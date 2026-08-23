@@ -87,6 +87,48 @@ pub struct PacketTimestamps {
     pub duration: Option<i64>,
 }
 
+/// Проверенная FFmpeg-compatible шкала времени compressed packet-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PacketTimeBase {
+    /// Числитель `AVRational`, гарантированно представимый FFmpeg ABI.
+    numer: i32,
+
+    /// Положительный знаменатель `AVRational`, гарантированно представимый FFmpeg ABI.
+    denom: i32,
+}
+
+impl PacketTimeBase {
+    /// Проверяет container time base до передачи чисел в FFmpeg FFI.
+    pub fn from_track_time_base(numer: u32, denom: u32) -> FfiResult<Self> {
+        if numer == 0 || denom == 0 {
+            return Err(FfmpegError::InvalidInput {
+                operation: "set packet time base",
+                details: format!("time base must be positive, got {numer}/{denom}"),
+            });
+        }
+
+        let numer = i32::try_from(numer).map_err(|_| FfmpegError::InvalidInput {
+            operation: "set packet time base",
+            details: format!("time base numerator exceeds FFmpeg i32 range: {numer}"),
+        })?;
+        let denom = i32::try_from(denom).map_err(|_| FfmpegError::InvalidInput {
+            operation: "set packet time base",
+            details: format!("time base denominator exceeds FFmpeg i32 range: {denom}"),
+        })?;
+
+        Ok(Self { numer, denom })
+    }
+
+    /// Строит raw rational только внутри родительского FFI module-а.
+    #[cfg(feature = "ffmpeg")]
+    pub(super) const fn as_av_rational(self) -> ffmpeg_sys_next::AVRational {
+        ffmpeg_sys_next::AVRational {
+            num: self.numer,
+            den: self.denom,
+        }
+    }
+}
+
 impl OwnedAvPacket {
     /// Allocates an `AVPacket`, copies caller payload and keeps FFmpeg padding.
     pub fn new(encoded_payload: impl AsRef<[u8]>) -> FfiResult<Self> {
@@ -203,6 +245,22 @@ impl OwnedAvPacket {
             packet.pts = timestamps.pts.unwrap_or(ffmpeg_sys_next::AV_NOPTS_VALUE);
             packet.dts = timestamps.dts.unwrap_or(ffmpeg_sys_next::AV_NOPTS_VALUE);
             packet.duration = timestamps.duration.unwrap_or(0);
+        }
+    }
+
+    /// Объявляет FFmpeg шкалу, в которой записаны `pts`, `dts` и `duration` packet-а.
+    pub fn set_time_base(&mut self, time_base: PacketTimeBase) {
+        #[cfg(not(feature = "ffmpeg"))]
+        {
+            let _time_base = time_base;
+        }
+
+        #[cfg(feature = "ffmpeg")]
+        {
+            // SAFETY: wrapper единолично владеет packet pointer-ом, а validated
+            // rational содержит только представимые и положительные компоненты.
+            let packet = unsafe { self.raw_packet.as_mut() };
+            packet.time_base = time_base.as_av_rational();
         }
     }
 
@@ -323,6 +381,36 @@ mod tests {
                 .iter()
                 .all(|padding_byte| *padding_byte == 0)
         );
+    }
+
+    #[test]
+    fn packet_time_base_rejects_values_outside_ffmpeg_rational_contract() {
+        assert!(PacketTimeBase::from_track_time_base(0, 90_000).is_err());
+        assert!(PacketTimeBase::from_track_time_base(1, 0).is_err());
+        assert!(PacketTimeBase::from_track_time_base(u32::MAX, 90_000).is_err());
+        assert!(PacketTimeBase::from_track_time_base(1, u32::MAX).is_err());
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn owned_packet_preserves_validated_time_base_and_timestamps() {
+        let mut packet = OwnedAvPacket::new([1_u8, 2, 3]).expect("создать FFmpeg packet");
+        let time_base =
+            PacketTimeBase::from_track_time_base(1, 90_000).expect("валидная MPEG time base");
+
+        packet.set_time_base(time_base);
+        packet.set_timestamps(PacketTimestamps {
+            pts: Some(18_000),
+            dts: None,
+            duration: None,
+        });
+
+        // SAFETY: packet живёт до конца test-а и единолично владеет raw pointer-ом.
+        let raw_packet = unsafe { packet.raw_packet.as_ref() };
+        assert_eq!(raw_packet.time_base.num, 1);
+        assert_eq!(raw_packet.time_base.den, 90_000);
+        assert_eq!(raw_packet.pts, 18_000);
+        assert_eq!(raw_packet.dts, ffmpeg_sys_next::AV_NOPTS_VALUE);
     }
 
     #[test]

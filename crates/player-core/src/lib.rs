@@ -110,7 +110,9 @@ pub use media_opening::{
     MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource,
     PreparedMediaTimelineMode, PreparedMediaTimelineModeError,
 };
-pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
+pub(crate) use pipeline::{
+    PendingAudioPacket, PendingVideoPacket, PendingVideoPacketTimestamps, PlaybackPipeline,
+};
 pub use playback_rate::{PlaybackRate, PlaybackRateValidationError};
 pub use playback_window::{MediaPlaybackWindow, MediaPlaybackWindowError};
 pub use prepared_demux_seek::{

@@ -13,6 +13,29 @@ selected file. The runner neither searches `test-assets/` nor assumes any filena
 the selected path, detected container, public track codecs, scenario, and a `PASSED`, `FAILED`,
 or `NOT RUN: missing selection` outcome.
 
+## PTS-only MPEG-TS через software FFmpeg
+
+AUD-003 проверяется generated fixture-ом, который не добавляется в Git. Он должен содержать
+H.264 без B-frames и не меньше трёх video PES packets с PTS и без DTS. Минимальный deterministic
+asset можно создать локальным FFmpeg:
+
+```bash
+ffmpeg -hide_banner -loglevel error \
+  -f lavfi -i testsrc2=size=160x90:rate=5 \
+  -t 4 -c:v libx264 -preset ultrafast -profile:v baseline \
+  -bf 0 -g 5 -keyint_min 5 -sc_threshold 0 -pix_fmt yuv420p -an \
+  -muxpreload 0 -muxdelay 0 -mpegts_flags +resend_headers \
+  -f mpegts -y /tmp/rustiplayer-aud003-pts-only.ts
+
+scripts/media-regression.sh \
+  --scenario h264-ts-pts-only-ffmpeg \
+  --path /tmp/rustiplayer-aud003-pts-only.ts
+```
+
+Сценарий принудительно запускает `ffmpeg-sw`, materialize-ит AVFrame-backed кадры через обычный
+resource-release path, проверяет строго возрастающие PTS первых трёх кадров на старте и после
+middle seek, current seek generation, landing `pts >= target` и terminal EOF drain.
+
 Web-media/app UX is checked separately through the S42 manual runner:
 
 ```bash

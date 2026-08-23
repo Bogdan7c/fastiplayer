@@ -1,3 +1,9 @@
+## AUD-003 PTS-only software FFmpeg time-base fix (2026-08-23)
+
+- Real generated MPEG-TS H.264 no-B-frame verification confirmed that player/decoder protocol dropped raw `track_pts` when `track_dts=None`, producing repeated materialized frame PTS at start and after seek.
+- `track_pts` now crosses player-core and neutral decoder protocol; FFmpeg sets exact packet timestamps plus `AVPacket.time_base` and `AVCodecContext.pkt_timebase`. Real start PTS are `0/200000/400000 us`; seek PTS are `2000000/2200000/2400000 us` for a 2 s target, with current generation and terminal EOF drain.
+- Full boundaries, focused/real tests, command and GUI/WGPU limitation: `mem:video-ffmpeg/pts-only-packet-timebase-aud003-2026-08-23`.
+
 ## AUD-002 dependency/security gate closure (2026-08-23)
 
 - Blocking RUSTSEC-2026-0221 и RUSTSEC-2026-0257 устранены точечным lock update: `event-listener 5.4.2`, `webbrowser 1.2.2`; manifests и desktop feature boundaries не менялись.

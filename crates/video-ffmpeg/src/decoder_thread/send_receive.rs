@@ -23,7 +23,7 @@ use crate::ffi::frame::FrameTimestamps;
 #[cfg(feature = "ffmpeg")]
 use crate::ffi::frame::OwnedAvFrame;
 #[cfg(feature = "ffmpeg")]
-use crate::ffi::packet::{OwnedAvPacket, PacketTimestamps};
+use crate::ffi::packet::{OwnedAvPacket, PacketTimeBase, PacketTimestamps};
 
 #[cfg(feature = "ffmpeg")]
 use super::FfmpegOpenDecoderError;
@@ -101,22 +101,15 @@ impl SendReceiveCodecApi for RealFfmpegDecodeApi {
         packet: &DecodePacket,
     ) -> Result<Self::Packet, FfmpegDecoderThreadError> {
         let mut av_packet = OwnedAvPacket::new(packet.encoded_bytes.as_ref())?;
-        let packet_time_base = packet
-            .track_dts
-            .map(|track_dts| {
-                StreamTimeBase::new(track_dts.time_base.numer, track_dts.time_base.denom)
-            })
-            .or(self.stream_time_base);
+        let packet_time_base = packet_track_time_base(packet).or(self.stream_time_base);
         let packet_timestamps = packet_time_base.map(|time_base| {
-            let pts = duration_to_units_saturating(packet.pts, time_base);
-            let dts = packet
-                .track_dts
-                .map(|track_dts| track_dts.units.get())
-                .or_else(|| {
-                    packet
-                        .dts
-                        .map(|dts| duration_to_units_saturating(dts, time_base))
-                });
+            let pts = packet_track_pts_units(packet, time_base)
+                .unwrap_or_else(|| duration_to_units_saturating(packet.pts, time_base));
+            let dts = packet_track_dts_units(packet, time_base).or_else(|| {
+                packet
+                    .dts
+                    .map(|dts| duration_to_units_saturating(dts, time_base))
+            });
 
             PacketTimestamps {
                 pts: Some(pts),
@@ -127,6 +120,10 @@ impl SendReceiveCodecApi for RealFfmpegDecodeApi {
 
         if let Some(time_base) = packet_time_base {
             self.stream_time_base = Some(time_base);
+            let ffmpeg_time_base =
+                PacketTimeBase::from_track_time_base(time_base.numer, time_base.denom)?;
+            self.codec_context.set_packet_time_base(ffmpeg_time_base);
+            av_packet.set_time_base(ffmpeg_time_base);
         }
 
         av_packet.set_timestamps(packet_timestamps.unwrap_or_default());
@@ -719,11 +716,8 @@ struct FramePtsResolver {
 #[cfg(any(test, feature = "ffmpeg"))]
 impl FramePtsResolver {
     fn observe_accepted_packet(&mut self, packet: &DecodePacket) {
-        if let Some(track_dts) = packet.track_dts {
-            self.time_base = Some(StreamTimeBase::new(
-                track_dts.time_base.numer,
-                track_dts.time_base.denom,
-            ));
+        if let Some(packet_time_base) = packet_track_time_base(packet) {
+            self.time_base = Some(packet_time_base);
         }
 
         if self.next_interpolated_pts.is_none() {
@@ -795,6 +789,51 @@ impl StreamTimeBase {
     fn new(numer: u32, denom: u32) -> Self {
         Self { numer, denom }
     }
+}
+
+/// Выбирает container time base из raw PTS, а при его отсутствии — из raw DTS.
+#[cfg(any(test, feature = "ffmpeg"))]
+fn packet_track_time_base(packet: &DecodePacket) -> Option<StreamTimeBase> {
+    packet
+        .track_pts
+        .filter(|track_pts| track_pts.track_id == packet.track_id)
+        .or_else(|| {
+            packet
+                .track_dts
+                .filter(|track_dts| track_dts.track_id == packet.track_id)
+        })
+        .map(|track_timestamp| {
+            StreamTimeBase::new(
+                track_timestamp.time_base.numer,
+                track_timestamp.time_base.denom,
+            )
+        })
+}
+
+/// Возвращает raw PTS units только для согласованных track owner и time base.
+#[cfg(feature = "ffmpeg")]
+fn packet_track_pts_units(packet: &DecodePacket, packet_time_base: StreamTimeBase) -> Option<i64> {
+    packet
+        .track_pts
+        .filter(|timestamp| timestamp.track_id == packet.track_id)
+        .filter(|timestamp| {
+            timestamp.time_base.numer == packet_time_base.numer
+                && timestamp.time_base.denom == packet_time_base.denom
+        })
+        .map(|timestamp| timestamp.units.get())
+}
+
+/// Возвращает raw DTS units только для согласованных track owner и time base.
+#[cfg(feature = "ffmpeg")]
+fn packet_track_dts_units(packet: &DecodePacket, packet_time_base: StreamTimeBase) -> Option<i64> {
+    packet
+        .track_dts
+        .filter(|timestamp| timestamp.track_id == packet.track_id)
+        .filter(|timestamp| {
+            timestamp.time_base.numer == packet_time_base.numer
+                && timestamp.time_base.denom == packet_time_base.denom
+        })
+        .map(|timestamp| timestamp.units.get())
 }
 
 #[cfg(any(test, feature = "ffmpeg"))]

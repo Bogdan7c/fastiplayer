@@ -434,6 +434,31 @@ fn pts_policy_uses_best_effort_then_pts_then_interpolation() {
     assert_eq!(third.frames[0].pts, Duration::from_millis(10));
 }
 
+#[test]
+fn pts_only_packet_time_base_resolves_materialized_frame_timestamp() {
+    let track_id = media_core::TrackId::new(1);
+    let time_base = media_core::TimeBase::new(1, 90_000).expect("валидная MPEG time base");
+    let mut decode_packet = decode_packet_with_pts(7, 18_000, Duration::from_millis(200));
+    decode_packet.track_pts = Some(media_core::TrackTimestamp::new(track_id, 18_000, time_base));
+    decode_packet.track_dts = None;
+
+    let mut decode_loop = fake_loop(
+        [FakeSendResult::Accepted],
+        [
+            FakeReceiveResult::Frame(frame_timestamps(18_000, NO_TIMESTAMP, 18_000)),
+            FakeReceiveResult::Again,
+        ],
+    );
+
+    let progress = decode_loop
+        .send_packet_for_test(decode_packet)
+        .expect("PTS-only packet должен materialize frame");
+
+    assert_eq!(progress.frames.len(), 1);
+    assert_eq!(progress.frames[0].generation, 7);
+    assert_eq!(progress.frames[0].pts, Duration::from_millis(200));
+}
+
 #[cfg(feature = "ffmpeg")]
 #[test]
 fn avframe_resource_remains_readable_until_release() {

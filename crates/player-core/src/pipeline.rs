@@ -391,6 +391,36 @@ impl MonotonicMediaClockAnchor {
     }
 }
 
+/// Полный набор media и container timestamps ожидающего video packet-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingVideoPacketTimestamps {
+    /// Presentation timestamp packet-а на media timeline.
+    pub(crate) pts: Duration,
+
+    /// Decode timestamp packet-а на media timeline, если container его сообщил.
+    pub(crate) dts: Option<Duration>,
+
+    /// Raw PTS в container track time base, если demuxer его сохранил.
+    pub(crate) track_pts: Option<TrackTimestamp>,
+
+    /// Raw DTS в container track time base, если demuxer его сохранил.
+    pub(crate) track_dts: Option<TrackTimestamp>,
+}
+
+impl PendingVideoPacketTimestamps {
+    /// Создаёт test/default timing без выдуманных raw container timestamps.
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) const fn from_presentation_pts(pts: Duration) -> Self {
+        Self {
+            pts,
+            dts: None,
+            track_pts: None,
+            track_dts: None,
+        }
+    }
+}
+
 /// Сырой video packet, который ждёт отправки в decode thread.
 pub(crate) struct PendingVideoPacket {
     /// Track ID нужен для фильтрации выбранного video track.
@@ -401,6 +431,9 @@ pub(crate) struct PendingVideoPacket {
 
     /// Decode timestamp нужен codec backends с decode-order семантикой, например H.264 B-frames.
     pub(crate) dts: Option<Duration>,
+
+    /// Raw PTS в track time base сохраняет точную container presentation metadata до decoder boundary.
+    pub(crate) track_pts: Option<TrackTimestamp>,
 
     /// Raw DTS в track time base сохраняет container ordering metadata до decoder boundary.
     pub(crate) track_dts: Option<TrackTimestamp>,
@@ -428,9 +461,7 @@ impl PendingVideoPacket {
     ) -> Self {
         Self::new_with_decode_timestamps(
             track_id,
-            pts,
-            None,
-            None,
+            PendingVideoPacketTimestamps::from_presentation_pts(pts),
             generation,
             encoded_bytes,
             keyframe,
@@ -441,18 +472,17 @@ impl PendingVideoPacket {
     #[must_use]
     pub(crate) fn new_with_decode_timestamps(
         track_id: TrackId,
-        pts: Duration,
-        dts: Option<Duration>,
-        track_dts: Option<TrackTimestamp>,
+        timestamps: PendingVideoPacketTimestamps,
         generation: u64,
         encoded_bytes: Bytes,
         keyframe: impl Into<PacketKeyframe>,
     ) -> Self {
         Self {
             track_id,
-            pts,
-            dts,
-            track_dts,
+            pts: timestamps.pts,
+            dts: timestamps.dts,
+            track_pts: timestamps.track_pts,
+            track_dts: timestamps.track_dts,
             generation,
             encoded_bytes,
             keyframe: keyframe.into(),

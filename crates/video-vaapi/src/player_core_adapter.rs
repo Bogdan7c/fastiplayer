@@ -351,11 +351,17 @@ mod tests {
 
     /// Проверяет, что packet adapter не теряет ownership payload-а и timing metadata.
     #[test]
-    fn decode_packet_adapter_preserves_core_fields() {
+    fn decode_packet_adapter_preserves_vaapi_fields_and_drops_unused_raw_pts() {
+        let time_base = media_core::TimeBase::new(1, 90_000).expect("валидная MPEG time base");
         let packet = video_core::DecodePacket {
             track_id: TrackId::new(7),
             pts: Duration::from_millis(42),
             dts: Some(Duration::from_millis(40)),
+            track_pts: Some(media_core::TrackTimestamp::new(
+                TrackId::new(7),
+                3_780,
+                time_base,
+            )),
             track_dts: None,
             generation: 11,
             encoded_bytes: Bytes::from_static(b"encoded-vp9-packet"),
@@ -369,6 +375,7 @@ mod tests {
         assert_eq!(neutral_packet.track_id, packet.track_id);
         assert_eq!(neutral_packet.pts, packet.pts);
         assert_eq!(neutral_packet.dts, packet.dts);
+        assert_eq!(neutral_packet.track_pts, None);
         assert_eq!(neutral_packet.track_dts, packet.track_dts);
         assert_eq!(neutral_packet.generation, packet.generation);
         assert_eq!(neutral_packet.encoded_bytes, packet.encoded_bytes);

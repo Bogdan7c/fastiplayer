@@ -288,6 +288,11 @@ pub(super) fn decode_packet_with_pts(
         track_id,
         pts,
         dts: None,
+        track_pts: Some(TrackTimestamp::new(
+            track_id,
+            dts_units,
+            TimeBase::new(1, 1_000).expect("test time base is valid"),
+        )),
         track_dts: Some(TrackTimestamp::new(
             track_id,
             dts_units,

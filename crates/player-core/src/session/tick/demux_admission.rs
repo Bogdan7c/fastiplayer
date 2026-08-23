@@ -26,9 +26,9 @@ use super::{
 };
 use crate::pipeline::{VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit};
 use crate::{
-    PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason, PlayerError,
-    PlayerErrorKind, PlayerTickPacket, PlayerVideoDropReason, session::PlayerSession,
-    session::audio_runtime::sanitize_audio_high_water_mark,
+    PendingAudioPacket, PendingVideoPacket, PendingVideoPacketTimestamps, PipelineLatencyStage,
+    PipelinePauseReason, PlayerError, PlayerErrorKind, PlayerTickPacket, PlayerVideoDropReason,
+    session::PlayerSession, session::audio_runtime::sanitize_audio_high_water_mark,
 };
 
 /// Результат маршрутизации demux packet-а внутри session queues.
@@ -510,9 +510,12 @@ pub(super) fn route_demuxed_packet(
         TrackKind::Video => {
             let pending_packet = PendingVideoPacket::new_with_decode_timestamps(
                 packet.track_id,
-                packet.pts,
-                packet.dts,
-                packet.track_dts,
+                PendingVideoPacketTimestamps {
+                    pts: packet.pts,
+                    dts: packet.dts,
+                    track_pts: packet.track_pts,
+                    track_dts: packet.track_dts,
+                },
                 generation,
                 packet.data,
                 packet.keyframe,

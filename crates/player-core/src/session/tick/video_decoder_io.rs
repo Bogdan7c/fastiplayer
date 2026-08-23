@@ -509,6 +509,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
         let packet_track_id = packet.track_id;
         let packet_pts = packet.pts;
         let packet_dts = packet.dts;
+        let packet_track_pts = packet.track_pts;
         let packet_track_dts = packet.track_dts;
         let packet_generation = packet.generation;
         let packet_keyframe = packet.keyframe;
@@ -654,6 +655,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
             track_id: packet_track_id,
             pts: packet_pts,
             dts: packet_dts,
+            track_pts: packet_track_pts,
             track_dts: packet_track_dts,
             generation: packet_generation,
             encoded_bytes: packet_probe.encoded_bytes,

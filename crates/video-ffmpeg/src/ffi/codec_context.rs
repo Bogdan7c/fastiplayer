@@ -10,7 +10,7 @@ use video_core::SoftwareDecodeThreadBudget;
 
 use super::error::{FfiResult, FfmpegError};
 use super::frame::OwnedAvFrame;
-use super::packet::OwnedAvPacket;
+use super::packet::{OwnedAvPacket, PacketTimeBase};
 #[cfg(feature = "ffmpeg")]
 use super::pixel_format::av_pixel_format_is_software;
 use super::pixel_format::{SoftwarePixelFormat, SoftwarePixelFormatSet};
@@ -407,6 +407,22 @@ impl CodecContext {
             }
 
             Ok(())
+        }
+    }
+
+    /// Объявляет decoder-у шкалу входных `AVPacket.pts/dts` до их отправки.
+    pub fn set_packet_time_base(&mut self, time_base: PacketTimeBase) {
+        #[cfg(not(feature = "ffmpeg"))]
+        {
+            let _time_base = time_base;
+        }
+
+        #[cfg(feature = "ffmpeg")]
+        {
+            // SAFETY: context принадлежит живому wrapper-у; `pkt_timebase`
+            // является caller-owned decode metadata по контракту libavcodec.
+            let context = unsafe { self.raw_context.as_mut() };
+            context.pkt_timebase = time_base.as_av_rational();
         }
     }
 

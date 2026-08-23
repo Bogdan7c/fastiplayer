@@ -1713,9 +1713,12 @@ fn video_backlog_recovery_keyframe_atomically_replaces_backlog_and_is_queued() {
         pipeline.route_pending_video_packet_for_backlog_recovery(
             PendingVideoPacket::new_with_decode_timestamps(
                 selected_track_id,
-                recovery_keyframe_pts,
-                recovery_keyframe_dts,
-                recovery_track_dts,
+                PendingVideoPacketTimestamps {
+                    pts: recovery_keyframe_pts,
+                    dts: recovery_keyframe_dts,
+                    track_pts: None,
+                    track_dts: recovery_track_dts,
+                },
                 generation,
                 recovery_payload.clone(),
                 PacketKeyframe::Keyframe,

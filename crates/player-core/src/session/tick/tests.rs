@@ -23,9 +23,10 @@ use super::*;
 use super::{demux_admission::*, presentation_scheduler::*, wakeup::*};
 use crate::{
     DecodeBackpressureReason, DecodeSendError, DecodeThreadError, FrameCounters,
-    PendingAudioPacket, PendingVideoPacket, PlaybackPipeline, PlaybackRate, PlaybackResumeIntent,
-    PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerDecodePacket, PlayerErrorKind,
-    PlayerSession, PresentFrameResourceProviderHandle, StartedVideoBackend, WorkerWakeupReason,
+    PendingAudioPacket, PendingVideoPacket, PendingVideoPacketTimestamps, PlaybackPipeline,
+    PlaybackRate, PlaybackResumeIntent, PlayerAudioClock, PlayerAudioOutput, PlayerCommand,
+    PlayerDecodePacket, PlayerErrorKind, PlayerSession, PresentFrameResourceProviderHandle,
+    StartedVideoBackend, WorkerWakeupReason,
 };
 
 mod audio_packet_window;
@@ -1884,9 +1885,12 @@ fn audio_catchup_recovery_keeps_runway_until_proven_keyframe() {
 
     let unknown_packet = PendingVideoPacket::new_with_decode_timestamps(
         selected_video_track_id,
-        Duration::from_millis(10),
-        None,
-        None,
+        PendingVideoPacketTimestamps {
+            pts: Duration::from_millis(10),
+            dts: None,
+            track_pts: None,
+            track_dts: None,
+        },
         generation,
         Bytes::new(),
         PacketKeyframe::Unknown,
@@ -3133,6 +3137,14 @@ fn route_demuxed_video_packet_preserves_shared_payload_keyframe_and_pts() {
     assert_eq!(pending_packet.dts, Some(Duration::from_millis(80)));
     assert_eq!(
         pending_packet
+            .track_pts
+            .expect("video pending packet должен сохранить raw PTS")
+            .units
+            .get(),
+        10_800
+    );
+    assert_eq!(
+        pending_packet
             .track_dts
             .expect("video pending packet должен сохранить raw DTS")
             .units
@@ -3220,11 +3232,12 @@ fn pending_backend_reselection_retains_starting_keyframe_until_decoder_install()
 }
 
 #[test]
-fn pending_video_packet_preserves_dts_through_decode_boundary() {
+fn pending_video_packet_preserves_track_timestamps_through_decode_boundary() {
     let mut session = PlayerSession::new();
     let decoder_thread = RecordingVideoDecoderThread::new();
     let mut tick_result = PlayerTickResult::default();
     let time_base = media_core::TimeBase::new(1, 90_000).expect("valid video time base");
+    let track_pts = media_core::TrackTimestamp::new(TrackId::new(1), 10_800, time_base);
     let track_dts = media_core::TrackTimestamp::new(TrackId::new(1), 7_200, time_base);
 
     session
@@ -3238,9 +3251,12 @@ fn pending_video_packet_preserves_dts_through_decode_boundary() {
         .pipeline
         .enqueue_pending_video_packet(PendingVideoPacket::new_with_decode_timestamps(
             TrackId::new(1),
-            Duration::from_millis(120),
-            Some(Duration::from_millis(80)),
-            Some(track_dts),
+            PendingVideoPacketTimestamps {
+                pts: Duration::from_millis(120),
+                dts: Some(Duration::from_millis(80)),
+                track_pts: Some(track_pts),
+                track_dts: Some(track_dts),
+            },
             session.pipeline.seek_generation(),
             Bytes::from_static(b"decode-order-video"),
             true,
@@ -3260,6 +3276,7 @@ fn pending_video_packet_preserves_dts_through_decode_boundary() {
         .expect("decoder должен получить packet");
     assert_eq!(sent_packet.pts, Duration::from_millis(120));
     assert_eq!(sent_packet.dts, Some(Duration::from_millis(80)));
+    assert_eq!(sent_packet.track_pts, Some(track_pts));
     assert_eq!(sent_packet.track_dts, Some(track_dts));
 }
 

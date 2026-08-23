@@ -379,6 +379,9 @@ pub struct DecodePacket {
     /// Decode timestamp на media timeline, если container сообщил DTS отдельно от PTS.
     pub dts: Option<Duration>,
 
+    /// Исходный signed PTS в track time base для точной FFmpeg packet time-base проекции.
+    pub track_pts: Option<TrackTimestamp>,
+
     /// Исходный signed DTS в track time base для codec backends, которым нужен decode order.
     pub track_dts: Option<TrackTimestamp>,
 

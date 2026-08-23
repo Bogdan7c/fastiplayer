@@ -414,6 +414,8 @@ impl From<DecodePacket> for video_core::DecodePacket {
             track_id: packet.track_id,
             pts: packet.pts,
             dts: packet.dts,
+            // VA-API декодирует по media PTS и не владеет raw container PTS metadata.
+            track_pts: None,
             track_dts: packet.track_dts,
             generation: packet.generation,
             encoded_bytes: packet.encoded_bytes,

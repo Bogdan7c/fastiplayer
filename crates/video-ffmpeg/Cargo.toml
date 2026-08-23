@@ -29,7 +29,10 @@ optional = true
 
 [dev-dependencies]
 bytes.workspace = true
+demux-api.workspace = true
 media-core.workspace = true
+mpeg-ts-demux.workspace = true
+source-core.workspace = true
 static_assertions = "1.1"
 
 [build-dependencies]

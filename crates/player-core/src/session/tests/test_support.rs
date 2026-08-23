@@ -1772,6 +1772,7 @@ pub(super) fn decode_packet_for_tests(pts: Duration) -> PlayerDecodePacket {
         track_id: TrackId::new(1),
         pts,
         dts: None,
+        track_pts: None,
         track_dts: None,
         generation: 0,
         encoded_bytes: Bytes::from_static(b"vp9-test-packet"),

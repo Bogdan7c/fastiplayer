@@ -1,5 +1,6 @@
 use super::test_support::*;
 use super::*;
+use crate::PendingVideoPacketTimestamps;
 
 fn final_seek_harness_with_actual_position(
     target: Duration,
@@ -900,9 +901,12 @@ fn active_accurate_seek_sends_pre_target_video_packets_in_burst() {
         harness.session.pipeline.enqueue_pending_video_packet(
             PendingVideoPacket::new_with_decode_timestamps(
                 TrackId::new(1),
-                packet_pts,
-                None,
-                None,
+                PendingVideoPacketTimestamps {
+                    pts: packet_pts,
+                    dts: None,
+                    track_pts: None,
+                    track_dts: None,
+                },
                 harness.session.pipeline.seek_generation(),
                 Bytes::from_static(b"seek-preroll-video"),
                 packet_keyframe,
@@ -912,9 +916,12 @@ fn active_accurate_seek_sends_pre_target_video_packets_in_burst() {
     harness.session.pipeline.enqueue_pending_video_packet(
         PendingVideoPacket::new_with_decode_timestamps(
             TrackId::new(1),
-            target_position,
-            None,
-            None,
+            PendingVideoPacketTimestamps {
+                pts: target_position,
+                dts: None,
+                track_pts: None,
+                track_dts: None,
+            },
             harness.session.pipeline.seek_generation(),
             Bytes::from_static(b"seek-target-video"),
             PacketKeyframe::NotKeyframe,
@@ -993,9 +1000,12 @@ fn active_accurate_seek_bypasses_audio_decode_ahead_for_target_reorder_tail() {
         harness.session.pipeline.enqueue_pending_video_packet(
             PendingVideoPacket::new_with_decode_timestamps(
                 TrackId::new(1),
-                packet_pts,
-                None,
-                None,
+                PendingVideoPacketTimestamps {
+                    pts: packet_pts,
+                    dts: None,
+                    track_pts: None,
+                    track_dts: None,
+                },
                 harness.session.pipeline.seek_generation(),
                 Bytes::from_static(b"seek-reorder-tail-video"),
                 packet_keyframe,
@@ -1241,9 +1251,12 @@ fn active_accurate_seek_uses_seek_specific_video_packet_burst() {
         harness.session.pipeline.enqueue_pending_video_packet(
             PendingVideoPacket::new_with_decode_timestamps(
                 TrackId::new(1),
-                Duration::from_millis(frame_index * 100),
-                None,
-                None,
+                PendingVideoPacketTimestamps {
+                    pts: Duration::from_millis(frame_index * 100),
+                    dts: None,
+                    track_pts: None,
+                    track_dts: None,
+                },
                 harness.session.pipeline.seek_generation(),
                 Bytes::from_static(b"seek-preroll-video"),
                 if frame_index == 0 {
@@ -1257,9 +1270,12 @@ fn active_accurate_seek_uses_seek_specific_video_packet_burst() {
     harness.session.pipeline.enqueue_pending_video_packet(
         PendingVideoPacket::new_with_decode_timestamps(
             TrackId::new(1),
-            target_position,
-            None,
-            None,
+            PendingVideoPacketTimestamps {
+                pts: target_position,
+                dts: None,
+                track_pts: None,
+                track_dts: None,
+            },
             harness.session.pipeline.seek_generation(),
             Bytes::from_static(b"seek-target-video"),
             PacketKeyframe::NotKeyframe,
