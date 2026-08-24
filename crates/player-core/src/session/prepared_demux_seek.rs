@@ -97,6 +97,14 @@ impl PreparedDemuxSeekRuntime {
         self.install(PreparedDemuxSeekMode::Synchronous);
     }
 
+    /// Сообщает one-shot seek orchestration, что demux replacement готовится вне player-owner.
+    ///
+    /// Этот intent-method не раскрывает конкретный port вызывающему коду: session выбирает
+    /// существующую асинхронную seek transaction, а request/receipt fences остаются здесь.
+    pub(super) const fn routes_one_shot_seek_through_worker(&self) -> bool {
+        matches!(self.mode, PreparedDemuxSeekMode::WorkerReceipted { .. })
+    }
+
     /// Не позволяет demux loop читать post-seek events до authoritative receipt-а.
     pub(super) const fn receipt_pending(&self) -> bool {
         self.pending.is_some()

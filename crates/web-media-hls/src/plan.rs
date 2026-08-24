@@ -46,6 +46,14 @@ pub(crate) struct HlsSegmentRestartCoordinate {
     pub segment_index: usize,
 }
 
+/// Manifest-owned точка, с которой receipted seek может начать bounded доказательство anchor-а.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HlsManifestSeekPoint {
+    pub epoch_index: usize,
+    pub restart_segment: HlsSegmentRestartCoordinate,
+    pub timeline_start: Duration,
+}
+
 /// Один parser/decoder-facing lifecycle epoch.
 #[derive(Clone, Debug)]
 pub(crate) struct HlsEpochPlan {
@@ -79,9 +87,26 @@ pub(crate) struct HlsComponentPlan {
     pub container: HlsRequiredContainer,
     pub epochs: Vec<HlsEpochPlan>,
     pub duration: Duration,
+    /// Отсортированные начала media segments на общей presentation timeline.
+    manifest_seek_points: Vec<HlsManifestSeekPoint>,
 }
 
 impl HlsComponentPlan {
+    /// Test-only constructor для live snapshot fixtures без fake media resource topology.
+    #[cfg(test)]
+    pub(crate) fn test_without_media_resources(
+        container: HlsRequiredContainer,
+        epochs: Vec<HlsEpochPlan>,
+        duration: Duration,
+    ) -> Self {
+        Self {
+            container,
+            epochs,
+            duration,
+            manifest_seek_points: Vec::new(),
+        }
+    }
+
     /// Проверяет statically known exact ranges до publication deferred runtime-а.
     pub(crate) fn validate_resource_bound(
         &self,
@@ -97,6 +122,41 @@ impl HlsComponentPlan {
             return Err(HlsPlanError::ResourceRangeExceedsAdaptiveLimit);
         }
         Ok(())
+    }
+
+    /// Возвращает near-target segment и, при наличии, предыдущий segment того же epoch-а.
+    ///
+    /// Первый кандидат минимизирует preroll. Предыдущий нужен только как decode-safe retry,
+    /// если содержащий target segment не доказывает RAP/audio anchor до requested position.
+    pub(crate) fn manifest_seek_candidates(&self, target: Duration) -> Vec<HlsManifestSeekPoint> {
+        let insertion_index = self
+            .manifest_seek_points
+            .partition_point(|point| point.timeline_start <= target);
+        let containing_index = insertion_index.saturating_sub(1);
+        let Some(containing) = self.manifest_seek_points.get(containing_index).copied() else {
+            return Vec::new();
+        };
+        let mut candidates = vec![containing];
+        if let Some(previous_index) = containing_index.checked_sub(1)
+            && let Some(previous) = self.manifest_seek_points.get(previous_index).copied()
+            && previous.epoch_index == containing.epoch_index
+        {
+            candidates.push(previous);
+        }
+        candidates
+    }
+
+    /// Строит suffix, начало timeline которого соответствует выбранному manifest segment-у.
+    pub(crate) fn manifest_restart_tail(
+        &self,
+        point: HlsManifestSeekPoint,
+    ) -> Option<HlsEpochPlan> {
+        let mut suffix = self
+            .epochs
+            .get(point.epoch_index)?
+            .restart_tail(point.restart_segment)?;
+        suffix.timeline_start = point.timeline_start;
+        Some(suffix)
     }
 }
 
@@ -181,6 +241,7 @@ fn build_component_plan_with_epoch_strategy(
     let mut timeline_start = Duration::ZERO;
     let mut current_epoch_duration = Duration::ZERO;
     let mut current_restart_segment_index = 0_usize;
+    let mut manifest_seek_points = Vec::with_capacity(media.segments.len());
 
     for segment in &media.segments {
         let map_changed = segment.initialization_map != current_map;
@@ -218,15 +279,24 @@ fn build_component_plan_with_epoch_strategy(
             current_map_resource = None;
         }
 
+        let restart_segment = HlsSegmentRestartCoordinate {
+            segment_index: current_restart_segment_index,
+        };
+        let segment_timeline_start = timeline_start
+            .checked_add(current_epoch_duration)
+            .ok_or(HlsPlanError::DurationOverflow)?;
+        manifest_seek_points.push(HlsManifestSeekPoint {
+            epoch_index: epochs.len(),
+            restart_segment,
+            timeline_start: segment_timeline_start,
+        });
         current_resources.push(plan_media_segment(
             segment,
             container,
             base,
             overrides,
             &mut range_cursor,
-            HlsSegmentRestartCoordinate {
-                segment_index: current_restart_segment_index,
-            },
+            restart_segment,
         )?);
         current_restart_segment_index = current_restart_segment_index
             .checked_add(1)
@@ -253,6 +323,7 @@ fn build_component_plan_with_epoch_strategy(
         container,
         epochs,
         duration,
+        manifest_seek_points,
     })
 }
 
@@ -427,4 +498,53 @@ pub(crate) fn parse_hls_duration(duration: &HlsDuration) -> Result<Duration, Hls
         }
     }
     Ok(Duration::new(seconds, nanoseconds))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Строит минимальный manifest point для focused candidate-order assertions.
+    fn seek_point(epoch_index: usize, segment_index: usize, seconds: u64) -> HlsManifestSeekPoint {
+        HlsManifestSeekPoint {
+            epoch_index,
+            restart_segment: HlsSegmentRestartCoordinate { segment_index },
+            timeline_start: Duration::from_secs(seconds),
+        }
+    }
+
+    #[test]
+    fn exact_segment_boundary_keeps_previous_same_epoch_as_decode_safe_retry() {
+        let first = seek_point(0, 0, 0);
+        let previous = seek_point(0, 1, 10);
+        let containing = seek_point(0, 2, 20);
+        let plan = HlsComponentPlan {
+            container: HlsRequiredContainer::TransportStream,
+            epochs: Vec::new(),
+            duration: Duration::from_secs(30),
+            manifest_seek_points: vec![first, previous, containing],
+        };
+
+        assert_eq!(
+            plan.manifest_seek_candidates(Duration::from_secs(20)),
+            vec![containing, previous]
+        );
+    }
+
+    #[test]
+    fn manifest_retry_never_crosses_discontinuity_epoch() {
+        let old_epoch = seek_point(0, 0, 0);
+        let new_epoch = seek_point(1, 0, 10);
+        let plan = HlsComponentPlan {
+            container: HlsRequiredContainer::TransportStream,
+            epochs: Vec::new(),
+            duration: Duration::from_secs(20),
+            manifest_seek_points: vec![old_epoch, new_epoch],
+        };
+
+        assert_eq!(
+            plan.manifest_seek_candidates(Duration::from_secs(15)),
+            vec![new_epoch]
+        );
+    }
 }

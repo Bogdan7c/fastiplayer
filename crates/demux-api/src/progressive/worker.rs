@@ -334,7 +334,9 @@ pub(super) fn run_seekable_progressive_worker(
                         .as_ref()
                         .is_some_and(|state| state.runtime_generation == fence.runtime_generation);
                     let worker_result = if runtime_is_current {
-                        Some(inner.seek_with_request(request))
+                        // Receipted command не публикует предварительный anchor: concrete demuxer
+                        // вправе доказать более точную позицию внутри blocking worker-а.
+                        Some(inner.seek_with_receipted_request(request))
                     } else {
                         None
                     };

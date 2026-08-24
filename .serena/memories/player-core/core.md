@@ -1,3 +1,10 @@
+## Video one-shot worker-receipted routing (2026-08-24)
+
+- `PreparedDemuxSeekRuntime::routes_one_shot_seek_through_worker()` is the storage-hiding capability boundary used by `start_one_shot_seek_landing`.
+- Video media with an installed worker-receipted port now enter the existing async seek transaction; receipt pending still pauses demux reads and exact fences gate commit. Legacy video without a port keeps the reused-decoder route.
+- During pointer drag `PreviewScrub` may still use the live reused-decoder route, but `EndScrub` must not reuse that preview when `routes_one_shot_seek_through_worker()` is true. Final release supersedes the live landing, clears progressive pre-target presentation, and waits for the authoritative worker receipt before target-frame commit.
+- Functional regressions prove both public one-shot seek and `BeginScrub -> PreviewScrub -> EndScrub` release through worker receipt -> post-seek packet -> decoder -> target-frame presentation with zero visible pre-target frames after release and no extra synchronous final seek. Full context: `mem:media-services/hls-vod-manifest-receipted-seek-2026-08-24`.
+
 ## Slice C staged same-lineage position gate (2026-07-26)
 
 Same-lineage staged install now inserts a player-owned strict position phase before authorization, transfers any used receipted-seek runtime/allocator through commit, and adopts the prepared demux result into existing decoder landing without a second seek. Ordinary staged-open semantics remain unchanged. Current ownership, failure, live/DVR and receipt invariants: `mem:player-core/staged-position-gate-slice-c-2026-07-26`.

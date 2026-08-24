@@ -2,6 +2,9 @@ use std::num::NonZeroUsize;
 
 use crate::MpegTsOptionsError;
 
+/// Размер одного MPEG-TS transport packet без M2TS-префикса.
+const MPEG_TS_PACKET_BYTES: usize = 188;
+
 /// Named non-zero safety limit; callsites не передают неочевидные голые числа.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MpegTsLimit(NonZeroUsize);
@@ -38,13 +41,32 @@ pub struct MpegTsDemuxOptions {
     pub seek_scan_packets: MpegTsLimit,
 }
 
+impl MpegTsDemuxOptions {
+    /// Связывает initial topology probe с уже проверенным byte budget входного resource-а.
+    ///
+    /// Ordered HLS segment может разнести один AAC PES между тысячами video TS packets.
+    /// Фиксированный default остаётся безопасным для обычного local/stream input, а владелец
+    /// bounded resource-а может разрешить parser-у дочитать topology evidence до его конца.
+    #[must_use]
+    pub fn with_initial_probe_byte_budget(mut self, byte_budget: NonZeroUsize) -> Self {
+        let packet_budget = byte_budget.get().div_ceil(MPEG_TS_PACKET_BYTES);
+        self.initial_probe_packets = MpegTsLimit(
+            NonZeroUsize::new(packet_budget)
+                .expect("non-zero byte budget даёт хотя бы один packet"),
+        );
+        self
+    }
+}
+
 impl Default for MpegTsDemuxOptions {
     fn default() -> Self {
         Self {
             // 4096 TS packets ~= 752 KiB: достаточно для обычного PAT/PMT cadence.
             initial_probe_packets: MpegTsLimit(NonZeroUsize::new(4_096).expect("non-zero")),
             // Resync ограничен шестнадцатью transport packets.
-            resync_bytes: MpegTsLimit(NonZeroUsize::new(188 * 16).expect("non-zero")),
+            resync_bytes: MpegTsLimit(
+                NonZeroUsize::new(MPEG_TS_PACKET_BYTES * 16).expect("non-zero"),
+            ),
             // PES больше 16 MiB считается повреждённым, а не бесконечно буферизуется.
             pes_bytes: MpegTsLimit(NonZeroUsize::new(16 * 1024 * 1024).expect("non-zero")),
             // AU ограничен отдельно: PES boundary не является границей кадра.
@@ -56,5 +78,19 @@ impl Default for MpegTsDemuxOptions {
             // Один seek не сканирует больше 32768 transport packets.
             seek_scan_packets: MpegTsLimit(NonZeroUsize::new(32_768).expect("non-zero")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_probe_byte_budget_rounds_up_to_whole_transport_packets() {
+        let options = MpegTsDemuxOptions::default().with_initial_probe_byte_budget(
+            NonZeroUsize::new(MPEG_TS_PACKET_BYTES + 1).expect("test byte budget"),
+        );
+
+        assert_eq!(options.initial_probe_packets.get(), 2);
     }
 }

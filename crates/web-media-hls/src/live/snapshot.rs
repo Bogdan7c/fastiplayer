@@ -390,11 +390,11 @@ mod tests {
                 epoch
             })
             .collect();
-        HlsComponentPlan {
-            container: HlsRequiredContainer::TransportStream,
+        HlsComponentPlan::test_without_media_resources(
+            HlsRequiredContainer::TransportStream,
             epochs,
-            duration: timeline_start,
-        }
+            timeline_start,
+        )
     }
 
     fn video_packet(pts: Duration, keyframe: PacketKeyframe) -> Packet {

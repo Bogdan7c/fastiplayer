@@ -205,6 +205,22 @@ impl PlayerSession {
             return Ok(());
         }
 
+        // Worker-receipted demuxers готовят replacement вне player-owner. Reused-decoder
+        // scrub route вызывает demux seek синхронно и потому не может сохранить receipt как
+        // authoritative boundary. Для такого media используем уже существующую асинхронную
+        // seek transaction; legacy/static-local media остаются на cold SeekLanding route ниже.
+        if self
+            .prepared_demux_seek
+            .routes_one_shot_seek_through_worker()
+        {
+            return self.start_seek_transaction(
+                target_position,
+                request.mode,
+                resume_intent,
+                timeline_admission,
+            );
+        }
+
         if !self.pipeline.has_selected_video_track() {
             return self.start_audio_only_seek_landing_transaction(
                 target_position,
@@ -550,6 +566,12 @@ impl PlayerSession {
                 return Ok(());
             }
         };
+
+        // Новая seek transaction полностью заменяет любой оставшийся SeekLanding route.
+        // Особенно это важно после EndScrub на worker-receipted media: live preview владеет
+        // progressive presentation policy, а финальный one-shot обязан снова подавлять
+        // pre-target кадры до authoritative worker anchor-а.
+        self.supersede_active_seek_landing_for_new_target()?;
 
         if let Err(error) = self.clear_active_seek_decoder_output_floor("new seek") {
             self.mark_fatal_error(error);

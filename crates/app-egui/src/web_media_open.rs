@@ -424,9 +424,16 @@ impl WebOpenRuntime {
         let demux_composition =
             crate::web_media_demux_registry::WebDemuxComposition::new(demuxer_options)
                 .context("Не удалось собрать web demux registry")?;
-        let hls_demux_composition =
-            crate::web_media_demux_registry::WebDemuxComposition::new_hls(demuxer_options)
-                .context("Не удалось собрать HLS demux registry")?;
+        let hls_transport_limits =
+            crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
+                .context("Network config нельзя преобразовать в HLS transport limits")?;
+        let hls_mpeg_ts_options = mpeg_ts_demux::MpegTsDemuxOptions::default()
+            .with_initial_probe_byte_budget(hls_transport_limits.maximum_segment_bytes);
+        let hls_demux_composition = crate::web_media_demux_registry::WebDemuxComposition::new_hls(
+            demuxer_options,
+            hls_mpeg_ts_options,
+        )
+        .context("Не удалось собрать HLS demux registry")?;
         let demux_capabilities = DemuxCapabilitySnapshot::new(
             demux_composition
                 .capabilities

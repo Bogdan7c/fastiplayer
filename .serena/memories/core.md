@@ -1,3 +1,10 @@
+## HLS VOD manifest-owned worker-receipted seek (2026-08-24)
+
+- Real x36xhzz verification found video one-shot bypassed the installed receipt port through S17A reused-decoder scrub, so HLS reopened the only early observed RAP and scanned from zero.
+- `Demuxer::seek_with_receipted_request` now separates worker-authoritative preparation from preview parity; player video one-shot uses the existing receipt transaction when the installed runtime advertises that route, while legacy video/live scrub remain unchanged.
+- HLS receipted seek now starts from containing/previous same-epoch manifest segments, proves an actual RAP/audio anchor under existing budgets, preserves exact-anchor fallback and transactional separate A/V topology. Real anchors landed near all three late targets without `DemuxError`.
+- Full boundaries, packet-to-presentation regressions, verification and the remaining fully-buffered 8.8–9.4 MiB target-segment latency: `mem:media-services/hls-vod-manifest-receipted-seek-2026-08-24`.
+
 ## Hardware AV1 Main/Profile 0 (2026-08-24)
 
 - Native VA-API AV1 is production-ready for Main/Profile 0 YUV420 only: 8-bit NV12 and 10-bit P010 DMA-BUF. The private adapter owns multi-OBU temporal-unit consumption/retry; public neutral APIs were not widened.
@@ -459,3 +466,8 @@ Progressive direct HTTP is now a complete neutral path: `source-core::HttpSource
 ## YouTube A/V completeness fix (2026-07-26)
 
 - `BestPlayable` ranks complete `Muxed`/`Separate` A/V before single-component candidates, and progressive yt-dlp composite packet retention uses an independent bounded 4 MiB limit rather than the 64 KiB HTTP bootstrap chunk. This fixes silent `VideoOnly` selection and the subsequent real-keyframe composite fatal. Exact selection and single-component-only media remain supported. Full evidence: `mem:media-services/ytdlp-av-completeness-2026-07-26`.
+
+
+## x36xhzz HLS seek/resume root correction (2026-08-24)
+
+Manifest-owned worker receipt и player routing были необходимы, но реальный checkpoint 355.251 s всё ещё падал из-за MPEG-TS initial probe cutoff посреди interleaved AAC PES. HLS registry теперь получает resource-bounded typed probe options; generic MPEG-TS default не изменён. Реальные seek, render и cold resume подтверждены, synthetic integration доходит до landing packet, player regression — до target-frame presentation. Полный handoff: `mem:media-services/hls-ts-resource-bounded-initial-probe-2026-08-24`.

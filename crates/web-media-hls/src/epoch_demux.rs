@@ -20,6 +20,8 @@ use crate::source::{
 };
 use crate::{HlsRequiredContainer, HlsVodOpenPolicy};
 
+mod manifest_seek;
+
 /// Cloneable construction recipe для offside transactional component replacement.
 #[derive(Clone)]
 pub(crate) struct HlsComponentFactory {
@@ -168,13 +170,16 @@ impl HlsComponentDemuxer {
         seek_index: SharedHlsSeekIndex,
         anchor: HlsSeekAnchor,
     ) -> Result<Self> {
-        let epoch = plan
+        let mut epoch = plan
             .epochs
             .get(anchor.epoch_index)
             .and_then(|epoch| epoch.restart_tail(anchor.restart_segment))
             .ok_or_else(|| {
                 anyhow::anyhow!("HLS seek restart отсутствует в immutable epoch plan")
             })?;
+        // Anchor может быть впервые доказан из manifest suffix-а. Его timestamp origin
+        // относится именно к сохранённому presentation origin, а не обязательно к началу epoch-а.
+        epoch.timeline_start = anchor.timeline_origin;
         Self::open_from_epoch_plan(
             plan,
             http,
@@ -284,7 +289,7 @@ impl HlsComponentDemuxer {
     fn position_replacement_at_anchor(&mut self, anchor: HlsSeekAnchor) -> Result<()> {
         let mut inspected_events = 0_usize;
         let mut inspected_bytes = 0_usize;
-        let mut retained_audio_packets = VecDeque::new();
+        let mut retained_audio_packets = VecDeque::<Packet>::new();
         loop {
             let event = self.read_next_inner_event()?;
             inspected_events = inspected_events.saturating_add(1);
@@ -318,6 +323,21 @@ impl HlsComponentDemuxer {
                 | DemuxReadEvent::MediaMetadataChanged(_)
                 | DemuxReadEvent::TemporarilyUnavailable(_) => {}
             }
+        }
+    }
+
+    /// Убирает второй component-local topology reset перед HLS-owned A/V composition.
+    ///
+    /// Composite публикует stable public topology по video reset-у. Если следом оставить такой же
+    /// audio reset, generic composite справедливо очистит уже pending video packet и потеряет RAP.
+    pub(crate) fn suppress_redundant_composite_tracks_changed(&mut self) -> Result<()> {
+        match self.replay_events.pop_front() {
+            Some(DemuxReadEvent::TracksChanged(_)) => Ok(()),
+            Some(unexpected) => {
+                self.replay_events.push_front(unexpected);
+                anyhow::bail!("HLS composite audio replacement не начал replay с TracksChanged")
+            }
+            None => anyhow::bail!("HLS composite audio replacement не содержит replay lifecycle"),
         }
     }
 
@@ -421,6 +441,7 @@ impl HlsComponentDemuxer {
         self.seek_index.lock().observe_packet(
             self.current_epoch_index,
             restart_segment,
+            self.current_timeline_start,
             origin,
             &packet,
         );
@@ -485,26 +506,36 @@ impl Demuxer for HlsComponentDemuxer {
     }
 
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
-        let anchor = self.seek_index.lock().anchor_for_worker(request)?;
-        let preview = HlsSeekIndex::result_for_anchor(request, anchor);
-        let replacement_index =
-            SharedHlsSeekIndex::new(self.policy.maximum_seek_index_entries.get());
-        let mut replacement = Self::open_from_restart_anchor(
+        let factory = HlsComponentFactory::new(
             self.plan.clone(),
             self.http.clone(),
             self.generation,
             self.policy,
             Arc::clone(&self.registry),
-            replacement_index,
-            anchor,
-        )?;
-        replacement.public_tracks = self.public_tracks.clone();
-        let replacement_tracks = replacement.current.tracks().to_vec();
-        replacement.refresh_track_mapping(&replacement_tracks)?;
-        replacement.position_replacement_at_anchor(anchor)?;
-        replacement.seek_index = self.seek_index.clone();
+            self.seek_index.clone(),
+        );
+        let (replacement, result) =
+            factory.prepare_seek_replacement(request, &self.public_tracks)?;
         *self = replacement;
-        Ok(preview)
+        Ok(result)
+    }
+
+    fn seek_with_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+    ) -> Result<DemuxSeekResult> {
+        let factory = HlsComponentFactory::new(
+            self.plan.clone(),
+            self.http.clone(),
+            self.generation,
+            self.policy,
+            Arc::clone(&self.registry),
+            self.seek_index.clone(),
+        );
+        let (replacement, result) =
+            factory.prepare_receipted_seek_replacement(request, &self.public_tracks)?;
+        *self = replacement;
+        Ok(result)
     }
 }
 

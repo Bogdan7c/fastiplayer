@@ -47,14 +47,17 @@ impl WebDemuxComposition {
     }
 
     /// Регистрирует только concrete TS/fMP4 owners для HLS ordered-segment path-а.
-    pub(crate) fn new_hls(symphonia_options: DemuxerOptions) -> Result<Self> {
+    pub(crate) fn new_hls(
+        symphonia_options: DemuxerOptions,
+        mpeg_ts_options: MpegTsDemuxOptions,
+    ) -> Result<Self> {
         let factories: Vec<Box<dyn DemuxFactory>> = vec![
             Box::new(
                 SymphoniaDemuxFactory::new(symphonia_options)
                     .context("Не удалось создать HLS Symphonia demux factory")?,
             ),
             Box::new(
-                MpegTsDemuxFactory::new(MpegTsDemuxOptions::default())
+                MpegTsDemuxFactory::new(mpeg_ts_options)
                     .context("Не удалось создать HLS MPEG-TS demux factory")?,
             ),
         ];
@@ -156,7 +159,8 @@ mod tests {
     #[test]
     fn hls_composition_adds_ordered_ts_without_changing_progressive_composition() {
         let composition =
-            WebDemuxComposition::new_hls(DemuxerOptions::default()).expect("HLS composition");
+            WebDemuxComposition::new_hls(DemuxerOptions::default(), MpegTsDemuxOptions::default())
+                .expect("HLS composition");
         assert!(
             composition
                 .capabilities

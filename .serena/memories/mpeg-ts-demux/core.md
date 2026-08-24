@@ -22,3 +22,12 @@
 - Focused owner proof требует оба RAP (0s и 1s) от двух independent ordered segments со стабильными tracks и отдельно проверяет rejection truncated PES без packet publication.
 - HLS grouped VOD использует этот owner boundary для decode-safe tail restart; HLS не пытается самостоятельно собирать PES/AU.
 - Проверка 2026-08-05: `cargo test -p mpeg-ts-demux` — 37/37; affected all-target Clippy `-D warnings` и Serena diagnostics — PASS.
+
+
+## Resource-bounded ordered-segment initial probe (2026-08-24)
+
+- Default initial probe остаётся 4096 TS packets для generic/local/stream input.
+- Additive `MpegTsDemuxOptions::with_initial_probe_byte_budget(NonZeroUsize)` принадлежит MPEG-TS owner-у и переводит validated resource bytes в целые 188-byte packets с округлением вверх.
+- HLS composition передаёт `AdaptiveTransportLimits::maximum_segment_bytes`; это позволяет дочитать topology evidence до конца уже bounded segment-а, когда один AAC PES перемежается тысячами video packets.
+- Cutoff посреди declared PES нельзя путать с EOF/corruption: раньше strict finalization корректно отвергал неполный PES, но неполноту создавал сам probe. Настоящий truncated resource по-прежнему fail-closed.
+- Functional owner test сначала воспроизводит failure прежнего default cutoff, затем доказывает video+audio packet playback с resource budget. Полный runtime evidence: `mem:media-services/hls-ts-resource-bounded-initial-probe-2026-08-24`.

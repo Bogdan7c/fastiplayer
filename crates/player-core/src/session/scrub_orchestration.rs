@@ -262,7 +262,14 @@ impl PlayerSession {
         resume_intent: PlaybackResumeIntent,
         live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
     ) -> PlayerResult<()> {
-        let active_live_target_matches = self.seek_runtime.active_seek_landing_is_live_scrub()
+        // Previewed progressive seek не является authoritative final anchor для demuxer-а,
+        // который умеет отдельно подтвердить one-shot seek worker receipt-ом. В таком media
+        // даже exact same target обязан пройти новый receipted route: иначе EndScrub просто
+        // разрешит старому preview-проходу показывать весь preroll до пользовательской цели.
+        let active_live_target_matches = !self
+            .prepared_demux_seek
+            .routes_one_shot_seek_through_worker()
+            && self.seek_runtime.active_seek_landing_is_live_scrub()
             && self
                 .seek_runtime
                 .active_commit()

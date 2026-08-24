@@ -1,3 +1,9 @@
+## Worker-authoritative receipted Demuxer seek (2026-08-24)
+
+- `media_core::Demuxer::seek_with_receipted_request` is an additive default method that delegates ordinary request seek for legacy implementations.
+- `ProgressiveSeekCommand::Receipted` alone calls this boundary; `Previewed` keeps `seek_with_request` because its worker result must match the synchronously published preview.
+- This separation lets manifest demuxers prove a near-target anchor during blocking worker preparation without changing legacy/local demux semantics. Full HLS consumer contract: `mem:media-services/hls-vod-manifest-receipted-seek-2026-08-24`.
+
 ## S36P4/P5 deferred receipted Smooth runtime (2026-07-25)
 
 - `ProgressiveDemuxer::new_deferred_receipted_seekable` additively combines worker-deferred concrete open with the existing generation-fenced async seek receipt vocabulary. Preview planning is pure; seek execution and replacement stay on the worker. Existing constructors and non-seekable behavior are unchanged.

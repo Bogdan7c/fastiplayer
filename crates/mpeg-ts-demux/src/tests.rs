@@ -136,6 +136,25 @@ impl TsFixtureBuilder {
         self
     }
 
+    /// Разносит TS packets одного PES null-packet-ами, как у high-bitrate muxed HLS segment-а.
+    fn pes_with_interleaved_null_packets(
+        mut self,
+        pid: u16,
+        pts: u64,
+        elementary: &[u8],
+        null_packets_between_payload_packets: usize,
+    ) -> Self {
+        let encoded_pes = Self::new().pes(pid, pts, None, elementary).finish();
+        let null_payload = [0_u8; 184];
+        for encoded_packet in encoded_pes.chunks_exact(188) {
+            self.bytes.extend_from_slice(encoded_packet);
+            for _ in 0..null_packets_between_payload_packets {
+                self.push_payload(0x1fff, false, false, &null_payload);
+            }
+        }
+        self
+    }
+
     fn discontinuity(mut self, pid: u16) -> Self {
         self.push_payload(pid, false, true, &[]);
         self
@@ -327,6 +346,94 @@ fn audio_only_adts_is_playable_without_video() {
     assert_eq!(demuxer.tracks()[0].kind, TrackKind::Audio);
     assert_eq!(demuxer.tracks()[0].sample_rate, Some(44_100));
     assert_eq!(demuxer.tracks()[0].channels, Some(2));
+}
+
+#[test]
+fn resource_bounded_probe_reaches_interleaved_audio_evidence_beyond_default_cutoff() {
+    let audio_elementary = std::iter::repeat_with(|| adts_frame(&[0x11, 0x22]))
+        .take(40)
+        .flatten()
+        .collect::<Vec<_>>();
+    let segment_bytes = TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)], 0)
+        .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID), (0x0f, AUDIO_PID)], 0)
+        .pes(
+            VIDEO_PID,
+            0,
+            None,
+            &[
+                0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0x00, 0x01, 0x00, 0x00, 0x01, 0x68, 0xce,
+                0x00, 0x00, 0x01, 0x65, 0x88,
+            ],
+        )
+        .pes_with_interleaved_null_packets(AUDIO_PID, 0, &audio_elementary, 2_100)
+        .finish();
+    let default_probe_bytes = MpegTsDemuxOptions::default()
+        .initial_probe_packets
+        .get()
+        .saturating_mul(188);
+    assert!(
+        segment_bytes.len() > default_probe_bytes,
+        "fixture обязан пересечь прежний fixed packet cutoff"
+    );
+
+    let default_result = registry_with_options(MpegTsDemuxOptions::default()).open(
+        DemuxInput::ordered_segments(Box::new(SegmentSource {
+            segments: VecDeque::from([OrderedSegment {
+                sequence: OrderedSegmentSequence::new(0),
+                kind: OrderedSegmentKind::Media,
+                discontinuity: OrderedSegmentDiscontinuity::Continuous,
+                bytes: Bytes::copy_from_slice(&segment_bytes),
+            }]),
+        })),
+        DemuxHints::none(),
+        sniff_budget(),
+        CancellationToken::never_cancelled(),
+    );
+    assert!(
+        default_result.is_err(),
+        "fixture должен воспроизводить прежний cutoff до полного AAC PES"
+    );
+
+    let resource_byte_budget =
+        NonZeroUsize::new(segment_bytes.len()).expect("generated segment is non-empty");
+    let options =
+        MpegTsDemuxOptions::default().with_initial_probe_byte_budget(resource_byte_budget);
+    let mut demuxer = registry_with_options(options)
+        .open(
+            DemuxInput::ordered_segments(Box::new(SegmentSource {
+                segments: VecDeque::from([OrderedSegment {
+                    sequence: OrderedSegmentSequence::new(0),
+                    kind: OrderedSegmentKind::Media,
+                    discontinuity: OrderedSegmentDiscontinuity::Continuous,
+                    bytes: Bytes::from(segment_bytes),
+                }]),
+            })),
+            DemuxHints::none(),
+            sniff_budget(),
+            CancellationToken::never_cancelled(),
+        )
+        .expect("resource-bounded probe должен дождаться полного AAC evidence");
+
+    assert!(
+        demuxer
+            .tracks()
+            .iter()
+            .any(|track| track.kind == TrackKind::Video)
+    );
+    assert!(
+        demuxer
+            .tracks()
+            .iter()
+            .any(|track| track.kind == TrackKind::Audio)
+    );
+    let events = drain(&mut *demuxer).expect("resource-bounded demux playback");
+    assert!(events.iter().any(
+        |event| matches!(event, DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video)
+    ));
+    assert!(events.iter().any(
+        |event| matches!(event, DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Audio)
+    ));
 }
 
 #[test]
@@ -1274,10 +1381,14 @@ fn open(input: DemuxInput, hints: DemuxHints) -> Result<Box<dyn Demuxer + Send>,
 }
 
 fn registry() -> DemuxRegistry {
+    registry_with_options(MpegTsDemuxOptions::default())
+}
+
+fn registry_with_options(options: MpegTsDemuxOptions) -> DemuxRegistry {
     let mut registry = DemuxRegistry::new();
     registry
         .register(Box::new(
-            MpegTsDemuxFactory::new(Default::default()).expect("factory identity"),
+            MpegTsDemuxFactory::new(options).expect("factory identity"),
         ))
         .expect("unique registration");
     registry

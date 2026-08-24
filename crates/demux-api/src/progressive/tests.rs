@@ -266,6 +266,8 @@ struct SupersededReadFailureDemuxer {
 struct OffsetReceiptSeekDemuxer {
     /// Счётчик доказывает, что stale fence не дошёл до inner.
     seek_count: Arc<AtomicUsize>,
+    /// Отдельный счётчик ловит утечку receipted-команды в legacy/preview boundary.
+    ordinary_seek_count: Arc<AtomicUsize>,
 }
 
 impl Demuxer for OffsetReceiptSeekDemuxer {
@@ -290,6 +292,19 @@ impl Demuxer for OffsetReceiptSeekDemuxer {
     }
 
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
+        self.ordinary_seek_count.fetch_add(1, Ordering::SeqCst);
+        let actual_position = request.timestamp.saturating_sub(Duration::from_secs(2));
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: MediaTime::from_duration(actual_position),
+            actual_track_timestamp: None,
+        })
+    }
+
+    fn seek_with_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+    ) -> anyhow::Result<DemuxSeekResult> {
         self.seek_count.fetch_add(1, Ordering::SeqCst);
         let actual_position = request.timestamp.saturating_sub(Duration::from_secs(1));
         Ok(DemuxSeekResult {
@@ -1128,9 +1143,11 @@ fn legacy_runtime_rejects_async_seek_capability_without_changing_legacy_contract
 #[test]
 fn receipted_seek_publishes_authoritative_result_exactly_once() {
     let seek_count = Arc::new(AtomicUsize::new(0));
+    let ordinary_seek_count = Arc::new(AtomicUsize::new(0));
     let (_progressive, handle) = receipted_runtime(
         Box::new(OffsetReceiptSeekDemuxer {
             seek_count: Arc::clone(&seek_count),
+            ordinary_seek_count: Arc::clone(&ordinary_seek_count),
         }),
         CancellationToken::new(),
         2,
@@ -1150,15 +1167,18 @@ fn receipted_seek_publishes_authoritative_result_exactly_once() {
         MediaTime::from_duration(Duration::from_secs(4))
     );
     assert_eq!(seek_count.load(Ordering::SeqCst), 1);
+    assert_eq!(ordinary_seek_count.load(Ordering::SeqCst), 0);
     assert_eq!(handle.poll_receipt(), None, "receipt is at-most-once");
 }
 
 #[test]
 fn stale_fence_is_receipted_without_touching_inner_parser() {
     let seek_count = Arc::new(AtomicUsize::new(0));
+    let ordinary_seek_count = Arc::new(AtomicUsize::new(0));
     let (_progressive, handle) = receipted_runtime(
         Box::new(OffsetReceiptSeekDemuxer {
             seek_count: Arc::clone(&seek_count),
+            ordinary_seek_count: Arc::clone(&ordinary_seek_count),
         }),
         CancellationToken::new(),
         2,
@@ -1179,6 +1199,7 @@ fn stale_fence_is_receipted_without_touching_inner_parser() {
         }
     );
     assert_eq!(seek_count.load(Ordering::SeqCst), 0);
+    assert_eq!(ordinary_seek_count.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -1186,6 +1207,7 @@ fn receipt_bound_and_monotonic_identity_are_enforced_until_drain() {
     let (_progressive, handle) = receipted_runtime(
         Box::new(OffsetReceiptSeekDemuxer {
             seek_count: Arc::new(AtomicUsize::new(0)),
+            ordinary_seek_count: Arc::new(AtomicUsize::new(0)),
         }),
         CancellationToken::new(),
         1,

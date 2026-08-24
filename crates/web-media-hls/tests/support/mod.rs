@@ -237,7 +237,7 @@ pub fn adaptive_context(
         &source_config,
         AdaptiveTransportLimits::new(
             NonZeroUsize::new(64 * 1_024).expect("manifest bound"),
-            NonZeroUsize::new(256 * 1_024).expect("resource bound"),
+            open_policy().maximum_seek_replay_bytes,
             NonZeroUsize::new(64).expect("descriptor bound"),
         ),
         AdaptiveRetryPolicy::new(
@@ -252,10 +252,12 @@ pub fn adaptive_context(
 }
 
 pub fn demux_registry() -> Arc<DemuxRegistry> {
+    let mpeg_ts_options = MpegTsDemuxOptions::default()
+        .with_initial_probe_byte_budget(open_policy().maximum_seek_replay_bytes);
     let mut registry = DemuxRegistry::new();
     registry
         .register(Box::new(
-            MpegTsDemuxFactory::new(MpegTsDemuxOptions::default()).expect("MPEG-TS factory"),
+            MpegTsDemuxFactory::new(mpeg_ts_options).expect("MPEG-TS factory"),
         ))
         .expect("register MPEG-TS");
     registry
@@ -325,6 +327,91 @@ pub fn long_muxed_ts_segment(start_pts_90khz: u64, duration_seconds: u64) -> Vec
             Some(start_pts_90khz.saturating_sub(3_000)),
             &h264_access_unit,
         );
+    for second in 0..duration_seconds {
+        builder = builder.pes(
+            AUDIO_PID,
+            start_pts_90khz.saturating_add(second.saturating_mul(90_000)),
+            None,
+            &adts_frame(&[0x11, 0x22]),
+        );
+    }
+    builder.finish()
+}
+
+/// Строит muxed TS segment, где полный AAC PES появляется позже default 4096-packet probe-а.
+#[allow(dead_code)] // Fixture используется только manifest-receipted integration binary.
+pub fn long_interleaved_muxed_ts_segment(start_pts_90khz: u64) -> Vec<u8> {
+    let h264_access_unit = [
+        0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0x00, 0x01, 0x00, 0x00, 0x01, 0x68, 0xce, 0x00,
+        0x00, 0x01, 0x65, 0x80,
+    ];
+    let audio_elementary = std::iter::repeat_with(|| adts_frame(&[0x11, 0x22]))
+        .take(40)
+        .flatten()
+        .collect::<Vec<_>>();
+    TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)])
+        .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID), (0x0f, AUDIO_PID)])
+        .pes(
+            VIDEO_PID,
+            start_pts_90khz,
+            Some(start_pts_90khz.saturating_sub(3_000)),
+            &h264_access_unit,
+        )
+        .pes_with_interleaved_null_packets(AUDIO_PID, start_pts_90khz, &audio_elementary, 2_100)
+        .finish()
+}
+
+/// Строит валидный muxed TS segment без IDR, чтобы проверить decode-safe fallback seek-а.
+#[allow(dead_code)] // Этот fixture нужен отдельной integration test binary, но не `runtime.rs`.
+pub fn long_muxed_ts_segment_without_rap(start_pts_90khz: u64, duration_seconds: u64) -> Vec<u8> {
+    let h264_inter_access_unit = [0x00, 0x00, 0x01, 0x41, 0x80];
+    let mut builder = TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)])
+        .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID), (0x0f, AUDIO_PID)])
+        .pes(
+            VIDEO_PID,
+            start_pts_90khz,
+            Some(start_pts_90khz.saturating_sub(3_000)),
+            &h264_inter_access_unit,
+        );
+    for second in 0..duration_seconds {
+        builder = builder.pes(
+            AUDIO_PID,
+            start_pts_90khz.saturating_add(second.saturating_mul(90_000)),
+            None,
+            &adts_frame(&[0x11, 0x22]),
+        );
+    }
+    builder.finish()
+}
+
+/// Строит самостоятельный video-only TS segment с RAP в начале manifest interval-а.
+#[allow(dead_code)] // Этот fixture нужен separate-A/V integration test binary.
+pub fn long_video_ts_segment(start_pts_90khz: u64) -> Vec<u8> {
+    let h264_access_unit = [
+        0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0x00, 0x01, 0x00, 0x00, 0x01, 0x68, 0xce, 0x00,
+        0x00, 0x01, 0x65, 0x80,
+    ];
+    TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)])
+        .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID)])
+        .pes(
+            VIDEO_PID,
+            start_pts_90khz,
+            Some(start_pts_90khz.saturating_sub(3_000)),
+            &h264_access_unit,
+        )
+        .finish()
+}
+
+/// Строит самостоятельный audio-only TS segment с packet evidence на каждую секунду.
+#[allow(dead_code)] // Этот fixture нужен separate-A/V integration test binary.
+pub fn long_audio_ts_segment(start_pts_90khz: u64, duration_seconds: u64) -> Vec<u8> {
+    let mut builder =
+        TsFixtureBuilder::new()
+            .pat(&[(1, PMT_PID)])
+            .pmt(PMT_PID, 1, &[(0x0f, AUDIO_PID)]);
     for second in 0..duration_seconds {
         builder = builder.pes(
             AUDIO_PID,
@@ -594,6 +681,25 @@ impl TsFixtureBuilder {
         pes[4..6].copy_from_slice(&(packet_length as u16).to_be_bytes());
         for (index, chunk) in pes.chunks(184).enumerate() {
             self.push_payload(pid, index == 0, chunk);
+        }
+        self
+    }
+
+    /// Сохраняет один PES, но разносит его TS payload packets null-packet-ами другого PID.
+    fn pes_with_interleaved_null_packets(
+        mut self,
+        pid: u16,
+        pts: u64,
+        elementary: &[u8],
+        null_packets_between_payload_packets: usize,
+    ) -> Self {
+        let encoded_pes = Self::new().pes(pid, pts, None, elementary).finish();
+        let null_payload = [0_u8; 184];
+        for encoded_packet in encoded_pes.chunks_exact(188) {
+            self.bytes.extend_from_slice(encoded_packet);
+            for _ in 0..null_packets_between_payload_packets {
+                self.push_payload(0x1fff, false, &null_payload);
+            }
         }
         self
     }

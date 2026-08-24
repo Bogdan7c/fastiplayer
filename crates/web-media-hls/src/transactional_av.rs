@@ -14,6 +14,32 @@ use media_core::{
 
 use crate::epoch_demux::{HlsComponentDemuxer, HlsComponentFactory};
 
+/// Выбирает подготовку replacement без неочевидного позиционного `bool` у callsite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HlsComponentSeekIntent {
+    /// Preview уже закрепил точный наблюдавшийся anchor, поэтому менять его нельзя.
+    PreviewedExactAnchor,
+    /// Worker может доказать near-target anchor до публикации seek receipt.
+    ReceiptedManifestCandidate,
+}
+
+impl HlsComponentSeekIntent {
+    /// Делегирует подготовку владельцу HLS component state с нужной seek-семантикой.
+    fn prepare_component(
+        self,
+        factory: &HlsComponentFactory,
+        request: DemuxSeekRequest,
+        public_tracks: &[TrackInfo],
+    ) -> Result<(HlsComponentDemuxer, DemuxSeekResult)> {
+        match self {
+            Self::PreviewedExactAnchor => factory.prepare_seek_replacement(request, public_tracks),
+            Self::ReceiptedManifestCandidate => {
+                factory.prepare_receipted_seek_replacement(request, public_tracks)
+            }
+        }
+    }
+}
+
 /// HLS-owned composite boundary, запрещающий частично применённый video/audio seek.
 pub(crate) struct TransactionalHlsAvDemuxer {
     current: CompositeAvDemuxer,
@@ -55,6 +81,49 @@ impl TransactionalHlsAvDemuxer {
             lead_policy,
         })
     }
+
+    /// Готовит video/audio replacements целиком и только затем меняет active pair.
+    fn seek_component_pair(
+        &mut self,
+        request: DemuxSeekRequest,
+        intent: HlsComponentSeekIntent,
+    ) -> Result<DemuxSeekResult> {
+        let video_factory = &self.video_factory;
+        let audio_factory = &self.audio_factory;
+        let video_public_tracks = &self.video_public_tracks;
+        let audio_public_tracks = &self.audio_public_tracks;
+        let public_track_ids = self.public_track_ids;
+        let lead_policy = self.lead_policy;
+        transact_component_pair(
+            &mut self.current,
+            || intent.prepare_component(video_factory, request, video_public_tracks),
+            || {
+                intent.prepare_component(
+                    audio_factory,
+                    DemuxSeekRequest::accurate(request.timestamp),
+                    audio_public_tracks,
+                )
+            },
+            |(video, mut video_result), (mut audio, _)| {
+                audio.suppress_redundant_composite_tracks_changed()?;
+                let selection = CompositeAvTrackSelection::new(
+                    exactly_one_track(video.tracks(), TrackKind::Video, "replacement video")?,
+                    exactly_one_track(audio.tracks(), TrackKind::Audio, "replacement audio")?,
+                );
+                let replacement = CompositeAvDemuxer::new_with_public_track_ids(
+                    Box::new(video),
+                    Box::new(audio),
+                    selection,
+                    public_track_ids,
+                    lead_policy,
+                )?;
+                if let Some(timestamp) = &mut video_result.actual_track_timestamp {
+                    timestamp.track_id = public_track_ids.video_track_id();
+                }
+                Ok((replacement, video_result))
+            },
+        )
+    }
 }
 
 impl Demuxer for TransactionalHlsAvDemuxer {
@@ -83,39 +152,14 @@ impl Demuxer for TransactionalHlsAvDemuxer {
     }
 
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
-        let video_factory = &self.video_factory;
-        let audio_factory = &self.audio_factory;
-        let video_public_tracks = &self.video_public_tracks;
-        let audio_public_tracks = &self.audio_public_tracks;
-        let public_track_ids = self.public_track_ids;
-        let lead_policy = self.lead_policy;
-        transact_component_pair(
-            &mut self.current,
-            || video_factory.prepare_seek_replacement(request, video_public_tracks),
-            || {
-                audio_factory.prepare_seek_replacement(
-                    DemuxSeekRequest::accurate(request.timestamp),
-                    audio_public_tracks,
-                )
-            },
-            |(video, mut video_result), (audio, _)| {
-                let selection = CompositeAvTrackSelection::new(
-                    exactly_one_track(video.tracks(), TrackKind::Video, "replacement video")?,
-                    exactly_one_track(audio.tracks(), TrackKind::Audio, "replacement audio")?,
-                );
-                let replacement = CompositeAvDemuxer::new_with_public_track_ids(
-                    Box::new(video),
-                    Box::new(audio),
-                    selection,
-                    public_track_ids,
-                    lead_policy,
-                )?;
-                if let Some(timestamp) = &mut video_result.actual_track_timestamp {
-                    timestamp.track_id = public_track_ids.video_track_id();
-                }
-                Ok((replacement, video_result))
-            },
-        )
+        self.seek_component_pair(request, HlsComponentSeekIntent::PreviewedExactAnchor)
+    }
+
+    fn seek_with_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+    ) -> Result<DemuxSeekResult> {
+        self.seek_component_pair(request, HlsComponentSeekIntent::ReceiptedManifestCandidate)
     }
 }
 

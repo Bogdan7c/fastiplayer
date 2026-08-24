@@ -23,6 +23,8 @@ pub(crate) enum HlsSeekAnchorKind {
 pub(crate) struct HlsSeekAnchor {
     pub epoch_index: usize,
     pub restart_segment: HlsSegmentRestartCoordinate,
+    /// Presentation timeline origin, которому соответствует `epoch_timestamp_origin`.
+    pub timeline_origin: std::time::Duration,
     pub epoch_timestamp_origin: std::time::Duration,
     pub position: MediaTime,
     pub kind: HlsSeekAnchorKind,
@@ -58,6 +60,7 @@ impl HlsSeekIndex {
         &mut self,
         epoch_index: usize,
         restart_segment: HlsSegmentRestartCoordinate,
+        timeline_origin: std::time::Duration,
         epoch_timestamp_origin: std::time::Duration,
         packet: &Packet,
     ) {
@@ -71,14 +74,25 @@ impl HlsSeekIndex {
         let anchor = HlsSeekAnchor {
             epoch_index,
             restart_segment,
+            timeline_origin,
             epoch_timestamp_origin,
             position: MediaTime::from_duration(packet.pts),
             kind,
         };
+        self.insert_proven_anchor(anchor);
+    }
+
+    /// Коммитит anchor, уже доказанный внутри offside manifest replacement-а.
+    pub(crate) fn commit_proven_anchor(&mut self, anchor: HlsSeekAnchor) {
+        self.insert_proven_anchor(anchor);
+    }
+
+    /// Один owner-path сохраняет dedup, ordering и bounded compaction для любого evidence source.
+    fn insert_proven_anchor(&mut self, anchor: HlsSeekAnchor) {
         if self.anchors.iter().any(|existing| {
-            existing.epoch_index == epoch_index
-                && existing.restart_segment == restart_segment
-                && existing.kind == kind
+            existing.epoch_index == anchor.epoch_index
+                && existing.restart_segment == anchor.restart_segment
+                && existing.kind == anchor.kind
         }) {
             return;
         }
@@ -238,7 +252,32 @@ impl HlsSeekIndex {
 
     /// Возвращает anchor <= target; manifest segment boundaries здесь не участвуют.
     pub(crate) fn anchor_for(&self, request: DemuxSeekRequest) -> Result<HlsSeekAnchor> {
-        let required_kind = match request.mode {
+        let required_kind = self.required_kind(request);
+        self.anchor_of_kind_before(required_kind, request.timestamp)
+    }
+
+    /// Возвращает последний доказанный anchor фиксированного kind не позже target.
+    pub(crate) fn anchor_of_kind_before(
+        &self,
+        required_kind: HlsSeekAnchorKind,
+        target: std::time::Duration,
+    ) -> Result<HlsSeekAnchor> {
+        self.anchors
+            .iter()
+            .rev()
+            .find(|anchor| anchor.kind == required_kind && anchor.position.as_duration() <= target)
+            .copied()
+            .ok_or_else(|| {
+                anyhow!(
+                    "HLS seek index не содержит доказанный {required_kind:?} anchor до {:?}",
+                    target
+                )
+            })
+    }
+
+    /// Выбирает обязательный evidence kind без дублирования Accurate fallback policy.
+    pub(crate) fn required_kind(&self, request: DemuxSeekRequest) -> HlsSeekAnchorKind {
+        match request.mode {
             DemuxSeekMode::DecodePointBefore | DemuxSeekMode::Preview => {
                 HlsSeekAnchorKind::VideoRandomAccessPoint
             }
@@ -253,20 +292,7 @@ impl HlsSeekIndex {
                     HlsSeekAnchorKind::VideoRandomAccessPoint
                 }
             }
-        };
-        self.anchors
-            .iter()
-            .rev()
-            .find(|anchor| {
-                anchor.kind == required_kind && anchor.position.as_duration() <= request.timestamp
-            })
-            .copied()
-            .ok_or_else(|| {
-                anyhow!(
-                    "HLS seek index не содержит доказанный {required_kind:?} anchor до {:?}",
-                    request.timestamp
-                )
-            })
+        }
     }
 
     /// Публикует preview и atomically pin-ит тот же exact anchor для worker-а.
@@ -382,12 +408,14 @@ mod tests {
                 0,
                 first_segment,
                 Duration::ZERO,
+                Duration::ZERO,
                 &audio_packet(Duration::from_secs(second)),
             );
         }
         index.observe_packet(
             0,
             HlsSegmentRestartCoordinate { segment_index: 1 },
+            Duration::ZERO,
             Duration::ZERO,
             &audio_packet(Duration::from_secs(30)),
         );
@@ -410,9 +438,16 @@ mod tests {
                 0,
                 restart_segment,
                 Duration::ZERO,
+                Duration::ZERO,
                 &video_keyframe(position),
             );
-            index.observe_packet(0, restart_segment, Duration::ZERO, &audio_packet(position));
+            index.observe_packet(
+                0,
+                restart_segment,
+                Duration::ZERO,
+                Duration::ZERO,
+                &audio_packet(position),
+            );
         }
 
         assert_eq!(index.anchors.len(), 4);
@@ -444,6 +479,7 @@ mod tests {
                 0,
                 HlsSegmentRestartCoordinate { segment_index },
                 Duration::ZERO,
+                Duration::ZERO,
                 &audio_packet(Duration::from_secs(segment_index as u64 * 10)),
             );
         }
@@ -466,10 +502,17 @@ mod tests {
         for segment_index in 0..2 {
             let position = Duration::from_secs(segment_index as u64 * 30);
             let restart_segment = HlsSegmentRestartCoordinate { segment_index };
-            index.observe_packet(0, restart_segment, Duration::ZERO, &audio_packet(position));
             index.observe_packet(
                 0,
                 restart_segment,
+                Duration::ZERO,
+                Duration::ZERO,
+                &audio_packet(position),
+            );
+            index.observe_packet(
+                0,
+                restart_segment,
+                Duration::ZERO,
                 Duration::ZERO,
                 &video_keyframe(position),
             );
@@ -500,12 +543,14 @@ mod tests {
                 0,
                 HlsSegmentRestartCoordinate { segment_index },
                 Duration::ZERO,
+                Duration::ZERO,
                 &video_keyframe(Duration::from_secs(segment_index as u64 * 10)),
             );
         }
         index.observe_packet(
             0,
             HlsSegmentRestartCoordinate { segment_index: 5 },
+            Duration::ZERO,
             Duration::ZERO,
             &audio_packet(Duration::from_secs(50)),
         );
@@ -529,6 +574,7 @@ mod tests {
                 0,
                 HlsSegmentRestartCoordinate { segment_index },
                 Duration::ZERO,
+                Duration::ZERO,
                 &audio_packet(Duration::from_secs(seconds)),
             );
         }
@@ -541,6 +587,7 @@ mod tests {
         index.observe_packet(
             0,
             HlsSegmentRestartCoordinate { segment_index: 2 },
+            Duration::ZERO,
             Duration::ZERO,
             &audio_packet(Duration::from_secs(8)),
         );

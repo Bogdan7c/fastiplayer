@@ -292,6 +292,19 @@ pub trait Demuxer: Send {
             .into()),
         }
     }
+
+    /// Выполняет seek, фактический результат которого caller публикует только после worker receipt.
+    ///
+    /// Обычный `seek_with_request` может участвовать в синхронном preview-протоколе, поэтому его
+    /// результат обязан быть известен до начала blocking container work. Receipted caller, напротив,
+    /// может дождаться worker-а и принять новый доказанный anchor. Default сохраняет прежнюю
+    /// семантику для demuxer-ов, которым такое различие не требуется.
+    fn seek_with_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+    ) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_with_request(request)
+    }
 }
 
 #[cfg(test)]
@@ -461,6 +474,18 @@ mod tests {
 
         assert_eq!(result.requested_position, MediaTime::from_secs(3));
         assert_eq!(demuxer.seek_log, vec![Duration::from_secs(3)]);
+    }
+
+    #[test]
+    fn default_receipted_seek_preserves_existing_request_semantics() {
+        let mut demuxer = AccurateOnlyDemuxer::with_duration(Some(Duration::from_secs(10)));
+
+        let result = demuxer
+            .seek_with_receipted_request(DemuxSeekRequest::accurate(Duration::from_secs(4)))
+            .expect("default receipted boundary должен делегировать обычному request seek");
+
+        assert_eq!(result.requested_position, MediaTime::from_secs(4));
+        assert_eq!(demuxer.seek_log, vec![Duration::from_secs(4)]);
     }
 
     #[test]

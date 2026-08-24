@@ -1,9 +1,12 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use media_core::{DemuxSeekRequest, DemuxSeekResult, MediaTime, TrackKind};
+use media_core::{DemuxSeekRequest, DemuxSeekResult, MediaTime, PacketKeyframe, TrackKind};
 
-use super::test_support::{fake_track, install_fake_media};
+use super::test_support::{
+    SeekRegressionHarness, fake_track, fake_video_packet_with_keyframe, install_fake_media,
+    scripted_seek_demuxer,
+};
 use super::*;
 use crate::{
     PlaybackState, PreparedDemuxSeekEnqueueError, PreparedDemuxSeekMode, PreparedDemuxSeekOutcome,
@@ -57,7 +60,7 @@ impl PreparedDemuxSeekPort for FakePreparedDemuxSeekPort {
     }
 }
 
-/// Устанавливает seekable video fake и exact worker-receipted mode.
+/// Устанавливает seekable audio fake и exact worker-receipted mode.
 fn receipted_session() -> (PlayerSession, Arc<FakePreparedDemuxSeekPort>) {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(1, TrackKind::Audio)]);
@@ -67,6 +70,23 @@ fn receipted_session() -> (PlayerSession, Arc<FakePreparedDemuxSeekPort>) {
         .prepared_demux_seek
         .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased });
     (session, port)
+}
+
+/// Устанавливает video fake, чтобы проверить production one-shot route и отсутствие sync seek-а.
+fn receipted_video_session() -> (
+    PlayerSession,
+    Arc<FakePreparedDemuxSeekPort>,
+    Arc<Mutex<Vec<Duration>>>,
+) {
+    let mut session = PlayerSession::new();
+    let synchronous_seek_log =
+        install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    let port = Arc::new(FakePreparedDemuxSeekPort::default());
+    let erased: Arc<dyn PreparedDemuxSeekPort> = port.clone();
+    session
+        .prepared_demux_seek
+        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased });
+    (session, port, synchronous_seek_log)
 }
 
 #[test]
@@ -85,6 +105,259 @@ fn legacy_media_without_port_keeps_synchronous_seek() {
         &[Duration::from_secs(4)]
     );
     assert!(session.seek_commit().is_some());
+}
+
+#[test]
+fn video_one_shot_seek_uses_worker_receipt_without_synchronous_demux_scan() {
+    let (mut session, port, synchronous_seek_log) = receipted_video_session();
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            MediaTime::from_secs(8),
+        )))
+        .expect("video receipted seek command");
+
+    let commands = port.commands();
+    let [(request_id, request)] = commands.as_slice() else {
+        panic!("video one-shot seek должен создать ровно один worker request");
+    };
+    assert_eq!(request.timestamp, Duration::from_secs(8));
+    assert!(
+        synchronous_seek_log
+            .lock()
+            .expect("synchronous seek log lock")
+            .is_empty(),
+        "video one-shot seek не должен сканировать active demuxer синхронно"
+    );
+    assert!(session.seek_commit().is_none());
+    assert_eq!(session.playback_state(), PlaybackState::Seeking);
+
+    port.complete(
+        *request_id,
+        PreparedDemuxSeekOutcome::Succeeded(DemuxSeekResult {
+            requested_position: MediaTime::from_secs(8),
+            actual_position: MediaTime::from_secs(5),
+            actual_track_timestamp: None,
+        }),
+    );
+    session.service_prepared_demux_seek_receipts();
+
+    let commit = session
+        .seek_commit()
+        .expect("authoritative worker receipt должен запустить video landing commit");
+    assert_eq!(commit.target_position, MediaTime::from_secs(8));
+    assert_eq!(commit.actual_position, MediaTime::from_secs(5));
+    assert!(
+        synchronous_seek_log
+            .lock()
+            .expect("synchronous seek log lock")
+            .is_empty(),
+        "receipt acceptance не должен повторять demux seek на player-owner"
+    );
+}
+
+#[test]
+fn worker_receipted_video_seek_reaches_target_frame_presentation() {
+    let target_position = Duration::from_secs(8);
+    let actual_position = Duration::from_secs(5);
+    let landing_position = Duration::from_millis(8_040);
+    let video_track = fake_track(1, TrackKind::Video);
+    let packets = vec![
+        fake_video_packet_with_keyframe(video_track.id, actual_position, PacketKeyframe::Keyframe),
+        fake_video_packet_with_keyframe(
+            video_track.id,
+            landing_position,
+            PacketKeyframe::NotKeyframe,
+        ),
+    ];
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        actual_position,
+        packets,
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+    let port = Arc::new(FakePreparedDemuxSeekPort::default());
+    let erased: Arc<dyn PreparedDemuxSeekPort> = port.clone();
+    harness
+        .session
+        .prepared_demux_seek
+        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased });
+    harness
+        .decoder
+        .decode_next_packet_as_frame(actual_position, 901);
+    harness
+        .decoder
+        .decode_next_packet_as_frame(landing_position, 902);
+
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    let commands = port.commands();
+    let [(request_id, request)] = commands.as_slice() else {
+        panic!("public video seek должен создать один worker request");
+    };
+    assert_eq!(request.timestamp, target_position);
+    assert!(
+        harness.seek_requests().is_empty(),
+        "active demuxer не должен выполнять второй синхронный seek"
+    );
+
+    port.complete(
+        *request_id,
+        PreparedDemuxSeekOutcome::Succeeded(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(target_position),
+            actual_position: MediaTime::from_duration(actual_position),
+            actual_track_timestamp: None,
+        }),
+    );
+    harness.session.service_prepared_demux_seek_receipts();
+
+    let mut presented_frames = 0;
+    for _ in 0..6 {
+        presented_frames += harness.tick_once_fast_preroll().video_frames_presented;
+        if harness.session.seek_commit().is_none() {
+            break;
+        }
+    }
+
+    assert!(
+        presented_frames > 0,
+        "receipt должен привести не только к commit state, но и к presentation target-frame"
+    );
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(landing_position)
+    );
+    assert!(harness.seek_requests().is_empty());
+    assert!(harness.session.seek_commit().is_none());
+}
+
+/// Release timeline scrub-а не должен коммитить preview-якорь вместо worker receipt-а.
+#[test]
+fn worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presentation() {
+    let target_position = Duration::from_secs(8);
+    let preview_anchor = Duration::from_secs(1);
+    let receipted_anchor = Duration::from_secs(5);
+    let landing_position = Duration::from_millis(8_040);
+    let video_track = fake_track(1, TrackKind::Video);
+    let packets = vec![
+        fake_video_packet_with_keyframe(video_track.id, receipted_anchor, PacketKeyframe::Keyframe),
+        fake_video_packet_with_keyframe(
+            video_track.id,
+            landing_position,
+            PacketKeyframe::NotKeyframe,
+        ),
+    ];
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target_position,
+        preview_anchor,
+        packets,
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+    let port = Arc::new(FakePreparedDemuxSeekPort::default());
+    let erased: Arc<dyn PreparedDemuxSeekPort> = port.clone();
+    harness
+        .session
+        .prepared_demux_seek
+        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased });
+    harness
+        .decoder
+        .decode_next_packet_as_frame(receipted_anchor, 911);
+    harness
+        .decoder
+        .decode_next_packet_as_frame(landing_position, 912);
+
+    harness
+        .session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .expect("begin worker-receipted scrub");
+    harness
+        .session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_duration(target_position),
+        )))
+        .expect("preview worker-receipted scrub");
+    assert!(harness.session.active_seek_presents_preroll_progressively());
+    assert_eq!(
+        harness.seek_requests().as_slice(),
+        &[DemuxSeekRequest::decode_point_before(target_position)],
+        "preview сохраняет прежний неблокирующий progressive route"
+    );
+
+    harness
+        .session
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitLatestTarget,
+        ))
+        .expect("release worker-receipted scrub");
+
+    let commands = port.commands();
+    let [(request_id, request)] = commands.as_slice() else {
+        panic!("EndScrub должен создать ровно один authoritative worker request");
+    };
+    assert_eq!(request.timestamp, target_position);
+    assert!(harness.session.seek_commit().is_none());
+    assert!(!harness.session.active_seek_presents_preroll_progressively());
+    assert_eq!(
+        harness.seek_requests().len(),
+        1,
+        "release не должен повторять seek через preview controller"
+    );
+
+    port.complete(
+        *request_id,
+        PreparedDemuxSeekOutcome::Succeeded(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(target_position),
+            actual_position: MediaTime::from_duration(receipted_anchor),
+            actual_track_timestamp: None,
+        }),
+    );
+    harness.session.service_prepared_demux_seek_receipts();
+
+    assert!(
+        harness
+            .session
+            .should_drop_decoded_frame_for_seek(receipted_anchor),
+        "после release кадры от anchor до target должны идти только в decoder preroll"
+    );
+    let mut presented_frame_positions = Vec::new();
+    for _ in 0..6 {
+        let tick_result = harness.tick_once_fast_preroll();
+        if tick_result.video_frames_presented > 0 {
+            let presented_position = harness
+                .session
+                .pipeline
+                .present_video_frame()
+                .expect("presentation counter требует current frame")
+                .pts;
+            presented_frame_positions.push(presented_position);
+        }
+        if harness.session.seek_commit().is_none() {
+            break;
+        }
+    }
+
+    assert!(!presented_frame_positions.is_empty());
+    assert!(
+        presented_frame_positions
+            .iter()
+            .all(|position| *position >= target_position),
+        "после release ни один pre-target кадр не должен стать видимым: {presented_frame_positions:?}"
+    );
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(landing_position),
+        "первый видимый итог release-а обязан быть target-or-after frame"
+    );
+    assert!(harness.session.seek_commit().is_none());
 }
 
 #[test]
