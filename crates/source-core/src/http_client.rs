@@ -4,7 +4,8 @@
 //! Providers могут переопределить `User-Agent` явным request header-ом, но
 //! обычный public URL никогда не уходит в сеть без идентифицируемого клиента.
 
-use reqwest::blocking::{Client, ClientBuilder};
+use reqwest::blocking::{Client as BlockingClient, ClientBuilder as BlockingClientBuilder};
+use reqwest::{Client as AsyncClient, ClientBuilder as AsyncClientBuilder};
 
 use crate::SourceRuntimeConfig;
 
@@ -19,8 +20,21 @@ const RUSTIPLAYER_HTTP_USER_AGENT: &str = concat!(
 ///
 /// Redirect и cookie policy остаются у конкретного session owner-а: этот
 /// helper задаёт только инварианты, общие для initial, Range и adaptive I/O.
-pub(crate) fn blocking_http_client_builder(source_config: &SourceRuntimeConfig) -> ClientBuilder {
-    Client::builder()
+pub(crate) fn blocking_http_client_builder(
+    source_config: &SourceRuntimeConfig,
+) -> BlockingClientBuilder {
+    BlockingClient::builder()
+        .user_agent(RUSTIPLAYER_HTTP_USER_AGENT)
+        .connect_timeout(source_config.connect_timeout())
+        .timeout(source_config.read_timeout())
+}
+
+/// Создаёт async Reqwest builder с теми же source-owned policy, что blocking frontend.
+///
+/// Отдельный transport frontend нужен только там, где lifecycle request-а должен
+/// завершаться через drop future, а не ждать конца blocking socket read-а.
+pub(crate) fn async_http_client_builder(source_config: &SourceRuntimeConfig) -> AsyncClientBuilder {
+    AsyncClient::builder()
         .user_agent(RUSTIPLAYER_HTTP_USER_AGENT)
         .connect_timeout(source_config.connect_timeout())
         .timeout(source_config.read_timeout())

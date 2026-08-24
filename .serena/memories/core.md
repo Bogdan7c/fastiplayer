@@ -1,3 +1,10 @@
+## AUD-020 abortable superseded manifest fetch (2026-08-24)
+
+- Independent loopback verification confirmed dormant public `AdaptiveManifestFetcher` serialized B behind hanging A: 300 ms hold, B started at 303 ms, A stayed connected; stale publication fence itself worked.
+- `source-core` now owns a lazy async session frontend and runtime-hidden one-future `AbortableHttpTaskExecutor`; `web-media-adaptive` remains Tokio-free and only owns generation/retry/publication semantics.
+- Supersede/source-cancel/Drop physically disconnect current TCP work; rapid A -> B -> C publishes only C. source-core 66/66, adaptive 44/44, strict Clippy, primary/MSRV workspace checks and guardrails passed.
+- Full boundaries, regression properties and dormant production reachability: `mem:media-services/manifest-supersede-cancellation-aud020-2026-08-24`.
+
 ## AUD-019 bounded next-item source/demux preload (2026-08-24)
 
 - Independent verification confirmed every clean EOF performed a cold strong-open; option A now prepares only the exact next source/demux, while decoder/backend/auth/packets/current identity remain unchanged until EOF.

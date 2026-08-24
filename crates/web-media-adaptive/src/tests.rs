@@ -35,6 +35,7 @@ use web_media_transport_api::{
 use super::*;
 
 mod blocking_resource_fetch;
+mod manifest_cancellation;
 mod ordered_segment_read_ahead;
 mod range_source;
 mod retry_after;

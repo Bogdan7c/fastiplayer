@@ -6,15 +6,15 @@
 
 use std::fmt;
 use std::io::Read;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use reqwest::StatusCode;
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{HeaderValue, LOCATION, RANGE};
+use reqwest::header::{HeaderMap, HeaderValue, LOCATION, RANGE};
 use reqwest::redirect::Policy;
+use reqwest::{Client as AsyncClient, StatusCode};
 
 use crate::http::{build_header_map, map_reqwest_error};
-use crate::http_client::blocking_http_client_builder;
+use crate::http_client::{async_http_client_builder, blocking_http_client_builder};
 use crate::{
     CancellationToken, HttpHeader, HttpRangeSource, HttpRequestTarget, ScopedHttpCookieJar,
     SecretHttpUrl, SourceError, SourceResult, SourceRuntimeConfig, StreamingByteSource,
@@ -286,11 +286,48 @@ impl fmt::Debug for HttpSingleHopRequest {
     }
 }
 
-/// Единственный reqwest client, переиспользуемый всеми hop/range request-ами source-а.
+/// Единая HTTP session, владеющая blocking и abortable async transport frontend-ами.
 #[derive(Clone)]
 pub struct HttpSourceSession {
     /// Blocking client с caller-owned timeout policy и выключенными redirect-ами.
     pub(crate) client: Client,
+    /// Lazy async frontend; blocking consumers не создают второй connection pool.
+    async_client_owner: Arc<AsyncHttpClientOwner>,
+}
+
+/// Session-owned lazy async client сохраняет один pool для всех clone-ов session-а.
+struct AsyncHttpClientOwner {
+    /// Source timeout/identity policy для deferred builder-а.
+    source_config: SourceRuntimeConfig,
+    /// Та же scoped cookie jar, что принадлежит blocking frontend-у session-а.
+    cookie_jar: Option<Arc<ScopedHttpCookieJar>>,
+    /// Инициализированный client либо пустой slot до первого async request-а.
+    client: Mutex<Option<AsyncClient>>,
+}
+
+impl AsyncHttpClientOwner {
+    /// Возвращает дешёвый clone единственного async client-а, создавая его один раз.
+    fn client(&self) -> SourceResult<AsyncClient> {
+        // После panic другого потока сохранённый slot всё ещё можно безопасно пересобрать.
+        let mut client_slot = self
+            .client
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(client) = client_slot.as_ref() {
+            return Ok(client.clone());
+        }
+
+        let mut client_builder =
+            async_http_client_builder(&self.source_config).redirect(Policy::none());
+        if let Some(cookie_jar) = &self.cookie_jar {
+            client_builder = client_builder.cookie_provider(Arc::clone(cookie_jar));
+        }
+        let client = client_builder
+            .build()
+            .map_err(|source| SourceError::HttpClientBuild { source })?;
+        *client_slot = Some(client.clone());
+        Ok(client)
+    }
 }
 
 impl HttpSourceSession {
@@ -307,20 +344,34 @@ impl HttpSourceSession {
         Self::build(source_config, Some(cookie_jar))
     }
 
-    /// Собирает один blocking client; jar никогда не разделяется между sources неявно.
+    /// Собирает blocking client и lazy async owner; jar не разделяется между sources неявно.
     fn build(
         source_config: &SourceRuntimeConfig,
         cookie_jar: Option<Arc<ScopedHttpCookieJar>>,
     ) -> SourceResult<Self> {
-        let mut client_builder =
+        let mut blocking_client_builder =
             blocking_http_client_builder(source_config).redirect(Policy::none());
-        if let Some(cookie_jar) = cookie_jar {
-            client_builder = client_builder.cookie_provider(cookie_jar);
+        if let Some(cookie_jar) = &cookie_jar {
+            blocking_client_builder =
+                blocking_client_builder.cookie_provider(Arc::clone(cookie_jar));
         }
-        let client = client_builder
+        let client = blocking_client_builder
             .build()
             .map_err(|source| SourceError::HttpClientBuild { source })?;
-        Ok(Self { client })
+        let async_client_owner = Arc::new(AsyncHttpClientOwner {
+            source_config: source_config.clone(),
+            cookie_jar,
+            client: Mutex::new(None),
+        });
+        Ok(Self {
+            client,
+            async_client_owner,
+        })
+    }
+
+    /// Материализует session-owned abortable client только для async consumer-а.
+    pub(crate) fn async_client(&self) -> SourceResult<AsyncClient> {
+        self.async_client_owner.client()
     }
 
     /// Выполняет ровно один `Range: bytes=0-0` hop и сохраняет его response.
@@ -458,8 +509,17 @@ pub(crate) fn parse_redirect_hop(
     status: StatusCode,
     response: &Response,
 ) -> SourceResult<HttpRedirectHop> {
-    let location = response
-        .headers()
+    parse_redirect_headers(current_target, current_url, status, response.headers())
+}
+
+/// Разрешает redirect по общим response headers для blocking и async frontends.
+pub(crate) fn parse_redirect_headers(
+    current_target: &HttpRequestTarget,
+    current_url: &SecretHttpUrl,
+    status: StatusCode,
+    response_headers: &HeaderMap,
+) -> SourceResult<HttpRedirectHop> {
+    let location = response_headers
         .get(LOCATION)
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| SourceError::InvalidHttpRedirect {

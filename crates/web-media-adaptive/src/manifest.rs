@@ -4,10 +4,11 @@ use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use source_core::HttpRequestTarget;
+use source_core::{AbortableHttpTaskExecutor, HttpRequestTarget};
 use web_media_transport_api::SourceGeneration;
 
-use crate::fetch::{FetchExecutor, FetchJob, FetchOutcome, FetchPurpose};
+use crate::fetch::fetch_with_redirects_async;
+use crate::fetch::{FetchJob, FetchOutcome, FetchPurpose};
 use crate::{AdaptiveHttpContext, AdaptiveTransportError};
 
 /// Effective manifest response target, используемый как URI base.
@@ -109,7 +110,7 @@ struct PendingManifest {
 /// Bounded one-resource-at-a-time manifest fetch owner.
 pub struct AdaptiveManifestFetcher {
     context: AdaptiveHttpContext,
-    executor: FetchExecutor,
+    executor: AbortableHttpTaskExecutor<FetchOutcome>,
     current: Option<PendingManifest>,
     current_generation: SourceGeneration,
     generation_claimed: bool,
@@ -119,7 +120,8 @@ pub struct AdaptiveManifestFetcher {
 impl AdaptiveManifestFetcher {
     /// Создаёт worker, но не выполняет network I/O до `request`.
     pub fn new(context: AdaptiveHttpContext) -> Result<Self, AdaptiveTransportError> {
-        let executor = FetchExecutor::start(context.clone())?;
+        let executor = AbortableHttpTaskExecutor::start()
+            .map_err(|_| AdaptiveTransportError::WorkerStopped)?;
         Ok(Self {
             current_generation: context.initial_generation,
             context,
@@ -144,6 +146,9 @@ impl AdaptiveManifestFetcher {
                 received: request.generation,
             });
         }
+        self.executor
+            .cancel_current()
+            .map_err(|_| AdaptiveTransportError::WorkerStopped)?;
         self.current_generation = request.generation;
         self.generation_claimed = true;
         let job_id = self.allocate_job_id();
@@ -160,16 +165,18 @@ impl AdaptiveManifestFetcher {
     /// Poll-ит worker channels и никогда не ждёт network/thread completion.
     pub fn poll(&mut self, now: Instant) -> ManifestPoll {
         if self.context.cancellation.is_cancelled() {
+            let _ = self.executor.cancel_current();
+            self.current = None;
             return ManifestPoll::Cancelled;
         }
-        match self.executor.try_receive() {
+        match self.executor.try_take() {
             Ok(Some(outcome)) => {
                 if let Some(result) = self.accept_outcome(outcome, now) {
                     return result;
                 }
             }
             Ok(None) => {}
-            Err(error) => return ManifestPoll::Failed(error),
+            Err(_) => return ManifestPoll::Failed(AdaptiveTransportError::WorkerStopped),
         }
 
         let Some(pending) = &mut self.current else {
@@ -194,9 +201,20 @@ impl AdaptiveManifestFetcher {
                     crate::fetch::AdaptiveResourceQueryApplication::ApplyScopedReplacement,
                 secret_forwarding: crate::AdaptiveResourceSecretForwarding::ForwardScoped,
             };
-            match self.executor.try_submit(job) {
-                Ok(submitted) => pending.submitted = submitted,
-                Err(error) => return ManifestPoll::Failed(error),
+            let outcome_id = job.id;
+            let outcome_generation = job.generation;
+            let context = self.context.clone();
+            let task = Box::pin(async move {
+                let result = fetch_with_redirects_async(&context, job).await;
+                FetchOutcome {
+                    id: outcome_id,
+                    generation: outcome_generation,
+                    result,
+                }
+            });
+            match self.executor.replace(task) {
+                Ok(()) => pending.submitted = true,
+                Err(_) => return ManifestPoll::Failed(AdaptiveTransportError::WorkerStopped),
             }
         }
         ManifestPoll::TemporarilyUnavailable {

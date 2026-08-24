@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+mod abortable_http_task;
 mod cache;
 mod cancellation;
 mod config;
@@ -16,6 +17,8 @@ mod ftp_policy;
 mod ftp_session;
 mod http;
 mod http_bounded;
+#[cfg(test)]
+mod http_bounded_async_tests;
 mod http_client;
 mod http_cookie;
 mod http_cookie_seed;
@@ -26,6 +29,9 @@ mod http_session;
 mod local;
 mod metadata;
 
+pub use abortable_http_task::{
+    AbortableHttpTask, AbortableHttpTaskExecutor, AbortableHttpTaskExecutorError,
+};
 pub use cache::{
     CacheDiagnostics, CachedByteSource, RamByteRangeCache, RangeDiagnostics, SourceDiagnostics,
 };

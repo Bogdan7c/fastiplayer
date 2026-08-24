@@ -19,6 +19,10 @@ use web_media_transport_api::{
     SecretRequestContext, SecretRequestPurpose, SourceGeneration, TransportOpenRequest,
 };
 
+mod async_job;
+
+pub(crate) use async_job::fetch_with_redirects_async;
+
 use crate::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
 
 /// Immutable shared request policy одного adaptive component generation lineage.
@@ -590,10 +594,6 @@ pub(crate) struct FetchExecutor {
 }
 
 impl FetchExecutor {
-    pub fn start(context: AdaptiveHttpContext) -> Result<Self, AdaptiveTransportError> {
-        Self::start_with_worker_count(context, NonZeroUsize::MIN)
-    }
-
     /// Создаёт bounded pool поверх одного immutable HTTP context-а.
     pub fn start_with_worker_count(
         context: AdaptiveHttpContext,
