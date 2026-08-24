@@ -12,6 +12,9 @@ use super::{
 use crate::state::AppState;
 use crate::telemetry::Telemetry;
 
+/// Отдельный tracing target позволяет acceptance включить покадровое доказательство точечно.
+const VIDEO_RENDER_ACCEPTANCE_TARGET: &str = "rustiplayer::video_render_acceptance";
+
 /// Передаёт краткоживущие UI/video resources renderer-у и учитывает outcome.
 pub(super) fn submit_render_frame(
     telemetry: &Telemetry,
@@ -41,6 +44,10 @@ pub(super) fn submit_render_frame(
     });
     if render_outcome_marks_video_submitted(&render_frame_outcome, submitted_video_frame) {
         prepared_video_frame.mark_submitted_to_renderer();
+        tracing::trace!(
+            target: VIDEO_RENDER_ACCEPTANCE_TARGET,
+            "video frame submitted to renderer"
+        );
     }
 
     match render_frame_outcome {

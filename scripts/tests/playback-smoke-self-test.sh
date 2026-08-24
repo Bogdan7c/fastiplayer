@@ -42,10 +42,30 @@ require_absent() {
 playback_smoke_source="$(<"${PLAYBACK_SMOKE}")"
 require_output "${playback_smoke_source}" "0 | 124)"
 require_absent "${playback_smoke_source}" "0 | 124 | 137)"
+# AV1 hardware acceptance обязана включать exact decoder/zero-copy/render evidence.
+require_output "${playback_smoke_source}" "VA-API codec adapter configured for stream"
+require_output "${playback_smoke_source}" "Zero-copy DMA-BUF resource registered"
+require_output "${playback_smoke_source}" "video frame submitted to renderer"
+require_output "${playback_smoke_source}" "rustiplayer::video_render_acceptance=trace"
 
 # Пустой invocation является NOT RUN, а не ложным acceptance pass.
 missing_selection_output="$(${PLAYBACK_SMOKE} 2>&1)"
 require_output "${missing_selection_output}" "NOT RUN: missing selection"
+
+# Public help документирует отдельный mandatory AV1 HDR input.
+help_output="$(${PLAYBACK_SMOKE} --help 2>&1)"
+require_output "${help_output}" "--av1-hdr FILE"
+require_output "${help_output}" "AV1 Main/Profile 0 10-bit YUV420 HDR"
+
+# Manifest help обязан описывать тот же mandatory HDR asset и exact capability.
+runtime_help_output="$("${REPO_ROOT}/scripts/runtime-acceptance.sh" --help 2>&1)"
+require_output "${runtime_help_output}" "--av1-hdr FILE"
+require_output "${runtime_help_output}" "AV1 Profile 0 VLD"
+
+# Manual workflow передаёт отдельный HDR input в единственный playback runner.
+hardware_workflow_source="$(<"${REPO_ROOT}/.github/workflows/hardware-acceptance.yml")"
+require_output "${hardware_workflow_source}" "av1_hdr_path:"
+require_output "${hardware_workflow_source}" '--av1-hdr "${AV1_HDR_FIXTURE_PATH}"'
 
 # Неизвестный аргумент обязан завершиться ошибкой parser-а.
 if unknown_output="$(${PLAYBACK_SMOKE} --unknown-option 2>&1)"; then
@@ -55,15 +75,72 @@ fi
 require_output "${unknown_output}" "неизвестный аргумент"
 
 # Пустые fixture-файлы достаточны: dry-run не читает media и не запускает GUI.
-touch "${temporary_directory}/vp9.mp4" "${temporary_directory}/av1.mp4" "${temporary_directory}/h264.mp4"
+touch \
+    "${temporary_directory}/vp9.mp4" \
+    "${temporary_directory}/av1.mp4" \
+    "${temporary_directory}/av1-hdr.mp4" \
+    "${temporary_directory}/h264.mp4"
+
+# Fake vainfo без exact AV1 VLD entrypoint функционально проверяет fail-closed SKIP.
+vainfo_shim_directory="${temporary_directory}/vainfo-shim"
+mkdir -p "${vainfo_shim_directory}"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -Eeuo pipefail' \
+    'printf '\''%s\n'\'' "VAProfileH264Main : VAEntrypointVLD"' \
+    >"${vainfo_shim_directory}/vainfo"
+chmod +x "${vainfo_shim_directory}/vainfo"
+# Readable fake node позволяет test-у изолированно дойти до exact profile assertion без GPU.
+fake_render_node="${temporary_directory}/renderD128"
+touch "${fake_render_node}"
+set +e
+missing_av1_profile_output="$(PATH="${vainfo_shim_directory}:${PATH}" \
+    RUSTIPLAYER_SMOKE_VAAPI_RENDER_NODE="${fake_render_node}" \
+    "${PLAYBACK_SMOKE}" --mode hardware-only --duration 1 \
+    --vp9 "${temporary_directory}/vp9.mp4" \
+    --av1 "${temporary_directory}/av1.mp4" \
+    --av1-hdr "${temporary_directory}/av1-hdr.mp4" 2>&1)"
+missing_av1_profile_status=$?
+set -e
+if [[ "${missing_av1_profile_status}" -ne 3 ]]; then
+    printf 'FAIL: ожидаемый AV1 profile SKIP exit code 3, получен %s\n' "${missing_av1_profile_status}" >&2
+    exit 1
+fi
+require_output "${missing_av1_profile_output}" \
+    "SKIP: vainfo не содержит exact VAProfileAV1Profile0 : VAEntrypointVLD"
+
+# Full matrix без отдельного HDR fixture должна fail-closed отклонить incomplete selection.
+set +e
+missing_av1_hdr_output="$(${PLAYBACK_SMOKE} --mode full --dry-run --duration 1 \
+    --vp9 "${temporary_directory}/vp9.mp4" \
+    --av1 "${temporary_directory}/av1.mp4" \
+    --h264 "${temporary_directory}/h264.mp4" 2>&1)"
+missing_av1_hdr_status=$?
+set -e
+if [[ "${missing_av1_hdr_status}" -eq 0 ]]; then
+    printf 'FAIL: full matrix без --av1-hdr завершилась успешно\n' >&2
+    exit 1
+fi
+require_output "${missing_av1_hdr_output}" "NOT RUN: missing selection"
+
 # Dry-run проверяет полный parser path и описывает current config contract.
 dry_run_output="$(${PLAYBACK_SMOKE} --mode full --dry-run --duration 1 \
     --vp9 "${temporary_directory}/vp9.mp4" \
     --av1 "${temporary_directory}/av1.mp4" \
+    --av1-hdr "${temporary_directory}/av1-hdr.mp4" \
     --h264 "${temporary_directory}/h264.mp4" 2>&1)"
-require_output "${dry_run_output}" "schema v8"
+require_output "${dry_run_output}" "schema v9"
 require_output "${dry_run_output}" 'yt_dlp.hdr_selection = "sdr_only"'
 require_output "${dry_run_output}" "cargo build --release -p app-egui"
+# Dry-run обязан показать exact hardware prerequisite и обе AV1 positive границы.
+require_output "${dry_run_output}" "VAProfileAV1Profile0 : VAEntrypointVLD"
+require_output "${dry_run_output}" "playback scenario: hardware-av1-sdr-4k60"
+require_output "${dry_run_output}" "format=NV12"
+require_output "${dry_run_output}" "playback scenario: hardware-av1-hdr-4k60"
+require_output "${dry_run_output}" "format=P010"
+require_output "${dry_run_output}" "playback scenario: software-av1-sdr-4k60"
+require_output "${dry_run_output}" "exact renderer marker: video frame submitted to renderer"
+require_absent "${dry_run_output}" "PlayerEvent::FatalError kind=UnsupportedVideoCodec"
 # Full dry-run переиспользует probe workflow, но обязан маркировать его только как план.
 require_output "${dry_run_output}" "DRY-RUN: WOULD RUN FFmpeg runtime probe acceptance; no checks were executed"
 require_absent "${dry_run_output}" "PASS: FFmpeg runtime probe acceptance"
@@ -113,6 +190,9 @@ if [[ "$(wc -l <"${successful_probe_cargo_log}")" -ne 2 ]]; then
     printf 'FAIL: успешный probe-only должен вызвать Cargo ровно два раза\n' >&2
     exit 1
 fi
+# Второй Cargo-вызов обязан выбирать только installed-runtime test, а не все ignored regressions crate-а.
+require_output "$(<"${successful_probe_cargo_log}")" \
+    "--test ffmpeg_runtime_probe -- --ignored --exact installed_ffmpeg_runtime_probe_reports_available_runtime"
 
 # Отдельный log принадлежит намеренно падающему probe-only workflow.
 failing_probe_cargo_log="${temporary_directory}/failing-probe-cargo.log"
@@ -162,6 +242,22 @@ require_output "${manifest_not_run_output}" "NOT RUN: missing --suite selection"
 manifest_dry_run_output="$("${REPO_ROOT}/scripts/runtime-acceptance.sh" \
     --suite playback-matrix --dry-run 2>&1)"
 require_output "${manifest_dry_run_output}" "NOT RUN: dry-run only"
+require_output "${manifest_dry_run_output}" "--av1-hdr"
+require_output "${manifest_dry_run_output}" "VAProfileAV1Profile0 : VAEntrypointVLD"
+
+# Hardware suite с SDR, но без обязательного HDR fixture даёт reasoned SKIP до host probe.
+set +e
+missing_hdr_manifest_output="$("${REPO_ROOT}/scripts/runtime-acceptance.sh" \
+    --suite vaapi-hardware \
+    --vp9 "${temporary_directory}/vp9.mp4" \
+    --av1 "${temporary_directory}/av1.mp4" 2>&1)"
+missing_hdr_manifest_status=$?
+set -e
+if [[ "${missing_hdr_manifest_status}" -ne 3 ]]; then
+    printf 'FAIL: ожидаемый --av1-hdr SKIP exit code 3, получен %s\n' "${missing_hdr_manifest_status}" >&2
+    exit 1
+fi
+require_output "${missing_hdr_manifest_output}" "SKIP: не указан --av1-hdr local asset path"
 
 # Выбранная runtime suite без fixture должна дать reasoned SKIP и специальный exit code.
 set +e

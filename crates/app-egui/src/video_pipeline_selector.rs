@@ -368,6 +368,8 @@ mod tests {
 
     use super::*;
 
+    mod av1;
+
     fn current_vaapi_output() -> SupportedVideoOutput {
         SupportedVideoOutput {
             backend: DecodeBackendId::vaapi(),

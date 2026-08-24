@@ -15,8 +15,8 @@
 |---|---|---|---|
 | hermetic CI | `scripts/runtime-acceptance.sh --suite hermetic-ci` | All-features workspace tests без owner-local media | Cargo/toolchain и зависимости CI |
 | runtime software | `scripts/runtime-acceptance.sh --suite runtime-software --vp9 <FILE> --h264 <FILE>` | FFmpeg runtime probe, software H.264 playback, VP9 stress | Явные files, FFmpeg `libavcodec >= 62`, `libavutil >= 60` |
-| optional VA-API regression smoke | `scripts/runtime-acceptance.sh --suite vaapi-hardware --vp9 <FILE> --av1 <FILE>` | Проверяет существующие VP9 VA-API DMA-BUF и typed AV1 rejection paths только на явно выбранном host/fixtures; не является общим S42 hardware acceptance | Явные files, readable render node, успешный `vainfo` |
-| combined runtime regression set | `scripts/runtime-acceptance.sh --suite playback-matrix --vp9 <FILE> --av1 <FILE> --h264 <FILE>` | Запускает перечисленные software и VA-API scenarios; результат относится только к данному host/fixtures и не доказывает полную hardware matrix | Все перечисленные software/hardware prerequisites |
+| optional VA-API regression smoke | `scripts/runtime-acceptance.sh --suite vaapi-hardware --vp9 <FILE> --av1 <SDR_FILE> --av1-hdr <HDR_FILE>` | Проверяет VP9 VA-API и AV1 Main/Profile 0 SDR NV12 + HDR P010 через DMA-BUF до реального renderer submit на явно выбранном host/fixtures | Явные files, readable render node, рабочий `vainfo` с exact `VAProfileAV1Profile0 : VAEntrypointVLD` |
+| combined runtime regression set | `scripts/runtime-acceptance.sh --suite playback-matrix --vp9 <FILE> --av1 <SDR_FILE> --av1-hdr <HDR_FILE> --h264 <FILE>` | Запускает software regressions, включая AV1 SDR через `ffmpeg-host-upload-wgpu`, и положительные VA-API AV1 SDR/HDR scenarios; результат относится только к данному host/fixtures | Все перечисленные software/hardware prerequisites и exact AV1 Profile 0 VLD capability |
 
 Отдельные команды, не смешанные с current playback config:
 
@@ -55,10 +55,15 @@
 - provider, auth, Range/refresh и live contracts по-прежнему проверяются
   hermetic fake/local-server suites, а real URL UX принадлежит только S42
   manual runner-у;
-- VP9 VA-API playback и typed AV1 rejection runtime checks не являются
-  `cargo test`: ими владеют `hardware-only` и `full` modes
-  `playback-smoke.sh`; они требуют выбранных пользователем assets и конкретного
-  GUI/VA-API/WGPU host и не являются checked-in S42 hardware acceptance.
+- VP9 VA-API playback и положительные AV1 Main/Profile 0 SDR/HDR runtime checks
+  не являются `cargo test`: ими владеют `hardware-only` и `full` modes
+  `playback-smoke.sh`; они требуют выбранных пользователем assets, exact
+  `VAProfileAV1Profile0 : VAEntrypointVLD` и конкретного GUI/VA-API/WGPU host.
+  AV1 checks принимаются только после `vaapi-dmabuf-wgpu`, configured AV1
+  adapter-а, первого NV12/P010 DMA-BUF и exact
+  `video frame submitted to renderer`; FFmpeg fallback, backend reselection и
+  fatal markers запрещены. Это post-S42 runtime feature evidence, а не
+  переписанная задним числом checked-in S42 hardware acceptance.
 
 Все fixture regressions запускаются по одному через `scripts/media-regression.sh --scenario <NAME> --path <FILE>`. Полный список требований доступен через `scripts/media-regression.sh --list-scenarios`; отсутствие selection уже печатает `NOT RUN`, а выбранный отсутствующий path завершает runner ошибкой.
 
@@ -67,7 +72,12 @@
 Единственное owner-approved hardware-capability исключение, которое фиксирует
 S42, — exact `VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420/NV12,
 capability intersection only. Более широкое hardware acceptance не заявлено;
-current hardware manual rerun имеет статус `NOT RUN`: у владельца сейчас нет
-совместимого VA-API device для opt-in rerun. Web-media manual status и полный
-safe-case список описаны в
+на момент S42 hardware manual rerun имел статус `NOT RUN`: у владельца тогда
+не было совместимого VA-API device для opt-in rerun. Web-media manual status и
+полный safe-case список описаны в
 [web-media-s42-final-acceptance.md](web-media-s42-final-acceptance.md).
+
+Отдельно от этой исторической S42 фиксации текущая post-S42 desktop matrix
+добавляет opt-in AV1 Main/Profile 0 hardware acceptance для 8-bit YUV420/NV12
+SDR и 10-bit YUV420/P010 HDR. High/Professional, YUV422/YUV444 и 12-bit этим
+runner-ом не заявлены.

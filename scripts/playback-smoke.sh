@@ -7,17 +7,23 @@ set -Eeuo pipefail
 # Код успешного завершения держим явным, как в остальных shell-скриптах проекта.
 readonly SUCCESS_EXIT_CODE=0
 
+# Hardware prerequisite SKIP не должен выглядеть как выполненная acceptance.
+readonly SKIPPED_EXIT_CODE=3
+
 # Default длительность одного playback-сценария: достаточно для startup/swap markers.
 readonly DEFAULT_DURATION_SECONDS=20
 
-# Лог-фильтр включает info markers и debug summary с `drops_decoder_starvation`.
-readonly DEFAULT_SMOKE_RUST_LOG="info,player_core::worker::runtime_publish=debug"
+# Лог-фильтр включает info markers, starvation summary и dedicated renderer acceptance trace.
+readonly DEFAULT_SMOKE_RUST_LOG="info,player_core::worker::runtime_publish=debug,rustiplayer::video_render_acceptance=trace"
+
+# Exact AV1 Profile 0 decode entrypoint обязателен для hardware/full AV1 acceptance.
+readonly AV1_VAAPI_PROFILE_REGEX='^[[:space:]]*VAProfileAV1Profile0[[:space:]]*:[[:space:]]*VAEntrypointVLD([[:space:]]|$)'
+
+# Hardware runner проверяет explicit DRM node; override существует только для test/multi-GPU hosts.
+readonly VAAPI_RENDER_NODE="${RUSTIPLAYER_SMOKE_VAAPI_RENDER_NODE:-/dev/dri/renderD128}"
 
 # Positive playback scenarios не должны встречать эти известные fatal/regression markers.
 readonly POSITIVE_FORBIDDEN_REGEX="InvalidData|Error parsing OBU data|No start code|resource table is full|Decoder thread disconnected|panicked at|thread .* panicked|panic in a function that cannot unwind|UnsupportedRenderFormat|missing render resources|PlayerEvent::FatalError"
-
-# Hardware rejection может содержать UnsupportedVideoCodec, но не должен падать иначе.
-readonly REJECTION_FORBIDDEN_REGEX="InvalidData|Error parsing OBU data|No start code|resource table is full|Decoder thread disconnected|panicked at|thread .* panicked|panic in a function that cannot unwind|UnsupportedRenderFormat|missing render resources"
 
 # Каталог скрипта нужен, чтобы запуск из любого cwd шёл от корня repo.
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
@@ -41,8 +47,11 @@ smoke_mode=""
 # Явно выбранный VP9 Profile 0 local path для hardware и software stress scenarios.
 vp9_profile0_path=""
 
-# Явно выбранный AV1 local path для auto fallback и hardware rejection scenarios.
+# Явно выбранный AV1 Main 8-bit SDR local path для software и hardware scenarios.
 av1_path=""
+
+# Явно выбранный AV1 Main 10-bit HDR local path для hardware P010 scenario.
+av1_hdr_path=""
 
 # Явно выбранный H.264 ISO BMFF local path для software host-upload scenario.
 h264_path=""
@@ -83,7 +92,7 @@ Options:
   --mode full|software-only|hardware-only|probe-only|legacy-migration
       full          Run FFmpeg probe tests, release build, and the full scenario matrix.
       software-only Run FFmpeg probe tests, release build, and FFmpeg software scenarios.
-      hardware-only Run release VA-API playback/rejection scenarios without FFmpeg probes.
+      hardware-only Run release VA-API playback scenarios without FFmpeg probes.
       probe-only    Run only the focused video-ffmpeg runtime probe tests.
       legacy-migration
                     Run the explicitly named legacy config migration smoke only.
@@ -92,10 +101,13 @@ Options:
       Per-scenario playback timeout. Default: 20.
 
   --vp9 FILE
-      VP9 Profile 0 SDR file for full/software-only scenarios; a 4K60 stream is recommended.
+      VP9 Profile 0 SDR file for full/software-only/hardware-only scenarios; 4K60 is recommended.
 
   --av1 FILE
-      AV1 SDR file for full mode; it must exercise software fallback and hardware rejection.
+      AV1 Main/Profile 0 8-bit YUV420 SDR file for full/hardware-only scenarios.
+
+  --av1-hdr FILE
+      AV1 Main/Profile 0 10-bit YUV420 HDR file for full/hardware-only P010 playback.
 
   --h264 FILE
       H.264 ISO BMFF file for full/software-only software host-upload scenario.
@@ -132,6 +144,18 @@ print_not_run_missing_selection() {
     printf 'NOT RUN: missing selection\n' >&2
 }
 
+# Функция завершает выбранную hardware suite reasoned SKIP-ом, а не ложным PASS/FAIL.
+skip_hardware_acceptance() {
+    # Причина передаётся первым аргументом и должна называть отсутствующую prerequisite.
+    local skip_reason="$1"
+
+    # Единая формулировка совпадает с executable runtime manifest contract-ом.
+    printf 'SKIP: %s; acceptance not satisfied\n' "${skip_reason}" >&2
+
+    # Специальный код позволяет automation отличить SKIP от assertion failure.
+    exit "${SKIPPED_EXIT_CODE}"
+}
+
 # Функция проверяет наличие внешней команды перед runtime-прогоном.
 require_command() {
     # Имя команды передаётся первым аргументом.
@@ -166,6 +190,36 @@ require_playback_commands() {
 
     # tail показывает контекст при падении сценария.
     require_command "tail"
+}
+
+# Функция fail-closed подтверждает AV1 Main/Profile 0 decode entrypoint до build/playback.
+require_av1_vaapi_decode_profile() {
+    # Dry-run только описывает prerequisite и не опрашивает host hardware.
+    if [[ "${dry_run}" == "true" ]]; then
+        printf 'Would require readable %s and vainfo entry: VAProfileAV1Profile0 : VAEntrypointVLD.\n' "${VAAPI_RENDER_NODE}" >&2
+        return
+    fi
+
+    # Explicit DRM device исключает ложный X11/Wayland probe failure на headless runner-е.
+    if [[ ! -r "${VAAPI_RENDER_NODE}" ]]; then
+        skip_hardware_acceptance "нет readable VA-API render node ${VAAPI_RENDER_NODE}"
+    fi
+
+    # Hardware acceptance без системного capability probe не может быть зачтена.
+    if ! command -v vainfo >/dev/null 2>&1; then
+        skip_hardware_acceptance "команда vainfo недоступна для AV1 hardware preflight"
+    fi
+
+    # Один снимок вывода гарантирует, что runtime health и profile проверены вместе.
+    local vaapi_capabilities
+    if ! vaapi_capabilities="$(vainfo --display drm --device "${VAAPI_RENDER_NODE}" 2>&1)"; then
+        skip_hardware_acceptance "vainfo не подтвердил рабочий VA-API runtime"
+    fi
+
+    # Profile name без точного VLD entrypoint не доказывает аппаратный decode.
+    if ! grep -Eq -- "${AV1_VAAPI_PROFILE_REGEX}" <<<"${vaapi_capabilities}"; then
+        skip_hardware_acceptance "vainfo не содержит exact VAProfileAV1Profile0 : VAEntrypointVLD"
+    fi
 }
 
 # Функция запускает шаг или печатает его в dry-run.
@@ -283,6 +337,14 @@ parse_arguments() {
                     exit 1
                 fi
                 av1_path="$2"
+                shift 2
+                ;;
+            --av1-hdr)
+                if (($# < 2)); then
+                    print_error "--av1-hdr требует путь к media file"
+                    exit 1
+                fi
+                av1_hdr_path="$2"
                 shift 2
                 ;;
             --h264)
@@ -422,7 +484,7 @@ absolute_selected_path() {
 # Функция проверяет, что mode получил все required explicit paths до expensive Cargo шагов.
 validate_media_selection() {
     # Полное отсутствие выбора означает, что пользователь не запросил scenario.
-    if [[ -z "${smoke_mode}" && -z "${vp9_profile0_path}" && -z "${av1_path}" && -z "${h264_path}" ]]; then
+    if [[ -z "${smoke_mode}" && -z "${vp9_profile0_path}" && -z "${av1_path}" && -z "${av1_hdr_path}" && -z "${h264_path}" ]]; then
         print_not_run_missing_selection
         exit "${SUCCESS_EXIT_CODE}"
     fi
@@ -439,19 +501,19 @@ validate_media_selection() {
     fi
 
     # Full matrix требует один path на каждое distinct media property.
-    if [[ "${smoke_mode}" == "full" && ( -z "${vp9_profile0_path}" || -z "${av1_path}" || -z "${h264_path}" ) ]]; then
+    if [[ "${smoke_mode}" == "full" && ( -z "${vp9_profile0_path}" || -z "${av1_path}" || -z "${av1_hdr_path}" || -z "${h264_path}" ) ]]; then
         print_not_run_missing_selection
         exit 1
     fi
 
-    # Software-only использует H.264 и VP9, но не AV1 hardware rejection matrix.
+    # Software-only сохраняет прежние H.264 и VP9 scenarios без hardware AV1 matrix.
     if [[ "${smoke_mode}" == "software-only" && ( -z "${vp9_profile0_path}" || -z "${h264_path}" ) ]]; then
         print_not_run_missing_selection
         exit 1
     fi
 
-    # Hardware-only использует VP9 success и AV1 typed rejection scenarios.
-    if [[ "${smoke_mode}" == "hardware-only" && ( -z "${vp9_profile0_path}" || -z "${av1_path}" ) ]]; then
+    # Hardware-only использует VP9 и обе AV1 Main SDR/HDR positive scenarios.
+    if [[ "${smoke_mode}" == "hardware-only" && ( -z "${vp9_profile0_path}" || -z "${av1_path}" || -z "${av1_hdr_path}" ) ]]; then
         print_not_run_missing_selection
         exit 1
     fi
@@ -464,6 +526,10 @@ validate_media_selection() {
     if [[ -n "${av1_path}" ]]; then
         require_asset_file "${av1_path}"
         av1_path="$(absolute_selected_path "${av1_path}")"
+    fi
+    if [[ -n "${av1_hdr_path}" ]]; then
+        require_asset_file "${av1_hdr_path}"
+        av1_hdr_path="$(absolute_selected_path "${av1_hdr_path}")"
     fi
     if [[ -n "${h264_path}" ]]; then
         require_asset_file "${h264_path}"
@@ -485,7 +551,7 @@ write_scenario_config() {
     # Создаём только isolated config tree текущего сценария.
     mkdir -p -- "$(dirname -- "${config_file}")"
 
-    # Config-crate остаётся единственным владельцем полного набора schema v8 fields/defaults.
+    # Config-crate остаётся единственным владельцем полного набора schema v9 fields/defaults.
     cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
         generate-current "${config_file}" "${backend_preference}"
 
@@ -508,7 +574,7 @@ run_playback_scenario() {
     # Dry-run печатает команду и не требует существования binary/logs.
     if [[ "${dry_run}" == "true" ]]; then
         printf '\n==> playback scenario: %s\n' "${scenario_name}" >&2
-        printf 'Would write full current config: schema v8, video.preferred_backend = "%s", player.start_paused = false, yt_dlp.hdr_selection = "sdr_only"\n' "${backend_preference}" >&2
+        printf 'Would write full current config: schema v9, video.preferred_backend = "%s", player.start_paused = false, yt_dlp.hdr_selection = "sdr_only"\n' "${backend_preference}" >&2
         print_command env \
             "XDG_CONFIG_HOME=<tmp>/configs/${scenario_name}" \
             "RUST_LOG=${SMOKE_RUST_LOG}" \
@@ -604,6 +670,7 @@ run_positive_playback_scenario() {
         if [[ "${require_reselection}" == "true" ]]; then
             printf 'Would require backend reselection evidence.\n' >&2
         fi
+        printf 'Would require exact renderer marker: video frame submitted to renderer\n' >&2
         printf 'Would reject known positive-scenario regression markers.\n' >&2
         return
     fi
@@ -614,7 +681,13 @@ run_positive_playback_scenario() {
         "Selected video pipeline.*plan=\"?${expected_plan}\"?" \
         "Selected video pipeline plan=${expected_plan}"
 
-    # Auto AV1 должен доказать, что был backend reselection, а не старт сразу в software.
+    # Успешный plan/decode недостаточен: кадр обязан дойти до реального renderer submit.
+    require_log_regex \
+        "${last_scenario_log}" \
+        "video frame submitted to renderer" \
+        "video frame submitted to renderer"
+
+    # Scenarios, явно ожидающие смену backend-а, обязаны показать lifecycle evidence.
     if [[ "${require_reselection}" == "true" ]]; then
         require_log_regex \
             "${last_scenario_log}" \
@@ -637,49 +710,57 @@ run_positive_playback_scenario() {
     fi
 }
 
-# Функция проверяет expected typed rejection для hardware-only AV1.
-run_hardware_av1_rejection_scenario() {
-    # Сценарий должен использовать public hardware preference.
-    run_playback_scenario "hardware-av1-4k60-reject" "hardware" "${av1_path}"
+# Функция доказывает AV1 hardware decode, exact DMA-BUF format и renderer submit.
+run_hardware_av1_positive_scenario() {
+    # Stable имя различает SDR NV12 и HDR P010 logs/configs.
+    local scenario_name="$1"
 
-    # Dry-run не создаёт log, поэтому marker checks только описываем.
+    # Выбранный AV1 Main asset передаётся явно и никогда не угадывается.
+    local selected_media_path="$2"
+
+    # Exact decoded surface format закрепляет 8-bit NV12 или 10-bit P010 boundary.
+    local expected_dma_buf_format="$3"
+
+    # Public hardware preference запрещает silent FFmpeg fallback по контракту selector-а.
+    run_positive_playback_scenario \
+        "${scenario_name}" \
+        "hardware" \
+        "${selected_media_path}" \
+        "vaapi-dmabuf-wgpu" \
+        "false" \
+        "false"
+
+    # Dry-run перечисляет AV1-specific assertions без чтения несуществующего log-а.
     if [[ "${dry_run}" == "true" ]]; then
-        printf 'Would require PlayerEvent::FatalError kind=UnsupportedVideoCodec.\n' >&2
-        printf 'Would require hardware rejection reason to mention unsupported AV1 stream.\n' >&2
-        printf 'Would reject old generic hardware-output reason.\n' >&2
-        printf 'Would reject FFmpeg software selected pipeline fallback.\n' >&2
+        printf 'Would require AV1 VA-API codec adapter configured marker.\n' >&2
+        printf 'Would require Zero-copy DMA-BUF resource registered with format=%s.\n' "${expected_dma_buf_format}" >&2
+        printf 'Would reject FFmpeg fallback and backend reselection markers.\n' >&2
         return
     fi
 
-    # Typed rejection должен быть виден на app-level stderr marker-е.
+    # Adapter marker доказывает concrete AV1 stateless backend, а не только selector plan.
     require_log_regex \
         "${last_scenario_log}" \
-        "PlayerEvent::FatalError.*kind=UnsupportedVideoCodec|kind=UnsupportedVideoCodec.*PlayerEvent::FatalError" \
-        "PlayerEvent::FatalError kind=UnsupportedVideoCodec"
+        "VA-API codec adapter configured for stream.*codec=\"?AV1\"?([[:space:]]|$)|codec=\"?AV1\"?([[:space:]]|$).*VA-API codec adapter configured for stream" \
+        "VA-API codec adapter configured for AV1 stream"
 
-    # Причина должна быть stream-oriented, а не generic selector/resource detail.
+    # Первый зарегистрированный zero-copy descriptor обязан иметь ожидаемый surface format.
     require_log_regex \
         "${last_scenario_log}" \
-        "native hardware output не поддерживает.*AV1|AV1.*native hardware output не поддерживает" \
-        "hardware rejection explains unsupported AV1 stream"
+        "Zero-copy DMA-BUF resource registered.*format=\"?${expected_dma_buf_format}\"?([[:space:]]|$)|format=\"?${expected_dma_buf_format}\"?([[:space:]]|$).*Zero-copy DMA-BUF resource registered" \
+        "Zero-copy DMA-BUF resource registered with format=${expected_dma_buf_format}"
 
-    # Старый generic selector reason скрывал настоящий codec-policy отказ.
+    # Hardware preference не имеет права незаметно выбрать software decoder.
     reject_log_regex \
         "${last_scenario_log}" \
-        "нет playable native hardware output после renderer intersection" \
-        "generic hardware output rejection reason"
+        "Selected video pipeline.*plan=\"?ffmpeg-host-upload-wgpu\"?|FFmpeg.*fallback|fallback.*FFmpeg" \
+        "FFmpeg fallback in AV1 hardware scenario"
 
-    # Hardware preference не должен silently fallback-иться в FFmpeg software.
+    # Положительный hardware сценарий должен стартовать сразу на выбранном VA-API plan-е.
     reject_log_regex \
         "${last_scenario_log}" \
-        "Selected video pipeline.*plan=\"?ffmpeg-host-upload-wgpu\"?" \
-        "software fallback in hardware-only scenario"
-
-    # Остальные known fatal markers всё равно запрещены.
-    reject_log_regex \
-        "${last_scenario_log}" \
-        "${REJECTION_FORBIDDEN_REGEX}" \
-        "non-typed hardware rejection regression"
+        "backend reselection" \
+        "backend reselection in AV1 hardware scenario"
 }
 
 # Функция запускает focused FFmpeg probe tests.
@@ -689,10 +770,12 @@ run_probe_steps() {
         "cargo test -p video-ffmpeg --features ffmpeg probe::tests" \
         cargo test -p video-ffmpeg --features ffmpeg --locked probe::tests
 
-    # Ignored real-runtime probe проверяет локально установленный FFmpeg runtime.
+    # Exact integration-test selector не запускает соседние ignored media/WGPU regressions.
     run_step \
-        "cargo test -p video-ffmpeg --features ffmpeg -- --ignored" \
-        cargo test -p video-ffmpeg --features ffmpeg --locked -- --ignored
+        "cargo test -p video-ffmpeg --features ffmpeg --test ffmpeg_runtime_probe -- --ignored --exact installed_ffmpeg_runtime_probe_reports_available_runtime" \
+        cargo test -p video-ffmpeg --features ffmpeg --locked \
+            --test ffmpeg_runtime_probe -- --ignored --exact \
+            installed_ffmpeg_runtime_probe_reports_available_runtime
 
     # Единый outcome boundary отличает выполненный probe от одного лишь dry-run плана.
     report_acceptance_outcome "FFmpeg runtime probe acceptance"
@@ -727,14 +810,17 @@ run_full_scenarios() {
         "false" \
         "false"
 
-    # Auto + AV1 должен сначала запросить reselection и затем выбрать FFmpeg host-upload.
-    run_positive_playback_scenario \
-        "auto-av1-4k60-fallback" \
-        "auto" \
+    # Hardware + AV1 Main 8-bit SDR должен пройти NV12 DMA-BUF путь до renderer submit.
+    run_hardware_av1_positive_scenario \
+        "hardware-av1-sdr-4k60" \
         "${av1_path}" \
-        "ffmpeg-host-upload-wgpu" \
-        "true" \
-        "false"
+        "NV12"
+
+    # Hardware + AV1 Main 10-bit HDR должен пройти P010 DMA-BUF путь до renderer submit.
+    run_hardware_av1_positive_scenario \
+        "hardware-av1-hdr-4k60" \
+        "${av1_hdr_path}" \
+        "P010"
 
     # Software + H.264 MP4 должен идти через FFmpeg host-upload без start-code ошибок.
     run_positive_playback_scenario \
@@ -745,8 +831,14 @@ run_full_scenarios() {
         "false" \
         "false"
 
-    # Hardware + AV1 должен дать typed unsupported, а не fallback и не panic.
-    run_hardware_av1_rejection_scenario
+    # Software + AV1 SDR сохраняет реальную FFmpeg host-upload регрессию рядом с hardware path.
+    run_positive_playback_scenario \
+        "software-av1-sdr-4k60" \
+        "software" \
+        "${av1_path}" \
+        "ffmpeg-host-upload-wgpu" \
+        "false" \
+        "false"
 
     # Software + VP9 Profile 0 stress должен идти через FFmpeg без resource/starvation regressions.
     run_positive_playback_scenario \
@@ -790,8 +882,17 @@ run_hardware_only_scenarios() {
         "false" \
         "false"
 
-    # AV1 подтверждает typed hardware-only rejection без software fallback.
-    run_hardware_av1_rejection_scenario
+    # AV1 Main 8-bit SDR подтверждает NV12 zero-copy decode и renderer submit.
+    run_hardware_av1_positive_scenario \
+        "hardware-av1-sdr-4k60" \
+        "${av1_path}" \
+        "NV12"
+
+    # AV1 Main 10-bit HDR подтверждает P010 zero-copy decode и renderer submit.
+    run_hardware_av1_positive_scenario \
+        "hardware-av1-hdr-4k60" \
+        "${av1_hdr_path}" \
+        "P010"
 }
 
 # Главная функция фиксирует acceptance workflow в одном месте.
@@ -818,6 +919,11 @@ main() {
     # Config-only modes не требуют timeout/mktemp/playback tools.
     if [[ "${dry_run}" != "true" && "${smoke_mode}" != "probe-only" && "${smoke_mode}" != "legacy-migration" ]]; then
         require_playback_commands
+    fi
+
+    # Full и hardware-only acceptance fail-closed требуют exact AV1 Profile 0 VLD capability.
+    if [[ "${smoke_mode}" == "full" || "${smoke_mode}" == "hardware-only" ]]; then
+        require_av1_vaapi_decode_profile
     fi
 
     # Legacy migration является отдельным сценарием и не запускает FFmpeg или GUI.

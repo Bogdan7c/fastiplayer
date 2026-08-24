@@ -1,3 +1,4 @@
+use super::av1::Av1VaapiCodecAdapter;
 use super::h264::{H264VaapiCodecAdapter, H264VaapiStreamConfig};
 use super::h265::{H265VaapiCodecAdapter, H265VaapiStreamConfig};
 use super::vp9::Vp9VaapiCodecAdapter;
@@ -26,10 +27,11 @@ impl VaapiCodecAdapterFactory {
         }
 
         match config.codec {
+            VideoCodec::Av1 => Ok(Box::new(Av1VaapiCodecAdapter::new(display)?)),
             VideoCodec::Vp9 => Ok(Box::new(Vp9VaapiCodecAdapter::new(display)?)),
             VideoCodec::H264 => Ok(Box::new(H264VaapiCodecAdapter::new(display, config)?)),
             VideoCodec::H265 => Ok(Box::new(H265VaapiCodecAdapter::new(display, config)?)),
-            codec @ (VideoCodec::Av1 | VideoCodec::Vp8) => Err(anyhow::anyhow!(
+            codec @ VideoCodec::Vp8 => Err(anyhow::anyhow!(
                 "VA-API adapter factory has no implemented adapter for {codec}"
             )),
         }
@@ -40,18 +42,21 @@ impl VaapiCodecAdapterFactory {
         config: &VideoStreamDecodeConfig,
     ) -> Option<VideoStreamConfigRejection> {
         match config.codec {
+            VideoCodec::Av1 => reject_unsupported_av1_config(config),
             VideoCodec::Vp9 => reject_unsupported_vp9_config(config),
             VideoCodec::H264 => reject_unsupported_h264_config(config),
             VideoCodec::H265 => reject_unsupported_h265_config(config),
-            codec @ (VideoCodec::Av1 | VideoCodec::Vp8) => {
-                Some(VideoStreamConfigRejection::UnsupportedCodec { codec })
-            }
+            codec @ VideoCodec::Vp8 => Some(VideoStreamConfigRejection::UnsupportedCodec { codec }),
         }
     }
 
     /// Проверяет, что probed hardware format имеет production adapter в этом crate-е.
     pub(crate) fn supports_decode_format(format: &SupportedVideoDecodeFormat) -> bool {
         match (format.codec, format.profile) {
+            (VideoCodec::Av1, VideoProfile::Av1(Av1Profile::Main)) => {
+                matches!(format.bit_depth, BitDepth::Eight | BitDepth::Ten)
+                    && format.chroma == ChromaSubsampling::Yuv420
+            }
             (VideoCodec::Vp9, VideoProfile::Vp9(Vp9Profile::Profile0)) => {
                 format.bit_depth == BitDepth::Eight && format.chroma == ChromaSubsampling::Yuv420
             }
@@ -83,6 +88,73 @@ fn is_implemented_h264_profile(profile: H264Profile) -> bool {
             | H264Profile::Main
             | H264Profile::High
     )
+}
+
+/// Валидирует AV1 config против production Profile 0/Main adapter matrix.
+fn reject_unsupported_av1_config(
+    config: &VideoStreamDecodeConfig,
+) -> Option<VideoStreamConfigRejection> {
+    if let Some(rejection) = reject_unsupported_frame_contract(config) {
+        return Some(rejection);
+    }
+
+    match config.profile {
+        Some(VideoProfile::Av1(Av1Profile::Main)) | None => {}
+        Some(profile) => {
+            return Some(VideoStreamConfigRejection::UnsupportedProfile { profile });
+        }
+    }
+
+    if let Some(rejection) = reject_av1_main_declared_format(
+        config.bit_depth,
+        config.chroma,
+        config.frame_contract.pixel_layout,
+    ) {
+        return Some(rejection);
+    }
+
+    if config.packetization.is_some() {
+        return Some(VideoStreamConfigRejection::BackendUnsupported {
+            reason: "AV1 VA-API adapter consumes temporal-unit OBU payloads without codec-specific packetization metadata"
+                .to_string(),
+        });
+    }
+
+    None
+}
+
+/// Проверяет AV1 Main bit depth/chroma/surface без догадок о неподдерживаемых profiles.
+fn reject_av1_main_declared_format(
+    bit_depth: Option<BitDepth>,
+    chroma: Option<ChromaSubsampling>,
+    surface_format: VideoFramePixelLayout,
+) -> Option<VideoStreamConfigRejection> {
+    if let Some(bit_depth) = bit_depth
+        && !matches!(bit_depth, BitDepth::Eight | BitDepth::Ten)
+    {
+        return Some(VideoStreamConfigRejection::UnsupportedBitDepth { bit_depth });
+    }
+
+    if let Some(chroma) = chroma
+        && chroma != ChromaSubsampling::Yuv420
+    {
+        return Some(VideoStreamConfigRejection::UnsupportedChroma { chroma });
+    }
+
+    if !matches!(
+        surface_format,
+        VideoFramePixelLayout::Nv12 | VideoFramePixelLayout::P010
+    ) {
+        return Some(VideoStreamConfigRejection::UnsupportedSurfaceFormat { surface_format });
+    }
+
+    match (bit_depth, surface_format) {
+        (Some(BitDepth::Eight), surface_format @ VideoFramePixelLayout::P010)
+        | (Some(BitDepth::Ten), surface_format @ VideoFramePixelLayout::Nv12) => {
+            Some(VideoStreamConfigRejection::UnsupportedSurfaceFormat { surface_format })
+        }
+        _ => None,
+    }
 }
 
 /// Валидирует VP9 config против production adapter matrix.
@@ -372,4 +444,190 @@ fn reject_optional_surface(
                 surface_format,
             },
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use media_core::TrackId;
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
+
+    use super::*;
+
+    /// Собирает production-shaped AV1 Main config с заданным decoded frame contract-ом.
+    fn av1_stream_config(
+        bit_depth: BitDepth,
+        chroma: ChromaSubsampling,
+        frame_contract: VideoFrameContract,
+    ) -> VideoStreamDecodeConfig {
+        VideoStreamDecodeConfig {
+            track_id: TrackId::new(1),
+            codec: VideoCodec::Av1,
+            profile: Some(VideoProfile::Av1(Av1Profile::Main)),
+            bit_depth: Some(bit_depth),
+            chroma: Some(chroma),
+            coded_width: Some(3_840),
+            coded_height: Some(2_160),
+            display_orientation: codec_core::VideoDisplayOrientation::Identity,
+            frame_contract,
+            codec_private: None,
+            packetization: None,
+        }
+    }
+
+    /// Собирает capability row для проверки adapter-owned production whitelist-а.
+    fn av1_decode_format(
+        profile: Av1Profile,
+        bit_depth: BitDepth,
+        chroma: ChromaSubsampling,
+    ) -> SupportedVideoDecodeFormat {
+        SupportedVideoDecodeFormat {
+            codec: VideoCodec::Av1,
+            profile: VideoProfile::Av1(profile),
+            bit_depth,
+            chroma,
+            max_width: Some(3_840),
+            max_height: Some(2_160),
+            max_fps: None,
+            hdr_input: bit_depth == BitDepth::Ten,
+        }
+    }
+
+    #[test]
+    fn av1_main_accepts_nv12_8bit_and_p010_10bit_zero_copy() {
+        let sdr_config = av1_stream_config(
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        );
+        let hdr_config = av1_stream_config(
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+            VideoFrameContract::dma_buf_p010(DmaBufImageLayout::ComposedLayers),
+        );
+
+        assert!(VaapiCodecAdapterFactory::stream_config_rejection(&sdr_config).is_none());
+        assert!(VaapiCodecAdapterFactory::stream_config_rejection(&hdr_config).is_none());
+        assert!(VaapiCodecAdapterFactory::supports_decode_format(
+            &av1_decode_format(Av1Profile::Main, BitDepth::Eight, ChromaSubsampling::Yuv420,)
+        ));
+        assert!(VaapiCodecAdapterFactory::supports_decode_format(
+            &av1_decode_format(Av1Profile::Main, BitDepth::Ten, ChromaSubsampling::Yuv420,)
+        ));
+    }
+
+    #[test]
+    fn av1_rejects_high_and_professional_profiles() {
+        for profile in [Av1Profile::High, Av1Profile::Professional] {
+            let config = VideoStreamDecodeConfig {
+                profile: Some(VideoProfile::Av1(profile)),
+                ..av1_stream_config(
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                    VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+                )
+            };
+
+            assert_eq!(
+                VaapiCodecAdapterFactory::stream_config_rejection(&config),
+                Some(VideoStreamConfigRejection::UnsupportedProfile {
+                    profile: VideoProfile::Av1(profile),
+                })
+            );
+            assert!(!VaapiCodecAdapterFactory::supports_decode_format(
+                &av1_decode_format(profile, BitDepth::Eight, ChromaSubsampling::Yuv420)
+            ));
+        }
+    }
+
+    #[test]
+    fn av1_rejects_12bit_and_non_yuv420_formats() {
+        let twelve_bit_config = av1_stream_config(
+            BitDepth::Twelve,
+            ChromaSubsampling::Yuv420,
+            VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+        );
+        assert_eq!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&twelve_bit_config),
+            Some(VideoStreamConfigRejection::UnsupportedBitDepth {
+                bit_depth: BitDepth::Twelve,
+            })
+        );
+
+        for chroma in [ChromaSubsampling::Yuv422, ChromaSubsampling::Yuv444] {
+            let config = av1_stream_config(
+                BitDepth::Eight,
+                chroma,
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+            );
+
+            assert_eq!(
+                VaapiCodecAdapterFactory::stream_config_rejection(&config),
+                Some(VideoStreamConfigRejection::UnsupportedChroma { chroma })
+            );
+            assert!(!VaapiCodecAdapterFactory::supports_decode_format(
+                &av1_decode_format(Av1Profile::Main, BitDepth::Eight, chroma)
+            ));
+        }
+        assert!(!VaapiCodecAdapterFactory::supports_decode_format(
+            &av1_decode_format(
+                Av1Profile::Main,
+                BitDepth::Twelve,
+                ChromaSubsampling::Yuv420,
+            )
+        ));
+    }
+
+    #[test]
+    fn av1_rejects_surface_bit_depth_mismatch_and_host_upload() {
+        let eight_bit_p010 = av1_stream_config(
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+            VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+        );
+        assert_eq!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&eight_bit_p010),
+            Some(VideoStreamConfigRejection::UnsupportedSurfaceFormat {
+                surface_format: VideoFramePixelLayout::P010,
+            })
+        );
+
+        let ten_bit_nv12 = av1_stream_config(
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        );
+        assert_eq!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&ten_bit_nv12),
+            Some(VideoStreamConfigRejection::UnsupportedSurfaceFormat {
+                surface_format: VideoFramePixelLayout::Nv12,
+            })
+        );
+
+        let host_upload = av1_stream_config(
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+            VideoFrameContract::host_yuv420_planar8(),
+        );
+        assert!(matches!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&host_upload),
+            Some(VideoStreamConfigRejection::UnsupportedFrameContract { .. })
+        ));
+    }
+
+    #[test]
+    fn av1_rejects_foreign_packetization_metadata() {
+        let config = VideoStreamDecodeConfig {
+            packetization: Some(VideoStreamPacketization::H264(H264Packetization::AnnexB)),
+            ..av1_stream_config(
+                BitDepth::Eight,
+                ChromaSubsampling::Yuv420,
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+            )
+        };
+
+        assert!(matches!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&config),
+            Some(VideoStreamConfigRejection::BackendUnsupported { .. })
+        ));
+    }
 }

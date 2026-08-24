@@ -100,7 +100,9 @@ cargo check -p video-ffmpeg --features ffmpeg
 FFMPEG_DIR="$RUSTIPLAYER_FFMPEG_PREFIX" \
 PKG_CONFIG_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
 LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-cargo test -p video-ffmpeg --features ffmpeg -- --ignored
+cargo test -p video-ffmpeg --features ffmpeg \
+  --test ffmpeg_runtime_probe -- --ignored --exact \
+  installed_ffmpeg_runtime_probe_reports_available_runtime
 ```
 
 ## Guardrail

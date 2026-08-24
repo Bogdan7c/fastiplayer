@@ -15,7 +15,9 @@ fn installed_ffmpeg_runtime_probe_reports_available_runtime() {
             assert!(runtime_info.versions().avutil().major() >= 60);
         }
         FfmpegRuntimeProbeStatus::Unavailable(FfmpegProbeFailure::NoBuild) => {
-            panic!("run with `cargo test -p video-ffmpeg --features ffmpeg -- --ignored`")
+            panic!(
+                "run with `cargo test -p video-ffmpeg --features ffmpeg --test ffmpeg_runtime_probe -- --ignored --exact installed_ffmpeg_runtime_probe_reports_available_runtime`"
+            )
         }
         FfmpegRuntimeProbeStatus::Unavailable(failure) => {
             panic!("installed FFmpeg runtime probe failed: {failure:?}")

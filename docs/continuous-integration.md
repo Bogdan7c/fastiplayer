@@ -94,21 +94,32 @@ scope. В таком состоянии CI показывает failures, но �
 GitHub-hosted clean runner не доказывает playback на реальном GPU/VA-API/audio.
 Ручной workflow `.github/workflows/hardware-acceptance.yml` запускается только на
 self-hosted runner-е с label `rustiplayer-hardware` и получает абсолютные пути к
-реальным VP9, AV1 и H.264 fixtures. Его job намеренно non-blocking.
+реальным VP9, AV1 Main 8-bit SDR, отдельному AV1 Main 10-bit HDR и H.264
+fixtures. Его job намеренно non-blocking.
 
 Эквивалентная локальная acceptance-команда использует тот же repo runner:
 
 ```bash
 scripts/playback-smoke.sh --mode full \
   --vp9 /absolute/path/to/vp9-profile0-4k60.webm \
-  --av1 /absolute/path/to/av1-4k60.mp4 \
+  --av1 /absolute/path/to/av1-main-8bit-sdr-4k60.mp4 \
+  --av1-hdr /absolute/path/to/av1-main-10bit-hdr-4k60.mp4 \
   --h264 /absolute/path/to/h264-4k60.mp4
 ```
 
-Этот opt-in workflow запускает существующие VP9/AV1/H.264 regression scenarios
-на конкретном host и явно выбранных fixtures. Его успешный результат относится
-только к этой конфигурации и не является общим S42 hardware acceptance.
+Этот opt-in workflow запускает VP9/AV1/H.264 regression scenarios на конкретном
+host и явно выбранных fixtures. Hardware preflight fail-closed требует readable
+render node и exact `VAProfileAV1Profile0 : VAEntrypointVLD` в `vainfo`, иначе
+suite возвращает reasoned `SKIP`, а не `PASS`. Оба AV1 hardware scenario требуют
+`vaapi-dmabuf-wgpu`, configured AV1 adapter, первый NV12 для SDR или P010 для
+HDR DMA-BUF и exact trace `video frame submitted to renderer`; FFmpeg fallback,
+backend reselection и fatal markers запрещены. Full mode отдельно сохраняет
+software AV1 SDR регрессию через `ffmpeg-host-upload-wgpu`.
+
+Успешный результат относится только к этой host/fixture конфигурации и не
+переписывает историческую S42 hardware acceptance.
 Единственное owner-approved hardware-capability исключение S42 — exact
 `VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420/NV12, capability
-intersection only; current hardware manual rerun остаётся `NOT RUN`, потому что
-у владельца сейчас нет совместимого VA-API device.
+intersection only; на момент S42 hardware manual rerun имел статус `NOT RUN`,
+потому что у владельца тогда не было совместимого VA-API device. Текущая
+AV1 Main SDR/HDR matrix является отдельной post-S42 feature acceptance.

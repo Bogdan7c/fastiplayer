@@ -80,8 +80,8 @@ resolver = "2"
 # cros-libva: совместимость с более новыми системными libva headers, VP9 encoder
 # ABI fields и VA surface readiness/query_status, которые нужны video-vaapi.
 "cros-libva:0.0.12" = { path = "crates/cros-libva-patch" }
-# cros-codecs: owned VA-API codec layer для VP9/H.264/H.265, включая H.265 seek,
-# Dolby Vision RPU NAL, WPP entry points и fallible decoded-surface readiness.
+# cros-codecs: owned VA-API codec layer для AV1/VP9/H.264/H.265, включая AV1
+# one-OBU-per-decode contract, H.265 seek/Dolby Vision/WPP и fallible readiness.
 "cros-codecs:0.0.6" = { path = "crates/cros-codecs-patch" }
 # Symphonia MP4: composition offsets, stss seek sync samples, display orientation,
 # MP4 color/HDR raw tags и QuickTime/iOS LPCM packet coalescing.

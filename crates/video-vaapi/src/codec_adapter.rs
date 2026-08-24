@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use codec_core::{
-    BitDepth, ChromaSubsampling, H264Packetization, H264ParameterSetInjection, H264Profile,
-    H265NalUnit, H265Packetization, H265ParameterSetInjection, H265Profile,
+    Av1Profile, BitDepth, ChromaSubsampling, H264Packetization, H264ParameterSetInjection,
+    H264Profile, H265NalUnit, H265Packetization, H265ParameterSetInjection, H265Profile,
     SupportedVideoDecodeFormat, VideoCodec, VideoProfile, Vp9Profile,
     h264_access_unit_to_annex_b_into, h265_access_unit_to_annex_b_into,
     h265_decode_requirement_from_hevc_decoder_configuration_record, h265_nal_units,
@@ -313,6 +313,7 @@ pub(crate) trait VaapiCodecAdapter {
     fn stream_info(&self) -> Option<VaapiAdapterStreamInfo>;
 }
 
+mod av1;
 mod factory;
 mod h264;
 mod h265;
@@ -1627,7 +1628,7 @@ mod tests {
         }
     }
 
-    /// Проверяет production capability matrix adapter-а без hardware probe.
+    /// Проверяет историческую VP9/H.264/H.265 production matrix без hardware probe.
     #[test]
     fn implemented_format_matrix_contains_vp9_h264_and_h265_main_main10() {
         let supported_vp9 = SupportedVideoDecodeFormat {

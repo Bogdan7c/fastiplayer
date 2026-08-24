@@ -14,11 +14,19 @@ on:
         required: true
         # Строковый тип сохраняет путь без скрытой интерпретации.
         type: string
-      # AV1 fixture проверяет software fallback и hardware rejection.
+      # AV1 SDR fixture проверяет software regression и hardware NV12 decode/render.
       av1_path:
-        # Подсказка фиксирует назначение файла.
-        description: Absolute path to an AV1 4K60 fixture
-        # Combined host-specific regression set без AV1 неполон.
+        # Подсказка фиксирует Main/Profile 0 8-bit YUV420 границу.
+        description: Absolute path to an AV1 Main 8-bit SDR 4K60 fixture
+        # Combined host-specific regression set без AV1 SDR неполон.
+        required: true
+        # Строковый тип сохраняет путь без скрытой интерпретации.
+        type: string
+      # Отдельный AV1 HDR fixture проверяет hardware P010 decode/render.
+      av1_hdr_path:
+        # Подсказка фиксирует Main/Profile 0 10-bit YUV420 HDR границу.
+        description: Absolute path to an AV1 Main 10-bit HDR 4K60 fixture
+        # Combined host-specific regression set без AV1 HDR неполон.
         required: true
         # Строковый тип сохраняет путь без скрытой интерпретации.
         type: string
@@ -47,14 +55,16 @@ jobs:
       # Checkout major закреплён, как и в blocking workflow.
       - uses: actions/checkout@v4
       # Существующий repo runner владеет host-specific regression orchestration.
-      - name: Run host-specific VP9/AV1/H.264 regression set
+      - name: Run host-specific VP9/AV1 SDR+HDR/H.264 regression set
         # Inputs передаются через env, чтобы shell не исполнял содержимое пути как код.
         env:
           # Имя переменной явно связывает input с VP9 аргументом runner-а.
           VP9_FIXTURE_PATH: ${{ inputs.vp9_path }}
           # Имя переменной явно связывает input с AV1 аргументом runner-а.
           AV1_FIXTURE_PATH: ${{ inputs.av1_path }}
+          # Отдельная переменная не позволяет случайно подменить HDR SDR-файлом.
+          AV1_HDR_FIXTURE_PATH: ${{ inputs.av1_hdr_path }}
           # Имя переменной явно связывает input с H.264 аргументом runner-а.
           H264_FIXTURE_PATH: ${{ inputs.h264_path }}
         # Quoted variables сохраняют пробелы в путях и не допускают shell injection.
-        run: scripts/playback-smoke.sh --mode full --vp9 "${VP9_FIXTURE_PATH}" --av1 "${AV1_FIXTURE_PATH}" --h264 "${H264_FIXTURE_PATH}"
+        run: scripts/playback-smoke.sh --mode full --vp9 "${VP9_FIXTURE_PATH}" --av1 "${AV1_FIXTURE_PATH}" --av1-hdr "${AV1_HDR_FIXTURE_PATH}" --h264 "${H264_FIXTURE_PATH}"

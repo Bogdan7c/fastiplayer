@@ -1,5 +1,7 @@
 # Live смена preference software→auto на AV1 роняла плейбек (2026-06-19)
 
+> **Current status (2026-08-24):** эта memory сохраняет историческую причину requirement-loss. Native VAAPI теперь поддерживает AV1 Main/Profile 0 8/10-bit YUV420, поэтому software→auto выбирает VAAPI при matching playable NV12/P010 output и остаётся на FFmpeg только без matching hardware. Передача active stream requirement по-прежнему обязательна; утверждения ниже «VAAPI не умеет AV1»/«auto+AV1 всегда FFmpeg» считать superseded через `mem:video-vaapi/av1-hardware-2026-08-24`.
+
 Багфикс: при живой смене `video.preferred_backend` software→auto во время
 воспроизведения AV1 HDR плейбек вставал с `RuntimeError: Video decoder thread
 stopped before accepting packet: Decoder thread disconnected`. Дополняет

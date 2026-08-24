@@ -813,6 +813,8 @@ fn known_driver_quirks(driver_name: &str) -> Vec<DriverQuirk> {
 mod tests {
     use super::*;
 
+    mod av1;
+
     #[test]
     fn intel_vendor_string_is_normalized_to_driver_family() {
         assert_eq!(
@@ -1033,22 +1035,18 @@ mod tests {
     }
 
     #[test]
-    fn capability_probe_does_not_advertise_future_codecs_without_adapters() {
-        for profile in [
-            libva::VAProfile::VAProfileAV1Profile0,
-            libva::VAProfile::VAProfileVP8Version0_3,
-        ] {
-            let formats = formats_for_va_profile(
-                profile,
-                libva::VA_RT_FORMAT_YUV420,
-                MaxResolution {
-                    width: Some(1920),
-                    height: Some(1080),
-                },
-            );
+    fn capability_probe_does_not_advertise_future_vp8_without_adapter() {
+        let profile = libva::VAProfile::VAProfileVP8Version0_3;
+        let formats = formats_for_va_profile(
+            profile,
+            libva::VA_RT_FORMAT_YUV420,
+            MaxResolution {
+                width: Some(1920),
+                height: Some(1080),
+            },
+        );
 
-            assert!(formats.is_empty(), "{profile:?} must not be advertised");
-        }
+        assert!(formats.is_empty(), "{profile:?} must not be advertised");
     }
 
     #[test]

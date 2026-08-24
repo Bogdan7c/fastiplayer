@@ -110,9 +110,15 @@ queue/current playback.
   demux/network/RTMP provider.
 - Единственное owner-approved hardware-capability исключение в S42 evidence —
   exact `VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420/NV12, capability
-  intersection only. Более широкая hardware matrix не принимается; текущий
-  hardware manual rerun — `NOT RUN`: у владельца сейчас нет совместимого
-  VA-API device для opt-in rerun.
+  intersection only. Более широкая hardware matrix в S42 не принималась; на
+  момент S42 hardware manual rerun был `NOT RUN`, потому что у владельца тогда
+  не было совместимого VA-API device для opt-in rerun.
+- Текущая post-S42 desktop decode matrix отдельно принимает AV1 Main/Profile 0
+  8-bit YUV420/NV12 SDR и 10-bit YUV420/P010 HDR только на host-е, где `vainfo`
+  подтверждает exact `VAProfileAV1Profile0 : VAEntrypointVLD`. Это расширение
+  decoder/runtime acceptance, а не изменение утверждённого S42 web profile или
+  его исторических evidence. High/Professional, YUV422/YUV444 и 12-bit не
+  заявлены.
 
 Operational failures и действия пользователя описаны в
 [web-media-operational-errors.md](web-media-operational-errors.md). Manual

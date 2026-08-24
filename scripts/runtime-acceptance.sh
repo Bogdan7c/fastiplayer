@@ -9,12 +9,17 @@ readonly SKIPPED_EXIT_CODE=3
 readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 # Playback runner является единственным владельцем scenario/config orchestration.
 readonly PLAYBACK_SMOKE="${REPO_ROOT}/scripts/playback-smoke.sh"
+# Exact AV1 Profile 0 decode entrypoint обязателен для обеих hardware suites.
+readonly AV1_VAAPI_PROFILE_REGEX='^[[:space:]]*VAProfileAV1Profile0[[:space:]]*:[[:space:]]*VAEntrypointVLD([[:space:]]|$)'
+# Explicit DRM node делает preflight независимым от X11/Wayland; override поддерживает multi-GPU hosts.
+readonly VAAPI_RENDER_NODE="${RUSTIPLAYER_SMOKE_VAAPI_RENDER_NODE:-/dev/dri/renderD128}"
 
 # Выбранная suite отсутствует до явного --suite.
 acceptance_suite=""
 # Local asset paths никогда не угадываются из test-assets.
 vp9_path=""
 av1_path=""
+av1_hdr_path=""
 h264_path=""
 # Dry-run печатает точную команду, но не является acceptance pass.
 dry_run="false"
@@ -27,8 +32,14 @@ Usage: scripts/runtime-acceptance.sh --suite SUITE [ASSET OPTIONS] [--dry-run]
 Suites:
   hermetic-ci       scripts/ci-checks.sh tests; no local fixtures/runtime/hardware.
   runtime-software  FFmpeg runtime probe + software playback; requires --vp9 and --h264.
-  vaapi-hardware    Host-specific VA-API regression smoke; requires --vp9, --av1 and working vainfo/render node.
-  playback-matrix   Combined host-specific regression set; requires --vp9, --av1, --h264 and runtime/hardware.
+  vaapi-hardware    Host-specific VA-API regression smoke; requires --vp9, --av1, --av1-hdr and AV1 Profile 0 VLD.
+  playback-matrix   Combined host-specific regression set; requires --vp9, --av1, --av1-hdr, --h264 and runtime/hardware.
+
+Asset options:
+  --vp9 FILE        VP9 Profile 0 SDR fixture.
+  --av1 FILE        AV1 Main/Profile 0 8-bit YUV420 SDR fixture.
+  --av1-hdr FILE    AV1 Main/Profile 0 10-bit YUV420 HDR fixture.
+  --h264 FILE       H.264 ISO BMFF software fixture.
 
 Outcome contract:
   PASS      Command really ran and all assertions passed (exit 0).
@@ -62,6 +73,11 @@ parse_arguments() {
             --av1)
                 (($# >= 2)) || { printf 'Ошибка: --av1 требует путь\n' >&2; exit 2; }
                 av1_path="$2"
+                shift 2
+                ;;
+            --av1-hdr)
+                (($# >= 2)) || { printf 'Ошибка: --av1-hdr требует путь\n' >&2; exit 2; }
+                av1_hdr_path="$2"
                 shift 2
                 ;;
             --h264)
@@ -104,12 +120,21 @@ require_ffmpeg_runtime() {
         skip_acceptance "libavutil >= 60 недоступен через pkg-config"
 }
 
-# Проверяет доступность локального VA-API runtime без запуска GUI.
+# Проверяет локальный VA-API runtime и exact AV1 decode capability без запуска GUI.
 require_vaapi_runtime() {
-    [[ "${dry_run}" == "true" ]] && return
-    [[ -r /dev/dri/renderD128 ]] || skip_acceptance "нет readable VA-API render node /dev/dri/renderD128"
+    if [[ "${dry_run}" == "true" ]]; then
+        printf 'Would require readable %s and vainfo entry: VAProfileAV1Profile0 : VAEntrypointVLD.\n' "${VAAPI_RENDER_NODE}" >&2
+        return
+    fi
+    [[ -r "${VAAPI_RENDER_NODE}" ]] || skip_acceptance "нет readable VA-API render node ${VAAPI_RENDER_NODE}"
     command -v vainfo >/dev/null 2>&1 || skip_acceptance "команда vainfo недоступна"
-    vainfo >/dev/null 2>&1 || skip_acceptance "vainfo не подтвердил рабочий VA-API runtime"
+    local vaapi_capabilities
+    if ! vaapi_capabilities="$(vainfo --display drm --device "${VAAPI_RENDER_NODE}" 2>&1)"; then
+        skip_acceptance "vainfo не подтвердил рабочий VA-API runtime"
+    fi
+    if ! grep -Eq -- "${AV1_VAAPI_PROFILE_REGEX}" <<<"${vaapi_capabilities}"; then
+        skip_acceptance "vainfo не содержит exact VAProfileAV1Profile0 : VAEntrypointVLD"
+    fi
 }
 
 # Печатает argv без eval; dry-run не затрагивает runtime.
@@ -161,18 +186,22 @@ run_selected_suite() {
         vaapi-hardware)
             require_asset "--vp9" "${vp9_path}"
             require_asset "--av1" "${av1_path}"
+            require_asset "--av1-hdr" "${av1_hdr_path}"
             require_vaapi_runtime
             run_acceptance_command "vaapi-hardware" "${PLAYBACK_SMOKE}" \
-                --mode hardware-only --vp9 "${vp9_path}" --av1 "${av1_path}"
+                --mode hardware-only --vp9 "${vp9_path}" --av1 "${av1_path}" \
+                --av1-hdr "${av1_hdr_path}"
             ;;
         playback-matrix)
             require_asset "--vp9" "${vp9_path}"
             require_asset "--av1" "${av1_path}"
+            require_asset "--av1-hdr" "${av1_hdr_path}"
             require_asset "--h264" "${h264_path}"
             require_ffmpeg_runtime
             require_vaapi_runtime
             run_acceptance_command "playback-matrix" "${PLAYBACK_SMOKE}" \
-                --mode full --vp9 "${vp9_path}" --av1 "${av1_path}" --h264 "${h264_path}"
+                --mode full --vp9 "${vp9_path}" --av1 "${av1_path}" \
+                --av1-hdr "${av1_hdr_path}" --h264 "${h264_path}"
             ;;
         "")
             printf 'NOT RUN: missing --suite selection; acceptance not satisfied\n' >&2
