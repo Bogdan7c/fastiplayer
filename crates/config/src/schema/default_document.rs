@@ -1,9 +1,29 @@
-/// Добавляет русские комментарии к полям schema version 7 в default TOML.
+/// Добавляет русские комментарии к полям текущей config schema.
 pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "[playlist]",
         "# Playlist policy: discovery следующих открытий, traversal defaults и state save timing.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "next_item_preload_enabled = true",
+        "# Bounded source/demux предзагрузка следующего queue item; decoder остаётся post-EOF.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "next_item_preload_budget_mb = 64",
+        "# Общий RAM/read-ahead budget; separate A/V делит его между components.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "next_item_preload_lead_time_ms = 30000",
+        "# Предзагрузка начинается только внутри этого окна до известного EOF.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "next_item_preload_max_hold_ms = 120000",
+        "# Максимальный срок удержания prepared source до authoritative перехода.",
     );
     insert_default_config_comment(
         toml_text,

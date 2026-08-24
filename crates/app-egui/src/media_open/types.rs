@@ -475,6 +475,22 @@ pub(crate) enum MediaOpenSourceRequest {
     },
 }
 
+impl MediaOpenSourceRequest {
+    /// Возвращает только безопасную bounded label без раскрытия URL credentials.
+    pub(crate) fn safe_label(&self) -> SafeMediaLabel {
+        match self {
+            Self::Local { path, .. } => SafeMediaLabel::from_local_path(path),
+            Self::Direct { locator, .. } => {
+                SafeMediaLabel::from_service_safe_label(locator.safe_label())
+            }
+            Self::YtDlp { locator, .. } => {
+                SafeMediaLabel::from_service_safe_label(locator.safe_label())
+            }
+            Self::PlaybackWindow { source, .. } => source.safe_label(),
+        }
+    }
+}
+
 /// Caller явно выбирает coalesce либо требует новый request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MediaOpenStartMode {

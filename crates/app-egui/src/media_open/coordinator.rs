@@ -749,21 +749,6 @@ impl MediaOpenCoordinator {
     }
 }
 
-impl MediaOpenSourceRequest {
-    fn safe_label(&self) -> SafeMediaLabel {
-        match self {
-            Self::Local { path, .. } => SafeMediaLabel::from_local_path(path),
-            Self::Direct { locator, .. } => {
-                SafeMediaLabel::from_service_safe_label(locator.safe_label())
-            }
-            Self::YtDlp { locator, .. } => {
-                SafeMediaLabel::from_service_safe_label(locator.safe_label())
-            }
-            Self::PlaybackWindow { source, .. } => source.safe_label(),
-        }
-    }
-}
-
 #[cfg(test)]
 impl MediaOpenCoordinator {
     pub(super) fn start_fake(

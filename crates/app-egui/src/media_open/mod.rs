@@ -23,11 +23,13 @@ pub(crate) mod local;
     reason = "Session 10C precedes production callsite migration in 10D"
 )]
 mod player_port;
+mod preload_budget;
 #[allow(
     dead_code,
     reason = "Session 10C precedes production callsite migration in 10D"
 )]
 mod preparation;
+mod speculative;
 #[allow(
     dead_code,
     reason = "Session 10C precedes production callsite migration in 10D"
@@ -42,7 +44,9 @@ pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
 // Prepared envelope is intentionally introduced before callsite migration.
 pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult, prepare_local_open};
 // Все app ingress-ы собирают provider-neutral `PreparedMedia` через один boundary.
+pub(crate) use preload_budget::QueuePreloadResourceBudget;
 pub(crate) use preparation::{YtDlpPreparedMediaAttachments, prepare_yt_dlp_player_media};
+pub(crate) use speculative::{SpeculativeMediaPreparation, SpeculativeMediaPreparationPoll};
 #[allow(
     unused_imports,
     reason = "cache snapshot is consumed through descriptor intent method"

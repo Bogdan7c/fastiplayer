@@ -30,6 +30,7 @@ pub use schema::{
 pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,
     LEGACY_SCHEMA_VERSION_5, LEGACY_SCHEMA_VERSION_6, LEGACY_SCHEMA_VERSION_7,
+    LEGACY_SCHEMA_VERSION_8,
 };
 pub use store::{
     LoadedConfig, load_from_path, load_or_create, load_or_create_at, save_validated_atomic_at,

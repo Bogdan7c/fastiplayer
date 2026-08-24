@@ -351,7 +351,6 @@ impl PlaylistSettingsOwner {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn committed(&self) -> PlaylistConfig {
         self.committed
     }

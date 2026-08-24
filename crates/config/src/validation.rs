@@ -168,6 +168,24 @@ pub(crate) const MIN_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS: u64 = 0;
 /// Порог Previous не может быть длиннее одной минуты.
 pub(crate) const MAX_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS: u64 = 60_000;
 
+/// Две minimum 8 MiB component windows помещаются в общий preload budget.
+pub(crate) const MIN_PLAYLIST_NEXT_ITEM_PRELOAD_BUDGET_MB: u64 = 16;
+
+/// Speculative read-ahead не должен конкурировать с unbounded media cache.
+pub(crate) const MAX_PLAYLIST_NEXT_ITEM_PRELOAD_BUDGET_MB: u64 = 512;
+
+/// Слишком поздний preload почти гарантированно не успеет подготовить web source.
+pub(crate) const MIN_PLAYLIST_NEXT_ITEM_PRELOAD_LEAD_TIME_MS: u64 = 1_000;
+
+/// Более пяти минут до EOF превращают next preload в долгоживущий cache.
+pub(crate) const MAX_PLAYLIST_NEXT_ITEM_PRELOAD_LEAD_TIME_MS: u64 = 300_000;
+
+/// Prepared result должен пережить хотя бы короткий scheduling jitter.
+pub(crate) const MIN_PLAYLIST_NEXT_ITEM_PRELOAD_MAX_HOLD_MS: u64 = 10_000;
+
+/// Десять минут — абсолютный предел удержания speculative source handles.
+pub(crate) const MAX_PLAYLIST_NEXT_ITEM_PRELOAD_MAX_HOLD_MS: u64 = 600_000;
+
 /// Минимальное additive brightness смещение SDR shader-а.
 pub(crate) const MIN_RENDER_COLOR_BRIGHTNESS: f32 = -1.0;
 
@@ -225,6 +243,32 @@ pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
 
 /// Проверяет bounded playlist timing policy.
 fn validate_playlist_section(config: &AppConfig) -> ConfigResult<()> {
+    validate_u64_range(
+        "playlist.next_item_preload_budget_mb",
+        config.playlist.next_item_preload_budget_mb,
+        MIN_PLAYLIST_NEXT_ITEM_PRELOAD_BUDGET_MB,
+        MAX_PLAYLIST_NEXT_ITEM_PRELOAD_BUDGET_MB,
+    )?;
+    validate_u64_range(
+        "playlist.next_item_preload_lead_time_ms",
+        config.playlist.next_item_preload_lead_time_ms,
+        MIN_PLAYLIST_NEXT_ITEM_PRELOAD_LEAD_TIME_MS,
+        MAX_PLAYLIST_NEXT_ITEM_PRELOAD_LEAD_TIME_MS,
+    )?;
+    validate_u64_range(
+        "playlist.next_item_preload_max_hold_ms",
+        config.playlist.next_item_preload_max_hold_ms,
+        MIN_PLAYLIST_NEXT_ITEM_PRELOAD_MAX_HOLD_MS,
+        MAX_PLAYLIST_NEXT_ITEM_PRELOAD_MAX_HOLD_MS,
+    )?;
+    if config.playlist.next_item_preload_max_hold_ms
+        < config.playlist.next_item_preload_lead_time_ms
+    {
+        return Err(invalid_value(
+            "playlist.next_item_preload_max_hold_ms",
+            "срок готовой предзагрузки не может быть меньше окна запуска".to_string(),
+        ));
+    }
     validate_u64_range(
         "playlist.state_save_debounce_ms",
         config.playlist.state_save_debounce_ms,

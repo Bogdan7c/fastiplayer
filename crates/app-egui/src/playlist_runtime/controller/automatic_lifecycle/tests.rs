@@ -180,6 +180,61 @@ fn planned_manual_next(controller: &mut PlaylistController) -> PlannedPlaylistIn
 }
 
 #[test]
+fn preload_plan_preserves_current_identity_and_becomes_exact_clean_eof_install() {
+    let (mut controller, ids, active) = controller_with_active(3, 0);
+    let queue_revision_before_preload = controller.queue().revision_snapshot();
+
+    let preload_target = controller
+        .next_item_preload_target()
+        .expect("sequential queue has an automatic next item");
+    let repeated_target = controller
+        .next_item_preload_target()
+        .expect("the fixed preload plan remains available before EOF");
+
+    assert_eq!(preload_target, repeated_target);
+    assert_eq!(preload_target.active, active);
+    assert_eq!(preload_target.item_id, ids[1]);
+    assert_eq!(
+        preload_target.expected_queue_revision,
+        queue_revision_before_preload
+    );
+    assert_eq!(controller.active_media, Some(active));
+    assert_eq!(
+        controller
+            .queue()
+            .traversal_current()
+            .map(|current| current.item_id()),
+        Some(ids[0]),
+        "preload plan must not commit queue current before EOF"
+    );
+
+    let AutomaticLifecycleOutcome::OpenItem { install } = controller.observe_automatic_snapshot(
+        active.player_binding_generation(),
+        Some(active.media_instance_id()),
+        PlaybackState::Ended,
+        EndedSnapshotKind::Clean,
+        AutomaticDeferredAvailability::Unavailable,
+    ) else {
+        panic!("clean EOF must consume the already fixed automatic plan");
+    };
+
+    assert_eq!(install.item_id, preload_target.item_id);
+    assert_eq!(
+        install.expected_queue_revision,
+        preload_target.expected_queue_revision
+    );
+    assert_eq!(controller.active_media, Some(active));
+    assert_eq!(
+        controller
+            .queue()
+            .traversal_current()
+            .map(|current| current.item_id()),
+        Some(ids[0]),
+        "even EOF planning must leave current identity unchanged until install commit"
+    );
+}
+
+#[test]
 fn playing_draining_ended_is_one_edge_and_rearms_after_replay_state() {
     let (mut controller, ids, active) = controller_with_active(2, 0);
     for state in [PlaybackState::Playing, PlaybackState::Draining] {

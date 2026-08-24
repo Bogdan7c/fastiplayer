@@ -44,6 +44,7 @@ pub(crate) use lifecycle_checkpoint::LifecycleTimelineCheckpointPosition;
 mod media_reset;
 mod persistence;
 mod persistence_runtime;
+mod prepared_next;
 #[allow(
     dead_code,
     reason = "Session 12A publishes runtime Undo boundary before Session 20 UI wiring"
@@ -63,7 +64,7 @@ mod shutdown_report;
 mod suspend_resume;
 pub(crate) use suspend_resume::SuspendedTimelineResumePosition;
 mod transport_execution;
-pub(crate) use transport_execution::RelativeBeyondEndNavigationOutcome;
+pub(crate) use transport_execution::{PlaylistMediaOpenIntent, RelativeBeyondEndNavigationOutcome};
 #[cfg(test)]
 mod transport_execution_audit_regressions;
 mod transport_ui;
@@ -138,7 +139,7 @@ pub(crate) use controller::{
     AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,
     ControllerManualNavigationOutcome, ControllerMoveItemsOutcome, ControllerPlayItemOutcome,
     ControllerStableIntentDispatch, LocalFileSelectionDisposition, PlannedPlaylistInstall,
-    StablePlaybackIntent, UnstagedPlannedTargetFailureOutcome,
+    QueuePreloadTarget, StablePlaybackIntent, UnstagedPlannedTargetFailureOutcome,
 };
 pub(crate) use controller::{StartupPosition, StartupRestoreFailureOutcome, StartupRestoreTarget};
 pub(crate) use discovery::PlaylistDiscoveryNavigationAction;
@@ -337,6 +338,7 @@ pub(crate) struct PlaylistShutdownReport {
     pub(crate) import_io: ProcessOwnerShutdownOutcome,
     pub(crate) url_import: ProcessOwnerShutdownOutcome,
     pub(crate) export_io: ProcessOwnerShutdownOutcome,
+    pub(crate) prepared_next: ProcessOwnerShutdownOutcome,
     pub(crate) media_open: ProcessOwnerShutdownOutcome,
     pub(crate) startup: startup::PlaylistStartupShutdownOutcome,
     pub(crate) persistence: persistence::PlaylistPersistenceShutdownOutcome,
@@ -477,6 +479,8 @@ pub(crate) struct PlaylistRuntime {
     discovery: discovery::PlaylistDiscoveryCoordinator,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
     media_open: MediaOpenCoordinator,
+    /// Bounded speculative source/demux preparation не занимает auth reservation.
+    prepared_next: prepared_next::PreparedNextOwner,
     /// Declared yt-dlp catalog и session-only semantic preference живут process lifetime.
     web_media_catalog: web_media_catalog::PlaylistWebMediaCatalogOwner,
     /// Runtime-only active source/checkpoint переживают renderer-bound `AppState` recreation.
@@ -495,6 +499,8 @@ impl PlaylistRuntime {
         safe_label: crate::media_open::SafeMediaLabel,
     ) -> Result<crate::media_open::MediaOpenStartOutcome, crate::media_open::MediaOpenStartError>
     {
+        self.prepared_next
+            .cancel(player_core::MediaInstallCancellationCause::Superseded);
         self.media_open
             .start_prepared(client_key, prepared_open, safe_label)
     }
@@ -526,6 +532,8 @@ impl PlaylistRuntime {
         let export_io = export_io::PlaylistExportIoOwner::new(wake_port.clone());
         let desktop_transport = desktop_transport::DesktopTransportOwner::new(wake_port.clone());
         let media_open = MediaOpenCoordinator::new(wake_port.clone());
+        let prepared_next =
+            prepared_next::PreparedNextOwner::new(wake_port.clone(), playlist_config);
         let web_media_catalog = web_media_catalog::PlaylistWebMediaCatalogOwner::new();
         let startup = startup::PlaylistStartupOwner::new(wake_port.clone());
         let discovery = discovery::PlaylistDiscoveryCoordinator::new(wake_port.clone());
@@ -572,6 +580,7 @@ impl PlaylistRuntime {
             startup_retained_actions: startup_retained::StartupRetainedActionOwner::default(),
             discovery,
             media_open,
+            prepared_next,
             web_media_catalog,
             suspended_media: suspend_resume::SuspendedMediaState::default(),
             settings,
@@ -594,7 +603,13 @@ impl PlaylistRuntime {
                 "playlist allocator load decision is still pending".to_owned(),
             )
         })?;
-        self.settings.stage(requested, controller)
+        let changed = self.settings.stage(requested, controller)?;
+        let committed = self.settings.committed();
+        self.prepared_next.reconfigure(committed);
+        if !committed.next_item_preload_enabled {
+            controller.cancel_next_item_preload_plan();
+        }
+        Ok(changed)
     }
 
     #[allow(dead_code)] // Session 14 подключит следующий explicit-open discovery job к snapshot boundary.
@@ -612,7 +627,13 @@ impl PlaylistRuntime {
             .controller
             .as_mut()
             .ok_or_else(|| "playlist allocator load decision is still pending".to_owned())?;
-        self.settings.rollback(controller)
+        let changed = self.settings.rollback(controller)?;
+        let committed = self.settings.committed();
+        self.prepared_next.reconfigure(committed);
+        if !committed.next_item_preload_enabled {
+            controller.cancel_next_item_preload_plan();
+        }
+        Ok(changed)
     }
 
     pub(crate) fn finalize_playlist_settings(&mut self) {
@@ -655,6 +676,11 @@ impl PlaylistRuntime {
                 .checked_add(1)
                 .expect("playlist lifecycle generation overflow during suspend");
             self.lifecycle = PlaylistRuntimeLifecycle::Suspended;
+            if let Some(controller) = self.controller.as_mut() {
+                controller.cancel_next_item_preload_plan();
+            }
+            self.prepared_next
+                .cancel(player_core::MediaInstallCancellationCause::StructuralInvalidation);
             self.media_open.suspend_player_binding();
         }
     }
@@ -757,6 +783,7 @@ impl PlaylistRuntime {
         let url_import = self.url_import.shutdown_until(deadline);
         self.export_io.cancel_active();
         let export_io = self.export_io.shutdown_until(deadline);
+        let prepared_next = self.prepared_next.shutdown_until(deadline);
         let media_open = self.media_open.shutdown_until(deadline);
         let startup = self.startup.shutdown_until(deadline);
         let persistence = self
@@ -768,6 +795,7 @@ impl PlaylistRuntime {
             import_io,
             url_import,
             export_io,
+            prepared_next,
             media_open,
             startup,
             persistence,
@@ -827,6 +855,13 @@ impl PlaylistShutdownReport {
                     ..
                 }
         ) || matches!(
+            self.prepared_next,
+            ProcessOwnerShutdownOutcome::TimedOut { .. }
+                | ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    pending_threads: 1..,
+                    ..
+                }
+        ) || matches!(
             self.media_open,
             ProcessOwnerShutdownOutcome::TimedOut { .. }
                 | ProcessOwnerShutdownOutcome::ThreadPanicked {
@@ -866,6 +901,10 @@ impl PlaylistShutdownReport {
             self.media_open,
             ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
         );
+        let prepared_next_failed = matches!(
+            self.prepared_next,
+            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
+        );
         let startup_failed = shutdown_report::startup_failed(self.startup);
         let persistence_failed = match self.persistence {
             persistence::PlaylistPersistenceShutdownOutcome::WriterUnavailable { .. }
@@ -891,6 +930,7 @@ impl PlaylistShutdownReport {
             || import_failed
             || url_import_failed
             || export_failed
+            || prepared_next_failed
             || media_failed
             || startup_failed
             || persistence_failed
@@ -911,6 +951,8 @@ impl PlaylistRuntime {
         mode: crate::media_open::MediaOpenStartMode,
     ) -> Result<crate::media_open::MediaOpenStartOutcome, crate::media_open::MediaOpenStartError>
     {
+        self.prepared_next
+            .cancel(player_core::MediaInstallCancellationCause::Superseded);
         self.media_open.start(client_key, source_request, mode)
     }
 
@@ -1164,6 +1206,7 @@ mod tests {
         let ports = runtime.owner_ports();
         let report = PlaylistShutdownReport {
             media_open: ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 },
+            prepared_next: ProcessOwnerShutdownOutcome::Completed,
             ui_interaction: ProcessOwnerShutdownOutcome::Completed,
             import_io: ProcessOwnerShutdownOutcome::Completed,
             url_import: ProcessOwnerShutdownOutcome::Completed,

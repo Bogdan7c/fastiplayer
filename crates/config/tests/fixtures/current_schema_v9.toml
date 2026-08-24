@@ -1,4 +1,4 @@
-schema_version = 8
+schema_version = 9
 
 [player]
 start_paused = true
@@ -39,6 +39,14 @@ max_consecutive_corrupted_packets = 64
 
 # Playlist policy: discovery следующих открытий, traversal defaults и state save timing.
 [playlist]
+# Bounded source/demux предзагрузка следующего queue item; decoder остаётся post-EOF.
+next_item_preload_enabled = true
+# Общий RAM/read-ahead budget; separate A/V делит его между components.
+next_item_preload_budget_mb = 64
+# Предзагрузка начинается только внутри этого окна до известного EOF.
+next_item_preload_lead_time_ms = 30000
+# Максимальный срок удержания prepared source до authoritative перехода.
+next_item_preload_max_hold_ms = 120000
 # Автоматически искать соседние media при следующих explicit local opens.
 load_siblings = true
 # Topology-фильтр только для будущих sibling discovery jobs.

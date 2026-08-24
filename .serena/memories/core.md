@@ -1,3 +1,10 @@
+## AUD-019 bounded next-item source/demux preload (2026-08-24)
+
+- Independent verification confirmed every clean EOF performed a cold strong-open; option A now prepares only the exact next source/demux, while decoder/backend/auth/packets/current identity remain unchanged until EOF.
+- `PlaylistRuntime::PreparedNextOwner` owns exact identity+queue-revision+item correlation, one physical speculative worker, 64 MiB aggregate RAM/read-ahead default budget, 30 s lead and 120 s hold; disable/settings/mutation/suspend/authoritative open/shutdown cancel authority.
+- Ready exact envelopes enter the unchanged strong protocol at EOF; preparing/failed/stale/mismatched/expired states preserve the cold-open fallback. Config schema v9; config 93/93, app 970/970 and strict Clippy passed.
+- Full boundaries, transition matrix and commands: `mem:app-egui/next-item-preload-aud019-2026-08-24`.
+
 ## AUD-018 truthful playback-smoke dry-run outcomes (2026-08-24)
 
 - Independent verification confirmed direct probe-only and legacy-migration dry-runs exited 0 and emitted production PASS without executing Cargo; runner markers are written to stderr.

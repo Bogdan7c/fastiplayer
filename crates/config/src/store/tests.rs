@@ -22,7 +22,7 @@ fn default_config_is_valid() {
 fn current_schema_without_yt_dlp_output_budgets_uses_safe_defaults() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
-    let current_text = "schema_version = 8\n\n[yt_dlp]\nresolve_timeout_ms = 30000\n";
+    let current_text = "schema_version = 9\n\n[yt_dlp]\nresolve_timeout_ms = 30000\n";
     fs::write(&config_path, current_text).expect("current config written");
 
     let loaded = load_from_path(&config_path).expect("current config without additive keys loads");
@@ -118,8 +118,12 @@ fn yt_dlp_vod_recovery_policy_bounds_are_validated_as_one_contract() {
 }
 
 #[test]
-fn playlist_defaults_match_session_13_contract() {
+fn playlist_defaults_include_bounded_next_item_preload() {
     let playlist = AppConfig::default().playlist;
+    assert!(playlist.next_item_preload_enabled);
+    assert_eq!(playlist.next_item_preload_budget_mb, 64);
+    assert_eq!(playlist.next_item_preload_lead_time_ms, 30_000);
+    assert_eq!(playlist.next_item_preload_max_hold_ms, 120_000);
     assert!(playlist.load_siblings);
     assert_eq!(
         playlist.sibling_media_filter,
@@ -133,6 +137,32 @@ fn playlist_defaults_match_session_13_contract() {
     assert_eq!(playlist.state_save_debounce_ms, 2_000);
     assert_eq!(playlist.resume_checkpoint_interval_ms, 5_000);
     assert_eq!(playlist.previous_restart_threshold_ms, 5_000);
+}
+
+#[test]
+fn playlist_next_item_preload_policy_is_bounded_as_one_contract() {
+    for budget_mebibytes in [16, 512] {
+        let mut config = AppConfig::default();
+        config.playlist.next_item_preload_budget_mb = budget_mebibytes;
+        config.validate().expect("inclusive preload RAM bound");
+    }
+    for budget_mebibytes in [15, 513] {
+        let mut config = AppConfig::default();
+        config.playlist.next_item_preload_budget_mb = budget_mebibytes;
+        assert!(config.validate().is_err());
+    }
+
+    let mut invalid_freshness = AppConfig::default();
+    invalid_freshness.playlist.next_item_preload_lead_time_ms = 120_001;
+    invalid_freshness.playlist.next_item_preload_max_hold_ms = 120_000;
+    let error = invalid_freshness
+        .validate()
+        .expect_err("hold shorter than lead must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("playlist.next_item_preload_max_hold_ms")
+    );
 }
 
 /// Additive `[playlist]` в schema v5 default-ится без rewrite существующего файла.
@@ -151,7 +181,7 @@ fn legacy_v5_without_playlist_uses_defaults_without_startup_rewrite() {
         fs::read_to_string(&config_path).expect("legacy file remains readable"),
         legacy_text
     );
-    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
 }
 
 #[test]
@@ -235,7 +265,7 @@ resolve_timeout_ms = 30000
         loaded.config.yt_dlp.hdr_selection,
         YtDlpHdrSelection::SdrOnly
     );
-    assert_eq!(loaded.config.schema_version, 8);
+    assert_eq!(loaded.config.schema_version, 9);
 }
 
 /// Все поддерживаемые legacy-схемы переименовывают `[youtube]` без потери значений.
@@ -262,7 +292,7 @@ resolve_timeout_ms = 4321
 
         let loaded = load_from_path(&config_path).expect("legacy yt-dlp config loads");
 
-        assert_eq!(loaded.config.schema_version, 8);
+        assert_eq!(loaded.config.schema_version, 9);
         assert_eq!(loaded.config.yt_dlp.preferred_video_height, None);
         assert!(!loaded.config.yt_dlp.enabled);
         assert_eq!(
@@ -316,7 +346,7 @@ fn yt_dlp_hdr_selection_stable_ids_roundtrip() {
             &config_path,
             format!(
                 r#"
-schema_version = 8
+schema_version = 9
 
 [yt_dlp]
 hdr_selection = "{stable_id}"
@@ -333,7 +363,7 @@ hdr_selection = "{stable_id}"
             .to_pretty_toml()
             .expect("HDR selection config serializes");
         assert!(generated.contains(&format!("hdr_selection = \"{stable_id}\"")));
-        assert!(generated.contains("schema_version = 8"));
+        assert!(generated.contains("schema_version = 9"));
     }
 }
 
@@ -354,7 +384,7 @@ resolve_timeout_ms = 30000
 
     let loaded = load_from_path(&config_path).expect("schema v6 config loads");
 
-    assert_eq!(loaded.config.schema_version, 8);
+    assert_eq!(loaded.config.schema_version, 9);
     assert_eq!(loaded.config.yt_dlp.preferred_video_height, None);
     assert!(!loaded.created);
     assert_eq!(
@@ -391,7 +421,7 @@ fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
     for invalid_height in [0, MAX_PREFERRED_VIDEO_HEIGHT + 1] {
         fs::write(
             &config_path,
-            format!("schema_version = 8\n\n[yt_dlp]\npreferred_video_height = {invalid_height}\n"),
+            format!("schema_version = 9\n\n[yt_dlp]\npreferred_video_height = {invalid_height}\n"),
         )
         .expect("invalid preferred height fixture written");
         let error = load_from_path(&config_path).expect_err("invalid height rejected");
@@ -400,7 +430,7 @@ fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
 
     fs::write(
         &config_path,
-        "schema_version = 8\n\n[yt_dlp]\nitem_video_height_override = 720\n",
+        "schema_version = 9\n\n[yt_dlp]\nitem_video_height_override = 720\n",
     )
     .expect("runtime-only override fixture written");
     let error = load_from_path(&config_path).expect_err("runtime-only override rejected in TOML");
@@ -470,13 +500,15 @@ fn render_hdr_to_sdr_defaults_are_valid_phase10_baseline() {
     assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
 }
 
-/// Проверяет defaults текущей schema version 8.
+/// Проверяет defaults текущей schema version 9.
 #[test]
-fn schema_version_8_defaults_include_seek_network_and_ui_skin() {
+fn schema_version_9_defaults_include_preload_seek_network_and_ui_skin() {
     let config = AppConfig::default();
 
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+    assert!(config.playlist.next_item_preload_enabled);
+    assert_eq!(config.playlist.next_item_preload_budget_mb, 64);
     assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
     assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
     assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
@@ -629,7 +661,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(loaded.config.render.color_adjustment.is_identity());
 
     let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-    assert!(created_toml.contains("schema_version = 8"));
+    assert!(created_toml.contains("schema_version = 9"));
     assert!(created_toml.contains("[player.seek]"));
     assert!(created_toml.contains("# Настройки seek commit"));
     assert!(created_toml.contains("commit_timeout_ms = 10000"));

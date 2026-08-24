@@ -12,7 +12,7 @@ pub(crate) use lifecycle_settlement::settle_timeline_seek_receipts_until;
 use player_core::{
     ExactMediaTransportOutcome, ExactMediaTransportReceipt, ExactMediaTransportRequest,
     ExactTimelineSeekReceipt, ExactTimelineSeekRequest, MediaInstallCancellationCause,
-    TimelineSeekRequestId,
+    PlayerSnapshot, TimelineSeekRequestId,
 };
 use render_wgpu_shell::Renderer;
 use tracing::{debug, warn};
@@ -20,8 +20,9 @@ use tracing::{debug, warn};
 use super::{AppState, StrongMediaOpenError, StrongMediaOpenPoll};
 use crate::media_open::{MediaOpenRequestId, MediaOpenSourceRequest};
 use crate::playlist_runtime::{
-    ControllerStableIntentDispatch, PlannedPlaylistInstall, PlaylistRuntime,
-    RelativeBeyondEndNavigationOutcome, UnstagedPlannedTargetFailureOutcome,
+    ControllerStableIntentDispatch, PlannedPlaylistInstall, PlaylistMediaOpenIntent,
+    PlaylistRuntime, PlaylistRuntimeBinding, RelativeBeyondEndNavigationOutcome,
+    UnstagedPlannedTargetFailureOutcome,
 };
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
 
@@ -144,6 +145,33 @@ impl AppState {
         let mut next_install = install;
         let mut next_supersedes = supersedes;
         loop {
+            if let Some(preloaded) = playlist_runtime.take_prepared_next_for_install(&next_install)
+            {
+                let item_id = next_install.item_id;
+                match self.begin_preloaded_playlist_media_strong(
+                    playlist_runtime,
+                    renderer,
+                    preloaded.prepared_open,
+                    preloaded.safe_label,
+                    next_install,
+                    next_supersedes,
+                ) {
+                    Ok(request_id) => {
+                        self.playlist_transport.active_request_id = Some(request_id);
+                        self.playlist_transport.active_item_id = Some(item_id);
+                        self.mark_pending_worker_redraw();
+                        return;
+                    }
+                    Err(unstaged) => {
+                        warn!(
+                            error = %unstaged.error,
+                            "Prepared next-item ingress отклонён; используется обычный cold-open"
+                        );
+                        next_install = *unstaged.install;
+                        next_supersedes = None;
+                    }
+                }
+            }
             let source_request = match self.playlist_source_request(playlist_runtime, &next_install)
             {
                 Ok(request) => request,
@@ -455,6 +483,14 @@ impl AppState {
         let open_intent = playlist_runtime
             .media_open_intent_for_planned_install(install)
             .map_err(|_| "stale playlist target")?;
+        self.playlist_source_request_for_intent(open_intent)
+    }
+
+    /// Общая app composition materializes одинаковый request для cold-open и preload.
+    fn playlist_source_request_for_intent(
+        &self,
+        open_intent: PlaylistMediaOpenIntent,
+    ) -> Result<MediaOpenSourceRequest, &'static str> {
         let locator = open_intent.locator();
         let config = self.committed_app_config();
         let physical_request = if let Some(local) = locator.as_local() {
@@ -493,6 +529,37 @@ impl AppState {
             },
             None => physical_request,
         })
+    }
+
+    /// Nonblocking frame boundary запускает не больше одного exact near-EOF preload-а.
+    pub(crate) fn drive_next_item_preload(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        binding: PlaylistRuntimeBinding,
+        player_snapshot: &PlayerSnapshot,
+    ) {
+        let Some(target) = playlist_runtime.poll_next_item_preload_target(binding, player_snapshot)
+        else {
+            return;
+        };
+        let source_request = playlist_runtime
+            .media_open_intent_for_queue_preload(target)
+            .map_err(|_| "stale queue preload target")
+            .and_then(|intent| self.playlist_source_request_for_intent(intent));
+        let source_request = match source_request {
+            Ok(source_request) => source_request,
+            Err(error) => {
+                playlist_runtime.mark_next_item_preload_failed(target);
+                debug!(error, "Next-item preload пропущен на source boundary");
+                return;
+            }
+        };
+        if let Err(error) = playlist_runtime.start_next_item_preload(target, source_request) {
+            playlist_runtime.mark_next_item_preload_failed(target);
+            debug!(error = %error, "Next-item preload executor отклонил request");
+            return;
+        }
+        self.mark_pending_worker_redraw();
     }
 
     fn poll_exact_playlist_transport_receipts(&mut self, playlist_runtime: &mut PlaylistRuntime) {

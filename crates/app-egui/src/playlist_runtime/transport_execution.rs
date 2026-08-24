@@ -8,6 +8,7 @@ use std::sync::Arc;
 use player_core::{MediaInstallRequestId, MediaInstanceId};
 use playlist_core::PlaylistLocator;
 
+use super::controller::QueuePreloadTarget;
 use super::controller::{
     AutomaticLifecycleOutcome, AutomaticTargetFailureOutcome, ControllerManualNavigationOutcome,
     ControllerStableIntentDispatch, PlannedPlaylistInstall, PlaylistInstallRequest,
@@ -100,16 +101,33 @@ impl PlaylistRuntime {
         &self,
         install: &PlannedPlaylistInstall,
     ) -> Result<PlaylistMediaOpenIntent, PlaylistMediaOpenGateError> {
+        self.media_open_intent_for_queue_target(install.item_id, install.expected_queue_revision)
+    }
+
+    /// Выдаёт тот же locator/window для read-only preload target без install reservation.
+    pub(crate) fn media_open_intent_for_queue_preload(
+        &self,
+        target: QueuePreloadTarget,
+    ) -> Result<PlaylistMediaOpenIntent, PlaylistMediaOpenGateError> {
+        self.media_open_intent_for_queue_target(target.item_id, target.expected_queue_revision)
+    }
+
+    /// Общая exact revision/item проверка не знает authoritative или speculative caller-а.
+    fn media_open_intent_for_queue_target(
+        &self,
+        item_id: playlist_core::PlaylistItemId,
+        expected_queue_revision: playlist_core::QueueRevisionSnapshot,
+    ) -> Result<PlaylistMediaOpenIntent, PlaylistMediaOpenGateError> {
         let controller = self
             .controller
             .as_ref()
             .ok_or(PlaylistMediaOpenGateError::LoadDecisionPending)?;
-        if controller.queue().revision_snapshot() != install.expected_queue_revision {
+        if controller.queue().revision_snapshot() != expected_queue_revision {
             return Err(PlaylistMediaOpenGateError::StalePlannedTarget);
         }
         let item = controller
             .queue()
-            .item(install.item_id)
+            .item(item_id)
             .ok_or(PlaylistMediaOpenGateError::StalePlannedTarget)?;
         let playback_window = item
             .durable_payload()

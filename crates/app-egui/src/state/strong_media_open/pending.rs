@@ -266,8 +266,6 @@ impl AppState {
                 install: Box::new(install),
             });
         }
-        let intent = install.playback_intent;
-        let intent_revision = install.intent_revision;
         let request_id = match playlist_runtime.start_media_open(
             SINGLE_MEDIA_CLIENT_KEY,
             source_request,
@@ -287,6 +285,71 @@ impl AppState {
                 });
             }
         };
+        Ok(
+            self.begin_playlist_media_staging_after_start(
+                renderer, request_id, install, supersedes,
+            ),
+        )
+    }
+
+    /// Продолжает обычный strong protocol уже подготовленным source/demux envelope-ом.
+    pub(crate) fn begin_preloaded_playlist_media_strong(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+        prepared_open: PreparedMediaOpen,
+        safe_label: SafeMediaLabel,
+        install: crate::playlist_runtime::PlannedPlaylistInstall,
+        supersedes: Option<MediaOpenRequestId>,
+    ) -> Result<MediaOpenRequestId, UnstagedPlaylistMediaOpenError> {
+        if self.pending_strong_media_open.is_some() {
+            return Err(UnstagedPlaylistMediaOpenError {
+                error: StrongMediaOpenError::Start(MediaOpenStartError::Busy),
+                install: Box::new(install),
+            });
+        }
+        if let Err(error) = self.cancel_suspended_media_resume_for_explicit_open(playlist_runtime) {
+            return Err(UnstagedPlaylistMediaOpenError {
+                error: StrongMediaOpenError::LineageRegistration(error),
+                install: Box::new(install),
+            });
+        }
+        let request_id = match playlist_runtime.start_prepared_media_open(
+            SINGLE_MEDIA_CLIENT_KEY,
+            prepared_open,
+            safe_label,
+        ) {
+            Ok(MediaOpenStartOutcome::Accepted { request_id }) => request_id,
+            Ok(MediaOpenStartOutcome::Coalesced { .. }) => {
+                return Err(UnstagedPlaylistMediaOpenError {
+                    error: StrongMediaOpenError::Start(MediaOpenStartError::Busy),
+                    install: Box::new(install),
+                });
+            }
+            Err(error) => {
+                return Err(UnstagedPlaylistMediaOpenError {
+                    error: StrongMediaOpenError::Start(error),
+                    install: Box::new(install),
+                });
+            }
+        };
+        Ok(
+            self.begin_playlist_media_staging_after_start(
+                renderer, request_id, install, supersedes,
+            ),
+        )
+    }
+
+    /// Единственная queue staging boundary после locator-based или prepared source ingress.
+    fn begin_playlist_media_staging_after_start(
+        &mut self,
+        renderer: &Renderer,
+        request_id: MediaOpenRequestId,
+        install: crate::playlist_runtime::PlannedPlaylistInstall,
+        supersedes: Option<MediaOpenRequestId>,
+    ) -> MediaOpenRequestId {
+        let intent = install.playback_intent;
+        let intent_revision = install.intent_revision;
         let driver = WgpuCandidateVideoPipelineResourceDriver::new(
             renderer.instance(),
             renderer.adapter(),
@@ -323,7 +386,7 @@ impl AppState {
                 }),
             },
         });
-        Ok(request_id)
+        request_id
     }
 
     /// Запускает background source prepare без queue reservation и новой lineage.

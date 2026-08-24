@@ -166,6 +166,9 @@ pub(super) struct PreparationExecutor {
     /// Workers захватывают только shared state, поэтому owner не образует Arc-cycle.
     shared: Arc<PreparationExecutorShared>,
 
+    /// Физический предел одновременно работающих preparation-задач этого owner-а.
+    worker_count: usize,
+
     /// Exact join authority всех bounded worker-ов остаётся у process owner-а.
     worker_handles: Mutex<Vec<thread::JoinHandle<()>>>,
 
@@ -175,6 +178,16 @@ pub(super) struct PreparationExecutor {
 
 impl PreparationExecutor {
     pub(super) fn new(wake_port: AppWakePort) -> Arc<Self> {
+        Self::new_with_worker_count(wake_port, PREPARATION_WORKER_COUNT)
+    }
+
+    /// Создаёт executor для speculative preload: физически не больше одного open одновременно.
+    pub(super) fn new_single_worker(wake_port: AppWakePort) -> Arc<Self> {
+        Self::new_with_worker_count(wake_port, 1)
+    }
+
+    fn new_with_worker_count(wake_port: AppWakePort, worker_count: usize) -> Arc<Self> {
+        debug_assert!(worker_count > 0, "preparation executor обязан иметь worker");
         Arc::new(Self {
             shared: Arc::new(PreparationExecutorShared {
                 state: Mutex::new(PreparationExecutorState {
@@ -186,6 +199,7 @@ impl PreparationExecutor {
                 wake_port,
                 state_lost: AtomicBool::new(false),
             }),
+            worker_count,
             worker_handles: Mutex::new(Vec::new()),
             terminal_shutdown_completed: AtomicBool::new(false),
         })
@@ -203,8 +217,8 @@ impl PreparationExecutor {
             return Err(MediaOpenStartError::ShuttingDown);
         }
         if !state.worker_started {
-            let mut spawned_workers = Vec::with_capacity(PREPARATION_WORKER_COUNT);
-            for worker_index in 0..PREPARATION_WORKER_COUNT {
+            let mut spawned_workers = Vec::with_capacity(self.worker_count);
+            for worker_index in 0..self.worker_count {
                 let worker_shared = Arc::clone(&self.shared);
                 let worker_handle = match thread::Builder::new()
                     .name(format!("media-open-worker-{worker_index}"))
@@ -379,7 +393,7 @@ mod shutdown_tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::app_wake::{AppWakeOwner, AppWakePort};
@@ -412,6 +426,75 @@ mod shutdown_tests {
 
         assert!(cancellation.is_cancelled());
         assert!(source_token.is_cancelled());
+    }
+
+    #[test]
+    fn single_worker_profile_never_runs_replacement_beside_stale_work() {
+        let executor = PreparationExecutor::new_single_worker(AppWakePort::disconnected(
+            AppWakeOwner::PlaylistRuntime,
+        ));
+        let first_started = Arc::new(AtomicBool::new(false));
+        let release_first = Arc::new(AtomicBool::new(false));
+        let first_started_by_worker = Arc::clone(&first_started);
+        let release_first_for_worker = Arc::clone(&release_first);
+        executor
+            .submit_latest(PreparationWork::new(
+                Arc::new(PreparationCancellation::new()),
+                Arc::new(PreparationResultSlot::new()),
+                move |_| {
+                    first_started_by_worker.store(true, Ordering::Release);
+                    while !release_first_for_worker.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                    Err(MediaPreparationFailureKind::Cancelled)
+                },
+            ))
+            .expect("first speculative work starts");
+        let first_deadline = Instant::now() + Duration::from_secs(1);
+        while !first_started.load(Ordering::Acquire) {
+            assert!(Instant::now() < first_deadline, "first work did not start");
+            std::thread::yield_now();
+        }
+
+        let replacement_started = Arc::new(AtomicBool::new(false));
+        let replacement_started_by_worker = Arc::clone(&replacement_started);
+        executor
+            .submit_latest(PreparationWork::new(
+                Arc::new(PreparationCancellation::new()),
+                Arc::new(PreparationResultSlot::new()),
+                move |_| {
+                    replacement_started_by_worker.store(true, Ordering::Release);
+                    Err(MediaPreparationFailureKind::Cancelled)
+                },
+            ))
+            .expect("replacement is retained in the bounded latest slot");
+
+        assert_eq!(
+            executor
+                .worker_handles
+                .lock()
+                .expect("worker handles mutex")
+                .len(),
+            1
+        );
+        assert!(
+            !replacement_started.load(Ordering::Acquire),
+            "replacement must not overlap a non-cooperative stale preparation"
+        );
+
+        release_first.store(true, Ordering::Release);
+        let replacement_deadline = Instant::now() + Duration::from_secs(1);
+        while !replacement_started.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < replacement_deadline,
+                "replacement did not start after stale work released the only worker"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            executor.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::Completed
+        );
     }
 
     #[test]

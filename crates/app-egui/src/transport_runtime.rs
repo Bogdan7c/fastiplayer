@@ -202,6 +202,7 @@ pub(crate) fn apply_playlist_automatic_snapshot(
         return;
     };
     playlist_runtime.observe_resume_checkpoint_snapshot(binding, player_snapshot);
+    app_state.drive_next_item_preload(playlist_runtime, binding, player_snapshot);
     let Some(outcome) =
         playlist_runtime.observe_playlist_automatic_snapshot(binding, player_snapshot)
     else {

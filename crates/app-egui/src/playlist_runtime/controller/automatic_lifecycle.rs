@@ -12,7 +12,7 @@ use player_core::{
 };
 use playlist_core::{
     AutomaticEndedIntent, AutomaticStopReason, AutomaticTraversalAdvance, AutomaticTraversalPlan,
-    AutomaticTraversalStart, PlaylistItemId, RepeatMode,
+    AutomaticTraversalStart, PlaylistItemId, QueueRevisionSnapshot, RepeatMode,
 };
 
 use super::PlaylistController;
@@ -129,9 +129,100 @@ pub(super) struct AutomaticLifecycle {
     pub(super) observed_ended: Option<ObservedEndedEdge>,
     pub(super) deferred_advance: Option<DeferredAdvanceLatch>,
     released_plan: Option<(MediaOpenRequestId, PlaylistItemId, AutomaticTraversalPlan)>,
+    prepared_next_plan: Option<PreparedNextAutomaticPlan>,
+}
+
+/// Pure automatic plan хранится до EOF, чтобы shuffle target preload-а не расходился с commit.
+struct PreparedNextAutomaticPlan {
+    active: ActiveMediaIdentity,
+    expected_queue_revision: QueueRevisionSnapshot,
+    repeat_mode: RepeatMode,
+    item_id: PlaylistItemId,
+    plan: Box<AutomaticTraversalPlan>,
+}
+
+/// Read-only target для app-owned speculative source preparation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QueuePreloadTarget {
+    pub(crate) active: ActiveMediaIdentity,
+    pub(crate) expected_queue_revision: QueueRevisionSnapshot,
+    pub(crate) item_id: PlaylistItemId,
 }
 
 impl PlaylistController {
+    /// Отменяет только speculative выбор; current identity и queue traversal не меняются.
+    pub(crate) fn cancel_next_item_preload_plan(&mut self) {
+        self.automatic_lifecycle.prepared_next_plan = None;
+    }
+
+    /// Фиксирует ровно тот automatic target, который позднее будет использован на clean EOF.
+    pub(crate) fn next_item_preload_target(&mut self) -> Option<QueuePreloadTarget> {
+        let active = self.active_media?;
+        active.item_id()?;
+        if self.pending_target.is_some()
+            || self.install_state.is_some()
+            || self.pending_manual_traversal.is_some()
+            || self.fatal_invariant.is_some()
+        {
+            self.automatic_lifecycle.prepared_next_plan = None;
+            return None;
+        }
+        let expected_queue_revision = self.queue.revision_snapshot();
+        let existing_matches = self
+            .automatic_lifecycle
+            .prepared_next_plan
+            .as_ref()
+            .is_some_and(|prepared| {
+                prepared.active == active
+                    && prepared.expected_queue_revision == expected_queue_revision
+                    && prepared.repeat_mode == self.repeat_mode
+            });
+        if !existing_matches {
+            self.automatic_lifecycle.prepared_next_plan = None;
+            let AutomaticTraversalStart::OpenItem { item_id, plan } = self
+                .queue
+                .begin_automatic_traversal(AutomaticEndedIntent::new(self.repeat_mode))
+            else {
+                return None;
+            };
+            self.automatic_lifecycle.prepared_next_plan = Some(PreparedNextAutomaticPlan {
+                active,
+                expected_queue_revision,
+                repeat_mode: self.repeat_mode,
+                item_id,
+                plan,
+            });
+        }
+        self.automatic_lifecycle
+            .prepared_next_plan
+            .as_ref()
+            .map(|prepared| QueuePreloadTarget {
+                active: prepared.active,
+                expected_queue_revision: prepared.expected_queue_revision,
+                item_id: prepared.item_id,
+            })
+    }
+
+    /// Consume сохранённого plan-а допускается только под тем же active/revision/repeat fence.
+    fn automatic_traversal_for_clean_ended(
+        &mut self,
+        active: ActiveMediaIdentity,
+    ) -> AutomaticTraversalStart {
+        let expected_queue_revision = self.queue.revision_snapshot();
+        if let Some(prepared) = self.automatic_lifecycle.prepared_next_plan.take()
+            && prepared.active == active
+            && prepared.expected_queue_revision == expected_queue_revision
+            && prepared.repeat_mode == self.repeat_mode
+        {
+            return AutomaticTraversalStart::OpenItem {
+                item_id: prepared.item_id,
+                plan: prepared.plan,
+            };
+        }
+        self.queue
+            .begin_automatic_traversal(AutomaticEndedIntent::new(self.repeat_mode))
+    }
+
     /// Suspend consumes an already observed terminal edge without navigation/error policy.
     pub(crate) fn consume_terminal_edge_for_suspend(
         &mut self,
@@ -441,10 +532,7 @@ impl PlaylistController {
                 AutomaticStopCause::Domain(AutomaticStopReason::CurrentItemAbsent),
             );
         };
-        match self
-            .queue
-            .begin_automatic_traversal(AutomaticEndedIntent::new(self.repeat_mode))
-        {
+        match self.automatic_traversal_for_clean_ended(active) {
             AutomaticTraversalStart::OpenItem { item_id, plan } => {
                 self.mark_current_edge_automatic_pending(active);
                 AutomaticLifecycleOutcome::OpenItem {

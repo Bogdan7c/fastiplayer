@@ -43,6 +43,88 @@ pub enum PlaylistErrorBehavior {
 #[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlaylistConfig {
+    /// Разрешает bounded подготовку source/demux следующего элемента до clean EOF.
+    #[setting(
+        id = "playlist.next_item_preload_enabled",
+        path = "playlist.next_item_preload_enabled",
+        section = "playlist",
+        group = "playback",
+        surface = "main-settings-window",
+        label_id = "settings.playlist.next_item_preload_enabled.label",
+        label_ru = "Предзагружать следующий элемент",
+        description_id = "settings.playlist.next_item_preload_enabled.description",
+        description_ru = "Заранее подготавливать source и demux следующего элемента, не меняя текущий media и decoder до перехода.",
+        help_id = "settings.playlist.next_item_preload_enabled.help",
+        help_ru = "При ошибке, отмене или устаревании предзагрузки используется обычное безопасное открытие после EOF.",
+        editor = "toggle",
+        apply = "playlist.apply"
+    )]
+    pub next_item_preload_enabled: bool,
+
+    /// Общий RAM/read-ahead budget; split A/V делит его между components.
+    #[setting(
+        id = "playlist.next_item_preload_budget_mb",
+        path = "playlist.next_item_preload_budget_mb",
+        section = "playlist",
+        group = "playback",
+        surface = "main-settings-window",
+        label_id = "settings.playlist.next_item_preload_budget_mb.label",
+        label_ru = "Лимит памяти предзагрузки",
+        description_id = "settings.playlist.next_item_preload_budget_mb.description",
+        description_ru = "Общий предел RAM-cache и read-ahead следующего элемента; для раздельных аудио и видео делится пополам.",
+        help_id = "settings.playlist.next_item_preload_budget_mb.help",
+        help_ru = "Лимит не увеличивает обычный playback cache и не разрешает подготавливать больше одного элемента.",
+        editor = "integer",
+        min = crate::validation::MIN_PLAYLIST_NEXT_ITEM_PRELOAD_BUDGET_MB,
+        max = crate::validation::MAX_PLAYLIST_NEXT_ITEM_PRELOAD_BUDGET_MB,
+        step = 16,
+        unit = "MiB",
+        apply = "playlist.apply"
+    )]
+    pub next_item_preload_budget_mb: u64,
+
+    /// За сколько media-time до известного EOF разрешается speculative preparation.
+    #[setting(
+        id = "playlist.next_item_preload_lead_time_ms",
+        path = "playlist.next_item_preload_lead_time_ms",
+        section = "playlist",
+        group = "playback",
+        surface = "main-settings-window",
+        label_id = "settings.playlist.next_item_preload_lead_time_ms.label",
+        label_ru = "Окно запуска предзагрузки",
+        description_id = "settings.playlist.next_item_preload_lead_time_ms.description",
+        description_ru = "Предзагрузка начинается только когда до известного конца текущего media осталось не больше этого времени.",
+        editor = "integer",
+        min = crate::validation::MIN_PLAYLIST_NEXT_ITEM_PRELOAD_LEAD_TIME_MS,
+        max = crate::validation::MAX_PLAYLIST_NEXT_ITEM_PRELOAD_LEAD_TIME_MS,
+        step = 5_000,
+        unit = "ms",
+        apply = "playlist.apply"
+    )]
+    pub next_item_preload_lead_time_ms: u64,
+
+    /// Максимальное wall-clock время удержания prepared source до authoritative EOF.
+    #[setting(
+        id = "playlist.next_item_preload_max_hold_ms",
+        path = "playlist.next_item_preload_max_hold_ms",
+        section = "playlist",
+        group = "playback",
+        surface = "main-settings-window",
+        label_id = "settings.playlist.next_item_preload_max_hold_ms.label",
+        label_ru = "Срок готовой предзагрузки",
+        description_id = "settings.playlist.next_item_preload_max_hold_ms.description",
+        description_ru = "После этого срока подготовленный source считается устаревшим и не используется для перехода.",
+        help_id = "settings.playlist.next_item_preload_max_hold_ms.help",
+        help_ru = "Ограничение защищает от долгого удержания ресурсов и истёкших временных URL при паузе или зависшем переходе.",
+        editor = "integer",
+        min = crate::validation::MIN_PLAYLIST_NEXT_ITEM_PRELOAD_MAX_HOLD_MS,
+        max = crate::validation::MAX_PLAYLIST_NEXT_ITEM_PRELOAD_MAX_HOLD_MS,
+        step = 10_000,
+        unit = "ms",
+        apply = "playlist.apply"
+    )]
+    pub next_item_preload_max_hold_ms: u64,
+
     /// Запускать sibling discovery для следующих explicit local opens.
     #[setting(
         id = "playlist.load_siblings",
@@ -192,6 +274,10 @@ pub struct PlaylistConfig {
 impl Default for PlaylistConfig {
     fn default() -> Self {
         Self {
+            next_item_preload_enabled: true,
+            next_item_preload_budget_mb: 64,
+            next_item_preload_lead_time_ms: 30_000,
+            next_item_preload_max_hold_ms: 120_000,
             load_siblings: true,
             sibling_media_filter: PlaylistSiblingMediaFilter::SameAsOpened,
             playback_behavior: PlaylistPlaybackBehavior::StopAfterLast,
