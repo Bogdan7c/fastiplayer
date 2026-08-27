@@ -16,7 +16,7 @@
 ## Wake, shutdown и проверки
 - Startup preparation, prepared-awaiting-allocator и stepwise Applying считаются pending background work. Wake/defensive poll продвигают транзакцию без блокировки UI; `ControlFlow::Wait` сохраняется.
 - Shutdown закрывает admission, drop-ит prepared ownership, cancel/drain-ит pending strong transaction по authoritative cancel/enqueue semantics и не разрешает поздний install/quarantine/write поверх terminal lifecycle. Session 14B suspend checkpoint и process restart zero+Pause не менялись.
-- Focused tests находятся в `playlist_runtime/startup/tests.rs`, `playlist_runtime/startup_retained.rs`, `startup_media/pending_install.rs`, `startup_media/orchestration.rs`, `state/strong_media_open/pending.rs`.
+- Focused tests находятся в `playlist_runtime/startup/tests.rs`, `playlist_runtime/startup_retained.rs`, `startup_media/pending_install.rs`, `startup_media/orchestration/pending_work_tests.rs`, `state/strong_media_open/pending.rs`.
 - PASS: 516 app-egui no-default, 75 playlist-core, 33 playlist-state, 52 playlist-discovery, 9 direct (+1 manual ignored), 33 YouTube (+4 manual ignored), app strict Clippy no-default/all-features, fmt, Rust 1.96 locked workspace check, guardrails, diff check и Serena diagnostics.
 - Полный handoff: `user/playlist_queue_implementation_plan.md`. Следующий разрешённый scope — Session 18 UI; Session 17 UI не добавляла.
 

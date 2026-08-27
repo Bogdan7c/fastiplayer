@@ -12,6 +12,7 @@
 - `src/color_pipeline.rs` + `src/bt2446c_reference.rs`: color uniform preparation and CPU reference math; shader math is not owned by the materializers.
 - `src/resource_provider.rs`: coherent WGPU submission queue binding and exactly-once release/rebind semantics.
 - `src/video/mod.rs`: public video facade, common texture-view/result vocabulary, render input/frame validation, renderer dispatch and render orchestration.
+- `src/video/tests.rs`: private `#[cfg(test)]` child module with the facade/boundary/dispatch/letterbox tests formerly inline in `video/mod.rs`; production ownership and public paths remain unchanged.
 
 ## Session 27E decisions
 

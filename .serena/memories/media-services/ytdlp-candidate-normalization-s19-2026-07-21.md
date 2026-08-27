@@ -4,7 +4,7 @@
 - `planning_snapshot()` строится только из canonical view. Публичный `validate_planning_snapshot_alignment()` fail-closed проверяет source, generation, полный exact+semantic set и order-independent exact→full `PlanningCandidate` projection, включая descriptor, runtime requirements, quality score и validated planner resource evidence. App вызывает эту границу до BestPlayable, Exact, sidebar и catalog projection.
 - Planner ranking публикует best-first exact+semantic identities; app сопоставляет их с canonical service candidates без source-order/rank-index эвристик. Exact lookup также требует exact+semantic pair.
 - A/V composition остаётся разрешена только candidate-ам с эквивалентным accepted `formats[]` membership, но использует canonical request material. Поэтому selected-only не composable, rejected/conflicting selected shadow не rematch-ится через inventory, а идентичный accepted selected+inventory duplicate использует richer selected material.
-- Focused regressions находятся в `crates/service-ytdlp/src/candidate/tests.rs`, `crates/web-media-playback-plan/src/tests.rs` и isolated real-shape child tests `crates/app-egui/src/web_media_open/content_probe_fallback.rs`.
+- Focused regressions находятся в `crates/service-ytdlp/src/candidate/tests.rs`, `crates/web-media-playback-plan/src/tests.rs` и isolated real-shape child tests `crates/app-egui/src/web_media_open/content_probe_fallback/tests.rs`.
 
 # Content-probed fresh rematch hardening (2026-08-05)
 

@@ -1,19 +1,20 @@
 //! Production composition selected yt-dlp HLS candidate -> uninstalled HLS VOD runtime.
 
-use std::num::{NonZeroU8, NonZeroU32, NonZeroUsize};
+#[path = "web_media_hls_open/runtime_policy.rs"]
+mod runtime_policy;
+
+use std::num::{NonZeroU8, NonZeroU32};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use demux_api::{
-    CompositeComponentLeadPolicy, DemuxInputCapability, DemuxRegistry, DemuxSniffBudget,
-    ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
-    ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits, ProgressiveDemuxReadiness,
-    ProgressiveSeekFence, ProgressiveSeekRequestId,
+    DemuxRegistry, ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle,
+    ProgressiveAsyncSeekOutcome, ProgressiveDemuxReadiness, ProgressiveSeekFence,
+    ProgressiveSeekRequestId,
 };
-use hls_playlist_core::HlsParserLimits;
 use media_core::{
-    DemuxReadEvent, DemuxRetryHint, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePort,
+    DemuxReadEvent, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePort,
     DynamicMediaTimelinePortGeneration, TrackKind,
 };
 use player_core::{
@@ -26,21 +27,24 @@ use service_ytdlp::{
     YtDlpHlsManifestInputKind, YtDlpNormalizedCandidate, YtDlpTransportRequestContext,
 };
 use source_core::{CancellationToken, SourceRuntimeConfig};
-use web_media_adaptive::{AdaptiveHttpContext, AdaptiveRetryPolicy, AdaptiveTransportLimits};
+use web_media_adaptive::{AdaptiveHttpContext, AdaptiveRetryPolicy};
 use web_media_core::{ContainerFamily, StreamLayout, TransportFamily};
 use web_media_hls::{
-    ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence, HlsCatalogBuildPolicy,
+    ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence,
     HlsCatalogCapabilityProofPort, HlsCatalogDiscoveryOutcome, HlsCatalogDiscoveryRequest,
     HlsCatalogPresentation, HlsComponentContainerIntent, HlsContainerEvidence,
     HlsEndpointRefreshPort, HlsInitialPositionProofCapability, HlsInitialPositionProofTakeOutcome,
     HlsInitialReadinessCapability, HlsLiveOpenRequest, HlsMainTrackLayoutIntent, HlsManifestInput,
-    HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenPolicy,
-    HlsVodOpenRequest, HlsVodRestoreFallbackReason, HlsVodSeekLandingPolicy,
-    HlsVodStartDisposition, HlsVodStartIntent, SecretInlineMediaPlaylist, discover_hls_catalog,
+    HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenRequest,
+    HlsVodRestoreFallbackReason, HlsVodSeekLandingPolicy, HlsVodStartDisposition,
+    HlsVodStartIntent, SecretInlineMediaPlaylist, discover_hls_catalog,
     prepare_hls_catalog_live_receipted, prepare_hls_catalog_vod_receipted,
     prepare_hls_live_receipted, prepare_hls_vod_receipted, prepare_hls_vod_receipted_at_start,
 };
 use web_media_transport_api::{SourceGeneration, TransportProviderId};
+
+use runtime_policy::{hls_async_seek_limits, hls_catalog_policy};
+pub(crate) use runtime_policy::{hls_policy, hls_transport_input};
 
 /// Secret-safe результат HLS preparation для общего coordinator-а.
 pub(crate) struct PreparedHlsCandidate {
@@ -430,10 +434,6 @@ pub(crate) fn prepare_hls_candidate(
     })
 }
 
-fn hls_async_seek_limits() -> ProgressiveAsyncSeekLimits {
-    ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(16).expect("HLS outstanding seek receipts"))
-}
-
 const fn map_enqueue_error(
     error: ProgressiveAsyncSeekEnqueueError,
 ) -> PreparedDemuxSeekEnqueueError {
@@ -759,282 +759,6 @@ fn hls_main_container_evidence(container: ContainerFamily) -> Result<HlsContaine
     }
 }
 
-pub(crate) fn hls_policy(limits: AdaptiveTransportLimits) -> Result<HlsVodOpenPolicy> {
-    Ok(HlsVodOpenPolicy {
-        seek_landing_policy: HlsVodSeekLandingPolicy::DecodeFromOrBeforeTarget,
-        parser_limits: HlsParserLimits::default(),
-        demux_sniff_budget: DemuxSniffBudget::new(
-            NonZeroUsize::new(64 * 1_024).expect("HLS sniff bytes"),
-            NonZeroUsize::new(8).expect("HLS sniff segments"),
-            Duration::from_secs(2),
-        )?,
-        progressive_limits: ProgressiveDemuxBufferLimits::new(
-            NonZeroUsize::new(256).expect("HLS event queue"),
-            NonZeroUsize::new(16 * 1_024 * 1_024).expect("HLS encoded queue"),
-        ),
-        retry_hint: DemuxRetryHint::new(Duration::from_millis(10))?,
-        composite_lead_policy: CompositeComponentLeadPolicy::single_pending_packet(
-            Duration::from_secs(3),
-            NonZeroUsize::new(4 * 1_024 * 1_024).expect("HLS composite packet"),
-        )?,
-        maximum_key_resource_bytes: NonZeroUsize::new(64).expect("HLS key response"),
-        maximum_seek_index_entries: NonZeroUsize::new(4_096).expect("HLS seek anchors"),
-        maximum_seek_replay_events: NonZeroUsize::new(65_536).expect("HLS seek replay events"),
-        maximum_seek_replay_bytes: limits.maximum_segment_bytes,
-    })
-}
-
-fn hls_catalog_policy() -> Result<HlsCatalogBuildPolicy> {
-    Ok(HlsCatalogBuildPolicy {
-        catalog_limit: web_media_core::ComponentVariantCatalogLimit::new(256)?,
-        compatibility_edge_limit: web_media_core::ComponentVariantEdgeLimit::new(4_096)?,
-        maximum_unique_children: NonZeroUsize::new(256)
-            .expect("HLS catalog child limit is non-zero"),
-    })
-}
-
-/// Planner HLS transport output не делает TS playable для progressive HTTP rows.
-pub(crate) fn hls_transport_input() -> DemuxInputCapability {
-    DemuxInputCapability::OrderedSegments
-}
-
 #[cfg(test)]
-mod tests {
-    use std::collections::VecDeque;
-    use std::num::NonZeroUsize;
-    use std::time::Duration;
-
-    use media_core::{
-        DemuxReadEvent, DemuxRetryHint, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
-        Demuxer, MediaMetadata, Packet, TrackId, TrackInfo, TrackKind,
-    };
-
-    use super::{
-        AdaptiveTransportLimits, ContainerFamily, HlsContainerEvidence,
-        HlsInitialReadinessCapability, HlsVodSeekLandingPolicy, hls_main_container_evidence,
-        hls_policy, wait_for_initial_hls_tracks,
-    };
-
-    /// Минимальный event-ordered demuxer моделирует deferred HLS publication.
-    struct ScriptedDemuxer {
-        /// Worker events становятся видимыми owner-у строго по одному.
-        events: VecDeque<DemuxReadEvent>,
-        /// До TracksChanged список пуст, после него содержит authoritative tracks.
-        tracks: Vec<TrackInfo>,
-        /// До TracksChanged duration неизвестна, после него становится authoritative.
-        duration: Option<Duration>,
-    }
-
-    impl Demuxer for ScriptedDemuxer {
-        /// Возвращает только уже опубликованный track snapshot.
-        fn tracks(&self) -> &[TrackInfo] {
-            &self.tracks
-        }
-
-        /// Возвращает только уже опубликованную длительность.
-        fn duration(&self) -> Option<Duration> {
-            self.duration
-        }
-
-        /// HLS VOD seek boundary существует ещё до публикации track metadata.
-        fn seekability(&self) -> DemuxSeekability {
-            DemuxSeekability::Seekable
-        }
-
-        /// Применяет lifecycle snapshot одновременно с возвратом TracksChanged.
-        fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
-            let event = self
-                .events
-                .pop_front()
-                .unwrap_or(DemuxReadEvent::EndOfStream);
-            if let DemuxReadEvent::TracksChanged(update) = &event {
-                self.tracks.clone_from(&update.tracks);
-                self.duration = update.duration;
-            }
-            Ok(event)
-        }
-
-        /// Этот fake не выполняет seek: тест проверяет install-ready boundary.
-        fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
-            panic!("scripted demuxer seek не должен вызываться в readiness test")
-        }
-    }
-
-    fn track(id: u32, kind: TrackKind) -> TrackInfo {
-        TrackInfo {
-            id: TrackId::new(id),
-            kind,
-            codec_id: "test".into(),
-            codec_private: None,
-            time_base: None,
-            duration: None,
-            sample_rate: None,
-            channels: None,
-            video: None,
-        }
-    }
-
-    #[test]
-    fn wait_for_initial_tracks_skips_metadata_before_topology() {
-        let published = vec![track(1, TrackKind::Video), track(2, TrackKind::Audio)];
-        let mut demuxer = ScriptedDemuxer {
-            events: VecDeque::from([
-                DemuxReadEvent::MediaMetadataChanged(MediaMetadata::default()),
-                DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(published.clone(), None)),
-            ]),
-            tracks: Vec::new(),
-            duration: None,
-        };
-
-        wait_for_initial_hls_tracks(
-            &mut demuxer,
-            &HlsInitialReadinessCapability::AlreadySynchronous,
-        )
-        .expect("TracksChanged after metadata");
-        assert_eq!(demuxer.tracks().len(), 2);
-    }
-
-    #[test]
-    fn wait_for_initial_tracks_rejects_unavailable_synchronous_runtime() {
-        let mut demuxer = ScriptedDemuxer {
-            events: VecDeque::from([DemuxReadEvent::TemporarilyUnavailable(
-                DemuxRetryHint::new(Duration::from_millis(1)).expect("retry hint"),
-            )]),
-            tracks: Vec::new(),
-            duration: None,
-        };
-
-        let error = wait_for_initial_hls_tracks(
-            &mut demuxer,
-            &HlsInitialReadinessCapability::AlreadySynchronous,
-        )
-        .expect_err("synchronous capability не должна скрывать deferred queue");
-
-        assert!(error.to_string().contains("синхронный HLS runtime"));
-    }
-
-    #[test]
-    fn wait_for_initial_tracks_accepts_bootstrapped_snapshot_without_consuming_packet() {
-        let published = vec![track(1, TrackKind::Video)];
-        let mut demuxer = ScriptedDemuxer {
-            events: VecDeque::from([DemuxReadEvent::Packet(Packet::new_unbounded(
-                TrackId::new(1),
-                TrackKind::Video,
-                Duration::ZERO,
-                None,
-                true,
-                Default::default(),
-            ))]),
-            tracks: published,
-            duration: None,
-        };
-
-        wait_for_initial_hls_tracks(
-            &mut demuxer,
-            &HlsInitialReadinessCapability::AlreadySynchronous,
-        )
-        .expect("готовый bootstrap snapshot уже является install-ready");
-
-        assert_eq!(demuxer.events.len(), 1);
-        assert_eq!(demuxer.tracks().len(), 1);
-    }
-
-    #[test]
-    fn wait_for_initial_tracks_rejects_packet_before_topology() {
-        let mut demuxer = ScriptedDemuxer {
-            events: VecDeque::from([DemuxReadEvent::Packet(Packet::new_unbounded(
-                TrackId::new(1),
-                TrackKind::Video,
-                Duration::ZERO,
-                None,
-                true,
-                Default::default(),
-            ))]),
-            tracks: Vec::new(),
-            duration: None,
-        };
-
-        let error = wait_for_initial_hls_tracks(
-            &mut demuxer,
-            &HlsInitialReadinessCapability::AlreadySynchronous,
-        )
-        .expect_err("packet before track topology должен быть отвергнут");
-
-        assert!(error.to_string().contains("packet"));
-        assert!(demuxer.tracks().is_empty());
-    }
-
-    #[test]
-    fn wait_for_initial_tracks_rejects_eos_before_tracks() {
-        let mut demuxer = ScriptedDemuxer {
-            events: VecDeque::from([DemuxReadEvent::EndOfStream]),
-            tracks: Vec::new(),
-            duration: None,
-        };
-        let error = wait_for_initial_hls_tracks(
-            &mut demuxer,
-            &HlsInitialReadinessCapability::AlreadySynchronous,
-        )
-        .expect_err("EOS before tracks");
-        assert!(error.to_string().contains("EOS"));
-    }
-
-    /// Regression: restart restore идёт сразу после Installed и не ждёт player tick.
-    #[test]
-    fn hls_vod_is_seekable_with_duration_at_prepared_media_boundary() {
-        // Acceptance row 01 имеет конечную десятиминутную timeline и declared codecs.
-        let published_duration = Duration::from_secs(634);
-        // До worker event-а metadata намеренно ещё не видна app owner-у.
-        let mut demuxer = ScriptedDemuxer {
-            events: VecDeque::from([DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
-                vec![track(1, TrackKind::Video), track(2, TrackKind::Audio)],
-                Some(published_duration),
-            ))]),
-            tracks: Vec::new(),
-            duration: None,
-        };
-
-        // Production HLS VOD preparation обязана пересечь readiness до PreparedMedia.
-        wait_for_initial_hls_tracks(
-            &mut demuxer,
-            &HlsInitialReadinessCapability::AlreadySynchronous,
-        )
-        .expect("HLS VOD install readiness");
-        // PreparedMedia снимает immutable snapshot, который немедленно увидит player install.
-        let prepared = player_core::PreparedMedia::from_external_label(
-            "HLS VOD acceptance",
-            Box::new(demuxer),
-        );
-
-        // Restore получает tracks без ожидания дополнительного player tick.
-        assert_eq!(prepared.tracks().len(), 2);
-        // Известная duration создаёт static seekable timeline при atomic install.
-        assert_eq!(prepared.duration(), Some(published_duration));
-        // Demux seekability snapshot не деградирует во время metadata publication.
-        assert_eq!(prepared.seekability(), DemuxSeekability::Seekable);
-    }
-
-    /// Generic MP4 output hint не должен подменять content proof реального HLS segment container.
-    #[test]
-    fn generic_iso_bmff_hls_hint_requires_segment_content_probe() {
-        let evidence = hls_main_container_evidence(ContainerFamily::IsoBmff)
-            .expect("generic ISO-BMFF входит в поддержанный HLS profile");
-
-        assert!(matches!(evidence, HlsContainerEvidence::ContentProbe));
-    }
-
-    /// Общая yt-dlp/live composition policy не должна получать native-only landing opt-in.
-    #[test]
-    fn shared_ytdlp_and_live_hls_policy_keeps_decode_forward_default() {
-        let limits = AdaptiveTransportLimits::new(
-            NonZeroUsize::new(64 * 1_024).expect("manifest byte bound"),
-            NonZeroUsize::new(2 * 1_024 * 1_024).expect("segment byte bound"),
-            NonZeroUsize::new(64).expect("descriptor byte bound"),
-        );
-        let policy = hls_policy(limits).expect("production shared HLS policy");
-        assert_eq!(
-            policy.seek_landing_policy,
-            HlsVodSeekLandingPolicy::DecodeFromOrBeforeTarget
-        );
-    }
-}
+#[path = "web_media_hls_open/tests.rs"]
+mod tests;
