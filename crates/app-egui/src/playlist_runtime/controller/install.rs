@@ -3,209 +3,30 @@
 mod intents;
 mod manual;
 mod post_installed_compensation;
+mod state;
 mod token;
 
 pub(crate) use intents::{
     BarrierRaceIntent, ControllerTerminalDrain, ControllerTerminalResolution,
     DeferredControllerIntent, DeferredTransportIntent, DesiredQueueModes, LifecycleIntentOutcome,
 };
+pub(crate) use state::{
+    AuthorizationDispatchStart, ControllerInstallPhase, ControllerMediaOpenCommand,
+    ControllerMediaOpenCommandError, ControllerMediaOpenDisposition, InstallReadyOutcome,
+    InstalledPlaybackIntentCompletion, PlaylistControllerInvariantViolation,
+    PlaylistInstallAdmissionError, PlaylistInstallMutation, PlaylistInstallRequest,
+};
+pub(super) use state::{AwaitingReady, GuardedInstall, InstallState};
 use token::{GuardedInstallAbort, GuardedInstallToken};
 
-use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackIntentRevision};
-use playlist_core::{
-    AutomaticTraversalPlan, PrepareReservedMutationError, QueueRevisionSnapshot, RepeatMode,
-    ReservedQueueMutation, ShuffleToggleError,
-};
+use player_core::{MediaInstallRequestId, MediaInstanceId};
+use playlist_core::{AutomaticTraversalPlan, RepeatMode, ShuffleToggleError};
 
 use super::PlaylistController;
 use crate::media_open::{AuthorizationDispatchResolution, MediaOpenClientKey, MediaOpenRequestId};
 use crate::playlist_runtime::PlaylistBindingGeneration;
 use crate::playlist_runtime::identity::{ActiveMediaIdentity, PendingTarget, PendingTargetOrigin};
 use crate::playlist_runtime::view::{PlaylistDirtySignal, PlaylistWorkerAvailability};
-
-/// Controller выбирает command semantics; coordinator остаётся policy-neutral executor-ом.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControllerMediaOpenDisposition {
-    Start,
-    Coalesce,
-    Supersede {
-        expected_request_id: MediaOpenRequestId,
-    },
-}
-
-/// Opaque controller command не содержит queue target/priority для coordinator-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControllerMediaOpenCommand {
-    Start {
-        client_key: MediaOpenClientKey,
-    },
-    Coalesce {
-        client_key: MediaOpenClientKey,
-    },
-    Supersede {
-        expected_request_id: MediaOpenRequestId,
-        client_key: MediaOpenClientKey,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControllerMediaOpenCommandError {
-    WorkerUnavailable,
-    InstallCommitLinearizing,
-    FatalInvariant,
-}
-
-/// Admission результата coordinator-а не превращает ожидаемый busy/supersede race в fatal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlaylistInstallAdmissionError {
-    Busy,
-    StaleSupersede,
-    InstallCommitLinearizing,
-    FatalInvariant,
-}
-
-/// Все queue-specific данные остаются в controller после neutral coordinator admission.
-pub(crate) struct PlaylistInstallRequest {
-    pub request_id: MediaOpenRequestId,
-    pub player_request_id: MediaInstallRequestId,
-    pub target_item_id: Option<playlist_core::PlaylistItemId>,
-    pub origin: PendingTargetOrigin,
-    pub intent_revision: PlaybackIntentRevision,
-    pub expected_queue_revision: QueueRevisionSnapshot,
-    pub mutation: PlaylistInstallMutation,
-}
-
-/// Controller сохраняет domain-owned manual preview вплоть до exact Installed.
-pub(crate) enum PlaylistInstallMutation {
-    /// Обычный explicit select/replacement reservation.
-    Reserved(ReservedQueueMutation),
-    /// One-step manual navigation, включая private shuffle history/upcoming preview.
-    ManualNavigation,
-    /// Opaque fixed-snapshot automatic traversal plan.
-    AutomaticTraversal(Box<AutomaticTraversalPlan>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControllerInstallPhase {
-    AwaitingReady,
-    ReservedAwaitingAuthorization,
-    AuthorizationDispatchPending,
-    AuthorizationInFlight,
-}
-
-/// Post-player-receipt playback intent, который может завершить playlist install.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InstalledPlaybackIntentCompletion {
-    /// Caller не владеет authoritative playback-intent receipt этого install-а.
-    PreserveCurrent,
-    /// Player уже принял exact staged intent; controller применяет его с revision fence.
-    Authoritative(super::StablePlaybackIntent),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlaylistControllerInvariantViolation {
-    LoadDecisionPending,
-    StaleReadyToCommit,
-    UnexpectedInstallPhase,
-    MissingAuthorizationResolution,
-    MissingInstalledTerminal,
-    TerminalRequestMismatch,
-    PlayerRequestMismatch,
-    DirtyRevisionExhaustedAfterPlayerCommit,
-    LineageIdentityExhausted,
-    DeferredModeApplicationFailed,
-    PostInstalledCandidateReleaseFailed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InstallReadyOutcome {
-    RequestAuthorization {
-        request_id: MediaOpenRequestId,
-    },
-    ReservationRejected {
-        request_id: MediaOpenRequestId,
-        error: PrepareReservedMutationError,
-    },
-    StaleManualNavigationResult {
-        request_id: MediaOpenRequestId,
-    },
-    Fatal(PlaylistControllerInvariantViolation),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AuthorizationDispatchStart {
-    request_id: MediaOpenRequestId,
-}
-
-impl AuthorizationDispatchStart {
-    pub(crate) const fn request_id(self) -> MediaOpenRequestId {
-        self.request_id
-    }
-}
-
-pub(super) enum InstallState {
-    AwaitingReady(AwaitingReady),
-    ReservedAwaitingAuthorization(GuardedInstall),
-    AuthorizationDispatchPending {
-        guarded: GuardedInstall,
-        race_intent: Option<BarrierRaceIntent>,
-    },
-    AuthorizationInFlight {
-        guarded: GuardedInstall,
-        post_commit_intent: Option<DeferredControllerIntent>,
-    },
-}
-
-impl InstallState {
-    pub(super) const fn holds_reservation(&self) -> bool {
-        !matches!(self, Self::AwaitingReady(_))
-    }
-
-    const fn phase(&self) -> ControllerInstallPhase {
-        match self {
-            Self::AwaitingReady(_) => ControllerInstallPhase::AwaitingReady,
-            Self::ReservedAwaitingAuthorization(_) => {
-                ControllerInstallPhase::ReservedAwaitingAuthorization
-            }
-            Self::AuthorizationDispatchPending { .. } => {
-                ControllerInstallPhase::AuthorizationDispatchPending
-            }
-            Self::AuthorizationInFlight { .. } => ControllerInstallPhase::AuthorizationInFlight,
-        }
-    }
-
-    pub(super) const fn request_id(&self) -> MediaOpenRequestId {
-        match self {
-            Self::AwaitingReady(state) => state.request.request_id,
-            Self::ReservedAwaitingAuthorization(state)
-            | Self::AuthorizationDispatchPending { guarded: state, .. }
-            | Self::AuthorizationInFlight { guarded: state, .. } => state.request_id,
-        }
-    }
-
-    pub(super) const fn player_request_id(&self) -> MediaInstallRequestId {
-        match self {
-            Self::AwaitingReady(state) => state.request.player_request_id,
-            Self::ReservedAwaitingAuthorization(state)
-            | Self::AuthorizationDispatchPending { guarded: state, .. }
-            | Self::AuthorizationInFlight { guarded: state, .. } => state.player_request_id,
-        }
-    }
-}
-
-pub(super) struct AwaitingReady {
-    request: PlaylistInstallRequest,
-}
-
-pub(super) struct GuardedInstall {
-    request_id: MediaOpenRequestId,
-    player_request_id: MediaInstallRequestId,
-    target_item_id: Option<playlist_core::PlaylistItemId>,
-    intent_revision: PlaybackIntentRevision,
-    token: GuardedInstallToken,
-    desired_modes: Option<DesiredQueueModes>,
-    queue_revision_before_commit: QueueRevisionSnapshot,
-}
 
 impl PlaylistController {
     /// Возвращает policy command до передачи source payload coordinator-у.
@@ -390,15 +211,6 @@ impl PlaylistController {
         self.pending_target = None;
         self.publish_view(false);
         Some(awaiting.request)
-    }
-
-    pub(crate) fn install_phase(&self) -> Option<ControllerInstallPhase> {
-        self.install_state.as_ref().map(InstallState::phase)
-    }
-
-    /// Возвращает exact coordinator request текущего install guard-а без раскрытия token-а.
-    pub(crate) fn install_request_id(&self) -> Option<MediaOpenRequestId> {
-        self.install_state.as_ref().map(InstallState::request_id)
     }
 
     /// Structural removal retires only a pre-Ready request; guarded phases remain immutable.
@@ -860,13 +672,6 @@ impl PlaylistController {
         intent: DeferredControllerIntent,
     ) -> Result<LifecycleIntentOutcome, PlaylistControllerInvariantViolation> {
         self.request_deferred_intent(intent)
-    }
-
-    /// D52 update остаётся разрешённым: controller только подтверждает exact request correlation.
-    pub(crate) fn accepts_playback_intent_update(&self, request_id: MediaOpenRequestId) -> bool {
-        self.install_state
-            .as_ref()
-            .is_some_and(|state| state.request_id() == request_id)
     }
 
     /// Во время guard сохраняется один desired value; вне guard применяется сразу.
