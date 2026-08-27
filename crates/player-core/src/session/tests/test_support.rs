@@ -559,6 +559,9 @@ pub(super) struct ScriptedAudioOutputHandle {
     /// Сколько раз session попросила запустить stream.
     pub(super) play_count: Arc<AtomicUsize>,
 
+    /// Изменяемая scripted play error для проверки recoverable retry lifecycle.
+    pub(super) play_error: Arc<Mutex<Option<&'static str>>>,
+
     /// Сколько раз session попросила поставить stream на паузу.
     pub(super) pause_count: Arc<AtomicUsize>,
 
@@ -576,6 +579,7 @@ impl ScriptedAudioOutputHandle {
             written_intents: Arc::new(Mutex::new(Vec::new())),
             write_result_override: Arc::new(Mutex::new(None)),
             play_count: Arc::new(AtomicUsize::new(0)),
+            play_error: Arc::new(Mutex::new(None)),
             pause_count: Arc::new(AtomicUsize::new(0)),
             clear_count: Arc::new(AtomicUsize::new(0)),
         }
@@ -628,15 +632,57 @@ impl ScriptedAudioOutputHandle {
     pub(super) fn clock(&self) -> Arc<dyn PlayerAudioClock> {
         self.clock.as_player_clock()
     }
+
+    /// Возвращает число successful/error play attempts через neutral output boundary.
+    pub(super) fn play_count(&self) -> usize {
+        self.play_count.load(Ordering::Relaxed)
+    }
+
+    /// Меняет результат следующей play attempt после передачи output-а в pipeline.
+    pub(super) fn set_play_error(&self, play_error: Option<&'static str>) {
+        *self
+            .play_error
+            .lock()
+            .expect("play error mutex should not be poisoned") = play_error;
+    }
+
+    /// Возвращает число pause/freeze attempts через neutral output boundary.
+    pub(super) fn pause_count(&self) -> usize {
+        self.pause_count.load(Ordering::Relaxed)
+    }
+
+    /// Меняет underlying clock, не обходя frozen snapshot fake output-а.
+    pub(super) fn set_underlying_output_timing(
+        &self,
+        audible_output_position: Duration,
+        submitted_output_end_position: Duration,
+    ) {
+        self.clock
+            .set_output_timing(audible_output_position, submitted_output_end_position);
+    }
+
+    /// Читает audible clock через тот же neutral contract, который использует player.
+    pub(super) fn audible_output_position(&self) -> Duration {
+        self.clock.now()
+    }
+
+    /// Устанавливает legacy callback-silence counter для paused diagnostics regression.
+    pub(super) fn set_underrun_callbacks(&self, underrun_callbacks: u64) {
+        self.clock
+            .underrun_callbacks
+            .store(underrun_callbacks, Ordering::Relaxed);
+    }
+
+    /// Возвращает legacy callback-silence counter без подмены его native xrun-ом.
+    pub(super) fn underrun_callbacks(&self) -> u64 {
+        self.clock.underrun_callbacks.load(Ordering::Relaxed)
+    }
 }
 
 /// Fake audio output для seek resume тестов без CPAL/device side effects.
 pub(super) struct ScriptedAudioOutput {
     /// Shared counters и clock, доступные тесту после move в pipeline.
     pub(super) handle: ScriptedAudioOutputHandle,
-
-    /// Ошибка, которую fake вернёт из play, если сценарий её задаёт.
-    pub(super) play_error: Option<&'static str>,
 
     /// Ошибка, которую fake вернёт из pause, если сценарий её задаёт.
     pub(super) pause_error: Option<&'static str>,
@@ -648,9 +694,10 @@ pub(super) struct ScriptedAudioOutput {
 impl ScriptedAudioOutput {
     /// Создаёт fake output с фиксированным buffer level и scripted play result.
     pub(super) fn new(buffer_level_ms: f64, play_error: Option<&'static str>) -> Self {
+        let handle = ScriptedAudioOutputHandle::new(buffer_level_ms);
+        handle.set_play_error(play_error);
         Self {
-            handle: ScriptedAudioOutputHandle::new(buffer_level_ms),
-            play_error,
+            handle,
             pause_error: None,
             input_channels: 2,
         }
@@ -667,7 +714,6 @@ impl ScriptedAudioOutput {
     pub(super) fn with_pause_error(buffer_level_ms: f64, pause_error: &'static str) -> Self {
         Self {
             handle: ScriptedAudioOutputHandle::new(buffer_level_ms),
-            play_error: None,
             pause_error: Some(pause_error),
             input_channels: 2,
         }
@@ -723,7 +769,12 @@ impl PlayerAudioOutput for ScriptedAudioOutput {
     /// Записывает play attempt и возвращает scripted success/error.
     fn play(&mut self) -> anyhow::Result<()> {
         self.handle.play_count.fetch_add(1, Ordering::Relaxed);
-        match self.play_error {
+        match *self
+            .handle
+            .play_error
+            .lock()
+            .expect("play error mutex should not be poisoned")
+        {
             Some(error) => Err(anyhow::anyhow!(error)),
             None => {
                 self.handle.clock.resume_output_timing();

@@ -436,64 +436,6 @@ impl PlayerSession {
         );
     }
 
-    /// Диагностирует слышимые пропуски звука при активном playback.
-    ///
-    /// Проверка уровня буфера в конце tick-а слепа к голоданию, которое тот же
-    /// tick уже залатал, поэтому основной сигнал — дельта CPAL underrun
-    /// callbacks: она растёт при каждом реальном device-side разрыве. Лог несёт
-    /// глубины очередей и паузу между tick-ами, чтобы разграничить
-    /// video-starved demux, стопор worker-треда и деградацию audio путей.
-    pub(super) fn diagnose_audio_output_starvation(&mut self, now: Instant) {
-        const STARVATION_LEVEL_MS: f64 = 1.0;
-        const WARN_INTERVAL: Duration = Duration::from_secs(2);
-
-        let previous_tick_at = self.last_tick_observed_at.replace(now);
-
-        if self.snapshot.playback_state != PlaybackState::Playing
-            || !self.pipeline.has_audio_clock()
-            || self.eof_drain_needs_progress()
-        {
-            self.last_seen_audio_underrun_callbacks =
-                self.pipeline.audio_clock_underrun_callbacks();
-            return;
-        }
-
-        let underrun_callbacks = self.pipeline.audio_clock_underrun_callbacks();
-        let new_underruns =
-            underrun_callbacks.saturating_sub(self.last_seen_audio_underrun_callbacks);
-        self.last_seen_audio_underrun_callbacks = underrun_callbacks;
-
-        let buffer_level_ms = self.audio_buffer_level_ms().unwrap_or(0.0);
-        let buffer_starved = buffer_level_ms.is_finite() && buffer_level_ms <= STARVATION_LEVEL_MS;
-
-        if new_underruns == 0 && !buffer_starved {
-            return;
-        }
-
-        let warn_is_due = self
-            .last_audio_starvation_warn_at
-            .is_none_or(|last| now.saturating_duration_since(last) >= WARN_INTERVAL);
-        if !warn_is_due {
-            return;
-        }
-        self.last_audio_starvation_warn_at = Some(now);
-
-        let tick_gap_ms = previous_tick_at
-            .map(|at| now.saturating_duration_since(at).as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-
-        warn!(
-            new_underrun_callbacks = new_underruns,
-            buffer_level_ms,
-            tick_gap_ms,
-            pending_audio_packets = self.pipeline.pending_audio_packet_len(),
-            pending_video_packets = self.pipeline.pending_video_packet_len(),
-            video_present_queue = self.pipeline.video_present_queue_len(),
-            playback_rate = %self.snapshot.playback_rate,
-            "Слышимый пропуск звука: CPAL underrun или осушенный buffer при Playing"
-        );
-    }
-
     /// Обрабатывает pending audio packets до достижения high-water mark audio buffer.
     pub(crate) fn process_pending_audio_packets_with_buffer_limit(
         &mut self,

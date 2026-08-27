@@ -22,6 +22,29 @@ use audio_core::{
 use media_core::{ExactPresentationWindow, PacketPresentationWindow, TimeBase, TrackTimestamp};
 
 use super::audio_packet_window::RecordingPcmDecoder;
+use crate::session::audio_starvation::{
+    AudioOutputStarvationObservation, classify_audio_output_starvation,
+};
+
+/// Callback silence-padding доказывает output-ring underrun независимо от свежего buffer level.
+#[test]
+fn starvation_diagnostics_distinguish_proven_ring_underrun_from_native_xrun_claims() {
+    assert_eq!(
+        classify_audio_output_starvation(1, 80.0),
+        Some(AudioOutputStarvationObservation::OutputRingUnderrunProven)
+    );
+}
+
+/// Один низкий buffer level остаётся риском, пока callback не дополнил блок тишиной.
+#[test]
+fn starvation_diagnostics_keep_low_buffer_as_risk_only() {
+    assert_eq!(
+        classify_audio_output_starvation(0, 0.5),
+        Some(AudioOutputStarvationObservation::LowBufferRiskOnly)
+    );
+    assert_eq!(classify_audio_output_starvation(0, 50.0), None);
+    assert_eq!(classify_audio_output_starvation(0, f64::NAN), None);
+}
 
 #[derive(Clone)]
 struct FakeTempoFactoryHandle {

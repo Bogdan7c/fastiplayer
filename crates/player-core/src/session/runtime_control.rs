@@ -82,6 +82,7 @@ impl PlayerSession {
         &mut self,
         audio_preroll_target_ms: f64,
     ) -> PlayerResult<bool> {
+        self.ensure_not_shutdown()?;
         if self.snapshot.playback_state != PlaybackState::Buffering {
             return Ok(false);
         }
@@ -90,7 +91,40 @@ impl PlayerSession {
             return Ok(false);
         }
 
-        self.play()?;
+        // Накопленный PCM сам по себе не доказывает recovery source-а. После
+        // demux-owned freeze matching packet/event сначала обязан снять retry fence.
+        if self.installed_demux_retry_blocks_buffering_resume() {
+            return Ok(false);
+        }
+
+        let publishes_audio_resume = self.pipeline.audio_output_needs_play_request();
+        if let Some(play_result) = self.pipeline.play_audio_output() {
+            if let Err(error) = play_result {
+                let player_error = PlayerError::new(
+                    PlayerErrorKind::RuntimeError,
+                    format!("Audio play after buffering error: {error}"),
+                );
+                let repeats_current_error =
+                    self.snapshot.last_error.as_ref() == Some(&player_error);
+                if !repeats_current_error {
+                    warn!(error = %error, "Не удалось запустить audio после preroll");
+                    self.record_recoverable_error(player_error);
+                }
+                return Ok(false);
+            }
+
+            let observed_at = Instant::now();
+            let audio_now = self.audio_clock_now();
+            self.pipeline
+                .reset_audio_clock_sample(audio_now, observed_at);
+        }
+
+        // Сначала backend play и clock anchors, затем observable success state/events.
+        self.anchor_monotonic_media_clock_if_needed(Instant::now());
+        self.set_playback_state(PlaybackState::Playing);
+        if publishes_audio_resume {
+            self.push_player_event(PlayerEvent::AudioPlaybackResumed);
+        }
         Ok(true)
     }
 
@@ -111,6 +145,28 @@ impl PlayerSession {
         }
 
         self.pipeline.has_present_video_frame() || !self.pipeline.video_present_queue_is_empty()
+    }
+
+    /// Замораживает presentation clock перед demux-owned buffering transition.
+    ///
+    /// В отличие от пользовательской Pause этот boundary намеренно сохраняет
+    /// video presentation queue: готовые кадры входят в общий resume preroll gate.
+    pub(super) fn freeze_playback_for_demux_buffering(&mut self) -> PlayerResult<()> {
+        let audio_pause_result = self.pipeline.pause_audio_output_and_capture_clock();
+        let frozen_media_position = match audio_pause_result {
+            Some(Ok(captured_clock)) => captured_clock.media_position(),
+            Some(Err(error)) => {
+                warn!(error = %error, "Не удалось заморозить audio для demux buffering");
+                return Err(PlayerError::new(
+                    PlayerErrorKind::RuntimeError,
+                    format!("Audio pause for demux buffering error: {error}"),
+                ));
+            }
+            None => self.presentation_clock_position_at(Instant::now()),
+        };
+
+        self.freeze_current_position_for_pause(frozen_media_position);
+        Ok(())
     }
 
     /// Переводит playback в `Paused` и останавливает audio output.

@@ -16,6 +16,8 @@ mod video_backlog_recovery_admission;
 mod video_decoder_io;
 mod wakeup;
 
+pub(super) use demux_admission::sanitize_audio_demux_low_water_mark;
+
 pub(crate) use presentation_scheduler::{
     SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
 };
@@ -75,7 +77,20 @@ impl PlayerSession {
         self.diagnose_audio_output_starvation(tick_context.now);
 
         process_pending_video_packets(self, tick_context, &mut tick_result);
-        self.enter_buffering_for_demux_underrun_if_needed();
+        // Demuxer мог создать deadline через `Instant::now()` уже после начала tick-а.
+        // Runway decision обязан использовать один свежий owner timestamp, а не
+        // более ранний `tick_context.now`, иначе remaining wait будет завышен.
+        let demux_runway_decision_at = Instant::now();
+        let audio_starvation_margin =
+            super::demux_retry::DemuxAudioStarvationMargin::from_low_water_mark_ms(
+                tick_context.config.audio_demux_low_water_mark_ms,
+            );
+        if let Err(error) = self.enter_buffering_for_demux_underrun_if_needed(
+            demux_runway_decision_at,
+            audio_starvation_margin,
+        ) {
+            self.mark_fatal_error(error);
+        }
         self.finish_seek_commit_if_ready(tick_context.now, &tick_context.config);
         if let Err(error) =
             self.finish_autoplay_preroll_if_ready(tick_context.config.audio_preroll_target_ms)

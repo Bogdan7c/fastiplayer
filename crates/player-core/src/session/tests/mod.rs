@@ -50,6 +50,7 @@ mod audio_runtime;
 mod capability_selection;
 mod cold_resume_av;
 mod decoder_boundary;
+mod demux_retry;
 mod diagnostics_sink;
 mod dynamic_timeline;
 mod eof_drain;

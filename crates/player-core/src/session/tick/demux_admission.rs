@@ -105,8 +105,8 @@ impl DemuxPacketRouteOutcome {
     }
 }
 
-/// Нормализует low-water mark для audio catch-up demux.
-pub(super) fn sanitize_audio_demux_low_water_mark(low_water_mark_ms: f64) -> f64 {
+/// Канонически нормализует общий low-water mark для demux admission и starvation.
+pub(in crate::session) fn sanitize_audio_demux_low_water_mark(low_water_mark_ms: f64) -> f64 {
     if low_water_mark_ms.is_finite() && low_water_mark_ms > 0.0 {
         low_water_mark_ms
     } else {

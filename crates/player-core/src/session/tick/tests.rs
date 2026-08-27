@@ -2914,7 +2914,14 @@ fn installed_demux_retry_avoids_busy_spin_and_recovers_buffering_on_packet() {
         read_demux_packets(&mut session, &tick_config, &mut first_tick_result, 1, None,),
         0
     );
-    session.enter_buffering_for_demux_underrun_if_needed();
+    session
+        .enter_buffering_for_demux_underrun_if_needed(
+            Instant::now(),
+            super::super::demux_retry::DemuxAudioStarvationMargin::from_low_water_mark_ms(
+                tick_config.audio_demux_low_water_mark_ms,
+            ),
+        )
+        .expect("drained retry должен войти в Buffering без audio output");
     assert_eq!(session.playback_state(), PlaybackState::Buffering);
     assert_eq!(read_count.load(Ordering::Relaxed), 1);
 
@@ -2952,6 +2959,16 @@ fn installed_demux_retry_avoids_busy_spin_and_recovers_buffering_on_packet() {
         1
     );
     assert_eq!(read_count.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        session.playback_state(),
+        PlaybackState::Buffering,
+        "первый packet доказывает recovery source-а, но не playback readiness"
+    );
+    assert!(
+        session
+            .finish_autoplay_preroll_if_ready(tick_config.audio_preroll_target_ms)
+            .expect("empty-track fixture должна пройти existing preroll gate")
+    );
     assert_eq!(session.playback_state(), PlaybackState::Playing);
     assert!(session.snapshot().last_error.is_none());
     assert!(!session.is_eof_draining());

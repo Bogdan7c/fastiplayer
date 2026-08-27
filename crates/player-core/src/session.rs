@@ -37,6 +37,7 @@ use crate::{
 mod audio_packet_window;
 mod audio_playback_bounds;
 mod audio_runtime;
+mod audio_starvation;
 mod audio_tempo_rate_change;
 mod audio_tempo_runtime;
 mod capability_selection;
