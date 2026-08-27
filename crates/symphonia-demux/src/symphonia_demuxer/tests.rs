@@ -35,15 +35,18 @@ use super::decode_point_before::{
     DecodePointBeforeVerificationIssue, DecodePointBeforeVideoPacket,
     decode_point_before_initial_timestamp, decode_point_before_retry_timestamp_for_issue,
 };
-use super::{
+use super::matroska_source_probe::{
     MATROSKA_STREAM_SCAN_LIMIT_BYTES, MatroskaVideoMetadataScanDecision,
+    decide_matroska_video_metadata_scan, read_stream_prefix,
+};
+use super::{
     RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG, RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG,
     RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG,
     RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG,
     RUSTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG,
     RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG, RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG,
     RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG, RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG,
-    SymphoniaDemuxer, decide_matroska_video_metadata_scan, read_stream_prefix,
+    SymphoniaDemuxer,
 };
 use crate::error::DemuxError;
 use crate::matroska_metadata::{MatroskaCueIndex, MatroskaVideoTrack};
