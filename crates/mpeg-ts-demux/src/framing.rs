@@ -1,8 +1,11 @@
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 
+use bytes::Bytes;
 use demux_api::{
-    DemuxByteSource, DemuxInput, OrderedSegmentDiscontinuity, OrderedSegmentReadError,
-    OrderedSegmentSource,
+    DemuxByteSource, DemuxInput, OrderedResourceMetadata, OrderedResourceReadError,
+    OrderedResourceReadOutcome, OrderedResourceStreamSource, OrderedSegmentDiscontinuity,
+    OrderedSegmentReadError, OrderedSegmentSource,
 };
 use source_core::{ByteSource, CancellationToken, Seekability, SourceError};
 
@@ -10,6 +13,9 @@ use crate::{MpegTsDemuxError, MpegTsDemuxOptions};
 
 /// Единственный поддерживаемый wire packet size.
 pub(crate) const TS_PACKET_BYTES: usize = 188;
+
+/// Один pull не разрешает transport owner-у materialize unbounded body.
+const ORDERED_RESOURCE_PULL_BYTES: usize = 32 * 1024;
 
 /// Нормализованный transport packet без раскрытия input storage наружу.
 #[derive(Debug)]
@@ -38,6 +44,22 @@ pub(crate) struct TransportPacket {
     pub(crate) byte_offset: u64,
 }
 
+/// Framing отделяет настоящий resource EOF от terminal input EOF и packet-а.
+pub(crate) enum TransportReadOutcome {
+    /// Следующий полностью собранный MPEG-TS packet.
+    Packet(TransportPacket),
+    /// Активный streamed resource закончился на доказанной provider boundary.
+    EndResource(OrderedResourceMetadata),
+    /// Весь input терминально закончился.
+    EndOfInput,
+}
+
+/// Boundary уже прочитана у source-а, но публикуется только после buffered bytes.
+enum PendingInputBoundary {
+    EndResource(OrderedResourceMetadata),
+    EndOfInput,
+}
+
 /// Input variants остаются нейтральными относительно local/network происхождения.
 enum TransportInput {
     /// Random-access `ByteSource`, включая `LocalFileSource`.
@@ -46,12 +68,22 @@ enum TransportInput {
     ByteStream(Box<dyn demux_api::DemuxByteStream>),
     /// Ordered segments с явным discontinuity marker-ом.
     OrderedSegments(Box<dyn OrderedSegmentSource>),
+    /// Pull-based resources с отдельными chunk и resource EOF boundaries.
+    OrderedResourceStream(Box<dyn OrderedResourceStreamSource>),
 }
 
 /// Bounded framing reader с replay-safe внутренним буфером.
 pub(crate) struct TransportPacketReader {
     input: TransportInput,
     buffered_bytes: VecDeque<u8>,
+    /// Текущий immutable source chunk; в packet buffer копируется только bounded demand.
+    ordered_resource_chunk: Bytes,
+    /// Streamed resource, которому принадлежат текущие и следующие body bytes.
+    active_ordered_resource: Option<OrderedResourceMetadata>,
+    /// Resource/input EOF не может обогнать уже buffered body bytes.
+    pending_input_boundary: Option<PendingInputBoundary>,
+    /// Terminal EOF остаётся terminal при повторном чтении.
+    reached_input_end: bool,
     stream_position: u64,
     source_seekable: bool,
     discontinuity_offsets: VecDeque<u64>,
@@ -81,10 +113,17 @@ impl TransportPacketReader {
             DemuxInput::OrderedSegments(source) => {
                 (TransportInput::OrderedSegments(source), false, 0)
             }
+            DemuxInput::OrderedResourceStream(source) => {
+                (TransportInput::OrderedResourceStream(source), false, 0)
+            }
         };
         Self {
             input,
             buffered_bytes: VecDeque::new(),
+            ordered_resource_chunk: Bytes::new(),
+            active_ordered_resource: None,
+            pending_input_boundary: None,
+            reached_input_end: false,
             stream_position,
             source_seekable,
             discontinuity_offsets: VecDeque::new(),
@@ -102,6 +141,11 @@ impl TransportPacketReader {
     /// Проверяет random-access capability без догадок по duration.
     pub(crate) const fn is_seekable(&self) -> bool {
         self.source_seekable
+    }
+
+    /// Только новый streamed contract запрещает трактовать probe limit как resource EOF.
+    pub(crate) const fn requires_explicit_resource_end(&self) -> bool {
+        matches!(&self.input, TransportInput::OrderedResourceStream(_))
     }
 
     /// Переставляет только настоящий `ByteSource` и сбрасывает framing state.
@@ -137,6 +181,10 @@ impl TransportPacketReader {
                 reason: error.to_string(),
             })?;
         self.buffered_bytes.clear();
+        self.ordered_resource_chunk = Bytes::new();
+        self.active_ordered_resource = None;
+        self.pending_input_boundary = None;
+        self.reached_input_end = false;
         self.stream_position = offset;
         self.discontinuity_offsets.clear();
         self.segment_start_offsets.clear();
@@ -147,13 +195,23 @@ impl TransportPacketReader {
     }
 
     /// Читает один устойчиво синхронизированный 188-byte packet.
-    pub(crate) fn next_packet(&mut self) -> Result<Option<TransportPacket>, MpegTsDemuxError> {
+    pub(crate) fn next_packet(&mut self) -> Result<TransportReadOutcome, MpegTsDemuxError> {
         if self.cancellation.is_cancelled() {
             return Err(MpegTsDemuxError::Cancelled);
         }
+        if self.buffered_bytes.is_empty()
+            && let Some(boundary) = self.take_pending_input_boundary()
+        {
+            return Ok(boundary);
+        }
+        if self.buffered_bytes.is_empty() && self.reached_input_end {
+            return Ok(TransportReadOutcome::EndOfInput);
+        }
         self.fill_until(TS_PACKET_BYTES)?;
         if self.buffered_bytes.is_empty() {
-            return Ok(None);
+            return Ok(self
+                .take_pending_input_boundary()
+                .unwrap_or(TransportReadOutcome::EndOfInput));
         }
         if self.looks_like_m2ts()? {
             return Err(MpegTsDemuxError::UnsupportedM2ts);
@@ -168,12 +226,26 @@ impl TransportPacketReader {
         let packet_offset = self.stream_position;
         let raw_packet: Vec<u8> = self.buffered_bytes.drain(..TS_PACKET_BYTES).collect();
         self.stream_position = self.stream_position.saturating_add(TS_PACKET_BYTES as u64);
-        parse_transport_packet(
+        let packet = parse_transport_packet(
             &raw_packet,
             packet_offset,
             self.take_discontinuity(packet_offset),
             self.take_segment_start(packet_offset),
-        )
+        )?;
+        Ok(TransportReadOutcome::Packet(packet))
+    }
+
+    /// Публикует boundary ровно после всех bytes соответствующего resource-а.
+    fn take_pending_input_boundary(&mut self) -> Option<TransportReadOutcome> {
+        match self.pending_input_boundary.take()? {
+            PendingInputBoundary::EndResource(metadata) => {
+                Some(TransportReadOutcome::EndResource(metadata))
+            }
+            PendingInputBoundary::EndOfInput => {
+                self.reached_input_end = true;
+                Some(TransportReadOutcome::EndOfInput)
+            }
+        }
     }
 
     fn take_discontinuity(&mut self, packet_offset: u64) -> bool {
@@ -236,6 +308,16 @@ impl TransportPacketReader {
             if self.cancellation.is_cancelled() {
                 return Err(MpegTsDemuxError::Cancelled);
             }
+            if self.pending_input_boundary.is_some() || self.reached_input_end {
+                break;
+            }
+            if !self.ordered_resource_chunk.is_empty() {
+                let required_bytes = minimum_bytes - self.buffered_bytes.len();
+                let copied_bytes = required_bytes.min(self.ordered_resource_chunk.len());
+                let chunk_prefix = self.ordered_resource_chunk.split_to(copied_bytes);
+                self.buffered_bytes.extend(chunk_prefix);
+                continue;
+            }
             let bytes_read = match &mut self.input {
                 TransportInput::ByteSource(source) => {
                     let mut chunk = [0_u8; 32 * 1024];
@@ -253,6 +335,9 @@ impl TransportPacketReader {
                             }
                         })?;
                     self.buffered_bytes.extend(&chunk[..count]);
+                    if count == 0 {
+                        self.reached_input_end = true;
+                    }
                     count
                 }
                 TransportInput::ByteStream(reader) => {
@@ -267,6 +352,9 @@ impl TransportPacketReader {
                         }
                     })?;
                     self.buffered_bytes.extend(&chunk[..count]);
+                    if count == 0 {
+                        self.reached_input_end = true;
+                    }
                     count
                 }
                 TransportInput::OrderedSegments(source) => {
@@ -283,6 +371,7 @@ impl TransportPacketReader {
                             }
                         })?
                     else {
+                        self.reached_input_end = true;
                         return Ok(());
                     };
                     let marker_offset = self
@@ -296,6 +385,89 @@ impl TransportPacketReader {
                     self.buffered_bytes.extend(segment.bytes);
                     count
                 }
+                TransportInput::OrderedResourceStream(source) => {
+                    let maximum_chunk_bytes = NonZeroUsize::new(ORDERED_RESOURCE_PULL_BYTES)
+                        .expect("ordered resource pull bound is non-zero");
+                    let outcome = source
+                        .next_event(maximum_chunk_bytes, &self.cancellation)
+                        .map_err(|error| {
+                            if self.cancellation.is_cancelled() {
+                                return MpegTsDemuxError::Cancelled;
+                            }
+                            match error {
+                                OrderedResourceReadError::Cancelled => MpegTsDemuxError::Cancelled,
+                                OrderedResourceReadError::RestartableReadInterrupted => {
+                                    MpegTsDemuxError::RestartableReadInterrupted {
+                                        source:
+                                            demux_api::OrderedResourceRestartableReadInterrupted,
+                                    }
+                                }
+                                failure @ OrderedResourceReadError::Failed { .. } => {
+                                    MpegTsDemuxError::Source {
+                                        reason: failure.to_string(),
+                                    }
+                                }
+                            }
+                        })?;
+                    match outcome {
+                        OrderedResourceReadOutcome::Begin(metadata) => {
+                            if self.active_ordered_resource.is_some() {
+                                return Err(stream_protocol_error(
+                                    "Begin получен до EndResource текущего resource",
+                                ));
+                            }
+                            let marker_offset = self
+                                .stream_position
+                                .saturating_add(self.buffered_bytes.len() as u64);
+                            if metadata.discontinuity
+                                == OrderedSegmentDiscontinuity::StartsNewTimeline
+                            {
+                                self.discontinuity_offsets.push_back(marker_offset);
+                            }
+                            self.active_ordered_resource = Some(metadata);
+                            1
+                        }
+                        OrderedResourceReadOutcome::Data(bytes) => {
+                            if self.active_ordered_resource.is_none() {
+                                return Err(stream_protocol_error(
+                                    "Data получен вне Begin/EndResource lifecycle",
+                                ));
+                            }
+                            if bytes.is_empty() {
+                                return Err(stream_protocol_error(
+                                    "пустой Data запрещён ordered resource contract-ом",
+                                ));
+                            }
+                            if bytes.len() > maximum_chunk_bytes.get() {
+                                return Err(stream_protocol_error(
+                                    "Data превысил caller-provided maximum_chunk_bytes",
+                                ));
+                            }
+                            let count = bytes.len();
+                            self.ordered_resource_chunk = bytes;
+                            count
+                        }
+                        OrderedResourceReadOutcome::EndResource => {
+                            let Some(metadata) = self.active_ordered_resource.take() else {
+                                return Err(stream_protocol_error(
+                                    "EndResource получен без активного resource",
+                                ));
+                            };
+                            self.pending_input_boundary =
+                                Some(PendingInputBoundary::EndResource(metadata));
+                            0
+                        }
+                        OrderedResourceReadOutcome::EndOfInput => {
+                            if self.active_ordered_resource.is_some() {
+                                return Err(stream_protocol_error(
+                                    "EndOfInput получен без EndResource текущего resource",
+                                ));
+                            }
+                            self.pending_input_boundary = Some(PendingInputBoundary::EndOfInput);
+                            0
+                        }
+                    }
+                }
             };
             if bytes_read == 0 {
                 break;
@@ -305,12 +477,19 @@ impl TransportPacketReader {
     }
 }
 
+/// Provider lifecycle violation остаётся fatal source error, а не container EOF.
+fn stream_protocol_error(reason: &'static str) -> MpegTsDemuxError {
+    MpegTsDemuxError::Source {
+        reason: reason.to_owned(),
+    }
+}
+
 fn parse_transport_packet(
     bytes: &[u8],
     byte_offset: u64,
     external_discontinuity: bool,
     starts_new_segment: bool,
-) -> Result<Option<TransportPacket>, MpegTsDemuxError> {
+) -> Result<TransportPacket, MpegTsDemuxError> {
     if bytes.first() != Some(&0x47) {
         return Err(MpegTsDemuxError::Malformed {
             reason: "transport packet не начинается sync byte 0x47".to_owned(),
@@ -362,7 +541,7 @@ fn parse_transport_packet(
     } else {
         Vec::new()
     };
-    Ok(Some(TransportPacket {
+    Ok(TransportPacket {
         pid,
         payload_unit_start,
         transport_error,
@@ -374,5 +553,5 @@ fn parse_transport_packet(
         pcr_base,
         payload,
         byte_offset,
-    }))
+    })
 }

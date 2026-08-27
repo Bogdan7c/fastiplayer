@@ -11,7 +11,10 @@ use crate::diagnostics::{
     AccurateSeekPrerollDiagnosticsSnapshot, SeekPrerollCountersSnapshot,
     SeekPrerollDemuxEventCountersSnapshot, SeekPrerollStageDiagnosticsSnapshot,
 };
-use crate::{PlaybackState, SeekMode, SeekRequest};
+use crate::seek_acceptance_telemetry::{
+    SeekAcceptanceTelemetry, SeekPositionProgressEvidence, SeekTargetPresentationEvidence,
+};
+use crate::{PlaybackState, PreparedDemuxSeekLandingPolicy, SeekMode, SeekRequest};
 
 /// Намерение возобновления playback после обычного final seek transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,8 +70,14 @@ pub(crate) struct SeekCommitState {
     /// Фактическая позиция, на которую container переставил demuxer.
     pub actual_position: MediaTime,
 
+    /// Source-owned contract выбора presentation/audio floor и final playback position.
+    pub landing_policy: PreparedDemuxSeekLandingPolicy,
+
     /// Момент старта операции для timeout policy.
     pub started_at: Instant,
+
+    /// Момент принятия public final seek для честной seek-to-presentation метрики.
+    pub public_accepted_at: Instant,
 
     /// Playback-состояние, которое нужно применить после прохождения gates.
     pub resume_intent: PlaybackResumeIntent,
@@ -283,6 +292,15 @@ impl ActiveSeekLandingState {
 }
 
 impl SeekCommitState {
+    /// Сообщает, что source доказал post-target actual как новый playback authority.
+    #[must_use]
+    pub(crate) const fn presents_from_actual_position(self) -> bool {
+        matches!(
+            self.landing_policy,
+            PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget
+        )
+    }
+
     /// Возвращает `true`, если runtime должен скрыть decode preroll до user target.
     #[must_use]
     pub(crate) const fn drops_decode_preroll_before_target(self) -> bool {
@@ -292,6 +310,9 @@ impl SeekCommitState {
     /// Возвращает clock base, от которого session должна вести playback после accepted seek-а.
     #[must_use]
     pub(crate) fn runtime_clock_base(self) -> Duration {
+        if self.presents_from_actual_position() {
+            return self.actual_position.as_duration();
+        }
         if self.drops_decode_preroll_before_target() {
             return self.target_position.as_duration();
         }
@@ -302,6 +323,9 @@ impl SeekCommitState {
     /// Возвращает минимальный PTS кадра, который может открыть video gate.
     #[must_use]
     pub(crate) fn landing_frame_min_position(self) -> Duration {
+        if self.presents_from_actual_position() {
+            return self.actual_position.as_duration();
+        }
         if self.drops_decode_preroll_before_target() {
             return self.target_position.as_duration();
         }
@@ -334,6 +358,9 @@ pub(crate) struct SeekDecoderOutputFloorState {
 pub(crate) struct SimpleScrubState {
     /// Активен ли scrub gesture на уровне command contract-а.
     active: bool,
+
+    /// Monotonic origin принятого `BeginScrub`; wall clock сюда не попадает.
+    began_at: Option<Instant>,
 
     /// Последний request, который release передаёт в единый SeekLanding route.
     latest_request: Option<SeekRequest>,
@@ -387,6 +414,7 @@ impl SimpleScrubState {
     ) {
         if !self.active {
             self.confirmed_playback_state = Some(confirmed_playback_state);
+            self.began_at = Some(Instant::now());
         }
         self.active = true;
         self.latest_request = None;
@@ -402,6 +430,7 @@ impl SimpleScrubState {
     ) {
         if !self.active {
             self.confirmed_playback_state = Some(confirmed_playback_state);
+            self.began_at = Some(Instant::now());
         }
         self.active = true;
         self.latest_request = Some(request);
@@ -431,6 +460,7 @@ impl SimpleScrubState {
     /// Сбрасывает только lightweight scrub state, не трогая active seek transaction.
     pub(crate) fn clear(&mut self) {
         self.active = false;
+        self.began_at = None;
         self.latest_request = None;
         self.confirmed_playback_state = None;
         self.live_scrub_diagnostics = None;
@@ -440,6 +470,12 @@ impl SimpleScrubState {
     #[must_use]
     pub(crate) const fn active(&self) -> bool {
         self.active
+    }
+
+    /// Возвращает owner-monotonic возраст текущего scrub gesture-а.
+    #[must_use]
+    pub(crate) fn elapsed_since_begin(&self) -> Option<Duration> {
+        self.began_at.map(|began_at| began_at.elapsed())
     }
 
     /// Возвращает state, подтверждённый до входа в scrub gesture.
@@ -828,6 +864,9 @@ pub(crate) struct SeekRuntimeState {
     /// Одноразовые trace markers accepted seek-а.
     trace: SeekTraceState,
 
+    /// Bounded proof state presentation/commit/progress acceptance path-а.
+    acceptance_telemetry: SeekAcceptanceTelemetry,
+
     /// Lightweight scrub gesture для старого command contract-а.
     simple_scrub: SimpleScrubState,
 
@@ -864,6 +903,7 @@ impl SeekRuntimeState {
 
     /// Открывает commit state после accepted demux seek.
     pub(crate) fn set_active_commit(&mut self, seek_commit: SeekCommitState) {
+        self.acceptance_telemetry.begin_seek(seek_commit);
         self.commit = Some(seek_commit);
     }
 
@@ -916,6 +956,7 @@ impl SeekRuntimeState {
         let active_commit = self.commit?;
         let rebased_commit = active_commit.rebased_to_generation(generation);
         self.commit = Some(rebased_commit);
+        self.acceptance_telemetry.rebase_seek(rebased_commit);
         Some(rebased_commit)
     }
 
@@ -927,6 +968,58 @@ impl SeekRuntimeState {
     /// Очищает trace markers без изменения commit state.
     pub(crate) fn clear_trace(&mut self) {
         self.trace.clear();
+        self.acceptance_telemetry.clear_active_presentation();
+    }
+
+    /// Учитывает реально presented pre-target frame текущей seek generation.
+    pub(crate) fn record_presented_pre_target_frame_for_acceptance(
+        &mut self,
+        generation: u64,
+        frame_pts: Duration,
+    ) {
+        self.acceptance_telemetry
+            .record_presented_pre_target_frame(generation, frame_pts);
+    }
+
+    /// Возвращает one-shot evidence первого target/post-target presented frame-а.
+    pub(crate) fn record_first_target_frame_presented_for_acceptance(
+        &mut self,
+        generation: u64,
+        frame_pts: Duration,
+    ) -> Option<SeekTargetPresentationEvidence> {
+        self.acceptance_telemetry
+            .record_first_target_frame_presented(generation, frame_pts)
+    }
+
+    /// Возвращает финальный presentation counter только для доказанного target frame-а.
+    #[must_use]
+    pub(crate) fn seek_commit_presentation_evidence(&self, generation: u64) -> Option<u64> {
+        self.acceptance_telemetry
+            .commit_presentation_evidence(generation)
+    }
+
+    /// Взводит bounded one-shot progress proof после успешного Playing commit-а.
+    pub(crate) fn arm_post_commit_position_progress(
+        &mut self,
+        seek_commit: SeekCommitState,
+        committed_position: Duration,
+        committed_at: Instant,
+    ) {
+        self.acceptance_telemetry.arm_position_progress(
+            seek_commit,
+            committed_position,
+            committed_at,
+        );
+    }
+
+    /// Возвращает evidence только для первого положительного post-commit clock delta.
+    pub(crate) fn observe_post_commit_position_progress(
+        &mut self,
+        observed_position: Duration,
+        observed_at: Instant,
+    ) -> Option<SeekPositionProgressEvidence> {
+        self.acceptance_telemetry
+            .observe_position_progress(observed_position, observed_at)
     }
 
     /// Учитывает post-seek demux packet для compact trace logging.
@@ -1052,6 +1145,12 @@ impl SeekRuntimeState {
         self.visible_scrub_preview = None;
         self.simple_scrub
             .begin(confirmed_playback_state, live_scrub_diagnostics);
+    }
+
+    /// Возвращает monotonic span от принятого `BeginScrub` без раскрытия storage.
+    #[must_use]
+    pub(crate) fn simple_scrub_elapsed(&self) -> Option<Duration> {
+        self.simple_scrub.elapsed_since_begin()
     }
 
     /// Запоминает stable identity/timing кадра в момент player-owned presentation.
@@ -1364,6 +1463,9 @@ pub(crate) enum FinalSeekCommitPosition {
     /// Requested target становится clock base.
     Target { position: Duration },
 
+    /// Audio-only post-target source коммитит доказанный actual без video frame-а.
+    AuthoritativeActual { position: Duration },
+
     /// Explicit keyframe-before seek коммитит реально показанный frame текущего generation-а.
     PresentedFrame { position: Duration },
 
@@ -1377,6 +1479,7 @@ impl FinalSeekCommitPosition {
     pub(crate) const fn position(self) -> Duration {
         match self {
             Self::Target { position }
+            | Self::AuthoritativeActual { position }
             | Self::PresentedFrame { position }
             | Self::EofFallbackFrame { position } => position,
         }
@@ -1387,6 +1490,7 @@ impl FinalSeekCommitPosition {
     pub(crate) const fn policy_name(self) -> &'static str {
         match self {
             Self::Target { .. } => "target",
+            Self::AuthoritativeActual { .. } => "authoritative-actual",
             Self::PresentedFrame { .. } => "presented-frame",
             Self::EofFallbackFrame { .. } => "eof-fallback-frame",
         }

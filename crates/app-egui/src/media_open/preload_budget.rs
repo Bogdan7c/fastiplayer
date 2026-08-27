@@ -43,6 +43,32 @@ impl MediaOpenSourceRequest {
                     demux_config,
                 }
             }
+            Self::NativeHls {
+                source,
+                intent,
+                mut network_config,
+                yt_dlp_config,
+                demux_config,
+                preferred_video_codec_order,
+                preferred_video_height,
+                system_capabilities,
+                audio_capabilities,
+            } => {
+                // Master playlist может доказать separate A/V, поэтому каждому component-у
+                // оставляем ту же половину общего bounded budget, что extractor path-у.
+                limit_network_resources(&mut network_config, budget.ytdlp_component_mebibytes());
+                Self::NativeHls {
+                    source,
+                    intent,
+                    network_config,
+                    yt_dlp_config,
+                    demux_config,
+                    preferred_video_codec_order,
+                    preferred_video_height,
+                    system_capabilities,
+                    audio_capabilities,
+                }
+            }
             Self::YtDlp {
                 locator,
                 selection_intent,

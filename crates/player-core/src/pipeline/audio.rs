@@ -343,6 +343,18 @@ impl PlaybackPipeline {
         Some(play_result)
     }
 
+    /// Проверяет, создаст ли успешный `play` новый observable resume transition.
+    #[must_use]
+    pub(crate) fn audio_output_needs_play_request(&self) -> bool {
+        self.audio_output.is_some() && !self.audio_output_play_requested
+    }
+
+    /// Фиксирует successful play replacement output-а, выполненный до atomic slot swap-а.
+    pub(crate) fn mark_audio_output_play_request_accepted(&mut self) {
+        debug_assert!(self.audio_output.is_some());
+        self.audio_output_play_requested = true;
+    }
+
     /// Ставит output на паузу и сразу переводит frozen timing в media coordinate.
     pub(crate) fn pause_audio_output_and_capture_clock(
         &mut self,

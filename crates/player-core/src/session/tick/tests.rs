@@ -355,7 +355,9 @@ fn start_accurate_seek_for_decoder_io(
         seek_mode: crate::SeekMode::Accurate,
         target_position: media_core::MediaTime::from_duration(target_position),
         actual_position: media_core::MediaTime::from_duration(target_position),
+        landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
         started_at: Instant::now(),
+        public_accepted_at: Instant::now(),
         resume_intent: PlaybackResumeIntent::Pause,
         target_retention: crate::seek_state::SeekTargetRetention::ExactPublicRange,
     }));
@@ -2955,6 +2957,111 @@ fn installed_demux_retry_avoids_busy_spin_and_recovers_buffering_on_packet() {
     assert!(!session.is_eof_draining());
 }
 
+/// Истёкший demux retry ждёт downstream capacity и становится runnable после её release.
+#[test]
+fn expired_demux_retry_waits_for_full_video_pipeline_capacity() {
+    let mut session = PlayerSession::new();
+    let tick_config = PlayerTickConfig {
+        max_video_present_queue: 1,
+        min_video_present_queue: 1,
+        target_video_present_queue: 1,
+        max_pending_video_packets: 1,
+        ..PlayerTickConfig::default()
+    };
+    let read_count = Arc::new(AtomicUsize::new(0));
+    let recovered_packet = media_core::Packet::new_unbounded(
+        TrackId::new(1),
+        TrackKind::Video,
+        Duration::from_secs(10),
+        None,
+        true,
+        Bytes::from_static(&[0x82, 0x49, 0x83, 0x42]),
+    );
+    let demuxer = AdmissionTestDemuxer::with_events([
+        media_core::DemuxReadEvent::Packet(recovered_packet),
+        media_core::DemuxReadEvent::EndOfStream,
+    ])
+    .with_packet_read_count(Arc::clone(&read_count));
+    session
+        .pipeline
+        .install_opened_media(Box::new(demuxer), None, None, Vec::new());
+    session.snapshot.media_instance_id = Some(crate::MediaInstanceId::new_unique());
+    session.set_playback_state(PlaybackState::Playing);
+    session.pipeline.select_video_track(
+        TrackId::new(1),
+        VideoDecodeRequirement::new(VideoCodec::Vp9),
+    );
+    session
+        .pipeline
+        .set_video_decoder_thread(RecordingVideoDecoderThread::new().with_packet_queue_depth(1));
+    enqueue_selected_video_packet(
+        &mut session,
+        Duration::from_secs(10),
+        Bytes::from_static(&[0x01]),
+        true,
+    );
+    session
+        .pipeline
+        .enqueue_queued_video_frame(decoded_frame(Duration::from_secs(10), 1));
+
+    let planned_at = Instant::now();
+    let retry_delay = Duration::from_millis(1);
+    let retry_observed_at = planned_at
+        .checked_sub(retry_delay)
+        .expect("focused deadline должен помещаться перед planned instant");
+    let retry_hint = media_core::DemuxRetryHint::new(retry_delay)
+        .expect("focused retry delay должен быть допустим");
+    session.schedule_installed_demux_retry(retry_observed_at, retry_hint);
+
+    assert_eq!(
+        session.installed_demux_retry_delay(planned_at),
+        Some(Duration::ZERO)
+    );
+    assert!(!demux_work_available(&session, &tick_config, planned_at));
+    let blocked_plan = session.worker_wakeup_plan(
+        planned_at,
+        &tick_config,
+        Duration::from_millis(5),
+        Duration::from_millis(250),
+    );
+    assert_ne!(blocked_plan.reason, WorkerWakeupReason::DemuxRetryDeadline);
+    assert!(blocked_plan.delay.is_some_and(|delay| !delay.is_zero()));
+    assert_eq!(read_count.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        session.installed_demux_retry_delay(planned_at),
+        Some(Duration::ZERO),
+        "downstream backpressure не должен очищать retry fence"
+    );
+
+    let _pending_packet = session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("focused pending queue должна быть заполнена");
+    let _queued_frame = session
+        .pipeline
+        .pop_queued_video_frame_front()
+        .expect("focused present queue должна быть заполнена");
+    session
+        .pipeline
+        .set_video_decoder_thread(RecordingVideoDecoderThread::new());
+
+    assert!(demux_work_available(&session, &tick_config, planned_at));
+    let ready_plan = session.worker_wakeup_plan(
+        planned_at,
+        &tick_config,
+        Duration::from_millis(5),
+        Duration::from_millis(250),
+    );
+    assert_eq!(ready_plan.delay, Some(Duration::ZERO));
+    let mut tick_result = PlayerTickResult::default();
+    assert_eq!(
+        read_demux_packets(&mut session, &tick_config, &mut tick_result, 1, None),
+        1
+    );
+    assert_eq!(read_count.load(Ordering::Relaxed), 1);
+    assert_eq!(session.installed_demux_retry_delay(planned_at), None);
+}
+
 /// Seek, media replacement и shutdown инвалидируют старый retry fence без ожидания deadline-а.
 #[test]
 fn installed_demux_retry_deadline_is_stale_after_seek_replace_and_shutdown() {
@@ -3011,6 +3118,7 @@ fn installed_demux_retry_deadline_is_stale_after_seek_replace_and_shutdown() {
 #[test]
 fn demux_retry_tie_break_preserves_existing_work_first() {
     let mut session = PlayerSession::new();
+    let tick_config = PlayerTickConfig::default();
     session.snapshot.media_instance_id = Some(crate::MediaInstanceId::new_unique());
     let planned_at = Instant::now();
     let shared_delay = Duration::from_millis(20);
@@ -3024,7 +3132,8 @@ fn demux_retry_tie_break_preserves_existing_work_first() {
         wait_for_decoder_activity: false,
     };
 
-    let selected_plan = prefer_earlier_demux_retry(&session, planned_at, existing_plan);
+    let selected_plan =
+        prefer_earlier_demux_retry(&session, &tick_config, planned_at, existing_plan);
 
     assert_eq!(selected_plan.reason, WorkerWakeupReason::PipelineWorkReady);
     assert_eq!(selected_plan.delay, Some(shared_delay));

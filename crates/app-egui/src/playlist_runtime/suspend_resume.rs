@@ -327,11 +327,21 @@ impl PlaylistRuntime {
             (Some(ControllerInstallPhase::AuthorizationInFlight), Some(pending_request))
                 if pending_request == request_id =>
             {
-                self.on_playlist_installed(
+                self.on_playlist_installed_with_playback_intent(
                     request_id,
                     player_request_id,
                     media_instance_id,
                     binding_generation,
+                    super::controller::InstalledPlaybackIntentCompletion::Authoritative(
+                        match install_intent {
+                            player_core::PlaybackIntent::StartPlaying => {
+                                super::controller::StablePlaybackIntent::Playing
+                            }
+                            player_core::PlaybackIntent::StartPaused => {
+                                super::controller::StablePlaybackIntent::Paused
+                            }
+                        },
+                    ),
                 )
                 .map_err(|_| ResumeCheckpointError::ControllerInvariant)?
                 .active_media

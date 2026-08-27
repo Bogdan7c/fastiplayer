@@ -93,6 +93,15 @@ pub(crate) enum ControllerInstallPhase {
     AuthorizationInFlight,
 }
 
+/// Post-player-receipt playback intent, который может завершить playlist install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstalledPlaybackIntentCompletion {
+    /// Caller не владеет authoritative playback-intent receipt этого install-а.
+    PreserveCurrent,
+    /// Player уже принял exact staged intent; controller применяет его с revision fence.
+    Authoritative(super::StablePlaybackIntent),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaylistControllerInvariantViolation {
     LoadDecisionPending,
@@ -192,6 +201,7 @@ pub(super) struct GuardedInstall {
     request_id: MediaOpenRequestId,
     player_request_id: MediaInstallRequestId,
     target_item_id: Option<playlist_core::PlaylistItemId>,
+    intent_revision: PlaybackIntentRevision,
     token: GuardedInstallToken,
     desired_modes: Option<DesiredQueueModes>,
     queue_revision_before_commit: QueueRevisionSnapshot,
@@ -433,6 +443,7 @@ impl PlaylistController {
             request_id,
             player_request_id,
             target_item_id,
+            intent_revision,
             expected_queue_revision,
             mutation,
             ..
@@ -493,6 +504,7 @@ impl PlaylistController {
                 request_id,
                 player_request_id,
                 target_item_id,
+                intent_revision,
                 token,
                 desired_modes: None,
                 queue_revision_before_commit: self.queue.revision_snapshot(),
@@ -667,6 +679,24 @@ impl PlaylistController {
         media_instance_id: MediaInstanceId,
         binding_generation: PlaylistBindingGeneration,
     ) -> Result<ControllerTerminalDrain, PlaylistControllerInvariantViolation> {
+        self.on_installed_with_playback_intent(
+            request_id,
+            player_request_id,
+            media_instance_id,
+            binding_generation,
+            InstalledPlaybackIntentCompletion::PreserveCurrent,
+        )
+    }
+
+    /// Exact Installed с уже принятым player-owned playback intent receipt-ом.
+    pub(crate) fn on_installed_with_playback_intent(
+        &mut self,
+        request_id: MediaOpenRequestId,
+        player_request_id: MediaInstallRequestId,
+        media_instance_id: MediaInstanceId,
+        binding_generation: PlaylistBindingGeneration,
+        playback_intent: InstalledPlaybackIntentCompletion,
+    ) -> Result<ControllerTerminalDrain, PlaylistControllerInvariantViolation> {
         if let Some(violation) = self.fatal_invariant {
             return Err(violation);
         }
@@ -716,6 +746,7 @@ impl PlaylistController {
         };
         let GuardedInstall {
             target_item_id,
+            intent_revision,
             token,
             desired_modes,
             queue_revision_before_commit,
@@ -739,6 +770,14 @@ impl PlaylistController {
             binding_generation,
         );
         self.active_media = Some(active_media);
+        if let InstalledPlaybackIntentCompletion::Authoritative(intent) = playback_intent
+            && self.stable_intent_revision == intent_revision.get()
+        {
+            self.stable_playback_intent = intent;
+            if intent == super::StablePlaybackIntent::Playing {
+                self.transport_disposition = super::AppTransportDisposition::Active;
+            }
+        }
         self.replacement_detached_disposition = None;
         self.release_detached_tombstone_for_new_lineage(active_media);
         self.automatic_install_committed(active_media);

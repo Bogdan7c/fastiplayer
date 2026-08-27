@@ -2,14 +2,15 @@ use std::collections::VecDeque;
 use std::io::{Cursor, Read};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
 use demux_api::{
     DemuxHints, DemuxInput, DemuxOpenError, DemuxRegistry, DemuxSniffBudget, DemuxSourceExtension,
-    OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
-    OrderedSegmentSequence, OrderedSegmentSource,
+    OrderedResourceMetadata, OrderedResourceReadError, OrderedResourceReadOutcome,
+    OrderedResourceStreamSource, OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind,
+    OrderedSegmentReadError, OrderedSegmentSequence, OrderedSegmentSource,
 };
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, TrackKind, VideoPacketFraming};
 use source_core::{
@@ -179,6 +180,15 @@ impl TsFixtureBuilder {
         self
     }
 
+    /// Добавляет deterministic padding, который не участвует в selected program topology.
+    fn null_packets(mut self, count: usize) -> Self {
+        let payload = [0_u8; 184];
+        for _ in 0..count {
+            self.push_payload(0x1fff, false, false, &payload);
+        }
+        self
+    }
+
     fn push_payload(&mut self, pid: u16, payload_start: bool, discontinuity: bool, payload: &[u8]) {
         assert!(payload.len() <= 184);
         let mut packet = [0xff_u8; 188];
@@ -302,6 +312,124 @@ impl OrderedSegmentSource for SegmentSource {
     }
 }
 
+/// Pull source отдаёт один resource bounded chunks без предварительной materialization в demux.
+struct PullResourceSource {
+    stage: PullResourceStage,
+    body: Bytes,
+    maximum_fragment_bytes: usize,
+    delivered_bytes: Arc<AtomicUsize>,
+    end_resource_pulled: Arc<AtomicBool>,
+    requested_bounds: Arc<std::sync::Mutex<Vec<usize>>>,
+    interruption: PullResourceInterruption,
+}
+
+#[derive(Clone, Copy)]
+enum PullResourceInterruption {
+    Never,
+    AfterDeliveredBytes(usize),
+}
+
+#[derive(Clone, Copy)]
+enum PullResourceStage {
+    Begin,
+    Body,
+    EndOfInput,
+}
+
+/// Shared counters позволяют проверить pull/backpressure после передачи source ownership.
+struct PullResourceObservation {
+    delivered_bytes: Arc<AtomicUsize>,
+    end_resource_pulled: Arc<AtomicBool>,
+    requested_bounds: Arc<std::sync::Mutex<Vec<usize>>>,
+}
+
+impl OrderedResourceStreamSource for PullResourceSource {
+    fn next_event(
+        &mut self,
+        maximum_chunk_bytes: NonZeroUsize,
+        cancellation: &CancellationToken,
+    ) -> Result<OrderedResourceReadOutcome, OrderedResourceReadError> {
+        if cancellation.is_cancelled() {
+            return Err(OrderedResourceReadError::Cancelled);
+        }
+        self.requested_bounds
+            .lock()
+            .expect("requested bounds")
+            .push(maximum_chunk_bytes.get());
+        match self.stage {
+            PullResourceStage::Begin => {
+                self.stage = PullResourceStage::Body;
+                Ok(OrderedResourceReadOutcome::Begin(OrderedResourceMetadata {
+                    sequence: OrderedSegmentSequence::new(0),
+                    kind: OrderedSegmentKind::Media,
+                    discontinuity: OrderedSegmentDiscontinuity::Continuous,
+                }))
+            }
+            PullResourceStage::Body
+                if matches!(
+                    self.interruption,
+                    PullResourceInterruption::AfterDeliveredBytes(threshold)
+                        if self.delivered_bytes.load(Ordering::SeqCst) >= threshold
+                ) =>
+            {
+                Err(OrderedResourceReadError::RestartableReadInterrupted)
+            }
+            PullResourceStage::Body if !self.body.is_empty() => {
+                let chunk_bytes = maximum_chunk_bytes
+                    .get()
+                    .min(self.maximum_fragment_bytes)
+                    .min(self.body.len());
+                let chunk = self.body.split_to(chunk_bytes);
+                self.delivered_bytes
+                    .fetch_add(chunk.len(), Ordering::SeqCst);
+                Ok(OrderedResourceReadOutcome::Data(chunk))
+            }
+            PullResourceStage::Body => {
+                self.stage = PullResourceStage::EndOfInput;
+                self.end_resource_pulled.store(true, Ordering::SeqCst);
+                Ok(OrderedResourceReadOutcome::EndResource)
+            }
+            PullResourceStage::EndOfInput => Ok(OrderedResourceReadOutcome::EndOfInput),
+        }
+    }
+}
+
+fn pull_resource_input(
+    body: Vec<u8>,
+    maximum_fragment_bytes: usize,
+) -> (DemuxInput, PullResourceObservation) {
+    let delivered_bytes = Arc::new(AtomicUsize::new(0));
+    let end_resource_pulled = Arc::new(AtomicBool::new(false));
+    let requested_bounds = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let input = DemuxInput::ordered_resource_stream(Box::new(PullResourceSource {
+        stage: PullResourceStage::Begin,
+        body: Bytes::from(body),
+        maximum_fragment_bytes,
+        delivered_bytes: Arc::clone(&delivered_bytes),
+        end_resource_pulled: Arc::clone(&end_resource_pulled),
+        requested_bounds: Arc::clone(&requested_bounds),
+        interruption: PullResourceInterruption::Never,
+    }));
+    let observation = PullResourceObservation {
+        delivered_bytes,
+        end_resource_pulled,
+        requested_bounds,
+    };
+    (input, observation)
+}
+
+fn interrupting_pull_resource_input(body: Vec<u8>, interruption_after_bytes: usize) -> DemuxInput {
+    DemuxInput::ordered_resource_stream(Box::new(PullResourceSource {
+        stage: PullResourceStage::Begin,
+        body: Bytes::from(body),
+        maximum_fragment_bytes: usize::MAX,
+        delivered_bytes: Arc::new(AtomicUsize::new(0)),
+        end_resource_pulled: Arc::new(AtomicBool::new(false)),
+        requested_bounds: Arc::new(std::sync::Mutex::new(Vec::new())),
+        interruption: PullResourceInterruption::AfterDeliveredBytes(interruption_after_bytes),
+    }))
+}
+
 #[test]
 fn muxed_h264_aac_survives_arbitrary_read_chunks() {
     let bytes = muxed_h264_aac_fixture(90_000);
@@ -328,6 +456,153 @@ fn muxed_h264_aac_survives_arbitrary_read_chunks() {
     assert!(events.iter().any(
         |event| matches!(event, DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Audio)
     ));
+}
+
+/// Network chunk внутри длинного AAC PES не является resource EOF и не закрывает PES досрочно.
+#[test]
+fn streamed_resource_chunk_boundary_inside_long_aac_pes_is_not_finalized() {
+    let long_adts_frame = adts_frame(&[0x5a; 640]);
+    let resource_bytes = TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)], 0)
+        .pmt(PMT_PID, 1, &[(0x0f, AUDIO_PID)], 0)
+        .pes(AUDIO_PID, 0, None, &long_adts_frame)
+        .finish();
+    let (input, observation) = pull_resource_input(resource_bytes.clone(), 73);
+
+    let demuxer = MpegTsDemuxer::open(
+        input,
+        CancellationToken::never_cancelled(),
+        MpegTsDemuxOptions::default(),
+    )
+    .expect("true EndResource must finalize the complete long AAC PES");
+
+    assert_eq!(demuxer.tracks().len(), 1);
+    assert_eq!(demuxer.tracks()[0].kind, TrackKind::Audio);
+    assert!(observation.end_resource_pulled.load(Ordering::SeqCst));
+    assert_eq!(
+        observation.delivered_bytes.load(Ordering::SeqCst),
+        resource_bytes.len()
+    );
+    assert!(
+        observation
+            .requested_bounds
+            .lock()
+            .expect("requested bounds")
+            .iter()
+            .all(|bound| *bound == 32 * 1024)
+    );
+}
+
+/// Настоящий resource EOF сохраняет strict truncated PES validation.
+#[test]
+fn streamed_resource_truncated_pes_is_fatal_at_end_resource() {
+    let long_adts_frame = adts_frame(&[0x33; 640]);
+    let mut truncated_resource = TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)], 0)
+        .pmt(PMT_PID, 1, &[(0x0f, AUDIO_PID)], 0)
+        .pes(AUDIO_PID, 0, None, &long_adts_frame)
+        .finish();
+    truncated_resource.truncate(truncated_resource.len() - 188);
+    let (input, observation) = pull_resource_input(truncated_resource, 97);
+
+    let error = match MpegTsDemuxer::open(
+        input,
+        CancellationToken::never_cancelled(),
+        MpegTsDemuxOptions::default(),
+    ) {
+        Ok(_) => panic!("truncated PES must not open at EndResource"),
+        Err(error) => error,
+    };
+
+    assert!(observation.end_resource_pulled.load(Ordering::SeqCst));
+    assert!(matches!(error, MpegTsDemuxError::Malformed { .. }));
+}
+
+/// Ранняя topology proof не тянет хвост большого streamed resource-а и каждый pull bounded.
+#[test]
+fn streamed_resource_open_stops_before_body_eof_with_bounded_pulls() {
+    let first_frame = adts_frame(&[0x11, 0x22]);
+    let second_frame = adts_frame(&[0x33, 0x44]);
+    let resource_bytes = TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)], 0)
+        .pmt(PMT_PID, 1, &[(0x0f, AUDIO_PID)], 0)
+        .pes(AUDIO_PID, 0, None, &first_frame)
+        .pes(AUDIO_PID, 1_920, None, &second_frame)
+        .null_packets(6_000)
+        .finish();
+    let resource_len = resource_bytes.len();
+    let (input, observation) = pull_resource_input(resource_bytes, usize::MAX);
+
+    let demuxer = MpegTsDemuxer::open(
+        input,
+        CancellationToken::never_cancelled(),
+        MpegTsDemuxOptions::default(),
+    )
+    .expect("topology must be proven from the early bounded prefix");
+
+    assert_eq!(demuxer.tracks().len(), 1);
+    assert_eq!(demuxer.tracks()[0].kind, TrackKind::Audio);
+    assert!(!observation.end_resource_pulled.load(Ordering::SeqCst));
+    assert_eq!(
+        observation.delivered_bytes.load(Ordering::SeqCst),
+        32 * 1024
+    );
+    assert!(observation.delivered_bytes.load(Ordering::SeqCst) < resource_len);
+    assert!(
+        observation
+            .requested_bounds
+            .lock()
+            .expect("requested bounds")
+            .iter()
+            .all(|bound| *bound == 32 * 1024)
+    );
+}
+
+#[test]
+fn streamed_resource_preserves_restartable_read_interruption_as_typed_error() {
+    let first_frame = adts_frame(&[0x31; 96]);
+    let second_frame = adts_frame(&[0x32; 96]);
+    let resource_bytes = TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)], 0)
+        .pmt(PMT_PID, 1, &[(0x0f, AUDIO_PID)], 0)
+        .pes(AUDIO_PID, 0, None, &first_frame)
+        .pes(AUDIO_PID, 1_920, None, &second_frame)
+        .null_packets(6_000)
+        .finish();
+    let input = interrupting_pull_resource_input(resource_bytes, 32 * 1024);
+    let mut demuxer = MpegTsDemuxer::open(
+        input,
+        CancellationToken::never_cancelled(),
+        MpegTsDemuxOptions::default(),
+    )
+    .expect("early topology must open before the injected body interruption");
+
+    let mut observed_interruption = false;
+    for _ in 0..32 {
+        match demuxer.next_event() {
+            Ok(_) => {}
+            Err(error) => {
+                assert!(error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<demux_api::OrderedResourceRestartableReadInterrupted>()
+                        .is_some()
+                }));
+                assert!(
+                    error
+                        .downcast_ref::<MpegTsDemuxError>()
+                        .is_some_and(|error| {
+                            matches!(error, MpegTsDemuxError::RestartableReadInterrupted { .. })
+                        })
+                );
+                observed_interruption = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        observed_interruption,
+        "runtime body interruption must reach caller before ordinary EOF"
+    );
 }
 
 #[test]

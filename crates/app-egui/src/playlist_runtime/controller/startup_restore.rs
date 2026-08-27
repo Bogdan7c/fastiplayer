@@ -1,4 +1,4 @@
-//! D04/D22 restored-current preparation и bounded paused fallback policy.
+//! D04/D22 restored-current preparation и bounded fallback policy.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -40,9 +40,14 @@ impl StartupRestoreTarget {
         self.install.item_id
     }
 
-    /// Restore и каждый D22 fallback несут неизменный paused intent.
+    /// Возвращает playback intent, который startup owner применит после position receipt.
     pub(crate) const fn playback_intent(&self) -> PlaybackIntent {
         self.install.playback_intent
+    }
+
+    /// Привязывает persisted restore к актуальной startup policy до media-open admission.
+    pub(crate) fn set_playback_intent(&mut self, playback_intent: PlaybackIntent) {
+        self.install.playback_intent = playback_intent;
     }
 
     /// Position policy читается strong-open транзакцией до передачи domain install plan.
@@ -224,5 +229,81 @@ impl PlaylistController {
             expected_queue_revision: self.queue.revision_snapshot(),
             mutation,
         }
+    }
+}
+
+#[cfg(test)]
+mod playback_policy_tests {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use playlist_core::{
+        CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistMediaKind,
+    };
+
+    use super::*;
+
+    fn restored_target(position: StartupPosition) -> StartupRestoreTarget {
+        let mut controller = PlaylistController::new();
+        let appended = controller
+            .append(vec![PlaylistItemDraft::local(
+                LocalLocator::Native(PathBuf::from("startup-restore-test.mkv")),
+                None,
+                CachedPlaylistMetadata::new("startup restore", PlaylistMediaKind::Video),
+            )])
+            .expect("append startup restore fixture");
+        let item_id = match appended {
+            super::super::ControllerAppendOutcome::Added { item_ids, .. } => item_ids[0],
+            super::super::ControllerAppendOutcome::NoItemsProvided => {
+                panic!("startup restore fixture must append one row")
+            }
+        };
+        controller
+            .queue
+            .set_traversal_current(item_id)
+            .expect("select persisted current fixture");
+        let mut target = controller
+            .startup_restored_current()
+            .expect("create restored-current target");
+        target.set_position(position);
+        target
+    }
+
+    #[test]
+    fn cold_resume_autoplay_preserves_checkpoint_and_stages_start_playing_intent() {
+        let checkpoint = Duration::from_secs(355);
+        let mut target = restored_target(StartupPosition::Restore(checkpoint));
+        let mut config = rustiplayer_config::AppConfig::default();
+        config.player.start_paused = false;
+
+        crate::startup_media::apply_restored_playback_policy(&mut target, &config);
+
+        assert_eq!(target.position(), StartupPosition::Restore(checkpoint));
+        assert_eq!(target.playback_intent(), PlaybackIntent::StartPlaying);
+    }
+
+    #[test]
+    fn startup_at_zero_autoplay_keeps_exact_start_and_stages_start_playing_intent() {
+        let mut target = restored_target(StartupPosition::KeepStart);
+        let mut config = rustiplayer_config::AppConfig::default();
+        config.player.start_paused = false;
+
+        crate::startup_media::apply_restored_playback_policy(&mut target, &config);
+
+        assert_eq!(target.position(), StartupPosition::KeepStart);
+        assert_eq!(target.playback_intent(), PlaybackIntent::StartPlaying);
+    }
+
+    #[test]
+    fn configured_pause_remains_paused_without_losing_resume_checkpoint() {
+        let checkpoint = Duration::from_secs(355);
+        let mut target = restored_target(StartupPosition::Restore(checkpoint));
+        let mut config = rustiplayer_config::AppConfig::default();
+        config.player.start_paused = true;
+
+        crate::startup_media::apply_restored_playback_policy(&mut target, &config);
+
+        assert_eq!(target.position(), StartupPosition::Restore(checkpoint));
+        assert_eq!(target.playback_intent(), PlaybackIntent::StartPaused);
     }
 }

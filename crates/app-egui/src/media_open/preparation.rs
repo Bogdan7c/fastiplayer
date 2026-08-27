@@ -5,7 +5,7 @@ use std::sync::Arc;
 use player_core::PreparedMedia;
 
 use super::{
-    ActiveMediaSource, MediaOpenSourceRequest, MediaPreparationFailureKind,
+    ActiveMediaSource, MediaOpenSourceRequest, MediaPreparationFailureKind, NativeHlsOpenIntent,
     PreparedMediaDescriptor, PreparedMediaOpen, SafeMediaLabel,
 };
 
@@ -84,6 +84,114 @@ pub(super) fn prepare_source(
                     safe_label,
                 },
             })
+        }
+        MediaOpenSourceRequest::NativeHls {
+            source,
+            intent,
+            network_config,
+            yt_dlp_config,
+            demux_config,
+            preferred_video_codec_order,
+            preferred_video_height,
+            system_capabilities,
+            audio_capabilities,
+        } => {
+            let safe_label = source.safe_label().clone();
+            let (expected_selection, fallback_locator) = match intent {
+                NativeHlsOpenIntent::InitialWithYtDlpFallback { fallback_locator } => {
+                    (None, Some(fallback_locator))
+                }
+                NativeHlsOpenIntent::ExactSelection(selection) => (Some(selection), None),
+            };
+            let mut port = crate::startup_media::native_hls::ProductionNativeHlsAdmissionPort::new(
+                crate::startup_media::native_hls::NativeHlsPreparationRequest {
+                    source: &source,
+                    expected_selection: expected_selection.as_ref(),
+                    network_config: &network_config,
+                    demux_config: &demux_config,
+                    preferred_video_codec_order: &preferred_video_codec_order,
+                    preferred_video_height,
+                    start: web_media_hls::HlsVodStartIntent::Beginning,
+                    cancellation: cancellation.source_token(),
+                },
+            );
+            let attempt =
+                crate::startup_media::native_hls::NativeHlsAdmissionPort::prepare(&mut port)
+                    .map_err(|error| {
+                        tracing::warn!(
+                            source = %safe_label,
+                            error = %error,
+                            "Подготовка native HLS VOD завершилась ошибкой"
+                        );
+                        if cancellation.is_cancelled() {
+                            MediaPreparationFailureKind::Cancelled
+                        } else {
+                            MediaPreparationFailureKind::NativeHlsOpen
+                        }
+                    })?;
+            match attempt {
+                crate::startup_media::native_hls::NativeHlsAttempt::Prepared(prepared) => {
+                    if cancellation.is_cancelled() {
+                        return Err(MediaPreparationFailureKind::Cancelled);
+                    }
+                    let tracks = prepared.tracks().to_vec();
+                    let duration = prepared.duration();
+                    let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
+                    let active_source = ActiveMediaSource::NativeHlsUrl {
+                        source,
+                        selection: prepared.selection,
+                    };
+                    let prepared_media =
+                        PreparedMedia::from_external_label(safe_label.as_str(), prepared.demuxer)
+                            .with_worker_receipted_demux_seek_policy(
+                            prepared.seek_port,
+                            player_core::PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget,
+                        );
+                    Ok(PreparedMediaOpen {
+                        prepared_media,
+                        descriptor: PreparedMediaDescriptor::NativeHls {
+                            tracks,
+                            duration,
+                            metadata,
+                            source: active_source,
+                            safe_label,
+                        },
+                    })
+                }
+                crate::startup_media::native_hls::NativeHlsAttempt::RequiresYtDlpFallback(
+                    reason,
+                ) => {
+                    let Some(locator) = fallback_locator else {
+                        // Успешный native install намеренно не хранит extractor locator:
+                        // exact reopen не имеет права молча сменить semantic stream.
+                        tracing::warn!(
+                            source = %safe_label,
+                            ?reason,
+                            "Exact native HLS reopen отклонён без extractor fallback"
+                        );
+                        return Err(MediaPreparationFailureKind::NativeHlsOpen);
+                    };
+                    tracing::info!(
+                        source = %safe_label,
+                        ?reason,
+                        "Initial native HLS admission передан единственному YtDlp fallback"
+                    );
+                    prepare_source(
+                        MediaOpenSourceRequest::YtDlp {
+                            locator,
+                            selection_intent:
+                                crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                            network_config,
+                            yt_dlp_config,
+                            demux_config,
+                            preferred_video_codec_order,
+                            system_capabilities,
+                            audio_capabilities,
+                        },
+                        cancellation,
+                    )
+                }
+            }
         }
         MediaOpenSourceRequest::YtDlp {
             locator,

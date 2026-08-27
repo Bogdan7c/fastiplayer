@@ -131,7 +131,9 @@ impl AppState {
         self.url_sidebar_controller.record_installed_source();
         self.current_local_file = match source.physical_source() {
             ActiveMediaSource::LocalFile(path) => Some(path.clone()),
-            ActiveMediaSource::DirectMediaUrl(_) | ActiveMediaSource::YtDlpUrl { .. } => None,
+            ActiveMediaSource::DirectMediaUrl(_)
+            | ActiveMediaSource::NativeHlsUrl { .. }
+            | ActiveMediaSource::YtDlpUrl { .. } => None,
             ActiveMediaSource::PlaybackWindow { .. } => {
                 unreachable!("physical_source removes playback-window wrappers")
             }

@@ -19,6 +19,7 @@ mod playback_window;
 mod prepared_demux_seek;
 mod render_lease_bridge;
 mod runtime_settings;
+mod seek_acceptance_telemetry;
 mod seek_state;
 mod session;
 mod snapshot;
@@ -107,8 +108,8 @@ pub use media_install::{
     PrepareMediaInstallPosition, TimelineSeekKind, TimelineSeekRequestId,
 };
 pub use media_opening::{
-    MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource,
-    PreparedMediaTimelineMode, PreparedMediaTimelineModeError,
+    MediaSourceInfo, MediaSourceKind, PreparedInitialPosition, PreparedInitialPositionError,
+    PreparedMedia, PreparedMediaSource, PreparedMediaTimelineMode, PreparedMediaTimelineModeError,
 };
 pub(crate) use pipeline::{
     PendingAudioPacket, PendingVideoPacket, PendingVideoPacketTimestamps, PlaybackPipeline,
@@ -116,8 +117,9 @@ pub(crate) use pipeline::{
 pub use playback_rate::{PlaybackRate, PlaybackRateValidationError};
 pub use playback_window::{MediaPlaybackWindow, MediaPlaybackWindowError};
 pub use prepared_demux_seek::{
-    PreparedDemuxSeekEnqueueError, PreparedDemuxSeekMode, PreparedDemuxSeekOutcome,
-    PreparedDemuxSeekPort, PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
+    PreparedDemuxSeekEnqueueError, PreparedDemuxSeekLandingPolicy, PreparedDemuxSeekMode,
+    PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, PreparedDemuxSeekReceipt,
+    PreparedDemuxSeekRequestId,
 };
 pub use runtime_settings::{
     PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,

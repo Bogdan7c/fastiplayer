@@ -40,7 +40,7 @@ use crate::redraw_pacing::{
 use crate::renderer_recreation::RendererLifecycleCoordinator;
 use crate::settings_runtime::SettingsRuntime;
 use crate::startup_media::{InitialMedia, StartupMediaController};
-use crate::state::{AppState, LifecycleTimelineSeekSettlement};
+use crate::state::{AppState, AppStateStartupContext, LifecycleTimelineSeekSettlement};
 use crate::telemetry::Telemetry;
 use hotkeys::ShellHotkeyAction;
 use shutdown::{
@@ -101,6 +101,9 @@ fn report_timeline_seek_lifecycle_settlement(settlement: LifecycleTimelineSeekSe
 /// - телеметрией
 /// - controller-ом стартового media lifecycle
 pub(crate) struct AppShell {
+    /// Monotonic process origin снимается до config/instance bootstrap-а.
+    process_started_at: Instant,
+
     /// Окно приложения. None до Resumed.
     window: Option<Arc<Window>>,
 
@@ -187,6 +190,7 @@ impl AppShell {
     ///
     /// Ресурсы инициализируются в Resumed, когда окно готово.
     pub(crate) fn new(
+        process_started_at: Instant,
         initial_media: Option<InitialMedia>,
         startup_error: Option<String>,
         loaded_config: LoadedConfig,
@@ -228,6 +232,7 @@ impl AppShell {
                 anyhow::anyhow!("playlist state inspection startup failed: {error:?}")
             })?;
         Ok(Self {
+            process_started_at,
             window: None,
             renderer: None,
             app_state: None,
@@ -263,6 +268,7 @@ impl AppShell {
         if self.renderer.is_some() && self.app_state.is_some() {
             return;
         }
+        let runtime_restore_started_at = Instant::now();
 
         let surface_present_settings =
             surface_present_settings_from_config(self.settings_runtime.committed_config());
@@ -274,6 +280,12 @@ impl AppShell {
                 return;
             }
         };
+        info!(
+            process_elapsed_ms = self.process_started_at.elapsed().as_secs_f64() * 1_000.0,
+            runtime_restore_elapsed_ms =
+                runtime_restore_started_at.elapsed().as_secs_f64() * 1_000.0,
+            "Startup window/GPU renderer ready"
+        );
         let initial_render_settings = match self.settings_runtime.initial_render_settings() {
             Ok(settings) => settings,
             Err(error) => {
@@ -288,10 +300,13 @@ impl AppShell {
 
         let mut app_state = match AppState::new(
             &window,
+            AppStateStartupContext::new(
+                self.process_started_at,
+                self.startup_media.startup_error_message(),
+            ),
             self.telemetry.clone(),
             self.settings_runtime.committed_snapshot(),
             self.settings_runtime.audio_output_device_controller(),
-            self.startup_media.startup_error_message(),
             self.local_file_open_wake_port.clone(),
             self.player_timeline_wake_port.clone(),
         ) {
@@ -302,6 +317,12 @@ impl AppShell {
                 return;
             }
         };
+        info!(
+            process_elapsed_ms = self.process_started_at.elapsed().as_secs_f64() * 1_000.0,
+            runtime_restore_elapsed_ms =
+                runtime_restore_started_at.elapsed().as_secs_f64() * 1_000.0,
+            "Startup player worker ready"
+        );
         let system_capabilities = probe_system_capabilities(renderer.render_capabilities());
         info!("{}", system_capabilities.summary_text());
         app_state.set_system_capabilities(system_capabilities.clone());
@@ -310,6 +331,12 @@ impl AppShell {
             renderer.adapter(),
             renderer.device(),
             renderer.queue(),
+        );
+        info!(
+            process_elapsed_ms = self.process_started_at.elapsed().as_secs_f64() * 1_000.0,
+            runtime_restore_elapsed_ms =
+                runtime_restore_started_at.elapsed().as_secs_f64() * 1_000.0,
+            "Startup video pipeline ready"
         );
 
         let Some(playlist_binding) = self.playlist_runtime.bind_resumed_app_state() else {

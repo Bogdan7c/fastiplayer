@@ -14,6 +14,7 @@ use crate::media_open::{
     prepare_yt_dlp_player_media,
 };
 use crate::playlist_runtime::StartupRestoreTarget;
+use crate::startup_readiness::StartupMediaOpenKind;
 use crate::state::PreparedSingleMediaOpen;
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
 
@@ -23,6 +24,28 @@ use super::{PreparedYtDlpStartupMedia, StartupMediaController};
 pub(super) enum StartupMediaTarget {
     CliReplacement,
     RestoredCurrent(StartupRestoreTarget),
+}
+
+/// Применяет актуальную config policy к domain target до strong-open admission.
+pub(crate) fn apply_restored_playback_policy(
+    target: &mut StartupRestoreTarget,
+    config: &rustiplayer_config::AppConfig,
+) {
+    target.set_playback_intent(PlaybackIntent::from_autoplay(!config.player.start_paused));
+}
+
+/// Prepared topology — единственный app-owned источник positive/absent audio proof-а.
+fn prepared_startup_audio_proof(
+    tracks: &[media_core::TrackInfo],
+) -> crate::startup_readiness::StartupAudioProof {
+    if tracks
+        .iter()
+        .any(|track| track.kind == media_core::TrackKind::Audio)
+    {
+        crate::startup_readiness::StartupAudioProof::Required
+    } else {
+        crate::startup_readiness::StartupAudioProof::NotPresent
+    }
 }
 
 #[cfg(test)]
@@ -66,6 +89,10 @@ pub(super) enum PreparedStartupMedia {
     Direct {
         source_locator: service_direct_media::DirectMediaUrl,
         prepared_media: player_core::PreparedMedia,
+    },
+    NativeHls {
+        source: crate::media_open::NativeHlsUrl,
+        prepared: Box<super::native_hls::PreparedNativeHlsMedia>,
     },
 }
 
@@ -200,6 +227,7 @@ impl StartupMediaController {
             && structurally_superseded
             && self.yt_dlp_startup_job.is_none()
             && self.direct_media_startup_job.is_none()
+            && self.native_hls_startup_job.is_none()
             && self.local_startup_job.is_none()
         {
             self.orchestration.prepared = None;
@@ -217,6 +245,7 @@ impl StartupMediaController {
             && self.orchestration.prepared.is_none()
             && self.yt_dlp_startup_job.is_none()
             && self.direct_media_startup_job.is_none()
+            && self.native_hls_startup_job.is_none()
             && self.local_startup_job.is_none()
             && (!self.orchestration.cli_requested || self.orchestration.cli_failed)
             && !structurally_superseded
@@ -313,6 +342,19 @@ impl StartupMediaController {
             }
         }
 
+        if let Some(job) = self.native_hls_startup_job.as_mut()
+            && let Some(result) = job.try_take_result()
+        {
+            self.native_hls_startup_job = None;
+            changed = true;
+            match result {
+                Ok(prepared) => self.hold_prepared(prepared, playlist_runtime),
+                Err(error) => {
+                    self.handle_preparation_failure(error, app_state, playlist_runtime);
+                }
+            }
+        }
+
         if playlist_runtime.allocator_load_gate_is_open() && self.orchestration.prepared.is_some() {
             changed |= self.begin_prepared_winner(app_state, playlist_runtime, renderer);
         }
@@ -368,20 +410,48 @@ impl StartupMediaController {
         app_state: &mut crate::state::AppState,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
     ) {
+        let Some(config) = self.startup_config.clone() else {
+            // Config absence — process-wide failure, поэтому D22 item fallback здесь бессмысленен.
+            self.handle_install_failure(
+                "Startup config недоступен для restored media".to_owned(),
+                false,
+                app_state,
+            );
+            return;
+        };
         loop {
+            // Каждый D22 fallback создаётся domain-owner-ом с безопасным paused default.
+            // Startup owner повторно применяет пользовательскую policy до нового admission.
+            apply_restored_playback_policy(&mut target, &config);
             let locator = target.locator.clone();
+            let readiness_target = match target.position() {
+                crate::playlist_runtime::StartupPosition::KeepStart => {
+                    crate::startup_readiness::StartupTargetExpectation::Beginning
+                }
+                crate::playlist_runtime::StartupPosition::Restore(target_position) => {
+                    crate::startup_readiness::StartupTargetExpectation::Restore { target_position }
+                }
+            };
+            let readiness_playback = match target.playback_intent() {
+                player_core::PlaybackIntent::StartPlaying => {
+                    crate::startup_readiness::StartupPlaybackExpectation::Playing
+                }
+                player_core::PlaybackIntent::StartPaused => {
+                    crate::startup_readiness::StartupPlaybackExpectation::Paused
+                }
+            };
             self.orchestration
                 .begin_target(StartupMediaTarget::RestoredCurrent(target));
+            app_state.begin_startup_readiness(
+                crate::startup_readiness::StartupReadinessExpectation::new(
+                    StartupMediaOpenKind::Restore,
+                    readiness_target,
+                    readiness_playback,
+                    crate::startup_readiness::StartupAudioExpectation::Unknown,
+                ),
+            );
             if let Some(local_locator) = locator.as_local() {
                 if let Some(path) = local_locator.expose_native_path_for_open() {
-                    let Some(config) = self.startup_config.as_ref() else {
-                        self.handle_preparation_failure(
-                            "Startup config недоступен для restored local media".to_owned(),
-                            app_state,
-                            playlist_runtime,
-                        );
-                        return;
-                    };
                     match crate::local_file_open::LocalFileOpenJob::spawn_preparation(
                         path.to_path_buf(),
                         config.player.demux,
@@ -389,9 +459,7 @@ impl StartupMediaController {
                     ) {
                         Ok(job) => {
                             self.local_startup_job = Some(job);
-                            app_state.set_startup_pending(
-                                "Восстановление media в состоянии Pause...".to_owned(),
-                            );
+                            app_state.set_startup_pending("Восстановление media...".to_owned());
                             return;
                         }
                         Err(error) => {
@@ -430,14 +498,23 @@ impl StartupMediaController {
                         continue;
                     }
                 };
-                let Some(config) = self.startup_config.clone() else {
-                    return;
-                };
                 let Some(capabilities) = self.system_capabilities.clone() else {
+                    self.handle_install_failure(
+                        "System capabilities недоступны для restored URL".to_owned(),
+                        false,
+                        app_state,
+                    );
                     return;
                 };
                 service_locator.start(self, app_state, &config, &capabilities);
-                if self.yt_dlp_startup_job.is_some() || self.direct_media_startup_job.is_some() {
+                // URL adapter считается успешно запущенным только пока один из
+                // трёх mutually-exclusive owner jobs действительно удерживается
+                // controller-ом. Native HLS — такой же полноценный startup owner,
+                // а не промежуточный probe перед yt-dlp fallback.
+                if self.yt_dlp_startup_job.is_some()
+                    || self.direct_media_startup_job.is_some()
+                    || self.native_hls_startup_job.is_some()
+                {
                     return;
                 }
                 let failed = self.orchestration.target.take();
@@ -487,10 +564,17 @@ impl StartupMediaController {
             .startup_config
             .as_ref()
             .is_some_and(|config| !config.player.start_paused);
+        let playback_intent = match &target {
+            StartupMediaTarget::CliReplacement => PlaybackIntent::from_autoplay(autoplay),
+            StartupMediaTarget::RestoredCurrent(target) => target.playback_intent(),
+        };
         let mut pending_install = None;
 
         let install_result = match prepared {
             PreparedStartupMedia::Local(prepared) => {
+                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                    &prepared.tracks,
+                ));
                 let path = prepared.source_path.clone();
                 let media_kind = prepared.media_kind;
                 let source = ActiveMediaSource::LocalFile(path.clone());
@@ -526,13 +610,8 @@ impl StartupMediaController {
                         )
                     }
                 };
-                let intent = if is_cli {
-                    PlaybackIntent::from_autoplay(autoplay)
-                } else {
-                    PlaybackIntent::StartPaused
-                };
                 app_state
-                    .begin_prepared_media_strong(playlist_runtime, renderer, input, intent)
+                    .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
@@ -547,6 +626,7 @@ impl StartupMediaController {
             } => {
                 let prepared = *prepared;
                 let tracks = prepared.demuxer.tracks().to_vec();
+                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(&tracks));
                 let duration = prepared.demuxer.duration();
                 let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
                 let safe_label =
@@ -584,16 +664,7 @@ impl StartupMediaController {
                         vod_endpoint_recovery: prepared.vod_endpoint_recovery,
                     });
                 app_state
-                    .begin_prepared_media_strong(
-                        playlist_runtime,
-                        renderer,
-                        input,
-                        if is_cli {
-                            PlaybackIntent::from_autoplay(autoplay)
-                        } else {
-                            PlaybackIntent::StartPaused
-                        },
-                    )
+                    .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
@@ -606,6 +677,9 @@ impl StartupMediaController {
                 source_locator,
                 prepared_media,
             } => {
+                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                    prepared_media.tracks(),
+                ));
                 let source = ActiveMediaSource::DirectMediaUrl(source_locator.clone());
                 let input = self.prepared_url_input(
                     prepared_media,
@@ -614,16 +688,59 @@ impl StartupMediaController {
                     target,
                 );
                 app_state
-                    .begin_prepared_media_strong(
-                        playlist_runtime,
-                        renderer,
-                        input,
-                        if is_cli {
-                            PlaybackIntent::from_autoplay(autoplay)
-                        } else {
-                            PlaybackIntent::StartPaused
-                        },
+                    .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)
+                    .map(|_| {
+                        pending_install = Some(StartupPendingInstall {
+                            is_cli,
+                            local_discovery: None,
+                            superseded: false,
+                        });
+                    })
+            }
+            PreparedStartupMedia::NativeHls { source, prepared } => {
+                let super::native_hls::PreparedNativeHlsMedia {
+                    demuxer,
+                    seek_port,
+                    initial_position,
+                    selection,
+                } = *prepared;
+                let tracks = demuxer.tracks().to_vec();
+                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(&tracks));
+                let duration = demuxer.duration();
+                let metadata = demuxer.media_metadata().unwrap_or_default().tags;
+                let safe_label = source.safe_label().clone();
+                let active_source = ActiveMediaSource::NativeHlsUrl { source, selection };
+                let prepared_media = crate::web_media_hls_open::prepare_native_hls_player_media(
+                    safe_label.as_str(),
+                    crate::web_media_hls_open::PreparedNativeHlsVod {
+                        demuxer,
+                        seek_port,
+                        initial_position,
+                    },
+                );
+                let prepared_media = match prepared_media {
+                    Ok(prepared_media) => prepared_media,
+                    Err(error) => {
+                        self.handle_install_failure(error.to_string(), is_cli, app_state);
+                        return true;
+                    }
+                };
+                let input = self
+                    .prepared_url_input(
+                        prepared_media,
+                        active_source.clone(),
+                        safe_label.clone(),
+                        target,
                     )
+                    .with_descriptor(crate::media_open::PreparedMediaDescriptor::NativeHls {
+                        tracks,
+                        duration,
+                        metadata,
+                        source: active_source,
+                        safe_label,
+                    });
+                app_state
+                    .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
@@ -693,6 +810,9 @@ impl StartupMediaController {
         app_state: &mut crate::state::AppState,
     ) {
         self.startup_error = Some(safe_error.clone());
+        app_state.abort_startup_readiness(
+            crate::startup_readiness::StartupReadinessAbortReason::InstallationFailed,
+        );
         app_state.set_startup_error(safe_error);
         self.orchestration.cli_failed |= is_cli;
         self.orchestration.phase = StartupMediaPhase::Failed;

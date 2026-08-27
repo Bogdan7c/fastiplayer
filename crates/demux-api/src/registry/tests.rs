@@ -19,8 +19,10 @@ use crate::{
     DemuxContainerId, DemuxFactoryId, DemuxFixtureId, DemuxHintRelationship, DemuxHints,
     DemuxInput, DemuxInputCapabilities, DemuxInputCapability, DemuxProbeConfidence,
     DemuxProbeDecision, DemuxProbeMatch, DemuxProbeRejection, DemuxProbeRequest, DemuxSniffBudget,
-    DemuxSourceExtension, OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind,
-    OrderedSegmentReadError, OrderedSegmentSequence, OrderedSegmentSource,
+    DemuxSourceExtension, OrderedResourceMetadata, OrderedResourceReadError,
+    OrderedResourceReadOutcome, OrderedResourceStreamSource, OrderedSegment,
+    OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
+    OrderedSegmentSequence, OrderedSegmentSource,
 };
 
 /// Fake runtime demuxer нужен только для проверки open composition.
@@ -53,13 +55,15 @@ struct RecordingFactory {
     descriptor: DemuxFactoryDescriptor,
     probed_container: DemuxContainerId,
     opened_bytes: Arc<Mutex<Vec<u8>>>,
+    maximum_open_bytes: Option<usize>,
 }
 
 impl RecordingFactory {
     fn new(factory_id: &str, container_id: &str, opened_bytes: Arc<Mutex<Vec<u8>>>) -> Self {
         let input_capabilities = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
             .with(DemuxInputCapability::StreamingBytes)
-            .with(DemuxInputCapability::OrderedSegments);
+            .with(DemuxInputCapability::OrderedSegments)
+            .with(DemuxInputCapability::OrderedResourceStream);
         let container = DemuxContainerRegistration::new(
             DemuxContainerId::new(container_id).expect("container ID"),
             input_capabilities,
@@ -85,7 +89,14 @@ impl RecordingFactory {
             probed_container: DemuxContainerId::new(probed_container_id)
                 .expect("probed container ID"),
             opened_bytes,
+            maximum_open_bytes: None,
         }
+    }
+
+    /// Ограничивает factory open чтением prefix-а, моделируя ранний container open.
+    fn with_maximum_open_bytes(mut self, maximum_open_bytes: usize) -> Self {
+        self.maximum_open_bytes = Some(maximum_open_bytes);
+        self
     }
 }
 
@@ -152,6 +163,28 @@ impl DemuxFactory for RecordingFactory {
                     opened_bytes.extend_from_slice(&segment.bytes);
                 }
             }
+            DemuxInput::OrderedResourceStream(mut source) => loop {
+                let outcome = source
+                    .next_event(
+                        NonZeroUsize::new(16).expect("non-zero factory read bound"),
+                        &request.cancellation,
+                    )
+                    .map_err(|error| DemuxFactoryOpenError::Backend(error.into()))?;
+                match outcome {
+                    OrderedResourceReadOutcome::Begin(_)
+                    | OrderedResourceReadOutcome::EndResource => {}
+                    OrderedResourceReadOutcome::Data(bytes) => {
+                        opened_bytes.extend_from_slice(&bytes);
+                        if self
+                            .maximum_open_bytes
+                            .is_some_and(|limit| opened_bytes.len() >= limit)
+                        {
+                            break;
+                        }
+                    }
+                    OrderedResourceReadOutcome::EndOfInput => break,
+                }
+            },
         }
         *self.opened_bytes.lock().expect("opened byte log") = opened_bytes;
         Ok(Box::new(EmptyDemuxer))
@@ -230,6 +263,39 @@ impl ByteSource for MemoryByteSource {
 /// Fake segment source сохраняет exact boundaries для replay verification.
 struct MemorySegmentSource {
     segments: VecDeque<OrderedSegment>,
+}
+
+/// Fake pull source сохраняет реальные max-chunk requests и режет `Bytes` без копии.
+struct MemoryResourceStream {
+    events: VecDeque<OrderedResourceReadOutcome>,
+    requested_chunk_bounds: Arc<Mutex<Vec<usize>>>,
+}
+
+impl OrderedResourceStreamSource for MemoryResourceStream {
+    fn next_event(
+        &mut self,
+        maximum_chunk_bytes: NonZeroUsize,
+        cancellation: &CancellationToken,
+    ) -> Result<OrderedResourceReadOutcome, OrderedResourceReadError> {
+        if cancellation.is_cancelled() {
+            return Err(OrderedResourceReadError::Cancelled);
+        }
+        self.requested_chunk_bounds
+            .lock()
+            .expect("chunk bounds")
+            .push(maximum_chunk_bytes.get());
+        if let Some(OrderedResourceReadOutcome::Data(bytes)) = self.events.front_mut()
+            && bytes.len() > maximum_chunk_bytes.get()
+        {
+            return Ok(OrderedResourceReadOutcome::Data(
+                bytes.split_to(maximum_chunk_bytes.get()),
+            ));
+        }
+        Ok(self
+            .events
+            .pop_front()
+            .unwrap_or(OrderedResourceReadOutcome::EndOfInput))
+    }
 }
 
 impl OrderedSegmentSource for MemorySegmentSource {
@@ -602,6 +668,124 @@ fn ordered_segment_larger_than_sniff_prefix_is_replayed_without_truncation() {
         &*opened_bytes.lock().expect("opened bytes"),
         oversized_segment.as_ref()
     );
+}
+
+/// Registry sniff читает только bounded body prefix и replay-ит его в тот же resource.
+#[test]
+fn ordered_resource_stream_replays_prefix_without_full_body_materialization() {
+    let opened_bytes = Arc::new(Mutex::new(Vec::new()));
+    let requested_chunk_bounds = Arc::new(Mutex::new(Vec::new()));
+    let registry = registry_with_recording_factory(Arc::clone(&opened_bytes));
+    let resource_bytes = Bytes::from_static(b"TEST-streamed-resource-body-beyond-sniff-prefix");
+    let events = VecDeque::from([
+        OrderedResourceReadOutcome::Begin(OrderedResourceMetadata {
+            sequence: OrderedSegmentSequence::new(7),
+            kind: OrderedSegmentKind::Media,
+            discontinuity: OrderedSegmentDiscontinuity::StartsNewTimeline,
+        }),
+        OrderedResourceReadOutcome::Data(resource_bytes.clone()),
+        OrderedResourceReadOutcome::EndResource,
+        OrderedResourceReadOutcome::EndOfInput,
+    ]);
+
+    registry
+        .open(
+            DemuxInput::ordered_resource_stream(Box::new(MemoryResourceStream {
+                events,
+                requested_chunk_bounds: Arc::clone(&requested_chunk_bounds),
+            })),
+            DemuxHints::none(),
+            sniff_budget(),
+            CancellationToken::never_cancelled(),
+        )
+        .expect("streamed resource must open from replayed prefix");
+
+    assert_eq!(
+        &*opened_bytes.lock().expect("opened bytes"),
+        resource_bytes.as_ref()
+    );
+    let bounds = requested_chunk_bounds.lock().expect("chunk bounds");
+    assert_eq!(&bounds[..2], &[8, 8]);
+    assert!(bounds.iter().all(|bound| *bound <= 16));
+}
+
+/// Winning factory может открыться по sniff prefix, не вытягивая body до EndResource.
+#[test]
+fn ordered_resource_stream_factory_open_does_not_wait_for_body_eof() {
+    let opened_bytes = Arc::new(Mutex::new(Vec::new()));
+    let requested_chunk_bounds = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = DemuxRegistry::new();
+    registry
+        .register(Box::new(
+            RecordingFactory::new(
+                "prefix-recording",
+                "test-container",
+                Arc::clone(&opened_bytes),
+            )
+            .with_maximum_open_bytes(8),
+        ))
+        .expect("prefix recording factory");
+    let events = VecDeque::from([
+        OrderedResourceReadOutcome::Begin(OrderedResourceMetadata {
+            sequence: OrderedSegmentSequence::new(0),
+            kind: OrderedSegmentKind::Media,
+            discontinuity: OrderedSegmentDiscontinuity::Continuous,
+        }),
+        OrderedResourceReadOutcome::Data(Bytes::from_static(
+            b"TEST-body-that-must-remain-unpulled-during-open",
+        )),
+        OrderedResourceReadOutcome::EndResource,
+        OrderedResourceReadOutcome::EndOfInput,
+    ]);
+
+    registry
+        .open(
+            DemuxInput::ordered_resource_stream(Box::new(MemoryResourceStream {
+                events,
+                requested_chunk_bounds: Arc::clone(&requested_chunk_bounds),
+            })),
+            DemuxHints::none(),
+            sniff_budget(),
+            CancellationToken::never_cancelled(),
+        )
+        .expect("prefix-only factory open");
+
+    assert_eq!(&*opened_bytes.lock().expect("opened bytes"), b"TEST-bod");
+    assert_eq!(
+        &*requested_chunk_bounds.lock().expect("chunk bounds"),
+        &[8, 8],
+        "factory должен получить registry replay без следующего source pull"
+    );
+}
+
+/// Пустой body chunk является protocol failure, а не временным EOF или spin.
+#[test]
+fn ordered_resource_stream_rejects_empty_data_during_sniff() {
+    let registry = registry_with_recording_factory(Arc::new(Mutex::new(Vec::new())));
+    let error = match registry.open(
+        DemuxInput::ordered_resource_stream(Box::new(MemoryResourceStream {
+            events: VecDeque::from([
+                OrderedResourceReadOutcome::Begin(OrderedResourceMetadata {
+                    sequence: OrderedSegmentSequence::new(0),
+                    kind: OrderedSegmentKind::Media,
+                    discontinuity: OrderedSegmentDiscontinuity::Continuous,
+                }),
+                OrderedResourceReadOutcome::Data(Bytes::new()),
+            ]),
+            requested_chunk_bounds: Arc::new(Mutex::new(Vec::new())),
+        })),
+        DemuxHints::none(),
+        sniff_budget(),
+        CancellationToken::never_cancelled(),
+    ) {
+        Ok(_) => panic!("empty Data must fail before factory selection"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        DemuxOpenError::ProbeRejected(DemuxProbeRejection::InputFailure { .. })
+    ));
 }
 
 /// Truncation, cancellation и no-match сохраняют разные terminal outcomes.

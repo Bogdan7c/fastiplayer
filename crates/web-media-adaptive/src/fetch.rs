@@ -7,10 +7,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use media_core::DemuxSeekCancellationToken;
 use source_core::{
-    CancellationToken, HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind,
-    HttpBoundedFetchRequest, HttpHeader, HttpRangeResponseMetadata, HttpRequestTarget,
-    HttpRequestTargetError, HttpRetryAfter, HttpSourceSession, ScopedHttpCookieJar,
+    CancellationToken, CurrentThreadAsyncExecutor, HttpBoundedByteRange, HttpBoundedFetchHop,
+    HttpBoundedFetchKind, HttpBoundedFetchRequest, HttpBoundedStreamingBody,
+    HttpBoundedStreamingFetchHop, HttpHeader, HttpRangeResponseMetadata, HttpRequestTarget,
+    HttpRequestTargetError, HttpResourceCacheOutcome, HttpResourceDiagnostics, HttpResourcePurpose,
+    HttpRetryAfter, HttpSourceSession, InterruptibleAsyncExecution, ScopedHttpCookieJar,
     ScopedHttpCookieJarError, SourceError, SourceRuntimeConfig,
 };
 use web_media_transport_api::{
@@ -23,6 +26,11 @@ mod async_job;
 
 pub(crate) use async_job::fetch_with_redirects_async;
 
+use crate::completed_resource_cache::{CompletedResourceCache, CompletedResourceCacheKey};
+use crate::restartable_read_interruption::AdaptiveRestartableReadAttempt;
+use crate::streaming_resource::{
+    AdaptiveRestartableReadAttemptBinding, AdaptiveStreamingResource, NetworkStreamingResourceOpen,
+};
 use crate::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
 
 /// Immutable shared request policy одного adaptive component generation lineage.
@@ -38,6 +46,8 @@ pub struct AdaptiveHttpContext {
     pub(crate) expected_presentation: MediaPresentation,
     pub(crate) limits: AdaptiveTransportLimits,
     pub(crate) retry: AdaptiveRetryPolicy,
+    /// Shared completed-only VOD cache одного source context-а.
+    completed_resource_cache: Arc<Mutex<CompletedResourceCache>>,
 }
 
 impl AdaptiveHttpContext {
@@ -66,6 +76,8 @@ impl AdaptiveHttpContext {
         )
         .map_err(map_cookie_jar_error)?;
         let session = HttpSourceSession::new_with_cookie_jar(source_config, Arc::new(cookie_jar))?;
+        let completed_cache_budget =
+            usize::try_from(source_config.memory_cache_bytes()).unwrap_or(usize::MAX);
         Ok(Self {
             session,
             secrets: request.secrets().clone(),
@@ -77,6 +89,9 @@ impl AdaptiveHttpContext {
             expected_presentation: request.presentation(),
             limits,
             retry,
+            completed_resource_cache: Arc::new(Mutex::new(CompletedResourceCache::new(
+                completed_cache_budget,
+            ))),
         })
     }
 
@@ -93,7 +108,7 @@ impl AdaptiveHttpContext {
     }
 
     /// Публикует expiry только для четырёх status codes и никогда не раскрывает target.
-    fn observe_endpoint_expiry(
+    pub(crate) fn observe_endpoint_expiry(
         &self,
         source_generation: SourceGeneration,
         purpose: FetchPurpose,
@@ -164,6 +179,9 @@ impl AdaptiveHttpContext {
             });
         }
         request.validate_bound(self.limits)?;
+        let resource_diagnostics = HttpResourceDiagnostics::started(
+            FetchPurpose::from(request.purpose).resource_purpose(),
+        );
         let mut attempt = std::num::NonZeroU8::MIN;
         loop {
             let result = fetch_with_redirects(
@@ -178,6 +196,7 @@ impl AdaptiveHttpContext {
                     query_application: request.query_application,
                     secret_forwarding: request.secret_forwarding,
                 },
+                resource_diagnostics,
             );
             match result {
                 Ok(success) => {
@@ -198,6 +217,184 @@ impl AdaptiveHttpContext {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Открывает bounded resource body до полной загрузки на текущем demux worker-е.
+    ///
+    /// Current-thread runtime не создаёт дополнительный OS thread. Redirect, cookie,
+    /// retry, generation и secret policy остаются теми же, что у buffered path-а.
+    pub fn open_resource_streaming_blocking(
+        &self,
+        request: AdaptiveResourceFetchRequest,
+        seek_cancellation: DemuxSeekCancellationToken,
+    ) -> Result<AdaptiveStreamingResource, AdaptiveTransportError> {
+        self.open_resource_streaming_blocking_with_restartable_read_binding(
+            request,
+            seek_cancellation,
+            AdaptiveRestartableReadAttemptBinding::Absent,
+        )
+    }
+
+    /// Открывает offside body с отдельным disarmed attempt-ом будущего committed resource-а.
+    ///
+    /// Сам open/probe слушает только request-scoped cancellation. Caller обязан вызвать
+    /// `attempt.arm_as_current()` лишь после successful proof и transactional commit-а.
+    pub fn open_resource_streaming_blocking_with_restartable_read_attempt(
+        &self,
+        request: AdaptiveResourceFetchRequest,
+        seek_cancellation: DemuxSeekCancellationToken,
+        restartable_read_attempt: AdaptiveRestartableReadAttempt,
+    ) -> Result<AdaptiveStreamingResource, AdaptiveTransportError> {
+        self.open_resource_streaming_blocking_with_restartable_read_binding(
+            request,
+            seek_cancellation,
+            AdaptiveRestartableReadAttemptBinding::Attempt(restartable_read_attempt),
+        )
+    }
+
+    /// Общий owner streaming open-а не дублирует redirect/cache/retry semantics двух API.
+    fn open_resource_streaming_blocking_with_restartable_read_binding(
+        &self,
+        request: AdaptiveResourceFetchRequest,
+        seek_cancellation: DemuxSeekCancellationToken,
+        restartable_read_attempt: AdaptiveRestartableReadAttemptBinding,
+    ) -> Result<AdaptiveStreamingResource, AdaptiveTransportError> {
+        if self.cancellation.is_cancelled() || seek_cancellation.is_cancelled() {
+            return Err(AdaptiveTransportError::Cancelled);
+        }
+        if request.generation != self.initial_generation {
+            return Err(AdaptiveTransportError::StaleGeneration {
+                current: self.initial_generation,
+                received: request.generation,
+            });
+        }
+        request.validate_bound(self.limits)?;
+        let resource_diagnostics = HttpResourceDiagnostics::started(
+            FetchPurpose::from(request.purpose).resource_purpose(),
+        );
+        let cache_key = self.completed_cache_key(&request);
+        let (cached_replay, cache_budget_bytes) = match cache_key.as_ref() {
+            Some(cache_key) => {
+                let mut cache = self.lock_completed_resource_cache();
+                (cache.replay(cache_key), cache.budget_bytes())
+            }
+            None => (None, 0),
+        };
+        if let Some(cached_replay) = cached_replay {
+            let (replay_chunks, replay_bytes) = cached_replay.diagnostic_shape();
+            resource_diagnostics.record_cache_outcome(
+                HttpResourceCacheOutcome::Replay,
+                replay_chunks,
+                replay_bytes,
+            );
+            return Ok(AdaptiveStreamingResource::from_completed_replay(
+                self.clone(),
+                request.generation,
+                request.purpose.into(),
+                seek_cancellation,
+                cached_replay,
+                resource_diagnostics,
+                restartable_read_attempt,
+            ));
+        }
+        resource_diagnostics.record_cache_outcome(
+            if cache_key.is_some() {
+                HttpResourceCacheOutcome::Miss
+            } else {
+                HttpResourceCacheOutcome::Ineligible
+            },
+            0,
+            0,
+        );
+        let executor =
+            CurrentThreadAsyncExecutor::new().map_err(|_| AdaptiveTransportError::WorkerStopped)?;
+        let mut attempt = std::num::NonZeroU8::MIN;
+        loop {
+            let result = executor.block_on_interruptible(
+                open_stream_with_redirects(
+                    self,
+                    FetchJob {
+                        id: 0,
+                        generation: request.generation,
+                        target: request.target.clone(),
+                        byte_range: request.byte_range,
+                        maximum_body_bytes: request.maximum_body_bytes,
+                        purpose: request.purpose.into(),
+                        query_application: request.query_application,
+                        secret_forwarding: request.secret_forwarding,
+                    },
+                    resource_diagnostics,
+                ),
+                wait_for_any_cancellation(self.cancellation(), &seek_cancellation),
+            );
+            let result = match result {
+                InterruptibleAsyncExecution::Completed(result) => result,
+                InterruptibleAsyncExecution::Interrupted => Err(AdaptiveTransportError::Cancelled),
+            };
+            match result {
+                Ok(success) => {
+                    return Ok(AdaptiveStreamingResource::from_network(
+                        NetworkStreamingResourceOpen {
+                            context: self.clone(),
+                            source_generation: request.generation,
+                            purpose: request.purpose.into(),
+                            seek_cancellation,
+                            final_target: success.final_target,
+                            executor,
+                            body: success.body,
+                            resource_diagnostics,
+                            cache_key,
+                            cache_budget_bytes,
+                            restartable_read_attempt,
+                        },
+                    ));
+                }
+                Err(error) if error.is_retryable() && attempt < self.retry.maximum_attempts() => {
+                    let delay = self
+                        .retry
+                        .retry_delay_after(attempt, error.http_retry_after());
+                    wait_for_retry_with_seek(self.cancellation(), &seek_cancellation, delay)?;
+                    attempt = std::num::NonZeroU8::new(attempt.get().saturating_add(1))
+                        .unwrap_or(attempt);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Создаёт cache identity только для полностью конечных media/init resources.
+    fn completed_cache_key(
+        &self,
+        request: &AdaptiveResourceFetchRequest,
+    ) -> Option<CompletedResourceCacheKey> {
+        if self.expected_presentation != MediaPresentation::Vod
+            || !matches!(
+                request.purpose,
+                AdaptiveResourcePurpose::MediaSegment | AdaptiveResourcePurpose::Initialization
+            )
+        {
+            return None;
+        }
+
+        Some(CompletedResourceCacheKey::new(
+            request.target.clone(),
+            request.byte_range,
+            request.maximum_body_bytes,
+            request.purpose,
+            request.query_application,
+            request.secret_forwarding,
+        ))
+    }
+
+    /// Poison не скрывается: cache восстанавливается, а diagnostics фиксирует panic boundary.
+    pub(crate) fn lock_completed_resource_cache(
+        &self,
+    ) -> std::sync::MutexGuard<'_, CompletedResourceCache> {
+        self.completed_resource_cache
+            .lock()
+            // Cache ownership остаётся recoverable после чужой panic; payload/accounting
+            // invariants дополнительно защищены checked arithmetic и RAII reservations.
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -222,6 +419,9 @@ pub enum AdaptiveTransportError {
     /// Shared caller отменил lifecycle.
     #[error("adaptive transport cancelled")]
     Cancelled,
+    /// Current committed body read прерван для whole-parser restart-а после accepted seek.
+    #[error("adaptive committed resource read interrupted for restart")]
+    RestartableReadInterrupted,
     /// Low-level source-core request/body/range failure.
     #[error("adaptive HTTP resource failure: {0}")]
     Source(#[from] SourceError),
@@ -480,6 +680,7 @@ impl AdaptiveTransportError {
                 status.is_server_error() || status.as_u16() == 408 || status.as_u16() == 429
             }
             Self::Cancelled
+            | Self::RestartableReadInterrupted
             | Self::Source(_)
             | Self::Target(_)
             | Self::Redirect(_)
@@ -560,6 +761,17 @@ impl FetchPurpose {
             Self::EncryptionKey => HttpBoundedFetchKind::Metadata,
         }
     }
+
+    /// Сохраняет точный adaptive purpose в source-owned secret-free telemetry.
+    const fn resource_purpose(self) -> HttpResourcePurpose {
+        match self {
+            Self::Manifest => HttpResourcePurpose::Manifest,
+            Self::ClockSynchronization => HttpResourcePurpose::ClockSynchronization,
+            Self::MediaSegment => HttpResourcePurpose::MediaSegment,
+            Self::Initialization => HttpResourcePurpose::Initialization,
+            Self::EncryptionKey => HttpResourcePurpose::EncryptionKey,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -579,6 +791,14 @@ pub(crate) struct FetchSuccess {
     pub final_target: HttpRequestTarget,
     pub bytes: Vec<u8>,
     pub range_metadata: Option<HttpRangeResponseMetadata>,
+}
+
+/// Успешно открытый streaming response после общей redirect policy.
+struct StreamingFetchSuccess {
+    /// Effective target последнего разрешённого hop-а.
+    final_target: HttpRequestTarget,
+    /// Открытый bounded response cursor.
+    body: HttpBoundedStreamingBody,
 }
 
 #[derive(Debug)]
@@ -662,7 +882,8 @@ fn run_fetch_worker(
         };
         let id = job.id;
         let generation = job.generation;
-        let result = fetch_with_redirects(&context, job);
+        let resource_diagnostics = HttpResourceDiagnostics::started(job.purpose.resource_purpose());
+        let result = fetch_with_redirects(&context, job, resource_diagnostics);
         if outcome_sender
             .send(FetchOutcome {
                 id,
@@ -679,6 +900,7 @@ fn run_fetch_worker(
 fn fetch_with_redirects(
     context: &AdaptiveHttpContext,
     job: FetchJob,
+    resource_diagnostics: HttpResourceDiagnostics,
 ) -> Result<FetchSuccess, AdaptiveTransportError> {
     if context.cancellation.is_cancelled() {
         return Err(AdaptiveTransportError::Cancelled);
@@ -711,7 +933,8 @@ fn fetch_with_redirects(
                 job.maximum_body_bytes,
                 job.purpose.fetch_kind(),
             ),
-        };
+        }
+        .with_resource_diagnostics(resource_diagnostics);
         let hop = match context
             .session
             .fetch_bounded_single_hop(request, &context.cancellation)
@@ -743,6 +966,96 @@ fn fetch_with_redirects(
             }
         }
     }
+}
+
+/// Async-вариант redirect traversal, который возвращает response до body EOF.
+async fn open_stream_with_redirects(
+    context: &AdaptiveHttpContext,
+    job: FetchJob,
+    resource_diagnostics: HttpResourceDiagnostics,
+) -> Result<StreamingFetchSuccess, AdaptiveTransportError> {
+    if context.cancellation.is_cancelled() {
+        return Err(AdaptiveTransportError::Cancelled);
+    }
+    let mut target = job.target;
+    let mut completed_hops = RedirectHopCount::none();
+    let mut forward_secrets = matches!(
+        job.secret_forwarding,
+        AdaptiveResourceSecretForwarding::ForwardScoped
+    );
+
+    loop {
+        let (request_target, headers) = request_material(
+            &context.secrets,
+            &target,
+            job.purpose,
+            job.query_application,
+            forward_secrets,
+        )?;
+        let request = match job.byte_range {
+            Some(byte_range) => HttpBoundedFetchRequest::range(
+                request_target,
+                headers,
+                byte_range,
+                job.purpose.fetch_kind(),
+            ),
+            None => HttpBoundedFetchRequest::full(
+                request_target,
+                headers,
+                job.maximum_body_bytes,
+                job.purpose.fetch_kind(),
+            ),
+        }
+        .with_resource_diagnostics(resource_diagnostics);
+        let hop = context
+            .session
+            .open_bounded_single_hop_stream(request, &context.cancellation)
+            .await;
+        let hop = match hop {
+            Ok(hop) => hop,
+            Err(source_error) => {
+                context.observe_endpoint_expiry(job.generation, job.purpose, &source_error);
+                return Err(AdaptiveTransportError::Source(source_error));
+            }
+        };
+        match hop {
+            HttpBoundedStreamingFetchHop::Body(body) => {
+                return Ok(StreamingFetchSuccess {
+                    final_target: target,
+                    body,
+                });
+            }
+            HttpBoundedStreamingFetchHop::Redirect(redirect) => {
+                let authorization = context.redirects.authorize_redirect(
+                    &target,
+                    redirect.target(),
+                    completed_hops,
+                )?;
+                forward_secrets &= authorization.permits_secret_scope_check();
+                target = redirect.target().clone();
+                completed_hops = RedirectHopCount::new(completed_hops.value().saturating_add(1));
+            }
+        }
+    }
+}
+
+/// Завершается при global source shutdown либо supersede текущего seek intent-а.
+pub(crate) async fn wait_for_any_cancellation(
+    source_cancellation: &CancellationToken,
+    seek_cancellation: &DemuxSeekCancellationToken,
+) {
+    let mut source_cancelled = std::pin::pin!(source_cancellation.cancelled());
+    let mut seek_cancelled = std::pin::pin!(seek_cancellation.cancelled());
+    std::future::poll_fn(|context| {
+        if source_cancelled.as_mut().poll(context).is_ready()
+            || seek_cancelled.as_mut().poll(context).is_ready()
+        {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
 }
 
 fn request_material(
@@ -789,6 +1102,25 @@ fn wait_for_retry(
     let deadline = Instant::now() + delay;
     loop {
         if cancellation.is_cancelled() {
+            return Err(AdaptiveTransportError::Cancelled);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        thread::sleep((deadline - now).min(Duration::from_millis(10)));
+    }
+}
+
+/// Сохраняет прежний bounded retry wait и дополнительно замечает seek supersede.
+fn wait_for_retry_with_seek(
+    cancellation: &CancellationToken,
+    seek_cancellation: &DemuxSeekCancellationToken,
+    delay: Duration,
+) -> Result<(), AdaptiveTransportError> {
+    let deadline = Instant::now() + delay;
+    loop {
+        if cancellation.is_cancelled() || seek_cancellation.is_cancelled() {
             return Err(AdaptiveTransportError::Cancelled);
         }
         let now = Instant::now();

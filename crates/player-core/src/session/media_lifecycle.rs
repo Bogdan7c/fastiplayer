@@ -139,6 +139,26 @@ impl PlayerSession {
             "Demuxer сообщил обновление track list"
         );
 
+        let preserves_worker_seek_runtime = active_seek_before_update.is_some()
+            && first_post_seek_track_update
+            && self
+                .prepared_demux_seek
+                .routes_one_shot_seek_through_worker()
+            && !self.prepared_demux_seek.receipt_pending()
+            && !self.has_dynamic_timeline_binding()
+            && self.pipeline.tracks() == tracks.as_slice();
+        if preserves_worker_seek_runtime {
+            self.set_snapshot_duration(duration);
+            debug!(
+                kind = "seek",
+                generation = pipeline_generation_before_update,
+                tracks = tracks.len(),
+                duration = ?duration,
+                "Exact post-receipt track topology подтверждена без повторного pipeline reset"
+            );
+            return;
+        }
+
         self.pause_audio_output_for_seek();
         if let Err(error) = self.reset_video_decoder_for_seek() {
             self.mark_fatal_error(error);

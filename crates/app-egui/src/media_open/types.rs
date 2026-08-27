@@ -13,6 +13,7 @@ use player_core::{
 use playlist_discovery::{LocalMediaFingerprint, LocalMediaKind};
 
 use super::local::LocalFingerprintValidation;
+use super::native_hls::{NativeHlsOpenIntent, NativeHlsUrl};
 
 /// Максимальная длина display-only label в Unicode scalar values.
 pub(crate) const SAFE_MEDIA_LABEL_MAX_CHARS: usize = 160;
@@ -106,6 +107,11 @@ pub(crate) enum ActiveMediaSource {
     },
     /// Exact functional direct locator с service-owned redacted formatting.
     DirectMediaUrl(service_direct_media::DirectMediaUrl),
+    /// Proven VOD HLS top identity + exact semantic master/media selection.
+    NativeHlsUrl {
+        source: NativeHlsUrl,
+        selection: web_media_hls::NativeHlsSemanticSelection,
+    },
 
     /// Source плюс neutral semantic identity ограниченного playback window.
     ///
@@ -141,7 +147,10 @@ impl ActiveMediaSource {
             Self::PlaybackWindow {
                 semantic_identity, ..
             } => Some(*semantic_identity),
-            Self::LocalFile(_) | Self::YtDlpUrl { .. } | Self::DirectMediaUrl(_) => None,
+            Self::LocalFile(_)
+            | Self::YtDlpUrl { .. }
+            | Self::DirectMediaUrl(_)
+            | Self::NativeHlsUrl { .. } => None,
         }
     }
 
@@ -207,6 +216,11 @@ impl fmt::Debug for ActiveMediaSource {
                 .debug_tuple("DirectMediaUrl")
                 .field(locator)
                 .finish(),
+            Self::NativeHlsUrl { source, selection } => formatter
+                .debug_struct("NativeHlsUrl")
+                .field("source", source)
+                .field("selection", selection)
+                .finish(),
             Self::PlaybackWindow {
                 source,
                 semantic_identity,
@@ -235,6 +249,14 @@ pub(crate) enum PreparedMediaDescriptor {
     },
     /// Direct media parity envelope без filesystem-only fields.
     Direct {
+        tracks: Vec<TrackInfo>,
+        duration: Option<Duration>,
+        metadata: MediaTagMetadata,
+        source: ActiveMediaSource,
+        safe_label: SafeMediaLabel,
+    },
+    /// Native HLS VOD с exact semantic selection для fail-closed reopen.
+    NativeHls {
         tracks: Vec<TrackInfo>,
         duration: Option<Duration>,
         metadata: MediaTagMetadata,
@@ -289,6 +311,12 @@ impl PreparedMediaDescriptor {
                 metadata,
                 ..
             }
+            | Self::NativeHls {
+                tracks,
+                duration,
+                metadata,
+                ..
+            }
             | Self::YtDlp {
                 tracks,
                 duration,
@@ -319,6 +347,7 @@ impl PreparedMediaDescriptor {
         match self {
             Self::Local { source, .. }
             | Self::Direct { source, .. }
+            | Self::NativeHls { source, .. }
             | Self::YtDlp { source, .. }
             | Self::CallerPrepared { source, .. } => source.clone(),
         }
@@ -360,6 +389,19 @@ impl PreparedMediaDescriptor {
                 source: source.with_playback_window(semantic_identity),
                 safe_label,
             },
+            Self::NativeHls {
+                tracks,
+                duration,
+                metadata,
+                source,
+                safe_label,
+            } => Self::NativeHls {
+                tracks,
+                duration,
+                metadata,
+                source: source.with_playback_window(semantic_identity),
+                safe_label,
+            },
             Self::YtDlp {
                 tracks,
                 duration,
@@ -391,7 +433,10 @@ impl PreparedMediaDescriptor {
                 vod_endpoint_recovery,
                 ..
             } => vod_endpoint_recovery.clone(),
-            Self::Local { .. } | Self::Direct { .. } | Self::CallerPrepared { .. } => None,
+            Self::Local { .. }
+            | Self::Direct { .. }
+            | Self::NativeHls { .. }
+            | Self::CallerPrepared { .. } => None,
         }
     }
 }
@@ -459,6 +504,17 @@ pub(crate) enum MediaOpenSourceRequest {
         network_config: rustiplayer_config::NetworkConfig,
         demux_config: rustiplayer_config::PlayerDemuxConfig,
     },
+    NativeHls {
+        source: NativeHlsUrl,
+        intent: NativeHlsOpenIntent,
+        network_config: rustiplayer_config::NetworkConfig,
+        yt_dlp_config: rustiplayer_config::YtDlpConfig,
+        demux_config: rustiplayer_config::PlayerDemuxConfig,
+        preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
+        preferred_video_height: Option<rustiplayer_config::PreferredVideoHeight>,
+        system_capabilities: Box<capability_core::SystemCapabilities>,
+        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
+    },
     YtDlp {
         locator: service_ytdlp::YtDlpMediaLocator,
         selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
@@ -483,6 +539,7 @@ impl MediaOpenSourceRequest {
             Self::Direct { locator, .. } => {
                 SafeMediaLabel::from_service_safe_label(locator.safe_label())
             }
+            Self::NativeHls { source, .. } => source.safe_label().clone(),
             Self::YtDlp { locator, .. } => {
                 SafeMediaLabel::from_service_safe_label(locator.safe_label())
             }
@@ -610,6 +667,7 @@ pub(crate) enum MediaPreparationFailureKind {
     LocalOpen,
     LocalSourceChanged,
     DirectOpen,
+    NativeHlsOpen,
     YtDlpOpen,
     /// Dynamic DASH валиден, но использует намеренно исключённый timing/profile contract.
     DashLiveProfileExcluded,

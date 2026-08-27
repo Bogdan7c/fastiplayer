@@ -19,6 +19,7 @@ use media_core::{
 use source_core::CancellationToken;
 
 mod async_seek;
+mod readiness;
 mod worker;
 
 pub use async_seek::{
@@ -26,10 +27,11 @@ pub use async_seek::{
     ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt, ProgressiveRuntimeGeneration,
     ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
+pub use readiness::{ProgressiveDemuxReadiness, ProgressiveDemuxReadinessPort};
 use worker::{
-    ProgressiveMessage, ProgressivePushOutcome, ProgressiveSeekCommand, ProgressiveSharedState,
-    ProgressiveWorkerCompletion, push_progressive_message, run_progressive_worker,
-    run_seekable_progressive_worker,
+    ProgressiveMessage, ProgressiveMessageEnvelope, ProgressivePushOutcome, ProgressiveSeekCommand,
+    ProgressiveSharedState, ProgressiveWorkerCompletion, push_progressive_message,
+    run_progressive_worker, run_seekable_progressive_worker,
 };
 
 /// Named bounds player-facing progressive event queue.
@@ -166,11 +168,20 @@ pub struct ProgressiveDemuxer {
     retry_hint: DemuxRetryHint,
     /// Shared token останавливает source read при drop/supersede.
     cancellation: CancellationToken,
-    /// После опубликованного EOF повторные reads остаются terminal.
-    end_of_stream_reached: bool,
+    /// EOF остаётся terminal только для generation, которая его опубликовала.
+    end_of_stream_generation: Option<u64>,
 }
 
 impl ProgressiveDemuxer {
+    /// Возвращает concrete event-driven queue readiness до type erasure в `dyn Demuxer`.
+    ///
+    /// Port не резервирует и не потребляет event: единственным consumer-ом остаётся
+    /// этот `ProgressiveDemuxer` через `next_event()`.
+    #[must_use]
+    pub fn readiness_port(&self) -> ProgressiveDemuxReadinessPort {
+        ProgressiveDemuxReadinessPort::new(Arc::clone(&self.shared), self.cancellation.clone())
+    }
+
     /// Снимает immutable snapshots и запускает worker до публикации handle-а.
     pub fn new(
         inner: Box<dyn Demuxer + Send>,
@@ -206,7 +217,7 @@ impl ProgressiveDemuxer {
             shared,
             retry_hint,
             cancellation,
-            end_of_stream_reached: false,
+            end_of_stream_generation: None,
         })
     }
 
@@ -227,6 +238,7 @@ impl ProgressiveDemuxer {
             return Err(ProgressiveDemuxStartupError::SeekableInputRequired);
         }
 
+        let active_read_interruption = inner.active_read_interruption();
         let visible_tracks = inner.tracks().to_vec();
         let visible_duration = inner.duration();
         let visible_metadata = inner.media_metadata();
@@ -235,6 +247,7 @@ impl ProgressiveDemuxer {
             runtime_generation,
             async_limits,
         ));
+        shared.install_active_read_interruption(active_read_interruption);
         let worker_shared = Arc::clone(&shared);
         let worker_cancellation = cancellation.clone();
         thread::Builder::new()
@@ -254,7 +267,7 @@ impl ProgressiveDemuxer {
             shared,
             retry_hint,
             cancellation,
-            end_of_stream_reached: false,
+            end_of_stream_generation: None,
         })
     }
 
@@ -348,7 +361,7 @@ impl ProgressiveDemuxer {
             shared,
             retry_hint,
             cancellation,
-            end_of_stream_reached: false,
+            end_of_stream_generation: None,
         })
     }
 
@@ -440,7 +453,7 @@ impl ProgressiveDemuxer {
             shared,
             retry_hint,
             cancellation,
-            end_of_stream_reached: false,
+            end_of_stream_generation: None,
         })
     }
 
@@ -495,6 +508,8 @@ impl ProgressiveDemuxer {
                     );
                     return;
                 }
+                let active_read_interruption = inner.active_read_interruption();
+                worker_shared.install_active_read_interruption(active_read_interruption);
                 let initial_tracks = DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
                     inner.tracks().to_vec(),
                     inner.duration(),
@@ -538,7 +553,7 @@ impl ProgressiveDemuxer {
             shared,
             retry_hint,
             cancellation,
-            end_of_stream_reached: false,
+            end_of_stream_generation: None,
         })
     }
 
@@ -575,7 +590,7 @@ impl ProgressiveDemuxer {
     }
 
     /// Применяет lifecycle snapshot ровно при публикации соответствующего event-а.
-    fn apply_visible_event(&mut self, event: &DemuxReadEvent) {
+    fn apply_visible_event(&mut self, generation: u64, event: &DemuxReadEvent) {
         match event {
             DemuxReadEvent::TracksChanged(update) => {
                 self.visible_tracks = update.tracks.clone();
@@ -585,7 +600,7 @@ impl ProgressiveDemuxer {
                 self.visible_metadata = Some(metadata.clone());
             }
             DemuxReadEvent::EndOfStream => {
-                self.end_of_stream_reached = true;
+                self.end_of_stream_generation = Some(generation);
             }
             DemuxReadEvent::Packet(_) | DemuxReadEvent::TemporarilyUnavailable(_) => {}
         }
@@ -615,8 +630,12 @@ impl Demuxer for ProgressiveDemuxer {
 
     /// Никогда не ждёт blocking inner demuxer на player owner-е.
     fn next_event(&mut self) -> Result<DemuxReadEvent> {
-        if self.end_of_stream_reached {
-            return Ok(DemuxReadEvent::EndOfStream);
+        if let Some(end_generation) = self.end_of_stream_generation {
+            let current_generation = self.shared.lock_queue().current_generation;
+            if end_generation == current_generation {
+                return Ok(DemuxReadEvent::EndOfStream);
+            }
+            self.end_of_stream_generation = None;
         }
 
         let message = {
@@ -645,12 +664,18 @@ impl Demuxer for ProgressiveDemuxer {
             message
         };
 
-        match message.map(|envelope| envelope.message) {
-            Some(ProgressiveMessage::Event(event)) => {
-                self.apply_visible_event(&event);
+        match message {
+            Some(ProgressiveMessageEnvelope {
+                generation,
+                message: ProgressiveMessage::Event(event),
+            }) => {
+                self.apply_visible_event(generation, &event);
                 Ok(event)
             }
-            Some(ProgressiveMessage::Failure(source)) => Err(source),
+            Some(ProgressiveMessageEnvelope {
+                message: ProgressiveMessage::Failure(source),
+                ..
+            }) => Err(source),
             None => Ok(DemuxReadEvent::TemporarilyUnavailable(self.retry_hint)),
         }
     }
@@ -676,12 +701,22 @@ impl Demuxer for ProgressiveDemuxer {
         queue.current_generation = queue.current_generation.wrapping_add(1);
         queue.messages.clear();
         queue.queued_encoded_bytes = 0;
+        if let Some(active_cancellation) = &queue.active_seek_cancellation {
+            active_cancellation.cancel();
+        }
+        if let Some(pending_cancellation) = queue
+            .pending_seek
+            .as_ref()
+            .and_then(ProgressiveSeekCommand::cancellation)
+        {
+            pending_cancellation.cancel();
+        }
         queue.pending_seek = Some(ProgressiveSeekCommand::Previewed {
             generation: queue.current_generation,
             request,
             preview,
         });
-        self.end_of_stream_reached = false;
+        self.end_of_stream_generation = None;
         self.shared.capacity_available.notify_all();
         Ok(preview)
     }
@@ -694,6 +729,7 @@ impl Drop for ProgressiveDemuxer {
         let mut queue = self.shared.lock_queue();
         queue.stop_requested = true;
         self.shared.capacity_available.notify_all();
+        self.shared.message_available.notify_all();
     }
 }
 

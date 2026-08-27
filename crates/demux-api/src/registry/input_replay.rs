@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Cursor, Read};
+use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use source_core::{
@@ -11,6 +12,7 @@ use source_core::{
 
 use crate::{
     DemuxByteSource, DemuxByteStream, DemuxInput, DemuxProbeRejection, DemuxSniffBudget,
+    OrderedResourceReadError, OrderedResourceReadOutcome, OrderedResourceStreamSource,
     OrderedSegment, OrderedSegmentReadError, OrderedSegmentSource,
 };
 
@@ -57,6 +59,15 @@ pub(super) fn sniff_and_restore_input(
             let replay_source = ReplayOrderedSegmentSource::new(source, replay_segments);
             Ok((
                 DemuxInput::ordered_segments(Box::new(replay_source)),
+                sniffed_bytes,
+            ))
+        }
+        DemuxInput::OrderedResourceStream(mut source) => {
+            let (sniffed_bytes, replay_events) =
+                read_bounded_resource_stream(source.as_mut(), budget, cancellation, started_at)?;
+            let replay_source = ReplayOrderedResourceStreamSource::new(source, replay_events);
+            Ok((
+                DemuxInput::ordered_resource_stream(Box::new(replay_source)),
                 sniffed_bytes,
             ))
         }
@@ -138,6 +149,82 @@ fn read_bounded_segments(
     Ok((sniffed_bytes, replay_segments))
 }
 
+/// Читает только bounded prefix текущих resources и сохраняет exact lifecycle replay.
+fn read_bounded_resource_stream(
+    source: &mut dyn OrderedResourceStreamSource,
+    budget: DemuxSniffBudget,
+    cancellation: &CancellationToken,
+    started_at: Instant,
+) -> Result<(Vec<u8>, VecDeque<OrderedResourceReadOutcome>), DemuxOpenError> {
+    let mut sniffed_bytes = Vec::with_capacity(budget.max_bytes());
+    let mut replay_events = VecDeque::new();
+    let mut resource_open = false;
+    let mut begun_resources = 0_usize;
+
+    while sniffed_bytes.len() < budget.max_bytes() {
+        if !resource_open && begun_resources >= budget.max_segments() {
+            break;
+        }
+        check_sniff_progress(cancellation, budget, started_at)?;
+        let remaining_bytes = budget.max_bytes() - sniffed_bytes.len();
+        let maximum_chunk_bytes = NonZeroUsize::new(remaining_bytes)
+            .expect("loop condition guarantees a non-zero sniff remainder");
+        let outcome = source
+            .next_event(maximum_chunk_bytes, cancellation)
+            .map_err(resource_error_to_probe)?;
+        match outcome {
+            OrderedResourceReadOutcome::Begin(metadata) => {
+                if resource_open {
+                    return Err(resource_protocol_to_probe(
+                        "Begin получен до EndResource текущего resource",
+                    ));
+                }
+                begun_resources = begun_resources.saturating_add(1);
+                resource_open = true;
+                replay_events.push_back(OrderedResourceReadOutcome::Begin(metadata));
+            }
+            OrderedResourceReadOutcome::Data(bytes) => {
+                if !resource_open {
+                    return Err(resource_protocol_to_probe(
+                        "Data получен вне Begin/EndResource lifecycle",
+                    ));
+                }
+                if bytes.is_empty() {
+                    return Err(resource_protocol_to_probe(
+                        "пустой Data запрещён ordered resource contract-ом",
+                    ));
+                }
+                if bytes.len() > maximum_chunk_bytes.get() {
+                    return Err(resource_protocol_to_probe(
+                        "Data превысил caller-provided maximum_chunk_bytes",
+                    ));
+                }
+                sniffed_bytes.extend_from_slice(&bytes);
+                replay_events.push_back(OrderedResourceReadOutcome::Data(bytes));
+            }
+            OrderedResourceReadOutcome::EndResource => {
+                if !resource_open {
+                    return Err(resource_protocol_to_probe(
+                        "EndResource получен без активного resource",
+                    ));
+                }
+                resource_open = false;
+                replay_events.push_back(OrderedResourceReadOutcome::EndResource);
+            }
+            OrderedResourceReadOutcome::EndOfInput => {
+                if resource_open {
+                    return Err(resource_protocol_to_probe(
+                        "EndOfInput получен без EndResource текущего resource",
+                    ));
+                }
+                replay_events.push_back(OrderedResourceReadOutcome::EndOfInput);
+                break;
+            }
+        }
+    }
+    Ok((sniffed_bytes, replay_events))
+}
+
 /// Проверяет cancellation/deadline в каждой доступной cooperative точке.
 fn check_sniff_progress(
     cancellation: &CancellationToken,
@@ -185,6 +272,26 @@ fn segment_error_to_probe(error: OrderedSegmentReadError) -> DemuxOpenError {
         OrderedSegmentReadError::Failed { reason } => DemuxProbeRejection::InputFailure { reason },
     };
     DemuxOpenError::ProbeRejected(rejection)
+}
+
+/// Классифицирует pull-based resource failure без превращения error-а в EOF.
+fn resource_error_to_probe(error: OrderedResourceReadError) -> DemuxOpenError {
+    let rejection = match error {
+        OrderedResourceReadError::Cancelled => DemuxProbeRejection::Cancelled,
+        OrderedResourceReadError::RestartableReadInterrupted => DemuxProbeRejection::InputFailure {
+            reason: "restartable ordered resource read interrupted before demux selection"
+                .to_owned(),
+        },
+        OrderedResourceReadError::Failed { reason } => DemuxProbeRejection::InputFailure { reason },
+    };
+    DemuxOpenError::ProbeRejected(rejection)
+}
+
+/// Нарушение lifecycle/bound остаётся typed input failure до выбора factory.
+fn resource_protocol_to_probe(reason: &'static str) -> DemuxOpenError {
+    DemuxOpenError::ProbeRejected(DemuxProbeRejection::InputFailure {
+        reason: reason.to_owned(),
+    })
 }
 
 /// Non-seekable source wrapper возвращает уже sniffed bytes ровно один раз.
@@ -317,5 +424,49 @@ impl OrderedSegmentSource for ReplayOrderedSegmentSource {
         } else {
             self.inner.next_segment(cancellation)
         }
+    }
+}
+
+/// Replay wrapper возвращает sniffed events перед продолжением того же resource body.
+struct ReplayOrderedResourceStreamSource {
+    /// Bounded lifecycle/body prefix, прочитанный registry.
+    replay_events: VecDeque<OrderedResourceReadOutcome>,
+    /// Original source остаётся на первом ещё не прочитанном body byte/event-е.
+    inner: Box<dyn OrderedResourceStreamSource>,
+}
+
+impl ReplayOrderedResourceStreamSource {
+    /// Передаёт ownership replay queue без копирования `Bytes` backing storage.
+    fn new(
+        inner: Box<dyn OrderedResourceStreamSource>,
+        replay_events: VecDeque<OrderedResourceReadOutcome>,
+    ) -> Self {
+        Self {
+            replay_events,
+            inner,
+        }
+    }
+}
+
+impl OrderedResourceStreamSource for ReplayOrderedResourceStreamSource {
+    fn next_event(
+        &mut self,
+        maximum_chunk_bytes: NonZeroUsize,
+        cancellation: &CancellationToken,
+    ) -> Result<OrderedResourceReadOutcome, OrderedResourceReadError> {
+        if cancellation.is_cancelled() {
+            return Err(OrderedResourceReadError::Cancelled);
+        }
+        if let Some(OrderedResourceReadOutcome::Data(bytes)) = self.replay_events.front_mut()
+            && bytes.len() > maximum_chunk_bytes.get()
+        {
+            return Ok(OrderedResourceReadOutcome::Data(
+                bytes.split_to(maximum_chunk_bytes.get()),
+            ));
+        }
+        if let Some(outcome) = self.replay_events.pop_front() {
+            return Ok(outcome);
+        }
+        self.inner.next_event(maximum_chunk_bytes, cancellation)
     }
 }

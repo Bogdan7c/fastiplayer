@@ -5,22 +5,36 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use demux_api::{DemuxHints, DemuxInput, DemuxRegistry};
+use demux_api::{DemuxHints, DemuxRegistry};
 use media_core::{
-    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
-    Demuxer, MediaMetadata, MediaTime, Packet, PacketKeyframe, TrackId, TrackInfo, TrackKind,
+    DemuxActiveReadInterruptionCapability, DemuxReadEvent, DemuxSeekCancellationCompletion,
+    DemuxSeekCancellationToken, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
+    DemuxTrackListUpdate, Demuxer, MediaMetadata, Packet, TrackId, TrackInfo, TrackKind,
 };
 use web_media_adaptive::AdaptiveHttpContext;
 use web_media_transport_api::SourceGeneration;
 
+use crate::active_read::{HlsComponentActiveReadControl, HlsEpochActiveReadLifecycle};
 use crate::plan::{HlsComponentPlan, HlsEpochPlan};
-use crate::seek::{HlsSeekAnchor, HlsSeekAnchorKind, HlsSeekIndex, SharedHlsSeekIndex};
+use crate::seek::{HlsSeekAnchor, HlsSeekIndex, SharedHlsSeekIndex};
 use crate::source::{
-    HlsEpochSegmentSource, HlsResourceExpiryObserver, SharedHlsKeyCache, SharedHlsMediaSpanIndex,
+    HlsEpochSegmentSource, HlsResourceAttemptObserver, HlsResourceExpiryObserver,
+    SharedHlsKeyCache, SharedHlsMediaSpanIndex,
 };
 use crate::{HlsRequiredContainer, HlsVodOpenPolicy};
 
+mod helpers;
+mod initial;
 mod manifest_seek;
+mod restartable_read;
+use helpers::{
+    event_encoded_bytes, layout_ordinals, packet_is_replayable_after_video_anchor,
+    packet_matches_anchor,
+};
+pub(crate) use initial::{
+    HlsInitialComponentOpen, HlsInitialPositionEvidence, HlsProbedInitialComponent,
+};
+use restartable_read::HlsParserReadState;
 
 /// Cloneable construction recipe для offside transactional component replacement.
 #[derive(Clone)]
@@ -31,6 +45,8 @@ pub(crate) struct HlsComponentFactory {
     policy: HlsVodOpenPolicy,
     registry: Arc<DemuxRegistry>,
     seek_index: SharedHlsSeekIndex,
+    seek_cancellation: DemuxSeekCancellationToken,
+    active_read_control: HlsComponentActiveReadControl,
 }
 
 impl HlsComponentFactory {
@@ -42,6 +58,7 @@ impl HlsComponentFactory {
         policy: HlsVodOpenPolicy,
         registry: Arc<DemuxRegistry>,
         seek_index: SharedHlsSeekIndex,
+        active_read_control: HlsComponentActiveReadControl,
     ) -> Self {
         Self {
             plan,
@@ -50,18 +67,32 @@ impl HlsComponentFactory {
             policy,
             registry,
             seek_index,
+            seek_cancellation: DemuxSeekCancellationToken::new(),
+            active_read_control,
         }
     }
 
-    /// Открывает initial component и доказывает первый decode anchor.
-    pub(crate) fn open(&self) -> Result<HlsComponentDemuxer> {
-        HlsComponentDemuxer::open(
+    /// Привязывает offside replacement к конкретному progressive seek intent-у.
+    #[must_use]
+    fn with_seek_cancellation(mut self, seek_cancellation: DemuxSeekCancellationToken) -> Self {
+        self.seek_cancellation = seek_cancellation;
+        self
+    }
+
+    /// Открывает component сразу с caller-owned restore intent-а либо продолжает probed source.
+    pub(crate) fn open_initial(
+        &self,
+        initial_open: HlsInitialComponentOpen,
+    ) -> Result<HlsComponentDemuxer> {
+        HlsComponentDemuxer::open_initial(
             self.plan.clone(),
             self.http.clone(),
             self.generation,
             self.policy,
             Arc::clone(&self.registry),
             self.seek_index.clone(),
+            self.active_read_control.clone(),
+            initial_open,
         )
     }
 
@@ -82,7 +113,9 @@ impl HlsComponentFactory {
             self.policy,
             Arc::clone(&self.registry),
             replacement_index,
+            self.active_read_control.clone(),
             anchor,
+            self.seek_cancellation.clone(),
         )?;
         replacement.public_tracks = stable_public_tracks.to_vec();
         let replacement_tracks = replacement.current.tracks().to_vec();
@@ -112,24 +145,13 @@ pub(crate) struct HlsComponentDemuxer {
     metadata: Option<MediaMetadata>,
     replay_events: VecDeque<DemuxReadEvent>,
     seek_index: SharedHlsSeekIndex,
+    initial_position_evidence: HlsInitialPositionEvidence,
+    active_read_control: HlsComponentActiveReadControl,
+    current_active_read: HlsEpochActiveReadLifecycle,
+    parser_read_state: HlsParserReadState,
 }
 
 impl HlsComponentDemuxer {
-    /// Открывает первый epoch и доказывает initial RAP/audio anchor до publication tracks.
-    pub(crate) fn open(
-        plan: HlsComponentPlan,
-        http: AdaptiveHttpContext,
-        generation: SourceGeneration,
-        policy: HlsVodOpenPolicy,
-        registry: Arc<DemuxRegistry>,
-        seek_index: SharedHlsSeekIndex,
-    ) -> Result<Self> {
-        let mut component =
-            Self::open_from_epoch(plan, http, generation, policy, registry, seek_index, 0)?;
-        component.prime_initial_seek_anchor()?;
-        Ok(component)
-    }
-
     /// Создаёт replacement parser, не меняя active instance.
     #[allow(clippy::too_many_arguments)]
     fn open_from_epoch(
@@ -139,7 +161,9 @@ impl HlsComponentDemuxer {
         policy: HlsVodOpenPolicy,
         registry: Arc<DemuxRegistry>,
         seek_index: SharedHlsSeekIndex,
+        active_read_control: HlsComponentActiveReadControl,
         epoch_index: usize,
+        seek_cancellation: DemuxSeekCancellationToken,
     ) -> Result<Self> {
         let epoch = plan
             .epochs
@@ -153,9 +177,12 @@ impl HlsComponentDemuxer {
             policy,
             registry,
             seek_index,
+            active_read_control,
             epoch_index,
             epoch,
             None,
+            seek_cancellation,
+            HlsResourceAttemptObserver::disabled(),
         )
     }
 
@@ -168,7 +195,9 @@ impl HlsComponentDemuxer {
         policy: HlsVodOpenPolicy,
         registry: Arc<DemuxRegistry>,
         seek_index: SharedHlsSeekIndex,
+        active_read_control: HlsComponentActiveReadControl,
         anchor: HlsSeekAnchor,
+        seek_cancellation: DemuxSeekCancellationToken,
     ) -> Result<Self> {
         let mut epoch = plan
             .epochs
@@ -187,9 +216,12 @@ impl HlsComponentDemuxer {
             policy,
             registry,
             seek_index,
+            active_read_control,
             anchor.epoch_index,
             epoch,
             Some(anchor.epoch_timestamp_origin),
+            seek_cancellation,
+            HlsResourceAttemptObserver::disabled(),
         )
     }
 
@@ -202,12 +234,16 @@ impl HlsComponentDemuxer {
         policy: HlsVodOpenPolicy,
         registry: Arc<DemuxRegistry>,
         seek_index: SharedHlsSeekIndex,
+        active_read_control: HlsComponentActiveReadControl,
         epoch_index: usize,
         epoch: HlsEpochPlan,
         timestamp_origin: Option<Duration>,
+        seek_cancellation: DemuxSeekCancellationToken,
+        resource_attempt_observer: HlsResourceAttemptObserver,
     ) -> Result<Self> {
         let current_timeline_start = epoch.timeline_start;
         let media_spans = SharedHlsMediaSpanIndex::default();
+        let active_read_lifecycle = active_read_control.new_epoch_lifecycle(&epoch);
         let current = open_epoch_with_media_span_index(
             plan.container,
             epoch,
@@ -216,7 +252,44 @@ impl HlsComponentDemuxer {
             policy,
             Arc::clone(&registry),
             media_spans.clone(),
+            seek_cancellation,
+            resource_attempt_observer,
+            active_read_lifecycle.clone(),
         )?;
+        Ok(Self::from_opened_epoch(
+            plan,
+            http,
+            generation,
+            policy,
+            registry,
+            seek_index,
+            active_read_control,
+            epoch_index,
+            current_timeline_start,
+            timestamp_origin,
+            current,
+            media_spans,
+            active_read_lifecycle,
+        ))
+    }
+
+    /// Собирает HLS component вокруг fresh либо content-probed demuxer-а одинаковым путём.
+    #[allow(clippy::too_many_arguments)]
+    fn from_opened_epoch(
+        plan: HlsComponentPlan,
+        http: AdaptiveHttpContext,
+        generation: SourceGeneration,
+        policy: HlsVodOpenPolicy,
+        registry: Arc<DemuxRegistry>,
+        seek_index: SharedHlsSeekIndex,
+        active_read_control: HlsComponentActiveReadControl,
+        epoch_index: usize,
+        current_timeline_start: Duration,
+        timestamp_origin: Option<Duration>,
+        current: Box<dyn Demuxer + Send>,
+        media_spans: SharedHlsMediaSpanIndex,
+        active_read_lifecycle: HlsEpochActiveReadLifecycle,
+    ) -> Self {
         let public_tracks = current
             .tracks()
             .iter()
@@ -239,7 +312,7 @@ impl HlsComponentDemuxer {
             .collect();
         let metadata = current.media_metadata();
         let duration = plan.duration;
-        Ok(Self {
+        Self {
             http,
             generation,
             policy,
@@ -257,7 +330,19 @@ impl HlsComponentDemuxer {
             metadata,
             replay_events: VecDeque::new(),
             seek_index,
-        })
+            initial_position_evidence: HlsInitialPositionEvidence::Beginning,
+            active_read_control,
+            current_active_read: active_read_lifecycle,
+            parser_read_state: HlsParserReadState::Ready,
+        }
+    }
+
+    /// Передаёт proof outer open transaction только после полного component validation.
+    pub(crate) fn take_initial_position_evidence(&mut self) -> HlsInitialPositionEvidence {
+        std::mem::replace(
+            &mut self.initial_position_evidence,
+            HlsInitialPositionEvidence::Beginning,
+        )
     }
 
     /// Initial preflight читает только на worker-е и сохраняет exact events для replay.
@@ -363,6 +448,7 @@ impl HlsComponentDemuxer {
         self.current_timeline_start = epoch.timeline_start;
         self.current_timestamp_origin = None;
         self.media_spans = SharedHlsMediaSpanIndex::default();
+        let active_read_lifecycle = self.active_read_control.new_epoch_lifecycle(&epoch);
         self.current = open_epoch_with_media_span_index(
             self.plan.container,
             epoch,
@@ -371,7 +457,13 @@ impl HlsComponentDemuxer {
             self.policy,
             Arc::clone(&self.registry),
             self.media_spans.clone(),
+            DemuxSeekCancellationToken::new(),
+            HlsResourceAttemptObserver::disabled(),
+            active_read_lifecycle.clone(),
         )?;
+        active_read_lifecycle.activate_committed()?;
+        self.current_active_read = active_read_lifecycle;
+        self.parser_read_state = HlsParserReadState::Ready;
         let next_tracks = self.current.tracks().to_vec();
         self.refresh_track_mapping(&next_tracks)?;
         self.metadata = self
@@ -456,7 +548,14 @@ impl HlsComponentDemuxer {
     }
 
     fn read_next_inner_event(&mut self) -> Result<DemuxReadEvent> {
-        match self.current.next_event()? {
+        let inner_event = match self.current.next_event() {
+            Ok(event) => event,
+            Err(error) => {
+                self.observe_current_read_error(&error)?;
+                return Err(error);
+            }
+        };
+        match inner_event {
             DemuxReadEvent::Packet(packet) => self.remap_packet(packet).map(DemuxReadEvent::Packet),
             DemuxReadEvent::EndOfStream if self.open_next_epoch()? => {
                 Ok(self.tracks_changed_event())
@@ -494,7 +593,24 @@ impl Demuxer for HlsComponentDemuxer {
         DemuxSeekability::Seekable
     }
 
+    fn active_read_interruption(&self) -> DemuxActiveReadInterruptionCapability {
+        let has_only_streaming_resources = self
+            .plan
+            .epochs
+            .iter()
+            .flat_map(|epoch| &epoch.resources)
+            .all(|resource| resource.encryption.is_none());
+        if self.plan.container == HlsRequiredContainer::TransportStream
+            && has_only_streaming_resources
+        {
+            self.active_read_control.capability()
+        } else {
+            DemuxActiveReadInterruptionCapability::Unsupported
+        }
+    }
+
     fn next_event(&mut self) -> Result<DemuxReadEvent> {
+        self.restore_interrupted_current_if_needed()?;
         if let Some(event) = self.replay_events.pop_front() {
             return Ok(event);
         }
@@ -513,9 +629,11 @@ impl Demuxer for HlsComponentDemuxer {
             self.policy,
             Arc::clone(&self.registry),
             self.seek_index.clone(),
+            self.active_read_control.clone(),
         );
         let (replacement, result) =
             factory.prepare_seek_replacement(request, &self.public_tracks)?;
+        replacement.activate_committed_read()?;
         *self = replacement;
         Ok(result)
     }
@@ -531,11 +649,45 @@ impl Demuxer for HlsComponentDemuxer {
             self.policy,
             Arc::clone(&self.registry),
             self.seek_index.clone(),
+            self.active_read_control.clone(),
         );
         let (replacement, result) =
             factory.prepare_receipted_seek_replacement(request, &self.public_tracks)?;
+        replacement.activate_committed_read()?;
         *self = replacement;
         Ok(result)
+    }
+
+    fn seek_with_cancellable_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> Result<DemuxSeekResult> {
+        if cancellation.is_cancelled() {
+            return Err(media_core::MediaDemuxError::SeekCancelled.into());
+        }
+        let factory = HlsComponentFactory::new(
+            self.plan.clone(),
+            self.http.clone(),
+            self.generation,
+            self.policy,
+            Arc::clone(&self.registry),
+            self.seek_index.clone(),
+            self.active_read_control.clone(),
+        )
+        .with_seek_cancellation(cancellation.clone());
+        let (replacement, result) =
+            factory.prepare_receipted_seek_replacement(request, &self.public_tracks)?;
+        match cancellation.complete() {
+            DemuxSeekCancellationCompletion::Completed => {
+                replacement.activate_committed_read()?;
+                *self = replacement;
+                Ok(result)
+            }
+            DemuxSeekCancellationCompletion::CancellationWon => {
+                Err(media_core::MediaDemuxError::SeekCancelled.into())
+            }
+        }
     }
 }
 
@@ -549,6 +701,9 @@ fn open_epoch_with_media_span_index(
     policy: HlsVodOpenPolicy,
     registry: Arc<DemuxRegistry>,
     media_spans: SharedHlsMediaSpanIndex,
+    seek_cancellation: DemuxSeekCancellationToken,
+    resource_attempt_observer: HlsResourceAttemptObserver,
+    active_read_lifecycle: HlsEpochActiveReadLifecycle,
 ) -> Result<Box<dyn Demuxer + Send>> {
     let cancellation = http.cancellation().clone();
     let source = HlsEpochSegmentSource::new_with_media_span_index(
@@ -557,10 +712,13 @@ fn open_epoch_with_media_span_index(
         epoch,
         policy.maximum_key_resource_bytes,
         media_spans,
-    );
+    )
+    .with_seek_cancellation(seek_cancellation)
+    .with_resource_attempt_observer(resource_attempt_observer)
+    .with_active_read_lifecycle(active_read_lifecycle);
     registry
         .open_required_container(
-            DemuxInput::ordered_segments(Box::new(source)),
+            source.into_demux_input(container),
             DemuxHints::none(),
             policy.demux_sniff_budget,
             cancellation,
@@ -594,7 +752,7 @@ pub(crate) fn open_epoch_with_key_cache_and_observer(
     );
     registry
         .open_required_container(
-            DemuxInput::ordered_segments(Box::new(source)),
+            source.into_demux_input(container),
             DemuxHints::none(),
             policy.demux_sniff_budget,
             cancellation,
@@ -603,51 +761,4 @@ pub(crate) fn open_epoch_with_key_cache_and_observer(
                 .context("invalid static HLS live container identity")?,
         )
         .context("HLS live segment container sniff/open failed")
-}
-
-fn packet_matches_anchor(packet: &Packet, anchor: HlsSeekAnchor) -> bool {
-    let kind_matches = match anchor.kind {
-        HlsSeekAnchorKind::VideoRandomAccessPoint => {
-            packet.kind == TrackKind::Video && packet.keyframe == PacketKeyframe::Keyframe
-        }
-        HlsSeekAnchorKind::AudioPacket => packet.kind == TrackKind::Audio,
-    };
-    kind_matches && MediaTime::from_duration(packet.pts) == anchor.position
-}
-
-/// Сохраняет только audio, которое по presentation time уже принадлежит выбранному video RAP.
-fn packet_is_replayable_after_video_anchor(packet: &Packet, anchor: HlsSeekAnchor) -> bool {
-    anchor.kind == HlsSeekAnchorKind::VideoRandomAccessPoint
-        && packet.kind == TrackKind::Audio
-        && MediaTime::from_duration(packet.pts) >= anchor.position
-}
-
-fn event_encoded_bytes(event: &DemuxReadEvent) -> usize {
-    match event {
-        DemuxReadEvent::Packet(packet) => packet.data.len(),
-        DemuxReadEvent::EndOfStream
-        | DemuxReadEvent::TracksChanged(_)
-        | DemuxReadEvent::MediaMetadataChanged(_)
-        | DemuxReadEvent::TemporarilyUnavailable(_) => 0,
-    }
-}
-
-fn layout_ordinals(tracks: &[TrackInfo]) -> Vec<(TrackKind, usize)> {
-    let mut video_index = 0;
-    let mut audio_index = 0;
-    tracks
-        .iter()
-        .map(|track| match track.kind {
-            TrackKind::Video => {
-                let ordinal = video_index;
-                video_index += 1;
-                (TrackKind::Video, ordinal)
-            }
-            TrackKind::Audio => {
-                let ordinal = audio_index;
-                audio_index += 1;
-                (TrackKind::Audio, ordinal)
-            }
-        })
-        .collect()
 }

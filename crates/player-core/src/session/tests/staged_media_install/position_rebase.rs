@@ -1,4 +1,4 @@
-//! Functional regression для rebase request-owned position receipt после `TracksChanged`.
+//! Functional regression для request-owned position receipt после exact `TracksChanged`.
 //!
 //! Тест проходит staged same-lineage install, worker-owned demux seek, decoder reset,
 //! packet admission и scheduler presentation. Ручной вызов final seek commit запрещён:
@@ -24,7 +24,7 @@ fn video_candidate_with_post_commit_track_update(
         Some(Duration::from_secs(40)),
         demux_seek_log,
     );
-    // Production `TracksChanged` обязан rebase-ить active seek и связанный staged receipt.
+    // Exact first post-receipt `TracksChanged` подтверждает topology без второго reset-а.
     demuxer.push_event(DemuxReadEvent::TracksChanged(
         media_core::DemuxTrackListUpdate::new(vec![video_track], Some(Duration::from_secs(40))),
     ));
@@ -125,7 +125,7 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
         .expect("adopted staged position должна ждать decoder landing")
         .generation;
 
-    // Первый installed tick читает настоящий demux event и rebases ту же seek-транзакцию.
+    // Первый installed tick читает exact demux event без повторной смены generation.
     let track_update_tick = session.tick(PlayerTickContext::with_config(
         Instant::now(),
         PlayerTickConfig {
@@ -142,12 +142,12 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
         .active_commit()
         .expect("TracksChanged должен сохранить active adopted seek")
         .generation;
-    assert_ne!(
+    assert_eq!(
         generation_after_track_update,
         generation_before_track_update
     );
 
-    // App забирает staged outcome уже после rebase и должен ждать новую generation.
+    // App забирает staged outcome после topology confirmation и ждёт presentation.
     let (restore_tx, restore_rx) = crossbeam_channel::bounded(1);
     session.begin_installed_media_state_restore(
         InstalledMediaStateRestore {
@@ -164,7 +164,7 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
     assert_eq!(
         restore_rx.try_recv(),
         Err(crossbeam_channel::TryRecvError::Empty),
-        "receipt нельзя завершать до presentation commit-а новой generation"
+        "receipt нельзя завершать до presentation commit-а текущей generation"
     );
 
     // Второй tick проводит target packet через обычный installed decoder admission.
@@ -179,7 +179,7 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
     assert_eq!(packet_tick.video_frames_presented, 0);
     assert_eq!(decoder.sent_packets().len(), 1);
 
-    // Decoded frame получает current rebased generation и только scheduler завершает seek.
+    // Decoded frame получает current generation и только scheduler завершает seek.
     decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
         &session,
         target_position,

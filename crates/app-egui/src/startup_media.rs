@@ -26,18 +26,26 @@ use crate::app_wake::{
     AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
 };
 use crate::process_shutdown::{FinishedThreadJoin, join_finished_thread};
+use crate::startup_readiness::{
+    StartupAudioExpectation, StartupMediaOpenKind, StartupPlaybackExpectation,
+    StartupReadinessExpectation, StartupTargetExpectation,
+};
 use crate::state::AppState;
 use crate::url_service_adapter::{
     StartupUrlClassification, StartupUrlLocator, classify_startup_url,
 };
 
+pub(crate) mod native_hls;
 mod orchestration;
 mod pending_install;
 mod playlist;
 mod shutdown;
 mod yt_dlp;
 
+use native_hls::NativeHlsStartupJob;
 pub(crate) use orchestration::StartupMediaPhase;
+#[cfg(test)]
+pub(crate) use orchestration::apply_restored_playback_policy;
 use orchestration::{StartupMediaOrchestration, StartupMediaTarget};
 pub(crate) use yt_dlp::PreparedYtDlpStartupMedia;
 
@@ -301,6 +309,9 @@ pub(crate) struct StartupMediaController {
     /// Фоновая подготовка generic direct media URL, если она уже запущена.
     direct_media_startup_job: Option<DirectMediaStartupJob>,
 
+    /// Mutually-exclusive native HLS admission/fallback job.
+    native_hls_startup_job: Option<NativeHlsStartupJob>,
+
     /// Local CLI/restore preparation принадлежит startup owner-у, а не UI picker-у.
     local_startup_job: Option<crate::local_file_open::LocalFileOpenJob>,
 
@@ -350,6 +361,7 @@ impl StartupMediaController {
             initial_media,
             yt_dlp_startup_job: None,
             direct_media_startup_job: None,
+            native_hls_startup_job: None,
             local_startup_job: None,
             startup_playlist_pending: false,
             orchestration: StartupMediaOrchestration::new(cli_requested),
@@ -378,6 +390,11 @@ impl StartupMediaController {
                     .map(DirectMediaStartupJob::pending_message)
             })
             .or_else(|| {
+                self.native_hls_startup_job
+                    .as_ref()
+                    .map(NativeHlsStartupJob::pending_message)
+            })
+            .or_else(|| {
                 self.local_startup_job
                     .as_ref()
                     .map(|_| "Подготовка local media...")
@@ -392,6 +409,7 @@ impl StartupMediaController {
     pub(crate) fn has_pending_startup_job(&self) -> bool {
         self.yt_dlp_startup_job.is_some()
             || self.direct_media_startup_job.is_some()
+            || self.native_hls_startup_job.is_some()
             || self.local_startup_job.is_some()
             || self.startup_playlist_pending
             || self.orchestration.has_pending_work()
@@ -433,6 +451,16 @@ impl StartupMediaController {
 
         self.orchestration
             .begin_target(StartupMediaTarget::CliReplacement);
+        app_state.begin_startup_readiness(StartupReadinessExpectation::new(
+            StartupMediaOpenKind::Cli,
+            StartupTargetExpectation::Beginning,
+            if app_config.player.start_paused {
+                StartupPlaybackExpectation::Paused
+            } else {
+                StartupPlaybackExpectation::Playing
+            },
+            StartupAudioExpectation::Unknown,
+        ));
 
         if let InitialMedia::Playlist(path) = &initial_media {
             match playlist_runtime.start_startup_playlist_import(path.clone()) {
@@ -754,6 +782,7 @@ mod tests {
                 source_cancellation: source_core::CancellationToken::new(),
             }),
             direct_media_startup_job: None,
+            native_hls_startup_job: None,
             local_startup_job: None,
             startup_playlist_pending: false,
             orchestration: StartupMediaOrchestration::new(false),
@@ -796,6 +825,7 @@ mod tests {
                 source_cancellation: source_core::CancellationToken::new(),
             }),
             direct_media_startup_job: None,
+            native_hls_startup_job: None,
             local_startup_job: None,
             startup_playlist_pending: false,
             orchestration: StartupMediaOrchestration::new(false),

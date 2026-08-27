@@ -46,6 +46,11 @@ pub enum InstalledPositionRestore {
     },
     /// Усыновляет preauthorization same-lineage result без второго demux seek-а.
     AdoptPreparedSameLineagePosition,
+    /// Усыновляет initial-position receipt exact installed candidate-а без второго demux seek-а.
+    AdoptPreparedInitialPosition {
+        /// Exact target защищает restore от adoption другого prepared candidate-а.
+        expected_target: Duration,
+    },
 }
 
 /// Причина, по которой live same-item restore принял свежий safe live edge.

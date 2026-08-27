@@ -267,7 +267,7 @@ fn final_seek_audio_gate_wait_keeps_target_frames_on_target_clock_base() {
     );
     assert_eq!(harness.session.pipeline.video_present_queue_len(), 2);
 
-    let soft_fallback_tick = harness.session.tick(PlayerTickContext::with_config(
+    let expired_audio_gate_tick = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),
         PlayerTickConfig {
             max_demux_packets_per_tick: 0,
@@ -276,11 +276,11 @@ fn final_seek_audio_gate_wait_keeps_target_frames_on_target_clock_base() {
         },
     ));
 
-    assert_eq!(soft_fallback_tick.video_frames_presented, 0);
-    assert!(soft_fallback_tick.dropped_video_frames.is_empty());
-    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(expired_audio_gate_tick.video_frames_presented, 0);
+    assert!(expired_audio_gate_tick.dropped_video_frames.is_empty());
+    assert!(harness.session.seek_commit().is_some());
     assert_eq!(harness.session.pipeline.media_clock_base(), target);
-    assert_eq!(harness.session.snapshot().current_position, target);
+    assert_ne!(harness.session.snapshot().current_position, target);
 }
 
 #[test]

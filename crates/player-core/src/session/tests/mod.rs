@@ -43,10 +43,12 @@ use video_core::{HostUploadResourceSnapshot, HostUploadResourceSnapshotStatus};
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
 mod test_support;
+mod tracing_capture;
 
 mod audio_packet_window;
 mod audio_runtime;
 mod capability_selection;
+mod cold_resume_av;
 mod decoder_boundary;
 mod diagnostics_sink;
 mod dynamic_timeline;
@@ -58,7 +60,10 @@ mod media_lifecycle;
 mod playback;
 mod playback_rate;
 mod playback_window;
+mod post_target_landing;
 mod prepared_demux_seek;
+mod prepared_demux_seek_av;
+mod prepared_initial_position;
 mod scrub;
 mod scrub_driver;
 mod seek_commit_gates;

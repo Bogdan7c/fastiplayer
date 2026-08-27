@@ -29,9 +29,10 @@ use support::{
 };
 use web_media_hls::{
     ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence,
-    HlsComponentContainerIntent, HlsContainerEvidence, HlsMainTrackLayoutIntent, HlsManifestInput,
-    HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenError,
-    HlsVodOpenRequest, SecretInlineMediaPlaylist, prepare_hls_vod, prepare_hls_vod_receipted,
+    HlsComponentContainerIntent, HlsContainerEvidence, HlsInitialReadinessCapability,
+    HlsMainTrackLayoutIntent, HlsManifestInput, HlsRequestOverrides, HlsRequiredContainer,
+    HlsVariantSelectionIntent, HlsVodOpenError, HlsVodOpenRequest, HlsVodSeekLandingPolicy,
+    SecretInlineMediaPlaylist, prepare_hls_vod, prepare_hls_vod_receipted,
 };
 use web_media_transport_api::SourceGeneration;
 
@@ -201,6 +202,24 @@ fn assert_bounded_restart_requests(
     }
 }
 
+/// Completed VOD resource может быть replay-нут из bounded RAM cache без нового GET.
+fn assert_bounded_or_cached_restart_requests(
+    requests: &[String],
+    permitted_path: &str,
+    forbidden_paths: &[&str],
+) {
+    assert!(
+        requests.iter().all(|line| line.contains(permitted_path)),
+        "restart должен читать только exact tail либо completed cache: {requests:?}"
+    );
+    for forbidden_path in forbidden_paths {
+        assert!(
+            requests.iter().all(|line| !line.contains(forbidden_path)),
+            "restart unexpectedly refetched {forbidden_path}: {requests:?}"
+        );
+    }
+}
+
 fn collect_until_eos(demuxer: &mut dyn Demuxer) -> Result<Vec<DemuxReadEvent>, anyhow::Error> {
     let mut events = Vec::new();
     for _ in 0..256 {
@@ -254,6 +273,10 @@ fn muxed_ts_is_deferred_and_inline_manifest_causes_zero_manifest_fetch() {
         HlsRequiredContainer::TransportStream,
     ))
     .expect("prepare inline TS");
+    assert!(matches!(
+        opened.initial_readiness(),
+        HlsInitialReadinessCapability::Progressive(_)
+    ));
     let mut demuxer = opened.into_demuxer();
     let first_poll_started = Instant::now();
     assert!(matches!(
@@ -1020,7 +1043,7 @@ fn main_content_probe_opens_muxed_ts_and_missing_still_rejects() {
 }
 
 #[test]
-fn vod_seek_uses_proven_raps_across_discontinuity_and_fences_rapid_supersede() {
+fn opt_in_vod_worker_seek_uses_post_target_raps_across_discontinuity() {
     let first = Arc::new(muxed_ts(0));
     let second = Arc::new(muxed_ts(0));
     let server = TestServer::start(move |_, request| {
@@ -1039,7 +1062,8 @@ fn vod_seek_uses_proven_raps_across_discontinuity_and_fences_rapid_supersede() {
                     #EXTINF:1,\nsecond.ts\n\
                     #EXT-X-ENDLIST\n";
     let opened = prepare_hls_vod_receipted(
-        inline_request(&server, playlist, HlsRequiredContainer::TransportStream),
+        inline_request(&server, playlist, HlsRequiredContainer::TransportStream)
+            .with_seek_landing_policy(HlsVodSeekLandingPolicy::PreferPostTargetRap),
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(4).expect("seek receipt bound")),
     )
     .expect("prepare seekable discontinuous VOD");
@@ -1101,14 +1125,17 @@ fn vod_seek_uses_proven_raps_across_discontinuity_and_fences_rapid_supersede() {
     let ProgressiveAsyncSeekOutcome::Succeeded(backward) = backward_receipt.outcome else {
         panic!("backward seek must succeed: {backward_receipt:?}");
     };
-    assert_eq!(backward.actual_position.as_duration(), Duration::ZERO);
+    assert_eq!(
+        backward.actual_position.as_duration(),
+        Duration::from_secs(1)
+    );
 
     let deadline = Instant::now() + TEST_TIMEOUT;
     loop {
         let event = next_ready_event(&mut *demuxer).expect("post-seek event");
         if let DemuxReadEvent::Packet(packet) = event {
             assert_eq!(packet.kind, TrackKind::Video);
-            assert_eq!(packet.pts, Duration::ZERO);
+            assert_eq!(packet.pts, Duration::from_secs(1));
             break;
         }
         assert!(Instant::now() < deadline, "rapid seek did not land");
@@ -1206,7 +1233,7 @@ fn long_grouped_ts_seek_restarts_from_exact_media_tail_with_tiny_index() {
     let forward_audio_packet = next_landing_packet(&mut *demuxer, &stable_tracks);
     assert_eq!(forward_audio_packet.kind, TrackKind::Audio);
     assert_eq!(forward_audio_packet.pts, Duration::from_secs(90));
-    assert_bounded_restart_requests(
+    assert_bounded_or_cached_restart_requests(
         &request_lines_since(&server, forward_request_index),
         "/segment-3.ts",
         &["/segment-0.ts", "/segment-1.ts", "/segment-2.ts"],
@@ -1229,7 +1256,7 @@ fn long_grouped_ts_seek_restarts_from_exact_media_tail_with_tiny_index() {
     let backward_audio_packet = next_landing_packet(&mut *demuxer, &stable_tracks);
     assert_eq!(backward_audio_packet.kind, TrackKind::Audio);
     assert_eq!(backward_audio_packet.pts, Duration::from_secs(30));
-    assert_bounded_restart_requests(
+    assert_bounded_or_cached_restart_requests(
         &request_lines_since(&server, backward_request_index),
         "/segment-1.ts",
         &["/segment-0.ts"],

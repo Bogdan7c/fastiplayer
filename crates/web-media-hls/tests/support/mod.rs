@@ -60,6 +60,16 @@ impl TestServer {
     pub fn start(
         handler: impl Fn(usize, &ObservedRequest) -> Vec<u8> + Send + Sync + 'static,
     ) -> Self {
+        Self::start_streaming(move |request_index, request, stream| {
+            let response = handler(request_index, request);
+            stream.write_all(&response).expect("write HLS response");
+        })
+    }
+
+    /// Запускает fixture, где test owner управляет частичной отправкой response body.
+    pub fn start_streaming(
+        handler: impl Fn(usize, &ObservedRequest, &mut TcpStream) + Send + Sync + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind HLS test server");
         listener
             .set_nonblocking(true)
@@ -81,8 +91,7 @@ impl TestServer {
                             observed.push(request.clone());
                             request_index
                         };
-                        let response = handler(request_index, &request);
-                        stream.write_all(&response).expect("write HLS response");
+                        handler(request_index, &request, &mut stream);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(1));
@@ -270,6 +279,7 @@ pub fn demux_registry() -> Arc<DemuxRegistry> {
 
 pub fn open_policy() -> HlsVodOpenPolicy {
     HlsVodOpenPolicy {
+        seek_landing_policy: web_media_hls::HlsVodSeekLandingPolicy::DecodeFromOrBeforeTarget,
         parser_limits: HlsParserLimits::default(),
         demux_sniff_budget: DemuxSniffBudget::new(
             NonZeroUsize::new(8 * 1_024).expect("sniff bytes"),
@@ -290,7 +300,8 @@ pub fn open_policy() -> HlsVodOpenPolicy {
         maximum_key_resource_bytes: NonZeroUsize::new(64).expect("key response bytes"),
         maximum_seek_index_entries: NonZeroUsize::new(256).expect("seek index entries"),
         maximum_seek_replay_events: NonZeroUsize::new(4_096).expect("seek replay events"),
-        maximum_seek_replay_bytes: NonZeroUsize::new(8 * 1_024 * 1_024).expect("seek replay bytes"),
+        maximum_seek_replay_bytes: NonZeroUsize::new(16 * 1_024 * 1_024)
+            .expect("seek replay bytes"),
     }
 }
 
@@ -336,6 +347,57 @@ pub fn long_muxed_ts_segment(start_pts_90khz: u64, duration_seconds: u64) -> Vec
         );
     }
     builder.finish()
+}
+
+/// Строит 10 MiB TS resource с ранними RAP/AAC и длинным валидным null-packet хвостом.
+#[allow(dead_code)] // Fixture используется streaming manifest-seek integration binary.
+pub fn large_muxed_ts_segment_with_early_landing(start_pts_90khz: u64) -> Vec<u8> {
+    let mut bytes = muxed_ts_segment_with_early_landing(start_pts_90khz);
+    let mut null_packet = [0xff_u8; 188];
+    null_packet[..4].copy_from_slice(&[0x47, 0x1f, 0xff, 0x10]);
+    while bytes.len() < 10 * 1_024 * 1_024 {
+        bytes.extend_from_slice(&null_packet);
+    }
+    bytes
+}
+
+/// Маленький TS segment завершает RAP внутри того же resource и не требует следующего GET.
+#[allow(dead_code)] // Fixture используется отдельными initial-open integration tests.
+pub fn muxed_ts_segment_with_early_landing(start_pts_90khz: u64) -> Vec<u8> {
+    let h264_random_access_unit = [
+        0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0x00, 0x01, 0x00, 0x00, 0x01, 0x68, 0xce, 0x00,
+        0x00, 0x01, 0x65, 0x80,
+    ];
+    let h264_following_unit = [0x00, 0x00, 0x01, 0x41, 0x80];
+    TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)])
+        .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID), (0x0f, AUDIO_PID)])
+        .pes(AUDIO_PID, start_pts_90khz, None, &adts_frame(&[0x11, 0x22]))
+        .pes(
+            AUDIO_PID,
+            start_pts_90khz.saturating_add(3_000),
+            None,
+            &adts_frame(&[0x33, 0x44]),
+        )
+        .pes(
+            VIDEO_PID,
+            start_pts_90khz,
+            Some(start_pts_90khz.saturating_sub(3_000)),
+            &h264_random_access_unit,
+        )
+        .pes(
+            VIDEO_PID,
+            start_pts_90khz.saturating_add(3_000),
+            None,
+            &h264_random_access_unit,
+        )
+        .pes(
+            VIDEO_PID,
+            start_pts_90khz.saturating_add(6_000),
+            None,
+            &h264_following_unit,
+        )
+        .finish()
 }
 
 /// Строит muxed TS segment, где полный AAC PES появляется позже default 4096-packet probe-а.

@@ -8,8 +8,8 @@ use playlist_core::{PlaylistEntryId, PlaylistItemId, RemovalCurrentOutcome};
 
 use super::controller::{
     ControllerDestructiveRemoval, ControllerDestructiveRemovalOutcome, ControllerRemovalKind,
-    ControllerRemovalUndoOutcome, ControllerTerminalDrain, ManualNavigationInvalidation,
-    PlaylistControllerInvariantViolation,
+    ControllerRemovalUndoOutcome, ControllerTerminalDrain, InstalledPlaybackIntentCompletion,
+    ManualNavigationInvalidation, PlaylistControllerInvariantViolation,
 };
 use super::identity::ActiveMediaIdentity;
 use super::identity::ActiveMediaLineageId;
@@ -426,16 +426,35 @@ impl PlaylistRuntime {
         media_instance_id: MediaInstanceId,
         binding_generation: PlaylistBindingGeneration,
     ) -> Result<ControllerTerminalDrain, PlaylistControllerInvariantViolation> {
+        self.on_playlist_installed_with_playback_intent(
+            request_id,
+            player_request_id,
+            media_instance_id,
+            binding_generation,
+            InstalledPlaybackIntentCompletion::PreserveCurrent,
+        )
+    }
+
+    /// Exact Installed завершает stable intent только после authoritative player receipt-а.
+    pub(crate) fn on_playlist_installed_with_playback_intent(
+        &mut self,
+        request_id: MediaOpenRequestId,
+        player_request_id: MediaInstallRequestId,
+        media_instance_id: MediaInstanceId,
+        binding_generation: PlaylistBindingGeneration,
+        playback_intent: InstalledPlaybackIntentCompletion,
+    ) -> Result<ControllerTerminalDrain, PlaylistControllerInvariantViolation> {
         let controller = self
             .controller
             .as_mut()
             .ok_or(PlaylistControllerInvariantViolation::LoadDecisionPending)?;
         let dirty_before = controller.dirty_revision();
-        let drain = controller.on_installed(
+        let drain = controller.on_installed_with_playback_intent(
             request_id,
             player_request_id,
             media_instance_id,
             binding_generation,
+            playback_intent,
         )?;
         if let Some(installed_active) = drain.active_media
             && self.removal_undo.as_ref().is_some_and(|undo| {

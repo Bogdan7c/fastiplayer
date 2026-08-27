@@ -18,6 +18,120 @@ pub(super) struct InstalledResumeCommit {
     pub(super) warning: Option<crate::playlist_runtime::ResumePositionWarning>,
 }
 
+/// Timeline/seekability installed snapshot-а выражены одним named фактом без positional `bool`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstalledStartupTimeline {
+    /// Live startup никогда не восстанавливает persisted static position.
+    Live,
+    /// Static source допускает post-install absolute restore.
+    StaticSeekable,
+    /// Static source не сообщает seek capability; решение остаётся у player restore boundary.
+    StaticNotSeekable,
+}
+
+/// Минимальные authoritative installed facts для выбора post-install position action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PostInstalledStartupPositionFacts {
+    timeline: InstalledStartupTimeline,
+    duration: Option<std::time::Duration>,
+    current_position: std::time::Duration,
+}
+
+impl PostInstalledStartupPositionFacts {
+    /// Проецирует production player snapshot без передачи всего mutable session state.
+    pub(crate) fn from_snapshot(snapshot: &player_core::PlayerSnapshot) -> Self {
+        let timeline = if snapshot.timeline.mode == media_core::TimelineMode::Live {
+            InstalledStartupTimeline::Live
+        } else if snapshot.timeline.seekable {
+            InstalledStartupTimeline::StaticSeekable
+        } else {
+            InstalledStartupTimeline::StaticNotSeekable
+        };
+        Self {
+            timeline,
+            duration: snapshot.duration,
+            current_position: snapshot.current_position,
+        }
+    }
+
+    /// Собирает deterministic static-seekable facts для cross-owner regression-а.
+    #[cfg(test)]
+    pub(crate) const fn static_seekable(
+        duration: Option<std::time::Duration>,
+        current_position: std::time::Duration,
+    ) -> Self {
+        Self {
+            timeline: InstalledStartupTimeline::StaticSeekable,
+            duration,
+            current_position,
+        }
+    }
+}
+
+/// Чистый plan отделяет решение о позиции от dispatch/compensation side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PostInstalledStartupPositionPlan {
+    /// Продолжает тот же installed candidate без player restore/demux seek-а.
+    Continue {
+        /// Stale checkpoint остаётся честным пользовательским warning-ом.
+        warning: Option<crate::playlist_runtime::ResumePositionWarning>,
+    },
+    /// Выполняет ровно один typed restore через existing player boundary.
+    Restore {
+        /// Persisted position нужна для receipt correlation.
+        requested_position: std::time::Duration,
+        /// Player-owned restore intent сохраняет seek/adoption различие.
+        position: player_core::InstalledPositionRestore,
+    },
+}
+
+/// Выбирает post-install action из authoritative duration/timeline и prepared-position strategy.
+pub(crate) fn plan_post_installed_startup_position(
+    startup_position: crate::playlist_runtime::StartupPosition,
+    strategy: super::super::PreparedPositionRestoreStrategy,
+    facts: PostInstalledStartupPositionFacts,
+) -> PostInstalledStartupPositionPlan {
+    match startup_position {
+        crate::playlist_runtime::StartupPosition::KeepStart => {
+            PostInstalledStartupPositionPlan::Continue { warning: None }
+        }
+        crate::playlist_runtime::StartupPosition::Restore(_)
+            if facts.timeline == InstalledStartupTimeline::Live =>
+        {
+            PostInstalledStartupPositionPlan::Continue { warning: None }
+        }
+        crate::playlist_runtime::StartupPosition::Restore(requested_position)
+            if facts.timeline == InstalledStartupTimeline::StaticSeekable
+                && facts
+                    .duration
+                    .is_some_and(|duration| requested_position > duration) =>
+        {
+            PostInstalledStartupPositionPlan::Continue {
+                warning: Some(crate::playlist_runtime::ResumePositionWarning {
+                    requested_position,
+                    available_position: facts.current_position,
+                }),
+            }
+        }
+        crate::playlist_runtime::StartupPosition::Restore(requested_position) => {
+            let position = match strategy {
+                super::super::PreparedPositionRestoreStrategy::SeekAfterInstall => {
+                    player_core::InstalledPositionRestore::SeekTo(requested_position)
+                }
+                super::super::PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition => {
+                    player_core::InstalledPositionRestore::AdoptPreparedInitialPosition {
+                        expected_target: requested_position,
+                    }
+                }
+            };
+            PostInstalledStartupPositionPlan::Restore {
+                requested_position,
+                position,
+            }
+        }
+    }
+}
+
 impl AppState {
     /// Installed забирается exactly once, затем restore position предшествует intent/lineage.
     pub(super) fn begin_post_installed_intent(
@@ -161,43 +275,24 @@ impl AppState {
                 ),
             };
         }
-        match pending.startup_position {
-            crate::playlist_runtime::StartupPosition::KeepStart => self.begin_playback_intent(
+        let position_plan = plan_post_installed_startup_position(
+            pending.startup_position,
+            pending.position_restore_strategy,
+            PostInstalledStartupPositionFacts::from_snapshot(&snapshot),
+        );
+        match position_plan {
+            PostInstalledStartupPositionPlan::Continue { warning } => self.begin_playback_intent(
                 playlist_runtime,
                 pending,
                 installed,
                 media_instance_id,
                 initial_checkpoint_position,
-                None,
+                warning,
             ),
-            crate::playlist_runtime::StartupPosition::Restore(_) if is_live => self
-                .begin_playback_intent(
-                    playlist_runtime,
-                    pending,
-                    installed,
-                    media_instance_id,
-                    initial_checkpoint_position,
-                    None,
-                ),
-            crate::playlist_runtime::StartupPosition::Restore(requested_position)
-                if snapshot.timeline.seekable
-                    && snapshot
-                        .duration
-                        .is_some_and(|duration| requested_position > duration) =>
-            {
-                self.begin_playback_intent(
-                    playlist_runtime,
-                    pending,
-                    installed,
-                    media_instance_id,
-                    initial_checkpoint_position,
-                    Some(crate::playlist_runtime::ResumePositionWarning {
-                        requested_position,
-                        available_position: snapshot.current_position,
-                    }),
-                )
-            }
-            crate::playlist_runtime::StartupPosition::Restore(requested_position) => {
+            PostInstalledStartupPositionPlan::Restore {
+                requested_position,
+                position,
+            } => {
                 let restore = player_core::InstalledMediaStateRestore {
                     request_id: installed.player_request_id,
                     media_instance_id,
@@ -205,7 +300,7 @@ impl AppState {
                     audio_track: player_core::InstalledTrackRestore::KeepDefault,
                     subtitle_track: player_core::InstalledSubtitleRestore::KeepDefault,
                     volume: player_core::InstalledVolumeRestore::KeepCurrent,
-                    position: player_core::InstalledPositionRestore::SeekTo(requested_position),
+                    position,
                 };
                 match self.player_worker.restore_installed_media_state(restore) {
                     Ok(receipt) => {
@@ -541,4 +636,53 @@ mod tests {
             player_core::InstalledSubtitleRestore::Select(media_core::TrackId::new(7))
         );
     }
+
+    #[test]
+    fn startup_position_plan_preserves_keep_start_live_and_exact_adoption() {
+        let requested_position = std::time::Duration::from_secs(25);
+        let static_facts = PostInstalledStartupPositionFacts::static_seekable(
+            Some(std::time::Duration::from_secs(60)),
+            std::time::Duration::from_secs(3),
+        );
+        assert_eq!(
+            plan_post_installed_startup_position(
+                crate::playlist_runtime::StartupPosition::KeepStart,
+                super::super::super::PreparedPositionRestoreStrategy::SeekAfterInstall,
+                static_facts,
+            ),
+            PostInstalledStartupPositionPlan::Continue { warning: None }
+        );
+
+        let live_facts = PostInstalledStartupPositionFacts {
+            timeline: InstalledStartupTimeline::Live,
+            duration: None,
+            current_position: std::time::Duration::from_secs(40),
+        };
+        assert_eq!(
+            plan_post_installed_startup_position(
+                crate::playlist_runtime::StartupPosition::Restore(requested_position),
+                super::super::super::PreparedPositionRestoreStrategy::SeekAfterInstall,
+                live_facts,
+            ),
+            PostInstalledStartupPositionPlan::Continue { warning: None }
+        );
+
+        assert_eq!(
+            plan_post_installed_startup_position(
+                crate::playlist_runtime::StartupPosition::Restore(requested_position),
+                super::super::super::PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition,
+                static_facts,
+            ),
+            PostInstalledStartupPositionPlan::Restore {
+                requested_position,
+                position: player_core::InstalledPositionRestore::AdoptPreparedInitialPosition {
+                    expected_target: requested_position,
+                },
+            }
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "../../../hls_startup_integration_tests.rs"]
+mod hls_startup_integration_tests;

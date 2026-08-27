@@ -142,7 +142,7 @@ impl PlayerSession {
             return;
         };
 
-        if let Some(play_result) = self.pipeline.play_audio_output() {
+        if let Some(play_result) = self.play_audio_output_with_resume_event() {
             if let Err(error) = play_result {
                 warn!(error = %error, "Не удалось запустить audio tail после EOF");
                 self.set_runtime_error(format!("Audio EOF drain play error: {error}"));

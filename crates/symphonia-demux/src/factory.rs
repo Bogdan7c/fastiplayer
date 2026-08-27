@@ -206,6 +206,11 @@ impl DemuxFactory for SymphoniaDemuxFactory {
                     .map(OrderedSegmentDemuxer::new)
                     .map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>)
             }
+            DemuxInput::OrderedResourceStream(_) => {
+                return Err(DemuxFactoryOpenError::UnsupportedInput {
+                    capability: DemuxInputCapability::OrderedResourceStream,
+                });
+            }
         };
 
         let demuxer = match demuxer_result {

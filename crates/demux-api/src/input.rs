@@ -1,5 +1,6 @@
 use std::fmt;
 use std::io::Read;
+use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
 use bytes::Bytes;
@@ -18,6 +19,8 @@ pub enum DemuxInputCapability {
     StreamingBytes,
     /// Последовательность явно отделённых init/media segments.
     OrderedSegments,
+    /// Pull-based ordered resources с отдельными chunk и resource EOF boundaries.
+    OrderedResourceStream,
 }
 
 impl DemuxInputCapability {
@@ -27,6 +30,7 @@ impl DemuxInputCapability {
             Self::SeekableBytes => 1 << 0,
             Self::StreamingBytes => 1 << 1,
             Self::OrderedSegments => 1 << 2,
+            Self::OrderedResourceStream => 1 << 3,
         }
     }
 }
@@ -253,6 +257,72 @@ pub trait OrderedSegmentSource: Send {
     ) -> Result<Option<OrderedSegment>, OrderedSegmentReadError>;
 }
 
+/// Provenance одного ресурса в pull-based ordered byte stream.
+///
+/// Metadata отделена от body chunks, поэтому временная граница transport chunk-а
+/// не может случайно стать container resource boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderedResourceMetadata {
+    /// Monotonic transport/session sequence.
+    pub sequence: OrderedSegmentSequence,
+    /// Роль ресурса в container byte sequence.
+    pub kind: OrderedSegmentKind,
+    /// Явный lifecycle marker перед первым byte ресурса.
+    pub discontinuity: OrderedSegmentDiscontinuity,
+}
+
+/// Результат одного bounded pull из ordered resource stream-а.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderedResourceReadOutcome {
+    /// Начинается новый resource; следующий непустой `Data` принадлежит ему.
+    Begin(OrderedResourceMetadata),
+    /// Непустой immutable body chunk размером не больше caller-provided bound-а.
+    Data(Bytes),
+    /// Текущий resource полностью и успешно закончен.
+    EndResource,
+    /// После последнего `EndResource` новых ресурсов больше не будет.
+    EndOfInput,
+}
+
+/// Typed failure pull-based ordered resource source-а.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum OrderedResourceReadError {
+    /// Caller отменил чтение через shared token; это не resource EOF.
+    #[error("чтение ordered resource stream отменено")]
+    Cancelled,
+    /// Committed owner прервал physical body read ради transactional replacement.
+    ///
+    /// Это не cancellation, EOF или malformed input: parser обязан unwind-нуть текущий
+    /// read, а source owner решает commit replacement либо byte-zero rollback reopen.
+    #[error("активное чтение ordered resource прервано с возможностью restart")]
+    RestartableReadInterrupted,
+    /// Source завершил pull operational error-ом; это не resource EOF.
+    #[error("ошибка чтения ordered resource stream: {reason}")]
+    Failed {
+        /// Secret-safe bounded transport reason.
+        reason: String,
+    },
+}
+
+/// Neutral marker сохраняет typed interruption через container-specific error chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("restartable ordered resource read interrupted")]
+pub struct OrderedResourceRestartableReadInterrupted;
+
+/// Neutral pull-based ordered resource stream.
+///
+/// Source обязан соблюдать lifecycle `Begin -> Data* -> EndResource` и затем
+/// либо начинать следующий resource, либо вернуть `EndOfInput`. Пустой `Data`
+/// запрещён, а непустой chunk не может превышать `maximum_chunk_bytes`.
+pub trait OrderedResourceStreamSource: Send {
+    /// Возвращает ровно один lifecycle/body outcome с явным backpressure bound-ом.
+    fn next_event(
+        &mut self,
+        maximum_chunk_bytes: NonZeroUsize,
+        cancellation: &CancellationToken,
+    ) -> Result<OrderedResourceReadOutcome, OrderedResourceReadError>;
+}
+
 /// Отдельный ordered segment contract с обязательным presentation-window intent.
 ///
 /// Существующий [`OrderedSegment`] намеренно не расширяется: старые finite
@@ -337,6 +407,8 @@ pub enum DemuxInput {
     ByteStream(Box<dyn DemuxByteStream>),
     /// Явно разделённая ordered segment sequence.
     OrderedSegments(Box<dyn OrderedSegmentSource>),
+    /// Ordered resources с pull-based bounded body chunks и отдельным resource EOF.
+    OrderedResourceStream(Box<dyn OrderedResourceStreamSource>),
 }
 
 impl DemuxInput {
@@ -370,6 +442,12 @@ impl DemuxInput {
         Self::OrderedSegments(source)
     }
 
+    /// Стирает concrete pull-based ordered resource provider type.
+    #[must_use]
+    pub fn ordered_resource_stream(source: Box<dyn OrderedResourceStreamSource>) -> Self {
+        Self::OrderedResourceStream(source)
+    }
+
     /// Вычисляет exact capability из runtime input shape/seekability.
     #[must_use]
     pub fn capability(&self) -> DemuxInputCapability {
@@ -379,6 +457,7 @@ impl DemuxInput {
             }
             Self::ByteSource(_) | Self::ByteStream(_) => DemuxInputCapability::StreamingBytes,
             Self::OrderedSegments(_) => DemuxInputCapability::OrderedSegments,
+            Self::OrderedResourceStream(_) => DemuxInputCapability::OrderedResourceStream,
         }
     }
 }
@@ -408,5 +487,13 @@ mod tests {
         assert_eq!(both.intersection(seekable), seekable);
         assert!(both.intersects(streaming));
         assert!(!seekable.intersects(streaming));
+
+        let ordered_stream =
+            DemuxInputCapabilities::only(DemuxInputCapability::OrderedResourceStream);
+        assert!(!ordered_stream.intersects(seekable));
+        assert!(
+            both.with(DemuxInputCapability::OrderedResourceStream)
+                .contains(DemuxInputCapability::OrderedResourceStream)
+        );
     }
 }

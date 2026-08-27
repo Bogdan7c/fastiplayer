@@ -26,7 +26,10 @@ pub(crate) struct HlsSeekAnchor {
     /// Presentation timeline origin, которому соответствует `epoch_timestamp_origin`.
     pub timeline_origin: std::time::Duration,
     pub epoch_timestamp_origin: std::time::Duration,
+    /// PTS landing packet-а, который честно публикуется в seek receipt.
     pub position: MediaTime,
+    /// DTS decode point-а; для audio/packet без DTS он совпадает с PTS.
+    pub decode_position: MediaTime,
     pub kind: HlsSeekAnchorKind,
 }
 
@@ -77,6 +80,7 @@ impl HlsSeekIndex {
             timeline_origin,
             epoch_timestamp_origin,
             position: MediaTime::from_duration(packet.pts),
+            decode_position: MediaTime::from_duration(packet.dts.unwrap_or(packet.pts)),
             kind,
         };
         self.insert_proven_anchor(anchor);
@@ -256,7 +260,10 @@ impl HlsSeekIndex {
         self.anchor_of_kind_before(required_kind, request.timestamp)
     }
 
-    /// Возвращает последний доказанный anchor фиксированного kind не позже target.
+    /// Возвращает последний anchor с decode point не позже target.
+    ///
+    /// У reordered video PTS первого представимого RAP может быть немного позже
+    /// target, хотя его настоящий DTS уже принадлежит requested decode boundary.
     pub(crate) fn anchor_of_kind_before(
         &self,
         required_kind: HlsSeekAnchorKind,
@@ -265,11 +272,31 @@ impl HlsSeekIndex {
         self.anchors
             .iter()
             .rev()
-            .find(|anchor| anchor.kind == required_kind && anchor.position.as_duration() <= target)
+            .find(|anchor| {
+                anchor.kind == required_kind && anchor.decode_position.as_duration() <= target
+            })
             .copied()
             .ok_or_else(|| {
                 anyhow!(
                     "HLS seek index не содержит доказанный {required_kind:?} anchor до {:?}",
+                    target
+                )
+            })
+    }
+
+    /// Возвращает первый anchor, чей представимый timestamp не раньше target-а.
+    pub(crate) fn anchor_of_kind_at_or_after(
+        &self,
+        required_kind: HlsSeekAnchorKind,
+        target: std::time::Duration,
+    ) -> Result<HlsSeekAnchor> {
+        self.anchors
+            .iter()
+            .find(|anchor| anchor.kind == required_kind && anchor.position.as_duration() >= target)
+            .copied()
+            .ok_or_else(|| {
+                anyhow!(
+                    "HLS seek index не содержит доказанный {required_kind:?} anchor после {:?}",
                     target
                 )
             })

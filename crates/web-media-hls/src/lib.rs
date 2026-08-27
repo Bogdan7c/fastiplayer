@@ -2,18 +2,23 @@
 
 #![forbid(unsafe_code)]
 
+mod active_read;
 mod catalog;
 mod crypto;
 mod epoch_demux;
+mod initial_open;
+mod initial_position_proof;
 mod key_state;
 mod live;
 mod manifest_profile;
+mod native_ingress;
 mod open;
 mod plan;
 mod request;
 mod seek;
 mod selection;
 mod source;
+mod start;
 mod transactional_av;
 
 pub use catalog::{
@@ -27,6 +32,10 @@ pub use catalog::{
     HlsCatalogTrackProof, build_hls_catalog, discover_hls_catalog, seed_hls_catalog_topology,
 };
 pub use crypto::{Aes128CbcDecryptError, DecryptedBytes, decrypt_aes128_cbc_pkcs7};
+pub use initial_position_proof::{
+    HlsInitialPositionProof, HlsInitialPositionProofCapability, HlsInitialPositionProofPort,
+    HlsInitialPositionProofTakeOutcome,
+};
 pub use key_state::{
     ActiveAes128Key, Aes128InitializationVector, Aes128KeySource, ExtractorAesOverride,
     ExtractorAesOverrideError, ExtractorKeyUri, HlsKeyState, HlsKeyStateError, SecretAes128Key,
@@ -36,21 +45,29 @@ pub use live::{
     prepare_hls_live_receipted,
 };
 pub use manifest_profile::ValidatedVodMediaPlaylist;
+pub use native_ingress::{
+    NativeHlsAdmissionError, NativeHlsDynamicRangePolicy, NativeHlsOpenFallbackReason,
+    NativeHlsSelectionPolicy, NativeHlsSelectionPolicyError, NativeHlsSemanticSelection,
+    admit_native_hls_vod, native_hls_open_fallback_reason,
+};
 pub use open::{
-    HlsVodOpenError, HlsVodOpenResult, prepare_hls_catalog_vod_receipted, prepare_hls_vod,
-    prepare_hls_vod_receipted,
+    HlsInitialReadinessCapability, HlsVodOpenError, HlsVodOpenResult,
+    prepare_hls_catalog_vod_receipted, prepare_hls_vod, prepare_hls_vod_receipted,
+    prepare_hls_vod_receipted_at_start,
 };
 pub use plan::HlsPlanError as HlsVodPlanError;
 pub use request::{
     HlsComponentContainerIntent, HlsContainerEvidence, HlsEndpointRefreshError,
     HlsEndpointRefreshPort, HlsEndpointRefreshReason, HlsEndpointRefreshReply,
-    HlsEndpointRefreshRequest, HlsLiveOpenRequest, HlsManifestInput, HlsRequestOverrides,
-    HlsRequiredContainer, HlsVodOpenPolicy, HlsVodOpenRequest, SecretInlineMediaPlaylist,
+    HlsEndpointRefreshRequest, HlsFetchedTopManifest, HlsLiveOpenRequest, HlsManifestInput,
+    HlsRequestOverrides, HlsRequiredContainer, HlsVodOpenPolicy, HlsVodOpenRequest,
+    HlsVodSeekLandingPolicy, SecretInlineMediaPlaylist,
 };
 pub use selection::{
     HlsAudioLayoutIntent, HlsAudioRenditionEvidence, HlsMainTrackLayoutIntent,
     HlsSubtitleRenditionDescriptor, HlsVariantSelectionIntent,
 };
+pub use start::{HlsVodRestoreFallbackReason, HlsVodStartDisposition, HlsVodStartIntent};
 
 #[cfg(test)]
 mod tests;

@@ -12,6 +12,16 @@ use crate::{
 
 use super::PlayerSession;
 use super::dynamic_timeline::LiveSameItemPositionRestoreDecision;
+use super::staged_media_install::{InstalledStagedPositionOrigin, InstalledStagedPositionOutcome};
+
+/// Provenance, которую explicit restore разрешает усыновить.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreparedPositionRestoreExpectation {
+    SameLineage,
+    InitialPosition {
+        expected_target: media_core::MediaTime,
+    },
+}
 
 /// Результат синхронной части restore до terminal seek commit-а.
 enum InstalledPositionRestoreStart {
@@ -42,8 +52,9 @@ impl PlayerSession {
                 seek_generation: expected,
             } if expected == seek_generation
         ) {
-            installed.outcome =
-                super::staged_media_install::InstalledStagedPositionOutcome::Completed;
+            installed.outcome = InstalledStagedPositionOutcome::Completed {
+                seek_generation: Some(seek_generation),
+            };
         }
     }
 
@@ -270,46 +281,20 @@ impl PlayerSession {
                 }
             },
             InstalledPositionRestore::AdoptPreparedSameLineagePosition => {
-                let Some(installed) = self.installed_staged_position.take() else {
-                    return Err(InstalledMediaStateRestoreOutcome::Failed {
-                        stage: InstalledMediaRestoreFailureStage::Position,
-                        error: PlayerError::new(
-                            PlayerErrorKind::SeekUnavailable,
-                            "installed same-lineage position result is missing",
-                        ),
-                    });
-                };
-                if installed.request_id != request_id
-                    || installed.media_instance_id != media_instance_id
-                {
-                    return Err(InstalledMediaStateRestoreOutcome::StaleInstance);
-                }
-                return match installed.outcome {
-                    super::staged_media_install::InstalledStagedPositionOutcome::Completed => {
-                        Ok(InstalledPositionRestoreStart::CompletedWithoutSeek)
-                    }
-                    super::staged_media_install::InstalledStagedPositionOutcome::AwaitingSeekCommit {
-                        seek_generation,
-                    } => Ok(InstalledPositionRestoreStart::AwaitingSeekCommit {
-                        seek_generation,
-                        requires_live_anchor_retention: true,
-                    }),
-                    super::staged_media_install::InstalledStagedPositionOutcome::AdjustedToLiveEdge {
-                        requested_position,
-                        live_edge,
-                        reason,
-                    } => Ok(InstalledPositionRestoreStart::AdjustedToLiveEdge {
-                        requested_position,
-                        live_edge,
-                        reason,
-                    }),
-                    super::staged_media_install::InstalledStagedPositionOutcome::Failed(error) => {
-                        Err(InstalledMediaStateRestoreOutcome::Failed {
-                            stage: InstalledMediaRestoreFailureStage::Position,
-                            error,
-                        })
-                    }
-                };
+                return self.adopt_installed_prepared_position(
+                    request_id,
+                    media_instance_id,
+                    PreparedPositionRestoreExpectation::SameLineage,
+                );
+            }
+            InstalledPositionRestore::AdoptPreparedInitialPosition { expected_target } => {
+                return self.adopt_installed_prepared_position(
+                    request_id,
+                    media_instance_id,
+                    PreparedPositionRestoreExpectation::InitialPosition {
+                        expected_target: media_core::MediaTime::from_duration(expected_target),
+                    },
+                );
             }
         };
         if !self.snapshot.timeline.seekable
@@ -352,6 +337,160 @@ impl PlayerSession {
             seek_generation: self.pipeline.seek_generation(),
             requires_live_anchor_retention: false,
         })
+    }
+
+    /// Привязывает restore receipt только к exact prepared-position provenance/generation.
+    fn adopt_installed_prepared_position(
+        &mut self,
+        request_id: crate::MediaInstallRequestId,
+        media_instance_id: crate::MediaInstanceId,
+        expectation: PreparedPositionRestoreExpectation,
+    ) -> Result<InstalledPositionRestoreStart, InstalledMediaStateRestoreOutcome> {
+        let Some(installed) = self.installed_staged_position.as_ref() else {
+            return Err(Self::prepared_position_restore_failure(
+                "installed prepared position result is missing",
+            ));
+        };
+        if installed.request_id != request_id || installed.media_instance_id != media_instance_id {
+            return Err(InstalledMediaStateRestoreOutcome::StaleInstance);
+        }
+        if !Self::prepared_position_origin_matches(installed.origin, expectation) {
+            return Err(Self::prepared_position_restore_failure(
+                "installed prepared position provenance or target does not match restore",
+            ));
+        }
+        if !Self::prepared_position_outcome_matches_origin(installed.origin, &installed.outcome) {
+            return Err(Self::prepared_position_restore_failure(
+                "installed prepared position outcome does not carry its required seek generation",
+            ));
+        }
+        if let Some(seek_generation) = Self::prepared_position_seek_generation(&installed.outcome)
+            && !self.prepared_position_generation_matches(
+                installed.origin,
+                &installed.outcome,
+                seek_generation,
+            )
+        {
+            return Err(Self::prepared_position_restore_failure(
+                "installed prepared position seek generation is stale",
+            ));
+        }
+
+        let installed = self
+            .installed_staged_position
+            .take()
+            .expect("validated installed prepared position remains owner-held");
+        match installed.outcome {
+            InstalledStagedPositionOutcome::Completed { .. } => {
+                Ok(InstalledPositionRestoreStart::CompletedWithoutSeek)
+            }
+            InstalledStagedPositionOutcome::AwaitingSeekCommit { seek_generation } => {
+                Ok(InstalledPositionRestoreStart::AwaitingSeekCommit {
+                    seek_generation,
+                    requires_live_anchor_retention: matches!(
+                        expectation,
+                        PreparedPositionRestoreExpectation::SameLineage
+                    ),
+                })
+            }
+            InstalledStagedPositionOutcome::AdjustedToLiveEdge {
+                requested_position,
+                live_edge,
+                reason,
+            } => Ok(InstalledPositionRestoreStart::AdjustedToLiveEdge {
+                requested_position,
+                live_edge,
+                reason,
+            }),
+            InstalledStagedPositionOutcome::Failed(error) => {
+                Err(InstalledMediaStateRestoreOutcome::Failed {
+                    stage: InstalledMediaRestoreFailureStage::Position,
+                    error,
+                })
+            }
+        }
+    }
+
+    /// Проверяет typed provenance и exact target без строковой/label correlation.
+    fn prepared_position_origin_matches(
+        origin: InstalledStagedPositionOrigin,
+        expectation: PreparedPositionRestoreExpectation,
+    ) -> bool {
+        match (origin, expectation) {
+            (
+                InstalledStagedPositionOrigin::SameLineage,
+                PreparedPositionRestoreExpectation::SameLineage,
+            ) => true,
+            (
+                InstalledStagedPositionOrigin::PreparedInitial { target_position },
+                PreparedPositionRestoreExpectation::InitialPosition { expected_target },
+            ) => target_position == expected_target,
+            _ => false,
+        }
+    }
+
+    /// Initial-position adoption всегда несёт generation; Beginning не маскируется под target.
+    fn prepared_position_outcome_matches_origin(
+        origin: InstalledStagedPositionOrigin,
+        outcome: &InstalledStagedPositionOutcome,
+    ) -> bool {
+        match origin {
+            InstalledStagedPositionOrigin::SameLineage => true,
+            InstalledStagedPositionOrigin::PreparedInitial { .. } => matches!(
+                outcome,
+                InstalledStagedPositionOutcome::AwaitingSeekCommit { .. }
+                    | InstalledStagedPositionOutcome::Completed {
+                        seek_generation: Some(_),
+                    }
+                    | InstalledStagedPositionOutcome::Failed(_)
+            ),
+        }
+    }
+
+    /// Возвращает generation только для paths, которые действительно начали decoder landing.
+    fn prepared_position_seek_generation(outcome: &InstalledStagedPositionOutcome) -> Option<u64> {
+        match outcome {
+            InstalledStagedPositionOutcome::Completed { seek_generation } => *seek_generation,
+            InstalledStagedPositionOutcome::AwaitingSeekCommit { seek_generation } => {
+                Some(*seek_generation)
+            }
+            InstalledStagedPositionOutcome::AdjustedToLiveEdge { .. }
+            | InstalledStagedPositionOutcome::Failed(_) => None,
+        }
+    }
+
+    /// Не позволяет restore-у присоединиться к superseding seek generation.
+    fn prepared_position_generation_matches(
+        &self,
+        origin: InstalledStagedPositionOrigin,
+        outcome: &InstalledStagedPositionOutcome,
+        seek_generation: u64,
+    ) -> bool {
+        if self.pipeline.seek_generation() != seek_generation {
+            return false;
+        }
+        let InstalledStagedPositionOutcome::AwaitingSeekCommit { .. } = outcome else {
+            return true;
+        };
+        self.seek_runtime.active_commit().is_some_and(|commit| {
+            commit.generation == seek_generation
+                && match origin {
+                    InstalledStagedPositionOrigin::SameLineage => true,
+                    InstalledStagedPositionOrigin::PreparedInitial { target_position } => {
+                        commit.target_position == target_position
+                    }
+                }
+        })
+    }
+
+    /// Строит единый typed Position failure для invalid prepared adoption-а.
+    fn prepared_position_restore_failure(
+        message: &'static str,
+    ) -> InstalledMediaStateRestoreOutcome {
+        InstalledMediaStateRestoreOutcome::Failed {
+            stage: InstalledMediaRestoreFailureStage::Position,
+            error: PlayerError::new(PlayerErrorKind::SeekUnavailable, message),
+        }
     }
 
     /// Возвращает exact ошибку, опубликованную синхронной частью seek-а.

@@ -60,6 +60,16 @@ pub enum PreparedDemuxSeekEnqueueError {
     CapabilityUnavailable,
 }
 
+/// Определяет, какая позиция authoritative после доказанного demux landing-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PreparedDemuxSeekLandingPolicy {
+    /// Demux начинает с decode point не позже target-а, а player скрывает preroll до target-а.
+    #[default]
+    DecodeForwardToTarget,
+    /// Demux доказал ближайший допустимый post-target landing, который и становится playback base.
+    AuthoritativePostTarget,
+}
+
 impl fmt::Display for PreparedDemuxSeekEnqueueError {
     /// Публикует только категорию без provider/runtime internals.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -95,6 +105,8 @@ pub enum PreparedDemuxSeekMode {
     WorkerReceipted {
         /// Exact runtime port этого prepared media.
         port: Arc<dyn PreparedDemuxSeekPort>,
+        /// Source-owned contract между requested target и authoritative landing position.
+        landing_policy: PreparedDemuxSeekLandingPolicy,
     },
 }
 
@@ -110,8 +122,9 @@ impl fmt::Debug for PreparedDemuxSeekMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Synchronous => formatter.write_str("Synchronous"),
-            Self::WorkerReceipted { .. } => formatter
+            Self::WorkerReceipted { landing_policy, .. } => formatter
                 .debug_struct("WorkerReceipted")
+                .field("landing_policy", landing_policy)
                 .finish_non_exhaustive(),
         }
     }

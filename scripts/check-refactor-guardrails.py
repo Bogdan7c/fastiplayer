@@ -224,6 +224,8 @@ WEB_MEDIA_FTP_ALLOWED_DEPENDENCIES = frozenset(
 WEB_MEDIA_ADAPTIVE_ALLOWED_DEPENDENCIES = frozenset(
     {
         "anyhow",
+        # Bounded single-waker primitive прерывает active HTTP body без lock/polling.
+        "atomic-waker",
         "bytes",
         "demux-api",
         "media-core",

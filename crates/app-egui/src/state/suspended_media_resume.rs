@@ -290,6 +290,25 @@ impl AppState {
                 network_config: config.network,
                 demux_config: config.player.demux,
             },
+            ActiveMediaSource::NativeHlsUrl { source, selection } => {
+                let capabilities = self
+                    .system_capabilities_snapshot
+                    .clone()
+                    .ok_or(ResumeCheckpointError::PreparationFailed)?;
+                MediaOpenSourceRequest::NativeHls {
+                    source: source.clone(),
+                    intent: crate::media_open::NativeHlsOpenIntent::ExactSelection(
+                        selection.clone(),
+                    ),
+                    preferred_video_height: config.yt_dlp.preferred_video_height,
+                    network_config: config.network,
+                    yt_dlp_config: config.yt_dlp,
+                    demux_config: config.player.demux,
+                    preferred_video_codec_order: config.player.preferred_video_codec_order,
+                    system_capabilities: Box::new(capabilities),
+                    audio_capabilities: self.audio_decode_capability_snapshot(),
+                }
+            }
             ActiveMediaSource::YtDlpUrl {
                 source_locator,
                 candidate_selection,

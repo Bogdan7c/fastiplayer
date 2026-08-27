@@ -56,6 +56,7 @@ pub(crate) enum StagedPositionCommit {
     Seek {
         target_position: MediaTime,
         result: DemuxSeekResult,
+        landing_policy: crate::PreparedDemuxSeekLandingPolicy,
     },
     AdjustedToLiveEdge {
         requested_position: Duration,
@@ -73,11 +74,20 @@ pub(super) struct PreparedStagedPosition {
 pub(crate) struct InstalledStagedPosition {
     pub(crate) request_id: MediaInstallRequestId,
     pub(crate) media_instance_id: MediaInstanceId,
+    pub(crate) origin: InstalledStagedPositionOrigin,
     pub(crate) outcome: InstalledStagedPositionOutcome,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstalledStagedPositionOrigin {
+    SameLineage,
+    PreparedInitial { target_position: MediaTime },
+}
+
 pub(crate) enum InstalledStagedPositionOutcome {
-    Completed,
+    Completed {
+        seek_generation: Option<u64>,
+    },
     AwaitingSeekCommit {
         seek_generation: u64,
     },
@@ -747,6 +757,7 @@ fn validate_target_and_result(
     Ok(StagedPositionCommit::Seek {
         target_position,
         result,
+        landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
     })
 }
 

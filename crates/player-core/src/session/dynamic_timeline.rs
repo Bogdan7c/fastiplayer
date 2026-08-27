@@ -82,6 +82,11 @@ impl PlayerSession {
         }
     }
 
+    /// Сообщает lifecycle-коду, что installed media владеет изменяемой live timeline.
+    pub(super) const fn has_dynamic_timeline_binding(&self) -> bool {
+        self.dynamic_timeline.binding.is_some()
+    }
+
     /// Consume latest revision; вызывается и в Paused, и в active playback.
     pub(crate) fn refresh_dynamic_timeline(&mut self) -> bool {
         let Some(binding) = self.dynamic_timeline.binding.as_ref() else {

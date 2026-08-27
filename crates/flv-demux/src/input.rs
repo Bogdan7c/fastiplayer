@@ -115,6 +115,12 @@ impl FlvInput {
                     input: "ordered-segments",
                 });
             }
+            DemuxInput::OrderedResourceStream(_) => {
+                return Err(FlvDemuxError::UnsupportedInput {
+                    container: "flv",
+                    input: "ordered-resource-stream",
+                });
+            }
         };
         let mut raw = RawFlvInput {
             reader,

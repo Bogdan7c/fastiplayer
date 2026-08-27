@@ -48,6 +48,63 @@ pub(crate) struct PreparedSingleMediaOpen {
     startup_position: crate::playlist_runtime::StartupPosition,
 }
 
+/// Выбирает, должен ли post-install path отправить новый demux seek или принять уже доказанный.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreparedPositionRestoreStrategy {
+    /// Обычный local/direct/extractor path ищет позицию после install.
+    SeekAfterInstall,
+    /// Native HLS уже открыл exact target segment и передал player-у authoritative result.
+    AdoptPreparedInitialPosition,
+}
+
+/// Fail-closed нарушение связи player proof-а с app-owned restore intent-ом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum PreparedPositionRestoreContractError {
+    /// Positioned proof допустим только для persisted restore target-а.
+    #[error("prepared initial position exists without a restored startup target")]
+    MissingRestoreTarget,
+    /// Player proof и persisted checkpoint обязаны описывать один exact target.
+    #[error(
+        "prepared initial target {prepared_target:?} differs from restore target {restore_target:?}"
+    )]
+    TargetMismatch {
+        prepared_target: std::time::Duration,
+        restore_target: std::time::Duration,
+    },
+}
+
+/// Атомарно выводит post-install routing из самого player proof-а и persisted intent-а.
+pub(crate) fn prepared_position_restore_strategy(
+    prepared_initial_position: player_core::PreparedInitialPosition,
+    startup_position: crate::playlist_runtime::StartupPosition,
+) -> Result<PreparedPositionRestoreStrategy, PreparedPositionRestoreContractError> {
+    match (prepared_initial_position, startup_position) {
+        (player_core::PreparedInitialPosition::Beginning, _) => {
+            Ok(PreparedPositionRestoreStrategy::SeekAfterInstall)
+        }
+        (
+            player_core::PreparedInitialPosition::PositionedAt {
+                target_position, ..
+            },
+            crate::playlist_runtime::StartupPosition::Restore(restore_target),
+        ) if target_position.as_duration() == restore_target => {
+            Ok(PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition)
+        }
+        (
+            player_core::PreparedInitialPosition::PositionedAt {
+                target_position, ..
+            },
+            crate::playlist_runtime::StartupPosition::Restore(restore_target),
+        ) => Err(PreparedPositionRestoreContractError::TargetMismatch {
+            prepared_target: target_position.as_duration(),
+            restore_target,
+        }),
+        (player_core::PreparedInitialPosition::PositionedAt { .. }, _) => {
+            Err(PreparedPositionRestoreContractError::MissingRestoreTarget)
+        }
+    }
+}
+
 /// App intent определяет domain reservation, не устройство coordinator-а.
 enum PreparedPlaylistTarget {
     QueueReplacement(Box<playlist_core::PlaylistItemDraft>),
@@ -200,6 +257,8 @@ pub(crate) enum StrongMediaOpenError {
     Terminal(MediaOpenTerminalOutcome),
     #[error("media-open did not publish a terminal outcome")]
     MissingTerminal,
+    #[error("prepared initial-position contract rejected: {0}")]
+    PreparedPositionContract(#[from] PreparedPositionRestoreContractError),
     #[error("пошаговая strong media-open транзакция потеряла текущую фазу между poll-вызовами")]
     PendingPhaseStateLost,
     #[error("exact post-Installed playback intent restore was rejected: {0:?}")]
@@ -725,6 +784,62 @@ impl AppState {
 #[cfg(test)]
 mod startup_poll_tests {
     use super::*;
+
+    fn positioned_at(target: std::time::Duration) -> player_core::PreparedInitialPosition {
+        let target = media_core::MediaTime::from_duration(target);
+        player_core::PreparedInitialPosition::PositionedAt {
+            target_position: target,
+            landing_policy: player_core::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+            result: media_core::DemuxSeekResult {
+                requested_position: target,
+                actual_position: target.saturating_sub(media_core::MediaDuration::from_secs(5)),
+                actual_track_timestamp: None,
+            },
+        }
+    }
+
+    #[test]
+    fn prepared_position_strategy_is_derived_from_exact_restore_contract() {
+        let target = std::time::Duration::from_secs(355);
+        assert_eq!(
+            prepared_position_restore_strategy(
+                positioned_at(target),
+                crate::playlist_runtime::StartupPosition::Restore(target),
+            ),
+            Ok(PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition)
+        );
+        assert_eq!(
+            prepared_position_restore_strategy(
+                player_core::PreparedInitialPosition::Beginning,
+                crate::playlist_runtime::StartupPosition::Restore(target),
+            ),
+            Ok(PreparedPositionRestoreStrategy::SeekAfterInstall)
+        );
+    }
+
+    #[test]
+    fn prepared_position_strategy_rejects_missing_or_different_restore_target() {
+        let prepared_target = std::time::Duration::from_secs(355);
+        assert_eq!(
+            prepared_position_restore_strategy(
+                positioned_at(prepared_target),
+                crate::playlist_runtime::StartupPosition::KeepStart,
+            ),
+            Err(PreparedPositionRestoreContractError::MissingRestoreTarget)
+        );
+        assert_eq!(
+            prepared_position_restore_strategy(
+                positioned_at(prepared_target),
+                crate::playlist_runtime::StartupPosition::Restore(std::time::Duration::from_secs(
+                    180
+                ),),
+            ),
+            Err(PreparedPositionRestoreContractError::TargetMismatch {
+                prepared_target,
+                restore_target: std::time::Duration::from_secs(180),
+            })
+        );
+    }
 
     /// Startup orchestration не должна снова вызвать blocking compatibility wrapper.
     #[test]

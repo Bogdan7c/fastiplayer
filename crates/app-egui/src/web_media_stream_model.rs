@@ -528,6 +528,9 @@ enum UrlSidebarSourceProjection<'source> {
     DirectMedia {
         source_label: &'source str,
     },
+    NativeHls {
+        source_label: &'source str,
+    },
     YtDlp {
         source_label: &'source str,
         configuration: &'source WebMediaStreamConfiguration,
@@ -652,6 +655,11 @@ impl UrlSidebarController {
                     source_label: locator.safe_label(),
                 }
             }
+            Some(ActiveMediaSource::NativeHlsUrl { source, .. }) => {
+                UrlSidebarSourceProjection::NativeHls {
+                    source_label: source.safe_label().as_str(),
+                }
+            }
             Some(ActiveMediaSource::YtDlpUrl {
                 source_locator,
                 stream_configuration,
@@ -684,6 +692,14 @@ impl UrlSidebarController {
         match source {
             UrlSidebarSourceProjection::Inactive => UrlSidebarModel::Inactive,
             UrlSidebarSourceProjection::DirectMedia { source_label } => {
+                UrlSidebarModel::DirectMedia {
+                    source_label: Arc::from(source_label),
+                    status: playback_status(player_snapshot, false),
+                }
+            }
+            UrlSidebarSourceProjection::NativeHls { source_label } => {
+                // Native HLS не имеет extractor catalog-а: UI показывает только source/status,
+                // не выдумывая YtDlp format controls.
                 UrlSidebarModel::DirectMedia {
                     source_label: Arc::from(source_label),
                     status: playback_status(player_snapshot, false),

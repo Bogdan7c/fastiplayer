@@ -23,8 +23,8 @@ use super::super::PlayerSession;
 use super::test_support::{
     FakeDemuxer, SharedFakeVideoDecoderThread, bt2020_pq_limited,
     capabilities_with_phase10_vp9_profile2_hdr, capabilities_with_vp9_profile0, fake_audio_packet,
-    fake_track, install_fake_media, present_frame_for_current_seek_generation,
-    test_decode_backend_id,
+    fake_track, install_fake_media, install_ready_audio_runtime,
+    present_frame_for_current_seek_generation, test_decode_backend_id,
 };
 use crate::{
     AuthorizeInstallCommit, CancelMediaInstall, DecodeThreadError, InstalledMediaStateRestore,
@@ -373,6 +373,28 @@ fn set_old_position(session: &mut PlayerSession, position: Duration) {
     session.pipeline.set_media_clock_base(position);
 }
 
+#[test]
+fn exact_start_playing_intent_waits_for_existing_autoplay_preroll_gate() {
+    let mut session = PlayerSession::new();
+    install_fake_media(&mut session, vec![fake_track(1, TrackKind::Audio)]);
+    let media_instance_id =
+        MediaInstanceId::from_non_zero(NonZeroU64::new(1_299).expect("non-zero instance id"));
+    session.snapshot.media_instance_id = Some(media_instance_id);
+    session.set_playback_state(PlaybackState::Buffering);
+    let audio_output = install_ready_audio_runtime(&mut session, 80.0, None);
+
+    assert!(session.apply_playback_intent_to_exact_installed_instance(
+        media_instance_id,
+        PlaybackIntent::StartPlaying,
+    ));
+    assert_eq!(session.playback_state(), PlaybackState::Buffering);
+    assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 0);
+
+    assert!(session.finish_autoplay_preroll_if_ready(50.0).unwrap());
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+    assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 1);
+}
+
 fn stage_audio_same_lineage(
     session: &mut PlayerSession,
     old_instance_id: MediaInstanceId,
@@ -507,6 +529,7 @@ fn same_lineage_worker_position_gate_preserves_old_playback_and_adopts_seek_once
         outcome_tx,
     );
     assert!(outcome_rx.try_recv().is_err());
+    let _audio_output = install_ready_audio_runtime(&mut session, 80.0, None);
     session.complete_seek_commit(seek_commit);
     assert_eq!(
         outcome_rx.recv().expect("landing completion"),

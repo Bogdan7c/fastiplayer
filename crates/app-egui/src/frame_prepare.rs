@@ -21,6 +21,7 @@ use rustiplayer_settings::{
 use settings_core::{SettingId, SettingsResult};
 use tracing::{debug, error, instrument, trace, warn};
 use video_core::DecodedPixelFormat;
+use video_present_core::VideoPresentFrameIdentity;
 use winit::window::{ResizeDirection, Window};
 
 use crate::redraw_pacing::RedrawPacing;
@@ -213,6 +214,18 @@ impl PreparedVideoFrame {
             renderable_frame.present_frame.mark_submitted_to_renderer();
         }
     }
+
+    /// Возвращает identity только текущего, не помеченного stale video lease-а.
+    fn current_frame_identity(&self) -> Option<VideoPresentFrameIdentity> {
+        let present_frame = &self.renderable_frame.as_ref()?.present_frame;
+        if present_frame.is_stale() {
+            return None;
+        }
+        Some(VideoPresentFrameIdentity::from_decoded_frame(
+            present_frame.render_generation(),
+            present_frame.decoded_frame(),
+        ))
+    }
 }
 
 /// Typed форма texture-view lookup-а без GPU handles для проверки app-level контракта.
@@ -369,7 +382,9 @@ fn record_worker_events(
                 app_state.clear_cached_present_frame_after_worker_render_error();
             }
             PlayerWorkerEvent::Player(correlated_event) => {
+                let media_instance_id = correlated_event.media_instance_id;
                 let player_event = correlated_event.event;
+                app_state.note_startup_player_event(media_instance_id, &player_event);
                 app_state.handle_cached_present_frame_player_event(&player_event);
                 app_state.handle_main_visual_override_player_event(&player_event);
                 match player_event {

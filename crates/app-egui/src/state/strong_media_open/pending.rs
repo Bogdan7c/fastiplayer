@@ -24,6 +24,7 @@ pub(crate) struct PendingStrongMediaOpen {
     intent: PlaybackIntent,
     intent_revision: PlaybackIntentRevision,
     startup_position: crate::playlist_runtime::StartupPosition,
+    position_restore_strategy: super::PreparedPositionRestoreStrategy,
     lineage_commit: PendingStrongLineageCommit,
     pre_barrier_failure: Option<StrongMediaOpenError>,
     phase: PendingStrongMediaOpenPhase,
@@ -117,11 +118,15 @@ impl AppState {
         if self.pending_strong_media_open.is_some() {
             return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
         }
+        let startup_position = prepared_input.startup_position;
+        let position_restore_strategy = super::prepared_position_restore_strategy(
+            prepared_input.prepared_media.prepared_initial_position(),
+            startup_position,
+        )?;
         self.cancel_suspended_media_resume_for_explicit_open(playlist_runtime)
             .map_err(StrongMediaOpenError::LineageRegistration)?;
         let source = prepared_input.source.clone();
         let playlist_target = prepared_input.playlist_target;
-        let startup_position = prepared_input.startup_position;
         let prepared_open = match prepared_input.descriptor {
             Some(descriptor) => PreparedMediaOpen::from_caller_prepared_with_descriptor(
                 prepared_input.prepared_media,
@@ -178,6 +183,7 @@ impl AppState {
                     intent,
                     intent_revision: initial_revision,
                     startup_position,
+                    position_restore_strategy,
                     lineage_commit: PendingStrongLineageCommit::NewLineageOrQueue,
                     pre_barrier_failure: None,
                     phase: PendingStrongMediaOpenPhase::Protocol {
@@ -235,6 +241,7 @@ impl AppState {
             intent,
             intent_revision: initial_revision,
             startup_position,
+            position_restore_strategy,
             lineage_commit: PendingStrongLineageCommit::NewLineageOrQueue,
             pre_barrier_failure: None,
             phase: PendingStrongMediaOpenPhase::Protocol {
@@ -371,6 +378,7 @@ impl AppState {
             intent,
             intent_revision,
             startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
+            position_restore_strategy: super::PreparedPositionRestoreStrategy::SeekAfterInstall,
             lineage_commit: PendingStrongLineageCommit::NewLineageOrQueue,
             pre_barrier_failure: None,
             phase: PendingStrongMediaOpenPhase::Protocol {
@@ -475,6 +483,7 @@ impl AppState {
             intent,
             intent_revision: initial_revision,
             startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
+            position_restore_strategy: super::PreparedPositionRestoreStrategy::SeekAfterInstall,
             lineage_commit: PendingStrongLineageCommit::SameLineage {
                 expected_active,
                 restore_position,

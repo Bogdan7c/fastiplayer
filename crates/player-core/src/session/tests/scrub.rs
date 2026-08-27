@@ -32,7 +32,9 @@ fn inactive_end_scrub_clears_simple_state_without_resetting_unrelated_seek_state
         seek_mode: SeekMode::Accurate,
         target_position: MediaTime::from_secs(17),
         actual_position: MediaTime::from_secs(16),
+        landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
         started_at: Instant::now(),
+        public_accepted_at: Instant::now(),
         resume_intent: PlaybackResumeIntent::Pause,
         target_retention: crate::seek_state::SeekTargetRetention::ExactPublicRange,
     }));

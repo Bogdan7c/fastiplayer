@@ -12,6 +12,13 @@ pub enum HlsAudioLayoutIntent {
     Separate(HlsAudioRenditionEvidence),
     /// Master сам доказывает muxed/separate topology, а внешний rendition выбирается строго по evidence.
     ManifestResolved(HlsAudioRenditionEvidence),
+    /// Native admission доказал exact AUDIO group и единственный rendition внутри него.
+    NativeGroupResolved {
+        /// Exact group ID нужен semantic rematch-у и не является request material.
+        group_id: Box<str>,
+        /// Exact rendition evidence не допускает first-row fallback.
+        evidence: HlsAudioRenditionEvidence,
+    },
 }
 
 /// Exact ожидаемая track shape main media component-а после master topology resolution.

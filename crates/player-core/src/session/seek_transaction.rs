@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use frame_server_core::{ScrubFrameTiming, ScrubRequestKind};
 use media_core::MediaTime;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 #[cfg(test)]
 use crate::SeekRequest;
@@ -100,7 +100,7 @@ impl PlayerSession {
         self.pipeline.has_selected_video_track()
             && seek_commit.drops_decode_preroll_before_target()
             && !self.active_seek_presents_preroll_progressively()
-            && frame_pts < seek_commit.target_position.as_duration()
+            && frame_pts < seek_commit.landing_frame_min_position()
     }
 
     /// Проверяет, показывает ли активный seek preroll-кадры «прокатом» (live scrub).
@@ -139,7 +139,7 @@ impl PlayerSession {
         self.pipeline.has_selected_video_track()
             && seek_commit.drops_decode_preroll_before_target()
             && !self.seek_presented_frame_ready(seek_commit)
-            && packet_pts < seek_commit.target_position.as_duration()
+            && packet_pts < seek_commit.landing_frame_min_position()
     }
 
     /// Проверяет, должен ли active Accurate seek временно обойти audio-clock decode-ahead.
@@ -174,7 +174,7 @@ impl PlayerSession {
             && seek_commit.generation == packet_generation
             && seek_commit.drops_decode_preroll_before_target()
             && !self.seek_presented_frame_ready(seek_commit)
-            && packet_pts < seek_commit.target_position.as_duration()
+            && packet_pts < seek_commit.landing_frame_min_position()
             && self
                 .seek_runtime
                 .decoder_output_floor_applied_for_generation(packet_generation)
@@ -221,7 +221,7 @@ impl PlayerSession {
             return false;
         }
 
-        let target_position = seek_commit.target_position.as_duration();
+        let target_position = seek_commit.landing_frame_min_position();
         let Some(packet_duration) = packet_duration else {
             return false;
         };
@@ -322,7 +322,7 @@ impl PlayerSession {
             return Ok(());
         }
 
-        let floor_pts = seek_commit.target_position.as_duration();
+        let floor_pts = seek_commit.landing_frame_min_position();
         let floor = VideoPrerollOutputFloor {
             generation: seek_commit.generation,
             floor_pts,
@@ -454,7 +454,7 @@ impl PlayerSession {
             self.seek_runtime.record_first_presented_frame(frame_pts);
         if seek_commit.drops_decode_preroll_before_target() {
             self.seek_runtime.record_accurate_preroll_presented_frame(
-                frame_pts >= seek_commit.target_position.as_duration(),
+                frame_pts >= seek_commit.landing_frame_min_position(),
                 seek_commit.started_at.elapsed(),
             );
         }
@@ -538,6 +538,13 @@ impl PlayerSession {
             frame_pts,
             present_frame_generation,
         );
+        if present_frame_generation == seek_commit.generation {
+            self.seek_runtime
+                .record_presented_pre_target_frame_for_acceptance(
+                    present_frame_generation,
+                    frame_pts,
+                );
+        }
         // Только что показанный frame уже заменил старый кадр; stale flag очищаем только после guard.
         if !self.seek_landing_frame_matches_active_commit(
             seek_commit,
@@ -570,25 +577,40 @@ impl PlayerSession {
             return;
         }
 
+        let target_presentation_evidence = self
+            .seek_runtime
+            .record_first_target_frame_presented_for_acceptance(
+                present_frame_generation,
+                frame_pts,
+            );
         let first_post_seek_presented_frame =
             self.seek_runtime.record_first_presented_frame(frame_pts);
         if seek_commit.drops_decode_preroll_before_target() {
             self.seek_runtime.record_accurate_preroll_presented_frame(
-                frame_pts >= seek_commit.target_position.as_duration(),
+                frame_pts >= seek_commit.landing_frame_min_position(),
                 seek_commit.started_at.elapsed(),
             );
         }
-        if first_post_seek_presented_frame {
-            debug!(
-                kind = "seek",
+        if let Some(presentation_evidence) = target_presentation_evidence {
+            let seek_elapsed_ms = seek_commit.public_accepted_at.elapsed().as_millis();
+            let receipt_to_presented_ms = seek_commit.started_at.elapsed().as_millis();
+            info!(
+                kind = "seek_acceptance",
                 target_ms = seek_commit.target_position.as_duration().as_millis(),
                 actual_ms = seek_commit.actual_position.as_duration().as_millis(),
-                active_seek_generation = seek_commit.generation,
+                generation = presentation_evidence.generation(),
                 pipeline_generation = self.pipeline.seek_generation(),
                 frame_pts_ms = frame_pts.as_millis(),
                 frame_generation = present_frame_generation,
-                stale_frame = self.snapshot.timeline.stale_frame,
-                elapsed_ms = seek_commit.started_at.elapsed().as_millis(),
+                stale_frame = false,
+                presented_pre_target_frames = presentation_evidence
+                    .presented_pre_target_frames(),
+                media_instance_id = self.snapshot.media_instance_id.map(|identity| identity.get()),
+                selected_video_track_id = ?self.pipeline.selected_video_track_id(),
+                seek_elapsed_ms,
+                public_to_presented_ms = seek_elapsed_ms,
+                receipt_to_presented_ms,
+                elapsed_ms = receipt_to_presented_ms,
                 "First post-seek presented frame observed"
             );
         }
@@ -656,28 +678,10 @@ impl PlayerSession {
             tick_config.effective_seek_resume_video_min_ready_frames();
         let gate_decision = self.seek_commit_gate_decision(
             seek_commit,
-            now,
             tick_config.seek_resume_audio_min_buffer_ms,
-            tick_config.seek_resume_audio_gate_timeout,
             resume_video_min_ready_frames,
         );
         if gate_decision.allows_commit() {
-            if let Some(audio_gate_status) = gate_decision.audio_soft_fallback_status() {
-                warn!(
-                    target_ms = seek_commit.target_position.as_duration().as_millis(),
-                    actual_ms = seek_commit.actual_position.as_duration().as_millis(),
-                    generation = seek_commit.generation,
-                    audio_gate_status = ?audio_gate_status,
-                    audio_gate_timeout_ms = tick_config.seek_resume_audio_gate_timeout.as_millis(),
-                    "Final seek commit продолжен через audio gate soft fallback"
-                );
-                self.record_seek_audio_soft_fallback(
-                    seek_commit,
-                    audio_gate_status,
-                    tick_config.seek_resume_audio_gate_timeout,
-                );
-            }
-
             self.complete_seek_commit(seek_commit);
             return;
         }

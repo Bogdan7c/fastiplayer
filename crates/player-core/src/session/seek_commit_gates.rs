@@ -19,48 +19,29 @@ pub(super) struct SeekProgressGateSnapshot {
 pub(super) enum SeekCommitGateDecision {
     Waiting,
     Ready,
-    AudioSoftFallback {
-        audio_gate_status: SeekAudioGateStatus,
-    },
 }
 impl SeekCommitGateDecision {
     pub(super) const fn allows_commit(self) -> bool {
-        matches!(self, Self::Ready | Self::AudioSoftFallback { .. })
-    }
-    pub(super) const fn audio_soft_fallback_status(self) -> Option<SeekAudioGateStatus> {
-        match self {
-            Self::AudioSoftFallback { audio_gate_status } => Some(audio_gate_status),
-            Self::Waiting | Self::Ready => None,
-        }
+        matches!(self, Self::Ready)
     }
 }
 impl PlayerSession {
-    /// Проверяет video/audio gates и возвращает причину, если commit разрешён soft fallback-ом.
+    /// Разрешает commit только после готовности target video и выбранного audio runtime.
     pub(super) fn seek_commit_gate_decision(
         &self,
         seek_commit: SeekCommitState,
-        now: Instant,
         resume_audio_min_buffer_ms: f64,
-        resume_audio_gate_timeout: Duration,
         resume_video_min_ready_frames: usize,
     ) -> SeekCommitGateDecision {
         if !self.seek_video_gate_ready(seek_commit, resume_video_min_ready_frames) {
             return SeekCommitGateDecision::Waiting;
         }
 
-        let audio_gate_status =
-            self.seek_audio_gate_status(seek_commit, resume_audio_min_buffer_ms);
-        if audio_gate_status.is_ready() {
+        if self
+            .seek_audio_gate_status(seek_commit, resume_audio_min_buffer_ms)
+            .is_ready()
+        {
             return SeekCommitGateDecision::Ready;
-        }
-
-        if self.seek_audio_gate_soft_fallback_ready(
-            seek_commit,
-            now,
-            audio_gate_status,
-            resume_audio_gate_timeout,
-        ) {
-            return SeekCommitGateDecision::AudioSoftFallback { audio_gate_status };
         }
 
         SeekCommitGateDecision::Waiting
@@ -75,37 +56,6 @@ impl PlayerSession {
         self.active_seek_diagnostics(now, tick_config)
             .map(|diagnostics| diagnostics.blocker)
             .unwrap_or(SeekProgressBlocker::Unknown)
-    }
-
-    /// Возвращает `true`, если audio gate можно отпустить без бесконечного удержания seek-а.
-    fn seek_audio_gate_soft_fallback_ready(
-        &self,
-        seek_commit: SeekCommitState,
-        now: Instant,
-        audio_gate_status: SeekAudioGateStatus,
-        resume_audio_gate_timeout: Duration,
-    ) -> bool {
-        if seek_commit.resume_intent != PlaybackResumeIntent::Play {
-            return false;
-        }
-
-        if !self.pipeline.has_selected_audio_track() {
-            return false;
-        }
-
-        if !self.pipeline.has_selected_video_track() {
-            return false;
-        }
-
-        if self.active_prepared_seek_landing_matches_commit(seek_commit) {
-            return false;
-        }
-
-        if !audio_gate_status.can_soft_fallback() {
-            return false;
-        }
-
-        now.saturating_duration_since(seek_commit.started_at) >= resume_audio_gate_timeout
     }
 
     /// Video gate готов, когда текущая seek policy увидела нужный frame.
@@ -147,7 +97,7 @@ impl PlayerSession {
             return true;
         }
 
-        let target_position = seek_commit.target_position.as_duration();
+        let target_position = seek_commit.landing_frame_min_position();
         self.current_seek_landing_frame_position(seek_commit)
             .is_some_and(|frame_position| frame_position >= target_position)
     }

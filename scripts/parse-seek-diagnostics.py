@@ -13,12 +13,17 @@ import csv
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, TextIO
 
+from seek_diagnostics_metrics import SUMMARY_FIELDNAMES, SeekTimingMetrics, build_summary
+from seek_diagnostics_metrics import format_milliseconds, write_summary
+
 
 START_MARKER = "Starting demux seek transaction"
+WORKER_REQUEST_MARKER = "Prepared demux seek request enqueued"
+WORKER_RECEIPT_MARKER = "Prepared demux seek receipt accepted"
 ACCEPTED_MARKER = "Demux seek transaction accepted"
 PACKET_MARKER = "Post-seek demux packet observed"
 VIDEO_PACKET_MARKER = "First post-seek video packet observed"
@@ -30,6 +35,18 @@ WAITING_MARKER = "Active seek transaction is still waiting"
 TRACKS_CHANGED_MARKER = "Demuxer сообщил обновление track list"
 REBASED_MARKER = "Active seek rebased after post-seek TracksChanged/ResetRequired marker"
 AUDIO_SOFT_FALLBACK_MARKER = "Final seek commit продолжен через audio gate soft fallback"
+AUDIO_PLAY_ACCEPTED_MARKER = "Audio play accepted before final seek commit"
+HTTP_HEADERS_READY_MARKERS = (
+    "Source HTTP response headers ready",
+    "Adaptive streaming HTTP headers ready",
+)
+HTTP_FIRST_BODY_READY_MARKERS = (
+    "Source HTTP first non-empty body chunk ready",
+    "Adaptive streaming HTTP first body chunk ready",
+)
+HTTP_BODY_COMPLETE_MARKER = "Source HTTP validated body complete"
+MANIFEST_CANDIDATE_MARKER = "HLS manifest seek candidate"
+MANIFEST_ANCHOR_PROVEN_MARKER = "HLS manifest seek anchor proven"
 
 FOLLOWUP_MARKERS = (
     ACCEPTED_MARKER,
@@ -43,6 +60,13 @@ FOLLOWUP_MARKERS = (
     TRACKS_CHANGED_MARKER,
     REBASED_MARKER,
     AUDIO_SOFT_FALLBACK_MARKER,
+    WORKER_RECEIPT_MARKER,
+    AUDIO_PLAY_ACCEPTED_MARKER,
+    *HTTP_HEADERS_READY_MARKERS,
+    *HTTP_FIRST_BODY_READY_MARKERS,
+    HTTP_BODY_COMPLETE_MARKER,
+    MANIFEST_CANDIDATE_MARKER,
+    MANIFEST_ANCHOR_PROVEN_MARKER,
 )
 
 BLOCKER_WARN_MS = 250.0
@@ -61,6 +85,13 @@ FIELDNAMES = [
     "first_packet",
     "first_decoded",
     "first_presented",
+    "worker_round_trip_ms",
+    "network_first_byte_ms",
+    "network_body_complete_ms",
+    "receipt_to_presented_ms",
+    "receipt_to_audio_ms",
+    "public_to_presented_ms",
+    "public_to_audio_ms",
     "final_commit",
     "blocker_over_250ms",
     "drops_seek_stale_late_queue",
@@ -101,13 +132,23 @@ class SeekTransaction:
     drops_late: int = 0
     drops_queue_overflow: int = 0
     audio_gate: str = ""
+    superseded: bool = False
+    timing: SeekTimingMetrics = field(default_factory=SeekTimingMetrics)
 
     def observe_common_fields(self, line: str) -> None:
         """Обновляет общие поля, которые встречаются на разных markers."""
 
         self.kind = field_value(line, "kind") or self.kind
-        self.target_ms = field_value(line, "target_ms") or self.target_ms
-        self.actual_ms = field_value(line, "actual_ms") or self.actual_ms
+        self.target_ms = (
+            field_value(line, "target_ms")
+            or field_value(line, "target_milliseconds")
+            or self.target_ms
+        )
+        self.actual_ms = (
+            field_value(line, "actual_ms")
+            or field_value(line, "actual_milliseconds")
+            or self.actual_ms
+        )
         self.committed_ms = field_value(line, "committed_ms") or self.committed_ms
         self.selected_video_track_id = (
             field_value(line, "selected_video_track_id") or self.selected_video_track_id
@@ -172,6 +213,17 @@ class SeekTransaction:
             missing.append("first_decoded")
         if self.video_required(media_kind) and not self.first_presented:
             missing.append("first_presented")
+        if self.timing.worker_receipted and self.timing.worker_round_trip_ms is None:
+            missing.append("worker_receipt")
+        if (
+            self.timing.worker_receipted
+            and self.video_required(media_kind)
+            and self.timing.receipt_to_presented_ms is None
+        ):
+            missing.append("receipt_to_presented")
+        audio_required = not none_like(self.selected_audio_track_id)
+        if audio_required and self.timing.receipt_to_audio_ms is None:
+            missing.append("audio_play_accepted")
         if not self.final_commit:
             missing.append("final_commit")
         return missing
@@ -202,6 +254,27 @@ class SeekTransaction:
             "first_packet": yes_no(self.first_packet),
             "first_decoded": yes_no(self.first_decoded),
             "first_presented": yes_no(self.first_presented),
+            "worker_round_trip_ms": format_milliseconds(
+                self.timing.worker_round_trip_ms
+            ),
+            "network_first_byte_ms": format_milliseconds(
+                self.timing.network_first_byte_ms()
+            ),
+            "network_body_complete_ms": format_milliseconds(
+                self.timing.network_body_complete_ms
+            ),
+            "receipt_to_presented_ms": format_milliseconds(
+                self.timing.receipt_to_presented_ms
+            ),
+            "receipt_to_audio_ms": format_milliseconds(
+                self.timing.receipt_to_audio_ms
+            ),
+            "public_to_presented_ms": format_milliseconds(
+                self.timing.public_to_presented_ms()
+            ),
+            "public_to_audio_ms": format_milliseconds(
+                self.timing.public_to_audio_ms()
+            ),
             "final_commit": yes_no(self.final_commit),
             "blocker_over_250ms": self.blocker_cell(),
             "drops_seek_stale_late_queue": self.drop_cell(),
@@ -257,6 +330,9 @@ class SeekDiagnosticsParser:
     def parse_line(self, source: str, line_number: int, line: str) -> None:
         """Маршрутизирует строку к marker-specific обработчику."""
 
+        if WORKER_REQUEST_MARKER in line:
+            self.start_transaction(source, line_number, line, worker_receipted=True)
+            return
         if START_MARKER in line:
             self.start_transaction(source, line_number, line)
             return
@@ -264,13 +340,48 @@ class SeekDiagnosticsParser:
         if not self.is_relevant_followup_line(line):
             return
 
-        transaction = self.transaction_for_line(source, line_number, line)
+        receipt_generation = generation_from_line(line)
+        if WORKER_RECEIPT_MARKER in line and receipt_generation is not None:
+            transaction = self.active_by_generation.get(receipt_generation)
+        else:
+            transaction = self.transaction_for_line(source, line_number, line)
         if transaction is None:
             return
 
         transaction.observe_common_fields(line)
 
-        if ACCEPTED_MARKER in line:
+        if WORKER_RECEIPT_MARKER in line:
+            transaction.timing.worker_receipted = True
+            transaction.timing.worker_round_trip_ms = float_field(
+                line, "elapsed_milliseconds"
+            )
+        elif any(marker in line for marker in HTTP_HEADERS_READY_MARKERS):
+            if transaction.timing.network_headers_ms is None:
+                transaction.timing.network_headers_ms = float_field(
+                    line, "elapsed_milliseconds"
+                )
+        elif any(marker in line for marker in HTTP_FIRST_BODY_READY_MARKERS):
+            if transaction.timing.network_first_body_ms is None:
+                transaction.timing.network_first_body_ms = float_field(
+                    line, "elapsed_milliseconds"
+                )
+        elif HTTP_BODY_COMPLETE_MARKER in line:
+            if transaction.timing.network_body_complete_ms is None:
+                transaction.timing.network_body_complete_ms = float_field(
+                    line, "elapsed_milliseconds"
+                )
+        elif MANIFEST_ANCHOR_PROVEN_MARKER in line:
+            transaction.timing.manifest_anchor_proven = True
+        elif MANIFEST_CANDIDATE_MARKER in line:
+            if "HLS manifest seek candidate started" in line:
+                transaction.timing.manifest_candidate_count += 1
+            if "HLS manifest seek candidate accepted" in line:
+                transaction.timing.manifest_candidate_accepted = True
+            transaction.timing.manifest_candidate_elapsed_ms = max(
+                transaction.timing.manifest_candidate_elapsed_ms,
+                float_field(line, "elapsed_milliseconds") or 0.0,
+            )
+        elif ACCEPTED_MARKER in line:
             transaction.demux_accepted = True
         elif VIDEO_PACKET_MARKER in line:
             transaction.first_packet = True
@@ -281,6 +392,13 @@ class SeekDiagnosticsParser:
             transaction.first_decoded = True
         elif PRESENTED_MARKER in line:
             transaction.first_presented = True
+            elapsed_ms = float_field(line, "elapsed_ms")
+            if elapsed_ms is not None:
+                transaction.timing.receipt_to_presented_ms = elapsed_ms
+        elif AUDIO_PLAY_ACCEPTED_MARKER in line:
+            accepted_after_ms = float_field(line, "accepted_after_ms")
+            if accepted_after_ms is not None:
+                transaction.timing.receipt_to_audio_ms = accepted_after_ms
         elif COMMIT_MARKER in line:
             transaction.final_commit = True
             self.close_transaction(transaction)
@@ -304,9 +422,23 @@ class SeekDiagnosticsParser:
             return True
         return self.last_active is not None and drop_reason(line) != ""
 
-    def start_transaction(self, source: str, line_number: int, line: str) -> None:
+    def start_transaction(
+        self,
+        source: str,
+        line_number: int,
+        line: str,
+        *,
+        worker_receipted: bool = False,
+    ) -> None:
         """Создаёт transaction на marker-е начала demux seek-а."""
 
+        if (
+            self.last_active is not None
+            and self.last_active.source == source
+            and not self.last_active.final_commit
+        ):
+            self.last_active.superseded = True
+            self.active_by_generation.pop(self.last_active.generation, None)
         generation = generation_from_line(line) or synthetic_generation(source, line_number)
         transaction = SeekTransaction(
             sequence=len(self.transactions) + 1,
@@ -315,6 +447,7 @@ class SeekDiagnosticsParser:
             generation=generation,
             start_line=line_number,
             demux_started=True,
+            timing=SeekTimingMetrics(worker_receipted=worker_receipted),
         )
         transaction.observe_common_fields(line)
         self.transactions.append(transaction)
@@ -362,6 +495,17 @@ class SeekDiagnosticsParser:
 
         return [transaction.to_row(self.media_kind) for transaction in self.transactions]
 
+    def summary_rows(self) -> list[dict[str, str]]:
+        """Считает nearest-rank latency summary только по completed success."""
+
+        return build_summary(
+            transaction.timing
+            for transaction in self.transactions
+            if not transaction.superseded
+            and transaction.final_commit
+            and transaction.verdict(self.media_kind) != "FAIL"
+        )
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """Создаёт CLI без внешних зависимостей."""
@@ -396,6 +540,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--strict",
         action="store_true",
         help="Exit with status 1 when any parsed transaction has FAIL verdict.",
+    )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help=(
+            "Output summary instead of rows; p50/p95 use nearest-rank "
+            "ceil(p*n)-1 over completed successful transactions."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -546,7 +698,9 @@ def main(argv: list[str]) -> int:
         parser.parse_path(path)
 
     rows = parser.rows()
-    if args.format == "csv":
+    if args.summary:
+        write_summary(parser.summary_rows(), args.format, sys.stdout)
+    elif args.format == "csv":
         write_csv(rows, sys.stdout)
     elif args.format == "json":
         write_json(rows, sys.stdout)

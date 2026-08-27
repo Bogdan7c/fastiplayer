@@ -5,6 +5,7 @@ use media_core::{DemuxReadEvent, DemuxSeekMode, TrackInfo};
 
 use super::{AudioAccumulator, AudioTrackEvidence, MpegTsDemuxer, StreamTimestamps};
 use crate::MpegTsDemuxError;
+use crate::framing::TransportReadOutcome;
 use crate::pes::PesAssembler;
 use crate::psi::{ProgramMap, ProgramMapEntry, PsiSectionAssembler, StreamKind};
 use crate::timestamps::TimestampUnwrapper;
@@ -101,8 +102,13 @@ impl MpegTsDemuxer {
         let mut reached_end = false;
         for _ in 0..self.options.seek_scan_packets.get() {
             match self.reader.next_packet()? {
-                Some(packet) => self.process_transport_packet(packet, false)?,
-                None => {
+                TransportReadOutcome::Packet(packet) => {
+                    self.process_transport_packet(packet, false)?;
+                }
+                TransportReadOutcome::EndResource(_metadata) => {
+                    self.finish_streamed_resource(false)?;
+                }
+                TransportReadOutcome::EndOfInput => {
                     self.finish_pending_elementary_streams(false)?;
                     reached_end = true;
                     break;
@@ -253,12 +259,20 @@ impl MpegTsDemuxer {
             self.reached_end = false;
             let mut reached_end = false;
             for _ in 0..self.options.seek_scan_packets.get() {
-                let Some(packet) = self.reader.next_packet()? else {
-                    self.finish_pending_elementary_streams(false)?;
-                    reached_end = true;
-                    break;
-                };
-                self.process_transport_packet(packet, false)?;
+                match self.reader.next_packet()? {
+                    TransportReadOutcome::Packet(packet) => {
+                        self.process_transport_packet(packet, false)?;
+                    }
+                    TransportReadOutcome::EndResource(_metadata) => {
+                        self.finish_streamed_resource(false)?;
+                        continue;
+                    }
+                    TransportReadOutcome::EndOfInput => {
+                        self.finish_pending_elementary_streams(false)?;
+                        reached_end = true;
+                        break;
+                    }
+                }
                 if self.index_covers(target_90khz, mode)
                     || self.seek_index.len() >= self.options.index_entries.get()
                 {

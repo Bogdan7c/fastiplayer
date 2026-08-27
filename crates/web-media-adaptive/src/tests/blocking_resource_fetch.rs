@@ -2,6 +2,75 @@
 
 use super::*;
 
+/// HTTP fixture публикует headers и ждёт физического закрытия body reader-а.
+struct StalledBodyServer {
+    /// Exact target для production adaptive boundary.
+    target: HttpRequestTarget,
+    /// Server замечает drop response socket-а после seek cancellation.
+    disconnected: std::sync::mpsc::Receiver<()>,
+    /// Exact physical request count исключает скрытый reopen/prefetch.
+    request_count: Arc<AtomicUsize>,
+    /// Bounded fixture thread.
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl StalledBodyServer {
+    /// Открывает one-shot listener с заявленным, но никогда не отправленным body.
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stalled body server");
+        let address = listener.local_addr().expect("stalled body server address");
+        let target = HttpRequestTarget::parse_exact(format!("http://{address}/segment.ts"))
+            .expect("stalled body target");
+        let (disconnect_sender, disconnected) = std::sync::mpsc::sync_channel(1);
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let worker_request_count = Arc::clone(&request_count);
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept stalled body request");
+            worker_request_count.fetch_add(1, Ordering::SeqCst);
+            let _request = read_request(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\n")
+                .expect("write stalled body headers");
+            stream.flush().expect("flush stalled body headers");
+            stream
+                .set_read_timeout(Some(TEST_TIMEOUT))
+                .expect("set stalled body disconnect timeout");
+            let mut byte = [0_u8; 1];
+            match stream.read(&mut byte) {
+                Ok(0) => disconnect_sender
+                    .send(())
+                    .expect("publish stalled body disconnect"),
+                Ok(_) => panic!("client не должен писать в HTTP response socket"),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+                    ) =>
+                {
+                    disconnect_sender
+                        .send(())
+                        .expect("publish reset stalled body disconnect")
+                }
+                Err(error) => panic!("stalled body socket не был закрыт: {error}"),
+            }
+        });
+        Self {
+            target,
+            disconnected,
+            request_count,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for StalledBodyServer {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            worker.join().expect("join stalled body server");
+        }
+    }
+}
+
 fn fetch(
     context: &AdaptiveHttpContext,
     target: HttpRequestTarget,
@@ -332,4 +401,154 @@ fn derived_forwarding_intent_fetches_out_of_scope_cdn_without_secrets() {
     assert_eq!(requests.len(), 1);
     assert!(!requests[0].headers.contains("cdn-secret"));
     assert!(!requests[0].request_line.contains("cdn-secret"));
+}
+
+/// Supersede будит pending `Response::chunk()` и физически закрывает response socket.
+#[test]
+fn streaming_seek_cancellation_aborts_stalled_body_without_waiting_for_timeout() {
+    let server = StalledBodyServer::start();
+    let context = context(
+        &server.target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        None,
+        None,
+    );
+    let seek_cancellation = media_core::DemuxSeekCancellationToken::new();
+    let mut resource = context
+        .open_resource_streaming_blocking(
+            AdaptiveResourceFetchRequest::full(
+                SourceGeneration::new(1),
+                server.target.clone(),
+                NonZeroUsize::new(16).expect("streaming body bound"),
+                AdaptiveResourcePurpose::MediaSegment,
+                AdaptiveResourceQueryApplication::BypassScopedQuery,
+            ),
+            seek_cancellation.clone(),
+        )
+        .expect("open stalled streaming body");
+    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+    let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
+    let reader = thread::spawn(move || {
+        started_sender.send(()).expect("publish body read start");
+        result_sender
+            .send(resource.next_chunk())
+            .expect("publish cancelled body result");
+    });
+    started_receiver
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("body read must start");
+
+    seek_cancellation.cancel();
+
+    let result = result_receiver
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("cancelled body read must wake without HTTP timeout");
+    assert!(matches!(result, Err(AdaptiveTransportError::Cancelled)));
+    reader.join().expect("join cancelled body reader");
+    server
+        .disconnected
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("dropping cancelled response must close transport socket");
+    assert_eq!(server.request_count.load(Ordering::SeqCst), 1);
+}
+
+/// Active-read signal drop-ает тот же pending body, не отменяя request token и не делая reopen.
+#[test]
+fn restartable_active_read_interruption_aborts_stalled_body_without_extra_request() {
+    let server = StalledBodyServer::start();
+    let context = context(
+        &server.target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        None,
+        None,
+    );
+    let request_cancellation = media_core::DemuxSeekCancellationToken::new();
+    let controller = AdaptiveRestartableReadInterruption::new();
+    let attempt = controller
+        .new_attempt()
+        .expect("allocate exact body attempt");
+    let mut resource = context
+        .open_resource_streaming_blocking_with_restartable_read_attempt(
+            AdaptiveResourceFetchRequest::full(
+                SourceGeneration::new(1),
+                server.target.clone(),
+                NonZeroUsize::new(16).expect("streaming body bound"),
+                AdaptiveResourcePurpose::MediaSegment,
+                AdaptiveResourceQueryApplication::BypassScopedQuery,
+            ),
+            request_cancellation.clone(),
+            attempt.clone(),
+        )
+        .expect("open stalled body with disarmed attempt");
+    assert!(resource.network_request_attempt_id().is_some());
+    assert_eq!(
+        controller.request_active_read_interruption(),
+        AdaptiveRestartableReadInterruptionRequest::AlreadyQuiescent,
+        "offside attempt не должен быть poisoned до commit"
+    );
+    assert_eq!(
+        attempt.arm_as_current(),
+        AdaptiveRestartableReadArmOutcome::Armed
+    );
+
+    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+    let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
+    let reader = thread::spawn(move || {
+        started_sender
+            .send(())
+            .expect("publish active body read start");
+        let first = resource.next_chunk();
+        let second = resource.next_chunk();
+        result_sender
+            .send((first, second, resource.received_body_bytes()))
+            .expect("publish restartable body outcomes");
+    });
+    started_receiver
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("active body read thread must start");
+
+    let request_deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        match controller.request_active_read_interruption() {
+            AdaptiveRestartableReadInterruptionRequest::InterruptionRequested => break,
+            AdaptiveRestartableReadInterruptionRequest::AlreadyQuiescent => {
+                assert!(
+                    Instant::now() < request_deadline,
+                    "body read должен занять active attempt slot"
+                );
+                thread::yield_now();
+            }
+            AdaptiveRestartableReadInterruptionRequest::InterruptionAlreadyRequested => {
+                panic!("test посылает только один accepted active-read signal")
+            }
+        }
+    }
+
+    let (first, second, received_body_bytes) = result_receiver
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("restartable body read must wake without HTTP timeout");
+    assert!(matches!(
+        first,
+        Err(AdaptiveTransportError::RestartableReadInterrupted)
+    ));
+    assert!(matches!(
+        second,
+        Err(AdaptiveTransportError::RestartableReadInterrupted)
+    ));
+    assert_eq!(
+        received_body_bytes, 0,
+        "stalled body не должен буферизоваться"
+    );
+    assert!(
+        !request_cancellation.is_cancelled(),
+        "active-read signal не должен отменять replacement request token"
+    );
+    reader.join().expect("join restartable body reader");
+    server
+        .disconnected
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("dropping interrupted response must close transport socket");
+    assert_eq!(server.request_count.load(Ordering::SeqCst), 1);
 }

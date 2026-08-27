@@ -12,7 +12,7 @@ use media_core::{
 use source_core::CancellationToken;
 
 use crate::elementary::{ElementaryPacket, drain_adts_frames, drain_mpeg_audio_frames};
-use crate::framing::{TransportPacket, TransportPacketReader};
+use crate::framing::{TransportPacket, TransportPacketReader, TransportReadOutcome};
 use crate::pes::{PesAssembler, PesPacket};
 use crate::psi::{
     ElementaryStream, ProgramMap, ProgramMapEntry, PsiSectionAssembler, StreamKind, parse_pat,
@@ -128,17 +128,34 @@ impl MpegTsDemuxer {
             duration: None,
             reached_end: false,
         };
-        for _ in 0..options.initial_probe_packets.get() {
-            let Some(packet) = demuxer.reader.next_packet()? else {
-                break;
-            };
-            demuxer.process_transport_packet(packet, false)?;
-            if demuxer.initial_topology_ready() {
-                demuxer.build_bounded_initial_index()?;
-                return Ok(demuxer);
+        let mut probed_packets = 0_usize;
+        while probed_packets < options.initial_probe_packets.get() {
+            match demuxer.reader.next_packet()? {
+                TransportReadOutcome::Packet(packet) => {
+                    probed_packets = probed_packets.saturating_add(1);
+                    demuxer.process_transport_packet(packet, false)?;
+                    if demuxer.initial_topology_ready() {
+                        demuxer.build_bounded_initial_index()?;
+                        return Ok(demuxer);
+                    }
+                }
+                TransportReadOutcome::EndResource(_metadata) => {
+                    demuxer.finish_streamed_resource(false)?;
+                    if demuxer.initial_topology_ready() {
+                        demuxer.build_bounded_initial_index()?;
+                        return Ok(demuxer);
+                    }
+                }
+                TransportReadOutcome::EndOfInput => {
+                    demuxer.finish_pending_elementary_streams(false)?;
+                    break;
+                }
             }
         }
-        demuxer.finish_pending_elementary_streams(false)?;
+        if !demuxer.reader.requires_explicit_resource_end() {
+            // Legacy byte/OrderedSegments paths сохраняют прежний bounded-probe fallback.
+            demuxer.finish_pending_elementary_streams(false)?;
+        }
         if demuxer.initial_topology_ready() {
             demuxer.build_bounded_initial_index()?;
             return Ok(demuxer);
@@ -338,6 +355,16 @@ impl MpegTsDemuxer {
         self.pes_by_pid.clear();
         self.audio_by_pid.clear();
         self.video_assembler.reset_all();
+    }
+
+    /// Настоящий streamed resource EOF завершает PES/AU и затем сбрасывает boundary state.
+    pub(super) fn finish_streamed_resource(
+        &mut self,
+        publish_lifecycle: bool,
+    ) -> Result<(), MpegTsDemuxError> {
+        self.finish_pending_elementary_streams(publish_lifecycle)?;
+        self.reset_ordered_segment_state();
+        Ok(())
     }
 
     fn reset_pid(&mut self, pid: u16) {
@@ -651,8 +678,13 @@ impl Demuxer for MpegTsDemuxer {
                 return Ok(DemuxReadEvent::EndOfStream);
             }
             match self.reader.next_packet()? {
-                Some(packet) => self.process_transport_packet(packet, true)?,
-                None => {
+                TransportReadOutcome::Packet(packet) => {
+                    self.process_transport_packet(packet, true)?;
+                }
+                TransportReadOutcome::EndResource(_metadata) => {
+                    self.finish_streamed_resource(true)?;
+                }
+                TransportReadOutcome::EndOfInput => {
                     self.finish_pending_elementary_streams(true)?;
                     self.reached_end = true;
                 }

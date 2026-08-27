@@ -21,7 +21,9 @@ pub(super) fn audio_gate_seek_commit(resume_intent: PlaybackResumeIntent) -> See
         seek_mode: SeekMode::Accurate,
         target_position: MediaTime::from_secs(8),
         actual_position: MediaTime::from_secs(8),
+        landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
         started_at: Instant::now(),
+        public_accepted_at: Instant::now(),
         resume_intent,
         target_retention: crate::seek_state::SeekTargetRetention::ExactPublicRange,
     }

@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use crate::pipeline::{AudioSeekRuntimeState, DecodedAudioPacket};
 use crate::seek_state::{PlaybackResumeIntent, SeekCommitState};
 use crate::{
-    AudioOutputSpec, PlaybackState, PlayerError, PlayerErrorKind, PlayerResult,
+    AudioOutputSpec, PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
     PlayerRuntimeAcceptedChange, SeekProgressBlocker, TrackId,
 };
 
@@ -105,17 +105,19 @@ impl SeekAudioGateStatus {
             Self::WaitingForPreroll => Some(SeekProgressBlocker::WaitingForAudioPreroll),
         }
     }
-
-    /// Возвращает `true` только для blockers, которые можно отпустить soft fallback-ом.
-    pub(super) const fn can_soft_fallback(self) -> bool {
-        matches!(
-            self,
-            Self::WaitingForDecoder | Self::WaitingForOutput | Self::WaitingForPreroll
-        )
-    }
 }
 
 impl PlayerSession {
+    /// Запускает output и публикует generic resume ровно один раз на pause/install transition.
+    pub(super) fn play_audio_output_with_resume_event(&mut self) -> Option<anyhow::Result<()>> {
+        let publishes_resume = self.pipeline.audio_output_needs_play_request();
+        let play_result = self.pipeline.play_audio_output();
+        if publishes_resume && matches!(play_result, Some(Ok(()))) {
+            self.push_player_event(PlayerEvent::AudioPlaybackResumed);
+        }
+        play_result
+    }
+
     /// Обрабатывает audio packet: decode -> write to AudioOutput.
     pub fn process_audio_packet(
         &mut self,
@@ -338,9 +340,10 @@ impl PlayerSession {
             self.pipeline.media_clock_base(),
             self.snapshot.playback_rate,
         );
+        self.push_player_event(PlayerEvent::AudioOutputReady);
 
         if self.playback_state() == PlaybackState::Playing {
-            if let Some(Err(error)) = self.pipeline.play_audio_output() {
+            if let Some(Err(error)) = self.play_audio_output_with_resume_event() {
                 return Err(PlayerError::new(
                     PlayerErrorKind::AudioDeviceUnavailable,
                     format!("Audio play after lazy output init failed: {error}"),
@@ -408,6 +411,11 @@ impl PlayerSession {
             .reanchor_audio_clock_media_mapping(media_position, self.snapshot.playback_rate);
         self.pipeline
             .reset_audio_clock_sample(self.audio_clock_now(), Instant::now());
+        self.push_player_event(PlayerEvent::AudioOutputReady);
+        if should_play {
+            self.pipeline.mark_audio_output_play_request_accepted();
+            self.push_player_event(PlayerEvent::AudioPlaybackResumed);
+        }
 
         Ok(PlayerRuntimeAcceptedChange::Applied)
     }

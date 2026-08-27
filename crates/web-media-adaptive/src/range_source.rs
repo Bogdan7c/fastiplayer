@@ -244,6 +244,9 @@ impl ByteSource for AdaptiveRangeByteSource {
 fn map_adaptive_read_error(error: AdaptiveTransportError) -> SourceError {
     match error {
         AdaptiveTransportError::Cancelled => SourceError::Cancelled,
+        // Range source никогда не прикрепляет restartable streaming attempt; если future
+        // owner всё же расширит этот path, interruption остаётся terminal, а не retryable I/O.
+        AdaptiveTransportError::RestartableReadInterrupted => SourceError::Cancelled,
         AdaptiveTransportError::Source(source) => source,
         AdaptiveTransportError::Target(_) => SourceError::HttpRequestPolicyRejected {
             reason: HttpRequestPolicyFailure::TargetResolution,

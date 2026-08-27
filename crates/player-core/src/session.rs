@@ -420,7 +420,9 @@ impl PlayerSession {
             seek_mode: crate::SeekMode::Accurate,
             target_position: MediaTime::from_duration(target_position),
             actual_position: MediaTime::from_duration(target_position),
+            landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
             started_at: Instant::now(),
+            public_accepted_at: Instant::now(),
             resume_intent: PlaybackResumeIntent::Pause,
             target_retention: crate::seek_state::SeekTargetRetention::ExactPublicRange,
         }));
@@ -940,7 +942,7 @@ impl PlayerSession {
 
         self.set_playback_state(PlaybackState::Playing);
 
-        if let Some(play_result) = self.pipeline.play_audio_output() {
+        if let Some(play_result) = self.play_audio_output_with_resume_event() {
             if let Err(error) = play_result {
                 warn!(error = %error, "Не удалось запустить audio");
                 self.set_runtime_error(format!("Audio play error: {error}"));

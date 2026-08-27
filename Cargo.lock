@@ -4595,6 +4595,7 @@ dependencies = [
 name = "source-core"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "cookie",
  "percent-encoding",
  "rcgen",
@@ -5907,6 +5908,7 @@ name = "web-media-adaptive"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-waker",
  "bytes",
  "demux-api",
  "media-core",

@@ -130,7 +130,7 @@ fn six_segment_playlist() -> String {
     playlist
 }
 
-/// После compaction поздний seek обязан открыть точный хвост, а landing RAP — дойти до demux output.
+/// После compaction поздний seek берёт точный хвост из HTTP либо completed RAM cache.
 #[test]
 fn late_seek_after_tiny_index_compaction_restarts_directly_from_latest_segment() {
     const SEGMENT_SECONDS: u64 = 30;
@@ -204,6 +204,14 @@ fn late_seek_after_tiny_index_compaction_restarts_directly_from_latest_segment()
         .filter(|request| request.request_line.contains(".ts"))
         .map(|request| request.request_line.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(media_requests.len(), 1, "seek refetch: {media_requests:?}");
-    assert!(media_requests[0].contains("/segment-5.ts"));
+    assert!(
+        media_requests.len() <= 1,
+        "seek не должен повторно открывать exact tail: {media_requests:?}"
+    );
+    assert!(
+        media_requests
+            .iter()
+            .all(|request_line| request_line.contains("/segment-5.ts")),
+        "seek не должен читать промежуточные segments: {media_requests:?}"
+    );
 }

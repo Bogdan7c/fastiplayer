@@ -3,7 +3,10 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use media_core::{DemuxSeekRequest, DemuxSeekResult};
+use media_core::{
+    DemuxActiveReadInterruptionCapability, DemuxActiveReadInterruptionReason,
+    DemuxSeekCancellationToken, DemuxSeekRequest, DemuxSeekResult,
+};
 
 use super::worker::{ProgressiveSeekCommand, ProgressiveSharedState};
 
@@ -169,24 +172,42 @@ impl ProgressiveAsyncSeekHandle {
         queue.current_generation = queue.current_generation.wrapping_add(1);
         queue.messages.clear();
         queue.queued_encoded_bytes = 0;
-        if let Some(superseded_fence) = queue
-            .pending_seek
-            .take()
-            .and_then(ProgressiveSeekCommand::receipt_fence)
-            && let Some(async_seek) = queue.async_seek.as_mut()
-        {
-            async_seek
-                .worker_pending_receipts
-                .push_back(ProgressiveAsyncSeekReceipt {
-                    fence: superseded_fence,
-                    outcome: ProgressiveAsyncSeekOutcome::Superseded,
-                });
+        if let Some(active_cancellation) = &queue.active_seek_cancellation {
+            // `Completed` token делает этот cancel no-op; физически прерывается только
+            // ещё не завершившийся request, а не уже committed replacement source.
+            active_cancellation.cancel();
         }
+        if let Some(superseded_command) = queue.pending_seek.take() {
+            if let Some(superseded_cancellation) = superseded_command.cancellation() {
+                superseded_cancellation.cancel();
+            }
+            if let Some(superseded_fence) = superseded_command.receipt_fence()
+                && let Some(async_seek) = queue.async_seek.as_mut()
+            {
+                async_seek
+                    .worker_pending_receipts
+                    .push_back(ProgressiveAsyncSeekReceipt {
+                        fence: superseded_fence,
+                        outcome: ProgressiveAsyncSeekOutcome::Superseded,
+                    });
+            }
+        }
+        let request_cancellation = DemuxSeekCancellationToken::new();
         queue.pending_seek = Some(ProgressiveSeekCommand::Receipted {
             generation: queue.current_generation,
             request,
             fence,
+            cancellation: request_cancellation,
         });
+        if let DemuxActiveReadInterruptionCapability::Supported(port) =
+            &queue.active_read_interruption
+        {
+            // Команда уже authoritative в queue, а mutex ещё не даёт worker-у начать rollback
+            // reopen без pending replacement. Port contract запрещает I/O, wait и queue callback.
+            let _interruption_request = port.request_active_read_interruption(
+                DemuxActiveReadInterruptionReason::ReceiptedSeekEnqueued,
+            );
+        }
         self.shared.capacity_available.notify_all();
         Ok(())
     }

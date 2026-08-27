@@ -32,6 +32,7 @@ pub(super) fn submit_render_frame(
         }
     };
     let submitted_video_frame = video_frame.is_some();
+    let startup_frame_identity = prepared_video_frame.current_frame_identity();
 
     let render_frame_outcome = renderer.render_frame(render_wgpu_shell::RenderFrameInput {
         window,
@@ -42,7 +43,9 @@ pub(super) fn submit_render_frame(
         video_viewport: prepared_ui_frame.video_viewport,
         video_exclusion_rects: prepared_ui_frame.video_exclusion_rects,
     });
-    if render_outcome_marks_video_submitted(&render_frame_outcome, submitted_video_frame) {
+    let video_was_submitted =
+        render_outcome_marks_video_submitted(&render_frame_outcome, submitted_video_frame);
+    if video_was_submitted {
         prepared_video_frame.mark_submitted_to_renderer();
         tracing::trace!(
             target: VIDEO_RENDER_ACCEPTANCE_TARGET,
@@ -54,6 +57,9 @@ pub(super) fn submit_render_frame(
         RenderFrameOutcome::Presented(timing) => {
             telemetry.record_frame_presented_to_surface();
             app_state.report_gpu_submit_present_latency(timing.submit_present_elapsed);
+            if video_was_submitted && let Some(frame_identity) = startup_frame_identity {
+                app_state.note_startup_surface_frame_presented(frame_identity);
+            }
             Some(timing)
         }
         RenderFrameOutcome::Dropped(reason) => {

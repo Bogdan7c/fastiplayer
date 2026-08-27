@@ -5,7 +5,7 @@ use super::seek_transaction::playback_resume_intent_name;
 use crate::seek_state::AccuratePrerollDemuxEventKind;
 use crate::{ActiveSeekDiagnosticsSnapshot, PlayerTickConfig};
 use std::time::{Duration, Instant};
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 impl PlayerSession {
     /// Собирает подробный snapshot активного seek-а для throttled stall logs.
     #[must_use]
@@ -195,7 +195,7 @@ impl PlayerSession {
         let elapsed = seek_commit.started_at.elapsed();
         if seek_commit.drops_decode_preroll_before_target() {
             self.seek_runtime.record_accurate_preroll_decoded_frame(
-                frame_pts >= seek_commit.target_position.as_duration(),
+                frame_pts >= seek_commit.landing_frame_min_position(),
                 elapsed,
             );
         }
@@ -204,7 +204,7 @@ impl PlayerSession {
             return;
         }
 
-        debug!(
+        info!(
             kind = "seek",
             target_ms = seek_commit.target_position.as_duration().as_millis(),
             actual_ms = seek_commit.actual_position.as_duration().as_millis(),
@@ -230,7 +230,7 @@ impl PlayerSession {
         let elapsed = seek_commit.started_at.elapsed();
         if seek_commit.drops_decode_preroll_before_target() {
             self.seek_runtime.record_accurate_preroll_queued_frame(
-                frame_pts >= seek_commit.target_position.as_duration(),
+                frame_pts >= seek_commit.landing_frame_min_position(),
                 elapsed,
             );
         }
@@ -312,7 +312,7 @@ impl PlayerSession {
 
         let matches_active_accurate_seek = seek_commit.generation == generation
             && seek_commit.drops_decode_preroll_before_target()
-            && pts < seek_commit.target_position.as_duration();
+            && pts < seek_commit.landing_frame_min_position();
         if !matches_active_accurate_seek {
             return false;
         }

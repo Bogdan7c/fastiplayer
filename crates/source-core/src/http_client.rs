@@ -29,15 +29,17 @@ pub(crate) fn blocking_http_client_builder(
         .timeout(source_config.read_timeout())
 }
 
-/// Создаёт async Reqwest builder с теми же source-owned policy, что blocking frontend.
+/// Создаёт async Reqwest builder с source-owned identity/connect policy.
 ///
 /// Отдельный transport frontend нужен только там, где lifecycle request-а должен
 /// завершаться через drop future, а не ждать конца blocking socket read-а.
+/// Body timeout намеренно остаётся у конкретной async операции: reqwest total
+/// timeout продолжает тикать, даже когда bounded consumer законно не poll-ит
+/// streaming body из-за backpressure.
 pub(crate) fn async_http_client_builder(source_config: &SourceRuntimeConfig) -> AsyncClientBuilder {
     AsyncClient::builder()
         .user_agent(RUSTIPLAYER_HTTP_USER_AGENT)
         .connect_timeout(source_config.connect_timeout())
-        .timeout(source_config.read_timeout())
 }
 
 #[cfg(test)]

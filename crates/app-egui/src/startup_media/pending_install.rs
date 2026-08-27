@@ -54,7 +54,7 @@ impl StartupMediaController {
                 app_state.record_installed_media(installed.as_ref());
                 if let Some(warning) = installed.position_warning {
                     let message = format!(
-                        "Сохранённая позиция {}.{:03} с недоступна; media открыто на {}.{:03} с и оставлено на паузе",
+                        "Сохранённая позиция {}.{:03} с недоступна; media открыто на {}.{:03} с",
                         warning.requested_position.as_secs(),
                         warning.requested_position.subsec_millis(),
                         warning.available_position.as_secs(),
@@ -100,7 +100,19 @@ impl StartupMediaController {
             }
             StrongMediaOpenPoll::Failed(error) => {
                 let safe_error = error.to_string();
-                match startup_install_failure_policy(&error, pending_context.superseded) {
+                let failure_policy =
+                    startup_install_failure_policy(&error, pending_context.superseded);
+                // Restore fallback может сразу перейти к следующему item и не дойти до общего
+                // install-failure handler, поэтому terminal owner фиксирует safe cause здесь.
+                tracing::warn!(
+                    error = %safe_error,
+                    terminal_request_id = ?error.terminal_request_id(),
+                    may_have_crossed_install_barrier = error.may_have_crossed_install_barrier(),
+                    superseded = pending_context.superseded,
+                    ?failure_policy,
+                    "Startup strong media install failed"
+                );
+                match failure_policy {
                     StartupInstallFailurePolicy::ApplyRetainedCancelWin => {
                         if let Err(retained_error) =
                             playlist_runtime.apply_retained_startup_actions()

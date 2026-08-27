@@ -11,6 +11,7 @@ mod abortable_http_task;
 mod cache;
 mod cancellation;
 mod config;
+mod current_thread_async;
 mod error;
 mod ftp_locator;
 mod ftp_policy;
@@ -22,6 +23,7 @@ mod http_bounded_async_tests;
 mod http_client;
 mod http_cookie;
 mod http_cookie_seed;
+mod http_diagnostics;
 mod http_locator;
 mod http_policy;
 mod http_retry_after;
@@ -35,8 +37,13 @@ pub use abortable_http_task::{
 pub use cache::{
     CacheDiagnostics, CachedByteSource, RamByteRangeCache, RangeDiagnostics, SourceDiagnostics,
 };
-pub use cancellation::CancellationToken;
+pub use cancellation::{CancellationFuture, CancellationToken};
 pub use config::SourceRuntimeConfig;
+pub use current_thread_async::{
+    CurrentThreadAsyncExecutor, CurrentThreadAsyncExecutorBuildError,
+    HttpAsyncDiagnosticMarkerOutcome, HttpAsyncOperationDiagnostics, HttpAsyncOperationKind,
+    InterruptibleAsyncExecution,
+};
 pub use error::{HttpRepresentationChange, HttpRequestPolicyFailure, SourceError, SourceResult};
 pub use ftp_locator::SecretFtpUrl;
 pub use ftp_policy::{FtpEndpoint, FtpRequestTarget, FtpRequestTargetError, FtpScheme};
@@ -47,10 +54,15 @@ pub use ftp_session::{
 pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
 pub use http_bounded::{
     HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind, HttpBoundedFetchRequest,
-    HttpBoundedResponse, HttpRangeResponseMetadata,
+    HttpBoundedResponse, HttpBoundedStreamingBody, HttpBoundedStreamingFetchHop,
+    HttpRangeResponseMetadata,
 };
 pub use http_cookie::{ScopedHttpCookieJar, ScopedHttpCookieJarError};
 pub use http_cookie_seed::{HttpCookieSeed, HttpCookieSeedBuilder, HttpCookieSeedError};
+pub use http_diagnostics::{
+    HttpRequestAttemptId, HttpResourceCacheOutcome, HttpResourceCorrelationId,
+    HttpResourceDiagnostics, HttpResourcePurpose,
+};
 pub use http_locator::SecretHttpUrl;
 pub use http_policy::{
     HttpHeaderValidationError, HttpOrigin, HttpPathScope, HttpPathScopeError, HttpRequestScope,

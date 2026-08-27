@@ -176,7 +176,7 @@ fn audio_only_seek_does_not_commit_when_output_is_absent() {
 }
 
 #[test]
-fn playing_video_seek_with_audio_soft_fallback_commits_after_target_frame() {
+fn playing_video_seek_does_not_soft_commit_without_ready_audio() {
     let mut session = PlayerSession::new();
     install_fake_media(
         &mut session,
@@ -196,7 +196,7 @@ fn playing_video_seek_with_audio_soft_fallback_commits_after_target_frame() {
 
     let seek_commit = session
         .seek_commit()
-        .expect("seek должен ждать audio до soft fallback deadline");
+        .expect("seek должен ждать ready audio");
     session.finish_seek_commit_if_ready_for_tests(
         seek_commit.started_at + Duration::from_millis(250),
         Duration::from_secs(10),
@@ -205,17 +205,10 @@ fn playing_video_seek_with_audio_soft_fallback_commits_after_target_frame() {
         3,
     );
 
-    assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Scrubbing);
     assert!(!session.snapshot().timeline.seeking);
-    assert!(session.seek_commit().is_none());
-    assert!(matches!(
-        session
-            .snapshot()
-            .last_error
-            .as_ref()
-            .map(|error| &error.kind),
-        Some(PlayerErrorKind::RuntimeError)
-    ));
+    assert!(session.seek_commit().is_some());
+    assert!(session.snapshot().last_error.is_none());
 
     let events = session.take_events();
     let target_frame_event_index = event_index(
@@ -228,28 +221,14 @@ fn playing_video_seek_with_audio_soft_fallback_commits_after_target_frame() {
                         && presentation.frame_pts == Duration::from_secs(6)
             )
         },
-        "target frame event должен быть опубликован до soft fallback commit",
+        "target frame event должен быть опубликован до ожидания audio",
     );
-    let commit_event_index = event_index(
-        &events,
-        |event| {
-            matches!(
-                event,
-                PlayerEvent::SeekCommitted(commit)
-                    if commit.target_position == Duration::from_secs(6)
-                        && commit.actual_position == Duration::from_secs(6)
-                        && commit.resume_intent == PlaybackResumeIntent::Play
-            )
-        },
-        "seek commit event должен быть опубликован после soft fallback",
+    assert!(target_frame_event_index < events.len());
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::SeekCommitted(_)))
     );
-    assert!(target_frame_event_index < commit_event_index);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        PlayerEvent::RecoverableError(error)
-            if error.kind == PlayerErrorKind::RuntimeError
-                && error.message.contains("blocker=audio_decoder")
-    )));
     assert!(
         !events
             .iter()

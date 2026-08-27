@@ -7,11 +7,14 @@
 #![forbid(unsafe_code)]
 
 mod adapter;
+mod completed_resource_cache;
 mod config;
 mod fetch;
 mod manifest;
 mod range_source;
+mod restartable_read_interruption;
 mod segment;
+mod streaming_resource;
 mod timeline;
 
 pub use adapter::{
@@ -30,11 +33,17 @@ pub use manifest::{
 pub use range_source::{
     AdaptiveRangeByteSource, AdaptiveRangeSourceConfig, AdaptiveRangeSourceOpenError,
 };
+pub use restartable_read_interruption::{
+    AdaptiveRestartableReadArmOutcome, AdaptiveRestartableReadAttempt,
+    AdaptiveRestartableReadAttemptError, AdaptiveRestartableReadInterruption,
+    AdaptiveRestartableReadInterruptionRequest,
+};
 pub use segment::{
     AdaptiveOrderedSegmentSource, AdaptiveSegmentCompletion, AdaptiveSegmentDescriptor,
     AdaptiveSegmentSnapshot, AdaptiveSegmentSnapshotError, SegmentByteRange, SegmentPoll,
     SourceRangeError,
 };
+pub use streaming_resource::AdaptiveStreamingResource;
 pub use timeline::{
     AdaptivePresentation, ComponentClockMetadata, DvrWindow, DvrWindowError, LiveEdge,
 };

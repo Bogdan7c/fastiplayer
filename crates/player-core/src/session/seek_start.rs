@@ -5,7 +5,7 @@ use frame_server_core::{
     ScrubGeneration, ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection,
 };
 use media_core::{MediaDemuxError, MediaTime, TimelinePreviewState};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::seek_state::{
     PlaybackResumeIntent, SeekCommitState, SeekDemuxRequestError, SeekLandingRoute,
@@ -16,7 +16,10 @@ use crate::{
 };
 
 use super::PlayerSession;
-use super::prepared_demux_seek::PreparedDemuxSeekIntent;
+use super::prepared_demux_seek::{
+    AcceptedDemuxSeekIntent, PreparedDemuxSeekEnqueueRoute, PreparedDemuxSeekFailureDisposition,
+    PreparedDemuxSeekIntent,
+};
 use super::prepared_seek::{
     SEEK_LANDING_BACKEND_REVISION_UNTRACKED, SEEK_LANDING_FIRST_SCRUB_GENERATION,
     SEEK_LANDING_SOURCE_REVISION_UNTRACKED, seek_landing_generation_token,
@@ -43,6 +46,7 @@ impl PlayerSession {
     pub(super) fn start_adopted_staged_seek(
         &mut self,
         target_position: MediaTime,
+        landing_policy: crate::PreparedDemuxSeekLandingPolicy,
         resume_intent: PlaybackResumeIntent,
         result: media_core::DemuxSeekResult,
     ) -> Result<u64, PlayerError> {
@@ -90,11 +94,15 @@ impl PlayerSession {
             self.pipeline.reset_audio_clock();
         }
         self.accept_demux_seek_result(
-            generation,
-            SeekMode::Accurate,
-            target_position,
-            resume_intent,
-            SeekTargetRetention::ExactPublicRange,
+            AcceptedDemuxSeekIntent::new(
+                generation,
+                SeekMode::Accurate,
+                target_position,
+                landing_policy,
+                resume_intent,
+                SeekTargetRetention::ExactPublicRange,
+                Instant::now(),
+            ),
             result,
         );
         self.seek_runtime
@@ -537,6 +545,7 @@ impl PlayerSession {
         resume_intent: PlaybackResumeIntent,
         timeline_admission: SeekTimelineAdmission,
     ) -> PlayerResult<()> {
+        let public_accepted_at = Instant::now();
         self.reset_playback_window_end_observation();
         if let Some(error) = self.seek_timeline_admission_error(target_position, timeline_admission)
         {
@@ -566,6 +575,7 @@ impl PlayerSession {
                 return Ok(());
             }
         };
+        let prepared_seek_failure_disposition = PreparedDemuxSeekFailureDisposition::capture(self);
 
         // Новая seek transaction полностью заменяет любой оставшийся SeekLanding route.
         // Особенно это важно после EndScrub на worker-receipted media: live preview владеет
@@ -587,6 +597,14 @@ impl PlayerSession {
         self.set_playback_state(PlaybackState::Seeking);
         let generation = self.pipeline.begin_seek_generation();
         let has_video = self.pipeline.has_selected_video_track();
+        info!(
+            kind = "seek_acceptance",
+            target_ms = target_duration.as_millis(),
+            generation,
+            seek_mode = ?seek_mode,
+            resume_intent = ?resume_intent,
+            "Public final seek accepted"
+        );
 
         self.pipeline.clear_pending_packets_for_seek();
         self.pipeline.reset_decoder_state_for_seek(has_video);
@@ -636,9 +654,11 @@ impl PlayerSession {
                 seek_mode,
                 resume_intent,
                 target_retention,
+                public_accepted_at,
+                failure_disposition: prepared_seek_failure_disposition,
             },
         ) {
-            Ok(true) => {
+            Ok(PreparedDemuxSeekEnqueueRoute::WorkerAccepted) => {
                 debug!(
                     kind = "seek",
                     target_ms = target_duration.as_millis(),
@@ -648,9 +668,9 @@ impl PlayerSession {
                 );
                 return Ok(());
             }
-            Ok(false) => {}
-            Err(error) => {
-                self.fail_started_demux_seek(error);
+            Ok(PreparedDemuxSeekEnqueueRoute::Synchronous) => {}
+            Err(failure) => {
+                self.settle_prepared_demux_seek_enqueue_failure(failure);
                 return Ok(());
             }
         }
@@ -675,11 +695,15 @@ impl PlayerSession {
         match seek_result {
             Ok(result) => {
                 self.accept_demux_seek_result(
-                    generation,
-                    seek_mode,
-                    target_position,
-                    resume_intent,
-                    target_retention,
+                    AcceptedDemuxSeekIntent::new(
+                        generation,
+                        seek_mode,
+                        target_position,
+                        crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+                        resume_intent,
+                        target_retention,
+                        public_accepted_at,
+                    ),
                     result,
                 );
                 Ok(())
@@ -695,34 +719,22 @@ impl PlayerSession {
     /// Принимает authoritative synchronous либо worker-receipted demux anchor.
     pub(super) fn accept_demux_seek_result(
         &mut self,
-        generation: u64,
-        seek_mode: SeekMode,
-        target_position: MediaTime,
-        resume_intent: PlaybackResumeIntent,
-        target_retention: SeekTargetRetention,
+        intent: AcceptedDemuxSeekIntent,
         result: media_core::DemuxSeekResult,
     ) {
-        debug!(
+        info!(
             kind = "seek",
-            target_ms = target_position.as_duration().as_millis(),
+            target_ms = intent.target_position().as_duration().as_millis(),
             actual_ms = result.actual_position.as_duration().as_millis(),
             actual_track_timestamp = ?result.actual_track_timestamp,
-            generation,
+            generation = intent.generation(),
             pipeline_generation = self.pipeline.seek_generation(),
             selected_video_track_id = ?self.pipeline.selected_video_track_id(),
             selected_audio_track_id = ?self.pipeline.selected_audio_track_id(),
             "Demux seek transaction accepted"
         );
-        self.seek_runtime.begin_trace(generation);
-        let seek_commit = SeekCommitState {
-            generation,
-            seek_mode,
-            target_position,
-            actual_position: result.actual_position,
-            started_at: Instant::now(),
-            resume_intent,
-            target_retention,
-        };
+        self.seek_runtime.begin_trace(intent.generation());
+        let seek_commit = intent.into_seek_commit(result.actual_position, Instant::now());
         self.reanchor_clocks_after_seek_accept(seek_commit);
         self.seek_runtime.set_active_commit(seek_commit);
         if let Err(error) = self.apply_decoder_output_floor_for_seek(seek_commit) {

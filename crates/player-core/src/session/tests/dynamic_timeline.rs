@@ -171,7 +171,10 @@ fn play_seeks_to_fresh_live_edge_when_paused_position_expired() {
     let erased_port: Arc<dyn PreparedDemuxSeekPort> = prepared_seek_port.clone();
     session
         .prepared_demux_seek
-        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased_port });
+        .install(PreparedDemuxSeekMode::WorkerReceipted {
+            port: erased_port,
+            landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+        });
 
     let fresh_availability =
         TimelineRange::new(MediaTime::from_secs(70), MediaTime::from_secs(110))
@@ -316,7 +319,10 @@ fn live_recovery_expiry_before_worker_receipt_returns_to_paused() {
     let erased_port: Arc<dyn PreparedDemuxSeekPort> = prepared_seek_port.clone();
     session
         .prepared_demux_seek
-        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased_port });
+        .install(PreparedDemuxSeekMode::WorkerReceipted {
+            port: erased_port,
+            landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+        });
 
     let recovery_availability =
         TimelineRange::new(MediaTime::from_secs(70), MediaTime::from_secs(110))

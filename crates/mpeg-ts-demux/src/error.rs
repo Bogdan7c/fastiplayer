@@ -15,6 +15,13 @@ pub enum MpegTsDemuxError {
     /// Cooperative cancellation подтверждён shared token-ом.
     #[error("MPEG-TS операция отменена")]
     Cancelled,
+    /// Transactional owner физически прервал body read; parser state нельзя продолжать.
+    #[error("MPEG-TS restartable source read interrupted")]
+    RestartableReadInterrupted {
+        /// Neutral source marker остаётся доступным HLS без знания MPEG-TS internals.
+        #[source]
+        source: demux_api::OrderedResourceRestartableReadInterrupted,
+    },
     /// 192-byte M2TS намеренно не входит в доказанный профиль.
     #[error("192-byte M2TS framing не поддерживается; требуется 188-byte MPEG-TS")]
     UnsupportedM2ts,

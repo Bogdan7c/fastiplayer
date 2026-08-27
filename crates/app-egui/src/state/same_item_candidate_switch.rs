@@ -260,6 +260,7 @@ impl AppState {
             },
             ActiveMediaSource::LocalFile(_)
             | ActiveMediaSource::DirectMediaUrl(_)
+            | ActiveMediaSource::NativeHlsUrl { .. }
             | ActiveMediaSource::PlaybackWindow { .. } => {
                 return Err(SameItemSwitchError::UnsupportedSource);
             }
@@ -465,7 +466,7 @@ impl ActiveMediaSource {
                 ..
             } => Some(stream_configuration),
             Self::PlaybackWindow { source, .. } => source.yt_dlp_stream_configuration(),
-            Self::LocalFile(_) | Self::DirectMediaUrl(_) => None,
+            Self::LocalFile(_) | Self::DirectMediaUrl(_) | Self::NativeHlsUrl { .. } => None,
         }
     }
 

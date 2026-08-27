@@ -352,6 +352,72 @@ fn enqueue_win_requires_exact_installed_and_commits_new_lineage_once() {
 }
 
 #[test]
+fn authoritative_install_receipt_commits_matching_stable_playback_intent() {
+    let mut controller = PlaylistController::new();
+    let item_id = append_ids(&mut controller, 1)[0];
+    reserve_existing(&mut controller, 33, 43, item_id);
+    controller
+        .begin_authorization_dispatch(request_id(33))
+        .expect("authorization dispatch begins");
+    controller
+        .resolve_authorization_dispatch(
+            request_id(33),
+            AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
+        )
+        .expect("authorization resolution");
+
+    controller
+        .on_installed_with_playback_intent(
+            request_id(33),
+            player_request_id(43),
+            media_instance_id(53),
+            PlaylistBindingGeneration(6),
+            InstalledPlaybackIntentCompletion::Authoritative(StablePlaybackIntent::Playing),
+        )
+        .expect("matching authoritative intent commits");
+
+    assert_eq!(
+        controller.stable_playback_intent(),
+        StablePlaybackIntent::Playing
+    );
+}
+
+#[test]
+fn newer_user_intent_revision_wins_over_late_install_completion() {
+    let mut controller = PlaylistController::new();
+    let item_id = append_ids(&mut controller, 1)[0];
+    reserve_existing(&mut controller, 34, 44, item_id);
+    controller
+        .begin_authorization_dispatch(request_id(34))
+        .expect("authorization dispatch begins");
+    controller
+        .resolve_authorization_dispatch(
+            request_id(34),
+            AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
+        )
+        .expect("authorization resolution");
+    controller
+        .record_stable_transport_intent(StablePlaybackIntent::Paused, TransportActionOrigin::Ui)
+        .expect("newer user intent accepted");
+
+    controller
+        .on_installed_with_playback_intent(
+            request_id(34),
+            player_request_id(44),
+            media_instance_id(54),
+            PlaylistBindingGeneration(6),
+            InstalledPlaybackIntentCompletion::Authoritative(StablePlaybackIntent::Playing),
+        )
+        .expect("late install still commits media lineage");
+
+    assert_eq!(
+        controller.stable_playback_intent(),
+        StablePlaybackIntent::Paused,
+        "late startup autoplay не должен перетирать более новую Pause"
+    );
+}
+
+#[test]
 fn replacement_ids_and_rows_stay_private_until_exact_installed_commit() {
     let mut controller = PlaylistController::new();
     let old_item = append_ids(&mut controller, 1)[0];

@@ -36,7 +36,9 @@ mod commit;
 mod position;
 /// Installed result пересекает commit boundary, внутренний staged state остаётся private.
 /// Re-export сохраняет существующий session-local путь без public API.
-pub(super) use position::{InstalledStagedPosition, InstalledStagedPositionOutcome};
+pub(super) use position::{
+    InstalledStagedPosition, InstalledStagedPositionOrigin, InstalledStagedPositionOutcome,
+};
 use position::{StagedPositionCommit, StagedPositionPreparation};
 
 /// Единственный request, удерживаемый player owner-ом между preparation и terminal.
@@ -426,7 +428,41 @@ impl PlayerSession {
             },
         );
 
-        let protocol = MediaInstallProtocol::accept(request_id, install_port);
+        let mut protocol = MediaInstallProtocol::accept(request_id, install_port);
+        let prepared_initial_position = prepared_media.prepared_initial_position();
+        let initial_position_error = prepared_initial_position
+            .validate()
+            .err()
+            .map(|error| {
+                PlayerError::new(
+                    PlayerErrorKind::SeekUnavailable,
+                    format!("invalid prepared initial position: {error}"),
+                )
+            })
+            .or_else(|| {
+                (position_preparation
+                    != MediaInstallPositionPreparation::NotRequired
+                    && !matches!(
+                        prepared_initial_position,
+                        crate::PreparedInitialPosition::Beginning
+                    ))
+                .then(|| {
+                    PlayerError::new(
+                        PlayerErrorKind::InvalidCommand,
+                        "prepared initial position conflicts with same-lineage position preparation",
+                    )
+                })
+            });
+        if let Some(error) = initial_position_error {
+            protocol.complete_failed(MediaInstallFailure::new(
+                MediaInstallFailureStage::PositionPreparation,
+                error,
+            ));
+            self.playback_intent_control
+                .forget_staged_request(request_id);
+            self.staged_media_install.last_terminal_request_id = Some(request_id);
+            return;
+        }
         let video_planning_mode = if video_resource_port.is_some() {
             StagedVideoPlanningMode::ExactBackendRequired
         } else {
@@ -435,7 +471,6 @@ impl PlayerSession {
         let audio_plan = match plan_staged_audio_track(prepared_media.tracks()) {
             Ok(audio_plan) => audio_plan,
             Err(error) => {
-                let mut protocol = protocol;
                 protocol.complete_failed(MediaInstallFailure::new(
                     MediaInstallFailureStage::AudioTrackPlanning,
                     error,
@@ -447,7 +482,6 @@ impl PlayerSession {
             }
         };
         if self.is_shutdown_requested() {
-            let mut protocol = protocol;
             protocol.complete_failed(MediaInstallFailure::new(
                 MediaInstallFailureStage::OpenTransition,
                 PlayerError::new(

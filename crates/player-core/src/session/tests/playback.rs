@@ -241,6 +241,22 @@ fn audio_only_autoplay_waits_for_decoder_output_and_buffer() {
     assert!(session.finish_autoplay_preroll_if_ready(50.0).unwrap());
     assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
     assert_eq!(audio_output_handle.play_count.load(Ordering::Relaxed), 1);
+    let events = session.take_events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, PlayerEvent::AudioPlaybackResumed))
+            .count(),
+        1
+    );
+
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    assert!(
+        !session
+            .take_events()
+            .contains(&PlayerEvent::AudioPlaybackResumed),
+        "повторный Play уже запущенного output-а не должен дублировать one-shot resume"
+    );
 }
 
 #[test]
@@ -303,6 +319,12 @@ fn video_only_autoplay_keeps_present_frame_gate() {
 
     assert!(session.finish_autoplay_preroll_if_ready(50.0).unwrap());
     assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+    assert!(session.take_events().iter().all(|event| {
+        !matches!(
+            event,
+            PlayerEvent::AudioOutputReady | PlayerEvent::AudioPlaybackResumed
+        )
+    }));
 }
 
 #[test]

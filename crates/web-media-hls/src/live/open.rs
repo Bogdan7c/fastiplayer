@@ -33,14 +33,15 @@ use crate::open::{
 };
 use crate::plan::{HlsComponentPlan, HlsPlanError, build_segment_scoped_component_plan};
 use crate::{
-    HlsAudioLayoutIntent, HlsLiveOpenRequest, HlsManifestInput, HlsRequiredContainer,
-    HlsSubtitleRenditionDescriptor, HlsVodOpenRequest,
+    HlsAudioLayoutIntent, HlsInitialReadinessCapability, HlsLiveOpenRequest, HlsManifestInput,
+    HlsRequiredContainer, HlsSubtitleRenditionDescriptor, HlsVodOpenRequest,
 };
 
 /// Неустановленный live runtime и neutral S31L port.
 pub struct HlsLiveOpenResult {
     demuxer: Box<dyn Demuxer + Send>,
     async_seek_handle: Option<ProgressiveAsyncSeekHandle>,
+    initial_readiness: HlsInitialReadinessCapability,
     timeline_port: DynamicMediaTimelinePort,
     subtitles: Box<[HlsSubtitleRenditionDescriptor]>,
 }
@@ -49,6 +50,12 @@ impl HlsLiveOpenResult {
     /// Возвращает worker receipt boundary для receipted live preparation.
     pub fn async_seek_handle(&self) -> Option<ProgressiveAsyncSeekHandle> {
         self.async_seek_handle.clone()
+    }
+
+    /// Возвращает non-consuming initial-readiness capability до type erasure.
+    #[must_use]
+    pub fn initial_readiness(&self) -> HlsInitialReadinessCapability {
+        self.initial_readiness.clone()
     }
 
     pub fn into_demuxer(self) -> Box<dyn Demuxer + Send> {
@@ -77,6 +84,7 @@ impl std::fmt::Debug for HlsLiveOpenResult {
             .field("tracks", &self.demuxer.tracks().len())
             .field("duration", &Option::<Duration>::None)
             .field("subtitles", &self.subtitles.len())
+            .field("initial_readiness", &self.initial_readiness)
             .finish_non_exhaustive()
     }
 }
@@ -228,6 +236,7 @@ fn prepare_hls_live_with_catalog(
             fatal,
         }),
         async_seek_handle: None,
+        initial_readiness: HlsInitialReadinessCapability::AlreadySynchronous,
         timeline_port,
         subtitles,
     })
@@ -279,9 +288,12 @@ fn prepare_hls_live_receipted_with_catalog(
         asynchronous_seek_limits,
     )?;
     let async_seek_handle = progressive.async_seek_handle();
+    let initial_readiness =
+        HlsInitialReadinessCapability::Progressive(progressive.readiness_port());
     Ok(HlsLiveOpenResult {
         demuxer: Box::new(progressive),
         async_seek_handle,
+        initial_readiness,
         timeline_port,
         subtitles,
     })

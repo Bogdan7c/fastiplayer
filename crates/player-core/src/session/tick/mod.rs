@@ -100,6 +100,35 @@ impl PlayerSession {
         }
         // Tick публикует clock sample, но не владеет lifecycle re-anchor-ом.
         self.publish_clock_sample(playback_position);
+        if let Some(progress_evidence) = self
+            .seek_runtime
+            .observe_post_commit_position_progress(playback_position, now)
+        {
+            tracing::info!(
+                kind = "seek_acceptance",
+                generation = progress_evidence.generation(),
+                media_instance_id = self
+                    .snapshot
+                    .media_instance_id
+                    .map(|identity| identity.get()),
+                target_ms = progress_evidence.target_position().as_millis(),
+                committed_ms = progress_evidence.committed_position().as_millis(),
+                position_ms = progress_evidence.observed_position().as_millis(),
+                progress_delta_ms = progress_evidence
+                    .observed_position()
+                    .saturating_sub(progress_evidence.committed_position())
+                    .as_millis(),
+                progress_delta_us = progress_evidence
+                    .observed_position()
+                    .saturating_sub(progress_evidence.committed_position())
+                    .as_micros(),
+                seek_elapsed_ms = progress_evidence.public_elapsed().as_millis(),
+                public_to_progress_ms = progress_evidence.public_elapsed().as_millis(),
+                receipt_to_progress_ms = progress_evidence.receipt_elapsed().as_millis(),
+                commit_to_progress_ms = progress_evidence.commit_elapsed().as_millis(),
+                "Post-seek position progress observed"
+            );
+        }
     }
 }
 

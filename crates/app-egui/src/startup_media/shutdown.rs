@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 
 use tracing::warn;
 
-use super::{DirectMediaStartupJob, StartupMediaController, YtDlpStartupJob};
+use super::{DirectMediaStartupJob, NativeHlsStartupJob, StartupMediaController, YtDlpStartupJob};
 use crate::process_shutdown::{
     FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_thread_until,
 };
@@ -41,6 +41,25 @@ impl Drop for DirectMediaStartupJob {
     }
 }
 
+impl NativeHlsStartupJob {
+    fn shutdown_until(&mut self, deadline: ShutdownDeadline) -> ProcessOwnerShutdownOutcome {
+        self.cancellation_requested.store(true, Ordering::Release);
+        self.source_cancellation.cancel();
+        shutdown_single_thread(&mut self.join_handle, deadline)
+    }
+}
+
+impl Drop for NativeHlsStartupJob {
+    fn drop(&mut self) {
+        self.cancellation_requested.store(true, Ordering::Release);
+        // После успешного join transport token уже принадлежит переданному
+        // demux runtime. Обычный Drop completed startup owner-а не имеет права
+        // отменять установленное media; explicit shutdown выше по-прежнему
+        // cancel-ит token до bounded join активного opener-а.
+        join_startup_thread_on_fail_safe_drop(&mut self.join_handle, "Native HLS startup opener");
+    }
+}
+
 impl StartupMediaController {
     /// Закрывает admission и bounded-завершает все принадлежащие startup jobs.
     pub(crate) fn shutdown_until(
@@ -63,6 +82,10 @@ impl StartupMediaController {
         if let Some(job) = self.direct_media_startup_job.as_ref() {
             job.cancellation_requested.store(true, Ordering::Release);
         }
+        if let Some(job) = self.native_hls_startup_job.as_ref() {
+            job.cancellation_requested.store(true, Ordering::Release);
+            job.source_cancellation.cancel();
+        }
 
         let mut panicked_threads = 0;
         let mut pending_threads = 0;
@@ -84,6 +107,16 @@ impl StartupMediaController {
             );
             if job.join_handle.is_none() {
                 self.direct_media_startup_job = None;
+            }
+        }
+        if let Some(job) = self.native_hls_startup_job.as_mut() {
+            accumulate_shutdown_outcome(
+                job.shutdown_until(deadline),
+                &mut panicked_threads,
+                &mut pending_threads,
+            );
+            if job.join_handle.is_none() {
+                self.native_hls_startup_job = None;
             }
         }
         if let Some(job) = self.local_startup_job.as_mut() {
@@ -131,6 +164,7 @@ impl StartupMediaController {
         }
         if self.yt_dlp_startup_job.is_some()
             || self.direct_media_startup_job.is_some()
+            || self.native_hls_startup_job.is_some()
             || self.local_startup_job.is_some()
         {
             return Some(

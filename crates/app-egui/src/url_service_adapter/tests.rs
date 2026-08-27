@@ -38,6 +38,50 @@ fn direct_signed_url_keeps_exact_identity() {
 }
 
 #[test]
+fn m3u8_hint_builds_native_admission_with_one_typed_fallback() {
+    let exact_url = "https://cdn.example.test/master.m3u8?signature=native-secret";
+    let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
+        panic!("m3u8 hint должен выбрать native admission adapter");
+    };
+    assert_eq!(persistence_identity(&locator), exact_url);
+
+    let request = locator
+        .into_media_open_source_request(
+            &AppConfig::default(),
+            &SystemCapabilities::empty(1),
+            audio::AudioDecodeCapabilitySnapshot::empty(),
+        )
+        .expect("native request");
+    assert!(matches!(
+        request,
+        crate::media_open::MediaOpenSourceRequest::NativeHls {
+            intent: crate::media_open::NativeHlsOpenIntent::InitialWithYtDlpFallback { .. },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn m3u8_text_outside_url_path_remains_generic() {
+    let StartupUrlClassification::Supported(locator) =
+        classify_startup_url("https://example.test/watch?next=movie.m3u8")
+    else {
+        panic!("generic HTTP URL должен остаться поддержан");
+    };
+    let request = locator
+        .into_media_open_source_request(
+            &AppConfig::default(),
+            &SystemCapabilities::empty(1),
+            audio::AudioDecodeCapabilitySnapshot::empty(),
+        )
+        .expect("generic request");
+    assert!(matches!(
+        request,
+        crate::media_open::MediaOpenSourceRequest::YtDlp { .. }
+    ));
+}
+
+#[test]
 fn playlist_locator_reopens_through_same_service_registry() {
     let domain_locator =
         SecretUrlLocator::from_reopenable_url("https://youtu.be/video-id?si=drop&future=preserve")

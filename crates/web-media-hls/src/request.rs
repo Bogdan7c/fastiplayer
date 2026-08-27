@@ -9,7 +9,7 @@ use demux_api::{
 use hls_playlist_core::HlsParserLimits;
 use media_core::{DemuxRetryHint, DynamicMediaTimelineEpoch, DynamicMediaTimelinePortGeneration};
 use source_core::HttpRequestTarget;
-use web_media_adaptive::AdaptiveHttpContext;
+use web_media_adaptive::{AdaptiveFetchedResource, AdaptiveHttpContext};
 use web_media_transport_api::SourceGeneration;
 use zeroize::Zeroizing;
 
@@ -29,6 +29,8 @@ pub enum HlsManifestInput {
         /// Secret-safe owned manifest bytes.
         playlist: SecretInlineMediaPlaylist,
     },
+    /// HTTP owner уже выполнил единственный bounded top-level fetch.
+    FetchedTop(HlsFetchedTopManifest),
 }
 
 impl HlsManifestInput {
@@ -36,6 +38,7 @@ impl HlsManifestInput {
     pub const fn selected_url(&self) -> &HttpRequestTarget {
         match self {
             Self::Fetch { selected_url } | Self::InlineMedia { selected_url, .. } => selected_url,
+            Self::FetchedTop(manifest) => manifest.selected_url(),
         }
     }
 }
@@ -55,7 +58,111 @@ impl fmt::Debug for HlsManifestInput {
                 .field("selected_url", selected_url)
                 .field("playlist", playlist)
                 .finish(),
+            Self::FetchedTop(manifest) => formatter
+                .debug_tuple("HlsManifestInput::FetchedTop")
+                .field(manifest)
+                .finish(),
         }
+    }
+}
+
+/// Top manifest, который уже получен bounded adaptive HTTP owner-ом.
+pub struct HlsFetchedTopManifest {
+    selected_url: HttpRequestTarget,
+    effective_url: HttpRequestTarget,
+    playlist: SecretFetchedTopPlaylist,
+    provenance: HlsFetchedManifestProvenance,
+}
+
+impl HlsFetchedTopManifest {
+    /// Передаёт HLS owner-у bounded body и effective redirect base без копирования body.
+    #[must_use]
+    pub fn new(
+        selected_url: HttpRequestTarget,
+        fetched: AdaptiveFetchedResource,
+        http: &AdaptiveHttpContext,
+    ) -> Self {
+        let effective_url = fetched.final_target().clone();
+        Self {
+            selected_url,
+            effective_url,
+            playlist: SecretFetchedTopPlaylist::new(fetched.into_bytes()),
+            provenance: HlsFetchedManifestProvenance::new(http.source_generation()),
+        }
+    }
+
+    /// Возвращает исходный selected URL без раскрытия query material.
+    #[must_use]
+    pub const fn selected_url(&self) -> &HttpRequestTarget {
+        &self.selected_url
+    }
+
+    pub(crate) const fn effective_url(&self) -> &HttpRequestTarget {
+        &self.effective_url
+    }
+
+    pub(crate) fn playlist_bytes(&self) -> &[u8] {
+        self.playlist.as_bytes()
+    }
+
+    pub(crate) const fn source_generation(&self) -> SourceGeneration {
+        self.provenance.generation()
+    }
+}
+
+impl fmt::Debug for HlsFetchedTopManifest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HlsFetchedTopManifest")
+            .field("selected_url", &self.selected_url)
+            .field("effective_url", &self.effective_url)
+            .field("playlist", &self.playlist)
+            .field("provenance", &self.provenance)
+            .finish()
+    }
+}
+
+/// Secret-free proof того, что fetched bytes принадлежат exact source generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HlsFetchedManifestProvenance {
+    generation: SourceGeneration,
+}
+
+impl HlsFetchedManifestProvenance {
+    /// Фиксирует generation после успешного validated fetch-а.
+    #[must_use]
+    const fn new(generation: SourceGeneration) -> Self {
+        Self { generation }
+    }
+
+    /// Возвращает generation только для stale-fence проверки HLS owner-ом.
+    #[must_use]
+    pub(crate) const fn generation(self) -> SourceGeneration {
+        self.generation
+    }
+}
+
+/// Уже загруженный top manifest, обнуляемый при уничтожении и не печатающий bytes.
+struct SecretFetchedTopPlaylist(Zeroizing<Vec<u8>>);
+
+impl SecretFetchedTopPlaylist {
+    /// Принимает владение bounded response body без дополнительного большого копирования.
+    #[must_use]
+    fn new(playlist: Vec<u8>) -> Self {
+        Self(Zeroizing::new(playlist))
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretFetchedTopPlaylist {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecretFetchedTopPlaylist")
+            .field("bytes", &self.0.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -156,9 +263,28 @@ pub struct HlsComponentContainerIntent {
     pub alternate_audio: Option<HlsContainerEvidence>,
 }
 
+/// Определяет, какой manifest segment HLS VOD вправе открыть до доказательства seek landing-а.
+///
+/// Policy принадлежит HLS boundary, потому что после выбора segment-а player уже не может
+/// восстановить пропущенный containing segment и прежнюю decode-forward семантику.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HlsVodSeekLandingPolicy {
+    /// Legacy/default: начать с containing либо предыдущего segment-а и декодировать до target-а.
+    #[default]
+    DecodeFromOrBeforeTarget,
+    /// Native VOD opt-in: сначала попробовать ближайший настоящий video RAP после target-а.
+    ///
+    /// Если post-target candidate отсутствует или не доказывается в bounded budget, HLS
+    /// сохраняет decode-forward fallback. Для audio-only потока эквивалентом RAP служит
+    /// первый доказанный audio anchor не раньше target-а.
+    PreferPostTargetRap,
+}
+
 /// Caller-owned bounds и backend policies; HLS runtime ничего не хардкодит.
 #[derive(Debug, Clone, Copy)]
 pub struct HlsVodOpenPolicy {
+    /// Manifest/RAP landing policy, доступная до первого media-segment request-а.
+    pub seek_landing_policy: HlsVodSeekLandingPolicy,
     /// Shared bounded parser policy.
     pub parser_limits: HlsParserLimits,
     /// Registry sniff/replay bounds.
@@ -197,6 +323,15 @@ pub struct HlsVodOpenRequest {
     pub demux_registry: Arc<DemuxRegistry>,
     /// Explicit parser/demux/backpressure policy.
     pub policy: HlsVodOpenPolicy,
+}
+
+impl HlsVodOpenRequest {
+    /// Явно включает HLS-owned landing policy до content probe и manifest segment selection.
+    #[must_use]
+    pub fn with_seek_landing_policy(mut self, policy: HlsVodSeekLandingPolicy) -> Self {
+        self.policy.seek_landing_policy = policy;
+        self
+    }
 }
 
 /// Причина app-owned fresh endpoint extraction без URL/status payload.

@@ -279,16 +279,30 @@ pub(super) fn run_seek_fast_preroll_catch_up(
         }
     }
 
-    debug!(
-        passes,
-        demux_budget_packets_read,
-        decoded_frames_drained,
-        packets_sent,
-        elapsed_ms = started_at.elapsed().as_millis(),
-        deadline_reached = catch_up_deadline_reached(Some(deadline)),
-        target_ready = !seek_fast_preroll_active(session, tick_config),
-        "Active accurate seek fast-preroll catch-up pass completed"
-    );
+    let deadline_reached = catch_up_deadline_reached(Some(deadline));
+    let target_ready = !seek_fast_preroll_active(session, tick_config);
+    if demux_budget_packets_read > 0
+        || decoded_frames_drained > 0
+        || packets_sent > 0
+        || deadline_reached
+        || target_ready
+    {
+        debug!(
+            passes,
+            demux_budget_packets_read,
+            decoded_frames_drained,
+            packets_sent,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            deadline_reached,
+            target_ready,
+            "Active accurate seek fast-preroll catch-up pass completed"
+        );
+    } else {
+        trace!(
+            passes,
+            "Active accurate seek fast-preroll catch-up pass yielded no progress"
+        );
+    }
 
     true
 }

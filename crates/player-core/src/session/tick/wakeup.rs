@@ -181,7 +181,7 @@ impl PlayerSession {
                 frame_timing,
                 decoder_activity_status.can_wait_for_activity(),
             );
-            return prefer_earlier_demux_retry(self, now, existing_plan);
+            return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
         }
 
         if let Some(front_frame_delay) = front_frame_delay {
@@ -193,7 +193,7 @@ impl PlayerSession {
                     WorkerWakeupReason::PipelineWorkReady,
                     frame_timing,
                 );
-                return prefer_earlier_demux_retry(self, now, existing_plan);
+                return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
             }
 
             let existing_plan = PlayerWorkerWakeupPlan::after(
@@ -201,7 +201,7 @@ impl PlayerSession {
                 WorkerWakeupReason::FramePtsDeadline,
                 frame_timing,
             );
-            return prefer_earlier_demux_retry(self, now, existing_plan);
+            return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
         }
 
         if let Some(audio_refill_delay) = audio_refill_delay {
@@ -210,7 +210,7 @@ impl PlayerSession {
                 WorkerWakeupReason::PipelineWorkReady,
                 frame_timing,
             );
-            return prefer_earlier_demux_retry(self, now, existing_plan);
+            return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
         }
 
         if seek_transition_needs_progress(self) {
@@ -219,7 +219,7 @@ impl PlayerSession {
                 WorkerWakeupReason::SeekOrPreroll,
                 frame_timing,
             );
-            return prefer_earlier_demux_retry(self, now, existing_plan);
+            return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
         }
 
         if self.eof_drain_needs_progress() {
@@ -228,7 +228,7 @@ impl PlayerSession {
                 WorkerWakeupReason::CoarseProgress,
                 frame_timing,
             );
-            return prefer_earlier_demux_retry(self, now, existing_plan);
+            return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
         }
 
         if active_pipeline_needs_coarse_progress(self) {
@@ -237,22 +237,29 @@ impl PlayerSession {
                 WorkerWakeupReason::CoarseProgress,
                 frame_timing,
             );
-            return prefer_earlier_demux_retry(self, now, existing_plan);
+            return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
         }
 
-        prefer_earlier_demux_retry(self, now, PlayerWorkerWakeupPlan::idle())
+        prefer_earlier_demux_retry(self, tick_config, now, PlayerWorkerWakeupPlan::idle())
     }
 }
 
-/// Выбирает demux deadline только когда он строго раньше existing work.
+/// Выбирает runnable demux deadline только когда он строго раньше existing work.
+///
+/// Истёкший retry остаётся установленным, пока downstream capacity не разрешит
+/// следующий demux read. Иначе zero-delay deadline крутил бы worker без работы.
 pub(super) fn prefer_earlier_demux_retry(
     session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
     now: Instant,
     existing_plan: PlayerWorkerWakeupPlan,
 ) -> PlayerWorkerWakeupPlan {
     let Some(retry_delay) = session.installed_demux_retry_delay(now) else {
         return prefer_earlier_staged_preflight(session, now, existing_plan);
     };
+    if retry_delay.is_zero() && !demux_work_available(session, tick_config, now) {
+        return prefer_earlier_staged_preflight(session, now, existing_plan);
+    }
     if existing_plan
         .delay
         .is_some_and(|delay| delay <= retry_delay)

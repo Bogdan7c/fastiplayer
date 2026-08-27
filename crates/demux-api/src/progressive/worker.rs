@@ -2,9 +2,13 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
-use media_core::{DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer};
+use media_core::{
+    DemuxActiveReadInterruptionCapability, DemuxReadEvent, DemuxSeekCancellationToken,
+    DemuxSeekRequest, DemuxSeekResult, Demuxer,
+};
 use source_core::CancellationToken;
 
 use super::{
@@ -38,7 +42,7 @@ pub(super) struct ProgressiveMessageEnvelope {
 }
 
 /// Latest-only seek command из player-owner в blocking worker.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) enum ProgressiveSeekCommand {
     /// Legacy path уже синхронно отдал caller-у доказанный preview.
     Previewed {
@@ -57,22 +61,32 @@ pub(super) enum ProgressiveSeekCommand {
         request: DemuxSeekRequest,
         /// Stable caller identity и runtime fence.
         fence: ProgressiveSeekFence,
+        /// Newer accepted request отменяет blocking transport этого seek-а.
+        cancellation: DemuxSeekCancellationToken,
     },
 }
 
 impl ProgressiveSeekCommand {
     /// Возвращает generation, принадлежащую command-у.
-    pub(super) const fn generation(self) -> u64 {
+    pub(super) const fn generation(&self) -> u64 {
         match self {
-            Self::Previewed { generation, .. } | Self::Receipted { generation, .. } => generation,
+            Self::Previewed { generation, .. } | Self::Receipted { generation, .. } => *generation,
         }
     }
 
     /// Возвращает fence только для receipted path-а.
-    pub(super) const fn receipt_fence(self) -> Option<ProgressiveSeekFence> {
+    pub(super) const fn receipt_fence(&self) -> Option<ProgressiveSeekFence> {
         match self {
             Self::Previewed { .. } => None,
-            Self::Receipted { fence, .. } => Some(fence),
+            Self::Receipted { fence, .. } => Some(*fence),
+        }
+    }
+
+    /// Возвращает request-scoped cancellation только receipted command-а.
+    pub(super) fn cancellation(&self) -> Option<DemuxSeekCancellationToken> {
+        match self {
+            Self::Previewed { .. } => None,
+            Self::Receipted { cancellation, .. } => Some(cancellation.clone()),
         }
     }
 }
@@ -125,6 +139,10 @@ pub(super) struct ProgressiveQueueState {
     pub(super) pending_seek: Option<ProgressiveSeekCommand>,
     /// Fence command-а, который worker уже вынул из pending slot-а.
     pub(super) in_flight_receipt: Option<ProgressiveSeekFence>,
+    /// Token принадлежит только выполняющемуся request-у и очищается после terminal receipt.
+    pub(super) active_seek_cancellation: Option<DemuxSeekCancellationToken>,
+    /// Stable owner port текущего physical read-а либо explicit unsupported capability.
+    pub(super) active_read_interruption: DemuxActiveReadInterruptionCapability,
     /// Optional receipt capability; legacy constructors оставляют её absent.
     pub(super) async_seek: Option<ProgressiveAsyncSeekState>,
 }
@@ -137,6 +155,10 @@ pub(super) struct ProgressiveSharedState {
     queue: Mutex<ProgressiveQueueState>,
     /// Consumer pop/drop будит producer без busy loop-а.
     pub(super) capacity_available: Condvar,
+    /// Producer publish/terminal state будит readiness consumer-а без polling.
+    pub(super) message_available: Condvar,
+    /// Только synchronous `CancellationFuture::poll` wake отмечает owner queue mutex-а.
+    readiness_poll_owner: Mutex<Option<ThreadId>>,
 }
 
 /// RAII-предохранитель публикует terminal worker state даже при panic backend-а.
@@ -200,10 +222,46 @@ impl ProgressiveSharedState {
                 current_generation: 0,
                 pending_seek: None,
                 in_flight_receipt: None,
+                active_seek_cancellation: None,
+                active_read_interruption: DemuxActiveReadInterruptionCapability::Unsupported,
                 async_seek,
             }),
             capacity_available: Condvar::new(),
+            message_available: Condvar::new(),
+            readiness_poll_owner: Mutex::new(None),
         }
+    }
+
+    /// Отмечает единственный queue-serialized poll для deadlock-free synchronous wake-а.
+    pub(super) fn begin_readiness_cancellation_poll(&self) {
+        *self
+            .readiness_poll_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(thread::current().id());
+    }
+
+    /// Очищает transient owner до atomic Condvar unlock+wait.
+    pub(super) fn finish_readiness_cancellation_poll(&self) {
+        *self
+            .readiness_poll_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// Waker не пытается рекурсивно взять queue mutex только во время synchronous poll wake-а.
+    pub(super) fn readiness_poll_is_owned_by_current_thread(&self) -> bool {
+        self.readiness_poll_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some_and(|owner| owner == thread::current().id())
+    }
+
+    /// Устанавливает stable demux-owned controller до первого physical read-а.
+    pub(super) fn install_active_read_interruption(
+        &self,
+        capability: DemuxActiveReadInterruptionCapability,
+    ) {
+        self.lock_queue().active_read_interruption = capability;
     }
 
     /// Poison означает internal invariant failure; восстанавливаем owned state для shutdown.
@@ -280,7 +338,15 @@ pub(super) fn run_seekable_progressive_worker(
         let seek_command = {
             let mut queue = shared.lock_queue();
             let command = queue.pending_seek.take();
-            queue.in_flight_receipt = command.and_then(ProgressiveSeekCommand::receipt_fence);
+            queue.in_flight_receipt = command
+                .as_ref()
+                .and_then(ProgressiveSeekCommand::receipt_fence);
+            if let Some(command_cancellation) = command
+                .as_ref()
+                .and_then(ProgressiveSeekCommand::cancellation)
+            {
+                queue.active_seek_cancellation = Some(command_cancellation);
+            }
             command
         };
         if let Some(command) = seek_command {
@@ -327,19 +393,28 @@ pub(super) fn run_seekable_progressive_worker(
                         }
                     }
                 },
-                ProgressiveSeekCommand::Receipted { request, fence, .. } => {
+                ProgressiveSeekCommand::Receipted {
+                    request,
+                    fence,
+                    cancellation: seek_cancellation,
+                    ..
+                } => {
                     let runtime_is_current = shared
                         .lock_queue()
                         .async_seek
                         .as_ref()
                         .is_some_and(|state| state.runtime_generation == fence.runtime_generation);
-                    let worker_result = if runtime_is_current {
-                        // Receipted command не публикует предварительный anchor: concrete demuxer
-                        // вправе доказать более точную позицию внутри blocking worker-а.
-                        Some(inner.seek_with_receipted_request(request))
-                    } else {
-                        None
-                    };
+                    let worker_result =
+                        if runtime_is_current {
+                            // Receipted command не публикует предварительный anchor: concrete demuxer
+                            // вправе доказать более точную позицию внутри blocking worker-а.
+                            Some(inner.seek_with_cancellable_receipted_request(
+                                request,
+                                seek_cancellation,
+                            ))
+                        } else {
+                            None
+                        };
                     let outcome = receipted_seek_outcome(
                         &shared,
                         &cancellation,
@@ -425,7 +500,13 @@ fn receipted_seek_outcome(
     }
     match worker_result.expect("current runtime всегда выполняет inner seek") {
         Ok(result) => ProgressiveAsyncSeekOutcome::Succeeded(result),
-        Err(_source) => ProgressiveAsyncSeekOutcome::Failed,
+        Err(source) => {
+            tracing::debug!(
+                error = ?source,
+                "Progressive worker receipted seek завершился typed demux failure"
+            );
+            ProgressiveAsyncSeekOutcome::Failed
+        }
     }
 }
 
@@ -448,6 +529,11 @@ fn publish_async_seek_receipt(
     let mut queue = shared.lock_queue();
     if queue.in_flight_receipt == Some(receipt.fence) {
         queue.in_flight_receipt = None;
+        if let Some(cancellation) = queue.active_seek_cancellation.take()
+            && !matches!(receipt.outcome, ProgressiveAsyncSeekOutcome::Succeeded(_))
+        {
+            cancellation.cancel();
+        }
     }
     let Some(async_seek) = queue.async_seek.as_mut() else {
         return;
@@ -516,6 +602,9 @@ pub(super) fn push_progressive_message(
                 generation,
                 message,
             });
+            // Predicate публикуется под queue mutex-ом до notification: readiness waiter
+            // не может увидеть wake без уже доступного current-generation сообщения.
+            shared.message_available.notify_all();
             return if oversized_packet {
                 ProgressivePushOutcome::Stopped
             } else {
@@ -576,7 +665,11 @@ fn mark_worker_stopped(shared: &ProgressiveSharedState) {
     let pending_receipt_fence = queue
         .pending_seek
         .take()
+        .as_ref()
         .and_then(ProgressiveSeekCommand::receipt_fence);
+    if let Some(cancellation) = queue.active_seek_cancellation.take() {
+        cancellation.cancel();
+    }
     let in_flight_receipt_fence = queue.in_flight_receipt.take();
     if let Some(async_seek) = queue.async_seek.as_mut() {
         while let Some(receipt) = async_seek.worker_pending_receipts.pop_front() {
@@ -601,4 +694,5 @@ fn mark_worker_stopped(shared: &ProgressiveSharedState) {
     }
     queue.worker_stopped = true;
     shared.capacity_available.notify_all();
+    shared.message_available.notify_all();
 }

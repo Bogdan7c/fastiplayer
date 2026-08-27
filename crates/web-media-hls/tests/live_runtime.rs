@@ -27,9 +27,9 @@ use support::{
 use web_media_hls::{
     HlsAudioLayoutIntent, HlsComponentContainerIntent, HlsContainerEvidence,
     HlsEndpointRefreshError, HlsEndpointRefreshPort, HlsEndpointRefreshReply,
-    HlsEndpointRefreshRequest, HlsLiveOpenRequest, HlsMainTrackLayoutIntent, HlsManifestInput,
-    HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenRequest,
-    prepare_hls_live, prepare_hls_live_receipted,
+    HlsEndpointRefreshRequest, HlsInitialReadinessCapability, HlsLiveOpenRequest,
+    HlsMainTrackLayoutIntent, HlsManifestInput, HlsRequestOverrides, HlsRequiredContainer,
+    HlsVariantSelectionIntent, HlsVodOpenRequest, prepare_hls_live, prepare_hls_live_receipted,
 };
 use web_media_transport_api::SourceGeneration;
 
@@ -242,6 +242,10 @@ fn segment_expiry_waits_for_atomic_endpoint_replacement_then_recovers() {
         port,
     ))
     .expect("prepare live TS");
+    assert!(matches!(
+        opened.initial_readiness(),
+        HlsInitialReadinessCapability::AlreadySynchronous
+    ));
     let (mut demuxer, _timeline_port, _) = opened.into_parts();
 
     let events = drive_until_recovered(demuxer.as_mut(), &refreshed);
@@ -611,6 +615,10 @@ fn sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired() {
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
     .expect("prepare sliding live");
+    assert!(matches!(
+        opened.initial_readiness(),
+        HlsInitialReadinessCapability::Progressive(_)
+    ));
     let seek_handle = opened.async_seek_handle().expect("live seek handle");
     let (mut demuxer, timeline_port, _) = opened.into_parts();
     let deadline = Instant::now() + TEST_TIMEOUT;

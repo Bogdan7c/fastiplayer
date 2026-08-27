@@ -1,6 +1,10 @@
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{MediaTime, Packet, TimelineNotSeekableReason, TrackInfo, TrackTimestamp};
+use crate::{
+    DemuxSeekCancellationToken, MediaTime, Packet, TimelineNotSeekableReason, TrackInfo,
+    TrackTimestamp,
+};
 
 /// Результат container-level seek без привязки к конкретной реализации demuxer-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +89,84 @@ pub enum DemuxSeekability {
     },
 }
 
+/// Причина кооперативного прерывания текущего физического demux read-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemuxActiveReadInterruptionReason {
+    /// Progressive worker уже опубликовал новую generation и поставил receipted seek в очередь.
+    ReceiptedSeekEnqueued,
+}
+
+/// Результат nonblocking сигнала владельцу текущего физического read-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemuxActiveReadInterruptionResult {
+    /// Владелец принял сигнал и обязан вывести текущий read к restartable resource boundary.
+    ///
+    /// Этот результат подтверждает только постановку сигнала, а не фактический Drop pending
+    /// future/read-а. Concrete demuxer обязан unwind-нуть весь parser вместе с source и при
+    /// rollback переоткрыть их с начала точного resource/segment-а. Нельзя подмешивать bytes
+    /// свежего body в уже частично использованный container parser.
+    InterruptionRequestedRestartable,
+
+    /// Физический read сейчас не выполнялся, поэтому прерывать нечего.
+    AlreadyQuiescent,
+}
+
+/// Owner-side обработчик кооперативного прерывания активного demux read-а.
+///
+/// Метод вызывается под mutex-ом progressive command queue. Поэтому реализация обязана быть
+/// infallible, bounded и strictly nonblocking: запрещены I/O, ожидание lock-а/condition variable
+/// и обратный вызов в progressive queue. Реализация только атомарно сигналит owner-у source/parser-а.
+pub trait DemuxActiveReadInterrupter: Send + Sync {
+    /// Ставит сигнал текущему active read-у, не публикуя seek receipt и не меняя commit state.
+    fn request_active_read_interruption(
+        &self,
+        reason: DemuxActiveReadInterruptionReason,
+    ) -> DemuxActiveReadInterruptionResult;
+}
+
+/// Cloneable opaque port к владельцу текущего physical demux read-а.
+#[derive(Clone)]
+pub struct DemuxActiveReadInterruptionPort {
+    /// Type-erased controller сохраняет concrete transport/parser ownership за demux boundary.
+    interrupter: Arc<dyn DemuxActiveReadInterrupter>,
+}
+
+impl DemuxActiveReadInterruptionPort {
+    /// Создаёт port из owner-controlled shared controller-а.
+    #[must_use]
+    pub fn new(interrupter: Arc<dyn DemuxActiveReadInterrupter>) -> Self {
+        Self { interrupter }
+    }
+
+    /// Передаёт infallible nonblocking сигнал concrete owner-у.
+    #[must_use]
+    pub fn request_active_read_interruption(
+        &self,
+        reason: DemuxActiveReadInterruptionReason,
+    ) -> DemuxActiveReadInterruptionResult {
+        self.interrupter.request_active_read_interruption(reason)
+    }
+}
+
+impl std::fmt::Debug for DemuxActiveReadInterruptionPort {
+    /// Не раскрывает concrete controller и его внутреннее состояние через generic diagnostics.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DemuxActiveReadInterruptionPort")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Явная capability текущего demuxer-а без двусмысленного `Option`.
+#[derive(Debug, Clone)]
+pub enum DemuxActiveReadInterruptionCapability {
+    /// Concrete demux/source stack не умеет безопасно прерывать active read.
+    Unsupported,
+
+    /// Port остаётся authoritative на всём lifetime demuxer-а, включая replacement commits.
+    Supported(DemuxActiveReadInterruptionPort),
+}
+
 /// Нейтральные ошибки общего demux contract-а.
 ///
 /// Concrete demuxer-ы могут продолжать возвращать свои backend-specific ошибки,
@@ -104,6 +186,10 @@ pub enum MediaDemuxError {
         /// Container-level режим, который demuxer не умеет честно выполнить.
         mode: DemuxSeekMode,
     },
+
+    /// Newer accepted intent отменил ещё выполняющийся seek.
+    #[error("Seek отменён более новым запросом")]
+    SeekCancelled,
 }
 
 impl MediaDemuxError {
@@ -267,6 +353,16 @@ pub trait Demuxer: Send {
         }
     }
 
+    /// Возвращает opt-in port для раннего прерывания obsolete physical read-а.
+    ///
+    /// Default ничего не меняет для local/progressive/legacy demuxer-ов. Supported реализация
+    /// обязана сохранять один stable controller через transactional replacements: успешный commit
+    /// переводит его на новый source, а failed replacement оставляет старый parser/source целиком
+    /// restartable. Сам вызов port-а никогда не является receipt либо доказательством seek-а.
+    fn active_read_interruption(&self) -> DemuxActiveReadInterruptionCapability {
+        DemuxActiveReadInterruptionCapability::Unsupported
+    }
+
     /// Возвращает следующий packet-level, lifecycle или readiness event.
     ///
     /// Это единственный generic read method: finite packet-only реализации явно
@@ -304,6 +400,22 @@ pub trait Demuxer: Send {
         request: DemuxSeekRequest,
     ) -> anyhow::Result<DemuxSeekResult> {
         self.seek_with_request(request)
+    }
+
+    /// Выполняет worker-receipted seek с request-scoped cooperative cancellation.
+    ///
+    /// Default сохраняет legacy поведение и проверяет token до входа в старый
+    /// boundary. Demuxer-ы с blocking transport могут override-нуть метод и
+    /// передать token глубже, не меняя semantics остальных реализаций.
+    fn seek_with_cancellable_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> anyhow::Result<DemuxSeekResult> {
+        if cancellation.is_cancelled() {
+            return Err(MediaDemuxError::SeekCancelled.into());
+        }
+        self.seek_with_receipted_request(request)
     }
 }
 
@@ -453,6 +565,16 @@ mod tests {
     }
 
     #[test]
+    fn default_active_read_interruption_is_explicitly_unsupported() {
+        let demuxer = AccurateOnlyDemuxer::with_duration(Some(Duration::from_secs(10)));
+
+        assert!(matches!(
+            demuxer.active_read_interruption(),
+            DemuxActiveReadInterruptionCapability::Unsupported
+        ));
+    }
+
+    #[test]
     fn default_seekability_reports_unknown_timeline_without_duration() {
         let demuxer = AccurateOnlyDemuxer::with_duration(None);
 
@@ -486,6 +608,42 @@ mod tests {
 
         assert_eq!(result.requested_position, MediaTime::from_secs(4));
         assert_eq!(demuxer.seek_log, vec![Duration::from_secs(4)]);
+    }
+
+    #[test]
+    fn default_cancellable_receipted_seek_delegates_while_token_is_active() {
+        let mut demuxer = AccurateOnlyDemuxer::with_duration(Some(Duration::from_secs(10)));
+        let cancellation = DemuxSeekCancellationToken::new();
+
+        let result = demuxer
+            .seek_with_cancellable_receipted_request(
+                DemuxSeekRequest::accurate(Duration::from_secs(5)),
+                cancellation,
+            )
+            .expect("активный token должен сохранить default receipted semantics");
+
+        assert_eq!(result.requested_position, MediaTime::from_secs(5));
+        assert_eq!(demuxer.seek_log, vec![Duration::from_secs(5)]);
+    }
+
+    #[test]
+    fn default_cancellable_receipted_seek_rejects_cancelled_token_without_mutation() {
+        let mut demuxer = AccurateOnlyDemuxer::with_duration(Some(Duration::from_secs(10)));
+        let cancellation = DemuxSeekCancellationToken::new();
+        cancellation.cancel();
+
+        let error = demuxer
+            .seek_with_cancellable_receipted_request(
+                DemuxSeekRequest::accurate(Duration::from_secs(5)),
+                cancellation,
+            )
+            .expect_err("cancelled token не должен входить в legacy seek");
+        let demux_error = error
+            .downcast_ref::<MediaDemuxError>()
+            .expect("отмена должна оставаться typed MediaDemuxError");
+
+        assert!(matches!(demux_error, MediaDemuxError::SeekCancelled));
+        assert!(demuxer.seek_log.is_empty());
     }
 
     #[test]

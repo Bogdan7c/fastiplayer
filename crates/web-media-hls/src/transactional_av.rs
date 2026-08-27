@@ -38,6 +38,26 @@ impl HlsComponentSeekIntent {
             }
         }
     }
+
+    /// Выравнивает alternate audio по уже доказанному video landing-у.
+    fn prepare_audio_component(
+        self,
+        factory: &HlsComponentFactory,
+        public_request: DemuxSeekRequest,
+        video_result: DemuxSeekResult,
+        public_tracks: &[TrackInfo],
+    ) -> Result<(HlsComponentDemuxer, DemuxSeekResult)> {
+        match self {
+            Self::PreviewedExactAnchor => factory.prepare_seek_replacement(
+                DemuxSeekRequest::accurate(public_request.timestamp),
+                public_tracks,
+            ),
+            Self::ReceiptedManifestCandidate => factory.prepare_aligned_audio_seek_replacement(
+                video_result.actual_position,
+                public_tracks,
+            ),
+        }
+    }
 }
 
 /// HLS-owned composite boundary, запрещающий частично применённый video/audio seek.
@@ -97,10 +117,11 @@ impl TransactionalHlsAvDemuxer {
         transact_component_pair(
             &mut self.current,
             || intent.prepare_component(video_factory, request, video_public_tracks),
-            || {
-                intent.prepare_component(
+            |(_, video_result)| {
+                intent.prepare_audio_component(
                     audio_factory,
-                    DemuxSeekRequest::accurate(request.timestamp),
+                    request,
+                    *video_result,
                     audio_public_tracks,
                 )
             },
@@ -167,11 +188,11 @@ impl Demuxer for TransactionalHlsAvDemuxer {
 fn transact_component_pair<Active, Video, Audio, Output>(
     active: &mut Active,
     prepare_video: impl FnOnce() -> Result<Video>,
-    prepare_audio: impl FnOnce() -> Result<Audio>,
+    prepare_audio: impl FnOnce(&Video) -> Result<Audio>,
     compose: impl FnOnce(Video, Audio) -> Result<(Active, Output)>,
 ) -> Result<Output> {
     let video = prepare_video()?;
-    let audio = prepare_audio()?;
+    let audio = prepare_audio(&video)?;
     let (replacement, result) = compose(video, audio)?;
     *active = replacement;
     Ok(result)
@@ -218,7 +239,7 @@ mod tests {
                 video_prepared.set(true);
                 Ok(1_800)
             },
-            || {
+            |_| {
                 audio_prepared.set(true);
                 Err(anyhow::anyhow!("audio replacement failed"))
             },
@@ -246,7 +267,7 @@ mod tests {
         let result = transact_component_pair(
             &mut active,
             || Ok(1_800_u64),
-            || Ok(1_760_u64),
+            |_| Ok(1_760_u64),
             |video_pts, audio_pts| {
                 compose_calls.set(compose_calls.get() + 1);
                 Ok((

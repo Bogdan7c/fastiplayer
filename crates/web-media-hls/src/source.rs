@@ -1,10 +1,13 @@
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use demux_api::{
-    OrderedSegment, OrderedSegmentReadError, OrderedSegmentSequence, OrderedSegmentSource,
+    DemuxInput, OrderedSegment, OrderedSegmentReadError, OrderedSegmentSequence,
+    OrderedSegmentSource,
 };
+use media_core::DemuxSeekCancellationToken;
 use source_core::{CancellationToken, SourceError};
 use web_media_adaptive::{
     AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
@@ -13,10 +16,17 @@ use web_media_adaptive::{
 use web_media_transport_api::SourceGeneration;
 use zeroize::Zeroizing;
 
+use crate::active_read::{HlsActiveReadError, HlsEpochActiveReadLifecycle};
 use crate::plan::{
     HlsEpochPlan, HlsSegmentRestartCoordinate, PlannedEncryption, PlannedKeySource, PlannedResource,
 };
-use crate::{HlsEndpointRefreshReason, SecretAes128Key, decrypt_aes128_cbc_pkcs7};
+use crate::{
+    HlsEndpointRefreshReason, HlsRequiredContainer, SecretAes128Key, decrypt_aes128_cbc_pkcs7,
+};
+
+mod streaming;
+
+use self::streaming::HlsResourceStreamState;
 
 /// Resource class без locator-а или key bytes для live expiry policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +44,119 @@ pub(crate) trait HlsResourceExpiryObserver: Send + Sync {
     );
 }
 
+/// Secret-free категория terminal body failure, при которой допустим один fresh restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum HlsTransientBodyFailureCategory {
+    /// Body read превысил configured deadline уже после успешного HTTP open-а.
+    Timeout = 1,
+    /// Transport не смог продолжить чтение уже открытого response body.
+    Read = 2,
+    /// Validated body завершился раньше объявленной длины или exact range-а.
+    UnexpectedEof = 3,
+}
+
+impl HlsTransientBodyFailureCategory {
+    /// Классифицирует только body-stage transient failures; policy/status ошибки не повторяются.
+    fn from_transport_error(error: &AdaptiveTransportError) -> Option<Self> {
+        match error {
+            AdaptiveTransportError::Source(SourceError::HttpTimeout { .. }) => Some(Self::Timeout),
+            AdaptiveTransportError::Source(SourceError::HttpBodyRead { .. }) => Some(Self::Read),
+            AdaptiveTransportError::Source(SourceError::UnexpectedEof { .. }) => {
+                Some(Self::UnexpectedEof)
+            }
+            AdaptiveTransportError::Cancelled
+            | AdaptiveTransportError::RestartableReadInterrupted
+            | AdaptiveTransportError::Source(_)
+            | AdaptiveTransportError::Target(_)
+            | AdaptiveTransportError::Redirect(_)
+            | AdaptiveTransportError::SecretScopeRejected
+            | AdaptiveTransportError::ExplicitCookieHeader
+            | AdaptiveTransportError::WorkerStopped
+            | AdaptiveTransportError::StaleGeneration { .. }
+            | AdaptiveTransportError::ResourceBoundExceeded { .. }
+            | AdaptiveTransportError::InvalidResourcePolicy { .. } => None,
+        }
+    }
+}
+
+/// Typed snapshot attempt-local transport evidence без locator-а или payload-а.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum HlsResourceAttemptFailure {
+    /// Source не наблюдал разрешённую transient body category.
+    #[default]
+    None,
+    /// Source завершился разрешённой transient body category.
+    TransientBody(HlsTransientBodyFailureCategory),
+}
+
+/// Shared one-shot evidence между временным source и manifest candidate owner-ом.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SharedHlsResourceAttemptFailure {
+    /// `0` означает отсутствие evidence; остальные значения соответствуют typed category.
+    state: Arc<AtomicU8>,
+}
+
+impl SharedHlsResourceAttemptFailure {
+    /// Запоминает первую terminal category; последующие ошибки не переписывают evidence.
+    fn record(&self, category: HlsTransientBodyFailureCategory) {
+        let _ = self
+            .state
+            .compare_exchange(0, category as u8, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    /// Возвращает immutable snapshot для bounded retry decision-а.
+    pub(crate) fn snapshot(&self) -> HlsResourceAttemptFailure {
+        match self.state.load(Ordering::Acquire) {
+            0 => HlsResourceAttemptFailure::None,
+            value if value == HlsTransientBodyFailureCategory::Timeout as u8 => {
+                HlsResourceAttemptFailure::TransientBody(HlsTransientBodyFailureCategory::Timeout)
+            }
+            value if value == HlsTransientBodyFailureCategory::Read as u8 => {
+                HlsResourceAttemptFailure::TransientBody(HlsTransientBodyFailureCategory::Read)
+            }
+            value if value == HlsTransientBodyFailureCategory::UnexpectedEof as u8 => {
+                HlsResourceAttemptFailure::TransientBody(
+                    HlsTransientBodyFailureCategory::UnexpectedEof,
+                )
+            }
+            value => unreachable!("недопустимая HLS resource attempt failure category: {value}"),
+        }
+    }
+}
+
+/// Named observation intent: обычные opens ничего не записывают, manifest attempt capture-ит evidence.
+#[derive(Clone, Debug, Default)]
+pub(crate) enum HlsResourceAttemptObserver {
+    /// Initial/live/legacy opens не участвуют в manifest retry transaction.
+    #[default]
+    Disabled,
+    /// Временный manifest attempt пишет terminal category в собственный shared state.
+    Capture(SharedHlsResourceAttemptFailure),
+}
+
+impl HlsResourceAttemptObserver {
+    /// Самодокументируемый intent обычного source open-а без retry observation.
+    pub(crate) const fn disabled() -> Self {
+        Self::Disabled
+    }
+
+    /// Привязывает observer к attempt-local state, который остаётся у manifest owner-а.
+    pub(crate) fn capture(failure: SharedHlsResourceAttemptFailure) -> Self {
+        Self::Capture(failure)
+    }
+
+    /// Записывает только разрешённые transient body categories.
+    pub(crate) fn observe_transport_error(&self, error: &AdaptiveTransportError) {
+        let Self::Capture(failure) = self else {
+            return;
+        };
+        if let Some(category) = HlsTransientBodyFailureCategory::from_transport_error(error) {
+            failure.record(category);
+        }
+    }
+}
+
 /// Lazy finite source одного epoch; network/key/decrypt выполняются на demux worker-е.
 pub(crate) struct HlsEpochSegmentSource {
     http: AdaptiveHttpContext,
@@ -45,6 +168,17 @@ pub(crate) struct HlsEpochSegmentSource {
     cached_key: SharedHlsKeyCache,
     expiry_observer: Option<Arc<dyn HlsResourceExpiryObserver>>,
     media_spans: SharedHlsMediaSpanIndex,
+    seek_cancellation: DemuxSeekCancellationToken,
+    resource_attempt_observer: HlsResourceAttemptObserver,
+    active_read: HlsSourceActiveReadLifecycle,
+    stream_state: HlsResourceStreamState,
+}
+
+/// Live/fMP4 сохраняют прежний transport path; static TS opt-in-ится явно.
+#[derive(Clone)]
+enum HlsSourceActiveReadLifecycle {
+    Disabled,
+    Restartable(HlsEpochActiveReadLifecycle),
 }
 
 /// Exact plaintext range одного media resource-а в virtual ordered input.
@@ -72,14 +206,22 @@ impl SharedHlsMediaSpanIndex {
         if start == end {
             return Ok(());
         }
-        self.spans
+        let mut spans = self
+            .spans
             .lock()
-            .map_err(|_| HlsSegmentSourceError::MediaSpanIndexPoisoned)?
-            .push(HlsMediaResourceSpan {
+            .map_err(|_| HlsSegmentSourceError::MediaSpanIndexPoisoned)?;
+        if let Some(active) = spans
+            .last_mut()
+            .filter(|span| span.start == start && span.restart_segment == restart_segment)
+        {
+            active.end = active.end.max(end);
+        } else {
+            spans.push(HlsMediaResourceSpan {
                 start,
                 end,
                 restart_segment,
             });
+        }
         Ok(())
     }
 
@@ -219,6 +361,51 @@ impl HlsEpochSegmentSource {
             cached_key,
             expiry_observer,
             media_spans,
+            seek_cancellation: DemuxSeekCancellationToken::new(),
+            resource_attempt_observer: HlsResourceAttemptObserver::disabled(),
+            active_read: HlsSourceActiveReadLifecycle::Disabled,
+            stream_state: HlsResourceStreamState::Ready,
+        }
+    }
+
+    /// Привязывает source к lifecycle конкретного worker-receipted seek-а.
+    #[must_use]
+    pub(crate) fn with_seek_cancellation(
+        mut self,
+        seek_cancellation: DemuxSeekCancellationToken,
+    ) -> Self {
+        self.seek_cancellation = seek_cancellation;
+        self
+    }
+
+    /// Привязывает source к attempt-local typed body failure observer-у.
+    #[must_use]
+    pub(crate) fn with_resource_attempt_observer(
+        mut self,
+        resource_attempt_observer: HlsResourceAttemptObserver,
+    ) -> Self {
+        self.resource_attempt_observer = resource_attempt_observer;
+        self
+    }
+
+    /// Привязывает static TS source к offside/committed active-read lifecycle-у.
+    #[must_use]
+    pub(crate) fn with_active_read_lifecycle(
+        mut self,
+        active_read: HlsEpochActiveReadLifecycle,
+    ) -> Self {
+        self.active_read = HlsSourceActiveReadLifecycle::Restartable(active_read);
+        self
+    }
+
+    /// Выбирает streaming boundary только для container factory с доказанной поддержкой.
+    #[must_use]
+    pub(crate) fn into_demux_input(self, container: HlsRequiredContainer) -> DemuxInput {
+        match container {
+            HlsRequiredContainer::TransportStream => {
+                DemuxInput::ordered_resource_stream(Box::new(self))
+            }
+            HlsRequiredContainer::FragmentedMp4 => DemuxInput::ordered_segments(Box::new(self)),
         }
     }
 
@@ -408,6 +595,8 @@ pub(crate) enum HlsSegmentSourceError {
     MediaSpanIndexPoisoned,
     #[error("ordered input byte position overflow")]
     BytePositionOverflow,
+    #[error("active read lifecycle")]
+    ActiveRead(#[from] HlsActiveReadError),
 }
 
 fn map_runtime_source_error(error: impl Into<HlsSegmentSourceError>) -> OrderedSegmentReadError {
@@ -433,6 +622,9 @@ fn map_runtime_source_error(error: impl Into<HlsSegmentSourceError>) -> OrderedS
         },
         HlsSegmentSourceError::BytePositionOverflow => OrderedSegmentReadError::Failed {
             reason: "hls-byte-position-overflow".to_owned(),
+        },
+        HlsSegmentSourceError::ActiveRead(_) => OrderedSegmentReadError::Failed {
+            reason: "hls-active-read-lifecycle".to_owned(),
         },
     }
 }

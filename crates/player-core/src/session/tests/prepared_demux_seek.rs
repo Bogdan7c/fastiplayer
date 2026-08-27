@@ -9,22 +9,44 @@ use super::test_support::{
 };
 use super::*;
 use crate::{
-    PlaybackState, PreparedDemuxSeekEnqueueError, PreparedDemuxSeekMode, PreparedDemuxSeekOutcome,
-    PreparedDemuxSeekPort, PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
+    PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PreparedDemuxSeekEnqueueError,
+    PreparedDemuxSeekMode, PreparedDemuxSeekOutcome, PreparedDemuxSeekPort,
+    PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
 };
 
 /// Deterministic nonblocking fake exact prepared-media seek port-а.
 #[derive(Default)]
-struct FakePreparedDemuxSeekPort {
+pub(super) struct FakePreparedDemuxSeekPort {
     /// Accepted commands для request/fence assertions.
     commands: Mutex<Vec<(PreparedDemuxSeekRequestId, DemuxSeekRequest)>>,
     /// Test-owned terminal receipts.
     receipts: Mutex<VecDeque<PreparedDemuxSeekReceipt>>,
 }
 
+/// Prepared port, который детерминированно моделирует уже остановленный worker.
+struct WorkerStoppedPreparedDemuxSeekPort;
+
+impl PreparedDemuxSeekPort for WorkerStoppedPreparedDemuxSeekPort {
+    fn enqueue_seek(
+        &self,
+        _request_id: PreparedDemuxSeekRequestId,
+        _request: DemuxSeekRequest,
+    ) -> Result<(), PreparedDemuxSeekEnqueueError> {
+        Err(PreparedDemuxSeekEnqueueError::WorkerStopped)
+    }
+
+    fn poll_seek_receipt(&self) -> Option<PreparedDemuxSeekReceipt> {
+        None
+    }
+}
+
 impl FakePreparedDemuxSeekPort {
     /// Публикует terminal outcome exact accepted request-а.
-    fn complete(&self, request_id: PreparedDemuxSeekRequestId, outcome: PreparedDemuxSeekOutcome) {
+    pub(super) fn complete(
+        &self,
+        request_id: PreparedDemuxSeekRequestId,
+        outcome: PreparedDemuxSeekOutcome,
+    ) {
         self.receipts
             .lock()
             .expect("fake receipt lock")
@@ -35,7 +57,7 @@ impl FakePreparedDemuxSeekPort {
     }
 
     /// Снимает immutable accepted request snapshot.
-    fn commands(&self) -> Vec<(PreparedDemuxSeekRequestId, DemuxSeekRequest)> {
+    pub(super) fn commands(&self) -> Vec<(PreparedDemuxSeekRequestId, DemuxSeekRequest)> {
         self.commands.lock().expect("fake command lock").clone()
     }
 }
@@ -68,12 +90,82 @@ fn receipted_session() -> (PlayerSession, Arc<FakePreparedDemuxSeekPort>) {
     let erased: Arc<dyn PreparedDemuxSeekPort> = port.clone();
     session
         .prepared_demux_seek
-        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased });
+        .install(PreparedDemuxSeekMode::WorkerReceipted {
+            port: erased,
+            landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+        });
     (session, port)
 }
 
+/// Устанавливает seekable media с prepared port-ом, который отклоняет enqueue.
+fn worker_stopped_receipted_session() -> PlayerSession {
+    let mut session = PlayerSession::new();
+    install_fake_media(&mut session, vec![fake_track(1, TrackKind::Audio)]);
+    let port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(WorkerStoppedPreparedDemuxSeekPort);
+    session
+        .prepared_demux_seek
+        .install(PreparedDemuxSeekMode::WorkerReceipted {
+            port,
+            landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+        });
+    session
+}
+
+#[test]
+fn worker_stopped_enqueue_preserves_causal_failed_state_and_error() {
+    let mut session = worker_stopped_receipted_session();
+    let causal_error = PlayerError::new(PlayerErrorKind::DemuxError, "causal demux failure");
+    session.mark_fatal_error(causal_error.clone());
+    let _prior_events = session.take_events();
+
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            MediaTime::from_secs(11),
+        )))
+        .expect("secondary public seek remains handled by player state machine");
+
+    assert_eq!(session.playback_state(), PlaybackState::Failed);
+    assert_eq!(session.snapshot().last_error.as_ref(), Some(&causal_error));
+    assert!(!session.snapshot().timeline.seeking);
+    assert!(session.snapshot().timeline.target_position.is_none());
+    assert!(
+        session
+            .take_events()
+            .into_iter()
+            .all(|event| !matches!(event, PlayerEvent::RecoverableError(_)))
+    );
+}
+
+#[test]
+fn worker_stopped_enqueue_remains_recoverable_from_non_fatal_states() {
+    for initial_state in [PlaybackState::Paused, PlaybackState::Playing] {
+        let mut session = worker_stopped_receipted_session();
+        session.set_playback_state(initial_state);
+        let _prior_events = session.take_events();
+
+        session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_secs(13),
+            )))
+            .expect("ordinary prepared enqueue failure remains recoverable");
+
+        assert_eq!(session.playback_state(), PlaybackState::Paused);
+        let error = session
+            .snapshot()
+            .last_error
+            .clone()
+            .expect("recoverable enqueue failure must remain visible");
+        assert_eq!(error.kind, PlayerErrorKind::SeekUnavailable);
+        assert!(error.message.contains("demux seek worker has stopped"));
+        assert!(session.take_events().into_iter().any(|event| matches!(
+            event,
+            PlayerEvent::RecoverableError(recoverable) if recoverable == error
+        )));
+    }
+}
+
 /// Устанавливает video fake, чтобы проверить production one-shot route и отсутствие sync seek-а.
-fn receipted_video_session() -> (
+pub(super) fn receipted_video_session() -> (
     PlayerSession,
     Arc<FakePreparedDemuxSeekPort>,
     Arc<Mutex<Vec<Duration>>>,
@@ -85,7 +177,10 @@ fn receipted_video_session() -> (
     let erased: Arc<dyn PreparedDemuxSeekPort> = port.clone();
     session
         .prepared_demux_seek
-        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased });
+        .install(PreparedDemuxSeekMode::WorkerReceipted {
+            port: erased,
+            landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+        });
     (session, port, synchronous_seek_log)
 }
 
@@ -182,7 +277,10 @@ fn worker_receipted_video_seek_reaches_target_frame_presentation() {
     harness
         .session
         .prepared_demux_seek
-        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased });
+        .install(PreparedDemuxSeekMode::WorkerReceipted {
+            port: erased,
+            landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+        });
     harness
         .decoder
         .decode_next_packet_as_frame(actual_position, 901);
@@ -263,7 +361,10 @@ fn worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presenta
     harness
         .session
         .prepared_demux_seek
-        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased });
+        .install(PreparedDemuxSeekMode::WorkerReceipted {
+            port: erased,
+            landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+        });
     harness
         .decoder
         .decode_next_packet_as_frame(receipted_anchor, 911);

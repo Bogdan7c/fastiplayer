@@ -11,13 +11,16 @@ mod dynamic_timeline;
 mod metadata;
 mod packet;
 mod presentation_window;
+mod seek_cancellation;
 mod time;
 mod track;
 
 pub use demux::{
-    DemuxReadEvent, DemuxRetryHint, DemuxRetryHintError, DemuxSeekMode, DemuxSeekRequest,
-    DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate, Demuxer, MediaDemuxError,
-    finite_packet_read_event,
+    DemuxActiveReadInterrupter, DemuxActiveReadInterruptionCapability,
+    DemuxActiveReadInterruptionPort, DemuxActiveReadInterruptionReason,
+    DemuxActiveReadInterruptionResult, DemuxReadEvent, DemuxRetryHint, DemuxRetryHintError,
+    DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
+    Demuxer, MediaDemuxError, finite_packet_read_event,
 };
 pub use dynamic_timeline::{
     DynamicMediaTimelineEpoch, DynamicMediaTimelineInitial, DynamicMediaTimelineObservation,
@@ -34,6 +37,9 @@ pub use packet::{Packet, PacketKeyframe};
 pub use presentation_window::{
     ExactPresentationWindow, ExactPresentationWindowError, PacketPresentationWindow,
     PacketPresentationWindowAssignmentError,
+};
+pub use seek_cancellation::{
+    DemuxSeekCancellationCompletion, DemuxSeekCancellationToken, DemuxSeekCancelled,
 };
 pub use time::{
     MediaDuration, MediaTime, TimeBase, TimelineMode, TimelineNotSeekableReason,

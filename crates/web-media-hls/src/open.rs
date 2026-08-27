@@ -1,18 +1,15 @@
-use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
 
 use demux_api::{
-    DemuxHints, DemuxInput, DemuxOpenError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
-    ProgressiveDemuxStartupError, ProgressiveDemuxer, ProgressiveRuntimeGeneration,
-    ProgressiveSeekController,
+    DemuxOpenError, ProgressiveAsyncSeekLimits, ProgressiveDemuxStartupError, ProgressiveDemuxer,
+    ProgressiveRuntimeGeneration, ProgressiveSeekController,
 };
 use hls_playlist_core::{
     HlsParseError, HlsParseRequest, HlsPlaylist, HlsProfileError, MasterPlaylist,
     MediaContainerIntent, MediaPlaylist, MediaRendition, MediaRenditionType, VariantStream,
     parse_hls_playlist, validate_initial_profile, validate_vod_profile,
 };
-use media_core::{Demuxer, TrackKind};
+use media_core::TrackKind;
 use source_core::HttpRequestTarget;
 use web_media_adaptive::{
     AdaptiveResourceFetchRequest, AdaptiveResourcePurpose, AdaptiveResourceQueryApplication,
@@ -21,57 +18,26 @@ use web_media_adaptive::{
 
 use crate::catalog::{HlsCatalogMatchMode, HlsCatalogReopenError, HlsCatalogReopenSelection};
 use crate::epoch_demux::HlsComponentFactory;
+use crate::initial_open::{
+    HlsInitialComponentRole, HlsPreparedInitialComponent, prepare_initial_component,
+};
+use crate::initial_position_proof::HlsInitialPositionProofPublisher;
 use crate::plan::{HlsComponentPlan, HlsPlanError, build_component_plan};
 use crate::seek::SharedHlsSeekIndex;
-use crate::source::HlsEpochSegmentSource;
-use crate::transactional_av::TransactionalHlsAvDemuxer;
 use crate::{
     HlsAudioLayoutIntent, HlsAudioRenditionEvidence, HlsContainerEvidence,
     HlsMainTrackLayoutIntent, HlsManifestInput, HlsRequiredContainer,
     HlsSubtitleRenditionDescriptor, HlsVariantSelectionIntent, HlsVodOpenRequest,
+    HlsVodStartIntent,
 };
 
-/// Неустановленный результат: manifest profile уже validated, media bytes живут за worker boundary.
-pub struct HlsVodOpenResult {
-    demuxer: ProgressiveDemuxer,
-    subtitles: Vec<HlsSubtitleRenditionDescriptor>,
-    duration: Duration,
-}
+mod container_probe;
+mod deferred_initial;
+mod result;
 
-impl HlsVodOpenResult {
-    /// Возвращает generation-fenced worker seek handle для receipted preparation.
-    pub fn async_seek_handle(&self) -> Option<ProgressiveAsyncSeekHandle> {
-        self.demuxer.async_seek_handle()
-    }
-
-    /// Передаёт единственный nonblocking demux runtime app-owned staged-open owner-у.
-    ///
-    /// App coordinator обязан дождаться initial `TracksChanged` и завершить capability preflight до player
-    /// mutation: первая key/segment/container ошибка приходит раньше этого lifecycle event.
-    pub fn into_demuxer(self) -> Box<dyn Demuxer + Send> {
-        Box::new(self.demuxer)
-    }
-
-    /// Subtitle renditions остаются descriptors only.
-    pub fn subtitle_renditions(&self) -> &[HlsSubtitleRenditionDescriptor] {
-        &self.subtitles
-    }
-
-    /// Manifest-derived finite VOD duration до первого demux event.
-    pub const fn duration(&self) -> Duration {
-        self.duration
-    }
-}
-
-impl fmt::Debug for HlsVodOpenResult {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("HlsVodOpenResult")
-            .field("subtitle_renditions", &self.subtitles)
-            .field("duration", &self.duration)
-            .finish_non_exhaustive()
-    }
-}
+pub(crate) use container_probe::{required_audio_container, required_main_container};
+use deferred_initial::{HlsDeferredInitialComponent, open_deferred_initial_components};
+pub use result::{HlsInitialReadinessCapability, HlsVodOpenResult};
 
 /// Secret-safe prepare/open failure до production player mutation.
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +52,8 @@ pub enum HlsVodOpenError {
     Target(#[from] source_core::HttpRequestTargetError),
     #[error("inline hls_media_playlist_data обязан быть media playlist")]
     InlineManifestWasMaster,
+    #[error("fetched HLS manifest принадлежит другой source generation")]
+    FetchedManifestGenerationMismatch,
     #[error("selected HLS child URI вернул nested master playlist")]
     NestedMasterPlaylist,
     #[error("HLS master не содержит variant, совместимый с explicit selection intent")]
@@ -126,6 +94,10 @@ pub enum HlsVodOpenError {
     KeyFetchBoundExceedsAdaptiveLimit,
     #[error("HLS seek index должен вмещать как минимум initial video и audio anchors")]
     SeekIndexBoundTooSmall,
+    #[error("HLS initial restore target находится за finite VOD duration")]
+    InitialRestoreOutsideVod,
+    #[error("HLS initial restore не нашёл containing manifest candidate")]
+    InitialRestoreCandidateMissing,
     #[error("HLS catalog reopen rejected: {0}")]
     CatalogReopen(#[from] HlsCatalogReopenError),
 }
@@ -147,7 +119,7 @@ pub(crate) struct HlsTrackShapeError {
 /// Caller вызывает функцию на media-open worker-е; app-owned staged preparation дожидается
 /// initial tracks/capability preflight и только затем проходит существующий player commit barrier.
 pub fn prepare_hls_vod(request: HlsVodOpenRequest) -> Result<HlsVodOpenResult, HlsVodOpenError> {
-    prepare_hls_vod_with_seek_boundary(request, None, None)
+    prepare_hls_vod_with_seek_boundary(request, None, None, HlsVodStartIntent::Beginning)
 }
 
 /// Готовит HLS VOD с worker-executed generation-fenced seek receipt boundary.
@@ -158,7 +130,21 @@ pub fn prepare_hls_vod_receipted(
     request: HlsVodOpenRequest,
     asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
 ) -> Result<HlsVodOpenResult, HlsVodOpenError> {
-    prepare_hls_vod_with_seek_boundary(request, Some(asynchronous_seek_limits), None)
+    prepare_hls_vod_with_seek_boundary(
+        request,
+        Some(asynchronous_seek_limits),
+        None,
+        HlsVodStartIntent::Beginning,
+    )
+}
+
+/// Готовит receipted HLS VOD сразу из caller-owned restore position.
+pub fn prepare_hls_vod_receipted_at_start(
+    request: HlsVodOpenRequest,
+    asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
+    start: HlsVodStartIntent,
+) -> Result<HlsVodOpenResult, HlsVodOpenError> {
+    prepare_hls_vod_with_seek_boundary(request, Some(asynchronous_seek_limits), None, start)
 }
 
 /// Открывает exact proven catalog selection с worker-receipted seek boundary.
@@ -168,13 +154,19 @@ pub fn prepare_hls_catalog_vod_receipted(
     asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
 ) -> Result<HlsVodOpenResult, HlsVodOpenError> {
     request.selection = selection.runtime_intent();
-    prepare_hls_vod_with_seek_boundary(request, Some(asynchronous_seek_limits), Some(selection))
+    prepare_hls_vod_with_seek_boundary(
+        request,
+        Some(asynchronous_seek_limits),
+        Some(selection),
+        HlsVodStartIntent::Beginning,
+    )
 }
 
 fn prepare_hls_vod_with_seek_boundary(
     request: HlsVodOpenRequest,
     asynchronous_seek_limits: Option<ProgressiveAsyncSeekLimits>,
     catalog_selection: Option<HlsCatalogReopenSelection>,
+    start: HlsVodStartIntent,
 ) -> Result<HlsVodOpenResult, HlsVodOpenError> {
     if request.generation != request.http.source_generation() {
         return Err(HlsVodOpenError::Transport(
@@ -207,9 +199,15 @@ fn prepare_hls_vod_with_seek_boundary(
             ) {
                 return Err(HlsVodOpenError::UnexpectedAudioContainerEvidence);
             }
-            let main_container = required_main_container(&media, &top_base, &request)?;
             SelectedPlans {
-                main: validate_and_plan_media(media, main_container, &top_base, &request)?,
+                main: prepare_initial_component(
+                    media,
+                    &top_base,
+                    &request,
+                    request.containers.main,
+                    HlsInitialComponentRole::Main,
+                    start,
+                )?,
                 audio: None,
                 subtitles: Vec::new(),
                 main_track_layout: request.selection.main_track_layout,
@@ -222,27 +220,31 @@ fn prepare_hls_vod_with_seek_boundary(
             Some(selection) => {
                 select_and_load_catalog_master(master, &top_base, &request, selection)?
             }
-            None => select_and_load_master(master, &top_base, &request)?,
+            None => select_and_load_master(master, &top_base, &request, start)?,
         },
     };
 
     let duration = selected
         .audio
         .as_ref()
-        .map_or(selected.main.duration, |audio| {
-            selected.main.duration.max(audio.duration)
+        .map_or(selected.main.plan.duration, |audio| {
+            selected.main.plan.duration.max(audio.plan.duration)
         });
+    let start_disposition = selected.main.start_disposition;
+    let effective_start = start_disposition.effective_start();
     let cancellation = request.http.cancellation().clone();
     let main_http = request.http.clone();
     let audio_http = request.http.clone();
     let generation = request.generation;
     let policy = request.policy;
     let registry = request.demux_registry;
-    let main_plan = selected.main;
-    let audio_plan = selected.audio;
+    let main_plan = selected.main.plan;
+    let main_initial_open = selected.main.initial_open;
+    let main_active_read_control = selected.main.active_read_control;
+    let audio_component = selected.audio;
     let main_track_layout = selected.main_track_layout;
     let main_seek_index = SharedHlsSeekIndex::new(policy.maximum_seek_index_entries.get());
-    let audio_seek_index = audio_plan
+    let audio_seek_index = audio_component
         .as_ref()
         .map(|_| SharedHlsSeekIndex::new(policy.maximum_seek_index_entries.get()));
     let preview_main_index = main_seek_index.clone();
@@ -256,47 +258,44 @@ fn prepare_hls_vod_with_seek_boundary(
         }
         Ok(main_result)
     });
+    let main_factory = HlsComponentFactory::new(
+        main_plan,
+        main_http,
+        generation,
+        policy,
+        Arc::clone(&registry),
+        main_seek_index,
+        main_active_read_control,
+    );
+    let audio_deferred = audio_component.map(|audio_component| {
+        let audio_index = audio_seek_index
+            .expect("audio seek index создаётся ровно вместе с alternate component");
+        HlsDeferredInitialComponent {
+            factory: HlsComponentFactory::new(
+                audio_component.plan,
+                audio_http,
+                generation,
+                policy,
+                registry,
+                audio_index,
+                audio_component.active_read_control,
+            ),
+            initial_open: audio_component.initial_open,
+        }
+    });
+    let (initial_position_proof, proof_publisher) =
+        HlsInitialPositionProofPublisher::for_start(effective_start, generation);
     let open_inner = move || {
-        let main_factory = HlsComponentFactory::new(
-            main_plan,
-            main_http,
-            generation,
+        open_deferred_initial_components(
+            HlsDeferredInitialComponent {
+                factory: main_factory,
+                initial_open: main_initial_open,
+            },
+            audio_deferred,
+            main_track_layout,
             policy,
-            Arc::clone(&registry),
-            main_seek_index,
-        );
-        let main = main_factory.open()?;
-        let Some(audio_plan) = audio_plan else {
-            validate_track_shape(main.tracks(), main_track_layout, "main")?;
-            return Ok(Box::new(main) as Box<dyn Demuxer + Send>);
-        };
-        let audio_factory = HlsComponentFactory::new(
-            audio_plan,
-            audio_http,
-            generation,
-            policy,
-            registry,
-            audio_seek_index.ok_or_else(|| anyhow::anyhow!("HLS audio seek index отсутствует"))?,
-        );
-        let audio = audio_factory.open()?;
-        validate_track_shape(
-            main.tracks(),
-            HlsMainTrackLayoutIntent::VideoOnly,
-            "alternate-video main",
-        )?;
-        validate_track_shape(
-            audio.tracks(),
-            HlsMainTrackLayoutIntent::AudioOnly,
-            "alternate-audio",
-        )?;
-        let composite = TransactionalHlsAvDemuxer::new(
-            main_factory,
-            audio_factory,
-            main,
-            audio,
-            policy.composite_lead_policy,
-        )?;
-        Ok(Box::new(composite) as Box<dyn Demuxer + Send>)
+            proof_publisher,
+        )
     };
     let progressive = match asynchronous_seek_limits {
         Some(asynchronous_seek_limits) => ProgressiveDemuxer::new_deferred_receipted_seekable(
@@ -317,11 +316,13 @@ fn prepare_hls_vod_with_seek_boundary(
         )?,
     };
 
-    Ok(HlsVodOpenResult {
-        demuxer: progressive,
-        subtitles: selected.subtitles,
+    Ok(HlsVodOpenResult::new(
+        progressive,
+        selected.subtitles,
         duration,
-    })
+        initial_position_proof,
+        start_disposition,
+    ))
 }
 
 pub(crate) fn validate_key_fetch_bound(request: &HlsVodOpenRequest) -> Result<(), HlsVodOpenError> {
@@ -357,6 +358,16 @@ pub(crate) fn load_top_playlist(
             let resource = fetch_manifest(selected_url.clone(), request)?;
             let playlist = parse_playlist(resource.bytes(), resource.final_target(), request)?;
             Ok((playlist, resource.final_target().clone(), false))
+        }
+        HlsManifestInput::FetchedTop(manifest) => {
+            if manifest.source_generation() != request.generation {
+                return Err(HlsVodOpenError::FetchedManifestGenerationMismatch);
+            }
+            Ok((
+                parse_playlist(manifest.playlist_bytes(), manifest.effective_url(), request)?,
+                manifest.effective_url().clone(),
+                false,
+            ))
         }
     }
 }
@@ -395,6 +406,7 @@ fn select_and_load_master(
     master: MasterPlaylist,
     base: &HttpRequestTarget,
     request: &HlsVodOpenRequest,
+    start: HlsVodStartIntent,
 ) -> Result<SelectedPlans, HlsVodOpenError> {
     let selected = select_master(&master, &request.selection)?;
     let variant_target = base.resolve_reference(selected.variant.uri.expose_for_resolution())?;
@@ -407,14 +419,17 @@ fn select_and_load_master(
     let HlsPlaylist::Media(variant_media) = variant_playlist else {
         return Err(HlsVodOpenError::NestedMasterPlaylist);
     };
-    let main_container =
-        required_main_container(&variant_media, variant_resource.final_target(), request)?;
-    let main = validate_and_plan_media(
+    let main = prepare_initial_component(
         variant_media,
-        main_container,
         variant_resource.final_target(),
         request,
+        request.containers.main,
+        HlsInitialComponentRole::Main,
+        start,
     )?;
+    // Main component единолично решает permissive checkpoint fallback. Separate audio получает
+    // уже строгий effective intent, чтобы не открыть несовместимое начало независимо от video.
+    let alternate_audio_start = main.start_disposition.strict_component_start();
 
     let audio = match selected.audio {
         Some(rendition) => {
@@ -428,13 +443,17 @@ fn select_and_load_master(
             let HlsPlaylist::Media(media) = playlist else {
                 return Err(HlsVodOpenError::NestedMasterPlaylist);
             };
-            let audio_container =
-                required_audio_container(&media, resource.final_target(), request)?;
-            Some(validate_and_plan_media(
+            let evidence = request
+                .containers
+                .alternate_audio
+                .ok_or(HlsVodOpenError::MissingAudioContainerEvidence)?;
+            Some(prepare_initial_component(
                 media,
-                audio_container,
                 resource.final_target(),
                 request,
+                evidence,
+                HlsInitialComponentRole::AlternateAudio,
+                alternate_audio_start,
             )?)
         }
         None => {
@@ -469,11 +488,13 @@ fn select_and_load_catalog_master(
     let HlsPlaylist::Media(main_media) = main_playlist else {
         return Err(HlsVodOpenError::NestedMasterPlaylist);
     };
-    let main = validate_and_plan_media(
+    let main = prepare_initial_component(
         main_media,
-        selected.main_container,
         main_resource.final_target(),
         request,
+        HlsContainerEvidence::Exact(selected.main_container),
+        HlsInitialComponentRole::Main,
+        HlsVodStartIntent::Beginning,
     )?;
 
     let audio = selected
@@ -485,7 +506,14 @@ fn select_and_load_catalog_master(
             let HlsPlaylist::Media(media) = playlist else {
                 return Err(HlsVodOpenError::NestedMasterPlaylist);
             };
-            validate_and_plan_media(media, audio.container, resource.final_target(), request)
+            prepare_initial_component(
+                media,
+                resource.final_target(),
+                request,
+                HlsContainerEvidence::Exact(audio.container),
+                HlsInitialComponentRole::AlternateAudio,
+                HlsVodStartIntent::Beginning,
+            )
         })
         .transpose()?;
 
@@ -497,7 +525,7 @@ fn select_and_load_catalog_master(
     })
 }
 
-fn validate_and_plan_media(
+pub(crate) fn validate_and_plan_media(
     media: MediaPlaylist,
     container: HlsRequiredContainer,
     base: &HttpRequestTarget,
@@ -524,126 +552,9 @@ fn validate_and_plan_media(
     Ok(plan)
 }
 
-pub(crate) fn required_main_container(
-    media: &MediaPlaylist,
-    base: &HttpRequestTarget,
-    request: &HlsVodOpenRequest,
-) -> Result<HlsRequiredContainer, HlsVodOpenError> {
-    match request.containers.main {
-        HlsContainerEvidence::Exact(container) => Ok(container),
-        HlsContainerEvidence::ContentProbe => probe_main_container(media, base, request),
-        HlsContainerEvidence::Missing => Err(HlsVodOpenError::MissingMainContainerEvidence),
-        HlsContainerEvidence::Ambiguous => Err(HlsVodOpenError::AmbiguousMainContainerEvidence),
-    }
-}
-
-pub(crate) fn required_audio_container(
-    media: &MediaPlaylist,
-    base: &HttpRequestTarget,
-    request: &HlsVodOpenRequest,
-) -> Result<HlsRequiredContainer, HlsVodOpenError> {
-    match request.containers.alternate_audio {
-        Some(HlsContainerEvidence::Exact(container)) => Ok(container),
-        Some(HlsContainerEvidence::ContentProbe) => probe_audio_container(media, base, request),
-        None | Some(HlsContainerEvidence::Missing) => {
-            Err(HlsVodOpenError::MissingAudioContainerEvidence)
-        }
-        Some(HlsContainerEvidence::Ambiguous) => {
-            Err(HlsVodOpenError::AmbiguousAudioContainerEvidence)
-        }
-    }
-}
-
-/// Доказывает main container реальными bounded bytes и не использует URI/MAP hints.
-fn probe_main_container(
-    media: &MediaPlaylist,
-    base: &HttpRequestTarget,
-    request: &HlsVodOpenRequest,
-) -> Result<HlsRequiredContainer, HlsVodOpenError> {
-    probe_component_container(media, base, request, ContainerProbeRole::Main)
-}
-
-/// Доказывает alternate-audio container реальными bounded bytes и не использует URI/MAP hints.
-fn probe_audio_container(
-    media: &MediaPlaylist,
-    base: &HttpRequestTarget,
-    request: &HlsVodOpenRequest,
-) -> Result<HlsRequiredContainer, HlsVodOpenError> {
-    probe_component_container(media, base, request, ContainerProbeRole::AlternateAudio)
-}
-
-#[derive(Clone, Copy)]
-enum ContainerProbeRole {
-    Main,
-    AlternateAudio,
-}
-
-fn probe_component_container(
-    media: &MediaPlaylist,
-    base: &HttpRequestTarget,
-    request: &HlsVodOpenRequest,
-    role: ContainerProbeRole,
-) -> Result<HlsRequiredContainer, HlsVodOpenError> {
-    let provisional = build_component_plan(
-        media,
-        HlsRequiredContainer::TransportStream,
-        base,
-        &request.overrides,
-    )?;
-    provisional.validate_resource_bound(
-        request
-            .http
-            .maximum_resource_bytes(AdaptiveResourcePurpose::MediaSegment),
-    )?;
-    let first_epoch = provisional
-        .epochs
-        .first()
-        .cloned()
-        .ok_or(HlsPlanError::EmptyMediaPlaylist)?;
-    let cancellation = request.http.cancellation().clone();
-    let source = HlsEpochSegmentSource::new(
-        request.http.clone(),
-        request.generation,
-        first_epoch,
-        request.policy.maximum_key_resource_bytes,
-    );
-    let opened = request
-        .demux_registry
-        .open_probed(
-            DemuxInput::ordered_segments(Box::new(source)),
-            DemuxHints::none(),
-            request.policy.demux_sniff_budget,
-            cancellation,
-        )
-        .map_err(|error| match role {
-            ContainerProbeRole::Main => HlsVodOpenError::MainContainerProbeOpen(error),
-            ContainerProbeRole::AlternateAudio => HlsVodOpenError::AudioContainerProbeOpen(error),
-        })?;
-    let transport_stream = HlsRequiredContainer::TransportStream
-        .demux_container_id()
-        .map_err(|_| match role {
-            ContainerProbeRole::Main => HlsVodOpenError::UnsupportedMainContainer,
-            ContainerProbeRole::AlternateAudio => HlsVodOpenError::UnsupportedAudioContainer,
-        })?;
-    let fragmented_mp4 = HlsRequiredContainer::FragmentedMp4
-        .demux_container_id()
-        .map_err(|_| match role {
-            ContainerProbeRole::Main => HlsVodOpenError::UnsupportedMainContainer,
-            ContainerProbeRole::AlternateAudio => HlsVodOpenError::UnsupportedAudioContainer,
-        })?;
-    match opened.container() {
-        container if container == &transport_stream => Ok(HlsRequiredContainer::TransportStream),
-        container if container == &fragmented_mp4 => Ok(HlsRequiredContainer::FragmentedMp4),
-        _ => Err(match role {
-            ContainerProbeRole::Main => HlsVodOpenError::UnsupportedMainContainer,
-            ContainerProbeRole::AlternateAudio => HlsVodOpenError::UnsupportedAudioContainer,
-        }),
-    }
-}
-
 struct SelectedPlans {
-    main: HlsComponentPlan,
-    audio: Option<HlsComponentPlan>,
+    main: HlsPreparedInitialComponent,
+    audio: Option<HlsPreparedInitialComponent>,
     subtitles: Vec<HlsSubtitleRenditionDescriptor>,
     main_track_layout: HlsMainTrackLayoutIntent,
 }
@@ -746,13 +657,22 @@ fn select_audio_rendition<'master>(
     let Some(group) = variant.audio_group.as_deref() else {
         return match intent {
             HlsAudioLayoutIntent::Muxed | HlsAudioLayoutIntent::ManifestResolved(_) => Ok(None),
-            HlsAudioLayoutIntent::Separate(_) => Err(HlsVodOpenError::MissingAudioRendition),
+            HlsAudioLayoutIntent::Separate(_)
+            | HlsAudioLayoutIntent::NativeGroupResolved { .. } => {
+                Err(HlsVodOpenError::MissingAudioRendition)
+            }
         };
     };
     let evidence = match intent {
         HlsAudioLayoutIntent::Muxed => None,
         HlsAudioLayoutIntent::Separate(evidence)
         | HlsAudioLayoutIntent::ManifestResolved(evidence) => Some(evidence),
+        HlsAudioLayoutIntent::NativeGroupResolved { group_id, evidence } => {
+            if group_id.as_ref() != group {
+                return Err(HlsVodOpenError::MissingAudioRendition);
+            }
+            Some(evidence)
+        }
     };
     let candidates = master
         .renditions
@@ -763,7 +683,8 @@ fn select_audio_rendition<'master>(
                 && match intent {
                     HlsAudioLayoutIntent::Muxed => rendition.uri.is_none(),
                     HlsAudioLayoutIntent::Separate(_) => rendition.uri.is_some(),
-                    HlsAudioLayoutIntent::ManifestResolved(_) => true,
+                    HlsAudioLayoutIntent::ManifestResolved(_)
+                    | HlsAudioLayoutIntent::NativeGroupResolved { .. } => true,
                 }
                 && evidence.is_none_or(|evidence| rendition_matches(rendition, evidence))
         })

@@ -179,6 +179,72 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         Err(error) => Err(format!("direct media rebuild failed: {error:#}")),
                     }
                 }
+                ActiveMediaSource::NativeHlsUrl { source, selection } => {
+                    let mut native_port =
+                        crate::startup_media::native_hls::ProductionNativeHlsAdmissionPort::new(
+                            crate::startup_media::native_hls::NativeHlsPreparationRequest {
+                                source: &source,
+                                expected_selection: Some(&selection),
+                                network_config: &config.network,
+                                demux_config: &config.demux,
+                                preferred_video_codec_order: &config.preferred_video_codec_order,
+                                preferred_video_height: config.yt_dlp.preferred_video_height,
+                                start: web_media_hls::HlsVodStartIntent::Beginning,
+                                cancellation: source_core::CancellationToken::new(),
+                            },
+                        );
+                    match crate::startup_media::native_hls::NativeHlsAdmissionPort::prepare(
+                        &mut native_port,
+                    ) {
+                        Ok(crate::startup_media::native_hls::NativeHlsAttempt::Prepared(
+                            prepared,
+                        )) => {
+                            let tracks = prepared.tracks().to_vec();
+                            let duration = prepared.duration();
+                            let metadata = prepared
+                                .demuxer
+                                .media_metadata()
+                                .unwrap_or_default()
+                                .tags;
+                            let safe_label = source.safe_label().clone();
+                            let active_source = ActiveMediaSource::NativeHlsUrl {
+                                source,
+                                selection: prepared.selection,
+                            };
+                            let prepared_media = PreparedMedia::from_external_label(
+                                safe_label.as_str(),
+                                prepared.demuxer,
+                            )
+                            .with_worker_receipted_demux_seek_policy(
+                                prepared.seek_port,
+                                player_core::PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget,
+                            )
+                            .with_preferred_video_codecs(&preferred_runtime_codecs);
+                            Ok(crate::state::PreparedSingleMediaOpen::new(
+                                prepared_media,
+                                active_source.clone(),
+                                safe_label.clone(),
+                            )
+                            .with_descriptor(
+                                crate::media_open::PreparedMediaDescriptor::NativeHls {
+                                    tracks,
+                                    duration,
+                                    metadata,
+                                    source: active_source,
+                                    safe_label,
+                                },
+                            ))
+                        }
+                        Ok(
+                            crate::startup_media::native_hls::NativeHlsAttempt::RequiresYtDlpFallback(
+                                reason,
+                            ),
+                        ) => Err(format!(
+                            "exact native HLS rebuild requires forbidden fallback: {reason:?}"
+                        )),
+                        Err(error) => Err(format!("native HLS media rebuild failed: {error:#}")),
+                    }
+                }
                 ActiveMediaSource::YtDlpUrl {
                     source_locator,
                     candidate_selection,

@@ -204,7 +204,7 @@ pub enum MediaInstallFailureStage {
     /// Playback window не прошло source validation либо demux pre-seek до Ready.
     PlaybackWindowPreparation,
 
-    /// Same-lineage candidate не подтвердил strict position до authorization.
+    /// Prepared candidate не подтвердил strict same-lineage/initial position до authorization.
     PositionPreparation,
 
     /// App resource owner не выдал matching detached backend/materializer pair.

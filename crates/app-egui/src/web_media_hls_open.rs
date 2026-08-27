@@ -8,8 +8,8 @@ use anyhow::{Context, Result, anyhow};
 use demux_api::{
     CompositeComponentLeadPolicy, DemuxInputCapability, DemuxRegistry, DemuxSniffBudget,
     ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
-    ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits, ProgressiveSeekFence,
-    ProgressiveSeekRequestId,
+    ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits, ProgressiveDemuxReadiness,
+    ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
 use hls_playlist_core::HlsParserLimits;
 use media_core::{
@@ -17,8 +17,9 @@ use media_core::{
     DynamicMediaTimelinePortGeneration, TrackKind,
 };
 use player_core::{
-    PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome, PreparedDemuxSeekPort,
-    PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
+    PreparedDemuxSeekEnqueueError, PreparedDemuxSeekLandingPolicy, PreparedDemuxSeekOutcome,
+    PreparedDemuxSeekPort, PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
+    PreparedInitialPosition,
 };
 use rustiplayer_config::NetworkConfig;
 use service_ytdlp::{
@@ -31,11 +32,13 @@ use web_media_hls::{
     ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence, HlsCatalogBuildPolicy,
     HlsCatalogCapabilityProofPort, HlsCatalogDiscoveryOutcome, HlsCatalogDiscoveryRequest,
     HlsCatalogPresentation, HlsComponentContainerIntent, HlsContainerEvidence,
-    HlsEndpointRefreshPort, HlsLiveOpenRequest, HlsMainTrackLayoutIntent, HlsManifestInput,
+    HlsEndpointRefreshPort, HlsInitialPositionProofCapability, HlsInitialPositionProofTakeOutcome,
+    HlsInitialReadinessCapability, HlsLiveOpenRequest, HlsMainTrackLayoutIntent, HlsManifestInput,
     HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenPolicy,
-    HlsVodOpenRequest, SecretInlineMediaPlaylist, discover_hls_catalog,
+    HlsVodOpenRequest, HlsVodRestoreFallbackReason, HlsVodSeekLandingPolicy,
+    HlsVodStartDisposition, HlsVodStartIntent, SecretInlineMediaPlaylist, discover_hls_catalog,
     prepare_hls_catalog_live_receipted, prepare_hls_catalog_vod_receipted,
-    prepare_hls_live_receipted, prepare_hls_vod_receipted,
+    prepare_hls_live_receipted, prepare_hls_vod_receipted, prepare_hls_vod_receipted_at_start,
 };
 use web_media_transport_api::{SourceGeneration, TransportProviderId};
 
@@ -47,6 +50,116 @@ pub(crate) struct PreparedHlsCandidate {
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
     pub(crate) component_variants:
         crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
+}
+
+/// Узкий native-VOD результат без extractor catalog/subtitle lifecycle attachment-ов.
+pub(crate) struct PreparedNativeHlsVod {
+    pub(crate) demuxer: Box<dyn Demuxer + Send>,
+    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    pub(crate) initial_position: PreparedInitialPosition,
+}
+
+/// Native open сохраняет typed HLS failure для строго ограниченного extractor fallback-а.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum PrepareNativeHlsVodError {
+    #[error("native HLS VOD runtime open failed: {0}")]
+    Open(#[source] web_media_hls::HlsVodOpenError),
+    #[error("native HLS VOD runtime потерял receipted seek handle")]
+    MissingSeekHandle,
+    #[error("native HLS VOD runtime не достиг install-ready topology: {0}")]
+    InitialTopology(#[source] anyhow::Error),
+    #[error("native HLS VOD initial-position proof нарушил requested start contract: {0:?}")]
+    InitialPositionProof(HlsInitialPositionProofTakeOutcome),
+    #[error("native HLS VOD initial-position capability не совпал с start intent")]
+    InitialPositionCapabilityMismatch,
+}
+
+impl PrepareNativeHlsVodError {
+    /// Только owner-typed live/event profile может перейти в extractor fallback.
+    #[must_use]
+    pub(crate) fn fallback_reason(&self) -> Option<web_media_hls::NativeHlsOpenFallbackReason> {
+        match self {
+            Self::Open(error) => web_media_hls::native_hls_open_fallback_reason(error),
+            Self::MissingSeekHandle
+            | Self::InitialTopology(_)
+            | Self::InitialPositionProof(_)
+            | Self::InitialPositionCapabilityMismatch => None,
+        }
+    }
+}
+
+/// Открывает уже admitted native HLS VOD через те же policy/bootstrap constants, что YtDlp HLS.
+pub(crate) fn prepare_native_hls_vod(
+    request: HlsVodOpenRequest,
+    start: HlsVodStartIntent,
+) -> std::result::Result<PreparedNativeHlsVod, PrepareNativeHlsVodError> {
+    let generation = request.generation;
+    let request = request.with_seek_landing_policy(HlsVodSeekLandingPolicy::PreferPostTargetRap);
+    let opened = prepare_hls_vod_receipted_at_start(request, hls_async_seek_limits(), start)
+        .map_err(PrepareNativeHlsVodError::Open)?;
+    let seek_handle = opened
+        .async_seek_handle()
+        .ok_or(PrepareNativeHlsVodError::MissingSeekHandle)?;
+    let start_disposition = opened.start_disposition();
+    let initial_position_proof = opened.initial_position_proof();
+    let initial_readiness = opened.initial_readiness();
+    let mut demuxer = opened.into_demuxer();
+    wait_for_initial_hls_tracks(demuxer.as_mut(), &initial_readiness)
+        .map_err(PrepareNativeHlsVodError::InitialTopology)?;
+    let initial_position = match (start_disposition, initial_position_proof) {
+        (
+            HlsVodStartDisposition::BeginningRequested,
+            HlsInitialPositionProofCapability::NotRequested,
+        ) => PreparedInitialPosition::Beginning,
+        (
+            HlsVodStartDisposition::RestoreRequested { .. },
+            HlsInitialPositionProofCapability::Deferred(port),
+        ) => match port.take_for_generation(generation) {
+            HlsInitialPositionProofTakeOutcome::Ready(proof) => {
+                let target_position = proof.target_position();
+                let result = proof.demux_seek_result();
+                let landing_policy = if result.actual_position >= target_position {
+                    PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget
+                } else {
+                    PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget
+                };
+                PreparedInitialPosition::PositionedAt {
+                    target_position,
+                    result,
+                    landing_policy,
+                }
+            }
+            outcome => return Err(PrepareNativeHlsVodError::InitialPositionProof(outcome)),
+        },
+        (
+            HlsVodStartDisposition::RestoreRejectedToBeginning {
+                reason: HlsVodRestoreFallbackReason::CheckpointOutsideVod,
+                ..
+            },
+            HlsInitialPositionProofCapability::NotRequested,
+        ) => PreparedInitialPosition::Beginning,
+        _ => return Err(PrepareNativeHlsVodError::InitialPositionCapabilityMismatch),
+    };
+    Ok(PreparedNativeHlsVod {
+        demuxer,
+        seek_port: Arc::new(HlsPreparedDemuxSeekPort {
+            handle: seek_handle,
+        }),
+        initial_position,
+    })
+}
+
+/// Переносит уже доказанный native HLS runtime через единственный player preparation boundary.
+pub(crate) fn prepare_native_hls_player_media(
+    safe_label: &str,
+    prepared: PreparedNativeHlsVod,
+) -> std::result::Result<player_core::PreparedMedia, player_core::PreparedInitialPositionError> {
+    player_core::PreparedMedia::from_external_label(safe_label, prepared.demuxer)
+        .with_worker_receipted_demux_seek_policy(
+            prepared.seek_port,
+            PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget,
+        )
+        .with_prepared_initial_position(prepared.initial_position)
 }
 
 struct HlsPreparedDemuxSeekPort {
@@ -221,10 +334,11 @@ pub(crate) fn prepare_hls_candidate(
         let seek_handle = opened
             .async_seek_handle()
             .ok_or_else(|| anyhow!("HLS live runtime потерял receipted seek handle"))?;
+        let initial_readiness = opened.initial_readiness();
         let (mut demuxer, timeline_port, _) = opened.into_parts();
         // Любой live HLS должен доказать хотя бы один реальный track до Installed.
         // Иначе неизвестный fMP4 sample entry превращается в бесконечное пустое playback state.
-        wait_for_initial_hls_tracks(demuxer.as_mut())
+        wait_for_initial_hls_tracks(demuxer.as_mut(), &initial_readiness)
             .context("HLS live не достиг install-ready track состояния")?;
         prove_deferred_hls_codec_evidence(candidate, demuxer.as_mut(), capability_probe)
             .context("HLS deferred candidate не прошёл post-open codec proof")?;
@@ -297,10 +411,11 @@ pub(crate) fn prepare_hls_candidate(
     let seek_handle = opened
         .async_seek_handle()
         .ok_or_else(|| anyhow!("HLS VOD runtime потерял receipted seek handle"))?;
+    let initial_readiness = opened.initial_readiness();
     let mut demuxer = opened.into_demuxer();
     // Static HLS обязан опубликовать tracks и duration до PreparedMedia/Installed:
     // startup restore начинается сразу после Installed и не ждёт поздний TracksChanged.
-    wait_for_initial_hls_tracks(demuxer.as_mut())
+    wait_for_initial_hls_tracks(demuxer.as_mut(), &initial_readiness)
         .context("HLS VOD не достиг install-ready track/timeline состояния")?;
     prove_deferred_hls_codec_evidence(candidate, demuxer.as_mut(), capability_probe)
         .context("HLS deferred candidate не прошёл post-open codec proof")?;
@@ -544,7 +659,10 @@ fn prove_deferred_hls_codec_evidence(
 }
 
 /// Media-open worker ждёт непустой authoritative track snapshot до capability prove / Installed.
-fn wait_for_initial_hls_tracks(demuxer: &mut dyn Demuxer) -> Result<()> {
+fn wait_for_initial_hls_tracks(
+    demuxer: &mut dyn Demuxer,
+    readiness: &HlsInitialReadinessCapability,
+) -> Result<()> {
     const INITIAL_TRACKS_DEADLINE: Duration = Duration::from_secs(30);
     let deadline = Instant::now() + INITIAL_TRACKS_DEADLINE;
     loop {
@@ -569,9 +687,31 @@ fn wait_for_initial_hls_tracks(demuxer: &mut dyn Demuxer) -> Result<()> {
                 // Metadata revision законно может предшествовать track topology.
                 // Demuxer уже сохранил snapshot в `media_metadata()`, поэтому install его не теряет.
             }
-            DemuxReadEvent::TemporarilyUnavailable(hint) => {
-                std::thread::sleep(hint.retry_after().min(Duration::from_millis(50)));
-            }
+            DemuxReadEvent::TemporarilyUnavailable(_) => match readiness {
+                HlsInitialReadinessCapability::AlreadySynchronous => {
+                    return Err(anyhow!(
+                        "синхронный HLS runtime не опубликовал initial topology сразу"
+                    ));
+                }
+                HlsInitialReadinessCapability::Progressive(port) => {
+                    match port.wait_until(deadline) {
+                        ProgressiveDemuxReadiness::EventAvailable => {}
+                        ProgressiveDemuxReadiness::Cancelled => {
+                            return Err(anyhow!("HLS runtime отменён до initial track topology"));
+                        }
+                        ProgressiveDemuxReadiness::WorkerStopped => {
+                            return Err(anyhow!(
+                                "HLS runtime worker завершился до initial track topology"
+                            ));
+                        }
+                        ProgressiveDemuxReadiness::DeadlineReached => {
+                            return Err(anyhow!(
+                                "HLS runtime не опубликовал непустой track snapshot до open deadline"
+                            ));
+                        }
+                    }
+                }
+            },
             DemuxReadEvent::EndOfStream => {
                 return Err(anyhow!(
                     "HLS runtime достиг EOS до непустого initial track snapshot"
@@ -621,6 +761,7 @@ fn hls_main_container_evidence(container: ContainerFamily) -> Result<HlsContaine
 
 pub(crate) fn hls_policy(limits: AdaptiveTransportLimits) -> Result<HlsVodOpenPolicy> {
     Ok(HlsVodOpenPolicy {
+        seek_landing_policy: HlsVodSeekLandingPolicy::DecodeFromOrBeforeTarget,
         parser_limits: HlsParserLimits::default(),
         demux_sniff_budget: DemuxSniffBudget::new(
             NonZeroUsize::new(64 * 1_024).expect("HLS sniff bytes"),
@@ -660,6 +801,7 @@ pub(crate) fn hls_transport_input() -> DemuxInputCapability {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::num::NonZeroUsize;
     use std::time::Duration;
 
     use media_core::{
@@ -668,8 +810,9 @@ mod tests {
     };
 
     use super::{
-        ContainerFamily, HlsContainerEvidence, hls_main_container_evidence,
-        wait_for_initial_hls_tracks,
+        AdaptiveTransportLimits, ContainerFamily, HlsContainerEvidence,
+        HlsInitialReadinessCapability, HlsVodSeekLandingPolicy, hls_main_container_evidence,
+        hls_policy, wait_for_initial_hls_tracks,
     };
 
     /// Минимальный event-ordered demuxer моделирует deferred HLS publication.
@@ -732,25 +875,42 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_initial_tracks_skips_metadata_and_temporary_unavailability() {
+    fn wait_for_initial_tracks_skips_metadata_before_topology() {
         let published = vec![track(1, TrackKind::Video), track(2, TrackKind::Audio)];
         let mut demuxer = ScriptedDemuxer {
             events: VecDeque::from([
                 DemuxReadEvent::MediaMetadataChanged(MediaMetadata::default()),
-                DemuxReadEvent::TemporarilyUnavailable(
-                    DemuxRetryHint::new(Duration::from_millis(1)).expect("retry hint"),
-                ),
-                DemuxReadEvent::TemporarilyUnavailable(
-                    DemuxRetryHint::new(Duration::from_millis(1)).expect("retry hint"),
-                ),
                 DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(published.clone(), None)),
             ]),
             tracks: Vec::new(),
             duration: None,
         };
 
-        wait_for_initial_hls_tracks(&mut demuxer).expect("TracksChanged after unavailable");
+        wait_for_initial_hls_tracks(
+            &mut demuxer,
+            &HlsInitialReadinessCapability::AlreadySynchronous,
+        )
+        .expect("TracksChanged after metadata");
         assert_eq!(demuxer.tracks().len(), 2);
+    }
+
+    #[test]
+    fn wait_for_initial_tracks_rejects_unavailable_synchronous_runtime() {
+        let mut demuxer = ScriptedDemuxer {
+            events: VecDeque::from([DemuxReadEvent::TemporarilyUnavailable(
+                DemuxRetryHint::new(Duration::from_millis(1)).expect("retry hint"),
+            )]),
+            tracks: Vec::new(),
+            duration: None,
+        };
+
+        let error = wait_for_initial_hls_tracks(
+            &mut demuxer,
+            &HlsInitialReadinessCapability::AlreadySynchronous,
+        )
+        .expect_err("synchronous capability не должна скрывать deferred queue");
+
+        assert!(error.to_string().contains("синхронный HLS runtime"));
     }
 
     #[test]
@@ -769,8 +929,11 @@ mod tests {
             duration: None,
         };
 
-        wait_for_initial_hls_tracks(&mut demuxer)
-            .expect("готовый bootstrap snapshot уже является install-ready");
+        wait_for_initial_hls_tracks(
+            &mut demuxer,
+            &HlsInitialReadinessCapability::AlreadySynchronous,
+        )
+        .expect("готовый bootstrap snapshot уже является install-ready");
 
         assert_eq!(demuxer.events.len(), 1);
         assert_eq!(demuxer.tracks().len(), 1);
@@ -791,8 +954,11 @@ mod tests {
             duration: None,
         };
 
-        let error = wait_for_initial_hls_tracks(&mut demuxer)
-            .expect_err("packet before track topology должен быть отвергнут");
+        let error = wait_for_initial_hls_tracks(
+            &mut demuxer,
+            &HlsInitialReadinessCapability::AlreadySynchronous,
+        )
+        .expect_err("packet before track topology должен быть отвергнут");
 
         assert!(error.to_string().contains("packet"));
         assert!(demuxer.tracks().is_empty());
@@ -805,7 +971,11 @@ mod tests {
             tracks: Vec::new(),
             duration: None,
         };
-        let error = wait_for_initial_hls_tracks(&mut demuxer).expect_err("EOS before tracks");
+        let error = wait_for_initial_hls_tracks(
+            &mut demuxer,
+            &HlsInitialReadinessCapability::AlreadySynchronous,
+        )
+        .expect_err("EOS before tracks");
         assert!(error.to_string().contains("EOS"));
     }
 
@@ -825,7 +995,11 @@ mod tests {
         };
 
         // Production HLS VOD preparation обязана пересечь readiness до PreparedMedia.
-        wait_for_initial_hls_tracks(&mut demuxer).expect("HLS VOD install readiness");
+        wait_for_initial_hls_tracks(
+            &mut demuxer,
+            &HlsInitialReadinessCapability::AlreadySynchronous,
+        )
+        .expect("HLS VOD install readiness");
         // PreparedMedia снимает immutable snapshot, который немедленно увидит player install.
         let prepared = player_core::PreparedMedia::from_external_label(
             "HLS VOD acceptance",
@@ -847,5 +1021,20 @@ mod tests {
             .expect("generic ISO-BMFF входит в поддержанный HLS profile");
 
         assert!(matches!(evidence, HlsContainerEvidence::ContentProbe));
+    }
+
+    /// Общая yt-dlp/live composition policy не должна получать native-only landing opt-in.
+    #[test]
+    fn shared_ytdlp_and_live_hls_policy_keeps_decode_forward_default() {
+        let limits = AdaptiveTransportLimits::new(
+            NonZeroUsize::new(64 * 1_024).expect("manifest byte bound"),
+            NonZeroUsize::new(2 * 1_024 * 1_024).expect("segment byte bound"),
+            NonZeroUsize::new(64).expect("descriptor byte bound"),
+        );
+        let policy = hls_policy(limits).expect("production shared HLS policy");
+        assert_eq!(
+            policy.seek_landing_policy,
+            HlsVodSeekLandingPolicy::DecodeFromOrBeforeTarget
+        );
     }
 }

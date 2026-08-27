@@ -86,8 +86,10 @@ pub struct SeekCommitInfo {
 /// Сведения о restart-е audio output после seek.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeekAudioResumeInfo {
-    /// Target-позиция seek-а, для которого audio output был запущен.
+    /// Requested target seek-а для correlation со startup/public command.
     pub target_position: Duration,
+    /// Фактическая playback base, с которой audio output продолжает clock.
+    pub playback_position: Duration,
 }
 
 /// Краткая сводка возможностей системы.
@@ -142,11 +144,17 @@ pub enum PlayerEvent {
     /// Свежий frame финального seek-а уже показан независимо от audio gate-а.
     SeekTargetFramePresented(SeekTargetFramePresentation),
 
-    /// Seek transaction закрыт после готовых gates или разрешённого soft fallback-а.
+    /// Seek transaction закрыт только после готовых video/audio gates.
     SeekCommitted(SeekCommitInfo),
 
-    /// Audio output запущен после закрытия seek transaction-а.
+    /// Audio output принял `play` до публикации успешного seek commit-а.
     AudioResumedAfterSeek(SeekAudioResumeInfo),
+
+    /// Audio output успешно установлен для exact active media instance-а.
+    AudioOutputReady,
+
+    /// Audio output впервые принял `play` после install/pause текущего output-а.
+    AudioPlaybackResumed,
 
     /// Кадр готов к presentation.
     VideoFrameReady(FramePresentationInfo),

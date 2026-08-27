@@ -20,7 +20,8 @@ impl MpegTsDemuxFactory {
     pub fn new(options: MpegTsDemuxOptions) -> Result<Self, demux_api::DemuxIdentityError> {
         let input_capabilities = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
             .with(DemuxInputCapability::StreamingBytes)
-            .with(DemuxInputCapability::OrderedSegments);
+            .with(DemuxInputCapability::OrderedSegments)
+            .with(DemuxInputCapability::OrderedResourceStream);
         let registration = DemuxContainerRegistration::new(
             DemuxContainerId::new("mpeg-ts")?,
             input_capabilities,

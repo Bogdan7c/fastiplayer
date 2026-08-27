@@ -146,6 +146,28 @@ impl HlsComponentPlan {
         candidates
     }
 
+    /// Возвращает первый media segment, начало которого не раньше requested target-а.
+    ///
+    /// Exact segment boundary остаётся в своём segment-е. Target внутри segment-а переходит
+    /// к следующему manifest point, чтобы не скачивать и не декодировать длинный GOP до target-а.
+    pub(crate) fn post_target_manifest_seek_point(
+        &self,
+        target: Duration,
+    ) -> Option<HlsManifestSeekPoint> {
+        let post_target_index = self
+            .manifest_seek_points
+            .partition_point(|point| point.timeline_start < target);
+        self.manifest_seek_points.get(post_target_index).copied()
+    }
+
+    /// Возвращает только containing segment для bounded near-EOS fallback-а.
+    pub(crate) fn containing_manifest_seek_point(
+        &self,
+        target: Duration,
+    ) -> Option<HlsManifestSeekPoint> {
+        self.manifest_seek_candidates(target).into_iter().next()
+    }
+
     /// Строит suffix, начало timeline которого соответствует выбранному manifest segment-у.
     pub(crate) fn manifest_restart_tail(
         &self,
@@ -545,6 +567,74 @@ mod tests {
         assert_eq!(
             plan.manifest_seek_candidates(Duration::from_secs(15)),
             vec![new_epoch]
+        );
+    }
+
+    #[test]
+    fn post_target_inside_segment_selects_next_manifest_point() {
+        let containing = seek_point(0, 0, 0);
+        let next = seek_point(0, 1, 10);
+        let plan = HlsComponentPlan {
+            container: HlsRequiredContainer::TransportStream,
+            epochs: Vec::new(),
+            duration: Duration::from_secs(20),
+            manifest_seek_points: vec![containing, next],
+        };
+
+        assert_eq!(
+            plan.post_target_manifest_seek_point(Duration::from_secs(5)),
+            Some(next)
+        );
+    }
+
+    #[test]
+    fn post_target_exact_boundary_keeps_exact_manifest_point() {
+        let previous = seek_point(0, 0, 0);
+        let exact = seek_point(0, 1, 10);
+        let plan = HlsComponentPlan {
+            container: HlsRequiredContainer::TransportStream,
+            epochs: Vec::new(),
+            duration: Duration::from_secs(20),
+            manifest_seek_points: vec![previous, exact],
+        };
+
+        assert_eq!(
+            plan.post_target_manifest_seek_point(Duration::from_secs(10)),
+            Some(exact)
+        );
+    }
+
+    #[test]
+    fn post_target_selection_preserves_next_discontinuity_epoch_identity() {
+        let old_epoch = seek_point(0, 0, 0);
+        let next_epoch = seek_point(1, 0, 10);
+        let plan = HlsComponentPlan {
+            container: HlsRequiredContainer::TransportStream,
+            epochs: Vec::new(),
+            duration: Duration::from_secs(20),
+            manifest_seek_points: vec![old_epoch, next_epoch],
+        };
+
+        assert_eq!(
+            plan.post_target_manifest_seek_point(Duration::from_secs(5)),
+            Some(next_epoch)
+        );
+    }
+
+    #[test]
+    fn post_target_inside_final_segment_has_no_future_manifest_point() {
+        let first = seek_point(0, 0, 0);
+        let final_segment = seek_point(0, 1, 10);
+        let plan = HlsComponentPlan {
+            container: HlsRequiredContainer::TransportStream,
+            epochs: Vec::new(),
+            duration: Duration::from_secs(20),
+            manifest_seek_points: vec![first, final_segment],
+        };
+
+        assert_eq!(
+            plan.post_target_manifest_seek_point(Duration::from_secs(15)),
+            None
         );
     }
 }

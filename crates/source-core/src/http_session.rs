@@ -7,6 +7,7 @@
 use std::fmt;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{HeaderMap, HeaderValue, LOCATION, RANGE};
@@ -372,6 +373,14 @@ impl HttpSourceSession {
     /// Материализует session-owned abortable client только для async consumer-а.
     pub(crate) fn async_client(&self) -> SourceResult<AsyncClient> {
         self.async_client_owner.client()
+    }
+
+    /// Возвращает timeout только для времени активного async I/O ожидания.
+    ///
+    /// Streaming consumer может не poll-ить response между чтениями из-за
+    /// bounded backpressure; это время не является зависшей сетью.
+    pub(crate) fn async_read_timeout(&self) -> Duration {
+        self.async_client_owner.source_config.read_timeout()
     }
 
     /// Выполняет ровно один `Range: bytes=0-0` hop и сохраняет его response.

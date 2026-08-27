@@ -1,3 +1,4 @@
+use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -11,8 +12,8 @@ use crate::{
     AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
     AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorError,
     AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoReportFrameCounts,
-    AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput, PlaybackRate,
-    PlaybackRateAudioTempoRejectReason, PlayerCommandReject,
+    AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput, MediaInstanceId,
+    PlaybackRate, PlaybackRateAudioTempoRejectReason, PlayerCommandReject,
 };
 use audio_core::{
     AudioChannelLayout, AudioPacketTimeBase, AudioPacketTiming, AudioTempoOutputSegmentSpan,
@@ -500,6 +501,43 @@ fn audio_output_factory_success_installs_output_and_clock() {
     assert!(session.pipeline.has_audio_clock());
     assert_eq!(factory_handle.created_specs(), vec![stereo_output_spec()]);
     assert_eq!(session.audio_buffer_level_ms(), Some(25.0));
+    assert_eq!(session.take_events(), vec![PlayerEvent::AudioOutputReady]);
+}
+
+#[test]
+fn audio_output_ready_and_resume_events_keep_exact_media_correlation_and_one_shot_order() {
+    let (factory, _factory_handle) = ScriptedAudioOutputFactory::success(25.0, None);
+    let mut session = PlayerSession::with_audio_output_factory(factory);
+    let media_instance_id = MediaInstanceId::from_non_zero(
+        NonZeroU64::new(77).expect("media instance id должен быть non-zero"),
+    );
+    session.snapshot.media_instance_id = Some(media_instance_id);
+
+    session
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
+        .expect("successful factory должен установить output");
+    session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("installed output должен принять Play");
+    session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("repeated Play остаётся idempotent command");
+
+    let correlated_events = session.take_correlated_events();
+    let audio_events = correlated_events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event,
+                PlayerEvent::AudioOutputReady | PlayerEvent::AudioPlaybackResumed
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(audio_events.len(), 2);
+    assert_eq!(audio_events[0].media_instance_id, Some(media_instance_id));
+    assert_eq!(audio_events[0].event, PlayerEvent::AudioOutputReady);
+    assert_eq!(audio_events[1].media_instance_id, Some(media_instance_id));
+    assert_eq!(audio_events[1].event, PlayerEvent::AudioPlaybackResumed);
 }
 
 #[test]
@@ -1269,6 +1307,12 @@ fn audio_output_factory_creation_error_becomes_audio_device_unavailable() {
     assert_eq!(factory_handle.create_count(), 1);
     assert!(!session.pipeline.has_audio_output());
     assert!(!session.pipeline.has_audio_clock());
+    assert!(session.take_events().iter().all(|event| {
+        !matches!(
+            event,
+            PlayerEvent::AudioOutputReady | PlayerEvent::AudioPlaybackResumed
+        )
+    }));
 }
 
 #[test]
@@ -1305,6 +1349,12 @@ fn lazy_audio_output_play_error_stays_audio_device_unavailable() {
     assert_eq!(error.kind, PlayerErrorKind::AudioDeviceUnavailable);
     assert!(error.message.contains("fake audio play failed"));
     assert_eq!(output_handle.play_count.load(Ordering::Relaxed), 1);
+    let events = session.take_events();
+    assert!(events.contains(&PlayerEvent::AudioOutputReady));
+    assert!(
+        !events.contains(&PlayerEvent::AudioPlaybackResumed),
+        "failed output play не имеет права публиковать resume"
+    );
 }
 
 #[test]

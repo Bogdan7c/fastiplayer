@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
 use player_core::{
-    FrameCounters, PlaybackRate, PlaybackState, PlayerCommand, PlayerEvent, PlayerRenderError,
-    PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
+    FrameCounters, MediaInstanceId, PlaybackRate, PlaybackState, PlayerCommand, PlayerEvent,
+    PlayerRenderError, PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
     PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
     PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome, QualitySelection, ScrubCommitPolicy,
     SeekRequest, VideoBackendSelectionRequest, VideoDecodeRequirement,
@@ -25,7 +25,7 @@ use rustiplayer_config::FrameServerLiveScrubDecodeModeConfig;
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, info, instrument, warn};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
-use video_present_core::VideoFrameLease;
+use video_present_core::{VideoFrameLease, VideoPresentFrameIdentity};
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 
@@ -40,6 +40,10 @@ use crate::local_file_open::{
 };
 use crate::settings_runtime::CommittedConfigSnapshot;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
+use crate::startup_readiness::{
+    StartupAudioProof, StartupReadinessAbortReason, StartupReadinessExpectation,
+    StartupReadinessTracker,
+};
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
@@ -231,6 +235,9 @@ pub struct AppState {
     /// Время запуска приложения для расчёта elapsed time.
     pub start_time: std::time::Instant,
 
+    /// App-owned correlation реального process/media-open → surface + audio результата.
+    startup_readiness: StartupReadinessTracker,
+
     /// Телеметрия — общие счётчики производительности.
     pub telemetry: Arc<Telemetry>,
 
@@ -364,22 +371,38 @@ impl player_core::PlayerWorkerTimelineWake for PlayerTimelineWakeBridge {
     }
 }
 
+/// Process-origin и безопасная startup-ошибка передаются в AppState одним typed контекстом.
+pub(crate) struct AppStateStartupContext {
+    process_started_at: Instant,
+    startup_error: Option<String>,
+}
+
+impl AppStateStartupContext {
+    /// Создаёт точный startup-контекст до запуска player worker-а.
+    pub(crate) fn new(process_started_at: Instant, startup_error: Option<String>) -> Self {
+        Self {
+            process_started_at,
+            startup_error,
+        }
+    }
+}
+
 impl AppState {
     /// Создаёт новое состояние приложения и запускает playback worker.
     #[instrument(skip(
         window,
         telemetry,
         committed_config_snapshot,
-        startup_error,
+        startup_context,
         local_file_open_wake_port,
         player_timeline_wake_port
     ))]
     pub fn new(
         window: &Window,
+        startup_context: AppStateStartupContext,
         telemetry: Arc<Telemetry>,
         committed_config_snapshot: CommittedConfigSnapshot,
         audio_output_device_controller: audio::AudioOutputDeviceController,
-        startup_error: Option<String>,
         local_file_open_wake_port: AppWakePort,
         player_timeline_wake_port: AppWakePort,
     ) -> anyhow::Result<Self> {
@@ -429,13 +452,14 @@ impl AppState {
             player_worker,
             frame_index: 0,
             start_time: std::time::Instant::now(),
+            startup_readiness: StartupReadinessTracker::new(startup_context.process_started_at),
             telemetry,
             committed_config_snapshot,
             system_capabilities_snapshot: None,
             audio_decode_capability_snapshot,
             playlist_attachment: None,
             playlist_ui_state: crate::ui::playlist::PlaylistUiState::default(),
-            startup_error,
+            startup_error: startup_context.startup_error,
             startup_pending: None,
             last_player_snapshot: PlayerSnapshot::empty(),
             pending_redraw_after_worker_command: false,
@@ -494,6 +518,8 @@ impl AppState {
         &mut self,
         deadline: crate::process_shutdown::ShutdownDeadline,
     ) -> PlayerWorkerShutdownOutcome {
+        self.startup_readiness
+            .abort_attempt(StartupReadinessAbortReason::Shutdown, Instant::now());
         self.player_worker
             .shutdown_before(PlayerWorkerShutdownDeadline::at(deadline.expires_at()))
     }
@@ -634,11 +660,53 @@ impl AppState {
         render_diagnostics: RenderDiagnostics,
     ) -> AppFrameContext {
         let player_snapshot = self.refresh_player_snapshot();
+        self.startup_readiness
+            .reconcile_tracks(&player_snapshot, Instant::now());
 
         AppFrameContext {
             player_snapshot,
             render_diagnostics,
         }
+    }
+
+    /// Фиксирует user-visible startup origin до начала media preparation/network path-а.
+    pub(crate) fn begin_startup_readiness(&mut self, expectation: StartupReadinessExpectation) {
+        self.startup_readiness
+            .begin_attempt(expectation, Instant::now());
+    }
+
+    /// Уточняет audio topology только по proof-у уже принятого prepared startup result-а.
+    pub(crate) fn note_startup_prepared_audio_proof(&mut self, proof: StartupAudioProof) {
+        self.startup_readiness
+            .note_prepared_audio_proof(proof, Instant::now());
+    }
+
+    /// Терминально закрывает попытку, которая больше не может показать startup result.
+    pub(crate) fn abort_startup_readiness(&mut self, reason: StartupReadinessAbortReason) {
+        self.startup_readiness.abort_attempt(reason, Instant::now());
+    }
+
+    /// Передаёт exact correlated player event app-owned readiness tracker-у.
+    pub(crate) fn note_startup_player_event(
+        &mut self,
+        media_instance_id: Option<MediaInstanceId>,
+        event: &PlayerEvent,
+    ) {
+        self.startup_readiness
+            .note_player_event(media_instance_id, event, Instant::now());
+    }
+
+    /// Фиксирует только кадр, который renderer уже действительно представил surface-у.
+    pub(crate) fn note_startup_surface_frame_presented(
+        &mut self,
+        frame_identity: VideoPresentFrameIdentity,
+    ) {
+        self.startup_readiness.note_surface_frame_presented(
+            self.last_player_snapshot.media_instance_id,
+            frame_identity,
+            self.last_player_snapshot.render_generation,
+            Instant::now(),
+        );
     }
 
     /// Показывает shell-level pending state, пока media ещё не передано в player.
@@ -650,6 +718,7 @@ impl AppState {
 
     /// Показывает shell-level ошибку, которая возникла до открытия media в player.
     pub fn set_startup_error(&mut self, message: String) {
+        self.abort_startup_readiness(StartupReadinessAbortReason::PreparationFailed);
         self.startup_pending = None;
         self.startup_error = Some(message);
         self.mark_pending_worker_redraw();

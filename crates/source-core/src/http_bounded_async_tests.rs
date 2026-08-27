@@ -5,6 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,8 +14,8 @@ use tokio::runtime::Builder;
 
 use crate::{
     CancellationToken, HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind,
-    HttpBoundedFetchRequest, HttpRequestTarget, HttpSourceSession, SourceError,
-    SourceRuntimeConfig,
+    HttpBoundedFetchRequest, HttpBoundedStreamingFetchHop, HttpRequestTarget, HttpSourceSession,
+    SourceError, SourceRuntimeConfig,
 };
 
 /// Все fixture waits остаются существенно меньше production timeout policy.
@@ -95,6 +96,78 @@ impl Drop for OneShotServer {
     }
 }
 
+/// Loopback fixture удерживает хвост body, чтобы отделить первый chunk от EOF.
+struct GatedBodyServer {
+    /// Exact public target для production source boundary.
+    target: HttpRequestTarget,
+    /// Разрешает fixture дописать хвост response body.
+    tail_release: Option<SyncSender<()>>,
+    /// Подтверждает, что headers и prefix уже физически отправлены.
+    prefix_ready: Receiver<()>,
+    /// Bounded worker thread fixture-а.
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl GatedBodyServer {
+    /// Запускает response с четырёхбайтовым prefix и удерживаемым tail.
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind gated HTTP fixture");
+        let address = listener.local_addr().expect("gated HTTP fixture address");
+        let target = HttpRequestTarget::parse_exact(format!("http://{address}/resource"))
+            .expect("gated HTTP target");
+        let (tail_release, wait_for_tail_release) = sync_channel(1);
+        let (prefix_ready_sender, prefix_ready) = sync_channel(1);
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept gated HTTP request");
+            read_request_headers(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nhead")
+                .expect("write gated HTTP prefix");
+            stream.flush().expect("flush gated HTTP prefix");
+            prefix_ready_sender
+                .send(())
+                .expect("publish gated HTTP prefix readiness");
+            if wait_for_tail_release.recv_timeout(FIXTURE_TIMEOUT).is_ok() {
+                stream.write_all(b"tail").expect("write gated HTTP tail");
+                stream.flush().expect("flush gated HTTP tail");
+            }
+        });
+        Self {
+            target,
+            tail_release: Some(tail_release),
+            prefix_ready,
+            worker: Some(worker),
+        }
+    }
+
+    /// Ждёт физической отправки prefix до чтения transport body.
+    fn wait_until_prefix_ready(&self) {
+        self.prefix_ready
+            .recv_timeout(FIXTURE_TIMEOUT)
+            .expect("gated HTTP prefix must become ready");
+    }
+
+    /// Разрешает server дописать оставшуюся половину body.
+    fn release_tail(&mut self) {
+        self.tail_release
+            .take()
+            .expect("gated HTTP tail released once")
+            .send(())
+            .expect("release gated HTTP tail");
+    }
+}
+
+impl Drop for GatedBodyServer {
+    fn drop(&mut self) {
+        if let Some(tail_release) = self.tail_release.take() {
+            let _ = tail_release.send(());
+        }
+        if let Some(worker) = self.worker.take() {
+            worker.join().expect("join gated HTTP fixture");
+        }
+    }
+}
+
 /// Читает request headers до отправки fixture response.
 fn read_request_headers(stream: &mut TcpStream) {
     stream
@@ -128,6 +201,17 @@ fn response(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
 fn source_session() -> HttpSourceSession {
     let source_config =
         SourceRuntimeConfig::from_network_config(&NetworkConfig::default()).expect("source config");
+    HttpSourceSession::new(&source_config).expect("HTTP source session")
+}
+
+/// Создаёт session с коротким read timeout для детерминированных timeout tests.
+fn source_session_with_read_timeout(read_timeout: Duration) -> HttpSourceSession {
+    let network_config = NetworkConfig {
+        read_timeout_ms: u64::try_from(read_timeout.as_millis()).expect("test timeout fits u64"),
+        ..NetworkConfig::default()
+    };
+    let source_config =
+        SourceRuntimeConfig::from_network_config(&network_config).expect("source config");
     HttpSourceSession::new(&source_config).expect("HTTP source session")
 }
 
@@ -250,4 +334,154 @@ fn async_hop_rejects_pre_cancelled_request_before_network() {
         panic!("recovery response must not become redirect");
     };
     assert_eq!(response.into_bytes(), b"recovered");
+}
+
+/// Streaming boundary отдаёт уже пришедший prefix, пока server удерживает tail.
+#[test]
+fn streaming_hop_does_not_wait_for_complete_body() {
+    let mut server = GatedBodyServer::start();
+    let session = source_session();
+    let cancellation = CancellationToken::new();
+    let request = HttpBoundedFetchRequest::full(
+        server.target.clone(),
+        Vec::new(),
+        NonZeroUsize::new(8).expect("body bound"),
+        HttpBoundedFetchKind::Media,
+    );
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test Tokio runtime");
+    let opened = runtime
+        .block_on(session.open_bounded_single_hop_stream(request, &cancellation))
+        .expect("open streaming response");
+    let HttpBoundedStreamingFetchHop::Body(mut body) = opened else {
+        panic!("streaming fixture must not redirect");
+    };
+    server.wait_until_prefix_ready();
+
+    let prefix = runtime
+        .block_on(body.next_chunk(&cancellation))
+        .expect("read streaming prefix")
+        .expect("prefix before EOF");
+    assert_eq!(prefix, b"head".as_slice());
+    assert_eq!(body.received_body_bytes(), 4);
+
+    server.release_tail();
+    let tail = runtime
+        .block_on(body.next_chunk(&cancellation))
+        .expect("read streaming tail")
+        .expect("tail before EOF");
+    assert_eq!(tail, b"tail".as_slice());
+    assert!(
+        runtime
+            .block_on(body.next_chunk(&cancellation))
+            .expect("read validated streaming EOF")
+            .is_none()
+    );
+    assert_eq!(body.received_body_bytes(), 8);
+}
+
+/// Законная пауза consumer-а не превращается в reqwest total-request timeout.
+#[test]
+fn streaming_hop_timeout_excludes_unpolled_backpressure_pause() {
+    let mut server = GatedBodyServer::start();
+    let read_timeout = Duration::from_millis(100);
+    let session = source_session_with_read_timeout(read_timeout);
+    let cancellation = CancellationToken::new();
+    let request = HttpBoundedFetchRequest::full(
+        server.target.clone(),
+        Vec::new(),
+        NonZeroUsize::new(8).expect("body bound"),
+        HttpBoundedFetchKind::Media,
+    );
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test Tokio runtime");
+    let opened = runtime
+        .block_on(session.open_bounded_single_hop_stream(request, &cancellation))
+        .expect("open streaming response");
+    let HttpBoundedStreamingFetchHop::Body(mut body) = opened else {
+        panic!("streaming fixture must not redirect");
+    };
+    server.wait_until_prefix_ready();
+    let prefix = runtime
+        .block_on(body.next_chunk(&cancellation))
+        .expect("read streaming prefix")
+        .expect("prefix before EOF");
+    assert_eq!(prefix, b"head".as_slice());
+
+    thread::sleep(read_timeout + Duration::from_millis(50));
+    server.release_tail();
+    let tail = runtime
+        .block_on(body.next_chunk(&cancellation))
+        .expect("backpressure pause must not expire idle response")
+        .expect("tail before EOF");
+    assert_eq!(tail, b"tail".as_slice());
+}
+
+/// Когда consumer активно ждёт следующий byte, configured read timeout сохраняется.
+#[test]
+fn streaming_hop_times_out_an_actively_polled_stalled_body() {
+    let server = GatedBodyServer::start();
+    let session = source_session_with_read_timeout(Duration::from_millis(100));
+    let cancellation = CancellationToken::new();
+    let request = HttpBoundedFetchRequest::full(
+        server.target.clone(),
+        Vec::new(),
+        NonZeroUsize::new(8).expect("body bound"),
+        HttpBoundedFetchKind::Media,
+    );
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test Tokio runtime");
+    let opened = runtime
+        .block_on(session.open_bounded_single_hop_stream(request, &cancellation))
+        .expect("open streaming response");
+    let HttpBoundedStreamingFetchHop::Body(mut body) = opened else {
+        panic!("streaming fixture must not redirect");
+    };
+    server.wait_until_prefix_ready();
+    let prefix = runtime
+        .block_on(body.next_chunk(&cancellation))
+        .expect("read streaming prefix")
+        .expect("prefix before EOF");
+    assert_eq!(prefix, b"head".as_slice());
+
+    let error = runtime
+        .block_on(body.next_chunk(&cancellation))
+        .expect_err("active stalled body must respect read timeout");
+    assert!(matches!(error, SourceError::HttpTimeout { .. }));
+}
+
+/// Cancellation после open не публикует buffered partial body как success.
+#[test]
+fn streaming_hop_observes_cancellation_before_next_read() {
+    let server = OneShotServer::start(response("200 OK", &[], b"unused"));
+    let session = source_session();
+    let cancellation = CancellationToken::new();
+    let request = HttpBoundedFetchRequest::full(
+        server.target.clone(),
+        Vec::new(),
+        NonZeroUsize::new(16).expect("body bound"),
+        HttpBoundedFetchKind::Media,
+    );
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test Tokio runtime");
+    let opened = runtime
+        .block_on(session.open_bounded_single_hop_stream(request, &cancellation))
+        .expect("open streaming response");
+    let HttpBoundedStreamingFetchHop::Body(mut body) = opened else {
+        panic!("streaming fixture must not redirect");
+    };
+    cancellation.cancel();
+
+    let error = runtime
+        .block_on(body.next_chunk(&cancellation))
+        .expect_err("cancelled streaming body must fail");
+    assert!(matches!(error, SourceError::Cancelled));
 }

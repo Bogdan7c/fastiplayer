@@ -422,12 +422,15 @@ impl ScrubTransactionLifecycle for PlayerSession {
             let commit_generation = seek_landing
                 .decode_seek_generation()
                 .unwrap_or_else(|| context.generation().playback_generation.get());
+            let accepted_at = std::time::Instant::now();
             let seek_commit = SeekCommitState {
                 generation: commit_generation,
                 seek_mode: seek_landing.seek_mode(),
                 target_position: context.target().media_time,
                 actual_position,
-                started_at: std::time::Instant::now(),
+                landing_policy: crate::PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+                started_at: accepted_at,
+                public_accepted_at: accepted_at,
                 resume_intent: seek_landing.resume_intent(),
                 target_retention: SeekTargetRetention::ExactPublicRange,
             };

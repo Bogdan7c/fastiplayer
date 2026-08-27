@@ -2436,8 +2436,8 @@ fn playing_final_seek_commits_after_target_frame_and_ready_audio() {
         "audio resume event должен быть опубликован после успешного play",
     );
 
-    assert!(target_frame_event_index < commit_event_index);
-    assert!(commit_event_index < audio_resume_event_index);
+    assert!(target_frame_event_index < audio_resume_event_index);
+    assert!(audio_resume_event_index < commit_event_index);
 }
 
 #[test]
@@ -2474,7 +2474,7 @@ fn final_seek_audio_play_error_closes_seek_and_reports_visible_error() {
     );
 
     assert!(session.seek_commit().is_none());
-    assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
     assert!(!session.snapshot().timeline.seeking);
     assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 1);
     assert!(matches!(
@@ -2498,6 +2498,17 @@ fn final_seek_audio_play_error_closes_seek_and_reports_visible_error() {
             .iter()
             .any(|event| matches!(event, PlayerEvent::AudioResumedAfterSeek(_)))
     );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::AudioPlaybackResumed))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::SeekCommitted(_)))
+    );
+    assert_eq!(session.snapshot().current_position, Duration::ZERO);
 }
 
 #[test]

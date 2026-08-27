@@ -1,30 +1,52 @@
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::task::{Context, Wake, Waker};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use media_core::{
-    DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer,
-    MediaTime, Packet, TimelineNotSeekableReason, TrackId, TrackInfo, TrackKind,
+    DemuxActiveReadInterrupter, DemuxActiveReadInterruptionCapability,
+    DemuxActiveReadInterruptionPort, DemuxActiveReadInterruptionReason,
+    DemuxActiveReadInterruptionResult, DemuxReadEvent, DemuxRetryHint,
+    DemuxSeekCancellationCompletion, DemuxSeekCancellationToken, DemuxSeekRequest, DemuxSeekResult,
+    DemuxSeekability, DemuxTrackListUpdate, Demuxer, MediaDemuxError, MediaTime, Packet,
+    TimelineNotSeekableReason, TrackId, TrackInfo, TrackKind,
 };
 use source_core::CancellationToken;
 
-use super::worker::{ProgressiveSeekCommand, ProgressiveSharedState, wait_for_seek_command};
+use super::worker::{
+    ProgressiveMessage, ProgressivePushOutcome, ProgressiveSeekCommand, ProgressiveSharedState,
+    push_progressive_message, wait_for_seek_command,
+};
 use super::{
     ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
     ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt, ProgressiveDemuxBufferLimits,
-    ProgressiveDemuxPacketTooLargeError, ProgressiveDemuxStartupError, ProgressiveDemuxer,
-    ProgressiveRuntimeGeneration, ProgressiveSeekController, ProgressiveSeekFence,
-    ProgressiveSeekRequestId,
+    ProgressiveDemuxPacketTooLargeError, ProgressiveDemuxReadiness, ProgressiveDemuxReadinessPort,
+    ProgressiveDemuxStartupError, ProgressiveDemuxer, ProgressiveRuntimeGeneration,
+    ProgressiveSeekController, ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
 
 /// Blocking fake сохраняет главный production invariant: inner read может ждать сколько угодно.
 struct BlockingChannelDemuxer {
     /// Test owner публикует готовые exact demux events.
     receiver: Receiver<DemuxReadEvent>,
+}
+
+/// Уникальные test waker-ы насыщают bounded cancellation registry без executor-а.
+struct ReadinessCountingWake {
+    /// Wake side effect не даёт clippy спутать unique registry fixture с noop waker-ом.
+    wake_count: AtomicUsize,
+}
+
+impl Wake for ReadinessCountingWake {
+    /// Saturation test наблюдает fail-closed token state, а не отдельные wake callbacks.
+    fn wake(self: Arc<Self>) {
+        self.wake_count.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// Gated seekable fake делает каждый inner read двухфазным и наблюдаемым.
@@ -37,6 +59,196 @@ struct GatedSeekableEventDemuxer {
     next_read_sequence: usize,
     /// Seek result сохраняет exact requested position.
     position: Duration,
+}
+
+/// Наблюдаемые фазы interruptible body read и следующего replacement seek-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterruptibleReadLifecycleEvent {
+    /// Worker вошёл в старый physical body read.
+    ReadStarted,
+    /// Старый body owner был dropped после interruption signal-а.
+    BodyDropped,
+    /// Worker начал transactional replacement только после unwind старого read-а.
+    ReplacementStarted,
+}
+
+/// Drop guard моделирует владение pending HTTP body future/resource-ом.
+struct InterruptibleBodyDropGuard {
+    /// Один ordered channel делает относительный порядок фаз детерминированным.
+    lifecycle_sender: SyncSender<InterruptibleReadLifecycleEvent>,
+}
+
+impl Drop for InterruptibleBodyDropGuard {
+    /// Фиксирует физическое освобождение старого body owner-а до replacement boundary.
+    fn drop(&mut self) {
+        let _ = self
+            .lifecycle_sender
+            .send(InterruptibleReadLifecycleEvent::BodyDropped);
+    }
+}
+
+/// Shared controller сигналит только active read-у и никогда не ждёт worker/queue.
+struct TestActiveReadInterrupter {
+    /// Истина только пока fake физически ждёт old body.
+    read_is_active: AtomicBool,
+    /// Число accepted current-runtime requests, пославших interruption signal.
+    request_count: AtomicUsize,
+    /// Capacity-one sender используется только через `try_send`, без ожидания receiver-а.
+    interruption_sender: SyncSender<()>,
+}
+
+impl DemuxActiveReadInterrupter for TestActiveReadInterrupter {
+    /// Ставит один nonblocking сигнал либо сообщает quiescent state.
+    fn request_active_read_interruption(
+        &self,
+        reason: DemuxActiveReadInterruptionReason,
+    ) -> DemuxActiveReadInterruptionResult {
+        assert_eq!(
+            reason,
+            DemuxActiveReadInterruptionReason::ReceiptedSeekEnqueued
+        );
+        self.request_count.fetch_add(1, Ordering::SeqCst);
+        if self.read_is_active.swap(false, Ordering::SeqCst) {
+            self.interruption_sender
+                .try_send(())
+                .expect("active test read обязан владеть свободным signal slot-ом");
+            DemuxActiveReadInterruptionResult::InterruptionRequestedRestartable
+        } else {
+            DemuxActiveReadInterruptionResult::AlreadyQuiescent
+        }
+    }
+}
+
+/// Seekable fake моделирует stalled old body, whole-parser unwind и transactional rollback.
+struct InterruptibleReceiptedSeekDemuxer {
+    /// Stable controller возвращается через generic demux capability.
+    interruption_controller: Arc<TestActiveReadInterrupter>,
+    /// Opaque cloneable port не раскрывает fake fields progressive owner-у.
+    interruption_port: DemuxActiveReadInterruptionPort,
+    /// Первый body read ждёт interruption signal-а.
+    interruption_receiver: Receiver<()>,
+    /// Ordered lifecycle events доказывают Drop-before-replacement.
+    lifecycle_sender: SyncSender<InterruptibleReadLifecycleEvent>,
+    /// Scripted replacement может fail-closed проверить rollback.
+    replacement_fails: bool,
+    /// Только самый первый read моделирует obsolete body.
+    first_read: bool,
+    /// Текущая committed timeline position старого либо нового source-а.
+    position: Duration,
+    /// После restart/commit fake публикует ровно один packet.
+    packet_emitted: bool,
+}
+
+impl Demuxer for InterruptibleReceiptedSeekDemuxer {
+    fn tracks(&self) -> &[TrackInfo] {
+        &[]
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(10))
+    }
+
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::Seekable
+    }
+
+    fn active_read_interruption(&self) -> DemuxActiveReadInterruptionCapability {
+        DemuxActiveReadInterruptionCapability::Supported(self.interruption_port.clone())
+    }
+
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        if self.first_read {
+            self.first_read = false;
+            self.interruption_controller
+                .read_is_active
+                .store(true, Ordering::SeqCst);
+            self.lifecycle_sender
+                .send(InterruptibleReadLifecycleEvent::ReadStarted)
+                .expect("test lifecycle receiver должен жить");
+            let _body_guard = InterruptibleBodyDropGuard {
+                lifecycle_sender: self.lifecycle_sender.clone(),
+            };
+            self.interruption_receiver
+                .recv()
+                .map_err(|_| anyhow::anyhow!("test interruption sender disconnected"))?;
+            anyhow::bail!("старый read unwind-нулся к whole-parser restart boundary");
+        }
+        if self.packet_emitted {
+            return Ok(DemuxReadEvent::EndOfStream);
+        }
+        self.packet_emitted = true;
+        Ok(DemuxReadEvent::Packet(Packet::new_unbounded(
+            TrackId::new(1),
+            TrackKind::Video,
+            self.position,
+            None,
+            true,
+            Bytes::from_static(&[0x65]),
+        )))
+    }
+
+    fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
+        self.position = request.timestamp;
+        self.packet_emitted = false;
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: MediaTime::from_duration(request.timestamp),
+            actual_track_timestamp: None,
+        })
+    }
+
+    fn seek_with_cancellable_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> anyhow::Result<DemuxSeekResult> {
+        self.lifecycle_sender
+            .send(InterruptibleReadLifecycleEvent::ReplacementStarted)
+            .expect("test lifecycle receiver должен жить");
+        if cancellation.is_cancelled() {
+            return Err(MediaDemuxError::SeekCancelled.into());
+        }
+        if self.replacement_fails {
+            anyhow::bail!("scripted replacement failure до commit");
+        }
+        self.seek_with_request(request)
+    }
+}
+
+/// Создаёт fake и наружные probes без доступа progressive к concrete state.
+fn interruptible_receipted_seek_demuxer(
+    replacement_fails: bool,
+) -> (
+    InterruptibleReceiptedSeekDemuxer,
+    Arc<TestActiveReadInterrupter>,
+    Receiver<InterruptibleReadLifecycleEvent>,
+) {
+    let (interruption_sender, interruption_receiver) = sync_channel(1);
+    let (lifecycle_sender, lifecycle_receiver) = sync_channel(4);
+    let interruption_controller = Arc::new(TestActiveReadInterrupter {
+        read_is_active: AtomicBool::new(false),
+        request_count: AtomicUsize::new(0),
+        interruption_sender,
+    });
+    let interruption_port = DemuxActiveReadInterruptionPort::new(interruption_controller.clone());
+    (
+        InterruptibleReceiptedSeekDemuxer {
+            interruption_controller: Arc::clone(&interruption_controller),
+            interruption_port,
+            interruption_receiver,
+            lifecycle_sender,
+            replacement_fails,
+            first_read: true,
+            position: Duration::ZERO,
+            packet_emitted: false,
+        },
+        interruption_controller,
+        lifecycle_receiver,
+    )
 }
 
 impl Demuxer for BlockingChannelDemuxer {
@@ -325,6 +537,60 @@ struct SlowReceiptSeekDemuxer {
     seek_count: usize,
 }
 
+/// Первый seek ждёт только request-scoped cancellation; второй сразу завершается.
+struct CancellableReceiptSeekDemuxer {
+    /// Test наблюдает начало каждого worker-owned seek без polling.
+    seek_started: SyncSender<usize>,
+    /// Число вызовов принадлежит единственному demux worker-у.
+    seek_count: usize,
+}
+
+impl Demuxer for CancellableReceiptSeekDemuxer {
+    fn tracks(&self) -> &[TrackInfo] {
+        &[]
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(10))
+    }
+
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::Seekable
+    }
+
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        Ok(DemuxReadEvent::EndOfStream)
+    }
+
+    fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: MediaTime::from_duration(request.timestamp),
+            actual_track_timestamp: None,
+        })
+    }
+
+    fn seek_with_cancellable_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_count = self.seek_count.saturating_add(1);
+        self.seek_started
+            .send(self.seek_count)
+            .expect("test receiver должен жить");
+        if self.seek_count == 1 {
+            cancellation.wait_cancelled();
+            return Err(MediaDemuxError::SeekCancelled.into());
+        }
+        self.seek_with_request(request)
+    }
+}
+
 impl Demuxer for SlowReceiptSeekDemuxer {
     fn tracks(&self) -> &[TrackInfo] {
         &[]
@@ -368,6 +634,71 @@ impl Demuxer for SlowReceiptSeekDemuxer {
 struct FirstReceiptSeekFailsDemuxer {
     /// Число вызовов выбирает scripted outcome.
     seek_count: usize,
+}
+
+/// Моделирует HLS replacement, который сохраняет request token в committed source.
+struct CompletedTokenReplacementDemuxer {
+    /// Последний committed source проверяет, не отравил ли его поздний supersede.
+    committed_source_token: Option<DemuxSeekCancellationToken>,
+    /// Второй request падает, а первый и третий успешно заменяют source.
+    seek_count: usize,
+}
+
+impl Demuxer for CompletedTokenReplacementDemuxer {
+    fn tracks(&self) -> &[TrackInfo] {
+        &[]
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(10))
+    }
+
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::Seekable
+    }
+
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        if self
+            .committed_source_token
+            .as_ref()
+            .is_some_and(DemuxSeekCancellationToken::is_cancelled)
+        {
+            anyhow::bail!("late supersede отравил committed source token");
+        }
+        Ok(DemuxReadEvent::EndOfStream)
+    }
+
+    fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: MediaTime::from_duration(request.timestamp),
+            actual_track_timestamp: None,
+        })
+    }
+
+    fn seek_with_cancellable_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_count = self.seek_count.saturating_add(1);
+        if self.seek_count == 2 {
+            anyhow::bail!("scripted failure после первого committed replacement");
+        }
+        match cancellation.complete() {
+            DemuxSeekCancellationCompletion::Completed => {
+                self.committed_source_token = Some(cancellation);
+                self.seek_with_request(request)
+            }
+            DemuxSeekCancellationCompletion::CancellationWon => {
+                Err(MediaDemuxError::SeekCancelled.into())
+            }
+        }
+    }
 }
 
 impl Demuxer for FirstReceiptSeekFailsDemuxer {
@@ -677,9 +1008,12 @@ fn blocked_inner_read_returns_readiness_without_blocking_player_owner() {
 
 #[test]
 fn deferred_open_failure_is_nonblocking_and_preserves_typed_error() {
+    let (release_sender, release_receiver) = sync_channel(0);
     let mut progressive = ProgressiveDemuxer::new_deferred(
-        || {
-            thread::sleep(Duration::from_millis(40));
+        move || {
+            release_receiver
+                .recv()
+                .expect("test owner releases deferred failure");
             Err(anyhow::anyhow!("deferred-open-test-failure"))
         },
         CancellationToken::new(),
@@ -687,6 +1021,7 @@ fn deferred_open_failure_is_nonblocking_and_preserves_typed_error() {
         retry_hint(),
     )
     .expect("deferred worker starts");
+    let readiness = progressive.readiness_port();
 
     let started_at = Instant::now();
     assert!(matches!(
@@ -695,20 +1030,192 @@ fn deferred_open_failure_is_nonblocking_and_preserves_typed_error() {
     ));
     assert!(started_at.elapsed() < Duration::from_millis(20));
 
-    let deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        match progressive.next_event() {
-            Ok(DemuxReadEvent::TemporarilyUnavailable(_)) => {
-                assert!(Instant::now() < deadline, "deferred failure timed out");
-                thread::sleep(DemuxRetryHint::MIN_RETRY_AFTER);
-            }
-            Err(error) => {
-                assert_eq!(error.to_string(), "deferred-open-test-failure");
-                break;
-            }
-            Ok(other) => panic!("unexpected deferred event: {other:?}"),
-        }
+    release_sender
+        .send(())
+        .expect("deferred worker still waits for release");
+    assert_eq!(
+        readiness.wait_until(Instant::now() + Duration::from_secs(1)),
+        ProgressiveDemuxReadiness::EventAvailable,
+        "queued typed failure обязан иметь приоритет над worker terminal state"
+    );
+    let error = progressive
+        .next_event()
+        .expect_err("deferred worker publishes exact failure");
+    assert_eq!(error.to_string(), "deferred-open-test-failure");
+}
+
+#[test]
+fn readiness_port_wakes_on_tracks_changed_without_consuming_event() {
+    let (sender, inner) = blocking_demuxer();
+    let mut progressive = ProgressiveDemuxer::new(
+        inner,
+        CancellationToken::new(),
+        limits(2, 1024),
+        retry_hint(),
+    )
+    .expect("progressive worker starts");
+    let readiness = progressive.readiness_port();
+    let (outcome_sender, outcome_receiver) = sync_channel(1);
+    let waiter = thread::spawn(move || {
+        outcome_sender
+            .send(readiness.wait_until(Instant::now() + Duration::from_secs(1)))
+            .expect("publish readiness outcome");
+    });
+
+    sender
+        .send(DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+            Vec::new(),
+            None,
+        )))
+        .expect("worker receiver lives");
+    assert_eq!(
+        outcome_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("tracks publication wakes readiness waiter"),
+        ProgressiveDemuxReadiness::EventAvailable
+    );
+    waiter.join().expect("join readiness waiter");
+    assert!(matches!(
+        progressive
+            .next_event()
+            .expect("tracks event remains queued"),
+        DemuxReadEvent::TracksChanged(_)
+    ));
+
+    sender
+        .send(DemuxReadEvent::EndOfStream)
+        .expect("worker receiver lives until terminal event");
+}
+
+#[test]
+fn readiness_port_cancellation_wakes_without_waiting_for_deadline() {
+    let (sender, inner) = blocking_demuxer();
+    let cancellation = CancellationToken::new();
+    let progressive =
+        ProgressiveDemuxer::new(inner, cancellation.clone(), limits(2, 1024), retry_hint())
+            .expect("progressive worker starts");
+    let readiness = progressive.readiness_port();
+    let (outcome_sender, outcome_receiver) = sync_channel(1);
+    let waiter = thread::spawn(move || {
+        outcome_sender
+            .send(readiness.wait_until(Instant::now() + Duration::from_secs(30)))
+            .expect("publish cancellation readiness outcome");
+    });
+
+    cancellation.cancel();
+    assert_eq!(
+        outcome_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancellation future wakes Condvar waiter"),
+        ProgressiveDemuxReadiness::Cancelled
+    );
+    waiter.join().expect("join cancelled readiness waiter");
+    // Если worker уже заметил cancellation до blocking read-а, receiver законно закрыт;
+    // иначе drop sender-а освобождает scripted recv без ложного terminal event-а.
+    drop(sender);
+}
+
+#[test]
+fn readiness_port_cancellation_waiter_saturation_fails_closed_without_deadlock() {
+    let shared = Arc::new(ProgressiveSharedState::new(limits(1, 1)));
+    let cancellation = CancellationToken::new();
+    let mut registered_futures = Vec::new();
+    let mut registered_wakers = Vec::new();
+
+    // source-core contract ограничивает один token восемью уникальными waker-ами;
+    // девятый poll обязан отменить token fail-closed вместо unbounded registry.
+    for _ in 0..8 {
+        let waker = Waker::from(Arc::new(ReadinessCountingWake {
+            wake_count: AtomicUsize::new(0),
+        }));
+        let mut cancellation_future = Box::pin(cancellation.cancelled());
+        let mut context = Context::from_waker(&waker);
+        assert!(cancellation_future.as_mut().poll(&mut context).is_pending());
+        registered_wakers.push(waker);
+        registered_futures.push(cancellation_future);
     }
+    let readiness = ProgressiveDemuxReadinessPort::new(shared, cancellation.clone());
+    assert_eq!(
+        readiness.wait_until(Instant::now() + Duration::from_secs(1)),
+        ProgressiveDemuxReadiness::Cancelled
+    );
+    assert!(cancellation.is_cancelled());
+    drop(registered_futures);
+    drop(registered_wakers);
+}
+
+#[test]
+fn readiness_port_observes_worker_panic_as_terminal_without_fake_event() {
+    let mut progressive = ProgressiveDemuxer::new_deferred(
+        || -> anyhow::Result<Box<dyn Demuxer + Send>> {
+            panic!("readiness-test-worker-panic");
+        },
+        CancellationToken::new(),
+        limits(2, 1024),
+        retry_hint(),
+    )
+    .expect("deferred worker starts before its scripted panic");
+    let readiness = progressive.readiness_port();
+
+    assert_eq!(
+        readiness.wait_until(Instant::now() + Duration::from_secs(1)),
+        ProgressiveDemuxReadiness::WorkerStopped
+    );
+    let error = progressive
+        .next_event()
+        .expect_err("panic не должен превращаться в synthetic event");
+    assert!(
+        error
+            .downcast_ref::<super::ProgressiveDemuxWorkerStoppedError>()
+            .is_some()
+    );
+}
+
+#[test]
+fn readiness_port_ignores_stale_generation_and_preserves_queue_accounting() {
+    let shared = Arc::new(ProgressiveSharedState::new(limits(2, 16)));
+    let cancellation = CancellationToken::new();
+    let packet_bytes = Bytes::from_static(&[1, 2, 3, 4]);
+    assert_eq!(
+        push_progressive_message(
+            &shared,
+            &cancellation,
+            0,
+            ProgressiveMessage::Event(DemuxReadEvent::Packet(Packet::new_unbounded(
+                TrackId::new(1),
+                TrackKind::Video,
+                Duration::ZERO,
+                None,
+                true,
+                packet_bytes.clone(),
+            ))),
+        ),
+        ProgressivePushOutcome::Published
+    );
+    let readiness = ProgressiveDemuxReadinessPort::new(Arc::clone(&shared), cancellation.clone());
+    assert_eq!(
+        readiness.wait_until(Instant::now() + Duration::from_secs(1)),
+        ProgressiveDemuxReadiness::EventAvailable
+    );
+    {
+        let queue = shared.lock_queue();
+        assert_eq!(queue.messages.len(), 1, "port не потребляет queued event");
+        assert_eq!(
+            queue.queued_encoded_bytes,
+            packet_bytes.len(),
+            "port не меняет byte accounting"
+        );
+    }
+
+    shared.lock_queue().current_generation = 1;
+    assert_eq!(
+        readiness.wait_until(Instant::now()),
+        ProgressiveDemuxReadiness::DeadlineReached,
+        "stale-only queue не является readiness нового player intent-а"
+    );
+    let queue = shared.lock_queue();
+    assert_eq!(queue.messages.len(), 1);
+    assert_eq!(queue.queued_encoded_bytes, packet_bytes.len());
 }
 
 #[test]
@@ -1313,6 +1820,192 @@ fn rapid_seek_supersedes_in_flight_and_pending_requests() {
 }
 
 #[test]
+fn newer_receipted_seek_physically_cancels_in_flight_worker_operation() {
+    let (started_sender, started_receiver) = sync_channel(2);
+    let (_progressive, handle) = receipted_runtime(
+        Box::new(CancellableReceiptSeekDemuxer {
+            seek_started: started_sender,
+            seek_count: 0,
+        }),
+        CancellationToken::new(),
+        2,
+    );
+    handle
+        .enqueue(
+            receipt_fence(7, 1),
+            DemuxSeekRequest::accurate(Duration::from_secs(1)),
+        )
+        .expect("first request accepted");
+    assert_eq!(
+        started_receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(1),
+        "worker должен войти в первый cancellable seek"
+    );
+
+    handle
+        .enqueue(
+            receipt_fence(7, 2),
+            DemuxSeekRequest::accurate(Duration::from_secs(2)),
+        )
+        .expect("newer request accepted");
+    assert_eq!(
+        started_receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(2),
+        "второй seek должен стартовать без ручного release первого"
+    );
+
+    let first = poll_until_receipt(&handle);
+    let second = poll_until_receipt(&handle);
+    let outcomes = [
+        (first.fence.request_id.value(), first.outcome),
+        (second.fence.request_id.value(), second.outcome),
+    ];
+    assert!(outcomes.contains(&(1, ProgressiveAsyncSeekOutcome::Superseded)));
+    assert!(outcomes.contains(&(
+        2,
+        ProgressiveAsyncSeekOutcome::Succeeded(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(Duration::from_secs(2)),
+            actual_position: MediaTime::from_duration(Duration::from_secs(2)),
+            actual_track_timestamp: None,
+        })
+    )));
+}
+
+#[test]
+fn deferred_receipted_seek_interrupts_stalled_old_body_before_replacement_receipt() {
+    let (inner, interruption_controller, lifecycle_receiver) =
+        interruptible_receipted_seek_demuxer(false);
+    let progressive = ProgressiveDemuxer::new_deferred_receipted_seekable(
+        move || Ok(Box::new(inner)),
+        exact_seek_controller(),
+        CancellationToken::new(),
+        limits(4, 16),
+        retry_hint(),
+        ProgressiveRuntimeGeneration::new(7),
+        ProgressiveAsyncSeekLimits::new(
+            NonZeroUsize::new(2).expect("test receipt bound ненулевой"),
+        ),
+    )
+    .expect("deferred receipt worker запускается");
+    let handle = progressive
+        .async_seek_handle()
+        .expect("deferred runtime публикует receipt capability");
+
+    assert_eq!(
+        lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(InterruptibleReadLifecycleEvent::ReadStarted),
+        "worker должен войти в stalled old body read"
+    );
+    handle
+        .enqueue(
+            receipt_fence(7, 1),
+            DemuxSeekRequest::accurate(Duration::from_secs(5)),
+        )
+        .expect("current-runtime request accepted");
+    assert_eq!(
+        lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(InterruptibleReadLifecycleEvent::BodyDropped),
+        "physical old body owner должен быть dropped после interruption"
+    );
+    assert_eq!(
+        lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(InterruptibleReadLifecycleEvent::ReplacementStarted),
+        "replacement нельзя начинать до whole-parser unwind"
+    );
+    assert_eq!(
+        interruption_controller.request_count.load(Ordering::SeqCst),
+        1
+    );
+    assert!(matches!(
+        poll_until_receipt(&handle).outcome,
+        ProgressiveAsyncSeekOutcome::Succeeded(DemuxSeekResult {
+            actual_position,
+            ..
+        }) if actual_position == MediaTime::from_secs(5)
+    ));
+}
+
+#[test]
+fn failed_replacement_after_active_read_interruption_has_no_fake_success_and_restarts_old_source() {
+    let (inner, interruption_controller, lifecycle_receiver) =
+        interruptible_receipted_seek_demuxer(true);
+    let (mut progressive, handle) = receipted_runtime(Box::new(inner), CancellationToken::new(), 2);
+
+    assert_eq!(
+        lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(InterruptibleReadLifecycleEvent::ReadStarted)
+    );
+    handle
+        .enqueue(
+            receipt_fence(7, 1),
+            DemuxSeekRequest::accurate(Duration::from_secs(5)),
+        )
+        .expect("current-runtime request accepted");
+    assert_eq!(
+        lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(InterruptibleReadLifecycleEvent::BodyDropped)
+    );
+    assert_eq!(
+        lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(InterruptibleReadLifecycleEvent::ReplacementStarted)
+    );
+    assert_eq!(
+        poll_until_receipt(&handle).outcome,
+        ProgressiveAsyncSeekOutcome::Failed,
+        "ошибка replacement не имеет права публиковать fake success"
+    );
+    assert_eq!(
+        interruption_controller.request_count.load(Ordering::SeqCst),
+        1
+    );
+
+    let DemuxReadEvent::Packet(packet) =
+        poll_until_event(&mut progressive).expect("old committed source должен restart-нуться")
+    else {
+        panic!("rollback обязан вернуть packet старого committed source-а");
+    };
+    assert_eq!(
+        packet.pts,
+        Duration::ZERO,
+        "failed target нельзя подменять новой timeline position"
+    );
+}
+
+#[test]
+fn stale_receipted_seek_does_not_interrupt_current_active_read() {
+    let (inner, interruption_controller, lifecycle_receiver) =
+        interruptible_receipted_seek_demuxer(false);
+    let (_progressive, handle) = receipted_runtime(Box::new(inner), CancellationToken::new(), 2);
+
+    assert_eq!(
+        lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(InterruptibleReadLifecycleEvent::ReadStarted)
+    );
+    let stale_fence = receipt_fence(6, 1);
+    handle
+        .enqueue(
+            stale_fence,
+            DemuxSeekRequest::accurate(Duration::from_secs(5)),
+        )
+        .expect("stale request получает terminal receipt");
+    assert_eq!(
+        interruption_controller.request_count.load(Ordering::SeqCst),
+        0,
+        "stale fence не должен трогать current physical read"
+    );
+
+    let _ = interruption_controller
+        .request_active_read_interruption(DemuxActiveReadInterruptionReason::ReceiptedSeekEnqueued);
+    assert_eq!(
+        poll_until_receipt(&handle),
+        ProgressiveAsyncSeekReceipt {
+            fence: stale_fence,
+            outcome: ProgressiveAsyncSeekOutcome::Stale,
+        }
+    );
+}
+
+#[test]
 fn failed_receipted_seek_does_not_kill_transactional_worker() {
     let (_progressive, handle) = receipted_runtime(
         Box::new(FirstReceiptSeekFailsDemuxer { seek_count: 0 }),
@@ -1339,6 +2032,75 @@ fn failed_receipted_seek_does_not_kill_transactional_worker() {
         poll_until_receipt(&handle).outcome,
         ProgressiveAsyncSeekOutcome::Succeeded(_)
     ));
+}
+
+#[test]
+fn completed_replacement_survives_later_failed_request_and_accepts_retry() {
+    let (_progressive, handle) = receipted_runtime(
+        Box::new(CompletedTokenReplacementDemuxer {
+            committed_source_token: None,
+            seek_count: 0,
+        }),
+        CancellationToken::new(),
+        1,
+    );
+
+    for (request_id, target_seconds, expected_success) in
+        [(1, 1, true), (2, 2, false), (3, 3, true)]
+    {
+        handle
+            .enqueue(
+                receipt_fence(7, request_id),
+                DemuxSeekRequest::accurate(Duration::from_secs(target_seconds)),
+            )
+            .expect("worker должен принимать retry после terminal receipt");
+        let receipt = poll_until_receipt(&handle);
+        assert_eq!(receipt.fence.request_id.value(), request_id);
+        assert_eq!(
+            matches!(receipt.outcome, ProgressiveAsyncSeekOutcome::Succeeded(_)),
+            expected_success,
+            "scripted request обязан сохранить свой terminal outcome"
+        );
+    }
+}
+
+#[test]
+fn async_seek_after_visible_eof_reopens_front_generation() {
+    let (mut progressive, handle) = receipted_runtime(
+        Box::new(CommandSeekableDemuxer {
+            position: Duration::ZERO,
+            packet_emitted: false,
+        }),
+        CancellationToken::new(),
+        1,
+    );
+
+    assert!(matches!(
+        poll_until_event(&mut progressive).expect("initial packet"),
+        DemuxReadEvent::Packet(_)
+    ));
+    assert!(matches!(
+        poll_until_event(&mut progressive).expect("visible EOF"),
+        DemuxReadEvent::EndOfStream
+    ));
+
+    handle
+        .enqueue(
+            receipt_fence(7, 1),
+            DemuxSeekRequest::accurate(Duration::from_secs(6)),
+        )
+        .expect("new generation accepted after EOF");
+    assert!(matches!(
+        poll_until_receipt(&handle).outcome,
+        ProgressiveAsyncSeekOutcome::Succeeded(_)
+    ));
+
+    let DemuxReadEvent::Packet(packet) =
+        poll_until_event(&mut progressive).expect("post-seek packet after old EOF")
+    else {
+        panic!("новая generation должна снять только старый EOS latch");
+    };
+    assert_eq!(packet.pts, Duration::from_secs(6));
 }
 
 #[test]

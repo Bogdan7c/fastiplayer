@@ -147,6 +147,69 @@ struct YtDlpStartupAdapter {
     locator: service_ytdlp::YtDlpMediaLocator,
 }
 
+/// `.m3u8` остаётся только admission hint-ом: фактический VOD profile доказывает HLS owner.
+struct NativeHlsStartupAdapter {
+    source: crate::media_open::NativeHlsUrl,
+    fallback_locator: service_ytdlp::YtDlpMediaLocator,
+}
+
+impl StartupUrlServiceAdapter for NativeHlsStartupAdapter {
+    fn safe_label(&self) -> &str {
+        self.source.safe_label().as_str()
+    }
+
+    fn start(
+        self: Box<Self>,
+        controller: &mut StartupMediaController,
+        app_state: &mut AppState,
+        app_config: &AppConfig,
+        system_capabilities: &SystemCapabilities,
+    ) {
+        controller.start_native_hls_startup_job(
+            self.source,
+            self.fallback_locator,
+            app_state,
+            app_config,
+            system_capabilities,
+        );
+    }
+
+    fn into_media_open_source_request(
+        self: Box<Self>,
+        app_config: &AppConfig,
+        system_capabilities: &SystemCapabilities,
+        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
+    ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
+        Ok(crate::media_open::MediaOpenSourceRequest::NativeHls {
+            source: self.source,
+            intent: crate::media_open::NativeHlsOpenIntent::InitialWithYtDlpFallback {
+                fallback_locator: self.fallback_locator,
+            },
+            network_config: app_config.network.clone(),
+            yt_dlp_config: app_config.yt_dlp.clone(),
+            demux_config: app_config.player.demux,
+            preferred_video_codec_order: app_config.player.preferred_video_codec_order.clone(),
+            preferred_video_height: app_config.yt_dlp.preferred_video_height,
+            system_capabilities: Box::new(system_capabilities.clone()),
+            audio_capabilities,
+        })
+    }
+
+    fn expose_secret_for_persistence(&self) -> &str {
+        self.source.target().expose_secret_for_request()
+    }
+
+    fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
+        self.fallback_locator
+            .requires_sensitive_persistence_acknowledgement()
+    }
+
+    fn requires_sensitive_export_acknowledgement(&self) -> bool {
+        self.fallback_locator
+            .requires_sensitive_export_acknowledgement()
+    }
+}
+
 impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
     fn safe_label(&self) -> &str {
         self.locator.safe_label()
@@ -397,6 +460,7 @@ fn profile_excluded_input_scheme(
 
 /// Единственное место регистрации URL services; общий traversal не знает их семантику.
 const STARTUP_URL_SERVICE_CLASSIFIERS: &[StartupUrlServiceClassifier] = &[
+    classify_native_hls_startup_url,
     classify_direct_media_startup_url,
     classify_yt_dlp_startup_url,
 ];
@@ -475,6 +539,34 @@ pub(crate) fn classify_playlist_url(
     locator: &playlist_core::SecretUrlLocator,
 ) -> StartupUrlClassification {
     classify_startup_url(locator.expose_secret_for_open())
+}
+
+/// Регистрирует только syntactic `.m3u8` hint; bytes/profile остаются authoritative.
+fn classify_native_hls_startup_url(argument: &str) -> ServiceClassifierResult {
+    let Ok(parsed) = url::Url::parse(argument) else {
+        return ServiceClassifierResult::NotUrl;
+    };
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.path().to_ascii_lowercase().ends_with(".m3u8")
+    {
+        return ServiceClassifierResult::NotUrl;
+    }
+    let Ok(target) = source_core::HttpRequestTarget::parse_exact(argument) else {
+        return ServiceClassifierResult::UnclaimedUrl {
+            reason: StartupUrlUnsupportedReason::InvalidSyntax,
+        };
+    };
+    let Ok(fallback_locator) = service_ytdlp::parse_yt_dlp_media_locator(argument) else {
+        return ServiceClassifierResult::UnclaimedUrl {
+            reason: StartupUrlUnsupportedReason::UnsupportedScheme,
+        };
+    };
+    let safe_label =
+        crate::media_open::SafeMediaLabel::from_service_safe_label(fallback_locator.safe_label());
+    ServiceClassifierResult::Supported(StartupUrlLocator::new(NativeHlsStartupAdapter {
+        source: crate::media_open::NativeHlsUrl::new(target, safe_label),
+        fallback_locator,
+    }))
 }
 
 /// Generic adapter pure-парсит exact approved schemes; registry решает availability.

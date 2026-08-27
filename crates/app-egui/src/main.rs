@@ -24,6 +24,7 @@ mod renderer_recreation;
 mod settings_runtime;
 pub mod settings_ui;
 mod startup_media;
+mod startup_readiness;
 mod state;
 mod system_capabilities;
 mod telemetry;
@@ -60,6 +61,7 @@ use crate::startup_media::InitialMedia;
 ///
 /// Shell lifecycle живёт в `app_shell`; здесь остаётся только процессный bootstrap.
 fn main() -> Result<()> {
+    let process_started_at = std::time::Instant::now();
     let ProcessBootstrap {
         config_paths,
         instance_lease,
@@ -78,8 +80,16 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    info!("=== rustiplayer ===");
+    info!(
+        process_elapsed_ms = process_started_at.elapsed().as_secs_f64() * 1_000.0,
+        "=== rustiplayer ==="
+    );
     info!("Запуск приложения");
+
+    info!(
+        process_elapsed_ms = process_started_at.elapsed().as_secs_f64() * 1_000.0,
+        "Process config/instance bootstrap complete"
+    );
 
     info!(created = loaded_config.created, "Config rustiplayer готов");
 
@@ -87,6 +97,10 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::<AppWakeEvent>::with_user_event()
         .build()
         .context("Не удалось создать event loop")?;
+    info!(
+        process_elapsed_ms = process_started_at.elapsed().as_secs_f64() * 1_000.0,
+        "Process event loop ready"
+    );
     // Ровно один process proxy передаётся shell-у через cloneable owner ports.
     let wake_proxy = AppWakeProxy::new(event_loop.create_proxy());
 
@@ -98,6 +112,7 @@ fn main() -> Result<()> {
     }
 
     let mut app = AppShell::new(
+        process_started_at,
         initial_media,
         cli_startup_error,
         loaded_config,

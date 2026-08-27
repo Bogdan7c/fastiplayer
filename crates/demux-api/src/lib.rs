@@ -25,7 +25,9 @@ pub use identity::{
 };
 pub use input::{
     DemuxByteSource, DemuxByteStream, DemuxInput, DemuxInputCapabilities, DemuxInputCapability,
-    OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
+    OrderedResourceMetadata, OrderedResourceReadError, OrderedResourceReadOutcome,
+    OrderedResourceRestartableReadInterrupted, OrderedResourceStreamSource, OrderedSegment,
+    OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
     OrderedSegmentSequence, OrderedSegmentSource, PresentationWindowOrderedSegment,
     PresentationWindowOrderedSegmentReadOutcome, PresentationWindowOrderedSegmentSource,
 };
@@ -36,10 +38,10 @@ pub use probe::{
 pub use progressive::{
     ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
     ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt, ProgressiveDemuxBufferLimits,
-    ProgressiveDemuxPacketTooLargeError, ProgressiveDemuxStartupError,
-    ProgressiveDemuxWorkerStoppedError, ProgressiveDemuxer, ProgressiveRuntimeGeneration,
-    ProgressiveSeekAnchorMismatchError, ProgressiveSeekController, ProgressiveSeekFence,
-    ProgressiveSeekRequestId,
+    ProgressiveDemuxPacketTooLargeError, ProgressiveDemuxReadiness, ProgressiveDemuxReadinessPort,
+    ProgressiveDemuxStartupError, ProgressiveDemuxWorkerStoppedError, ProgressiveDemuxer,
+    ProgressiveRuntimeGeneration, ProgressiveSeekAnchorMismatchError, ProgressiveSeekController,
+    ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
 pub use registry::{
     DemuxContainerRegistration, DemuxFactory, DemuxFactoryDescriptor, DemuxFactoryOpenError,

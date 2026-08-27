@@ -62,9 +62,9 @@ pub(crate) use install::{
     AuthorizationDispatchStart, BarrierRaceIntent, ControllerInstallPhase,
     ControllerMediaOpenCommand, ControllerMediaOpenCommandError, ControllerMediaOpenDisposition,
     ControllerTerminalDrain, ControllerTerminalResolution, DeferredControllerIntent,
-    DesiredQueueModes, InstallReadyOutcome, LifecycleIntentOutcome,
-    PlaylistControllerInvariantViolation, PlaylistInstallAdmissionError, PlaylistInstallMutation,
-    PlaylistInstallRequest,
+    DesiredQueueModes, InstallReadyOutcome, InstalledPlaybackIntentCompletion,
+    LifecycleIntentOutcome, PlaylistControllerInvariantViolation, PlaylistInstallAdmissionError,
+    PlaylistInstallMutation, PlaylistInstallRequest,
 };
 pub(crate) use local_file_selection::{
     LocalFileQueueReplacementReason, LocalFileSelectionDisposition,

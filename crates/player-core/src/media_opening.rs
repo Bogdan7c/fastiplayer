@@ -7,13 +7,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use media_core::{
-    DemuxReadEvent, DemuxSeekability, Demuxer, DynamicMediaTimelinePort, MediaDuration,
-    MediaMetadata, MediaTime, TrackInfo, TrackKind,
+    DemuxReadEvent, DemuxSeekResult, DemuxSeekability, Demuxer, DynamicMediaTimelinePort,
+    MediaDuration, MediaMetadata, MediaTime, TrackInfo, TrackKind,
 };
 
 use self::prefetched_demuxer::PrefetchedDemuxer;
 
-use crate::{MediaPlaybackWindow, MediaSource, PreparedDemuxSeekMode, PreparedDemuxSeekPort};
+use crate::{
+    MediaPlaybackWindow, MediaSource, PreparedDemuxSeekLandingPolicy, PreparedDemuxSeekMode,
+    PreparedDemuxSeekPort,
+};
 
 /// Безопасная, UI-ready информация об источнике без reopen credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +45,125 @@ pub(crate) struct PreparedMediaSlots {
     pub(crate) timeline_mode: PreparedMediaTimelineMode,
     pub(crate) demux_seek_mode: PreparedDemuxSeekMode,
 }
+
+/// Позиция demux cursor-а, которую opener уже авторитетно подготовил до install-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PreparedInitialPosition {
+    /// Candidate начинает чтение с обычного начала своего timeline.
+    #[default]
+    Beginning,
+    /// Candidate уже стоит на доказанном source-owned landing-е.
+    PositionedAt {
+        /// Exact public/source target, который opener обещает восстановить.
+        target_position: MediaTime,
+        /// Авторитетный результат уже выполненного demux seek-а.
+        result: DemuxSeekResult,
+        /// Определяет, target или actual становится presentation/audio floor.
+        landing_policy: PreparedDemuxSeekLandingPolicy,
+    },
+}
+
+/// Ошибка противоречивого prepared initial-position contract-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparedInitialPositionError {
+    /// Demux receipt относится к другому requested target-у.
+    RequestedPositionMismatch {
+        /// Target, объявленный prepared-media boundary.
+        target_position: MediaTime,
+        /// Target, фактически записанный в demux receipt-е.
+        requested_position: MediaTime,
+    },
+    /// Container anchor лежит после target-а и мог бы пропустить нужные samples.
+    ActualPositionAfterTarget {
+        /// Target, который должен остаться достижим декодированием вперёд.
+        target_position: MediaTime,
+        /// Anchor, фактически выбранный demuxer-ом.
+        actual_position: MediaTime,
+    },
+    /// Post-target contract получил anchor раньше target-а и потерял обещанную семантику.
+    ActualPositionBeforeTarget {
+        /// Requested target, после которого source обещал landing.
+        target_position: MediaTime,
+        /// Anchor, фактически выбранный demuxer-ом.
+        actual_position: MediaTime,
+    },
+}
+
+impl PreparedInitialPosition {
+    /// Проверяет exact target identity и допустимое направление decoder landing-а.
+    pub fn validate(self) -> Result<(), PreparedInitialPositionError> {
+        let Self::PositionedAt {
+            target_position,
+            result,
+            landing_policy,
+        } = self
+        else {
+            return Ok(());
+        };
+        if result.requested_position != target_position {
+            return Err(PreparedInitialPositionError::RequestedPositionMismatch {
+                target_position,
+                requested_position: result.requested_position,
+            });
+        }
+        match landing_policy {
+            PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget
+                if result.actual_position > target_position =>
+            {
+                return Err(PreparedInitialPositionError::ActualPositionAfterTarget {
+                    target_position,
+                    actual_position: result.actual_position,
+                });
+            }
+            PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget
+                if result.actual_position < target_position =>
+            {
+                return Err(PreparedInitialPositionError::ActualPositionBeforeTarget {
+                    target_position,
+                    actual_position: result.actual_position,
+                });
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for PreparedInitialPositionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RequestedPositionMismatch {
+                target_position,
+                requested_position,
+            } => write!(
+                formatter,
+                "prepared initial target mismatch: expected={} ms, receipt requested={} ms",
+                target_position.as_duration().as_millis(),
+                requested_position.as_duration().as_millis()
+            ),
+            Self::ActualPositionAfterTarget {
+                target_position,
+                actual_position,
+            } => write!(
+                formatter,
+                "prepared initial anchor lies after target: target={} ms, actual={} ms",
+                target_position.as_duration().as_millis(),
+                actual_position.as_duration().as_millis()
+            ),
+            Self::ActualPositionBeforeTarget {
+                target_position,
+                actual_position,
+            } => write!(
+                formatter,
+                "prepared post-target landing lies before target: target={} ms, actual={} ms",
+                target_position.as_duration().as_millis(),
+                actual_position.as_duration().as_millis()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PreparedInitialPositionError {}
 
 /// Взаимоисключающий timeline intent подготовленного media.
 #[derive(Debug)]
@@ -127,6 +249,9 @@ pub struct PreparedMedia {
     /// Explicit synchronous либо worker-receipted demux seek boundary.
     demux_seek_mode: PreparedDemuxSeekMode,
 
+    /// Уже подготовленная opener-ом начальная demux position.
+    prepared_initial_position: PreparedInitialPosition,
+
     /// Cold replay state создаётся только если exact preflight действительно читает demuxer.
     prefetch_state: Option<Box<PreparedMediaPrefetchState>>,
 
@@ -135,6 +260,25 @@ pub struct PreparedMedia {
 }
 
 impl PreparedMedia {
+    /// Привязывает авторитетный initial-position receipt без повторного demux seek-а.
+    pub fn with_prepared_initial_position(
+        mut self,
+        prepared_initial_position: PreparedInitialPosition,
+    ) -> Result<Self, PreparedInitialPositionError> {
+        prepared_initial_position.validate()?;
+        self.prepared_initial_position = prepared_initial_position;
+        Ok(self)
+    }
+
+    /// Возвращает typed intent уже подготовленной opener-ом начальной позиции.
+    ///
+    /// Внешний composition-код может использовать этот факт только для выбора между
+    /// adoption и обычным post-install seek. Container/HLS internals из него выводить
+    /// нельзя: их по-прежнему полностью скрывает owner конкретного demux boundary.
+    #[must_use]
+    pub const fn prepared_initial_position(&self) -> PreparedInitialPosition {
+        self.prepared_initial_position
+    }
     /// Упорядочивает только video-track candidates по explicit codec policy.
     ///
     /// Demuxer, track ids и non-video порядок не меняются; default selection выше
@@ -252,7 +396,24 @@ impl PreparedMedia {
         mut self,
         port: Arc<dyn PreparedDemuxSeekPort>,
     ) -> Self {
-        self.demux_seek_mode = PreparedDemuxSeekMode::WorkerReceipted { port };
+        self.demux_seek_mode = PreparedDemuxSeekMode::WorkerReceipted {
+            port,
+            landing_policy: PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget,
+        };
+        self
+    }
+
+    /// Прикрепляет worker route с явным source-owned landing contract-ом.
+    #[must_use]
+    pub fn with_worker_receipted_demux_seek_policy(
+        mut self,
+        port: Arc<dyn PreparedDemuxSeekPort>,
+        landing_policy: PreparedDemuxSeekLandingPolicy,
+    ) -> Self {
+        self.demux_seek_mode = PreparedDemuxSeekMode::WorkerReceipted {
+            port,
+            landing_policy,
+        };
         self
     }
 
@@ -400,6 +561,7 @@ impl PreparedMedia {
             seekability,
             timeline_mode: PreparedMediaTimelineMode::default(),
             demux_seek_mode: PreparedDemuxSeekMode::default(),
+            prepared_initial_position: PreparedInitialPosition::Beginning,
             prefetch_state: None,
             source_info,
         }

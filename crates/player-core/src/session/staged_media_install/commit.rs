@@ -48,6 +48,7 @@ impl PlayerSession {
             accepted_intent.intent == PlaybackIntent::StartPlaying,
         );
         let seekability = prepared_media.seekability();
+        let prepared_initial_position = prepared_media.prepared_initial_position();
         let playback_window_start = playback_window
             .map(MediaPlaybackWindow::start)
             .unwrap_or(MediaTime::ZERO)
@@ -144,6 +145,7 @@ impl PlayerSession {
             request_id,
             media_instance_id,
             position,
+            prepared_initial_position,
             accepted_intent.intent,
         );
         self.push_player_event(PlayerEvent::MediaOpenRequested(media_open_request));
@@ -172,8 +174,17 @@ impl PlayerSession {
         }
 
         let apply_result = match intent {
-            PlaybackIntent::StartPlaying => self.dispatch_command(crate::PlayerCommand::Play),
-            PlaybackIntent::StartPaused => self.dispatch_command(crate::PlayerCommand::Pause),
+            PlaybackIntent::StartPlaying
+                if self.snapshot.playback_state == PlaybackState::Buffering =>
+            {
+                Ok(())
+            }
+            PlaybackIntent::StartPlaying => self
+                .dispatch_command(crate::PlayerCommand::Play)
+                .map(|_| ()),
+            PlaybackIntent::StartPaused => self
+                .dispatch_command(crate::PlayerCommand::Pause)
+                .map(|_| ()),
         };
         if let Err(error) = apply_result {
             self.set_runtime_error(format!(
@@ -255,13 +266,51 @@ impl PlayerSession {
         request_id: MediaInstallRequestId,
         media_instance_id: MediaInstanceId,
         position: Option<StagedPositionCommit>,
+        prepared_initial_position: crate::PreparedInitialPosition,
         accepted_intent: PlaybackIntent,
     ) {
-        let Some(position) = position else {
-            return;
+        let (position, origin) = match (position, prepared_initial_position) {
+            (Some(position), crate::PreparedInitialPosition::Beginning) => (
+                position,
+                position::InstalledStagedPositionOrigin::SameLineage,
+            ),
+            (
+                None,
+                crate::PreparedInitialPosition::PositionedAt {
+                    target_position,
+                    result,
+                    landing_policy,
+                },
+            ) => (
+                StagedPositionCommit::Seek {
+                    target_position,
+                    result,
+                    landing_policy,
+                },
+                position::InstalledStagedPositionOrigin::PreparedInitial { target_position },
+            ),
+            (None, crate::PreparedInitialPosition::Beginning) => return,
+            (Some(_), crate::PreparedInitialPosition::PositionedAt { .. }) => {
+                let error = crate::PlayerError::new(
+                    crate::PlayerErrorKind::InvalidCommand,
+                    "prepared initial position conflicts with same-lineage position preparation",
+                );
+                self.mark_fatal_error(error.clone());
+                self.installed_staged_position = Some(InstalledStagedPosition {
+                    request_id,
+                    media_instance_id,
+                    origin: position::InstalledStagedPositionOrigin::SameLineage,
+                    outcome: position::InstalledStagedPositionOutcome::Failed(error),
+                });
+                return;
+            }
         };
         let outcome = match position {
-            StagedPositionCommit::KeepStart => position::InstalledStagedPositionOutcome::Completed,
+            StagedPositionCommit::KeepStart => {
+                position::InstalledStagedPositionOutcome::Completed {
+                    seek_generation: None,
+                }
+            }
             StagedPositionCommit::AdjustedToLiveEdge {
                 requested_position,
                 live_edge: prepared_live_edge,
@@ -299,6 +348,7 @@ impl PlayerSession {
             StagedPositionCommit::Seek {
                 target_position,
                 result,
+                landing_policy,
             } => {
                 let resume_intent = match accepted_intent {
                     PlaybackIntent::StartPlaying => crate::PlaybackResumeIntent::Play,
@@ -322,7 +372,12 @@ impl PlayerSession {
                         "prepared live seek expired during media installation",
                     ))
                 } else {
-                    self.start_adopted_staged_seek(target_position, resume_intent, result)
+                    self.start_adopted_staged_seek(
+                        target_position,
+                        landing_policy,
+                        resume_intent,
+                        result,
+                    )
                 };
                 match adopted {
                     Ok(seek_generation) => {
@@ -340,6 +395,7 @@ impl PlayerSession {
         self.installed_staged_position = Some(InstalledStagedPosition {
             request_id,
             media_instance_id,
+            origin,
             outcome,
         });
     }

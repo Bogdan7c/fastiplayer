@@ -258,11 +258,29 @@ fn map_runtime_source_error(error: AdaptiveTransportError) -> OrderedSegmentRead
         | AdaptiveTransportError::Redirect(_)
         | AdaptiveTransportError::SecretScopeRejected
         | AdaptiveTransportError::ExplicitCookieHeader
+        | AdaptiveTransportError::RestartableReadInterrupted
         | AdaptiveTransportError::WorkerStopped
         | AdaptiveTransportError::StaleGeneration { .. }
         | AdaptiveTransportError::ResourceBoundExceeded { .. }
         | AdaptiveTransportError::InvalidResourcePolicy { .. } => OrderedSegmentReadError::Failed {
             reason: "dash-resource-fetch".to_owned(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// DASH не вооружает restartable-read contract HLS и потому обязан fail-closed.
+    #[test]
+    fn restartable_read_interruption_is_an_ordinary_fatal_source_failure() {
+        let error = map_runtime_source_error(AdaptiveTransportError::RestartableReadInterrupted);
+
+        assert!(matches!(
+            error,
+            OrderedSegmentReadError::Failed { ref reason }
+                if reason == "dash-resource-fetch"
+        ));
     }
 }
