@@ -1292,7 +1292,7 @@ mod tests {
     };
 
     use super::*;
-
+    mod vod_endpoint_recovery;
     #[test]
     fn validation_failure_blocks_persist_and_runtime_apply() {
         let registry = app_config_registry().expect("registry builds");

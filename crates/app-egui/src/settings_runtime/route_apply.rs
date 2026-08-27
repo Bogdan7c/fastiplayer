@@ -1,7 +1,11 @@
 use super::*;
 
+mod mechanism;
 mod snapshots;
+#[cfg(test)]
+mod tests;
 
+use mechanism::media_service_apply_mechanism;
 pub(super) use snapshots::{
     MediaServiceRuntimeSnapshot, PlayerRuntimeSnapshot, simulated_player_runtime_report,
 };
@@ -378,25 +382,14 @@ impl SettingsRuntimeRouteAppliers {
                 Ok(self.apply_player_route(route, &update, target_policy, reconfigure_host))
             }
             RuntimeCommittedUpdate::MediaService(update) => {
-                let policy_only = route
-                    .affected_settings
-                    .iter()
-                    .all(|setting_id| setting_id.as_str().starts_with("yt_dlp."));
+                let mechanism = media_service_apply_mechanism(&route.affected_settings)?;
                 let result = self.apply_media_service_update(
                     &update,
                     &route.affected_settings,
                     target_policy,
                     reconfigure_host,
                 );
-                Ok(Self::route_report(
-                    route,
-                    result,
-                    if policy_only {
-                        ApplyMechanism::InPlace
-                    } else {
-                        ApplyMechanism::PipelineRebuild
-                    },
-                ))
+                Ok(Self::route_report(route, result, mechanism))
             }
             RuntimeCommittedUpdate::FrameServer(update) => {
                 let result =

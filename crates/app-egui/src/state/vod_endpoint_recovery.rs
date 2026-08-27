@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use player_core::{MediaInstallCompletion, MediaInstanceId, PlaybackIntent};
+use player_core::{MediaInstallCompletion, MediaInstanceId, PlaybackIntent, PlayerSnapshot};
 use render_wgpu_shell::Renderer;
 use tracing::{debug, warn};
 use web_media_transport_api::{EndpointExpirySignal, SourceGeneration};
@@ -28,8 +28,13 @@ pub(super) struct VodEndpointRecoveryRuntimeState {
 
 /// Attachment связан только с exact Installed media instance и его logical source.
 struct InstalledVodEndpointRecoveryBinding {
-    media_instance_id: MediaInstanceId,
     source: ActiveMediaSource,
+    claim_admission: InstalledVodEndpointRecoveryClaimAdmission,
+}
+
+/// Source-neutral admission state позволяет отдельно проверить runtime identity и policy fences.
+struct InstalledVodEndpointRecoveryClaimAdmission {
+    media_instance_id: MediaInstanceId,
     attachment: VodEndpointRecoveryAttachment,
     consecutive_attempts: u64,
     installed_at: Instant,
@@ -37,8 +42,15 @@ struct InstalledVodEndpointRecoveryBinding {
 
 /// Одна claimed expiry generation порождает не более одной same-lineage транзакции.
 struct PendingVodEndpointRecoveryAttempt {
-    expected_active: ActiveMediaIdentity,
     source: ActiveMediaSource,
+    claim: VodEndpointRecoveryClaimPlan,
+    strong_open_started: bool,
+}
+
+/// Полный admission plan без source reconstruction responsibility; policy snapshot неизменяем.
+#[derive(Debug, Clone)]
+struct VodEndpointRecoveryClaimPlan {
+    expected_active: ActiveMediaIdentity,
     attachment: VodEndpointRecoveryAttachment,
     source_generation: SourceGeneration,
     restore_position: Duration,
@@ -46,7 +58,6 @@ struct PendingVodEndpointRecoveryAttempt {
     policy: VodEndpointRecoveryPolicy,
     next_consecutive_attempts: u64,
     not_before: Instant,
-    strong_open_started: bool,
 }
 
 /// Immutable policy snapshot не даёт live config mutation менять уже claimed attempt.
@@ -57,6 +68,21 @@ struct VodEndpointRecoveryPolicy {
     initial_backoff: Duration,
     max_backoff: Duration,
     stable_reset: Duration,
+}
+
+/// Typed результат claim-а отделяет отсутствие сигнала от terminal rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VodEndpointExpiryClaimOutcome {
+    NoSignal,
+    Rejected,
+    Claimed,
+}
+
+/// Admission ещё не содержит source и поэтому не может опубликовать half-built pending attempt.
+enum VodEndpointExpiryAdmissionOutcome {
+    NoSignal,
+    Rejected,
+    Admitted(VodEndpointRecoveryClaimPlan),
 }
 
 impl VodEndpointRecoveryPolicy {
@@ -84,6 +110,156 @@ impl VodEndpointRecoveryPolicy {
     }
 }
 
+impl InstalledVodEndpointRecoveryClaimAdmission {
+    /// Создаёт source-neutral admission state из exact Installed lifecycle facts.
+    fn new(
+        media_instance_id: MediaInstanceId,
+        attachment: VodEndpointRecoveryAttachment,
+        consecutive_attempts: u64,
+        installed_at: Instant,
+    ) -> Self {
+        Self {
+            media_instance_id,
+            attachment,
+            consecutive_attempts,
+            installed_at,
+        }
+    }
+
+    /// Не заставляет composition boundary снимать snapshots без armed expiry.
+    fn has_pending_expiry_signal(&self) -> bool {
+        self.attachment.is_recovery_pending()
+    }
+
+    /// Claims signal и строит immutable plan только после config и обеих identity fences.
+    fn admit_claim_from_runtime_facts(
+        &self,
+        config: &rustiplayer_config::YtDlpConfig,
+        player_snapshot: &PlayerSnapshot,
+        expected_active: Option<ActiveMediaIdentity>,
+        now: Instant,
+    ) -> VodEndpointExpiryAdmissionOutcome {
+        if !self.attachment.is_recovery_pending() {
+            return VodEndpointExpiryAdmissionOutcome::NoSignal;
+        }
+        if player_snapshot.media_instance_id != Some(self.media_instance_id)
+            || expected_active
+                .as_ref()
+                .map(|identity| identity.media_instance_id())
+                != Some(self.media_instance_id)
+        {
+            self.attachment.mark_recovery_failed();
+            return VodEndpointExpiryAdmissionOutcome::Rejected;
+        }
+        let policy = VodEndpointRecoveryPolicy::from_config(config);
+        let consecutive_attempts =
+            if now.saturating_duration_since(self.installed_at) >= policy.stable_reset {
+                0
+            } else {
+                self.consecutive_attempts
+            };
+        if !policy.enabled || consecutive_attempts >= policy.max_consecutive_attempts {
+            warn!(
+                enabled = policy.enabled,
+                consecutive_attempts,
+                max_consecutive_attempts = policy.max_consecutive_attempts,
+                "VOD endpoint recovery budget исчерпан; публикуем исходную transport ошибку"
+            );
+            self.attachment.mark_recovery_failed();
+            return VodEndpointExpiryAdmissionOutcome::Rejected;
+        }
+        let Some(signal) = self.attachment.claim_pending_signal() else {
+            return VodEndpointExpiryAdmissionOutcome::NoSignal;
+        };
+        let expected_active = expected_active
+            .expect("identity fence допускает admission только с exact active identity");
+        let restore_position = player_snapshot
+            .timeline
+            .target_position
+            .map(|target| target.as_duration())
+            .unwrap_or(player_snapshot.current_position);
+        let next_consecutive_attempts = consecutive_attempts.saturating_add(1);
+        let backoff = policy.backoff_for_attempt(next_consecutive_attempts);
+        debug_vod_expiry_claim(
+            &signal,
+            next_consecutive_attempts,
+            backoff,
+            restore_position,
+        );
+        VodEndpointExpiryAdmissionOutcome::Admitted(VodEndpointRecoveryClaimPlan {
+            expected_active,
+            attachment: self.attachment.clone(),
+            source_generation: signal.source_generation(),
+            restore_position,
+            playback_intent: playback_intent_from_snapshot(player_snapshot),
+            policy,
+            next_consecutive_attempts,
+            not_before: now + backoff,
+        })
+    }
+}
+
+impl VodEndpointRecoveryRuntimeState {
+    /// Заменяет exact Installed binding, сохраняя создание полей внутри owner-а recovery state.
+    fn bind_installed_runtime_facts(
+        &mut self,
+        media_instance_id: MediaInstanceId,
+        source: ActiveMediaSource,
+        attachment: VodEndpointRecoveryAttachment,
+        consecutive_attempts: u64,
+        installed_at: Instant,
+    ) {
+        self.installed = Some(InstalledVodEndpointRecoveryBinding {
+            source,
+            claim_admission: InstalledVodEndpointRecoveryClaimAdmission::new(
+                media_instance_id,
+                attachment,
+                consecutive_attempts,
+                installed_at,
+            ),
+        });
+    }
+
+    /// Не заставляет app снимать player/playlist snapshots без armed expiry.
+    fn has_pending_expiry_signal(&self) -> bool {
+        self.installed
+            .as_ref()
+            .is_some_and(|binding| binding.claim_admission.has_pending_expiry_signal())
+    }
+
+    /// Атомарно добавляет real Installed source только к полностью admitted owned plan-у.
+    fn claim_pending_expiry_from_runtime_facts(
+        &mut self,
+        config: &rustiplayer_config::YtDlpConfig,
+        player_snapshot: &PlayerSnapshot,
+        expected_active: Option<ActiveMediaIdentity>,
+        now: Instant,
+    ) -> VodEndpointExpiryClaimOutcome {
+        let Some(binding) = self.installed.as_ref() else {
+            return VodEndpointExpiryClaimOutcome::NoSignal;
+        };
+        // Clone может аллоцировать, поэтому выполняется до consume единственного expiry signal-а.
+        let source = binding.source.clone();
+        match binding.claim_admission.admit_claim_from_runtime_facts(
+            config,
+            player_snapshot,
+            expected_active,
+            now,
+        ) {
+            VodEndpointExpiryAdmissionOutcome::NoSignal => VodEndpointExpiryClaimOutcome::NoSignal,
+            VodEndpointExpiryAdmissionOutcome::Rejected => VodEndpointExpiryClaimOutcome::Rejected,
+            VodEndpointExpiryAdmissionOutcome::Admitted(claim) => {
+                self.pending = Some(PendingVodEndpointRecoveryAttempt {
+                    source,
+                    claim,
+                    strong_open_started: false,
+                });
+                VodEndpointExpiryClaimOutcome::Claimed
+            }
+        }
+    }
+}
+
 impl AppState {
     /// Привязывает recovery gate только к exact Installed result, никогда к Prepared candidate-у.
     pub(super) fn bind_installed_vod_endpoint_recovery(
@@ -106,14 +282,14 @@ impl AppState {
             .pending
             .as_ref()
             .filter(|pending| pending.strong_open_started)
-            .map_or(0, |pending| pending.next_consecutive_attempts);
-        self.vod_endpoint_recovery.installed = Some(InstalledVodEndpointRecoveryBinding {
+            .map_or(0, |pending| pending.claim.next_consecutive_attempts);
+        self.vod_endpoint_recovery.bind_installed_runtime_facts(
             media_instance_id,
-            source: installed.source.clone(),
+            installed.source.clone(),
             attachment,
             consecutive_attempts,
-            installed_at: Instant::now(),
-        });
+            Instant::now(),
+        );
     }
 
     /// Сбрасывает runtime-only attachment при install path без полного descriptor-а.
@@ -128,16 +304,16 @@ impl AppState {
         source: ActiveMediaSource,
         attachment: Option<VodEndpointRecoveryAttachment>,
     ) {
-        self.vod_endpoint_recovery = VodEndpointRecoveryRuntimeState {
-            installed: attachment.map(|attachment| InstalledVodEndpointRecoveryBinding {
+        self.vod_endpoint_recovery = VodEndpointRecoveryRuntimeState::default();
+        if let Some(attachment) = attachment {
+            self.vod_endpoint_recovery.bind_installed_runtime_facts(
                 media_instance_id,
                 source,
                 attachment,
-                consecutive_attempts: 0,
-                installed_at: Instant::now(),
-            }),
-            pending: None,
-        };
+                0,
+                Instant::now(),
+            );
+        }
     }
 
     /// Продвигает recovery не более чем на один strong-open poll step за UI frame.
@@ -161,75 +337,23 @@ impl AppState {
 
     /// Claims signal только после exact instance fence и budget admission.
     fn claim_vod_endpoint_expiry(&mut self, playlist_runtime: &PlaylistRuntime) {
-        let Some(binding) = self.vod_endpoint_recovery.installed.as_ref() else {
-            return;
-        };
-        if !binding.attachment.is_recovery_pending() {
+        if !self.vod_endpoint_recovery.has_pending_expiry_signal() {
             return;
         }
-        let media_instance_id = binding.media_instance_id;
-        let source = binding.source.clone();
-        let attachment = binding.attachment.clone();
-        let installed_at = binding.installed_at;
-        let installed_consecutive_attempts = binding.consecutive_attempts;
-        let policy = VodEndpointRecoveryPolicy::from_config(&self.committed_app_config().yt_dlp);
+        let yt_dlp_config = self.committed_app_config().yt_dlp;
         let snapshot = self.refresh_player_snapshot();
         let expected_active = playlist_runtime.playlist_view_snapshot().active_media();
-        if snapshot.media_instance_id != Some(media_instance_id)
-            || expected_active.map(ActiveMediaIdentity::media_instance_id)
-                != Some(media_instance_id)
-        {
-            attachment.mark_recovery_failed();
-            return;
-        }
-        let consecutive_attempts = if installed_at.elapsed() >= policy.stable_reset {
-            0
-        } else {
-            installed_consecutive_attempts
-        };
-        if !policy.enabled || consecutive_attempts >= policy.max_consecutive_attempts {
-            warn!(
-                enabled = policy.enabled,
-                consecutive_attempts,
-                max_consecutive_attempts = policy.max_consecutive_attempts,
-                "VOD endpoint recovery budget исчерпан; публикуем исходную transport ошибку"
+        let outcome = self
+            .vod_endpoint_recovery
+            .claim_pending_expiry_from_runtime_facts(
+                &yt_dlp_config,
+                &snapshot,
+                expected_active,
+                Instant::now(),
             );
-            attachment.mark_recovery_failed();
-            return;
+        if outcome == VodEndpointExpiryClaimOutcome::Claimed {
+            self.mark_pending_worker_redraw();
         }
-        let Some(signal) = attachment.claim_pending_signal() else {
-            return;
-        };
-        let Some(expected_active) = expected_active else {
-            attachment.mark_recovery_failed();
-            return;
-        };
-        let next_consecutive_attempts = consecutive_attempts.saturating_add(1);
-        let backoff = policy.backoff_for_attempt(next_consecutive_attempts);
-        let restore_position = snapshot
-            .timeline
-            .target_position
-            .map(|target| target.as_duration())
-            .unwrap_or(snapshot.current_position);
-        debug_vod_expiry_claim(
-            &signal,
-            next_consecutive_attempts,
-            backoff,
-            restore_position,
-        );
-        self.vod_endpoint_recovery.pending = Some(PendingVodEndpointRecoveryAttempt {
-            expected_active,
-            source,
-            attachment,
-            source_generation: signal.source_generation(),
-            restore_position,
-            playback_intent: playback_intent_from_snapshot(&snapshot),
-            policy,
-            next_consecutive_attempts,
-            not_before: Instant::now() + backoff,
-            strong_open_started: false,
-        });
-        self.mark_pending_worker_redraw();
     }
 
     /// Запускает exact re-extraction после backoff и затем использует общий staged install.
@@ -244,18 +368,20 @@ impl AppState {
         if !pending.strong_open_started {
             let active_media = playlist_runtime.playlist_view_snapshot().active_media();
             let snapshot = self.refresh_player_snapshot();
-            if active_media != Some(pending.expected_active)
-                || snapshot.media_instance_id != Some(pending.expected_active.media_instance_id())
-                || pending.attachment.pending_source_generation() != Some(pending.source_generation)
+            if active_media != Some(pending.claim.expected_active)
+                || snapshot.media_instance_id
+                    != Some(pending.claim.expected_active.media_instance_id())
+                || pending.claim.attachment.pending_source_generation()
+                    != Some(pending.claim.source_generation)
             {
                 debug!(
-                    source_generation = pending.source_generation.value(),
+                    source_generation = pending.claim.source_generation.value(),
                     "VOD endpoint recovery отменён exact identity/generation fence-ом"
                 );
-                pending.attachment.mark_recovery_failed();
+                pending.claim.attachment.mark_recovery_failed();
                 return;
             }
-            if Instant::now() < pending.not_before {
+            if Instant::now() < pending.claim.not_before {
                 self.vod_endpoint_recovery.pending = Some(pending);
                 return;
             }
@@ -267,7 +393,7 @@ impl AppState {
                 Ok(source_request) => source_request,
                 Err(reason) => {
                     warn!(reason, "Не удалось построить exact VOD recovery request");
-                    pending.attachment.mark_recovery_failed();
+                    pending.claim.attachment.mark_recovery_failed();
                     return;
                 }
             };
@@ -275,16 +401,16 @@ impl AppState {
                 playlist_runtime,
                 renderer,
                 source_request,
-                pending.expected_active,
-                pending.playback_intent,
-                pending.restore_position,
+                pending.claim.expected_active,
+                pending.claim.playback_intent,
+                pending.claim.restore_position,
             ) {
                 warn!(
                     error = %error,
-                    source_generation = pending.source_generation.value(),
+                    source_generation = pending.claim.source_generation.value(),
                     "Не удалось запустить VOD endpoint recovery"
                 );
-                pending.attachment.mark_recovery_failed();
+                pending.claim.attachment.mark_recovery_failed();
                 return;
             }
             pending.strong_open_started = true;
@@ -298,7 +424,7 @@ impl AppState {
                         .vod_endpoint_recovery
                         .pending
                         .as_ref()
-                        .map_or(0, |pending| pending.next_consecutive_attempts),
+                        .map_or(0, |pending| pending.claim.next_consecutive_attempts),
                     "VOD endpoint recovery установил fresh candidate той же lineage"
                 );
                 // Exact strong commit уже вызвал `record_installed_media` и привязал новый gate.
@@ -310,25 +436,27 @@ impl AppState {
                     return;
                 };
                 if error.allows_vod_endpoint_recovery_retry()
-                    && pending.next_consecutive_attempts < pending.policy.max_consecutive_attempts
+                    && pending.claim.next_consecutive_attempts
+                        < pending.claim.policy.max_consecutive_attempts
                 {
-                    pending.next_consecutive_attempts =
-                        pending.next_consecutive_attempts.saturating_add(1);
+                    pending.claim.next_consecutive_attempts =
+                        pending.claim.next_consecutive_attempts.saturating_add(1);
                     let retry_backoff = pending
+                        .claim
                         .policy
-                        .backoff_for_attempt(pending.next_consecutive_attempts);
-                    pending.not_before = Instant::now() + retry_backoff;
+                        .backoff_for_attempt(pending.claim.next_consecutive_attempts);
+                    pending.claim.not_before = Instant::now() + retry_backoff;
                     pending.strong_open_started = false;
                     warn!(
                         error = %error,
-                        next_consecutive_attempt = pending.next_consecutive_attempts,
+                        next_consecutive_attempt = pending.claim.next_consecutive_attempts,
                         retry_backoff_ms = retry_backoff.as_millis(),
                         "VOD endpoint recovery pre-barrier failure будет повторён"
                     );
                     self.vod_endpoint_recovery.pending = Some(pending);
                 } else {
                     warn!(error = %error, "VOD endpoint recovery завершился terminal failure");
-                    pending.attachment.mark_recovery_failed();
+                    pending.claim.attachment.mark_recovery_failed();
                 }
             }
         }
@@ -397,6 +525,10 @@ fn debug_vod_expiry_claim(
         "Claimed typed VOD endpoint expiry signal"
     );
 }
+
+#[cfg(test)]
+#[path = "vod_endpoint_recovery_claim_policy_tests.rs"]
+mod claim_policy_tests;
 
 #[cfg(test)]
 mod tests {

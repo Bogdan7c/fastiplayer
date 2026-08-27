@@ -75,3 +75,12 @@
 - Forward executor вызывает `apply_playlist_runtime_settings(update)`, а compensating path — только `rollback_playlist_runtime_settings()`. Typed `Applied/Noop/PartialFailure/Failed/Busy/Conflict` проходит через общий route report без сведения к `bool`.
 - Транзакционный порядок подтверждён функционально: success = один apply -> atomic persistence -> finalize -> committed snapshot; persistence failure = один apply -> ровно один rollback, без finalize, committed config остаётся прежним.
 - Проверки: focused contract/routing/settings tests, `app-egui` 1005/1005 для `--no-default-features` и `--all-features`, strict clippy обеих app matrices и `rustiplayer-settings`, S41/S42 acceptance, format/refactor guardrails. Полный `cargo test -p rustiplayer-settings --locked` не заявляется зелёным: 17 passed/1 failed на внешнем незакрытом контракте `yt_dlp.vod_endpoint_recovery_enabled`.
+
+## AUD-009 — checked VOD endpoint recovery settings contract (2026-08-27)
+
+- Пять exact editable IDs `yt_dlp.vod_endpoint_recovery_{enabled,max_consecutive_attempts,initial_backoff_ms,max_backoff_ms,stable_reset_ms}` явно перечислены в checked application matrix без prefix-match.
+- Каждый ID имеет один контракт: `AppRuntimeRoute::MediaService`, owner и rollback owner `SettingStateOwner::MediaOpenPolicy`, `SettingApplyMechanism::PolicyUpdateInPlace`, focused suite `POLICY_TESTS`, включая `EffectOnNextNaturalEvent`.
+- Live apply меняет policy только для следующего естественного expiry claim-а; уже захваченная recovery-цепочка продолжает использовать свой immutable policy snapshot. Новый owner enum, restart/deferred mechanism и немедленное вмешательство в claimed recovery не добавлялись.
+- `runtime_route_plan_from_diff` агрегирует одновременное изменение всех пяти полей в ровно один `MediaService` route: единственный source route `yt_dlp`, exact registry-stable ordered набор ID, одна группа `MediaYtDlp` и полный целевой `YtDlpConfig` внутри существующего `MediaServiceRuntimeSettingsUpdate`.
+- Exact contract и routing regressions вынесены в focused private children `application_contract/tests/vod_endpoint_recovery.rs` и `routing/tests/vod_endpoint_recovery.rs`; центральный `application_contract.rs` остаётся 680 строк, legacy-ratcheted `routing.rs` — ровно 1939.
+- Проверки: `rustiplayer-settings` 20/20 и doc-tests 0/0; config registry 1/1; strict all-target Clippy; rustfmt/diff/refactor/S42 guardrails; S41 3/3; S42 24/24; Serena diagnostics чисты.

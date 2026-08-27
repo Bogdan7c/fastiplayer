@@ -29,7 +29,7 @@ use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyRouteResult, OptionProviderId, RollbackResult, SettingId,
     SettingOption, SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingOptionsError,
     SettingOptionsRequest, SettingOptionsStatus, SettingRouteId, SettingText, SettingValue,
-    SettingsResult, SettingsSurfaceId,
+    SettingsError, SettingsResult, SettingsSurfaceId,
 };
 
 use super::{
@@ -42,6 +42,8 @@ use crate::render_settings::{
 };
 use crate::settings_ui::SettingsUiAction;
 use crate::ui::sidebar::{SidebarWidthChange, SidebarWidthPoints};
+
+mod yt_dlp_recovery_apply;
 
 fn loaded_config_for_test(config: AppConfig) -> LoadedConfig {
     LoadedConfig {
@@ -306,6 +308,7 @@ struct RecordingRuntimeAdapter {
     player_updates: Vec<PlayerRuntimeSettingsUpdate>,
     player_target_backend_preferences: Vec<VideoBackendPreference>,
     media_updates: usize,
+    media_route_updates: Vec<(MediaServiceRuntimeSettingsUpdate, Vec<SettingId>)>,
     media_target_backend_preferences: Vec<VideoBackendPreference>,
     fail_player: bool,
     fail_media: bool,
@@ -327,6 +330,7 @@ struct RecordingRuntimeAdapter {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsTransactionEvent {
+    MediaServiceApply,
     PlaylistApply,
     PlaylistRollback,
     Finalize,
@@ -340,6 +344,7 @@ impl RecordingRuntimeAdapter {
             player_updates: Vec::new(),
             player_target_backend_preferences: Vec::new(),
             media_updates: 0,
+            media_route_updates: Vec::new(),
             media_target_backend_preferences: Vec::new(),
             fail_player: false,
             fail_media: false,
@@ -467,8 +472,8 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
 
     fn apply_media_service_runtime_settings(
         &mut self,
-        _update: &MediaServiceRuntimeSettingsUpdate,
-        _affected_settings: &[SettingId],
+        update: &MediaServiceRuntimeSettingsUpdate,
+        affected_settings: &[SettingId],
         target_policy: SettingsRouteTargetPolicy,
     ) -> AppRouteApplyResult {
         let Some(target_backend_preference) = target_policy.video_backend_preference() else {
@@ -478,6 +483,10 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
         };
         self.media_target_backend_preferences
             .push(target_backend_preference);
+        self.transaction_events
+            .push(SettingsTransactionEvent::MediaServiceApply);
+        self.media_route_updates
+            .push((update.clone(), affected_settings.to_vec()));
         self.media_updates += 1;
         if self.fail_media {
             return AppRouteApplyResult::Failed {

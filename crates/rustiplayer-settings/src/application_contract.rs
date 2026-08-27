@@ -458,6 +458,19 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
             SettingApplyMechanism::PolicyUpdateInPlace,
             POLICY_TESTS,
         ),
+        // Recovery policy обновляется для следующего естественного expiry claim-а.
+        // Уже захваченная recovery-цепочка продолжает immutable policy snapshot.
+        "yt_dlp.vod_endpoint_recovery_enabled"
+        | "yt_dlp.vod_endpoint_recovery_max_consecutive_attempts"
+        | "yt_dlp.vod_endpoint_recovery_initial_backoff_ms"
+        | "yt_dlp.vod_endpoint_recovery_max_backoff_ms"
+        | "yt_dlp.vod_endpoint_recovery_stable_reset_ms" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::MediaService,
+            SettingStateOwner::MediaOpenPolicy,
+            SettingApplyMechanism::PolicyUpdateInPlace,
+            POLICY_TESTS,
+        ),
         "yt_dlp.preferred_video_height" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::MediaService,
@@ -517,6 +530,8 @@ mod tests {
 
     use super::*;
     use crate::{app_config_registry, runtime_route_from_descriptor};
+
+    mod vod_endpoint_recovery;
 
     #[test]
     fn every_editable_setting_has_one_checked_live_application_contract() {
