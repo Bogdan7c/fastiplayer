@@ -1397,7 +1397,10 @@ mod tests {
         current.video.scheduler.demux_packets_per_tick += 1;
         current.network.read_ahead_mb += 1;
         current.yt_dlp.enabled = !current.yt_dlp.enabled;
-        current.playlist.load_siblings = false;
+        current.playlist.next_item_preload_enabled = false;
+        current.playlist.next_item_preload_budget_mb = 80;
+        current.playlist.next_item_preload_lead_time_ms = 35_000;
+        current.playlist.next_item_preload_max_hold_ms = 130_000;
 
         let diff = registry
             .diff(&AppConfig::default(), &current)
@@ -1428,12 +1431,14 @@ mod tests {
                 AppRuntimeRoute::Playlist,
             ]
         );
+        let route = |expected| {
+            plan.committed_routes
+                .iter()
+                .find(|route| route.route == expected)
+                .expect("typed route exists")
+        };
 
-        let player_route = plan
-            .committed_routes
-            .iter()
-            .find(|route| route.route == AppRuntimeRoute::Player)
-            .expect("player route exists");
+        let player_route = route(AppRuntimeRoute::Player);
         assert_eq!(
             player_route.groups,
             vec![AppRuntimeRouteGroupUpdate {
@@ -1442,11 +1447,7 @@ mod tests {
             }]
         );
 
-        let media_route = plan
-            .committed_routes
-            .iter()
-            .find(|route| route.route == AppRuntimeRoute::MediaService)
-            .expect("media route exists");
+        let media_route = route(AppRuntimeRoute::MediaService);
         assert_eq!(
             media_route.groups,
             vec![
@@ -1461,26 +1462,25 @@ mod tests {
             ]
         );
 
-        let playlist_route = plan
-            .committed_routes
-            .iter()
-            .find(|route| route.route == AppRuntimeRoute::Playlist)
-            .expect("playlist route exists");
+        let playlist_route = route(AppRuntimeRoute::Playlist);
+        // Четыре preload knobs обязаны идти одним payload к process-lifetime owner-у.
+        // Так persistence и rollback не могут разделить атомарную speculative policy.
         assert_eq!(
             playlist_route.groups,
             vec![AppRuntimeRouteGroupUpdate {
                 group: AppRuntimeRouteGroup::PlaylistPolicy,
-                affected_settings: vec![SettingId::from("playlist.load_siblings")],
+                affected_settings: vec![
+                    SettingId::from("playlist.next_item_preload_enabled"),
+                    SettingId::from("playlist.next_item_preload_budget_mb"),
+                    SettingId::from("playlist.next_item_preload_lead_time_ms"),
+                    SettingId::from("playlist.next_item_preload_max_hold_ms"),
+                ],
             }]
         );
         assert!(matches!(
-            playlist_route.update,
-            RuntimeCommittedUpdate::Playlist(PlaylistRuntimeSettingsUpdate {
-                playlist: PlaylistConfig {
-                    load_siblings: false,
-                    ..
-                }
-            })
+            &playlist_route.update,
+            RuntimeCommittedUpdate::Playlist(PlaylistRuntimeSettingsUpdate { playlist })
+                if *playlist == current.playlist
         ));
     }
 

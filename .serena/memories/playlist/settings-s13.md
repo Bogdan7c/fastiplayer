@@ -22,3 +22,11 @@ Session 13 completed PASS on 2026-07-15. This memory complements `mem:core`, `me
 
 - Live debounce reconfigure remains transactional with apply/reschedule and rollback. PlaylistRuntime owns the committed debounce schedule used by its state worker; process shutdown joins active and retired dynamic-option jobs under the shared absolute deadline before releasing the app lease.
 - Full owner order and limitations: `mem:app-egui/playlist-persistence-s14`.
+
+
+## AUD-019 preload policy transaction extension (2026-08-27)
+
+- Четыре `next_item_preload_*` поля входят в существующий `PlaylistPolicy` boundary одним полным `PlaylistRuntimeSettingsUpdate`; новый отдельный owner или source rebuild не вводился.
+- Forward route использует `apply_playlist_runtime_settings(&update)` и staged baseline внутри `PlaylistSettingsOwner`; только compensating transaction route вызывает `rollback_playlist_runtime_settings()`. Finalize выполняется после успешной persistence, а persistence failure оставляет committed config прежним и откатывает owner ровно один раз.
+- `PreparedNextOwner::reconfigure` при отличающейся policy инвалидирует speculative `Preparing/Ready`, но не меняет controller active media identity. Natural poll применяет новый enable/lead/hold, а start boundary продолжает брать новый resource budget из owner policy.
+- Долговечные focused tests расположены в `rustiplayer-settings::{application_contract,routing}`, `app-egui::settings_runtime::tests` и `app-egui::playlist_runtime::prepared_next::tests`.

@@ -66,3 +66,12 @@
 - Failure полностью восстанавливает controller committed/draft/preview/generation baselines; app-owned live state дополнительно откатывается к committed snapshot владельцем host.
 - `SettingsRuntime` использует boundary для `ui.sidebar.width_points`: latest-only debounce 500 ms, same rounded value не создаёт запись, deadline участвует в event-loop wake, manual width edit/Apply/OK сначала force-flush pending, Cancel соседних изменений не отменяет committed resize.
 - Pending runtime resize force-flush-ится перед suspend и штатным shutdown. Focused tests покрывают coalescing, draft/preview preservation, genuine conflict preservation, no-op same-field sync, persistence rollback и drag -> Apply/Cancel ordering.
+
+
+## AUD-019: canonical next-item preload settings route (2026-08-27)
+
+- Все четыре editable ID `playlist.next_item_preload_{enabled,budget_mb,lead_time_ms,max_hold_ms}` имеют явный единый контракт: `AppRuntimeRoute::Playlist`, owner и rollback owner `SettingStateOwner::PlaylistPolicy`, механизм `SettingApplyMechanism::PolicyUpdateInPlace`, focused suite `POLICY_TESTS`.
+- `route_diff` агрегирует четыре изменения в одну typed `PlaylistRuntimeSettingsUpdate` с полным `PlaylistConfig`; preload policy не дробится на независимые runtime mutations.
+- Forward executor вызывает `apply_playlist_runtime_settings(update)`, а compensating path — только `rollback_playlist_runtime_settings()`. Typed `Applied/Noop/PartialFailure/Failed/Busy/Conflict` проходит через общий route report без сведения к `bool`.
+- Транзакционный порядок подтверждён функционально: success = один apply -> atomic persistence -> finalize -> committed snapshot; persistence failure = один apply -> ровно один rollback, без finalize, committed config остаётся прежним.
+- Проверки: focused contract/routing/settings tests, `app-egui` 1005/1005 для `--no-default-features` и `--all-features`, strict clippy обеих app matrices и `rustiplayer-settings`, S41/S42 acceptance, format/refactor guardrails. Полный `cargo test -p rustiplayer-settings --locked` не заявляется зелёным: 17 passed/1 failed на внешнем незакрытом контракте `yt_dlp.vod_endpoint_recovery_enabled`.

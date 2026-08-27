@@ -347,12 +347,24 @@ mod tests {
     use std::path::PathBuf;
 
     use media_core::{DemuxSeekResult, Demuxer};
-    use playlist_core::{PlaylistItemId, PlaylistQueue};
+    use player_core::{MediaInstallRequestId, MediaInstanceId};
+    use playlist_core::{
+        CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistItemId, PlaylistMediaKind,
+        PlaylistQueue,
+    };
 
     use super::*;
     use crate::app_wake::AppWakeOwner;
-    use crate::media_open::ActiveMediaSource;
-    use crate::playlist_runtime::identity::{ActiveMediaIdentity, ActiveMediaLineageId};
+    use crate::media_open::{
+        ActiveMediaSource, AuthorizationDispatchResolution, MediaOpenRequestId,
+    };
+    use crate::playlist_runtime::controller::{
+        ControllerAppendOutcome, ControllerPlayItemOutcome, InstallReadyOutcome,
+        PlaylistInstallRequest,
+    };
+    use crate::playlist_runtime::identity::{
+        ActiveMediaIdentity, ActiveMediaLineageId, TransportActionOrigin,
+    };
 
     #[derive(Default)]
     struct EmptyDemuxer;
@@ -428,6 +440,92 @@ mod tests {
         snapshot
     }
 
+    fn playlist_draft(index: usize) -> PlaylistItemDraft {
+        let label = format!("prepared-next-track-{index}.mkv");
+        PlaylistItemDraft::local(
+            LocalLocator::Native(PathBuf::from(&label)),
+            None,
+            CachedPlaylistMetadata::new(label, PlaylistMediaKind::Video),
+        )
+    }
+
+    /// Собирает настоящий controller install, чтобы policy test проходил через natural runtime poll.
+    fn runtime_with_installed_queue(
+        initial_config: PlaylistConfig,
+    ) -> (PlaylistRuntime, PlaylistRuntimeBinding, ActiveMediaIdentity) {
+        let mut runtime = PlaylistRuntime::new_with_config(
+            AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime),
+            initial_config,
+        );
+        runtime.resolve_missing_state_for_test();
+        let binding = runtime
+            .bind_resumed_app_state()
+            .expect("test runtime accepts resumed binding");
+        let controller = runtime
+            .controller
+            .as_mut()
+            .expect("resolved runtime owns controller");
+        let item_ids = match controller
+            .append((0..2).map(playlist_draft).collect())
+            .expect("test queue append succeeds")
+        {
+            ControllerAppendOutcome::Added { item_ids, .. } => item_ids,
+            ControllerAppendOutcome::NoItemsProvided => panic!("test append is non-empty"),
+        };
+        let ControllerPlayItemOutcome::StartInstall { install, .. } =
+            controller.play_item(item_ids[0], TransportActionOrigin::Ui)
+        else {
+            panic!("first committed item starts a real install");
+        };
+        let request_id = MediaOpenRequestId::from_non_zero(non_zero(101));
+        let player_request_id = MediaInstallRequestId::from_non_zero(non_zero(102));
+        controller
+            .accept_install_request(PlaylistInstallRequest {
+                request_id,
+                player_request_id,
+                target_item_id: Some(install.item_id),
+                origin: install.pending_origin,
+                intent_revision: install.intent_revision,
+                expected_queue_revision: install.expected_queue_revision,
+                mutation: install.mutation,
+            })
+            .expect("test install request is admitted");
+        assert!(matches!(
+            controller.on_ready_to_commit(request_id),
+            InstallReadyOutcome::RequestAuthorization { .. }
+        ));
+        controller
+            .begin_authorization_dispatch(request_id)
+            .expect("authorization dispatch begins");
+        assert!(
+            controller
+                .resolve_authorization_dispatch(
+                    request_id,
+                    AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
+                )
+                .expect("authorization enqueue wins")
+                .is_none()
+        );
+        let installed = controller
+            .on_installed(
+                request_id,
+                player_request_id,
+                MediaInstanceId::from_non_zero(non_zero(103)),
+                binding.binding_generation(),
+            )
+            .expect("exact Installed commits queue identity")
+            .active_media
+            .expect("installed drain carries active identity");
+
+        (runtime, binding, installed)
+    }
+
+    fn installed_snapshot(active: ActiveMediaIdentity, position_seconds: u64) -> PlayerSnapshot {
+        let mut snapshot = snapshot(PlaybackState::Playing, position_seconds);
+        snapshot.media_instance_id = Some(active.media_instance_id());
+        snapshot
+    }
+
     #[test]
     fn default_policy_opens_only_bounded_playing_lead_window() {
         let policy = PreparedNextPolicy::from_validated_config(PlaylistConfig::default());
@@ -488,5 +586,125 @@ mod tests {
             owner.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
             ProcessOwnerShutdownOutcome::Completed
         );
+    }
+
+    #[test]
+    fn staged_preload_policy_reconfigures_natural_poll_and_rolls_back_without_media_restart() {
+        let initial_config = PlaylistConfig::default();
+        let (mut runtime, binding, installed) = runtime_with_installed_queue(initial_config);
+        let initial_target = runtime
+            .poll_next_item_preload_target(binding, &installed_snapshot(installed, 90))
+            .expect("default policy opens its natural lead window");
+        runtime.prepared_next.state = ready_state(initial_target, Instant::now());
+        let disabled = PlaylistConfig {
+            next_item_preload_enabled: false,
+            next_item_preload_budget_mb: 80,
+            next_item_preload_lead_time_ms: 10_000,
+            next_item_preload_max_hold_ms: 20_000,
+            ..initial_config
+        };
+
+        assert!(
+            runtime
+                .stage_playlist_settings(disabled)
+                .expect("disabled preload policy stage succeeds")
+        );
+        assert!(matches!(
+            &runtime.prepared_next.state,
+            PreparedNextState::Idle
+        ));
+        assert_eq!(
+            runtime.prepared_next.policy,
+            PreparedNextPolicy::from_validated_config(disabled)
+        );
+        assert_eq!(runtime.controller.active_media(), Some(installed));
+        assert!(
+            runtime
+                .poll_next_item_preload_target(binding, &installed_snapshot(installed, 119))
+                .is_none(),
+            "disabled policy must suppress even an open lead window"
+        );
+
+        runtime.finalize_playlist_settings();
+        assert!(
+            !runtime
+                .stage_playlist_settings(disabled)
+                .expect("same preload policy is a safe no-op")
+        );
+
+        let enabled = PlaylistConfig {
+            next_item_preload_enabled: true,
+            next_item_preload_budget_mb: 96,
+            next_item_preload_lead_time_ms: 5_000,
+            next_item_preload_max_hold_ms: 10_000,
+            ..disabled
+        };
+        assert!(
+            runtime
+                .stage_playlist_settings(enabled)
+                .expect("enabled preload policy stage succeeds")
+        );
+        assert_eq!(
+            runtime.prepared_next.policy.resource_budget,
+            QueuePreloadResourceBudget::from_validated_config(enabled.next_item_preload_budget_mb,)
+        );
+        assert!(
+            runtime
+                .poll_next_item_preload_target(binding, &installed_snapshot(installed, 114))
+                .is_none(),
+            "new five-second lead window must reject six seconds remaining"
+        );
+        let enabled_target = runtime
+            .poll_next_item_preload_target(binding, &installed_snapshot(installed, 115))
+            .expect("new enabled policy starts at its exact lead boundary");
+        assert_eq!(enabled_target.active, installed);
+        assert_eq!(runtime.controller.active_media(), Some(installed));
+
+        runtime.prepared_next.state = ready_state(enabled_target, Instant::now());
+        assert!(
+            runtime
+                .poll_next_item_preload_target(binding, &installed_snapshot(installed, 115))
+                .is_none(),
+            "new ten-second hold must keep a fresh ready envelope"
+        );
+        runtime.prepared_next.state = ready_state(
+            enabled_target,
+            Instant::now()
+                .checked_sub(Duration::from_millis(10_001))
+                .expect("test instant represents expired configured hold"),
+        );
+        assert_eq!(
+            runtime.poll_next_item_preload_target(binding, &installed_snapshot(installed, 115),),
+            Some(enabled_target),
+            "natural poll must expire the envelope at the new hold boundary"
+        );
+
+        runtime.finalize_playlist_settings();
+        runtime.prepared_next.state = PreparedNextState::Preparing {
+            key: PreparedNextKey::from(enabled_target),
+        };
+        let rollback_candidate = PlaylistConfig {
+            next_item_preload_budget_mb: 112,
+            next_item_preload_lead_time_ms: 6_000,
+            next_item_preload_max_hold_ms: 12_000,
+            ..enabled
+        };
+        assert!(
+            runtime
+                .stage_playlist_settings(rollback_candidate)
+                .expect("replacement preload policy stage succeeds")
+        );
+        assert!(matches!(
+            &runtime.prepared_next.state,
+            PreparedNextState::Idle
+        ));
+        assert_eq!(runtime.controller.active_media(), Some(installed));
+
+        assert_eq!(runtime.rollback_playlist_settings(), Ok(true));
+        assert_eq!(
+            runtime.prepared_next.policy,
+            PreparedNextPolicy::from_validated_config(enabled)
+        );
+        assert_eq!(runtime.controller.active_media(), Some(installed));
     }
 }

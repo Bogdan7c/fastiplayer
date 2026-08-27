@@ -478,7 +478,11 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "playlist.sibling_media_filter"
         | "playlist.playback_behavior"
         | "playlist.error_behavior"
-        | "playlist.previous_restart_threshold_ms" => SettingApplicationContract::new(
+        | "playlist.previous_restart_threshold_ms"
+        | "playlist.next_item_preload_enabled"
+        | "playlist.next_item_preload_budget_mb"
+        | "playlist.next_item_preload_lead_time_ms"
+        | "playlist.next_item_preload_max_hold_ms" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::Playlist,
             SettingStateOwner::PlaylistPolicy,
@@ -605,6 +609,31 @@ mod tests {
             resume_interval.mechanism,
             SettingApplyMechanism::WorkerReconfigure
         );
+    }
+
+    #[test]
+    fn next_item_preload_descriptors_have_the_exact_playlist_policy_contract() {
+        for setting_id in [
+            "playlist.next_item_preload_enabled",
+            "playlist.next_item_preload_budget_mb",
+            "playlist.next_item_preload_lead_time_ms",
+            "playlist.next_item_preload_max_hold_ms",
+        ] {
+            let contract = setting_application_contract(&SettingId::from(setting_id))
+                .expect("next-item preload contract exists");
+
+            assert_eq!(
+                contract,
+                SettingApplicationContract {
+                    setting_id: SettingId::from(setting_id),
+                    route: AppRuntimeRoute::Playlist,
+                    state_owner: SettingStateOwner::PlaylistPolicy,
+                    mechanism: SettingApplyMechanism::PolicyUpdateInPlace,
+                    rollback_owner: SettingStateOwner::PlaylistPolicy,
+                    focused_tests: POLICY_TESTS,
+                }
+            );
+        }
     }
 
     #[test]

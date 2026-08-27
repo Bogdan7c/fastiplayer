@@ -311,10 +311,6 @@ impl SettingsRuntimeRouteAppliers {
                     ApplyMechanism::PreviewPromoted,
                 ))
             }
-            RuntimeCommittedUpdate::Playlist(_) => {
-                let result = runtime_adapter.rollback_playlist_runtime_settings();
-                Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
-            }
             _ => self.apply_committed_route_with_reconfigure_host(
                 route,
                 target_policy,
@@ -344,6 +340,11 @@ impl SettingsRuntimeRouteAppliers {
                     result,
                     ApplyMechanism::PreviewPromoted,
                 ))
+            }
+            RuntimeCommittedUpdate::Playlist(_) => {
+                // Компенсация не повторяет apply: staged playlist owner сам хранит exact baseline.
+                let result = runtime_adapter.rollback_playlist_runtime_settings();
+                Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
             _ => self.apply_committed_route_with_reconfigure_host(
                 route,

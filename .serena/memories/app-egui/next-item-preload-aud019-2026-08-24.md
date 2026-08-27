@@ -42,3 +42,11 @@ Final checks:
 - strict affected all-target Clippy with `-D warnings`, rustfmt and `git diff --check`: PASS.
 
 Audit source: `user/project_health_audit_2026-08-22.md`.
+
+
+## Canonical live settings wiring (2026-08-27)
+
+- `PlaylistRuntime` остаётся владельцем staged/finalize/rollback policy и передаёт config в `PreparedNextOwner::reconfigure`; settings executor не знает внутренние поля owner-а и не rebuild/restart-ит active source/player.
+- Изменение policy структурно инвалидирует текущий `Preparing` или `Ready` speculative state до следующей работы. Повторный apply exact той же policy возвращает `Noop`; rollback восстанавливает exact предыдущую policy.
+- Функциональный тест проходит через настоящий resolved `PlaylistRuntime`, controller queue и Installed identity: новая `enabled` подавляет natural poll, новый `lead_time` открывает exact scheduling boundary, новый `max_hold` сохраняет fresh Ready и инвалидирует expired Ready через natural runtime poll, а новый `budget_mb` проецируется в owner resource budget. При stage/finalize/noop/rollback текущая active media identity не меняется.
+- Проверки после self-review: focused owner test, обе полные app test matrices по 1005 тестов, strict clippy no-default/all-features, Serena diagnostics и guardrails — зелёные.

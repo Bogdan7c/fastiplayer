@@ -20,9 +20,10 @@ use rustiplayer_settings::{
     AppRouteApplyResult, AppRuntimeRoute, AppRuntimeRouteApplier, AppRuntimeRouteGroup,
     AppRuntimeRouteGroupUpdate, FrameServerRuntimeSettingsUpdate,
     MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
-    RenderCommittedSettingsUpdate, RendererRecreationApplyError, RendererRecreationApplyErrorKind,
-    RuntimeCommittedRoute, RuntimeCommittedUpdate, SettingStateOwner, SettingsApplyFailure,
-    SettingsBoundaryActivity, render_live_settings_from_config,
+    PlaylistRuntimeSettingsUpdate, RenderCommittedSettingsUpdate, RendererRecreationApplyError,
+    RendererRecreationApplyErrorKind, RuntimeCommittedRoute, RuntimeCommittedUpdate,
+    SettingStateOwner, SettingsApplyFailure, SettingsBoundaryActivity,
+    render_live_settings_from_config,
 };
 use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyRouteResult, OptionProviderId, RollbackResult, SettingId,
@@ -317,6 +318,19 @@ struct RecordingRuntimeAdapter {
     restored_sidebar_widths: Vec<SidebarWidthPoints>,
     finalize_calls: usize,
     snapshot_synced_after_finalize: Vec<bool>,
+    playlist_updates: Vec<PlaylistRuntimeSettingsUpdate>,
+    playlist_rollback_calls: usize,
+    transaction_events: Vec<SettingsTransactionEvent>,
+    expected_persisted_path_at_finalize: Option<PathBuf>,
+    persistence_visible_at_finalize: Vec<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsTransactionEvent {
+    PlaylistApply,
+    PlaylistRollback,
+    Finalize,
+    SnapshotSync,
 }
 
 impl RecordingRuntimeAdapter {
@@ -337,6 +351,11 @@ impl RecordingRuntimeAdapter {
             restored_sidebar_widths: Vec::new(),
             finalize_calls: 0,
             snapshot_synced_after_finalize: Vec::new(),
+            playlist_updates: Vec::new(),
+            playlist_rollback_calls: 0,
+            transaction_events: Vec::new(),
+            expected_persisted_path_at_finalize: None,
+            persistence_visible_at_finalize: Vec::new(),
         })
     }
 }
@@ -377,6 +396,8 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
     }
 
     fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
+        self.transaction_events
+            .push(SettingsTransactionEvent::SnapshotSync);
         self.snapshot_synced_after_finalize
             .push(self.finalize_calls > 0);
         self.committed_snapshots.push(snapshot);
@@ -387,7 +408,29 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
     }
 
     fn finalize_settings_transaction(&mut self) {
+        self.transaction_events
+            .push(SettingsTransactionEvent::Finalize);
+        if let Some(path) = &self.expected_persisted_path_at_finalize {
+            self.persistence_visible_at_finalize.push(path.is_file());
+        }
         self.finalize_calls += 1;
+    }
+
+    fn apply_playlist_runtime_settings(
+        &mut self,
+        update: &PlaylistRuntimeSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        self.transaction_events
+            .push(SettingsTransactionEvent::PlaylistApply);
+        self.playlist_updates.push(*update);
+        AppRouteApplyResult::Applied
+    }
+
+    fn rollback_playlist_runtime_settings(&mut self) -> AppRouteApplyResult {
+        self.transaction_events
+            .push(SettingsTransactionEvent::PlaylistRollback);
+        self.playlist_rollback_calls += 1;
+        AppRouteApplyResult::Applied
     }
 
     fn recreate_renderer(
@@ -1879,6 +1922,98 @@ fn transaction_multi_group_success_commits_runtime_and_toml() {
     remove_file_if_exists(&path);
 }
 
+/// Проверяет canonical preload route: один apply, persistence до finalize и ни одного rollback.
+#[test]
+fn next_item_preload_transaction_applies_once_then_persists_and_finalizes() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("next-item-preload-success");
+    remove_file_if_exists(&path);
+    let requested_enabled = !config.playlist.next_item_preload_enabled;
+    let requested_budget_mb = config.playlist.next_item_preload_budget_mb + 16;
+    let requested_lead_time_ms = config.playlist.next_item_preload_lead_time_ms + 5_000;
+    let requested_max_hold_ms = config.playlist.next_item_preload_max_hold_ms + 10_000;
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+    adapter.expected_persisted_path_at_finalize = Some(path.clone());
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("playlist.next_item_preload_enabled"),
+                value: SettingValue::Bool(requested_enabled),
+            },
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("playlist.next_item_preload_budget_mb"),
+                value: SettingValue::Integer(
+                    i64::try_from(requested_budget_mb).expect("test budget fits i64"),
+                ),
+            },
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("playlist.next_item_preload_lead_time_ms"),
+                value: SettingValue::Integer(
+                    i64::try_from(requested_lead_time_ms).expect("test lead fits i64"),
+                ),
+            },
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("playlist.next_item_preload_max_hold_ms"),
+                value: SettingValue::Integer(
+                    i64::try_from(requested_max_hold_ms).expect("test hold fits i64"),
+                ),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("playlist success report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert_eq!(report.routes.len(), 1);
+    assert_eq!(report.routes[0].route, SettingRouteId::from("playlist"));
+    assert_eq!(adapter.playlist_updates.len(), 1);
+    assert_eq!(adapter.playlist_rollback_calls, 0);
+    assert_eq!(adapter.persistence_visible_at_finalize, vec![true]);
+    assert_eq!(
+        adapter.transaction_events,
+        vec![
+            SettingsTransactionEvent::PlaylistApply,
+            SettingsTransactionEvent::Finalize,
+            SettingsTransactionEvent::SnapshotSync,
+        ]
+    );
+
+    let requested_playlist = adapter.playlist_updates[0].playlist;
+    assert_eq!(
+        requested_playlist.next_item_preload_enabled,
+        requested_enabled
+    );
+    assert_eq!(
+        requested_playlist.next_item_preload_budget_mb,
+        requested_budget_mb
+    );
+    assert_eq!(
+        requested_playlist.next_item_preload_lead_time_ms,
+        requested_lead_time_ms
+    );
+    assert_eq!(
+        requested_playlist.next_item_preload_max_hold_ms,
+        requested_max_hold_ms
+    );
+    assert_eq!(runtime.committed_config().playlist, requested_playlist);
+    let persisted = rustiplayer_config::load_from_path(&path)
+        .expect("persisted preload config должен читаться");
+    assert_eq!(persisted.config.playlist, requested_playlist);
+    remove_file_if_exists(&path);
+}
+
 /// Global quality Apply проходит MediaService owner, сохраняется и не создаёт item override key.
 #[test]
 fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {
@@ -2150,6 +2285,64 @@ fn transaction_persistence_failure_rolls_runtime_back() {
     assert_eq!(adapter.finalize_calls, 0);
     assert!(adapter.snapshot_synced_after_finalize.is_empty());
     assert_eq!(runtime.committed_config().network, config.network);
+    fs::remove_dir_all(&path).expect("test target directory должна удалиться");
+}
+
+/// Проверяет exact compensating rollback playlist owner-а при отказе atomic persistence.
+#[test]
+fn next_item_preload_persistence_failure_rolls_back_once_without_finalize() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("next-item-preload-persist-failure");
+    remove_file_if_exists(&path);
+    fs::create_dir_all(&path).expect("target directory создаёт deterministic rename failure");
+    let requested_budget_mb = config.playlist.next_item_preload_budget_mb + 16;
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("playlist.next_item_preload_budget_mb"),
+                value: SettingValue::Integer(
+                    i64::try_from(requested_budget_mb).expect("test budget fits i64"),
+                ),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("playlist persistence failure report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
+    assert_eq!(report.rollback.len(), 1);
+    assert_eq!(adapter.playlist_updates.len(), 1);
+    assert_eq!(
+        adapter.playlist_updates[0]
+            .playlist
+            .next_item_preload_budget_mb,
+        requested_budget_mb
+    );
+    assert_eq!(adapter.playlist_rollback_calls, 1);
+    assert_eq!(adapter.finalize_calls, 0);
+    assert!(adapter.committed_snapshots.is_empty());
+    assert!(adapter.persistence_visible_at_finalize.is_empty());
+    assert_eq!(
+        adapter.transaction_events,
+        vec![
+            SettingsTransactionEvent::PlaylistApply,
+            SettingsTransactionEvent::PlaylistRollback,
+        ]
+    );
+    assert_eq!(runtime.committed_config().playlist, config.playlist);
     fs::remove_dir_all(&path).expect("test target directory должна удалиться");
 }
 
