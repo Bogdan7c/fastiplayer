@@ -5,16 +5,11 @@
 //! с новой generation и exact ordered player port после resume.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
-use playlist_core::PlaylistQueue;
-
-use crate::app_wake::{
-    AppWakePort, OwnerMailboxPublisher, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
-};
+use crate::app_wake::{AppWakePort, OwnerMailboxReceiver, owner_mailbox};
 use crate::media_open::MediaOpenCoordinator;
-use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
 
 #[allow(
     dead_code,
@@ -60,6 +55,7 @@ pub(crate) use resume_persistence::InstalledCheckpointPosition;
 mod row_interactions;
 mod selection;
 mod settings;
+mod shell_boundary;
 mod shutdown_report;
 mod suspend_resume;
 pub(crate) use suspend_resume::SuspendedTimelineResumePosition;
@@ -80,6 +76,14 @@ pub(crate) use import_transaction::{
     PlaylistImportPreviewUiFixture,
 };
 pub(crate) use settings::{FutureDiscoveryPolicy, PlaylistSettingsStageError};
+use shell_boundary::PlaylistRuntimeLifecycle;
+pub(crate) use shell_boundary::{
+    PlaylistAppStateAttachment, PlaylistBindingGeneration, PlaylistLifecycleGeneration,
+    PlaylistOwnerCompletion, PlaylistOwnerPorts, PlaylistOwnerProgress, PlaylistRuntimeBinding,
+    PlaylistTerminalShutdownOutcome,
+};
+#[allow(unused_imports)]
+pub(crate) use shell_boundary::{PlaylistBindingRejection, PlaylistShutdownReport};
 pub(crate) use suspend_resume::{
     ResumeAttempt, ResumeCheckpointError, ResumePlaybackIntent, ResumePositionWarning,
 };
@@ -203,64 +207,6 @@ impl ManualAddQueueGeneration {
     }
 }
 
-/// Generation любого lifecycle transition runtime-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct PlaylistLifecycleGeneration(u64);
-
-/// Generation конкретного renderer/player binding-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct PlaylistBindingGeneration(u64);
-
-/// Exact binding token будущих AppState/controller callbacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PlaylistRuntimeBinding {
-    lifecycle_generation: PlaylistLifecycleGeneration,
-    binding_generation: PlaylistBindingGeneration,
-}
-
-/// Renderer-bound attachment: exact port identity плюс immutable controller view.
-#[derive(Debug, Clone)]
-pub(crate) struct PlaylistAppStateAttachment {
-    binding: PlaylistRuntimeBinding,
-    view_model: PlaylistViewModel,
-}
-
-impl PlaylistAppStateAttachment {
-    /// Возвращает exact binding для correlation callbacks текущего `AppState`.
-    pub(crate) const fn binding(&self) -> PlaylistRuntimeBinding {
-        self.binding
-    }
-
-    /// Возвращает cheap-clone read-only snapshot без mutable доступа к controller-у.
-    pub(crate) fn view_model(&self) -> PlaylistViewModel {
-        self.view_model.clone()
-    }
-
-    /// Заменяет только immutable view при сохранении exact binding identity.
-    pub(crate) fn replace_view_model(&mut self, view_model: PlaylistViewModel) {
-        self.view_model = view_model;
-    }
-}
-
-impl PlaylistRuntimeBinding {
-    /// Передаёт controller-у exact player binding generation после `Installed`.
-    pub(crate) const fn binding_generation(self) -> PlaylistBindingGeneration {
-        self.binding_generation
-    }
-}
-
-/// Почему callback нельзя применять к текущему runtime binding-у.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Session 11A начнёт применять этот typed rejection на callbacks.
-pub(crate) enum PlaylistBindingRejection {
-    /// Runtime сейчас suspended и renderer/player binding отсутствует.
-    Suspended,
-    /// Callback относится к предыдущей lifecycle/binding generation.
-    StaleGeneration,
-    /// Runtime уже начал либо завершил process shutdown.
-    ShuttingDown,
-}
-
 /// Read-only load gate, который Session 11A свяжет с allocator/state startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // `Ready` становится достижимым после state-load wiring Session 14.
@@ -322,58 +268,6 @@ pub(crate) enum PlaylistMediaOpenGateError {
     StalePlannedTarget,
 }
 
-/// Текущая lifecycle фаза process owner-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlaylistRuntimeLifecycle {
-    Suspended,
-    Bound(PlaylistRuntimeBinding),
-    ShuttingDown,
-    Shutdown,
-}
-
-/// Полный typed отчёт всех process-lifetime playlist owners.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PlaylistShutdownReport {
-    pub(crate) ui_interaction: ProcessOwnerShutdownOutcome,
-    pub(crate) import_io: ProcessOwnerShutdownOutcome,
-    pub(crate) url_import: ProcessOwnerShutdownOutcome,
-    pub(crate) export_io: ProcessOwnerShutdownOutcome,
-    pub(crate) prepared_next: ProcessOwnerShutdownOutcome,
-    pub(crate) media_open: ProcessOwnerShutdownOutcome,
-    pub(crate) startup: startup::PlaylistStartupShutdownOutcome,
-    pub(crate) persistence: persistence::PlaylistPersistenceShutdownOutcome,
-    pub(crate) resume_persistence: playlist_state::ResumeWorkerShutdownOutcome,
-}
-
-/// Результат нового terminal API с общей абсолютной границей времени.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlaylistTerminalShutdownOutcome {
-    /// Все owners терминальны, filesystem outcome успешен.
-    Completed(PlaylistShutdownReport),
-    /// Runtime уже полностью завершён предыдущим вызовом.
-    AlreadyCompleted,
-    /// Хотя бы один writable/async поток не подтверждён; lease освобождать нельзя.
-    ExitRequired(PlaylistShutdownReport),
-    /// Все потоки терминальны, но panic либо persistence failure сохранены типизированно.
-    Failed(PlaylistShutdownReport),
-}
-
-/// Пока controller отсутствует, progress/completion slots несут neutral marker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PlaylistOwnerProgress;
-
-/// Neutral terminal marker будущего playlist owner-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PlaylistOwnerCompletion;
-
-/// Cloneable worker-side ports, принадлежащие process runtime-у.
-#[derive(Clone)]
-#[allow(dead_code)] // Ports резервируют process boundary до controller Session 11A.
-pub(crate) struct PlaylistOwnerPorts {
-    publisher: OwnerMailboxPublisher<PlaylistOwnerProgress, PlaylistOwnerCompletion>,
-    admission_open: Arc<AtomicBool>,
-}
-
 /// Typed controller slot физически не содержит allocator до load decision.
 struct PlaylistControllerSlot(Option<PlaylistController>);
 
@@ -410,21 +304,6 @@ impl std::ops::DerefMut for PlaylistControllerSlot {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut()
             .expect("focused controller test must resolve startup load gate first")
-    }
-}
-
-impl PlaylistOwnerPorts {
-    /// Публикует latest progress только пока shutdown gate допускает работу.
-    fn publish_progress(&self) -> bool {
-        if !self.admission_open.load(Ordering::Acquire) {
-            return false;
-        }
-        !matches!(
-            self.publisher
-                .publish_progress(PlaylistOwnerProgress)
-                .wake_delivery(),
-            WakeDelivery::EventLoopClosed
-        )
     }
 }
 
@@ -639,303 +518,6 @@ impl PlaylistRuntime {
     pub(crate) fn finalize_playlist_settings(&mut self) {
         self.settings.finalize();
     }
-
-    /// Создаёт новый exact binding после успешного AppState recreation.
-    pub(crate) fn bind_resumed_app_state(&mut self) -> Option<PlaylistRuntimeBinding> {
-        if matches!(
-            self.lifecycle,
-            PlaylistRuntimeLifecycle::ShuttingDown | PlaylistRuntimeLifecycle::Shutdown
-        ) {
-            return None;
-        }
-
-        self.lifecycle_generation.0 = self
-            .lifecycle_generation
-            .0
-            .checked_add(1)
-            .expect("playlist lifecycle generation overflow during bind");
-        self.next_binding_generation.0 = self
-            .next_binding_generation
-            .0
-            .checked_add(1)
-            .expect("playlist binding generation overflow during bind");
-        let binding = PlaylistRuntimeBinding {
-            lifecycle_generation: self.lifecycle_generation,
-            binding_generation: self.next_binding_generation,
-        };
-        self.lifecycle = PlaylistRuntimeLifecycle::Bound(binding);
-        Some(binding)
-    }
-
-    /// Снимает только AppState binding; process owner, ports и load gate сохраняются.
-    pub(crate) fn suspend_app_state_binding(&mut self) {
-        if matches!(self.lifecycle, PlaylistRuntimeLifecycle::Bound(_)) {
-            self.lifecycle_generation.0 = self
-                .lifecycle_generation
-                .0
-                .checked_add(1)
-                .expect("playlist lifecycle generation overflow during suspend");
-            self.lifecycle = PlaylistRuntimeLifecycle::Suspended;
-            if let Some(controller) = self.controller.as_mut() {
-                controller.cancel_next_item_preload_plan();
-            }
-            self.prepared_next
-                .cancel(player_core::MediaInstallCancellationCause::StructuralInvalidation);
-            self.media_open.suspend_player_binding();
-        }
-    }
-
-    /// Привязывает exact ordered player control stream нового renderer-bound AppState.
-    pub(crate) fn attach_player_sender(&mut self, sender: player_core::PlayerCommandSender) {
-        self.media_open.attach_player(sender);
-    }
-
-    /// Проверяет exact generation до применения будущего callback-а.
-    pub(crate) fn validate_binding(
-        &self,
-        binding: PlaylistRuntimeBinding,
-    ) -> Result<(), PlaylistBindingRejection> {
-        match self.lifecycle {
-            PlaylistRuntimeLifecycle::Bound(current) if current == binding => Ok(()),
-            PlaylistRuntimeLifecycle::Bound(_) => Err(PlaylistBindingRejection::StaleGeneration),
-            PlaylistRuntimeLifecycle::Suspended => Err(PlaylistBindingRejection::Suspended),
-            PlaylistRuntimeLifecycle::ShuttingDown | PlaylistRuntimeLifecycle::Shutdown => {
-                Err(PlaylistBindingRejection::ShuttingDown)
-            }
-        }
-    }
-
-    /// Неблокирующе опустошает process owner slots; UI payload здесь пока отсутствует.
-    pub(crate) fn drain_owner_mailbox(&mut self) -> bool {
-        let owner_changed = self.owner_receiver.drain().has_payload();
-        let media_open_changed = self.media_open.drain();
-        let dialog_changed = self.drain_playlist_file_dialog();
-        let import_changed = self.drain_playlist_import_job();
-        let url_import_changed = self.drain_playlist_url_import_job();
-        let export_changed = self.drain_playlist_export_job();
-        owner_changed
-            || media_open_changed
-            || dialog_changed
-            || import_changed
-            || url_import_changed
-            || export_changed
-    }
-
-    /// Cheap-clone read-only snapshot для renderer-bound AppState/будущего UI port-а.
-    #[allow(
-        dead_code,
-        reason = "read-only AppState attachment lands with playlist UI"
-    )]
-    pub(crate) fn playlist_view_snapshot(&self) -> Arc<PlaylistViewSnapshot> {
-        static EMPTY_VIEW: LazyLock<Arc<PlaylistViewSnapshot>> =
-            LazyLock::new(|| Arc::new(PlaylistViewSnapshot::initial(&PlaylistQueue::new())));
-        self.controller
-            .as_ref()
-            .map(PlaylistController::view_snapshot)
-            .unwrap_or_else(|| Arc::clone(&EMPTY_VIEW))
-    }
-
-    /// Создаёт renderer-bound attachment только для текущего exact binding-а.
-    pub(crate) fn app_state_attachment(
-        &self,
-        binding: PlaylistRuntimeBinding,
-    ) -> Result<PlaylistAppStateAttachment, PlaylistBindingRejection> {
-        self.validate_binding(binding)?;
-        Ok(PlaylistAppStateAttachment {
-            binding,
-            view_model: self.playlist_view_model(),
-        })
-    }
-
-    /// Controller остаётся process owner-ом; mutable facade нужен orchestration layer-у.
-    #[allow(
-        dead_code,
-        reason = "controller facade is consumed by Session 11B orchestration"
-    )]
-    pub(crate) fn playlist_controller(&self) -> Option<&PlaylistController> {
-        self.controller.as_ref()
-    }
-
-    /// Закрывает admission и последовательно завершает owners в одном общем бюджете.
-    ///
-    /// Порядок намеренный: сначала отменяется player/media preparation, затем
-    /// read/quarantine startup job, последним выполняется committed-only state flush.
-    pub(crate) fn shutdown_until(
-        &mut self,
-        deadline: ShutdownDeadline,
-    ) -> PlaylistTerminalShutdownOutcome {
-        if matches!(self.lifecycle, PlaylistRuntimeLifecycle::Shutdown) {
-            return PlaylistTerminalShutdownOutcome::AlreadyCompleted;
-        }
-
-        self.admission_open.store(false, Ordering::Release);
-        self.lifecycle = PlaylistRuntimeLifecycle::ShuttingDown;
-        self.removal_undo = None;
-        self.supersede_playlist_import_flow();
-        self.replacement_confirmation.cancel();
-        if let Some(controller) = self.controller.as_mut() {
-            controller.release_detached_tombstone_for_shutdown();
-        }
-        self.discovery.begin_shutdown();
-
-        let ui_interaction = self.ui_interaction.shutdown_until(deadline);
-        let import_io = self.import_io.shutdown_until(deadline);
-        let url_import = self.url_import.shutdown_until(deadline);
-        self.export_io.cancel_active();
-        let export_io = self.export_io.shutdown_until(deadline);
-        let prepared_next = self.prepared_next.shutdown_until(deadline);
-        let media_open = self.media_open.shutdown_until(deadline);
-        let startup = self.startup.shutdown_until(deadline);
-        let persistence = self
-            .persistence
-            .shutdown_until(self.controller.as_ref(), deadline);
-        let resume_persistence = self.resume_persistence.shutdown_until(deadline);
-        let report = PlaylistShutdownReport {
-            ui_interaction,
-            import_io,
-            url_import,
-            export_io,
-            prepared_next,
-            media_open,
-            startup,
-            persistence,
-            resume_persistence,
-        };
-
-        if report.requires_process_exit() {
-            return PlaylistTerminalShutdownOutcome::ExitRequired(report);
-        }
-        self.lifecycle = PlaylistRuntimeLifecycle::Shutdown;
-        if report.has_terminal_failure() {
-            PlaylistTerminalShutdownOutcome::Failed(report)
-        } else {
-            PlaylistTerminalShutdownOutcome::Completed(report)
-        }
-    }
-
-    #[cfg(test)]
-    fn owner_ports(&self) -> PlaylistOwnerPorts {
-        self.owner_ports.clone()
-    }
-
-    #[cfg(test)]
-    fn load_gate(&self) -> PlaylistLoadGateState {
-        self.load_gate
-    }
-}
-
-impl PlaylistShutdownReport {
-    fn requires_process_exit(self) -> bool {
-        matches!(
-            self.ui_interaction,
-            ProcessOwnerShutdownOutcome::TimedOut { .. }
-                | ProcessOwnerShutdownOutcome::ThreadPanicked {
-                    pending_threads: 1..,
-                    ..
-                }
-        ) || matches!(
-            self.import_io,
-            ProcessOwnerShutdownOutcome::TimedOut { .. }
-                | ProcessOwnerShutdownOutcome::ThreadPanicked {
-                    pending_threads: 1..,
-                    ..
-                }
-        ) || matches!(
-            self.url_import,
-            ProcessOwnerShutdownOutcome::TimedOut { .. }
-                | ProcessOwnerShutdownOutcome::ThreadPanicked {
-                    pending_threads: 1..,
-                    ..
-                }
-        ) || matches!(
-            self.export_io,
-            ProcessOwnerShutdownOutcome::TimedOut { .. }
-                | ProcessOwnerShutdownOutcome::ThreadPanicked {
-                    pending_threads: 1..,
-                    ..
-                }
-        ) || matches!(
-            self.prepared_next,
-            ProcessOwnerShutdownOutcome::TimedOut { .. }
-                | ProcessOwnerShutdownOutcome::ThreadPanicked {
-                    pending_threads: 1..,
-                    ..
-                }
-        ) || matches!(
-            self.media_open,
-            ProcessOwnerShutdownOutcome::TimedOut { .. }
-                | ProcessOwnerShutdownOutcome::ThreadPanicked {
-                    pending_threads: 1..,
-                    ..
-                }
-        ) || matches!(
-            self.startup,
-            startup::PlaylistStartupShutdownOutcome::TimedOut
-        ) || matches!(
-            self.persistence,
-            persistence::PlaylistPersistenceShutdownOutcome::TimedOut { .. }
-        ) || matches!(
-            self.resume_persistence,
-            playlist_state::ResumeWorkerShutdownOutcome::TimedOut
-        )
-    }
-
-    fn has_terminal_failure(self) -> bool {
-        let ui_failed = matches!(
-            self.ui_interaction,
-            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
-        );
-        let import_failed = matches!(
-            self.import_io,
-            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
-        );
-        let url_import_failed = matches!(
-            self.url_import,
-            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
-        );
-        let export_failed = matches!(
-            self.export_io,
-            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
-        );
-        let media_failed = matches!(
-            self.media_open,
-            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
-        );
-        let prepared_next_failed = matches!(
-            self.prepared_next,
-            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
-        );
-        let startup_failed = shutdown_report::startup_failed(self.startup);
-        let persistence_failed = match self.persistence {
-            persistence::PlaylistPersistenceShutdownOutcome::WriterUnavailable { .. }
-            | persistence::PlaylistPersistenceShutdownOutcome::SnapshotCaptureFailed { .. }
-            | persistence::PlaylistPersistenceShutdownOutcome::ThreadPanicked(_) => true,
-            persistence::PlaylistPersistenceShutdownOutcome::Completed(completion) => {
-                shutdown_report::shutdown_persistence_failed(completion.persistence)
-            }
-            persistence::PlaylistPersistenceShutdownOutcome::CompletedWithoutWorker { .. }
-            | persistence::PlaylistPersistenceShutdownOutcome::AlreadyCompleted
-            | persistence::PlaylistPersistenceShutdownOutcome::TimedOut { .. } => false,
-        };
-        let resume_persistence_failed = match self.resume_persistence {
-            playlist_state::ResumeWorkerShutdownOutcome::Completed {
-                final_report: Some(report),
-            } => !matches!(report.outcome, playlist_state::AtomicWriteOutcome::Durable),
-            playlist_state::ResumeWorkerShutdownOutcome::WorkerUnavailable => true,
-            playlist_state::ResumeWorkerShutdownOutcome::Completed { final_report: None }
-            | playlist_state::ResumeWorkerShutdownOutcome::AlreadyCompleted
-            | playlist_state::ResumeWorkerShutdownOutcome::TimedOut => false,
-        };
-        ui_failed
-            || import_failed
-            || url_import_failed
-            || export_failed
-            || prepared_next_failed
-            || media_failed
-            || startup_failed
-            || persistence_failed
-            || resume_persistence_failed
-    }
 }
 
 #[allow(
@@ -1063,170 +645,4 @@ impl PlaylistRuntime {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
-
-    use crate::app_wake::{AppWakeEvent, AppWakeOwner, WakeEmitter};
-
-    use super::*;
-
-    struct CountingEmitter(AtomicUsize);
-
-    impl WakeEmitter for CountingEmitter {
-        fn emit(&self, _event: AppWakeEvent) -> Result<(), ()> {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        }
-    }
-
-    fn runtime() -> PlaylistRuntime {
-        let emitter = Arc::new(CountingEmitter(AtomicUsize::new(0)));
-        let mut runtime =
-            PlaylistRuntime::new(AppWakePort::new(AppWakeOwner::PlaylistRuntime, emitter));
-        runtime.resolve_missing_state_for_test();
-        runtime
-    }
-
-    #[test]
-    fn suspend_resume_preserves_runtime_and_rejects_stale_binding() {
-        let mut runtime = runtime();
-        let initial_view = runtime.playlist_view_snapshot();
-        let first = runtime.bind_resumed_app_state().unwrap();
-        assert_eq!(runtime.validate_binding(first), Ok(()));
-
-        runtime.suspend_app_state_binding();
-        assert_eq!(
-            runtime.validate_binding(first),
-            Err(PlaylistBindingRejection::Suspended)
-        );
-
-        let second = runtime.bind_resumed_app_state().unwrap();
-        assert_ne!(second, first);
-        assert_eq!(
-            runtime.validate_binding(first),
-            Err(PlaylistBindingRejection::StaleGeneration)
-        );
-        assert_eq!(runtime.validate_binding(second), Ok(()));
-        assert_eq!(
-            runtime.load_gate(),
-            PlaylistLoadGateState::Open(PlaylistLineagePersistence::Persistent)
-        );
-
-        let attachment = runtime
-            .app_state_attachment(second)
-            .expect("current binding attachment");
-        assert_eq!(attachment.binding(), second);
-        assert_eq!(attachment.view_model().revision(), initial_view.revision());
-        assert!(matches!(
-            runtime.app_state_attachment(first),
-            Err(PlaylistBindingRejection::StaleGeneration)
-        ));
-    }
-
-    #[test]
-    fn owner_ports_survive_suspend_and_keep_mailbox_reachable() {
-        let mut runtime = runtime();
-        let ports = runtime.owner_ports();
-        runtime.bind_resumed_app_state().unwrap();
-        runtime.suspend_app_state_binding();
-
-        assert!(ports.publish_progress());
-        assert!(runtime.drain_owner_mailbox());
-        assert!(!runtime.drain_owner_mailbox());
-    }
-
-    #[test]
-    fn inline_url_draft_survives_views_and_confirmation_is_render_only() {
-        let mut runtime = runtime();
-        runtime.open_playlist_url_editor();
-        runtime.update_playlist_url_draft("не URL с token=secret".to_string());
-
-        assert!(runtime.submit_playlist_url_draft(&rustiplayer_config::YtDlpConfig::default()));
-        let invalid = runtime.playlist_interaction_model();
-        assert!(invalid.url_editor_open);
-        assert_eq!(invalid.url_text, "не URL с token=secret");
-        assert_eq!(
-            invalid.url_safe_error.as_ref().map(|error| error.message()),
-            Some("Введите корректный http(s) URL")
-        );
-
-        let sensitive = "https://user:password@media.example.test/video.mp4?token=secret";
-        runtime.update_playlist_url_draft(sensitive.to_string());
-        assert!(runtime.submit_playlist_url_draft(&rustiplayer_config::YtDlpConfig::default()));
-        let confirmation = runtime
-            .pending_playlist_confirmation()
-            .expect("sensitive URL должен ждать typed decision");
-        assert_eq!(runtime.playlist_interaction_model().url_text, sensitive);
-        assert!(!format!("{confirmation:?}").contains("token=secret"));
-
-        assert!(runtime.submit_playlist_url_draft(&rustiplayer_config::YtDlpConfig::default()));
-        let stale_outcome = runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
-            intent_id: confirmation.intent_id(),
-            decision: QueueReplacementConfirmationDecision::Confirm,
-        });
-        runtime.finish_url_draft_after_confirmation(&stale_outcome);
-        assert_eq!(runtime.playlist_interaction_model().url_text, sensitive);
-
-        let current_confirmation = runtime
-            .pending_playlist_confirmation()
-            .expect("новый exact intent должен остаться pending");
-        let outcome = runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
-            intent_id: current_confirmation.intent_id(),
-            decision: QueueReplacementConfirmationDecision::Confirm,
-        });
-        runtime.finish_url_draft_after_confirmation(&outcome);
-
-        let finished = runtime.playlist_interaction_model();
-        assert!(!finished.url_editor_open);
-        assert!(finished.url_text.is_empty());
-        assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);
-    }
-
-    #[test]
-    fn shutdown_is_bounded_idempotent_and_closes_admission() {
-        let mut runtime = runtime();
-        let ports = runtime.owner_ports();
-        let deadline = ShutdownDeadline::after(Duration::from_secs(1));
-
-        assert!(matches!(
-            runtime.shutdown_until(deadline),
-            PlaylistTerminalShutdownOutcome::Completed(_)
-        ));
-        assert!(!ports.publish_progress());
-        assert_eq!(
-            runtime.shutdown_until(deadline),
-            PlaylistTerminalShutdownOutcome::AlreadyCompleted
-        );
-    }
-
-    #[test]
-    fn media_open_timeout_requires_process_exit_without_collapsing_owner_outcomes() {
-        let mut runtime = runtime();
-        let ports = runtime.owner_ports();
-        let report = PlaylistShutdownReport {
-            media_open: ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 },
-            prepared_next: ProcessOwnerShutdownOutcome::Completed,
-            ui_interaction: ProcessOwnerShutdownOutcome::Completed,
-            import_io: ProcessOwnerShutdownOutcome::Completed,
-            url_import: ProcessOwnerShutdownOutcome::Completed,
-            export_io: ProcessOwnerShutdownOutcome::Completed,
-            startup: startup::PlaylistStartupShutdownOutcome::Completed,
-            persistence: persistence::PlaylistPersistenceShutdownOutcome::CompletedWithoutWorker {
-                save_block: None,
-            },
-            resume_persistence: playlist_state::ResumeWorkerShutdownOutcome::AlreadyCompleted,
-        };
-
-        assert!(report.requires_process_exit());
-        assert_eq!(
-            report.media_open,
-            ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
-        );
-
-        runtime.admission_open.store(false, Ordering::Release);
-        runtime.lifecycle = PlaylistRuntimeLifecycle::ShuttingDown;
-        assert!(!ports.publish_progress());
-        assert!(runtime.bind_resumed_app_state().is_none());
-    }
-}
+mod tests;
