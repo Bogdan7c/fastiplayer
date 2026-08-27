@@ -4,12 +4,12 @@ use frame_server_core::{
     CancelScrubReason, FinishScrubPolicy, LiveScrubDiagnostics, ScrubExactnessPolicy,
     ScrubGeneration, ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection,
 };
-use media_core::{MediaDemuxError, MediaTime, TimelinePreviewState};
+use media_core::{MediaTime, TimelinePreviewState};
 use tracing::{debug, info, warn};
 
 use crate::seek_state::{
-    PlaybackResumeIntent, SeekCommitState, SeekDemuxRequestError, SeekLandingRoute,
-    SeekTargetRetention, demux_seek_request_for_transaction,
+    PlaybackResumeIntent, SeekCommitState, SeekLandingRoute, SeekTargetRetention,
+    demux_seek_request_for_transaction,
 };
 use crate::{
     PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekMode, SeekRequest,
@@ -32,6 +32,13 @@ use super::scrub_orchestration::{
     initial_scrub_generation_before_target,
 };
 use super::seek_admission::SeekTimelineAdmission;
+
+mod error_mapping;
+
+use error_mapping::{
+    player_error_from_decoder_flush_error, player_error_from_demux_seek_error,
+    player_error_from_seek_demux_request_error,
+};
 
 /// Максимальный шаг вперёд, при котором live scrub продолжает текущий decode-проход
 /// вместо нового cold seek на keyframe-before.
@@ -769,38 +776,4 @@ impl PlayerSession {
             self.set_runtime_error(format!("Audio pause before seek error: {error}"));
         }
     }
-}
-
-/// Мапит ошибку demux seek в player error без смешивания unavailable/timeout/demux.
-fn player_error_from_demux_seek_error(error: anyhow::Error) -> PlayerError {
-    if error.chain().any(|cause| {
-        cause
-            .downcast_ref::<MediaDemuxError>()
-            .is_some_and(MediaDemuxError::is_seek_unavailable)
-    }) {
-        return PlayerError::new(
-            PlayerErrorKind::SeekUnavailable,
-            format!("Seek failed: {error}"),
-        );
-    }
-
-    PlayerError::new(PlayerErrorKind::DemuxError, format!("Seek failed: {error}"))
-}
-
-/// Мапит ошибку выбора seek policy до mutating-части transaction-а.
-fn player_error_from_seek_demux_request_error(error: SeekDemuxRequestError) -> PlayerError {
-    match error {
-        SeekDemuxRequestError::UnsupportedSeekMode { mode } => PlayerError::new(
-            PlayerErrorKind::SeekUnavailable,
-            format!("Seek mode {mode:?} пока не поддерживается текущим demux contract"),
-        ),
-    }
-}
-
-/// Мапит failed decoder flush в typed player error без продолжения seek transaction.
-fn player_error_from_decoder_flush_error(error: anyhow::Error) -> PlayerError {
-    PlayerError::new(
-        PlayerErrorKind::DecoderFlushFailed,
-        format!("Video decoder flush failed before seek: {error}"),
-    )
 }

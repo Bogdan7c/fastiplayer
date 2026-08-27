@@ -23,6 +23,12 @@ const COORDINATOR_INLINE_TEST_EVIDENCE_PATH: &str = "crates/app-egui/src/media_o
 /// Canonical dedicated owner тех же coordinator-тестов после S42 extraction.
 const COORDINATOR_DEDICATED_TEST_EVIDENCE_PATH: &str =
     "crates/app-egui/src/media_open/coordinator/tests.rs";
+/// Прежний physical owner settings projection-теста до S42 layout extraction.
+const SETTINGS_ADAPTER_INLINE_TEST_EVIDENCE_PATH: &str =
+    "crates/app-egui/src/frame_prepare/settings_runtime_adapter.rs";
+/// Canonical child owner того же settings projection-теста после S42 extraction.
+const SETTINGS_ADAPTER_PROJECTION_TEST_EVIDENCE_PATH: &str =
+    "crates/app-egui/src/frame_prepare/settings_runtime_adapter/reconfigure_projection.rs";
 
 /// Возвращает workspace root через compile-time path текущего crate-а.
 fn workspace_root() -> PathBuf {
@@ -116,10 +122,12 @@ fn assert_source_evidence(evidence: &Value, context: &str) {
     // Symbol является стабильным именем focused test или production boundary.
     let evidence_symbol = required_string(evidence, "symbol");
     // S42 поменял только physical test layout; exact evidence symbol остаётся прежним.
-    let physical_evidence_path = if evidence_path == COORDINATOR_INLINE_TEST_EVIDENCE_PATH {
-        COORDINATOR_DEDICATED_TEST_EVIDENCE_PATH
-    } else {
-        evidence_path
+    let physical_evidence_path = match evidence_path {
+        COORDINATOR_INLINE_TEST_EVIDENCE_PATH => COORDINATOR_DEDICATED_TEST_EVIDENCE_PATH,
+        SETTINGS_ADAPTER_INLINE_TEST_EVIDENCE_PATH => {
+            SETTINGS_ADAPTER_PROJECTION_TEST_EVIDENCE_PATH
+        }
+        _ => evidence_path,
     };
     // Exact workspace path строится без glob или directory traversal из runtime input.
     let absolute_path = workspace_root().join(physical_evidence_path);

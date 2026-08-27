@@ -1,16 +1,11 @@
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use codec_core::VideoColorMetadata;
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, select};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, select};
 use media_core::{Packet, TrackKind};
 use tracing::trace;
-use video_core::{
-    DecodedFrame, VideoDecoder, VideoDecoderActivityNotifier, VideoDecoderDiagnosticEvent,
-    VideoFramePublishPressureDiagnostics,
-};
-
-use crate::decoder::VaapiDecodePacketOutcome;
+use video_core::{DecodedFrame, VideoDecoder, VideoDecoderActivityNotifier};
 
 use super::control::ThreadControlMsg;
 use super::{
@@ -18,78 +13,21 @@ use super::{
     QueuedDecodePacket,
 };
 
+mod frame_publication;
+
+use frame_publication::release_pending_publish_frame;
+#[cfg(test)]
+pub(super) use frame_publication::send_frame_publish_pressure_event;
+pub(super) use frame_publication::{
+    DecodeQueuedPacketContext, DecodeQueuedPacketResult, FramePublishPressureCounters,
+    PendingFramePublish, handle_decode_packet_outcome, publish_pending_frame,
+};
+
 /// Проверяет stream config на реализованный в этой фазе VA-API adapter intersection.
 pub(super) fn reject_unsupported_vaapi_stream_config(
     config: &video_core::VideoStreamDecodeConfig,
 ) -> Option<video_core::VideoStreamConfigRejection> {
     crate::codec_adapter::VaapiCodecAdapterFactory::stream_config_rejection(config)
-}
-
-/// Decoded frame, который уже готов, но ещё ждёт место в bounded frame channel.
-pub(super) struct PendingFramePublish {
-    /// Frame metadata и zero-copy texture handle.
-    frame: DecodedFrame,
-
-    /// Монотонный момент начала publish stage.
-    publish_started_at: Instant,
-
-    /// Был ли этот frame уже остановлен заполненным bounded frame channel.
-    has_seen_channel_full: bool,
-}
-
-impl PendingFramePublish {
-    /// Создаёт pending publish item и начинает измерять decoded-frame publish latency.
-    pub(super) fn new(frame: DecodedFrame) -> Self {
-        Self {
-            frame,
-            publish_started_at: Instant::now(),
-            has_seen_channel_full: false,
-        }
-    }
-
-    /// Помечает frame как ожидающий свободного места в bounded frame channel.
-    fn mark_channel_full(&mut self) {
-        self.has_seen_channel_full = true;
-    }
-}
-
-/// Локальные counters decoder thread-а для decoded-frame publish boundary.
-#[derive(Debug, Default)]
-pub(super) struct FramePublishPressureCounters {
-    /// Накопительный snapshot, который можно отправлять через diagnostics event.
-    pressure: VideoFramePublishPressureDiagnostics,
-}
-
-impl FramePublishPressureCounters {
-    /// Учитывает заполненный bounded frame channel без изменения publish lifecycle.
-    fn record_channel_full(&mut self) {
-        self.pressure.frame_publish_channel_full_count = self
-            .pressure
-            .frame_publish_channel_full_count
-            .saturating_add(1);
-    }
-
-    /// Учитывает повторную попытку публикации уже pending frame.
-    fn record_pending_retry(&mut self) {
-        self.pressure.pending_publish_retry_count =
-            self.pressure.pending_publish_retry_count.saturating_add(1);
-    }
-
-    /// Учитывает latency только один раз: когда frame реально опубликован worker-у.
-    fn record_published_latency(&mut self, latency: Duration) {
-        self.pressure.total_decoded_frame_publish_latency = self
-            .pressure
-            .total_decoded_frame_publish_latency
-            .saturating_add(latency);
-        if latency > self.pressure.max_decoded_frame_publish_latency {
-            self.pressure.max_decoded_frame_publish_latency = latency;
-        }
-    }
-
-    /// Возвращает копию counters для неблокирующей отправки в diagnostics channel.
-    fn snapshot(&self) -> VideoFramePublishPressureDiagnostics {
-        self.pressure
-    }
 }
 
 /// Каналы и shared state, которыми владеет lifetime decoder thread loop-а.
@@ -652,30 +590,6 @@ pub(super) fn drain_queued_decode_packets(packet_rx: &Receiver<QueuedDecodePacke
     }
 }
 
-/// Собирает decoder-thread state, который нужен одному packet decode step.
-pub(super) struct DecodeQueuedPacketContext<'a> {
-    pub(super) frame_tx: &'a Sender<DecodedFrame>,
-    pub(super) packet_ack_tx: &'a Sender<DecodePacketAck>,
-    pub(super) error_tx: &'a Sender<DecodeThreadError>,
-    pub(super) pending_publish: &'a mut Option<PendingFramePublish>,
-    pub(super) publish_pressure: &'a mut FramePublishPressureCounters,
-    pub(super) diagnostic_tx: &'a DecoderDiagnosticSender,
-    pub(super) activity_notifier: &'a VideoDecoderActivityNotifier,
-    pub(super) latest_color_metadata: &'a mut Option<VideoColorMetadata>,
-}
-
-/// Result одного decode attempt-а внутри decoder thread loop-а.
-pub(super) enum DecodeQueuedPacketResult {
-    /// Loop может продолжать normal scheduling.
-    Continue,
-
-    /// Decode thread должен завершиться.
-    Stop,
-
-    /// Packet не принят из-за output-buffer pressure и должен быть повторён позже.
-    OutputBackpressured(QueuedDecodePacket),
-}
-
 /// Декодирует один queued packet и ставит первый готовый frame в publish stage.
 fn decode_queued_packet(
     decoder: &mut crate::VaapiVideoDecoder,
@@ -702,177 +616,6 @@ fn decode_queued_packet(
         packet_receive_latency,
         decode_context,
     )
-}
-
-/// Обрабатывает результат backend decode без повторного знания о VAAPI submit path.
-pub(super) fn handle_decode_packet_outcome(
-    decode_result: anyhow::Result<VaapiDecodePacketOutcome>,
-    queued_packet: QueuedDecodePacket,
-    packet_receive_latency: Duration,
-    decode_context: DecodeQueuedPacketContext<'_>,
-) -> DecodeQueuedPacketResult {
-    let decode_packet = &queued_packet.packet;
-
-    match decode_result {
-        Ok(VaapiDecodePacketOutcome::OutputBackpressured) => {
-            DecodeQueuedPacketResult::OutputBackpressured(queued_packet)
-        }
-        Ok(VaapiDecodePacketOutcome::Accepted(Some(frame))) => {
-            let mut frame = *frame;
-            let _ = decode_context.packet_ack_tx.try_send(());
-            notify_decoder_activity(decode_context.activity_notifier);
-            *decode_context.latest_color_metadata = decode_packet.resolved_color.clone();
-            if let Some(color_metadata) = &decode_packet.resolved_color {
-                frame.color = color_metadata.clone();
-            }
-            frame.diagnostics.timings.decoder_packet_receive_latency = Some(packet_receive_latency);
-            *decode_context.pending_publish = Some(PendingFramePublish::new(frame));
-            notify_decoder_activity(decode_context.activity_notifier);
-            if publish_pending_frame(
-                decode_context.frame_tx,
-                decode_context.pending_publish,
-                decode_context.publish_pressure,
-                decode_context.diagnostic_tx,
-                decode_context.activity_notifier,
-            ) {
-                DecodeQueuedPacketResult::Continue
-            } else {
-                DecodeQueuedPacketResult::Stop
-            }
-        }
-        Ok(VaapiDecodePacketOutcome::Accepted(None)) => {
-            let _ = decode_context.packet_ack_tx.try_send(());
-            notify_decoder_activity(decode_context.activity_notifier);
-            *decode_context.latest_color_metadata = decode_packet.resolved_color.clone();
-            DecodeQueuedPacketResult::Continue
-        }
-        Err(error) => {
-            if crate::decoder::is_fatal_decoder_error(&error) {
-                let message = format!("Video decoder stopped after fatal error: {error:#}");
-                tracing::warn!(
-                    error = %message,
-                    "Decoder thread: fatal decode error, exiting"
-                );
-                send_decoder_thread_error(
-                    decode_context.error_tx,
-                    message,
-                    decode_context.activity_notifier,
-                );
-                return DecodeQueuedPacketResult::Stop;
-            }
-            let _ = decode_context.packet_ack_tx.try_send(());
-            notify_decoder_activity(decode_context.activity_notifier);
-            tracing::warn!(error = %error, "Decoder thread: decode error");
-            DecodeQueuedPacketResult::Continue
-        }
-    }
-}
-
-/// Пытается передать pending frame worker-у, не блокируя release/flush control path.
-pub(super) fn publish_pending_frame(
-    frame_tx: &Sender<DecodedFrame>,
-    pending_publish: &mut Option<PendingFramePublish>,
-    publish_pressure: &mut FramePublishPressureCounters,
-    diagnostic_tx: &DecoderDiagnosticSender,
-    activity_notifier: &VideoDecoderActivityNotifier,
-) -> bool {
-    let Some(mut pending_frame) = pending_publish.take() else {
-        return true;
-    };
-
-    let is_retry = pending_frame.has_seen_channel_full;
-    let publish_latency = pending_frame.publish_started_at.elapsed();
-    pending_frame
-        .frame
-        .diagnostics
-        .timings
-        .decoded_frame_publish_latency = Some(publish_latency);
-
-    match frame_tx.try_send(pending_frame.frame) {
-        Ok(()) => {
-            if is_retry {
-                publish_pressure.record_pending_retry();
-            }
-            publish_pressure.record_published_latency(publish_latency);
-            if is_retry {
-                send_frame_publish_pressure_event(
-                    diagnostic_tx,
-                    publish_pressure.snapshot(),
-                    activity_notifier,
-                );
-            }
-            notify_decoder_activity(activity_notifier);
-            true
-        }
-        Err(TrySendError::Full(frame)) => {
-            if is_retry {
-                publish_pressure.record_pending_retry();
-            }
-            publish_pressure.record_channel_full();
-            let mut blocked_frame = PendingFramePublish {
-                frame,
-                publish_started_at: pending_frame.publish_started_at,
-                has_seen_channel_full: pending_frame.has_seen_channel_full,
-            };
-            blocked_frame.mark_channel_full();
-            *pending_publish = Some(blocked_frame);
-            send_frame_publish_pressure_event(
-                diagnostic_tx,
-                publish_pressure.snapshot(),
-                activity_notifier,
-            );
-            true
-        }
-        Err(TrySendError::Disconnected(frame)) => {
-            if is_retry {
-                publish_pressure.record_pending_retry();
-                send_frame_publish_pressure_event(
-                    diagnostic_tx,
-                    publish_pressure.snapshot(),
-                    activity_notifier,
-                );
-            }
-            tracing::warn!(
-                handle_id = frame.resource_handle.0,
-                "Player thread dropped decoded frame receiver"
-            );
-            *pending_publish = Some(PendingFramePublish {
-                frame,
-                publish_started_at: pending_frame.publish_started_at,
-                has_seen_channel_full: pending_frame.has_seen_channel_full,
-            });
-            false
-        }
-    }
-}
-
-/// Отправляет cumulative publish-pressure snapshot без блокировки decoder thread-а.
-pub(super) fn send_frame_publish_pressure_event(
-    diagnostic_tx: &DecoderDiagnosticSender,
-    pressure: VideoFramePublishPressureDiagnostics,
-    activity_notifier: &VideoDecoderActivityNotifier,
-) {
-    let _ = diagnostic_tx
-        .try_send(VideoDecoderDiagnosticEvent::DecodedFramePublishPressure { pressure });
-    notify_decoder_activity(activity_notifier);
-}
-
-/// Освобождает frame, который decoder уже импортировал, но не успел отдать worker-у.
-fn release_pending_publish_frame(
-    decoder: &mut crate::VaapiVideoDecoder,
-    pending_publish: Option<PendingFramePublish>,
-) {
-    let Some(pending_frame) = pending_publish else {
-        return;
-    };
-
-    if let Err(error) = decoder.release_frame(pending_frame.frame.resource_handle) {
-        tracing::warn!(
-            error = %error,
-            handle_id = pending_frame.frame.resource_handle.0,
-            "Failed to release pending decoded frame during decoder thread shutdown/flush"
-        );
-    }
 }
 
 /// Отправляет fatal decoder-thread error без блокировки.
