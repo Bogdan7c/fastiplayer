@@ -358,8 +358,7 @@ fn install_old_media(
     playback_state: PlaybackState,
 ) -> MediaInstanceId {
     install_fake_media(session, vec![fake_track(90, TrackKind::Audio)]);
-    let old_instance_id =
-        MediaInstanceId::from_non_zero(NonZeroU64::new(90).expect("test instance id is non-zero"));
+    let old_instance_id = MediaInstanceId::new_unique();
     session.snapshot.media_instance_id = Some(old_instance_id);
     session.set_playback_state(playback_state);
     old_instance_id

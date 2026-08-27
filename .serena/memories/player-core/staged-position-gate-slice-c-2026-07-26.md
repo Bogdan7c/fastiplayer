@@ -17,6 +17,7 @@
 - Player state machine: `crates/player-core/src/session/staged_media_install/position.rs`; transfer/adoption: sibling `commit.rs`, `prepared_demux_seek.rs`, `seek_start.rs`, and `installed_media_restore.rs`.
 - App subphase: `crates/app-egui/src/media_open/{types,coordinator,player_port}.rs`; same-lineage orchestration: `state/strong_media_open/pending*.rs`.
 - Focused player coverage is in `session/tests/staged_media_install.rs` and `session/tests/live_same_item_restore.rs`; coordinator ordering coverage is in `media_open/coordinator.rs` tests.
+- Параллельные fixtures, которые должны моделировать реально сменяемый `MediaInstanceId`, резервируют old identity через `MediaInstanceId::new_unique()`: достижимый hardcoded ID может совпасть с process-global allocator candidate-а и дать ложный same-identity результат. Числовые identity допустимы только в изолированных тестах, где production allocator не участвует в проверяемом пути.
 
 ## Post-commit `TracksChanged` rebase (2026-08-05)
 - Между atomic staged commit и app adoption demux может опубликовать `TracksChanged`. Это остаётся той же adopted seek-транзакцией, хотя decoder/packet generation меняется.
