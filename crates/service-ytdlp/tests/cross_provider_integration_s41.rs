@@ -29,6 +29,12 @@ const SETTINGS_ADAPTER_INLINE_TEST_EVIDENCE_PATH: &str =
 /// Canonical child owner того же settings projection-теста после S42 extraction.
 const SETTINGS_ADAPTER_PROJECTION_TEST_EVIDENCE_PATH: &str =
     "crates/app-egui/src/frame_prepare/settings_runtime_adapter/reconfigure_projection.rs";
+/// Исторический S41 owner обоих app web-open production symbols.
+const WEB_MEDIA_OPEN_PARENT_EVIDENCE_PATH: &str = "crates/app-egui/src/web_media_open.rs";
+/// Exact runtime symbol, физически вынесенный из parent в S42 executor wave 5.
+const WEB_MEDIA_OPEN_CANDIDATE_SYMBOL: &str = "fn open_candidate";
+/// Canonical private owner concrete candidate open после S42 extraction.
+const WEB_MEDIA_OPEN_RUNTIME_EVIDENCE_PATH: &str = "crates/app-egui/src/web_media_open/runtime.rs";
 
 /// Возвращает workspace root через compile-time path текущего crate-а.
 fn workspace_root() -> PathBuf {
@@ -121,11 +127,14 @@ fn assert_source_evidence(evidence: &Value, context: &str) {
     let evidence_path = required_string(evidence, "path");
     // Symbol является стабильным именем focused test или production boundary.
     let evidence_symbol = required_string(evidence, "symbol");
-    // S42 поменял только physical test layout; exact evidence symbol остаётся прежним.
-    let physical_evidence_path = match evidence_path {
-        COORDINATOR_INLINE_TEST_EVIDENCE_PATH => COORDINATOR_DEDICATED_TEST_EVIDENCE_PATH,
-        SETTINGS_ADAPTER_INLINE_TEST_EVIDENCE_PATH => {
+    // S42 поменял только physical layout; historical artifact и exact symbol остаются прежними.
+    let physical_evidence_path = match (evidence_path, evidence_symbol) {
+        (COORDINATOR_INLINE_TEST_EVIDENCE_PATH, _) => COORDINATOR_DEDICATED_TEST_EVIDENCE_PATH,
+        (SETTINGS_ADAPTER_INLINE_TEST_EVIDENCE_PATH, _) => {
             SETTINGS_ADAPTER_PROJECTION_TEST_EVIDENCE_PATH
+        }
+        (WEB_MEDIA_OPEN_PARENT_EVIDENCE_PATH, WEB_MEDIA_OPEN_CANDIDATE_SYMBOL) => {
+            WEB_MEDIA_OPEN_RUNTIME_EVIDENCE_PATH
         }
         _ => evidence_path,
     };

@@ -39,3 +39,12 @@
 - `app-egui`: coordinator barrier/cancel winner, exact revision/intent, local/direct prepared parity, compound part Installed-only current publication, stale/remove/tombstone, automatic compound traversal, restore/settings compensation, startup shutdown token propagation.
 - S22 neighbor tests покрывают Range/non-Range, MP4/M4A/WebM, separate A/V composition, generation fences и planner exact/stale semantics.
 - Проверено: `scripts/ci-checks.sh tests` (workspace PASS), `cargo test -p app-egui` (805 PASS), `cargo test -p service-ytdlp` (48 PASS), S22 focused packages PASS, `cargo clippy -p service-ytdlp --all-targets -- -D warnings`, `cargo machete --with-metadata crates/service-ytdlp crates/app-egui`, `scripts/check-refactor-guardrails.py`, fmt/diff-check/reference audit и Serena diagnostics. App Clippy остаётся с двумя прежними untouched `large_enum_variant` warnings в `state/strong_media_open.rs` и `state/strong_media_open/pending.rs`.
+
+
+## S42 executor wave 5 — private concrete runtime owner (2026-08-27)
+
+- `crates/app-egui/src/web_media_open/runtime.rs` теперь владеет `WebOpenRuntime`: construction concrete transport/demux registries, immutable capability snapshots, candidate physical open, demux open/readiness wrapping и private config-to-budget helpers.
+- `web_media_open.rs` сохраняет top-level yt-dlp extraction/rematch, source/timeline/catalog generation, cancellation fences до open и перед publication, exact candidate/component identity, separate A/V composition, stream/catalog finalization и strong-install-facing prepared envelope.
+- HLS/DASH refresh ports и timeline generation по-прежнему строятся parent attempt owner-ом и передаются в runtime через typed `WebCandidateOpenContext`; runtime не получил queue/Installed authority. Parent/child production line counts: `686/538`, оба ниже 800.
+- Focused `web_media_open::` suite: 46/46 PASS. Full app no-default и all-features: 1002/1002 в каждой matrix; strict Clippy обеих matrix, fmt/diff/refactor guardrails, S41 cross-provider integration 3/3, S42 final acceptance 24/24 и Serena diagnostics PASS.
+- Historical S41 `runtime-coverage-s41.json` остаётся immutable. `cross_provider_integration_s41.rs` exact-map-ит только пару `(web_media_open.rs, fn open_candidate)` в canonical `web_media_open/runtime.rs`; соседний `prepare_yt_dlp_web_media` по-прежнему проверяется в parent. Это предотвращает path-wide redirect, который мог бы скрыть stale evidence.
