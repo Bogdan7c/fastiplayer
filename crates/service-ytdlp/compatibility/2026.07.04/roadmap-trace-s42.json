@@ -959,13 +959,13 @@
     "hardware-baseline-profile": {
       "kind": "ExecutableTest", "role": "hardware_exception", "polarity": "Positive",
       "package": "video-vaapi", "target": "lib",
-      "path": "crates/video-vaapi/src/probe.rs",
+      "path": "crates/video-vaapi/src/probe/tests.rs",
       "symbol": "h264_baseline_va_profile_maps_to_exact_8bit_yuv420_slot"
     },
     "hardware-constrained-no-alias": {
       "kind": "ExecutableTest", "role": "hardware_exception", "polarity": "Negative",
       "package": "video-vaapi", "target": "lib",
-      "path": "crates/video-vaapi/src/probe.rs",
+      "path": "crates/video-vaapi/src/probe/tests.rs",
       "symbol": "constrained_baseline_va_profile_does_not_advertise_ordinary_baseline"
     },
     "ci-tests-function": {

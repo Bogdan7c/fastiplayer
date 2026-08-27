@@ -18,6 +18,11 @@ const COVERAGE_PATH: &str = "compatibility/2026.07.04/runtime-coverage-s41.json"
 const IMPLEMENTED_ROW_COUNT: usize = 12;
 // Aggregate RTMP identity не является доказанным wire provider-ом.
 const RTMP_IDENTITY_ONLY_ROW: &str = "rtmp-family-flv";
+/// Прежний physical owner coordinator-тестов до S42 layout extraction.
+const COORDINATOR_INLINE_TEST_EVIDENCE_PATH: &str = "crates/app-egui/src/media_open/coordinator.rs";
+/// Canonical dedicated owner тех же coordinator-тестов после S42 extraction.
+const COORDINATOR_DEDICATED_TEST_EVIDENCE_PATH: &str =
+    "crates/app-egui/src/media_open/coordinator/tests.rs";
 
 /// Возвращает workspace root через compile-time path текущего crate-а.
 fn workspace_root() -> PathBuf {
@@ -110,8 +115,14 @@ fn assert_source_evidence(evidence: &Value, context: &str) {
     let evidence_path = required_string(evidence, "path");
     // Symbol является стабильным именем focused test или production boundary.
     let evidence_symbol = required_string(evidence, "symbol");
+    // S42 поменял только physical test layout; exact evidence symbol остаётся прежним.
+    let physical_evidence_path = if evidence_path == COORDINATOR_INLINE_TEST_EVIDENCE_PATH {
+        COORDINATOR_DEDICATED_TEST_EVIDENCE_PATH
+    } else {
+        evidence_path
+    };
     // Exact workspace path строится без glob или directory traversal из runtime input.
-    let absolute_path = workspace_root().join(evidence_path);
+    let absolute_path = workspace_root().join(physical_evidence_path);
     // Missing file означает stale либо выдуманное traceability evidence.
     let source = fs::read_to_string(&absolute_path).unwrap_or_else(|error| {
         panic!(
@@ -122,7 +133,7 @@ fn assert_source_evidence(evidence: &Value, context: &str) {
     // Exact symbol обязан оставаться в declared owner file.
     assert!(
         source.contains(evidence_symbol),
-        "{context}: symbol `{evidence_symbol}` отсутствует в `{evidence_path}`"
+        "{context}: symbol `{evidence_symbol}` отсутствует в `{physical_evidence_path}`"
     );
 }
 

@@ -1,6 +1,6 @@
 # yt-dlp external-process ownership (2026-08-05)
 
-- Общая internal boundary находится в `crates/service-ytdlp/src/process_tree.rs`. Оба process caller-а — candidate/recovery `src/process.rs` и topology `src/topology/process.rs` — не владеют `std::process::Child` напрямую.
+- Общая child-lifecycle boundary находится в `crates/service-ytdlp/src/process_tree.rs`. Candidate command orchestration живёт в `src/process.rs`, platform-hijack recovery — в `src/process/recovery.rs`, topology caller — в `src/topology/process.rs`; ни один из них не владеет `std::process::Child` напрямую.
 - `spawn_owned_process` на Unix создаёт отдельную process group (PGID = PID root child) и возвращает только `OwnedProcess`. На non-Unix сохраняется fallback одного child.
 - Unix spawn имеет bounded operational recovery только для `ETXTBSY`: максимум 8 попыток с паузой не более 10 ms. Между попытками проверяется cancellation; retry не запускается после исходного process deadline; exhaustion/deadline сохраняет последний OS error как прежний typed `ProcessFailure`. После успешного spawn wait использует только остаток исходного timeout.
 - `OwnedProcess` — единственный владелец child/group. Caller получает только intent methods `take_stdout`, `take_stderr`, `try_wait`, `finish`. `finish` всегда завершает всю owned group и reap-ит root, в том числе после нормального root exit: lingering descendants могут удерживать унаследованные stdout/stderr pipe-ы.
@@ -30,4 +30,12 @@
 - Defaults после real-corpus profiling: stdout 64 MiB, stderr 8 MiB, JSON 1,000,000 values; direct `YtDlpConfig` caller проходит ту же upper-bound validation.
 - Overflow использует тот же `OwnedProcess::finish` lifecycle: terminate owned group, reap root, bounded join readers. Full evidence и known headless-process RSS limitation: `mem:media-services/ytdlp-output-budgets-aud007-2026-08-23`.
 
-Related: `mem:core`, `mem:media-services/core`, `mem:media-services/ytdlp-topology-s15-2026-07-20`, `mem:media-services/ytdlp-output-budgets-aud007-2026-08-23`.
+## S42 module ownership split (2026-08-27)
+
+- `crates/service-ytdlp/src/process.rs` (492 lines) owns candidate command orchestration plus bounded child/pipe lifecycle; `src/process/recovery.rs` (245 lines) owns recovery temp directories, bounded `.dump` scanning, platform-hijack recovery and title enrichment.
+- Existing `crate::process::recover_playable_document_after_platform_hijack` remains available through a crate-private re-export, so candidate/topology callers and typed cancellation/fallback semantics did not change.
+- `candidate/request_material.rs` (528 lines) keeps the versioned model, safe summaries and transport intent-accessors; `candidate/request_material/normalization.rs` (332 lines) owns raw yt-dlp DTO projection and all bounded normalization helpers. The existing candidate-level `normalize_request_material` path and descendant-test access to `normalize_fragments` remain intact.
+- Inline process tests and their test-only fixtures now live in `src/process/tests.rs`; cleanup, recovery, output-budget, timeout/cancellation and full candidate normalization regressions remain functional.
+- Verification: full Rust 1.96.0 all-features locked `service-ytdlp` suite green (150 unit tests plus all integration/final-acceptance suites; one pre-existing real-system test ignored), strict all-targets Clippy, rustfmt, diff-check and Serena diagnostics.
+
+Related: `mem:core`, `mem:media-services/core`, `mem:media-services/ytdlp-topology-s15-2026-07-20`, `mem:media-services/ytdlp-output-budgets-aud007-2026-08-23`, `mem:testing/s42-core-services-test-layout-2026-08-27`.

@@ -128,3 +128,8 @@ Normal coordinator preparation, startup orchestration and settings rebuild now a
 - Coordinator phases remain unchanged. Live candidate switching uses the existing S25 envelope: old playback until commit, exact Installed, same-lineage rebind, then player-owned live position restore and playback intent.
 - App forwards the captured old absolute position but never reads the fresh DVR range. Player returns either existing seek-backed `Applied` or typed `AdjustedToLiveEdge`; both retain non-persistent `Live` checkpoint semantics.
 - Full contract: `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.
+
+## S42 dedicated coordinator tests (2026-08-27)
+- Coordinator inline unit tests now live in `crates/app-egui/src/media_open/coordinator/tests.rs`; the parent declares private `#[cfg(test)] mod tests;`.
+- Existing `same_lineage_tests` remains a child of that logical tests module at `crates/app-egui/src/media_open/coordinator/tests/same_lineage_tests.rs`.
+- This was a behavior-neutral relocation: coordinator protocol/API/invariants and every test body/name/assertion are unchanged.
