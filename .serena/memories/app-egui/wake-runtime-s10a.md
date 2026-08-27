@@ -47,3 +47,9 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 ## Session 18B desktop owner (2026-07-16)
 - Process-lifetime desktop command mailbox shares `AppWakeOwner::PlaylistRuntime`: bounded payload remains outside winit events, send uses the existing false→true wake edge, and UI-thread drain applies neutral MPRIS actions without a hidden playback queue during suspend/no-binding.
 - Desktop backend is now a process owner in `PlaylistRuntime/AppShell`; it starts only after D10e lease and shuts down before renderer-bound player. Details: `mem:app-egui/playlist-desktop-transport-s18b`.
+
+## S42 app-shell decomposition (2026-08-27)
+
+- `ApplicationHandler<AppWakeEvent>` и wake/redraw/window callback policy теперь находятся в приватном `app_shell/event_loop.rs`; `AppShell` state, construction, suspend/resume/shutdown intent methods и lease ownership остаются в `app_shell/mod.rs`.
+- App-shell focused tests перенесены в `app_shell/tests.rs`; functional suspend/resume и seek-settlement regressions остаются у `PlaylistRuntime` owners.
+- Полные размеры, инварианты и verification: `mem:app-egui/app-shell-event-loop-decomposition-s42-2026-08-27`.

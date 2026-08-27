@@ -8,7 +8,7 @@ use super::{
     AVC_LENGTH_SIZE_MINUS_ONE_MASK, AVC_SPS_COUNT_MASK, AvcDecoderConfigurationRecordError,
     H264ByteStreamError, H264NalLengthSize, H264Packetization, H264ParameterSetInjection,
     H264SpsError, h264_access_unit_to_annex_b, h264_access_unit_to_annex_b_into, h264_nal_units,
-    h264_sps_metadata_from_avc_decoder_configuration_record,
+    h264_sps_metadata_from_avc_decoder_configuration_record, infer_h264_packetization,
     parse_avc_decoder_configuration_record, parse_avc3_decoder_configuration_record,
     parse_h264_sps_metadata, probe_h264_packet_keyframe,
 };
@@ -242,6 +242,93 @@ fn avcc_to_annex_b_conversion_uses_explicit_parameter_set_injection() {
     let expected =
         annex_b_access_unit(&[sequence_parameter_set, picture_parameter_set, idr_slice()]);
     assert_eq!(annex_b, expected);
+}
+
+#[test]
+fn avcc_config_packet_reaches_annex_b_decoder_boundary_with_borrowed_nal_views() {
+    let sequence_parameter_set = constrained_baseline_sps();
+    let picture_parameter_set = pps();
+    let record_bytes = avcc(4, &sequence_parameter_set, &picture_parameter_set);
+    let record = parse_avc_decoder_configuration_record(&record_bytes)
+        .expect("валидный avcC должен сохранить decoder configuration contract");
+    let packetization = infer_h264_packetization(Some(&record_bytes), &[])
+        .expect("валидный avcC должен определить AVCC packetization");
+    let access_unit = avcc_access_unit(H264NalLengthSize::FOUR, &[idr_slice()]);
+
+    let packet_nal_units = h264_nal_units(&access_unit, packetization)
+        .expect("AVCC IDR packet должен дойти до NAL boundary");
+    let borrowed_idr_bytes = packet_nal_units[0].bytes();
+    let expected_idr_bytes = &access_unit[H264NalLengthSize::FOUR.bytes()..];
+
+    // NAL view обязан ссылаться на исходный packet: parser не владеет lifecycle packet bytes.
+    assert_eq!(borrowed_idr_bytes, expected_idr_bytes);
+    assert_eq!(borrowed_idr_bytes.as_ptr(), expected_idr_bytes.as_ptr());
+
+    let annex_b = h264_access_unit_to_annex_b(
+        &access_unit,
+        packetization,
+        H264ParameterSetInjection::BeforeAccessUnit {
+            sequence_parameter_sets: record.sequence_parameter_sets(),
+            picture_parameter_sets: record.picture_parameter_sets(),
+        },
+    )
+    .expect("AVCC packet с явной injection policy должен дойти до Annex B decoder boundary");
+    let decoder_nal_types = h264_nal_units(&annex_b, H264Packetization::AnnexB)
+        .expect("decoder-facing Annex B packet должен оставаться структурно валидным")
+        .into_iter()
+        .map(|nal_unit| nal_unit.nal_unit_type())
+        .collect::<Vec<_>>();
+
+    assert_eq!(decoder_nal_types, vec![7, 8, 5]);
+    assert!(
+        probe_h264_packet_keyframe(&annex_b, H264Packetization::AnnexB)
+            .expect("injected decoder-facing packet должен сохранить IDR classification")
+    );
+}
+
+#[test]
+fn malformed_bytestream_preserves_typed_length_header_and_empty_output_contracts() {
+    let truncated_length_packet = [0x00, 0x00, 0x00];
+    let truncated_length_error = h264_nal_units(
+        &truncated_length_packet,
+        H264Packetization::AvccLengthPrefixed {
+            nal_length_size: H264NalLengthSize::FOUR,
+        },
+    )
+    .expect_err("оборванный AVCC length-prefix должен быть typed ошибкой");
+    assert_eq!(
+        truncated_length_error,
+        H264ByteStreamError::TruncatedAvccNalLength {
+            nal_length_size: H264NalLengthSize::FOUR,
+            remaining_bytes: 3,
+        }
+    );
+
+    let invalid_header_packet = [0x00, 0x00, 0x01, 0x80];
+    let invalid_header_error = h264_nal_units(&invalid_header_packet, H264Packetization::AnnexB)
+        .expect_err("forbidden_zero_bit должен сохранить typed header ошибку");
+    assert_eq!(
+        invalid_header_error,
+        H264ByteStreamError::InvalidNalHeader { header: 0x80 }
+    );
+
+    let mut decoder_output = Vec::with_capacity(64);
+    decoder_output.extend_from_slice(b"stale decoder bytes");
+    let original_capacity = decoder_output.capacity();
+    let conversion_error = h264_access_unit_to_annex_b_into(
+        &invalid_header_packet,
+        H264Packetization::AnnexB,
+        H264ParameterSetInjection::None,
+        &mut decoder_output,
+    )
+    .expect_err("невалидный header нельзя публиковать decoder-у");
+
+    assert_eq!(
+        conversion_error,
+        H264ByteStreamError::InvalidNalHeader { header: 0x80 }
+    );
+    assert!(decoder_output.is_empty());
+    assert_eq!(decoder_output.capacity(), original_capacity);
 }
 
 #[test]

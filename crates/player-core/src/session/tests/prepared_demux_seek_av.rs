@@ -11,15 +11,34 @@ use super::test_support::{
     SeekRegressionHarness, fake_track, fake_video_packet_with_keyframe,
     install_ready_audio_runtime, scripted_seek_demuxer,
 };
-use super::tracing_capture::install_tracing_capture;
+use super::tracing_capture::{
+    IsolatedTracingTestProcess, install_tracing_capture, isolate_tracing_capture_test,
+};
 use crate::{
     PlaybackState, PlayerCommand, PlayerEvent, PlayerTickConfig, PlayerTickContext,
     PreparedDemuxSeekMode, PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, SeekMode, SeekRequest,
     SeekTarget,
 };
 
+/// Canonical libtest name полного A/V tracing acceptance test-а.
+const WORKER_RECEIPTED_AV_TRACE_TEST_NAME: &str = concat!(
+    "session::tests::prepared_demux_seek_av::",
+    "worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_play"
+);
+
+/// Canonical libtest name regression-а pre-target tracing telemetry.
+const PRE_TARGET_TRACE_TEST_NAME: &str = concat!(
+    "session::tests::prepared_demux_seek_av::",
+    "presented_pre_target_violation_never_publishes_zero_target_proof"
+);
+
 #[test]
 fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_play() {
+    match isolate_tracing_capture_test(WORKER_RECEIPTED_AV_TRACE_TEST_NAME) {
+        IsolatedTracingTestProcess::ParentCompleted => return,
+        IsolatedTracingTestProcess::ChildRunsBody => {}
+    }
+
     let (captured_tracing, _tracing_guard) = install_tracing_capture();
     let target_position = Duration::from_secs(8);
     let actual_position = Duration::from_secs(5);
@@ -313,6 +332,11 @@ fn marker_u128_field(trace: &str, marker: &str, field_name: &str) -> u128 {
 /// telemetry не имеет права назвать такой кадр target/post-target либо выдумать нулевой counter.
 #[test]
 fn presented_pre_target_violation_never_publishes_zero_target_proof() {
+    match isolate_tracing_capture_test(PRE_TARGET_TRACE_TEST_NAME) {
+        IsolatedTracingTestProcess::ParentCompleted => return,
+        IsolatedTracingTestProcess::ChildRunsBody => {}
+    }
+
     let (captured_tracing, _tracing_guard) = install_tracing_capture();
     let target_position = Duration::from_secs(8);
     let actual_position = Duration::from_secs(5);

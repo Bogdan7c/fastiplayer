@@ -9,14 +9,18 @@
 //! Player/session/render internals остаются за своими модулями. Shell работает
 //! через boundary methods `AppState`, `Renderer` и startup/redraw helpers.
 
-use std::sync::Arc;
+mod event_loop;
 mod hotkeys;
 mod shutdown;
 
+#[cfg(test)]
+mod tests;
+
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::app_instance::AppInstanceLease;
-use crate::app_wake::{AppWakeEvent, AppWakeOwner, AppWakeProxy};
+use crate::app_wake::{AppWakeOwner, AppWakeProxy};
 use crate::render_settings::{
     surface_present_settings_from_config, warn_legacy_tone_mapping_config,
 };
@@ -24,44 +28,25 @@ use crate::system_capabilities::probe_system_capabilities;
 use playlist_state::{PlaylistResumeStore, PlaylistStateStore};
 use render_wgpu_shell::Renderer;
 use rustiplayer_config::{ConfigPaths, LoadedConfig};
-use tracing::{debug, info, instrument};
-use winit::{
-    application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
-    event_loop::ActiveEventLoop, window::Window,
-};
+use tracing::{debug, info};
+use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use crate::frame_prepare::{flush_sidebar_resize_before_lifecycle_boundary, render_frame};
+use crate::frame_prepare::flush_sidebar_resize_before_lifecycle_boundary;
 use crate::local_file_open::{LocalFileOpenJob, LocalFileOpenRestoreOutcome};
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
-use crate::redraw_pacing::{
-    BackgroundPollScheduler, RedrawControlAction, should_request_redraw_after_window_event,
-};
+use crate::redraw_pacing::{BackgroundPollScheduler, RedrawControlAction};
 use crate::renderer_recreation::RendererLifecycleCoordinator;
 use crate::settings_runtime::SettingsRuntime;
 use crate::startup_media::{InitialMedia, StartupMediaController};
 use crate::state::{AppState, AppStateStartupContext, LifecycleTimelineSeekSettlement};
 use crate::telemetry::Telemetry;
-use hotkeys::ShellHotkeyAction;
 use shutdown::{
     AppShellProcessLifecycle, AppShellShutdownReport, OwnerTerminalDisposition,
     PROCESS_TERMINAL_SHUTDOWN_BUDGET, TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE,
     TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET, TerminalEntryDisposition, player_disposition,
     process_owner_disposition, terminal_entry_disposition,
 };
-
-/// Применяет redraw только когда drain действительно изменил видимый state.
-fn request_redraw_for_visible_wake(window: Option<&Window>, visible_mutation: bool) -> bool {
-    let should_redraw = should_request_redraw_for_wake(window.is_some(), visible_mutation);
-    if should_redraw && let Some(window) = window {
-        window.request_redraw();
-    }
-    should_redraw
-}
-
-const fn should_request_redraw_for_wake(has_window: bool, visible_mutation: bool) -> bool {
-    has_window && visible_mutation
-}
 
 /// Публикует typed lifecycle settlement без выдачи timeout-а за успешный seek commit.
 fn report_timeline_seek_lifecycle_settlement(settlement: LifecycleTimelineSeekSettlement) {
@@ -723,364 +708,5 @@ impl AppShell {
             || discovery_changed
             || resume_changed
             || startup_changed
-    }
-}
-
-impl ApplicationHandler<AppWakeEvent> for AppShell {
-    /// Неблокирующе опустошает ровно одного owner-а и redraw-ит только mutation.
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppWakeEvent) {
-        if self.process_lifecycle != AppShellProcessLifecycle::Running {
-            return;
-        }
-        let visible_mutation = match event.owner() {
-            AppWakeOwner::StartupMedia => match (self.app_state.as_mut(), self.renderer.as_ref()) {
-                (Some(app_state), Some(renderer)) => self.startup_media.poll_startup_jobs(
-                    app_state,
-                    &mut self.playlist_runtime,
-                    renderer,
-                ),
-                _ => false,
-            },
-            AppWakeOwner::LocalFileOpen => {
-                match (self.app_state.as_mut(), self.renderer.as_ref()) {
-                    (Some(app_state), Some(renderer)) => {
-                        app_state.poll_local_file_open_job(&mut self.playlist_runtime, renderer)
-                    }
-                    _ => {
-                        self.local_file_open_wake_port
-                            .acknowledge_abandoned_mailbox();
-                        false
-                    }
-                }
-            }
-            AppWakeOwner::SettingsDynamicOptions => {
-                self.settings_runtime.poll_dynamic_options_refresh()
-            }
-            AppWakeOwner::PlaylistRuntime => self.drain_playlist_persistence(),
-            AppWakeOwner::PlayerTimeline => {
-                self.player_timeline_wake_port.clear_pending_for_drain();
-                match self.app_state.as_mut() {
-                    Some(app_state) => {
-                        match app_state.refresh_player_snapshot_if_timeline_changed() {
-                            Some(player_snapshot) => {
-                                self.playlist_runtime
-                                    .publish_desktop_snapshot(&player_snapshot);
-                                true
-                            }
-                            None => false,
-                        }
-                    }
-                    None => false,
-                }
-            }
-        };
-
-        request_redraw_for_visible_wake(self.window.as_deref(), visible_mutation);
-    }
-
-    /// Гарантирует process-owner shutdown и для exit путей вне window callbacks.
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        self.finish_process_shutdown();
-    }
-
-    /// Вызывается при приостановке приложения (сворачивание, смена TTY).
-    ///
-    /// Освобождаем GPU ресурсы — surface может стать невалидным.
-    #[instrument(skip(self))]
-    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        if self.process_lifecycle != AppShellProcessLifecycle::Running {
-            return;
-        }
-        info!("Приостановка: освобождаем runtime-ресурсы");
-        self.suspend_runtime();
-    }
-
-    /// Вызывается при возобновлении работы (разворачивание, первый запуск).
-    ///
-    /// Здесь создаём окно, инициализируем wgpu и egui.
-    #[instrument(skip(self, event_loop))]
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.process_lifecycle != AppShellProcessLifecycle::Running {
-            return;
-        }
-        let persistence_changed = self.drain_playlist_persistence();
-        if let Some(window) = self.window.clone() {
-            self.restore_runtime(event_loop, window);
-            let post_resume_changed = self.drain_playlist_persistence();
-            request_redraw_for_visible_wake(
-                self.window.as_deref(),
-                persistence_changed || post_resume_changed,
-            );
-            return;
-        }
-
-        info!("Resumed: создание окна");
-
-        let window_attributes = Window::default_attributes()
-            .with_title("Rustiplayer")
-            .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720))
-            // Ширина гарантирует полный порядок transport controls; единичная высота
-            // оставляет вертикальное ограничение практически на усмотрение compositor-а.
-            .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, 1.0))
-            .with_decorations(false)
-            .with_visible(true);
-
-        let window = match event_loop.create_window(window_attributes) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                tracing::error!("Не удалось создать окно: {}", e);
-                event_loop.exit();
-                return;
-            }
-        };
-
-        info!(
-            width = window.inner_size().width,
-            height = window.inner_size().height,
-            scale_factor = window.scale_factor(),
-            "Окно создано"
-        );
-
-        self.window = Some(window.clone());
-        self.restore_runtime(event_loop, window);
-        let post_resume_changed = self.drain_playlist_persistence();
-        request_redraw_for_visible_wake(
-            self.window.as_deref(),
-            persistence_changed || post_resume_changed,
-        );
-    }
-
-    /// Обработка событий окна.
-    ///
-    /// Основной поток событий: ввод, ресайз, закрытие, redraw.
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: winit::window::WindowId,
-        event: WindowEvent,
-    ) {
-        if self.process_lifecycle != AppShellProcessLifecycle::Running {
-            return;
-        }
-        let Some(window) = self.window.clone() else {
-            return;
-        };
-        let (Some(renderer), Some(app_state)) = (&mut self.renderer, &mut self.app_state) else {
-            return;
-        };
-        app_state.sync_committed_config_snapshot(self.settings_runtime.committed_snapshot());
-
-        // Передаём событие в egui_winit для обработки ввода
-        let egui_response = app_state.egui_winit_state.on_window_event(&window, &event);
-        let redraw_after_event = should_request_redraw_after_window_event(&event);
-
-        if let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = &event
-        {
-            let keyboard_captured = egui_response.consumed
-                || app_state.egui_ctx.egui_wants_keyboard_input()
-                || app_state.egui_ctx.text_edit_focused();
-            if let Some(action) = hotkeys::classify_key_event(key_event, keyboard_captured) {
-                match action {
-                    ShellHotkeyAction::Close => {
-                        self.close_runtime_and_exit(event_loop, "Выход по Escape");
-                        return;
-                    }
-                    ShellHotkeyAction::Legacy(key_code) => {
-                        app_state.handle_hotkeys(&window, key_code, false);
-                    }
-                    ShellHotkeyAction::Transport(action) => {
-                        let snapshot = app_state.refresh_player_snapshot();
-                        self.playlist_runtime.publish_desktop_snapshot(&snapshot);
-                        crate::transport_runtime::apply_transport_action(
-                            app_state,
-                            &mut self.playlist_runtime,
-                            renderer,
-                            &snapshot,
-                            action,
-                        );
-                    }
-                }
-                window.request_redraw();
-                return;
-            }
-        }
-
-        // Если egui потребил событие (например, клик по кнопке), не обрабатываем дальше
-        if egui_response.consumed {
-            if redraw_after_event {
-                window.request_redraw();
-            }
-            return;
-        }
-
-        match event {
-            WindowEvent::CloseRequested => {
-                self.close_runtime_and_exit(event_loop, "Закрытие окна по запросу пользователя");
-                return;
-            }
-
-            WindowEvent::Resized(PhysicalSize { width, height }) => {
-                debug!(width, height, "Изменение размера окна");
-                self.renderer_lifecycle
-                    .resize_renderer(renderer, width, height);
-            }
-
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                debug!(scale_factor, "Изменение масштаба");
-                app_state.egui_ctx.set_pixels_per_point(scale_factor as f32);
-            }
-
-            WindowEvent::RedrawRequested => {
-                self.startup_media.poll_startup_jobs(
-                    app_state,
-                    &mut self.playlist_runtime,
-                    renderer,
-                );
-                app_state.poll_local_file_open_job(&mut self.playlist_runtime, renderer);
-                let frame_result = render_frame(
-                    &self.telemetry,
-                    &window,
-                    renderer,
-                    app_state,
-                    &mut self.playlist_runtime,
-                    &mut self.settings_runtime,
-                    &mut self.renderer_lifecycle,
-                );
-                if frame_result.close_requested {
-                    self.close_runtime_and_exit(
-                        event_loop,
-                        "Закрытие окна через кастомный titlebar",
-                    );
-                    return;
-                }
-                let has_pending_background_job = self.startup_media.has_pending_startup_job()
-                    || app_state.has_pending_prepared_media_strong()
-                    || app_state.has_pending_playlist_transport()
-                    || self.playlist_runtime.has_pending_media_reset()
-                    || app_state.has_pending_local_file_open()
-                    || self.settings_runtime.has_pending_options_refresh()
-                    || self
-                        .playlist_runtime
-                        .has_pending_playlist_persistence_work();
-                let action = self.background_poll_scheduler.after_render_with_deadline(
-                    frame_result.pacing,
-                    has_pending_background_job,
-                    frame_result.next_ui_wake_deadline,
-                    Instant::now(),
-                );
-                Self::apply_redraw_control_action(event_loop, Some(&window), action);
-                return;
-            }
-
-            _ => {}
-        }
-
-        if redraw_after_event {
-            window.request_redraw();
-        }
-    }
-
-    /// Перед idle wait будит shell только для timed background job polling-а.
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.process_lifecycle != AppShellProcessLifecycle::Running {
-            return;
-        }
-        let persistence_changed = self.drain_playlist_persistence();
-        request_redraw_for_visible_wake(self.window.as_deref(), persistence_changed);
-        let has_continuous_redraw = self.has_continuous_redraw();
-        let has_pending_background_job = self.has_pending_background_job();
-        let now = Instant::now();
-        let action = self.background_poll_scheduler.before_idle_wait(
-            has_continuous_redraw,
-            has_pending_background_job,
-            now,
-        );
-
-        Self::apply_redraw_control_action(event_loop, self.window.as_deref(), action);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_request_redraw_for_wake;
-
-    #[test]
-    fn idle_and_noop_wakes_never_request_redraw() {
-        assert!(!should_request_redraw_for_wake(true, false));
-        assert!(!should_request_redraw_for_wake(false, false));
-    }
-
-    #[test]
-    fn visible_wake_requires_live_window() {
-        assert!(should_request_redraw_for_wake(true, true));
-        assert!(!should_request_redraw_for_wake(false, true));
-    }
-
-    #[test]
-    fn desktop_backend_start_is_inside_lease_owning_shell_constructor() {
-        let source = include_str!("mod.rs");
-        let lease_argument = source
-            .find("instance_lease: AppInstanceLease")
-            .expect("AppShell constructor requires an acquired lease");
-        let desktop_start = source
-            .find("playlist_runtime.start_desktop_transport(")
-            .expect("desktop backend starts from process shell");
-        let retained_lease = source
-            .find("_instance_lease: instance_lease")
-            .expect("process shell retains lease for its full lifetime");
-        assert!(lease_argument < desktop_start && desktop_start < retained_lease);
-    }
-
-    #[test]
-    fn suspend_and_terminal_exit_force_flush_pending_sidebar_resize() {
-        let source = include_str!("mod.rs");
-        let flush_call = format!(
-            "{}{}",
-            "self.flush_sidebar_resize_for_lifecycle_boundary", "();"
-        );
-        assert_eq!(
-            source.matches(&flush_call).count(),
-            2,
-            "suspend и terminal shutdown должны flush-ить resize до уничтожения AppState"
-        );
-
-        let suspend_start = source
-            .find("fn suspend_runtime(&mut self)")
-            .expect("suspend lifecycle method exists");
-        let suspend_flush = source[suspend_start..]
-            .find(&flush_call)
-            .expect("suspend flush exists");
-        let suspend_drop = source[suspend_start..]
-            .find("self.app_state = None;")
-            .expect("suspend drops AppState");
-        assert!(suspend_flush < suspend_drop);
-
-        let shutdown_start = source
-            .find("pub(crate) fn finish_process_shutdown(&mut self)")
-            .expect("terminal shutdown method exists");
-        let shutdown_flush = source[shutdown_start..]
-            .find(&flush_call)
-            .expect("terminal flush exists");
-        let shutdown_drop = source[shutdown_start..]
-            .find("self.app_state = None;")
-            .expect("terminal shutdown drops AppState");
-        assert!(shutdown_flush < shutdown_drop);
-    }
-
-    #[test]
-    fn window_creation_keeps_minimum_logical_width_at_four_hundred_points() {
-        let source = include_str!("mod.rs");
-        let creation = source
-            .split_once("let window_attributes = Window::default_attributes()")
-            .expect("window attributes construction must exist")
-            .1
-            .split_once("let window = match")
-            .expect("window attributes construction must stay bounded")
-            .0;
-
-        assert!(creation.contains("with_min_inner_size"));
-        assert!(creation.contains("LogicalSize::new(400.0, 1.0)"));
     }
 }
