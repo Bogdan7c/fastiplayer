@@ -49,4 +49,14 @@ Dropping/cancelling the streaming body physically releases the response and prev
 - `git diff --check`
 - `scripts/check-refactor-guardrails.py`
 
+## Confirmed real release acceptance (2026-08-28)
+
+- Clean committed HEAD `72a3cbf7` release matrix passed cold InitialOpen/InitialRestore, 10 warm final seeks, 3 restart seeks, 3 causal rapid `550 -> 60` pairs and 3 actual KWin EIS timeline drags.
+- Rapid setup waited until each old 550 request entered worker/HTTP. Old requests then physically terminated cancelled in `7/8/11 ms` with no old receipt/frame/audio/commit/progress; each winning 60 completed in `28 ms`.
+- Drags produced `4/7/7` preview dispatches. Cancelled candidates emitted no committed marker; final receipts completed with video/audio/UI progress.
+- Strict aggregate HLS/network/scrub proof anomalies were 0. Proven silence-padding underrun markers were 0; three risk-only drag observations had zero new silence-padding callback delta.
+- Real x36 playlist contained no discontinuity; sequence remained 0. Discontinuity/AES/key/separate-A/V atomic cancellation claims therefore rely on the hermetic loopback tests above, not on the CDN manifest.
+- One warm `1169 ms` external body-delivery residual occurred before receipt; receipt-to-video/audio/commit was `18/19/19 ms`. It does not weaken cancellation correctness and is not a durable latency promise.
+- Final HLS change is committed; worktree after acceptance was clean.
+
 Related: `mem:demux-api/core`, `mem:media-services/hls-vod-manifest-receipted-seek-2026-08-24`, `mem:media-services/hls-manifest-selection-diagnostics-2026-08-27`.

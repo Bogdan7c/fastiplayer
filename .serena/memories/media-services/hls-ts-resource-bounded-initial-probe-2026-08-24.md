@@ -21,14 +21,14 @@
 - HLS integration `late_receipted_seek_fetches_target_segment_and_publishes_landing_packet` использует такой target segment, получает authoritative receipt на 60 s, не fetch-ит промежуточные segments и публикует post-seek video RAP.
 - Player functional regression `worker_receipted_video_seek_reaches_target_frame_presentation` доводит receipt через decoder до presentation target-frame.
 - Реальный GUI до parser fix воспроизвёл `SeekUnavailable: Demux worker не смог выполнить seek` и возврат к 0; после fix authoritative anchor снова стал доказуемым. Прежний единичный receipt около 0.2 s был прогретым CDN и не является performance evidence.
-- Исторический latency re-audit до streaming implementation показал full-body transport gate: 10 warm seek дали p50 около 0.993 s и max 1.324 s, rapid supersede 1.673 s, а худший cold resume дошёл до frame за 20.288 s. Эти измерения относятся к прежнему whole-body path и не являются acceptance текущего worktree.
-- Текущий незакоммиченный HLS TS path использует bounded chunk-streaming и сохраняет strict resource validation/resource-bounded parser probe. После source-scoping policy real release acceptance подтверждён: 3 cold resume 355 s достигли actual 360.033 s и full video/audio/startup readiness за 447–547 ms; 10 warm seek дали p50 35 ms, p95/max 295 ms. Полная архитектура, матрица и известный S42 gate описаны в `mem:media-services/hls-vod-manifest-receipted-seek-2026-08-24`.
-- Исторический re-audit сообщал успешное восстановление пользовательских `playlist-state.json` и `playlist-resume.json` к item 2 / 41.401578841 s. Временный backup path намеренно не хранится как durable project contract; каждый новый real-profile acceptance обязан создать и проверить свежий backup.
+- Whole-body transport был историческим bottleneck, но текущий committed HLS path использует bounded chunk-streaming и сохраняет strict resource validation/resource-bounded parser probe.
+- Финальный release snapshot 2026-08-28 на clean committed HEAD подтвердил 3 cold InitialRestore requested `355.000 s` с actual `360.033 s` и process-to-ready `702/447/573 ms`; 10 warm seeks дали p50 `338 ms`, p95/max `1169 ms`. Residual `1169 ms` возник до receipt во внешней body delivery; post-receipt video/audio/commit завершились за `18/19/19 ms`, поэтому это не текущий parser/readiness regression и не долговечная CDN гарантия.
+- Controlled real-profile acceptance восстановил state/resume byte-for-byte. Ephemeral backup location намеренно не хранится как durable project contract; каждый новый real-profile run создаёт и проверяет свежий recoverable backup.
 
 ## Проверка
 
-- `cargo +1.96.0 test -p media-core -p demux-api -p mpeg-ts-demux -p web-media-hls -p player-core --all-targets --locked`: PASS; media-core 66, demux-api 59, MPEG-TS 43, player-core 669, HLS unit 59 и все integration targets.
-- `cargo +1.96.0 test -p app-egui --no-default-features --locked`: 1000/1000 PASS.
-- Source/adaptive tests, strict affected all-target Clippy `-D warnings`, workspace all-target check, release build, rustfmt, diff-check, refactor guardrails, Python diagnostics/acceptance и Serena diagnostics: PASS.
-- Канонический `scripts/pre-pr-checks.sh` доходит до S42 и останавливается на накопленном module-size baseline большого незакоммиченного worktree; не маскировать это обновлением baseline в focused HLS fix.
-Related: `mem:mpeg-ts-demux/core`, `mem:media-services/hls-vod-manifest-receipted-seek-2026-08-24`, `mem:core`.
+- Affected media-core/demux-api/MPEG-TS/HLS/player/app suites, source/adaptive tests, strict all-target Clippy, workspace check, release build, rustfmt, diff-check, refactor/S42 guardrails, Python diagnostics/acceptance и Serena diagnostics прошли.
+- Exact test counts не являются контрактом и намеренно не фиксируются: текущий результат следует читать из конкретного CI/reviewer run.
+- Финальный HLS change закоммичен как `72a3cbf7`; worktree после real acceptance clean.
+
+Related: `mem:mpeg-ts-demux/core`, `mem:media-services/hls-vod-manifest-receipted-seek-2026-08-24`, `mem:media-services/hls-preview-receipt-cancellation-2026-08-27`, `mem:core`.

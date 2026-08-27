@@ -1,9 +1,10 @@
-## HLS VOD manifest-owned worker-receipted seek (2026-08-24)
+## HLS VOD manifest-owned worker-receipted seek/cancellation (updated 2026-08-28)
 
-- Real x36xhzz verification found video one-shot bypassed the installed receipt port through S17A reused-decoder scrub, so HLS reopened the only early observed RAP and scanned from zero.
-- `Demuxer::seek_with_receipted_request` now separates worker-authoritative preparation from preview parity; player video one-shot uses the existing receipt transaction when the installed runtime advertises that route, while legacy video/live scrub remain unchanged.
-- HLS receipted seek now starts from containing/previous same-epoch manifest segments, proves an actual RAP/audio anchor under existing budgets, preserves exact-anchor fallback and transactional separate A/V topology. Real anchors landed near all three late targets without `DemuxError`.
-- Full boundaries, packet-to-presentation regressions, verification and the remaining fully-buffered 8.8–9.4 MiB target-segment latency: `mem:media-services/hls-vod-manifest-receipted-seek-2026-08-24`.
+- Native HLS VOD alone opt-in uses typed `PreferPostTargetRap`; yt-dlp HLS VOD keeps default containing-segment decode-forward semantics, and live HLS remains on its separate legacy/live path.
+- `Demuxer::seek_with_cancellable_preview_request` plus HLS request-scoped tokens physically cancel superseded preview body reads. Component and separate A/V replacements stage packet-derived anchor/index/diagnostics offside and commit only after one `complete()`; cancellation preserves the old committed source/pair.
+- HLS encrypted media/external key full-resource reads use bounded cancellable streaming, so partial ciphertext/key cannot enter packet publication or key cache. InitialOpen/InitialRestore and Preview/FinalReceipt selection markers publish via neutral `log` target only from authorized commit.
+- Release GUI acceptance on clean committed HEAD `72a3cbf7` confirmed cold open/restore, 19 final seeks, causal rapid cancellation, actual timeline drags, video/audio/UI progress and strict secret-safe marker parsing. One warm `1169 ms` residual occurred before receipt in external body delivery; post-receipt readiness was `18–19 ms`, so it is not a durable player/CDN latency contract.
+- Real x36 manifest had discontinuity sequence 0; cross-epoch correctness is backed by synthetic integration tests. Full boundaries, verification and limitations: `mem:media-services/hls-vod-manifest-receipted-seek-2026-08-24`, `mem:media-services/hls-preview-receipt-cancellation-2026-08-27`, `mem:media-services/hls-manifest-selection-diagnostics-2026-08-27`.
 
 ## Hardware AV1 Main/Profile 0 (2026-08-24)
 

@@ -27,55 +27,66 @@
 - Legacy video without port test сохраняет synchronous seek. Demux-api tests отдельно доказывают, что receipted command не протекает в ordinary boundary.
 - Exact manifest-boundary и discontinuity tests находятся в `web-media-hls/src/plan.rs`.
 
-## Проверка
+## Проверка первоначальной границы
 
-- `cargo +1.96.0 test -p media-core -p demux-api -p web-media-hls -p player-core --all-targets --locked`: PASS; media-core 55, demux-api 45, player-core 648, HLS unit 44 и все HLS integration targets.
-- Strict affected Clippy `-D warnings`, workspace all-target check, fmt, `git diff --check` и refactor guardrails: PASS.
-- Real GUI/MPRIS run на x36xhzz: targets/anchors `279.659 -> 270.033`, `337.698 -> 330.033`, `282.848 -> 280.033`; каждый request прошёл worker-receipted route, приземлился без `DemuxError` и не сканировал от нуля.
+- Initial affected Rust suites, strict Clippy, workspace check, formatting/diff and refactor guardrails passed when the worker-receipted boundary was introduced.
+- Hermetic functional tests proved target-segment selection, exact-anchor fallback, separate A/V topology and player delivery through decoder/presentation. Текущий comprehensive release/real snapshot находится в финальном разделе ниже.
 
 ## Follow-up: UI scrub release (2026-08-24)
 
-- Реальный timeline drag использует `BeginScrub -> PreviewScrub -> EndScrub`. Даже после исправления one-shot seek `EndScrub` повторно использовал matching live `SeekLanding`, поэтому preview anchor становился final и `active_seek_presents_preroll_progressively()` показывал все кадры от него до цели. Это и было видимым «прокручиванием».
-- Инвариант player-core: если `PreparedDemuxSeekRuntime::routes_one_shot_seek_through_worker()` истинно, release scrub-а не имеет права коммитить matching preview route. Он запускает final async seek transaction, которая сначала supersede-ит старый live landing и снимает progressive-presentation policy, затем ждёт authoritative worker receipt. Preview во время удержания мыши для legacy/local media не изменён.
-- Functional regression `worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presentation` проходит production command chain, receipt, demux packets, decoder и presentation. Он доказывает ровно один worker request, отсутствие второго sync seek-а и отсутствие любого видимого pre-target frame после release.
-- Реальный GUI smoke на приложенном `user/web-media-playlist-acceptance.xspf`: мышью перемещено примерно `00:13 -> 05:17`; UI удержал target, suppressed `Seek discard, expected` вырос до 436, первый target-frame появился примерно через 1 s, затем позиция нормально пошла `05:17 -> 05:19 -> 05:22` без прокрутки от начала.
-- После follow-up полный affected test run: media-core 55, demux-api 45, player-core 649, HLS unit 44 и все HLS integration targets; strict Clippy, workspace all-target check, fmt, diff-check, guardrails и Serena diagnostics — PASS.
+- Реальный timeline drag использует `BeginScrub -> PreviewScrub -> EndScrub`. Matching live preview landing нельзя коммитить как final для worker-receipted runtime: release обязан запустить authoritative final async transaction и отключить progressive pre-target presentation.
+- Functional regression `worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presentation` проходит production command chain, receipt, demux packets, decoder и presentation. Он доказывает один final worker request, отсутствие второго sync seek и отсутствие видимого pre-target frame после release.
+- Legacy/local media без worker receipt сохраняет synchronous preview-compatible behavior. Финальный реальный drag/cancellation snapshot приведён ниже.
 
-## Source-scoped landing policy и финальный acceptance (2026-08-27)
+## Source-scoped landing policy и подтверждённый финальный state (2026-08-28)
 
-### Исправленная граница
+### Граница policy
 
-- Корневая ошибка подтверждена: post-target выбор выполнялся в HLS manifest/demux до source-specific player wiring и поэтому потенциально менял yt-dlp HLS VOD вместе с native HLS.
-- `web-media-hls::HlsVodSeekLandingPolicy` теперь принадлежит HLS open boundary и типизирован: default `DecodeFromOrBeforeTarget`, opt-in `PreferPostTargetRap`.
-- Policy входит в `HlsVodOpenPolicy` и передаётся до content probe, initial restore и worker-receipted manifest seek. `initial_open`, `epoch_demux::initial` и `epoch_demux::manifest_seek` читают её до необратимого выбора segment-а.
-- Единственный production opt-in находится в `app-egui::web_media_hls_open::prepare_native_hls_vod`. yt-dlp HLS VOD использует общий default request, live HLS остаётся на отдельном live demuxer path; URL heuristics и positional bool отсутствуют.
-- HLS отвечает только за manifest segment/RAP и доказанный actual landing. `PreparedDemuxSeekLandingPolicy` player-а остаётся отдельной границей интерпретации receipt, readiness, timeline и presentation; он не может задним числом разрешить demux skip.
-- Если post-target RAP отсутствует/не доказывается, opt-in сохраняет decode-forward fallback; default вообще не пробует post-target candidate.
+- `web-media-hls::HlsVodSeekLandingPolicy` принадлежит HLS open boundary: default `DecodeFromOrBeforeTarget`, явный opt-in `PreferPostTargetRap`.
+- Единственный production opt-in находится в `app-egui::web_media_hls_open::prepare_native_hls_vod`. Shared yt-dlp HLS VOD использует default decode-forward policy, live HLS остаётся на отдельном legacy/live demuxer path. URL heuristics и positional bool отсутствуют.
+- Policy проходит до initial open/restore и worker-receipted manifest seek. Если post-target RAP не найден или не доказан в bounded budget, native opt-in сохраняет decode-forward fallback.
+- HLS выбирает manifest segment и packet-derived actual/decode anchor. Player отдельно владеет receipt interpretation, decoder/presentation/audio readiness и final position commit; receipt сам по себе seek не завершает.
 
-### Regression anchors
+### Cancellable preview/receipt lifecycle
 
-- `web-media-hls/tests/receipted_manifest_seek.rs::default_receipted_seek_keeps_containing_segment_decode_forward_semantics` доказывает default containing-segment landing до target; opt-in tests отдельно доказывают post-target RAP, separate A/V и fallback.
-- `web-media-hls/tests/initial_restore_runtime.rs` разделяет default containing restore и explicit post-target restore.
-- `web-media-hls/tests/runtime.rs::opt_in_vod_worker_seek_uses_post_target_raps_across_discontinuity` закрепляет explicit policy через discontinuity.
-- `web-media-hls/tests/transient_manifest_retry.rs::cancellation_of_discontinuous_partial_body_prevents_stale_publication_and_restart` блокирует partial body первой post-discontinuity epoch, supersede-ит её backward seek-ом в предыдущую epoch и доказывает: старый request получает именно `Superseded`, не рестартует HTTP body и не публикует packet; первый committed video packet имеет PTS актуального landing `40 s`.
-- `app-egui::web_media_hls_open` tests закрепляют default для shared yt-dlp/live policy и native-only app opt-in.
-- `player-core/src/session/tests/post_target_landing.rs` проходит production player command/receipt/decoder/presentation/audio boundaries: receipt сам по себе не завершает seek, frame доходит до presentation, actual landing обновляет position, audio proof обязателен, superseded generation не коммитится.
+- `Demuxer::seek_with_cancellable_preview_request` сохраняет preview semantics, но проводит request-scoped `DemuxSeekCancellationToken` до HLS transport body. Новый final receipt физически отменяет superseded preview, а single worker не ждёт stale body.
+- Component и separate A/V replacement готовятся offside. Один shared token для video+audio должен выиграть `complete()` до active-read activation, staged index/marker commit и atomic swap. На cancellation/failure старый committed source или A/V pair остаётся authoritative.
+- Packet-proven anchor не попадает в shared `HlsSeekIndex` во время prepare: evidence вставляется только в authorized commit section. Отмена на video или audio phase не меняет следующий preview selection.
+- Encrypted media и external keys дочитываются через HLS-owned bounded cancellable streaming helper; partial ciphertext/key не публикуются и не попадают в key cache. Drop response body физически освобождает старый HTTP stream.
+- InitialOpen/InitialRestore marker создаётся из packet-derived anchor и публикуется только после topology validation, active-read commit и final muxed/A-V assembly. Separate A/V cold pair коммитится атомарно.
 
-### Подтверждённый real-GUI x36xhzz acceptance
+### Secret-safe committed-selection diagnostics
 
-- Release build прошёл. Все real runs использовали `https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`, release GUI, MPRIS и production video/audio/render path.
-- 3 cold start без checkpoint: process-to-ready `532/370/550 ms`, p50 `532`, p95/max `550`; первый кадр начинался около `33 ms`, начало VOD не перескакивало.
-- 3 cold resume с requested `355.000 s`: process-to-ready `473/447/547 ms`, p50 `473`, p95/max `547`. Во всех runs demux actual `360.033 s`, presented frame `360.050 s`, audio proof через `29–30 ms` после landing transaction и последующий position progress.
-- 10 отдельных warm seek: ready `34/215/35/247/216/35/35/265/295/35 ms`, p50 `35`, p95/max `295`. Targets `60/180/355/550 s` landed соответственно около `60.033/180.033/360.033/550.033 s`; video presentation, audio proof и progress подтверждены в каждой пробе.
-- 3 seek после полного process restart: `60 s -> 352 ms`, `355 s -> 228 ms`, `550 s -> 537 ms`; p50 `352`, p95/max `537`.
-- Rapid `550 s -> 60 s`: старый generation получил `SUPERSEDED` без receipt/presentation/commit/progress, новый завершился за `28 ms`.
-- Реальный KWin EIS timeline drag через четыре preview-точки: request `355.031 s`, actual `360.033 s`, video/audio/ready `563/565/565 ms`, progress `590 ms`; scrub begin-to-first-preview `0 ms`, begin-to-end `33 ms`.
-- `x36xhzz` media playlist не содержит `#EXT-X-DISCONTINUITY`, поэтому real-stream discontinuity не заявляется; он подтверждён synthetic integration test-ом выше.
-- Профиль после каждого контролируемого набора и финально восстановлен byte-for-byte к исходным `playlist-state.json`/`playlist-resume.json`; current item 2, checkpoint `41.401578841 s`, fingerprint совпали. Durable memory не хранит временный backup path.
+- `HlsManifestSegmentSeekMarker` публикуется через neutral `log` facade на INFO target `rustiplayer::hls_manifest_selection`; concrete logger остаётся composition-root ownership.
+- Marker хранит phase, component role, opaque HLS-local selection ID, landing policy, source generation, requested target, actual/decode anchor и kind, media/discontinuity sequence, global/epoch/restart indexes и half-open segment interval. URI/query/header/cookie/token/key/map/hash/cache/resource/request IDs отсутствуют.
+- `scripts/playback_acceptance_hls.py` разбирает exact Display schema независимо от public seek correlation. ID opaque и unique per log source; числовая monotonic order не является schema invariant. Strict analyzer fail-closed проверяет enum/domain/interval/anchor/duplicate anomalies.
 
-### Verification и известный gate
+### Functional proof
 
-- PASS: focused/full affected Rust tests, `app-egui --no-default-features`, strict affected all-target Clippy `-D warnings`, workspace all-target check, release build, rustfmt, diff-check, refactor guardrails, Python diagnostics/acceptance tests и strict real-log analyzer.
-- Канонический `scripts/pre-pr-checks.sh` запускается, но останавливается на S42 module-size guardrail: десятки уже изменённых ранее файлов большого незакоммиченного worktree превышают/меняют legacy line-count baseline. Не обновлять baseline и не начинать массовую нарезку модулей внутри HLS policy salvage; это отдельный явный архитектурный cleanup/gate.
-- Изменения остаются незакоммиченными.
-Related: `mem:core`, `mem:player-core/core`, `mem:demux-api/core`, `mem:media-services/hls-vod-s32c-2026-07-23`, `mem:media-services/hls-vod-seek-index-compaction-aud010-2026-08-23`.
+- media-core закрепляет default delegation, pre-cancel и semantic split preview/receipt; demux-api causal worker test доказывает старт final receipt после cancellation in-flight preview без manual release.
+- HLS loopback tests физически закрывают partial plaintext, ciphertext и rotated-key bodies; final receipt продолжает работу без stale packet/cache publication.
+- Separate A/V production-like loopback отменяет partial video и partial audio candidate, затем читает старый non-EOF committed pair со stable IDs/no `TracksChanged`, и только отдельный успешный receipt делает один atomic commit.
+- Shared-index tests закрепляют stage/drop/authorized-commit; cold open/restore tests покрывают post-target, fallback, discontinuity и failure-no-marker.
+- Player functional tests доводят actual landing до decoder, video presentation, audio readiness, commit и post-landing progress; stale generation, paused intent и readiness failures не коммитятся.
+
+### Финальный release/real acceptance snapshot (2026-08-28)
+
+- Проверен release binary из clean committed HEAD `72a3cbf7` (`fix(hls): cancel superseded previews and report landings`); SHA256 release snapshot: `4c03f566e02296545796f79c17dda1ace82449c66d3b19b9aeecdfcca7f27c85`.
+- 3 cold InitialOpen: process-to-ready `609/624/492 ms` (p50 `609`, max `624`), actual/decode anchor `33/0 ms`, segment `[0,10000)`.
+- 3 cold InitialRestore requested `355.000 s`: process-to-ready `702/447/573 ms` (p50 `573`, max `702`), actual/decode anchor `360.033/360.000 s`.
+- 10 warm final seeks: ready `33/483/851/1169/31/549/627/241/338/34 ms`, p50 `338`, p95/max `1169`. Единственный residual `1169 ms` относится к внешней body delivery до receipt: headers/first byte `101 ms`, enqueue-to-receipt `1147 ms`, затем receipt-to-video/audio/commit `18/19/19 ms`; повтор того же 550 s path дал `241 ms`. Это не доказательство post-receipt regression и не обещание network latency.
+- 3 process-restart final seeks завершились за `223/245/255 ms`.
+- 3 causally gated rapid `550 -> 60 s`: каждый old 550 request вошёл в worker/HTTP и физически завершился cancelled за `7/8/11 ms` без old receipt/frame/audio/commit/progress; каждый winning 60 завершился за `28 ms`.
+- 3 настоящих KWin EIS timeline drag-а дали `4/7/7` preview dispatches и final requested/actual `355.031/360.033 s`; final ready `237/35/28 ms`. UI screenshots и telemetry подтверждают video surface/render, audio play и последующий progress.
+- Strict aggregate: 12 startup runs, 19 completed final seeks и 3 честных superseded old seeks; HLS/network/scrub proof anomalies 0. Committed marker counts: InitialOpen 3, InitialRestore 9, Preview 9, FinalReceipt 19; privacy scan clean.
+- Доказанных `output_ring_underrun_proven_by_silence_padding` событий 0. Три drag-а дали risk-only observations с `new_silence_padding_callbacks=0`; они не скрываются, но не являются доказанным underrun.
+- Реальный x36 media playlist не содержит discontinuity: все 40 marker records имели `discontinuity_sequence=0`. Discontinuity/cross-epoch correctness подтверждается synthetic loopback/integration tests, а не приписывается реальному CDN stream.
+- Controlled profile после каждого набора и финально был восстановлен byte-for-byte; ephemeral backup locations не являются project contract и в memory не хранятся.
+
+### Финальная проверка и repository state
+
+- PASS: full three-crate all-target/all-feature tests, HLS integration matrix, focused/repeated cancellation cases, strict affected Clippy `-D warnings`, workspace formatting/diff, refactor/S42/format guardrails, Python HLS analyzer tests, release build и strict real-log analyzer.
+- Canonical HLS change закоммичен как `72a3cbf7`; refactor/S42/format guardrails прошли, после acceptance worktree clean.
+- Абсолютные test counts и external-network latency не являются долговечным контрактом; при следующих изменениях читать конкретный CI/acceptance run.
+
+Related: `mem:core`, `mem:player-core/core`, `mem:demux-api/core`, `mem:media-services/hls-preview-receipt-cancellation-2026-08-27`, `mem:media-services/hls-manifest-selection-diagnostics-2026-08-27`, `mem:media-services/hls-ts-resource-bounded-initial-probe-2026-08-24`, `mem:media-services/hls-vod-seek-index-compaction-aud010-2026-08-23`.
