@@ -38,6 +38,7 @@ HTTP_REQUEST_MARKER = "Source HTTP request started"
 HTTP_HEADERS_MARKER = "Source HTTP response headers ready"
 HTTP_FIRST_BODY_MARKER = "Source HTTP first non-empty body chunk ready"
 HTTP_BODY_COMPLETE_MARKER = "Source HTTP validated body complete"
+HTTP_BOUNDED_TERMINAL_MARKER = "Bounded HTTP request terminal"
 HTTP_CANCELLED_MARKERS = (
     "Source HTTP request cancelled",
     "Source HTTP request canceled",
@@ -110,6 +111,7 @@ class ScrubTimeline:
     end: LogPoint | None = None
     begin_to_first_preview_ms: float | None = None
     begin_to_end_ms: float | None = None
+    correlation_failures: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -129,6 +131,10 @@ class NetworkRequest:
     body_complete_point: LogPoint | None = None
     cancelled_ms: float | None = None
     cancelled_point: LogPoint | None = None
+    terminal_outcome: str = ""
+    terminal_ms: float | None = None
+    terminal_point: LogPoint | None = None
+    terminal_error_category: str = ""
     ambiguous: bool = False
 
     def missing_stages(self) -> list[str]:
@@ -158,9 +164,50 @@ class NetworkRequest:
             "request_to_first_byte_ms": self.first_body_ms,
             "request_to_body_complete_ms": self.body_complete_ms,
             "request_to_cancelled_ms": self.cancelled_ms,
+            "request_to_terminal_ms": self.terminal_ms,
+            "terminal_outcome": self.terminal_outcome,
+            "terminal_error_category": self.terminal_error_category,
             "body_bytes": self.body_bytes,
             "ambiguous": self.ambiguous,
             "missing_stages": self.missing_stages(),
+        }
+
+
+@dataclass(frozen=True)
+class NetworkTerminalAnomaly:
+    """Secret-safe terminal marker, который нельзя честно привязать к request outcome."""
+
+    sequence: int
+    source: str
+    kind: str
+    safe_request_id: str | None
+    outcome: str | None
+    elapsed_ms: float | None
+    received_bytes: int | None
+    line_number: int
+    owner_seek_sequence: int | None
+    impact: str
+
+    def proof_relevant(self) -> bool:
+        """Возвращает strict impact без вывода из текста anomaly kind."""
+
+        return self.impact == "proof_relevant"
+
+    def to_dict(self) -> dict[str, object]:
+        """Сериализует additive evidence без URL, headers и абсолютного времени."""
+
+        return {
+            "sequence": self.sequence,
+            "source": self.source,
+            "anomaly_kind": self.kind,
+            "request_id": self.safe_request_id,
+            "terminal_outcome": self.outcome,
+            "request_to_terminal_ms": self.elapsed_ms,
+            "received_bytes": self.received_bytes,
+            "line_number": self.line_number,
+            "owner_seek_sequence": self.owner_seek_sequence,
+            "impact": self.impact,
+            "proof_relevant": self.proof_relevant(),
         }
 
 
@@ -367,6 +414,8 @@ class SeekSample:
         if self.monotonic_public_to_ready_ms() is None:
             missing.append("public_to_ready_monotonic_span")
         if self.role == "timeline_final":
+            if self.scrub is not None and self.scrub.correlation_failures:
+                missing.append("scrub_command_correlation")
             if self.scrub is None or self.scrub.begin is None:
                 missing.append("begin_scrub")
             if self.scrub is None or not self.scrub.previews:
@@ -790,6 +839,7 @@ def scrub_to_dict(scrub: ScrubTimeline | None) -> dict[str, object] | None:
         "preview_count": len(scrub.previews),
         "begin_to_first_preview_ms": scrub.begin_to_first_preview_ms,
         "begin_to_end_ms": scrub.begin_to_end_ms,
+        "correlation_failures": list(scrub.correlation_failures),
     }
 
 

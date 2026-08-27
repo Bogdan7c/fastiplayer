@@ -9,7 +9,7 @@ use media_core::{
     MediaDuration, MediaTime, TimeBase, TimelineMode, TimelinePreviewState, TrackKind,
     TrackTimestamp,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::seek_state::{PlaybackResumeIntent, SeekLandingRoute, VisibleScrubPreview};
 use crate::{
@@ -115,16 +115,6 @@ impl PlayerSession {
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = false;
         self.snapshot.timeline.target_position = Some(self.snapshot.timeline.current_position);
-        info!(
-            kind = "seek_acceptance",
-            current_position_ms = self
-                .snapshot
-                .timeline
-                .current_position
-                .as_duration()
-                .as_millis(),
-            "Player command received command=BeginScrub"
-        );
         Ok(())
     }
 
@@ -149,17 +139,6 @@ impl PlayerSession {
             .unwrap_or_else(|| self.playback_state_for_new_simple_scrub());
         let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
         self.store_simple_scrub_request(request, live_scrub_diagnostics)?;
-        let begin_to_preview_ms = self
-            .seek_runtime
-            .simple_scrub_elapsed()
-            .map(|elapsed| elapsed.as_millis())
-            .unwrap_or_default();
-        info!(
-            kind = "seek_acceptance",
-            target_ms = target_position.as_duration().as_millis(),
-            begin_to_preview_ms,
-            "Player command received command=PreviewScrub"
-        );
         let live_scrub_diagnostics =
             live_scrub_diagnostics.or_else(|| self.seek_runtime.simple_scrub_live_diagnostics());
 
@@ -324,16 +303,6 @@ impl PlayerSession {
             self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
             return Ok(ScrubCommitOutcome::NoActiveGesture);
         }
-
-        let begin_to_end_ms = self
-            .seek_runtime
-            .simple_scrub_elapsed()
-            .map(|elapsed| elapsed.as_millis())
-            .unwrap_or_default();
-        info!(
-            kind = "seek_acceptance",
-            begin_to_end_ms, "Player command received command=EndScrub"
-        );
 
         let Some(finished_scrub) = self.seek_runtime.finish_active_simple_scrub() else {
             self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);

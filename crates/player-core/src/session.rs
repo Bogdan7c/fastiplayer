@@ -29,10 +29,12 @@ use crate::seek_state::SeekRuntimeState;
 use crate::{
     AudioDecoderFactory, AudioOutputFactory, AudioTempoProcessorFactory, CorrelatedPlayerEvent,
     FrameCounters, MediaPlaybackWindow, PlaybackDiagnostics, PlaybackPipeline, PlaybackState,
-    PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
-    PlayerRuntimeApplyError, PlayerRuntimeBoundaryActivity, PlayerSnapshot,
-    PlayerVideoBackendInstallIntent, StartedVideoBackend, TrackId,
+    PlayerError, PlayerErrorKind, PlayerEvent, PlayerRuntimeApplyError,
+    PlayerRuntimeBoundaryActivity, PlayerSnapshot, PlayerVideoBackendInstallIntent,
+    StartedVideoBackend, TrackId,
 };
+#[cfg(test)]
+use crate::{PlayerCommandOutcome, PlayerResult};
 
 mod audio_packet_window;
 mod audio_playback_bounds;
@@ -41,6 +43,7 @@ mod audio_starvation;
 mod audio_tempo_rate_change;
 mod audio_tempo_runtime;
 mod capability_selection;
+mod command_dispatch;
 mod demux_retry;
 mod diagnostics_sink;
 mod dynamic_timeline;
@@ -54,6 +57,7 @@ mod prepared_demux_seek;
 mod prepared_seek;
 mod render_leases;
 mod runtime_control;
+mod scrub_command_correlation;
 mod scrub_driver;
 mod scrub_orchestration;
 mod seek_admission;
@@ -84,6 +88,7 @@ use self::media_lifecycle::MediaLifecycleState;
 use self::prepared_demux_seek::PreparedDemuxSeekRuntime;
 use self::prepared_seek::PreparedSeekLandingRuntime;
 pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
+use self::scrub_command_correlation::ScrubCommandCorrelationRuntime;
 use self::staged_media_install::{InstalledStagedPosition, StagedMediaInstallRegistry};
 pub use self::tick::{
     PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
@@ -179,6 +184,9 @@ pub struct PlayerSession {
 
     /// Runtime state seek transaction/scrub/trace markers, которым владеет session.
     seek_runtime: SeekRuntimeState,
+
+    /// Monotonic identity и shared fields двух tracing forms одной scrub command.
+    scrub_command_correlation: ScrubCommandCorrelationRuntime,
 
     /// Exact prepared-media demux seek port и pending receipt fence.
     prepared_demux_seek: PreparedDemuxSeekRuntime,
@@ -440,57 +448,6 @@ impl PlayerSession {
     #[must_use]
     pub fn current_file_path(&self) -> Option<&Path> {
         self.pipeline.source_file_path()
-    }
-
-    /// Применяет команду к state machine.
-    pub fn dispatch_command(
-        &mut self,
-        command: PlayerCommand,
-    ) -> PlayerResult<PlayerCommandOutcome> {
-        debug!(
-            command = ?command,
-            playback_state = ?self.playback_state(),
-            draining_after_eof = self.is_eof_draining(),
-            current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
-            duration_ms = ?self
-                .snapshot
-                .duration
-                .map(|duration| duration.as_secs_f64() * 1000.0),
-            "Player command received"
-        );
-
-        let command_result = match command {
-            PlayerCommand::OpenMedia(request) => self.open_media(request),
-            PlayerCommand::Play => self.play(),
-            PlayerCommand::Pause => self.pause(),
-            PlayerCommand::TogglePlayback => self.toggle_playback(),
-            PlayerCommand::Seek(request) => self.seek(request),
-            PlayerCommand::BeginScrub { live_scrub } => self.begin_scrub(live_scrub),
-            PlayerCommand::UpdateScrub(request) => self.update_scrub(request),
-            PlayerCommand::PreviewScrub {
-                request,
-                live_scrub,
-            } => self.preview_scrub(request, live_scrub),
-            PlayerCommand::EndScrub { policy, live_scrub } => {
-                return self
-                    .end_scrub(policy, live_scrub)
-                    .map(PlayerCommandOutcome::ScrubCommit);
-            }
-            PlayerCommand::Stop => self.stop(),
-            PlayerCommand::SetPlaybackRate(playback_rate) => {
-                return Ok(self.set_playback_rate(playback_rate));
-            }
-            PlayerCommand::SetVolume(volume) => self.set_volume(volume),
-            PlayerCommand::ToggleMute { fallback_volume } => self.toggle_mute(fallback_volume),
-            PlayerCommand::SelectVideoTrack(track_id) => self.select_video_track(track_id),
-            PlayerCommand::SelectAudioTrack(track_id) => self.select_audio_track(track_id),
-            PlayerCommand::SelectSubtitleTrack(track_id) => self.select_subtitle_track(track_id),
-            PlayerCommand::SelectQuality(selection) => self.select_quality(selection),
-            PlayerCommand::ReloadConfig => self.reload_config(),
-            PlayerCommand::Shutdown => self.shutdown(),
-        };
-
-        command_result.map(|()| PlayerCommandOutcome::Applied)
     }
 
     /// Отмечает fatal error от media pipeline.
@@ -766,6 +723,7 @@ impl Default for PlayerSession {
                 .validate()
                 .expect("default frame-server config must validate"),
             seek_runtime: SeekRuntimeState::default(),
+            scrub_command_correlation: ScrubCommandCorrelationRuntime::default(),
             prepared_demux_seek: PreparedDemuxSeekRuntime::default(),
             pending_exact_timeline_seek: None,
             pending_installed_position_restore: None,

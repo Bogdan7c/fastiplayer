@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,13 @@ def log_line(offset_ms: float, message: str) -> str:
 
     timestamp = BASE_TIMESTAMP + timedelta(milliseconds=offset_ms)
     return f"{timestamp.isoformat(timespec='microseconds').replace('+00:00', 'Z')} DEBUG {message}"
+
+
+def info_log_line(offset_ms: float, message: str) -> str:
+    """Добавляет INFO level к production-visible correlation marker-у."""
+
+    timestamp = BASE_TIMESTAMP + timedelta(milliseconds=offset_ms)
+    return f"{timestamp.isoformat(timespec='microseconds').replace('+00:00', 'Z')} INFO {message}"
 
 
 def process_prefix() -> list[str]:
@@ -224,6 +232,104 @@ def complete_seek(
             )
         )
     return lines
+
+
+def paired_scrub_commands(
+    base_ms: float,
+    target_ms: float,
+    *,
+    preview_count: int = 1,
+    begin_to_preview_ms: float = 20,
+    begin_to_end_ms: float = 80,
+    first_command_id: int = 1,
+) -> list[str]:
+    """Строит current schema pair из одного Rust-owned command envelope."""
+
+    begin_fields = (
+        f"scrub_schema_version=1 scrub_command_id={first_command_id} "
+        "scrub_stage=begin scrub_target_kind=none scrub_requested_target_ms=0"
+    )
+    lines = [
+        info_log_line(
+            base_ms,
+            f"{begin_fields} scrub_command_form=dispatch "
+            "Player scrub command received",
+        ),
+        info_log_line(
+            base_ms + 1,
+            f'kind="seek_acceptance" {begin_fields} '
+            "scrub_command_form=acceptance scrub_elapsed_ms=0 "
+            "current_position_ms=0 Player scrub command received",
+        ),
+    ]
+    for preview_index in range(preview_count):
+        preview_offset_ms = begin_to_preview_ms + preview_index * 10
+        preview_command_id = first_command_id + preview_index + 1
+        preview_fields = (
+            f"scrub_schema_version=1 scrub_command_id={preview_command_id} "
+            "scrub_stage=preview scrub_target_kind=absolute "
+            f"scrub_requested_target_ms={int(target_ms)}"
+        )
+        lines.extend(
+            [
+                info_log_line(
+                    base_ms + preview_offset_ms,
+                    f"{preview_fields} scrub_command_form=dispatch "
+                    "Player scrub command received",
+                ),
+                info_log_line(
+                    base_ms + preview_offset_ms + 1,
+                    f'kind="seek_acceptance" {preview_fields} '
+                    "scrub_command_form=acceptance "
+                    f"scrub_elapsed_ms={preview_offset_ms} "
+                    "Player scrub command received",
+                ),
+            ]
+        )
+    end_command_id = first_command_id + preview_count + 1
+    end_fields = (
+        f"scrub_schema_version=1 scrub_command_id={end_command_id} "
+        "scrub_stage=end scrub_target_kind=none scrub_requested_target_ms=0"
+    )
+    lines.extend(
+        [
+            info_log_line(
+                base_ms + begin_to_end_ms,
+                f"{end_fields} scrub_command_form=dispatch "
+                "Player scrub command received",
+            ),
+            info_log_line(
+                base_ms + begin_to_end_ms + 1,
+                f'kind="seek_acceptance" {end_fields} '
+                "scrub_command_form=acceptance "
+                f"scrub_elapsed_ms={begin_to_end_ms} "
+                "Player scrub command received",
+            ),
+        ]
+    )
+    return lines
+
+
+def modern_scrub_form(
+    offset_ms: float,
+    command_id: int,
+    stage: str,
+    form: str,
+    *,
+    target_kind: str = "none",
+    target_ms: int = 0,
+    scrub_elapsed_ms: int = 0,
+) -> str:
+    """Строит одну current-schema form для corruption/cross-missing tests."""
+
+    kind = 'kind="seek_acceptance" ' if form == "acceptance" else ""
+    return info_log_line(
+        offset_ms,
+        f"{kind}scrub_schema_version=1 scrub_command_id={command_id} "
+        f"scrub_stage={stage} scrub_command_form={form} "
+        f"scrub_target_kind={target_kind} scrub_requested_target_ms={target_ms} "
+        f"scrub_elapsed_ms={scrub_elapsed_ms} Player scrub command received",
+    )
 
 
 class PlaybackAcceptanceAnalyzerTests(unittest.TestCase):
@@ -474,6 +580,318 @@ class PlaybackAcceptanceAnalyzerTests(unittest.TestCase):
         )
         self.assertEqual(analyzer.network_requests[0].cancelled_ms, 3)
 
+    def test_bounded_terminal_cancelled_proves_exact_rapid_request(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = process_prefix() + [
+            log_line(
+                100,
+                "Player command received command=Seek(SeekRequest { "
+                "target: Absolute(MediaTime(60000ms)), mode: Accurate }) "
+                "current_position_ms=0",
+            ),
+            log_line(
+                102,
+                "generation=1 target_milliseconds=60000 public_to_enqueue_ms=2 "
+                "Prepared demux seek request enqueued",
+            ),
+            log_line(
+                103,
+                'received_body_bytes=0 operation_kind="bounded_streaming_fetch" '
+                "request_id=request-7 elapsed_milliseconds=0 "
+                "Source HTTP request started",
+            ),
+            log_line(
+                105,
+                "supersede_after_ms=5 Player command received "
+                "command=Seek(SeekRequest { target: Absolute(MediaTime(550000ms)), "
+                "mode: Accurate }) current_position_ms=0",
+            ),
+            log_line(
+                106,
+                'received_bytes=0 outcome="cancelled" request_id=request-7 '
+                "elapsed_milliseconds=46 Bounded HTTP request terminal",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "rapid-terminal-cancel.log")
+
+        request = analyzer.network_requests[0]
+        self.assertEqual(request.safe_request_id, "request-7")
+        self.assertEqual(request.cancelled_ms, 46)
+        self.assertEqual(request.body_bytes, 0)
+        self.assertEqual(request.terminal_outcome, "cancelled")
+        self.assertFalse(request.ambiguous)
+        self.assertEqual(
+            analyzer.samples[0].supersede_network_status,
+            "cancelled_or_completed_before_supersede",
+        )
+
+    def test_bounded_terminal_without_id_never_uses_unique_candidate_fallback(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            log_line(
+                0,
+                'request_id=request-only operation_kind="bounded_streaming_fetch" '
+                "elapsed_milliseconds=0 Source HTTP request started",
+            ),
+            log_line(
+                5,
+                'outcome="cancelled" received_bytes=7 elapsed_milliseconds=5 '
+                "Bounded HTTP request terminal",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "bounded-terminal-missing-id.log")
+
+        request = analyzer.network_requests[0]
+        self.assertIsNone(request.cancelled_ms)
+        self.assertEqual(request.terminal_outcome, "")
+        self.assertTrue(request.ambiguous)
+        self.assertEqual(
+            [anomaly.kind for anomaly in analyzer.network_terminal_anomalies],
+            ["missing_request_id"],
+        )
+        self.assertTrue(analyzer.network_terminal_anomalies[0].proof_relevant())
+        self.assertEqual(
+            analyzer.network_anomaly_summary(),
+            {
+                "anomaly_count": 1,
+                "proof_relevant_anomaly_count": 1,
+                "by_kind": {"missing_request_id": 1},
+            },
+        )
+        self.assertEqual(analyzer.network_summary_rows()[0]["anomaly_count"], 1)
+
+    def test_old_terminal_string_keeps_legacy_unique_candidate_fallback(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            log_line(
+                0,
+                'request_id=request-old operation_kind="bounded_streaming_fetch" '
+                "elapsed_milliseconds=0 Source HTTP request started",
+            ),
+            log_line(
+                5,
+                "received_bytes=7 elapsed_milliseconds=5 "
+                "Source HTTP request cancelled",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "legacy-terminal-fallback.log")
+
+        self.assertEqual(analyzer.network_requests[0].cancelled_ms, 5)
+        self.assertEqual(analyzer.network_requests[0].body_bytes, 7)
+        self.assertEqual(analyzer.network_terminal_anomalies, [])
+
+    def test_bounded_terminal_outcomes_do_not_alias_error_to_cancellation(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            log_line(
+                0,
+                'request_id=request-complete operation_kind="bounded_streaming_fetch" '
+                "elapsed_milliseconds=0 Source HTTP request started",
+            ),
+            log_line(
+                1,
+                'operation_kind="bounded_streaming_fetch" request_id=request-error '
+                "elapsed_milliseconds=0 Source HTTP request started",
+            ),
+            log_line(
+                2,
+                "received_bytes=128 elapsed_milliseconds=7 "
+                'outcome="complete" request_id=request-complete '
+                "Bounded HTTP request terminal",
+            ),
+            log_line(
+                3,
+                'error_category="timeout" received_bytes=64 request_id=request-error '
+                'outcome="error" elapsed_milliseconds=9 '
+                "Bounded HTTP request terminal",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "typed-terminal-outcomes.log")
+
+        completed, failed = analyzer.network_requests
+        self.assertEqual(completed.body_complete_ms, 7)
+        self.assertEqual(completed.body_bytes, 128)
+        self.assertEqual(completed.terminal_outcome, "complete")
+        self.assertIsNone(completed.cancelled_ms)
+        self.assertEqual(failed.terminal_ms, 9)
+        self.assertEqual(failed.body_bytes, 64)
+        self.assertEqual(failed.terminal_outcome, "error")
+        self.assertEqual(failed.terminal_error_category, "timeout")
+        self.assertIsNone(failed.cancelled_ms)
+
+    def test_explicit_request_id_is_fail_closed_even_without_operation_kind(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            log_line(
+                0,
+                'request_id=request-1 operation_kind="bounded_streaming_fetch" '
+                "elapsed_milliseconds=0 Source HTTP request started",
+            ),
+            log_line(
+                0,
+                'request_id=request-2 operation_kind="bounded_streaming_fetch" '
+                "elapsed_milliseconds=0 Source HTTP request started",
+            ),
+            log_line(
+                5,
+                'outcome="cancelled" received_bytes=17 request_id=request-2 '
+                "elapsed_milliseconds=5 Bounded HTTP request terminal",
+            ),
+            log_line(
+                6,
+                'outcome="cancelled" request_id=request-missing received_bytes=99 '
+                "elapsed_milliseconds=6 Bounded HTTP request terminal",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "exact-request-id.log")
+
+        first, second = analyzer.network_requests
+        self.assertIsNone(first.cancelled_ms)
+        self.assertEqual(second.cancelled_ms, 5)
+        self.assertEqual(second.body_bytes, 17)
+        self.assertFalse(first.ambiguous)
+        self.assertFalse(second.ambiguous)
+
+    def test_unknown_terminal_request_id_is_reported_and_cannot_prove_supersede(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = process_prefix() + [
+            log_line(
+                100,
+                "Player command received command=Seek(SeekRequest { "
+                "target: Absolute(MediaTime(60000ms)), mode: Accurate }) "
+                "current_position_ms=0",
+            ),
+            log_line(
+                102,
+                "generation=1 target_milliseconds=60000 public_to_enqueue_ms=2 "
+                "Prepared demux seek request enqueued",
+            ),
+            log_line(
+                103,
+                'request_id=request-owned operation_kind="bounded_streaming_fetch" '
+                "elapsed_milliseconds=0 Source HTTP request started",
+            ),
+            log_line(
+                105,
+                "supersede_after_ms=5 Player command received "
+                "command=Seek(SeekRequest { target: Absolute(MediaTime(550000ms)), "
+                "mode: Accurate }) current_position_ms=0",
+            ),
+            log_line(
+                106,
+                'outcome="cancelled" request_id=request-unknown received_bytes=0 '
+                "elapsed_milliseconds=3 Bounded HTTP request terminal",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "unknown-terminal-request.log")
+
+        self.assertIsNone(analyzer.network_requests[0].cancelled_ms)
+        self.assertEqual(
+            analyzer.samples[0].supersede_network_status,
+            "cancellation_unproven",
+        )
+        self.assertEqual(len(analyzer.network_terminal_anomalies), 1)
+        anomaly = analyzer.network_terminal_anomalies[0]
+        self.assertEqual(anomaly.kind, "unknown_request_id")
+        self.assertEqual(anomaly.safe_request_id, "request-unknown")
+        self.assertEqual(anomaly.outcome, "cancelled")
+
+    def test_missing_and_unsupported_terminal_outcomes_are_explicit_anomalies(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            log_line(
+                0,
+                'request_id=request-missing operation_kind="bounded_streaming_fetch" '
+                "elapsed_milliseconds=0 Source HTTP request started",
+            ),
+            log_line(
+                1,
+                'request_id=request-unsupported operation_kind="bounded_streaming_fetch" '
+                "elapsed_milliseconds=0 Source HTTP request started",
+            ),
+            log_line(
+                5,
+                "request_id=request-missing received_bytes=11 elapsed_milliseconds=5 "
+                "Bounded HTTP request terminal",
+            ),
+            log_line(
+                7,
+                'outcome="aborted_by_owner" request_id=request-unsupported '
+                "received_bytes=13 elapsed_milliseconds=6 "
+                "Bounded HTTP request terminal",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "invalid-terminal-outcomes.log")
+
+        self.assertEqual(
+            [anomaly.kind for anomaly in analyzer.network_terminal_anomalies],
+            ["missing_outcome", "unsupported_outcome"],
+        )
+        self.assertEqual(
+            [anomaly.outcome for anomaly in analyzer.network_terminal_anomalies],
+            [None, "aborted_by_owner"],
+        )
+        self.assertTrue(all(request.ambiguous for request in analyzer.network_requests))
+        self.assertTrue(
+            all(request.cancelled_ms is None for request in analyzer.network_requests)
+        )
+        self.assertEqual(
+            [request.body_bytes for request in analyzer.network_requests],
+            [11, 13],
+        )
+        serialized_anomalies = analyzer.to_dict()["network_terminal_anomalies"]
+        self.assertEqual(
+            [row["anomaly_kind"] for row in serialized_anomalies],
+            ["missing_outcome", "unsupported_outcome"],
+        )
+        self.assertEqual(serialized_anomalies[1]["terminal_outcome"], "aborted_by_owner")
+        self.assertIsInstance(json.dumps(serialized_anomalies), str)
+
+    def test_terminal_anomaly_report_is_additive_json_and_defaults_empty(self):
+        legacy_analyzer = PlaybackAcceptanceAnalyzer(scenario="legacy-consumer")
+        legacy_analyzer.parse_lines(process_prefix(), "legacy.log")
+
+        legacy_report = legacy_analyzer.to_dict()
+
+        self.assertEqual(legacy_report["network_terminal_anomalies"], [])
+        self.assertEqual(legacy_report["scrub_command_anomalies"], [])
+        self.assertEqual(
+            legacy_report["network_anomaly_summary"],
+            {
+                "anomaly_count": 0,
+                "proof_relevant_anomaly_count": 0,
+                "by_kind": {},
+            },
+        )
+        self.assertEqual(
+            legacy_report["scrub_anomaly_summary"],
+            {
+                "anomaly_count": 0,
+                "proof_relevant_anomaly_count": 0,
+                "by_kind": {},
+            },
+        )
+        self.assertTrue(
+            {
+                "scenario",
+                "startup_runs",
+                "seek_samples",
+                "network_requests",
+                "startup_summary",
+                "seek_summary",
+                "network_summary",
+                "production_marker_requirements",
+            }.issubset(legacy_report)
+        )
+        self.assertIsInstance(json.dumps(legacy_report), str)
+
     def test_timeline_drag_requires_begin_preview_end_and_monotonic_span(self):
         analyzer = PlaybackAcceptanceAnalyzer()
         lines = process_prefix() + [
@@ -516,6 +934,452 @@ class PlaybackAcceptanceAnalyzerTests(unittest.TestCase):
         summary = {row.metric: row for row in analyzer.summary_rows()}
         self.assertEqual(summary["scrub_begin_to_first_preview_ms"].p50, 20)
         self.assertEqual(summary["scrub_begin_to_end_ms"].p50, 80)
+
+    def test_info_scrub_dispatch_and_acceptance_count_each_command_once(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = process_prefix() + [
+            log_line(
+                99,
+                "command=BeginScrub { live_scrub: None } "
+                "Player scrub command debug received",
+            )
+        ]
+        lines.extend(paired_scrub_commands(100, 355_000))
+        lines.append(
+            log_line(
+                181,
+                "generation=1 target_ms=355000 Public final seek accepted",
+            )
+        )
+        lines.extend(
+            complete_seek(
+                1,
+                180,
+                0,
+                355_000,
+                150,
+                include_public=False,
+                process_ready_base_ms=330,
+            )
+        )
+
+        analyzer.parse_lines(lines, "paired-scrub.log")
+
+        self.assertEqual(len(analyzer.samples), 1)
+        sample = analyzer.samples[0]
+        self.assertFalse(sample.superseded)
+        self.assertEqual(len(sample.scrub.previews), 1)
+        self.assertEqual(sample.scrub.begin_to_first_preview_ms, 20)
+        self.assertEqual(sample.scrub.begin_to_end_ms, 80)
+        self.assertEqual(sample.verdict(), Verdict.PASS)
+        self.assertEqual(analyzer.scrub_command_anomalies, [])
+
+    def test_two_identical_real_preview_pairs_remain_two_previews(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = paired_scrub_commands(100, 355_000, preview_count=2)
+
+        analyzer.parse_lines(lines, "identical-preview-pairs.log")
+
+        self.assertEqual(len(analyzer.samples), 1)
+        self.assertIsNotNone(analyzer.samples[0].scrub)
+        self.assertEqual(len(analyzer.samples[0].scrub.previews), 2)
+        self.assertEqual(analyzer.scrub_command_anomalies, [])
+
+    def test_modern_cross_missing_same_target_never_cross_pairs_ids(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            modern_scrub_form(100, 1, "begin", "dispatch"),
+            modern_scrub_form(101, 1, "begin", "acceptance"),
+            modern_scrub_form(
+                120,
+                2,
+                "preview",
+                "dispatch",
+                target_kind="absolute",
+                target_ms=355_000,
+                scrub_elapsed_ms=20,
+            ),
+            log_line(125, "unrelated diagnostic between exact command forms"),
+            modern_scrub_form(
+                130,
+                3,
+                "preview",
+                "acceptance",
+                target_kind="absolute",
+                target_ms=355_000,
+                scrub_elapsed_ms=30,
+            ),
+            modern_scrub_form(180, 4, "end", "dispatch", scrub_elapsed_ms=80),
+            modern_scrub_form(
+                181,
+                4,
+                "end",
+                "acceptance",
+                scrub_elapsed_ms=80,
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "modern-cross-missing.log")
+
+        self.assertEqual(len(analyzer.samples), 1)
+        self.assertEqual(len(analyzer.samples[0].scrub.previews), 2)
+        self.assertEqual(
+            [anomaly.kind for anomaly in analyzer.scrub_command_anomalies],
+            ["missing_acceptance_form", "missing_dispatch_form"],
+        )
+        self.assertEqual(
+            [anomaly.command_id for anomaly in analyzer.scrub_command_anomalies],
+            [2, 3],
+        )
+        self.assertEqual(analyzer.samples[0].verdict(), Verdict.INCOMPLETE)
+
+    def test_modern_duplicate_stage_and_target_mismatch_are_explicit(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            modern_scrub_form(100, 1, "begin", "dispatch"),
+            modern_scrub_form(101, 1, "begin", "dispatch"),
+            modern_scrub_form(102, 1, "end", "acceptance"),
+            modern_scrub_form(
+                120,
+                2,
+                "preview",
+                "dispatch",
+                target_kind="absolute",
+                target_ms=1000,
+            ),
+            modern_scrub_form(
+                121,
+                2,
+                "preview",
+                "acceptance",
+                target_kind="absolute",
+                target_ms=2000,
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "modern-corrupt-pairs.log")
+
+        anomaly_kinds = [
+            anomaly.kind for anomaly in analyzer.scrub_command_anomalies
+        ]
+        self.assertIn("duplicate_scrub_command_form", anomaly_kinds)
+        self.assertIn("scrub_stage_mismatch", anomaly_kinds)
+        self.assertIn("scrub_target_mismatch", anomaly_kinds)
+        self.assertIn("missing_acceptance_form", anomaly_kinds)
+        serialized = analyzer.to_dict()["scrub_command_anomalies"]
+        self.assertTrue(all(row["proof_relevant"] for row in serialized))
+
+    def test_modern_missing_and_non_monotonic_ids_are_explicit_anomalies(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            modern_scrub_form(100, 2, "begin", "dispatch"),
+            modern_scrub_form(101, 2, "begin", "acceptance"),
+            modern_scrub_form(110, 1, "end", "dispatch"),
+            modern_scrub_form(111, 1, "end", "acceptance"),
+            log_line(
+                120,
+                "scrub_schema_version=1 scrub_stage=preview "
+                "scrub_command_form=dispatch scrub_target_kind=absolute "
+                "scrub_requested_target_ms=355000 Player scrub command received",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "modern-invalid-ids.log")
+
+        self.assertEqual(
+            [anomaly.kind for anomaly in analyzer.scrub_command_anomalies],
+            ["non_monotonic_scrub_command_id", "missing_scrub_command_id"],
+        )
+        self.assertTrue(analyzer.has_proof_relevant_anomalies())
+
+    def test_adjacent_modern_ids_above_float_precision_remain_distinct(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        first_id = 9_007_199_254_740_992
+        second_id = first_id + 1
+        lines = [
+            modern_scrub_form(100, first_id, "begin", "dispatch"),
+            modern_scrub_form(101, first_id, "begin", "acceptance"),
+            modern_scrub_form(
+                110,
+                second_id,
+                "preview",
+                "dispatch",
+                target_kind="absolute",
+                target_ms=355_000,
+            ),
+            modern_scrub_form(
+                111,
+                second_id,
+                "preview",
+                "acceptance",
+                target_kind="absolute",
+                target_ms=355_000,
+            ),
+            modern_scrub_form(120, second_id + 1, "end", "dispatch"),
+            modern_scrub_form(121, second_id + 1, "end", "acceptance"),
+        ]
+
+        analyzer.parse_lines(lines, "exact-large-scrub-ids.log")
+
+        self.assertEqual(analyzer.scrub_command_anomalies, [])
+        self.assertEqual(len(analyzer.samples), 1)
+        self.assertEqual(len(analyzer.samples[0].scrub.previews), 1)
+        report = analyzer.to_dict()
+        self.assertEqual(report["scrub_anomaly_summary"]["anomaly_count"], 0)
+
+    def test_modern_unsigned_decimal_fields_reject_non_decimal_and_overflow(self):
+        invalid_values = ("1.5", "1.9", "nan", "inf", "-1", "1e3", "malformed")
+        field_cases = (
+            (
+                "scrub_schema_version",
+                "invalid_scrub_schema_version_integer",
+                str(1 << 64),
+                "scrub_schema_version_overflow",
+            ),
+            (
+                "scrub_command_id",
+                "invalid_scrub_command_id_integer",
+                str(1 << 64),
+                "scrub_command_id_overflow",
+            ),
+            (
+                "scrub_requested_target_ms",
+                "invalid_scrub_target_integer",
+                str(1 << 128),
+                "scrub_target_overflow",
+            ),
+        )
+
+        for field_name, invalid_kind, overflow_value, overflow_kind in field_cases:
+            for invalid_value in invalid_values:
+                with self.subTest(field=field_name, value=invalid_value):
+                    fields = {
+                        "scrub_schema_version": "1",
+                        "scrub_command_id": "1",
+                        "scrub_requested_target_ms": "355000",
+                    }
+                    fields[field_name] = invalid_value
+                    analyzer = PlaybackAcceptanceAnalyzer()
+                    analyzer.parse_lines(
+                        [
+                            log_line(
+                                100,
+                                f"scrub_schema_version={fields['scrub_schema_version']} "
+                                f"scrub_command_id={fields['scrub_command_id']} "
+                                "scrub_stage=preview scrub_command_form=dispatch "
+                                "scrub_target_kind=absolute "
+                                "scrub_requested_target_ms="
+                                f"{fields['scrub_requested_target_ms']} "
+                                "Player scrub command received",
+                            )
+                        ],
+                        f"invalid-{field_name}-{invalid_value}.log",
+                    )
+                    self.assertEqual(
+                        [
+                            anomaly.kind
+                            for anomaly in analyzer.scrub_command_anomalies
+                        ],
+                        [invalid_kind],
+                    )
+                    self.assertTrue(analyzer.has_proof_relevant_anomalies())
+
+            for overflow_case in (overflow_value, "9" * 5_000):
+                with self.subTest(field=field_name, value="overflow"):
+                    fields = {
+                        "scrub_schema_version": "1",
+                        "scrub_command_id": "1",
+                        "scrub_requested_target_ms": "355000",
+                    }
+                    fields[field_name] = overflow_case
+                    analyzer = PlaybackAcceptanceAnalyzer()
+                    analyzer.parse_lines(
+                        [
+                            log_line(
+                                100,
+                                f"scrub_schema_version={fields['scrub_schema_version']} "
+                                f"scrub_command_id={fields['scrub_command_id']} "
+                                "scrub_stage=preview scrub_command_form=dispatch "
+                                "scrub_target_kind=absolute "
+                                "scrub_requested_target_ms="
+                                f"{fields['scrub_requested_target_ms']} "
+                                "Player scrub command received",
+                            )
+                        ],
+                        f"overflow-{field_name}.log",
+                    )
+                    self.assertEqual(
+                        [
+                            anomaly.kind
+                            for anomaly in analyzer.scrub_command_anomalies
+                        ],
+                        [overflow_kind],
+                    )
+
+    def test_typed_only_legacy_scrub_remains_backward_compatible(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            log_line(
+                100,
+                'kind="seek_acceptance" current_position_ms=0 '
+                "Player command received command=BeginScrub",
+            ),
+            log_line(
+                120,
+                'kind="seek_acceptance" target_ms=355000 begin_to_preview_ms=20 '
+                "Player command received command=PreviewScrub",
+            ),
+            log_line(
+                180,
+                'kind="seek_acceptance" begin_to_end_ms=80 '
+                "Player command received command=EndScrub",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "typed-only-legacy.log")
+
+        self.assertEqual(len(analyzer.samples), 1)
+        self.assertEqual(len(analyzer.samples[0].scrub.previews), 1)
+        self.assertEqual(analyzer.scrub_command_anomalies, [])
+
+    def test_two_unmatched_legacy_previews_are_not_collapsed(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            log_line(100, "Player command received command=BeginScrub"),
+            log_line(
+                120,
+                "Player command received command=PreviewScrub { request: SeekRequest { "
+                "target: Absolute(MediaTime(355000ms)), mode: Accurate } }",
+            ),
+            log_line(
+                130,
+                "Player command received command=PreviewScrub { request: SeekRequest { "
+                "target: Absolute(MediaTime(355000ms)), mode: Accurate } }",
+            ),
+            log_line(180, "Player command received command=EndScrub"),
+        ]
+
+        analyzer.parse_lines(lines, "unmatched-legacy-previews.log")
+
+        self.assertEqual(len(analyzer.samples), 1)
+        self.assertEqual(len(analyzer.samples[0].scrub.previews), 2)
+
+    def test_idless_mixed_forms_are_anomalous_and_use_only_first_legacy_family(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            log_line(
+                100,
+                'kind="seek_acceptance" current_position_ms=0 '
+                "Player command received command=BeginScrub",
+            ),
+            log_line(
+                120,
+                'kind="seek_acceptance" target_ms=355000 begin_to_preview_ms=20 '
+                "Player command received command=PreviewScrub",
+            ),
+            log_line(
+                130,
+                "Player command received command=PreviewScrub { request: SeekRequest { "
+                "target: Absolute(MediaTime(355000ms)), mode: Accurate } }",
+            ),
+            log_line(
+                180,
+                'kind="seek_acceptance" begin_to_end_ms=80 '
+                "Player command received command=EndScrub",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "typed-then-raw-cross-missing.log")
+
+        self.assertEqual(len(analyzer.samples), 1)
+        self.assertEqual(len(analyzer.samples[0].scrub.previews), 1)
+        self.assertEqual(
+            [anomaly.kind for anomaly in analyzer.scrub_command_anomalies],
+            ["legacy_mixed_forms_without_id"],
+        )
+        self.assertIn(
+            "scrub_command_correlation",
+            analyzer.samples[0].missing_gates(),
+        )
+        self.assertEqual(analyzer.samples[0].verdict(), Verdict.INCOMPLETE)
+
+    def test_non_adjacent_idless_mixed_forms_never_use_lifo_pairing(self):
+        analyzer = PlaybackAcceptanceAnalyzer()
+        lines = [
+            log_line(
+                100,
+                'kind="seek_acceptance" current_position_ms=0 '
+                "Player command received command=BeginScrub",
+            ),
+            log_line(
+                110,
+                "Player command received command=EndScrub { policy: LatestPreview }",
+            ),
+            log_line(
+                120,
+                "Player command received command=EndScrub { policy: LatestPreview }",
+            ),
+            log_line(125, "Source HTTP response headers ready elapsed_milliseconds=4"),
+            log_line(
+                130,
+                'kind="seek_acceptance" current_position_ms=222 '
+                'begin_to_end_ms=30 '
+                "Player command received command=EndScrub",
+            ),
+        ]
+
+        analyzer.parse_lines(lines, "non-adjacent-lifo-end.log")
+
+        self.assertEqual(len(analyzer.samples), 1)
+        self.assertEqual(analyzer.samples[0].origin_ms, 222)
+        self.assertEqual(analyzer.samples[0].scrub.begin_to_end_ms, 30)
+        self.assertEqual(
+            [anomaly.kind for anomaly in analyzer.scrub_command_anomalies],
+            ["legacy_mixed_forms_without_id"],
+        )
+        self.assertEqual(analyzer.samples[0].verdict(), Verdict.INCOMPLETE)
+
+    def test_ten_paired_scrubs_keep_exact_warm_final_count(self):
+        analyzer = PlaybackAcceptanceAnalyzer(scenario="warm-scrub-10")
+        lines = process_prefix()
+        previous_target_ms = 0.0
+        for index in range(1, 11):
+            base_ms = 1_000.0 * index
+            target_ms = 50_000.0 * index
+            lines.extend(
+                paired_scrub_commands(
+                    base_ms,
+                    target_ms,
+                    first_command_id=(index - 1) * 3 + 1,
+                )
+            )
+            lines.append(
+                log_line(
+                    base_ms + 81,
+                    f"generation={index} target_ms={target_ms} "
+                    "Public final seek accepted",
+                )
+            )
+            lines.extend(
+                complete_seek(
+                    index,
+                    base_ms + 80,
+                    previous_target_ms,
+                    target_ms,
+                    100 + index,
+                    include_public=False,
+                )
+            )
+            previous_target_ms = target_ms
+
+        analyzer.parse_lines(lines, "warm-paired-scrub-10.log")
+
+        self.assertEqual(len(analyzer.samples), 10)
+        self.assertTrue(all(not sample.superseded for sample in analyzer.samples))
+        self.assertTrue(
+            all(len(sample.scrub.previews) == 1 for sample in analyzer.samples)
+        )
+        self.assertEqual(analyzer.summary_rows()[0].eligible_count, 10)
 
     def test_public_generations_do_not_merge_when_worker_markers_are_filtered(self):
         analyzer = PlaybackAcceptanceAnalyzer()

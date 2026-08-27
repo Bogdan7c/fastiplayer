@@ -38,7 +38,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Return 1 for FAIL/INCOMPLETE final samples or startup runs.",
+        help=(
+            "Return 1 for FAIL/INCOMPLETE final evidence or proof-relevant "
+            "network/scrub/HLS manifest-selection telemetry anomalies."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -137,8 +140,116 @@ def write_table(analyzer: PlaybackAcceptanceAnalyzer, output: TextIO) -> None:
             + "\n"
         )
 
+    output.write("\nHLS MANIFEST SELECTIONS\n")
+    output.write(
+        "seq | source | class | phase | role | selection id | requested_ms | "
+        "selected_segment_ms | actual_anchor_ms | decode_anchor_ms | "
+        "media/discontinuity/global/epoch/restart | policy | anchor kind | status\n"
+    )
+    for selection in analyzer.hls_manifest_selections:
+        indexes = "/".join(
+            str(value)
+            for value in (
+                selection.media_sequence,
+                selection.discontinuity_sequence,
+                selection.manifest_segment_index,
+                selection.epoch_index,
+                selection.restart_segment_index,
+            )
+        )
+        status = (
+            "valid" if selection.valid() else ",".join(selection.anomaly_kinds)
+        )
+        output.write(
+            " | ".join(
+                (
+                    str(selection.sequence),
+                    selection.source,
+                    selection.operation_class(),
+                    selection.phase,
+                    selection.component_role,
+                    str(selection.manifest_selection_id),
+                    str(selection.requested_target_ms),
+                    f"[{selection.segment_start_ms},{selection.segment_end_ms})",
+                    str(selection.actual_anchor_ms),
+                    str(selection.actual_decode_anchor_ms),
+                    indexes,
+                    selection.landing_policy,
+                    selection.anchor_kind,
+                    status,
+                )
+            )
+            + "\n"
+        )
+
+    output.write("\nHLS MANIFEST SELECTION SUMMARY\n")
+    output.write("class | phase | role | selections | valid | anomalies\n")
+    for row in analyzer.hls_manifest_selection_summary_rows():
+        output.write(
+            " | ".join(
+                (
+                    str(row["operation_class"]),
+                    str(row["phase"]),
+                    str(row["component_role"]),
+                    str(row["selection_count"]),
+                    str(row["valid_count"]),
+                    str(row["anomaly_count"]),
+                )
+            )
+            + "\n"
+        )
+
+    hls_anomaly_summary = analyzer.hls_manifest_selection_anomaly_summary()
+    output.write("\nHLS MANIFEST SELECTION ANOMALY SUMMARY\n")
+    output.write("anomalies | proof anomalies | by kind\n")
+    output.write(
+        " | ".join(
+            (
+                str(hls_anomaly_summary["anomaly_count"]),
+                str(hls_anomaly_summary["proof_relevant_anomaly_count"]),
+                ",".join(
+                    f"{kind}:{count}"
+                    for kind, count in hls_anomaly_summary["by_kind"].items()
+                ),
+            )
+        )
+        + "\n"
+    )
+
+    output.write("\nHLS MANIFEST SELECTION ANOMALIES\n")
+    output.write(
+        "source | line | kind | field | record | selection id | role | impact\n"
+    )
+    for anomaly in analyzer.hls_manifest_selection_anomalies:
+        output.write(
+            " | ".join(
+                (
+                    anomaly.source,
+                    str(anomaly.line_number),
+                    anomaly.kind,
+                    anomaly.field or "",
+                    (
+                        str(anomaly.record_sequence)
+                        if anomaly.record_sequence is not None
+                        else ""
+                    ),
+                    (
+                        str(anomaly.manifest_selection_id)
+                        if anomaly.manifest_selection_id is not None
+                        else ""
+                    ),
+                    anomaly.component_role or "",
+                    anomaly.impact,
+                )
+            )
+            + "\n"
+        )
+
     output.write("\nNETWORK SUMMARY\n")
-    output.write("metric | observed | requests | ambiguous | p50 | p95 | max | clock\n")
+    output.write(
+        "metric | observed | requests | ambiguous | anomalies | proof anomalies | "
+        "p50 | p95 | max | clock\n"
+    )
     for row in analyzer.network_summary_rows():
         output.write(
             " | ".join(
@@ -147,6 +258,8 @@ def write_table(analyzer: PlaybackAcceptanceAnalyzer, output: TextIO) -> None:
                     str(row["observed_count"]),
                     str(row["request_count"]),
                     str(row["ambiguous_count"]),
+                    str(row["anomaly_count"]),
+                    str(row["proof_relevant_anomaly_count"]),
                     format_summary_value(row["p50"]),
                     format_summary_value(row["p95"]),
                     format_summary_value(row["max"]),
@@ -156,10 +269,52 @@ def write_table(analyzer: PlaybackAcceptanceAnalyzer, output: TextIO) -> None:
             + "\n"
         )
 
+    output.write("\nNETWORK ANOMALIES\n")
+    output.write("source | line | kind | request | outcome | owner seek | impact\n")
+    for anomaly in analyzer.network_terminal_anomalies:
+        output.write(
+            " | ".join(
+                (
+                    anomaly.source,
+                    str(anomaly.line_number),
+                    anomaly.kind,
+                    anomaly.safe_request_id or "",
+                    anomaly.outcome or "",
+                    (
+                        str(anomaly.owner_seek_sequence)
+                        if anomaly.owner_seek_sequence is not None
+                        else ""
+                    ),
+                    anomaly.impact,
+                )
+            )
+            + "\n"
+        )
+
+    output.write("\nSCRUB COMMAND ANOMALIES\n")
+    output.write("source | line | kind | command id | form | stage | proof relevant\n")
+    for anomaly in analyzer.scrub_command_anomalies:
+        output.write(
+            " | ".join(
+                (
+                    anomaly.source,
+                    str(anomaly.line_number),
+                    anomaly.kind,
+                    str(anomaly.command_id) if anomaly.command_id is not None else "",
+                    anomaly.form or "",
+                    anomaly.stage or "",
+                    str(anomaly.proof_relevant).lower(),
+                )
+            )
+            + "\n"
+        )
+
 
 def has_blocking_outcome(analyzer: PlaybackAcceptanceAnalyzer) -> bool:
     """Superseded operations допустимы; final FAIL/INCOMPLETE блокируют acceptance."""
 
+    if analyzer.has_proof_relevant_anomalies():
+        return True
     if any(run.verdict() != Verdict.PASS for run in analyzer.runs):
         return True
     return any(

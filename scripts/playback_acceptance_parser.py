@@ -13,6 +13,7 @@ from playback_acceptance import (
     COMMIT_TIMEOUT_MARKER,
     DECODED_MARKER,
     DEMUX_ACCEPTED_MARKER,
+    HTTP_BOUNDED_TERMINAL_MARKER,
     HTTP_BODY_COMPLETE_MARKER,
     HTTP_CANCELLED_MARKERS,
     HTTP_FIRST_BODY_MARKER,
@@ -35,6 +36,7 @@ from playback_acceptance import (
     WORKER_RECEIPT_MARKER,
     WORKER_REQUEST_MARKER,
     LogPoint,
+    NetworkTerminalAnomaly,
     ProcessRun,
     ScrubTimeline,
     SeekSample,
@@ -55,6 +57,23 @@ from playback_acceptance import (
 )
 
 from playback_acceptance_network import NetworkTracker
+from playback_acceptance_hls import (
+    HLS_MANIFEST_SEGMENT_SEEK_MARKER,
+    HlsManifestSelectionAnomaly,
+    HlsManifestSelectionRecord,
+    HlsManifestSelectionTracker,
+    hls_manifest_selection_anomaly_summary,
+    hls_manifest_selection_summary_rows,
+)
+from playback_acceptance_scrub import (
+    ScrubCommandAnomaly,
+    ScrubCommandCorrelationTracker,
+    ScrubCommandMarker,
+    ScrubCommandStage,
+    ScrubCorrelationAction,
+    line_is_scrub_command_marker,
+    parse_scrub_command_marker,
+)
 from playback_acceptance_summary import MetricSummary, summary_for_values
 from seek_diagnostics_metrics import nearest_rank
 
@@ -64,8 +83,8 @@ from seek_diagnostics_metrics import nearest_rank
 ANSI_CSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 PUBLIC_COMMAND_MARKER = "Player command received command="
 PUBLIC_FINAL_SEEK_ACCEPTED_MARKER = "Public final seek accepted"
-SEEK_COMMAND_PATTERN = re.compile(
-    r"command=Seek\(SeekRequest \{ target: Absolute\(MediaTime\((?P<value>[0-9.]+)(?P<unit>ms|s)\)"
+PUBLIC_COMMAND_TARGET_PATTERN = re.compile(
+    r"target: Absolute\(MediaTime\((?P<value>[0-9.]+)(?P<unit>ms|s)\)"
 )
 RELEVANT_MARKERS = (
     *PROCESS_START_MARKERS,
@@ -88,6 +107,7 @@ RELEVANT_MARKERS = (
     HTTP_HEADERS_MARKER,
     HTTP_FIRST_BODY_MARKER,
     HTTP_BODY_COMPLETE_MARKER,
+    HTTP_BOUNDED_TERMINAL_MARKER,
     *HTTP_CANCELLED_MARKERS,
     *POSITION_PROGRESS_MARKERS,
     *PRE_TARGET_PRESENTED_MARKERS,
@@ -105,9 +125,13 @@ PRODUCTION_MARKER_REQUIREMENTS = (
     "public Seek/EndScrub accepted plus public_to_enqueue_ms or direct public_to_presented/audio spans",
     "presented_pre_target_frames=0 for the committed generation",
     "post-commit PositionChanged/progress marker with generation and position_ms",
-    "HTTP http_request_id/resource_request_id on start, headers, first body, EOF and cancellation",
+    "HTTP request_id/http_request_id/resource_request_id on start, headers, first body, EOF and cancellation",
     "secret-safe resource/segment identity, purpose and cache-hit marker for repeated target reuse",
-    "BeginScrub/PreviewScrub/EndScrub monotonic begin_to_preview_ms and begin_to_end_ms",
+    "paired INFO dispatch/acceptance scrub_schema_version=1 markers with exact monotonic "
+    "scrub_command_id, stage and requested target identity",
+    "committed kind=hls_manifest_segment_seek marker with exact HLS-local selection ID, "
+    "phase/component role, requested target, selected half-open manifest interval and "
+    "packet-derived actual/decode anchors; this evidence is never joined to a public operation",
 )
 
 
@@ -119,28 +143,46 @@ def append_unique_failure(run: ProcessRun, message: str) -> None:
 
 
 @dataclass
+class PublicCommandObservation:
+    """Logical command, уже применённая к parser state ровно один раз."""
+
+    stage: ScrubCommandStage
+    scrub: ScrubTimeline
+    sample: SeekSample | None = None
+
+
+@dataclass
 class SourceState:
     """Correlation state строго одного process log."""
 
     run: ProcessRun
     network_tracker: NetworkTracker
+    hls_manifest_selection_tracker: HlsManifestSelectionTracker
+    scrub_tracker: ScrubCommandCorrelationTracker
     samples: list[SeekSample] = field(default_factory=list)
     active_by_generation: dict[str, SeekSample] = field(default_factory=dict)
     pending_public_sample: SeekSample | None = None
     current_sample: SeekSample | None = None
     scrub: ScrubTimeline | None = None
+    scrub_observations: dict[str, PublicCommandObservation] = field(default_factory=dict)
     last_requested_target_ms: float | None = None
     last_committed_target_ms: float | None = None
 
 
 class PlaybackAcceptanceAnalyzer:
-    """Собирает startup, final seek, scrub и HTTP metrics из готовых логов."""
+    """Собирает startup/seek/HTTP и независимое HLS evidence из готовых логов."""
 
     def __init__(self, scenario: str = "") -> None:
         self.scenario = scenario
         self.runs: list[ProcessRun] = []
         self.samples: list[SeekSample] = []
         self.network_requests: list[NetworkRequest] = []
+        self.network_terminal_anomalies: list[NetworkTerminalAnomaly] = []
+        self.scrub_command_anomalies: list[ScrubCommandAnomaly] = []
+        self.hls_manifest_selections: list[HlsManifestSelectionRecord] = []
+        self.hls_manifest_selection_anomalies: list[
+            HlsManifestSelectionAnomaly
+        ] = []
 
     def parse_path(self, path: Path) -> None:
         """Читает один log; приложение и пользовательский профиль не затрагиваются."""
@@ -155,6 +197,17 @@ class PlaybackAcceptanceAnalyzer:
             network_tracker=NetworkTracker(
                 source=source,
                 first_sequence=len(self.network_requests) + 1,
+                first_anomaly_sequence=len(self.network_terminal_anomalies) + 1,
+            ),
+            hls_manifest_selection_tracker=HlsManifestSelectionTracker(
+                source=source,
+                first_record_sequence=len(self.hls_manifest_selections) + 1,
+                first_anomaly_sequence=len(self.hls_manifest_selection_anomalies)
+                + 1,
+            ),
+            scrub_tracker=ScrubCommandCorrelationTracker(
+                source=source,
+                first_anomaly_sequence=len(self.scrub_command_anomalies) + 1,
             ),
         )
         for line_number, line in enumerate(lines, start=1):
@@ -172,6 +225,8 @@ class PlaybackAcceptanceAnalyzer:
         """Маршрутизирует строку к process/public/network/seek owners."""
 
         if not line_is_relevant(line):
+            return
+        if state.hls_manifest_selection_tracker.observe(line_number, line):
             return
         point = point_for_line(source, line_number, line)
         self._observe_process_marker(state, point, line)
@@ -446,33 +501,97 @@ class PlaybackAcceptanceAnalyzer:
                 return True
             self._begin_public_sample(state, point, line, "seek", None)
             return True
-        if PUBLIC_COMMAND_MARKER not in line:
+        scrub_marker = (
+            parse_scrub_command_marker(line, point)
+            if line_is_scrub_command_marker(line)
+            else None
+        )
+        if scrub_marker is None:
+            if PUBLIC_COMMAND_MARKER not in line:
+                return False
+            if "command=Seek(" in line:
+                self._begin_public_sample(state, point, line, "seek", None)
+                return True
             return False
-        if "command=BeginScrub" in line:
-            state.scrub = ScrubTimeline(begin=point)
+
+        decision = state.scrub_tracker.observe(scrub_marker)
+        if decision.action == ScrubCorrelationAction.IGNORE_ANOMALOUS:
             return True
-        if "command=PreviewScrub" in line or "command=UpdateScrub" in line:
+        if decision.action == ScrubCorrelationAction.ENRICH_EXISTING:
+            if decision.correlation_key is not None:
+                observation = state.scrub_observations.get(decision.correlation_key)
+                if observation is not None:
+                    self._enrich_paired_scrub_observation(observation, line)
+            return True
+
+        scrub_stage = scrub_marker.stage
+        if scrub_stage is None:
+            return True
+        scrub_elapsed_ms = float_field(
+            line,
+            "scrub_elapsed_ms",
+            "begin_to_preview_ms",
+            "begin_to_end_ms",
+            "elapsed_since_begin_ms",
+        )
+
+        if scrub_stage == ScrubCommandStage.BEGIN:
+            state.scrub = ScrubTimeline(begin=point)
+        elif scrub_stage in {ScrubCommandStage.PREVIEW, ScrubCommandStage.UPDATE}:
             if state.scrub is None:
                 state.scrub = ScrubTimeline()
             state.scrub.previews.append(point)
             if state.scrub.begin_to_first_preview_ms is None:
-                state.scrub.begin_to_first_preview_ms = float_field(
-                    line, "begin_to_preview_ms", "elapsed_since_begin_ms"
-                )
-            return True
-        if "command=EndScrub" in line:
+                state.scrub.begin_to_first_preview_ms = scrub_elapsed_ms
+        else:
             if state.scrub is None:
                 state.scrub = ScrubTimeline()
             state.scrub.end = point
-            state.scrub.begin_to_end_ms = float_field(
-                line, "begin_to_end_ms", "elapsed_since_begin_ms"
-            )
+            state.scrub.begin_to_end_ms = scrub_elapsed_ms
             self._begin_public_sample(state, point, line, "timeline_final", state.scrub)
-            return True
-        if "command=Seek(" in line:
-            self._begin_public_sample(state, point, line, "seek", None)
-            return True
-        return False
+        if decision.correlation_key is not None:
+            state.scrub_observations[decision.correlation_key] = PublicCommandObservation(
+                stage=scrub_stage,
+                scrub=state.scrub,
+                sample=(
+                    state.current_sample
+                    if scrub_stage == ScrubCommandStage.END
+                    else None
+                ),
+            )
+        return True
+
+    @staticmethod
+    def _enrich_paired_scrub_observation(
+        observation: PublicCommandObservation,
+        line: str,
+    ) -> None:
+        """Добавляет typed spans к уже учтённой command без второго state transition."""
+
+        if observation.stage in {
+            ScrubCommandStage.PREVIEW,
+            ScrubCommandStage.UPDATE,
+        }:
+            if observation.scrub.begin_to_first_preview_ms is None:
+                observation.scrub.begin_to_first_preview_ms = float_field(
+                    line,
+                    "scrub_elapsed_ms",
+                    "begin_to_preview_ms",
+                    "elapsed_since_begin_ms",
+                )
+            return
+        if observation.stage != ScrubCommandStage.END:
+            return
+        begin_to_end_ms = float_field(
+            line,
+            "scrub_elapsed_ms",
+            "begin_to_end_ms",
+            "elapsed_since_begin_ms",
+        )
+        if begin_to_end_ms is not None:
+            observation.scrub.begin_to_end_ms = begin_to_end_ms
+        if observation.sample is not None and observation.sample.origin_ms is None:
+            observation.sample.origin_ms = float_field(line, "current_position_ms")
 
     def _begin_public_sample(
         self,
@@ -697,6 +816,8 @@ class PlaybackAcceptanceAnalyzer:
     def _finish_source(self, state: SourceState) -> None:
         """Публикует source rows и переносит terminal seek failure на startup run."""
 
+        state.scrub_tracker.finish()
+        self._apply_scrub_correlation_anomalies(state)
         first_final = next(
             (sample for sample in state.samples if sample.role != "preview_scrub"), None
         )
@@ -707,6 +828,40 @@ class PlaybackAcceptanceAnalyzer:
         self.runs.append(state.run)
         self.samples.extend(state.samples)
         self.network_requests.extend(state.network_tracker.requests)
+        self.network_terminal_anomalies.extend(
+            state.network_tracker.terminal_anomalies
+        )
+        self.scrub_command_anomalies.extend(state.scrub_tracker.anomalies)
+        self.hls_manifest_selections.extend(
+            state.hls_manifest_selection_tracker.records
+        )
+        self.hls_manifest_selection_anomalies.extend(
+            state.hls_manifest_selection_tracker.anomalies
+        )
+
+    @staticmethod
+    def _apply_scrub_correlation_anomalies(state: SourceState) -> None:
+        """Делает affected drag non-eligible, сохраняя отдельный anomaly evidence."""
+
+        for anomaly in state.scrub_tracker.anomalies:
+            if anomaly.correlation_key is not None:
+                observation = state.scrub_observations.get(anomaly.correlation_key)
+                scrub_timelines = [observation.scrub] if observation is not None else []
+            else:
+                scrub_timelines = [
+                    observation.scrub
+                    for observation in state.scrub_observations.values()
+                ]
+                if not scrub_timelines and state.scrub is not None:
+                    scrub_timelines = [state.scrub]
+            seen_timelines: set[int] = set()
+            for scrub in scrub_timelines:
+                identity = id(scrub)
+                if identity in seen_timelines:
+                    continue
+                seen_timelines.add(identity)
+                if anomaly.kind not in scrub.correlation_failures:
+                    scrub.correlation_failures.append(anomaly.kind)
 
     def _settle_supersede_network_status(
         self, state: SourceState, sample: SeekSample
@@ -842,6 +997,7 @@ class PlaybackAcceptanceAnalyzer:
         """Суммирует request→headers/first-byte/body отдельно, не требуя body EOF."""
 
         rows: list[dict[str, object]] = []
+        anomaly_summary = self.network_anomaly_summary()
         for metric, attribute in (
             ("request_to_headers_ms", "headers_ms"),
             ("request_to_first_byte_ms", "first_body_ms"),
@@ -861,6 +1017,10 @@ class PlaybackAcceptanceAnalyzer:
                     "ambiguous_count": sum(
                         request.ambiguous for request in self.network_requests
                     ),
+                    "anomaly_count": anomaly_summary["anomaly_count"],
+                    "proof_relevant_anomaly_count": anomaly_summary[
+                        "proof_relevant_anomaly_count"
+                    ],
                     "p50": nearest_rank(values, 0.50),
                     "p95": nearest_rank(values, 0.95),
                     "max": max(values) if values else None,
@@ -869,6 +1029,60 @@ class PlaybackAcceptanceAnalyzer:
                 }
             )
         return rows
+
+    def network_anomaly_summary(self) -> dict[str, object]:
+        """Суммирует typed terminal anomalies для JSON/table/strict consumers."""
+
+        by_kind: dict[str, int] = {}
+        for anomaly in self.network_terminal_anomalies:
+            by_kind[anomaly.kind] = by_kind.get(anomaly.kind, 0) + 1
+        return {
+            "anomaly_count": len(self.network_terminal_anomalies),
+            "proof_relevant_anomaly_count": sum(
+                anomaly.proof_relevant()
+                for anomaly in self.network_terminal_anomalies
+            ),
+            "by_kind": by_kind,
+        }
+
+    def scrub_anomaly_summary(self) -> dict[str, object]:
+        """Суммирует command-correlation anomalies без подмены sample verdict-а."""
+
+        by_kind: dict[str, int] = {}
+        for anomaly in self.scrub_command_anomalies:
+            by_kind[anomaly.kind] = by_kind.get(anomaly.kind, 0) + 1
+        return {
+            "anomaly_count": len(self.scrub_command_anomalies),
+            "proof_relevant_anomaly_count": sum(
+                anomaly.proof_relevant for anomaly in self.scrub_command_anomalies
+            ),
+            "by_kind": by_kind,
+        }
+
+    def hls_manifest_selection_summary_rows(self) -> list[dict[str, object]]:
+        """Группирует HLS exact selections отдельно по cold/warm phase и role."""
+
+        return hls_manifest_selection_summary_rows(self.hls_manifest_selections)
+
+    def hls_manifest_selection_anomaly_summary(self) -> dict[str, object]:
+        """Публикует typed HLS marker anomalies отдельным additive summary."""
+
+        return hls_manifest_selection_anomaly_summary(
+            self.hls_manifest_selection_anomalies
+        )
+
+    def has_proof_relevant_anomalies(self) -> bool:
+        """Возвращает blocking telemetry corruption для strict acceptance."""
+
+        return any(
+            anomaly.proof_relevant()
+            for anomaly in self.network_terminal_anomalies
+        ) or any(
+            anomaly.proof_relevant for anomaly in self.scrub_command_anomalies
+        ) or any(
+            anomaly.proof_relevant()
+            for anomaly in self.hls_manifest_selection_anomalies
+        )
 
     def to_dict(self) -> dict[str, object]:
         """Строит полный machine-readable acceptance report."""
@@ -880,9 +1094,30 @@ class PlaybackAcceptanceAnalyzer:
             "network_requests": [
                 request.to_dict() for request in self.network_requests
             ],
+            "network_terminal_anomalies": [
+                anomaly.to_dict() for anomaly in self.network_terminal_anomalies
+            ],
+            "scrub_command_anomalies": [
+                anomaly.to_dict() for anomaly in self.scrub_command_anomalies
+            ],
+            "hls_manifest_selections": [
+                selection.to_dict() for selection in self.hls_manifest_selections
+            ],
+            "hls_manifest_selection_anomalies": [
+                anomaly.to_dict()
+                for anomaly in self.hls_manifest_selection_anomalies
+            ],
             "startup_summary": self.startup_summary_rows(),
             "seek_summary": [row.to_dict() for row in self.summary_rows()],
             "network_summary": self.network_summary_rows(),
+            "network_anomaly_summary": self.network_anomaly_summary(),
+            "scrub_anomaly_summary": self.scrub_anomaly_summary(),
+            "hls_manifest_selection_summary": (
+                self.hls_manifest_selection_summary_rows()
+            ),
+            "hls_manifest_selection_anomaly_summary": (
+                self.hls_manifest_selection_anomaly_summary()
+            ),
             "production_marker_requirements": list(PRODUCTION_MARKER_REQUIREMENTS),
         }
 
@@ -893,7 +1128,7 @@ def target_from_public_command(line: str) -> float | None:
     explicit_target = float_field(line, "target_ms", "target_milliseconds")
     if explicit_target is not None:
         return explicit_target
-    match = SEEK_COMMAND_PATTERN.search(line)
+    match = PUBLIC_COMMAND_TARGET_PATTERN.search(line)
     if match is None:
         return None
     value = float(match.group("value"))
@@ -915,6 +1150,10 @@ def scrub_begin_to_end_ms(sample: SeekSample) -> float | None:
 def line_is_relevant(line: str) -> bool:
     """Отбрасывает миллионы unrelated debug lines до regex/timestamp parsing."""
 
+    if line_is_scrub_command_marker(line):
+        return True
+    if HLS_MANIFEST_SEGMENT_SEEK_MARKER in line:
+        return True
     if any(marker in line for marker in RELEVANT_MARKERS):
         return True
     if PUBLIC_COMMAND_MARKER not in line:

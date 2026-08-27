@@ -1,6 +1,19 @@
 use super::test_support::*;
 use super::*;
 
+const SCRUB_COMMAND_CORRELATION_TRACE_TEST_NAME: &str = concat!(
+    "session::tests::scrub::",
+    "scrub_dispatch_tracing_pairs_exact_monotonic_ids_without_consuming_non_scrub_ids"
+);
+const INACTIVE_END_SCRUB_TRACE_TEST_NAME: &str = concat!(
+    "session::tests::scrub::",
+    "inactive_end_scrub_public_dispatch_emits_exact_info_pair_and_outcome"
+);
+const FAILED_SCRUB_TRACE_TEST_NAME: &str = concat!(
+    "session::tests::scrub::",
+    "failed_scrub_public_dispatch_emits_pairs_without_reusing_command_id"
+);
+
 fn live_scrub_settings_for_tests(
     decode_mode: frame_server_core::LiveScrubDecodeMode,
     max_hz: u16,
@@ -97,6 +110,195 @@ fn direct_dispatch_scrub_api_remains_session_compatibility_path() {
         )
     );
     assert!(!session.snapshot().timeline.scrubbing);
+}
+
+#[test]
+fn scrub_dispatch_tracing_pairs_exact_monotonic_ids_without_consuming_non_scrub_ids() {
+    match super::tracing_capture::isolate_tracing_capture_test(
+        SCRUB_COMMAND_CORRELATION_TRACE_TEST_NAME,
+    ) {
+        super::tracing_capture::IsolatedTracingTestProcess::ParentCompleted => return,
+        super::tracing_capture::IsolatedTracingTestProcess::ChildRunsBody => {}
+    }
+    let (captured_tracing, _tracing_guard) = super::tracing_capture::install_info_tracing_capture();
+    let mut session = PlayerSession::new();
+    let absolute_request = SeekRequest::absolute(MediaTime::from_millis(3_550));
+    let relative_request = SeekRequest::relative(Duration::from_millis(750));
+
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::SetVolume(0.75))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::UpdateScrub(absolute_request))
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::PreviewScrub {
+            request: absolute_request,
+            live_scrub: None,
+        })
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::PreviewScrub {
+            request: absolute_request,
+            live_scrub: None,
+        })
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::UpdateScrub(relative_request))
+        .unwrap();
+    let _end_outcome = session.dispatch_command(PlayerCommand::end_scrub(
+        ScrubCommitPolicy::CommitLatestTarget,
+    ));
+
+    let trace = captured_tracing.contents();
+    let scrub_rows = trace
+        .lines()
+        .filter(|line| line.contains("scrub_schema_version=1"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        scrub_rows.len(),
+        12,
+        "шесть real scrub commands обязаны дать две INFO forms под default filter: {trace}"
+    );
+
+    for command_id in 1..=6 {
+        let identity = format!("scrub_command_id={command_id}");
+        let identity_rows = scrub_rows
+            .iter()
+            .filter(|line| line.split_whitespace().any(|field| field == identity))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            identity_rows.len(),
+            2,
+            "каждый ID обязан встретиться ровно в двух forms: {trace}"
+        );
+        assert!(identity_rows.iter().any(|line| {
+            line.contains("level=INFO") && line.contains("scrub_command_form=dispatch")
+        }));
+        assert!(identity_rows.iter().any(|line| {
+            line.contains("level=INFO")
+                && line.contains("kind=seek_acceptance")
+                && line.contains("scrub_command_form=acceptance")
+        }));
+    }
+
+    let identical_preview_rows = scrub_rows
+        .iter()
+        .filter(|line| {
+            line.contains("scrub_stage=preview")
+                && line.contains("scrub_target_kind=absolute")
+                && line.contains("scrub_requested_target_ms=3550")
+        })
+        .count();
+    assert_eq!(
+        identical_preview_rows, 4,
+        "две одинаковые preview commands обязаны сохранить два разных exact ID"
+    );
+    assert_eq!(
+        scrub_rows
+            .iter()
+            .filter(|line| {
+                line.contains("scrub_stage=update")
+                    && line.contains("scrub_target_kind=relative")
+                    && line.contains("scrub_requested_target_ms=750")
+            })
+            .count(),
+        2,
+        "relative target identity должна совпадать в двух INFO forms"
+    );
+    assert!(
+        trace.lines().all(|line| !line.contains("level=DEBUG")),
+        "INFO subscriber не должен захватывать full DEBUG command: {trace}"
+    );
+}
+
+#[test]
+fn inactive_end_scrub_public_dispatch_emits_exact_info_pair_and_outcome() {
+    match super::tracing_capture::isolate_tracing_capture_test(INACTIVE_END_SCRUB_TRACE_TEST_NAME) {
+        super::tracing_capture::IsolatedTracingTestProcess::ParentCompleted => return,
+        super::tracing_capture::IsolatedTracingTestProcess::ChildRunsBody => {}
+    }
+    let (captured_tracing, _tracing_guard) = super::tracing_capture::install_info_tracing_capture();
+    let mut session = PlayerSession::new();
+
+    let outcome = session
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitLatestTarget,
+        ))
+        .expect("inactive EndScrub должен вернуть typed public outcome");
+
+    assert_eq!(
+        outcome,
+        PlayerCommandOutcome::ScrubCommit(ScrubCommitOutcome::NoActiveGesture)
+    );
+    let trace = captured_tracing.contents();
+    let correlation_rows = trace
+        .lines()
+        .filter(|line| line.contains("scrub_command_id=1"))
+        .collect::<Vec<_>>();
+    assert_eq!(correlation_rows.len(), 2, "inactive command pair: {trace}");
+    assert!(correlation_rows.iter().all(|line| {
+        line.contains("level=INFO")
+            && line.contains("scrub_stage=end")
+            && line.contains("scrub_target_kind=none")
+    }));
+    assert!(
+        correlation_rows
+            .iter()
+            .any(|line| line.contains("scrub_command_form=dispatch"))
+    );
+    assert!(correlation_rows.iter().any(|line| {
+        line.contains("scrub_command_form=acceptance") && line.contains("kind=seek_acceptance")
+    }));
+}
+
+#[test]
+fn failed_scrub_public_dispatch_emits_pairs_without_reusing_command_id() {
+    match super::tracing_capture::isolate_tracing_capture_test(FAILED_SCRUB_TRACE_TEST_NAME) {
+        super::tracing_capture::IsolatedTracingTestProcess::ParentCompleted => return,
+        super::tracing_capture::IsolatedTracingTestProcess::ChildRunsBody => {}
+    }
+    let (captured_tracing, _tracing_guard) = super::tracing_capture::install_info_tracing_capture();
+    let mut session = PlayerSession::new();
+    session
+        .dispatch_command(PlayerCommand::Shutdown)
+        .expect("fixture shutdown должен примениться");
+
+    for _attempt in 0..2 {
+        let error = session
+            .dispatch_command(PlayerCommand::begin_scrub())
+            .expect_err("scrub command после shutdown должна вернуть typed error");
+        assert_eq!(error.kind, PlayerErrorKind::InvalidCommand);
+    }
+
+    let trace = captured_tracing.contents();
+    let correlation_rows = trace
+        .lines()
+        .filter(|line| line.contains("scrub_schema_version=1"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        correlation_rows.len(),
+        4,
+        "две failed commands обязаны сохранить две exact INFO pairs: {trace}"
+    );
+    for command_id in 1..=2 {
+        let identity = format!("scrub_command_id={command_id}");
+        let identity_rows = correlation_rows
+            .iter()
+            .filter(|line| line.split_whitespace().any(|field| field == identity))
+            .collect::<Vec<_>>();
+        assert_eq!(identity_rows.len(), 2, "failed command ID pair: {trace}");
+        assert!(identity_rows.iter().any(|line| {
+            line.contains("scrub_command_form=dispatch") && line.contains("scrub_stage=begin")
+        }));
+        assert!(identity_rows.iter().any(|line| {
+            line.contains("scrub_command_form=acceptance") && line.contains("kind=seek_acceptance")
+        }));
+    }
 }
 
 /// Вход в public Scrubbing замораживает audio output, а release без target восстанавливает Playing.

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
-use tracing::{Event, Metadata, Subscriber};
+use tracing::{Event, Level, Metadata, Subscriber};
 
 /// Child-only marker одного exact tracing test-а.
 ///
@@ -151,11 +151,12 @@ impl Visit for CapturedEventFields {
 struct CapturingSubscriber {
     events: Arc<Mutex<Vec<String>>>,
     next_span_id: AtomicU64,
+    max_level: Level,
 }
 
 impl Subscriber for CapturingSubscriber {
-    fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
-        true
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.level() <= &self.max_level
     }
 
     fn new_span(&self, _span: &Attributes<'_>) -> Id {
@@ -187,10 +188,21 @@ impl Subscriber for CapturingSubscriber {
 
 /// Ставит thread-local subscriber и возвращает output вместе с lifetime guard-ом.
 pub(super) fn install_tracing_capture() -> (CapturedTracing, impl Drop) {
+    install_tracing_capture_with_max_level(Level::TRACE)
+}
+
+/// Ставит production-like INFO filter, который обязан сохранить обе scrub forms.
+pub(super) fn install_info_tracing_capture() -> (CapturedTracing, impl Drop) {
+    install_tracing_capture_with_max_level(Level::INFO)
+}
+
+/// Строит event-only capture с явной верхней границей уровня.
+fn install_tracing_capture_with_max_level(max_level: Level) -> (CapturedTracing, impl Drop) {
     let captured_tracing = CapturedTracing::default();
     let subscriber = CapturingSubscriber {
         events: Arc::clone(&captured_tracing.events),
         next_span_id: AtomicU64::new(1),
+        max_level,
     };
     let guard = tracing::subscriber::set_default(subscriber);
     (captured_tracing, guard)
