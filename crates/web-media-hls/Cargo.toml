@@ -13,6 +13,7 @@ bytes.workspace = true
 cbc.workspace = true
 demux-api.workspace = true
 hls-playlist-core.workspace = true
+log.workspace = true
 media-core.workspace = true
 source-core.workspace = true
 thiserror.workspace = true

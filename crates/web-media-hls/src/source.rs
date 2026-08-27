@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 
 use crate::active_read::{HlsActiveReadError, HlsEpochActiveReadLifecycle};
 use crate::plan::{
-    HlsEpochPlan, HlsSegmentRestartCoordinate, PlannedEncryption, PlannedKeySource, PlannedResource,
+    HlsEpochPlan, HlsManifestSeekPoint, PlannedEncryption, PlannedKeySource, PlannedResource,
 };
 use crate::{
     HlsEndpointRefreshReason, HlsRequiredContainer, SecretAes128Key, decrypt_aes128_cbc_pkcs7,
@@ -186,7 +186,7 @@ enum HlsSourceActiveReadLifecycle {
 struct HlsMediaResourceSpan {
     start: u64,
     end: u64,
-    restart_segment: HlsSegmentRestartCoordinate,
+    manifest_segment: HlsManifestSeekPoint,
 }
 
 /// Shared HLS-private provenance между lazy source и component demuxer-ом.
@@ -201,7 +201,7 @@ impl SharedHlsMediaSpanIndex {
         &self,
         start: u64,
         end: u64,
-        restart_segment: HlsSegmentRestartCoordinate,
+        manifest_segment: HlsManifestSeekPoint,
     ) -> Result<(), HlsSegmentSourceError> {
         if start == end {
             return Ok(());
@@ -212,24 +212,24 @@ impl SharedHlsMediaSpanIndex {
             .map_err(|_| HlsSegmentSourceError::MediaSpanIndexPoisoned)?;
         if let Some(active) = spans
             .last_mut()
-            .filter(|span| span.start == start && span.restart_segment == restart_segment)
+            .filter(|span| span.start == start && span.manifest_segment == manifest_segment)
         {
             active.end = active.end.max(end);
         } else {
             spans.push(HlsMediaResourceSpan {
                 start,
                 end,
-                restart_segment,
+                manifest_segment,
             });
         }
         Ok(())
     }
 
     /// Разрешает packet source-position только по concrete registered plaintext span-у.
-    pub(crate) fn restart_segment_for_byte_position(
+    pub(crate) fn manifest_segment_for_byte_position(
         &self,
         byte_position: u64,
-    ) -> Result<Option<HlsSegmentRestartCoordinate>, HlsSegmentSourceError> {
+    ) -> Result<Option<HlsManifestSeekPoint>, HlsSegmentSourceError> {
         let spans = self
             .spans
             .lock()
@@ -241,7 +241,7 @@ impl SharedHlsMediaSpanIndex {
         Ok(spans
             .get(candidate_index)
             .filter(|span| byte_position < span.end)
-            .map(|span| span.restart_segment))
+            .map(|span| span.manifest_segment))
     }
 }
 
@@ -425,10 +425,7 @@ impl HlsEpochSegmentSource {
         }
     }
 
-    fn fetch_resource(
-        &self,
-        resource: &PlannedResource,
-    ) -> Result<Vec<u8>, AdaptiveTransportError> {
+    fn fetch_resource(&self, resource: &PlannedResource) -> Result<Vec<u8>, HlsSegmentSourceError> {
         let purpose = match resource.kind {
             demux_api::OrderedSegmentKind::Initialization => {
                 AdaptiveResourcePurpose::Initialization
@@ -454,15 +451,11 @@ impl HlsEpochSegmentSource {
             ),
         }
         .with_secret_forwarding(self.http.resource_secret_forwarding_for(&resource.target));
-        self.http
-            .fetch_resource_blocking(request)
-            .inspect_err(|error| {
-                self.observe_refreshable_expiry(
-                    error,
-                    HlsRefreshableResourceKind::MediaOrInitialization,
-                );
-            })
-            .map(web_media_adaptive::AdaptiveFetchedResource::into_bytes)
+        self.fetch_cancellable_full_resource(
+            request,
+            HlsRefreshableResourceKind::MediaOrInitialization,
+            true,
+        )
     }
 
     fn key_for(
@@ -505,22 +498,19 @@ impl HlsEpochSegmentSource {
         target: &source_core::HttpRequestTarget,
         query_application: AdaptiveResourceQueryApplication,
     ) -> Result<SecretAes128Key, HlsSegmentSourceError> {
-        let fetched = self
-            .http
-            .fetch_resource_blocking(
-                AdaptiveResourceFetchRequest::full(
-                    self.generation,
-                    target.clone(),
-                    self.maximum_key_resource_bytes,
-                    AdaptiveResourcePurpose::EncryptionKey,
-                    query_application,
-                )
-                .with_secret_forwarding(self.http.resource_secret_forwarding_for(target)),
-            )
-            .inspect_err(|error| {
-                self.observe_refreshable_expiry(error, HlsRefreshableResourceKind::EncryptionKey);
-            })?;
-        let key_bytes = Zeroizing::new(fetched.into_bytes());
+        let request = AdaptiveResourceFetchRequest::full(
+            self.generation,
+            target.clone(),
+            self.maximum_key_resource_bytes,
+            AdaptiveResourcePurpose::EncryptionKey,
+            query_application,
+        )
+        .with_secret_forwarding(self.http.resource_secret_forwarding_for(target));
+        let key_bytes = Zeroizing::new(self.fetch_cancellable_full_resource(
+            request,
+            HlsRefreshableResourceKind::EncryptionKey,
+            false,
+        )?);
         Ok(SecretAes128Key::from_key_file_bytes(&key_bytes)?)
     }
 
@@ -564,9 +554,9 @@ impl OrderedSegmentSource for HlsEpochSegmentSource {
                 map_runtime_source_error(HlsSegmentSourceError::BytePositionOverflow)
             })?)
             .ok_or_else(|| map_runtime_source_error(HlsSegmentSourceError::BytePositionOverflow))?;
-        if let Some(restart_segment) = resource.restart_segment {
+        if let Some(manifest_segment) = resource.manifest_segment {
             self.media_spans
-                .observe_media_resource(resource_start, resource_end, restart_segment)
+                .observe_media_resource(resource_start, resource_end, manifest_segment)
                 .map_err(map_runtime_source_error)?;
         }
         self.next_byte_position = resource_end;
@@ -632,13 +622,27 @@ fn map_runtime_source_error(error: impl Into<HlsSegmentSourceError>) -> OrderedS
 #[cfg(test)]
 mod tests {
     use super::SharedHlsMediaSpanIndex;
-    use crate::plan::HlsSegmentRestartCoordinate;
+    use std::time::Duration;
+
+    use crate::plan::{HlsManifestSeekPoint, HlsSegmentRestartCoordinate};
+
+    fn manifest_segment(segment_index: usize) -> HlsManifestSeekPoint {
+        HlsManifestSeekPoint {
+            media_sequence: segment_index as u64,
+            discontinuity_sequence: 0,
+            manifest_segment_index: segment_index,
+            epoch_index: 0,
+            restart_segment: HlsSegmentRestartCoordinate { segment_index },
+            timeline_start: Duration::from_secs(segment_index as u64 * 10),
+            timeline_end: Duration::from_secs((segment_index as u64 + 1) * 10),
+        }
+    }
 
     #[test]
     fn media_span_lookup_uses_half_open_exact_boundaries() {
         let spans = SharedHlsMediaSpanIndex::default();
-        let first = HlsSegmentRestartCoordinate { segment_index: 0 };
-        let second = HlsSegmentRestartCoordinate { segment_index: 1 };
+        let first = manifest_segment(0);
+        let second = manifest_segment(1);
         spans
             .observe_media_resource(4, 10, first)
             .expect("record first media span");
@@ -648,25 +652,25 @@ mod tests {
 
         assert_eq!(
             spans
-                .restart_segment_for_byte_position(9)
+                .manifest_segment_for_byte_position(9)
                 .expect("lookup first span"),
             Some(first)
         );
         assert_eq!(
             spans
-                .restart_segment_for_byte_position(10)
+                .manifest_segment_for_byte_position(10)
                 .expect("lookup second span"),
             Some(second)
         );
         assert_eq!(
             spans
-                .restart_segment_for_byte_position(20)
+                .manifest_segment_for_byte_position(20)
                 .expect("lookup exclusive end"),
             None
         );
         assert_eq!(
             spans
-                .restart_segment_for_byte_position(3)
+                .manifest_segment_for_byte_position(3)
                 .expect("lookup initialization bytes"),
             None
         );

@@ -15,8 +15,9 @@ use web_media_adaptive::AdaptiveHttpContext;
 use web_media_transport_api::SourceGeneration;
 
 use crate::active_read::{HlsComponentActiveReadControl, HlsEpochActiveReadLifecycle};
+use crate::diagnostics::HlsManifestSegmentSeekMarker;
 use crate::plan::{HlsComponentPlan, HlsEpochPlan};
-use crate::seek::{HlsSeekAnchor, HlsSeekIndex, SharedHlsSeekIndex};
+use crate::seek::{HlsSeekAnchor, SharedHlsSeekIndex};
 use crate::source::{
     HlsEpochSegmentSource, HlsResourceAttemptObserver, HlsResourceExpiryObserver,
     SharedHlsKeyCache, SharedHlsMediaSpanIndex,
@@ -27,6 +28,7 @@ mod helpers;
 mod initial;
 mod manifest_seek;
 mod restartable_read;
+mod selection_commit;
 use helpers::{
     event_encoded_bytes, layout_ordinals, packet_is_replayable_after_video_anchor,
     packet_matches_anchor,
@@ -35,6 +37,7 @@ pub(crate) use initial::{
     HlsInitialComponentOpen, HlsInitialPositionEvidence, HlsProbedInitialComponent,
 };
 use restartable_read::HlsParserReadState;
+pub(crate) use selection_commit::HlsStagedSelectionCommit;
 
 /// Cloneable construction recipe для offside transactional component replacement.
 #[derive(Clone)]
@@ -74,7 +77,10 @@ impl HlsComponentFactory {
 
     /// Привязывает offside replacement к конкретному progressive seek intent-у.
     #[must_use]
-    fn with_seek_cancellation(mut self, seek_cancellation: DemuxSeekCancellationToken) -> Self {
+    pub(crate) fn with_seek_cancellation(
+        mut self,
+        seek_cancellation: DemuxSeekCancellationToken,
+    ) -> Self {
         self.seek_cancellation = seek_cancellation;
         self
     }
@@ -94,35 +100,6 @@ impl HlsComponentFactory {
             self.active_read_control.clone(),
             initial_open,
         )
-    }
-
-    /// Полностью готовит positioned replacement, не меняя active component/composite.
-    pub(crate) fn prepare_seek_replacement(
-        &self,
-        request: DemuxSeekRequest,
-        stable_public_tracks: &[TrackInfo],
-    ) -> Result<(HlsComponentDemuxer, DemuxSeekResult)> {
-        let anchor = self.seek_index.lock().anchor_for_worker(request)?;
-        let preview = HlsSeekIndex::result_for_anchor(request, anchor);
-        let replacement_index =
-            SharedHlsSeekIndex::new(self.policy.maximum_seek_index_entries.get());
-        let mut replacement = HlsComponentDemuxer::open_from_restart_anchor(
-            self.plan.clone(),
-            self.http.clone(),
-            self.generation,
-            self.policy,
-            Arc::clone(&self.registry),
-            replacement_index,
-            self.active_read_control.clone(),
-            anchor,
-            self.seek_cancellation.clone(),
-        )?;
-        replacement.public_tracks = stable_public_tracks.to_vec();
-        let replacement_tracks = replacement.current.tracks().to_vec();
-        replacement.refresh_track_mapping(&replacement_tracks)?;
-        replacement.position_replacement_at_anchor(anchor)?;
-        replacement.seek_index = self.seek_index.clone();
-        Ok((replacement, preview))
     }
 }
 
@@ -149,6 +126,10 @@ pub(crate) struct HlsComponentDemuxer {
     active_read_control: HlsComponentActiveReadControl,
     current_active_read: HlsEpochActiveReadLifecycle,
     parser_read_state: HlsParserReadState,
+    /// Marker остаётся staged до outer cancellation/atomic commit authority.
+    committed_selection_marker: Option<HlsManifestSegmentSeekMarker>,
+    /// Новый packet-proven anchor меняет shared preview index только при authoritative commit.
+    staged_shared_seek_anchor: Option<HlsSeekAnchor>,
 }
 
 impl HlsComponentDemuxer {
@@ -334,6 +315,8 @@ impl HlsComponentDemuxer {
             active_read_control,
             current_active_read: active_read_lifecycle,
             parser_read_state: HlsParserReadState::Ready,
+            committed_selection_marker: None,
+            staged_shared_seek_anchor: None,
         }
     }
 
@@ -522,17 +505,16 @@ impl HlsComponentDemuxer {
         let byte_position = packet.byte_offset.ok_or_else(|| {
             anyhow::anyhow!("HLS packet не содержит exact source byte-position provenance")
         })?;
-        let restart_segment = self
+        let manifest_segment = self
             .media_spans
-            .restart_segment_for_byte_position(byte_position)?
+            .manifest_segment_for_byte_position(byte_position)?
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "HLS packet source byte-position не принадлежит planned media resource"
                 )
             })?;
-        self.seek_index.lock().observe_packet(
-            self.current_epoch_index,
-            restart_segment,
+        self.seek_index.lock().observe_manifest_packet(
+            manifest_segment,
             self.current_timeline_start,
             origin,
             &packet,
@@ -633,9 +615,37 @@ impl Demuxer for HlsComponentDemuxer {
         );
         let (replacement, result) =
             factory.prepare_seek_replacement(request, &self.public_tracks)?;
-        replacement.activate_committed_read()?;
-        *self = replacement;
-        Ok(result)
+        self.commit_prepared_replacement(replacement, result)
+    }
+
+    fn seek_with_cancellable_preview_request(
+        &mut self,
+        request: DemuxSeekRequest,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> Result<DemuxSeekResult> {
+        if cancellation.is_cancelled() {
+            return Err(media_core::MediaDemuxError::SeekCancelled.into());
+        }
+        let factory = HlsComponentFactory::new(
+            self.plan.clone(),
+            self.http.clone(),
+            self.generation,
+            self.policy,
+            Arc::clone(&self.registry),
+            self.seek_index.clone(),
+            self.active_read_control.clone(),
+        )
+        .with_seek_cancellation(cancellation.clone());
+        let (replacement, result) =
+            factory.prepare_seek_replacement(request, &self.public_tracks)?;
+        match cancellation.complete() {
+            DemuxSeekCancellationCompletion::Completed => {
+                self.commit_prepared_replacement(replacement, result)
+            }
+            DemuxSeekCancellationCompletion::CancellationWon => {
+                Err(media_core::MediaDemuxError::SeekCancelled.into())
+            }
+        }
     }
 
     fn seek_with_receipted_request(
@@ -653,9 +663,7 @@ impl Demuxer for HlsComponentDemuxer {
         );
         let (replacement, result) =
             factory.prepare_receipted_seek_replacement(request, &self.public_tracks)?;
-        replacement.activate_committed_read()?;
-        *self = replacement;
-        Ok(result)
+        self.commit_prepared_replacement(replacement, result)
     }
 
     fn seek_with_cancellable_receipted_request(
@@ -680,9 +688,7 @@ impl Demuxer for HlsComponentDemuxer {
             factory.prepare_receipted_seek_replacement(request, &self.public_tracks)?;
         match cancellation.complete() {
             DemuxSeekCancellationCompletion::Completed => {
-                replacement.activate_committed_read()?;
-                *self = replacement;
-                Ok(result)
+                self.commit_prepared_replacement(replacement, result)
             }
             DemuxSeekCancellationCompletion::CancellationWon => {
                 Err(media_core::MediaDemuxError::SeekCancelled.into())

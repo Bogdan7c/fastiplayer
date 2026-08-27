@@ -389,6 +389,22 @@ pub trait Demuxer: Send {
         }
     }
 
+    /// Выполняет preview-compatible seek с request-scoped cooperative cancellation.
+    ///
+    /// В отличие от receipted boundary результат по-прежнему обязан совпасть с уже
+    /// опубликованным preview anchor. Default проверяет отмену до legacy mutation;
+    /// transport-aware demuxer может провести token до blocking body read-а.
+    fn seek_with_cancellable_preview_request(
+        &mut self,
+        request: DemuxSeekRequest,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> anyhow::Result<DemuxSeekResult> {
+        if cancellation.is_cancelled() {
+            return Err(MediaDemuxError::SeekCancelled.into());
+        }
+        self.seek_with_request(request)
+    }
+
     /// Выполняет seek, фактический результат которого caller публикует только после worker receipt.
     ///
     /// Обычный `seek_with_request` может участвовать в синхронном preview-протоколе, поэтому его
@@ -417,6 +433,11 @@ pub trait Demuxer: Send {
         }
         self.seek_with_receipted_request(request)
     }
+}
+
+#[cfg(test)]
+mod cancellable_preview_tests {
+    include!("demux/cancellable_preview_tests.rs");
 }
 
 #[cfg(test)]

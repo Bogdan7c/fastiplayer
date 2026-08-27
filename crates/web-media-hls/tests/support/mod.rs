@@ -207,6 +207,38 @@ pub fn adaptive_context(
     generation: SourceGeneration,
     queries: TestQueries<'_>,
 ) -> AdaptiveHttpContext {
+    adaptive_context_with_network_config(
+        target,
+        cancellation,
+        generation,
+        queries,
+        NetworkConfig::default(),
+    )
+}
+
+/// Отключает только completed-resource cache, чтобы повторный seek доказуемо дошёл до сети.
+#[allow(dead_code)]
+pub fn adaptive_context_without_completed_cache(
+    target: &HttpRequestTarget,
+    cancellation: CancellationToken,
+    generation: SourceGeneration,
+    queries: TestQueries<'_>,
+) -> AdaptiveHttpContext {
+    let network_config = NetworkConfig {
+        memory_cache_mb: 0,
+        ..NetworkConfig::default()
+    };
+    adaptive_context_with_network_config(target, cancellation, generation, queries, network_config)
+}
+
+/// Собирает общий transport context из явно выбранной validated network policy.
+fn adaptive_context_with_network_config(
+    target: &HttpRequestTarget,
+    cancellation: CancellationToken,
+    generation: SourceGeneration,
+    queries: TestQueries<'_>,
+    network_config: NetworkConfig,
+) -> AdaptiveHttpContext {
     let source = SourceIdentity::new(73);
     let exact = CandidateIdentity::new(
         source,
@@ -240,7 +272,7 @@ pub fn adaptive_context(
     )
     .expect("transport request");
     let source_config =
-        SourceRuntimeConfig::from_network_config(&NetworkConfig::default()).expect("source config");
+        SourceRuntimeConfig::from_network_config(&network_config).expect("source config");
     AdaptiveHttpContext::new(
         request,
         &source_config,
@@ -448,13 +480,14 @@ pub fn long_muxed_ts_segment_without_rap(start_pts_90khz: u64, duration_seconds:
     builder.finish()
 }
 
-/// Строит самостоятельный video-only TS segment с RAP в начале manifest interval-а.
+/// Строит самостоятельный video-only TS segment с RAP и проверяемым packet tail внутри interval-а.
 #[allow(dead_code)] // Этот fixture нужен separate-A/V integration test binary.
 pub fn long_video_ts_segment(start_pts_90khz: u64) -> Vec<u8> {
     let h264_access_unit = [
         0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0x00, 0x01, 0x00, 0x00, 0x01, 0x68, 0xce, 0x00,
         0x00, 0x01, 0x65, 0x80,
     ];
+    let h264_following_unit = [0x00, 0x00, 0x01, 0x41, 0x80];
     TsFixtureBuilder::new()
         .pat(&[(1, PMT_PID)])
         .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID)])
@@ -463,6 +496,16 @@ pub fn long_video_ts_segment(start_pts_90khz: u64) -> Vec<u8> {
             start_pts_90khz,
             Some(start_pts_90khz.saturating_sub(3_000)),
             &h264_access_unit,
+        )
+        .pes(
+            VIDEO_PID,
+            start_pts_90khz.saturating_add(5 * 90_000),
+            Some(
+                start_pts_90khz
+                    .saturating_add(5 * 90_000)
+                    .saturating_sub(3_000),
+            ),
+            &h264_following_unit,
         )
         .finish()
 }

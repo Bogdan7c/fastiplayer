@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use media_core::{
-    DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, MediaDemuxError, MediaMetadata, TimelineNotSeekableReason,
-    TrackInfo,
+    DemuxReadEvent, DemuxRetryHint, DemuxSeekCancellationToken, DemuxSeekRequest, DemuxSeekResult,
+    DemuxSeekability, DemuxTrackListUpdate, Demuxer, MediaDemuxError, MediaMetadata,
+    TimelineNotSeekableReason, TrackInfo,
 };
 use source_core::CancellationToken;
 
@@ -711,10 +711,12 @@ impl Demuxer for ProgressiveDemuxer {
         {
             pending_cancellation.cancel();
         }
+        let request_cancellation = DemuxSeekCancellationToken::new();
         queue.pending_seek = Some(ProgressiveSeekCommand::Previewed {
             generation: queue.current_generation,
             request,
             preview,
+            cancellation: request_cancellation,
         });
         self.end_of_stream_generation = None;
         self.shared.capacity_available.notify_all();

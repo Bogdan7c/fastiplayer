@@ -38,6 +38,8 @@ pub(crate) struct PlannedResource {
     pub encryption: Option<PlannedEncryption>,
     /// Stable coordinate media segment-а внутри parser lifecycle epoch.
     pub restart_segment: Option<HlsSegmentRestartCoordinate>,
+    /// Manifest provenance существует только у media resource-а, но не у init map.
+    pub manifest_segment: Option<HlsManifestSeekPoint>,
 }
 
 /// Stable HLS-private coordinate, по которой seek строит suffix immutable epoch plan-а.
@@ -49,9 +51,17 @@ pub(crate) struct HlsSegmentRestartCoordinate {
 /// Manifest-owned точка, с которой receipted seek может начать bounded доказательство anchor-а.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HlsManifestSeekPoint {
+    /// RFC media sequence выбранного segment-а внутри конкретного rendition lineage.
+    pub media_sequence: u64,
+    /// RFC discontinuity sequence отличает одинаковые local indexes разных timeline epochs.
+    pub discontinuity_sequence: u64,
+    /// Позиция segment-а в immutable media playlist snapshot.
+    pub manifest_segment_index: usize,
     pub epoch_index: usize,
     pub restart_segment: HlsSegmentRestartCoordinate,
     pub timeline_start: Duration,
+    /// Exclusive конец manifest interval-а на общей presentation timeline.
+    pub timeline_end: Duration,
 }
 
 /// Один parser/decoder-facing lifecycle epoch.
@@ -265,7 +275,7 @@ fn build_component_plan_with_epoch_strategy(
     let mut current_restart_segment_index = 0_usize;
     let mut manifest_seek_points = Vec::with_capacity(media.segments.len());
 
-    for segment in &media.segments {
+    for (manifest_segment_index, segment) in media.segments.iter().enumerate() {
         let map_changed = segment.initialization_map != current_map;
         let starts_epoch = !current_resources.is_empty()
             && (segment_scoped_epochs || segment.discontinuity || map_changed);
@@ -307,11 +317,20 @@ fn build_component_plan_with_epoch_strategy(
         let segment_timeline_start = timeline_start
             .checked_add(current_epoch_duration)
             .ok_or(HlsPlanError::DurationOverflow)?;
-        manifest_seek_points.push(HlsManifestSeekPoint {
+        let segment_duration = parse_hls_duration(&segment.duration)?;
+        let segment_timeline_end = segment_timeline_start
+            .checked_add(segment_duration)
+            .ok_or(HlsPlanError::DurationOverflow)?;
+        let manifest_segment = HlsManifestSeekPoint {
+            media_sequence: segment.media_sequence,
+            discontinuity_sequence: segment.discontinuity_sequence,
+            manifest_segment_index,
             epoch_index: epochs.len(),
             restart_segment,
             timeline_start: segment_timeline_start,
-        });
+            timeline_end: segment_timeline_end,
+        };
+        manifest_seek_points.push(manifest_segment);
         current_resources.push(plan_media_segment(
             segment,
             container,
@@ -319,12 +338,13 @@ fn build_component_plan_with_epoch_strategy(
             overrides,
             &mut range_cursor,
             restart_segment,
+            manifest_segment,
         )?);
         current_restart_segment_index = current_restart_segment_index
             .checked_add(1)
             .ok_or(HlsPlanError::RestartSegmentIndexOverflow)?;
         current_epoch_duration = current_epoch_duration
-            .checked_add(parse_hls_duration(&segment.duration)?)
+            .checked_add(segment_duration)
             .ok_or(HlsPlanError::DurationOverflow)?;
     }
     if !current_resources.is_empty() {
@@ -375,6 +395,7 @@ fn plan_initialization_map(
         byte_range,
         encryption,
         restart_segment: None,
+        manifest_segment: None,
     })
 }
 
@@ -385,6 +406,7 @@ fn plan_media_segment(
     overrides: &HlsRequestOverrides,
     range_cursor: &mut RangeCursor,
     restart_segment: HlsSegmentRestartCoordinate,
+    manifest_segment: HlsManifestSeekPoint,
 ) -> Result<PlannedResource, HlsPlanError> {
     let target = resource_target(base, segment.uri.expose_for_resolution())?;
     let byte_range = range_cursor.resolve(&target, segment.byte_range.as_ref())?;
@@ -416,6 +438,7 @@ fn plan_media_segment(
         byte_range,
         encryption,
         restart_segment: Some(restart_segment),
+        manifest_segment: Some(manifest_segment),
     })
 }
 
@@ -529,9 +552,13 @@ mod tests {
     /// Строит минимальный manifest point для focused candidate-order assertions.
     fn seek_point(epoch_index: usize, segment_index: usize, seconds: u64) -> HlsManifestSeekPoint {
         HlsManifestSeekPoint {
+            media_sequence: segment_index as u64,
+            discontinuity_sequence: epoch_index as u64,
+            manifest_segment_index: segment_index,
             epoch_index,
             restart_segment: HlsSegmentRestartCoordinate { segment_index },
             timeline_start: Duration::from_secs(seconds),
+            timeline_end: Duration::from_secs(seconds + 10),
         }
     }
 

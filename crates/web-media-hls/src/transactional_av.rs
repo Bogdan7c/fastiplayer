@@ -8,11 +8,12 @@ use demux_api::{
     CompositeComponentLeadPolicy,
 };
 use media_core::{
-    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaMetadata,
-    TrackId, TrackInfo, TrackKind,
+    DemuxReadEvent, DemuxSeekCancellationCompletion, DemuxSeekCancellationToken, DemuxSeekRequest,
+    DemuxSeekResult, DemuxSeekability, Demuxer, MediaDemuxError, MediaMetadata, TrackId, TrackInfo,
+    TrackKind,
 };
 
-use crate::epoch_demux::{HlsComponentDemuxer, HlsComponentFactory};
+use crate::epoch_demux::{HlsComponentDemuxer, HlsComponentFactory, HlsStagedSelectionCommit};
 
 /// Выбирает подготовку replacement без неочевидного позиционного `bool` у callsite.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +54,7 @@ impl HlsComponentSeekIntent {
                 public_tracks,
             ),
             Self::ReceiptedManifestCandidate => factory.prepare_aligned_audio_seek_replacement(
+                public_request.timestamp,
                 video_result.actual_position,
                 public_tracks,
             ),
@@ -76,22 +78,28 @@ impl TransactionalHlsAvDemuxer {
     pub(crate) fn new(
         video_factory: HlsComponentFactory,
         audio_factory: HlsComponentFactory,
-        video: HlsComponentDemuxer,
-        audio: HlsComponentDemuxer,
+        mut video: HlsComponentDemuxer,
+        mut audio: HlsComponentDemuxer,
         lead_policy: CompositeComponentLeadPolicy,
-    ) -> Result<Self> {
+    ) -> Result<(Self, [HlsStagedSelectionCommit; 2])> {
         let video_public_tracks = video.tracks().to_vec();
         let audio_public_tracks = audio.tracks().to_vec();
         let video_track = exactly_one_track(&video_public_tracks, TrackKind::Video, "video")?;
         let audio_track = exactly_one_track(&audio_public_tracks, TrackKind::Audio, "audio")?;
         let selection = CompositeAvTrackSelection::new(video_track, audio_track);
+        video.activate_committed_read()?;
+        audio.activate_committed_read()?;
+        let committed_selections = [
+            video.take_staged_selection_commit(),
+            audio.take_staged_selection_commit(),
+        ];
         let current =
             CompositeAvDemuxer::new(Box::new(video), Box::new(audio), selection, lead_policy)?;
         let public_track_ids = CompositeAvPublicTrackIds::new(
             current.public_video_track_id(),
             current.public_audio_track_id(),
         );
-        Ok(Self {
+        let composite = Self {
             current,
             video_factory,
             audio_factory,
@@ -99,7 +107,8 @@ impl TransactionalHlsAvDemuxer {
             audio_public_tracks,
             public_track_ids,
             lead_policy,
-        })
+        };
+        Ok((composite, committed_selections))
     }
 
     /// Готовит video/audio replacements целиком и только затем меняет active pair.
@@ -108,24 +117,78 @@ impl TransactionalHlsAvDemuxer {
         request: DemuxSeekRequest,
         intent: HlsComponentSeekIntent,
     ) -> Result<DemuxSeekResult> {
-        let video_factory = &self.video_factory;
-        let audio_factory = &self.audio_factory;
+        self.seek_component_pair_with_factories(
+            request,
+            intent,
+            self.video_factory.clone(),
+            self.audio_factory.clone(),
+            || Ok(()),
+        )
+    }
+
+    /// Проводит один request token через обе offside подготовки и завершает его до commit-а.
+    fn seek_cancellable_component_pair(
+        &mut self,
+        request: DemuxSeekRequest,
+        intent: HlsComponentSeekIntent,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> Result<DemuxSeekResult> {
+        if cancellation.is_cancelled() {
+            return Err(MediaDemuxError::SeekCancelled.into());
+        }
+        let video_factory = self
+            .video_factory
+            .clone()
+            .with_seek_cancellation(cancellation.clone());
+        let audio_factory = self
+            .audio_factory
+            .clone()
+            .with_seek_cancellation(cancellation.clone());
+        self.seek_component_pair_with_factories(
+            request,
+            intent,
+            video_factory,
+            audio_factory,
+            || match cancellation.complete() {
+                DemuxSeekCancellationCompletion::Completed => Ok(()),
+                DemuxSeekCancellationCompletion::CancellationWon => {
+                    Err(MediaDemuxError::SeekCancelled.into())
+                }
+            },
+        )
+    }
+
+    /// Собирает replacement из явно выбранных factories и отделяет prepare от commit authority.
+    fn seek_component_pair_with_factories(
+        &mut self,
+        request: DemuxSeekRequest,
+        intent: HlsComponentSeekIntent,
+        video_factory: HlsComponentFactory,
+        audio_factory: HlsComponentFactory,
+        authorize_commit: impl FnOnce() -> Result<()>,
+    ) -> Result<DemuxSeekResult> {
         let video_public_tracks = &self.video_public_tracks;
         let audio_public_tracks = &self.audio_public_tracks;
         let public_track_ids = self.public_track_ids;
         let lead_policy = self.lead_policy;
-        transact_component_pair(
+        let (result, _) = transact_component_pair(
             &mut self.current,
-            || intent.prepare_component(video_factory, request, video_public_tracks),
+            || intent.prepare_component(&video_factory, request, video_public_tracks),
             |(_, video_result)| {
                 intent.prepare_audio_component(
-                    audio_factory,
+                    &audio_factory,
                     request,
                     *video_result,
                     audio_public_tracks,
                 )
             },
-            |(video, mut video_result), (mut audio, _)| {
+            |(mut video, mut video_result), (mut audio, _)| {
+                let committed_selections = [
+                    Some(video.take_staged_selection_commit()),
+                    Some(audio.take_staged_selection_commit()),
+                ];
+                video.activate_committed_read()?;
+                audio.activate_committed_read()?;
                 audio.suppress_redundant_composite_tracks_changed()?;
                 let selection = CompositeAvTrackSelection::new(
                     exactly_one_track(video.tracks(), TrackKind::Video, "replacement video")?,
@@ -141,9 +204,16 @@ impl TransactionalHlsAvDemuxer {
                 if let Some(timestamp) = &mut video_result.actual_track_timestamp {
                     timestamp.track_id = public_track_ids.video_track_id();
                 }
-                Ok((replacement, video_result))
+                Ok((replacement, (video_result, committed_selections)))
             },
-        )
+            authorize_commit,
+            |(_, selections)| {
+                for selection in selections.iter_mut().filter_map(Option::take) {
+                    selection.commit();
+                }
+            },
+        )?;
+        Ok(result)
     }
 }
 
@@ -176,11 +246,35 @@ impl Demuxer for TransactionalHlsAvDemuxer {
         self.seek_component_pair(request, HlsComponentSeekIntent::PreviewedExactAnchor)
     }
 
+    fn seek_with_cancellable_preview_request(
+        &mut self,
+        request: DemuxSeekRequest,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> Result<DemuxSeekResult> {
+        self.seek_cancellable_component_pair(
+            request,
+            HlsComponentSeekIntent::PreviewedExactAnchor,
+            cancellation,
+        )
+    }
+
     fn seek_with_receipted_request(
         &mut self,
         request: DemuxSeekRequest,
     ) -> Result<DemuxSeekResult> {
         self.seek_component_pair(request, HlsComponentSeekIntent::ReceiptedManifestCandidate)
+    }
+
+    fn seek_with_cancellable_receipted_request(
+        &mut self,
+        request: DemuxSeekRequest,
+        cancellation: DemuxSeekCancellationToken,
+    ) -> Result<DemuxSeekResult> {
+        self.seek_cancellable_component_pair(
+            request,
+            HlsComponentSeekIntent::ReceiptedManifestCandidate,
+            cancellation,
+        )
     }
 }
 
@@ -190,10 +284,14 @@ fn transact_component_pair<Active, Video, Audio, Output>(
     prepare_video: impl FnOnce() -> Result<Video>,
     prepare_audio: impl FnOnce(&Video) -> Result<Audio>,
     compose: impl FnOnce(Video, Audio) -> Result<(Active, Output)>,
+    authorize_commit: impl FnOnce() -> Result<()>,
+    before_commit: impl FnOnce(&mut Output),
 ) -> Result<Output> {
     let video = prepare_video()?;
     let audio = prepare_audio(&video)?;
-    let (replacement, result) = compose(video, audio)?;
+    authorize_commit()?;
+    let (replacement, mut result) = compose(video, audio)?;
+    before_commit(&mut result);
     *active = replacement;
     Ok(result)
 }
@@ -215,6 +313,10 @@ fn exactly_one_track(tracks: &[TrackInfo], kind: TrackKind, label: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+
+    use media_core::{
+        DemuxSeekCancellationCompletion, DemuxSeekCancellationToken, MediaDemuxError,
+    };
 
     use super::transact_component_pair;
 
@@ -247,6 +349,8 @@ mod tests {
                 compose_calls.set(compose_calls.get() + 1);
                 unreachable!("failed audio must prevent composition")
             },
+            || Ok(()),
+            |_| {},
         )
         .expect_err("transaction must fail");
         assert_eq!(error.to_string(), "audio replacement failed");
@@ -264,6 +368,7 @@ mod tests {
             next_packet_pts: 900,
         };
         let compose_calls = Cell::new(0);
+        let commit_evidence_calls = Cell::new(0);
         let result = transact_component_pair(
             &mut active,
             || Ok(1_800_u64),
@@ -278,11 +383,105 @@ mod tests {
                     7_u8,
                 ))
             },
+            || Ok(()),
+            |result| {
+                assert_eq!(*result, 7);
+                commit_evidence_calls.set(commit_evidence_calls.get() + 1);
+            },
         )
         .expect("transaction commits");
         assert_eq!(result, 7);
         assert_eq!(compose_calls.get(), 1);
+        assert_eq!(commit_evidence_calls.get(), 1);
         assert_eq!(active.public_track_ids, (11, 12));
         assert_eq!(active.next_packet_pts, 1_760);
+    }
+
+    #[test]
+    fn cancellation_observed_by_audio_after_video_phase_preserves_active_pair() {
+        let mut active = ObservableComposite {
+            public_track_ids: (11, 12),
+            next_packet_pts: 900,
+        };
+        let cancellation = DemuxSeekCancellationToken::new();
+        let video_cancellation = cancellation.clone();
+        let audio_cancellation = cancellation.clone();
+        let compose_calls = Cell::new(0);
+
+        let error = transact_component_pair::<_, u64, u64, ()>(
+            &mut active,
+            || {
+                video_cancellation.cancel();
+                Ok(1_800)
+            },
+            |_| {
+                if audio_cancellation.is_cancelled() {
+                    return Err(MediaDemuxError::SeekCancelled.into());
+                }
+                Ok(1_760)
+            },
+            |_, _| {
+                compose_calls.set(compose_calls.get() + 1);
+                unreachable!("cancelled shared token не должен допустить composition")
+            },
+            || unreachable!("failed audio preparation не должна доходить до commit authority"),
+            |_| unreachable!("failed audio preparation не должна публиковать commit evidence"),
+        )
+        .expect_err("audio phase должна увидеть отмену shared token");
+
+        assert!(matches!(
+            error.downcast_ref::<MediaDemuxError>(),
+            Some(MediaDemuxError::SeekCancelled)
+        ));
+        assert_eq!(compose_calls.get(), 0);
+        assert_eq!(active.next_packet_pts, 900);
+    }
+
+    #[test]
+    fn cancellation_during_audio_phase_wins_before_composite_commit() {
+        let mut active = ObservableComposite {
+            public_track_ids: (11, 12),
+            next_packet_pts: 900,
+        };
+        let cancellation = DemuxSeekCancellationToken::new();
+        let audio_cancellation = cancellation.clone();
+        let commit_cancellation = cancellation.clone();
+        let commit_checks = Cell::new(0);
+
+        let error = transact_component_pair(
+            &mut active,
+            || Ok(1_800_u64),
+            |_| {
+                audio_cancellation.cancel();
+                Ok(1_760_u64)
+            },
+            |video_pts, audio_pts| {
+                Ok((
+                    ObservableComposite {
+                        public_track_ids: (11, 12),
+                        next_packet_pts: video_pts.min(audio_pts),
+                    },
+                    (),
+                ))
+            },
+            || {
+                commit_checks.set(commit_checks.get() + 1);
+                match commit_cancellation.complete() {
+                    DemuxSeekCancellationCompletion::Completed => Ok(()),
+                    DemuxSeekCancellationCompletion::CancellationWon => {
+                        Err(MediaDemuxError::SeekCancelled.into())
+                    }
+                }
+            },
+            |_| unreachable!("cancellation должна победить до commit evidence"),
+        )
+        .expect_err("отмена должна победить до единственной mutation active pair");
+
+        assert!(matches!(
+            error.downcast_ref::<MediaDemuxError>(),
+            Some(MediaDemuxError::SeekCancelled)
+        ));
+        assert_eq!(commit_checks.get(), 1);
+        assert_eq!(active.next_packet_pts, 900);
     }
 }

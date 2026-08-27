@@ -13,6 +13,9 @@ use web_media_transport_api::SourceGeneration;
 
 use super::HlsComponentDemuxer;
 use crate::active_read::{HlsComponentActiveReadControl, HlsEpochActiveReadLifecycle};
+use crate::diagnostics::{
+    HlsManifestComponentRole, HlsManifestSeekDiagnosticPhase, HlsManifestSegmentSeekMarker,
+};
 use crate::plan::{HlsComponentPlan, HlsManifestSeekPoint};
 use crate::seek::HlsSeekAnchorKind;
 use crate::source::{HlsResourceAttemptObserver, SharedHlsMediaSpanIndex};
@@ -137,6 +140,7 @@ impl HlsComponentDemuxer {
                     DemuxSeekCancellationToken::new(),
                 )?;
                 component.prime_initial_seek_anchor()?;
+                component.stage_initial_open_marker()?;
                 Ok(component)
             }
             HlsInitialComponentOpen::Fresh(HlsResolvedVodStartIntent::Restore(target)) => {
@@ -175,6 +179,7 @@ impl HlsComponentDemuxer {
                         probed.active_read_lifecycle,
                     );
                     component.prime_initial_seek_anchor()?;
+                    component.stage_initial_open_marker()?;
                     Ok(component)
                 }
                 HlsProbedInitialPosition::Restore { target, point } => Self::open_initial_restore(
@@ -335,6 +340,15 @@ impl HlsComponentDemuxer {
         if let Some(anchor) = anchor {
             component.suppress_initial_restore_tracks_changed()?;
             let result = crate::seek::HlsSeekIndex::result_for_anchor(request, anchor);
+            let component_role = HlsManifestComponentRole::from_tracks(&component.public_tracks)?;
+            component.stage_committed_selection_marker(HlsManifestSegmentSeekMarker::new(
+                HlsManifestSeekDiagnosticPhase::InitialRestore,
+                component_role,
+                component.policy.seek_landing_policy,
+                component.generation,
+                target.as_duration(),
+                anchor,
+            ));
             Ok(Some((component, result)))
         } else {
             Ok(None)
@@ -345,6 +359,29 @@ impl HlsComponentDemuxer {
     fn with_initial_position_result(mut component: Self, result: DemuxSeekResult) -> Self {
         component.initial_position_evidence = HlsInitialPositionEvidence::Positioned(result);
         component
+    }
+
+    /// Beginning open также публикует только packet-derived, а не manifest-start anchor.
+    fn stage_initial_open_marker(&mut self) -> Result<()> {
+        let has_video = self
+            .public_tracks
+            .iter()
+            .any(|track| track.kind == TrackKind::Video);
+        let anchor = self
+            .seek_index
+            .lock()
+            .initial_anchor(has_video)
+            .ok_or_else(|| anyhow::anyhow!("HLS initial open не сохранил packet-derived anchor"))?;
+        let component_role = HlsManifestComponentRole::from_tracks(&self.public_tracks)?;
+        self.stage_committed_selection_marker(HlsManifestSegmentSeekMarker::new(
+            HlsManifestSeekDiagnosticPhase::InitialOpen,
+            component_role,
+            self.policy.seek_landing_policy,
+            self.generation,
+            std::time::Duration::ZERO,
+            anchor,
+        ));
+        Ok(())
     }
 
     /// Progressive startup сам публикует initial topology; candidate replay не должен делать второй reset.

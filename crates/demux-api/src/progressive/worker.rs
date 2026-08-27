@@ -52,6 +52,8 @@ pub(super) enum ProgressiveSeekCommand {
         request: DemuxSeekRequest,
         /// Уже опубликованный player-у доказанный anchor.
         preview: DemuxSeekResult,
+        /// Newer preview либо receipted intent отменяет blocking transport этого seek-а.
+        cancellation: DemuxSeekCancellationToken,
     },
     /// Opt-in path публикует authoritative result отдельным terminal receipt-ом.
     Receipted {
@@ -82,11 +84,12 @@ impl ProgressiveSeekCommand {
         }
     }
 
-    /// Возвращает request-scoped cancellation только receipted command-а.
+    /// Возвращает request-scoped cancellation любого worker-owned seek command-а.
     pub(super) fn cancellation(&self) -> Option<DemuxSeekCancellationToken> {
         match self {
-            Self::Previewed { .. } => None,
-            Self::Receipted { cancellation, .. } => Some(cancellation.clone()),
+            Self::Previewed { cancellation, .. } | Self::Receipted { cancellation, .. } => {
+                Some(cancellation.clone())
+            }
         }
     }
 }
@@ -354,45 +357,52 @@ pub(super) fn run_seekable_progressive_worker(
             reached_end = false;
             match command {
                 ProgressiveSeekCommand::Previewed {
-                    request, preview, ..
-                } => match inner.seek_with_request(request) {
-                    Ok(worker_result) if worker_result == preview => {}
-                    Ok(worker_result) => {
-                        let outcome = push_progressive_message(
-                            &shared,
-                            &cancellation,
-                            generation,
-                            ProgressiveMessage::Failure(anyhow::Error::new(
-                                ProgressiveSeekAnchorMismatchError {
-                                    preview_actual: preview.actual_position,
-                                    worker_actual: worker_result.actual_position,
-                                },
-                            )),
-                        );
-                        match outcome {
-                            ProgressivePushOutcome::Published | ProgressivePushOutcome::Stopped => {
-                                mark_worker_stopped(&shared);
-                                return;
+                    request,
+                    preview,
+                    cancellation: seek_cancellation,
+                    ..
+                } => {
+                    match inner.seek_with_cancellable_preview_request(request, seek_cancellation) {
+                        Ok(worker_result) if worker_result == preview => {}
+                        Ok(worker_result) => {
+                            let outcome = push_progressive_message(
+                                &shared,
+                                &cancellation,
+                                generation,
+                                ProgressiveMessage::Failure(anyhow::Error::new(
+                                    ProgressiveSeekAnchorMismatchError {
+                                        preview_actual: preview.actual_position,
+                                        worker_actual: worker_result.actual_position,
+                                    },
+                                )),
+                            );
+                            match outcome {
+                                ProgressivePushOutcome::Published
+                                | ProgressivePushOutcome::Stopped => {
+                                    mark_worker_stopped(&shared);
+                                    return;
+                                }
+                                ProgressivePushOutcome::Stale => continue,
                             }
-                            ProgressivePushOutcome::Stale => continue,
+                        }
+                        Err(source) => {
+                            let outcome = push_progressive_message(
+                                &shared,
+                                &cancellation,
+                                generation,
+                                ProgressiveMessage::Failure(source),
+                            );
+                            match outcome {
+                                ProgressivePushOutcome::Published
+                                | ProgressivePushOutcome::Stopped => {
+                                    mark_worker_stopped(&shared);
+                                    return;
+                                }
+                                ProgressivePushOutcome::Stale => continue,
+                            }
                         }
                     }
-                    Err(source) => {
-                        let outcome = push_progressive_message(
-                            &shared,
-                            &cancellation,
-                            generation,
-                            ProgressiveMessage::Failure(source),
-                        );
-                        match outcome {
-                            ProgressivePushOutcome::Published | ProgressivePushOutcome::Stopped => {
-                                mark_worker_stopped(&shared);
-                                return;
-                            }
-                            ProgressivePushOutcome::Stale => continue,
-                        }
-                    }
-                },
+                }
                 ProgressiveSeekCommand::Receipted {
                     request,
                     fence,

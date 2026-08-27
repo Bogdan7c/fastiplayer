@@ -14,6 +14,9 @@ use web_media_adaptive::AdaptiveHttpContext;
 use web_media_transport_api::SourceGeneration;
 
 use super::{HlsComponentDemuxer, HlsComponentFactory, event_encoded_bytes, packet_matches_anchor};
+use crate::diagnostics::{
+    HlsManifestComponentRole, HlsManifestSeekDiagnosticPhase, HlsManifestSegmentSeekMarker,
+};
 use crate::plan::{HlsComponentPlan, HlsManifestSeekPoint};
 use crate::seek::{HlsSeekAnchor, HlsSeekAnchorKind, HlsSeekIndex, SharedHlsSeekIndex};
 use crate::source::{
@@ -108,27 +111,39 @@ impl HlsComponentFactory {
         }
         // Near-EOS либо malformed segment без будущего RAP сохраняет прежний bounded path.
         // Player route остаётся source-scoped и выберет target-floor, если actual не post-target.
-        self.prepare_seek_replacement(request, stable_public_tracks)
+        self.prepare_seek_replacement_for_phase(
+            request,
+            stable_public_tracks,
+            HlsManifestSeekDiagnosticPhase::FinalReceipt,
+        )
     }
 
     /// Готовит separate-audio replacement не позже уже доказанного video landing-а.
     pub(crate) fn prepare_aligned_audio_seek_replacement(
         &self,
+        public_requested_target: Duration,
         video_landing: MediaTime,
         stable_public_tracks: &[TrackInfo],
     ) -> Result<(HlsComponentDemuxer, DemuxSeekResult)> {
         let request = DemuxSeekRequest::accurate(video_landing.as_duration());
         for manifest_point in self.plan.manifest_seek_candidates(request.timestamp) {
-            if let Some(prepared) = self.prepare_manifest_seek_candidate(
+            if let Some((mut replacement, result)) = self.prepare_manifest_seek_candidate(
                 request,
                 stable_public_tracks,
                 manifest_point,
                 HlsManifestLandingIntent::DecodeForwardToTarget,
             )? {
-                return Ok(prepared);
+                replacement.retarget_committed_selection_marker(public_requested_target);
+                return Ok((replacement, result));
             }
         }
-        self.prepare_seek_replacement(request, stable_public_tracks)
+        let (mut replacement, result) = self.prepare_seek_replacement_for_phase(
+            request,
+            stable_public_tracks,
+            HlsManifestSeekDiagnosticPhase::FinalReceipt,
+        )?;
+        replacement.retarget_committed_selection_marker(public_requested_target);
+        Ok((replacement, result))
     }
 
     /// Проверяет один immutable manifest candidate offside от active demuxer-а.
@@ -229,8 +244,16 @@ impl HlsComponentFactory {
             return Ok(None);
         };
         let result = HlsSeekIndex::result_for_anchor(request, anchor);
-        self.seek_index.lock().commit_proven_anchor(anchor);
         replacement.seek_index = self.seek_index.clone();
+        replacement.stage_shared_seek_anchor(anchor);
+        replacement.stage_committed_selection_marker(HlsManifestSegmentSeekMarker::new(
+            HlsManifestSeekDiagnosticPhase::FinalReceipt,
+            HlsManifestComponentRole::from_tracks(stable_public_tracks)?,
+            self.policy.seek_landing_policy,
+            self.generation,
+            request.timestamp,
+            anchor,
+        ));
         Ok(Some((replacement, result)))
     }
 

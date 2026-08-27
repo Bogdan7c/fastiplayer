@@ -62,6 +62,59 @@ pub(super) enum HlsResourceStreamState {
 }
 
 impl HlsEpochSegmentSource {
+    /// Полностью дочитывает bounded response через cancellable streaming transport.
+    /// Redirect/status/range/max-body/secret policy уже зафиксированы в typed request-е.
+    pub(super) fn fetch_cancellable_full_resource(
+        &self,
+        request: AdaptiveResourceFetchRequest,
+        refreshable_kind: HlsRefreshableResourceKind,
+        register_active_attempt: bool,
+    ) -> Result<Vec<u8>, HlsSegmentSourceError> {
+        let opened = if register_active_attempt {
+            match &self.active_read {
+                HlsSourceActiveReadLifecycle::Disabled => self
+                    .http
+                    .open_resource_streaming_blocking(request, self.seek_cancellation.clone())
+                    .map_err(HlsSegmentSourceError::from),
+                HlsSourceActiveReadLifecycle::Restartable(lifecycle) => {
+                    let attempt = lifecycle.new_resource_attempt()?;
+                    let body = self
+                        .http
+                        .open_resource_streaming_blocking_with_restartable_read_attempt(
+                            request,
+                            self.seek_cancellation.clone(),
+                            attempt.clone(),
+                        )
+                        .map_err(HlsSegmentSourceError::from)?;
+                    lifecycle.register_opened_attempt(attempt)?;
+                    Ok(body)
+                }
+            }
+        } else {
+            self.http
+                .open_resource_streaming_blocking(request, self.seek_cancellation.clone())
+                .map_err(HlsSegmentSourceError::from)
+        };
+        let mut body = opened.inspect_err(|error| {
+            if let HlsSegmentSourceError::Transport(error) = error {
+                self.observe_refreshable_expiry(error, refreshable_kind);
+            }
+        })?;
+        let mut resource_bytes = Vec::new();
+        loop {
+            let next_chunk = body.next_chunk();
+            if let Err(error) = &next_chunk {
+                self.resource_attempt_observer
+                    .observe_transport_error(error);
+                self.observe_refreshable_expiry(error, refreshable_kind);
+            }
+            match next_chunk? {
+                Some(chunk) => resource_bytes.extend_from_slice(&chunk),
+                None => return Ok(resource_bytes),
+            }
+        }
+    }
+
     /// Открывает один unencrypted resource до HTTP EOF, сохраняя общую policy.
     fn open_streaming_resource(
         &self,
@@ -134,11 +187,11 @@ impl HlsEpochSegmentSource {
             .next_byte_position
             .checked_add(chunk_bytes)
             .ok_or(HlsSegmentSourceError::BytePositionOverflow)?;
-        if let Some(restart_segment) = resource.restart_segment {
+        if let Some(manifest_segment) = resource.manifest_segment {
             self.media_spans.observe_media_resource(
                 resource_start,
                 self.next_byte_position,
-                restart_segment,
+                manifest_segment,
             )?;
         }
         Ok(())

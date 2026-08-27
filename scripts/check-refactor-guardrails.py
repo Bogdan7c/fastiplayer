@@ -245,6 +245,9 @@ WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES = frozenset(
         "cbc",
         "demux-api",
         "hls-playlist-core",
+        # Neutral `log` facade публикует только typed secret-safe HLS evidence;
+        # concrete logger/backend по-прежнему принадлежит composition root.
+        "log",
         "media-core",
         "source-core",
         "thiserror",

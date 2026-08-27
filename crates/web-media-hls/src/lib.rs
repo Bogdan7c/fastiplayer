@@ -5,6 +5,7 @@
 mod active_read;
 mod catalog;
 mod crypto;
+mod diagnostics;
 mod epoch_demux;
 mod initial_open;
 mod initial_position_proof;

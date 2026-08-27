@@ -5980,6 +5980,7 @@ dependencies = [
  "cbc",
  "demux-api",
  "hls-playlist-core",
+ "log",
  "media-core",
  "mpeg-ts-demux",
  "rustiplayer-config",

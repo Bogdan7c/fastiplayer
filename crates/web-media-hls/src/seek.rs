@@ -7,7 +7,7 @@ use media_core::{
     DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, MediaTime, Packet, PacketKeyframe, TrackKind,
 };
 
-use crate::plan::HlsSegmentRestartCoordinate;
+use crate::plan::{HlsManifestSeekPoint, HlsSegmentRestartCoordinate};
 
 /// Тип доказанной packet boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,8 @@ pub(crate) enum HlsSeekAnchorKind {
 pub(crate) struct HlsSeekAnchor {
     pub epoch_index: usize,
     pub restart_segment: HlsSegmentRestartCoordinate,
+    /// Exact manifest segment, plaintext bytes которого породили landing packet.
+    pub manifest_segment: HlsManifestSeekPoint,
     /// Presentation timeline origin, которому соответствует `epoch_timestamp_origin`.
     pub timeline_origin: std::time::Duration,
     pub epoch_timestamp_origin: std::time::Duration,
@@ -59,10 +61,9 @@ impl HlsSeekIndex {
     }
 
     /// Добавляет первый concrete RAP/audio anchor каждого actual media segment-а.
-    pub(crate) fn observe_packet(
+    pub(crate) fn observe_manifest_packet(
         &mut self,
-        epoch_index: usize,
-        restart_segment: HlsSegmentRestartCoordinate,
+        manifest_segment: HlsManifestSeekPoint,
         timeline_origin: std::time::Duration,
         epoch_timestamp_origin: std::time::Duration,
         packet: &Packet,
@@ -75,8 +76,9 @@ impl HlsSeekIndex {
             (TrackKind::Video, PacketKeyframe::NotKeyframe | PacketKeyframe::Unknown) => return,
         };
         let anchor = HlsSeekAnchor {
-            epoch_index,
-            restart_segment,
+            epoch_index: manifest_segment.epoch_index,
+            restart_segment: manifest_segment.restart_segment,
+            manifest_segment,
             timeline_origin,
             epoch_timestamp_origin,
             position: MediaTime::from_duration(packet.pts),
@@ -86,9 +88,49 @@ impl HlsSeekIndex {
         self.insert_proven_anchor(anchor);
     }
 
+    /// Focused index fixtures не строят manifest plan, поэтому дают безопасную synthetic identity.
+    #[cfg(test)]
+    fn observe_packet(
+        &mut self,
+        epoch_index: usize,
+        restart_segment: HlsSegmentRestartCoordinate,
+        timeline_origin: std::time::Duration,
+        epoch_timestamp_origin: std::time::Duration,
+        packet: &Packet,
+    ) {
+        let manifest_segment = HlsManifestSeekPoint {
+            media_sequence: restart_segment.segment_index as u64,
+            discontinuity_sequence: epoch_index as u64,
+            manifest_segment_index: restart_segment.segment_index,
+            epoch_index,
+            restart_segment,
+            timeline_start: timeline_origin,
+            timeline_end: timeline_origin.saturating_add(std::time::Duration::from_secs(1)),
+        };
+        self.observe_manifest_packet(
+            manifest_segment,
+            timeline_origin,
+            epoch_timestamp_origin,
+            packet,
+        );
+    }
+
     /// Коммитит anchor, уже доказанный внутри offside manifest replacement-а.
     pub(crate) fn commit_proven_anchor(&mut self, anchor: HlsSeekAnchor) {
         self.insert_proven_anchor(anchor);
+    }
+
+    /// Возвращает первый packet-derived anchor initial preflight-а нужной topology.
+    pub(crate) fn initial_anchor(&self, has_video: bool) -> Option<HlsSeekAnchor> {
+        let required_kind = if has_video {
+            HlsSeekAnchorKind::VideoRandomAccessPoint
+        } else {
+            HlsSeekAnchorKind::AudioPacket
+        };
+        self.anchors
+            .iter()
+            .copied()
+            .find(|anchor| anchor.kind == required_kind)
     }
 
     /// Один owner-path сохраняет dedup, ordering и bounded compaction для любого evidence source.

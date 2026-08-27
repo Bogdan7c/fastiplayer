@@ -2,10 +2,17 @@
 
 #[allow(dead_code)]
 mod support;
+mod receipted_manifest_seek {
+    include!("receipted_manifest_seek/diagnostics.rs");
+}
+mod separate_av_cancellation {
+    include!("receipted_manifest_seek/separate_av_cancellation.rs");
+}
 
 use std::io::{Read, Write};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,8 +23,8 @@ use demux_api::{
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, PacketKeyframe, TrackId, TrackKind};
 use source_core::CancellationToken;
 use support::{
-    TestQueries, TestServer, adaptive_context, demux_registry,
-    large_muxed_ts_segment_with_early_landing, long_audio_ts_segment,
+    TestQueries, TestServer, adaptive_context, adaptive_context_without_completed_cache,
+    demux_registry, large_muxed_ts_segment_with_early_landing, long_audio_ts_segment,
     long_interleaved_muxed_ts_segment, long_muxed_ts_segment, long_muxed_ts_segment_without_rap,
     long_video_ts_segment, open_policy, response,
 };

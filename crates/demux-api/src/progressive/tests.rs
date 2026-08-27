@@ -30,6 +30,8 @@ use super::{
     ProgressiveSeekController, ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
 
+mod preview_cancellation;
+
 /// Blocking fake сохраняет главный production invariant: inner read может ждать сколько угодно.
 struct BlockingChannelDemuxer {
     /// Test owner публикует готовые exact demux events.
@@ -1343,6 +1345,7 @@ fn eof_wait_observes_preexisting_seek_without_blocking() {
         generation: 1,
         request,
         preview,
+        cancellation: DemuxSeekCancellationToken::new(),
     });
     // Неотменённый token заставляет проверку дойти именно до pending seek.
     let cancellation = CancellationToken::new();

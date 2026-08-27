@@ -1,5 +1,11 @@
 //! Deterministic regression ровно одного fresh manifest-resource restart-а.
 
+mod preview_cancellation {
+    include!("transient_manifest_retry/preview_cancellation.rs");
+}
+mod encrypted_preview_cancellation {
+    include!("transient_manifest_retry/encrypted_preview_cancellation.rs");
+}
 #[allow(dead_code)]
 mod support;
 
@@ -10,6 +16,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use aes::Aes128;
+use cbc::Encryptor;
+use cbc::cipher::block_padding::Pkcs7;
+use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
 use demux_api::{
     ProgressiveAsyncSeekLimits, ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits,
     ProgressiveSeekFence, ProgressiveSeekRequestId,
@@ -17,8 +27,9 @@ use demux_api::{
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, Packet, TrackKind};
 use source_core::CancellationToken;
 use support::{
-    TestQueries, TestServer, adaptive_context, demux_registry, long_muxed_ts_segment,
-    long_muxed_ts_segment_without_rap, open_policy, response,
+    TestQueries, TestServer, adaptive_context, adaptive_context_without_completed_cache,
+    demux_registry, long_muxed_ts_segment, long_muxed_ts_segment_without_rap, open_policy,
+    response,
 };
 use web_media_hls::{
     HlsAudioLayoutIntent, HlsComponentContainerIntent, HlsContainerEvidence,
@@ -34,6 +45,23 @@ const SEGMENT_COUNT: u64 = 8;
 const TARGET_SEGMENT_INDEX: u64 = 7;
 const CONTAINING_SEGMENT_INDEX: u64 = 6;
 const SUPERSEDING_SEGMENT_INDEX: u64 = 4;
+
+fn sequence_iv(sequence: u64) -> [u8; 16] {
+    let mut iv = [0_u8; 16];
+    iv[8..].copy_from_slice(&sequence.to_be_bytes());
+    iv
+}
+
+fn encrypt_pkcs7(plaintext: &[u8], key: [u8; 16], iv: [u8; 16]) -> Vec<u8> {
+    let mut buffer = vec![0_u8; plaintext.len().saturating_add(16)];
+    buffer[..plaintext.len()].copy_from_slice(plaintext);
+    let encrypted_length = Encryptor::<Aes128>::new((&key).into(), (&iv).into())
+        .encrypt_padded::<Pkcs7>(&mut buffer, plaintext.len())
+        .expect("encrypt cancellable HLS fixture")
+        .len();
+    buffer.truncate(encrypted_length);
+    buffer
+}
 
 /// Собирает native-like opt-in request для deterministic post-target retry/cancellation checks.
 fn post_target_request(server: &TestServer) -> HlsVodOpenRequest {
