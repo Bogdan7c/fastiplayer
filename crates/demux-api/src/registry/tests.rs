@@ -17,13 +17,131 @@ use super::{
 };
 use crate::{
     DemuxContainerId, DemuxFactoryId, DemuxFixtureId, DemuxHintRelationship, DemuxHints,
-    DemuxInput, DemuxInputCapabilities, DemuxInputCapability, DemuxProbeConfidence,
-    DemuxProbeDecision, DemuxProbeMatch, DemuxProbeRejection, DemuxProbeRequest, DemuxSniffBudget,
-    DemuxSourceExtension, OrderedResourceMetadata, OrderedResourceReadError,
-    OrderedResourceReadOutcome, OrderedResourceStreamSource, OrderedSegment,
-    OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
+    DemuxIdentityError, DemuxInput, DemuxInputCapabilities, DemuxInputCapability, DemuxMimeType,
+    DemuxProbeConfidence, DemuxProbeDecision, DemuxProbeMatch, DemuxProbeRejection,
+    DemuxProbeRequest, DemuxSniffBudget, DemuxSourceExtension, OrderedResourceMetadata,
+    OrderedResourceReadError, OrderedResourceReadOutcome, OrderedResourceStreamSource,
+    OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
     OrderedSegmentSequence, OrderedSegmentSource,
 };
+
+/// Registration identities fail-closed до попадания неоднозначных значений в registry.
+#[test]
+fn registry_identity_boundary_rejects_empty_and_oversized_values() {
+    assert!(matches!(
+        DemuxContainerId::new(""),
+        Err(DemuxIdentityError::Empty {
+            kind: "demux container ID"
+        })
+    ));
+
+    let oversized = "x".repeat(129);
+    assert!(matches!(
+        DemuxFixtureId::new(oversized),
+        Err(DemuxIdentityError::TooLong {
+            kind: "demux fixture ID",
+            max_bytes: 128
+        })
+    ));
+}
+
+/// Public diagnostics сохраняют exact typed kind и canonical value без alias-нормализации.
+#[test]
+fn registry_identity_diagnostics_are_stable_for_every_dimension() {
+    let identities = [
+        (
+            format!(
+                "{:?}",
+                DemuxFactoryId::new("first-party").expect("factory ID")
+            ),
+            "DemuxFactoryId(\"first-party\")",
+        ),
+        (
+            format!(
+                "{:?}",
+                DemuxContainerId::new("mpeg-ts").expect("container ID")
+            ),
+            "DemuxContainerId(\"mpeg-ts\")",
+        ),
+        (
+            format!(
+                "{:?}",
+                DemuxFixtureId::new("generated-fixture").expect("fixture ID")
+            ),
+            "DemuxFixtureId(\"generated-fixture\")",
+        ),
+        (
+            format!(
+                "{:?}",
+                DemuxSourceExtension::new("m4s").expect("source extension")
+            ),
+            "DemuxSourceExtension(\"m4s\")",
+        ),
+        (
+            format!("{:?}", DemuxMimeType::new("video/mp4").expect("MIME type")),
+            "DemuxMimeType(\"video/mp4\")",
+        ),
+    ];
+
+    for (actual, expected) in identities {
+        assert_eq!(actual, expected);
+    }
+    let displayed_identities = [
+        DemuxFactoryId::new("first-party")
+            .expect("factory ID")
+            .to_string(),
+        DemuxContainerId::new("mpeg-ts")
+            .expect("container ID")
+            .to_string(),
+        DemuxFixtureId::new("generated-fixture")
+            .expect("fixture ID")
+            .to_string(),
+        DemuxSourceExtension::new("m4s")
+            .expect("source extension")
+            .to_string(),
+        DemuxMimeType::new("video/mp4")
+            .expect("MIME type")
+            .to_string(),
+    ];
+    assert_eq!(
+        displayed_identities,
+        [
+            "first-party",
+            "mpeg-ts",
+            "generated-fixture",
+            "m4s",
+            "video/mp4"
+        ]
+    );
+}
+
+/// Runtime input diagnostics показывают только shape/metadata и не раскрывают source internals.
+#[test]
+fn byte_source_input_and_complete_hints_keep_typed_diagnostics() {
+    let hints = DemuxHints::none()
+        .with_mime_type(DemuxMimeType::new("video/mp2t").expect("MIME hint"))
+        .with_container(DemuxContainerId::new("mpeg-ts").expect("container hint"));
+    assert_eq!(
+        hints.mime_type.as_ref().map(DemuxMimeType::as_str),
+        Some("video/mp2t")
+    );
+    assert_eq!(
+        hints.container.as_ref().map(DemuxContainerId::as_str),
+        Some("mpeg-ts")
+    );
+
+    let input = DemuxInput::byte_source(Box::new(MemoryByteSource::new(b"TEST-source", true)));
+    let DemuxInput::ByteSource(source) = &input else {
+        panic!("constructor должен сохранить byte-source shape");
+    };
+    let source_diagnostics = format!("{source:?}");
+    assert!(source_diagnostics.contains("seekability: Seekable"));
+    assert!(source_diagnostics.contains("content_length: Some(11)"));
+    assert_eq!(
+        format!("{input:?}"),
+        "DemuxInput { capability: SeekableBytes, .. }"
+    );
+}
 
 /// Fake runtime demuxer нужен только для проверки open composition.
 struct EmptyDemuxer;

@@ -2,6 +2,26 @@
 
 use super::*;
 
+/// Пустой foreground read является no-op и не двигает source/accounting перед обычным чтением.
+#[test]
+fn empty_foreground_read_preserves_position_and_followup_bytes() {
+    let bytes = sample_bytes(24);
+    let (inner, handle) = FakeByteSource::seekable(bytes.clone());
+    let mut source = start_test_source(Box::new(inner), test_config(4, 8, 16));
+    wait_for_read_count(&handle, 1);
+
+    assert_eq!(source.read(&mut [], &token()).expect("empty read"), 0);
+    assert_eq!(source.position(), 0);
+    assert_eq!(source.diagnostics().refetches, 0);
+
+    let mut output = [0; 4];
+    let bytes_read = source
+        .read(&mut output, &token())
+        .expect("обычное чтение после no-op должно пройти");
+    assert_eq!(bytes_read, output.len());
+    assert_eq!(output, bytes[..output.len()]);
+}
+
 /// Forward seek переиспользует active range без cancellation и duplicate refetch-а.
 #[test]
 fn forward_seek_inside_active_fetch_coalesces_without_cancel_or_refetch() {

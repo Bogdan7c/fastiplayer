@@ -7,10 +7,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use demux_api::{
-    DemuxHints, DemuxInput, DemuxOpenError, DemuxRegistry, DemuxSniffBudget, DemuxSourceExtension,
-    OrderedResourceMetadata, OrderedResourceReadError, OrderedResourceReadOutcome,
-    OrderedResourceStreamSource, OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind,
-    OrderedSegmentReadError, OrderedSegmentSequence, OrderedSegmentSource,
+    DemuxFactory, DemuxFactoryOpenError, DemuxHints, DemuxInput, DemuxInputCapability,
+    DemuxOpenError, DemuxOpenRequest, DemuxProbeDecision, DemuxProbeRejection, DemuxProbeRequest,
+    DemuxRegistry, DemuxSniffBudget, DemuxSourceExtension, OrderedResourceMetadata,
+    OrderedResourceReadError, OrderedResourceReadOutcome, OrderedResourceStreamSource,
+    OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
+    OrderedSegmentSequence, OrderedSegmentSource,
 };
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, TrackKind, VideoPacketFraming};
 use source_core::{
@@ -982,6 +984,114 @@ fn cancelled_probe_never_opens_backend() {
         .err()
         .expect("cancelled open");
     assert!(matches!(error, DemuxOpenError::ProbeRejected(_)));
+}
+
+/// Factory boundary самостоятельно сохраняет cancellation даже без registry preflight-а.
+#[test]
+fn factory_probe_and_open_reject_pre_cancelled_requests() {
+    let factory = MpegTsDemuxFactory::new(MpegTsDemuxOptions::default()).expect("factory");
+    let hints = DemuxHints::none();
+    let fixture = muxed_h264_aac_fixture(0);
+    let active_cancellation = CancellationToken::never_cancelled();
+    let selected_probe = match factory.probe(DemuxProbeRequest {
+        hints: &hints,
+        sniffed_bytes: &fixture,
+        input_capability: DemuxInputCapability::StreamingBytes,
+        cancellation: &active_cancellation,
+    }) {
+        DemuxProbeDecision::Match(selected_probe) => selected_probe,
+        decision => panic!("валидная TS signature должна match-иться: {decision:?}"),
+    };
+
+    assert!(matches!(
+        factory.probe(DemuxProbeRequest {
+            hints: &hints,
+            sniffed_bytes: &[0; 188 * 3],
+            input_capability: DemuxInputCapability::StreamingBytes,
+            cancellation: &active_cancellation,
+        }),
+        DemuxProbeDecision::NoMatch
+    ));
+
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    assert!(matches!(
+        factory.probe(DemuxProbeRequest {
+            hints: &hints,
+            sniffed_bytes: &fixture,
+            input_capability: DemuxInputCapability::StreamingBytes,
+            cancellation: &cancellation,
+        }),
+        DemuxProbeDecision::Rejected(DemuxProbeRejection::Cancelled)
+    ));
+
+    let error = match factory.open(DemuxOpenRequest {
+        input: DemuxInput::byte_stream(Box::new(Cursor::new(fixture))),
+        hints,
+        selected_probe,
+        cancellation,
+    }) {
+        Ok(_) => panic!("pre-cancelled factory open не должен публиковать demuxer"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, DemuxFactoryOpenError::Cancelled));
+}
+
+/// Cancellation после factory preflight сохраняется в typed open error, а не становится backend.
+#[test]
+fn factory_maps_cancellation_that_arrives_during_open() {
+    let factory = MpegTsDemuxFactory::new(MpegTsDemuxOptions::default()).expect("factory");
+    let hints = DemuxHints::none();
+    let fixture = muxed_h264_aac_fixture(0);
+    let cancellation = CancellationToken::new();
+    let selected_probe = match factory.probe(DemuxProbeRequest {
+        hints: &hints,
+        sniffed_bytes: &fixture,
+        input_capability: DemuxInputCapability::StreamingBytes,
+        cancellation: &cancellation,
+    }) {
+        DemuxProbeDecision::Match(selected_probe) => selected_probe,
+        decision => panic!("валидная TS signature должна match-иться: {decision:?}"),
+    };
+    let cancelling_reader = CancellingProbeReader {
+        bytes: Cursor::new(fixture),
+        cancellation: cancellation.clone(),
+        first_read: true,
+    };
+
+    let error = match factory.open(DemuxOpenRequest {
+        input: DemuxInput::byte_stream(Box::new(cancelling_reader)),
+        hints,
+        selected_probe,
+        cancellation,
+    }) {
+        Ok(_) => panic!("mid-open cancellation не должна публиковать demuxer"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, DemuxFactoryOpenError::Cancelled));
+}
+
+/// Content signature не маскирует отсутствие supported PAT/PMT program как `NoMatch`.
+#[test]
+fn transport_signature_without_playable_program_is_backend_failure() {
+    let bytes = TsFixtureBuilder::new().null_packets(3).finish();
+    let error = open(
+        DemuxInput::byte_stream(Box::new(Cursor::new(bytes))),
+        DemuxHints::none(),
+    )
+    .err()
+    .expect("сигнатурно валидный TS без PAT/PMT должен fail closed после probe");
+
+    assert!(matches!(
+        error,
+        DemuxOpenError::FactoryRejected {
+            source: DemuxFactoryOpenError::Backend(source),
+            ..
+        } if matches!(
+            source.downcast_ref::<MpegTsDemuxError>(),
+            Some(MpegTsDemuxError::NoPlayableProgram)
+        )
+    ));
 }
 
 #[test]
