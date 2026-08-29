@@ -87,7 +87,6 @@ pub(crate) struct FixtureOrigin {
     exact_target: String,
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
-    address: std::net::SocketAddr,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -152,7 +151,6 @@ impl FixtureOrigin {
             exact_target,
             requests,
             stop,
-            address,
             worker: Some(worker),
         }
     }
@@ -193,13 +191,27 @@ impl FixtureOrigin {
 }
 
 impl Drop for FixtureOrigin {
-    /// Останавливает worker через explicit flag и loopback wake-up.
+    /// Останавливает worker через explicit flag и ждёт не дольше очередного nonblocking poll.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        let _ = TcpStream::connect(self.address);
         if let Some(worker) = self.worker.take() {
             worker.join().expect("fixture worker");
         }
+    }
+}
+
+#[test]
+fn fixture_origin_drop_does_not_publish_a_synthetic_request() {
+    for _ in 0..128 {
+        let origin = FixtureOrigin::start();
+        let requests = Arc::clone(&origin.requests);
+
+        drop(origin);
+
+        assert!(
+            requests.lock().expect("request journal").is_empty(),
+            "остановка fixture не должна выглядеть как HTTP-запрос"
+        );
     }
 }
 
