@@ -549,3 +549,120 @@ fn partial_root_base_url_is_rejected_before_runtime_handoff() {
         ))
     ));
 }
+
+/// Root envelope принимает informational metadata и сохраняет XML/model distinctions.
+#[test]
+fn dynamic_root_envelope_preserves_structural_failure_kinds() {
+    let empty_information = fixture("", "").replace(
+        "          <UTCTiming",
+        "          <ProgramInformation/>\n          <UTCTiming",
+    );
+    let parsed = parse(&empty_information).expect("empty informational metadata is ignorable");
+    assert_eq!(parsed.presentation.periods.len(), 1);
+
+    let invalid_roots = [
+        ("", dash_mpd_core::DashMpdErrorKind::Xml),
+        (
+            r#"<Period xmlns="urn:mpeg:dash:schema:mpd:2011"/>"#,
+            dash_mpd_core::DashMpdErrorKind::InvalidRoot,
+        ),
+    ];
+    for (case_index, (invalid_root, expected_kind)) in invalid_roots.into_iter().enumerate() {
+        let error = parse(invalid_root).expect_err("invalid root must fail closed");
+        assert!(
+            matches!(
+                &error,
+                DashDynamicMpdError::Schema(schema_error)
+                    if schema_error.kind() == expected_kind
+            ),
+            "unexpected root error for case {case_index}: {error:?}"
+        );
+    }
+    assert!(matches!(
+        parse(r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"></MPD>"#),
+        Err(DashDynamicMpdError::ProfileExcluded(
+            DashDynamicProfileExclusion::NotDynamic
+        ))
+    ));
+
+    let trailing_root = fixture("", "").replace("</MPD>", "</MPD><unexpected/>");
+    let trailing_root_error = parse(&trailing_root).expect_err("trailing root must fail closed");
+    assert!(
+        matches!(
+            &trailing_root_error,
+            DashDynamicMpdError::Schema(error)
+                if error.kind() == dash_mpd_core::DashMpdErrorKind::Xml
+        ),
+        "unexpected trailing-root error: {trailing_root_error:?}"
+    );
+
+    let missing_period = r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
+        availabilityStartTime="2026-07-24T10:00:00Z"
+        publishTime="2026-07-24T10:01:00Z" minimumUpdatePeriod="PT2S"
+        suggestedPresentationDelay="PT6S">
+      <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014"
+          value="2026-07-24T10:01:01Z"/>
+    </MPD>"#;
+    assert!(matches!(
+        parse(missing_period),
+        Err(DashDynamicMpdError::Schema(error))
+            if error.kind() == dash_mpd_core::DashMpdErrorKind::InvalidRoot
+    ));
+}
+
+/// Dynamic adapter переводит clock/profile failures отдельно от malformed schema.
+#[test]
+fn dynamic_profile_maps_clock_and_period_schema_failures() {
+    let duplicate_started_clock = fixture("", "").replace(
+        "          <Period",
+        r#"          <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014"
+              value="2026-07-24T10:01:01Z"></UTCTiming>
+          <Period"#,
+    );
+    assert!(matches!(
+        parse(&duplicate_started_clock),
+        Err(DashDynamicMpdError::ProfileExcluded(
+            DashDynamicProfileExclusion::UnsupportedClockModel
+        ))
+    ));
+
+    let unsupported_period_child = fixture("", "").replace(
+        "            <AdaptationSet",
+        "            <EventStream/>\n            <AdaptationSet",
+    );
+    assert!(matches!(
+        parse(&unsupported_period_child),
+        Err(DashDynamicMpdError::ProfileExcluded(
+            DashDynamicProfileExclusion::UnsupportedTimingConstruct
+        ))
+    ));
+
+    let invalid_period_attribute =
+        fixture("", "").replace(r#"start="PT0S""#, r#"start="not-a-duration""#);
+    assert!(matches!(
+        parse(&invalid_period_attribute),
+        Err(DashDynamicMpdError::Schema(error))
+            if error.kind() == dash_mpd_core::DashMpdErrorKind::InvalidAttribute
+    ));
+}
+
+/// Period budget останавливает parser до удержания второго элемента timeline.
+#[test]
+fn dynamic_period_limit_rejects_second_period_before_retention() {
+    let one_period_limits = DashMpdLimits {
+        maximum_periods: 1,
+        ..limits()
+    };
+    let period_limit_document = explicit_two_period_document_with_second_start("PT60S");
+    let period_limit_error = parse_dynamic_dash_mpd(DashMpdParseRequest {
+        document_bytes: period_limit_document.as_bytes(),
+        xml_budgets: xml_budgets(),
+        limits: one_period_limits,
+    })
+    .expect_err("period cap must fail before a second Period is retained");
+    assert!(matches!(
+        period_limit_error,
+        DashDynamicMpdError::Schema(error)
+            if error.kind() == dash_mpd_core::DashMpdErrorKind::LimitExceeded
+    ));
+}

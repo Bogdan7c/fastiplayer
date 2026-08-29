@@ -421,3 +421,93 @@ fn abortable_fetch_preserves_http_status_error() {
         SourceError::HttpStatus { status, .. } if status.as_u16() == 503
     ));
 }
+
+/// Range response policy не сливает status, отсутствие header и несовпавшие bounds.
+#[test]
+fn bounded_range_response_policy_preserves_failure_categories() {
+    let session = source_session();
+    let cancellation = CancellationToken::new();
+
+    let unsupported_server = OneShotServer::start(response("200 OK", &[], b"456"));
+    let unsupported = session
+        .fetch_bounded_single_hop(
+            range_request(unsupported_server.target.clone(), 4, 3),
+            &cancellation,
+        )
+        .expect_err("200 response must not masquerade as a successful Range");
+    assert!(matches!(
+        unsupported,
+        SourceError::HttpRangeUnsupported {
+            reason: crate::NotSeekableReason::HttpRangeStatus { status: 200 }
+        }
+    ));
+
+    let status_server = OneShotServer::start(response(
+        "416 Range Not Satisfiable",
+        &[("Content-Range", "bytes */10")],
+        b"out-of-range",
+    ));
+    let status_error = session
+        .fetch_bounded_single_hop(
+            range_request(status_server.target.clone(), 4, 3),
+            &cancellation,
+        )
+        .expect_err("non-206 Range status must remain an HTTP status error");
+    assert!(matches!(
+        status_error,
+        SourceError::HttpStatus { status, .. } if status.as_u16() == 416
+    ));
+
+    let invalid_range_cases = [
+        (None, "<missing>"),
+        (Some("not-a-content-range"), "<invalid>"),
+        (Some("bytes 5-7/10"), "<unexpected range>"),
+        (Some("bytes 4-6/6"), "<inconsistent total length>"),
+    ];
+    for (content_range, expected_safe_marker) in invalid_range_cases {
+        let headers = content_range
+            .map(|value| vec![("Content-Range", value)])
+            .unwrap_or_default();
+        let server = OneShotServer::start(response("206 Partial Content", &headers, b"456"));
+        let target_secret = server.target.expose_secret_for_request().to_owned();
+        let error = session
+            .fetch_bounded_single_hop(range_request(server.target.clone(), 4, 3), &cancellation)
+            .expect_err("invalid Content-Range must fail before body publication");
+        assert!(matches!(
+            &error,
+            SourceError::InvalidContentRange { header, .. } if header == expected_safe_marker
+        ));
+        assert!(!format!("{error:?}").contains(&target_secret));
+    }
+}
+
+/// Redirect parser различает malformed location и запрещённую transport scheme без утечки URL.
+#[test]
+fn bounded_redirect_policy_preserves_safe_rejection_reasons() {
+    let session = source_session();
+    let cancellation = CancellationToken::new();
+    let cases = [
+        ("http://[::1", "invalid-location"),
+        (
+            "ftp://user:secret@example.invalid/media?token=hidden",
+            "unsupported-location-target",
+        ),
+    ];
+
+    for (location, expected_reason) in cases {
+        let server =
+            OneShotServer::start(response("302 Found", &[("Location", location)], b"ignored"));
+        let current_target = server.target.expose_secret_for_request().to_owned();
+        let error = session
+            .fetch_bounded_single_hop(full_request(server.target.clone(), 16), &cancellation)
+            .expect_err("unsafe redirect target must fail before another request");
+        assert!(matches!(
+            &error,
+            SourceError::InvalidHttpRedirect { reason, .. } if *reason == expected_reason
+        ));
+        let diagnostic = format!("{error:?}");
+        assert!(!diagnostic.contains(&current_target));
+        assert!(!diagnostic.contains(location));
+        assert_eq!(server.accepted_requests(), 1);
+    }
+}
