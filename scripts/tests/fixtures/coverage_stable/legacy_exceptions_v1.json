@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "exceptions": [
+    {
+      "scope": "crate:alpha", "metric": "lines",
+      "previous": {"covered": 8, "total": 8},
+      "allowed": {"covered": 7, "total": 8},
+      "reason": "Проверяет сохранение legacy identity.",
+      "review_by": "2099-01-01", "follow_up": "Удалить после миграции."
+    },
+    {
+      "scope": "crate:alpha", "metric": "functions",
+      "previous": {"covered": 2, "total": 2},
+      "allowed": {"covered": 1, "total": 2},
+      "reason": "Проверяет сохранение legacy identity.",
+      "review_by": "2099-01-01", "follow_up": "Удалить после миграции."
+    },
+    {
+      "scope": "crate:alpha", "metric": "regions",
+      "previous": {"covered": 3, "total": 3},
+      "allowed": {"covered": 2, "total": 3},
+      "reason": "Проверяет сохранение legacy identity.",
+      "review_by": "2099-01-01", "follow_up": "Удалить после миграции."
+    },
+    {
+      "scope": "blocking-group", "metric": "lines",
+      "previous": {"covered": 8, "total": 8},
+      "allowed": {"covered": 7, "total": 8},
+      "reason": "Проверяет сохранение legacy identity.",
+      "review_by": "2099-01-01", "follow_up": "Удалить после миграции."
+    },
+    {
+      "scope": "blocking-group", "metric": "regions",
+      "previous": {"covered": 3, "total": 3},
+      "allowed": {"covered": 2, "total": 3},
+      "reason": "Проверяет сохранение legacy identity.",
+      "review_by": "2099-01-01", "follow_up": "Удалить после миграции."
+    },
+    {
+      "scope": "workspace", "metric": "lines",
+      "previous": {"covered": 8, "total": 9},
+      "allowed": {"covered": 7, "total": 9},
+      "reason": "Проверяет сохранение legacy identity.",
+      "review_by": "2099-01-01", "follow_up": "Удалить после миграции."
+    },
+    {
+      "scope": "workspace", "metric": "functions",
+      "previous": {"covered": 2, "total": 3},
+      "allowed": {"covered": 1, "total": 3},
+      "reason": "Проверяет сохранение legacy identity.",
+      "review_by": "2099-01-01", "follow_up": "Удалить после миграции."
+    },
+    {
+      "scope": "workspace", "metric": "regions",
+      "previous": {"covered": 3, "total": 4},
+      "allowed": {"covered": 2, "total": 4},
+      "reason": "Проверяет сохранение legacy identity.",
+      "review_by": "2099-01-01", "follow_up": "Удалить после миграции."
+    }
+  ]
+}

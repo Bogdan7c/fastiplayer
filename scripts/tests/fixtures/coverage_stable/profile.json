@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "profile": "workspace",
+  "methodology": "cargo-llvm-cov-full-json-3run-v1",
+  "llvm_cov_version": "22.1.2",
+  "cargo_llvm_cov_version": "0.8.7"
+}

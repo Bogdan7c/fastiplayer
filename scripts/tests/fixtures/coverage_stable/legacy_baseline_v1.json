@@ -1,0 +1,28 @@
+{
+  "blocking_crates": {
+    "alpha": {
+      "functions": {"covered": 1, "total": 2},
+      "lines": {"covered": 7, "total": 8},
+      "regions": {"covered": 2, "total": 3}
+    }
+  },
+  "blocking_group": {
+    "functions": {"covered": 1, "total": 2},
+    "lines": {"covered": 7, "total": 8},
+    "regions": {"covered": 2, "total": 3}
+  },
+  "informational_crates": {
+    "shell": {
+      "functions": {"covered": 0, "total": 1},
+      "lines": {"covered": 0, "total": 1},
+      "regions": {"covered": 0, "total": 1}
+    }
+  },
+  "schema_version": 1,
+  "tool": {"name": "cargo-llvm-cov", "version": "0.8.7"},
+  "workspace": {
+    "functions": {"covered": 1, "total": 3},
+    "lines": {"covered": 7, "total": 9},
+    "regions": {"covered": 2, "total": 4}
+  }
+}
