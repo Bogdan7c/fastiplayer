@@ -213,6 +213,71 @@ fn topology_standalone_rows_are_selectable_exactly_and_after_semantic_reopen() {
 }
 
 #[test]
+fn sparse_topology_semantic_rematch_preserves_only_proven_component_pairs() {
+    let identity = catalog_identity(parent(49, "sparse-parent", "sparse-parent-semantic"), 11);
+    let videos = vec![
+        video_variant(
+            &identity,
+            "video-allowed",
+            "video-semantic-allowed",
+            Some(720),
+        ),
+        video_variant(&identity, "video-other", "video-semantic-other", Some(1080)),
+    ];
+    let audios = vec![
+        audio_variant(&identity, "audio-allowed", "audio-semantic-allowed", 1),
+        audio_variant(&identity, "audio-other", "audio-semantic-other", 2),
+    ];
+    let allowed_video_exact = videos[0].exact_identity().clone();
+    let allowed_audio_exact = audios[0].exact_identity().clone();
+    let incompatible_video_semantic = videos[1].semantic_identity().clone();
+    let incompatible_audio_semantic = audios[1].semantic_identity().clone();
+    let catalog = ComponentVariantCatalog::new(
+        identity,
+        generous_limit(),
+        ComponentVariantCatalogEntries::Topology {
+            video: videos,
+            audio: audios,
+            compatibility: ComponentVariantCompatibilityEntries::Sparse {
+                edge_limit: generous_edge_limit(),
+                edges: vec![ComponentVariantCompatibilityEdge::new(
+                    allowed_video_exact.clone(),
+                    allowed_audio_exact.clone(),
+                )],
+            },
+            coupled: vec![],
+            video_only: vec![],
+            audio_only: vec![],
+        },
+    )
+    .expect("sparse topology с одной доказанной парой должна пройти admission");
+
+    let installed = catalog
+        .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
+            video: allowed_video_exact.clone(),
+            audio: allowed_audio_exact.clone(),
+        })
+        .expect("доказанная exact pair должна устанавливаться");
+    let rematched = catalog
+        .rematch_semantic(installed.semantic_rematch_request())
+        .expect("semantic rematch должен сохранить доказанную pair");
+    let ComponentVariantSelection::VideoAndAudio { video, audio } = rematched else {
+        panic!("semantic rematch не должен менять layout доказанной pair");
+    };
+    assert_eq!(video.exact_identity(), &allowed_video_exact);
+    assert_eq!(audio.exact_identity(), &allowed_audio_exact);
+
+    assert_eq!(
+        catalog.rematch_semantic(ComponentVariantSemanticSelectionRequest::VideoAndAudio {
+            video: incompatible_video_semantic,
+            audio: incompatible_audio_semantic,
+        }),
+        Err(ComponentVariantError::IncompatibleComponentPair),
+        "существование обеих rows не доказывает их Cartesian compatibility"
+    );
+}
+
+#[test]
 fn catalog_admission_diagnostics_explain_empty_topology_limits_and_duplicates() {
     let empty_identity = catalog_identity(parent(44, "empty-parent", "empty-semantic"), 6);
     let empty_error = ComponentVariantCatalog::new(
