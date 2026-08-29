@@ -873,6 +873,52 @@ fn adts_frame_split_across_two_pes_is_reassembled_once() {
     assert_eq!(packet_count, 1);
 }
 
+/// Complete ADTS packet остаётся видимым, но оборванный следующий frame не становится EOF.
+#[test]
+fn truncated_adts_tail_is_fatal_after_complete_packet() {
+    let complete_frame = adts_frame(&[0x11, 0x22]);
+    let mut truncated_frame = adts_frame(&[0x33, 0x44, 0x55]);
+    truncated_frame.pop();
+    let bytes = TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)], 0)
+        .pmt(PMT_PID, 1, &[(0x0f, AUDIO_PID)], 0)
+        .pes(AUDIO_PID, 0, None, &complete_frame)
+        .pes(AUDIO_PID, 1_920, None, &truncated_frame)
+        .null_packets(6_000)
+        .finish();
+    let (input, observation) = pull_resource_input(bytes, usize::MAX);
+    let mut demuxer = MpegTsDemuxer::open(
+        input,
+        CancellationToken::never_cancelled(),
+        MpegTsDemuxOptions::default(),
+    )
+    .expect("complete early ADTS frame must prove streamed topology");
+    assert!(!observation.end_resource_pulled.load(Ordering::SeqCst));
+
+    let mut complete_packet_seen = false;
+    loop {
+        match demuxer.next_event() {
+            Ok(DemuxReadEvent::Packet(_)) => complete_packet_seen = true,
+            Ok(DemuxReadEvent::EndOfStream) => {
+                panic!("truncated ADTS tail must not become clean EOF")
+            }
+            Ok(DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_)) => {}
+            Ok(DemuxReadEvent::TemporarilyUnavailable(_)) => {
+                panic!("finite in-memory resource must not report backpressure")
+            }
+            Err(error) => {
+                let typed_error = error
+                    .downcast_ref::<MpegTsDemuxError>()
+                    .expect("MPEG-TS owner keeps the typed malformed error");
+                assert!(matches!(typed_error, MpegTsDemuxError::Malformed { .. }));
+                break;
+            }
+        }
+    }
+    assert!(complete_packet_seen);
+    assert!(observation.end_resource_pulled.load(Ordering::SeqCst));
+}
+
 #[test]
 fn multiple_playable_programs_fail_closed() {
     let bytes = TsFixtureBuilder::new()

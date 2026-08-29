@@ -948,3 +948,32 @@ fn truncated_cancelled_and_no_match_are_distinct() {
         DemuxOpenError::ProbeRejected(DemuxProbeRejection::Cancelled)
     ));
 }
+
+/// Probed open связывает content-selected container с тем же реально открытым input.
+#[test]
+fn probed_open_returns_authoritative_container_and_live_demuxer() {
+    let opened_bytes = Arc::new(Mutex::new(Vec::new()));
+    let registry = registry_with_recording_factory(Arc::clone(&opened_bytes));
+    let probed = registry
+        .open_probed(
+            DemuxInput::byte_stream(Box::new(std::io::Cursor::new(
+                b"TEST-authoritative-body".to_vec(),
+            ))),
+            DemuxHints::none(),
+            sniff_budget(),
+            CancellationToken::never_cancelled(),
+        )
+        .expect("content-probed open");
+    assert_eq!(probed.container().as_str(), "test-container");
+    assert_eq!(
+        &*opened_bytes.lock().expect("opened byte log"),
+        b"TEST-authoritative-body"
+    );
+
+    let mut demuxer = probed.into_demuxer();
+    assert!(demuxer.tracks().is_empty());
+    assert!(matches!(
+        demuxer.next_event().expect("opened demuxer remains usable"),
+        DemuxReadEvent::EndOfStream
+    ));
+}
