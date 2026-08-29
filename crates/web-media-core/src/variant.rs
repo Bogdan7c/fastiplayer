@@ -629,6 +629,10 @@ pub use semantic_rematch::ComponentVariantSemanticSelectionRequest;
 mod test_support;
 
 #[cfg(test)]
+#[path = "variant/tests.rs"]
+mod tests;
+
+#[cfg(test)]
 #[path = "variant/tests_catalog.rs"]
 mod tests_catalog;
 
