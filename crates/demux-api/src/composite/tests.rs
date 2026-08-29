@@ -13,17 +13,27 @@ use media_core::{
 
 use super::{
     CompositeAvDemuxer, CompositeAvTrackSelection, CompositeComponent,
-    CompositeComponentLeadPolicy, CompositeComponentLeadPolicyError, CompositeComponentSeekError,
-    CompositePendingPacketTooLargeError,
+    CompositeComponentLeadPolicy, CompositeComponentLeadPolicyError, CompositeComponentReadError,
+    CompositeComponentSeekError, CompositePendingPacketTooLargeError,
 };
+
+mod lifecycle;
 
 /// Scripted component поддерживает lifecycle/seek tests без concrete container backend-а.
 struct ScriptedDemuxer {
     tracks: Vec<TrackInfo>,
     duration: Option<Duration>,
     events: VecDeque<DemuxReadEvent>,
+    next_event_error: Option<ScriptedReadError>,
+    media_metadata: Option<MediaMetadata>,
     seek_behavior: SeekBehavior,
     seek_log: Arc<Mutex<Vec<DemuxSeekRequest>>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("scripted component read failed: {safe_reason}")]
+struct ScriptedReadError {
+    safe_reason: &'static str,
 }
 
 /// Seek outcome позволяет моделировать partial composite failure.
@@ -52,9 +62,23 @@ impl ScriptedDemuxer {
             tracks,
             duration,
             events,
+            next_event_error: None,
+            media_metadata: None,
             seek_behavior,
             seek_log,
         }
+    }
+
+    fn with_next_event_error(mut self, message: &'static str) -> Self {
+        self.next_event_error = Some(ScriptedReadError {
+            safe_reason: message,
+        });
+        self
+    }
+
+    fn with_media_metadata(mut self, media_metadata: MediaMetadata) -> Self {
+        self.media_metadata = Some(media_metadata);
+        self
     }
 }
 
@@ -67,7 +91,14 @@ impl Demuxer for ScriptedDemuxer {
         self.duration
     }
 
+    fn media_metadata(&self) -> Option<MediaMetadata> {
+        self.media_metadata.clone()
+    }
+
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        if let Some(error) = self.next_event_error.take() {
+            return Err(error.into());
+        }
         let event = self
             .events
             .pop_front()
@@ -75,6 +106,9 @@ impl Demuxer for ScriptedDemuxer {
         if let DemuxReadEvent::TracksChanged(update) = &event {
             self.tracks = update.tracks.clone();
             self.duration = update.duration;
+        }
+        if let DemuxReadEvent::MediaMetadataChanged(media_metadata) = &event {
+            self.media_metadata = Some(media_metadata.clone());
         }
         Ok(event)
     }
