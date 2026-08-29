@@ -18,6 +18,8 @@ use crate::{
     SourceError, SourceRuntimeConfig,
 };
 
+mod lifecycle_tests;
+
 /// Все fixture waits остаются существенно меньше production timeout policy.
 const FIXTURE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -197,6 +199,16 @@ fn response(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
     wire
 }
 
+/// Создаёт одинаковый full-resource intent для разных HTTP frontends.
+fn full_request(target: HttpRequestTarget, maximum_body_bytes: usize) -> HttpBoundedFetchRequest {
+    HttpBoundedFetchRequest::full(
+        target,
+        Vec::new(),
+        NonZeroUsize::new(maximum_body_bytes).expect("nonzero body bound"),
+        HttpBoundedFetchKind::Metadata,
+    )
+}
+
 /// Создаёт session с production default network policy.
 fn source_session() -> HttpSourceSession {
     let source_config =
@@ -319,6 +331,24 @@ fn async_hop_rejects_pre_cancelled_request_before_network() {
     let error = run_fetch(&session, request, &cancellation)
         .expect_err("pre-cancelled async request must fail");
     assert!(matches!(error, SourceError::Cancelled));
+
+    let blocking_error = session
+        .fetch_bounded_single_hop(full_request(server.target.clone(), 16), &cancellation)
+        .expect_err("pre-cancelled blocking request must fail");
+    assert!(matches!(blocking_error, SourceError::Cancelled));
+
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test Tokio runtime");
+    let streaming_error =
+        runtime
+            .block_on(session.open_bounded_single_hop_stream(
+                full_request(server.target.clone(), 16),
+                &cancellation,
+            ))
+            .expect_err("pre-cancelled streaming request must fail");
+    assert!(matches!(streaming_error, SourceError::Cancelled));
     assert_eq!(server.accepted_requests(), 0);
 
     let recovery_server = OneShotServer::start(response("200 OK", &[], b"recovered"));
@@ -355,9 +385,17 @@ fn streaming_hop_does_not_wait_for_complete_body() {
     let opened = runtime
         .block_on(session.open_bounded_single_hop_stream(request, &cancellation))
         .expect("open streaming response");
+    let opened_debug = format!("{opened:?}");
+    assert!(opened_debug.contains("Body"));
+    assert!(!opened_debug.contains(server.target.expose_secret_for_request()));
     let HttpBoundedStreamingFetchHop::Body(mut body) = opened else {
         panic!("streaming fixture must not redirect");
     };
+    let request_attempt_id = body.request_attempt_id();
+    let body_debug = format!("{body:?}");
+    assert!(body_debug.contains("received_body_bytes: 0"));
+    assert!(!body_debug.contains(server.target.expose_secret_for_request()));
+    assert!(body.range_metadata().is_none());
     server.wait_until_prefix_ready();
 
     let prefix = runtime
@@ -379,7 +417,14 @@ fn streaming_hop_does_not_wait_for_complete_body() {
             .expect("read validated streaming EOF")
             .is_none()
     );
+    assert!(
+        runtime
+            .block_on(body.next_chunk(&cancellation))
+            .expect("repeat validated streaming EOF")
+            .is_none()
+    );
     assert_eq!(body.received_body_bytes(), 8);
+    assert_eq!(body.request_attempt_id(), request_attempt_id);
 }
 
 /// Законная пауза consumer-а не превращается в reqwest total-request timeout.
