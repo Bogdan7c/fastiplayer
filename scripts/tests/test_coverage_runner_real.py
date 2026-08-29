@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -23,7 +24,7 @@ from coverage_runner import (  # noqa: E402
 
 
 class RealCargoWithFixtureCoordinates(CommandExecutor):
-    """Оставляет Cargo настоящим, подменяя только ещё не интегрированный A CLI."""
+    """Оставляет Cargo настоящим, подменяя только coordinate fixture output."""
 
     def run(
         self,
@@ -108,11 +109,64 @@ class RealCargoCoverageRunnerTests(unittest.TestCase):
                 rustc_command="rustc",
                 python_command="fixture-python",
             )
+            # Реальный bootstrap blocker: старые wrapper list/profdata пережили прошлый run.
+            config.profile_directory.mkdir(parents=True, exist_ok=True)
+            stale_list = config.profile_directory / "rustiplayer-profraw-list"
+            stale_profdata = config.profile_directory / "rustiplayer.profdata"
+            stale_list.write_bytes(b"stale-real-profile-list\n")
+            stale_profdata.write_bytes(b"stale-real-profdata\n")
             StableCoverageRunner(config, RealCargoWithFixtureCoordinates()).run()
             raw_manifests = sorted((config.artifact_directory / "manifests").glob("*.json"))
             self.assertEqual(len(raw_manifests), 3)
             self.assertTrue((config.artifact_directory / "cohort.json").is_file())
             self.assertTrue((config.artifact_directory / "html" / "index.html").is_file())
+            replacement_backup = (
+                config.artifact_directory / "replaced-merge-metadata"
+            )
+            self.assertEqual(
+                (replacement_backup / stale_list.name).read_bytes(),
+                b"stale-real-profile-list\n",
+            )
+            self.assertEqual(
+                (replacement_backup / stale_profdata.name).read_bytes(),
+                b"stale-real-profdata\n",
+            )
+            merge_manifest = json.loads(
+                (config.artifact_directory / "cohort-manifest.json").read_text()
+            )["merge_metadata"]
+            self.assertEqual(len(merge_manifest["preexisting"]), 2)
+            self.assertEqual(len(merge_manifest["authoritative"]), 2)
+            first_authoritative = {
+                str(entry["path"]): (
+                    config.profile_directory / str(entry["path"])
+                ).read_bytes()
+                for entry in merge_manifest["authoritative"]
+            }
+            StableCoverageRunner(config, RealCargoWithFixtureCoordinates()).run()
+            replacement_backup = (
+                config.artifact_directory / "replaced-merge-metadata"
+            )
+            self.assertEqual(
+                {path.name: path.read_bytes() for path in replacement_backup.iterdir()},
+                first_authoritative,
+            )
+            second_merge_manifest = json.loads(
+                (config.artifact_directory / "cohort-manifest.json").read_text()
+            )["merge_metadata"]
+            self.assertEqual(
+                {
+                    str(entry["path"]): str(entry["sha256"])
+                    for entry in second_merge_manifest["preexisting"]
+                },
+                {
+                    name: hashlib.sha256(payload).hexdigest()
+                    for name, payload in first_authoritative.items()
+                },
+            )
+            self.assertEqual(
+                len(list(config.artifact_directory.parent.glob(".stable.previous"))),
+                0,
+            )
 
 
 if __name__ == "__main__":

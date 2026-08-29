@@ -19,10 +19,12 @@ from typing import Mapping, Sequence
 
 from coverage_runner_support import (
     CoverageRunnerError,
+    MergeMetadataTransaction,
     assert_unchanged,
     atomic_artifact_stage,
     atomic_write_json,
     canonical_json_bytes,
+    cleanup_retired_artifact,
     executable_manifest,
     git_source_manifest,
     publish_artifacts,
@@ -458,6 +460,7 @@ class StableCoverageRunner:
         source_manifest: dict[str, object],
         build_manifest: dict[str, object],
         tool_identity: ToolIdentity,
+        merge_metadata: MergeMetadataTransaction,
     ) -> None:
         """Сохраняет проверяемые hashes всех опубликованных cohort artifacts."""
 
@@ -483,6 +486,7 @@ class StableCoverageRunner:
                     "llvm_release": tool_identity.llvm_release,
                     "cargo_llvm_cov_release": tool_identity.cargo_llvm_cov_release,
                 },
+                "merge_metadata": merge_metadata.manifest(),
                 "artifacts": artifact_hashes,
             },
         )
@@ -490,8 +494,19 @@ class StableCoverageRunner:
     def run(self) -> None:
         """Строит exact три runs и транзакционно заменяет только свой artifact tree."""
 
+        MergeMetadataTransaction.validate_configured_roots(
+            self.config.repo_root,
+            self.config.profile_directory,
+            self.config.artifact_directory,
+        )
         stage = atomic_artifact_stage(
             self.config.artifact_directory, self.config.session_id
+        )
+        merge_metadata = MergeMetadataTransaction(
+            self.config.repo_root,
+            self.config.profile_directory,
+            stage,
+            self.config.artifact_directory,
         )
         lock_path = self.config.artifact_directory.parent / ".stable-coverage.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -503,6 +518,8 @@ class StableCoverageRunner:
                     raise CoverageRunnerError("уже выполняется другой stable coverage runner") from error
                 tool_identity = self.tool_identity()
                 source_manifest = git_source_manifest(self.config.repo_root)
+                # Старые wrapper merge-файлы сохраняются до cargo clean, а не удаляются.
+                merge_metadata.begin()
                 build_manifest = self.clean_all_and_build_once()
                 assert_unchanged(
                     "source inventory",
@@ -563,20 +580,44 @@ class StableCoverageRunner:
                 )
                 assert_unchanged("tool identity", tool_identity, self.tool_identity())
                 self.write_cohort_manifest(
-                    stage, source_manifest, build_manifest, tool_identity
+                    stage,
+                    source_manifest,
+                    build_manifest,
+                    tool_identity,
+                    merge_metadata,
                 )
-                publish_artifacts(
-                    stage, self.config.artifact_directory, self.config.session_id
+                merge_metadata.prepare_publication()
+                retired_artifact = publish_artifacts(
+                    stage,
+                    self.config.artifact_directory,
+                    self.config.session_id,
+                    merge_metadata.complete_publication,
                 )
-        except BaseException:
-            if stage.exists():
+                cleanup_warning = cleanup_retired_artifact(retired_artifact)
+                if cleanup_warning is not None:
+                    # Swap уже принят: cleanup не может запустить rollback нового cohort.
+                    try:
+                        print(f"Предупреждение: {cleanup_warning}", file=sys.stderr)
+                    except OSError:
+                        pass
+        except BaseException as error:
+            rollback_error = None
+            try:
+                merge_metadata.rollback()
+            except BaseException as caught_rollback_error:
+                rollback_error = caught_rollback_error
+            if rollback_error is None and stage.exists():
                 shutil.rmtree(stage)
-            # Удаляются только profiles с session-owned prefix и уже обнаруженные merge outputs.
+            # Удаляются только raw profiles текущего уникального session prefix.
             for profile in self.config.profile_directory.glob(
                 f"stable-{self.config.session_id}-run-*.profraw"
             ):
                 profile.unlink(missing_ok=True)
-            self.remove_owned_merge_artifacts()
+            if rollback_error is not None:
+                raise CoverageRunnerError(
+                    f"runner завершился ошибкой ({error}); rollback merge metadata "
+                    f"тоже завершился ошибкой: {rollback_error}"
+                ) from error
             raise
 
 
@@ -603,9 +644,12 @@ def parse_args(arguments: Sequence[str]) -> RunnerConfig:
         parser.error("--session-id принимает только ASCII letters, digits, '_' и '-'")
 
     repo_root = parsed.repo_root.resolve()
+    requested_profile_directory = parsed.profile_directory.absolute()
+    if requested_profile_directory.is_symlink():
+        parser.error("--profile-directory не может быть symlink")
     return RunnerConfig(
         repo_root=repo_root,
-        profile_directory=parsed.profile_directory.resolve(),
+        profile_directory=requested_profile_directory.resolve(),
         artifact_directory=parsed.artifact_directory.resolve(),
         policy_path=parsed.policy.resolve(),
         coordinate_extractor=parsed.coordinate_extractor.resolve(),

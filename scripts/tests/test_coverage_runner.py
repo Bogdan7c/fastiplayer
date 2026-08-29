@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -24,7 +25,11 @@ from coverage_runner import (  # noqa: E402
     RunnerConfig,
     StableCoverageRunner,
 )
-from coverage_runner_support import publish_artifacts  # noqa: E402
+from coverage_runner_support import (  # noqa: E402
+    MergeMetadataTransaction,
+    publish_artifacts,
+    sha256_file,
+)
 
 
 @dataclass(frozen=True)
@@ -288,6 +293,16 @@ class StableCoverageRunnerTests(unittest.TestCase):
         marker.write_text("accepted", encoding="utf-8")
         return marker
 
+    def seed_merge_metadata(self) -> tuple[Path, Path]:
+        """Создаёт exact stale names, которые следующий cargo report заменит."""
+
+        self.config.profile_directory.mkdir(parents=True, exist_ok=True)
+        profile_list = self.config.profile_directory / "fixture-profraw-list"
+        profdata = self.config.profile_directory / "fixture.profdata"
+        profile_list.write_bytes(b"stale profile list\n")
+        profdata.write_bytes(b"stale profdata\n")
+        return profile_list, profdata
+
     def assert_no_private_stage(self):
         """Failure не должен оставлять private stage похожим на accepted artifact."""
 
@@ -408,6 +423,7 @@ class StableCoverageRunnerTests(unittest.TestCase):
         )
         self.assertEqual(cohort_manifest["run_count"], 3)
         self.assertTrue(cohort_manifest["artifacts"])
+        self.assertIsNone(cohort_manifest["merge_metadata"]["backup_artifact"])
 
     def test_empty_mixed_and_stale_profiles_fail_without_replacing_previous_artifact(self):
         """Ни пустой, ни mixed, ни переживший clean profile set не допускается к report."""
@@ -486,6 +502,121 @@ class StableCoverageRunnerTests(unittest.TestCase):
         runner.run()
         self.assertFalse(old_marker.exists())
         self.assertEqual(foreign.read_text(encoding="utf-8"), "owned elsewhere")
+        self.assert_no_private_stage()
+
+    def test_success_quarantines_stale_merge_metadata_and_records_both_hash_sets(self):
+        """Старые list/profdata не блокируют run и остаются bounded diagnostics."""
+
+        profile_list, profdata = self.seed_merge_metadata()
+        original_hashes = {
+            profile_list.name: sha256_file(profile_list),
+            profdata.name: sha256_file(profdata),
+        }
+        runner, _executor = self.new_runner()
+        runner.run()
+        backup = self.config.artifact_directory / "replaced-merge-metadata"
+        self.assertEqual((backup / profile_list.name).read_bytes(), b"stale profile list\n")
+        self.assertEqual((backup / profdata.name).read_bytes(), b"stale profdata\n")
+        self.assertNotEqual(profile_list.read_bytes(), b"stale profile list\n")
+        self.assertNotEqual(profdata.read_bytes(), b"stale profdata\n")
+        manifest = json.loads(
+            (self.config.artifact_directory / "cohort-manifest.json").read_text()
+        )["merge_metadata"]
+        self.assertEqual(manifest["backup_artifact"], "replaced-merge-metadata")
+        self.assertEqual(
+            {entry["path"]: entry["sha256"] for entry in manifest["preexisting"]},
+            original_hashes,
+        )
+        self.assertEqual(
+            {entry["path"] for entry in manifest["authoritative"]},
+            {"fixture-profraw-list", "fixture.profdata"},
+        )
+
+    def test_failure_after_report_restores_original_merge_metadata(self):
+        """LCOV failure удаляет replacements и возвращает originals byte-for-byte."""
+
+        profile_list, profdata = self.seed_merge_metadata()
+        list_stat = profile_list.stat()
+        profdata_stat = profdata.stat()
+        runner, executor = self.new_runner()
+        executor.fail_lcov_validation = True
+        with self.assertRaises(CoverageRunnerError):
+            runner.run()
+        self.assertEqual(profile_list.read_bytes(), b"stale profile list\n")
+        self.assertEqual(profdata.read_bytes(), b"stale profdata\n")
+        self.assertEqual(profile_list.stat().st_mode, list_stat.st_mode)
+        self.assertEqual(profdata.stat().st_mode, profdata_stat.st_mode)
+        self.assertEqual(
+            {path.name for path in self.config.profile_directory.glob("*-profraw-list")},
+            {"fixture-profraw-list"},
+        )
+        self.assertEqual(
+            {path.name for path in self.config.profile_directory.glob("*.profdata")},
+            {"fixture.profdata"},
+        )
+        self.assert_no_private_stage()
+
+    def test_run_intersection_and_publication_failures_restore_original_metadata(self):
+        """Каждая последующая lifecycle boundary использует один rollback owner."""
+
+        for scenario in ("run", "intersection", "prepare", "publication"):
+            with self.subTest(scenario=scenario):
+                profile_list, profdata = self.seed_merge_metadata()
+                marker = self.prepare_previous_artifact()
+                runner, executor = self.new_runner()
+                if scenario == "run":
+                    executor.failed_run = 2
+                elif scenario == "intersection":
+                    executor.omit_intersection_output = True
+                publication_patch = (
+                    mock.patch(
+                        "coverage_runner.publish_artifacts",
+                        side_effect=OSError("fixture publication failure"),
+                    )
+                    if scenario == "publication"
+                    else contextlib.nullcontext()
+                )
+                prepare_patch = (
+                    mock.patch.object(
+                        MergeMetadataTransaction,
+                        "prepare_publication",
+                        side_effect=CoverageRunnerError(
+                            "fixture pre-publication validation failure"
+                        ),
+                    )
+                    if scenario == "prepare"
+                    else contextlib.nullcontext()
+                )
+                with prepare_patch, publication_patch:
+                    with self.assertRaises((CoverageRunnerError, OSError)):
+                        runner.run()
+                self.assertEqual(profile_list.read_bytes(), b"stale profile list\n")
+                self.assertEqual(profdata.read_bytes(), b"stale profdata\n")
+                self.assertEqual(marker.read_text(encoding="utf-8"), "accepted")
+                self.assert_no_private_stage()
+                shutil.rmtree(self.config.artifact_directory)
+
+    def test_repeated_session_retains_only_one_replaced_metadata_generation(self):
+        """Следующий cohort заменяет diagnostic backup без unbounded growth."""
+
+        profile_list, profdata = self.seed_merge_metadata()
+        first_runner, _first_executor = self.new_runner()
+        first_runner.run()
+        first_current = {
+            profile_list.name: profile_list.read_bytes(),
+            profdata.name: profdata.read_bytes(),
+        }
+        second_runner, _second_executor = self.new_runner()
+        second_runner.run()
+        backup = self.config.artifact_directory / "replaced-merge-metadata"
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in backup.iterdir()},
+            first_current,
+        )
+        self.assertEqual(
+            len(list(self.config.artifact_directory.rglob("replaced-merge-metadata"))),
+            1,
+        )
         self.assert_no_private_stage()
 
     def test_publication_rolls_back_when_final_tree_swap_fails(self):
