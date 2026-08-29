@@ -16,6 +16,8 @@ use crate::atomic_write::{
 };
 use crate::{PlaylistStateSnapshot, SaveRevision};
 
+mod lifecycle;
+
 fn revision(value: u64) -> SaveRevision {
     let mut revision = SaveRevision::FIRST;
     for _ in 1..value {
@@ -171,6 +173,7 @@ struct BlockingWriterState {
     active_writes: usize,
     maximum_active_writes: usize,
     revisions: Vec<SaveRevision>,
+    json_snapshots: Vec<serde_json::Value>,
 }
 
 impl BlockingWriter {
@@ -182,6 +185,7 @@ impl BlockingWriter {
                 active_writes: 0,
                 maximum_active_writes: 0,
                 revisions: Vec::new(),
+                json_snapshots: Vec::new(),
             }),
             changed: Condvar::new(),
         }
@@ -213,6 +217,14 @@ impl BlockingWriter {
             .clone()
     }
 
+    fn json_snapshots(&self) -> Vec<serde_json::Value> {
+        self.state
+            .lock()
+            .expect("test blocking lock")
+            .json_snapshots
+            .clone()
+    }
+
     fn maximum_active_writes(&self) -> usize {
         self.state
             .lock()
@@ -223,11 +235,18 @@ impl BlockingWriter {
 
 impl SnapshotWriter for BlockingWriter {
     fn write_snapshot(&self, snapshot: &ImmutableSaveSnapshot) -> AtomicWriteOutcome {
+        let json_snapshot = serde_json::from_slice(
+            &snapshot
+                .serialize_json()
+                .expect("test snapshot сериализуется"),
+        )
+        .expect("serialized snapshot является JSON");
         let mut state = self.state.lock().expect("test blocking lock");
         state.entered_writes += 1;
         state.active_writes += 1;
         state.maximum_active_writes = state.maximum_active_writes.max(state.active_writes);
         state.revisions.push(snapshot.revision());
+        state.json_snapshots.push(json_snapshot);
         self.changed.notify_all();
         while !state.release {
             state = self.changed.wait(state).expect("test condvar wait");
