@@ -66,9 +66,9 @@ class S42ReleaseRunnerTests(unittest.TestCase):
             "ветка `all)` обязана сохранять exact ordered blocking owner sequence",
         )
 
-    # Coverage check обязан иметь preflight, общий suite dispatch и post-suite ratchet.
-    def test_coverage_check_composes_preflight_shared_suite_and_ratchet(self):
-        """Coverage owner не может пропустить validation, измерение либо blocking check."""
+    # Coverage check обязан иметь v2 preflight, общий runner и post-suite stable ratchet.
+    def test_coverage_check_composes_stable_preflight_suite_and_ratchet(self):
+        """Coverage owner не может вернуть legacy aggregate в blocking execution path."""
 
         # Coverage script читается как declarative composition без запуска LLVM suite.
         coverage_script = read_script("coverage.sh")
@@ -87,125 +87,43 @@ class S42ReleaseRunnerTests(unittest.TestCase):
         # Дальнейшие matches не могут случайно найти одноимённые строки вне main.
         main_body = main_match.group("body")
 
-        # Check-only preflight обязан вызывать pure baseline validation.
-        preflight_match = re.search(
-            r'(?ms)^[ \t]*if \[\[ "\$1" == "check" \]\]; then[ \t]*\n'
-            r"(?P<body>.*?)^[ \t]*fi[ \t]*$",
-            main_body,
+        # Exact calls отражают три разных ownership boundary.
+        preflight_position = main_body.find("validate_stable_check_inputs || return 2")
+        suite_position = main_body.find("run_stable_coverage_suite || return 2")
+        diagnostics_position = main_body.find("publish_legacy_diagnostics || return 2")
+        ratchet_position = main_body.find("run_stable_check")
+        # Check проходит preflight, measurement и diagnostics до blocking decision.
+        self.assertTrue(
+            0 <= preflight_position < suite_position < diagnostics_position < ratchet_position,
+            "stable preflight/suite/report-only diagnostics/ratchet обязаны идти в exact порядке",
         )
-        # Missing либо переименованный check preflight ломает fail-fast contract.
-        self.assertIsNotNone(
-            preflight_match,
-            "`coverage.sh check` обязан иметь отдельный validate-baseline preflight",
+        # Legacy aggregator остаётся только generate boundary, но не решает exit check-а.
+        self.assertNotIn(
+            'coverage_metrics.py" check',
+            coverage_script,
+            "legacy coverage_metrics.py check запрещён в v2 execution gate",
         )
-        # Type narrowing следует после assertion.
-        assert preflight_match is not None
-        # Command regex anchored на whole line и не совпадает с комментариями.
-        preflight_commands = re.findall(
-            r'(?m)^[ \t]*python3 "\$\{SCRIPT_DIRECTORY\}/coverage_metrics\.py" '
-            r"validate-baseline[ \t]*$",
-            preflight_match.group("body"),
-        )
-        # Ровно один preflight не допускает удаления либо случайного duplicate run.
-        self.assertEqual(
-            len(preflight_commands),
-            1,
-            "`coverage.sh check` обязан один раз выполнить validate-baseline до suite",
-        )
+        # Stable checker обязан получать cohort и отдельный measurement-exceptions manifest.
+        self.assertIn('coverage_stability.py" check', coverage_script)
+        self.assertIn('--cohort "${STABLE_ARTIFACT_DIRECTORY}/cohort.json"', coverage_script)
+        self.assertIn('--measurement-exceptions "${MEASUREMENT_EXCEPTIONS_PATH}"', coverage_script)
 
-        # Public check/baseline/report modes обязаны делить один clean measurement owner.
-        suite_dispatch_match = re.search(
-            r'(?ms)^[ \t]*case "\$1" in[ \t]*\n'
-            r".*?"
-            r"^[ \t]*check\|baseline\|report\)[ \t]*\n"
-            r"(?P<body>.*?)^[ \t]*;;[ \t]*$",
-            main_body,
-        )
-        # Изменение selector-а либо исчезновение shared arm ломает composition contract.
-        self.assertIsNotNone(
-            suite_dispatch_match,
-            "check/baseline/report обязаны делить один case arm coverage suite",
-        )
-        # Type narrowing следует после assertion.
-        assert suite_dispatch_match is not None
-        # Preflight обязан завершиться раньше входа в общий dispatch.
-        self.assertLess(
-            preflight_match.end(),
-            suite_dispatch_match.start(),
-            "validate-baseline обязан выполняться до coverage suite dispatch",
-        )
-        # Только реальные whole-line run_* calls считаются dispatch owners.
-        shared_suite_calls = tuple(
-            re.findall(
-                r"(?m)^[ \t]*(run_[a-z0-9_]+)[ \t]*$",
-                suite_dispatch_match.group("body"),
-            )
-        )
-        # Shared arm обязан делегировать exact clean suite owner-у.
-        self.assertEqual(
-            shared_suite_calls,
-            ("run_clean_coverage_suite",),
-            "shared coverage arm обязан вызывать только run_clean_coverage_suite",
-        )
-
-        # Blocking ratchet обязан находиться после полного case dispatch.
-        case_end_match = re.search(r"(?m)^[ \t]*esac[ \t]*$", main_body)
-        # Без terminator-а нельзя доказать post-dispatch положение ratchet-а.
-        self.assertIsNotNone(
-            case_end_match,
-            "coverage.sh main обязан содержать case terminator до ratchet",
-        )
-        # Type narrowing следует после assertion.
-        assert case_end_match is not None
-        # Exact command использует freshly generated LLVM summary.
-        ratchet_match = re.search(
-            r'(?m)^[ \t]*python3 "\$\{SCRIPT_DIRECTORY\}/coverage_metrics\.py" '
-            r'check --input "\$\{LLVM_SUMMARY_PATH\}"[ \t]*$',
-            main_body,
-        )
-        # Missing либо изменённый input path должен дать точную diagnostics.
-        self.assertIsNotNone(
-            ratchet_match,
-            "coverage.sh check обязан применять coverage_metrics.py check к LLVM summary",
-        )
-        # Type narrowing следует после assertion.
-        assert ratchet_match is not None
-        # Позиционное сравнение не позволяет перенести ratchet до измерения.
-        self.assertGreater(
-            ratchet_match.start(),
-            case_end_match.end(),
-            "coverage ratchet обязан выполняться после shared suite dispatch",
-        )
-
-    # Raw LCOV обязан валидироваться после export и до публикации HTML/baseline.
-    def test_coverage_suite_rejects_counter_underflow_before_publication(self):
+    # Raw LCOV обязан валидироваться после export и до публикации HTML/cohort.
+    def test_coverage_runner_rejects_counter_underflow_before_publication(self):
         """Повреждённый detached-worker profile не может стать release artifact."""
 
-        # Coverage script остаётся единственным владельцем report composition.
-        coverage_script = read_script("coverage.sh")
-        # Whole function extraction запрещает совпадение только в help/comment.
-        suite_match = re.search(
-            r"(?ms)^run_clean_coverage_suite\(\) \{\n(?P<body>.*?)^\}$",
-            coverage_script,
-        )
-        # Missing function является отдельным wiring failure.
-        self.assertIsNotNone(suite_match)
-        # Type narrowing следует после assertion.
-        assert suite_match is not None
-        # Позиции exact executable anchors фиксируют fail-closed порядок.
-        suite_body = suite_match.group("body")
+        # Python runner является владельцем последовательных raw report boundaries.
+        runner_script = read_script("coverage_runner.py")
         # LCOV сначала должен быть экспортирован из merged profdata.
-        lcov_export_position = suite_body.find("llvm-cov report --lcov")
+        lcov_export_position = runner_script.find('self.cargo_report("--lcov"')
         # Pure parser обязан проверить raw counters, а не compact summary.
-        lcov_validation_position = suite_body.find(
-            'coverage_metrics.py" validate-lcov'
-        )
+        lcov_validation_position = runner_script.find('"validate-lcov"')
         # HTML нельзя публиковать из уже известного повреждённого profile.
-        html_export_position = suite_body.find("llvm-cov report --html")
+        html_export_position = runner_script.find('self.cargo_report("--html"')
         # Все три executable anchors обязательны и идут в exact порядке.
         self.assertTrue(
             0 <= lcov_export_position < lcov_validation_position < html_export_position,
-            "LCOV export обязан пройти validate-lcov до HTML/baseline/ratchet",
+            "LCOV export обязан пройти validate-lcov до HTML/cohort publication",
         )
 
     # Семь standalone forks обязаны оставаться exact, без glob или пропущенного lockfile.
@@ -275,13 +193,16 @@ class S42ReleaseRunnerTests(unittest.TestCase):
             with self.subTest(required_anchor=required_anchor):
                 # Anchor обязан присутствовать буквально.
                 self.assertIn(required_anchor, ci_script)
-        # Coverage test suite тоже является Cargo resolution boundary.
-        coverage_script = read_script("coverage.sh")
-        # Instrumented suite обязана использовать locked workspace graph.
-        self.assertIn(
-            'llvm-cov --workspace --all-features --locked --no-fail-fast',
-            coverage_script,
+        # Stable runner теперь владеет direct Cargo execution boundary.
+        coverage_runner = read_script("coverage_runner.py")
+        # Exact argv sequence закрепляет один locked workspace graph для build и трёх runs.
+        self.assertRegex(
+            coverage_runner,
+            r'(?s)run_arguments = \[.*?"test",.*?"--workspace",.*?'
+            r'"--all-features",.*?"--locked",.*?"--no-fail-fast",.*?\]',
         )
+        # Ambient serialization запрещена approved normal-concurrency methodology.
+        self.assertNotIn('RUST_TEST_THREADS=1', coverage_runner)
 
     # Final launcher должен переиспользовать owners и не запускать manual inputs.
     def test_final_acceptance_reuses_owners_and_keeps_manual_not_run(self):
