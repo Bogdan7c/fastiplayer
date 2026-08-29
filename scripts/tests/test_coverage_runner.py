@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+"""Hermetic tests build-once/three-run coverage orchestration."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from dataclasses import dataclass
+from pathlib import Path
+from unittest import mock
+
+
+SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS_DIRECTORY))
+
+from coverage_runner import (  # noqa: E402
+    CommandExecutor,
+    CoverageRunnerError,
+    RunnerConfig,
+    StableCoverageRunner,
+)
+from coverage_runner_support import publish_artifacts  # noqa: E402
+
+
+@dataclass(frozen=True)
+class RecordedCommand:
+    """Exact argv/env одного fake subprocess вызова."""
+
+    arguments: tuple[str, ...]
+    profile_name: str | None
+    profile_path: str | None
+    rust_test_threads: str | None
+
+
+class FakeCoverageExecutor(CommandExecutor):
+    """Имитирует cargo-llvm-cov, сохраняя реальную filesystem handoff-семантику."""
+
+    def __init__(self, config: RunnerConfig):
+        self.config = config
+        self.commands: list[RecordedCommand] = []
+        self.execution_count = 0
+        self.build_count = 0
+        self.report_count = 0
+        self.empty_run: int | None = None
+        self.mixed_run: int | None = None
+        self.failed_run: int | None = None
+        self.mutate_source_run: int | None = None
+        self.mutate_build_run: int | None = None
+        self.mutate_tool_run: int | None = None
+        self.leave_stale_after_clean = False
+        self.mutate_profile_during_report = False
+        self.omit_intersection_output = False
+        self.fail_lcov_validation = False
+        self.tool_is_mutated = False
+
+    def completed(
+        self, arguments: tuple[str, ...], stdout: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        """Возвращает успешный subprocess-compatible result."""
+
+        return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
+
+    def write_merge_inputs(self) -> None:
+        """Воспроизводит profraw-list/profdata, создаваемые cargo-llvm-cov report."""
+
+        profiles = sorted(self.config.profile_directory.glob("*.profraw"))
+        profile_list = self.config.profile_directory / "fixture-profraw-list"
+        profile_list.write_text(
+            "".join(f"{profile.resolve()}\n" for profile in profiles), encoding="utf-8"
+        )
+        (self.config.profile_directory / "fixture.profdata").write_bytes(b"profdata")
+
+    def run_cargo(
+        self,
+        arguments: tuple[str, ...],
+        environment: dict[str, str],
+    ) -> subprocess.CompletedProcess[str]:
+        """Проецирует только cargo lifecycle, который обязан контролировать runner."""
+
+        if arguments[-1] == "--version":
+            version = "0.8.8" if self.tool_is_mutated else "0.8.7"
+            return self.completed(arguments, f"cargo-llvm-cov {version}\n")
+
+        if "show-env" in arguments:
+            profile_directory = self.config.profile_directory
+            return self.completed(
+                arguments,
+                f"export LLVM_PROFILE_FILE='{profile_directory}/fixture-%p-%16m.profraw'\n"
+                "export RUSTC_WRAPPER='fake-wrapper'\n"
+                "export CARGO_LLVM_COV='1'\n"
+                f"export CARGO_LLVM_COV_TARGET_DIR='{profile_directory}'\n"
+                f"export CARGO_LLVM_COV_BUILD_DIR='{profile_directory}'\n",
+            )
+
+        if "clean" in arguments:
+            self.config.profile_directory.mkdir(parents=True, exist_ok=True)
+            if "--profraw-only" in arguments:
+                if not self.leave_stale_after_clean:
+                    for profile in self.config.profile_directory.glob("*.profraw"):
+                        profile.unlink()
+            else:
+                shutil.rmtree(self.config.profile_directory)
+                self.config.profile_directory.mkdir(parents=True)
+            return self.completed(arguments)
+
+        if "--no-run" in arguments:
+            self.build_count += 1
+            executable = self.config.profile_directory / "debug" / "deps" / "fixture-test"
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.write_bytes(b"instrumented executable")
+            executable.chmod(0o755)
+            return self.completed(arguments)
+
+        if "report" in arguments:
+            self.report_count += 1
+            self.write_merge_inputs()
+            if "--output-path" in arguments:
+                output_path = Path(arguments[arguments.index("--output-path") + 1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                if "--lcov" in arguments:
+                    output_path.write_text(
+                        "TN:\nSF:crates/example/src/lib.rs\nDA:1,1\nend_of_record\n",
+                        encoding="utf-8",
+                    )
+                else:
+                    output_path.write_text(
+                        '{"type":"llvm.coverage.json.export","version":"3.1.0","data":[]}',
+                        encoding="utf-8",
+                    )
+            if "--output-dir" in arguments:
+                html_directory = (
+                    Path(arguments[arguments.index("--output-dir") + 1]) / "html"
+                )
+                html_directory.mkdir(parents=True, exist_ok=True)
+                (html_directory / "index.html").write_text("fixture", encoding="utf-8")
+            if self.mutate_profile_during_report and self.report_count == 1:
+                next(self.config.profile_directory.glob("*.profraw")).write_bytes(b"changed")
+            return self.completed(arguments)
+
+        if "test" in arguments and "--no-run" not in arguments:
+            self.execution_count += 1
+            run_number = self.execution_count
+            if self.failed_run == run_number:
+                raise CoverageRunnerError(f"fixture run {run_number} failed")
+            if self.mutate_source_run == run_number:
+                (self.config.repo_root / "src" / "lib.rs").write_text(
+                    f"pub fn changed_{run_number}() {{}}\n", encoding="utf-8"
+                )
+            if self.mutate_build_run == run_number:
+                executable = (
+                    self.config.profile_directory / "debug" / "deps" / "fixture-test"
+                )
+                executable.write_bytes(executable.read_bytes() + b" changed")
+            if self.mutate_tool_run == run_number:
+                self.tool_is_mutated = True
+            if self.empty_run != run_number:
+                template = environment["LLVM_PROFILE_FILE_NAME"]
+                profile_name = template.replace("%p", str(1000 + run_number)).replace(
+                    "%16m", f"module{run_number}"
+                )
+                (self.config.profile_directory / profile_name).write_bytes(
+                    f"profile-{run_number}".encode()
+                )
+            if self.mixed_run == run_number:
+                (self.config.profile_directory / "foreign.profraw").write_bytes(b"foreign")
+            return self.completed(arguments)
+
+        raise AssertionError(f"unexpected cargo command: {arguments}")
+
+    def run_python(self, arguments: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        """Имитирует LCOV validator и frozen coordinate CLI contracts."""
+
+        if "validate-lcov" in arguments:
+            if self.fail_lcov_validation:
+                raise CoverageRunnerError("fixture LCOV corruption")
+            return self.completed(arguments)
+        if "extract" in arguments:
+            output = Path(arguments[arguments.index("--output") + 1])
+            run_label = arguments[arguments.index("--run-label") + 1]
+            output.write_text(json.dumps({"run_label": run_label}), encoding="utf-8")
+            return self.completed(arguments)
+        if "intersect" in arguments:
+            if not self.omit_intersection_output:
+                output = Path(arguments[arguments.index("--output") + 1])
+                diagnostics = Path(arguments[arguments.index("--diagnostics") + 1])
+                output.write_text('{"stable":true}', encoding="utf-8")
+                diagnostics.write_text('{"variable":[]}', encoding="utf-8")
+            return self.completed(arguments)
+        raise AssertionError(f"unexpected Python command: {arguments}")
+
+    def run(
+        self,
+        arguments,
+        *,
+        cwd,
+        environment,
+        capture_output=False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Записывает вызов и делегирует exact fake tool owner-у."""
+
+        del cwd, capture_output
+        exact_arguments = tuple(arguments)
+        exact_environment = dict(environment)
+        self.commands.append(
+            RecordedCommand(
+                exact_arguments,
+                exact_environment.get("LLVM_PROFILE_FILE_NAME"),
+                exact_environment.get("LLVM_PROFILE_FILE"),
+                exact_environment.get("RUST_TEST_THREADS"),
+            )
+        )
+        if exact_arguments[0] == self.config.rustc_command:
+            llvm_version = "99.0.0" if self.tool_is_mutated else "22.1.2"
+            return self.completed(
+                exact_arguments,
+                f"rustc 1.96.0\nrelease: 1.96.0\nLLVM version: {llvm_version}\n",
+            )
+        if exact_arguments[0] == self.config.cargo_command:
+            return self.run_cargo(exact_arguments, exact_environment)
+        if exact_arguments[0] == self.config.python_command:
+            return self.run_python(exact_arguments)
+        raise AssertionError(f"unexpected executable: {exact_arguments[0]}")
+
+
+class StableCoverageRunnerTests(unittest.TestCase):
+    """Проверяет публичный runner lifecycle через filesystem-visible fake tools."""
+
+    def setUp(self):
+        """Создаёт отдельный git worktree и policy paths для каждого scenario."""
+
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.repo_root = Path(self.temporary_directory.name)
+        (self.repo_root / "src").mkdir()
+        (self.repo_root / "src" / "lib.rs").write_text(
+            "pub fn covered() {}\n", encoding="utf-8"
+        )
+        (self.repo_root / ".gitignore").write_text("/target/\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", self.repo_root], check=True)
+        scripts = self.repo_root / "scripts"
+        scripts.mkdir()
+        for script_name in (
+            "coverage_coordinates.py",
+            "coverage_stability.py",
+            "coverage_metrics.py",
+        ):
+            (scripts / script_name).write_text("# fixture\n", encoding="utf-8")
+        coverage_directory = self.repo_root / "coverage"
+        coverage_directory.mkdir()
+        (coverage_directory / "policy.json").write_text("{}\n", encoding="utf-8")
+        self.config = RunnerConfig(
+            repo_root=self.repo_root,
+            profile_directory=self.repo_root / "target" / "llvm-cov-target",
+            artifact_directory=self.repo_root / "target" / "coverage" / "stable",
+            policy_path=coverage_directory / "policy.json",
+            coordinate_extractor=scripts / "coverage_coordinates.py",
+            stability_tool=scripts / "coverage_stability.py",
+            lcov_validator=scripts / "coverage_metrics.py",
+            toolchain="1.96.0",
+            cargo_llvm_cov_version="0.8.7",
+            llvm_cov_version="22.1.2",
+            session_id="fixture-session",
+            cargo_command="fake-cargo",
+            rustc_command="fake-rustc",
+            python_command="fake-python",
+        )
+
+    def tearDown(self):
+        """Удаляет только testcase-owned temporary worktree."""
+
+        self.temporary_directory.cleanup()
+
+    def new_runner(self) -> tuple[StableCoverageRunner, FakeCoverageExecutor]:
+        """Возвращает runner и его observable fake subprocess boundary."""
+
+        executor = FakeCoverageExecutor(self.config)
+        return StableCoverageRunner(self.config, executor), executor
+
+    def prepare_previous_artifact(self) -> Path:
+        """Создаёт last-known-good tree для проверки transaction rollback."""
+
+        self.config.artifact_directory.mkdir(parents=True)
+        marker = self.config.artifact_directory / "previous.txt"
+        marker.write_text("accepted", encoding="utf-8")
+        return marker
+
+    def assert_no_private_stage(self):
+        """Failure не должен оставлять private stage похожим на accepted artifact."""
+
+        stages = list(
+            self.config.artifact_directory.parent.glob(".stable.stage-*")
+        )
+        self.assertEqual(stages, [])
+
+    def test_success_builds_once_runs_exact_same_suite_three_times_and_publishes(self):
+        """Три normal-concurrency run используют один build и уникальные profile prefixes."""
+
+        runner, executor = self.new_runner()
+        with mock.patch.dict(os.environ, {"RUST_TEST_THREADS": "1"}):
+            runner.run()
+
+        run_commands = [
+            command
+            for command in executor.commands
+            if "test" in command.arguments and "--no-run" not in command.arguments
+        ]
+        self.assertEqual(executor.build_count, 1)
+        self.assertEqual(len(run_commands), 3)
+        self.assertEqual(len({command.arguments for command in run_commands}), 1)
+        self.assertEqual(
+            [command.profile_name for command in run_commands],
+            [
+                "stable-fixture-session-run-1-%p-%16m.profraw",
+                "stable-fixture-session-run-2-%p-%16m.profraw",
+                "stable-fixture-session-run-3-%p-%16m.profraw",
+            ],
+        )
+        self.assertTrue(
+            all(
+                command.profile_path
+                == str(self.config.profile_directory / command.profile_name)
+                for command in run_commands
+            )
+        )
+        self.assertTrue(all(command.rust_test_threads is None for command in run_commands))
+        profile_cleans = [
+            command
+            for command in executor.commands
+            if "clean" in command.arguments and "--profraw-only" in command.arguments
+        ]
+        self.assertEqual(len(profile_cleans), 3)
+        show_env_commands = [
+            command for command in executor.commands if "show-env" in command.arguments
+        ]
+        self.assertEqual(len(show_env_commands), 1)
+        self.assertEqual(executor.report_count, 10)
+        for run_number in range(1, 4):
+            self.assertTrue(
+                (self.config.artifact_directory / f"run-{run_number}.json").is_file()
+            )
+        self.assertTrue((self.config.artifact_directory / "cohort.json").is_file())
+        self.assertTrue((self.config.artifact_directory / "variable.json").is_file())
+        self.assertTrue(
+            (self.config.artifact_directory / "html" / "index.html").is_file()
+        )
+        self.assert_no_private_stage()
+
+    def test_reports_are_sequential_and_each_run_is_extracted_before_next_execution(self):
+        """Full/summary/LCOV одного run завершаются до следующего test execution."""
+
+        runner, executor = self.new_runner()
+        runner.run()
+        command_kinds = []
+        for command in executor.commands:
+            if "test" in command.arguments and "--no-run" not in command.arguments:
+                command_kinds.append("run")
+            elif "report" in command.arguments:
+                command_kinds.append("html" if "--html" in command.arguments else "report")
+            elif "extract" in command.arguments:
+                command_kinds.append("extract")
+            elif "intersect" in command.arguments:
+                command_kinds.append("intersect")
+        self.assertEqual(
+            command_kinds,
+            [
+                "run", "report", "report", "report", "extract",
+                "run", "report", "report", "report", "extract",
+                "run", "report", "report", "report", "extract",
+                "intersect", "html",
+            ],
+        )
+
+    def test_manifests_hash_exact_prefix_only_profiles_and_frozen_profile_identity(self):
+        """Published provenance отделяет exact A schema от подробного raw hash manifest."""
+
+        runner, _executor = self.new_runner()
+        runner.run()
+        profile_identity = json.loads(
+            (self.config.artifact_directory / "profiles" / "run-1.json").read_text()
+        )
+        self.assertEqual(
+            profile_identity,
+            {
+                "schema_version": 1,
+                "profile": "workspace",
+                "methodology": "cargo-llvm-cov-full-json-3run-v1",
+                "llvm_cov_version": "22.1.2",
+                "cargo_llvm_cov_version": "0.8.7",
+            },
+        )
+        raw_manifest = json.loads(
+            (self.config.artifact_directory / "manifests" / "run-1.json").read_text()
+        )
+        self.assertTrue(raw_manifest["profiles"])
+        self.assertTrue(
+            all(
+                profile["name"].startswith("stable-fixture-session-run-1-")
+                and len(profile["sha256"]) == 64
+                for profile in raw_manifest["profiles"]
+            )
+        )
+        cohort_manifest = json.loads(
+            (self.config.artifact_directory / "cohort-manifest.json").read_text()
+        )
+        self.assertEqual(cohort_manifest["run_count"], 3)
+        self.assertTrue(cohort_manifest["artifacts"])
+
+    def test_empty_mixed_and_stale_profiles_fail_without_replacing_previous_artifact(self):
+        """Ни пустой, ни mixed, ни переживший clean profile set не допускается к report."""
+
+        scenarios = ("empty", "mixed", "stale")
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario):
+                marker = self.prepare_previous_artifact()
+                runner, executor = self.new_runner()
+                if scenario == "empty":
+                    executor.empty_run = 1
+                elif scenario == "mixed":
+                    executor.mixed_run = 1
+                else:
+                    executor.leave_stale_after_clean = True
+                    self.config.profile_directory.mkdir(parents=True, exist_ok=True)
+                    (self.config.profile_directory / "stale.profraw").write_bytes(b"stale")
+                with self.assertRaises(CoverageRunnerError):
+                    runner.run()
+                self.assertEqual(marker.read_text(encoding="utf-8"), "accepted")
+                self.assert_no_private_stage()
+                shutil.rmtree(self.config.artifact_directory)
+
+    def test_failed_run_source_tool_or_build_mutation_aborts_exact_cohort(self):
+        """Execution failure и любое изменение inputs/binaries/tools являются terminal."""
+
+        scenarios = ("failed", "source", "tool", "build")
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario):
+                marker = self.prepare_previous_artifact()
+                runner, executor = self.new_runner()
+                if scenario == "failed":
+                    executor.failed_run = 2
+                elif scenario == "source":
+                    executor.mutate_source_run = 2
+                elif scenario == "tool":
+                    executor.mutate_tool_run = 2
+                else:
+                    executor.mutate_build_run = 2
+                with self.assertRaises(CoverageRunnerError):
+                    runner.run()
+                self.assertEqual(marker.read_text(encoding="utf-8"), "accepted")
+                self.assert_no_private_stage()
+                # Source mutation откатывается только testcase-ом, не production runner-ом.
+                (self.repo_root / "src" / "lib.rs").write_text(
+                    "pub fn covered() {}\n", encoding="utf-8"
+                )
+                shutil.rmtree(self.config.artifact_directory)
+
+    def test_profile_mutation_or_missing_intersection_never_publishes_partial_tree(self):
+        """Hash mismatch и broken coordinate CLI сохраняют last-known-good artifacts."""
+
+        for scenario in ("profile", "intersection", "lcov"):
+            with self.subTest(scenario=scenario):
+                marker = self.prepare_previous_artifact()
+                runner, executor = self.new_runner()
+                if scenario == "profile":
+                    executor.mutate_profile_during_report = True
+                elif scenario == "intersection":
+                    executor.omit_intersection_output = True
+                else:
+                    executor.fail_lcov_validation = True
+                with self.assertRaises(CoverageRunnerError):
+                    runner.run()
+                self.assertEqual(marker.read_text(encoding="utf-8"), "accepted")
+                self.assert_no_private_stage()
+                shutil.rmtree(self.config.artifact_directory)
+
+    def test_success_replaces_previous_tree_and_cleanup_does_not_touch_foreign_sibling(self):
+        """Commit tree заменяется целиком, а соседний artifact остаётся нетронутым."""
+
+        old_marker = self.prepare_previous_artifact()
+        foreign = self.config.artifact_directory.parent / "foreign-artifact.txt"
+        foreign.write_text("owned elsewhere", encoding="utf-8")
+        runner, _executor = self.new_runner()
+        runner.run()
+        self.assertFalse(old_marker.exists())
+        self.assertEqual(foreign.read_text(encoding="utf-8"), "owned elsewhere")
+        self.assert_no_private_stage()
+
+    def test_publication_rolls_back_when_final_tree_swap_fails(self):
+        """Ошибка второго rename возвращает previous artifact и не трогает foreign sibling."""
+
+        marker = self.prepare_previous_artifact()
+        stage = self.config.artifact_directory.parent / ".manual-stage"
+        stage.mkdir()
+        (stage / "new.txt").write_text("new", encoding="utf-8")
+        real_replace = os.replace
+        replace_count = 0
+
+        def fail_second_replace(source, destination):
+            nonlocal replace_count
+            replace_count += 1
+            if replace_count == 2:
+                raise OSError("fixture atomic swap failure")
+            return real_replace(source, destination)
+
+        with mock.patch(
+            "coverage_runner_support.os.replace", side_effect=fail_second_replace
+        ):
+            with self.assertRaises(OSError):
+                publish_artifacts(stage, self.config.artifact_directory, "rollback")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "accepted")
+        self.assertTrue(stage.is_dir())
+
+
+if __name__ == "__main__":
+    unittest.main()
