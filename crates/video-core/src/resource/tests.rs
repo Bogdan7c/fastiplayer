@@ -802,59 +802,81 @@ fn dma_buf_frame_contract_validation_accepts_exact_descriptor_match() {
 fn dma_buf_frame_contract_validation_returns_typed_layout_and_size_rejections() {
     let descriptor = sample_dma_buf_descriptor();
 
+    let layout_rejection = validate_dma_buf_descriptor_against_frame_contract(
+        VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        1920,
+        1080,
+        &descriptor,
+    )
+    .expect_err("несовпадающий DMA-BUF layout должен быть отклонён");
     assert_eq!(
-        validate_dma_buf_descriptor_against_frame_contract(
-            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
-            1920,
-            1080,
-            &descriptor,
-        ),
-        Err(DmaBufDescriptorRejection::ImageLayoutMismatch {
+        layout_rejection,
+        DmaBufDescriptorRejection::ImageLayoutMismatch {
             expected: DmaBufImageLayout::SeparateLayers,
             actual: DmaBufImageLayout::ComposedLayers,
-        })
+        }
     );
+    assert!(
+        layout_rejection
+            .to_string()
+            .contains("image layout mismatch")
+    );
+
+    let size_rejection = validate_dma_buf_descriptor_against_frame_contract(
+        VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+        1280,
+        720,
+        &descriptor,
+    )
+    .expect_err("несовпадающий coded size должен быть отклонён");
     assert_eq!(
-        validate_dma_buf_descriptor_against_frame_contract(
-            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
-            1280,
-            720,
-            &descriptor,
-        ),
-        Err(DmaBufDescriptorRejection::CodedSizeMismatch {
+        size_rejection,
+        DmaBufDescriptorRejection::CodedSizeMismatch {
             expected_width: 1280,
             expected_height: 720,
             actual_width: 1920,
             actual_height: 1080,
-        })
+        }
     );
+    assert!(size_rejection.to_string().contains("1280x720"));
 }
 
 #[test]
 fn dma_buf_frame_contract_validation_rejects_wrong_transfer_path_and_zero_size() {
     let descriptor = sample_dma_buf_descriptor();
 
+    let transfer_rejection = validate_dma_buf_descriptor_against_frame_contract(
+        VideoFrameContract::host_yuv420_planar8(),
+        1920,
+        1080,
+        &descriptor,
+    )
+    .expect_err("host-upload contract не должен принимать DMA-BUF descriptor");
     assert_eq!(
-        validate_dma_buf_descriptor_against_frame_contract(
-            VideoFrameContract::host_yuv420_planar8(),
-            1920,
-            1080,
-            &descriptor,
-        ),
-        Err(DmaBufDescriptorRejection::FrameContractRequiresHostUpload)
+        transfer_rejection,
+        DmaBufDescriptorRejection::FrameContractRequiresHostUpload
     );
+    assert!(
+        transfer_rejection
+            .to_string()
+            .contains("requires host upload")
+    );
+
+    let size_rejection = validate_dma_buf_descriptor_against_frame_contract(
+        VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+        0,
+        1080,
+        &descriptor,
+    )
+    .expect_err("нулевой coded size должен быть отклонён до импорта");
     assert_eq!(
-        validate_dma_buf_descriptor_against_frame_contract(
-            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
-            0,
-            1080,
-            &descriptor,
-        ),
-        Err(DmaBufDescriptorRejection::InvalidCodedSize {
+        size_rejection,
+        DmaBufDescriptorRejection::InvalidCodedSize {
             coded_width: 0,
             coded_height: 1080,
-        })
+        }
     );
+    assert!(size_rejection.to_string().contains("got 0x1080"));
 }
 
 #[test]

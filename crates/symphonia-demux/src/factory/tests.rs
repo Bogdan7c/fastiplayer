@@ -49,7 +49,7 @@ impl Drop for TemporaryMediaFile {
 }
 
 /// Генерирует минимальный mono PCM WAV без checked-in media assets.
-fn generated_pcm_wav() -> Vec<u8> {
+pub(crate) fn generated_pcm_wav() -> Vec<u8> {
     let sample_data = [0_u8; 32];
     let riff_size = 36_u32 + sample_data.len() as u32;
     let mut wav = Vec::with_capacity(44 + sample_data.len());

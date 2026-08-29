@@ -479,4 +479,4 @@ fn registration(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

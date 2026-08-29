@@ -176,6 +176,33 @@ fn prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet() {
     drop(demuxer);
 }
 
+#[test]
+fn live_presentation_is_rejected_before_any_manifest_fetch() {
+    let server = HermeticHttpServer::start(HashMap::new());
+    let root_target = server.target("/live.f4m");
+    let request = HdsVodOpenRequest {
+        transport_request: transport_request_for_presentation(
+            &root_target,
+            MediaPresentation::Live,
+            CancellationToken::new(),
+        ),
+        source_config: source_config(),
+        demux_registry: f4f_registry(),
+        policy: open_policy(),
+        selection: HdsRenditionSelection::BestByPreference(PreferredHeightPolicy::NoPreference),
+    };
+
+    let error = match prepare_hds_vod(request) {
+        Ok(_) => panic!("VOD-only HDS runtime не должен принимать live presentation"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("accepts only VOD"));
+    assert!(
+        server.requested_paths().is_empty(),
+        "presentation contract должен быть проверен до network side effects"
+    );
+}
+
 /// Reorder/URL rotation сохраняет semantic row, unavailable sibling изолируется,
 /// а rematched exact identity открывает только fresh private runtime mapping.
 #[test]
@@ -295,10 +322,58 @@ fn capability_rejection_prevents_truthless_catalog_publication() {
     })
     .expect_err("capability-rejected row must not be published");
 
+    let typed_error = error
+        .downcast_ref::<HdsNoPlayableRendition>()
+        .expect("all content/capability rejections must preserve typed parent fallback");
     assert!(
-        error.downcast_ref::<HdsNoPlayableRendition>().is_some(),
-        "all content/capability rejections must preserve typed parent fallback"
+        typed_error
+            .to_string()
+            .contains("no probed playable rendition"),
+        "terminal fallback diagnostic должен называть отсутствие playable rendition"
     );
+}
+
+#[test]
+fn malformed_siblings_are_reported_without_hiding_a_playable_rendition() {
+    let server = HermeticHttpServer::start(HashMap::from([
+        ("/mixed.f4m", mixed_rejection_manifest()),
+        ("/media/bootstrap.bin", vod_bootstrap()),
+        ("/media/validSeg1-Frag1", f4f_fragment(0)),
+        ("/media/validSeg1-Frag2", f4f_fragment(1_000)),
+    ]));
+    let target = server.target("/mixed.f4m");
+    let capabilities = FixtureHdsCapabilities::default();
+
+    let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
+        transport_request: transport_request(&target, CancellationToken::new()),
+        source_config: source_config(),
+        demux_registry: f4f_registry(),
+        policy: open_policy(),
+        catalog_identity: catalog_identity(1),
+        capability_probe: &capabilities,
+        preferred_height: PreferredHeightPolicy::NoPreference,
+    })
+    .expect("валидная HDS row должна пережить malformed siblings");
+
+    assert_eq!(discovered.catalog().coupled_presentations().len(), 1);
+    let rejection_reasons = discovered
+        .rejections()
+        .iter()
+        .copied()
+        .map(web_media_hds::HdsRenditionRejection::reason)
+        .collect::<Vec<_>>();
+    assert!(
+        rejection_reasons
+            .contains(&web_media_hds::HdsRenditionRejectionReason::MalformedManifestRow)
+    );
+    assert!(
+        rejection_reasons.contains(&web_media_hds::HdsRenditionRejectionReason::InvalidLocator)
+    );
+
+    let diagnostic = format!("{discovered:?}");
+    assert!(diagnostic.contains("published_rows: 1"));
+    assert!(diagnostic.contains("rejected_rows: 2"));
+    assert!(!diagnostic.contains(target.expose_secret_for_request()));
 }
 
 /// Доказывает user-visible startup contract на полном production path-е:
@@ -586,6 +661,14 @@ fn transport_request(
     target: &HttpRequestTarget,
     cancellation: CancellationToken,
 ) -> TransportOpenRequest {
+    transport_request_for_presentation(target, MediaPresentation::Vod, cancellation)
+}
+
+fn transport_request_for_presentation(
+    target: &HttpRequestTarget,
+    presentation: MediaPresentation,
+    cancellation: CancellationToken,
+) -> TransportOpenRequest {
     let source = SourceIdentity::new(38);
     let generation = SourceGeneration::new(1);
     let exact = CandidateIdentity::new(
@@ -608,7 +691,7 @@ fn transport_request(
         TransportProviderId::new("hds-runtime-test").expect("HDS provider identity"),
         component,
         target.clone(),
-        MediaPresentation::Vod,
+        presentation,
         generation,
         secrets,
         RedirectPolicy::same_origin(
@@ -735,6 +818,11 @@ fn discovery_manifest(valid_media: &str, valid_first: bool) -> Vec<u8> {
         r#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><streamType>recorded</streamType><duration>2</duration><baseURL>media/</baseURL>{rows}<bootstrapInfo id="boot" url="bootstrap.bin"/></manifest>"#
     )
     .into_bytes()
+}
+
+/// Валидная row сосуществует с parser-level и locator-level content rejections.
+fn mixed_rejection_manifest() -> Vec<u8> {
+    br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><streamType>recorded</streamType><duration>2</duration><baseURL>media/</baseURL><media url="broken" width="wide"/><media href="http://["/><media url="valid" bitrate="1200" width="1280" height="720" bootstrapInfoId="boot"/><bootstrapInfo id="boot" url="bootstrap.bin"/></manifest>"#.to_vec()
 }
 
 /// Четыре валидных rows заставляют discovery доказать полный bounded parallel pass.

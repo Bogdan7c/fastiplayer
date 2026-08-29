@@ -157,3 +157,7 @@ impl Read for StreamingByteReader {
         Ok(bytes_to_copy)
     }
 }
+
+#[cfg(test)]
+#[path = "streaming_source/tests.rs"]
+mod tests;
