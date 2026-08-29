@@ -1,8 +1,9 @@
 use bounded_xml_reader::XmlBudgets;
 use dash_mpd_core::{
-    DashAddressing, DashDynamicMpd, DashDynamicMpdError, DashDynamicProfileExclusion,
-    DashMpdLimits, DashMpdParseRequest, DashPresentationDuration, DashUtcTiming,
-    parse_dynamic_dash_mpd,
+    DASH_DIRECT_UTC_SCHEME, DASH_HTTP_XSDATE_UTC_SCHEME, DashAddressing, DashColorMetadata,
+    DashDynamicMpd, DashDynamicMpdError, DashDynamicProfileExclusion, DashHdrTransfer,
+    DashMpdLimits, DashMpdParseRequest, DashPresentationDuration, DashUtcTimestamp,
+    DashUtcTimestampParseError, DashUtcTiming, parse_dynamic_dash_mpd,
 };
 
 /// Test-only hardened XML budget.
@@ -288,4 +289,263 @@ fn utc_timing_accepts_paired_whitespace_and_rejects_payload_nested_or_duplicate_
             )
         ));
     }
+}
+
+/// Diagnostics dynamic snapshot-а не должны раскрывать locator или wall-clock payload.
+#[test]
+fn dynamic_debug_is_structural_and_redacts_source_material() {
+    let secret_locator = "https://media.invalid/private/manifest?token=secret";
+    let document = fixture("", "").replace(
+        r#"          <Period id="p0""#,
+        &format!(
+            r#"          <BaseURL>{secret_locator}</BaseURL>
+          <Period id="p0""#
+        ),
+    );
+
+    let mpd = parse(&document).expect("dynamic fixture с root BaseURL");
+    let diagnostics = format!("{mpd:?}");
+
+    assert!(diagnostics.contains("period_count: 1"));
+    assert!(diagnostics.contains("minimum_update_period_milliseconds: 2000"));
+    assert!(diagnostics.contains("suggested_presentation_delay_milliseconds: 6000"));
+    assert!(!diagnostics.contains(secret_locator));
+    assert!(!diagnostics.contains("2026-07-24T10:01:01Z"));
+}
+
+/// Clock boundary принимает один XSDATE timestamp и не раскрывает clock material в diagnostics.
+#[test]
+fn utc_clock_response_and_diagnostics_are_exact_and_secret_safe() {
+    let direct_mpd = parse(&fixture("", "")).expect("direct UTC fixture");
+    let direct_timestamp = direct_mpd.direct_utc_time().expect("direct timestamp");
+    let parsed_response =
+        DashUtcTimestamp::parse_xs_datetime_response(b" \n2026-07-24T10:01:01Z\t")
+            .expect("bounded XSDATE response");
+    assert_eq!(parsed_response, direct_timestamp);
+    assert_eq!(
+        format!("{parsed_response:?}"),
+        "DashUtcTimestamp(<redacted>)"
+    );
+    assert_eq!(
+        format!("{:?}", direct_mpd.utc_timing),
+        "DashUtcTiming::Direct(<redacted>)"
+    );
+
+    let http_document = fixture("", "")
+        .replace(DASH_DIRECT_UTC_SCHEME, DASH_HTTP_XSDATE_UTC_SCHEME)
+        .replace(
+            r#"value="2026-07-24T10:01:01Z""#,
+            r#"value="clock/private""#,
+        );
+    let http_mpd = parse(&http_document).expect("HTTP XSDATE descriptor");
+    let DashUtcTiming::HttpXsDate(resource) = &http_mpd.utc_timing else {
+        panic!("ожидался HTTP XSDATE descriptor");
+    };
+    assert_eq!(
+        format!("{:?}", http_mpd.utc_timing),
+        "DashUtcTiming::HttpXsDate(<redacted>)"
+    );
+    assert_eq!(format!("{resource:?}"), "DashUtcTimingResource(<redacted>)");
+    assert!(!format!("{resource:?}").contains(resource.reference()));
+
+    assert_eq!(
+        DashUtcTimestamp::parse_xs_datetime_response(&[0xff]),
+        Err(DashUtcTimestampParseError::InvalidEncoding)
+    );
+    assert_eq!(
+        DashUtcTimestamp::parse_xs_datetime_response(b" \r\n\t"),
+        Err(DashUtcTimestampParseError::InvalidTimestamp)
+    );
+    assert_eq!(
+        DashUtcTimestamp::parse_xs_datetime_response(b"not-a-timestamp"),
+        Err(DashUtcTimestampParseError::InvalidTimestamp)
+    );
+}
+
+/// Typed model queries не смешивают live/finite и SDR/HDR semantic states.
+#[test]
+fn presentation_and_color_queries_preserve_semantic_distinctions() {
+    for (transfer_characteristics, expected) in [
+        (Some(16), Some(DashHdrTransfer::Pq)),
+        (Some(18), Some(DashHdrTransfer::Hlg)),
+        (Some(1), None),
+        (None, None),
+    ] {
+        let color = DashColorMetadata {
+            transfer_characteristics,
+            ..DashColorMetadata::default()
+        };
+        assert_eq!(color.hdr_transfer(), expected);
+    }
+
+    let finite = DashPresentationDuration::FiniteMilliseconds(12_345);
+    assert_eq!(finite.finite_milliseconds(), Some(12_345));
+    assert!(!finite.is_open_ended());
+    assert_eq!(
+        DashPresentationDuration::OpenEnded.finite_milliseconds(),
+        None
+    );
+    assert!(DashPresentationDuration::OpenEnded.is_open_ended());
+}
+
+/// Root timing contract fail-closed различает profile exclusions и schema failures.
+#[test]
+fn root_timing_and_shape_failures_keep_typed_boundaries() {
+    let valid = fixture("", "");
+    let cases = [
+        (
+            valid.replace(r#"type="dynamic""#, r#"type="static""#),
+            DashDynamicProfileExclusion::NotDynamic,
+        ),
+        (
+            valid.replace(r#" availabilityStartTime="2026-07-24T10:00:00Z""#, ""),
+            DashDynamicProfileExclusion::MissingOrInvalidAvailabilityStartTime,
+        ),
+        (
+            valid.replace(
+                r#"availabilityStartTime="2026-07-24T10:00:00Z""#,
+                r#"availabilityStartTime="not-a-timestamp""#,
+            ),
+            DashDynamicProfileExclusion::MissingOrInvalidAvailabilityStartTime,
+        ),
+        (
+            valid.replace(r#" publishTime="2026-07-24T10:01:00.250Z""#, ""),
+            DashDynamicProfileExclusion::MissingPublishTime,
+        ),
+        (
+            valid.replace(
+                r#"minimumUpdatePeriod="PT2S""#,
+                r#"minimumUpdatePeriod="PT0S""#,
+            ),
+            DashDynamicProfileExclusion::MissingOrInvalidMinimumUpdatePeriod,
+        ),
+        (
+            valid.replace(
+                r#"suggestedPresentationDelay="PT6S""#,
+                r#"suggestedPresentationDelay="PT0S""#,
+            ),
+            DashDynamicProfileExclusion::MissingOrInvalidSuggestedPresentationDelay,
+        ),
+        (
+            fixture(r#"timeShiftBufferDepth="PT6S""#, ""),
+            DashDynamicProfileExclusion::MissingOrInvalidSuggestedPresentationDelay,
+        ),
+        (
+            fixture(r#"unknownTiming="true""#, ""),
+            DashDynamicProfileExclusion::UnsupportedTimingConstruct,
+        ),
+        (
+            valid.replace(
+                "          <Period",
+                "          <Location>next.mpd</Location>\n          <Period",
+            ),
+            DashDynamicProfileExclusion::UnsupportedTimingConstruct,
+        ),
+    ];
+
+    for (document, expected) in cases {
+        let error = parse(&document).expect_err("неполный dynamic contract должен fail closed");
+        assert!(matches!(
+            error,
+            DashDynamicMpdError::ProfileExcluded(actual) if actual == expected
+        ));
+    }
+}
+
+/// Period bounds являются semantic identity live timeline и не нормализуются догадками.
+#[test]
+fn dynamic_period_continuity_accepts_derived_bounds_and_rejects_ambiguity() {
+    let derived_first_duration = fixture("", "")
+        .replace(
+            r#"<Period id="p0" start="PT0S" duration="PT120S">"#,
+            r#"<Period id="p0" start="PT0S">"#,
+        )
+        .replace(
+            "</Period>\n        </MPD>",
+            r#"</Period>
+          <Period id="p1" start="PT120S">
+            <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401f">
+              <SegmentTemplate timescale="1000" media="tail-$Time$.m4s"
+                  initialization="tail-init.mp4">
+                <SegmentTimeline><S t="120000" d="2000" r="4"/></SegmentTimeline>
+              </SegmentTemplate>
+              <Representation id="tail-video"/>
+            </AdaptationSet>
+          </Period>
+        </MPD>"#,
+        );
+    let mpd = parse(&derived_first_duration).expect("next Period start задаёт finite bound");
+    assert_eq!(
+        mpd.presentation.periods[0].duration,
+        DashPresentationDuration::FiniteMilliseconds(120_000)
+    );
+    assert_eq!(
+        mpd.presentation.media_presentation_duration,
+        DashPresentationDuration::OpenEnded
+    );
+
+    let non_contiguous = explicit_two_period_document_with_second_start("PT61S");
+    let ambiguous_cases = [
+        fixture("", "").replace(r#"duration="PT120S""#, r#"duration="PT0S""#),
+        fixture("", "").replace(r#" start="PT0S""#, ""),
+        non_contiguous,
+    ];
+    for (case_index, document) in ambiguous_cases.into_iter().enumerate() {
+        let error = parse(&document).expect_err("ambiguous Period timing должен fail closed");
+        assert!(
+            matches!(
+                &error,
+                DashDynamicMpdError::ProfileExcluded(
+                    DashDynamicProfileExclusion::MissingPeriodTiming
+                )
+            ),
+            "unexpected Period error for case {case_index}: {error:?}"
+        );
+    }
+}
+
+/// Строит explicit two-period snapshot для проверки exact соседних bounds.
+fn explicit_two_period_document_with_second_start(second_start: &str) -> String {
+    fixture("", "")
+        .replace(
+            r#"<Period id="p0" start="PT0S" duration="PT120S">"#,
+            r#"<Period id="p0" start="PT0S" duration="PT60S">"#,
+        )
+        .replace(
+            r#"<SegmentTimeline><S t="0" d="2000" r="59"/></SegmentTimeline>"#,
+            r#"<SegmentTimeline><S t="0" d="2000" r="29"/></SegmentTimeline>"#,
+        )
+        .replace(
+            "</Period>\n        </MPD>",
+            &format!(
+                r#"</Period>
+          <Period id="p1" start="{second_start}" duration="PT60S">
+            <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401f">
+              <SegmentTemplate timescale="1000" media="v2-$Time$.m4s"
+                  initialization="v2-init.mp4">
+                <SegmentTimeline><S t="60000" d="2000" r="29"/></SegmentTimeline>
+              </SegmentTemplate>
+              <Representation id="video-2"/>
+            </AdaptationSet>
+          </Period>
+        </MPD>"#
+            ),
+        )
+}
+
+/// LL availability на stable root запрещена так же строго, как на representation template.
+#[test]
+fn partial_root_base_url_is_rejected_before_runtime_handoff() {
+    let document = fixture("", "").replace(
+        "          <Period",
+        r#"          <BaseURL availabilityTimeComplete="false">video/</BaseURL>
+          <Period"#,
+    );
+
+    assert!(matches!(
+        parse(&document),
+        Err(DashDynamicMpdError::ProfileExcluded(
+            DashDynamicProfileExclusion::PartialSegmentAvailability
+        ))
+    ));
 }
