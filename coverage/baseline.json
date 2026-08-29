@@ -44,16 +44,16 @@
     },
     "bounded-work-executor": {
       "functions": {
-        "covered": 34,
-        "total": 42
+        "covered": 38,
+        "total": 46
       },
       "lines": {
-        "covered": 292,
-        "total": 325
+        "covered": 333,
+        "total": 367
       },
       "regions": {
-        "covered": 454,
-        "total": 494
+        "covered": 520,
+        "total": 561
       }
     },
     "bounded-xml-reader": {
@@ -72,86 +72,86 @@
     },
     "capability-core": {
       "functions": {
-        "covered": 99,
-        "total": 126
+        "covered": 72,
+        "total": 99
       },
       "lines": {
-        "covered": 1274,
-        "total": 1519
+        "covered": 736,
+        "total": 981
       },
       "regions": {
-        "covered": 1500,
-        "total": 1773
+        "covered": 843,
+        "total": 1110
       }
     },
     "codec-core": {
       "functions": {
-        "covered": 387,
-        "total": 436
+        "covered": 394,
+        "total": 439
       },
       "lines": {
-        "covered": 4041,
-        "total": 5214
+        "covered": 4130,
+        "total": 5247
       },
       "regions": {
-        "covered": 5058,
-        "total": 6404
+        "covered": 5157,
+        "total": 6426
       }
     },
     "config": {
       "functions": {
-        "covered": 138,
-        "total": 182
+        "covered": 141,
+        "total": 183
       },
       "lines": {
-        "covered": 1539,
-        "total": 1783
+        "covered": 1790,
+        "total": 2043
       },
       "regions": {
-        "covered": 1578,
-        "total": 1863
+        "covered": 1766,
+        "total": 2067
       }
     },
     "dash-mpd-core": {
       "functions": {
-        "covered": 98,
-        "total": 134
+        "covered": 146,
+        "total": 196
       },
       "lines": {
-        "covered": 1218,
-        "total": 1447
+        "covered": 1682,
+        "total": 1946
       },
       "regions": {
-        "covered": 1885,
-        "total": 2334
+        "covered": 2586,
+        "total": 3191
       }
     },
     "demux-api": {
       "functions": {
-        "covered": 182,
-        "total": 217
+        "covered": 203,
+        "total": 240
       },
       "lines": {
-        "covered": 1944,
-        "total": 2312
+        "covered": 2242,
+        "total": 2613
       },
       "regions": {
-        "covered": 2188,
-        "total": 2591
+        "covered": 2568,
+        "total": 2956
       }
     },
     "flv-demux": {
       "functions": {
-        "covered": 148,
+        "covered": 149,
         "total": 193
       },
       "lines": {
-        "covered": 1852,
-        "total": 2260
+        "covered": 1868,
+        "total": 2274
       },
       "regions": {
-        "covered": 2558,
-        "total": 3136
+        "covered": 2577,
+        "total": 3148
       }
     },
     "frame-server-core": {
@@ -170,72 +170,72 @@
     },
     "hds-manifest-core": {
       "functions": {
-        "covered": 111,
-        "total": 120
+        "covered": 104,
+        "total": 112
       },
       "lines": {
-        "covered": 1085,
-        "total": 1180
+        "covered": 987,
+        "total": 1081
       },
       "regions": {
-        "covered": 1650,
-        "total": 1887
+        "covered": 1413,
+        "total": 1643
       }
     },
     "hls-playlist-core": {
       "functions": {
-        "covered": 128,
-        "total": 180
+        "covered": 143,
+        "total": 198
       },
       "lines": {
-        "covered": 1317,
-        "total": 1515
+        "covered": 1394,
+        "total": 1594
       },
       "regions": {
-        "covered": 1871,
-        "total": 2276
+        "covered": 1992,
+        "total": 2404
       }
     },
     "media-core": {
       "functions": {
-        "covered": 176,
-        "total": 193
+        "covered": 221,
+        "total": 239
       },
       "lines": {
-        "covered": 1487,
-        "total": 1562
+        "covered": 1947,
+        "total": 2045
       },
       "regions": {
-        "covered": 2001,
-        "total": 2107
+        "covered": 2689,
+        "total": 2819
       }
     },
     "media-prefetch": {
       "functions": {
-        "covered": 113,
-        "total": 119
+        "covered": 125,
+        "total": 131
       },
       "lines": {
-        "covered": 1091,
-        "total": 1157
+        "covered": 1181,
+        "total": 1252
       },
       "regions": {
-        "covered": 1618,
-        "total": 1712
+        "covered": 1755,
+        "total": 1851
       }
     },
     "mpeg-ts-demux": {
       "functions": {
-        "covered": 123,
-        "total": 138
+        "covered": 132,
+        "total": 147
       },
       "lines": {
-        "covered": 1590,
-        "total": 1829
+        "covered": 1765,
+        "total": 2026
       },
       "regions": {
-        "covered": 2272,
-        "total": 2546
+        "covered": 2512,
+        "total": 2795
       }
     },
     "natural-sort-key": {
@@ -254,30 +254,30 @@
     },
     "player-core": {
       "functions": {
-        "covered": 1632,
-        "total": 1902
+        "covered": 1825,
+        "total": 2098
       },
       "lines": {
-        "covered": 16774,
-        "total": 20263
+        "covered": 19040,
+        "total": 22684
       },
       "regions": {
-        "covered": 19357,
-        "total": 23702
+        "covered": 21801,
+        "total": 26333
       }
     },
     "playlist-core": {
       "functions": {
-        "covered": 565,
-        "total": 717
+        "covered": 567,
+        "total": 719
       },
       "lines": {
-        "covered": 4943,
-        "total": 6361
+        "covered": 4975,
+        "total": 6397
       },
       "regions": {
-        "covered": 5892,
-        "total": 7975
+        "covered": 5926,
+        "total": 8012
       }
     },
     "playlist-discovery": {
@@ -286,11 +286,11 @@
         "total": 390
       },
       "lines": {
-        "covered": 2645,
+        "covered": 2646,
         "total": 3003
       },
       "regions": {
-        "covered": 3212,
+        "covered": 3213,
         "total": 3733
       }
     },
@@ -310,15 +310,15 @@
     },
     "playlist-state": {
       "functions": {
-        "covered": 282,
+        "covered": 284,
         "total": 318
       },
       "lines": {
-        "covered": 2504,
+        "covered": 2507,
         "total": 3009
       },
       "regions": {
-        "covered": 3176,
+        "covered": 3180,
         "total": 3860
       }
     },
@@ -342,26 +342,26 @@
         "total": 115
       },
       "lines": {
-        "covered": 1287,
-        "total": 1524
+        "covered": 1328,
+        "total": 1563
       },
       "regions": {
-        "covered": 1664,
-        "total": 1951
+        "covered": 1705,
+        "total": 1987
       }
     },
     "service-direct-media": {
       "functions": {
-        "covered": 61,
-        "total": 96
+        "covered": 38,
+        "total": 66
       },
       "lines": {
-        "covered": 554,
-        "total": 762
+        "covered": 331,
+        "total": 469
       },
       "regions": {
-        "covered": 863,
-        "total": 1127
+        "covered": 455,
+        "total": 599
       }
     },
     "settings-core": {
@@ -394,16 +394,16 @@
     },
     "smooth-streaming-fmp4": {
       "functions": {
-        "covered": 61,
-        "total": 71
+        "covered": 63,
+        "total": 73
       },
       "lines": {
-        "covered": 471,
-        "total": 549
+        "covered": 509,
+        "total": 587
       },
       "regions": {
-        "covered": 528,
-        "total": 640
+        "covered": 559,
+        "total": 671
       }
     },
     "smooth-streaming-manifest-core": {
@@ -422,58 +422,58 @@
     },
     "source-core": {
       "functions": {
-        "covered": 300,
-        "total": 389
+        "covered": 400,
+        "total": 502
       },
       "lines": {
-        "covered": 2623,
-        "total": 3121
+        "covered": 3623,
+        "total": 4273
       },
       "regions": {
-        "covered": 3914,
-        "total": 4632
+        "covered": 5200,
+        "total": 6139
       }
     },
     "symphonia-demux": {
       "functions": {
-        "covered": 496,
-        "total": 577
+        "covered": 495,
+        "total": 571
       },
       "lines": {
-        "covered": 5047,
-        "total": 6063
+        "covered": 4952,
+        "total": 5918
       },
       "regions": {
-        "covered": 6647,
-        "total": 7970
+        "covered": 6388,
+        "total": 7646
       }
     },
     "video-backend-api": {
       "functions": {
-        "covered": 62,
-        "total": 88
+        "covered": 65,
+        "total": 90
       },
       "lines": {
-        "covered": 595,
-        "total": 717
+        "covered": 622,
+        "total": 739
       },
       "regions": {
-        "covered": 535,
-        "total": 649
+        "covered": 568,
+        "total": 676
       }
     },
     "video-core": {
       "functions": {
-        "covered": 88,
-        "total": 114
+        "covered": 92,
+        "total": 117
       },
       "lines": {
-        "covered": 849,
-        "total": 1033
+        "covered": 919,
+        "total": 1105
       },
       "regions": {
-        "covered": 833,
-        "total": 1077
+        "covered": 892,
+        "total": 1140
       }
     },
     "video-frame-contract": {
@@ -520,44 +520,44 @@
     },
     "web-media-adaptive": {
       "functions": {
-        "covered": 74,
-        "total": 92
+        "covered": 196,
+        "total": 226
       },
       "lines": {
-        "covered": 830,
-        "total": 993
+        "covered": 2364,
+        "total": 2667
       },
       "regions": {
-        "covered": 891,
-        "total": 1088
+        "covered": 2882,
+        "total": 3239
       }
     },
     "web-media-core": {
       "functions": {
-        "covered": 214,
-        "total": 239
+        "covered": 302,
+        "total": 327
       },
       "lines": {
-        "covered": 2211,
-        "total": 2437
+        "covered": 3063,
+        "total": 3343
       },
       "regions": {
-        "covered": 2989,
-        "total": 3314
+        "covered": 4093,
+        "total": 4515
       }
     },
     "web-media-dash": {
       "functions": {
-        "covered": 194,
-        "total": 250
+        "covered": 349,
+        "total": 432
       },
       "lines": {
-        "covered": 2524,
-        "total": 3130
+        "covered": 4695,
+        "total": 5777
       },
       "regions": {
-        "covered": 2981,
-        "total": 3947
+        "covered": 5605,
+        "total": 7296
       }
     },
     "web-media-ftp": {
@@ -576,130 +576,130 @@
     },
     "web-media-hds": {
       "functions": {
-        "covered": 48,
-        "total": 70
+        "covered": 106,
+        "total": 127
       },
       "lines": {
-        "covered": 538,
-        "total": 612
+        "covered": 1148,
+        "total": 1305
       },
       "regions": {
-        "covered": 725,
-        "total": 862
+        "covered": 1536,
+        "total": 1792
       }
     },
     "web-media-hls": {
       "functions": {
-        "covered": 287,
-        "total": 378
+        "covered": 688,
+        "total": 839
       },
       "lines": {
-        "covered": 3090,
-        "total": 3888
+        "covered": 7759,
+        "total": 9096
       },
       "regions": {
-        "covered": 3858,
-        "total": 5103
+        "covered": 9423,
+        "total": 11483
       }
     },
     "web-media-http": {
       "functions": {
-        "covered": 19,
-        "total": 29
+        "covered": 26,
+        "total": 38
       },
       "lines": {
-        "covered": 284,
-        "total": 361
+        "covered": 339,
+        "total": 424
       },
       "regions": {
-        "covered": 300,
-        "total": 395
+        "covered": 372,
+        "total": 476
       }
     },
     "web-media-playback-plan": {
       "functions": {
-        "covered": 82,
-        "total": 106
+        "covered": 125,
+        "total": 146
       },
       "lines": {
-        "covered": 678,
-        "total": 833
+        "covered": 1066,
+        "total": 1242
       },
       "regions": {
-        "covered": 715,
-        "total": 876
+        "covered": 1153,
+        "total": 1329
       }
     },
     "web-media-smooth": {
       "functions": {
-        "covered": 125,
-        "total": 168
+        "covered": 187,
+        "total": 233
       },
       "lines": {
-        "covered": 1680,
-        "total": 1943
+        "covered": 2275,
+        "total": 2597
       },
       "regions": {
-        "covered": 2189,
-        "total": 2577
+        "covered": 2844,
+        "total": 3336
       }
     },
     "web-media-transport-api": {
       "functions": {
-        "covered": 106,
-        "total": 126
+        "covered": 117,
+        "total": 137
       },
       "lines": {
-        "covered": 676,
-        "total": 830
+        "covered": 753,
+        "total": 909
       },
       "regions": {
-        "covered": 726,
-        "total": 911
+        "covered": 800,
+        "total": 987
       }
     }
   },
   "blocking_group": {
     "functions": {
-      "covered": 8338,
-      "total": 10114
+      "covered": 9698,
+      "total": 11586
     },
     "lines": {
-      "covered": 83276,
-      "total": 99646
+      "covered": 98718,
+      "total": 116687
     },
     "regions": {
-      "covered": 103632,
-      "total": 125867
+      "covered": 121984,
+      "total": 146575
     }
   },
   "informational_crates": {
     "app-egui": {
       "functions": {
-        "covered": 2885,
-        "total": 4228
+        "covered": 3208,
+        "total": 4665
       },
       "lines": {
-        "covered": 31451,
-        "total": 50628
+        "covered": 35381,
+        "total": 57082
       },
       "regions": {
-        "covered": 39689,
-        "total": 63356
+        "covered": 44309,
+        "total": 70814
       }
     },
     "audio": {
       "functions": {
-        "covered": 217,
-        "total": 301
+        "covered": 252,
+        "total": 331
       },
       "lines": {
-        "covered": 2236,
-        "total": 3161
+        "covered": 2595,
+        "total": 3511
       },
       "regions": {
-        "covered": 3131,
-        "total": 4500
+        "covered": 3626,
+        "total": 4970
       }
     },
     "audio-signalsmith": {
@@ -760,30 +760,30 @@
     },
     "render-wgpu-video": {
       "functions": {
-        "covered": 303,
-        "total": 464
+        "covered": 282,
+        "total": 453
       },
       "lines": {
-        "covered": 3707,
-        "total": 6337
+        "covered": 3585,
+        "total": 6217
       },
       "regions": {
-        "covered": 4233,
-        "total": 6805
+        "covered": 4050,
+        "total": 6592
       }
     },
     "service-ytdlp": {
       "functions": {
-        "covered": 405,
-        "total": 503
+        "covered": 640,
+        "total": 758
       },
       "lines": {
-        "covered": 4159,
-        "total": 5002
+        "covered": 6592,
+        "total": 7816
       },
       "regions": {
-        "covered": 5332,
-        "total": 6528
+        "covered": 8528,
+        "total": 10248
       }
     },
     "ui-artwork-egui": {
@@ -802,30 +802,30 @@
     },
     "video-ffmpeg": {
       "functions": {
-        "covered": 323,
-        "total": 460
+        "covered": 335,
+        "total": 481
       },
       "lines": {
-        "covered": 2916,
-        "total": 4320
+        "covered": 2976,
+        "total": 4433
       },
       "regions": {
-        "covered": 3456,
-        "total": 5089
+        "covered": 3453,
+        "total": 5139
       }
     },
     "video-vaapi": {
       "functions": {
-        "covered": 384,
-        "total": 692
+        "covered": 357,
+        "total": 673
       },
       "lines": {
-        "covered": 4369,
-        "total": 7798
+        "covered": 3966,
+        "total": 7475
       },
       "regions": {
-        "covered": 4947,
-        "total": 9172
+        "covered": 4379,
+        "total": 8733
       }
     }
   },
@@ -836,16 +836,16 @@
   },
   "workspace": {
     "functions": {
-      "covered": 13197,
-      "total": 17245
+      "covered": 15114,
+      "total": 19430
     },
     "lines": {
-      "covered": 135834,
-      "total": 181804
+      "covered": 157533,
+      "total": 208133
     },
     "regions": {
-      "covered": 169757,
-      "total": 228313
+      "covered": 195669,
+      "total": 260067
     }
   }
 }

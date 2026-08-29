@@ -17,24 +17,25 @@ CI сравнивает дроби точно, без округления пр�
 метрики запрещено. Произвольного global threshold нет: текущий измеренный
 baseline и есть нижняя граница.
 
-Фактический S42 baseline от 2026-07-25:
+Фактический baseline после normalization migration от 2026-08-29:
 
-- workspace: `135834/181804` lines, `13197/17245` functions,
-  `169757/228313` regions;
-- blocking group: `83276/99646` lines, `8338/10114` functions,
-  `103632/125867` regions.
+- workspace: `157533/208133` lines, `15114/19430` functions,
+  `195669/260067` regions;
+- blocking group: `98718/116687` lines, `9698/11586` functions,
+  `121984/146575` regions.
 
-Это conservative per-crate envelope из реально наблюдавшихся clean runs:
+Это conservative per-metric envelope из двух реально наблюдавшихся clean runs:
 scheduler-dependent worker tests могут менять, какой из соседних async paths
-успевает получить execution counter. Каждая crate floor взята из фактического
-clean result, а workspace/blocking aggregate равен сумме этих floors. Никаких
-новых exception rows для стабилизации не добавлено: остаются ровно 28
-owner-approved S42 записей.
+успевает получить execution counter. Для каждой пары `scope/metric` взят меньший
+`covered` при одинаковом `total`; придуманные пороги и aggregate exceptions не
+используются. После удаления 28 старых S42 transition rows остаются ровно восемь
+normalization-only exceptions для `capability-core`, `hds-manifest-core` и
+`service-direct-media`.
 
-Последний clean gate artifact был выше baseline: workspace
-`135842/181804` lines, `13200/17245` functions, `169766/228313` regions;
-blocking group `83284/99646` lines, `8341/10114` functions,
-`103641/125867` regions.
+Последний clean gate artifact был не ниже baseline: workspace
+`157537/208133` lines, `15114/19430` functions, `195669/260067` regions;
+blocking group `98722/116687` lines, `9698/11586` functions,
+`121984/146575` regions.
 
 Hardware, FFI и UI-shell crate-ы перечислены в `informational_crates`. Их
 результаты видны в `current-summary.json`, LCOV и HTML, но отдельная crate-метрика
@@ -100,11 +101,14 @@ PR job сравнивает proposed baseline с baseline целевой вет�
 необъяснённое снижение. Exact counters не позволяют повторно использовать старое
 или слишком широкое исключение.
 
-S42 содержит одноразовый owner-approved rebaseline: ровно 28 exact
-`scope/metric` записей для изменившегося blocking inventory и названных
-crate-ов. У каждой записи зафиксированы прежние и допустимые counters, причина,
-bounded follow-up и единая дата пересмотра `2026-10-25`. Это не новый общий
-порог и не разрешение на дальнейшее снижение.
+Normalization migration содержит ровно восемь exact `scope/metric` записей:
+`capability-core` lines/functions/regions, `hds-manifest-core` lines/regions и
+`service-direct-media` lines/functions/regions. Они объясняют только смену
+измеряемого source set после выноса тестов в диапазоне `39839dc3→857ac895`;
+source, aggregate и остальные crate-ы исключений не имеют. У каждой записи
+зафиксированы прежние и допустимые counters, paired clean evidence, bounded
+follow-up и дата пересмотра `2026-10-25`. Это не новый общий порог и не
+разрешение на дальнейшее снижение.
 
 Lifecycle exception-ов проверяется при каждом обычном
 `scripts/coverage.sh check` и `scripts/coverage.sh baseline`, а не только при
@@ -117,7 +121,14 @@ PR-сравнении двух baseline. Просроченная, дублир�
 
 ## Exclusions
 
-Сейчас `excluded_source_paths` намеренно пуст:
+`excluded_source_paths` намеренно пуст и не добавляет project-specific
+исключений. При этом `cargo-llvm-cov 0.8.7` применяет собственный default filename
+regex: каталоги `tests`, `examples`, `benches`, а также файлы `tests.rs`,
+`*_tests.rs` и `*-tests.rs` не входят в source report. Тестовые бинарники всё
+равно исполняются; исключён только их исходный текст из знаменателей и execution
+counters отчёта.
+
+Дополнительно:
 
 - generated raw bindings local patch-crate `crates/cros-libva-patch/src/bindings.rs`
   находится вне workspace и поэтому не попадает в first-party report;
