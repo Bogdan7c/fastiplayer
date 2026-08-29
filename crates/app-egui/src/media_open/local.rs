@@ -381,7 +381,7 @@ pub(crate) mod tests {
         assert!(!error.to_string().contains("private-customer-name"));
     }
 
-    fn pcm_wav_bytes() -> Vec<u8> {
+    pub(crate) fn pcm_wav_bytes() -> Vec<u8> {
         let samples = [0_i16, 500, -500, 250, -250, 0];
         let data_size = (samples.len() * 2) as u32;
         let mut bytes = Vec::new();

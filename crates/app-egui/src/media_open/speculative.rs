@@ -124,21 +124,21 @@ impl SpeculativeMediaPreparation {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::io::Write;
     use std::time::{Duration, Instant};
 
     use super::*;
     use crate::app_wake::AppWakeOwner;
     use crate::process_shutdown::ShutdownDeadline;
 
-    fn audio_fixture_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/audio/music_sample.wav")
-    }
-
     #[test]
     fn local_preload_reaches_prepared_demux_without_authoritative_player_install() {
-        let fixture_path = audio_fixture_path();
-        assert!(fixture_path.is_file(), "audio fixture must be available");
+        // Required test сам владеет WAV и не зависит от локальных `test-assets` владельца.
+        let mut fixture_file = tempfile::NamedTempFile::new().expect("create hermetic PCM fixture");
+        fixture_file
+            .write_all(&super::super::local::tests::pcm_wav_bytes())
+            .expect("write complete hermetic PCM fixture");
+        let fixture_path = fixture_file.path().to_path_buf();
         let mut preparation = SpeculativeMediaPreparation::new(AppWakePort::disconnected(
             AppWakeOwner::PlaylistRuntime,
         ));
