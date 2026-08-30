@@ -516,43 +516,7 @@ def validate_exception_inventory(exceptions):
     return exception_index
 
 
-# Функция доказывает, что каждое снижение baseline имеет точное exception.
-def validate_baseline_update(previous_baseline, proposed_baseline, exceptions, metric_names) -> None:
-    # Переиспользуем ту же точную ratchet-логику для proposed baseline.
-    regressions = find_regressions(proposed_baseline, previous_baseline, metric_names)
-    # Lifecycle/index проверяются отдельно от old-counter matching.
-    exception_index = validate_exception_inventory(exceptions)
-    # Собираем все снижения без точного разрешения для единой диагностики.
-    unrecorded_regressions = []
-    # Каждое уменьшение должно совпасть со старыми и новыми counters.
-    for regression in regressions:
-        # Ключ отражает требование metric/crate из общего плана.
-        exception = exception_index.get((regression["scope"], regression["metric"]))
-        # Отсутствующая запись не разрешает обновление baseline.
-        if exception is None:
-            # Regression будет напечатана стандартным formatter-ом.
-            unrecorded_regressions.append(regression)
-            # Дальнейшая проверка полей невозможна без записи.
-            continue
-        # Exact previous counters не позволяют переиспользовать старое исключение.
-        if exception["previous"] != regression["baseline"]:
-            # Несовпадение трактуется как незаписанное текущее снижение.
-            unrecorded_regressions.append(regression)
-            # allowed всё равно не может сделать запись валидной.
-            continue
-        # Exact allowed counters ограничивают exception конкретным baseline.
-        if exception["allowed"] != regression["current"]:
-            # Более широкое или устаревшее разрешение не принимается.
-            unrecorded_regressions.append(regression)
-    # Любое неразрешённое снижение блокирует команду и CI.
-    if unrecorded_regressions:
-        # Стандартная диагностика показывает точные необходимые пары.
-        print_regressions(unrecorded_regressions)
-        # Дополнение объясняет required remediation без программного жаргона.
-        raise ValueError("обновление baseline требует точного непросроченного exception")
-
-
-# Функция создаёт CLI с отдельными командами generate/check/update-check.
+# Функция создаёт CLI только для legacy report/validation операций.
 def parse_args():
     # Описание появляется в --help и CI diagnostics.
     parser = argparse.ArgumentParser(description=__doc__)
@@ -568,14 +532,6 @@ def parse_args():
     check_parser = subparsers.add_parser("check", help="проверить ratchet")
     # Raw input нужен для независимого пересчёта, а не доверия artifact summary.
     check_parser.add_argument("--input", type=Path, required=True)
-    # update-check сравнивает два baseline и exception-файл.
-    update_parser = subparsers.add_parser(
-        "check-baseline-update", help="проверить осознанное уменьшение baseline"
-    )
-    # Previous baseline экспортируется CI из base branch во временный файл.
-    update_parser.add_argument("--previous", type=Path, required=True)
-    # Proposed по умолчанию является versioned baseline текущей ветки.
-    update_parser.add_argument("--proposed", type=Path, default=BASELINE_PATH)
     # validate-baseline проверяет baseline и exception lifecycle без LLVM run.
     subparsers.add_parser(
         "validate-baseline",
@@ -656,31 +612,8 @@ def main() -> int:
         print("Coverage ratchet пройден: workspace и blocking crates не уменьшились.")
         # Informational crates намеренно не участвуют в status.
         return 0
-    # Осталась только команда проверки versioned baseline update.
-    previous_baseline = read_json(arguments.previous)
-    # Proposed baseline читается из текущей ветки или явного пути теста.
-    proposed_baseline = read_json(arguments.proposed)
-    # Proposed документ обязан покрывать current policy до exception comparison.
-    validate_summary_inventory(
-        proposed_baseline,
-        policy,
-        document_name="proposed coverage baseline",
-    )
-    # Versioned exceptions валидируются даже при отсутствии снижения.
-    exception_document = read_json(EXCEPTIONS_PATH)
-    # Versioned schema проверяется до сравнения любых baseline counters.
-    exceptions = validate_exception_document(exception_document)
-    # Точная проверка запрещает молчаливое уменьшение baseline.
-    validate_baseline_update(
-        previous_baseline,
-        proposed_baseline,
-        exceptions,
-        policy["metrics"],
-    )
-    # Успешный status означает, что каждое снижение объяснено и bounded.
-    print("Обновление coverage baseline соответствует exception policy.")
-    # Возвращаем успешный process status.
-    return 0
+    # Parser исчерпывающе ограничивает command, поэтому сюда попасть невозможно.
+    raise AssertionError(f"необработанная legacy coverage команда: {arguments.command}")
 
 
 # Guard не запускает CLI при импорте функций unit-тестами.

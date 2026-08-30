@@ -500,10 +500,22 @@ def _validate_baseline_surface(baseline: dict[str, Any]) -> None:
     )
 
 
-def validate_measurement_exceptions(document: Any) -> dict[tuple[str, str], dict[str, Any]]:
+def validate_measurement_exceptions(
+    document: Any,
+    *,
+    enforce_review_deadline: bool = True,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Валидирует ledger; historical base можно безопасно ротировать после deadline."""
+
     manifest = _object(document, "measurement exceptions")
     _exact_keys(manifest, {"schema_version", "measurement_exceptions"}, "measurement exceptions")
-    if manifest["schema_version"] != EXCEPTION_SCHEMA_VERSION:
+    if (
+        _integer(
+            manifest["schema_version"],
+            "measurement exceptions.schema_version",
+        )
+        != EXCEPTION_SCHEMA_VERSION
+    ):
         raise ValueError("measurement exceptions schema_version неизвестна")
     index: dict[tuple[str, str], dict[str, Any]] = {}
     required = {
@@ -534,7 +546,7 @@ def validate_measurement_exceptions(document: Any) -> dict[tuple[str, str], dict
         for text_field in ("reason", "follow_up"):
             _string(entry[text_field], f"exception.{text_field}")
         review_by = dt.date.fromisoformat(_string(entry["review_by"], "exception.review_by"))
-        if review_by < dt.date.today():
+        if enforce_review_deadline and review_by < dt.date.today():
             raise ValueError(f"measurement exception {domain}/{metric} просрочена")
         for counter_name in ("previous", "allowed"):
             counters = _object(entry[counter_name], f"exception.{counter_name}")

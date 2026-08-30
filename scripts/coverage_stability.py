@@ -282,54 +282,75 @@ def bootstrap_baseline(cohort_document: Any, legacy_baseline: Any, legacy_except
 
 
 def _ratio_decreased(current: dict[str, int], previous: dict[str, int]) -> bool:
+    """Сравнивает exact fractions cross-multiplication-ом без округления."""
+
     if current["total"] == 0:
         return previous["total"] != 0
     return current["stable"] * previous["total"] < previous["stable"] * current["total"]
 
 
-def check_baseline(
-    baseline_document: Any,
-    cohort_document: Any,
-    exception_document: Any,
-    *,
-    allow_universe_update: bool,
-) -> tuple[bool, dict[str, Any]]:
-    baseline = validate_baseline(baseline_document)
-    cohort = validate_cohort(cohort_document)
-    exceptions = validate_measurement_exceptions(exception_document)
+def _compare_stable_transition(
+    previous_artifact: dict[str, Any],
+    current_artifact: dict[str, Any],
+    exceptions: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    """Сравнивает blocking stable-source semantics двух валидных artifacts.
+
+    Добавленные/удалённые domains остаются явной диагностикой: их изменение уже
+    отражено в workspace/blocking-group universe. Для общих domains exact stable
+    coordinate loss запрещён, а смена universe использует прежнюю ratio-policy.
+    """
+
     hard_provenance = {
-        key for key in baseline["provenance"] if key not in {"policy_hash"}
+        key for key in previous_artifact["provenance"] if key not in {"policy_hash"}
     }
-    if any(baseline["provenance"][key] != cohort["provenance"][key] for key in hard_provenance):
-        raise ValueError("baseline/cohort tool, methodology или profile provenance отличаются")
+    if any(
+        previous_artifact["provenance"][key]
+        != current_artifact["provenance"][key]
+        for key in hard_provenance
+    ):
+        raise ValueError(
+            "stable coverage tool, methodology или profile provenance отличаются"
+        )
     changes: list[dict[str, Any]] = []
     regressions: list[dict[str, Any]] = []
-    files_changed = baseline["source_files"] != cohort["source_files"]
-    policy_changed = baseline["provenance"]["policy_hash"] != cohort["provenance"]["policy_hash"]
-    baseline_domains = baseline["stable_source"]["domains"]
-    current_domains = cohort["stable_source"]["domains"]
-    baseline_identities = _artifact_identity_universes(baseline)
-    current_identities = _artifact_identity_universes(cohort)
-    available_domains = set(baseline_domains) & set(current_domains)
-    unknown_exceptions = {
-        identity for identity in exceptions if identity[0] not in available_domains
-    }
-    if unknown_exceptions:
-        raise ValueError(
-            f"measurement exceptions ссылаются на отсутствующие domains: {sorted(unknown_exceptions)}"
-        )
+    files_changed = previous_artifact["source_files"] != current_artifact["source_files"]
+    policy_changed = (
+        previous_artifact["provenance"]["policy_hash"]
+        != current_artifact["provenance"]["policy_hash"]
+    )
+    previous_domains = previous_artifact["stable_source"]["domains"]
+    current_domains = current_artifact["stable_source"]["domains"]
+    previous_identities = _artifact_identity_universes(previous_artifact)
+    current_identities = _artifact_identity_universes(current_artifact)
+    previous_domain_names = set(previous_domains)
+    current_domain_names = set(current_domains)
     consumed_exceptions: set[tuple[str, str]] = set()
-    if set(baseline_domains) != set(current_domains):
-        changes.append({"kind": "measurement-domains", "update_required": True})
-    for domain_name in sorted(set(baseline_domains) & set(current_domains)):
+    if previous_domain_names != current_domain_names:
+        changes.append(
+            {
+                "kind": "measurement-domains",
+                "added": sorted(current_domain_names - previous_domain_names),
+                "removed": sorted(previous_domain_names - current_domain_names),
+            }
+        )
+    for domain_name in sorted(previous_domain_names & current_domain_names):
         for metric in model.METRICS:
-            previous = baseline_domains[domain_name][metric]
+            previous = previous_domains[domain_name][metric]
             current = current_domains[domain_name][metric]
             previous_universe = _metric_identities(
-                baseline, baseline_identities, domain_name, metric, "universe_ranges"
+                previous_artifact,
+                previous_identities,
+                domain_name,
+                metric,
+                "universe_ranges",
             )
             current_universe = _metric_identities(
-                cohort, current_identities, domain_name, metric, "universe_ranges"
+                current_artifact,
+                current_identities,
+                domain_name,
+                metric,
+                "universe_ranges",
             )
             same_universe = (
                 previous["universe_hash"] == current["universe_hash"]
@@ -342,8 +363,8 @@ def check_baseline(
             if same_universe:
                 previous_stable = set(
                     _metric_identities(
-                        baseline,
-                        baseline_identities,
+                        previous_artifact,
+                        previous_identities,
                         domain_name,
                         metric,
                         "stable_ranges",
@@ -351,7 +372,7 @@ def check_baseline(
                 )
                 current_stable = set(
                     _metric_identities(
-                        cohort,
+                        current_artifact,
                         current_identities,
                         domain_name,
                         metric,
@@ -369,7 +390,13 @@ def check_baseline(
                         }
                     )
                 continue
-            changes.append({"kind": "coordinate-universe", "domain": domain_name, "metric": metric})
+            changes.append(
+                {
+                    "kind": "coordinate-universe",
+                    "domain": domain_name,
+                    "metric": metric,
+                }
+            )
             if _ratio_decreased(current_counts, previous_counts):
                 exception = exceptions.get((domain_name, metric))
                 if exception is not None:
@@ -384,13 +411,45 @@ def check_baseline(
                 )
                 if not valid_exception:
                     regressions.append(
-                        {"domain": domain_name, "metric": metric, "kind": "cross-universe-stable-ratio-decrease", "previous": previous_counts, "current": current_counts}
+                        {
+                            "domain": domain_name,
+                            "metric": metric,
+                            "kind": "cross-universe-stable-ratio-decrease",
+                            "previous": previous_counts,
+                            "current": current_counts,
+                        }
                     )
-    unused_exceptions = set(exceptions) - consumed_exceptions
-    if unused_exceptions:
-        raise ValueError(
-            f"measurement exceptions содержит stale/unused entries: {sorted(unused_exceptions)}"
-        )
+    return {
+        "files_changed": files_changed,
+        "policy_changed": policy_changed,
+        "changes": changes,
+        "regressions": regressions,
+        "consumed_exceptions": consumed_exceptions,
+    }
+
+
+def check_baseline(
+    baseline_document: Any,
+    cohort_document: Any,
+    exception_document: Any,
+    *,
+    allow_universe_update: bool,
+) -> tuple[bool, dict[str, Any]]:
+    """Проверяет measurement против baseline, не переиспользуя provenance rows.
+
+    Установленный baseline хранит exceptions своего transition. Они могут быть
+    неактивны против идентичного cohort; exact counters/hashes всё равно не дают
+    им разрешить другое снижение, а обычный check запрещает universe update.
+    """
+
+    baseline = validate_baseline(baseline_document)
+    cohort = validate_cohort(cohort_document)
+    exceptions = validate_measurement_exceptions(exception_document)
+    transition = _compare_stable_transition(baseline, cohort, exceptions)
+    changes = transition["changes"]
+    regressions = transition["regressions"]
+    files_changed = transition["files_changed"]
+    policy_changed = transition["policy_changed"]
     update_required = bool(changes or files_changed or policy_changed)
     passed = not regressions and (allow_universe_update or not update_required)
     report = {
@@ -402,7 +461,90 @@ def check_baseline(
         "policy_changed": policy_changed,
         "universe_changes": changes,
         "regressions": regressions,
+        "historical_exception_count": len(exceptions),
+        "consumed_exception_count": len(transition["consumed_exceptions"]),
         "legacy_report_only": "legacy counters/exceptions do not authorize stable-source loss",
+    }
+    report["check_hash"] = model.content_hash(report)
+    return passed, report
+
+
+def _blocking_baseline_payload(baseline: dict[str, Any]) -> dict[str, Any]:
+    """Отделяет blocking identity; legacy provenance проверяется независимо."""
+
+    return {
+        "provenance": baseline["provenance"],
+        "source_files": baseline["source_files"],
+        "stable_source": baseline["stable_source"],
+    }
+
+
+def check_baseline_update(
+    previous_baseline_document: Any,
+    previous_exception_document: Any,
+    proposed_baseline_document: Any,
+    proposed_exception_document: Any,
+) -> tuple[bool, dict[str, Any]]:
+    """Проверяет atomic v2 baseline+exception transition без legacy waiver-а."""
+
+    previous_baseline = validate_baseline(previous_baseline_document)
+    proposed_baseline = validate_baseline(proposed_baseline_document)
+    previous_exceptions = validate_measurement_exceptions(
+        previous_exception_document,
+        # Base ledger является immutable history, а не текущим waiver-ом.
+        enforce_review_deadline=False,
+    )
+    proposed_exceptions = validate_measurement_exceptions(
+        proposed_exception_document
+    )
+    transition = _compare_stable_transition(
+        previous_baseline, proposed_baseline, proposed_exceptions
+    )
+    regressions = list(transition["regressions"])
+    if (
+        previous_baseline["legacy_report_only"]
+        != proposed_baseline["legacy_report_only"]
+    ):
+        regressions.append({"kind": "legacy-report-only-provenance-changed"})
+    blocking_changed = (
+        _blocking_baseline_payload(previous_baseline)
+        != _blocking_baseline_payload(proposed_baseline)
+    )
+    if blocking_changed:
+        unused_exceptions = sorted(
+            set(proposed_exceptions) - transition["consumed_exceptions"]
+        )
+        for domain_name, metric in unused_exceptions:
+            regressions.append(
+                {
+                    "domain": domain_name,
+                    "metric": metric,
+                    "kind": "unused-proposed-measurement-exception",
+                }
+            )
+    elif previous_exceptions != proposed_exceptions:
+        regressions.append(
+            {
+                "kind": "measurement-exception-history-changed-without-baseline-update"
+            }
+        )
+    passed = not regressions
+    report = {
+        "schema_version": 1,
+        "kind": "coverage-stable-baseline-update-check",
+        "status": "pass" if passed else "fail",
+        "blocking_baseline_changed": blocking_changed,
+        "source_files_changed": transition["files_changed"],
+        "policy_changed": transition["policy_changed"],
+        "universe_changes": transition["changes"],
+        "regressions": regressions,
+        "previous_exception_count": len(previous_exceptions),
+        "proposed_exception_count": len(proposed_exceptions),
+        "consumed_exception_count": len(transition["consumed_exceptions"]),
+        "legacy_report_only": (
+            "legacy counters never authorize stable-source loss; embedded migration "
+            "provenance is immutable"
+        ),
     }
     report["check_hash"] = model.content_hash(report)
     return passed, report
@@ -430,6 +572,18 @@ def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
     check.add_argument("--measurement-exceptions", type=Path, required=True)
     check.add_argument("--output", type=Path, required=True)
     check.add_argument("--allow-universe-update", action="store_true")
+    update = commands.add_parser(
+        "check-baseline-update",
+        help="проверить atomic v2 baseline и measurement-exceptions transition",
+    )
+    update.add_argument("--previous-baseline", type=Path, required=True)
+    update.add_argument(
+        "--previous-measurement-exceptions", type=Path, required=True
+    )
+    update.add_argument("--proposed-baseline", type=Path, required=True)
+    update.add_argument(
+        "--proposed-measurement-exceptions", type=Path, required=True
+    )
     return parser.parse_args(arguments)
 
 
@@ -476,6 +630,24 @@ def main(arguments: list[str] | None = None) -> int:
             )
             model.write_json_atomic(parsed.output, report)
             print(f"Stable coverage check: {report['status']}")
+            return 0 if passed else 1
+        if parsed.command == "check-baseline-update":
+            passed, report = check_baseline_update(
+                model.read_json(parsed.previous_baseline),
+                model.read_json(parsed.previous_measurement_exceptions),
+                model.read_json(parsed.proposed_baseline),
+                model.read_json(parsed.proposed_measurement_exceptions),
+            )
+            print(f"Stable coverage baseline update: {report['status']}")
+            if not passed:
+                regression_kinds = sorted(
+                    {entry["kind"] for entry in report["regressions"]}
+                )
+                print(
+                    "coverage baseline update regressions: "
+                    + ", ".join(regression_kinds),
+                    file=sys.stderr,
+                )
             return 0 if passed else 1
         raise ValueError(f"неизвестная команда {parsed.command}")
     except (OSError, ValueError, json.JSONDecodeError) as error:

@@ -193,7 +193,8 @@ class CoverageStabilityTests(unittest.TestCase):
 
     def test_actual_legacy_lower_envelope_deltas_are_named_and_exact(self):
         baseline = coordinate_model.read_json(REPO_ROOT / "coverage/baseline.json")
-        diagnostics = legacy_schema.lower_envelope_diagnostics(baseline)
+        legacy_baseline = baseline["legacy_report_only"]["baseline_v1"]
+        diagnostics = legacy_schema.lower_envelope_diagnostics(legacy_baseline)
         self.assertEqual(
             diagnostics,
             {
@@ -363,10 +364,12 @@ class CoverageStabilityTests(unittest.TestCase):
                 },
             }
         )
-        with self.assertRaisesRegex(ValueError, "stale/unused"):
-            stability.check_baseline(
-                baseline, new_cohort, stale, allow_universe_update=True
-            )
+        passed, report = stability.check_baseline(
+            baseline, new_cohort, stale, allow_universe_update=True
+        )
+        self.assertTrue(passed)
+        self.assertEqual(report["historical_exception_count"], 4)
+        self.assertEqual(report["consumed_exception_count"], 3)
 
         expired = copy.deepcopy(scoped_exceptions)
         expired["measurement_exceptions"][0]["review_by"] = "2000-01-01"
@@ -377,10 +380,14 @@ class CoverageStabilityTests(unittest.TestCase):
 
         unknown_domain = copy.deepcopy(scoped_exceptions)
         unknown_domain["measurement_exceptions"][0]["domain"] = "crate:missing"
-        with self.assertRaisesRegex(ValueError, "отсутствующие domains"):
-            stability.check_baseline(
-                baseline, new_cohort, unknown_domain, allow_universe_update=True
-            )
+        passed, report = stability.check_baseline(
+            baseline, new_cohort, unknown_domain, allow_universe_update=True
+        )
+        self.assertFalse(passed)
+        self.assertIn(
+            "cross-universe-stable-ratio-decrease",
+            {entry["kind"] for entry in report["regressions"]},
+        )
 
     def test_global_index_shift_cannot_hide_same_domain_stable_replacement(self):
         policy = copy.deepcopy(self.policy)

@@ -12,6 +12,8 @@ import importlib.util
 import json
 # pathlib вычисляет стабильные пути относительно этого test-файла.
 from pathlib import Path
+# sys добавляет production scripts directory для v2 schema imports.
+import sys
 # tempfile создаёт изолированный exception manifest для CLI lifecycle test-а.
 import tempfile
 # tomllib читает workspace/package manifests стандартной библиотекой Python 3.11+.
@@ -23,6 +25,10 @@ from unittest import mock
 
 # Корень репозитория находится на два уровня выше scripts/tests/.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Stable-coordinate validator является владельцем установленной baseline schema v2.
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import coverage_coordinate_model as COORDINATE_MODEL  # noqa: E402
+import coverage_stability as COVERAGE_STABILITY  # noqa: E402
 # Spec указывает на production parser, который проверяет CI ratchet.
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "coverage_metrics", REPO_ROOT / "scripts" / "coverage_metrics.py"
@@ -117,75 +123,36 @@ class CoverageRatchetTests(unittest.TestCase):
             {"blocking-group", "crate:contract-core"},
         )
 
-    # Baseline нельзя снизить простой правкой JSON без exception.
-    def test_baseline_decrease_without_exception_is_rejected(self):
-        # Previous baseline имеет 80% во всех scopes.
-        previous = summary(metric(8, 10), metric(8, 10))
-        # Proposed снижает только crate до 70%.
-        proposed = summary(metric(8, 10), metric(7, 10))
-        # Ожидаемая stderr-диагностика не должна засорять успешный общий CI log.
-        with contextlib.redirect_stderr(io.StringIO()):
-            # ValueError является policy failure для CI wrapper-а.
-            with self.assertRaisesRegex(ValueError, "требует точного"):
-                # Пустой список не разрешает ни одну regression.
-                COVERAGE_METRICS.validate_baseline_update(
-                    previous, proposed, [], ["lines", "functions", "regions"]
-                )
+    # Legacy CLI больше не должен предоставлять второй baseline-update policy.
+    def test_legacy_update_subcommand_is_unavailable_but_report_commands_remain(self):
+        # Старое имя обязано завершаться parser error до чтения versioned inputs.
+        with mock.patch(
+            "sys.argv",
+            ["coverage_metrics.py", "check-baseline-update", "--previous", "base.json"],
+        ):
+            # Argparse использует frozen exit 2 для неизвестного subcommand.
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+                SystemExit
+            ) as rejected_update:
+                COVERAGE_METRICS.parse_args()
+        # Нельзя случайно принять старый v1 update path как policy success.
+        self.assertEqual(rejected_update.exception.code, 2)
 
-    # Точная bounded exception разрешает только заявленную metric/counters пару.
-    def test_exact_non_expired_exception_allows_one_metric_decrease(self):
-        # Previous и proposed различаются только line coverage crate-а.
-        previous = summary(metric(8, 10), metric(8, 10))
-        # Глубокая ручная копия fixture не нужна: создаём новый summary.
-        proposed = summary(metric(8, 10), metric(8, 10))
-        # Снижаем только lines, чтобы exception оставалась точечной.
-        proposed["blocking_crates"]["contract-core"]["lines"] = metric(7, 10)
-        # Review date в будущем не зависит от календарного года тестовой среды.
-        review_by = (dt.date.today() + dt.timedelta(days=30)).isoformat()
-        # Exception фиксирует scope/metric, точные counters, причину и follow-up.
-        exception = {
-            "scope": "crate:contract-core",
-            "metric": "lines",
-            "previous": metric(8, 10),
-            "allowed": metric(7, 10),
-            "reason": "Удалён недетерминированный тест внешнего устройства.",
-            "review_by": review_by,
-            "follow_up": "issue:coverage-contract-core-restore",
+        # Report-only и integrity commands остаются доступными после удаления update API.
+        command_arguments = {
+            "generate": ["--input", "raw.json", "--output", "summary.json"],
+            "check": ["--input", "raw.json"],
+            "validate-baseline": [],
+            "validate-lcov": ["--input", "coverage.lcov"],
         }
-        # Отсутствие исключения подтверждает успешную policy validation.
-        COVERAGE_METRICS.validate_baseline_update(
-            previous, proposed, [exception], ["lines", "functions", "regions"]
-        )
-
-    # Duplicate scope/metric не должен молча затереть одну из reviewed записей.
-    def test_duplicate_exception_identity_is_rejected(self):
-        # Previous и proposed различаются одной line regression.
-        previous = summary(metric(8, 10), metric(8, 10))
-        # Новый baseline снижает только crate lines.
-        proposed = summary(metric(8, 10), metric(8, 10))
-        # Точная regression совпадает с обеими намеренно дублированными записями.
-        proposed["blocking_crates"]["contract-core"]["lines"] = metric(7, 10)
-        # Будущая дата удерживает тест сфокусированным на duplicate identity.
-        review_by = (dt.date.today() + dt.timedelta(days=30)).isoformat()
-        # Полная валидная запись используется как duplicate fixture.
-        exception = {
-            "scope": "crate:contract-core",
-            "metric": "lines",
-            "previous": metric(8, 10),
-            "allowed": metric(7, 10),
-            "reason": "Одно измеренное снижение line coverage.",
-            "review_by": review_by,
-            "follow_up": "До review date добавить focused line test.",
-        }
-        # Duplicate должен завершиться policy failure до regression matching.
-        with self.assertRaisesRegex(ValueError, "duplicate crate:contract-core/lines"):
-            # Две независимые копии доказывают проверку identity, а не object identity.
-            COVERAGE_METRICS.validate_baseline_update(
-                previous,
-                proposed,
-                [dict(exception), dict(exception)],
-                ["lines", "functions", "regions"],
-            )
+        # Каждый сохранившийся command парсится тем же production parser-ом.
+        for command, arguments in command_arguments.items():
+            # Subtest называет exact legacy/report-only поверхность.
+            with self.subTest(command=command), mock.patch(
+                "sys.argv", ["coverage_metrics.py", command, *arguments]
+            ):
+                # Parsed command доказывает, что зачистка не сломала соседний CLI.
+                self.assertEqual(COVERAGE_METRICS.parse_args().command, command)
 
     # Верхний уровень exceptions manifest обязан соблюдать versioned exact schema.
     def test_exception_manifest_schema_is_fail_closed(self):
@@ -229,13 +196,29 @@ class CoverageRatchetTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            # Legacy CLI получает embedded report-only v1, а не blocking v2 document.
+            baseline_path = Path(directory) / "baseline-v1.json"
+            stable_baseline = COORDINATE_MODEL.read_json(
+                REPO_ROOT / "coverage/baseline.json"
+            )
+            baseline_path.write_text(
+                json.dumps(
+                    stable_baseline["legacy_report_only"]["baseline_v1"],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             # CLI читает temporary manifest через точечную подмену module constant.
-            with mock.patch.object(COVERAGE_METRICS, "EXCEPTIONS_PATH", exception_path):
+            with mock.patch.object(
+                COVERAGE_METRICS, "EXCEPTIONS_PATH", exception_path
+            ), mock.patch.object(
+                COVERAGE_METRICS, "BASELINE_PATH", baseline_path
+            ):
                 # argv запускает тот же cheap preflight, который вызывает coverage.sh check.
                 with mock.patch("sys.argv", ["coverage_metrics.py", "validate-baseline"]):
                     # Expired lifecycle обязан остановить release до дорогой LLVM suite.
                     with self.assertRaisesRegex(ValueError, "просрочено 2000-01-01"):
-                        # main использует реальные checked-in policy/baseline и fixture exceptions.
+                        # main использует current policy и embedded legacy/report-only baseline.
                         COVERAGE_METRICS.main()
 
 
@@ -284,11 +267,34 @@ class CoveragePolicyInventoryTests(unittest.TestCase):
         ) as baseline_file:
             # Counters не пересчитываются и не фабрикуются этим дешёвым тестом.
             coverage_baseline = json.load(baseline_file)
-        # Exact validator проверяет tool/schema/groups/metrics/counter bounds.
-        COVERAGE_METRICS.validate_summary_inventory(
-            coverage_baseline,
-            coverage_policy,
-            document_name="checked-in coverage baseline",
+        # Stable schema проверяет hashes/ranges/paths до inventory projection.
+        COVERAGE_STABILITY.validate_baseline(coverage_baseline)
+        # Blocking domains являются exact typed projection current policy.
+        expected_domains = {
+            "workspace",
+            "blocking-group",
+            *{
+                f"crate:{crate_name}"
+                for crate_name in coverage_policy["blocking_crates"]
+            },
+        }
+        self.assertEqual(
+            set(coverage_baseline["stable_source"]["domains"]), expected_domains
+        )
+        # Source universe содержит ровно все classified workspace owners.
+        source_owners = {
+            COORDINATE_MODEL.crate_name(source_path)
+            for source_path in coverage_baseline["source_files"]["universe"]
+        }
+        self.assertEqual(
+            source_owners,
+            set(coverage_policy["blocking_crates"])
+            | set(coverage_policy["informational_crates"]),
+        )
+        # Policy content hash связывает baseline с exact tracked classification.
+        self.assertEqual(
+            coverage_baseline["provenance"]["policy_hash"],
+            COORDINATE_MODEL.content_hash(coverage_policy),
         )
 
     # Missing blocking owner должен давать actionable fail-closed diagnostics.
