@@ -5,12 +5,18 @@
 import re
 # pathlib вычисляет repository paths относительно test-файла.
 from pathlib import Path
+# sys добавляет sibling test-support module для package/direct discovery modes.
+import sys
 # unittest предоставляет hermetic stdlib test runner.
 import unittest
 
 
 # Корень репозитория находится на два уровня выше scripts/tests/.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Оба unittest entrypoint-а получают один exact sibling import path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Pure helper владеет constrained YAML selected-key/indentation validation.
+import coverage_workflow_contract as WORKFLOW_CONTRACT  # noqa: E402
 
 
 # Функция читает versioned script как UTF-8 contract artifact.
@@ -107,6 +113,352 @@ class S42ReleaseRunnerTests(unittest.TestCase):
         self.assertIn('coverage_stability.py" check', coverage_script)
         self.assertIn('--cohort "${STABLE_ARTIFACT_DIRECTORY}/cohort.json"', coverage_script)
         self.assertIn('--measurement-exceptions "${MEASUREMENT_EXCEPTIONS_PATH}"', coverage_script)
+
+        # Workflow является отдельной границей: он передаёт base/current pair в pure v2 validator.
+        coverage_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        )
+        # Production workflow обязан пройти тот же strict validator, что и mutations ниже.
+        WORKFLOW_CONTRACT.validate_coverage_workflow_contract(coverage_workflow)
+        # Comment-only pull_request body остаётся семантически unfiltered trigger-ом.
+        commented_pull_request = coverage_workflow.replace(
+            "  pull_request:\n",
+            "  pull_request:\n    # Все PR остаются включены без paths/branches filters.\n",
+            1,
+        )
+        # Constrained style oracle не должен отвергать безопасную документацию trigger-а.
+        WORKFLOW_CONTRACT.validate_coverage_workflow_contract(commented_pull_request)
+        # Соседний canonical job с uppercase/underscore не принадлежит coverage body.
+        workflow_with_unrelated_job = (
+            coverage_workflow
+            + "\n  Z_unrelated:\n"
+            "    name: Unrelated contract fixture\n"
+            "    runs-on: ubuntu-24.04\n"
+            "    steps:\n"
+            "      - run: true\n"
+        )
+        # Job-key grammar helper-а и coverage lookahead обязаны оставаться согласованными.
+        WORKFLOW_CONTRACT.validate_coverage_workflow_contract(workflow_with_unrelated_job)
+
+        # Mutation helper требует один exact anchor, чтобы fixture не стал silently stale.
+        def replace_workflow_anchor(anchor: str, replacement: str) -> str:
+            # Multiple/missing occurrences означают, что adversarial fixture потерял точность.
+            self.assertEqual(coverage_workflow.count(anchor), 1)
+            # Единственная замена моделирует один конкретный опасный workflow regression.
+            return coverage_workflow.replace(anchor, replacement, 1)
+
+        # Missing/wrong PR condition не должен запускать update step на push event-е.
+        missing_pr_condition = replace_workflow_anchor(
+            "        if: github.event_name == 'pull_request'\n",
+            "",
+        )
+        # `always()` моделирует ошибочное расширение update-policy на event без base pair.
+        wrong_pr_condition = replace_workflow_anchor(
+            "        if: github.event_name == 'pull_request'\n",
+            "        if: always()\n",
+        )
+        # Root trigger обязан существовать независимо от condition внутри update step-а.
+        missing_pull_request_trigger = replace_workflow_anchor("  pull_request:\n", "")
+        # Другой event не создаёт PR status и не предоставляет проверенный base ref.
+        replaced_pull_request_trigger = replace_workflow_anchor(
+            "  pull_request:\n",
+            "  workflow_dispatch:\n",
+        )
+        # Paths filter оставил бы часть PR без blocking baseline-update проверки.
+        filtered_pull_request_trigger = replace_workflow_anchor(
+            "  pull_request:\n",
+            "  pull_request:\n    paths:\n      - 'coverage/**'\n",
+        )
+        # Canonical duplicate root owner может полностью shadow-ить проверенный mapping.
+        duplicate_root_owners = {
+            "duplicate-root-on": coverage_workflow + "\non:\n  workflow_dispatch:\n",
+            "duplicate-root-jobs": coverage_workflow + "\njobs:\n  shadow:\n    name: Shadow\n",
+        }
+        # Noncanonical root spellings fail closed вместо попытки реализовать весь YAML parser.
+        noncanonical_root_owners = {
+            "quoted-root-jobs": coverage_workflow + '\n"jobs":\n  shadow:\n',
+            "spaced-root-jobs": coverage_workflow + "\njobs :\n  shadow:\n",
+            "explicit-root-jobs": coverage_workflow + "\n? jobs\n:\n  shadow:\n",
+            "anchored-root-jobs": coverage_workflow + "\n&shadow jobs:\n  shadow:\n",
+            "quoted-root-on": coverage_workflow + '\n"on":\n  workflow_dispatch:\n',
+            "spaced-root-on": coverage_workflow + "\non :\n  workflow_dispatch:\n",
+        }
+        # Alternate YAML spelling ребёнка jobs не может создать второй coverage owner.
+        noncanonical_coverage_jobs = {
+            "duplicate-canonical-coverage-job": (
+                coverage_workflow
+                + "\n  coverage:\n"
+                "    name: Duplicate coverage status\n"
+                "    runs-on: ubuntu-24.04\n"
+            ),
+            **{
+                f"noncanonical-{spelling_name}-coverage-job": (
+                    coverage_workflow
+                    + f"\n  {key_spelling}\n"
+                    "    name: Spaced shadow job\n"
+                    "    runs-on: ubuntu-24.04\n"
+                )
+                for spelling_name, key_spelling in (
+                    ("plain-spaced-colon", "coverage :"),
+                    ("single-quoted", "'coverage':"),
+                    ("double-quoted-unicode", '"cover\\u0061ge":'),
+                    ("explicit", "? coverage\n  :"),
+                    ("anchored", "&shadow coverage:"),
+                )
+            },
+        }
+        # Job-level status controls не могут выключить либо условно пропустить ratchet.
+        coverage_job_status_mutations = {
+            "coverage-job-continue-on-error": replace_workflow_anchor(
+                "    name: Coverage ratchet\n",
+                "    name: Coverage ratchet\n    continue-on-error: true\n",
+            ),
+            "coverage-job-if-false": replace_workflow_anchor(
+                "    name: Coverage ratchet\n",
+                "    name: Coverage ratchet\n    if: false\n",
+            ),
+            "coverage-job-needs": replace_workflow_anchor(
+                "    name: Coverage ratchet\n",
+                "    name: Coverage ratchet\n    needs: vertical-seek-acceptance\n",
+            ),
+            "coverage-job-empty-strategy": replace_workflow_anchor(
+                "    name: Coverage ratchet\n",
+                "    name: Coverage ratchet\n"
+                "    strategy:\n"
+                "      matrix:\n"
+                "        shard: []\n",
+            ),
+            "duplicate-coverage-steps-owner": replace_workflow_anchor(
+                "    name: Coverage ratchet\n",
+                "    name: Coverage ratchet\n    steps:\n",
+            ),
+        }
+        # Ambient serialization на любом workflow scope ломает normal-concurrency cohort.
+        serialized_coverage_mutations = {
+            "root-rust-test-threads": replace_workflow_anchor(
+                "  CARGO_TERM_COLOR: always\n",
+                '  CARGO_TERM_COLOR: always\n  RUST_TEST_THREADS: "1"\n',
+            ),
+            "root-encoded-rust-test-threads": replace_workflow_anchor(
+                "  CARGO_TERM_COLOR: always\n",
+                '  CARGO_TERM_COLOR: always\n  "RUST_TEST_\\u0054HREADS": "1"\n',
+            ),
+            "coverage-job-rust-test-threads": replace_workflow_anchor(
+                "    name: Coverage ratchet\n",
+                "    name: Coverage ratchet\n"
+                "    env:\n"
+                '      RUST_TEST_THREADS: "1"\n',
+            ),
+            "measured-step-rust-test-threads": replace_workflow_anchor(
+                "      - name: Run clean coverage suite and ratchet\n",
+                "      - name: Run clean coverage suite and ratchet\n"
+                "        env:\n"
+                '          RUST_TEST_THREADS: "1"\n',
+            ),
+        }
+        # Unique env owner anchor включает first-party explanatory comment.
+        update_env_owner = (
+            "        env:\n"
+            "          # Base ref поступает от GitHub event и используется только для чтения versioned JSON.\n"
+        )
+        # Missing env mapping оставляет orphan child key и обязан fail-closed отклоняться.
+        missing_env_owner = replace_workflow_anchor(
+            update_env_owner,
+            update_env_owner.removeprefix("        env:\n"),
+        )
+        # Wrong `with` owner не является environment mapping для shell process-а.
+        wrong_env_owner = replace_workflow_anchor(
+            update_env_owner,
+            update_env_owner.replace("        env:\n", "        with:\n", 1),
+        )
+        # Duplicate env mapping моделирует YAML override exact base-ref owner-а.
+        duplicate_env_owner = replace_workflow_anchor(
+            update_env_owner,
+            "        env:\n        env:\n"
+            "          # Base ref поступает от GitHub event и используется только для чтения versioned JSON.\n",
+        )
+        # Quoted child key с separation space также override-ит base-ref env value.
+        duplicate_spaced_base_ref = replace_workflow_anchor(
+            "          COVERAGE_BASE_REF: origin/${{ github.base_ref }}\n",
+            "          COVERAGE_BASE_REF: origin/${{ github.base_ref }}\n"
+            '          "COVERAGE_BASE_REF" : refs/heads/untrusted\n',
+        )
+        # Удалённый первый continuation запускает flags как отдельные shell commands.
+        missing_command_continuation = replace_workflow_anchor(
+            "          python3 scripts/coverage_stability.py check-baseline-update \\\n",
+            "          python3 scripts/coverage_stability.py check-baseline-update\n",
+        )
+        # Blank line после escaped newline разрывает frozen contiguous command contract.
+        blank_between_continuations = replace_workflow_anchor(
+            "          python3 scripts/coverage_stability.py check-baseline-update \\\n",
+            "          python3 scripts/coverage_stability.py check-baseline-update \\\n\n",
+        )
+        # Comment после escaped newline меняет shell continuation и не является harmless prose.
+        comment_between_continuations = replace_workflow_anchor(
+            "          python3 scripts/coverage_stability.py check-baseline-update \\\n",
+            "          python3 scripts/coverage_stability.py check-baseline-update \\\n"
+            "          # unexpected command-continuation comment\n",
+        )
+        # Пробел после backslash превращает его в escaped space, а не line continuation.
+        trailing_space_after_backslash = replace_workflow_anchor(
+            "          python3 scripts/coverage_stability.py check-baseline-update \\\n",
+            "          python3 scripts/coverage_stability.py check-baseline-update \\  \n",
+        )
+        # Удалённый middle continuation разрывает command после первого argument-а.
+        missing_argument_continuation = replace_workflow_anchor(
+            "            --previous-baseline /tmp/coverage-previous-baseline.json \\\n",
+            "            --previous-baseline /tmp/coverage-previous-baseline.json\n",
+        )
+        # Любой success suffix на final line не должен маскировать validator exit 1/2.
+        masked_update_variants = {
+            suffix_name: replace_workflow_anchor(
+                "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n",
+                "            --proposed-measurement-exceptions "
+                f"coverage/measurement-exceptions.json {suffix}\n",
+            )
+            for suffix_name, suffix in (
+                ("or-colon", "|| :"),
+                ("semicolon-true", "; true"),
+                ("or-exit-zero", "|| exit 0"),
+                ("semicolon-colon", "; :"),
+            )
+        }
+        # Artifact relocation сохраняет старое global совпадение, но ломает Upload step ownership.
+        relocated_artifact_name = replace_workflow_anchor(
+            "          name: coverage-report\n",
+            "          name: moved-coverage-report\n",
+        )
+        # Второй replacement переносит прежнюю строку в checkout `with`, где она не artifact name.
+        self.assertEqual(relocated_artifact_name.count("          fetch-depth: 0\n"), 1)
+        # Valid YAML semantics здесь не нужны: oracle обязан отвергнуть relocation до workflow run.
+        relocated_artifact_name = relocated_artifact_name.replace(
+            "          fetch-depth: 0\n",
+            "          fetch-depth: 0\n          name: coverage-report\n",
+            1,
+        )
+        # Blank line после final argument тоже запрещена exact frozen scalar contract-ом.
+        blank_line_after_update = replace_workflow_anchor(
+            "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n",
+            "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n\n",
+        )
+        # Scanner обязан продолжить scalar после blank line и увидеть extra executable command.
+        extra_command_after_blank = replace_workflow_anchor(
+            "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n",
+            "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n"
+            "\n          echo unexpected-extra-command\n",
+        )
+        # Duplicate mapping key `name` не может override-ить public lifecycle step labels.
+        duplicate_step_names = {
+            f"duplicate-{step_slug}-step-name": replace_workflow_anchor(
+                f"      - name: {step_name}\n",
+                f"      - name: {step_name}\n        name: Shadow {step_name}\n",
+            )
+            for step_slug, step_name in (
+                ("update", "Validate baseline update policy"),
+                ("run", "Run clean coverage suite and ratchet"),
+                ("upload", "Upload coverage report"),
+            )
+        }
+        # Spaced quoted mapping key проверяет ту же YAML identity внутри exact update step-а.
+        duplicate_spaced_update_step_name = replace_workflow_anchor(
+            "      - name: Validate baseline update policy\n",
+            "      - name: Validate baseline update policy\n"
+            '        "name" : Shadow baseline update policy\n',
+        )
+        # Stable label без actual measured owner не является coverage ratchet evidence.
+        replaced_measured_run = replace_workflow_anchor(
+            "        run: scripts/coverage.sh check\n",
+            "        run: true\n",
+        )
+        # Measured step с false condition оставляет job зелёным без запуска ratchet-а.
+        suppressed_measured_step = replace_workflow_anchor(
+            "      - name: Run clean coverage suite and ratchet\n",
+            "      - name: Run clean coverage suite and ratchet\n        if: false\n",
+        )
+        # Upload обязан выполняться always; missing/conditional-only variants теряют failure artifact.
+        missing_upload_always = replace_workflow_anchor("        if: always()\n", "")
+        success_only_upload = replace_workflow_anchor(
+            "        if: always()\n",
+            "        if: success()\n",
+        )
+        # Selected-key grammar применяется не только к top-level coverage identity.
+        spaced_selected_key_overrides = {
+            "duplicate-spaced-job-name": replace_workflow_anchor(
+                "    name: Coverage ratchet\n",
+                "    name: Coverage ratchet\n    'name' : Shadow coverage status\n",
+            ),
+            "duplicate-spaced-update-if": replace_workflow_anchor(
+                "        if: github.event_name == 'pull_request'\n",
+                "        if: github.event_name == 'pull_request'\n"
+                '        "if" : always()\n',
+            ),
+            "duplicate-spaced-update-env": replace_workflow_anchor(
+                update_env_owner,
+                update_env_owner + "        'env' :\n",
+            ),
+            "duplicate-spaced-update-run": replace_workflow_anchor(
+                "        run: |\n"
+                '          git show "${COVERAGE_BASE_REF}:coverage/baseline.json"',
+                "        run: |\n        'run' : echo shadow\n"
+                '          git show "${COVERAGE_BASE_REF}:coverage/baseline.json"',
+            ),
+            "duplicate-spaced-upload-uses": replace_workflow_anchor(
+                "        uses: actions/upload-artifact@v4\n",
+                "        uses: actions/upload-artifact@v4\n"
+                '        "uses" : actions/checkout@v4\n',
+            ),
+            "duplicate-spaced-upload-with": replace_workflow_anchor(
+                "        with:\n          # Стабильное имя упрощает поиск report-а в любом run.\n",
+                "        with:\n        'with' :\n"
+                "          # Стабильное имя упрощает поиск report-а в любом run.\n",
+            ),
+            "duplicate-spaced-artifact-name": replace_workflow_anchor(
+                "          name: coverage-report\n",
+                "          name: coverage-report\n"
+                '          "name" : shadow-coverage-report\n',
+            ),
+        }
+
+        # Каждая mutation обязана провалить contract helper отдельным AssertionError.
+        workflow_mutations = {
+            "missing-pr-condition": missing_pr_condition,
+            "wrong-pr-condition": wrong_pr_condition,
+            "missing-pull-request-trigger": missing_pull_request_trigger,
+            "replaced-pull-request-trigger": replaced_pull_request_trigger,
+            "filtered-pull-request-trigger": filtered_pull_request_trigger,
+            **duplicate_root_owners,
+            **noncanonical_root_owners,
+            **noncanonical_coverage_jobs,
+            **coverage_job_status_mutations,
+            **serialized_coverage_mutations,
+            "missing-env-owner": missing_env_owner,
+            "wrong-env-owner": wrong_env_owner,
+            "duplicate-env-owner": duplicate_env_owner,
+            "duplicate-spaced-base-ref": duplicate_spaced_base_ref,
+            "missing-command-continuation": missing_command_continuation,
+            "blank-between-continuations": blank_between_continuations,
+            "comment-between-continuations": comment_between_continuations,
+            "trailing-space-after-backslash": trailing_space_after_backslash,
+            "missing-argument-continuation": missing_argument_continuation,
+            "relocated-artifact-name": relocated_artifact_name,
+            "blank-line-after-update": blank_line_after_update,
+            "extra-command-after-blank": extra_command_after_blank,
+            "duplicate-spaced-update-step-name": duplicate_spaced_update_step_name,
+            "replaced-measured-run": replaced_measured_run,
+            "suppressed-measured-step": suppressed_measured_step,
+            "missing-upload-always": missing_upload_always,
+            "success-only-upload": success_only_upload,
+            **duplicate_step_names,
+            **spaced_selected_key_overrides,
+            **masked_update_variants,
+        }
+        # Mutation matrix закрепляет причинность каждого strict assertion-а.
+        for mutation_name, mutated_workflow in workflow_mutations.items():
+            # Subtest сохраняет actionable имя ошибочно принятого bypass-а.
+            with self.subTest(mutation_name=mutation_name):
+                # Green helper на mutation означал бы false-positive release evidence.
+                with self.assertRaises(AssertionError):
+                    WORKFLOW_CONTRACT.validate_coverage_workflow_contract(mutated_workflow)
 
     # Raw LCOV обязан валидироваться после export и до публикации HTML/cohort.
     def test_coverage_runner_rejects_counter_underflow_before_publication(self):
