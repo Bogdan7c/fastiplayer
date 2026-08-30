@@ -31,6 +31,7 @@ use super::{
 };
 
 mod preview_cancellation;
+mod sync_preview_receipt;
 
 /// Blocking fake сохраняет главный production invariant: inner read может ждать сколько угодно.
 struct BlockingChannelDemuxer {

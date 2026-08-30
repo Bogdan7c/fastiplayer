@@ -704,12 +704,22 @@ impl Demuxer for ProgressiveDemuxer {
         if let Some(active_cancellation) = &queue.active_seek_cancellation {
             active_cancellation.cancel();
         }
-        if let Some(pending_cancellation) = queue
-            .pending_seek
-            .as_ref()
-            .and_then(ProgressiveSeekCommand::cancellation)
-        {
-            pending_cancellation.cancel();
+        if let Some(superseded_command) = queue.pending_seek.take() {
+            if let Some(superseded_cancellation) = superseded_command.cancellation() {
+                superseded_cancellation.cancel();
+            }
+            if let Some(superseded_fence) = superseded_command.receipt_fence()
+                && let Some(async_seek) = queue.async_seek.as_mut()
+            {
+                // Pending receipt нельзя потерять при смене sync/async control path:
+                // poll этого terminal outcome освобождает bounded receipt capacity.
+                async_seek
+                    .worker_pending_receipts
+                    .push_back(ProgressiveAsyncSeekReceipt {
+                        fence: superseded_fence,
+                        outcome: ProgressiveAsyncSeekOutcome::Superseded,
+                    });
+            }
         }
         let request_cancellation = DemuxSeekCancellationToken::new();
         queue.pending_seek = Some(ProgressiveSeekCommand::Previewed {
