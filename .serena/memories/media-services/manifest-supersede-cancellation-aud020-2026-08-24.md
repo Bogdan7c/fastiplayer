@@ -1,5 +1,15 @@
 # AUD-020 — abortable superseded manifest generation (2026-08-24)
 
+## Дополнение 2026-08-30: revision-correlated task slot
+
+- Финальная проверка repeatability выявила реальный lost-task race в `source-core::AbortableHttpTaskExecutor`: отдельные watch-revision и неверсированный latest-task slot позволяли worker-у, обрабатывающему старую cancel-ревизию, забрать уже новую task, после чего biased `changed()` дропал её и executor засыпал без result или компенсирующего wake.
+- Slot теперь хранит единый `VersionedTaskSlot { revision, task }`. Publisher под одним mutex вычисляет следующую прикладную revision, записывает `Some(task)` либо cancel-`None`, затем публикует ту же revision в watch. Worker извлекает task только при точном совпадении observed и slot revision; mismatch сохраняет более новую task до следующего уже ожидающего notification.
+- Lock order обязателен: worker копирует watch revision и освобождает `watch::Ref` до захвата slot mutex; publisher использует `slot mutex -> watch send`. Это запрещает инверсию `watch read guard -> slot mutex`. Empty cancellation и wrap revision используют тот же versioned contract.
+- Алгоритмический oracle расположен в `crates/source-core/src/abortable_http_task.rs`: `stale_observed_revision_leaves_newer_task_for_exact_notification` и `immediate_successor_after_cancellation_completes_every_time`. Вертикальный held-request TCP rendezvous находится в `crates/web-media-adaptive/src/tests/live_manifest_refresh.rs::live_manifest_refresh_fences_slow_stale_generation`; он больше не использует scheduler-delay `sleep(40ms)`, требует ровно две HTTP-попытки и публикует только current generation/body.
+- До исправления вертикальный тест воспроизводил timeout уже на 2-м из 100 отдельных запусков без workspace load. После исправления он прошёл 100/100; source-core successor oracle — 100/100 по 32 внутренних цикла. Публичный API и dependency graph не менялись.
+
+Ниже сохранён исходный AUD-020 boundary; это дополнение уточняет внутреннюю реализацию latest-task slot.
+
 ## Independent verification
 
 - Pre-fix hermetic loopback reproduction held generation A response body for 300 ms after headers, then superseded with B while continuously polling.
