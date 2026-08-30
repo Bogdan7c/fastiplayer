@@ -1,5 +1,7 @@
 //! Transactional metadata Sort orchestration отдельно от Add/visible jobs.
 
+#[cfg(test)]
+mod pending_probe_contract;
 mod runtime;
 #[cfg(test)]
 mod tests;
