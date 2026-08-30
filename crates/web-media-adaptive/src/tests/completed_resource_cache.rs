@@ -298,7 +298,7 @@ fn truncated_stream_is_not_cached_and_next_open_refetches() {
     assert_eq!(server.request_count(), 2);
 }
 
-/// Supersede drop-ает pending response и никогда не публикует неполный cache entry.
+/// Уже отменённый cursor закрывает response и не публикует неполный cache entry.
 #[test]
 fn cancelled_stream_is_not_cached_and_next_open_refetches() {
     let server = CancelledThenCompleteServer::start();
@@ -320,31 +320,35 @@ fn cancelled_stream_is_not_cached_and_next_open_refetches() {
     let mut cancelled = context
         .open_resource_streaming_blocking(request.clone(), seek_cancellation.clone())
         .expect("open cancellable response");
-    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
-    let cancelled_reader = thread::spawn(move || {
-        started_sender.send(()).expect("publish body read start");
-        let result = cancelled.next_chunk();
-        (result, cancelled)
-    });
-    started_receiver
-        .recv_timeout(TEST_TIMEOUT)
-        .expect("cancelled body read must start");
+    assert!(
+        context
+            .lock_completed_resource_cache()
+            .pending_charge_bytes()
+            > 0,
+        "network open обязан зарезервировать место до validated EOF"
+    );
 
+    // Program order намеренно доказывает pre-cancelled public read, не полагаясь на scheduler.
     seek_cancellation.cancel();
-
-    let (cancelled_result, _retained_cancelled_resource) = cancelled_reader
-        .join()
-        .expect("join cancelled cache reader");
+    let cancelled_result = cancelled.next_chunk();
     assert!(matches!(
         cancelled_result,
         Err(AdaptiveTransportError::Cancelled)
     ));
+    assert_eq!(cancelled.received_body_bytes(), 0);
     assert_eq!(
         context
             .lock_completed_resource_cache()
             .pending_charge_bytes(),
         0,
         "cancellation обязана освободить pending cache reservation"
+    );
+    assert_eq!(
+        context
+            .lock_completed_resource_cache()
+            .accounted_charge_bytes(),
+        0,
+        "pre-cancelled response не должен оставить completed cache entry"
     );
     server
         .first_disconnected
