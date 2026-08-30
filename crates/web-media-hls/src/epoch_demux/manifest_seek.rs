@@ -439,7 +439,11 @@ mod tests {
         HlsManifestCandidateLifecycle, HlsManifestCandidateRetryDecision,
         manifest_candidate_retry_decision,
     };
-    use crate::source::{HlsResourceAttemptFailure, HlsTransientBodyFailureCategory};
+    use crate::source::{
+        HlsResourceAttemptFailure, HlsResourceAttemptObserver, HlsTransientBodyFailureCategory,
+        SharedHlsResourceAttemptFailure,
+    };
+    use web_media_adaptive::AdaptiveTransportError;
 
     #[test]
     fn cancellation_after_transient_failure_prevents_restart() {
@@ -483,5 +487,28 @@ mod tests {
             ),
             HlsManifestCandidateRetryDecision::DoNotRestart
         );
+    }
+
+    #[test]
+    fn cancellation_transport_errors_do_not_authorize_manifest_restart() {
+        for transport_error in [
+            AdaptiveTransportError::Cancelled,
+            AdaptiveTransportError::RestartableReadInterrupted,
+        ] {
+            let attempt_failure = SharedHlsResourceAttemptFailure::default();
+            let observer = HlsResourceAttemptObserver::capture(attempt_failure.clone());
+
+            observer.observe_transport_error(&transport_error);
+
+            let failure_snapshot = attempt_failure.snapshot();
+            assert_eq!(failure_snapshot, HlsResourceAttemptFailure::None);
+            assert_eq!(
+                manifest_candidate_retry_decision(
+                    failure_snapshot,
+                    HlsManifestCandidateLifecycle::Active,
+                ),
+                HlsManifestCandidateRetryDecision::DoNotRestart,
+            );
+        }
     }
 }
