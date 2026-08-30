@@ -9,14 +9,20 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from coverage_executable_inventory import (
+    PrebuiltExecutableReference,
+    RuntimeExecutableReference,
+    load_executable_inventory_policy,
+)
+from coverage_runtime_quarantine import RuntimeRootTransaction
+from coverage_runner_model import RunnerConfig, ToolIdentity
+from coverage_runtime_prewarm import prepare_instrumented_build, prewarm_runtime_builds
 from coverage_runner_support import (
     CoverageRunnerError,
     MergeMetadataTransaction,
@@ -25,7 +31,6 @@ from coverage_runner_support import (
     atomic_write_json,
     canonical_json_bytes,
     cleanup_retired_artifact,
-    executable_manifest,
     git_source_manifest,
     publish_artifacts,
     sha256_file,
@@ -36,35 +41,6 @@ RUN_COUNT = 3
 PROFILE_NAME = "workspace"
 METHODOLOGY = "cargo-llvm-cov-full-json-3run-v1"
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-@dataclass(frozen=True)
-class RunnerConfig:
-    """Все пути и exact tool identities одного воспроизводимого cohort."""
-
-    repo_root: Path
-    profile_directory: Path
-    artifact_directory: Path
-    policy_path: Path
-    coordinate_extractor: Path
-    stability_tool: Path
-    lcov_validator: Path
-    toolchain: str
-    cargo_llvm_cov_version: str
-    llvm_cov_version: str
-    session_id: str
-    cargo_command: str
-    rustc_command: str
-    python_command: str
-
-
-@dataclass(frozen=True)
-class ToolIdentity:
-    """Версии compiler, LLVM и wrapper, которыми построен весь cohort."""
-
-    rustc_release: str
-    llvm_release: str
-    cargo_llvm_cov_release: str
 
 
 class CommandExecutor:
@@ -105,6 +81,9 @@ class StableCoverageRunner:
     def __init__(self, config: RunnerConfig, executor: CommandExecutor | None = None):
         self.config = config
         self.executor = executor or CommandExecutor()
+        self.executable_inventory_policy = load_executable_inventory_policy(
+            config.executable_inventory_policy_path
+        )
         self.base_environment = dict(os.environ)
         # Ambient serialization нельзя выдавать за normal-concurrency acceptance.
         self.base_environment.pop("RUST_TEST_THREADS", None)
@@ -161,63 +140,22 @@ class StableCoverageRunner:
             )
         return ToolIdentity(rustc_release, llvm_release, cargo_release)
 
-    def clean_all_and_build_once(self) -> dict[str, object]:
+    def clean_all_and_build_once(self) -> None:
         """Один full clean и один no-run build отделяют compilation от трёх executions."""
 
-        self.execute([*self.cargo_prefix, "clean", "--workspace", "--locked"])
         # В 0.8.7 пары --no-run/--no-report и --no-clean/--no-report запрещены самим CLI.
         # Поэтому официальный show-env даёт instrumented env для одного direct Cargo build/run.
-        show_env = self.execute([*self.cargo_prefix, "show-env", "--sh"], capture=True)
-        build_environment = dict(self.base_environment)
-        seen_variables: set[str] = set()
-        for line in show_env.stdout.splitlines():
-            if not line:
-                continue
-            if not line.startswith("export "):
-                raise CoverageRunnerError(f"show-env вернул не-export строку: {line}")
-            line = line.removeprefix("export ")
-            if "=" not in line:
-                raise CoverageRunnerError(f"show-env вернул строку без значения: {line}")
-            variable_name, encoded_value = line.split("=", 1)
-            if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", variable_name):
-                raise CoverageRunnerError(f"show-env вернул недопустимое имя: {variable_name}")
-            if variable_name in seen_variables:
-                raise CoverageRunnerError(f"show-env повторил переменную: {variable_name}")
-            seen_variables.add(variable_name)
-            decoded_values = shlex.split(encoded_value, posix=True)
-            if len(decoded_values) != 1:
-                raise CoverageRunnerError(f"show-env вернул неоднозначное значение: {variable_name}")
-            build_environment[variable_name] = decoded_values[0]
-        required_variables = {"RUSTC_WRAPPER", "CARGO_LLVM_COV", "LLVM_PROFILE_FILE"}
-        missing_variables = sorted(required_variables - build_environment.keys())
-        if missing_variables:
-            raise CoverageRunnerError(
-                "show-env не вернул обязательные переменные: " + ", ".join(missing_variables)
-            )
-        if (
-            Path(build_environment["LLVM_PROFILE_FILE"]).parent.resolve()
-            != self.config.profile_directory
-        ):
-            raise CoverageRunnerError("show-env вывел LLVM_PROFILE_FILE вне isolated directory")
-        # Plain Cargo build использует тот же isolated target, который report знает через wrapper env.
-        build_environment["CARGO_TARGET_DIR"] = str(self.config.profile_directory)
-        build_environment.pop("RUST_TEST_THREADS", None)
-        self.instrumented_environment = build_environment
-        self.executor.run(
-            [
-                self.config.cargo_command,
-                f"+{self.config.toolchain}",
-                "test",
-                "--workspace",
-                "--all-features",
-                "--locked",
-                "--no-fail-fast",
-                "--no-run",
-            ],
-            cwd=self.config.repo_root,
-            environment=build_environment,
+        self.instrumented_environment = prepare_instrumented_build(
+            self.config,
+            self.cargo_prefix,
+            self.base_environment,
+            lambda arguments, capture: self.execute(arguments, capture=capture),
+            lambda arguments, environment: self.executor.run(
+                arguments,
+                cwd=self.config.repo_root,
+                environment=environment,
+            ),
         )
-        return executable_manifest(self.config.profile_directory)
 
     def clean_profiles_and_prove_empty(self) -> None:
         """Перед каждым run удаляет только raw profiles и затем проверяет реальную пустоту."""
@@ -331,7 +269,8 @@ class StableCoverageRunner:
         run_number: int,
         stage: Path,
         source_manifest: dict[str, object],
-        build_manifest: dict[str, object],
+        build_reference: PrebuiltExecutableReference,
+        runtime_references: Sequence[RuntimeExecutableReference],
         tool_identity: ToolIdentity,
     ) -> Path:
         """Исполняет suite и публикует raw/report/state только внутри private stage."""
@@ -350,6 +289,8 @@ class StableCoverageRunner:
             self.config.profile_directory / profile_file_name
         )
         run_environment.pop("RUST_TEST_THREADS", None)
+        for runtime_reference in runtime_references:
+            runtime_reference.assert_ready_before_run(run_number)
         run_arguments = [
             self.config.cargo_command,
             f"+{self.config.toolchain}",
@@ -367,11 +308,9 @@ class StableCoverageRunner:
         assert_unchanged(
             "source inventory", source_manifest, git_source_manifest(self.config.repo_root)
         )
-        assert_unchanged(
-            "instrumented build",
-            build_manifest,
-            executable_manifest(self.config.profile_directory),
-        )
+        build_reference.assert_unchanged()
+        for runtime_reference in runtime_references:
+            runtime_reference.observe_completed_run(run_number)
         assert_unchanged("tool identity", tool_identity, self.tool_identity())
         profiles = self.collect_profiles(prefix)
 
@@ -459,6 +398,7 @@ class StableCoverageRunner:
         stage: Path,
         source_manifest: dict[str, object],
         build_manifest: dict[str, object],
+        runtime_references: Sequence[RuntimeExecutableReference],
         tool_identity: ToolIdentity,
         merge_metadata: MergeMetadataTransaction,
     ) -> None:
@@ -477,10 +417,26 @@ class StableCoverageRunner:
         atomic_write_json(
             stage / "cohort-manifest.json",
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "run_count": RUN_COUNT,
                 "source": source_manifest,
                 "build": build_manifest,
+                "runtime_build_roots": [
+                    {
+                        "owner": runtime_reference.root_policy.owner,
+                        "relative_root": runtime_reference.root_policy.relative_root.as_posix(),
+                        "materialization": {
+                            "phase": "prewarm",
+                            "kind": "cargo-test",
+                            "package": (
+                                runtime_reference.root_policy.materializer.package
+                            ),
+                            "test": runtime_reference.root_policy.materializer.test,
+                        },
+                        "manifest": runtime_reference.manifest(),
+                    }
+                    for runtime_reference in runtime_references
+                ],
                 "tool": {
                     "rustc_release": tool_identity.rustc_release,
                     "llvm_release": tool_identity.llvm_release,
@@ -508,6 +464,11 @@ class StableCoverageRunner:
             stage,
             self.config.artifact_directory,
         )
+        runtime_roots = RuntimeRootTransaction(
+            self.config.profile_directory,
+            self.config.artifact_directory,
+            self.executable_inventory_policy,
+        )
         lock_path = self.config.artifact_directory.parent / ".stable-coverage.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -520,7 +481,25 @@ class StableCoverageRunner:
                 source_manifest = git_source_manifest(self.config.repo_root)
                 # Старые wrapper merge-файлы сохраняются до cargo clean, а не удаляются.
                 merge_metadata.begin()
-                build_manifest = self.clean_all_and_build_once()
+                # Nested Cargo cache сохраняется отдельно: full clean им не владеет.
+                runtime_roots.begin()
+                self.clean_all_and_build_once()
+                if self.instrumented_environment is None:
+                    raise CoverageRunnerError(
+                        "instrumented environment отсутствует после build-once"
+                    )
+                build_reference, runtime_references = prewarm_runtime_builds(
+                    self.config,
+                    self.executable_inventory_policy,
+                    self.instrumented_environment,
+                    lambda arguments, environment: self.executor.run(
+                        arguments,
+                        cwd=self.config.repo_root,
+                        environment=environment,
+                    ),
+                    self.clean_profiles_and_prove_empty,
+                )
+                build_manifest = build_reference.manifest()
                 assert_unchanged(
                     "source inventory",
                     source_manifest,
@@ -532,7 +511,8 @@ class StableCoverageRunner:
                         run_number,
                         stage,
                         source_manifest,
-                        build_manifest,
+                        build_reference,
+                        runtime_references,
                         tool_identity,
                     )
                     for run_number in range(1, RUN_COUNT + 1)
@@ -573,25 +553,32 @@ class StableCoverageRunner:
                     source_manifest,
                     git_source_manifest(self.config.repo_root),
                 )
-                assert_unchanged(
-                    "instrumented build",
-                    build_manifest,
-                    executable_manifest(self.config.profile_directory),
-                )
+                build_reference.assert_unchanged()
+                for runtime_reference in runtime_references:
+                    runtime_reference.assert_final()
                 assert_unchanged("tool identity", tool_identity, self.tool_identity())
                 self.write_cohort_manifest(
                     stage,
                     source_manifest,
                     build_manifest,
+                    runtime_references,
                     tool_identity,
                     merge_metadata,
                 )
                 merge_metadata.prepare_publication()
+                runtime_roots.prepare_publication()
+
+                def complete_publication_transactions() -> None:
+                    """Atomic runtime retire precedes infallible merge state commit."""
+
+                    runtime_roots.complete_publication()
+                    merge_metadata.complete_publication()
+
                 retired_artifact = publish_artifacts(
                     stage,
                     self.config.artifact_directory,
                     self.config.session_id,
-                    merge_metadata.complete_publication,
+                    complete_publication_transactions,
                 )
                 cleanup_warning = cleanup_retired_artifact(retired_artifact)
                 if cleanup_warning is not None:
@@ -600,23 +587,38 @@ class StableCoverageRunner:
                         print(f"Предупреждение: {cleanup_warning}", file=sys.stderr)
                     except OSError:
                         pass
+                runtime_cleanup_warning = runtime_roots.accept_publication()
+                if runtime_cleanup_warning is not None:
+                    # Cohort уже atomically принят; retired tree не является active truth.
+                    try:
+                        print(
+                            "Предупреждение: не удалось завершить runtime quarantine "
+                            f"cleanup: {runtime_cleanup_warning}",
+                            file=sys.stderr,
+                        )
+                    except OSError:
+                        pass
         except BaseException as error:
-            rollback_error = None
+            rollback_errors = []
+            try:
+                runtime_roots.rollback()
+            except BaseException as caught_rollback_error:
+                rollback_errors.append(f"runtime roots: {caught_rollback_error}")
             try:
                 merge_metadata.rollback()
             except BaseException as caught_rollback_error:
-                rollback_error = caught_rollback_error
-            if rollback_error is None and stage.exists():
+                rollback_errors.append(f"merge metadata: {caught_rollback_error}")
+            if not rollback_errors and stage.exists():
                 shutil.rmtree(stage)
             # Удаляются только raw profiles текущего уникального session prefix.
             for profile in self.config.profile_directory.glob(
                 f"stable-{self.config.session_id}-run-*.profraw"
             ):
                 profile.unlink(missing_ok=True)
-            if rollback_error is not None:
+            if rollback_errors:
                 raise CoverageRunnerError(
-                    f"runner завершился ошибкой ({error}); rollback merge metadata "
-                    f"тоже завершился ошибкой: {rollback_error}"
+                    f"runner завершился ошибкой ({error}); rollback тоже завершился "
+                    f"ошибкой: {'; '.join(rollback_errors)}"
                 ) from error
             raise
 
@@ -629,6 +631,11 @@ def parse_args(arguments: Sequence[str]) -> RunnerConfig:
     parser.add_argument("--profile-directory", type=Path, required=True)
     parser.add_argument("--artifact-directory", type=Path, required=True)
     parser.add_argument("--policy", type=Path, required=True)
+    parser.add_argument(
+        "--executable-inventory-policy",
+        type=Path,
+        required=True,
+    )
     parser.add_argument("--coordinate-extractor", type=Path, required=True)
     parser.add_argument("--stability-tool", type=Path, required=True)
     parser.add_argument("--lcov-validator", type=Path, required=True)
@@ -652,6 +659,9 @@ def parse_args(arguments: Sequence[str]) -> RunnerConfig:
         profile_directory=requested_profile_directory.resolve(),
         artifact_directory=parsed.artifact_directory.resolve(),
         policy_path=parsed.policy.resolve(),
+        executable_inventory_policy_path=(
+            parsed.executable_inventory_policy.resolve()
+        ),
         coordinate_extractor=parsed.coordinate_extractor.resolve(),
         stability_tool=parsed.stability_tool.resolve(),
         lcov_validator=parsed.lcov_validator.resolve(),

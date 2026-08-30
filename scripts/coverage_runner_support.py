@@ -455,30 +455,6 @@ def git_source_manifest(repo_root: Path) -> dict[str, object]:
     }
 
 
-def executable_manifest(profile_directory: Path) -> dict[str, object]:
-    """Фиксирует instrumented executables без повторного хеширования гигабайтов binaries."""
-
-    entries: list[dict[str, object]] = []
-    if profile_directory.exists():
-        for candidate in sorted(profile_directory.rglob("*")):
-            if not candidate.is_file() or not os.access(candidate, os.X_OK):
-                continue
-            candidate_stat = candidate.stat()
-            entries.append(
-                {
-                    "path": candidate.relative_to(profile_directory).as_posix(),
-                    "size": candidate_stat.st_size,
-                    "mtime_ns": candidate_stat.st_mtime_ns,
-                }
-            )
-    if not entries:
-        raise CoverageRunnerError("build-once не создал ни одного instrumented executable")
-    return {
-        "file_count": len(entries),
-        "sha256": hashlib.sha256(canonical_json_bytes(entries)).hexdigest(),
-    }
-
-
 def assert_unchanged(label: str, expected: object, actual: object) -> None:
     """Останавливает cohort, если между runs изменился его инструмент или input."""
 

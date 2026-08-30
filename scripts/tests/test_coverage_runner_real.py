@@ -93,11 +93,17 @@ class RealCargoCoverageRunnerTests(unittest.TestCase):
             placeholder.write_text("# intercepted by fixture executor\n", encoding="utf-8")
             policy = repo_root / "policy.json"
             policy.write_text("{}\n", encoding="utf-8")
+            executable_inventory_policy = repo_root / "executable-policy.json"
+            executable_inventory_policy.write_text(
+                '{"schema_version":1,"runtime_build_roots":[]}\n',
+                encoding="utf-8",
+            )
             config = RunnerConfig(
                 repo_root=repo_root,
                 profile_directory=repo_root / "target" / "llvm-cov-target",
                 artifact_directory=repo_root / "target" / "coverage" / "stable",
                 policy_path=policy,
+                executable_inventory_policy_path=executable_inventory_policy,
                 coordinate_extractor=placeholder,
                 stability_tool=placeholder,
                 lcov_validator=placeholder,

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "runtime_build_roots": [
+    {
+      "owner": "trybuild",
+      "relative_root": "tests/trybuild",
+      "materializer": {
+        "kind": "cargo-test",
+        "package": "settings-derive",
+        "test": "trybuild"
+      }
+    }
+  ]
+}

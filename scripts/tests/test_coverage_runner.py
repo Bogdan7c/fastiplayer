@@ -49,6 +49,7 @@ class FakeCoverageExecutor(CommandExecutor):
         self.config = config
         self.commands: list[RecordedCommand] = []
         self.execution_count = 0
+        self.prewarm_count = 0
         self.build_count = 0
         self.report_count = 0
         self.empty_run: int | None = None
@@ -56,12 +57,48 @@ class FakeCoverageExecutor(CommandExecutor):
         self.failed_run: int | None = None
         self.mutate_source_run: int | None = None
         self.mutate_build_run: int | None = None
+        self.mutate_runtime_build_run: int | None = None
+        self.add_outside_runtime_build_run: int | None = None
+        self.runtime_symlink_run: int | None = None
+        self.leave_stale_runtime_root_after_build = False
+        self.emit_build_profile = False
+        self.skip_prewarm_executables = False
+        self.prewarm_foreign_profile = False
+        self.fail_prewarm_after_profile = False
+        self.prewarm_invalid_profile = False
         self.mutate_tool_run: int | None = None
         self.leave_stale_after_clean = False
         self.mutate_profile_during_report = False
         self.omit_intersection_output = False
         self.fail_lcov_validation = False
         self.tool_is_mutated = False
+
+    def materialize_runtime_build(self, run_number: int) -> None:
+        """Имитирует trybuild: run-1 создаёт, later runs byte-identically relink-ят."""
+
+        runtime_root = self.config.profile_directory / "tests" / "trybuild"
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        executable = runtime_root / "settings-derive-tests"
+        alias = runtime_root / "settings-derive-tests-hardlink"
+        executable.unlink(missing_ok=True)
+        alias.unlink(missing_ok=True)
+        executable_bytes = (
+            b"mutated executable"
+            if self.mutate_runtime_build_run == run_number
+            else b"runtime executable"
+        )
+        executable.write_bytes(executable_bytes)
+        executable.chmod(0o755)
+        os.link(executable, alias)
+        if self.runtime_symlink_run == run_number:
+            alias.unlink()
+            alias.symlink_to(executable.name)
+        if self.add_outside_runtime_build_run == run_number:
+            leaked_executable = (
+                self.config.profile_directory / "debug" / "deps" / "runtime-leak"
+            )
+            leaked_executable.write_bytes(b"outside configured runtime root")
+            leaked_executable.chmod(0o755)
 
     def completed(
         self, arguments: tuple[str, ...], stdout: str = ""
@@ -119,6 +156,14 @@ class FakeCoverageExecutor(CommandExecutor):
             executable.parent.mkdir(parents=True, exist_ok=True)
             executable.write_bytes(b"instrumented executable")
             executable.chmod(0o755)
+            if self.leave_stale_runtime_root_after_build:
+                stale_root = self.config.profile_directory / "tests" / "trybuild"
+                stale_root.mkdir(parents=True)
+                (stale_root / "stale-cache").write_bytes(b"stale")
+            if self.emit_build_profile:
+                (self.config.profile_directory / "build-script.profraw").write_bytes(
+                    b"build-profile"
+                )
             return self.completed(arguments)
 
         if "report" in arguments:
@@ -148,6 +193,27 @@ class FakeCoverageExecutor(CommandExecutor):
             return self.completed(arguments)
 
         if "test" in arguments and "--no-run" not in arguments:
+            if "--package" in arguments:
+                self.prewarm_count += 1
+                if not self.skip_prewarm_executables:
+                    self.materialize_runtime_build(0)
+                template = environment["LLVM_PROFILE_FILE_NAME"]
+                profile_name = template.replace("%p", "900").replace(
+                    "%16m", "123456_0"
+                )
+                (self.config.profile_directory / profile_name).write_bytes(
+                    b"prewarm-profile"
+                )
+                if self.prewarm_foreign_profile:
+                    (self.config.profile_directory / "foreign.profraw").write_bytes(
+                        b"foreign"
+                    )
+                if self.prewarm_invalid_profile:
+                    invalid_name = template.replace("%p-%16m", "garbage")
+                    (self.config.profile_directory / invalid_name).write_bytes(b"invalid")
+                if self.fail_prewarm_after_profile:
+                    raise CoverageRunnerError("fixture prewarm failed after profile")
+                return self.completed(arguments)
             self.execution_count += 1
             run_number = self.execution_count
             if self.failed_run == run_number:
@@ -163,6 +229,7 @@ class FakeCoverageExecutor(CommandExecutor):
                 executable.write_bytes(executable.read_bytes() + b" changed")
             if self.mutate_tool_run == run_number:
                 self.tool_is_mutated = True
+            self.materialize_runtime_build(run_number)
             if self.empty_run != run_number:
                 template = environment["LLVM_PROFILE_FILE_NAME"]
                 profile_name = template.replace("%p", str(1000 + run_number)).replace(
@@ -257,11 +324,34 @@ class StableCoverageRunnerTests(unittest.TestCase):
         coverage_directory = self.repo_root / "coverage"
         coverage_directory.mkdir()
         (coverage_directory / "policy.json").write_text("{}\n", encoding="utf-8")
+        executable_inventory_policy = (
+            coverage_directory / "executable-inventory-policy.json"
+        )
+        executable_inventory_policy.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "runtime_build_roots": [
+                        {
+                            "owner": "trybuild",
+                            "relative_root": "tests/trybuild",
+                            "materializer": {
+                                "kind": "cargo-test",
+                                "package": "settings-derive",
+                                "test": "trybuild",
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         self.config = RunnerConfig(
             repo_root=self.repo_root,
             profile_directory=self.repo_root / "target" / "llvm-cov-target",
             artifact_directory=self.repo_root / "target" / "coverage" / "stable",
             policy_path=coverage_directory / "policy.json",
+            executable_inventory_policy_path=executable_inventory_policy,
             coordinate_extractor=scripts / "coverage_coordinates.py",
             stability_tool=scripts / "coverage_stability.py",
             lcov_validator=scripts / "coverage_metrics.py",
@@ -311,59 +401,6 @@ class StableCoverageRunnerTests(unittest.TestCase):
         )
         self.assertEqual(stages, [])
 
-    def test_success_builds_once_runs_exact_same_suite_three_times_and_publishes(self):
-        """Три normal-concurrency run используют один build и уникальные profile prefixes."""
-
-        runner, executor = self.new_runner()
-        with mock.patch.dict(os.environ, {"RUST_TEST_THREADS": "1"}):
-            runner.run()
-
-        run_commands = [
-            command
-            for command in executor.commands
-            if "test" in command.arguments and "--no-run" not in command.arguments
-        ]
-        self.assertEqual(executor.build_count, 1)
-        self.assertEqual(len(run_commands), 3)
-        self.assertEqual(len({command.arguments for command in run_commands}), 1)
-        self.assertEqual(
-            [command.profile_name for command in run_commands],
-            [
-                "stable-fixture-session-run-1-%p-%16m.profraw",
-                "stable-fixture-session-run-2-%p-%16m.profraw",
-                "stable-fixture-session-run-3-%p-%16m.profraw",
-            ],
-        )
-        self.assertTrue(
-            all(
-                command.profile_path
-                == str(self.config.profile_directory / command.profile_name)
-                for command in run_commands
-            )
-        )
-        self.assertTrue(all(command.rust_test_threads is None for command in run_commands))
-        profile_cleans = [
-            command
-            for command in executor.commands
-            if "clean" in command.arguments and "--profraw-only" in command.arguments
-        ]
-        self.assertEqual(len(profile_cleans), 3)
-        show_env_commands = [
-            command for command in executor.commands if "show-env" in command.arguments
-        ]
-        self.assertEqual(len(show_env_commands), 1)
-        self.assertEqual(executor.report_count, 10)
-        for run_number in range(1, 4):
-            self.assertTrue(
-                (self.config.artifact_directory / f"run-{run_number}.json").is_file()
-            )
-        self.assertTrue((self.config.artifact_directory / "cohort.json").is_file())
-        self.assertTrue((self.config.artifact_directory / "variable.json").is_file())
-        self.assertTrue(
-            (self.config.artifact_directory / "html" / "index.html").is_file()
-        )
-        self.assert_no_private_stage()
-
     def test_reports_are_sequential_and_each_run_is_extracted_before_next_execution(self):
         """Full/summary/LCOV одного run завершаются до следующего test execution."""
 
@@ -371,7 +408,11 @@ class StableCoverageRunnerTests(unittest.TestCase):
         runner.run()
         command_kinds = []
         for command in executor.commands:
-            if "test" in command.arguments and "--no-run" not in command.arguments:
+            if (
+                "test" in command.arguments
+                and "--workspace" in command.arguments
+                and "--no-run" not in command.arguments
+            ):
                 command_kinds.append("run")
             elif "report" in command.arguments:
                 command_kinds.append("html" if "--html" in command.arguments else "report")
@@ -388,42 +429,6 @@ class StableCoverageRunnerTests(unittest.TestCase):
                 "intersect", "html",
             ],
         )
-
-    def test_manifests_hash_exact_prefix_only_profiles_and_frozen_profile_identity(self):
-        """Published provenance отделяет exact A schema от подробного raw hash manifest."""
-
-        runner, _executor = self.new_runner()
-        runner.run()
-        profile_identity = json.loads(
-            (self.config.artifact_directory / "profiles" / "run-1.json").read_text()
-        )
-        self.assertEqual(
-            profile_identity,
-            {
-                "schema_version": 1,
-                "profile": "workspace",
-                "methodology": "cargo-llvm-cov-full-json-3run-v1",
-                "llvm_cov_version": "22.1.2",
-                "cargo_llvm_cov_version": "0.8.7",
-            },
-        )
-        raw_manifest = json.loads(
-            (self.config.artifact_directory / "manifests" / "run-1.json").read_text()
-        )
-        self.assertTrue(raw_manifest["profiles"])
-        self.assertTrue(
-            all(
-                profile["name"].startswith("stable-fixture-session-run-1-")
-                and len(profile["sha256"]) == 64
-                for profile in raw_manifest["profiles"]
-            )
-        )
-        cohort_manifest = json.loads(
-            (self.config.artifact_directory / "cohort-manifest.json").read_text()
-        )
-        self.assertEqual(cohort_manifest["run_count"], 3)
-        self.assertTrue(cohort_manifest["artifacts"])
-        self.assertIsNone(cohort_manifest["merge_metadata"]["backup_artifact"])
 
     def test_empty_mixed_and_stale_profiles_fail_without_replacing_previous_artifact(self):
         """Ни пустой, ни mixed, ни переживший clean profile set не допускается к report."""

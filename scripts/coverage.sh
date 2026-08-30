@@ -26,6 +26,8 @@ readonly ARTIFACT_DIRECTORY="${REPO_ROOT}/target/coverage"
 readonly STABLE_ARTIFACT_DIRECTORY="${ARTIFACT_DIRECTORY}/stable"
 # Versioned policy определяет first-party source domains для extractor-а.
 readonly POLICY_PATH="${REPO_ROOT}/coverage/policy.json"
+# Отдельная versioned policy владеет exact runtime-generated build roots.
+readonly EXECUTABLE_INVENTORY_POLICY_PATH="${REPO_ROOT}/coverage/executable-inventory-policy.json"
 # После явной миграции этот путь содержит blocking stable-coordinate baseline v2.
 readonly BASELINE_PATH="${REPO_ROOT}/coverage/baseline.json"
 # Measurement exceptions отделены от legacy relocation exceptions.
@@ -135,6 +137,7 @@ run_stable_coverage_suite() {
         --profile-directory "${PROFILE_DIRECTORY}" \
         --artifact-directory "${STABLE_ARTIFACT_DIRECTORY}" \
         --policy "${POLICY_PATH}" \
+        --executable-inventory-policy "${EXECUTABLE_INVENTORY_POLICY_PATH}" \
         --coordinate-extractor "${SCRIPT_DIRECTORY}/coverage_coordinates.py" \
         --stability-tool "${SCRIPT_DIRECTORY}/coverage_stability.py" \
         --lcov-validator "${SCRIPT_DIRECTORY}/coverage_metrics.py" \

@@ -73,7 +73,7 @@ if script_name == "coverage_runner.py":
         )
     write_json(artifact_root / "cohort.json", {"schema_version": 1, "kind": "cohort"})
     write_json(artifact_root / "variable.json", {"schema_version": 1, "variables": []})
-    write_json(artifact_root / "cohort-manifest.json", {"schema_version": 1, "run_count": 3})
+    write_json(artifact_root / "cohort-manifest.json", {"schema_version": 2, "run_count": 3})
     write_json(artifact_root / "legacy" / "run-3-summary.json", {"fixture": "llvm-summary"})
     (artifact_root / "legacy" / "run-3.lcov").write_text("DA:1,1\n", encoding="utf-8")
     (artifact_root / "html" / "index.html").write_text("fixture", encoding="utf-8")
