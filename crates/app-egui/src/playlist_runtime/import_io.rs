@@ -34,6 +34,9 @@ use super::import_transaction::{PlaylistImportDraft, PlaylistImportIntent};
 
 mod materializer;
 
+#[cfg(test)]
+mod supersede_cancel_contract;
+
 /// Terminal result одного picker+parse job-а.
 #[derive(Debug)]
 enum PlaylistImportJobCompletion {
@@ -533,8 +536,6 @@ mod tests {
 
     use super::*;
     use crate::app_wake::AppWakeOwner;
-
-    mod supersede_cancel;
 
     #[test]
     fn m3u_xspf_and_cue_roots_use_authoritative_content_parsers() {

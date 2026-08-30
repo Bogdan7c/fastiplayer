@@ -1,6 +1,6 @@
 use std::sync::{Arc, mpsc};
 
-use super::super::*;
+use super::*;
 use crate::app_wake::{AppWakeEvent, AppWakeOwner, WakeEmitter};
 
 struct ChannelWakeEmitter(mpsc::SyncSender<()>);
