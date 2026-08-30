@@ -511,58 +511,122 @@ mod tests {
 
     #[test]
     fn terminal_notifier_covers_success_panic_and_cancel_before_start_exactly_once() {
+        #[derive(Debug, PartialEq, Eq)]
+        enum TerminalNotification {
+            Success,
+            Panic,
+            CancelledBeforeStart,
+        }
+
+        struct ActiveTaskReleaseGuard(Arc<Barrier>);
+
+        impl Drop for ActiveTaskReleaseGuard {
+            fn drop(&mut self) {
+                // Guard объявлен после executor-а, поэтому при unwind сначала
+                // освобождает worker и лишь затем разрешает Executor::drop join.
+                self.0.wait();
+            }
+        }
+
         let executor = BoundedExecutor::start(config(1, 4)).unwrap();
         let notification_count = Arc::new(AtomicUsize::new(0));
+        // Нулевая ёмкость ратчетит production-order: main сначала обязан увидеть
+        // terminal result и только после этого разблокировать соответствующий notifier.
+        let (notification_sender, notification_receiver) = std::sync::mpsc::sync_channel(0);
+
         let success_count = Arc::clone(&notification_count);
+        let success_notification_sender = notification_sender.clone();
         let success = executor
             .try_submit_with_terminal_notifier(
                 |_| 11_u8,
                 move || {
                     success_count.fetch_add(1, Ordering::AcqRel);
+                    success_notification_sender
+                        .send(TerminalNotification::Success)
+                        .unwrap();
                 },
             )
             .unwrap();
         assert_eq!(wait(&success), TaskPoll::Completed(11));
+        assert_eq!(
+            notification_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("success notifier did not follow terminal result"),
+            TerminalNotification::Success
+        );
 
         let panic_count = Arc::clone(&notification_count);
+        let panic_notification_sender = notification_sender.clone();
         let panicked = executor
             .try_submit_with_terminal_notifier::<_, (), _>(
                 |_| panic!("expected operation panic"),
                 move || {
                     panic_count.fetch_add(1, Ordering::AcqRel);
+                    panic_notification_sender
+                        .send(TerminalNotification::Panic)
+                        .unwrap();
                 },
             )
             .unwrap();
         assert_eq!(wait(&panicked), TaskPoll::Failed(TaskFailure::Panicked));
+        assert_eq!(
+            notification_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("panic notifier did not follow terminal result"),
+            TerminalNotification::Panic
+        );
 
         let gate = Arc::new(Barrier::new(2));
-        let started = Arc::new(AtomicBool::new(false));
+        let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(0);
         let active_gate = Arc::clone(&gate);
-        let active_started = Arc::clone(&started);
         let active = executor
             .try_submit(move |_| {
-                active_started.store(true, Ordering::Release);
+                // При аварийном исчезновении receiver-а operation выходит, не
+                // заходя в barrier, поэтому Executor::drop не зависнет на join.
+                if started_sender.send(()).is_err() {
+                    return;
+                }
                 active_gate.wait();
             })
             .unwrap();
-        while !started.load(Ordering::Acquire) {
-            thread::yield_now();
-        }
+        started_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("active task did not occupy the sole worker");
+        let active_release = ActiveTaskReleaseGuard(gate);
+
         let cancelled_count = Arc::clone(&notification_count);
+        let cancelled_notification_sender = notification_sender.clone();
         let cancelled = executor
             .try_submit_with_terminal_notifier(
                 |_| 99_u8,
                 move || {
                     cancelled_count.fetch_add(1, Ordering::AcqRel);
+                    cancelled_notification_sender
+                        .send(TerminalNotification::CancelledBeforeStart)
+                        .unwrap();
                 },
             )
             .unwrap();
+        drop(notification_sender);
         cancelled.cancel();
-        gate.wait();
+        drop(active_release);
         assert_eq!(wait(&active), TaskPoll::Completed(()));
         assert_eq!(
             wait(&cancelled),
             TaskPoll::Failed(TaskFailure::CancelledBeforeStart)
+        );
+        assert_eq!(
+            notification_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("cancel notifier did not follow terminal result"),
+            TerminalNotification::CancelledBeforeStart
+        );
+
+        let report = executor.shutdown_and_join();
+        assert_eq!(report.joined_workers, 1);
+        assert_eq!(
+            notification_receiver.try_recv(),
+            Err(TryRecvError::Disconnected)
         );
         assert_eq!(notification_count.load(Ordering::Acquire), 3);
     }
