@@ -18,11 +18,30 @@ scripts/pre-pr-checks.sh
 `scripts/ci-checks.sh --help`. Все Cargo-команды используют `--locked`.
 
 Измеримый coverage ratchet запускается отдельно командой
-`scripts/coverage.sh check`. Он сохраняет raw/LCOV/HTML только как CI artifact,
-а в Git сравнивает компактный baseline workspace и pure contract/business
-crate-ов. Политика, локальная установка exact tool и процедура осознанного
-исключения описаны в `docs/code-coverage.md`. До baseline/ratchet runner
-fail-closed отклоняет LCOV с top-bit execution counter corruption.
+`scripts/coverage.sh check`. Runner один раз строит instrumented workspace,
+typed-prewarm-ит объявленные runtime Cargo roots и выполняет ровно три одинаковых
+normal-concurrency запуска. Blocking baseline schema v2 хранит exact
+source-coordinate sets: 3/3 coordinates считаются stable, 1/3–2/3 публикуются
+как variable diagnostics, 0/3 остаются uncovered.
+
+PR step `Validate baseline update policy` читает из целевой ветки обе части
+предыдущей policy — `coverage/baseline.json` и
+`coverage/measurement-exceptions.json` — и сравнивает их с текущей tracked
+парой через `coverage_stability.py check-baseline-update`. Отсутствующий либо
+malformed base artifact является failure; режима «принять первый baseline»
+после migration нет. Same-universe stable-coordinate loss запрещён безусловно,
+а cross-universe снижение exact `stable/total` требует новой полностью
+потреблённой measurement exception. Предыдущая exception остаётся provenance и
+не разрешает новый decrement.
+
+Raw JSON, LCOV, HTML и compact ratio summary сохраняются как report-only artifact
+`coverage-report`; blocking status принадлежит только stable cohort и v2
+ratchet. Cohort manifest schema v2 фиксирует source/tool inventories, parent
+executables и typed runtime executable roots. До публикации runner fail-closed
+отклоняет LCOV с top-bit execution counter corruption, mutation executable set,
+symlink escape и partial/orphaned quarantine. Полная методика, команды
+`check`/`report`/одноразового `bootstrap` и crash-recovery limitation
+описаны в `docs/code-coverage.md`.
 
 Семь local dependency patches остаются вне workspace и проверяются своими
 manifest/lock парами. Их exact direct-команды и removal gates перечислены в

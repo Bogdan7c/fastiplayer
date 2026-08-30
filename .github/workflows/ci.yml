@@ -86,13 +86,17 @@ jobs:
       # PR не может снизить versioned baseline без точечной bounded exception.
       - name: Validate baseline update policy
         if: github.event_name == 'pull_request'
+        env:
+          # Base ref поступает от GitHub event и используется только для чтения versioned JSON.
+          COVERAGE_BASE_REF: origin/${{ github.base_ref }}
         run: |
-          if git cat-file -e "origin/${{ github.base_ref }}:coverage/baseline.json"; then
-            git show "origin/${{ github.base_ref }}:coverage/baseline.json" > /tmp/coverage-previous-baseline.json
-            python3 scripts/coverage_metrics.py check-baseline-update --previous /tmp/coverage-previous-baseline.json
-          else
-            echo "Base branch не содержит coverage baseline; принимается первичное введение policy."
-          fi
+          git show "${COVERAGE_BASE_REF}:coverage/baseline.json" > /tmp/coverage-previous-baseline.json
+          git show "${COVERAGE_BASE_REF}:coverage/measurement-exceptions.json" > /tmp/coverage-previous-measurement-exceptions.json
+          python3 scripts/coverage_stability.py check-baseline-update \
+            --previous-baseline /tmp/coverage-previous-baseline.json \
+            --previous-measurement-exceptions /tmp/coverage-previous-measurement-exceptions.json \
+            --proposed-baseline coverage/baseline.json \
+            --proposed-measurement-exceptions coverage/measurement-exceptions.json
       # Clean runner строит artifacts и применяет workspace/pure-crate ratchet.
       - name: Run clean coverage suite and ratchet
         run: scripts/coverage.sh check
