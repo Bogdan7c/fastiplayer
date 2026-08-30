@@ -60,3 +60,49 @@ fn public_debounce_reschedule_starts_exact_dirty_snapshot_before_old_deadline() 
         })
     );
 }
+
+#[test]
+fn public_shutdown_reports_command_admission_timeout_while_queue_is_full() {
+    const COMMAND_ADMISSION_TIMEOUT: Duration = Duration::from_secs(1);
+
+    let writer = Arc::new(BlockingWriter::new());
+    let wake_port = Arc::new(CountingWakePort::default());
+    let worker = started_test_worker(writer.clone(), wake_port);
+    worker
+        .submit_snapshot(captured_snapshot(revision(1), 1))
+        .expect("revision 1 принимается");
+    worker.retry_now().expect("write запускается немедленно");
+    writer.wait_until_entered(1);
+
+    // Заблокированный writer не позволяет receiver-у освободить ни один command slot.
+    let capacity_admissions = (2..=9)
+        .map(|value| worker.submit_snapshot(captured_snapshot(revision(value), value as usize)))
+        .collect::<Vec<_>>();
+    let backpressured_admission = worker.submit_snapshot(captured_snapshot(revision(10), 10));
+
+    let shutdown = worker.shutdown(None, COMMAND_ADMISSION_TIMEOUT);
+    let revisions_before_release = writer.revisions();
+    let maximum_active_writes = writer.maximum_active_writes();
+    // Fake writer остаётся test-owned даже после consuming shutdown и освобождается до assert.
+    writer.release();
+
+    assert!(
+        capacity_admissions
+            .iter()
+            .all(|outcome| matches!(outcome, Ok(SubmitSnapshotOutcome::Accepted)))
+    );
+    let backpressured_snapshot = match backpressured_admission {
+        Err(SubmitSnapshotError::Backpressure(snapshot)) => snapshot,
+        other => panic!("ожидался typed backpressure, получено {other:?}"),
+    };
+    assert_eq!(backpressured_snapshot.revision(), revision(10));
+    assert_eq!(
+        shutdown,
+        SaveWorkerShutdownOutcome::TimedOut {
+            phase: ShutdownTimeoutPhase::CommandAdmission,
+            completion: None,
+        }
+    );
+    assert_eq!(revisions_before_release, vec![revision(1)]);
+    assert_eq!(maximum_active_writes, 1);
+}
