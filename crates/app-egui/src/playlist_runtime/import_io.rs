@@ -530,10 +530,11 @@ fn parse_selected_cue_root(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::mpsc;
 
     use super::*;
     use crate::app_wake::AppWakeOwner;
+
+    mod supersede_cancel;
 
     #[test]
     fn m3u_xspf_and_cue_roots_use_authoritative_content_parsers() {
@@ -647,44 +648,6 @@ mod tests {
         assert!(dialog_source.contains(".pick_file()"));
         assert!(!dialog_source.contains(".pick_files()"));
         assert!(dialog_source.contains(r#".add_filter("CUE", &["cue"])"#));
-    }
-
-    #[test]
-    fn supersede_cancels_in_flight_job_before_late_completion_can_stage() {
-        let wake_port = AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime);
-        let (started_sender, started_receiver) = mpsc::sync_channel(1);
-        let (release_sender, release_receiver) = mpsc::sync_channel(1);
-        let job = PlaylistImportJob::spawn_runner(
-            wake_port.clone(),
-            "playlist-import-supersede-test",
-            move |worker_cancel, expansion_cancellation| {
-                started_sender.send(()).expect("publish worker start");
-                release_receiver.recv().expect("release worker");
-                if worker_cancel.load(Ordering::Acquire) || expansion_cancellation.is_cancelled() {
-                    PlaylistImportJobCompletion::Cancelled
-                } else {
-                    panic!("superseded worker must observe cancellation")
-                }
-            },
-        )
-        .expect("spawn test import job");
-        let mut owner = PlaylistImportIoOwner {
-            wake_port,
-            job: Some(job),
-        };
-        started_receiver.recv().expect("worker started");
-
-        owner.cancel_active();
-        release_sender.send(()).expect("release worker");
-        let completion = loop {
-            if let Some(completion) = owner.drain() {
-                break completion;
-            }
-            std::thread::yield_now();
-        };
-
-        assert!(matches!(completion, PlaylistImportJobCompletion::Cancelled));
-        assert!(!owner.is_open());
     }
 
     #[test]
