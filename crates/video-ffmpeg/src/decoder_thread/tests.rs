@@ -82,7 +82,7 @@ fn disconnected_frontend_terminates_worker_with_full_pool_and_queued_packet() {
             host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
         )
         .expect("test AVFrame should fill the only host-pool slot");
-    // Защищаем предусловие: worker обязан войти именно в full-pool control branch.
+    // Заполняем pool; causal ack ниже отдельно докажет наблюдение этого состояния worker-ом.
     assert_eq!(resource_provider.free_slots(), 0);
 
     // Два production send_packet вызова оставляют минимум один packet за full-pool gate.
@@ -92,8 +92,11 @@ fn disconnected_frontend_terminates_worker_with_full_pool_and_queued_packet() {
     decoder
         .send_packet(decode_packet_with_pts(1, 1, Duration::from_millis(1)))
         .expect("second packet should remain queued behind full-pool backpressure");
-    // Проверяем exact defect precondition до lifecycle drop.
-    assert!(decoder.packet_queue_depth() >= 1);
+    // Ack публикуется самим worker-ом только после фактического входа в full-pool wait.
+    decoder
+        .full_pool_wait_observer_rx
+        .recv_timeout(TERMINATION_TIMEOUT)
+        .expect("worker must enter full-pool wait before frontend shutdown");
 
     // Hook наблюдает возврат настоящего Drop, внутри которого выполняется worker join.
     let (terminated_tx, terminated_rx) = bounded(1);
@@ -120,6 +123,7 @@ fn disconnected_frontend_terminates_worker_with_full_pool_and_queued_packet() {
 
     // Lease намеренно освобождается только после доказанного worker termination.
     resource_provider.release_frame(held_resource.handle);
+    assert_eq!(resource_provider.free_slots(), HOST_POOL_CAPACITY);
 }
 
 #[test]

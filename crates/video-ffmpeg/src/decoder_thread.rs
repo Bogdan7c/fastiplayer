@@ -207,6 +207,10 @@ pub struct FfmpegVideoDecoderThread {
 
     /// Владелец независимого shutdown signal и exactly-once worker join.
     worker_lifecycle: FfmpegWorkerLifecycle,
+
+    /// Test-only causal observation фактического входа worker-а в full-pool wait.
+    #[cfg(test)]
+    full_pool_wait_observer_rx: Receiver<()>,
 }
 
 #[cfg(feature = "ffmpeg")]
@@ -258,6 +262,10 @@ impl FfmpegVideoDecoderThread {
         // bounded(1) coalescing wake-up: release_frame пишет токен, worker будит
         // reception, как только освободился pool slot, без busy-poll.
         let (release_notify_tx, release_notify_rx) = bounded(1);
+        // Test-only coalesced ack отделяет реальный вход в full-pool wait от
+        // scheduler-зависимого наблюдения состояния provider-а другим thread-ом.
+        #[cfg(test)]
+        let (full_pool_wait_observer_tx, full_pool_wait_observer_rx) = bounded(1);
         let host_resource_provider = FfmpegHostResourceProvider::new(
             thread_config.software_frame_pool_frames,
             release_notify_tx,
@@ -286,6 +294,8 @@ impl FfmpegVideoDecoderThread {
                     packet_completion_counter: worker_packet_completion_counter,
                     error_tx,
                     software_decode_thread_budget: worker_software_decode_thread_budget,
+                    #[cfg(test)]
+                    full_pool_wait_observer_tx,
                 };
 
                 worker.run(packet_rx, control_rx, shutdown_rx);
@@ -309,6 +319,8 @@ impl FfmpegVideoDecoderThread {
             thread_config,
             control_pressure,
             worker_lifecycle: FfmpegWorkerLifecycle::new(shutdown_tx, worker_thread),
+            #[cfg(test)]
+            full_pool_wait_observer_rx,
         })
     }
 
@@ -709,6 +721,10 @@ struct FfmpegDecoderWorker {
 
     /// Software decode thread budget, применяемый при открытии FFmpeg context-а.
     software_decode_thread_budget: SoftwareDecodeThreadBudget,
+
+    /// Test-only coalesced publisher фактического входа в full-pool wait.
+    #[cfg(test)]
+    full_pool_wait_observer_tx: Sender<()>,
 }
 
 /// Проверяет, обязан ли decoder owner немедленно сделать следующий EOF turn.

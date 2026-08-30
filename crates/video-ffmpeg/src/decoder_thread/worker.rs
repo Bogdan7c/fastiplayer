@@ -45,6 +45,8 @@ impl FfmpegDecoderWorker {
             // переполнится fatal-ом. Control обслуживается всегда; release pool
             // slot-а будит reception через release_notify_rx.
             if self.resource_provider.free_slots() == 0 {
+                #[cfg(test)]
+                self.publish_full_pool_wait_entry();
                 crossbeam_channel::select! {
                     recv(shutdown_rx) -> _ => break,
                     recv(control_rx) -> control_message => {
@@ -97,6 +99,14 @@ impl FfmpegDecoderWorker {
                 }
             }
         }
+    }
+
+    /// Публикует test-only causal ack прямо перед блокировкой в full-pool select.
+    #[cfg(test)]
+    fn publish_full_pool_wait_entry(&self) {
+        // Full означает уже опубликованный coalesced ack, а disconnected observer
+        // больше никого не может уведомить; ни один исход не меняет worker lifecycle.
+        let _test_observation_outcome = self.full_pool_wait_observer_tx.try_send(());
     }
 
     fn handle_control(
