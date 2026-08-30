@@ -262,13 +262,25 @@ fn cancelling_blocked_job_removes_queued_work_before_probe_start() {
         "block-cancel-0"
     );
     assert!(handle.cancel(DiscoveryCancellationCause::UserCancelled));
-    gate.release();
-    assert!(started.recv_timeout(Duration::from_millis(100)).is_err());
+    assert!(!handle.cancel(DiscoveryCancellationCause::StructuralInvalidation));
     assert_eq!(
-        wait_for_final(&handle).outcome,
+        handle.cancellation().cause(),
+        Some(DiscoveryCancellationCause::UserCancelled)
+    );
+    gate.release();
+    let summary = wait_for_final(&handle);
+    // Terminal требует `active_work == 0`, а cancel синхронно удаляет pending work:
+    // после этого edge новый старт probe уже не может появиться в канале.
+    assert!(started.try_recv().is_err());
+    assert_eq!(summary.verified, 0);
+    assert_eq!(summary.failed, 0);
+    assert_eq!(
+        summary.outcome,
         DiscoveryFinalOutcome::Cancelled(DiscoveryCancellationCause::UserCancelled)
     );
     assert!(handle.drain_events().is_empty());
+    assert!(handle.take_final_summary().is_none());
+    assert!(!handle.cancel(DiscoveryCancellationCause::LifecycleShutdown));
 }
 
 #[test]
