@@ -155,6 +155,27 @@ python3 scripts/coverage_stability.py validate \
 `coverage/baseline.json` + `coverage/measurement-exceptions.json`; `check` и
 `report` versioned policy не меняют.
 
+Для обычной проверки достаточно одного cohort из трёх measured runs. Однако
+обновление tracked baseline после правок конкурентных тестов квалифицируется
+строже: на одной и той же source revision независимо собираются три cohort-а,
+то есть девять measured workspace runs. В proposal попадает только точное
+пересечение stable coordinates всех девяти запусков. Текущий CLI намеренно не
+скрывает этот review за автоматическим cross-cohort reducer: reviewer отдельно
+сверяет source/tool/profile и coordinate universes, а для каждого изменённого
+файла проверяет stable counts. Aggregate workspace ratio не может доказать, что
+потеря в одном файле случайно не замаскирована приростом в другом.
+
+Executable SHA-256 обязан быть неизменным внутри каждого cohort-а: именно это
+доказывает, что его три measured run исполняли один instrumented build. Между
+независимыми cohort-ами байты ELF могут различаться из-за linker/compiler
+nondeterminism; такое различие допустимо только при совпадающих source, exact
+toolchain, profile и coordinate universe и при отдельно зелёной внутренней
+валидации каждого cohort-а. Это не утверждение о reproducible builds.
+
+После reviewed установки baseline выполняются два свежих
+`scripts/coverage.sh check`. Оба обязаны вернуть пустые `regressions` и
+`universe_changes`; retry не превращает реальный test/build failure в PASS.
+
 Законченные artifacts находятся в `target/coverage/stable/`: три run state,
 cohort, variable diagnostics, schema-v2 cohort manifest, raw summaries, LCOV,
 HTML и legacy report-only files. CI публикует тот же стабильный artifact с именем
