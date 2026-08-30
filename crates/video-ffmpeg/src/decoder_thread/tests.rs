@@ -97,6 +97,7 @@ fn disconnected_frontend_terminates_worker_with_full_pool_and_queued_packet() {
         .full_pool_wait_observer_rx
         .recv_timeout(TERMINATION_TIMEOUT)
         .expect("worker must enter full-pool wait before frontend shutdown");
+    assert!(decoder.packet_queue_depth() >= 1);
 
     // Hook наблюдает возврат настоящего Drop, внутри которого выполняется worker join.
     let (terminated_tx, terminated_rx) = bounded(1);
