@@ -1,5 +1,15 @@
 # GitHub Actions CI
 
+## Stable coverage v2 override (2026-08-30)
+
+- Этот раздел supersedes более старые coverage-v1 paragraphs ниже. Authoritative architecture/methodology: `mem:testing/coverage`.
+- Stable blocking job/status остаётся `Coverage ratchet`; artifact name остаётся `coverage-report`. Workflow устанавливает exact cargo-llvm-cov 0.8.7 и запускает `scripts/coverage.sh check`.
+- На pull request отдельный fail-closed step извлекает из `origin/${{ github.base_ref }}` обе previous tracked части: `coverage/baseline.json` и `coverage/measurement-exceptions.json`. Затем единственный owner `scripts/coverage_stability.py check-baseline-update` получает exact four required previous/proposed flags. Missing base file, malformed pair или policy violation падают; migration fallback/legacy updater/continue-on-error отсутствуют.
+- Workflow contract закреплён `scripts/tests/test_s42_release_runner.py::S42ReleaseRunnerTests::test_coverage_check_composes_stable_preflight_suite_and_ratchet` и pure canonical scanner `scripts/tests/coverage_workflow_contract.py`: active unfiltered PR trigger, exact jobs→coverage→steps ancestry, отсутствие job suppression/concurrency override, exact update shell tuple, measured `scripts/coverage.sh check`, upload `if: always()` + `actions/upload-artifact@v4` + stable artifact name.
+- Root coverage env остаётся exact `CARGO_INCREMENTAL=0`, `CARGO_TERM_COLOR=always`; coverage job/measured step не могут задавать `RUST_TEST_THREADS`, `if`, `continue-on-error`, `needs` или `strategy`, которые убрали бы обычную three-run concurrency/blocking status.
+- Human documentation: `docs/code-coverage.md` и coverage section `docs/continuous-integration.md`.
+
+
 ## Current dependency-gate status after AUD-002 (2026-08-23)
 
 - `scripts/ci-checks.sh dependencies` снова blocking-green после exact lock updates `event-listener 5.4.1 -> 5.4.2` и `webbrowser 1.2.1 -> 1.2.2`; RUSTSEC-2026-0221/0257 отсутствуют.

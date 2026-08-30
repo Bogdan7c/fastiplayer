@@ -1,3 +1,9 @@
+## Stable coverage v2 foundation (2026-08-30)
+
+- Blocking coverage now uses three-run source-coordinate stability, not legacy aggregate one-run counters. `coverage/baseline.json` schema v2 and atomic `coverage/measurement-exceptions.json` are the only blocking policy pair; embedded v1 + `coverage/exceptions.json` are frozen report-only provenance.
+- Runtime-built executables are owned by typed policy/prewarm/quarantine and semantic content inventories; CI `Coverage ratchet` compares the previous/current pair through the sole v2 updater before `scripts/coverage.sh check`.
+- Full architecture, commands, accepted counts and tests: `mem:testing/coverage`; workflow wiring: `mem:ci/github-actions`.
+
 ## HLS VOD manifest-owned worker-receipted seek/cancellation (updated 2026-08-28)
 
 - Native HLS VOD alone opt-in uses typed `PreferPostTargetRap`; yt-dlp HLS VOD keeps default containing-segment decode-forward semantics, and live HLS remains on its separate legacy/live path.
