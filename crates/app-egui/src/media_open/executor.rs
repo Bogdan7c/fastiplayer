@@ -423,9 +423,14 @@ mod shutdown_tests {
         let source_token = cancellation.source_token();
 
         cancellation.cancel(MediaInstallCancellationCause::LifecycleShutdown);
+        cancellation.cancel(MediaInstallCancellationCause::Superseded);
 
         assert!(cancellation.is_cancelled());
         assert!(source_token.is_cancelled());
+        assert_eq!(
+            cancellation.cause(),
+            Ok(Some(MediaInstallCancellationCause::LifecycleShutdown))
+        );
     }
 
     #[test]

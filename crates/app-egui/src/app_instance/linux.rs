@@ -198,9 +198,10 @@ fn io_error(operation: AppInstanceLeaseIoOperation, error: io::Error) -> AppInst
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::{BufRead, BufReader};
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
 
@@ -216,6 +217,9 @@ mod tests {
     /// чужой descriptor до применения `FD_CLOEXEC` в `exec` и создаёт искусственный
     /// `AlreadyRunning` сразу после `drop(owner)`.
     static LEASE_TEST_SERIALIZATION: Mutex<()> = Mutex::new(());
+
+    /// Однозначный pipe-сигнал: owner уже выполнил первый retry после захвата lease.
+    const ORDERED_CONTENDER_OWNER_READY: &str = "rustiplayer-ordered-contender-owner-ready";
 
     fn serialize_lease_test() -> MutexGuard<'static, ()> {
         LEASE_TEST_SERIALIZATION
@@ -399,6 +403,39 @@ mod tests {
     }
 
     #[test]
+    fn ordered_contention_retries_owner_before_typed_rejection() {
+        let _lease_test_guard = serialize_lease_test();
+        let root = TempDir::new().expect("temp root");
+        let config_dir = root.path().join("config");
+        let start_file = root.path().join("start");
+        let contender_done_file = root.path().join("contender-done");
+        let mut owner = subprocess_command(&config_dir, "ordered-contender-owner")
+            .env("RUSTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("ordered owner");
+        let owner_stderr = owner.stderr.take().expect("ordered owner stderr");
+        let mut owner_ready = String::new();
+        BufReader::new(owner_stderr)
+            .read_line(&mut owner_ready)
+            .expect("ordered owner readiness");
+        assert_eq!(owner_ready.trim_end(), ORDERED_CONTENDER_OWNER_READY);
+
+        fs::write(&start_file, []).expect("release typed contender");
+        let contender_status = subprocess_command(&config_dir, "contend")
+            .env("RUSTIPLAYER_TEST_START_FILE", &start_file)
+            .env("RUSTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
+            .status()
+            .expect("typed contender status");
+        let owner_status = owner.wait().expect("ordered owner status");
+
+        assert_eq!(contender_status.code(), Some(23));
+        assert!(owner_status.success());
+        assert!(!config_dir.join("config.toml").exists());
+        assert!(!config_dir.join("playlist-state.json").exists());
+    }
+
+    #[test]
     fn forced_timeout_owner_blocks_competitor_until_process_exit() {
         let _lease_test_guard = serialize_lease_test();
         let root = TempDir::new().expect("temp root");
@@ -484,14 +521,17 @@ mod tests {
 
         match action.as_str() {
             "abort" => std::process::abort(),
-            "contend" => {
+            "contend" | "ordered-contender-owner" => {
                 let contender_done =
                     std::env::var("RUSTIPLAYER_TEST_CONTENDER_DONE").expect("contender done file");
-                for _ in 0..200 {
+                for attempt in 0..200 {
                     if std::path::Path::new(&contender_done).exists() {
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(10));
+                    if action == "ordered-contender-owner" && attempt == 0 {
+                        eprintln!("{ORDERED_CONTENDER_OWNER_READY}");
+                    }
                 }
                 std::process::exit(24);
             }
