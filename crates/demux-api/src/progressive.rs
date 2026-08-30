@@ -705,9 +705,7 @@ impl Demuxer for ProgressiveDemuxer {
             active_cancellation.cancel();
         }
         if let Some(superseded_command) = queue.pending_seek.take() {
-            if let Some(superseded_cancellation) = superseded_command.cancellation() {
-                superseded_cancellation.cancel();
-            }
+            superseded_command.cancellation().cancel();
             if let Some(superseded_fence) = superseded_command.receipt_fence()
                 && let Some(async_seek) = queue.async_seek.as_mut()
             {

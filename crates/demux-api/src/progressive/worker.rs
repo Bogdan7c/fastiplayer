@@ -85,10 +85,10 @@ impl ProgressiveSeekCommand {
     }
 
     /// Возвращает request-scoped cancellation любого worker-owned seek command-а.
-    pub(super) fn cancellation(&self) -> Option<DemuxSeekCancellationToken> {
+    pub(super) fn cancellation(&self) -> &DemuxSeekCancellationToken {
         match self {
             Self::Previewed { cancellation, .. } | Self::Receipted { cancellation, .. } => {
-                Some(cancellation.clone())
+                cancellation
             }
         }
     }
@@ -344,11 +344,8 @@ pub(super) fn run_seekable_progressive_worker(
             queue.in_flight_receipt = command
                 .as_ref()
                 .and_then(ProgressiveSeekCommand::receipt_fence);
-            if let Some(command_cancellation) = command
-                .as_ref()
-                .and_then(ProgressiveSeekCommand::cancellation)
-            {
-                queue.active_seek_cancellation = Some(command_cancellation);
+            if let Some(command) = command.as_ref() {
+                queue.active_seek_cancellation = Some(command.cancellation().clone());
             }
             command
         };
