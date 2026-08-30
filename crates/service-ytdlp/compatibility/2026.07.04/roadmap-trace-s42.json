@@ -879,7 +879,7 @@
     "coverage-runner-composition": {
       "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
       "path": "scripts/tests/test_s42_release_runner.py",
-      "symbol": "test_coverage_check_composes_preflight_shared_suite_and_ratchet"
+      "symbol": "test_coverage_check_composes_stable_preflight_suite_and_ratchet"
     },
     "release-runner-final-composition": {
       "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
@@ -924,7 +924,7 @@
     "coverage-lcov-validation-wiring": {
       "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
       "path": "scripts/tests/test_s42_release_runner.py",
-      "symbol": "test_coverage_suite_rejects_counter_underflow_before_publication"
+      "symbol": "test_coverage_runner_rejects_counter_underflow_before_publication"
     },
     "guardrail-owner-pass": {
       "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42SourceGuardrailTests",
@@ -990,7 +990,7 @@
     },
     "coverage-suite-function": {
       "kind": "ScriptFunction", "role": "cross_cutting", "target": "coverage",
-      "path": "scripts/coverage.sh", "symbol": "run_clean_coverage_suite"
+      "path": "scripts/coverage.sh", "symbol": "run_stable_coverage_suite"
     }
   }
 }
