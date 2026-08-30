@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::num::{NonZeroU8, NonZeroU32, NonZeroUsize};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -54,6 +54,26 @@ struct LocalServer {
     stop: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<ObservedRequest>>>,
     thread: Option<thread::JoinHandle<()>>,
+}
+
+/// На unwind освобождает server rendezvous раньше, чем `LocalServer::drop` ждёт join.
+struct ServerRequestRelease(Option<mpsc::SyncSender<()>>);
+
+impl ServerRequestRelease {
+    fn release(&mut self) {
+        if let Some(sender) = self.0.take() {
+            sender.send(()).expect("release held server request");
+        }
+    }
+}
+
+impl Drop for ServerRequestRelease {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            // Drop не может вернуть ошибку; disconnect также гарантированно будит receiver.
+            let _ = sender.try_send(());
+        }
+    }
 }
 
 impl LocalServer {
@@ -408,14 +428,25 @@ fn manifest_redirect_uses_effective_base_uri() {
 
 #[test]
 fn live_manifest_refresh_fences_slow_stale_generation() {
-    let server = LocalServer::start(|index, _| {
+    let (stale_started_sender, stale_started_receiver) = mpsc::sync_channel(1);
+    let (stale_release_sender, stale_release_receiver) = mpsc::sync_channel(1);
+    let stale_release_receiver = Arc::new(Mutex::new(stale_release_receiver));
+    let server = LocalServer::start(move |index, _| {
         if index == 0 {
-            thread::sleep(Duration::from_millis(40));
-            response("200 OK", &[], b"stale")
+            stale_started_sender
+                .send(())
+                .expect("report stale request admission");
+            stale_release_receiver
+                .lock()
+                .expect("stale release mutex")
+                .recv()
+                .expect("release stale request");
+            Vec::new()
         } else {
             response("200 OK", &[], b"current")
         }
     });
+    let mut stale_request_release = ServerRequestRelease(Some(stale_release_sender));
     let target = server.target("/refresh");
     let mut fetcher = AdaptiveManifestFetcher::new(context_with_presentation(
         &target,
@@ -436,20 +467,20 @@ fn live_manifest_refresh_fences_slow_stale_generation() {
         fetcher.poll(Instant::now()),
         ManifestPoll::TemporarilyUnavailable { .. }
     ));
-    let request_deadline = Instant::now() + TEST_TIMEOUT;
-    while server.request_count() == 0 {
-        assert!(
-            Instant::now() < request_deadline,
-            "initial request was not admitted"
-        );
-        thread::sleep(Duration::from_millis(1));
-    }
+    stale_started_receiver
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("initial request was admitted");
     fetcher
         .request(
             ManifestFetchRequest::new(target.clone(), SourceGeneration::new(2)),
             Instant::now(),
         )
         .expect("new generation refresh");
+    assert!(matches!(
+        fetcher.poll(Instant::now()),
+        ManifestPoll::TemporarilyUnavailable { .. }
+    ));
+    stale_request_release.release();
     let stale_request = fetcher.request(
         ManifestFetchRequest::new(target, SourceGeneration::new(1)),
         Instant::now(),

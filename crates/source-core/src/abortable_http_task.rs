@@ -17,6 +17,42 @@ use tokio::sync::watch;
 /// Boxed HTTP future без зависимости consumer-а от concrete async runtime-а.
 pub type AbortableHttpTask<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
+/// Связывает latest task с той же revision, которую наблюдает runtime worker.
+struct VersionedTaskSlot<T> {
+    revision: u64,
+    task: Option<T>,
+}
+
+impl<T> VersionedTaskSlot<T> {
+    fn new() -> Self {
+        Self {
+            revision: 0,
+            task: None,
+        }
+    }
+
+    /// Публикует замену/отмену как одно состояние и сохраняет прежний wrapping contract.
+    fn publish(&mut self, task: Option<T>) -> u64 {
+        self.revision = self.revision.wrapping_add(1);
+        self.task = task;
+        self.revision
+    }
+
+    /// Старое уведомление не вправе забрать task, принадлежащий более новой revision.
+    fn take_for_revision(&mut self, observed_revision: u64) -> VersionedTaskTake<T> {
+        if self.revision == observed_revision {
+            VersionedTaskTake::Current(self.task.take())
+        } else {
+            VersionedTaskTake::NewerCommandPending
+        }
+    }
+}
+
+enum VersionedTaskTake<T> {
+    Current(Option<T>),
+    NewerCommandPending,
+}
+
 /// Typed infrastructure failure без смешивания с HTTP/result semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AbortableHttpTaskExecutorError {
@@ -39,7 +75,7 @@ pub struct AbortableHttpTaskExecutor<T> {
     /// Versioned wake-up; concrete task остаётся скрыт в bounded latest slot-е.
     command_sender: Option<watch::Sender<u64>>,
     /// `None` отменяет current future; `Some` заменяет его latest task-ом.
-    task_slot: Arc<Mutex<Option<AbortableHttpTask<T>>>>,
+    task_slot: Arc<Mutex<VersionedTaskSlot<AbortableHttpTask<T>>>>,
     /// Newer completion безопасно вытесняет completion superseded owner-ом task-а.
     result_slot: Arc<Mutex<Option<T>>>,
     /// Отличает временно пустой slot от остановленного runtime worker-а.
@@ -57,7 +93,7 @@ where
             .build()
             .map_err(|_| AbortableHttpTaskExecutorError::WorkerStopped)?;
         let (command_sender, command_receiver) = watch::channel(0_u64);
-        let task_slot = Arc::new(Mutex::new(None));
+        let task_slot = Arc::new(Mutex::new(VersionedTaskSlot::new()));
         let result_slot = Arc::new(Mutex::new(None));
         let worker_running = Arc::new(AtomicBool::new(true));
         let worker_result_slot = Arc::clone(&result_slot);
@@ -95,14 +131,7 @@ where
         if sender.receiver_count() == 0 {
             return Err(AbortableHttpTaskExecutorError::WorkerStopped);
         }
-        let mut task_slot = self
-            .task_slot
-            .lock()
-            .map_err(|_| AbortableHttpTaskExecutorError::WorkerStopped)?;
-        *task_slot = Some(task);
-        drop(task_slot);
-        sender.send_modify(|version| *version = version.wrapping_add(1));
-        Ok(())
+        self.publish_command(sender, Some(task))
     }
 
     /// Отменяет current task без остановки executor-а или будущих tasks.
@@ -113,13 +142,21 @@ where
         if sender.receiver_count() == 0 {
             return Err(AbortableHttpTaskExecutorError::WorkerStopped);
         }
+        self.publish_command(sender, None)
+    }
+
+    /// Slot и watch value публикуются под одним mutex, поэтому их revisions не расходятся.
+    fn publish_command(
+        &self,
+        sender: &watch::Sender<u64>,
+        task: Option<AbortableHttpTask<T>>,
+    ) -> Result<(), AbortableHttpTaskExecutorError> {
         let mut task_slot = self
             .task_slot
             .lock()
             .map_err(|_| AbortableHttpTaskExecutorError::WorkerStopped)?;
-        *task_slot = None;
-        drop(task_slot);
-        sender.send_modify(|version| *version = version.wrapping_add(1));
+        let revision = task_slot.publish(task);
+        sender.send_replace(revision);
         Ok(())
     }
 
@@ -142,11 +179,11 @@ where
 
 impl<T> Drop for AbortableHttpTaskExecutor<T> {
     fn drop(&mut self) {
-        if let Some(sender) = self.command_sender.take() {
-            if let Ok(mut task_slot) = self.task_slot.lock() {
-                *task_slot = None;
-            }
-            sender.send_modify(|version| *version = version.wrapping_add(1));
+        if let Some(sender) = self.command_sender.take()
+            && let Ok(mut task_slot) = self.task_slot.lock()
+        {
+            let revision = task_slot.publish(None);
+            sender.send_replace(revision);
         }
     }
 }
@@ -163,21 +200,25 @@ impl Drop for WorkerRunningGuard {
 /// Poll-ит ровно один future; command branch biased, чтобы supersede всегда победил race.
 async fn run_latest_task<T>(
     mut command_receiver: watch::Receiver<u64>,
-    task_slot: Arc<Mutex<Option<AbortableHttpTask<T>>>>,
+    task_slot: Arc<Mutex<VersionedTaskSlot<AbortableHttpTask<T>>>>,
     result_slot: Arc<Mutex<Option<T>>>,
 ) where
     T: Send + 'static,
 {
-    let _ = command_receiver.borrow_and_update();
-    let mut next_task = take_latest_task(&task_slot);
+    let mut next_task = match take_observed_task(&mut command_receiver, &task_slot) {
+        VersionedTaskTake::Current(task) => task,
+        VersionedTaskTake::NewerCommandPending => None,
+    };
 
     loop {
         let Some(mut task) = next_task.take() else {
             if command_receiver.changed().await.is_err() {
                 return;
             }
-            let _ = command_receiver.borrow_and_update();
-            next_task = take_latest_task(&task_slot);
+            next_task = match take_observed_task(&mut command_receiver, &task_slot) {
+                VersionedTaskTake::Current(task) => task,
+                VersionedTaskTake::NewerCommandPending => None,
+            };
             continue;
         };
 
@@ -188,8 +229,10 @@ async fn run_latest_task<T>(
                 if changed.is_err() {
                     return;
                 }
-                let _ = command_receiver.borrow_and_update();
-                next_task = take_latest_task(&task_slot);
+                next_task = match take_observed_task(&mut command_receiver, &task_slot) {
+                    VersionedTaskTake::Current(task) => task,
+                    VersionedTaskTake::NewerCommandPending => None,
+                };
             }
             result = &mut task => {
                 let Ok(mut guarded_result) = result_slot.lock() else {
@@ -202,14 +245,19 @@ async fn run_latest_task<T>(
     }
 }
 
-/// Забирает latest task, не удерживая mutex во время async poll-а.
-fn take_latest_task<T>(
-    task_slot: &Arc<Mutex<Option<AbortableHttpTask<T>>>>,
-) -> Option<AbortableHttpTask<T>> {
+/// Копирует watch revision до slot lock-а: `watch::Ref` нельзя держать при обратном lock order.
+fn take_observed_task<T>(
+    command_receiver: &mut watch::Receiver<u64>,
+    task_slot: &Arc<Mutex<VersionedTaskSlot<AbortableHttpTask<T>>>>,
+) -> VersionedTaskTake<AbortableHttpTask<T>> {
+    let observed_revision = {
+        let watched_revision = command_receiver.borrow_and_update();
+        *watched_revision
+    };
     task_slot
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take()
+        .take_for_revision(observed_revision)
 }
 
 #[cfg(test)]
@@ -229,6 +277,47 @@ mod tests {
                 let _ = sender.send(());
             }
         }
+    }
+
+    fn take_result(executor: &AbortableHttpTaskExecutor<usize>) -> usize {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match executor.try_take().expect("poll result") {
+                Some(result) => return result,
+                None => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "latest task timed out"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+
+    /// Уведомление старой cancellation revision не может украсть более новый task.
+    #[test]
+    fn stale_observed_revision_leaves_newer_task_for_exact_notification() {
+        let mut task_slot = VersionedTaskSlot::new();
+        let cancellation_revision = task_slot.publish(None);
+        let successor_revision = task_slot.publish(Some(42));
+
+        assert!(matches!(
+            task_slot.take_for_revision(cancellation_revision),
+            VersionedTaskTake::NewerCommandPending
+        ));
+        assert!(matches!(
+            task_slot.take_for_revision(successor_revision),
+            VersionedTaskTake::Current(Some(42))
+        ));
+
+        task_slot.revision = u64::MAX;
+        let wrapped_cancellation_revision = task_slot.publish(None);
+        assert_eq!(wrapped_cancellation_revision, 0);
+        assert!(matches!(
+            task_slot.take_for_revision(wrapped_cancellation_revision),
+            VersionedTaskTake::Current(None)
+        ));
     }
 
     /// Replacement drop-ает pending future и публикует только новый result.
@@ -255,21 +344,36 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("superseded future must drop");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        loop {
-            match executor.try_take().expect("poll result") {
-                Some(result) => {
-                    assert_eq!(result, 42);
-                    break;
-                }
-                None => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "latest task timed out"
-                    );
-                    std::thread::yield_now();
-                }
-            }
+        assert_eq!(take_result(&executor), 42);
+    }
+
+    /// Successor не теряется, когда caller не ждёт acknowledgement cancellation.
+    #[test]
+    fn immediate_successor_after_cancellation_completes_every_time() {
+        let executor = AbortableHttpTaskExecutor::start().expect("start executor");
+        for expected_result in 0..32 {
+            let (started_sender, started_receiver) = mpsc::channel();
+            let (dropped_sender, dropped_receiver) = mpsc::channel();
+            executor
+                .replace(Box::pin(async move {
+                    let _drop_signal = DropSignal(Some(dropped_sender));
+                    started_sender.send(()).expect("report pending task start");
+                    future::pending::<usize>().await
+                }))
+                .expect("submit pending task");
+            started_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("pending task must start");
+
+            executor.cancel_current().expect("cancel current task");
+            executor
+                .replace(Box::pin(async move { expected_result }))
+                .expect("submit immediate successor task");
+
+            dropped_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cancelled future must drop");
+            assert_eq!(take_result(&executor), expected_result);
         }
     }
 
