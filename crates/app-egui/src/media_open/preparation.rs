@@ -61,6 +61,7 @@ pub(super) fn prepare_source(
                 &locator,
                 &network_config,
                 &demux_config,
+                cancellation.source_token(),
             )
             .map_err(|error| {
                 tracing::warn!(source = %safe_label, error = %error, "Подготовка direct media завершилась ошибкой");
@@ -549,7 +550,7 @@ mod tests {
     fn cancelled_web_request_stops_before_adapter_dispatch() {
         let cancellation = super::super::executor::PreparationCancellation::new();
         cancellation.cancel(player_core::MediaInstallCancellationCause::UserCancelled);
-        let locator = service_direct_media::parse_direct_media_url(
+        let locator = crate::direct_progressive_open::classify_direct_media_url(
             "https://unreachable.example.test/cancelled-before-io.mp4",
         )
         .expect("direct fixture locator валиден");

@@ -219,6 +219,12 @@ WEB_MEDIA_FTP_ALLOWED_DEPENDENCIES = frozenset(
     {"source-core", "thiserror", "web-media-transport-api"}
 )
 
+# Direct-media service только классифицирует locator по фактическим demux capabilities.
+# Concrete transport, prefetch, demux runtime и app lifecycle принадлежат composition root.
+SERVICE_DIRECT_MEDIA_ALLOWED_DEPENDENCIES = frozenset(
+    {"demux-api", "source-core", "thiserror", "url", "web-media-transport-api"}
+)
+
 # Shared adaptive owner использует только neutral HTTP/policy/demux boundaries.
 # Concrete HLS/DASH parser, reqwest, service, player, UI и cache edges запрещены.
 WEB_MEDIA_ADAPTIVE_ALLOWED_DEPENDENCIES = frozenset(
@@ -1307,6 +1313,14 @@ def find_dependency_violations(
             frozenset({"service-ytdlp"}),
             SERVICE_YTDLP_FORBIDDEN_DEPENDENCIES,
             "service-ytdlp не владеет concrete HTTP/cache/demux/player playback stack",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"service-direct-media"}),
+            SERVICE_DIRECT_MEDIA_ALLOWED_DEPENDENCIES,
+            "service-direct-media остаётся classification/locator boundary без transport/demux runtime owners",
         )
     )
     violations.extend(

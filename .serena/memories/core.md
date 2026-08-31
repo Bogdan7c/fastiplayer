@@ -1,3 +1,10 @@
+## N06 native progressive HTTP(S)/FTP(S) (2026-08-31)
+
+- HTTP Ogg/WebM и FTP/FTPS Ogg теперь идут native direct через existing transport/demux registries при `yt_dlp.enabled=false`; Ogg достигает nonzero PCM, WebM — decoded/submitted WGPU frame.
+- `service-direct-media` сокращён до capability-driven classification + secret-safe locator; app-owned `direct_progressive_open` владеет HTTP/FTP providers, cancellation, prefetch, demux и progressive lifecycle.
+- HTTP 200 body handoff выполняется за один request; Range open/seek/reopen accounting exact 3/3/6; FTP credentials/query redacted, request создаётся через no-HTTP-material constructor, process spy остаётся 0.
+- Полные boundaries, tests, commands и limitations: `mem:media-services/native-progressive-http-ftp-n06-2026-08-31`. N07 не начинался.
+
 ## G1 native web ingress qualification (2026-08-31)
 
 - N01–N05B foundation прошёл полный gate-only G1: neutral boundaries/config v10/adapter isolation/secret-safe persistence/exact process reasons подтверждены self-review, process-spy parity и всеми workspace/pre-PR/release/Serena gates.

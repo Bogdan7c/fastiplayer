@@ -4,8 +4,8 @@ use crate::media_open::WebMediaSourceIntent;
 #[test]
 fn service_labels_and_source_debug_do_not_leak_url_secrets() {
     let direct_secret = "https://user:password@example.com/video.mp4?token=very-secret";
-    let direct_locator =
-        service_direct_media::parse_direct_media_url(direct_secret).expect("direct locator parsed");
+    let direct_locator = crate::direct_progressive_open::classify_direct_media_url(direct_secret)
+        .expect("direct locator parsed");
     let direct_source =
         ActiveMediaSource::Web(WebMediaSourceIntent::direct(direct_locator.clone()));
     let direct_debug = format!("{direct_source:?}");

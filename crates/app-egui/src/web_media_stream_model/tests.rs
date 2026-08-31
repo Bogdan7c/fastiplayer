@@ -98,7 +98,7 @@ fn inactive_local_source_has_no_web_configuration() {
 
 #[test]
 fn direct_media_state_does_not_invent_format_choices() {
-    let locator = service_direct_media::parse_direct_media_url(
+    let locator = crate::direct_progressive_open::classify_direct_media_url(
         "https://user:password@example.test/video.mp4?token=secret",
     )
     .expect("valid direct-media fixture");

@@ -10,6 +10,7 @@
 mod app_instance;
 mod app_shell;
 mod app_wake;
+mod direct_progressive_open;
 mod dma_buf_runtime_fallback;
 mod frame_prepare;
 mod local_file_open;

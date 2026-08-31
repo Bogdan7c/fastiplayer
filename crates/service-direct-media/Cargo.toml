@@ -11,14 +11,10 @@ path = "src/lib.rs"
 
 [dependencies]
 demux-api = { workspace = true }
-media-prefetch = { workspace = true }
-media-core = { workspace = true }
-rustiplayer-config = { workspace = true }
 source-core = { workspace = true }
-symphonia-demux = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 url = { workspace = true }
-web-media-core = { workspace = true }
-web-media-http = { workspace = true }
 web-media-transport-api = { workspace = true }
+
+[dev-dependencies]
+symphonia-demux = { workspace = true }

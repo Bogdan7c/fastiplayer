@@ -1,3 +1,9 @@
+## N06 superseding update (2026-08-31)
+
+- `service-direct-media` больше не opener/runtime owner: это classification + secret-safe locator boundary для HTTP(S)/FTP(S), использующий фактические extension/input capabilities `DemuxRegistry`.
+- Старые v1/S15A/S22 абзацы ниже про HTTP-only allowlist, `DirectMediaOpenResult` и service-owned transport/demux runtime являются историческими. Актуальная app-owned composition, security/data-plane invariants и functional evidence: `mem:media-services/native-progressive-http-ftp-n06-2026-08-31`.
+- Exact locator теперь хранит checked `TransportRequestTarget`; app строит HTTP request с empty scoped secret context либо FTP request через `TransportOpenRequest::for_ftp`, исключающий ambient HTTP material.
+
 ## S31 shared adaptive HTTP note (2026-07-23)
 
 - `source-core` получил generic `fetch_bounded_single_hop` для metadata/media full GET и exact Range с manual redirects; его использует новый `web-media-adaptive`. Existing direct-media S22 open/classification/prefetch flow не менялся и не маршрутизируется через adaptive owner. Полный boundary: `mem:media-services/adaptive-transport-s31-2026-07-23`.

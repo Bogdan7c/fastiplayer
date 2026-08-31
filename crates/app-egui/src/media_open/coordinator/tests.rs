@@ -487,7 +487,7 @@ fn preparation_panic_becomes_typed_terminal_instead_of_lost_result() {
 
 #[test]
 fn local_and_direct_descriptors_follow_the_same_prepared_phase() {
-    let direct_locator = service_direct_media::parse_direct_media_url(
+    let direct_locator = crate::direct_progressive_open::classify_direct_media_url(
         "https://media.example.test/movie.mp4?token=secret",
     )
     .expect("direct locator");

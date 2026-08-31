@@ -303,6 +303,26 @@ impl DemuxRegistry {
         }
     }
 
+    /// Проверяет, зарегистрирован ли extension для точной формы входа.
+    ///
+    /// Метод публикует только capability-факт registry и не выбирает factory:
+    /// окончательное решение по-прежнему принимает content probe во время
+    /// [`Self::open`]. Это позволяет классификаторам следовать фактическим
+    /// registrations без копирования отдельного allowlist-а.
+    #[must_use]
+    pub fn supports_extension(
+        &self,
+        extension: &DemuxSourceExtension,
+        input_capability: DemuxInputCapability,
+    ) -> bool {
+        self.factories.iter().any(|factory| {
+            factory.descriptor().containers.iter().any(|registration| {
+                registration.supports_input(input_capability)
+                    && registration.extensions.contains(extension)
+            })
+        })
+    }
+
     /// Добавляет factory после проверки owner uniqueness и evidence completeness.
     pub fn register(&mut self, factory: Box<dyn DemuxFactory>) -> Result<(), DemuxRegistryError> {
         let descriptor = factory.descriptor();

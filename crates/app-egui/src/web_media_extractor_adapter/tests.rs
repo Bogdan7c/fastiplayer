@@ -161,9 +161,10 @@ fn native_direct_fixture_cannot_reach_extractor_launcher() {
     });
     let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(launcher.clone());
 
-    let native_locator =
-        service_direct_media::parse_direct_media_url("https://media.example.invalid/video.mp4")
-            .expect("direct MP4 fixture must remain a native source intent");
+    let native_locator = crate::direct_progressive_open::classify_direct_media_url(
+        "https://media.example.invalid/video.mp4",
+    )
+    .expect("direct MP4 fixture must remain a native source intent");
 
     assert!(
         native_locator

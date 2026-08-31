@@ -70,7 +70,7 @@ type YtDlpStartupResult = std::result::Result<PreparedYtDlpStartupMedia, String>
 
 /// Результат фоновой подготовки generic direct media URL.
 type DirectMediaStartupResult =
-    std::result::Result<service_direct_media::DirectMediaOpenResult, String>;
+    std::result::Result<crate::direct_progressive_open::DirectProgressiveOpenResult, String>;
 
 /// Фоновый job, который не блокирует создание окна и UI.
 struct YtDlpStartupJob {
@@ -230,6 +230,7 @@ impl DirectMediaStartupJob {
                         &thread_locator,
                         &network_config,
                         &demux_config,
+                        source_core::CancellationToken::new(),
                     )
                     .map_err(|error| format!("{error:#}"))
                 };
@@ -673,9 +674,15 @@ pub(crate) fn resolve_direct_media_startup_media(
     source_locator: &service_direct_media::DirectMediaUrl,
     network_config: &NetworkConfig,
     demux_config: &PlayerDemuxConfig,
-) -> Result<service_direct_media::DirectMediaOpenResult> {
-    service_direct_media::open_direct_media_url(source_locator, network_config, demux_config)
-        .context("Не удалось открыть direct media URL")
+    cancellation: source_core::CancellationToken,
+) -> Result<crate::direct_progressive_open::DirectProgressiveOpenResult> {
+    crate::direct_progressive_open::open_direct_media(
+        source_locator,
+        network_config,
+        demux_config,
+        cancellation,
+    )
+    .context("Не удалось открыть direct media URL")
 }
 
 /// Сопоставляет user-facing codec policy с нейтральным capability vocabulary.

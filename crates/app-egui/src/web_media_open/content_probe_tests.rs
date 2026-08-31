@@ -41,6 +41,15 @@ mod audio_fixtures;
 #[path = "content_probe_tests/vorbis.rs"]
 mod vorbis;
 
+/// Direct N06 regressions переиспользуют те же реальные Ogg fixtures и origins.
+#[path = "content_probe_tests/direct_progressive.rs"]
+mod direct_progressive;
+
+/// Default-feature vertical доводит direct WebM до production WGPU submit-а.
+#[cfg(feature = "ffmpeg")]
+#[path = "content_probe_tests/direct_progressive_webm.rs"]
+mod direct_progressive_webm;
+
 /// Отдельный модуль доказывает комбинацию FTP transport и Ogg/Vorbis playback.
 #[path = "content_probe_tests/ftp_vorbis.rs"]
 mod ftp_vorbis;
@@ -70,6 +79,8 @@ const DEMUX_EVENT_DEADLINE: Duration = Duration::from_secs(2);
 enum FixtureOriginResponse {
     /// Настоящий seekable Ogg resource обслуживает production Range transport.
     Ogg(Vec<u8>),
+    /// Один `200 OK` body доказывает forward-only response handoff без refetch.
+    FullBodyOgg(Vec<u8>),
     /// Ogg bytes выдаются только после exact request Cookie pair.
     CookieProtectedOgg {
         /// Настоящий seekable Ogg resource.
@@ -167,6 +178,12 @@ impl RangeFixtureOrigin {
         format!("http://{}/content-probed.ogg", self.address)
     }
 
+    /// Возвращает locator с caller-selected registered extension для direct tests.
+    #[cfg(feature = "ffmpeg")]
+    fn media_url_with_extension(&self, extension: &str) -> String {
+        format!("http://{}/content-probed.{extension}", self.address)
+    }
+
     /// Возвращает host для scoped-cookie fixture без чтения owner state снаружи.
     fn cookie_domain(&self) -> String {
         self.address.ip().to_string()
@@ -213,6 +230,9 @@ fn respond_to_fixture_request(
         FixtureOriginResponse::Ogg(ogg_bytes) => {
             respond_to_range_request(stream, &request, ogg_bytes);
         }
+        FixtureOriginResponse::FullBodyOgg(ogg_bytes) => {
+            respond_to_full_body(stream, ogg_bytes);
+        }
         FixtureOriginResponse::CookieProtectedOgg {
             ogg_bytes,
             expected_cookie_pair,
@@ -229,6 +249,18 @@ fn respond_to_fixture_request(
         FixtureOriginResponse::RequestLimitedOgg { .. } => respond_to_rate_limit(stream),
         FixtureOriginResponse::NotFound => respond_to_not_found(stream),
     }
+}
+
+/// Возвращает весь media body тем же response-ом, который открыл transport probe.
+fn respond_to_full_body(stream: &mut TcpStream, body: &[u8]) {
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(headers.as_bytes())
+        .expect("write full-body Ogg headers");
+    stream.write_all(body).expect("write full-body Ogg body");
 }
 
 /// Ищет exact pair внутри request `Cookie` без зависимости от casing имени header-а.

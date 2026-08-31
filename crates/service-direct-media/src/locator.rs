@@ -1,6 +1,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+use web_media_transport_api::TransportRequestTarget;
+
 use super::DirectMediaExtension;
 
 /// Проверенный direct-media locator с exact reopen/persistence identity.
@@ -11,7 +13,7 @@ pub struct DirectMediaUrl {
 
 #[derive(PartialEq, Eq)]
 struct DirectMediaUrlInner {
-    secret_identity: String,
+    request_target: TransportRequestTarget,
     extension: DirectMediaExtension,
     safe_label: String,
     requires_sensitive_persistence_acknowledgement: bool,
@@ -19,14 +21,14 @@ struct DirectMediaUrlInner {
 
 impl DirectMediaUrl {
     pub(crate) fn new(
-        secret_identity: String,
+        request_target: TransportRequestTarget,
         extension: DirectMediaExtension,
         safe_label: String,
         requires_sensitive_persistence_acknowledgement: bool,
     ) -> Self {
         Self {
             inner: Arc::new(DirectMediaUrlInner {
-                secret_identity,
+                request_target,
                 extension,
                 safe_label,
                 requires_sensitive_persistence_acknowledgement,
@@ -37,19 +39,28 @@ impl DirectMediaUrl {
     /// Раскрывает exact identity только для реального media open.
     #[must_use]
     pub fn expose_secret_for_open(&self) -> &str {
-        &self.inner.secret_identity
+        match &self.inner.request_target {
+            TransportRequestTarget::Http(target) => target.expose_secret_for_request(),
+            TransportRequestTarget::Ftp(target) => target.expose_secret_for_request(),
+        }
     }
 
     /// Раскрывает exact identity только для persistence snapshot-а.
     #[must_use]
     pub fn expose_secret_for_persistence(&self) -> &str {
-        &self.inner.secret_identity
+        self.expose_secret_for_open()
+    }
+
+    /// Возвращает checked physical target только app-owned transport runtime-у.
+    #[must_use]
+    pub fn request_target_for_open(&self) -> TransportRequestTarget {
+        self.inner.request_target.clone()
     }
 
     /// Возвращает container extension, доказанный URL path-ом.
     #[must_use]
-    pub fn extension(&self) -> DirectMediaExtension {
-        self.inner.extension
+    pub fn extension(&self) -> &DirectMediaExtension {
+        &self.inner.extension
     }
 
     /// Возвращает безопасный label без userinfo/path/query/fragment.

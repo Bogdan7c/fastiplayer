@@ -27,7 +27,7 @@ const FTP_VORBIS_FORMAT_ID: &str = "ogg";
 const FTP_MEDIA_LOCATOR_ENV: &str = "RUSTIPLAYER_CONTENT_PROBE_FTP_LOCATOR";
 
 /// Loopback FTP origin владеет media bytes и завершением worker-а.
-struct FtpVorbisOrigin {
+pub(super) struct FtpVorbisOrigin {
     /// Control endpoint нужен для descriptor URL.
     address: SocketAddr,
     /// Stop flag завершает неблокирующий accept loop.
@@ -40,7 +40,7 @@ struct FtpVorbisOrigin {
 
 impl FtpVorbisOrigin {
     /// Запускает минимальный passive FTP server на loopback ephemeral port.
-    fn spawn(file_bytes: Vec<u8>) -> Self {
+    pub(super) fn spawn(file_bytes: Vec<u8>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind FTP Vorbis origin");
         listener
             .set_nonblocking(true)
@@ -81,12 +81,20 @@ impl FtpVorbisOrigin {
     }
 
     /// Строит exact direct FTP locator для fake extractor format row.
-    fn media_url(&self) -> String {
+    pub(super) fn media_url(&self) -> String {
         format!("ftp://{}/content-probed.ogg", self.address)
     }
 
+    /// Строит credentialed/query locator для direct redaction regression-а.
+    pub(super) fn credentialed_media_url(&self) -> String {
+        format!(
+            "ftp://user:password@{}/content-probed.ogg?token=secret",
+            self.address
+        )
+    }
+
     /// Возвращает число начатых media transfer-ов.
-    fn retrieval_count(&self) -> usize {
+    pub(super) fn retrieval_count(&self) -> usize {
         self.retrieval_count.load(Ordering::SeqCst)
     }
 }

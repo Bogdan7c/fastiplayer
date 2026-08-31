@@ -4324,16 +4324,10 @@ name = "service-direct-media"
 version = "0.1.0"
 dependencies = [
  "demux-api",
- "media-core",
- "media-prefetch",
- "rustiplayer-config",
  "source-core",
  "symphonia-demux",
  "thiserror 2.0.18",
- "tracing",
  "url",
- "web-media-core",
- "web-media-http",
  "web-media-transport-api",
 ]
 

@@ -408,7 +408,7 @@ fn app_start(
     snapshot.set_timeline_position(media_core::MediaTime::from_duration(Duration::from_millis(
         37_250,
     )));
-    let locator = service_direct_media::parse_direct_media_url(
+    let locator = crate::direct_progressive_open::classify_direct_media_url(
         "https://media.example.test/same-item-switch.mp4",
     )
     .expect("direct URL fixture locator валиден");

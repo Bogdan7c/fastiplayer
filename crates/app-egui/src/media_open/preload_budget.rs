@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn caps_nested_network_request_without_changing_identity() {
-        let direct_locator = service_direct_media::parse_direct_media_url(
+        let direct_locator = crate::direct_progressive_open::classify_direct_media_url(
             "https://example.com/video.mp4?token=budget-secret",
         )
         .expect("direct locator parsed");
@@ -171,9 +171,10 @@ mod tests {
             prefetch_initial_chunk_kb: 512,
             ..rustiplayer_config::NetworkConfig::default()
         };
-        let direct_locator =
-            service_direct_media::parse_direct_media_url("https://example.com/already-small.mp4")
-                .expect("direct locator parsed");
+        let direct_locator = crate::direct_progressive_open::classify_direct_media_url(
+            "https://example.com/already-small.mp4",
+        )
+        .expect("direct locator parsed");
         let projected_direct = MediaOpenSourceRequest::Web(WebMediaOpenRequest::direct(
             direct_locator,
             small_network_config,

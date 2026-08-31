@@ -450,6 +450,18 @@ fn registry_with_recording_factory(opened_bytes: Arc<Mutex<Vec<u8>>>) -> DemuxRe
     registry
 }
 
+/// Capability query читает те же registrations, которые затем использует open.
+#[test]
+fn extension_capability_follows_registered_input_shapes() {
+    let registry = registry_with_recording_factory(Arc::new(Mutex::new(Vec::new())));
+    let registered = DemuxSourceExtension::new("test").expect("registered extension");
+    let absent = DemuxSourceExtension::new("absent").expect("absent extension");
+
+    assert!(registry.supports_extension(&registered, DemuxInputCapability::SeekableBytes));
+    assert!(registry.supports_extension(&registered, DemuxInputCapability::StreamingBytes));
+    assert!(!registry.supports_extension(&absent, DemuxInputCapability::SeekableBytes));
+}
+
 /// Content остаётся authoritative и явно показывает agree/disagree hints.
 #[test]
 fn hint_and_sniff_agreement_is_typed_without_overriding_content() {

@@ -153,17 +153,42 @@ fn registry_prioritizes_direct_media_and_freezes_chosen_adapter_without_open_fal
     ));
 }
 
+/// HTTP Ogg/WebM и FTP Ogg обходят extractor даже при disabled process policy.
+#[test]
+fn direct_progressive_extensions_route_to_native_adapter_when_ytdlp_is_disabled() {
+    let mut app_config = AppConfig::default();
+    app_config.yt_dlp.enabled = false;
+
+    for raw_locator in [
+        "https://media.example.test/audio.ogg",
+        "https://media.example.test/video.webm",
+        "ftp://media.example.test/audio.ogg",
+    ] {
+        let StartupUrlClassification::Supported(locator) = classify_startup_url(raw_locator) else {
+            panic!("{raw_locator} должен быть принят direct classifier-ом");
+        };
+        assert!(
+            locator.safe_label().starts_with("direct media "),
+            "startup registry должен зафиксировать direct service adapter"
+        );
+        let request = locator
+            .into_media_open_source_request(
+                &app_config,
+                &SystemCapabilities::empty(1),
+                audio::AudioDecodeCapabilitySnapshot::empty(),
+            )
+            .expect("disabled yt-dlp не должен блокировать direct request");
+        let crate::media_open::MediaOpenSourceRequest::Web(_) = request else {
+            panic!("direct progressive locator должен построить neutral web request");
+        };
+    }
+}
+
 #[test]
 fn extended_s00_schemes_follow_implemented_or_excluded_profile_disposition() {
-    for (raw_locator, input_scheme) in [
-        (
-            "ftp://media.example.test/video.webm",
-            service_ytdlp::YtDlpInputScheme::Ftp,
-        ),
-        (
-            "ftps://media.example.test/video.webm",
-            service_ytdlp::YtDlpInputScheme::Ftps,
-        ),
+    for raw_locator in [
+        "ftp://media.example.test/video.webm",
+        "ftps://media.example.test/video.webm",
     ] {
         let StartupUrlClassification::Supported(locator) = classify_startup_url(raw_locator) else {
             panic!("production registry должен включать S37 FTP provider");
@@ -173,25 +198,23 @@ fn extended_s00_schemes_follow_implemented_or_excluded_profile_disposition() {
         let missing_registry = StartupUrlServiceRegistry {
             implemented_yt_dlp_input_providers: &[],
         };
-        let StartupUrlClassification::Unsupported { reason } =
+        let StartupUrlClassification::Supported(native_without_extractor) =
             missing_registry.classify(raw_locator)
         else {
-            panic!("без exact capability Implemented provider должен быть unavailable");
+            panic!("direct FTP не должен зависеть от extractor provider capabilities");
         };
-        assert_eq!(
-            reason,
-            StartupUrlUnsupportedReason::ImplementedProviderUnavailable { input_scheme }
-        );
+        assert_eq!(persistence_identity(&native_without_extractor), raw_locator);
 
-        let implemented_capabilities =
-            [ImplementedYtDlpInputProviderCapability::exact(input_scheme)];
+        let implemented_capabilities = [ImplementedYtDlpInputProviderCapability::exact(
+            service_ytdlp::YtDlpInputScheme::Ftp,
+        )];
         let active_registry = StartupUrlServiceRegistry {
             implemented_yt_dlp_input_providers: &implemented_capabilities,
         };
         let StartupUrlClassification::Supported(active_locator) =
             active_registry.classify(raw_locator)
         else {
-            panic!("exact Implemented capability должна включать только свою scheme");
+            panic!("extractor capability не должна менять direct FTP classification");
         };
         assert_eq!(persistence_identity(&active_locator), raw_locator);
     }
