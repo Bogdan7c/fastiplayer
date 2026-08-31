@@ -173,30 +173,58 @@ impl WebMediaSourceIntent {
         }
     }
 
-    /// Временный N05B bridge к native HLS reopen material.
-    pub(crate) const fn native_hls_reopen(
-        &self,
-    ) -> Option<(&NativeHlsUrl, &web_media_hls::NativeHlsSemanticSelection)> {
-        match &*self.adapter {
-            WebMediaSourceAdapter::NativeHls { source, selection } => Some((source, selection)),
-            WebMediaSourceAdapter::Direct { .. } | WebMediaSourceAdapter::Extractor { .. } => None,
-        }
-    }
-
     /// Временный N05B bridge к extractor reopen/UI projections.
     pub(crate) const fn extractor_bridge(&self) -> Option<ExtractorSourceBridge<'_>> {
         match &*self.adapter {
             WebMediaSourceAdapter::Extractor {
                 locator,
                 stream_configuration,
-                catalog_attachment,
                 ..
             } => Some(ExtractorSourceBridge {
                 locator,
                 stream_configuration,
-                catalog_attachment,
             }),
             WebMediaSourceAdapter::Direct { .. } | WebMediaSourceAdapter::NativeHls { .. } => None,
+        }
+    }
+
+    /// Передаёт catalog coordinator-у только neutral attachment, не locator/request material.
+    pub(crate) const fn catalog_attachment(
+        &self,
+    ) -> Option<&crate::web_media_catalog::WebMediaCatalogAttachment> {
+        match &*self.adapter {
+            WebMediaSourceAdapter::Extractor {
+                catalog_attachment, ..
+            } => Some(catalog_attachment),
+            WebMediaSourceAdapter::Direct { .. } | WebMediaSourceAdapter::NativeHls { .. } => None,
+        }
+    }
+
+    /// Возвращает единый secret-safe read-only projection для catalog/sidebar owners.
+    pub(crate) fn read_only_projection(&self) -> WebMediaSourceReadProjection<'_> {
+        match &*self.adapter {
+            WebMediaSourceAdapter::Direct { locator } => WebMediaSourceReadProjection {
+                ingress: self.ingress,
+                presentation: self.presentation,
+                source_label: locator.safe_label(),
+                stream_configuration: None,
+            },
+            WebMediaSourceAdapter::NativeHls { source, .. } => WebMediaSourceReadProjection {
+                ingress: self.ingress,
+                presentation: self.presentation,
+                source_label: source.safe_label().as_str(),
+                stream_configuration: None,
+            },
+            WebMediaSourceAdapter::Extractor {
+                locator,
+                stream_configuration,
+                ..
+            } => WebMediaSourceReadProjection {
+                ingress: self.ingress,
+                presentation: self.presentation,
+                source_label: locator.safe_label(),
+                stream_configuration: Some(stream_configuration),
+            },
         }
     }
 
@@ -301,7 +329,31 @@ impl fmt::Debug for WebMediaSourceIntent {
 pub(crate) struct ExtractorSourceBridge<'a> {
     pub(crate) locator: &'a service_ytdlp::YtDlpMediaLocator,
     pub(crate) stream_configuration: &'a crate::web_media_stream_model::WebMediaStreamConfiguration,
-    pub(crate) catalog_attachment: &'a crate::web_media_catalog::WebMediaCatalogAttachment,
+}
+
+/// Borrowed read-only N04 projection без locator/request/exact identity material.
+#[derive(Clone, Copy)]
+pub(crate) struct WebMediaSourceReadProjection<'a> {
+    pub(crate) ingress: WebMediaIngressKind,
+    pub(crate) presentation: WebMediaPresentationKind,
+    pub(crate) source_label: &'a str,
+    pub(crate) stream_configuration:
+        Option<&'a crate::web_media_stream_model::WebMediaStreamConfiguration>,
+}
+
+impl fmt::Debug for WebMediaSourceReadProjection<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebMediaSourceReadProjection")
+            .field("ingress", &self.ingress)
+            .field("presentation", &self.presentation)
+            .field("source_label", &"<safe-label>")
+            .field(
+                "has_stream_configuration",
+                &self.stream_configuration.is_some(),
+            )
+            .finish()
+    }
 }
 
 /// Общий immutable settings snapshot одного web open/reopen.

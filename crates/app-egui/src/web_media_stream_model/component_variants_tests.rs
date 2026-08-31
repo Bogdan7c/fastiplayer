@@ -267,6 +267,7 @@ pub(crate) fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStrea
         active_parent_selection: ActiveParentCandidateSelection::ProjectionFixture,
         candidates: Arc::from([active_candidate.clone()]),
         candidate_selections: Arc::from([]),
+        catalog_selection_routes: Arc::from([]),
         active_candidate,
         preference: WebMediaSelectionPreference::GlobalPreferredHeight(1080),
         component_variants: WebMediaComponentVariantConfiguration::Unavailable,

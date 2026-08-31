@@ -1,6 +1,7 @@
 use web_media_core::{
-    CodecFamily, DynamicRange, FrameRate, NormalizedCodec, RawCodecIdentity, VideoHeight,
-    VideoTrackDescriptor, VideoWidth,
+    CandidateFormatIdentity, CandidateIdentity, CodecFamily, DynamicRange, ExactSelectionIdentity,
+    ExtractionGeneration, FrameRate, NormalizedCodec, RawCodecIdentity, SemanticIdentity,
+    SourceIdentity, VideoHeight, VideoTrackDescriptor, VideoWidth, WebMediaSelection,
 };
 
 use super::model::{WebMediaCatalog, WebMediaFacet};
@@ -11,7 +12,7 @@ fn dependent_facets_keep_one_item_and_automatic_missing_metadata_visible() {
     let target = WebMediaSelectionTarget::Fixture(1);
     let catalog = WebMediaCatalog::new(
         7,
-        crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
+        Some(crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1)),
         vec![WebMediaCatalogChoice {
             mode: WebMediaMode::VideoAndAudio,
             video: Some(VideoTrackDescriptor::new(
@@ -68,7 +69,7 @@ fn deferred_hls_like_absent_codec_keeps_resolution_switch_and_automatic_codec() 
     let active = choices[0].target.clone();
     let catalog = WebMediaCatalog::new(
         11,
-        crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
+        Some(crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1)),
         choices.into(),
         &active,
     )
@@ -126,7 +127,7 @@ fn upper_facet_change_preserves_reachable_lower_facets() {
     let active = choices[0].target.clone();
     let catalog = WebMediaCatalog::new(
         9,
-        crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
+        Some(crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1)),
         choices.into(),
         &active,
     )
@@ -172,7 +173,7 @@ fn lower_facet_action_never_escapes_selected_upper_prefix() {
     let active = choices[0].target.clone();
     let catalog = WebMediaCatalog::new(
         11,
-        crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
+        Some(crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1)),
         choices.into(),
         &active,
     )
@@ -241,7 +242,7 @@ fn identical_visible_alternatives_use_planner_rank_not_catalog_order() {
     ] {
         let catalog = WebMediaCatalog::new(
             12,
-            crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
+            Some(crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1)),
             choices.into(),
             &active.target,
         )
@@ -267,4 +268,109 @@ fn identical_visible_alternatives_use_planner_rank_not_catalog_order() {
             Some(&preferred.target)
         );
     }
+}
+
+fn neutral_exact_selection(exact_key: &str, semantic_key: &str) -> ExactSelectionIdentity {
+    let source = SourceIdentity::new(77);
+    ExactSelectionIdentity::new(
+        CandidateIdentity::new(
+            source,
+            ExtractionGeneration::new(9),
+            CandidateFormatIdentity::new(exact_key).unwrap(),
+        ),
+        SemanticIdentity::new(source, semantic_key).unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn installed_only_catalog_keeps_one_visible_inert_option() {
+    let attachment = WebMediaCatalogAttachment::installed_only();
+    let catalog = WebMediaCatalog::new(41, None, attachment.choices(), attachment.active())
+        .expect("installed-only attachment must build a visible catalog");
+
+    let projection = catalog.picker_projection();
+    assert_eq!(projection.selectors.len(), 1);
+    assert_eq!(projection.selectors[0].facet, WebMediaFacet::Mode);
+    assert_eq!(projection.selectors[0].selected_index, Some(0));
+    assert_eq!(
+        projection.selectors[0].options.as_ref(),
+        [WebMediaFacetOption::Mode(WebMediaMode::Automatic)]
+    );
+    assert!(
+        catalog
+            .resolve_facet_action(WebMediaFacetAction {
+                generation: 41,
+                facet: WebMediaFacet::Mode,
+                option_index: 0,
+            })
+            .is_none()
+    );
+}
+
+#[test]
+fn stale_catalog_generation_rejects_otherwise_valid_facet_action() {
+    let active = WebMediaCatalogChoice {
+        mode: WebMediaMode::VideoOnly,
+        video: None,
+        rank: web_media_playback_plan::OpaqueAlternativeRank::parent(0),
+        target: WebMediaSelectionTarget::Fixture(1),
+    };
+    let alternative = WebMediaCatalogChoice {
+        mode: WebMediaMode::AudioOnly,
+        video: None,
+        rank: web_media_playback_plan::OpaqueAlternativeRank::parent(1),
+        target: WebMediaSelectionTarget::Fixture(2),
+    };
+    let catalog = WebMediaCatalog::new(
+        52,
+        Some(crate::web_media_stream_model::WebMediaStreamGeneration::for_test(5, 2)),
+        vec![active.clone(), alternative].into(),
+        &active.target,
+    )
+    .unwrap();
+
+    assert_eq!(
+        catalog.resolve_facet_action(WebMediaFacetAction {
+            generation: 52,
+            facet: WebMediaFacet::Mode,
+            option_index: 1,
+        }),
+        Some(&WebMediaSelectionTarget::Fixture(2))
+    );
+    assert!(
+        catalog
+            .resolve_facet_action(WebMediaFacetAction {
+                generation: 51,
+                facet: WebMediaFacet::Mode,
+                option_index: 1,
+            })
+            .is_none()
+    );
+}
+
+#[test]
+fn neutral_target_and_attachment_debug_redact_raw_identities() {
+    let parent = neutral_exact_selection("raw-format-secret", "raw-semantic-secret");
+    let target = WebMediaSelectionTarget::Candidate {
+        selection: Box::new(WebMediaSelection::candidate(parent.clone())),
+    };
+    let attachment = WebMediaCatalogAttachment::new(
+        parent,
+        vec![WebMediaCatalogChoice {
+            mode: WebMediaMode::Automatic,
+            video: None,
+            rank: web_media_playback_plan::OpaqueAlternativeRank::parent(0),
+            target: target.clone(),
+        }],
+        target.clone(),
+    )
+    .unwrap();
+
+    let debug = format!("{target:?} {attachment:?}");
+    assert!(!debug.contains("raw-format-secret"));
+    assert!(!debug.contains("raw-semantic-secret"));
+    assert!(debug.contains("<opaque>"));
+    assert!(debug.contains("<exact-selection>"));
+    assert!(!include_str!("model.rs").contains("service_ytdlp"));
 }

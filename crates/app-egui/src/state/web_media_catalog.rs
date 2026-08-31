@@ -35,18 +35,19 @@ impl AppState {
             self.web_media_fallback_notice = false;
             return;
         };
-        let Some(extractor) = source
-            .web_intent()
-            .and_then(crate::media_open::WebMediaSourceIntent::extractor_bridge)
-        else {
+        let Some(web_intent) = source.web_intent() else {
             playlist_runtime.clear_web_media_catalog();
             self.web_media_catalog_state = WebMediaCatalogState::Inactive;
             self.pending_automatic_web_media_switch = None;
             self.web_media_fallback_notice = false;
             return;
         };
-        let stream_configuration = extractor.stream_configuration;
-        let catalog_attachment = extractor.catalog_attachment;
+        let projection = web_intent.read_only_projection();
+        let stream_configuration = projection.stream_configuration;
+        let catalog_attachment = web_intent
+            .catalog_attachment()
+            .cloned()
+            .unwrap_or_else(crate::web_media_catalog::WebMediaCatalogAttachment::installed_only);
         let Some(active) = playlist_runtime.playlist_view_snapshot().active_media() else {
             playlist_runtime.clear_web_media_catalog();
             self.web_media_catalog_state = WebMediaCatalogState::Inactive;
@@ -69,14 +70,20 @@ impl AppState {
         playlist_runtime.ensure_web_media_catalog(
             WebMediaCatalogCorrelation {
                 scope,
-                parent: catalog_attachment.parent().clone(),
+                parent: catalog_attachment.parent().cloned(),
                 media_instance: active.media_instance_id(),
                 binding,
-                parent_generation: stream_configuration.generation(),
+                parent_generation: stream_configuration
+                    .map(crate::web_media_stream_model::WebMediaStreamConfiguration::generation),
             },
-            catalog_attachment.clone(),
+            catalog_attachment,
         );
         self.web_media_catalog_state = playlist_runtime.web_media_catalog_state();
+        if stream_configuration.is_none() {
+            self.pending_automatic_web_media_switch = None;
+            self.web_media_fallback_notice = false;
+            return;
+        }
         let WebMediaCatalogScope::Item(item_id) = scope else {
             self.pending_automatic_web_media_switch = None;
             self.web_media_fallback_notice = false;
@@ -98,10 +105,12 @@ impl AppState {
             Some(target) if target != &catalog.active_choice().target => {
                 if self.same_item_switch.is_none() {
                     self.pending_automatic_web_media_switch =
-                        Some(PendingAutomaticWebMediaSwitch {
-                            parent_generation: catalog.parent_generation(),
-                            catalog_generation: catalog.generation(),
-                            target: target.clone(),
+                        catalog.parent_generation().map(|parent_generation| {
+                            PendingAutomaticWebMediaSwitch {
+                                parent_generation,
+                                catalog_generation: catalog.generation(),
+                                target: target.clone(),
+                            }
                         });
                 } else {
                     self.pending_automatic_web_media_switch = None;
@@ -114,11 +123,10 @@ impl AppState {
                 self.pending_automatic_web_media_switch = None;
                 // Уже установленный yt-dlp choice прошёл exact Installed и является допустимым
                 // fallback commit point без второй бессмысленной same-item транзакции.
-                playlist_runtime.remember_web_media_preference(
-                    item_id,
-                    catalog.active_choice().target.remembered(),
-                );
-                self.web_media_fallback_notice = true;
+                if let Some(preference) = catalog.active_choice().target.remembered() {
+                    playlist_runtime.remember_web_media_preference(item_id, preference);
+                    self.web_media_fallback_notice = true;
+                }
             }
         }
     }

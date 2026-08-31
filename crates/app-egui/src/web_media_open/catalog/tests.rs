@@ -1,4 +1,4 @@
-use super::{complete_parent_choices, layout_facets};
+use super::{complete_parent_choices, first_compatible_composition, layout_facets};
 use crate::web_media_catalog::{WebMediaCatalogChoice, WebMediaMode, WebMediaSelectionTarget};
 use web_media_core::{
     ContainerFamily, ContainerIdentity, ContentProbedDescriptor, ContentProbedTrackEvidence,
@@ -79,6 +79,24 @@ fn declared_catalog_projection_has_no_candidate_or_provider_io() {
             "declared catalog projection не должна содержать `{forbidden}`"
         );
     }
+}
+
+#[test]
+fn one_video_projects_only_the_first_compatible_audio_without_cartesian_rows() {
+    let audio_candidates = ["incompatible", "preferred", "also-compatible"];
+    let mut visited_candidates = Vec::new();
+
+    let composition = first_compatible_composition(&audio_candidates, |audio_candidate| {
+        visited_candidates.push(*audio_candidate);
+        Ok(
+            (*audio_candidate == "preferred" || *audio_candidate == "also-compatible")
+                .then_some(*audio_candidate),
+        )
+    })
+    .unwrap();
+
+    assert_eq!(composition, Some("preferred"));
+    assert_eq!(visited_candidates, ["incompatible", "preferred"]);
 }
 
 #[test]

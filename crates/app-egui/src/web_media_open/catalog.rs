@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use service_ytdlp::{YtDlpCandidateSelection, YtDlpCandidateSnapshot, YtDlpComposedSelection};
-use web_media_core::{ExactSelectionIdentity, StreamLayout};
+use web_media_core::{ExactSelectionIdentity, StreamLayout, WebMediaSelection};
 use web_media_playback_plan::{
     OpaqueAlternativeRank, PlanningCandidateSnapshot, PlaybackCapabilitySnapshot,
     PlaybackSelectionPolicy,
@@ -11,6 +11,17 @@ use web_media_playback_plan::{
 use crate::web_media_catalog::{
     WebMediaCatalogAttachment, WebMediaCatalogChoice, WebMediaMode, WebMediaSelectionTarget,
 };
+use crate::web_media_stream_model::ExtractorCatalogSelectionRoute;
+
+pub(super) struct CatalogAttachmentProjection {
+    pub(super) attachment: WebMediaCatalogAttachment,
+    pub(super) routes: Vec<ExtractorCatalogSelectionRoute>,
+}
+
+struct ProjectedCatalogChoice {
+    choice: WebMediaCatalogChoice,
+    route: ExtractorCatalogSelectionRoute,
+}
 
 pub(super) struct CatalogAttachmentRequest<'a> {
     pub(super) candidate_snapshot: &'a YtDlpCandidateSnapshot,
@@ -23,22 +34,17 @@ pub(super) struct CatalogAttachmentRequest<'a> {
 
 pub(super) fn catalog_attachment(
     request: CatalogAttachmentRequest<'_>,
-) -> Result<WebMediaCatalogAttachment> {
+) -> Result<CatalogAttachmentProjection> {
     let parent = ExactSelectionIdentity::new(
         request.active_selection.exact_identity().clone(),
         request.active_selection.semantic_identity().clone(),
     )
     .context("catalog attachment parent identity is invalid")?;
     let active = match request.active_composed {
-        Some(selection) => WebMediaSelectionTarget::Composed {
-            selection: Box::new(selection.clone()),
-            parent_preference: Box::new(request.active_selection.clone()),
-        },
-        None => WebMediaSelectionTarget::Parent {
-            selection: Box::new(request.active_selection.clone()),
-        },
+        Some(selection) => separate_components_target(selection, request.active_selection)?,
+        None => candidate_target(request.active_selection)?,
     };
-    let choices = complete_parent_choices(
+    let projected_choices = complete_projected_choices(
         parent_choices(
             request.candidate_snapshot,
             request.planning_snapshot,
@@ -47,7 +53,51 @@ pub(super) fn catalog_attachment(
         )?,
         &active,
     )?;
-    WebMediaCatalogAttachment::new(parent, choices, active)
+    let mut choices = Vec::with_capacity(projected_choices.len());
+    let mut routes = Vec::with_capacity(projected_choices.len());
+    for projected in projected_choices {
+        choices.push(projected.choice);
+        routes.push(projected.route);
+    }
+    Ok(CatalogAttachmentProjection {
+        attachment: WebMediaCatalogAttachment::new(parent, choices, active)?,
+        routes,
+    })
+}
+
+fn candidate_target(selection: &YtDlpCandidateSelection) -> Result<WebMediaSelectionTarget> {
+    let exact = ExactSelectionIdentity::new(
+        selection.exact_identity().clone(),
+        selection.semantic_identity().clone(),
+    )
+    .context("candidate catalog identity is invalid")?;
+    Ok(WebMediaSelectionTarget::Candidate {
+        selection: Box::new(WebMediaSelection::candidate(exact)),
+    })
+}
+
+fn separate_components_target(
+    selection: &YtDlpComposedSelection,
+    parent_preference: &YtDlpCandidateSelection,
+) -> Result<WebMediaSelectionTarget> {
+    let target = WebMediaSelection::candidate(
+        ExactSelectionIdentity::new(
+            selection.descriptor().identity().clone(),
+            selection.descriptor().semantic_identity().clone(),
+        )
+        .context("separate-components catalog identity is invalid")?,
+    );
+    let parent = WebMediaSelection::candidate(
+        ExactSelectionIdentity::new(
+            parent_preference.exact_identity().clone(),
+            parent_preference.semantic_identity().clone(),
+        )
+        .context("separate-components parent identity is invalid")?,
+    );
+    Ok(WebMediaSelectionTarget::SeparateComponents {
+        selection: Box::new(target),
+        parent_preference: Box::new(parent),
+    })
 }
 
 /// Возвращает число projected parent choices для cross-module regression tests.
@@ -64,6 +114,29 @@ pub(super) fn projected_parent_choice_count(
     .map(|choices| choices.len())
 }
 
+fn complete_projected_choices(
+    mut choices: Vec<ProjectedCatalogChoice>,
+    active: &WebMediaSelectionTarget,
+) -> Result<Vec<ProjectedCatalogChoice>> {
+    choices.sort_by_key(|projected| (projected.choice.rank, projected.choice.mode));
+    if choices.windows(2).any(|pair| {
+        pair[0].choice.rank == pair[1].choice.rank
+            && pair[0].choice.mode == pair[1].choice.mode
+            && pair[0].choice.target != pair[1].choice.target
+    }) {
+        anyhow::bail!("parent catalog ranking неоднозначен без source-order tie-breaker");
+    }
+    if !choices
+        .iter()
+        .any(|projected| &projected.choice.target == active)
+    {
+        anyhow::bail!("active Installed choice отсутствует в playable parent catalog");
+    }
+    Ok(choices)
+}
+
+/// Стабилизирует pure neutral rows; отдельно оставлен как focused projection boundary.
+#[cfg(test)]
 fn complete_parent_choices(
     mut choices: Vec<WebMediaCatalogChoice>,
     active: &WebMediaSelectionTarget,
@@ -87,7 +160,7 @@ fn parent_choices(
     planning: &PlanningCandidateSnapshot,
     capabilities: PlaybackCapabilitySnapshot<'_>,
     policy: &PlaybackSelectionPolicy,
-) -> Result<Vec<WebMediaCatalogChoice>> {
+) -> Result<Vec<ProjectedCatalogChoice>> {
     snapshot
         .validate_planning_snapshot_alignment(planning)
         .context("Catalog service/planner snapshots не соответствуют друг другу")?;
@@ -110,11 +183,16 @@ fn parent_choices(
             .ok_or_else(|| {
                 anyhow::anyhow!("playable candidate отсутствует в opaque planner ranking")
             })?;
-        choices.push(WebMediaCatalogChoice {
-            mode,
-            video,
-            rank: OpaqueAlternativeRank::parent(parent_rank),
-            target: WebMediaSelectionTarget::Parent {
+        let target = candidate_target(&selection)?;
+        choices.push(ProjectedCatalogChoice {
+            choice: WebMediaCatalogChoice {
+                mode,
+                video,
+                rank: OpaqueAlternativeRank::parent(parent_rank),
+                target: target.clone(),
+            },
+            route: ExtractorCatalogSelectionRoute::Candidate {
+                target,
                 selection: Box::new(selection),
             },
         });
@@ -152,16 +230,10 @@ fn parent_choices(
             .ok_or_else(|| {
                 anyhow::anyhow!("composed video отсутствует в opaque planner ranking")
             })?;
-        let mut composed = None;
-        for audio in &playable_audio {
+        let composed = first_compatible_composition(&playable_audio, |audio| {
             let audio_selection = snapshot.selection_for(audio)?;
-            if let Some(selection) =
-                compose_catalog_inventory_av(snapshot, &video_selection, &audio_selection)?
-            {
-                composed = Some(selection);
-                break;
-            }
-        }
+            compose_catalog_inventory_av(snapshot, &video_selection, &audio_selection)
+        })?;
         let Some(composed) = composed else {
             continue;
         };
@@ -171,17 +243,39 @@ fn parent_choices(
         else {
             continue;
         };
-        choices.push(WebMediaCatalogChoice {
-            mode: WebMediaMode::VideoAndAudio,
-            video: Some(component.video().clone()),
-            rank: OpaqueAlternativeRank::parent(parent_rank),
-            target: WebMediaSelectionTarget::Composed {
+        let target = separate_components_target(&composed, &video_selection)?;
+        choices.push(ProjectedCatalogChoice {
+            choice: WebMediaCatalogChoice {
+                mode: WebMediaMode::VideoAndAudio,
+                video: Some(component.video().clone()),
+                rank: OpaqueAlternativeRank::parent(parent_rank),
+                target: target.clone(),
+            },
+            route: ExtractorCatalogSelectionRoute::SeparateComponents {
+                target,
                 selection: Box::new(composed),
                 parent_preference: Box::new(video_selection),
             },
         });
     }
     Ok(choices)
+}
+
+/// Возвращает максимум одну совместимую композицию для одной video-строки каталога.
+///
+/// Такой boundary не позволяет случайно превратить catalog projection в декартово
+/// произведение `video × audio`: следующие audio-кандидаты после первого успеха
+/// вообще не рассматриваются.
+fn first_compatible_composition<T, U>(
+    audio_candidates: &[T],
+    mut compose: impl FnMut(&T) -> Result<Option<U>>,
+) -> Result<Option<U>> {
+    for audio_candidate in audio_candidates {
+        if let Some(composition) = compose(audio_candidate)? {
+            return Ok(Some(composition));
+        }
+    }
+    Ok(None)
 }
 
 /// Отделяет optional non-inventory alternative от настоящего composition error-а.

@@ -12,7 +12,7 @@ static NEXT_ATTACHMENT_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone)]
 pub(crate) struct WebMediaCatalogAttachment {
     id: u64,
-    parent: ExactSelectionIdentity,
+    parent: Option<ExactSelectionIdentity>,
     choices: Arc<[WebMediaCatalogChoice]>,
     active: WebMediaSelectionTarget,
 }
@@ -31,14 +31,31 @@ impl WebMediaCatalogAttachment {
         }
         Ok(Self {
             id: NEXT_ATTACHMENT_ID.fetch_add(1, Ordering::Relaxed),
-            parent,
+            parent: Some(parent),
             choices: choices.into(),
             active,
         })
     }
 
-    pub(crate) const fn parent(&self) -> &ExactSelectionIdentity {
-        &self.parent
+    /// Создаёт честный single-row catalog для direct/native ingress-а.
+    pub(crate) fn installed_only() -> Self {
+        let active = WebMediaSelectionTarget::InstalledOnly;
+        Self {
+            id: NEXT_ATTACHMENT_ID.fetch_add(1, Ordering::Relaxed),
+            parent: None,
+            choices: vec![WebMediaCatalogChoice {
+                mode: super::model::WebMediaMode::Automatic,
+                video: None,
+                rank: web_media_playback_plan::OpaqueAlternativeRank::parent(0),
+                target: active.clone(),
+            }]
+            .into(),
+            active,
+        }
+    }
+
+    pub(crate) const fn parent(&self) -> Option<&ExactSelectionIdentity> {
+        self.parent.as_ref()
     }
 
     pub(super) fn choices(&self) -> Arc<[WebMediaCatalogChoice]> {
@@ -57,13 +74,13 @@ fn active_matches_parent(
     let selection = match active {
         #[cfg(test)]
         WebMediaSelectionTarget::Fixture(_) => return true,
-        WebMediaSelectionTarget::Parent { selection } => selection.as_ref(),
-        WebMediaSelectionTarget::Composed {
-            parent_preference, ..
-        } => parent_preference.as_ref(),
+        WebMediaSelectionTarget::InstalledOnly => return false,
+        WebMediaSelectionTarget::Candidate { .. }
+        | WebMediaSelectionTarget::SeparateComponents { .. } => active
+            .parent_selection()
+            .expect("switchable target always owns a parent selection"),
     };
-    selection.exact_identity() == parent.exact()
-        && selection.semantic_identity() == parent.semantic()
+    selection.parent() == parent
 }
 
 impl PartialEq for WebMediaCatalogAttachment {
@@ -79,7 +96,7 @@ impl fmt::Debug for WebMediaCatalogAttachment {
         formatter
             .debug_struct("WebMediaCatalogAttachment")
             .field("id", &self.id)
-            .field("parent", &self.parent)
+            .field("parent", &self.parent.as_ref().map(|_| "<exact-selection>"))
             .field("choice_count", &self.choices.len())
             .field("active", &self.active)
             .finish()

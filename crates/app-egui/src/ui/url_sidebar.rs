@@ -30,13 +30,15 @@ pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) -> Option<UrlSidebarAct
                     None
                 }
                 UrlSidebarModel::DirectMedia {
+                    ingress,
                     source_label,
                     status,
+                    catalog,
                 } => {
-                    show_direct_media(ui, source_label, *status);
+                    show_single_web_media(ui, *ingress, source_label, *status, catalog);
                     None
                 }
-                UrlSidebarModel::YtDlp {
+                UrlSidebarModel::CatalogBacked {
                     generation,
                     source_label,
                     candidates,
@@ -49,7 +51,7 @@ pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) -> Option<UrlSidebarAct
                     safe_error,
                     catalog,
                     fallback_notice,
-                } => show_yt_dlp(
+                } => show_catalog_backed(
                     ui,
                     *generation,
                     source_label,
@@ -76,19 +78,29 @@ fn show_inactive(ui: &mut Ui) {
     ui.weak("URL добавляется только через кнопку «Добавить URL» в плейлисте.");
 }
 
-fn show_direct_media(ui: &mut Ui, source_label: &str, status: UrlSidebarPlaybackStatus) {
-    ui.heading("Прямой web-поток");
+fn show_single_web_media(
+    ui: &mut Ui,
+    ingress: web_media_core::WebMediaIngressKind,
+    source_label: &str,
+    status: UrlSidebarPlaybackStatus,
+    catalog: &WebMediaCatalogState,
+) {
+    let heading = match ingress {
+        web_media_core::WebMediaIngressKind::DirectResource => "Прямой web-поток",
+        web_media_core::WebMediaIngressKind::NativeManifest => "Нативный web-манифест",
+        web_media_core::WebMediaIngressKind::ExtractorBacked => "Web-медиа",
+    };
+    ui.heading(heading);
     wrapped_value(ui, "Источник", source_label);
     ui.add_space(8.0);
     status_grid(ui, status);
     ui.add_space(8.0);
-    ui.label(
-        "Источник содержит один прямой media resource. Выбор разрешения и формата недоступен.",
-    );
+    let _ = show_stream_picker(ui, None, catalog, false);
+    ui.weak("У источника один установленный вариант; переключение не требуется.");
 }
 
 #[allow(clippy::too_many_arguments)]
-fn show_yt_dlp(
+fn show_catalog_backed(
     ui: &mut Ui,
     generation: WebMediaStreamGeneration,
     source_label: &str,
@@ -122,7 +134,8 @@ fn show_yt_dlp(
 
     let _legacy_candidate_projection = (candidates, active_candidate);
     ui.add_space(12.0);
-    let unified_action = show_stream_picker(ui, generation, catalog, pending_selection.is_some());
+    let unified_action =
+        show_stream_picker(ui, Some(generation), catalog, pending_selection.is_some());
     let component_action =
         component_variants::show(ui, generation, component_variants, pending_selection);
     choose_single_sidebar_action(unified_action, component_action)
@@ -130,7 +143,7 @@ fn show_yt_dlp(
 
 fn show_stream_picker(
     ui: &mut Ui,
-    parent_generation: WebMediaStreamGeneration,
+    parent_generation: Option<WebMediaStreamGeneration>,
     catalog: &WebMediaCatalogState,
     pending: bool,
 ) -> Option<UrlSidebarAction> {
@@ -167,6 +180,7 @@ fn show_stream_picker(
                                     .clicked()
                                     && !selected
                                     && action.is_none()
+                                    && let Some(parent_generation) = parent_generation
                                 {
                                     action = Some(UrlSidebarAction::StreamFacet {
                                         parent_generation,
@@ -389,7 +403,7 @@ mod tests {
     fn production_url_model_renders_component_axis_after_unified_catalog() {
         let generation = WebMediaStreamGeneration::for_test(4, 9);
         let active_candidate = candidate_presentation();
-        let model = UrlSidebarModel::YtDlp {
+        let model = UrlSidebarModel::CatalogBacked {
             generation,
             source_label: Arc::from("acceptance source"),
             candidates: Arc::from([active_candidate.clone()]),
@@ -428,6 +442,34 @@ mod tests {
         assert!(labels.iter().any(|label| label == "Видео"));
         assert!(labels.iter().any(|label| label.contains("1920×1080")));
         assert!(labels.iter().any(|label| label == "Активный"));
+    }
+
+    #[test]
+    fn direct_single_option_is_visible_but_cannot_emit_selection_action() {
+        let model = UrlSidebarModel::DirectMedia {
+            ingress: web_media_core::WebMediaIngressKind::DirectResource,
+            source_label: Arc::from("media.example.test"),
+            status: UrlSidebarPlaybackStatus {
+                is_live: false,
+                seekable: true,
+                buffering: false,
+                refresh_on_reopen: false,
+            },
+            catalog: crate::web_media_catalog::installed_only_catalog_state_for_test(),
+        };
+        let context = egui::Context::default();
+        let mut action = None;
+        let _output = context.run_ui(egui::RawInput::default(), |ui| {
+            action = super::show(ui, &model);
+        });
+
+        assert!(action.is_none());
+        let labels = visible_labels(&model);
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("один установленный вариант"))
+        );
     }
 
     #[test]

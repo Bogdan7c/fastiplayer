@@ -1,3 +1,10 @@
+## N05A provider-neutral web media catalog/sidebar (2026-08-31)
+
+- `WebMediaSelectionTarget` и весь catalog model теперь provider-neutral: N01 `WebMediaSelection` targets для extractor и inert `InstalledOnly` row для direct/native HLS; exact/semantic generation fences и secret-safe Debug сохранены.
+- Read-only URL sidebar использует единый safe web projection и provider-neutral `CatalogBacked` model; один installed variant видим, но не создаёт action. Separate A/V projection выбирает максимум одну ranked audio pair на video и не строит Cartesian combinations.
+- Provider selections временно изолированы в закрытом `web_media_stream_model/catalog_routes.rs` bridge только до N05B; same-item transaction/reopen semantics не переписывались.
+- Focused catalog/stream/sidebar/lifecycle tests, strict app Clippy и workspace all-features check прошли. Full details and N05B removal obligation: `mem:app-egui/native-web-ingress-n05a-2026-08-31`.
+
 ## N04 unified app web envelope (2026-08-31)
 
 - `ActiveMediaSource`, `MediaOpenSourceRequest`, and `PreparedMediaDescriptor` now each expose exactly one neutral web variant; local files remain separate.

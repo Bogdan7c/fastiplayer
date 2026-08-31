@@ -237,7 +237,7 @@ impl AppState {
                 else {
                     return Err(SameItemSwitchError::Stale);
                 };
-                if catalog.parent_generation() != parent_generation {
+                if catalog.parent_generation() != Some(parent_generation) {
                     return Err(SameItemSwitchError::Stale);
                 }
                 let target = catalog
@@ -291,7 +291,7 @@ impl AppState {
             return Err(SameItemSwitchError::Stale);
         };
         if catalog.generation() != pending.catalog_generation
-            || catalog.parent_generation() != pending.parent_generation
+            || catalog.parent_generation() != Some(pending.parent_generation)
             || !catalog.contains_target(&pending.target)
         {
             return Err(SameItemSwitchError::Stale);
@@ -469,26 +469,9 @@ fn picker_selection_intent(
     target: &crate::web_media_catalog::WebMediaSelectionTarget,
     stream_configuration: &crate::web_media_stream_model::WebMediaStreamConfiguration,
 ) -> Result<crate::web_media_open::YtDlpCandidateOpenIntent, SameItemSwitchError> {
-    match target {
-        #[cfg(test)]
-        crate::web_media_catalog::WebMediaSelectionTarget::Fixture(_) => {
-            Err(SameItemSwitchError::Stale)
-        }
-        crate::web_media_catalog::WebMediaSelectionTarget::Parent { selection } => Ok(
-            crate::web_media_open::YtDlpCandidateOpenIntent::exact_parent_provider_default(
-                selection.clone(),
-                stream_configuration.preference(),
-            ),
-        ),
-        crate::web_media_catalog::WebMediaSelectionTarget::Composed {
-            selection,
-            parent_preference,
-        } => Ok(crate::web_media_open::YtDlpCandidateOpenIntent::composed(
-            selection.clone(),
-            parent_preference.clone(),
-            stream_configuration.preference(),
-        )),
-    }
+    stream_configuration
+        .selection_intent_for_catalog_target(target)
+        .ok_or(SameItemSwitchError::Stale)
 }
 
 /// Start rejection сохраняет bounded UI vocabulary.

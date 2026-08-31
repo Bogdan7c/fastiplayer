@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 
 use player_core::MediaInstanceId;
@@ -16,13 +17,26 @@ pub(crate) enum WebMediaCatalogScope {
     Detached,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct WebMediaCatalogCorrelation {
     pub(crate) scope: WebMediaCatalogScope,
-    pub(crate) parent: ExactSelectionIdentity,
+    pub(crate) parent: Option<ExactSelectionIdentity>,
     pub(crate) media_instance: MediaInstanceId,
     pub(crate) binding: PlaylistRuntimeBinding,
-    pub(crate) parent_generation: WebMediaStreamGeneration,
+    pub(crate) parent_generation: Option<WebMediaStreamGeneration>,
+}
+
+impl fmt::Debug for WebMediaCatalogCorrelation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebMediaCatalogCorrelation")
+            .field("scope", &self.scope)
+            .field("parent", &self.parent.as_ref().map(|_| "<exact-selection>"))
+            .field("media_instance", &self.media_instance)
+            .field("binding", &self.binding)
+            .field("parent_generation", &self.parent_generation)
+            .finish()
+    }
 }
 
 pub(crate) struct WebMediaCatalogCoordinator {
@@ -45,7 +59,7 @@ impl WebMediaCatalogCoordinator {
         correlation: WebMediaCatalogCorrelation,
         attachment: WebMediaCatalogAttachment,
     ) {
-        if attachment.parent() != &correlation.parent {
+        if attachment.parent() != correlation.parent.as_ref() {
             self.visible = WebMediaCatalogState::Failed {
                 parent_generation: correlation.parent_generation,
                 error: WebMediaCatalogSafeError::AttachmentMismatch,
@@ -117,12 +131,12 @@ mod tests {
             scope: WebMediaCatalogScope::Item(
                 PlaylistItemId::from_persistence_value(item).unwrap(),
             ),
-            parent,
+            parent: Some(parent),
             media_instance: MediaInstanceId::from_non_zero(
                 NonZeroU64::new(media_instance).unwrap(),
             ),
             binding: PlaylistRuntimeBinding::for_test(1, generation),
-            parent_generation: WebMediaStreamGeneration::for_test(1, generation),
+            parent_generation: Some(WebMediaStreamGeneration::for_test(1, generation)),
         }
     }
 
@@ -206,5 +220,44 @@ mod tests {
             catalog.active_choice().target,
             WebMediaSelectionTarget::Fixture(1)
         );
+    }
+
+    #[test]
+    fn direct_and_native_installed_rows_publish_without_fake_parent_generation() {
+        let mut coordinator = WebMediaCatalogCoordinator::new();
+        let correlation =
+            |media_instance: u64, binding_generation: u64| WebMediaCatalogCorrelation {
+                scope: WebMediaCatalogScope::Detached,
+                parent: None,
+                media_instance: MediaInstanceId::from_non_zero(
+                    NonZeroU64::new(media_instance).unwrap(),
+                ),
+                binding: PlaylistRuntimeBinding::for_test(7, binding_generation),
+                parent_generation: None,
+            };
+
+        coordinator.ensure(
+            correlation(70, 1),
+            WebMediaCatalogAttachment::installed_only(),
+        );
+        let WebMediaCatalogState::Ready(direct) = coordinator.state() else {
+            panic!("direct installed-only row must publish synchronously");
+        };
+        assert_eq!(direct.generation(), 1);
+        assert_eq!(direct.parent_generation(), None);
+        assert_eq!(
+            direct.active_choice().target,
+            WebMediaSelectionTarget::InstalledOnly
+        );
+
+        coordinator.ensure(
+            correlation(71, 2),
+            WebMediaCatalogAttachment::installed_only(),
+        );
+        let WebMediaCatalogState::Ready(native_hls) = coordinator.state() else {
+            panic!("native HLS installed-only row must replace stale direct correlation");
+        };
+        assert_eq!(native_hls.generation(), 2);
+        assert_eq!(native_hls.parent_generation(), None);
     }
 }

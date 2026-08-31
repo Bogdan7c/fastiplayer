@@ -21,6 +21,8 @@ use web_media_playback_plan::{
 use crate::media_open::ActiveMediaSource;
 use crate::playlist_runtime::PlaylistViewModel;
 
+mod catalog_routes;
+pub(crate) use catalog_routes::ExtractorCatalogSelectionRoute;
 pub(crate) mod component_variants;
 use component_variants::{
     ActiveParentCandidateSelection, WebMediaComponentVariantConfiguration,
@@ -263,6 +265,8 @@ pub(crate) struct WebMediaStreamConfiguration {
     active_parent_selection: ActiveParentCandidateSelection,
     candidates: Arc<[WebMediaCandidatePresentation]>,
     candidate_selections: Arc<[YtDlpCandidateSelection]>,
+    /// Временный N05A→N05B extractor adapter: neutral catalog target → legacy open token.
+    catalog_selection_routes: Arc<[ExtractorCatalogSelectionRoute]>,
     active_candidate: WebMediaCandidatePresentation,
     preference: WebMediaSelectionPreference,
     component_variants: WebMediaComponentVariantConfiguration,
@@ -275,6 +279,7 @@ impl fmt::Debug for WebMediaStreamConfiguration {
             .debug_struct("WebMediaStreamConfiguration")
             .field("generation", &self.generation)
             .field("candidate_count", &self.candidates.len())
+            .field("catalog_route_count", &self.catalog_selection_routes.len())
             .field("active_candidate", &self.active_candidate)
             .field("preference", &self.preference)
             .field("component_variants", &self.component_variants)
@@ -385,6 +390,7 @@ impl WebMediaStreamConfiguration {
             )),
             candidates: candidates.into(),
             candidate_selections: candidate_selections.into(),
+            catalog_selection_routes: Arc::from([]),
             active_candidate,
             preference,
             component_variants: WebMediaComponentVariantConfiguration::Unavailable,
@@ -511,10 +517,12 @@ pub(crate) enum UrlSidebarSafeError {
 pub(crate) enum UrlSidebarModel {
     Inactive,
     DirectMedia {
+        ingress: web_media_core::WebMediaIngressKind,
         source_label: Arc<str>,
         status: UrlSidebarPlaybackStatus,
+        catalog: crate::web_media_catalog::WebMediaCatalogState,
     },
-    YtDlp {
+    CatalogBacked {
         generation: WebMediaStreamGeneration,
         source_label: Arc<str>,
         candidates: Arc<[WebMediaCandidatePresentation]>,
@@ -538,15 +546,10 @@ struct UrlSidebarItemBinding {
 
 enum UrlSidebarSourceProjection<'source> {
     Inactive,
-    DirectMedia {
+    WebMedia {
+        ingress: web_media_core::WebMediaIngressKind,
         source_label: &'source str,
-    },
-    NativeHls {
-        source_label: &'source str,
-    },
-    YtDlp {
-        source_label: &'source str,
-        configuration: &'source WebMediaStreamConfiguration,
+        configuration: Option<&'source WebMediaStreamConfiguration>,
     },
 }
 
@@ -562,21 +565,11 @@ impl UrlSidebarController {
         let source = match active_source.map(ActiveMediaSource::physical_source) {
             None | Some(ActiveMediaSource::LocalFile(_)) => UrlSidebarSourceProjection::Inactive,
             Some(ActiveMediaSource::Web(intent)) => {
-                if let Some(locator) = intent.direct_locator() {
-                    UrlSidebarSourceProjection::DirectMedia {
-                        source_label: locator.safe_label(),
-                    }
-                } else if let Some((source, _selection)) = intent.native_hls_reopen() {
-                    UrlSidebarSourceProjection::NativeHls {
-                        source_label: source.safe_label().as_str(),
-                    }
-                } else if let Some(extractor) = intent.extractor_bridge() {
-                    UrlSidebarSourceProjection::YtDlp {
-                        source_label: extractor.locator.safe_label(),
-                        configuration: extractor.stream_configuration,
-                    }
-                } else {
-                    unreachable!("every web intent owns one typed adapter projection")
+                let projection = intent.read_only_projection();
+                UrlSidebarSourceProjection::WebMedia {
+                    ingress: projection.ingress,
+                    source_label: projection.source_label,
+                    configuration: projection.stream_configuration,
                 }
             }
             Some(ActiveMediaSource::PlaybackWindow { .. }) => {
@@ -602,26 +595,23 @@ impl UrlSidebarController {
     ) -> UrlSidebarModel {
         match source {
             UrlSidebarSourceProjection::Inactive => UrlSidebarModel::Inactive,
-            UrlSidebarSourceProjection::DirectMedia { source_label } => {
-                UrlSidebarModel::DirectMedia {
-                    source_label: Arc::from(source_label),
-                    status: playback_status(player_snapshot, false),
-                }
-            }
-            UrlSidebarSourceProjection::NativeHls { source_label } => {
-                // Native HLS не имеет extractor catalog-а: UI показывает только source/status,
-                // не выдумывая YtDlp format controls.
-                UrlSidebarModel::DirectMedia {
-                    source_label: Arc::from(source_label),
-                    status: playback_status(player_snapshot, false),
-                }
-            }
-            UrlSidebarSourceProjection::YtDlp {
+            UrlSidebarSourceProjection::WebMedia {
+                ingress,
                 source_label,
-                configuration: stream_configuration,
+                configuration: None,
+            } => UrlSidebarModel::DirectMedia {
+                ingress,
+                source_label: Arc::from(source_label),
+                status: playback_status(player_snapshot, false),
+                catalog,
+            },
+            UrlSidebarSourceProjection::WebMedia {
+                source_label,
+                configuration: Some(stream_configuration),
+                ..
             } => {
                 let generation = stream_configuration.generation();
-                UrlSidebarModel::YtDlp {
+                UrlSidebarModel::CatalogBacked {
                     generation,
                     source_label: Arc::from(source_label),
                     candidates: Arc::from(stream_configuration.candidates()),

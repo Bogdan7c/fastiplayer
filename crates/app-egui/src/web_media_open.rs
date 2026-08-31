@@ -332,7 +332,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
     )
     .context("Не удалось финализировать fresh component variant configuration")?;
     ensure_not_cancelled(&is_cancelled)?;
-    let catalog_attachment = catalog::catalog_attachment(catalog::CatalogAttachmentRequest {
+    let catalog_projection = catalog::catalog_attachment(catalog::CatalogAttachmentRequest {
         candidate_snapshot: &candidate_snapshot,
         planning_snapshot,
         capabilities,
@@ -340,6 +340,9 @@ pub(crate) fn prepare_yt_dlp_web_media(
         active_selection: &candidate_selection,
         active_composed: composed_selection.as_deref(),
     })?;
+    let stream_configuration =
+        stream_configuration.with_catalog_selection_routes(catalog_projection.routes);
+    let catalog_attachment = catalog_projection.attachment;
     let extractor_projection = extractor_projection.with_neutral_selection(
         stream_configuration
             .neutral_selection()

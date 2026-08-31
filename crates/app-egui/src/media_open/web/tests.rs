@@ -72,3 +72,60 @@ fn active_web_source_debug_redacts_raw_locator_and_temporary_material() {
     assert!(!debug.contains("debug-secret"));
     assert!(!debug.contains("movie.mp4"));
 }
+
+#[test]
+fn direct_and_native_read_only_projections_are_neutral_and_secret_safe() {
+    let direct = WebMediaSourceIntent::direct(
+        service_direct_media::parse_direct_media_url(
+            "https://user:password@cdn.example.test/movie.mp4?token=direct-secret",
+        )
+        .unwrap(),
+    );
+    let direct_projection = direct.read_only_projection();
+    assert_eq!(
+        direct_projection.ingress,
+        WebMediaIngressKind::DirectResource
+    );
+    assert!(direct_projection.stream_configuration.is_none());
+    assert!(direct.catalog_attachment().is_none());
+    assert!(!direct_projection.source_label.contains("password"));
+    assert!(!direct_projection.source_label.contains("direct-secret"));
+
+    let native_target = source_core::HttpRequestTarget::parse_exact(
+        "https://media.example.test/master.m3u8?token=native-secret",
+    )
+    .unwrap();
+    let policy = web_media_hls::NativeHlsSelectionPolicy::new(
+        web_media_core::PreferredHeightPolicy::NoPreference,
+        vec![web_media_core::CodecFamily::H264],
+    )
+    .unwrap();
+    let native_selection = web_media_hls::admit_native_hls_vod(
+        b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\nsegment.ts\n#EXT-X-ENDLIST\n",
+        &native_target,
+        hls_playlist_core::HlsParserLimits::default(),
+        &policy,
+        None,
+    )
+    .unwrap();
+    let native = WebMediaSourceIntent::native_hls_vod(
+        NativeHlsUrl::new(
+            native_target,
+            SafeMediaLabel::from_service_safe_label("media.example.test"),
+        ),
+        native_selection,
+    );
+    let native_projection = native.read_only_projection();
+    assert_eq!(
+        native_projection.ingress,
+        WebMediaIngressKind::NativeManifest
+    );
+    assert!(native_projection.stream_configuration.is_none());
+    assert!(native.catalog_attachment().is_none());
+
+    let debug = format!("{direct_projection:?} {native_projection:?}");
+    for secret in ["password", "direct-secret", "native-secret", "master.m3u8"] {
+        assert!(!debug.contains(secret));
+    }
+    assert!(debug.contains("<safe-label>"));
+}

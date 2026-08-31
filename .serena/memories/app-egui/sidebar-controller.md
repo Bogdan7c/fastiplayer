@@ -37,3 +37,10 @@
 ## S27 evidence note (2026-07-22)
 - URL sidebar remains a secret-safe projection with no second URL ingress; guardrails reject transient transport/auth types in sidebar/config/playlist persistence owners.
 - Full evidence and explicit-URL manual workflow: `mem:media-services/progressive-web-hardening-s27-2026-07-22`.
+
+## N04/N05A current URL sidebar source/catalog boundary (2026-08-31)
+
+- Старые S24 имена `ActiveMediaSource::YtDlpUrl`, `UrlSidebarModel::YtDlp` и отдельная native/direct source projection — исторические. N04 свёл active web source к одному neutral variant-у, а N05A заменил provider-named sidebar model на `CatalogBacked` и общий read-only `WebMediaSourceReadProjection`.
+- Sidebar projection получает только ingress kind, safe label, presentation и optional safe stream configuration; locator, request material, raw exact/semantic identities и catalog attachment в read-only projection отсутствуют.
+- Extractor публикует neutral candidate/separate targets; direct/native HLS публикуют один видимый inert `InstalledOnly/Automatic` row без fake parent generation и без action. Catalog generation stale fence сохраняется.
+- Временная reverse route table с extractor selection tokens живёт отдельно в `web_media_stream_model/catalog_routes.rs` и должна быть удалена N05B. Полный handoff: `mem:app-egui/native-web-ingress-n05a-2026-08-31`.

@@ -1,8 +1,10 @@
 use std::fmt;
 use std::sync::Arc;
 
-use service_ytdlp::{YtDlpCandidateSelection, YtDlpComposedSelection};
-use web_media_core::{CodecFamily, DynamicRange, FrameRate, VideoTrackDescriptor};
+use web_media_core::{
+    CodecFamily, DynamicRange, FrameRate, VideoTrackDescriptor, WebMediaSelection,
+    WebMediaSemanticSelectionRequest,
+};
 
 use crate::web_media_stream_model::WebMediaStreamGeneration;
 
@@ -70,12 +72,14 @@ pub(crate) struct WebMediaPickerProjection {
 pub(crate) enum WebMediaSelectionTarget {
     #[cfg(test)]
     Fixture(u64),
-    Parent {
-        selection: Box<YtDlpCandidateSelection>,
-    },
-    Composed {
-        selection: Box<YtDlpComposedSelection>,
-        parent_preference: Box<YtDlpCandidateSelection>,
+    /// Установленный direct/native ingress не обещает переключаемый semantic target.
+    InstalledOnly,
+    /// Один atomic либо muxed candidate, выраженный N01 selection contract-ом.
+    Candidate { selection: Box<WebMediaSelection> },
+    /// Уже проверенная отдельная A/V пара; catalog никогда не строит её Cartesian product.
+    SeparateComponents {
+        selection: Box<WebMediaSelection>,
+        parent_preference: Box<WebMediaSelection>,
     },
 }
 
@@ -84,8 +88,9 @@ impl fmt::Debug for WebMediaSelectionTarget {
         let kind = match self {
             #[cfg(test)]
             Self::Fixture(_) => "fixture",
-            Self::Parent { .. } => "parent",
-            Self::Composed { .. } => "composed",
+            Self::InstalledOnly => "installed-only",
+            Self::Candidate { .. } => "candidate",
+            Self::SeparateComponents { .. } => "separate-components",
         };
         formatter
             .debug_struct("WebMediaSelectionTarget")
@@ -96,22 +101,41 @@ impl fmt::Debug for WebMediaSelectionTarget {
 }
 
 impl WebMediaSelectionTarget {
-    pub(crate) fn remembered(&self) -> WebMediaRememberedPreference {
+    /// Строит refresh-stable preference только для реально переключаемого target-а.
+    pub(crate) fn remembered(&self) -> Option<WebMediaRememberedPreference> {
         match self {
             #[cfg(test)]
             Self::Fixture(_) => panic!("fixture target is not a remembered production intent"),
-            Self::Parent { selection } => WebMediaRememberedPreference::Parent(selection.clone()),
-            Self::Composed { selection, .. } => {
-                WebMediaRememberedPreference::Composed(selection.clone())
+            Self::InstalledOnly => None,
+            Self::Candidate { selection } => Some(WebMediaRememberedPreference::Candidate(
+                selection.semantic_rematch_request(),
+            )),
+            Self::SeparateComponents { selection, .. } => {
+                Some(WebMediaRememberedPreference::SeparateComponents(
+                    selection.semantic_rematch_request(),
+                ))
             }
+        }
+    }
+
+    /// Возвращает exact parent, которому должен принадлежать catalog attachment.
+    pub(super) fn parent_selection(&self) -> Option<&WebMediaSelection> {
+        match self {
+            #[cfg(test)]
+            Self::Fixture(_) => None,
+            Self::InstalledOnly => None,
+            Self::Candidate { selection } => Some(selection),
+            Self::SeparateComponents {
+                parent_preference, ..
+            } => Some(parent_preference),
         }
     }
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum WebMediaRememberedPreference {
-    Parent(Box<YtDlpCandidateSelection>),
-    Composed(Box<YtDlpComposedSelection>),
+    Candidate(WebMediaSemanticSelectionRequest),
+    SeparateComponents(WebMediaSemanticSelectionRequest),
 }
 
 impl fmt::Debug for WebMediaRememberedPreference {
@@ -150,7 +174,7 @@ pub(crate) enum WebMediaCatalogState {
     Inactive,
     Ready(Arc<WebMediaCatalog>),
     Failed {
-        parent_generation: WebMediaStreamGeneration,
+        parent_generation: Option<WebMediaStreamGeneration>,
         error: WebMediaCatalogSafeError,
     },
 }
@@ -158,7 +182,7 @@ pub(crate) enum WebMediaCatalogState {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct WebMediaCatalog {
     generation: u64,
-    parent_generation: WebMediaStreamGeneration,
+    parent_generation: Option<WebMediaStreamGeneration>,
     choices: Arc<[WebMediaCatalogChoice]>,
     active_index: usize,
 }
@@ -178,7 +202,7 @@ impl fmt::Debug for WebMediaCatalog {
 impl WebMediaCatalog {
     pub(super) fn new(
         generation: u64,
-        parent_generation: WebMediaStreamGeneration,
+        parent_generation: Option<WebMediaStreamGeneration>,
         choices: Arc<[WebMediaCatalogChoice]>,
         active: &WebMediaSelectionTarget,
     ) -> Option<Self> {
@@ -191,7 +215,7 @@ impl WebMediaCatalog {
         })
     }
 
-    pub(crate) const fn parent_generation(&self) -> WebMediaStreamGeneration {
+    pub(crate) const fn parent_generation(&self) -> Option<WebMediaStreamGeneration> {
         self.parent_generation
     }
 
@@ -218,6 +242,17 @@ impl WebMediaCatalog {
 
     pub(crate) fn picker_projection(&self) -> WebMediaPickerProjection {
         let active = self.active_choice();
+        if matches!(active.target, WebMediaSelectionTarget::InstalledOnly) {
+            return WebMediaPickerProjection {
+                generation: self.generation,
+                selectors: vec![WebMediaPickerSelector {
+                    facet: WebMediaFacet::Mode,
+                    options: vec![WebMediaFacetOption::Mode(WebMediaMode::Automatic)].into(),
+                    selected_index: Some(0),
+                }]
+                .into(),
+            };
+        }
         let selectors = [
             WebMediaFacet::Mode,
             WebMediaFacet::Codec,
@@ -246,7 +281,7 @@ impl WebMediaCatalog {
         &self,
         action: WebMediaFacetAction,
     ) -> Option<&WebMediaSelectionTarget> {
-        if action.generation != self.generation {
+        if action.generation != self.generation || self.choices.len() <= 1 {
             return None;
         }
         let active = self.active_choice();
@@ -295,18 +330,15 @@ fn preference_matches(
 ) -> bool {
     match (target, preference) {
         (
-            WebMediaSelectionTarget::Parent { selection: fresh },
-            WebMediaRememberedPreference::Parent(previous),
-        ) => fresh.semantic_identity() == previous.semantic_identity(),
+            WebMediaSelectionTarget::Candidate { selection: fresh },
+            WebMediaRememberedPreference::Candidate(previous),
+        ) => fresh.semantic_rematch_request() == *previous,
         (
-            WebMediaSelectionTarget::Composed {
+            WebMediaSelectionTarget::SeparateComponents {
                 selection: fresh, ..
             },
-            WebMediaRememberedPreference::Composed(previous),
-        ) => {
-            fresh.descriptor().semantic_identity() == previous.descriptor().semantic_identity()
-                && fresh.audio_semantic_identity() == previous.audio_semantic_identity()
-        }
+            WebMediaRememberedPreference::SeparateComponents(previous),
+        ) => fresh.semantic_rematch_request() == *previous,
         #[cfg(test)]
         (WebMediaSelectionTarget::Fixture(fresh), _) => {
             let _ = fresh;

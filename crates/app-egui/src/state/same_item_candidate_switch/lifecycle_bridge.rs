@@ -543,8 +543,10 @@ impl SameItemSwitchCompletionOwner for ProductionSameItemSwitchPollContext<'_, '
         item_id: playlist_core::PlaylistItemId,
         target: crate::web_media_catalog::WebMediaSelectionTarget,
     ) {
-        self.playlist_runtime
-            .remember_web_media_preference(item_id, target.remembered());
+        if let Some(preference) = target.remembered() {
+            self.playlist_runtime
+                .remember_web_media_preference(item_id, preference);
+        }
     }
 
     fn clear_web_media_fallback_notice(&mut self) {

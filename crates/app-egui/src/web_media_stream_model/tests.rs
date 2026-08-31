@@ -33,6 +33,7 @@ fn configuration(
         active_parent_selection: ActiveParentCandidateSelection::ProjectionFixture,
         candidates: candidates.into(),
         candidate_selections: Arc::from([]),
+        catalog_selection_routes: Arc::from([]),
         active_candidate,
         preference: WebMediaSelectionPreference::GlobalBestPlayable,
         component_variants: WebMediaComponentVariantConfiguration::Unavailable,
@@ -158,14 +159,15 @@ fn stale_generation_hides_pending_candidate_and_safe_error() {
     let active = candidate(Some(1080), false);
     let configuration = configuration(active_generation, vec![active.clone()], active);
     let model = controller.model_from_source(
-        UrlSidebarSourceProjection::YtDlp {
+        UrlSidebarSourceProjection::WebMedia {
+            ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
             source_label: "example.test",
-            configuration: &configuration,
+            configuration: Some(&configuration),
         },
         &PlayerSnapshot::empty(),
         binding(UrlSidebarItemScope::SingleItem),
     );
-    let UrlSidebarModel::YtDlp {
+    let UrlSidebarModel::CatalogBacked {
         pending_selection,
         safe_error,
         ..
@@ -198,14 +200,15 @@ fn current_generation_exposes_pending_candidate_and_bounded_failure() {
         item_override: None,
     };
     let model = controller.model_from_source(
-        UrlSidebarSourceProjection::YtDlp {
+        UrlSidebarSourceProjection::WebMedia {
+            ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
             source_label: "example.test",
-            configuration: &configuration,
+            configuration: Some(&configuration),
         },
         &PlayerSnapshot::empty(),
         binding(UrlSidebarItemScope::SingleItem),
     );
-    let UrlSidebarModel::YtDlp {
+    let UrlSidebarModel::CatalogBacked {
         pending_selection,
         safe_error,
         ..
@@ -284,9 +287,10 @@ fn detached_installed_switch_publishes_runtime_override_for_fresh_generation() {
 
     controller.record_candidate_switch_installed(installed_generation, None, Some(1440));
     let model = controller.model_from_source(
-        UrlSidebarSourceProjection::YtDlp {
+        UrlSidebarSourceProjection::WebMedia {
+            ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
             source_label: "example.test",
-            configuration: &configuration,
+            configuration: Some(&configuration),
         },
         &PlayerSnapshot::empty(),
         UrlSidebarItemBinding {
@@ -297,7 +301,7 @@ fn detached_installed_switch_publishes_runtime_override_for_fresh_generation() {
 
     assert!(matches!(
         model,
-        UrlSidebarModel::YtDlp {
+        UrlSidebarModel::CatalogBacked {
             preference: WebMediaSelectionPreference::ItemOverride(Some(1440)),
             pending_selection: None,
             ..
@@ -325,9 +329,10 @@ fn component_completion_keeps_existing_item_override_unchanged() {
     controller.record_component_switch_installed();
 
     let model = controller.model_from_source(
-        UrlSidebarSourceProjection::YtDlp {
+        UrlSidebarSourceProjection::WebMedia {
+            ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
             source_label: "example.test",
-            configuration: &configuration,
+            configuration: Some(&configuration),
         },
         &PlayerSnapshot::empty(),
         UrlSidebarItemBinding {
@@ -338,7 +343,7 @@ fn component_completion_keeps_existing_item_override_unchanged() {
 
     assert!(matches!(
         model,
-        UrlSidebarModel::YtDlp {
+        UrlSidebarModel::CatalogBacked {
             preference: WebMediaSelectionPreference::ItemOverride(Some(1440)),
             pending_selection: None,
             ..
@@ -366,9 +371,10 @@ fn item_override_requires_exact_item_and_source_lineage() {
         }),
     };
     let exact_model = controller.model_from_source(
-        UrlSidebarSourceProjection::YtDlp {
+        UrlSidebarSourceProjection::WebMedia {
+            ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
             source_label: "example.test",
-            configuration: &configuration,
+            configuration: Some(&configuration),
         },
         &PlayerSnapshot::empty(),
         UrlSidebarItemBinding {
@@ -378,23 +384,24 @@ fn item_override_requires_exact_item_and_source_lineage() {
     );
     assert!(matches!(
         exact_model,
-        UrlSidebarModel::YtDlp {
+        UrlSidebarModel::CatalogBacked {
             preference: WebMediaSelectionPreference::ItemOverride(Some(720)),
             ..
         }
     ));
 
     let detached_model = controller.model_from_source(
-        UrlSidebarSourceProjection::YtDlp {
+        UrlSidebarSourceProjection::WebMedia {
+            ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
             source_label: "example.test",
-            configuration: &configuration,
+            configuration: Some(&configuration),
         },
         &PlayerSnapshot::empty(),
         binding(UrlSidebarItemScope::Detached),
     );
     assert!(matches!(
         detached_model,
-        UrlSidebarModel::YtDlp {
+        UrlSidebarModel::CatalogBacked {
             preference: WebMediaSelectionPreference::GlobalBestPlayable,
             ..
         }
@@ -430,16 +437,17 @@ fn group_part_scope_is_first_class_and_not_a_fake_single_item() {
     let active = candidate(Some(720), false);
     let configuration = configuration(generation, vec![active.clone()], active);
     let model = UrlSidebarController::default().model_from_source(
-        UrlSidebarSourceProjection::YtDlp {
+        UrlSidebarSourceProjection::WebMedia {
+            ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
             source_label: "example.test",
-            configuration: &configuration,
+            configuration: Some(&configuration),
         },
         &PlayerSnapshot::empty(),
         binding(UrlSidebarItemScope::CompoundPart),
     );
     assert!(matches!(
         model,
-        UrlSidebarModel::YtDlp {
+        UrlSidebarModel::CatalogBacked {
             item_scope: UrlSidebarItemScope::CompoundPart,
             ..
         }
@@ -459,9 +467,10 @@ fn secret_safe_model_never_contains_locator_path_query_or_userinfo() {
     let active = candidate(Some(1080), false);
     let configuration = configuration(generation, vec![active.clone()], active);
     let model = UrlSidebarController::default().model_from_source(
-        UrlSidebarSourceProjection::YtDlp {
+        UrlSidebarSourceProjection::WebMedia {
+            ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
             source_label: locator.safe_label(),
-            configuration: &configuration,
+            configuration: Some(&configuration),
         },
         &PlayerSnapshot::empty(),
         binding(UrlSidebarItemScope::Detached),
