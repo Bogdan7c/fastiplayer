@@ -271,7 +271,7 @@ impl std::error::Error for WebMediaSelectionError {
 mod tests {
     use super::{
         WebMediaSelection, WebMediaSelectionError, WebMediaSelectionRematchSource,
-        WebMediaSelectionShapeKind,
+        WebMediaSelectionShape, WebMediaSelectionShapeKind,
     };
     use crate::{
         CandidateFormatIdentity, CandidateIdentity, ComponentKind, ComponentVariantCatalog,
@@ -381,6 +381,86 @@ mod tests {
                 provided: WebMediaSelectionShapeKind::Candidate,
             })
         );
+    }
+
+    #[test]
+    fn public_shape_and_error_chain_preserve_boundary_semantics() {
+        // Candidate-only selection должна сообщать наружу именно candidate shape.
+        let candidate_selection =
+            WebMediaSelection::candidate(parent(11, 1, "candidate", "candidate-semantic"));
+        // Публичный shape не должен раскрывать или выдумывать component selection.
+        assert!(matches!(
+            candidate_selection.shape(),
+            WebMediaSelectionShape::Candidate
+        ));
+
+        // Собираем валидную component selection через настоящий catalog boundary.
+        let component_parent = parent(12, 1, "parent", "parent-semantic");
+        // Catalog и exact identity принадлежат одной generation и одному parent.
+        let (component_catalog, component_exact) =
+            video_catalog(component_parent.clone(), 1, "video", "video-semantic");
+        // Exact lookup создаёт owned component selection с проверенными инвариантами.
+        let selected_components = component_catalog
+            .select_exact(ComponentVariantSelectionRequest::VideoOnly {
+                video: component_exact,
+            })
+            .expect("валидный component должен выбираться");
+        // Web selection принимает component shape только от того же parent.
+        let component_selection =
+            WebMediaSelection::with_components(component_parent, selected_components)
+                .expect("component selection должна принадлежать parent");
+        // Публичный borrowed shape обязан сохранить проверенный component selection.
+        assert!(matches!(
+            component_selection.shape(),
+            WebMediaSelectionShape::Components(_)
+        ));
+
+        // Проверяем стабильные пользовательские причины всех boundary failures.
+        let errors = [
+            (
+                WebMediaSelectionError::CrossParentSelection,
+                "component selection belongs to another parent candidate",
+            ),
+            (
+                WebMediaSelectionError::MissingParentSemanticIdentity,
+                "semantic parent candidate disappeared after refresh",
+            ),
+            (
+                WebMediaSelectionError::FreshCatalogParentMismatch,
+                "fresh component catalog belongs to another parent candidate",
+            ),
+            (
+                WebMediaSelectionError::ShapeMismatch {
+                    expected: WebMediaSelectionShapeKind::Components,
+                    provided: WebMediaSelectionShapeKind::Candidate,
+                },
+                "semantic selection shape does not match fresh owner",
+            ),
+            (
+                WebMediaSelectionError::ComponentVariant(
+                    ComponentVariantError::MissingSemanticVariant {
+                        component: ComponentKind::Video,
+                    },
+                ),
+                "component rematch failed: semantic Video variant отсутствует в catalog",
+            ),
+        ];
+        // Display остаётся точным и не сваливает разные причины в общий bool/status.
+        for (error, expected_message) in errors {
+            // Форматированный текст является частью диагностического boundary.
+            assert_eq!(error.to_string(), expected_message);
+        }
+
+        // Wrapper обязан сохранять исходную component-domain ошибку в standard error chain.
+        let component_error = WebMediaSelectionError::ComponentVariant(
+            ComponentVariantError::MissingSemanticVariant {
+                component: ComponentKind::Video,
+            },
+        );
+        // Источник доступен caller-у для typed диагностики.
+        assert!(std::error::Error::source(&component_error).is_some());
+        // Собственная selection-ошибка не должна притворяться обёрткой над чужой причиной.
+        assert!(std::error::Error::source(&WebMediaSelectionError::CrossParentSelection).is_none());
     }
 
     #[test]

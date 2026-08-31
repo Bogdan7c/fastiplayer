@@ -776,8 +776,8 @@
     "hardware-baseline-owner-approval": {
       "kind": "CheckedInDecision",
       "role": "owner_approval",
-      "path": "user/web_media_url_playback_implementation_plan.md",
-      "symbol": "owner-approved S27 mapping exact `VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420"
+      "path": "docs/web-media-s42-final-acceptance.md",
+      "symbol": "`VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420/NV12"
     },
     "hardware-vaapi-profile-dispatch": {
       "kind": "ProductionBoundary",

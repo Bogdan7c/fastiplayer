@@ -338,8 +338,8 @@ Target rows, сохраняет их exact owner sessions и отделяет д
 
 Все `Implemented` rows проходят один app-owned путь:
 `prepare_yt_dlp_web_media` выбирает candidate и открывает concrete
-transport/demux, `prepare_yt_dlp_player_media` прикрепляет provider-neutral
-receipted seek/playback window/live timeline, а
+transport/demux, `compose_prepared_web_media` прикрепляет provider-neutral
+receipted seek/playback window/live timeline для общего web envelope, а
 `install_prepared_media_strong` сохраняет общий Ready → authorize → Installed
 barrier. Startup, normal media-open и settings rebuild используют один
 `PreparedMedia` assembly boundary; отдельного provider-specific install

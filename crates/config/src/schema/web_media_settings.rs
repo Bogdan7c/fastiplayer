@@ -435,3 +435,85 @@ fn u64_value(setting_path: &'static str, value: SettingValue) -> SettingsResult<
         SettingsError::access_failed(format!("{setting_path} не может быть отрицательным"))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    // Подключаем только внутренний accessor boundary и принадлежащие модулю типы.
+    use super::*;
+
+    #[test]
+    fn accessor_rejects_invalid_values_without_mutating_owned_fields() {
+        // Каждый case проверяет собственную exact failure-причину accessor-а.
+        let invalid_values = [
+            (
+                WebMediaField::HdrSelection,
+                SettingValue::Bool(true),
+                "web_media.hdr_selection ожидает select value",
+            ),
+            (
+                WebMediaField::HdrSelection,
+                SettingValue::Select("unknown_hdr_policy".into()),
+                "web_media.hdr_selection получил неизвестный option id",
+            ),
+            (
+                WebMediaField::PreferredVideoHeight,
+                SettingValue::Bool(true),
+                "web_media.preferred_video_height ожидает select value",
+            ),
+            (
+                WebMediaField::PreferredVideoHeight,
+                SettingValue::Select("not_a_height".into()),
+                "web_media.preferred_video_height ожидает best_playable или целое число",
+            ),
+            (
+                WebMediaField::VodEndpointRecoveryEnabled,
+                SettingValue::Integer(1),
+                "web_media.vod_endpoint_recovery_enabled ожидает bool",
+            ),
+            (
+                WebMediaField::VodEndpointRecoveryMaxAttempts,
+                SettingValue::Bool(true),
+                "web_media.vod_endpoint_recovery_max_consecutive_attempts ожидает integer value",
+            ),
+            (
+                WebMediaField::VodEndpointRecoveryInitialBackoff,
+                SettingValue::Integer(-1),
+                "web_media.vod_endpoint_recovery_initial_backoff_ms не может быть отрицательным",
+            ),
+        ];
+        // Один typed config позволяет заметить даже частичную мутацию между rejected calls.
+        let mut config = WebMediaConfig::default();
+
+        // Обходим trait implementation через его intent-методы get/set.
+        for (field, invalid_value, expected_error) in invalid_values {
+            // Снимок принадлежит самому owner-модулю и не раскрывает storage наружу.
+            let value_before = field.get(&config);
+            // Ошибочный neutral input обязан сохраниться как различимая SettingsError.
+            let error = field
+                .set(&mut config, invalid_value)
+                .expect_err("accessor не должен принимать неверное neutral value");
+
+            // Exact reason сохраняет различия между типом, id, parse и signedness.
+            assert_eq!(
+                error.to_string(),
+                format!("setting access failed: {expected_error}")
+            );
+            // Owner field остаётся неизменным после любой rejected операции.
+            assert_eq!(field.get(&config), value_before);
+        }
+
+        // Все integer projections обязаны пройти checked u64 -> i64 boundary.
+        for integer_field in [
+            WebMediaField::VodEndpointRecoveryMaxAttempts,
+            WebMediaField::VodEndpointRecoveryInitialBackoff,
+            WebMediaField::VodEndpointRecoveryMaxBackoff,
+            WebMediaField::VodEndpointRecoveryStableReset,
+        ] {
+            // Значения config уже провалидированы и потому возвращаются как neutral Integer.
+            assert!(matches!(
+                integer_field.get(&config),
+                SettingValue::Integer(_)
+            ));
+        }
+    }
+}

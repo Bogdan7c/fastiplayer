@@ -1,3 +1,10 @@
+## G1 native web ingress qualification (2026-08-31)
+
+- N01–N05B foundation прошёл полный gate-only G1: neutral boundaries/config v10/adapter isolation/secret-safe persistence/exact process reasons подтверждены self-review, process-spy parity и всеми workspace/pre-PR/release/Serena gates.
+- Coverage baseline квалифицирован exact 9/9 intersection без measurement exceptions и двумя fresh repeatability PASS; authoritative hashes/counts находятся в `mem:testing/coverage`.
+- Gate-only root fixes, module locations, dependency-security closure и полный verification handoff: `mem:testing/native-web-ingress-g1-2026-08-31`; suppaftp advisory details: `mem:dependency-security/g1-suppaftp-2026-08-31`.
+- Следующая feature session N06 начинается только после отдельного разрешения пользователя.
+
 ## N05B provider-neutral same-item/reopen lifecycle (2026-08-31)
 
 - UI, same-item lifecycle, settings, recovery and queue/reopen consumers now use source-owned neutral intent methods and never inspect the concrete ingress provider.

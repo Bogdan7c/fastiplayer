@@ -1,4 +1,4 @@
-# Stable coverage v2 (authoritative, 2026-08-30)
+# Stable coverage v2 (authoritative, 2026-08-31)
 
 Этот документ полностью заменяет прежние Session 07B/28/S42 утверждения об aggregate v1 baseline и одном measured run. Историческая модель сохранена только внутри `coverage/baseline.json.legacy_report_only` как provenance и никогда не участвует в blocking decision.
 
@@ -6,7 +6,7 @@
 
 - `scripts/coverage.sh` — единственный shell entrypoint: `check` проверяет tracked v2 baseline, `bootstrap <proposal>` создаёт review-only proposal и не меняет tracked policy.
 - `scripts/coverage_stability.py` + `scripts/coverage_stability_schema.py` владеют source-coordinate run/cohort/baseline schemas, stable ratchet, atomic baseline-update policy и measurement-exception lifecycle.
-- `coverage/baseline.json` — schema v2. Текущий tracked baseline квалифицирован точным пересечением трёх независимых cohort-ов (9 measured workspace runs) на одной source revision; raw SHA-256 `090f220611fdc3c7cb0dc0911d320b09a5b49743221a71de84fc076d5949ecc7`, logical `sha256:0f769c46fd4f5b5d239c8628cb398cb92a0e122525bea309cbe0e22433d34785`. Он принят без measurement exceptions и подтверждён двумя свежими обычными `scripts/coverage.sh check` с пустыми `regressions`/`universe_changes`.
+- `coverage/baseline.json` — schema v2. Текущий G1 tracked baseline квалифицирован exact 9/9 intersection трёх независимых cohort-ов на одной source revision; raw SHA-256 `d6bd75a3e8ded589fd4e8e9b8e9461ea1b541c92d4f22c07369849b23fd92fd2`, logical `sha256:8d6242e05724c8ccaa0d9bd118aa8b059de3f5ab1353491806493d9b4ef0b010`. Atomic transition прошёл с неизменным пустым measurement-exception ledger и подтверждён двумя fresh `scripts/coverage.sh check` с пустыми `regressions`/`universe_changes`.
 - `coverage/measurement-exceptions.json` — единственный blocking exception ledger, schema v1; initial exact empty ledger SHA-256 `1f64ad40d0db9ebf1a108da65cd02c8baec6a26c41e78e85add972c6f3534a2b`.
 - `coverage/exceptions.json` и embedded v1 baseline — frozen `legacy_report_only` provenance. Они не разрешают v2 regression и не являются параллельным источником истины.
 - `coverage/policy.json` по-прежнему классифицирует blocking/informational crates. `coverage/executable-inventory-policy.json` типизированно разрешает runtime-built root только для `settings-derive/tests/trybuild`.
@@ -20,7 +20,7 @@
 5. Run/cohort/artifact publication transactional. Build, runner или publication failure восстанавливает предыдущие merge metadata и quarantined runtime root; partial stage/prewarm/run1/run2 profiles не публикуются. После успешной публикации полного cohort semantic ratchet выполняется отдельно: его exit 1 намеренно сохраняет новый cohort, variable diagnostics и `check.json` как evidence регрессии, но не меняет tracked baseline/exception ledger и не считается успешным gate. Successful cohort retains exact authoritative run3 profraw set + profdata/list for report artifact.
 6. Runtime builder policy, source identity, toolchain identity, build/runtime inventories and every published artifact are recorded in schema-v2 cohort manifest. New runtime owner fails until explicitly modeled.
 
-Текущий independently qualified baseline принят на Rust 1.96.0, LLVM 22.1.2 и cargo-llvm-cov 0.8.7. Его exact workspace stable intersection: functions 15,138/19,448, lines 155,989/204,432, regions 196,739/260,578; blocking stable: functions 9,708/11,594, lines 97,681/114,414, regions 122,587/146,771.
+Текущий independently qualified G1 baseline принят на Rust 1.96.0, LLVM 22.1.2 и cargo-llvm-cov 0.8.7. Его exact workspace stable intersection: functions 15,281/19,612, lines 157,433/205,843, regions 198,245/262,103; blocking stable: functions 9,765/11,653, lines 98,353/115,061, regions 123,377/147,538.
 
 Для baseline update после конкурентных test-only правок один cohort статистически недостаточен. Обязательный human-reviewed qualification workflow: три независимых cohort-а на одной source revision (9 measured workspace runs), exact 9-run stable intersection, file-local audit каждого изменённого файла и два свежих обычных repeatability-check после установки tracked baseline. Aggregate workspace ratio не может скрывать file-local stable loss. CLI пока не автоматизирует cross-cohort reducer; evidence хранится вне tracked policy и сверяется вручную.
 

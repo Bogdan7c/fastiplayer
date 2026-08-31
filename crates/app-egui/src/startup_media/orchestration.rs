@@ -48,6 +48,7 @@ fn prepared_startup_audio_proof(
 #[cfg(test)]
 #[path = "orchestration/pending_work_tests.rs"]
 mod pending_work_tests;
+mod web_preparation;
 
 /// Prepared ownership сохраняется до trusted allocator decision.
 pub(super) enum PreparedStartupMedia {
@@ -293,32 +294,10 @@ impl StartupMediaController {
             self.direct_media_startup_job = None;
             changed = true;
             match result {
-                Ok(opened_media) => {
-                    let source_label = opened_media.source_label().to_owned();
-                    let tracks = opened_media.tracks().to_vec();
-                    let duration = opened_media.duration();
-                    let metadata = opened_media.media_metadata().unwrap_or_default().tags;
-                    let safe_label = SafeMediaLabel::from_service_safe_label(&source_label);
-                    let source =
-                        crate::media_open::WebMediaSourceIntent::direct(source_locator.clone());
-                    let descriptor = crate::media_open::PreparedWebMediaEnvelope::new(
-                        tracks, duration, metadata, source, safe_label, None, None,
-                    );
-                    let prepared_media = crate::media_open::compose_prepared_web_media(
-                        &source_label,
-                        opened_media.into_demuxer(),
-                        crate::media_open::PreparedWebMediaAttachments::default(),
-                    )
-                    .expect("direct VOD has no conflicting timeline attachments");
-                    self.hold_prepared(
-                        PreparedStartupMedia::Direct {
-                            source_locator,
-                            prepared_media,
-                            descriptor: Box::new(descriptor),
-                        },
-                        playlist_runtime,
-                    );
-                }
+                Ok(opened_media) => self.hold_prepared(
+                    web_preparation::compose_direct_startup_media(source_locator, opened_media),
+                    playlist_runtime,
+                ),
                 Err(error) => {
                     self.handle_preparation_failure(error, app_state, playlist_runtime);
                 }
@@ -705,57 +684,26 @@ impl StartupMediaController {
                     })
             }
             PreparedStartupMedia::NativeHls { source, prepared } => {
-                let super::native_hls::PreparedNativeHlsMedia {
-                    demuxer,
-                    seek_port,
-                    initial_position,
-                    selection,
-                } = *prepared;
-                let tracks = demuxer.tracks().to_vec();
-                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(&tracks));
-                let duration = demuxer.duration();
-                let metadata = demuxer.media_metadata().unwrap_or_default().tags;
-                let safe_label = source.safe_label().clone();
-                let source_intent =
-                    crate::media_open::WebMediaSourceIntent::native_hls_vod(source, selection);
-                let active_source = ActiveMediaSource::Web(source_intent.clone());
-                let prepared_media = crate::media_open::compose_prepared_web_media(
-                    safe_label.as_str(),
-                    demuxer,
-                    crate::media_open::PreparedWebMediaAttachments {
-                        demux_seek: Some(
-                            crate::media_open::PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
-                                seek_port,
-                            ),
-                        ),
-                        initial_position: Some(initial_position),
-                        ..crate::media_open::PreparedWebMediaAttachments::default()
-                    },
-                );
-                let prepared_media = match prepared_media {
-                    Ok(prepared_media) => prepared_media,
-                    Err(error) => {
-                        self.handle_install_failure(error.to_string(), is_cli, app_state);
-                        return true;
-                    }
-                };
+                let prepared =
+                    match web_preparation::compose_native_hls_startup_media(source, *prepared) {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            self.handle_install_failure(error, is_cli, app_state);
+                            return true;
+                        }
+                    };
+                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                    prepared.prepared_media.tracks(),
+                ));
                 let input = self
                     .prepared_url_input(
-                        prepared_media,
-                        active_source.clone(),
-                        safe_label.clone(),
+                        prepared.prepared_media,
+                        prepared.active_source,
+                        prepared.safe_label,
                         target,
                     )
                     .with_descriptor(crate::media_open::PreparedMediaDescriptor::Web(
-                        crate::media_open::PreparedWebMediaEnvelope::new(
-                            tracks,
-                            duration,
-                            metadata,
-                            source_intent,
-                            safe_label,
-                            None,
-                            None,
-                        ),
+                        prepared.descriptor,
                     ));
                 app_state
                     .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)

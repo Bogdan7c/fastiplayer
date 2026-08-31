@@ -1,7 +1,7 @@
 {
   "hard_limit_lines": 800,
   "legacy_modules": {
-    "crates/app-egui/src/frame_prepare.rs": 1426,
+    "crates/app-egui/src/frame_prepare.rs": 1425,
     "crates/app-egui/src/playlist_runtime/persistence.rs": 893,
     "crates/app-egui/src/playlist_runtime/ui_interaction.rs": 843,
     "crates/app-egui/src/state/telemetry_panel.rs": 877,

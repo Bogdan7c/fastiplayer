@@ -282,17 +282,28 @@ mod tests {
     fn take_result(executor: &AbortableHttpTaskExecutor<usize>) -> usize {
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         loop {
-            match executor.try_take().expect("poll result") {
-                Some(result) => return result,
-                None => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "latest task timed out"
-                    );
-                    std::thread::yield_now();
-                }
+            // Deadline и yield исполняются на каждой итерации, поэтому test coverage
+            // не зависит от того, успел ли immediate future завершиться до первого poll-а.
+            assert!(
+                std::time::Instant::now() < deadline,
+                "latest task timed out"
+            );
+            std::thread::yield_now();
+            if let Some(result) = executor.try_take().expect("poll result") {
+                return result;
             }
         }
+    }
+
+    /// Публичная ошибка worker-а сохраняет точную и source-free диагностику.
+    #[test]
+    fn worker_stopped_error_preserves_exact_public_diagnostic() {
+        // Создаём typed ошибку без зависимости от timing worker thread-а.
+        let error = AbortableHttpTaskExecutorError::WorkerStopped;
+        // Display обязан сохранять точную причину для вызывающего transport boundary.
+        assert_eq!(error.to_string(), "abortable HTTP task worker stopped");
+        // Ошибка не должна объявлять несуществующий вложенный источник.
+        assert!(std::error::Error::source(&error).is_none());
     }
 
     /// Уведомление старой cancellation revision не может украсть более новый task.

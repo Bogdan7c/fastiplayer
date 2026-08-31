@@ -774,8 +774,8 @@ PROGRESSIVE_WEB_SOURCE_ANCHORS = (
     ),
     (
         Path("crates/app-egui/src/frame_prepare/settings_runtime_adapter.rs"),
-        ("crate::web_media_open::prepare_yt_dlp_web_media(",),
-        "settings rebuild обязан использовать единый progressive web-open composition path",
+        ("crate::media_open::prepare_source_synchronously(",),
+        "settings rebuild обязан использовать единый provider-neutral media-open preparation path",
     ),
     (
         Path("crates/service-ytdlp/src/candidate/tests.rs"),

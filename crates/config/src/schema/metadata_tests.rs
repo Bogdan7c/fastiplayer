@@ -821,6 +821,63 @@ fn preferred_height_settings_accessor_preserves_best_playable_and_validated_choi
 }
 
 #[test]
+fn web_media_settings_reject_invalid_neutral_values_without_mutating_config() {
+    // Проверяем ошибки через публичный registry boundary, а не через приватные conversion helpers.
+    let registry = registry();
+    // Каждый case закрепляет публичное отклонение неверного типа или диапазона одного поля.
+    let invalid_values = [
+        ("web_media.hdr_selection", SettingValue::Bool(true)),
+        (
+            "web_media.hdr_selection",
+            SettingValue::Select("unknown_hdr_policy".into()),
+        ),
+        ("web_media.preferred_video_height", SettingValue::Bool(true)),
+        (
+            "web_media.preferred_video_height",
+            SettingValue::Select("not_a_height".into()),
+        ),
+        (
+            "web_media.vod_endpoint_recovery_enabled",
+            SettingValue::Integer(1),
+        ),
+        (
+            "web_media.vod_endpoint_recovery_max_consecutive_attempts",
+            SettingValue::Bool(true),
+        ),
+        (
+            "web_media.vod_endpoint_recovery_initial_backoff_ms",
+            SettingValue::Integer(-1),
+        ),
+    ];
+    // Один config последовательно доказывает, что ни одна rejected-запись не оставляет partial mutation.
+    let mut config = AppConfig::default();
+
+    // Прогоняем все invalid cases через тот же API, которым пользуется settings UI.
+    for (setting_path, invalid_value) in invalid_values {
+        // Снимаем neutral snapshot конкретного поля до ошибочной операции.
+        let setting_id = SettingId::from(setting_path);
+        // Ошибка не должна менять даже то поле, к которому обращался caller.
+        let value_before = registry
+            .get_value(&config, &setting_id)
+            .expect("web-media setting должен читаться до rejected update");
+        // Неверное значение обязано вернуться наружу как SettingsError.
+        let error = registry
+            .set_value(&mut config, &setting_id, invalid_value)
+            .expect_err("неверное neutral value не должно применяться");
+
+        // Registry error обязан назвать rejected setting, даже если validation сработала до accessor-а.
+        assert!(error.to_string().contains(setting_path));
+        // Повторное чтение подтверждает отсутствие частичного изменения typed config.
+        assert_eq!(
+            registry
+                .get_value(&config, &setting_id)
+                .expect("web-media setting должен читаться после rejected update"),
+            value_before
+        );
+    }
+}
+
+#[test]
 fn web_media_metadata_is_provider_neutral_and_yt_dlp_registry_is_process_only() {
     let registry = registry();
     let web_media_descriptors = registry

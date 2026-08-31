@@ -12,8 +12,8 @@
       "symbol": "fn open_candidate"
     },
     "prepared_media": {
-      "path": "crates/app-egui/src/media_open/preparation.rs",
-      "symbol": "prepare_yt_dlp_player_media"
+      "path": "crates/app-egui/src/media_open/web.rs",
+      "symbol": "compose_prepared_web_media"
     },
     "strong_install": {
       "path": "crates/app-egui/src/state/strong_media_open.rs",
@@ -232,7 +232,7 @@
     {
       "requirement": "settings",
       "path": "crates/app-egui/src/frame_prepare/settings_runtime_adapter.rs",
-      "symbol": "only_global_preferred_height_requests_yt_dlp_reselection"
+      "symbol": "only_global_preferred_height_requests_web_media_reselection"
     },
     {
       "requirement": "shutdown",
