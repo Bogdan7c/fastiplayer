@@ -10,10 +10,10 @@ mod media_services;
 
 pub(crate) use media_services::{
     MAX_NETWORK_MEMORY_CACHE_MB, MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB, MAX_NETWORK_READ_AHEAD_MB,
-    MAX_YT_DLP_RESOLVE_TIMEOUT_MS, MAX_YT_DLP_SINGLE_ITEM_JSON_NODES,
-    MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES, MAX_YT_DLP_SINGLE_ITEM_STDOUT_BYTES,
-    MAX_YT_DLP_VOD_RECOVERY_ATTEMPTS, MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS,
-    MAX_YT_DLP_VOD_RECOVERY_STABLE_RESET_MS, validate_yt_dlp_config,
+    MAX_WEB_MEDIA_VOD_RECOVERY_ATTEMPTS, MAX_WEB_MEDIA_VOD_RECOVERY_BACKOFF_MS,
+    MAX_WEB_MEDIA_VOD_RECOVERY_STABLE_RESET_MS, MAX_YT_DLP_RESOLVE_TIMEOUT_MS,
+    MAX_YT_DLP_SINGLE_ITEM_JSON_NODES, MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES,
+    MAX_YT_DLP_SINGLE_ITEM_STDOUT_BYTES, validate_web_media_config, validate_yt_dlp_config,
 };
 use media_services::{validate_audio_section, validate_network_section};
 
@@ -213,6 +213,7 @@ pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
     validate_video_section(config)?;
     validate_audio_section(config)?;
     validate_network_section(config)?;
+    validate_web_media_config(&config.web_media)?;
     validate_yt_dlp_config(&config.yt_dlp)?;
     validate_render_section(config)?;
     validate_ui_section(config)?;

@@ -391,6 +391,7 @@ fn assert_child_hds_open() {
     let mut prepared = prepare_yt_dlp_web_media(
         &locator,
         &NetworkConfig::default(),
+        &rustiplayer_config::WebMediaConfig::default(),
         &YtDlpConfig::default(),
         &PlayerDemuxConfig::default(),
         &[ConfigVideoCodec::H264],
@@ -497,6 +498,7 @@ fn assert_child_hds_transport_failure_is_terminal() {
     let error = match prepare_yt_dlp_web_media(
         &locator,
         &NetworkConfig::default(),
+        &rustiplayer_config::WebMediaConfig::default(),
         &YtDlpConfig::default(),
         &PlayerDemuxConfig::default(),
         &[ConfigVideoCodec::H264],

@@ -262,13 +262,43 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "[yt_dlp]",
-        "# Настройки generic yt-dlp service adapter-а.",
+        "[web_media]",
+        "# Provider-neutral policy выбора качества и восстановления web media.",
     );
     insert_default_config_comment(
         toml_text,
         "hdr_selection = \"sdr_only\"",
-        "# Политика yt-dlp dynamic range: только SDR или HDR с автоматическим SDR fallback.",
+        "# Динамический диапазон web media: только SDR или HDR с автоматическим SDR fallback.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "vod_endpoint_recovery_enabled = true",
+        "# Автоматически переоткрывать web VOD после истечения временного endpoint-а.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "vod_endpoint_recovery_max_consecutive_attempts = 3",
+        "# Максимум последовательных recovery attempts до terminal failure.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "vod_endpoint_recovery_initial_backoff_ms = 250",
+        "# Начальная задержка перед повторным source resolution.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "vod_endpoint_recovery_max_backoff_ms = 2000",
+        "# Верхняя граница exponential recovery backoff.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "vod_endpoint_recovery_stable_reset_ms = 30000",
+        "# Stable playback interval до сброса consecutive recovery budget.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "[yt_dlp]",
+        "# Process controls системного yt-dlp extractor adapter-а.",
     );
     insert_default_config_comment(
         toml_text,

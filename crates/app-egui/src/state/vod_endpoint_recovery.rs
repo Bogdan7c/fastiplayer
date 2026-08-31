@@ -87,7 +87,7 @@ enum VodEndpointExpiryAdmissionOutcome {
 
 impl VodEndpointRecoveryPolicy {
     /// Переводит validated config в runtime units в одном месте.
-    fn from_config(config: &rustiplayer_config::YtDlpConfig) -> Self {
+    fn from_config(config: &rustiplayer_config::WebMediaConfig) -> Self {
         Self {
             enabled: config.vod_endpoint_recovery_enabled,
             max_consecutive_attempts: config.vod_endpoint_recovery_max_consecutive_attempts,
@@ -134,7 +134,7 @@ impl InstalledVodEndpointRecoveryClaimAdmission {
     /// Claims signal и строит immutable plan только после config и обеих identity fences.
     fn admit_claim_from_runtime_facts(
         &self,
-        config: &rustiplayer_config::YtDlpConfig,
+        config: &rustiplayer_config::WebMediaConfig,
         player_snapshot: &PlayerSnapshot,
         expected_active: Option<ActiveMediaIdentity>,
         now: Instant,
@@ -230,7 +230,7 @@ impl VodEndpointRecoveryRuntimeState {
     /// Атомарно добавляет real Installed source только к полностью admitted owned plan-у.
     fn claim_pending_expiry_from_runtime_facts(
         &mut self,
-        config: &rustiplayer_config::YtDlpConfig,
+        config: &rustiplayer_config::WebMediaConfig,
         player_snapshot: &PlayerSnapshot,
         expected_active: Option<ActiveMediaIdentity>,
         now: Instant,
@@ -340,13 +340,13 @@ impl AppState {
         if !self.vod_endpoint_recovery.has_pending_expiry_signal() {
             return;
         }
-        let yt_dlp_config = self.committed_app_config().yt_dlp;
+        let web_media_config = self.committed_app_config().web_media;
         let snapshot = self.refresh_player_snapshot();
         let expected_active = playlist_runtime.playlist_view_snapshot().active_media();
         let outcome = self
             .vod_endpoint_recovery
             .claim_pending_expiry_from_runtime_facts(
-                &yt_dlp_config,
+                &web_media_config,
                 &snapshot,
                 expected_active,
                 Instant::now(),
@@ -497,6 +497,7 @@ impl AppState {
             locator: source_locator.clone(),
             selection_intent,
             network_config: config.network,
+            web_media_config: config.web_media,
             yt_dlp_config: config.yt_dlp,
             demux_config: config.player.demux,
             preferred_video_codec_order: config.player.preferred_video_codec_order,

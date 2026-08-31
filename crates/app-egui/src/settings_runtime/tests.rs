@@ -43,7 +43,7 @@ use crate::render_settings::{
 use crate::settings_ui::SettingsUiAction;
 use crate::ui::sidebar::{SidebarWidthChange, SidebarWidthPoints};
 
-mod yt_dlp_recovery_apply;
+mod web_media_recovery_apply;
 
 fn loaded_config_for_test(config: AppConfig) -> LoadedConfig {
     LoadedConfig {
@@ -892,6 +892,7 @@ fn media_service_route_uses_live_app_owner() {
         }],
         update: RuntimeCommittedUpdate::MediaService(MediaServiceRuntimeSettingsUpdate {
             network: next_network,
+            web_media: config.web_media.clone(),
             yt_dlp: config.yt_dlp.clone(),
         }),
     };
@@ -931,6 +932,7 @@ fn media_service_route_keeps_snapshot_when_owner_rebuild_fails() {
         }],
         update: RuntimeCommittedUpdate::MediaService(MediaServiceRuntimeSettingsUpdate {
             network: next_network,
+            web_media: config.web_media.clone(),
             yt_dlp: config.yt_dlp.clone(),
         }),
     };
@@ -2042,7 +2044,7 @@ fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {
         vec![
             SettingsUiAction::Open,
             SettingsUiAction::SetValue {
-                setting_id: SettingId::from("yt_dlp.preferred_video_height"),
+                setting_id: SettingId::from("web_media.preferred_video_height"),
                 value: SettingValue::Select("1080".into()),
             },
             SettingsUiAction::Apply,
@@ -2058,7 +2060,7 @@ fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {
     assert_eq!(
         runtime
             .committed_config()
-            .yt_dlp
+            .web_media
             .preferred_video_height
             .map(rustiplayer_config::PreferredVideoHeight::pixels),
         Some(1080)
@@ -2072,7 +2074,7 @@ fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {
     assert_eq!(
         reopened
             .config
-            .yt_dlp
+            .web_media
             .preferred_video_height
             .map(rustiplayer_config::PreferredVideoHeight::pixels),
         Some(1080)
@@ -2381,7 +2383,7 @@ fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
                 value: SettingValue::Select("software".into()),
             },
             SettingsUiAction::SetValue {
-                setting_id: SettingId::from("yt_dlp.preferred_video_height"),
+                setting_id: SettingId::from("web_media.preferred_video_height"),
                 value: SettingValue::Select("1080".into()),
             },
             SettingsUiAction::Apply,

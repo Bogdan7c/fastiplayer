@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 
 use media_core::MediaTime;
 use player_core::{MediaInstallRequestId, PlaybackState, PlayerSnapshot};
-use rustiplayer_config::YtDlpConfig;
+use rustiplayer_config::WebMediaConfig;
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, SemanticIdentity,
     SourceIdentity,
@@ -101,14 +101,14 @@ fn armed_admission(
     )
 }
 
-fn requested_config() -> YtDlpConfig {
-    YtDlpConfig {
+fn requested_config() -> WebMediaConfig {
+    WebMediaConfig {
         vod_endpoint_recovery_enabled: true,
         vod_endpoint_recovery_max_consecutive_attempts: 5,
         vod_endpoint_recovery_initial_backoff_ms: 400,
         vod_endpoint_recovery_max_backoff_ms: 700,
         vod_endpoint_recovery_stable_reset_ms: 5_000,
-        ..YtDlpConfig::default()
+        ..WebMediaConfig::default()
     }
 }
 

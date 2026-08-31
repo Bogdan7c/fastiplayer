@@ -1,4 +1,4 @@
-schema_version = 9
+schema_version = 10
 
 [player]
 start_paused = true
@@ -165,11 +165,24 @@ connect_timeout_ms = 15000
 # Timeout чтения из сетевого источника.
 read_timeout_ms = 15000
 
-# Настройки generic yt-dlp service adapter-а.
+# Provider-neutral policy выбора качества и восстановления web media.
+[web_media]
+# Динамический диапазон web media: только SDR или HDR с автоматическим SDR fallback.
+hdr_selection = "sdr_only"
+# Автоматически переоткрывать web VOD после истечения временного endpoint-а.
+vod_endpoint_recovery_enabled = true
+# Максимум последовательных recovery attempts до terminal failure.
+vod_endpoint_recovery_max_consecutive_attempts = 3
+# Начальная задержка перед повторным source resolution.
+vod_endpoint_recovery_initial_backoff_ms = 250
+# Верхняя граница exponential recovery backoff.
+vod_endpoint_recovery_max_backoff_ms = 2000
+# Stable playback interval до сброса consecutive recovery budget.
+vod_endpoint_recovery_stable_reset_ms = 30000
+
+# Process controls системного yt-dlp extractor adapter-а.
 [yt_dlp]
 enabled = true
-# Политика yt-dlp dynamic range: только SDR или HDR с автоматическим SDR fallback.
-hdr_selection = "sdr_only"
 # Timeout подготовки metadata через системный yt-dlp.
 resolve_timeout_ms = 30000
 # Максимальный stdout одного media item до немедленного завершения yt-dlp.
@@ -178,11 +191,6 @@ single_item_stdout_limit_bytes = 67108864
 single_item_stderr_limit_bytes = 8388608
 # Максимальное число JSON values до построения metadata DOM.
 single_item_json_node_limit = 1000000
-vod_endpoint_recovery_enabled = true
-vod_endpoint_recovery_max_consecutive_attempts = 3
-vod_endpoint_recovery_initial_backoff_ms = 250
-vod_endpoint_recovery_max_backoff_ms = 2000
-vod_endpoint_recovery_stable_reset_ms = 30000
 
 [ui]
 show_telemetry = true

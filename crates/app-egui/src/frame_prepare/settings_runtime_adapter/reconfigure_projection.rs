@@ -3,7 +3,7 @@
 use super::*;
 
 /// Stable setting id, единственный YtDlp policy change с active-source reselection.
-const PREFERRED_VIDEO_HEIGHT_SETTING_ID: &str = "yt_dlp.preferred_video_height";
+const PREFERRED_VIDEO_HEIGHT_SETTING_ID: &str = "web_media.preferred_video_height";
 
 /// Проверяет intent переоткрыть active YtDlp source с новым global preference.
 pub(super) fn requires_yt_dlp_stream_reselection(affected_settings: &[SettingId]) -> bool {
@@ -171,8 +171,8 @@ mod tests {
             PREFERRED_VIDEO_HEIGHT_SETTING_ID,
         )]));
         assert!(!requires_yt_dlp_stream_reselection(&[
-            SettingId::from("yt_dlp.hdr_selection"),
-            SettingId::from("yt_dlp.item_video_height_override"),
+            SettingId::from("web_media.hdr_selection"),
+            SettingId::from("web_media.item_video_height_override"),
         ]));
         assert!(!requires_remote_source_rebuild(&[SettingId::from(
             PREFERRED_VIDEO_HEIGHT_SETTING_ID,

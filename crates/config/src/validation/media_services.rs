@@ -1,6 +1,6 @@
 //! Audio, network и yt-dlp validation с неизменными setting/error paths.
 
-use crate::{AppConfig, ConfigResult, YtDlpConfig};
+use crate::{AppConfig, ConfigResult, WebMediaConfig, YtDlpConfig};
 
 use super::{
     MAX_AUDIO_BUFFER_TARGET_MS, MAX_AUDIO_VOLUME, MIN_AUDIO_BUFFER_TARGET_MS, MIN_AUDIO_VOLUME,
@@ -29,13 +29,13 @@ pub(crate) const MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_YT_DLP_SINGLE_ITEM_JSON_NODES: u64 = 10_000_000;
 
 /// Recovery budget остаётся малым и не допускает бесконечный extraction loop.
-pub(crate) const MAX_YT_DLP_VOD_RECOVERY_ATTEMPTS: u64 = 10;
+pub(crate) const MAX_WEB_MEDIA_VOD_RECOVERY_ATTEMPTS: u64 = 10;
 
 /// Backoff не должен замораживать UI/runtime дольше одной минуты за attempt.
-pub(crate) const MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS: u64 = 60_000;
+pub(crate) const MAX_WEB_MEDIA_VOD_RECOVERY_BACKOFF_MS: u64 = 60_000;
 
 /// Stable reset interval ограничен одним часом.
-pub(crate) const MAX_YT_DLP_VOD_RECOVERY_STABLE_RESET_MS: u64 = 3_600_000;
+pub(crate) const MAX_WEB_MEDIA_VOD_RECOVERY_STABLE_RESET_MS: u64 = 3_600_000;
 
 /// Проверяет audio section.
 pub(super) fn validate_audio_section(config: &AppConfig) -> ConfigResult<()> {
@@ -133,7 +133,7 @@ pub(super) fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
     Ok(())
 }
 
-/// Проверяет YtDlp/service section.
+/// Проверяет process controls extractor adapter-а `yt-dlp`.
 pub(crate) fn validate_yt_dlp_config(config: &YtDlpConfig) -> ConfigResult<()> {
     validate_u64_range(
         "yt_dlp.resolve_timeout_ms",
@@ -159,34 +159,39 @@ pub(crate) fn validate_yt_dlp_config(config: &YtDlpConfig) -> ConfigResult<()> {
         1,
         MAX_YT_DLP_SINGLE_ITEM_JSON_NODES,
     )?;
+    Ok(())
+}
+
+/// Проверяет provider-neutral web-media policy как единый recovery contract.
+pub(crate) fn validate_web_media_config(config: &WebMediaConfig) -> ConfigResult<()> {
     validate_u64_range(
-        "yt_dlp.vod_endpoint_recovery_max_consecutive_attempts",
+        "web_media.vod_endpoint_recovery_max_consecutive_attempts",
         config.vod_endpoint_recovery_max_consecutive_attempts,
         1,
-        MAX_YT_DLP_VOD_RECOVERY_ATTEMPTS,
+        MAX_WEB_MEDIA_VOD_RECOVERY_ATTEMPTS,
     )?;
     validate_u64_range(
-        "yt_dlp.vod_endpoint_recovery_initial_backoff_ms",
+        "web_media.vod_endpoint_recovery_initial_backoff_ms",
         config.vod_endpoint_recovery_initial_backoff_ms,
         1,
-        MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS,
+        MAX_WEB_MEDIA_VOD_RECOVERY_BACKOFF_MS,
     )?;
     validate_u64_range(
-        "yt_dlp.vod_endpoint_recovery_max_backoff_ms",
+        "web_media.vod_endpoint_recovery_max_backoff_ms",
         config.vod_endpoint_recovery_max_backoff_ms,
         1,
-        MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS,
+        MAX_WEB_MEDIA_VOD_RECOVERY_BACKOFF_MS,
     )?;
     validate_u64_range(
-        "yt_dlp.vod_endpoint_recovery_stable_reset_ms",
+        "web_media.vod_endpoint_recovery_stable_reset_ms",
         config.vod_endpoint_recovery_stable_reset_ms,
         1,
-        MAX_YT_DLP_VOD_RECOVERY_STABLE_RESET_MS,
+        MAX_WEB_MEDIA_VOD_RECOVERY_STABLE_RESET_MS,
     )?;
     if config.vod_endpoint_recovery_initial_backoff_ms > config.vod_endpoint_recovery_max_backoff_ms
     {
         return Err(invalid_value(
-            "yt_dlp.vod_endpoint_recovery_initial_backoff_ms",
+            "web_media.vod_endpoint_recovery_initial_backoff_ms",
             "initial recovery backoff не может превышать maximum backoff".to_owned(),
         ));
     }

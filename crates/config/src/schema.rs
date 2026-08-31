@@ -10,6 +10,7 @@ mod services;
 mod ui;
 mod version;
 mod video;
+mod web_media_settings;
 mod yt_dlp_settings;
 
 #[cfg(test)]
@@ -24,7 +25,7 @@ pub use version::CURRENT_SCHEMA_VERSION;
 pub(crate) use version::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,
     LEGACY_SCHEMA_VERSION_5, LEGACY_SCHEMA_VERSION_6, LEGACY_SCHEMA_VERSION_7,
-    LEGACY_SCHEMA_VERSION_8,
+    LEGACY_SCHEMA_VERSION_8, LEGACY_SCHEMA_VERSION_9,
 };
 pub use video::*;
 
@@ -86,7 +87,12 @@ pub struct AppConfig {
     #[setting(nested)]
     pub network: NetworkConfig,
 
-    /// Настройки YtDlp/service слоя.
+    /// Provider-neutral policy выбора и восстановления web media.
+    #[serde(default)]
+    #[setting(nested)]
+    pub web_media: WebMediaConfig,
+
+    /// Process controls extractor adapter-а `yt-dlp`.
     #[serde(default)]
     #[setting(nested)]
     pub yt_dlp: YtDlpConfig,
@@ -129,6 +135,7 @@ impl Default for AppConfig {
             render: RenderConfig::default(),
             audio: AudioConfig::default(),
             network: NetworkConfig::default(),
+            web_media: WebMediaConfig::default(),
             yt_dlp: YtDlpConfig::default(),
             ui: UiConfig::default(),
         }

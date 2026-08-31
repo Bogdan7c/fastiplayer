@@ -7,11 +7,11 @@ fn setting_ids(setting_names: &[&str]) -> Vec<SettingId> {
 #[test]
 fn recovery_policy_contracts_report_in_place_application() {
     let affected_settings = setting_ids(&[
-        "yt_dlp.vod_endpoint_recovery_enabled",
-        "yt_dlp.vod_endpoint_recovery_max_consecutive_attempts",
-        "yt_dlp.vod_endpoint_recovery_initial_backoff_ms",
-        "yt_dlp.vod_endpoint_recovery_max_backoff_ms",
-        "yt_dlp.vod_endpoint_recovery_stable_reset_ms",
+        "web_media.vod_endpoint_recovery_enabled",
+        "web_media.vod_endpoint_recovery_max_consecutive_attempts",
+        "web_media.vod_endpoint_recovery_initial_backoff_ms",
+        "web_media.vod_endpoint_recovery_max_backoff_ms",
+        "web_media.vod_endpoint_recovery_stable_reset_ms",
     ]);
 
     assert_eq!(
@@ -23,11 +23,11 @@ fn recovery_policy_contracts_report_in_place_application() {
 
 #[test]
 fn preferred_height_alone_and_mixed_with_policy_report_pipeline_rebuild() {
-    let preferred_height = setting_ids(&["yt_dlp.preferred_video_height"]);
+    let preferred_height = setting_ids(&["web_media.preferred_video_height"]);
     let mixed = setting_ids(&[
-        "yt_dlp.vod_endpoint_recovery_enabled",
-        "yt_dlp.preferred_video_height",
-        "yt_dlp.vod_endpoint_recovery_initial_backoff_ms",
+        "web_media.vod_endpoint_recovery_enabled",
+        "web_media.preferred_video_height",
+        "web_media.vod_endpoint_recovery_initial_backoff_ms",
     ]);
 
     assert_eq!(

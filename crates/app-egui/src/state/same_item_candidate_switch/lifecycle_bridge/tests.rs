@@ -362,6 +362,7 @@ fn app_start(
             .expect("URL fixture locator валиден"),
             selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
             network_config: config.network,
+            web_media_config: config.web_media,
             yt_dlp_config: config.yt_dlp,
             demux_config: config.player.demux,
             preferred_video_codec_order: config.player.preferred_video_codec_order,

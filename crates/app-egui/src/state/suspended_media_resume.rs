@@ -300,8 +300,8 @@ impl AppState {
                     intent: crate::media_open::NativeHlsOpenIntent::ExactSelection(
                         selection.clone(),
                     ),
-                    preferred_video_height: config.yt_dlp.preferred_video_height,
                     network_config: config.network,
+                    web_media_config: config.web_media,
                     yt_dlp_config: config.yt_dlp,
                     demux_config: config.player.demux,
                     preferred_video_codec_order: config.player.preferred_video_codec_order,
@@ -335,6 +335,7 @@ impl AppState {
                     locator: source_locator.clone(),
                     selection_intent,
                     network_config: config.network,
+                    web_media_config: config.web_media,
                     yt_dlp_config: config.yt_dlp,
                     demux_config: config.player.demux,
                     preferred_video_codec_order: config.player.preferred_video_codec_order,

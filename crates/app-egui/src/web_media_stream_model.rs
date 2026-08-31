@@ -83,7 +83,7 @@ pub(crate) enum WebMediaSelectionPreference {
 impl WebMediaSelectionPreference {
     /// Проецирует current global config в явную preference semantics.
     #[must_use]
-    pub(crate) fn from_global_config(config: &rustiplayer_config::YtDlpConfig) -> Self {
+    pub(crate) fn from_global_config(config: &rustiplayer_config::WebMediaConfig) -> Self {
         match config.preferred_video_height {
             Some(height) => Self::GlobalPreferredHeight(height.pixels()),
             None => Self::GlobalBestPlayable,

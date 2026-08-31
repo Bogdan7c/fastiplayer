@@ -447,7 +447,6 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
             PIPELINE_TESTS,
         ),
         "yt_dlp.enabled"
-        | "yt_dlp.hdr_selection"
         | "yt_dlp.resolve_timeout_ms"
         | "yt_dlp.single_item_stdout_limit_bytes"
         | "yt_dlp.single_item_stderr_limit_bytes"
@@ -460,18 +459,19 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         ),
         // Recovery policy обновляется для следующего естественного expiry claim-а.
         // Уже захваченная recovery-цепочка продолжает immutable policy snapshot.
-        "yt_dlp.vod_endpoint_recovery_enabled"
-        | "yt_dlp.vod_endpoint_recovery_max_consecutive_attempts"
-        | "yt_dlp.vod_endpoint_recovery_initial_backoff_ms"
-        | "yt_dlp.vod_endpoint_recovery_max_backoff_ms"
-        | "yt_dlp.vod_endpoint_recovery_stable_reset_ms" => SettingApplicationContract::new(
+        "web_media.hdr_selection"
+        | "web_media.vod_endpoint_recovery_enabled"
+        | "web_media.vod_endpoint_recovery_max_consecutive_attempts"
+        | "web_media.vod_endpoint_recovery_initial_backoff_ms"
+        | "web_media.vod_endpoint_recovery_max_backoff_ms"
+        | "web_media.vod_endpoint_recovery_stable_reset_ms" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::MediaService,
             SettingStateOwner::MediaOpenPolicy,
             SettingApplyMechanism::PolicyUpdateInPlace,
             POLICY_TESTS,
         ),
-        "yt_dlp.preferred_video_height" => SettingApplicationContract::new(
+        "web_media.preferred_video_height" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::MediaService,
             SettingStateOwner::MediaSourceLifecycle,
@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn preferred_video_height_uses_media_reopen_contract() {
         let contract =
-            setting_application_contract(&SettingId::from("yt_dlp.preferred_video_height"))
+            setting_application_contract(&SettingId::from("web_media.preferred_video_height"))
                 .expect("preferred height contract exists");
 
         assert_eq!(contract.route, AppRuntimeRoute::MediaService);

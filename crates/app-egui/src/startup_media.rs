@@ -643,6 +643,7 @@ pub(crate) fn resolve_yt_dlp_startup_media(
     let prepared = crate::web_media_open::prepare_yt_dlp_web_media(
         source_locator,
         &app_config.network,
+        &app_config.web_media,
         &app_config.yt_dlp,
         &app_config.player.demux,
         &app_config.player.preferred_video_codec_order,

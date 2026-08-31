@@ -52,6 +52,7 @@ impl<'frame> FrameSettingsRuntimeAdapter<'frame> {
 /// Полный config snapshot для staged active-media reopen-а.
 struct ActiveMediaReconfigureConfig {
     network: rustiplayer_config::NetworkConfig,
+    web_media: rustiplayer_config::WebMediaConfig,
     yt_dlp: rustiplayer_config::YtDlpConfig,
     demux: rustiplayer_config::PlayerDemuxConfig,
     preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
@@ -76,7 +77,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
             ActiveMediaSource::DirectMediaUrl(_)
         ) && !config.rebuild_remote_source
         {
-            // Global YtDlp quality policy не должна перестраивать direct-media source.
+            // Global web-media quality policy не должна перестраивать direct-media source.
             return AppRouteApplyResult::Applied;
         }
         if matches!(
@@ -167,7 +168,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                 network_config: &config.network,
                                 demux_config: &config.demux,
                                 preferred_video_codec_order: &config.preferred_video_codec_order,
-                                preferred_video_height: config.yt_dlp.preferred_video_height,
+                                preferred_video_height: config.web_media.preferred_video_height,
                                 start: web_media_hls::HlsVodStartIntent::Beginning,
                                 cancellation: source_core::CancellationToken::new(),
                             },
@@ -250,6 +251,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                     match crate::web_media_open::prepare_yt_dlp_web_media(
                         &source_locator,
                         &config.network,
+                        &config.web_media,
                         &config.yt_dlp,
                         &config.demux,
                         &config.preferred_video_codec_order,
@@ -567,6 +569,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                 .any(|setting_id| setting_id.as_str() == "player.preferred_video_codec_order");
             let media_result = self.reconfigure_active_media(ActiveMediaReconfigureConfig {
                 network: app_config.network,
+                web_media: app_config.web_media,
                 yt_dlp: app_config.yt_dlp,
                 demux: app_config.player.demux,
                 preferred_video_codec_order: app_config.player.preferred_video_codec_order,
@@ -657,9 +660,10 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         let preferred_height_changed = requires_yt_dlp_stream_reselection(affected_settings);
         let network_source_changed = requires_remote_source_rebuild(affected_settings);
         if !preferred_height_changed
-            && affected_settings
-                .iter()
-                .all(|setting_id| setting_id.as_str().starts_with("yt_dlp."))
+            && affected_settings.iter().all(|setting_id| {
+                setting_id.as_str().starts_with("yt_dlp.")
+                    || setting_id.as_str().starts_with("web_media.")
+            })
         {
             return self.app_state.apply_media_service_runtime_settings(update);
         }
@@ -672,9 +676,11 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
 
         let mut app_config = self.app_state.committed_app_config();
         app_config.network = update.network.clone();
+        app_config.web_media = update.web_media.clone();
         app_config.yt_dlp = update.yt_dlp.clone();
         self.reconfigure_active_media(ActiveMediaReconfigureConfig {
             network: app_config.network,
+            web_media: app_config.web_media,
             yt_dlp: app_config.yt_dlp,
             demux: app_config.player.demux,
             preferred_video_codec_order: app_config.player.preferred_video_codec_order,

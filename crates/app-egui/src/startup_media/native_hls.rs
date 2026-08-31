@@ -557,7 +557,7 @@ fn resolve_native_hls_startup_media(
         network_config: &app_config.network,
         demux_config: &app_config.player.demux,
         preferred_video_codec_order: &app_config.player.preferred_video_codec_order,
-        preferred_video_height: app_config.yt_dlp.preferred_video_height,
+        preferred_video_height: app_config.web_media.preferred_video_height,
         start,
         cancellation: cancellation.clone(),
     });

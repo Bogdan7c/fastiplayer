@@ -273,7 +273,10 @@ pub(in crate::settings_runtime) struct MediaServiceRuntimeSnapshot {
     /// Network/source cache policy.
     network: NetworkConfig,
 
-    /// YtDlp service policy.
+    /// Provider-neutral web-media policy.
+    web_media: WebMediaConfig,
+
+    /// YtDlp extractor process controls.
     yt_dlp: YtDlpConfig,
 }
 
@@ -282,6 +285,7 @@ impl MediaServiceRuntimeSnapshot {
     pub(in crate::settings_runtime) fn from_config(config: &AppConfig) -> Self {
         Self {
             network: config.network.clone(),
+            web_media: config.web_media.clone(),
             yt_dlp: config.yt_dlp.clone(),
         }
     }
@@ -290,6 +294,7 @@ impl MediaServiceRuntimeSnapshot {
     pub(super) fn from_update(update: &MediaServiceRuntimeSettingsUpdate) -> Self {
         Self {
             network: update.network.clone(),
+            web_media: update.web_media.clone(),
             yt_dlp: update.yt_dlp.clone(),
         }
     }

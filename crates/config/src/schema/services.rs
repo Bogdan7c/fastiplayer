@@ -2,7 +2,6 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use super::YtDlpHdrSelection;
 use crate::ConfigResult;
 
 /// Верхняя граница persisted preference, синхронизированная app boundary с `web-media-core`.
@@ -304,18 +303,73 @@ impl Default for NetworkConfig {
     }
 }
 
-/// Настройки YtDlp/service слоя.
+/// Пользовательская provider-neutral политика выбора dynamic range для web media.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebMediaHdrSelection {
+    /// Выбирать только кандидаты с достоверно подтверждённым SDR dynamic range.
+    #[default]
+    SdrOnly,
+
+    /// Сначала искать playable HDR, затем автоматически переходить к лучшему SDR.
+    #[serde(rename = "prefer_hdr")]
+    PreferHdrWhenAvailable,
+}
+
+/// Provider-neutral policy выбора и восстановления web media.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebMediaConfig {
+    /// Политика выбора SDR/HDR stream-а до открытия media bytes.
+    pub hdr_selection: WebMediaHdrSelection,
+
+    /// Глобальная preferred height; `None` сохраняет обычный `BestPlayable`.
+    pub preferred_video_height: Option<PreferredVideoHeight>,
+
+    /// Разрешает автоматический candidate-level reopen после expiry VOD endpoint-а.
+    pub vod_endpoint_recovery_enabled: bool,
+
+    /// Максимум последовательных recovery attempts до typed terminal failure.
+    pub vod_endpoint_recovery_max_consecutive_attempts: u64,
+
+    /// Начальная задержка exponential backoff перед повторным source resolution.
+    pub vod_endpoint_recovery_initial_backoff_ms: u64,
+
+    /// Верхняя граница exponential backoff между recovery attempts.
+    pub vod_endpoint_recovery_max_backoff_ms: u64,
+
+    /// Stable playback interval, после которого consecutive budget сбрасывается.
+    pub vod_endpoint_recovery_stable_reset_ms: u64,
+}
+
+impl WebMediaConfig {
+    /// Проверяет provider-neutral web-media policy независимо от полного `AppConfig`.
+    pub fn validate(&self) -> ConfigResult<()> {
+        crate::validation::validate_web_media_config(self)
+    }
+}
+
+impl Default for WebMediaConfig {
+    /// Возвращает безопасную policy для всех web-media providers.
+    fn default() -> Self {
+        Self {
+            hdr_selection: WebMediaHdrSelection::SdrOnly,
+            preferred_video_height: None,
+            vod_endpoint_recovery_enabled: true,
+            vod_endpoint_recovery_max_consecutive_attempts: 3,
+            vod_endpoint_recovery_initial_backoff_ms: 250,
+            vod_endpoint_recovery_max_backoff_ms: 2_000,
+            vod_endpoint_recovery_stable_reset_ms: 30_000,
+        }
+    }
+}
+
+/// Process controls extractor adapter-а `yt-dlp`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct YtDlpConfig {
     /// Разрешает YtDlp adapter.
     pub enabled: bool,
-
-    /// Политика выбора SDR/HDR stream-а до открытия media bytes.
-    pub hdr_selection: YtDlpHdrSelection,
-
-    /// Глобальная preferred height; `None` сохраняет обычный `BestPlayable`.
-    pub preferred_video_height: Option<PreferredVideoHeight>,
 
     /// Максимальное время подготовки direct stream metadata через `yt-dlp`.
     pub resolve_timeout_ms: u64,
@@ -328,21 +382,6 @@ pub struct YtDlpConfig {
 
     /// Максимальное число JSON values до построения metadata DOM.
     pub single_item_json_node_limit: u64,
-
-    /// Разрешает автоматический candidate-level reopen после expiry VOD endpoint-а.
-    pub vod_endpoint_recovery_enabled: bool,
-
-    /// Максимум последовательных recovery attempts до typed terminal failure.
-    pub vod_endpoint_recovery_max_consecutive_attempts: u64,
-
-    /// Начальная задержка exponential backoff перед повторной extraction.
-    pub vod_endpoint_recovery_initial_backoff_ms: u64,
-
-    /// Верхняя граница exponential backoff между recovery attempts.
-    pub vod_endpoint_recovery_max_backoff_ms: u64,
-
-    /// Stable playback interval, после которого consecutive budget сбрасывается.
-    pub vod_endpoint_recovery_stable_reset_ms: u64,
 }
 
 impl YtDlpConfig {
@@ -357,17 +396,10 @@ impl Default for YtDlpConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            hdr_selection: YtDlpHdrSelection::SdrOnly,
-            preferred_video_height: None,
             resolve_timeout_ms: 30_000,
             single_item_stdout_limit_bytes: 64 * 1024 * 1024,
             single_item_stderr_limit_bytes: 8 * 1024 * 1024,
             single_item_json_node_limit: 1_000_000,
-            vod_endpoint_recovery_enabled: true,
-            vod_endpoint_recovery_max_consecutive_attempts: 3,
-            vod_endpoint_recovery_initial_backoff_ms: 250,
-            vod_endpoint_recovery_max_backoff_ms: 2_000,
-            vod_endpoint_recovery_stable_reset_ms: 30_000,
         }
     }
 }

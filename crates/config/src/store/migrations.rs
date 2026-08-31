@@ -1,7 +1,7 @@
 use crate::{
     AppConfig, CURRENT_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3,
     LEGACY_SCHEMA_VERSION_4, LEGACY_SCHEMA_VERSION_5, LEGACY_SCHEMA_VERSION_6,
-    LEGACY_SCHEMA_VERSION_7, LEGACY_SCHEMA_VERSION_8,
+    LEGACY_SCHEMA_VERSION_7, LEGACY_SCHEMA_VERSION_8, LEGACY_SCHEMA_VERSION_9,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -19,6 +19,17 @@ pub(super) const REMOVED_FRAME_SERVER_HOVER_KEYS: &[&str] = &[
     "network_hover_prepare_throttle_ms",
 ];
 
+/// Web-media policy, которая до schema v10 ошибочно принадлежала `[yt_dlp]`.
+const LEGACY_YT_DLP_WEB_MEDIA_KEYS: &[&str] = &[
+    "hdr_selection",
+    "preferred_video_height",
+    "vod_endpoint_recovery_enabled",
+    "vod_endpoint_recovery_max_consecutive_attempts",
+    "vod_endpoint_recovery_initial_backoff_ms",
+    "vod_endpoint_recovery_max_backoff_ms",
+    "vod_endpoint_recovery_stable_reset_ms",
+];
+
 /// Нормализует только известные legacy-поля до strict Serde-разбора.
 pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     let toml::Value::Table(root_table) = toml_document else {
@@ -33,9 +44,12 @@ pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_5) {
         migrate_legacy_youtube_section(root_table);
     }
+    if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_9) {
+        migrate_web_media_policy(root_table);
+    }
 }
 
-/// Поднимает поддерживаемые v2-v7 структуры до текущей in-memory версии.
+/// Поднимает поддерживаемые v2-v9 структуры до текущей in-memory версии.
 pub(super) fn upgrade_config(config: &mut AppConfig) {
     if matches!(
         config.schema_version,
@@ -46,8 +60,32 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             | LEGACY_SCHEMA_VERSION_6
             | LEGACY_SCHEMA_VERSION_7
             | LEGACY_SCHEMA_VERSION_8
+            | LEGACY_SCHEMA_VERSION_9
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
+    }
+}
+
+/// Переносит web-media policy из extractor-specific `[yt_dlp]` в `[web_media]`.
+///
+/// Существующий target не объединяется с legacy source: исходные ключи остаются
+/// в `[yt_dlp]`, и его `deny_unknown_fields` детерминированно отклоняет конфликт.
+fn migrate_web_media_policy(root_table: &mut toml::Table) {
+    if root_table.contains_key("web_media") {
+        return;
+    }
+    let Some(toml::Value::Table(yt_dlp_table)) = root_table.get_mut("yt_dlp") else {
+        return;
+    };
+
+    let mut web_media_table = toml::Table::new();
+    for legacy_key in LEGACY_YT_DLP_WEB_MEDIA_KEYS {
+        if let Some(value) = yt_dlp_table.remove(*legacy_key) {
+            web_media_table.insert((*legacy_key).to_owned(), value);
+        }
+    }
+    if !web_media_table.is_empty() {
+        root_table.insert("web_media".to_owned(), toml::Value::Table(web_media_table));
     }
 }
 

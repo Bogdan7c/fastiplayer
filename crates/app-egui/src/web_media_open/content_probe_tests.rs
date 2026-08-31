@@ -539,6 +539,7 @@ fn prepare_content_probed_test_media_at_locator(
     prepare_yt_dlp_web_media(
         &locator,
         &NetworkConfig::default(),
+        &rustiplayer_config::WebMediaConfig::default(),
         &YtDlpConfig::default(),
         &PlayerDemuxConfig::default(),
         &[VideoCodec::Vp9],

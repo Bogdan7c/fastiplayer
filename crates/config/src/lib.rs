@@ -25,12 +25,12 @@ pub use schema::{
     PreferredVideoHeightError, RenderColorAdjustmentConfig, RenderConfig, RenderProfile,
     ToneMappingMode, UiAnimationsConfig, UiConfig, UiSettingsConfig, UiSidebarConfig,
     UiWindowConfig, VideoBackendPreference, VideoCodec, VideoConfig, VideoSchedulerConfig,
-    VulkanConfig, VulkanPresentMode, YtDlpConfig, YtDlpHdrSelection,
+    VulkanConfig, VulkanPresentMode, WebMediaConfig, WebMediaHdrSelection, YtDlpConfig,
 };
 pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,
     LEGACY_SCHEMA_VERSION_5, LEGACY_SCHEMA_VERSION_6, LEGACY_SCHEMA_VERSION_7,
-    LEGACY_SCHEMA_VERSION_8,
+    LEGACY_SCHEMA_VERSION_8, LEGACY_SCHEMA_VERSION_9,
 };
 pub use store::{
     LoadedConfig, load_from_path, load_or_create, load_or_create_at, save_validated_atomic_at,

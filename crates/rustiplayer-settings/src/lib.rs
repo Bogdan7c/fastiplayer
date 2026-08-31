@@ -29,8 +29,8 @@ use render_core::{
 use rustiplayer_config::{
     AppConfig, FrameServerConfig, HdrToSdrOperatorConfig, NetworkConfig, OpenGlesConfig,
     PlayerDemuxConfig, PlaylistConfig, RenderProfile, ToneMappingMode as ConfigToneMappingMode,
-    UiConfig, VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, YtDlpConfig,
-    save_validated_atomic_at,
+    UiConfig, VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig,
+    YtDlpConfig, save_validated_atomic_at,
 };
 use settings_core::{
     ApplyMechanism, ApplyRouteReport, ApplyRouteResult, CommittedApplyRequest,

@@ -1,16 +1,16 @@
 use super::*;
 
-use rustiplayer_config::YtDlpConfig;
+use rustiplayer_config::WebMediaConfig;
 
 const RECOVERY_SETTING_NAMES: [&str; 5] = [
-    "yt_dlp.vod_endpoint_recovery_enabled",
-    "yt_dlp.vod_endpoint_recovery_max_consecutive_attempts",
-    "yt_dlp.vod_endpoint_recovery_initial_backoff_ms",
-    "yt_dlp.vod_endpoint_recovery_max_backoff_ms",
-    "yt_dlp.vod_endpoint_recovery_stable_reset_ms",
+    "web_media.vod_endpoint_recovery_enabled",
+    "web_media.vod_endpoint_recovery_max_consecutive_attempts",
+    "web_media.vod_endpoint_recovery_initial_backoff_ms",
+    "web_media.vod_endpoint_recovery_max_backoff_ms",
+    "web_media.vod_endpoint_recovery_stable_reset_ms",
 ];
 
-fn requested_recovery_policy(previous: &YtDlpConfig) -> YtDlpConfig {
+fn requested_recovery_policy(previous: &WebMediaConfig) -> WebMediaConfig {
     let mut requested = previous.clone();
     requested.vod_endpoint_recovery_enabled = !previous.vod_endpoint_recovery_enabled;
     requested.vod_endpoint_recovery_max_consecutive_attempts = 5;
@@ -20,7 +20,7 @@ fn requested_recovery_policy(previous: &YtDlpConfig) -> YtDlpConfig {
     requested
 }
 
-fn recovery_policy_value_actions(requested: &YtDlpConfig) -> Vec<SettingsUiAction> {
+fn recovery_policy_value_actions(requested: &WebMediaConfig) -> Vec<SettingsUiAction> {
     vec![
         SettingsUiAction::SetValue {
             setting_id: SettingId::from(RECOVERY_SETTING_NAMES[0]),
@@ -57,7 +57,7 @@ fn recovery_policy_value_actions(requested: &YtDlpConfig) -> Vec<SettingsUiActio
     ]
 }
 
-fn recovery_policy_actions(requested: &YtDlpConfig) -> Vec<SettingsUiAction> {
+fn recovery_policy_actions(requested: &WebMediaConfig) -> Vec<SettingsUiAction> {
     let mut actions = vec![SettingsUiAction::Open];
     actions.extend(recovery_policy_value_actions(requested));
     actions.push(SettingsUiAction::Apply);
@@ -75,17 +75,18 @@ fn media_service_route_with_affected_setting(
     config: &AppConfig,
     affected_setting: SettingId,
 ) -> RuntimeCommittedRoute {
-    let mut observably_changed_yt_dlp = config.yt_dlp.clone();
-    observably_changed_yt_dlp.vod_endpoint_recovery_enabled =
-        !config.yt_dlp.vod_endpoint_recovery_enabled;
+    let mut observably_changed_web_media = config.web_media.clone();
+    observably_changed_web_media.vod_endpoint_recovery_enabled =
+        !config.web_media.vod_endpoint_recovery_enabled;
     RuntimeCommittedRoute {
         route: AppRuntimeRoute::MediaService,
-        source_routes: vec![SettingRouteId::from("yt_dlp")],
+        source_routes: vec![SettingRouteId::from("web_media")],
         affected_settings: vec![affected_setting],
         groups: Vec::new(),
         update: RuntimeCommittedUpdate::MediaService(MediaServiceRuntimeSettingsUpdate {
             network: config.network.clone(),
-            yt_dlp: observably_changed_yt_dlp,
+            web_media: observably_changed_web_media,
+            yt_dlp: config.yt_dlp.clone(),
         }),
     }
 }
@@ -93,7 +94,7 @@ fn media_service_route_with_affected_setting(
 #[test]
 fn recovery_policy_success_applies_exact_target_then_persists_finalizes_and_syncs() {
     let config = custom_config_for_test();
-    let requested_yt_dlp = requested_recovery_policy(&config.yt_dlp);
+    let requested_web_media = requested_recovery_policy(&config.web_media);
     let path = temp_config_path("vod-recovery-policy-success");
     remove_file_if_exists(&path);
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
@@ -107,7 +108,7 @@ fn recovery_policy_success_applies_exact_target_then_persists_finalizes_and_sync
 
     run_runtime_actions(
         &mut runtime,
-        recovery_policy_actions(&requested_yt_dlp),
+        recovery_policy_actions(&requested_web_media),
         &mut adapter,
     );
 
@@ -116,10 +117,13 @@ fn recovery_policy_success_applies_exact_target_then_persists_finalizes_and_sync
         .expect("успешный recovery report должен сохраниться");
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(report.routes.len(), 1);
-    assert_eq!(report.routes[0].route, SettingRouteId::from("yt_dlp"));
+    assert_eq!(report.routes[0].route, SettingRouteId::from("web_media"));
     assert_eq!(report.routes[0].mechanism, ApplyMechanism::InPlace);
     assert_eq!(adapter.media_route_updates.len(), 1);
-    assert_eq!(adapter.media_route_updates[0].0.yt_dlp, requested_yt_dlp);
+    assert_eq!(
+        adapter.media_route_updates[0].0.web_media,
+        requested_web_media
+    );
     assert_eq!(adapter.media_route_updates[0].1, recovery_setting_ids());
     assert_eq!(adapter.persistence_visible_at_finalize, vec![true]);
     assert_eq!(adapter.snapshot_synced_after_finalize, vec![true]);
@@ -131,21 +135,21 @@ fn recovery_policy_success_applies_exact_target_then_persists_finalizes_and_sync
             SettingsTransactionEvent::SnapshotSync,
         ]
     );
-    assert_eq!(runtime.committed_config().yt_dlp, requested_yt_dlp);
+    assert_eq!(runtime.committed_config().web_media, requested_web_media);
     assert_eq!(
-        adapter.committed_snapshots[0].as_config().yt_dlp,
-        requested_yt_dlp
+        adapter.committed_snapshots[0].as_config().web_media,
+        requested_web_media
     );
     let persisted = rustiplayer_config::load_from_path(&path)
         .expect("persisted recovery policy должна читаться");
-    assert_eq!(persisted.config.yt_dlp, requested_yt_dlp);
+    assert_eq!(persisted.config.web_media, requested_web_media);
     remove_file_if_exists(&path);
 }
 
 #[test]
 fn recovery_policy_persistence_failure_rolls_owner_back_without_finalize_or_sync() {
     let config = custom_config_for_test();
-    let requested_yt_dlp = requested_recovery_policy(&config.yt_dlp);
+    let requested_web_media = requested_recovery_policy(&config.web_media);
     let path = temp_config_path("vod-recovery-policy-persist-failure");
     remove_file_if_exists(&path);
     fs::create_dir_all(&path).expect("target directory создаёт deterministic rename failure");
@@ -159,7 +163,7 @@ fn recovery_policy_persistence_failure_rolls_owner_back_without_finalize_or_sync
 
     run_runtime_actions(
         &mut runtime,
-        recovery_policy_actions(&requested_yt_dlp),
+        recovery_policy_actions(&requested_web_media),
         &mut adapter,
     );
 
@@ -170,9 +174,12 @@ fn recovery_policy_persistence_failure_rolls_owner_back_without_finalize_or_sync
     assert_eq!(report.routes[0].mechanism, ApplyMechanism::InPlace);
     assert_eq!(report.rollback.len(), 1);
     assert_eq!(adapter.media_route_updates.len(), 2);
-    assert_eq!(adapter.media_route_updates[0].0.yt_dlp, requested_yt_dlp);
+    assert_eq!(
+        adapter.media_route_updates[0].0.web_media,
+        requested_web_media
+    );
     assert_eq!(adapter.media_route_updates[0].1, recovery_setting_ids());
-    assert_eq!(adapter.media_route_updates[1].0.yt_dlp, config.yt_dlp);
+    assert_eq!(adapter.media_route_updates[1].0.web_media, config.web_media);
     assert_eq!(adapter.media_route_updates[1].1, recovery_setting_ids());
     assert_eq!(
         adapter.transaction_events,
@@ -183,7 +190,7 @@ fn recovery_policy_persistence_failure_rolls_owner_back_without_finalize_or_sync
     );
     assert_eq!(adapter.finalize_calls, 0);
     assert!(adapter.committed_snapshots.is_empty());
-    assert_eq!(runtime.committed_config().yt_dlp, config.yt_dlp);
+    assert_eq!(runtime.committed_config().web_media, config.web_media);
     fs::remove_dir_all(&path).expect("test target directory должна удалиться");
 }
 
@@ -193,7 +200,9 @@ fn preferred_height_only_and_mixed_reports_match_the_rebuild_contract() {
         ("preferred-height-only-report", None),
         (
             "preferred-height-mixed-recovery-report",
-            Some(requested_recovery_policy(&custom_config_for_test().yt_dlp)),
+            Some(requested_recovery_policy(
+                &custom_config_for_test().web_media,
+            )),
         ),
     ] {
         let config = custom_config_for_test();
@@ -209,7 +218,7 @@ fn preferred_height_only_and_mixed_reports_match_the_rebuild_contract() {
         let mut actions = vec![
             SettingsUiAction::Open,
             SettingsUiAction::SetValue {
-                setting_id: SettingId::from("yt_dlp.preferred_video_height"),
+                setting_id: SettingId::from("web_media.preferred_video_height"),
                 value: SettingValue::Select("1080".into()),
             },
         ];
@@ -255,7 +264,7 @@ fn unknown_and_foreign_media_service_settings_fail_before_any_owner_mutation() {
             panic!("fixture должна передавать MediaService update");
         };
         assert_ne!(
-            attempted_update.yt_dlp, config.yt_dlp,
+            attempted_update.web_media, config.web_media,
             "invalid route payload должен требовать observable owner mutation"
         );
 

@@ -272,9 +272,11 @@ fn assert_child_catalog_choice_count(expected_choice_count: usize) {
         &system_capabilities,
         audio_capabilities,
     );
-    let policy =
-        super::super::selection_policy(&yt_dlp_config, &[rustiplayer_config::VideoCodec::H264])
-            .expect("create catalog playback policy");
+    let policy = super::super::selection_policy(
+        &rustiplayer_config::WebMediaConfig::default(),
+        &[rustiplayer_config::VideoCodec::H264],
+    )
+    .expect("create catalog playback policy");
     let active_candidate = snapshot
         .accepted_candidates()
         .next()
@@ -363,9 +365,11 @@ fn assert_child_service_snapshot_fallback() {
         &system_capabilities,
         audio_capabilities,
     );
-    let policy =
-        super::super::selection_policy(&yt_dlp_config, &[rustiplayer_config::VideoCodec::Vp9])
-            .expect("create app playback policy");
+    let policy = super::super::selection_policy(
+        &rustiplayer_config::WebMediaConfig::default(),
+        &[rustiplayer_config::VideoCodec::Vp9],
+    )
+    .expect("create app playback policy");
     let ranked = ranked_best_playable_candidates(&snapshot, &planning, capabilities, &policy)
         .expect("rank real service candidates");
     assert_eq!(

@@ -31,8 +31,8 @@ use media_core::{
     Demuxer, DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration, TrackId, TrackKind,
 };
 use rustiplayer_config::{
-    NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YtDlpConfig,
-    YtDlpHdrSelection,
+    NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, WebMediaConfig,
+    WebMediaHdrSelection, YtDlpConfig,
 };
 use service_ytdlp::{
     YtDlpCandidateSelection, YtDlpCandidateSnapshot, YtDlpLiveIntent, YtDlpMediaLocator,
@@ -157,6 +157,7 @@ struct WebCandidateOpenContext {
 pub(crate) fn prepare_yt_dlp_web_media(
     locator: &YtDlpMediaLocator,
     network_config: &NetworkConfig,
+    web_media_config: &WebMediaConfig,
     yt_dlp_config: &YtDlpConfig,
     demux_config: &PlayerDemuxConfig,
     preferred_video_codec_order: &[ConfigVideoCodec],
@@ -171,7 +172,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let selection_preference = match &intent {
         YtDlpCandidateOpenIntent::BestPlayable => {
             crate::web_media_stream_model::WebMediaSelectionPreference::from_global_config(
-                yt_dlp_config,
+                web_media_config,
             )
         }
         YtDlpCandidateOpenIntent::Exact(exact) => exact.preference,
@@ -193,7 +194,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         .context("YtDlp service/planner candidate snapshots не соответствуют друг другу")?;
     let runtime = WebOpenRuntime::new(network_config, demux_config)
         .context("Не удалось собрать web-media runtime registries")?;
-    let policy = selection_policy(yt_dlp_config, preferred_video_codec_order)
+    let policy = selection_policy(web_media_config, preferred_video_codec_order)
         .context("Не удалось собрать YtDlp playback selection policy")?;
     let capabilities = runtime.playback_capabilities(system_capabilities, audio_capabilities);
     let planning_candidate_count = planning_snapshot.candidates().len();
@@ -221,7 +222,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         runtime: &runtime,
         component_selection_intent: &component_selection_intent,
         preferred_height: crate::web_media_quality::preferred_height_policy(
-            yt_dlp_config.preferred_video_height,
+            web_media_config.preferred_video_height,
         ),
         cancellation: &cancellation,
         is_cancelled: &is_cancelled,
@@ -371,12 +372,12 @@ fn next_source_identity() -> Result<SourceIdentity> {
 
 /// Строит pure selection policy из committed user config.
 fn selection_policy(
-    yt_dlp_config: &YtDlpConfig,
+    web_media_config: &WebMediaConfig,
     preferred_video_codec_order: &[ConfigVideoCodec],
 ) -> Result<PlaybackSelectionPolicy> {
-    let hdr = match yt_dlp_config.hdr_selection {
-        YtDlpHdrSelection::SdrOnly => HdrSelectionPolicy::SdrOnly,
-        YtDlpHdrSelection::PreferHdrWhenAvailable => HdrSelectionPolicy::PreferHdrWhenAvailable,
+    let hdr = match web_media_config.hdr_selection {
+        WebMediaHdrSelection::SdrOnly => HdrSelectionPolicy::SdrOnly,
+        WebMediaHdrSelection::PreferHdrWhenAvailable => HdrSelectionPolicy::PreferHdrWhenAvailable,
     };
     let codecs = preferred_video_codec_order
         .iter()
@@ -398,7 +399,7 @@ fn selection_policy(
     PlaybackSelectionPolicy::new(
         hdr,
         codecs,
-        crate::web_media_quality::preferred_height_policy(yt_dlp_config.preferred_video_height),
+        crate::web_media_quality::preferred_height_policy(web_media_config.preferred_video_height),
         containers,
     )
     .map_err(Into::into)
@@ -515,6 +516,7 @@ mod tests {
         let result = prepare_yt_dlp_web_media(
             &locator,
             &NetworkConfig::default(),
+            &WebMediaConfig::default(),
             &YtDlpConfig::default(),
             &PlayerDemuxConfig::default(),
             &[ConfigVideoCodec::Vp9],

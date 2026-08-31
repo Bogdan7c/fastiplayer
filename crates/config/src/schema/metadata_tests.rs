@@ -83,17 +83,17 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "network.connect_timeout_ms",
     "network.read_timeout_ms",
     "yt_dlp.enabled",
-    "yt_dlp.hdr_selection",
-    "yt_dlp.preferred_video_height",
+    "web_media.hdr_selection",
+    "web_media.preferred_video_height",
     "yt_dlp.resolve_timeout_ms",
     "yt_dlp.single_item_stdout_limit_bytes",
     "yt_dlp.single_item_stderr_limit_bytes",
     "yt_dlp.single_item_json_node_limit",
-    "yt_dlp.vod_endpoint_recovery_enabled",
-    "yt_dlp.vod_endpoint_recovery_max_consecutive_attempts",
-    "yt_dlp.vod_endpoint_recovery_initial_backoff_ms",
-    "yt_dlp.vod_endpoint_recovery_max_backoff_ms",
-    "yt_dlp.vod_endpoint_recovery_stable_reset_ms",
+    "web_media.vod_endpoint_recovery_enabled",
+    "web_media.vod_endpoint_recovery_max_consecutive_attempts",
+    "web_media.vod_endpoint_recovery_initial_backoff_ms",
+    "web_media.vod_endpoint_recovery_max_backoff_ms",
+    "web_media.vod_endpoint_recovery_stable_reset_ms",
     "ui.show_telemetry",
     "ui.language",
     "ui.skin",
@@ -645,7 +645,7 @@ fn static_enum_and_string_options_use_stable_ids() {
     );
     assert_select_options(
         &registry,
-        "yt_dlp.hdr_selection",
+        "web_media.hdr_selection",
         &["sdr_only", "prefer_hdr"],
     );
     assert_select_options(&registry, "ui.skin", &[validation::DEFAULT_UI_SKIN]);
@@ -761,7 +761,7 @@ fn generated_accessors_read_and_reset_values_from_default_documents() {
 #[test]
 fn preferred_height_settings_accessor_preserves_best_playable_and_validated_choices() {
     let registry = registry();
-    let setting_id = SettingId::from("yt_dlp.preferred_video_height");
+    let setting_id = SettingId::from("web_media.preferred_video_height");
     let descriptor = registry
         .descriptor(&setting_id)
         .expect("preferred height descriptor exists");
@@ -786,7 +786,7 @@ fn preferred_height_settings_accessor_preserves_best_playable_and_validated_choi
         )
         .expect("valid fixed height applies");
     assert_eq!(
-        config.yt_dlp.preferred_video_height,
+        config.web_media.preferred_video_height,
         Some(PreferredVideoHeight::new(2160).expect("2160 валидно"))
     );
 
@@ -797,7 +797,7 @@ fn preferred_height_settings_accessor_preserves_best_playable_and_validated_choi
     );
     assert!(invalid.is_err());
     assert_eq!(
-        config.yt_dlp.preferred_video_height,
+        config.web_media.preferred_video_height,
         Some(PreferredVideoHeight::new(2160).expect("2160 валидно"))
     );
 
@@ -808,15 +808,54 @@ fn preferred_height_settings_accessor_preserves_best_playable_and_validated_choi
             SettingValue::Select("best_playable".into()),
         )
         .expect("best-playable mode applies");
-    assert_eq!(config.yt_dlp.preferred_video_height, None);
+    assert_eq!(config.web_media.preferred_video_height, None);
 
-    config.yt_dlp.preferred_video_height =
+    config.web_media.preferred_video_height =
         Some(PreferredVideoHeight::new(1234).expect("custom height валидна"));
     assert_eq!(
         registry
             .get_value(&config, &setting_id)
             .expect("custom TOML height readable"),
         SettingValue::Select("1234".into())
+    );
+}
+
+#[test]
+fn web_media_metadata_is_provider_neutral_and_yt_dlp_registry_is_process_only() {
+    let registry = registry();
+    let web_media_descriptors = registry
+        .descriptors()
+        .filter(|descriptor| descriptor.id.as_str().starts_with("web_media."))
+        .collect::<Vec<_>>();
+    assert_eq!(web_media_descriptors.len(), 7);
+    for descriptor in web_media_descriptors {
+        assert_eq!(descriptor.placement.section.as_str(), "web_media");
+        let label = descriptor.text.label.fallback_ru.to_lowercase();
+        let description = descriptor
+            .text
+            .description
+            .as_ref()
+            .expect("web-media descriptor должен объяснять policy")
+            .fallback_ru
+            .to_lowercase();
+        assert!(!label.contains("yt-dlp") && !label.contains("ytdlp"));
+        assert!(!description.contains("yt-dlp") && !description.contains("ytdlp"));
+    }
+
+    let yt_dlp_ids = registry
+        .descriptors()
+        .filter(|descriptor| descriptor.id.as_str().starts_with("yt_dlp."))
+        .map(|descriptor| descriptor.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        yt_dlp_ids,
+        vec![
+            "yt_dlp.enabled",
+            "yt_dlp.resolve_timeout_ms",
+            "yt_dlp.single_item_stdout_limit_bytes",
+            "yt_dlp.single_item_stderr_limit_bytes",
+            "yt_dlp.single_item_json_node_limit",
+        ]
     );
 }
 

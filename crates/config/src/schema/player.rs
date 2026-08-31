@@ -367,16 +367,3 @@ pub enum VideoCodec {
     /// VP8.
     Vp8,
 }
-
-/// Пользовательская политика выбора dynamic range для YtDlp video stream-а.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum YtDlpHdrSelection {
-    /// Выбирать только кандидаты с достоверно подтверждённым SDR dynamic range.
-    #[default]
-    SdrOnly,
-
-    /// Сначала искать playable HDR, затем автоматически переходить к лучшему SDR.
-    #[serde(rename = "prefer_hdr")]
-    PreferHdrWhenAvailable,
-}

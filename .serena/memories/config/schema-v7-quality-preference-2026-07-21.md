@@ -1,4 +1,6 @@
-# Config schema v7: global preferred video height (2026-07-21)
+# Config schema v7: global preferred video height (историческая, 2026-07-21)
+
+> Эта memory описывает прежний boundary. Начиная со schema v10 preferred height принадлежит `WebMediaConfig`, setting id — `web_media.preferred_video_height`. Актуальный contract: `mem:config/schema-v10-web-media-policy-2026-08-31`.
 
 - `CURRENT_SCHEMA_VERSION = 7`; поддерживаемые legacy versions — v2-v6. v2-v5 по-прежнему мигрируют `[youtube]` -> `[yt_dlp]`, v6 получает новый default без startup rewrite.
 - `rustiplayer_config::YtDlpConfig::preferred_video_height: Option<PreferredVideoHeight>` — единственный durable global quality knob. `None` означает обычный BestPlayable. Config-owned newtype принимает только `1..=16_384`; TOML сериализует его scalar-числом. Config crate не зависит от `web-media-core`.
