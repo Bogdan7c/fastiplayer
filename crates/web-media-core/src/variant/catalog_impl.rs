@@ -393,7 +393,7 @@ impl ComponentVariantSelection {
     }
 
     /// Возвращает catalog identity, доказанную всеми rows selection.
-    fn catalog_identity(&self) -> &ComponentVariantCatalogIdentity {
+    pub(crate) fn catalog_identity(&self) -> &ComponentVariantCatalogIdentity {
         match self {
             Self::VideoAndAudio { video, .. } | Self::VideoOnly { video } => {
                 video.exact_identity().catalog()

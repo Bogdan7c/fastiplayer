@@ -1,3 +1,8 @@
+## N01 provider-neutral native web ingress contracts (2026-08-31)
+
+- `web-media-core` now owns std-only ingress/presentation/selection/recovery/extractor-reason/fallback contracts while reusing the existing identity and component variant boundaries. No locator, secrets, process/HTTP/UI/runtime handles or concrete provider dependencies entered core.
+- Exact invariants, public types, focused tests and verification: `mem:media-services/native-web-ingress-n01-2026-08-31`.
+
 ## YtDlp scoped cookies + Ogg active-prefetch correction (2026-08-09)
 
 - Pinned yt-dlp scoped cookie records now remain distinct from ready request Cookie headers through service normalization, neutral transport and per-source RFC cookie jar projection.
