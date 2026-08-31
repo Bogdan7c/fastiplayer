@@ -1,3 +1,10 @@
+## N03 typed extractor adapter/process spy (2026-08-31)
+
+- `service-ytdlp::YtDlpExtractorAdapter` carries N01 `ExtractorInvocationReason` through candidate/topology/metadata and every platform-hijack recovery subprocess. All OS child starts cross one instance-injected launcher; production default has no global mutable hook.
+- Existing `process_tree::OwnedProcess` still exclusively owns process group, cancellation, timeout, output budgets, cleanup/reap and pipe joins.
+- App now has a narrow yt-dlp snapshot projection into the existing neutral planning catalog, N01 selection (including canonical component selection), VOD/live presentation and same-generation metadata; `ActiveMediaSource` migration remains N04.
+- Full boundaries, functional fixtures, commands and known S42 missing-evidence-file limitation: `mem:media-services/native-web-ingress-n03-2026-08-31`.
+
 ## Stable coverage v2 foundation (2026-08-30)
 
 - Blocking coverage uses three-run source-coordinate stability, not legacy aggregate one-run counters. `coverage/baseline.json` schema v2 and atomic `coverage/measurement-exceptions.json` are the only blocking policy pair; embedded v1 + `coverage/exceptions.json` are frozen report-only provenance. A routine gate is one 3-run cohort; a reviewed baseline update after concurrency-sensitive test changes requires three independent cohort-ов (9 measured runs), exact cross-cohort stable intersection, file-local audit and two fresh post-install repeatability checks. Exact workflow and current hashes live in `mem:testing/coverage`.

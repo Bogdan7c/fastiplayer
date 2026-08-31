@@ -101,11 +101,13 @@ impl YtDlpMetadataResolver for ServiceYtDlpMetadataResolver {
         if cancellation.is_cancelled() {
             return YtDlpMetadataTaskOutcome::Cancelled;
         }
-        let metadata = service_ytdlp::resolve_yt_dlp_playlist_metadata_with_config(
-            locator,
-            yt_dlp_config,
-            || cancellation.is_cancelled(),
-        );
+        let metadata = service_ytdlp::YtDlpExtractorAdapter::default()
+            .resolve_playlist_metadata_with_cancellation(
+                locator,
+                yt_dlp_config,
+                web_media_core::ExtractorInvocationReason::CollectionTopologyResolution,
+                &|| cancellation.is_cancelled(),
+            );
         match metadata {
             Ok(metadata) if !cancellation.is_cancelled() => YtDlpMetadataTaskOutcome::Resolved {
                 title: metadata.title().map(ToOwned::to_owned),

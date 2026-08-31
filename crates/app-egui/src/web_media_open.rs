@@ -181,17 +181,15 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let (candidate_snapshot, resolved_intent) =
         preparation::resolve_candidate_snapshot(locator, yt_dlp_config, intent, &is_cancelled)
             .context("Не удалось подготовить exact YtDlp candidate snapshot")?;
-    // Service-owned projection локализует неподдерживаемые rows и сохраняет рабочие соседние rows.
-    let planning_projection = candidate_snapshot
-        .planning_projection()
-        .context("Не удалось выразить YtDlp candidates через playback planner")?;
+    // Новый узкий adapter projection локализует extractor DTO до neutral catalog boundary.
+    let extractor_catalog_projection =
+        crate::web_media_extractor_adapter::ExtractorCatalogProjection::from_snapshot(
+            &candidate_snapshot,
+        )?;
     // Сохраняем безопасный счётчик row-local planning rejections для diagnostics.
-    let planning_rejection_count = planning_projection.rejections().len();
-    // Downstream neutral planner получает только statically-compatible candidate snapshot.
-    let planning_snapshot = planning_projection.into_snapshot();
-    candidate_snapshot
-        .validate_planning_snapshot_alignment(&planning_snapshot)
-        .context("YtDlp service/planner candidate snapshots не соответствуют друг другу")?;
+    let planning_rejection_count = extractor_catalog_projection.planning_rejection_count();
+    // Downstream planner читает existing neutral catalog без второго inventory.
+    let planning_snapshot = extractor_catalog_projection.catalog();
     let runtime = WebOpenRuntime::new(network_config, demux_config)
         .context("Не удалось собрать web-media runtime registries")?;
     let policy = selection_policy(web_media_config, preferred_video_codec_order)
@@ -208,7 +206,6 @@ pub(crate) fn prepare_yt_dlp_web_media(
                 .selected()
                 .is_some_and(|entry| entry.rejected().is_some()),
         );
-    let playlist_metadata = candidate_snapshot.playlist_metadata().clone();
     ensure_not_cancelled(&is_cancelled)?;
     let mut catalog_capability_probe = catalog_capabilities::AppCatalogCapabilityProbe::new(
         system_capabilities.clone(),
@@ -233,7 +230,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         preparation::ResolvedCandidateIntent::Planner(SelectionRequest::BestPlayable) => {
             let ranked = content_probe_fallback::ranked_best_playable_candidates(
                 &candidate_snapshot,
-                &planning_snapshot,
+                planning_snapshot,
                 capabilities,
                 &policy,
             )
@@ -257,7 +254,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
             selection_request @ SelectionRequest::Exact(_),
         ) => {
             let outcome = plan_playback(
-                &planning_snapshot,
+                planning_snapshot,
                 capabilities,
                 &selection_request,
                 &policy,
@@ -298,13 +295,16 @@ pub(crate) fn prepare_yt_dlp_web_media(
             (candidate_selection, Some(selection), opened)
         }
     };
-    let stream_configuration =
-        crate::web_media_stream_model::WebMediaStreamConfiguration::from_yt_dlp_snapshot(
+    let extractor_projection =
+        extractor_catalog_projection.with_active_selection(&candidate_selection)?;
+    let planning_snapshot = extractor_projection.catalog();
+    let stream_configuration = crate::web_media_stream_model::WebMediaStreamConfiguration::from_yt_dlp_snapshot_with_neutral_selection(
             &candidate_snapshot,
-            &planning_snapshot,
+            planning_snapshot,
             capabilities,
             &policy,
             &candidate_selection,
+            extractor_projection.selection(),
             selection_preference,
         )
         .context("Не удалось построить secret-safe URL sidebar stream model")?;
@@ -320,13 +320,25 @@ pub(crate) fn prepare_yt_dlp_web_media(
     ensure_not_cancelled(&is_cancelled)?;
     let catalog_attachment = catalog::catalog_attachment(catalog::CatalogAttachmentRequest {
         candidate_snapshot: &candidate_snapshot,
-        planning_snapshot: &planning_snapshot,
+        planning_snapshot,
         capabilities,
         policy: &policy,
         active_selection: &candidate_selection,
         active_composed: composed_selection.as_deref(),
     })?;
+    let extractor_projection = extractor_projection.with_neutral_selection(
+        stream_configuration
+            .neutral_selection()
+            .context("Не удалось спроецировать canonical component selection")?,
+    )?;
     let vod_endpoint_recovery = opened_candidate.vod_endpoint_recovery;
+    if extractor_projection.presentation() == web_media_core::WebMediaPresentationKind::Live
+        && vod_endpoint_recovery.is_some()
+    {
+        return Err(anyhow!(
+            "Live extractor projection не может владеть VOD endpoint recovery"
+        ));
+    }
     if let Some(recovery) = vod_endpoint_recovery.as_ref() {
         recovery.arm_after_candidate_finalization();
     }
@@ -338,6 +350,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         Some(recovery) => recovery.wrap_seek_port(opened_candidate.demux_seek_port),
         None => opened_candidate.demux_seek_port,
     };
+    let playlist_metadata = extractor_projection.into_playlist_metadata();
     Ok(PreparedYtDlpWebMedia {
         demuxer,
         playlist_metadata,

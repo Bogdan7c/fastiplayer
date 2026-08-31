@@ -8,6 +8,13 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use web_media_core::ExtractorInvocationReason;
+
+use crate::invocation::{ExtractorProcessInvocation, ExtractorProcessLauncher};
+#[cfg(test)]
+use crate::invocation::{ExtractorProcessPhase, YtDlpExtractorAdapter};
+
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 
@@ -442,11 +449,13 @@ where
 /// Один `Command` безопасно переиспользуется между попытками. Retry не выходит за
 /// общий timeout операции: caller передаёт исходный `operation_started_at`, а
 /// оставшееся время после успешного spawn использует для ожидания child process.
-pub(crate) fn spawn_owned_process(
+pub(crate) fn spawn_owned_process_with_launcher(
     command: &mut Command,
     operation_started_at: Instant,
     timeout: Duration,
     is_cancelled: &dyn Fn() -> bool,
+    process_launcher: &dyn ExtractorProcessLauncher,
+    invocation: ExtractorProcessInvocation,
 ) -> Result<OwnedProcess, OwnedProcessSpawnError> {
     configure_owned_process_group(command);
     let mut last_text_file_busy = None;
@@ -463,7 +472,7 @@ pub(crate) fn spawn_owned_process(
             ));
         }
 
-        match command.spawn() {
+        match process_launcher.spawn(command, invocation) {
             Ok(child) => return Ok(OwnedProcess::new(child)),
             Err(error)
                 if is_text_file_busy(&error)
@@ -481,6 +490,29 @@ pub(crate) fn spawn_owned_process(
     }
 
     unreachable!("spawn retry loop always returns on its final attempt")
+}
+
+/// Test-only совместимый вход сохраняет реальные lifecycle проверки без spy wiring.
+#[cfg(test)]
+pub(crate) fn spawn_owned_process(
+    command: &mut Command,
+    operation_started_at: Instant,
+    timeout: Duration,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<OwnedProcess, OwnedProcessSpawnError> {
+    let adapter = YtDlpExtractorAdapter::default();
+    let launcher = adapter.process_launcher();
+    spawn_owned_process_with_launcher(
+        command,
+        operation_started_at,
+        timeout,
+        is_cancelled,
+        launcher.as_ref(),
+        ExtractorProcessInvocation::new(
+            ExtractorInvocationReason::PageMediaResolution,
+            ExtractorProcessPhase::CandidatePrimary,
+        ),
+    )
 }
 
 /// Изолирует новый child в process group, которой владеет текущий запуск.

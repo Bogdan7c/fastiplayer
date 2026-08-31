@@ -3,10 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustiplayer_config::{NetworkConfig, YtDlpConfig};
-use service_ytdlp::{
-    YtDlpCandidateSelection, YtDlpLiveIntent, YtDlpMediaLocator,
-    resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation,
-};
+use service_ytdlp::{YtDlpCandidateSelection, YtDlpLiveIntent, YtDlpMediaLocator};
 use source_core::{CancellationToken, SourceRuntimeConfig};
 use web_media_core::ExtractionGeneration;
 use web_media_dash::{
@@ -94,20 +91,22 @@ impl DashEndpointRefreshPort for AppDashEndpointRefreshPort {
             return Err(DashEndpointRefreshError::Cancelled);
         }
         let extraction_generation = self.extraction_generations.allocate()?;
-        let snapshot = resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
-            &self.locator,
-            self.semantic_anchor.exact_identity().source(),
-            extraction_generation,
-            &self.yt_dlp_config,
-            &|| self.cancellation.is_cancelled(),
-        )
-        .map_err(|_| {
-            if self.cancellation.is_cancelled() {
-                DashEndpointRefreshError::Cancelled
-            } else {
-                DashEndpointRefreshError::AttemptsExhausted
-            }
-        })?;
+        let snapshot = service_ytdlp::YtDlpExtractorAdapter::default()
+            .resolve_candidate_snapshot_with_cancellation(
+                &self.locator,
+                self.semantic_anchor.exact_identity().source(),
+                extraction_generation,
+                &self.yt_dlp_config,
+                web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery,
+                &|| self.cancellation.is_cancelled(),
+            )
+            .map_err(|_| {
+                if self.cancellation.is_cancelled() {
+                    DashEndpointRefreshError::Cancelled
+                } else {
+                    DashEndpointRefreshError::AttemptsExhausted
+                }
+            })?;
         if snapshot.live_intent() != YtDlpLiveIntent::Live {
             return Err(DashEndpointRefreshError::IncompatibleLiveCandidate);
         }

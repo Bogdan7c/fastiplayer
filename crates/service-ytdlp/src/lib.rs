@@ -9,6 +9,7 @@ mod candidate;
 mod dto;
 mod embed_recovery;
 mod error;
+mod invocation;
 mod locator;
 mod metadata;
 mod process;
@@ -39,6 +40,10 @@ pub use candidate::{
     resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation,
 };
 pub use error::YtDlpServiceError;
+pub use invocation::{
+    ExtractorProcessInvocation, ExtractorProcessLauncher, ExtractorProcessPhase,
+    YtDlpExtractorAdapter,
+};
 pub use locator::{
     YtDlpInputScheme, YtDlpLocatorParseError, YtDlpMediaLocator, parse_yt_dlp_media_locator,
 };

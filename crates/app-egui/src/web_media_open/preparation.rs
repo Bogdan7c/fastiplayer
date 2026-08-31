@@ -59,12 +59,13 @@ pub(super) fn resolve_candidate_snapshot(
         YtDlpCandidateOpenIntent::BestPlayable => {
             let source = next_source_identity()?;
             let generation = ExtractionGeneration::new(INITIAL_EXTRACTION_GENERATION);
-            let snapshot =
-                service_ytdlp::resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
+            let snapshot = service_ytdlp::YtDlpExtractorAdapter::default()
+                .resolve_candidate_snapshot_with_cancellation(
                     locator,
                     source,
                     generation,
                     yt_dlp_config,
+                    web_media_core::ExtractorInvocationReason::PageMediaResolution,
                     is_cancelled,
                 )?;
             Ok((
@@ -81,12 +82,13 @@ pub(super) fn resolve_candidate_snapshot(
                 .value()
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("YtDlp extraction generation space исчерпан"))?;
-            let snapshot =
-                service_ytdlp::resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
+            let snapshot = service_ytdlp::YtDlpExtractorAdapter::default()
+                .resolve_candidate_snapshot_with_cancellation(
                     locator,
                     source,
                     ExtractionGeneration::new(generation_value),
                     yt_dlp_config,
+                    web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery,
                     is_cancelled,
                 )?;
             let matched = snapshot
@@ -117,12 +119,13 @@ pub(super) fn resolve_candidate_snapshot(
                 .value()
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("YtDlp extraction generation space исчерпан"))?;
-            let snapshot =
-                service_ytdlp::resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
+            let snapshot = service_ytdlp::YtDlpExtractorAdapter::default()
+                .resolve_candidate_snapshot_with_cancellation(
                     locator,
                     source,
                     ExtractionGeneration::new(generation_value),
                     yt_dlp_config,
+                    web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery,
                     is_cancelled,
                 )?;
             let (_, selection, candidate) = snapshot

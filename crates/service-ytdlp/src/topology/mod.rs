@@ -11,6 +11,7 @@ mod reopen;
 
 use rustiplayer_config::YtDlpConfig;
 use serde_json::{Value, json};
+use web_media_core::ExtractorInvocationReason;
 
 pub use limits::{
     DEFAULT_TOPOLOGY_DEPTH, DEFAULT_TOPOLOGY_ENTRY_COUNT, DEFAULT_TOPOLOGY_JSON_DEPTH,
@@ -33,11 +34,11 @@ pub use reopen::{
     classify_yt_dlp_delegation_reopen_target, classify_yt_dlp_durable_reopen_identity,
 };
 
-use crate::YtDlpMediaLocator;
 use crate::error::YtDlpServiceError;
 use crate::process::{YtDlpProcessConfig, recover_playable_document_after_platform_hijack};
+use crate::{ExtractorProcessPhase, YtDlpExtractorAdapter, YtDlpMediaLocator};
 use parser::{parse_topology_root, validate_lazy_json_lines};
-use process::{TopologyProcessOutput, run_topology_process};
+use process::{TopologyProcessOutput, run_topology_process_with_invocation};
 
 /// Извлекает bounded topology с default budgets.
 pub fn extract_yt_dlp_topology_with_config(
@@ -45,11 +46,12 @@ pub fn extract_yt_dlp_topology_with_config(
     yt_dlp_config: &YtDlpConfig,
     is_cancelled: impl Fn() -> bool,
 ) -> Result<YtDlpTopology, YtDlpTopologyError> {
-    extract_yt_dlp_topology_with_budgets(
+    YtDlpExtractorAdapter::default().extract_topology_with_budgets(
         locator,
         yt_dlp_config,
         YtDlpTopologyBudgets::default(),
-        is_cancelled,
+        ExtractorInvocationReason::CollectionTopologyResolution,
+        &is_cancelled,
     )
 }
 
@@ -60,12 +62,34 @@ pub fn extract_yt_dlp_topology_with_budgets(
     budgets: YtDlpTopologyBudgets,
     is_cancelled: impl Fn() -> bool,
 ) -> Result<YtDlpTopology, YtDlpTopologyError> {
+    YtDlpExtractorAdapter::default().extract_topology_with_budgets(
+        locator,
+        yt_dlp_config,
+        budgets,
+        ExtractorInvocationReason::CollectionTopologyResolution,
+        &is_cancelled,
+    )
+}
+
+/// Реализует topology adapter method с explicit reason и injected launcher-ом.
+pub(crate) fn extract_topology_with_adapter_budgets(
+    adapter: &YtDlpExtractorAdapter,
+    locator: &YtDlpMediaLocator,
+    yt_dlp_config: &YtDlpConfig,
+    budgets: YtDlpTopologyBudgets,
+    invocation_reason: ExtractorInvocationReason,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<YtDlpTopology, YtDlpTopologyError> {
     if !yt_dlp_config.enabled {
         return Err(YtDlpTopologyError::AdapterDisabled);
     }
     let budgets = budgets.validate()?;
-    let process_config = YtDlpProcessConfig::from_yt_dlp_config_for_topology(yt_dlp_config)?;
-    let process_output = run_topology_process(
+    let process_config = YtDlpProcessConfig::from_yt_dlp_config_for_topology_with_invocation(
+        yt_dlp_config,
+        adapter.process_launcher(),
+        invocation_reason,
+    )?;
+    let process_output = run_topology_process_with_invocation(
         process_config.executable_for_spawn(),
         locator.expose_secret_for_open(),
         crate::embed_recovery::GenericExtractorImpersonation::for_input_scheme(
@@ -73,7 +97,9 @@ pub fn extract_yt_dlp_topology_with_budgets(
         ),
         process_config.extraction_timeout(),
         budgets,
-        &is_cancelled,
+        process_config.process_launcher(),
+        process_config.invocation(ExtractorProcessPhase::TopologyPrimary),
+        is_cancelled,
     )?;
     let primary_topology = topology_from_process_output(process_output, budgets)?;
     recover_topology_after_platform_hijack(primary_topology, budgets, |primary_document| {
@@ -81,7 +107,7 @@ pub fn extract_yt_dlp_topology_with_budgets(
             locator.expose_secret_for_open(),
             primary_document,
             &process_config,
-            &is_cancelled,
+            is_cancelled,
         )
     })
 }

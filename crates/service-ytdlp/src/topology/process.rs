@@ -8,9 +8,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::embed_recovery::{GENERIC_IMPERSONATE_EXTRACTOR_ARGS, GenericExtractorImpersonation};
+use crate::invocation::{ExtractorProcessInvocation, ExtractorProcessLauncher};
 use crate::process_tree::{
     OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
-    OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_pipe_reader, spawn_owned_process,
+    OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_pipe_reader,
+    spawn_owned_process_with_launcher,
 };
 
 use super::limits::{YtDlpTopologyBudgets, YtDlpTopologyError};
@@ -53,12 +55,42 @@ impl std::fmt::Debug for TopologyProcessOutput {
 }
 
 /// Запускает exact app-owned topology argv.
+#[cfg(test)]
 pub(crate) fn run_topology_process(
     executable: &str,
     exact_locator: &str,
     impersonation: GenericExtractorImpersonation,
     timeout: Duration,
     budgets: YtDlpTopologyBudgets,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<TopologyProcessOutput, YtDlpTopologyError> {
+    let adapter = crate::YtDlpExtractorAdapter::default();
+    let launcher = adapter.process_launcher();
+    run_topology_process_with_invocation(
+        executable,
+        exact_locator,
+        impersonation,
+        timeout,
+        budgets,
+        launcher.as_ref(),
+        ExtractorProcessInvocation::new(
+            web_media_core::ExtractorInvocationReason::CollectionTopologyResolution,
+            crate::ExtractorProcessPhase::TopologyPrimary,
+        ),
+        is_cancelled,
+    )
+}
+
+/// Production topology path с explicit injected launcher и invocation event.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_topology_process_with_invocation(
+    executable: &str,
+    exact_locator: &str,
+    impersonation: GenericExtractorImpersonation,
+    timeout: Duration,
+    budgets: YtDlpTopologyBudgets,
+    process_launcher: &dyn ExtractorProcessLauncher,
+    invocation: ExtractorProcessInvocation,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<TopologyProcessOutput, YtDlpTopologyError> {
     if timeout.is_zero() {
@@ -80,16 +112,22 @@ pub(crate) fn run_topology_process(
         .arg(exact_locator)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut process =
-        match spawn_owned_process(&mut command, operation_started_at, timeout, is_cancelled) {
-            Ok(process) => process,
-            Err(OwnedProcessSpawnError::Cancellation) => {
-                return Err(YtDlpTopologyError::Cancellation);
-            }
-            Err(OwnedProcessSpawnError::Process(error)) => {
-                return Err(YtDlpTopologyError::process(error));
-            }
-        };
+    let mut process = match spawn_owned_process_with_launcher(
+        &mut command,
+        operation_started_at,
+        timeout,
+        is_cancelled,
+        process_launcher,
+        invocation,
+    ) {
+        Ok(process) => process,
+        Err(OwnedProcessSpawnError::Cancellation) => {
+            return Err(YtDlpTopologyError::Cancellation);
+        }
+        Err(OwnedProcessSpawnError::Process(error)) => {
+            return Err(YtDlpTopologyError::process(error));
+        }
+    };
     let stdout = match process.take_stdout() {
         Some(stdout) => stdout,
         None => {

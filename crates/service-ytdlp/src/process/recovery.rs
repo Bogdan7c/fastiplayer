@@ -9,13 +9,14 @@ use url::Url;
 
 use super::{
     YtDlpProcessConfig, ensure_yt_dlp_candidate_success, run_dump_single_json,
-    run_process_with_timeout_and_cancellation,
+    run_process_with_extractor_invocation,
 };
 use crate::embed_recovery::{
     GenericExtractorImpersonation, discover_non_platform_embed_urls, discover_page_title,
     should_attempt_platform_embed_recovery, write_pages_arguments,
 };
 use crate::error::YtDlpServiceError;
+use crate::invocation::ExtractorProcessPhase;
 
 pub(super) const MAX_RECOVERY_DUMP_FILES: usize = 8;
 pub(super) const MAX_RECOVERY_DUMP_BYTES: u64 = 2 * 1024 * 1024;
@@ -100,12 +101,13 @@ fn recover_non_platform_embed(
 
     let recovery_directory = RecoveryTempDirectory::create()?;
     let write_pages_arguments = write_pages_arguments(input_url);
-    let write_pages_output = run_process_with_timeout_and_cancellation(
+    let write_pages_output = run_process_with_extractor_invocation(
         process_config.executable.as_str(),
         &write_pages_arguments,
         Some(recovery_directory.path()),
         process_config.timeout,
         process_config.output_budgets(),
+        process_config.launch_context(ExtractorProcessPhase::RecoveryPageCapture),
         is_cancelled,
     )?;
     ensure_yt_dlp_candidate_success(write_pages_output.status, write_pages_output.stderr_bytes)?;
@@ -117,6 +119,7 @@ fn recover_non_platform_embed(
             embed_url,
             GenericExtractorImpersonation::RequiredForHttp,
             process_config,
+            ExtractorProcessPhase::RecoveryEmbedCandidate,
             is_cancelled,
         ) {
             Ok(document) => document,

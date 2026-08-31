@@ -62,12 +62,15 @@ impl PlaylistUrlTopologyResolver for ServicePlaylistUrlTopologyResolver {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<PlaylistImportDraft, ()> {
         // Service владеет процессом, bounded JSON contract и cooperative cancellation.
-        let topology = service_ytdlp::extract_yt_dlp_topology_with_config(
-            locator,
-            yt_dlp_config,
-            is_cancelled,
-        )
-        .map_err(|_| ())?;
+        let topology = service_ytdlp::YtDlpExtractorAdapter::default()
+            .extract_topology_with_budgets(
+                locator,
+                yt_dlp_config,
+                service_ytdlp::YtDlpTopologyBudgets::default(),
+                web_media_core::ExtractorInvocationReason::CollectionTopologyResolution,
+                is_cancelled,
+            )
+            .map_err(|_| ())?;
         // App mapper сохраняет exact root provenance и service-owned child reopen identity.
         let preview = map_yt_dlp_topology_to_playlist_drafts(locator, &topology).map_err(|_| ())?;
         // Source-neutral S08 preview пока показывает topology diagnostics общей категорией.

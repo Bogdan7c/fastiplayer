@@ -12,7 +12,7 @@ use player_core::{PlaybackState, PlayerSnapshot};
 use service_ytdlp::{YtDlpCandidateSelection, YtDlpCandidateSnapshot};
 use web_media_core::{
     CandidateDescriptor, CodecFamily, CodecKind, ContainerFamily, DynamicRange,
-    ExactSelectionIdentity, StreamLayout, StreamLayoutKind,
+    ExactSelectionIdentity, StreamLayout, StreamLayoutKind, WebMediaSelection,
 };
 use web_media_playback_plan::{
     PlanningCandidateSnapshot, PlaybackCapabilitySnapshot, PlaybackSelectionPolicy, plan_playback,
@@ -288,6 +288,7 @@ impl fmt::Debug for WebMediaStreamConfiguration {
 
 impl WebMediaStreamConfiguration {
     /// Строит inventory только из candidates, которые S21C planning признаёт playable.
+    #[cfg(test)]
     pub(crate) fn from_yt_dlp_snapshot(
         candidate_snapshot: &YtDlpCandidateSnapshot,
         planning_snapshot: &PlanningCandidateSnapshot,
@@ -296,15 +297,44 @@ impl WebMediaStreamConfiguration {
         active_selection: &YtDlpCandidateSelection,
         preference: WebMediaSelectionPreference,
     ) -> Result<Self, WebMediaStreamModelBuildError> {
+        let active_parent = ExactSelectionIdentity::new(
+            active_selection.exact_identity().clone(),
+            active_selection.semantic_identity().clone(),
+        )
+        .map_err(|_| WebMediaStreamModelBuildError::InvalidActiveCandidateIdentity)?;
+        let neutral_selection = WebMediaSelection::candidate(active_parent);
+        Self::from_yt_dlp_snapshot_with_neutral_selection(
+            candidate_snapshot,
+            planning_snapshot,
+            capabilities,
+            policy,
+            active_selection,
+            &neutral_selection,
+            preference,
+        )
+    }
+
+    /// Строит UI inventory, переиспользуя N01 neutral active selection adapter-а.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_yt_dlp_snapshot_with_neutral_selection(
+        candidate_snapshot: &YtDlpCandidateSnapshot,
+        planning_snapshot: &PlanningCandidateSnapshot,
+        capabilities: PlaybackCapabilitySnapshot<'_>,
+        policy: &PlaybackSelectionPolicy,
+        active_selection: &YtDlpCandidateSelection,
+        neutral_selection: &WebMediaSelection,
+        preference: WebMediaSelectionPreference,
+    ) -> Result<Self, WebMediaStreamModelBuildError> {
         candidate_snapshot
             .validate_planning_snapshot_alignment(planning_snapshot)
             .map_err(|_| WebMediaStreamModelBuildError::CandidateSnapshotAlignmentFailed)?;
         let active_identity = active_selection.exact_identity();
-        let active_parent = ExactSelectionIdentity::new(
-            active_identity.clone(),
-            active_selection.semantic_identity().clone(),
-        )
-        .map_err(|_| WebMediaStreamModelBuildError::InvalidActiveCandidateIdentity)?;
+        let active_parent = neutral_selection.parent().clone();
+        if active_parent.exact() != active_identity
+            || active_parent.semantic() != active_selection.semantic_identity()
+        {
+            return Err(WebMediaStreamModelBuildError::InvalidActiveCandidateIdentity);
+        }
         // BestPlayable оценивает весь inventory один раз и возвращает typed rejection
         // каждого недоступного candidate-а; source order не участвует в selection.
         let availability = plan_playback(

@@ -289,6 +289,13 @@ fn default_and_muxed_without_provider_catalog_remain_honestly_unavailable() {
         configuration.component_selection_reopen_intent(),
         crate::web_media_open::YtDlpComponentSelectionOpenIntent::ProviderDefault
     );
+    assert_eq!(
+        configuration
+            .neutral_selection()
+            .expect("parent-only neutral selection")
+            .shape_kind(),
+        web_media_core::WebMediaSelectionShapeKind::Candidate
+    );
 }
 
 #[test]
@@ -314,7 +321,7 @@ fn matching_catalog_install_canonicalizes_supplied_selection() {
     let supplied_catalog = catalog(identity, FixtureLayout::VideoAndAudio);
     let supplied_selection = selection(&supplied_catalog, 1, 0);
 
-    let configured = configuration_for(active_parent)
+    let configured = configuration_for(active_parent.clone())
         .with_component_variants(Arc::clone(&canonical_catalog), supplied_selection)
         .expect("matching catalog должен установиться");
 
@@ -327,6 +334,14 @@ fn matching_catalog_install_canonicalizes_supplied_selection() {
     assert_eq!(video.active_index, 1);
     assert_eq!(audio.active_index, 0);
     assert_eq!(video.variants[1].height, Some(1080));
+    let neutral_selection = configured
+        .neutral_selection()
+        .expect("installed components form neutral selection");
+    assert_eq!(
+        neutral_selection.shape_kind(),
+        web_media_core::WebMediaSelectionShapeKind::Components
+    );
+    assert_eq!(neutral_selection.parent(), &active_parent);
     assert_eq!(
         configured.component_selection_reopen_intent(),
         crate::web_media_open::YtDlpComponentSelectionOpenIntent::Semantic(

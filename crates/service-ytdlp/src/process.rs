@@ -1,15 +1,22 @@
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use rustiplayer_config::YtDlpConfig;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use web_media_core::ExtractorInvocationReason;
 
 use crate::dto::YtDlpMetadata;
 use crate::embed_recovery::{GenericExtractorImpersonation, candidate_arguments};
 use crate::error::YtDlpServiceError;
+#[cfg(test)]
+use crate::invocation::YtDlpExtractorAdapter;
+use crate::invocation::{
+    ExtractorProcessInvocation, ExtractorProcessLauncher, ExtractorProcessPhase,
+};
 use crate::locator::YtDlpMediaLocator;
 use crate::process_output::{
     ProcessOutputBudgetSignal, YtDlpProcessOutputBudgets, spawn_stderr_reader, spawn_stdout_reader,
@@ -17,7 +24,7 @@ use crate::process_output::{
 };
 use crate::process_tree::{
     OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
-    OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_process,
+    OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_process_with_launcher,
 };
 
 mod recovery;
@@ -34,7 +41,7 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_REPORTED_STDERR_BYTES: usize = 1_048_576;
 
 /// Runtime policy запуска `yt-dlp`, отделённая от parsing/selection логики.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct YtDlpProcessConfig {
     /// Имя или путь к executable.
     executable: String,
@@ -44,12 +51,32 @@ pub(crate) struct YtDlpProcessConfig {
 
     /// Независимые byte/structure budgets single-item process path-а.
     output_budgets: YtDlpProcessOutputBudgets,
+
+    /// Injected launcher текущей adapter instance, общий для primary и recovery.
+    process_launcher: Arc<dyn ExtractorProcessLauncher>,
+
+    /// Неизменяемая пользовательская причина всей extraction operation.
+    invocation_reason: ExtractorInvocationReason,
 }
 
 impl YtDlpProcessConfig {
     /// Строит process policy из пользовательского YtDlp config.
+    #[cfg(test)]
     pub(crate) fn from_yt_dlp_config(
         yt_dlp_config: &YtDlpConfig,
+    ) -> Result<Self, YtDlpServiceError> {
+        Self::from_yt_dlp_config_with_invocation(
+            yt_dlp_config,
+            YtDlpExtractorAdapter::default().process_launcher(),
+            ExtractorInvocationReason::PageMediaResolution,
+        )
+    }
+
+    /// Строит process policy с explicit injected launcher и product reason.
+    pub(crate) fn from_yt_dlp_config_with_invocation(
+        yt_dlp_config: &YtDlpConfig,
+        process_launcher: Arc<dyn ExtractorProcessLauncher>,
+        invocation_reason: ExtractorInvocationReason,
     ) -> Result<Self, YtDlpServiceError> {
         let output_budgets = YtDlpProcessOutputBudgets::from_config(yt_dlp_config)?;
 
@@ -57,12 +84,16 @@ impl YtDlpProcessConfig {
             executable: YT_DLP_EXECUTABLE.to_string(),
             timeout: Duration::from_millis(yt_dlp_config.resolve_timeout_ms),
             output_budgets,
+            process_launcher,
+            invocation_reason,
         })
     }
 
-    /// Строит ту же runtime policy, переводя только config validation в topology error.
-    pub(crate) fn from_yt_dlp_config_for_topology(
+    /// Строит topology policy с тем же launcher/reason contract-ом.
+    pub(crate) fn from_yt_dlp_config_for_topology_with_invocation(
         yt_dlp_config: &YtDlpConfig,
+        process_launcher: Arc<dyn ExtractorProcessLauncher>,
+        invocation_reason: ExtractorInvocationReason,
     ) -> Result<Self, crate::topology::YtDlpTopologyError> {
         let output_budgets = YtDlpProcessOutputBudgets::from_config(yt_dlp_config)
             .map_err(crate::topology::YtDlpTopologyError::process)?;
@@ -71,6 +102,8 @@ impl YtDlpProcessConfig {
             executable: YT_DLP_EXECUTABLE.to_string(),
             timeout: Duration::from_millis(yt_dlp_config.resolve_timeout_ms),
             output_budgets,
+            process_launcher,
+            invocation_reason,
         })
     }
 
@@ -88,6 +121,49 @@ impl YtDlpProcessConfig {
     const fn output_budgets(&self) -> YtDlpProcessOutputBudgets {
         self.output_budgets
     }
+
+    /// Возвращает injected launcher, не раскрывая его concrete type.
+    pub(crate) fn process_launcher(&self) -> &dyn ExtractorProcessLauncher {
+        self.process_launcher.as_ref()
+    }
+
+    /// Создаёт secret-free event для конкретной subprocess phase.
+    pub(crate) const fn invocation(
+        &self,
+        phase: ExtractorProcessPhase,
+    ) -> ExtractorProcessInvocation {
+        ExtractorProcessInvocation::new(self.invocation_reason, phase)
+    }
+
+    /// Связывает instance launcher с phase-specific secret-free event.
+    fn launch_context(&self, phase: ExtractorProcessPhase) -> ProcessLaunchContext<'_> {
+        ProcessLaunchContext {
+            process_launcher: self.process_launcher(),
+            invocation: self.invocation(phase),
+        }
+    }
+}
+
+impl std::fmt::Debug for YtDlpProcessConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("YtDlpProcessConfig")
+            .field("executable", &self.executable)
+            .field("timeout", &self.timeout)
+            .field("output_budgets", &self.output_budgets)
+            .field("process_launcher", &"<injected>")
+            .field("invocation_reason", &self.invocation_reason)
+            .finish()
+    }
+}
+
+/// Один named argument объединяет launcher и typed invocation одного spawn path-а.
+#[derive(Clone, Copy)]
+struct ProcessLaunchContext<'launcher> {
+    /// Instance-owned injected launcher.
+    process_launcher: &'launcher dyn ExtractorProcessLauncher,
+    /// Secret-free reason/phase event.
+    invocation: ExtractorProcessInvocation,
 }
 
 /// Собранный stdout/stderr внешнего процесса.
@@ -148,8 +224,13 @@ pub(crate) fn resolve_yt_dlp_candidate_document_with_cancellation<T: Deserialize
 ) -> Result<T, YtDlpServiceError> {
     let video_url = locator.expose_secret_for_open();
     let impersonation = GenericExtractorImpersonation::for_input_scheme(locator.input_scheme());
-    let primary_document =
-        run_dump_single_json(video_url, impersonation, process_config, is_cancelled)?;
+    let primary_document = run_dump_single_json(
+        video_url,
+        impersonation,
+        process_config,
+        ExtractorProcessPhase::CandidatePrimary,
+        is_cancelled,
+    )?;
     let document = match recover_playable_document_after_platform_hijack(
         video_url,
         &primary_document,
@@ -172,15 +253,17 @@ fn run_dump_single_json(
     video_url: &str,
     impersonation: GenericExtractorImpersonation,
     process_config: &YtDlpProcessConfig,
+    process_phase: ExtractorProcessPhase,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Value, YtDlpServiceError> {
     let command_arguments = candidate_arguments(video_url, impersonation);
-    let command_output = run_process_with_timeout_and_cancellation(
+    let command_output = run_process_with_extractor_invocation(
         process_config.executable.as_str(),
         &command_arguments,
         None,
         process_config.timeout,
         process_config.output_budgets(),
+        process_config.launch_context(process_phase),
         is_cancelled,
     )?;
 
@@ -189,13 +272,14 @@ fn run_dump_single_json(
     serde_json::from_slice(&command_output.stdout).map_err(YtDlpServiceError::invalid_response)
 }
 
-/// Запускает внешний процесс с timeout-ом и cooperative cancellation.
-fn run_process_with_timeout_and_cancellation(
+/// Запускает внешний процесс с typed invocation, timeout-ом и cancellation.
+fn run_process_with_extractor_invocation(
     executable: &str,
     arguments: &[&str],
     current_directory: Option<&Path>,
     timeout: Duration,
     output_budgets: YtDlpProcessOutputBudgets,
+    launch_context: ProcessLaunchContext<'_>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<ProcessOutput, YtDlpServiceError> {
     if timeout.is_zero() {
@@ -216,16 +300,22 @@ fn run_process_with_timeout_and_cancellation(
     if let Some(directory) = current_directory {
         command.current_dir(directory);
     }
-    let mut process =
-        match spawn_owned_process(&mut command, operation_started_at, timeout, is_cancelled) {
-            Ok(process) => process,
-            Err(OwnedProcessSpawnError::Cancellation) => {
-                return Err(YtDlpServiceError::Cancellation);
-            }
-            Err(OwnedProcessSpawnError::Process(error)) => {
-                return Err(YtDlpServiceError::process(error));
-            }
-        };
+    let mut process = match spawn_owned_process_with_launcher(
+        &mut command,
+        operation_started_at,
+        timeout,
+        is_cancelled,
+        launch_context.process_launcher,
+        launch_context.invocation,
+    ) {
+        Ok(process) => process,
+        Err(OwnedProcessSpawnError::Cancellation) => {
+            return Err(YtDlpServiceError::Cancellation);
+        }
+        Err(OwnedProcessSpawnError::Process(error)) => {
+            return Err(YtDlpServiceError::process(error));
+        }
+    };
 
     let stdout = match process.take_stdout() {
         Some(stdout) => stdout,
@@ -324,6 +414,35 @@ fn run_process_with_timeout_and_cancellation(
             )),
         },
     }
+}
+
+/// Test-only wrapper сохраняет focused lifecycle tests на production launcher path-е.
+#[cfg(test)]
+fn run_process_with_timeout_and_cancellation(
+    executable: &str,
+    arguments: &[&str],
+    current_directory: Option<&Path>,
+    timeout: Duration,
+    output_budgets: YtDlpProcessOutputBudgets,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<ProcessOutput, YtDlpServiceError> {
+    let adapter = YtDlpExtractorAdapter::default();
+    let launcher = adapter.process_launcher();
+    run_process_with_extractor_invocation(
+        executable,
+        arguments,
+        current_directory,
+        timeout,
+        output_budgets,
+        ProcessLaunchContext {
+            process_launcher: launcher.as_ref(),
+            invocation: ExtractorProcessInvocation::new(
+                ExtractorInvocationReason::PageMediaResolution,
+                ExtractorProcessPhase::CandidatePrimary,
+            ),
+        },
+        is_cancelled,
+    )
 }
 
 /// Завершает owner после primary failure, сохраняя обе ошибки при cleanup failure.

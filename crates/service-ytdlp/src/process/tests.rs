@@ -113,6 +113,21 @@ fn test_output_budgets() -> YtDlpProcessOutputBudgets {
     .expect("default output budgets валидны")
 }
 
+/// Собирает test process policy через тот же instance-owned launcher contract.
+fn test_process_config(
+    executable: String,
+    timeout: Duration,
+    output_budgets: YtDlpProcessOutputBudgets,
+) -> YtDlpProcessConfig {
+    YtDlpProcessConfig {
+        executable,
+        timeout,
+        output_budgets,
+        process_launcher: crate::YtDlpExtractorAdapter::default().process_launcher(),
+        invocation_reason: web_media_core::ExtractorInvocationReason::PageMediaResolution,
+    }
+}
+
 /// Создаёт маленький explicit budget для exact-boundary regressions.
 fn explicit_output_budgets(
     stdout_bytes: u64,
@@ -238,11 +253,11 @@ fi
     );
     let executable = create_executable_test_script(fixture_directory.path(), &script)
         .expect("fake yt-dlp executable");
-    let process_config = YtDlpProcessConfig {
-        executable: executable.to_string_lossy().into_owned(),
-        timeout: Duration::from_secs(2),
-        output_budgets: test_output_budgets(),
-    };
+    let process_config = test_process_config(
+        executable.to_string_lossy().into_owned(),
+        Duration::from_secs(2),
+        test_output_budgets(),
+    );
 
     let locator = crate::parse_yt_dlp_media_locator("https://cinema.example/watch/42")
         .expect("parse recovery test locator");
@@ -286,11 +301,11 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
     );
     let executable = create_executable_test_script(fixture_directory.path(), &script)
         .expect("fake yt-dlp executable");
-    let process_config = YtDlpProcessConfig {
-        executable: executable.to_string_lossy().into_owned(),
-        timeout: Duration::from_secs(10),
-        output_budgets: test_output_budgets(),
-    };
+    let process_config = test_process_config(
+        executable.to_string_lossy().into_owned(),
+        Duration::from_secs(10),
+        test_output_budgets(),
+    );
 
     let cancellation_started_at = Instant::now();
     let locator = crate::parse_yt_dlp_media_locator("https://cinema.example/watch/42")
@@ -522,11 +537,11 @@ printf '%s' '"}'
 "#;
     let executable = create_executable_test_script(fixture_directory.path(), script)
         .expect("create large candidate fixture");
-    let process_config = YtDlpProcessConfig {
-        executable: executable.to_string_lossy().into_owned(),
-        timeout: Duration::from_secs(5),
-        output_budgets: explicit_output_budgets(2 * 1024 * 1024, 1024, 128),
-    };
+    let process_config = test_process_config(
+        executable.to_string_lossy().into_owned(),
+        Duration::from_secs(5),
+        explicit_output_budgets(2 * 1024 * 1024, 1024, 128),
+    );
     let locator = crate::parse_yt_dlp_media_locator("https://media.invalid/item")
         .expect("valid candidate fixture locator");
 

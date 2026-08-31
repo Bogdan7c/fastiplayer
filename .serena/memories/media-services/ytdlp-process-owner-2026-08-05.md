@@ -38,4 +38,11 @@
 - Inline process tests and their test-only fixtures now live in `src/process/tests.rs`; cleanup, recovery, output-budget, timeout/cancellation and full candidate normalization regressions remain functional.
 - Verification: full Rust 1.96.0 all-features locked `service-ytdlp` suite green (150 unit tests plus all integration/final-acceptance suites; one pre-existing real-system test ignored), strict all-targets Clippy, rustfmt, diff-check and Serena diagnostics.
 
-Related: `mem:core`, `mem:media-services/core`, `mem:media-services/ytdlp-topology-s15-2026-07-20`, `mem:media-services/ytdlp-output-budgets-aud007-2026-08-23`, `mem:testing/s42-core-services-test-layout-2026-08-27`.
+## N03 typed invocation/launcher boundary (2026-08-31)
+
+- `process_tree` остаётся единственным Child/process-group owner-ом, но каждый OS spawn attempt теперь проходит instance-injected `ExtractorProcessLauncher` после `configure_owned_process_group`.
+- `YtDlpProcessConfig` переносит один `ExtractorInvocationReason` и один launcher через candidate/topology/platform-hijack recovery; internal `ExtractorProcessPhase` различает primary candidate, primary topology, write-pages и embed candidate.
+- Production default локальный и immutable; global test hook отсутствует. Cancellation/deadline/output budgets/ETXTBSY retry/finish+pipe join/Drop semantics не менялись.
+- Hermetic spy и real descendant cleanup evidence, exact callsites и gates: `mem:media-services/native-web-ingress-n03-2026-08-31`.
+
+Related: `mem:core`, `mem:media-services/core`, `mem:media-services/ytdlp-topology-s15-2026-07-20`, `mem:media-services/ytdlp-output-budgets-aud007-2026-08-23`, `mem:testing/s42-core-services-test-layout-2026-08-27`, `mem:media-services/native-web-ingress-n03-2026-08-31`.

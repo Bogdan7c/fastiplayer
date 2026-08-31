@@ -16,7 +16,7 @@ use web_media_core::{
     AudioComponentVariant, CodecFamily, CodecKind, ComponentVariantCatalog,
     ComponentVariantCatalogGeneration, ComponentVariantError, ComponentVariantSelection,
     ComponentVariantSelectionRequest, ComponentVariantSemanticSelectionRequest, DynamicRange,
-    ExactSelectionIdentity, VideoComponentVariant,
+    ExactSelectionIdentity, VideoComponentVariant, WebMediaSelection, WebMediaSelectionError,
 };
 
 use super::{WebMediaStreamConfiguration, WebMediaStreamGeneration, known_codec};
@@ -327,6 +327,21 @@ impl WebMediaStreamConfiguration {
             selection,
         )?;
         Ok(self)
+    }
+
+    /// Возвращает N01 selection поверх canonical installed component choice.
+    pub(crate) fn neutral_selection(&self) -> Result<WebMediaSelection, WebMediaSelectionError> {
+        match &self.component_variants {
+            WebMediaComponentVariantConfiguration::Unavailable => {
+                Ok(WebMediaSelection::candidate(self.active_parent.clone()))
+            }
+            WebMediaComponentVariantConfiguration::Installed(installed) => {
+                WebMediaSelection::with_components(
+                    self.active_parent.clone(),
+                    installed.selection.clone(),
+                )
+            }
+        }
     }
 
     /// Строит reopen intent без публикации catalog-а либо exact component identities.

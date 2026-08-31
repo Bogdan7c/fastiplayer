@@ -1,9 +1,11 @@
 use std::time::Duration;
 
 use rustiplayer_config::YtDlpConfig;
+use web_media_core::ExtractorInvocationReason;
 
 use crate::dto::YtDlpMetadata;
 use crate::error::YtDlpServiceError;
+use crate::invocation::YtDlpExtractorAdapter;
 use crate::locator::YtDlpMediaLocator;
 use crate::process::{YtDlpProcessConfig, resolve_yt_dlp_candidate_metadata_with_cancellation};
 
@@ -50,11 +52,31 @@ pub fn resolve_yt_dlp_playlist_metadata_with_config(
     yt_dlp_config: &YtDlpConfig,
     is_cancelled: impl Fn() -> bool,
 ) -> Result<YtDlpPlaylistMetadata, YtDlpServiceError> {
+    YtDlpExtractorAdapter::default().resolve_playlist_metadata_with_cancellation(
+        locator,
+        yt_dlp_config,
+        ExtractorInvocationReason::CollectionTopologyResolution,
+        &is_cancelled,
+    )
+}
+
+/// Реализует metadata adapter method с explicit reason и injected launcher-ом.
+pub(crate) fn resolve_playlist_metadata_with_adapter(
+    adapter: &YtDlpExtractorAdapter,
+    locator: &YtDlpMediaLocator,
+    yt_dlp_config: &YtDlpConfig,
+    invocation_reason: ExtractorInvocationReason,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<YtDlpPlaylistMetadata, YtDlpServiceError> {
     if !yt_dlp_config.enabled {
         return Err(YtDlpServiceError::AdapterDisabled);
     }
 
-    let process_config = YtDlpProcessConfig::from_yt_dlp_config(yt_dlp_config)?;
+    let process_config = YtDlpProcessConfig::from_yt_dlp_config_with_invocation(
+        yt_dlp_config,
+        adapter.process_launcher(),
+        invocation_reason,
+    )?;
     let metadata = resolve_yt_dlp_candidate_metadata_with_cancellation(
         locator,
         &process_config,
