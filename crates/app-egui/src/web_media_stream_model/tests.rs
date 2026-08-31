@@ -100,7 +100,7 @@ fn direct_media_state_does_not_invent_format_choices() {
         "https://user:password@example.test/video.mp4?token=secret",
     )
     .expect("valid direct-media fixture");
-    let source = ActiveMediaSource::DirectMediaUrl(locator);
+    let source = ActiveMediaSource::Web(crate::media_open::WebMediaSourceIntent::direct(locator));
     let model =
         UrlSidebarController::default().model(Some(&source), &PlayerSnapshot::empty(), None);
     let UrlSidebarModel::DirectMedia { source_label, .. } = model else {

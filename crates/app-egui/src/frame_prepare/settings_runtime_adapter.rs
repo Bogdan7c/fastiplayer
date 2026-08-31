@@ -72,10 +72,11 @@ impl FrameSettingsRuntimeAdapter<'_> {
             return AppRouteApplyResult::Applied;
         };
         let playback_window = active_source.playback_window();
-        if matches!(
-            active_source.physical_source(),
-            ActiveMediaSource::DirectMediaUrl(_)
-        ) && !config.rebuild_remote_source
+        if active_source
+            .web_intent()
+            .and_then(crate::media_open::WebMediaSourceIntent::direct_locator)
+            .is_some()
+            && !config.rebuild_remote_source
         {
             // Global web-media quality policy не должна перестраивать direct-media source.
             return AppRouteApplyResult::Applied;
@@ -133,47 +134,75 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         Err(error) => Err(format!("local media rebuild failed: {error:#}")),
                     }
                 }
-                ActiveMediaSource::DirectMediaUrl(source_locator) => {
-                    match resolve_direct_media_startup_media(
-                        &source_locator,
-                        &config.network,
-                        &config.demux,
-                    ) {
-                        Ok(opened_media) => {
-                            let source_label = opened_media.source_label().to_string();
-                            let prepared_media = PreparedMedia::from_external_label(
-                                source_label,
-                                opened_media.into_demuxer(),
-                            )
-                            .with_preferred_video_codecs(&preferred_runtime_codecs);
-                            let safe_label =
-                                crate::media_open::SafeMediaLabel::from_service_safe_label(
-                                    source_locator.safe_label(),
-                                );
-                            Ok(crate::state::PreparedSingleMediaOpen::new(
-                                prepared_media,
-                                ActiveMediaSource::DirectMediaUrl(source_locator),
-                                safe_label,
-                            ))
+                ActiveMediaSource::Web(web_intent) => match web_intent.into_adapter_bridge() {
+                    crate::media_open::WebMediaSourceAdapterBridge::Direct {
+                        locator: source_locator,
+                    } => {
+                        match resolve_direct_media_startup_media(
+                            &source_locator,
+                            &config.network,
+                            &config.demux,
+                        ) {
+                            Ok(opened_media) => {
+                                let source_label = opened_media.source_label().to_string();
+                                let tracks = opened_media.tracks().to_vec();
+                                let duration = opened_media.duration();
+                                let metadata =
+                                    opened_media.media_metadata().unwrap_or_default().tags;
+                                let prepared_media = crate::media_open::compose_prepared_web_media(
+                                    &source_label,
+                                    opened_media.into_demuxer(),
+                                    crate::media_open::PreparedWebMediaAttachments::default(),
+                                )
+                                .expect("direct VOD has no conflicting timeline attachments")
+                                .with_preferred_video_codecs(&preferred_runtime_codecs);
+                                let safe_label =
+                                    crate::media_open::SafeMediaLabel::from_service_safe_label(
+                                        source_locator.safe_label(),
+                                    );
+                                let source_intent =
+                                    crate::media_open::WebMediaSourceIntent::direct(source_locator);
+                                Ok(crate::state::PreparedSingleMediaOpen::new(
+                                    prepared_media,
+                                    ActiveMediaSource::Web(source_intent.clone()),
+                                    safe_label.clone(),
+                                )
+                                .with_descriptor(
+                                    crate::media_open::PreparedMediaDescriptor::Web(
+                                        crate::media_open::PreparedWebMediaEnvelope::new(
+                                            tracks,
+                                            duration,
+                                            metadata,
+                                            source_intent,
+                                            safe_label,
+                                            None,
+                                            None,
+                                        ),
+                                    ),
+                                ))
+                            }
+                            Err(error) => Err(format!("direct media rebuild failed: {error:#}")),
                         }
-                        Err(error) => Err(format!("direct media rebuild failed: {error:#}")),
                     }
-                }
-                ActiveMediaSource::NativeHlsUrl { source, selection } => {
-                    let mut native_port =
-                        crate::startup_media::native_hls::ProductionNativeHlsAdmissionPort::new(
-                            crate::startup_media::native_hls::NativeHlsPreparationRequest {
-                                source: &source,
-                                expected_selection: Some(&selection),
-                                network_config: &config.network,
-                                demux_config: &config.demux,
-                                preferred_video_codec_order: &config.preferred_video_codec_order,
-                                preferred_video_height: config.web_media.preferred_video_height,
-                                start: web_media_hls::HlsVodStartIntent::Beginning,
-                                cancellation: source_core::CancellationToken::new(),
-                            },
-                        );
-                    match crate::startup_media::native_hls::NativeHlsAdmissionPort::prepare(
+                    crate::media_open::WebMediaSourceAdapterBridge::NativeHls {
+                        source,
+                        selection,
+                    } => {
+                        let mut native_port =
+                            crate::startup_media::native_hls::ProductionNativeHlsAdmissionPort::new(
+                                crate::startup_media::native_hls::NativeHlsPreparationRequest {
+                                    source: &source,
+                                    expected_selection: Some(&selection),
+                                    network_config: &config.network,
+                                    demux_config: &config.demux,
+                                    preferred_video_codec_order: &config
+                                        .preferred_video_codec_order,
+                                    preferred_video_height: config.web_media.preferred_video_height,
+                                    start: web_media_hls::HlsVodStartIntent::Beginning,
+                                    cancellation: source_core::CancellationToken::new(),
+                                },
+                            );
+                        match crate::startup_media::native_hls::NativeHlsAdmissionPort::prepare(
                         &mut native_port,
                     ) {
                         Ok(crate::startup_media::native_hls::NativeHlsAttempt::Prepared(
@@ -187,18 +216,33 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                 .unwrap_or_default()
                                 .tags;
                             let safe_label = source.safe_label().clone();
-                            let active_source = ActiveMediaSource::NativeHlsUrl {
+                            let source_intent = crate::media_open::WebMediaSourceIntent::native_hls_vod(
                                 source,
-                                selection: prepared.selection,
-                            };
-                            let prepared_media = PreparedMedia::from_external_label(
+                                prepared.selection,
+                            );
+                            let active_source = ActiveMediaSource::Web(source_intent.clone());
+                            let prepared_media = match crate::media_open::compose_prepared_web_media(
                                 safe_label.as_str(),
                                 prepared.demuxer,
-                            )
-                            .with_worker_receipted_demux_seek_policy(
-                                prepared.seek_port,
-                                player_core::PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget,
-                            )
+                                crate::media_open::PreparedWebMediaAttachments {
+                                    demux_seek: Some(
+                                        crate::media_open::PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
+                                            prepared.seek_port,
+                                        ),
+                                    ),
+                                    initial_position: Some(prepared.initial_position),
+                                    ..crate::media_open::PreparedWebMediaAttachments::default()
+                                },
+                            ) {
+                                Ok(prepared_media) => prepared_media,
+                                Err(error) => {
+                                    return AppRouteApplyResult::Failed {
+                                        message: format!(
+                                            "native HLS composition failed: {error}"
+                                        ),
+                                    };
+                                }
+                            }
                             .with_preferred_video_codecs(&preferred_runtime_codecs);
                             Ok(crate::state::PreparedSingleMediaOpen::new(
                                 prepared_media,
@@ -206,13 +250,17 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                 safe_label.clone(),
                             )
                             .with_descriptor(
-                                crate::media_open::PreparedMediaDescriptor::NativeHls {
+                                crate::media_open::PreparedMediaDescriptor::Web(
+                                    crate::media_open::PreparedWebMediaEnvelope::new(
                                     tracks,
                                     duration,
                                     metadata,
-                                    source: active_source,
+                                    source_intent,
                                     safe_label,
-                                },
+                                    None,
+                                    None,
+                                ),
+                                ),
                             ))
                         }
                         Ok(
@@ -224,56 +272,77 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         )),
                         Err(error) => Err(format!("native HLS media rebuild failed: {error:#}")),
                     }
-                }
-                ActiveMediaSource::YtDlpUrl {
-                    source_locator,
-                    candidate_selection,
-                    composed_selection,
-                    stream_configuration,
-                    ..
-                } => {
-                    let selection_intent = if config.reselect_yt_dlp_stream {
-                        crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable
-                    } else if let Some(composed) = composed_selection {
-                        crate::web_media_open::YtDlpCandidateOpenIntent::composed(
-                            composed,
-                            candidate_selection,
-                            stream_configuration.preference(),
-                        )
-                    } else {
-                        crate::web_media_open::YtDlpCandidateOpenIntent::exact_preserving_installed_stream_configuration(
+                    }
+                    crate::media_open::WebMediaSourceAdapterBridge::Extractor {
+                        locator: source_locator,
+                        candidate_selection,
+                        composed_selection,
+                        stream_configuration,
+                        ..
+                    } => {
+                        let selection_intent = if config.reselect_yt_dlp_stream {
+                            crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable
+                        } else if let Some(composed) = composed_selection {
+                            crate::web_media_open::YtDlpCandidateOpenIntent::composed(
+                                composed,
+                                candidate_selection,
+                                stream_configuration.preference(),
+                            )
+                        } else {
+                            crate::web_media_open::YtDlpCandidateOpenIntent::exact_preserving_installed_stream_configuration(
                             candidate_selection,
                             &stream_configuration,
                         )
-                    };
-                    let system_capabilities =
-                        probe_system_capabilities(self.renderer.render_capabilities());
-                    match crate::web_media_open::prepare_yt_dlp_web_media(
-                        &source_locator,
-                        &config.network,
-                        &config.web_media,
-                        &config.yt_dlp,
-                        &config.demux,
-                        &config.preferred_video_codec_order,
-                        &system_capabilities,
-                        self.app_state.audio_decode_capability_snapshot(),
-                        selection_intent,
-                        source_core::CancellationToken::new(),
-                        || false,
-                    ) {
-                        Ok(prepared) => {
-                            let tracks = prepared.demuxer.tracks().to_vec();
-                            let duration = prepared.demuxer.duration();
-                            let metadata =
-                                prepared.demuxer.media_metadata().unwrap_or_default().tags;
-                            let prepared_media =
-                                match crate::media_open::prepare_yt_dlp_player_media(
+                        };
+                        let system_capabilities =
+                            probe_system_capabilities(self.renderer.render_capabilities());
+                        match crate::web_media_open::prepare_yt_dlp_web_media(
+                            &source_locator,
+                            &config.network,
+                            &config.web_media,
+                            &config.yt_dlp,
+                            &config.demux,
+                            &config.preferred_video_codec_order,
+                            &system_capabilities,
+                            self.app_state.audio_decode_capability_snapshot(),
+                            selection_intent,
+                            source_core::CancellationToken::new(),
+                            || false,
+                        ) {
+                            Ok(prepared) => {
+                                let tracks = prepared.demuxer.tracks().to_vec();
+                                let demux_duration = prepared.playback_window.and_then(|window| {
+                                    window.end_exclusive().and_then(|end| {
+                                        end.as_duration().checked_sub(window.start().as_duration())
+                                    })
+                                });
+                                let demux_duration =
+                                    demux_duration.or_else(|| prepared.demuxer.duration());
+                                let demux_metadata =
+                                    prepared.demuxer.media_metadata().unwrap_or_default().tags;
+                                let playlist_duration =
+                                    crate::media_open::service_duration_for_timeline(
+                                        prepared.timeline_port.as_ref(),
+                                        prepared.playlist_metadata.duration(),
+                                    );
+                                let (duration, metadata) =
+                                    crate::media_open::merge_yt_dlp_playlist_metadata(
+                                        demux_duration,
+                                        demux_metadata,
+                                        prepared.playlist_metadata.title(),
+                                        playlist_duration,
+                                    );
+                                let prepared_media =
+                                match crate::media_open::compose_prepared_web_media(
                                     source_locator.safe_label(),
                                     prepared.demuxer,
-                                    crate::media_open::YtDlpPreparedMediaAttachments {
+                                    crate::media_open::PreparedWebMediaAttachments {
                                         timeline_port: prepared.timeline_port,
-                                        demux_seek_port: prepared.demux_seek_port,
+                                        demux_seek: prepared.demux_seek_port.map(
+                                            crate::media_open::PreparedWebMediaSeekAttachment::WorkerReceipted,
+                                        ),
                                         playback_window: prepared.playback_window,
+                                        initial_position: None,
                                     },
                                 ) {
                                     Ok(prepared_media) => prepared_media,
@@ -285,36 +354,45 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                         };
                                     }
                                 };
-                            let safe_label =
-                                crate::media_open::SafeMediaLabel::from_service_safe_label(
-                                    source_locator.safe_label(),
-                                );
-                            let source = ActiveMediaSource::YtDlpUrl {
-                                source_locator,
-                                candidate_selection: Box::new(prepared.candidate_selection),
-                                composed_selection: prepared.composed_selection,
-                                stream_configuration: Box::new(prepared.stream_configuration),
-                                catalog_attachment: prepared.catalog_attachment,
-                            };
-                            Ok(crate::state::PreparedSingleMediaOpen::new(
-                                prepared_media,
-                                source.clone(),
-                                safe_label.clone(),
-                            )
-                            .with_descriptor(
-                                crate::media_open::PreparedMediaDescriptor::YtDlp {
-                                    tracks,
-                                    duration,
-                                    metadata,
-                                    source,
-                                    safe_label,
-                                    vod_endpoint_recovery: prepared.vod_endpoint_recovery,
-                                },
-                            ))
+                                let safe_label =
+                                    crate::media_open::SafeMediaLabel::from_service_safe_label(
+                                        source_locator.safe_label(),
+                                    );
+                                let source_intent =
+                                    crate::media_open::WebMediaSourceIntent::extractor(
+                                        source_locator,
+                                        prepared.presentation,
+                                        prepared.neutral_selection,
+                                        prepared.candidate_selection,
+                                        prepared.composed_selection,
+                                        prepared.stream_configuration,
+                                        prepared.catalog_attachment,
+                                        prepared.extractor_reason,
+                                    );
+                                let source = ActiveMediaSource::Web(source_intent.clone());
+                                Ok(crate::state::PreparedSingleMediaOpen::new(
+                                    prepared_media,
+                                    source.clone(),
+                                    safe_label.clone(),
+                                )
+                                .with_descriptor(
+                                    crate::media_open::PreparedMediaDescriptor::Web(
+                                        crate::media_open::PreparedWebMediaEnvelope::new(
+                                            tracks,
+                                            duration,
+                                            metadata,
+                                            source_intent,
+                                            safe_label,
+                                            prepared.playback_window,
+                                            prepared.vod_endpoint_recovery,
+                                        ),
+                                    ),
+                                ))
+                            }
+                            Err(error) => Err(format!("YtDlp media rebuild failed: {error:#}")),
                         }
-                        Err(error) => Err(format!("YtDlp media rebuild failed: {error:#}")),
                     }
-                }
+                },
                 ActiveMediaSource::PlaybackWindow { .. } => {
                     unreachable!("into_physical_source removes playback-window wrappers")
                 }

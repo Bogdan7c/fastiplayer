@@ -51,12 +51,12 @@ fn playlist_runtime_with_installed_media(value: u64) -> (PlaylistRuntime, Active
     let binding = playlist_runtime
         .bind_resumed_app_state()
         .expect("test runtime принимает resumed AppState binding");
-    let direct_source = ActiveMediaSource::DirectMediaUrl(
+    let direct_source = ActiveMediaSource::Web(crate::media_open::WebMediaSourceIntent::direct(
         service_direct_media::parse_direct_media_url(&format!(
             "https://media.example.test/recovery-identity-{value}.mp4"
         ))
         .expect("direct identity fixture должна быть valid"),
-    );
+    ));
     let active_media = playlist_runtime
         .register_successful_strong_install(
             MediaOpenRequestId::from_non_zero(non_zero(value)),

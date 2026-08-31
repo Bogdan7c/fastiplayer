@@ -154,16 +154,33 @@ pub(crate) fn prepare_native_hls_vod(
 }
 
 /// Переносит уже доказанный native HLS runtime через единственный player preparation boundary.
+#[cfg(test)]
 pub(crate) fn prepare_native_hls_player_media(
     safe_label: &str,
     prepared: PreparedNativeHlsVod,
 ) -> std::result::Result<player_core::PreparedMedia, player_core::PreparedInitialPositionError> {
-    player_core::PreparedMedia::from_external_label(safe_label, prepared.demuxer)
-        .with_worker_receipted_demux_seek_policy(
-            prepared.seek_port,
-            PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget,
-        )
-        .with_prepared_initial_position(prepared.initial_position)
+    let result = crate::media_open::compose_prepared_web_media(
+        safe_label,
+        prepared.demuxer,
+        crate::media_open::PreparedWebMediaAttachments {
+            demux_seek: Some(
+                crate::media_open::PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
+                    prepared.seek_port,
+                ),
+            ),
+            initial_position: Some(prepared.initial_position),
+            ..crate::media_open::PreparedWebMediaAttachments::default()
+        },
+    );
+    match result {
+        Ok(prepared_media) => Ok(prepared_media),
+        Err(crate::media_open::PreparedWebMediaCompositionError::InitialPosition(error)) => {
+            Err(error)
+        }
+        Err(crate::media_open::PreparedWebMediaCompositionError::TimelineMode(_)) => {
+            unreachable!("native HLS compatibility fixture has no dynamic timeline")
+        }
+    }
 }
 
 struct HlsPreparedDemuxSeekPort {

@@ -31,67 +31,43 @@ impl MediaOpenSourceRequest {
     pub(crate) fn with_queue_preload_budget(self, budget: QueuePreloadResourceBudget) -> Self {
         match self {
             request @ Self::Local { .. } => request,
-            Self::Direct {
-                locator,
-                mut network_config,
-                demux_config,
-            } => {
-                limit_network_resources(&mut network_config, budget.direct_component_mebibytes());
-                Self::Direct {
-                    locator,
-                    network_config,
-                    demux_config,
-                }
-            }
-            Self::NativeHls {
-                source,
-                intent,
-                mut network_config,
-                web_media_config,
-                yt_dlp_config,
-                demux_config,
-                preferred_video_codec_order,
-                system_capabilities,
-                audio_capabilities,
-            } => {
-                // Master playlist может доказать separate A/V, поэтому каждому component-у
-                // оставляем ту же половину общего bounded budget, что extractor path-у.
-                limit_network_resources(&mut network_config, budget.ytdlp_component_mebibytes());
-                Self::NativeHls {
-                    source,
-                    intent,
-                    network_config,
-                    web_media_config,
-                    yt_dlp_config,
-                    demux_config,
-                    preferred_video_codec_order,
-                    system_capabilities,
-                    audio_capabilities,
-                }
-            }
-            Self::YtDlp {
-                locator,
-                selection_intent,
-                mut network_config,
-                web_media_config,
-                yt_dlp_config,
-                demux_config,
-                preferred_video_codec_order,
-                system_capabilities,
-                audio_capabilities,
-            } => {
-                limit_network_resources(&mut network_config, budget.ytdlp_component_mebibytes());
-                Self::YtDlp {
-                    locator,
-                    selection_intent,
-                    network_config,
-                    web_media_config,
-                    yt_dlp_config,
-                    demux_config,
-                    preferred_video_codec_order,
-                    system_capabilities,
-                    audio_capabilities,
-                }
+            Self::Web(request) => {
+                let request = match request.into_adapter() {
+                    super::web::WebMediaOpenAdapterView::Direct {
+                        locator,
+                        mut network_config,
+                        demux_config,
+                    } => {
+                        limit_network_resources(
+                            &mut network_config,
+                            budget.direct_component_mebibytes(),
+                        );
+                        super::WebMediaOpenRequest::direct(locator, network_config, demux_config)
+                    }
+                    super::web::WebMediaOpenAdapterView::NativeHls {
+                        source,
+                        intent,
+                        mut settings,
+                    } => {
+                        limit_network_resources(
+                            &mut settings.network_config,
+                            budget.ytdlp_component_mebibytes(),
+                        );
+                        super::WebMediaOpenRequest::native_hls(source, intent, settings)
+                    }
+                    super::web::WebMediaOpenAdapterView::Extractor {
+                        locator,
+                        selection_intent,
+                        mut settings,
+                    } => {
+                        limit_network_resources(
+                            &mut settings.network_config,
+                            budget.ytdlp_component_mebibytes(),
+                        );
+                        super::WebMediaOpenRequest::extractor(locator, selection_intent, settings)
+                    }
+                };
+                Self::Web(request)
             }
             Self::PlaybackWindow {
                 source,
@@ -129,6 +105,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::media_open::WebMediaOpenRequest;
+    use crate::media_open::web::WebMediaOpenAdapterView;
 
     #[test]
     fn caps_nested_network_request_without_changing_identity() {
@@ -148,11 +126,11 @@ mod tests {
             ..rustiplayer_config::NetworkConfig::default()
         };
         let request = MediaOpenSourceRequest::PlaybackWindow {
-            source: Box::new(MediaOpenSourceRequest::Direct {
-                locator: direct_locator.clone(),
+            source: Box::new(MediaOpenSourceRequest::Web(WebMediaOpenRequest::direct(
+                direct_locator.clone(),
                 network_config,
-                demux_config: rustiplayer_config::PlayerDemuxConfig::default(),
-            }),
+                rustiplayer_config::PlayerDemuxConfig::default(),
+            ))),
             semantic_identity,
         };
 
@@ -166,11 +144,14 @@ mod tests {
         else {
             panic!("projection must preserve playback-window boundary");
         };
-        let MediaOpenSourceRequest::Direct {
+        let MediaOpenSourceRequest::Web(web_request) = *source else {
+            panic!("projection must preserve neutral web boundary");
+        };
+        let WebMediaOpenAdapterView::Direct {
             locator,
             network_config,
             ..
-        } = *source
+        } = web_request.into_adapter()
         else {
             panic!("projection must preserve direct source kind");
         };
@@ -193,11 +174,11 @@ mod tests {
         let direct_locator =
             service_direct_media::parse_direct_media_url("https://example.com/already-small.mp4")
                 .expect("direct locator parsed");
-        let projected_direct = MediaOpenSourceRequest::Direct {
-            locator: direct_locator,
-            network_config: small_network_config,
-            demux_config: rustiplayer_config::PlayerDemuxConfig::default(),
-        }
+        let projected_direct = MediaOpenSourceRequest::Web(WebMediaOpenRequest::direct(
+            direct_locator,
+            small_network_config,
+            rustiplayer_config::PlayerDemuxConfig::default(),
+        ))
         .with_queue_preload_budget(QueuePreloadResourceBudget::from_validated_config(64));
         let projected_local = MediaOpenSourceRequest::Local {
             path: PathBuf::from("fixture.flac"),
@@ -206,8 +187,12 @@ mod tests {
         }
         .with_queue_preload_budget(QueuePreloadResourceBudget::from_validated_config(64));
 
-        let MediaOpenSourceRequest::Direct { network_config, .. } = projected_direct else {
-            panic!("direct request kind is stable");
+        let MediaOpenSourceRequest::Web(web_request) = projected_direct else {
+            panic!("neutral web request boundary is stable");
+        };
+        let WebMediaOpenAdapterView::Direct { network_config, .. } = web_request.into_adapter()
+        else {
+            panic!("direct adapter kind is stable inside neutral web request");
         };
         assert_eq!(network_config.memory_cache_mb, 64);
         assert_eq!(network_config.read_ahead_mb, 24);

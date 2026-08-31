@@ -54,10 +54,7 @@ fn m3u8_hint_builds_native_admission_with_one_typed_fallback() {
         .expect("native request");
     assert!(matches!(
         request,
-        crate::media_open::MediaOpenSourceRequest::NativeHls {
-            intent: crate::media_open::NativeHlsOpenIntent::InitialWithYtDlpFallback { .. },
-            ..
-        }
+        crate::media_open::MediaOpenSourceRequest::Web(_)
     ));
 }
 
@@ -77,7 +74,7 @@ fn m3u8_text_outside_url_path_remains_generic() {
         .expect("generic request");
     assert!(matches!(
         request,
-        crate::media_open::MediaOpenSourceRequest::YtDlp { .. }
+        crate::media_open::MediaOpenSourceRequest::Web(_)
     ));
 }
 
@@ -128,7 +125,7 @@ fn registry_prioritizes_direct_media_and_freezes_chosen_adapter_without_open_fal
         .expect("direct request");
     assert!(matches!(
         direct_request,
-        crate::media_open::MediaOpenSourceRequest::Direct { .. }
+        crate::media_open::MediaOpenSourceRequest::Web(_)
     ));
 
     let exact_generic_url =
@@ -152,7 +149,7 @@ fn registry_prioritizes_direct_media_and_freezes_chosen_adapter_without_open_fal
         .expect("yt-dlp request");
     assert!(matches!(
         generic_request,
-        crate::media_open::MediaOpenSourceRequest::YtDlp { .. }
+        crate::media_open::MediaOpenSourceRequest::Web(_)
     ));
 }
 

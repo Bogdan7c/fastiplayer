@@ -1,12 +1,11 @@
 //! Production adapters существующих local/direct/YtDlp preparation owners.
 
-use std::sync::Arc;
-
-use player_core::PreparedMedia;
-
+use super::web::WebMediaOpenAdapterView;
 use super::{
-    ActiveMediaSource, MediaOpenSourceRequest, MediaPreparationFailureKind, NativeHlsOpenIntent,
-    PreparedMediaDescriptor, PreparedMediaOpen, SafeMediaLabel,
+    MediaOpenSourceRequest, MediaPreparationFailureKind, NativeHlsOpenIntent,
+    PreparedMediaDescriptor, PreparedMediaOpen, PreparedWebMediaAttachments,
+    PreparedWebMediaEnvelope, PreparedWebMediaSeekAttachment, SafeMediaLabel, WebMediaOpenRequest,
+    WebMediaOpenSettings, WebMediaSourceIntent, compose_prepared_web_media,
 };
 
 /// Выполняет ровно один source-specific preparation flow.
@@ -51,13 +50,14 @@ pub(super) fn prepare_source(
                 }
             })
         }
-        MediaOpenSourceRequest::Direct {
-            locator,
-            network_config,
-            demux_config,
-        } => {
-            let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
-            let opened = crate::startup_media::resolve_direct_media_startup_media(
+        MediaOpenSourceRequest::Web(request) => match request.into_adapter() {
+            WebMediaOpenAdapterView::Direct {
+                locator,
+                network_config,
+                demux_config,
+            } => {
+                let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
+                let opened = crate::startup_media::resolve_direct_media_startup_media(
                 &locator,
                 &network_config,
                 &demux_config,
@@ -66,147 +66,166 @@ pub(super) fn prepare_source(
                 tracing::warn!(source = %safe_label, error = %error, "Подготовка direct media завершилась ошибкой");
                 MediaPreparationFailureKind::DirectOpen
             })?;
-            if cancellation.is_cancelled() {
-                return Err(MediaPreparationFailureKind::Cancelled);
+                if cancellation.is_cancelled() {
+                    return Err(MediaPreparationFailureKind::Cancelled);
+                }
+                let tracks = opened.tracks().to_vec();
+                let duration = opened.duration();
+                let metadata = opened.media_metadata().unwrap_or_default().tags;
+                let prepared_media = compose_prepared_web_media(
+                    safe_label.as_str(),
+                    opened.into_demuxer(),
+                    PreparedWebMediaAttachments::default(),
+                )
+                .expect("direct VOD has no conflicting timeline attachments");
+                let source = WebMediaSourceIntent::direct(locator);
+                Ok(PreparedMediaOpen {
+                    prepared_media,
+                    descriptor: PreparedMediaDescriptor::Web(PreparedWebMediaEnvelope::new(
+                        tracks, duration, metadata, source, safe_label, None, None,
+                    )),
+                })
             }
-            let tracks = opened.tracks().to_vec();
-            let duration = opened.duration();
-            let metadata = opened.media_metadata().unwrap_or_default().tags;
-            let prepared_media =
-                PreparedMedia::from_external_label(safe_label.as_str(), opened.into_demuxer());
-            Ok(PreparedMediaOpen {
-                prepared_media,
-                descriptor: PreparedMediaDescriptor::Direct {
-                    tracks,
-                    duration,
-                    metadata,
-                    source: ActiveMediaSource::DirectMediaUrl(locator),
-                    safe_label,
-                },
-            })
-        }
-        MediaOpenSourceRequest::NativeHls {
-            source,
-            intent,
-            network_config,
-            web_media_config,
-            yt_dlp_config,
-            demux_config,
-            preferred_video_codec_order,
-            system_capabilities,
-            audio_capabilities,
-        } => {
-            let safe_label = source.safe_label().clone();
-            let (expected_selection, fallback_locator) = match intent {
-                NativeHlsOpenIntent::InitialWithYtDlpFallback { fallback_locator } => {
-                    (None, Some(fallback_locator))
-                }
-                NativeHlsOpenIntent::ExactSelection(selection) => (Some(selection), None),
-            };
-            let mut port = crate::startup_media::native_hls::ProductionNativeHlsAdmissionPort::new(
-                crate::startup_media::native_hls::NativeHlsPreparationRequest {
-                    source: &source,
-                    expected_selection: expected_selection.as_ref(),
-                    network_config: &network_config,
-                    demux_config: &demux_config,
-                    preferred_video_codec_order: &preferred_video_codec_order,
-                    preferred_video_height: web_media_config.preferred_video_height,
-                    start: web_media_hls::HlsVodStartIntent::Beginning,
-                    cancellation: cancellation.source_token(),
-                },
-            );
-            let attempt =
-                crate::startup_media::native_hls::NativeHlsAdmissionPort::prepare(&mut port)
-                    .map_err(|error| {
-                        tracing::warn!(
-                            source = %safe_label,
-                            error = %error,
-                            "Подготовка native HLS VOD завершилась ошибкой"
-                        );
-                        if cancellation.is_cancelled() {
-                            MediaPreparationFailureKind::Cancelled
-                        } else {
-                            MediaPreparationFailureKind::NativeHlsOpen
-                        }
-                    })?;
-            match attempt {
-                crate::startup_media::native_hls::NativeHlsAttempt::Prepared(prepared) => {
-                    if cancellation.is_cancelled() {
-                        return Err(MediaPreparationFailureKind::Cancelled);
+            WebMediaOpenAdapterView::NativeHls {
+                source,
+                intent,
+                settings,
+            } => {
+                let WebMediaOpenSettings {
+                    network_config,
+                    web_media_config,
+                    yt_dlp_config,
+                    demux_config,
+                    preferred_video_codec_order,
+                    system_capabilities,
+                    audio_capabilities,
+                } = settings;
+                let safe_label = source.safe_label().clone();
+                let (expected_selection, fallback_locator) = match intent {
+                    NativeHlsOpenIntent::InitialWithYtDlpFallback { fallback_locator } => {
+                        (None, Some(fallback_locator))
                     }
-                    let tracks = prepared.tracks().to_vec();
-                    let duration = prepared.duration();
-                    let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
-                    let active_source = ActiveMediaSource::NativeHlsUrl {
-                        source,
-                        selection: prepared.selection,
-                    };
-                    let prepared_media =
-                        PreparedMedia::from_external_label(safe_label.as_str(), prepared.demuxer)
-                            .with_worker_receipted_demux_seek_policy(
-                            prepared.seek_port,
-                            player_core::PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget,
-                        );
-                    Ok(PreparedMediaOpen {
-                        prepared_media,
-                        descriptor: PreparedMediaDescriptor::NativeHls {
-                            tracks,
-                            duration,
-                            metadata,
-                            source: active_source,
-                            safe_label,
+                    NativeHlsOpenIntent::ExactSelection(selection) => (Some(selection), None),
+                };
+                let mut port =
+                    crate::startup_media::native_hls::ProductionNativeHlsAdmissionPort::new(
+                        crate::startup_media::native_hls::NativeHlsPreparationRequest {
+                            source: &source,
+                            expected_selection: expected_selection.as_ref(),
+                            network_config: &network_config,
+                            demux_config: &demux_config,
+                            preferred_video_codec_order: &preferred_video_codec_order,
+                            preferred_video_height: web_media_config.preferred_video_height,
+                            start: web_media_hls::HlsVodStartIntent::Beginning,
+                            cancellation: cancellation.source_token(),
                         },
-                    })
-                }
-                crate::startup_media::native_hls::NativeHlsAttempt::RequiresYtDlpFallback(
-                    reason,
-                ) => {
-                    let Some(locator) = fallback_locator else {
-                        // Успешный native install намеренно не хранит extractor locator:
-                        // exact reopen не имеет права молча сменить semantic stream.
-                        tracing::warn!(
+                    );
+                let attempt =
+                    crate::startup_media::native_hls::NativeHlsAdmissionPort::prepare(&mut port)
+                        .map_err(|error| {
+                            tracing::warn!(
+                                source = %safe_label,
+                                error = %error,
+                                "Подготовка native HLS VOD завершилась ошибкой"
+                            );
+                            if cancellation.is_cancelled() {
+                                MediaPreparationFailureKind::Cancelled
+                            } else {
+                                MediaPreparationFailureKind::NativeHlsOpen
+                            }
+                        })?;
+                match attempt {
+                    crate::startup_media::native_hls::NativeHlsAttempt::Prepared(prepared) => {
+                        if cancellation.is_cancelled() {
+                            return Err(MediaPreparationFailureKind::Cancelled);
+                        }
+                        let tracks = prepared.tracks().to_vec();
+                        let duration = prepared.duration();
+                        let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
+                        let active_source =
+                            WebMediaSourceIntent::native_hls_vod(source, prepared.selection);
+                        let prepared_media = compose_prepared_web_media(
+                            safe_label.as_str(),
+                            prepared.demuxer,
+                            PreparedWebMediaAttachments {
+                                demux_seek: Some(
+                                    PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
+                                        prepared.seek_port,
+                                    ),
+                                ),
+                                initial_position: Some(prepared.initial_position),
+                                ..PreparedWebMediaAttachments::default()
+                            },
+                        )
+                        .expect("native HLS VOD has no conflicting timeline attachments");
+                        Ok(PreparedMediaOpen {
+                            prepared_media,
+                            descriptor: PreparedMediaDescriptor::Web(
+                                PreparedWebMediaEnvelope::new(
+                                    tracks,
+                                    duration,
+                                    metadata,
+                                    active_source,
+                                    safe_label,
+                                    None,
+                                    None,
+                                ),
+                            ),
+                        })
+                    }
+                    crate::startup_media::native_hls::NativeHlsAttempt::RequiresYtDlpFallback(
+                        reason,
+                    ) => {
+                        let Some(locator) = fallback_locator else {
+                            // Успешный native install намеренно не хранит extractor locator:
+                            // exact reopen не имеет права молча сменить semantic stream.
+                            tracing::warn!(
+                                source = %safe_label,
+                                ?reason,
+                                "Exact native HLS reopen отклонён без extractor fallback"
+                            );
+                            return Err(MediaPreparationFailureKind::NativeHlsOpen);
+                        };
+                        tracing::info!(
                             source = %safe_label,
                             ?reason,
-                            "Exact native HLS reopen отклонён без extractor fallback"
+                            "Initial native HLS admission передан единственному YtDlp fallback"
                         );
-                        return Err(MediaPreparationFailureKind::NativeHlsOpen);
-                    };
-                    tracing::info!(
-                        source = %safe_label,
-                        ?reason,
-                        "Initial native HLS admission передан единственному YtDlp fallback"
-                    );
-                    prepare_source(
-                        MediaOpenSourceRequest::YtDlp {
-                            locator,
-                            selection_intent:
+                        prepare_source(
+                            MediaOpenSourceRequest::Web(WebMediaOpenRequest::extractor(
+                                locator,
                                 crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
-                            network_config,
-                            web_media_config,
-                            yt_dlp_config,
-                            demux_config,
-                            preferred_video_codec_order,
-                            system_capabilities,
-                            audio_capabilities,
-                        },
-                        cancellation,
-                    )
+                                WebMediaOpenSettings {
+                                    network_config,
+                                    web_media_config,
+                                    yt_dlp_config,
+                                    demux_config,
+                                    preferred_video_codec_order,
+                                    system_capabilities,
+                                    audio_capabilities,
+                                },
+                            )),
+                            cancellation,
+                        )
+                    }
                 }
             }
-        }
-        MediaOpenSourceRequest::YtDlp {
-            locator,
-            selection_intent,
-            network_config,
-            web_media_config,
-            yt_dlp_config,
-            demux_config,
-            preferred_video_codec_order,
-            system_capabilities,
-            audio_capabilities,
-        } => {
-            let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
-            let prepared = crate::web_media_open::prepare_yt_dlp_web_media(
+            WebMediaOpenAdapterView::Extractor {
+                locator,
+                selection_intent,
+                settings,
+            } => {
+                let WebMediaOpenSettings {
+                    network_config,
+                    web_media_config,
+                    yt_dlp_config,
+                    demux_config,
+                    preferred_video_codec_order,
+                    system_capabilities,
+                    audio_capabilities,
+                } = settings;
+                let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
+                let prepared = crate::web_media_open::prepare_yt_dlp_web_media(
                 &locator,
                 &network_config,
                 &web_media_config,
@@ -223,62 +242,71 @@ pub(super) fn prepare_source(
                 tracing::warn!(source = %safe_label, error = %error, "Подготовка YtDlp media завершилась ошибкой");
                 classify_yt_dlp_preparation_failure(&error)
             })?;
-            if cancellation.is_cancelled() {
-                return Err(MediaPreparationFailureKind::Cancelled);
-            }
-            let tracks = prepared.demuxer.tracks().to_vec();
-            let demux_duration = prepared.playback_window.and_then(|window| {
-                window
-                    .end_exclusive()
-                    .and_then(|end| end.as_duration().checked_sub(window.start().as_duration()))
-            });
-            let demux_duration = demux_duration.or_else(|| prepared.demuxer.duration());
-            let demux_metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
-            let playlist_duration = service_duration_for_timeline(
-                prepared.timeline_port.as_ref(),
-                prepared.playlist_metadata.duration(),
-            );
-            let (duration, metadata) = merge_yt_dlp_playlist_metadata(
-                demux_duration,
-                demux_metadata,
-                prepared.playlist_metadata.title(),
-                playlist_duration,
-            );
-            let prepared_media = prepare_yt_dlp_player_media(
-                safe_label.as_str(),
-                prepared.demuxer,
-                YtDlpPreparedMediaAttachments {
-                    timeline_port: prepared.timeline_port,
-                    demux_seek_port: prepared.demux_seek_port,
-                    playback_window: prepared.playback_window,
-                },
-            )
-            .map_err(|error| {
-                tracing::warn!(
-                    source = %safe_label,
-                    error = %error,
-                    "YtDlp timeline mode не прошёл PreparedMedia boundary"
+                if cancellation.is_cancelled() {
+                    return Err(MediaPreparationFailureKind::Cancelled);
+                }
+                let tracks = prepared.demuxer.tracks().to_vec();
+                let demux_duration = prepared.playback_window.and_then(|window| {
+                    window
+                        .end_exclusive()
+                        .and_then(|end| end.as_duration().checked_sub(window.start().as_duration()))
+                });
+                let demux_duration = demux_duration.or_else(|| prepared.demuxer.duration());
+                let demux_metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
+                let playlist_duration = service_duration_for_timeline(
+                    prepared.timeline_port.as_ref(),
+                    prepared.playlist_metadata.duration(),
                 );
-                MediaPreparationFailureKind::YtDlpOpen
-            })?;
-            Ok(PreparedMediaOpen {
-                prepared_media,
-                descriptor: PreparedMediaDescriptor::YtDlp {
-                    tracks,
-                    duration,
-                    metadata,
-                    source: ActiveMediaSource::YtDlpUrl {
-                        source_locator: locator,
-                        candidate_selection: Box::new(prepared.candidate_selection),
-                        composed_selection: prepared.composed_selection,
-                        stream_configuration: Box::new(prepared.stream_configuration),
-                        catalog_attachment: prepared.catalog_attachment,
+                let (duration, metadata) = merge_yt_dlp_playlist_metadata(
+                    demux_duration,
+                    demux_metadata,
+                    prepared.playlist_metadata.title(),
+                    playlist_duration,
+                );
+                let prepared_media = compose_prepared_web_media(
+                    safe_label.as_str(),
+                    prepared.demuxer,
+                    PreparedWebMediaAttachments {
+                        timeline_port: prepared.timeline_port,
+                        demux_seek: prepared
+                            .demux_seek_port
+                            .map(PreparedWebMediaSeekAttachment::WorkerReceipted),
+                        playback_window: prepared.playback_window,
+                        initial_position: None,
                     },
-                    safe_label,
-                    vod_endpoint_recovery: prepared.vod_endpoint_recovery,
-                },
-            })
-        }
+                )
+                .map_err(|error| {
+                    tracing::warn!(
+                        source = %safe_label,
+                        error = %error,
+                        "YtDlp timeline mode не прошёл PreparedMedia boundary"
+                    );
+                    MediaPreparationFailureKind::YtDlpOpen
+                })?;
+                let source = WebMediaSourceIntent::extractor(
+                    locator,
+                    prepared.presentation,
+                    prepared.neutral_selection,
+                    prepared.candidate_selection,
+                    prepared.composed_selection,
+                    prepared.stream_configuration,
+                    prepared.catalog_attachment,
+                    prepared.extractor_reason,
+                );
+                Ok(PreparedMediaOpen {
+                    prepared_media,
+                    descriptor: PreparedMediaDescriptor::Web(PreparedWebMediaEnvelope::new(
+                        tracks,
+                        duration,
+                        metadata,
+                        source,
+                        safe_label,
+                        prepared.playback_window,
+                        prepared.vod_endpoint_recovery,
+                    )),
+                })
+            }
+        },
     }
 }
 
@@ -303,49 +331,8 @@ fn classify_yt_dlp_preparation_failure(error: &anyhow::Error) -> MediaPreparatio
     }
 }
 
-/// Именованный набор provider-neutral дополнений к уже открытому demuxer-у.
-pub(crate) struct YtDlpPreparedMediaAttachments {
-    /// Dynamic live/DVR timeline; static VOD оставляет поле пустым.
-    pub(crate) timeline_port: Option<media_core::DynamicMediaTimelinePort>,
-
-    /// Worker-receipted seek boundary для segmented static provider-а.
-    pub(crate) demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
-
-    /// Абсолютное source window для provider-а с ненулевым presentation origin.
-    pub(crate) playback_window: Option<player_core::MediaPlaybackWindow>,
-}
-
-/// Собирает единый `PreparedMedia` до общего strong-install commit barrier-а.
-pub(crate) fn prepare_yt_dlp_player_media(
-    safe_label: &str,
-    demuxer: Box<dyn media_core::Demuxer + Send>,
-    attachments: YtDlpPreparedMediaAttachments,
-) -> Result<PreparedMedia, player_core::PreparedMediaTimelineModeError> {
-    // Разбираем именованный boundary один раз, чтобы все ingress-ы сохраняли один порядок.
-    let YtDlpPreparedMediaAttachments {
-        timeline_port,
-        demux_seek_port,
-        playback_window,
-    } = attachments;
-    // Базовый `PreparedMedia` получает уже открытый provider-neutral demuxer.
-    let mut prepared = PreparedMedia::from_external_label(safe_label, demuxer);
-    // Receipted seek прикрепляется до playback window и live-mode validation.
-    if let Some(port) = demux_seek_port {
-        prepared = prepared.with_worker_receipted_demux_seek(port);
-    }
-    // Static presentation window остаётся fallible pre-barrier подготовкой.
-    if let Some(window) = playback_window {
-        prepared = prepared.with_playback_window(window)?;
-    }
-    // Dynamic timeline устанавливается последней и fail-closed отвергает static-window конфликт.
-    match timeline_port {
-        Some(port) => prepared.with_dynamic_timeline(port),
-        None => Ok(prepared),
-    }
-}
-
 /// Service duration не превращает dynamic live candidate в finite media.
-fn service_duration_for_timeline(
+pub(crate) fn service_duration_for_timeline(
     timeline_port: Option<&media_core::DynamicMediaTimelinePort>,
     service_duration: Option<std::time::Duration>,
 ) -> Option<std::time::Duration> {
@@ -357,7 +344,7 @@ fn service_duration_for_timeline(
 }
 
 /// Service title/duration заполняют только пробелы demux metadata и не стирают более полный snapshot.
-fn merge_yt_dlp_playlist_metadata(
+pub(crate) fn merge_yt_dlp_playlist_metadata(
     demux_duration: Option<std::time::Duration>,
     mut demux_metadata: media_core::MediaTagMetadata,
     service_title: Option<&str>,
@@ -386,10 +373,13 @@ mod tests {
     use player_core::PreparedMediaTimelineMode;
 
     use super::{
-        YtDlpPreparedMediaAttachments, classify_yt_dlp_preparation_failure,
-        merge_yt_dlp_playlist_metadata, prepare_yt_dlp_player_media, service_duration_for_timeline,
+        classify_yt_dlp_preparation_failure, merge_yt_dlp_playlist_metadata,
+        service_duration_for_timeline,
     };
-    use crate::media_open::MediaPreparationFailureKind;
+    use crate::media_open::{
+        MediaPreparationFailureKind, PreparedWebMediaAttachments, PreparedWebMediaSeekAttachment,
+        compose_prepared_web_media,
+    };
     use crate::web_media_open::ComponentVariantFinalizationError;
 
     /// Fake demuxer моделирует provider readiness без привязки к VOD/live режиму.
@@ -547,6 +537,31 @@ mod tests {
         );
     }
 
+    /// Cancelled neutral request обязан завершиться до adapter I/O и не менять error semantics.
+    #[test]
+    fn cancelled_web_request_stops_before_adapter_dispatch() {
+        let cancellation = super::super::executor::PreparationCancellation::new();
+        cancellation.cancel(player_core::MediaInstallCancellationCause::UserCancelled);
+        let locator = service_direct_media::parse_direct_media_url(
+            "https://unreachable.example.test/cancelled-before-io.mp4",
+        )
+        .expect("direct fixture locator валиден");
+        let request = crate::media_open::MediaOpenSourceRequest::Web(
+            crate::media_open::WebMediaOpenRequest::direct(
+                locator,
+                rustiplayer_config::NetworkConfig::default(),
+                rustiplayer_config::PlayerDemuxConfig::default(),
+            ),
+        );
+
+        let result = super::prepare_source(request, &cancellation);
+
+        assert!(matches!(
+            result,
+            Err(MediaPreparationFailureKind::Cancelled)
+        ));
+    }
+
     #[test]
     fn live_timeline_is_installed_before_barrier_and_service_duration_stays_unknown() {
         let (timeline_port, _publisher) =
@@ -561,13 +576,12 @@ mod tests {
             service_duration_for_timeline(Some(&timeline_port), Some(Duration::from_secs(3_600))),
             None
         );
-        let prepared = prepare_yt_dlp_player_media(
+        let prepared = compose_prepared_web_media(
             "live",
             Box::new(UnavailableFakeDemuxer),
-            YtDlpPreparedMediaAttachments {
+            PreparedWebMediaAttachments {
                 timeline_port: Some(timeline_port),
-                demux_seek_port: None,
-                playback_window: None,
+                ..PreparedWebMediaAttachments::default()
             },
         )
         .expect("live timeline attaches before barrier");
@@ -592,13 +606,15 @@ mod tests {
         )
         .expect("static test window валидно");
         // Общий helper прикрепляет все static intents до strong-install barrier-а.
-        let prepared = prepare_yt_dlp_player_media(
+        let prepared = compose_prepared_web_media(
             "static segmented",
             Box::new(UnavailableFakeDemuxer),
-            YtDlpPreparedMediaAttachments {
-                timeline_port: None,
-                demux_seek_port: Some(erased_seek_port),
+            PreparedWebMediaAttachments {
+                demux_seek: Some(PreparedWebMediaSeekAttachment::WorkerReceipted(
+                    erased_seek_port,
+                )),
                 playback_window: Some(playback_window),
+                ..PreparedWebMediaAttachments::default()
             },
         )
         .expect("static attachments совместимы");
@@ -632,13 +648,13 @@ mod tests {
         )
         .expect("static test window валидно");
         // Конфликт обязан terminal-resolve как recoverable preparation error.
-        let result = prepare_yt_dlp_player_media(
+        let result = compose_prepared_web_media(
             "invalid mixed timeline",
             Box::new(UnavailableFakeDemuxer),
-            YtDlpPreparedMediaAttachments {
+            PreparedWebMediaAttachments {
                 timeline_port: Some(timeline_port),
-                demux_seek_port: None,
                 playback_window: Some(playback_window),
+                ..PreparedWebMediaAttachments::default()
             },
         );
         // Никакой mixed provider state не достигает Ready/authorize phase.

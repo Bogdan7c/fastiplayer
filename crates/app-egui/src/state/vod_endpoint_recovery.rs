@@ -462,49 +462,28 @@ impl AppState {
         }
     }
 
-    /// Создаёт request только из logical source и exact semantic candidate selection.
     fn vod_recovery_source_request(
         &self,
         source: &ActiveMediaSource,
     ) -> Result<MediaOpenSourceRequest, &'static str> {
         let config = self.committed_app_config();
-        let ActiveMediaSource::YtDlpUrl {
-            source_locator,
-            candidate_selection,
-            composed_selection,
-            stream_configuration,
-            ..
-        } = source.physical_source()
-        else {
-            return Err("installed recovery attachment не принадлежит yt-dlp source");
-        };
+        let web_intent = source
+            .web_intent()
+            .filter(|intent| intent.extractor_bridge().is_some())
+            .ok_or("installed recovery attachment не принадлежит extractor source")?;
         let capabilities = self
             .system_capabilities_snapshot
-            .clone()
+            .as_ref()
             .ok_or("system capabilities snapshot отсутствует")?;
-        let selection_intent = match composed_selection {
-            Some(composed) => crate::web_media_open::YtDlpCandidateOpenIntent::composed(
-                composed.clone(),
-                candidate_selection.clone(),
-                stream_configuration.preference(),
-            ),
-            None => crate::web_media_open::YtDlpCandidateOpenIntent::exact_preserving_installed_stream_configuration(
-                candidate_selection.clone(),
-                stream_configuration,
-            ),
-        };
-        let physical_request = MediaOpenSourceRequest::YtDlp {
-            locator: source_locator.clone(),
-            selection_intent,
-            network_config: config.network,
-            web_media_config: config.web_media,
-            yt_dlp_config: config.yt_dlp,
-            demux_config: config.player.demux,
-            preferred_video_codec_order: config.player.preferred_video_codec_order,
-            system_capabilities: Box::new(capabilities),
-            audio_capabilities: self.audio_decode_capability_snapshot(),
-        };
-        Ok(source.wrap_reopen_request(physical_request))
+        let settings = crate::media_open::WebMediaOpenSettings::from_app_config(
+            &config,
+            capabilities,
+            self.audio_decode_capability_snapshot(),
+        );
+        let request = web_intent
+            .controlled_reopen_request(config.network.clone(), config.player.demux, Some(settings))
+            .ok_or("extractor controlled reopen settings отсутствуют")?;
+        Ok(source.wrap_reopen_request(MediaOpenSourceRequest::Web(request)))
     }
 }
 

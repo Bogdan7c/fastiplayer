@@ -180,19 +180,19 @@ impl StartupUrlServiceAdapter for NativeHlsStartupAdapter {
         system_capabilities: &SystemCapabilities,
         audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
-        Ok(crate::media_open::MediaOpenSourceRequest::NativeHls {
-            source: self.source,
-            intent: crate::media_open::NativeHlsOpenIntent::InitialWithYtDlpFallback {
-                fallback_locator: self.fallback_locator,
-            },
-            network_config: app_config.network.clone(),
-            web_media_config: app_config.web_media.clone(),
-            yt_dlp_config: app_config.yt_dlp.clone(),
-            demux_config: app_config.player.demux,
-            preferred_video_codec_order: app_config.player.preferred_video_codec_order.clone(),
-            system_capabilities: Box::new(system_capabilities.clone()),
-            audio_capabilities,
-        })
+        Ok(crate::media_open::MediaOpenSourceRequest::Web(
+            crate::media_open::WebMediaOpenRequest::native_hls(
+                self.source,
+                crate::media_open::NativeHlsOpenIntent::InitialWithYtDlpFallback {
+                    fallback_locator: self.fallback_locator,
+                },
+                crate::media_open::WebMediaOpenSettings::from_app_config(
+                    app_config,
+                    system_capabilities,
+                    audio_capabilities,
+                ),
+            ),
+        ))
     }
 
     fn expose_secret_for_persistence(&self) -> &str {
@@ -245,17 +245,17 @@ impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
         audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
         self.validate_config(app_config)?;
-        Ok(crate::media_open::MediaOpenSourceRequest::YtDlp {
-            locator: self.locator,
-            selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
-            network_config: app_config.network.clone(),
-            web_media_config: app_config.web_media.clone(),
-            yt_dlp_config: app_config.yt_dlp.clone(),
-            demux_config: app_config.player.demux,
-            preferred_video_codec_order: app_config.player.preferred_video_codec_order.clone(),
-            system_capabilities: Box::new(system_capabilities.clone()),
-            audio_capabilities,
-        })
+        Ok(crate::media_open::MediaOpenSourceRequest::Web(
+            crate::media_open::WebMediaOpenRequest::extractor(
+                self.locator,
+                crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                crate::media_open::WebMediaOpenSettings::from_app_config(
+                    app_config,
+                    system_capabilities,
+                    audio_capabilities,
+                ),
+            ),
+        ))
     }
 
     fn expose_secret_for_persistence(&self) -> &str {
@@ -309,11 +309,13 @@ impl StartupUrlServiceAdapter for DirectMediaStartupAdapter {
         _system_capabilities: &SystemCapabilities,
         _audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
-        Ok(crate::media_open::MediaOpenSourceRequest::Direct {
-            locator: self.locator,
-            network_config: app_config.network.clone(),
-            demux_config: app_config.player.demux,
-        })
+        Ok(crate::media_open::MediaOpenSourceRequest::Web(
+            crate::media_open::WebMediaOpenRequest::direct(
+                self.locator,
+                app_config.network.clone(),
+                app_config.player.demux,
+            ),
+        ))
     }
 
     fn expose_secret_for_persistence(&self) -> &str {

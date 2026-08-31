@@ -9,10 +9,7 @@ use std::sync::Arc;
 use player_core::PlaybackIntent;
 
 use crate::local_file_open::LocalFileOpenResult;
-use crate::media_open::{
-    ActiveMediaSource, PreparedLocalOpenResult, SafeMediaLabel, YtDlpPreparedMediaAttachments,
-    prepare_yt_dlp_player_media,
-};
+use crate::media_open::{ActiveMediaSource, PreparedLocalOpenResult, SafeMediaLabel};
 use crate::playlist_runtime::StartupRestoreTarget;
 use crate::startup_readiness::StartupMediaOpenKind;
 use crate::state::PreparedSingleMediaOpen;
@@ -62,6 +59,7 @@ pub(super) enum PreparedStartupMedia {
     Direct {
         source_locator: service_direct_media::DirectMediaUrl,
         prepared_media: player_core::PreparedMedia,
+        descriptor: Box<crate::media_open::PreparedWebMediaEnvelope>,
     },
     NativeHls {
         source: crate::media_open::NativeHlsUrl,
@@ -297,14 +295,26 @@ impl StartupMediaController {
             match result {
                 Ok(opened_media) => {
                     let source_label = opened_media.source_label().to_owned();
-                    let prepared_media = player_core::PreparedMedia::from_external_label(
-                        source_label.clone(),
-                        opened_media.into_demuxer(),
+                    let tracks = opened_media.tracks().to_vec();
+                    let duration = opened_media.duration();
+                    let metadata = opened_media.media_metadata().unwrap_or_default().tags;
+                    let safe_label = SafeMediaLabel::from_service_safe_label(&source_label);
+                    let source =
+                        crate::media_open::WebMediaSourceIntent::direct(source_locator.clone());
+                    let descriptor = crate::media_open::PreparedWebMediaEnvelope::new(
+                        tracks, duration, metadata, source, safe_label, None, None,
                     );
+                    let prepared_media = crate::media_open::compose_prepared_web_media(
+                        &source_label,
+                        opened_media.into_demuxer(),
+                        crate::media_open::PreparedWebMediaAttachments::default(),
+                    )
+                    .expect("direct VOD has no conflicting timeline attachments");
                     self.hold_prepared(
                         PreparedStartupMedia::Direct {
                             source_locator,
                             prepared_media,
+                            descriptor: Box::new(descriptor),
                         },
                         playlist_runtime,
                     );
@@ -600,24 +610,46 @@ impl StartupMediaController {
                 let prepared = *prepared;
                 let tracks = prepared.demuxer.tracks().to_vec();
                 app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(&tracks));
-                let duration = prepared.demuxer.duration();
-                let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
+                let demux_duration = prepared.playback_window.and_then(|window| {
+                    window
+                        .end_exclusive()
+                        .and_then(|end| end.as_duration().checked_sub(window.start().as_duration()))
+                });
+                let demux_duration = demux_duration.or_else(|| prepared.demuxer.duration());
+                let demux_metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
+                let playlist_duration = crate::media_open::service_duration_for_timeline(
+                    prepared.timeline_port.as_ref(),
+                    prepared.playlist_metadata.duration(),
+                );
+                let (duration, metadata) = crate::media_open::merge_yt_dlp_playlist_metadata(
+                    demux_duration,
+                    demux_metadata,
+                    prepared.playlist_metadata.title(),
+                    playlist_duration,
+                );
                 let safe_label =
                     SafeMediaLabel::from_service_safe_label(source_locator.safe_label());
-                let source = ActiveMediaSource::YtDlpUrl {
-                    source_locator: source_locator.clone(),
-                    candidate_selection: Box::new(prepared.candidate_selection),
-                    composed_selection: prepared.composed_selection,
-                    stream_configuration: Box::new(prepared.stream_configuration),
-                    catalog_attachment: prepared.catalog_attachment,
-                };
-                let prepared_media = match prepare_yt_dlp_player_media(
+                let source_intent = crate::media_open::WebMediaSourceIntent::extractor(
+                    source_locator.clone(),
+                    prepared.presentation,
+                    prepared.neutral_selection,
+                    prepared.candidate_selection,
+                    prepared.composed_selection,
+                    prepared.stream_configuration,
+                    prepared.catalog_attachment,
+                    prepared.extractor_reason,
+                );
+                let source = ActiveMediaSource::Web(source_intent.clone());
+                let prepared_media = match crate::media_open::compose_prepared_web_media(
                     source_locator.safe_label(),
                     prepared.demuxer,
-                    YtDlpPreparedMediaAttachments {
+                    crate::media_open::PreparedWebMediaAttachments {
                         timeline_port: prepared.timeline_port,
-                        demux_seek_port: prepared.demux_seek_port,
+                        demux_seek: prepared.demux_seek_port.map(
+                            crate::media_open::PreparedWebMediaSeekAttachment::WorkerReceipted,
+                        ),
                         playback_window: prepared.playback_window,
+                        initial_position: None,
                     },
                 ) {
                     Ok(prepared_media) => prepared_media,
@@ -628,14 +660,17 @@ impl StartupMediaController {
                 };
                 let input = self
                     .prepared_url_input(prepared_media, source.clone(), safe_label.clone(), target)
-                    .with_descriptor(crate::media_open::PreparedMediaDescriptor::YtDlp {
-                        tracks,
-                        duration,
-                        metadata,
-                        source: source.clone(),
-                        safe_label,
-                        vod_endpoint_recovery: prepared.vod_endpoint_recovery,
-                    });
+                    .with_descriptor(crate::media_open::PreparedMediaDescriptor::Web(
+                        crate::media_open::PreparedWebMediaEnvelope::new(
+                            tracks,
+                            duration,
+                            metadata,
+                            source_intent,
+                            safe_label,
+                            prepared.playback_window,
+                            prepared.vod_endpoint_recovery,
+                        ),
+                    ));
                 app_state
                     .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)
                     .map(|_| {
@@ -649,17 +684,20 @@ impl StartupMediaController {
             PreparedStartupMedia::Direct {
                 source_locator,
                 prepared_media,
+                descriptor,
             } => {
                 app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
                     prepared_media.tracks(),
                 ));
-                let source = ActiveMediaSource::DirectMediaUrl(source_locator.clone());
-                let input = self.prepared_url_input(
-                    prepared_media,
-                    source.clone(),
-                    SafeMediaLabel::from_service_safe_label(source_locator.safe_label()),
-                    target,
-                );
+                let source = ActiveMediaSource::Web(descriptor.source().clone());
+                let input = self
+                    .prepared_url_input(
+                        prepared_media,
+                        source,
+                        SafeMediaLabel::from_service_safe_label(source_locator.safe_label()),
+                        target,
+                    )
+                    .with_descriptor(crate::media_open::PreparedMediaDescriptor::Web(*descriptor));
                 app_state
                     .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)
                     .map(|_| {
@@ -682,13 +720,20 @@ impl StartupMediaController {
                 let duration = demuxer.duration();
                 let metadata = demuxer.media_metadata().unwrap_or_default().tags;
                 let safe_label = source.safe_label().clone();
-                let active_source = ActiveMediaSource::NativeHlsUrl { source, selection };
-                let prepared_media = crate::web_media_hls_open::prepare_native_hls_player_media(
+                let source_intent =
+                    crate::media_open::WebMediaSourceIntent::native_hls_vod(source, selection);
+                let active_source = ActiveMediaSource::Web(source_intent.clone());
+                let prepared_media = crate::media_open::compose_prepared_web_media(
                     safe_label.as_str(),
-                    crate::web_media_hls_open::PreparedNativeHlsVod {
-                        demuxer,
-                        seek_port,
-                        initial_position,
+                    demuxer,
+                    crate::media_open::PreparedWebMediaAttachments {
+                        demux_seek: Some(
+                            crate::media_open::PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
+                                seek_port,
+                            ),
+                        ),
+                        initial_position: Some(initial_position),
+                        ..crate::media_open::PreparedWebMediaAttachments::default()
                     },
                 );
                 let prepared_media = match prepared_media {
@@ -705,13 +750,17 @@ impl StartupMediaController {
                         safe_label.clone(),
                         target,
                     )
-                    .with_descriptor(crate::media_open::PreparedMediaDescriptor::NativeHls {
-                        tracks,
-                        duration,
-                        metadata,
-                        source: active_source,
-                        safe_label,
-                    });
+                    .with_descriptor(crate::media_open::PreparedMediaDescriptor::Web(
+                        crate::media_open::PreparedWebMediaEnvelope::new(
+                            tracks,
+                            duration,
+                            metadata,
+                            source_intent,
+                            safe_label,
+                            None,
+                            None,
+                        ),
+                    ));
                 app_state
                     .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)
                     .map(|_| {

@@ -1,3 +1,10 @@
+## N04 unified app web envelope (2026-08-31)
+
+- `ActiveMediaSource`, `MediaOpenSourceRequest`, and `PreparedMediaDescriptor` now each expose exactly one neutral web variant; local files remain separate.
+- Direct, native HLS, and extractor preparation share one app composition boundary preserving metadata, safe label, neutral selection/catalog, exact VOD/live kind, named seek semantics, live timeline, playback window, native initial position, recovery strategy/attachment, and optional extractor reason.
+- Durable active source contains only reconstructible root intent/selection; endpoint-bearing recovery material remains descriptor/runtime-only. Controlled reopen preserves neutral selection. Typed UI/settings compatibility bridges are temporary and must be deleted by N05B before G1.
+- Local N04 commit; three 110/110 media-open cohorts, focused URL/same-item/stream/startup owners, strict Clippy and workspace all-features check passed. Public-media/GUI/hardware were NOT RUN. Full boundaries and commands: `mem:media-services/native-web-ingress-n04-2026-08-31`.
+
 ## N03 typed extractor adapter/process spy (2026-08-31)
 
 - `service-ytdlp::YtDlpExtractorAdapter` carries N01 `ExtractorInvocationReason` through candidate/topology/metadata and every platform-hijack recovery subprocess. All OS child starts cross one instance-injected launcher; production default has no global mutable hook.

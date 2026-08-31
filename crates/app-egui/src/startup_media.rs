@@ -657,6 +657,10 @@ pub(crate) fn resolve_yt_dlp_startup_media(
 
     Ok(PreparedYtDlpStartupMedia {
         demuxer: prepared.demuxer,
+        playlist_metadata: prepared.playlist_metadata,
+        neutral_selection: prepared.neutral_selection,
+        presentation: prepared.presentation,
+        extractor_reason: prepared.extractor_reason,
         candidate_selection: prepared.candidate_selection,
         composed_selection: prepared.composed_selection,
         stream_configuration: prepared.stream_configuration,

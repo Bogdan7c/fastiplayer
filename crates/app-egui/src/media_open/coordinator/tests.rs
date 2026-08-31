@@ -16,7 +16,7 @@ use super::*;
 use crate::app_wake::{AppWakeOwner, AppWakePort};
 use crate::media_open::{
     ActiveMediaSource, MAX_NON_CANCELLABLE_STALE_PREPARATIONS, PlayerDispatchRejection,
-    SafeMediaLabel,
+    PreparedWebMediaEnvelope, SafeMediaLabel, WebMediaSourceIntent,
 };
 
 mod same_lineage_tests;
@@ -502,13 +502,15 @@ fn local_and_direct_descriptors_follow_the_same_prepared_phase() {
             safe_label: SafeMediaLabel::from_service_safe_label("fixture.wav"),
             fingerprint_validation: crate::media_open::LocalFingerprintValidation::Matched,
         },
-        PreparedMediaDescriptor::Direct {
-            tracks: Vec::new(),
-            duration: None,
-            metadata: media_core::MediaTagMetadata::default(),
-            source: ActiveMediaSource::DirectMediaUrl(direct_locator),
-            safe_label: SafeMediaLabel::from_service_safe_label("media.example.test"),
-        },
+        PreparedMediaDescriptor::Web(PreparedWebMediaEnvelope::new(
+            Vec::new(),
+            None,
+            media_core::MediaTagMetadata::default(),
+            WebMediaSourceIntent::direct(direct_locator),
+            SafeMediaLabel::from_service_safe_label("media.example.test"),
+            None,
+            None,
+        )),
     ];
 
     for (index, descriptor) in descriptors.into_iter().enumerate() {
@@ -526,8 +528,7 @@ fn local_and_direct_descriptors_follow_the_same_prepared_phase() {
                 .snapshot()
                 .expect("prepared snapshot")
                 .descriptor,
-            Some(PreparedMediaDescriptor::Local { .. })
-                | Some(PreparedMediaDescriptor::Direct { .. })
+            Some(PreparedMediaDescriptor::Local { .. }) | Some(PreparedMediaDescriptor::Web(_))
         ));
     }
 }

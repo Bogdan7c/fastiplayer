@@ -65,7 +65,8 @@ impl StartupMediaController {
                 }
                 if matches!(
                     installed.source.physical_source(),
-                    ActiveMediaSource::DirectMediaUrl(_)
+                    ActiveMediaSource::Web(intent)
+                        if intent.ingress() == web_media_core::WebMediaIngressKind::DirectResource
                 ) {
                     tracing::info!("Startup direct media Installed");
                 }

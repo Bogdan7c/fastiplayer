@@ -285,63 +285,25 @@ impl AppState {
                 expected_fingerprint: None,
                 demux_config: config.player.demux,
             },
-            ActiveMediaSource::DirectMediaUrl(locator) => MediaOpenSourceRequest::Direct {
-                locator: locator.clone(),
-                network_config: config.network,
-                demux_config: config.player.demux,
-            },
-            ActiveMediaSource::NativeHlsUrl { source, selection } => {
-                let capabilities = self
-                    .system_capabilities_snapshot
-                    .clone()
+            ActiveMediaSource::Web(web_intent) => {
+                let adaptive_settings =
+                    self.system_capabilities_snapshot
+                        .as_ref()
+                        .map(|system_capabilities| {
+                            crate::media_open::WebMediaOpenSettings::from_app_config(
+                                &config,
+                                system_capabilities,
+                                self.audio_decode_capability_snapshot(),
+                            )
+                        });
+                let request = web_intent
+                    .controlled_reopen_request(
+                        config.network.clone(),
+                        config.player.demux,
+                        adaptive_settings,
+                    )
                     .ok_or(ResumeCheckpointError::PreparationFailed)?;
-                MediaOpenSourceRequest::NativeHls {
-                    source: source.clone(),
-                    intent: crate::media_open::NativeHlsOpenIntent::ExactSelection(
-                        selection.clone(),
-                    ),
-                    network_config: config.network,
-                    web_media_config: config.web_media,
-                    yt_dlp_config: config.yt_dlp,
-                    demux_config: config.player.demux,
-                    preferred_video_codec_order: config.player.preferred_video_codec_order,
-                    system_capabilities: Box::new(capabilities),
-                    audio_capabilities: self.audio_decode_capability_snapshot(),
-                }
-            }
-            ActiveMediaSource::YtDlpUrl {
-                source_locator,
-                candidate_selection,
-                composed_selection,
-                stream_configuration,
-                ..
-            } => {
-                let capabilities = self
-                    .system_capabilities_snapshot
-                    .clone()
-                    .ok_or(ResumeCheckpointError::PreparationFailed)?;
-                let selection_intent = match composed_selection {
-                    Some(composed) => crate::web_media_open::YtDlpCandidateOpenIntent::composed(
-                        composed.clone(),
-                        candidate_selection.clone(),
-                        stream_configuration.preference(),
-                    ),
-                    None => crate::web_media_open::YtDlpCandidateOpenIntent::exact_preserving_installed_stream_configuration(
-                            candidate_selection.clone(),
-                            stream_configuration,
-                        ),
-                };
-                MediaOpenSourceRequest::YtDlp {
-                    locator: source_locator.clone(),
-                    selection_intent,
-                    network_config: config.network,
-                    web_media_config: config.web_media,
-                    yt_dlp_config: config.yt_dlp,
-                    demux_config: config.player.demux,
-                    preferred_video_codec_order: config.player.preferred_video_codec_order,
-                    system_capabilities: Box::new(capabilities),
-                    audio_capabilities: self.audio_decode_capability_snapshot(),
-                }
+                MediaOpenSourceRequest::Web(request)
             }
             ActiveMediaSource::PlaybackWindow { .. } => {
                 unreachable!("physical_source removes playback-window wrappers")

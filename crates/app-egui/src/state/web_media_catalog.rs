@@ -1,4 +1,3 @@
-use crate::media_open::ActiveMediaSource;
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::web_media_catalog::{
     WebMediaCatalogCorrelation, WebMediaCatalogScope, WebMediaCatalogState, WebMediaSelectionTarget,
@@ -36,11 +35,9 @@ impl AppState {
             self.web_media_fallback_notice = false;
             return;
         };
-        let ActiveMediaSource::YtDlpUrl {
-            stream_configuration,
-            catalog_attachment,
-            ..
-        } = source.physical_source()
+        let Some(extractor) = source
+            .web_intent()
+            .and_then(crate::media_open::WebMediaSourceIntent::extractor_bridge)
         else {
             playlist_runtime.clear_web_media_catalog();
             self.web_media_catalog_state = WebMediaCatalogState::Inactive;
@@ -48,6 +45,8 @@ impl AppState {
             self.web_media_fallback_notice = false;
             return;
         };
+        let stream_configuration = extractor.stream_configuration;
+        let catalog_attachment = extractor.catalog_attachment;
         let Some(active) = playlist_runtime.playlist_view_snapshot().active_media() else {
             playlist_runtime.clear_web_media_catalog();
             self.web_media_catalog_state = WebMediaCatalogState::Inactive;

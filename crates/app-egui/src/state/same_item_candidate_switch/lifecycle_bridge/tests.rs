@@ -58,7 +58,7 @@ impl SameItemSwitchLifecycleStartPort for FakeSameItemSwitchContext {
         playback_intent: PlaybackIntent,
     ) -> Result<MediaOpenRequestId, StrongMediaOpenError> {
         assert!(
-            matches!(source_request, MediaOpenSourceRequest::YtDlp { .. }),
+            matches!(source_request, MediaOpenSourceRequest::Web(_)),
             "URL action обязан передать lifecycle port-у готовый YtDlp reopen request"
         );
         self.begin_expected_active = Some(expected_active);
@@ -355,20 +355,20 @@ fn app_start(
         37_250,
     )));
     SameItemSwitchAppStart {
-        source_request: MediaOpenSourceRequest::YtDlp {
-            locator: service_ytdlp::parse_yt_dlp_media_locator(
-                "https://media.example.test/same-item-switch",
-            )
-            .expect("URL fixture locator валиден"),
-            selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
-            network_config: config.network,
-            web_media_config: config.web_media,
-            yt_dlp_config: config.yt_dlp,
-            demux_config: config.player.demux,
-            preferred_video_codec_order: config.player.preferred_video_codec_order,
-            system_capabilities: Box::new(capability_core::SystemCapabilities::empty(0)),
-            audio_capabilities: audio::AudioDecodeCapabilitySnapshot::empty(),
-        },
+        source_request: MediaOpenSourceRequest::Web(
+            crate::media_open::WebMediaOpenRequest::extractor(
+                service_ytdlp::parse_yt_dlp_media_locator(
+                    "https://media.example.test/same-item-switch",
+                )
+                .expect("URL fixture locator валиден"),
+                crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                crate::media_open::WebMediaOpenSettings::from_app_config(
+                    &config,
+                    &capability_core::SystemCapabilities::empty(0),
+                    audio::AudioDecodeCapabilitySnapshot::empty(),
+                ),
+            ),
+        ),
         expected_active: ActiveMediaIdentity::for_same_item_switch_test(item_id, media_instance_id),
         playback_intent: super::super::super::playback_intent_from_snapshot(&snapshot),
         kind: SameItemSwitchKind::Picker {

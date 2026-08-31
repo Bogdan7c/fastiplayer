@@ -87,6 +87,12 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) demuxer: Box<dyn Demuxer + Send>,
     /// Service metadata из того же extraction snapshot-а, что и exact selection.
     pub(crate) playlist_metadata: service_ytdlp::YtDlpPlaylistMetadata,
+    /// Canonical N01 exact selection, включая installed component choice.
+    pub(crate) neutral_selection: web_media_core::WebMediaSelection,
+    /// Точный lifecycle kind того же extraction generation.
+    pub(crate) presentation: web_media_core::WebMediaPresentationKind,
+    /// Product reason фактически выполненной extractor invocation.
+    pub(crate) extractor_reason: web_media_core::ExtractorInvocationReason,
     /// Exact установленный выбор для active source и последующего rematch-а.
     pub(crate) candidate_selection: YtDlpCandidateSelection,
     /// Service-owned composed intent, если installed runtime собран из inventory components.
@@ -168,6 +174,14 @@ pub(crate) fn prepare_yt_dlp_web_media(
     is_cancelled: impl Fn() -> bool,
 ) -> Result<PreparedYtDlpWebMedia> {
     ensure_not_cancelled(&is_cancelled)?;
+    let extractor_reason = match &intent {
+        YtDlpCandidateOpenIntent::BestPlayable => {
+            web_media_core::ExtractorInvocationReason::PageMediaResolution
+        }
+        YtDlpCandidateOpenIntent::Exact(_) | YtDlpCandidateOpenIntent::Composed(_) => {
+            web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery
+        }
+    };
     let component_selection_intent = intent.component_selection_intent();
     let selection_preference = match &intent {
         YtDlpCandidateOpenIntent::BestPlayable => {
@@ -350,10 +364,15 @@ pub(crate) fn prepare_yt_dlp_web_media(
         Some(recovery) => recovery.wrap_seek_port(opened_candidate.demux_seek_port),
         None => opened_candidate.demux_seek_port,
     };
+    let neutral_selection = extractor_projection.selection().clone();
+    let presentation = extractor_projection.presentation();
     let playlist_metadata = extractor_projection.into_playlist_metadata();
     Ok(PreparedYtDlpWebMedia {
         demuxer,
         playlist_metadata,
+        neutral_selection,
+        presentation,
+        extractor_reason,
         candidate_selection,
         composed_selection,
         stream_configuration,

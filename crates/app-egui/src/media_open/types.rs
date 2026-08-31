@@ -13,7 +13,6 @@ use player_core::{
 use playlist_discovery::{LocalMediaFingerprint, LocalMediaKind};
 
 use super::local::LocalFingerprintValidation;
-use super::native_hls::{NativeHlsOpenIntent, NativeHlsUrl};
 
 /// Максимальная длина display-only label в Unicode scalar values.
 pub(crate) const SAFE_MEDIA_LABEL_MAX_CHARS: usize = 160;
@@ -92,26 +91,8 @@ impl fmt::Display for SafeMediaLabel {
 pub(crate) enum ActiveMediaSource {
     /// Exact native path; `Debug` ниже не раскрывает его.
     LocalFile(PathBuf),
-    /// Stable normalized YtDlp locator + exact selected candidate token.
-    YtDlpUrl {
-        /// Reconstructible exact source identity; Debug/Display остаются redacted.
-        source_locator: service_ytdlp::YtDlpMediaLocator,
-        /// Exact selection для fresh semantic rematch при controlled reopen.
-        candidate_selection: Box<service_ytdlp::YtDlpCandidateSelection>,
-        /// Optional service-owned composed A/V semantic intent.
-        composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
-        /// UI-safe installed inventory без URL, headers/cookies и candidate IDs.
-        stream_configuration: Box<crate::web_media_stream_model::WebMediaStreamConfiguration>,
-        /// Runtime-only declared catalog; Debug и persistence не раскрывают opaque identities.
-        catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
-    },
-    /// Exact functional direct locator с service-owned redacted formatting.
-    DirectMediaUrl(service_direct_media::DirectMediaUrl),
-    /// Proven VOD HLS top identity + exact semantic master/media selection.
-    NativeHlsUrl {
-        source: NativeHlsUrl,
-        selection: web_media_hls::NativeHlsSemanticSelection,
-    },
+    /// Единый reconstructible web intent независимо от ingress adapter-а.
+    Web(super::web::WebMediaSourceIntent),
 
     /// Source плюс neutral semantic identity ограниченного playback window.
     ///
@@ -124,6 +105,17 @@ pub(crate) enum ActiveMediaSource {
 }
 
 impl ActiveMediaSource {
+    /// Возвращает neutral web intent под optional playback-window wrapper-ом.
+    pub(crate) fn web_intent(&self) -> Option<&super::web::WebMediaSourceIntent> {
+        match self.physical_source() {
+            Self::Web(intent) => Some(intent),
+            Self::LocalFile(_) => None,
+            Self::PlaybackWindow { .. } => {
+                unreachable!("physical_source removes playback-window wrappers")
+            }
+        }
+    }
+
     /// Добавляет или заменяет единственную neutral playback-window identity.
     #[must_use]
     pub(crate) fn with_playback_window(
@@ -147,10 +139,7 @@ impl ActiveMediaSource {
             Self::PlaybackWindow {
                 semantic_identity, ..
             } => Some(*semantic_identity),
-            Self::LocalFile(_)
-            | Self::YtDlpUrl { .. }
-            | Self::DirectMediaUrl(_)
-            | Self::NativeHlsUrl { .. } => None,
+            Self::LocalFile(_) | Self::Web(_) => None,
         }
     }
 
@@ -206,21 +195,7 @@ impl fmt::Debug for ActiveMediaSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LocalFile(_) => formatter.write_str("LocalFile(<redacted-path>)"),
-            Self::YtDlpUrl { source_locator, .. } => formatter
-                .debug_struct("YtDlpUrl")
-                .field("source_locator", source_locator)
-                .field("candidate_selection", &"<exact-candidate>")
-                .field("catalog_attachment", &"<provider-private>")
-                .finish(),
-            Self::DirectMediaUrl(locator) => formatter
-                .debug_tuple("DirectMediaUrl")
-                .field(locator)
-                .finish(),
-            Self::NativeHlsUrl { source, selection } => formatter
-                .debug_struct("NativeHlsUrl")
-                .field("source", source)
-                .field("selection", selection)
-                .finish(),
+            Self::Web(intent) => formatter.debug_tuple("Web").field(intent).finish(),
             Self::PlaybackWindow {
                 source,
                 semantic_identity,
@@ -247,32 +222,8 @@ pub(crate) enum PreparedMediaDescriptor {
         safe_label: SafeMediaLabel,
         fingerprint_validation: LocalFingerprintValidation,
     },
-    /// Direct media parity envelope без filesystem-only fields.
-    Direct {
-        tracks: Vec<TrackInfo>,
-        duration: Option<Duration>,
-        metadata: MediaTagMetadata,
-        source: ActiveMediaSource,
-        safe_label: SafeMediaLabel,
-    },
-    /// Native HLS VOD с exact semantic selection для fail-closed reopen.
-    NativeHls {
-        tracks: Vec<TrackInfo>,
-        duration: Option<Duration>,
-        metadata: MediaTagMetadata,
-        source: ActiveMediaSource,
-        safe_label: SafeMediaLabel,
-    },
-    /// YtDlp parity envelope с exact service-selected stream identity.
-    YtDlp {
-        tracks: Vec<TrackInfo>,
-        duration: Option<Duration>,
-        metadata: MediaTagMetadata,
-        source: ActiveMediaSource,
-        safe_label: SafeMediaLabel,
-        /// Runtime-only candidate gate устанавливается в AppState только после exact Installed.
-        vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
-    },
+    /// Единая web envelope для direct/native-manifest/extractor ingress-ов.
+    Web(super::web::PreparedWebMediaEnvelope),
     /// Prepared-by-caller ingress сохраняет single-open ownership без повторного I/O.
     CallerPrepared {
         source: ActiveMediaSource,
@@ -305,27 +256,10 @@ impl PreparedMediaDescriptor {
                 metadata: metadata.clone(),
                 fingerprint: Some(*fingerprint),
             }),
-            Self::Direct {
-                tracks,
-                duration,
-                metadata,
-                ..
-            }
-            | Self::NativeHls {
-                tracks,
-                duration,
-                metadata,
-                ..
-            }
-            | Self::YtDlp {
-                tracks,
-                duration,
-                metadata,
-                ..
-            } => Some(PreparedPlaylistCacheUpdate {
-                media_kind: media_kind_from_tracks(tracks),
-                duration: *duration,
-                metadata: metadata.clone(),
+            Self::Web(envelope) => Some(PreparedPlaylistCacheUpdate {
+                media_kind: media_kind_from_tracks(envelope.tracks()),
+                duration: envelope.duration(),
+                metadata: envelope.metadata().clone(),
                 fingerprint: None,
             }),
             Self::CallerPrepared { .. } => None,
@@ -345,11 +279,8 @@ impl PreparedMediaDescriptor {
     /// Возвращает reconstructible source без раскрытия variant-specific storage.
     pub(crate) fn active_source(&self) -> ActiveMediaSource {
         match self {
-            Self::Local { source, .. }
-            | Self::Direct { source, .. }
-            | Self::NativeHls { source, .. }
-            | Self::YtDlp { source, .. }
-            | Self::CallerPrepared { source, .. } => source.clone(),
+            Self::Local { source, .. } | Self::CallerPrepared { source, .. } => source.clone(),
+            Self::Web(envelope) => envelope.active_source(),
         }
     }
 
@@ -376,47 +307,7 @@ impl PreparedMediaDescriptor {
                 safe_label,
                 fingerprint_validation,
             },
-            Self::Direct {
-                tracks,
-                duration,
-                metadata,
-                source,
-                safe_label,
-            } => Self::Direct {
-                tracks,
-                duration,
-                metadata,
-                source: source.with_playback_window(semantic_identity),
-                safe_label,
-            },
-            Self::NativeHls {
-                tracks,
-                duration,
-                metadata,
-                source,
-                safe_label,
-            } => Self::NativeHls {
-                tracks,
-                duration,
-                metadata,
-                source: source.with_playback_window(semantic_identity),
-                safe_label,
-            },
-            Self::YtDlp {
-                tracks,
-                duration,
-                metadata,
-                source,
-                safe_label,
-                vod_endpoint_recovery,
-            } => Self::YtDlp {
-                tracks,
-                duration,
-                metadata,
-                source: source.with_playback_window(semantic_identity),
-                safe_label,
-                vod_endpoint_recovery,
-            },
+            Self::Web(envelope) => Self::Web(envelope.with_playback_window(semantic_identity)),
             Self::CallerPrepared { source, safe_label } => Self::CallerPrepared {
                 source: source.with_playback_window(semantic_identity),
                 safe_label,
@@ -429,14 +320,8 @@ impl PreparedMediaDescriptor {
         &self,
     ) -> Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment> {
         match self {
-            Self::YtDlp {
-                vod_endpoint_recovery,
-                ..
-            } => vod_endpoint_recovery.clone(),
-            Self::Local { .. }
-            | Self::Direct { .. }
-            | Self::NativeHls { .. }
-            | Self::CallerPrepared { .. } => None,
+            Self::Web(envelope) => envelope.vod_endpoint_recovery(),
+            Self::Local { .. } | Self::CallerPrepared { .. } => None,
         }
     }
 }
@@ -499,33 +384,7 @@ pub(crate) enum MediaOpenSourceRequest {
         expected_fingerprint: Option<LocalMediaFingerprint>,
         demux_config: rustiplayer_config::PlayerDemuxConfig,
     },
-    Direct {
-        locator: service_direct_media::DirectMediaUrl,
-        network_config: rustiplayer_config::NetworkConfig,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
-    },
-    NativeHls {
-        source: NativeHlsUrl,
-        intent: NativeHlsOpenIntent,
-        network_config: rustiplayer_config::NetworkConfig,
-        web_media_config: rustiplayer_config::WebMediaConfig,
-        yt_dlp_config: rustiplayer_config::YtDlpConfig,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
-        preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
-        system_capabilities: Box<capability_core::SystemCapabilities>,
-        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
-    },
-    YtDlp {
-        locator: service_ytdlp::YtDlpMediaLocator,
-        selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
-        network_config: rustiplayer_config::NetworkConfig,
-        web_media_config: rustiplayer_config::WebMediaConfig,
-        yt_dlp_config: rustiplayer_config::YtDlpConfig,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
-        preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
-        system_capabilities: Box<capability_core::SystemCapabilities>,
-        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
-    },
+    Web(super::web::WebMediaOpenRequest),
     PlaybackWindow {
         source: Box<MediaOpenSourceRequest>,
         semantic_identity: player_core::MediaPlaybackWindow,
@@ -537,13 +396,7 @@ impl MediaOpenSourceRequest {
     pub(crate) fn safe_label(&self) -> SafeMediaLabel {
         match self {
             Self::Local { path, .. } => SafeMediaLabel::from_local_path(path),
-            Self::Direct { locator, .. } => {
-                SafeMediaLabel::from_service_safe_label(locator.safe_label())
-            }
-            Self::NativeHls { source, .. } => source.safe_label().clone(),
-            Self::YtDlp { locator, .. } => {
-                SafeMediaLabel::from_service_safe_label(locator.safe_label())
-            }
+            Self::Web(request) => request.safe_label(),
             Self::PlaybackWindow { source, .. } => source.safe_label(),
         }
     }

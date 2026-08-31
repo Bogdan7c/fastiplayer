@@ -551,8 +551,6 @@ enum UrlSidebarSourceProjection<'source> {
 }
 
 impl UrlSidebarController {
-    /// Строит read-only model; stale pending/error generation никогда не показывается.
-    #[must_use]
     pub(crate) fn model_with_catalog(
         &self,
         active_source: Option<&ActiveMediaSource>,
@@ -563,24 +561,24 @@ impl UrlSidebarController {
     ) -> UrlSidebarModel {
         let source = match active_source.map(ActiveMediaSource::physical_source) {
             None | Some(ActiveMediaSource::LocalFile(_)) => UrlSidebarSourceProjection::Inactive,
-            Some(ActiveMediaSource::DirectMediaUrl(locator)) => {
-                UrlSidebarSourceProjection::DirectMedia {
-                    source_label: locator.safe_label(),
+            Some(ActiveMediaSource::Web(intent)) => {
+                if let Some(locator) = intent.direct_locator() {
+                    UrlSidebarSourceProjection::DirectMedia {
+                        source_label: locator.safe_label(),
+                    }
+                } else if let Some((source, _selection)) = intent.native_hls_reopen() {
+                    UrlSidebarSourceProjection::NativeHls {
+                        source_label: source.safe_label().as_str(),
+                    }
+                } else if let Some(extractor) = intent.extractor_bridge() {
+                    UrlSidebarSourceProjection::YtDlp {
+                        source_label: extractor.locator.safe_label(),
+                        configuration: extractor.stream_configuration,
+                    }
+                } else {
+                    unreachable!("every web intent owns one typed adapter projection")
                 }
             }
-            Some(ActiveMediaSource::NativeHlsUrl { source, .. }) => {
-                UrlSidebarSourceProjection::NativeHls {
-                    source_label: source.safe_label().as_str(),
-                }
-            }
-            Some(ActiveMediaSource::YtDlpUrl {
-                source_locator,
-                stream_configuration,
-                ..
-            }) => UrlSidebarSourceProjection::YtDlp {
-                source_label: source_locator.safe_label(),
-                configuration: stream_configuration,
-            },
             Some(ActiveMediaSource::PlaybackWindow { .. }) => {
                 unreachable!("physical_source removes playback-window wrappers")
             }

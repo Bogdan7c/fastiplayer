@@ -6,7 +6,6 @@ use player_core::{
     PlayerError, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
     PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerTickResult, PlayerWorkerEvent,
-    PreparedMedia,
 };
 use render_core::{
     RenderLiveApplyReport, RenderLiveSettings, RenderLiveSettingsAdapter, RenderLiveSettingsError,
