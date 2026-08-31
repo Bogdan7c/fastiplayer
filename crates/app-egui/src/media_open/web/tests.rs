@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "tests/native_hls_vertical.rs"]
+mod native_hls_vertical;
+
 /// Absent optional attachments не должны превращаться в скрытые adapter defaults.
 #[test]
 fn direct_envelope_keeps_optional_attachments_absent() {
@@ -95,33 +98,36 @@ fn direct_and_native_read_only_projections_are_neutral_and_secret_safe() {
         "https://media.example.test/master.m3u8?token=native-secret",
     )
     .unwrap();
-    let policy = web_media_hls::NativeHlsSelectionPolicy::new(
-        web_media_core::PreferredHeightPolicy::NoPreference,
-        vec![web_media_core::CodecFamily::H264],
-    )
-    .unwrap();
-    let native_selection = web_media_hls::admit_native_hls_vod(
-        b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\nsegment.ts\n#EXT-X-ENDLIST\n",
-        &native_target,
-        hls_playlist_core::HlsParserLimits::default(),
-        &policy,
-        None,
-    )
-    .unwrap();
-    let native = WebMediaSourceIntent::native_hls_vod(
-        NativeHlsUrl::new(
-            native_target,
-            SafeMediaLabel::from_service_safe_label("media.example.test"),
-        ),
-        native_selection,
+    let native_source = NativeHlsUrl::new(
+        native_target,
+        SafeMediaLabel::from_service_safe_label("media.example.test"),
     );
+    let native_source_identity = native_source.source_identity();
+    let native_parent = web_media_core::ExactSelectionIdentity::new(
+        web_media_core::CandidateIdentity::new(
+            native_source_identity,
+            web_media_core::ExtractionGeneration::new(1),
+            web_media_core::CandidateFormatIdentity::new("native-hls-vod").unwrap(),
+        ),
+        web_media_core::SemanticIdentity::new(native_source_identity, "native-hls-vod").unwrap(),
+    )
+    .unwrap();
+    let native_source_state = NativeHlsSourceState::new(
+        web_media_core::WebMediaSelection::candidate(native_parent),
+        None,
+        crate::web_media_stream_model::WebMediaSelectionPreference::from_global_config(
+            &rustiplayer_config::WebMediaConfig::default(),
+        ),
+    )
+    .unwrap();
+    let native = WebMediaSourceIntent::native_hls_vod(native_source, native_source_state);
     let native_projection = native.read_only_projection();
     assert_eq!(
         native_projection.ingress,
         WebMediaIngressKind::NativeManifest
     );
-    assert!(native_projection.stream_configuration.is_none());
-    assert!(native.catalog_attachment().is_none());
+    assert!(native_projection.stream_configuration.is_some());
+    assert!(native.catalog_attachment().is_some());
 
     let debug = format!("{direct_projection:?} {native_projection:?}");
     for secret in ["password", "direct-secret", "native-secret", "master.m3u8"] {

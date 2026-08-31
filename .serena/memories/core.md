@@ -1,3 +1,10 @@
+## N07 native HLS VOD catalog/switch/reopen (2026-09-01)
+
+- Existing native HLS VOD path теперь публикует полный neutral TS/fMP4 component catalog и проходит initial/switch/reopen через один FetchedTop handoff без extractor для valid supported finite profile.
+- Fresh master ordinal используется только внутри текущего catalog snapshot-а; durable/app state хранит stable root lineage + semantic selection. Root refresh/recovery rematch-ит selection после перестановки rows.
+- Catalog exact reopen теперь реально переносит caller start в receipted seek; hermetic vertical достигает H.264 decoder/WGPU и AAC nonzero PCM на fMP4 и TS, root GET exact 1/attempt, process spy 0, Playing/Paused lifecycle остаётся единым.
+- Полные boundaries, root causes, tests, commands и limitations: `mem:media-services/native-hls-vod-n07-2026-09-01`. N08 не начинался.
+
 ## N06 native progressive HTTP(S)/FTP(S) (2026-08-31)
 
 - HTTP Ogg/WebM и FTP/FTPS Ogg теперь идут native direct через existing transport/demux registries при `yt_dlp.enabled=false`; Ogg достигает nonzero PCM, WebM — decoded/submitted WGPU frame.

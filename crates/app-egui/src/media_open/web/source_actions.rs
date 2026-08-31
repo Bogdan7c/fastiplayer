@@ -59,18 +59,14 @@ impl WebMediaSourceIntent {
         }
     }
 
-    /// Разрешает same-item action внутри owner-а physical extractor state.
+    /// Разрешает same-item action внутри owner-а physical adapter state.
     pub(crate) fn selection_switch_request(
         &self,
         intent: WebMediaSelectionSwitchIntent,
         settings: WebMediaOpenSettings,
     ) -> WebMediaSelectionSwitchResolution {
-        let WebMediaSourceAdapter::Extractor {
-            locator,
-            source_state,
-        } = &*self.adapter
-        else {
-            return match intent {
+        match &*self.adapter {
+            WebMediaSourceAdapter::Direct { .. } => match intent {
                 WebMediaSelectionSwitchIntent::CatalogTarget(
                     crate::web_media_catalog::WebMediaSelectionTarget::InstalledOnly,
                 ) => WebMediaSelectionSwitchResolution::NoChange,
@@ -78,30 +74,55 @@ impl WebMediaSourceIntent {
                 | WebMediaSelectionSwitchIntent::ComponentSemantic(_) => {
                     WebMediaSelectionSwitchResolution::Unsupported
                 }
-            };
-        };
-
-        let selection_intent = match intent {
-            WebMediaSelectionSwitchIntent::CatalogTarget(
-                crate::web_media_catalog::WebMediaSelectionTarget::InstalledOnly,
-            ) => return WebMediaSelectionSwitchResolution::NoChange,
-            WebMediaSelectionSwitchIntent::CatalogTarget(target) => {
-                let Some(selection_intent) = source_state.selection_intent_for_target(&target)
-                else {
-                    return WebMediaSelectionSwitchResolution::Stale;
+            },
+            WebMediaSourceAdapter::NativeHls {
+                source,
+                source_state,
+            } => match intent {
+                WebMediaSelectionSwitchIntent::CatalogTarget(
+                    crate::web_media_catalog::WebMediaSelectionTarget::InstalledOnly,
+                ) => WebMediaSelectionSwitchResolution::NoChange,
+                WebMediaSelectionSwitchIntent::CatalogTarget(_) => {
+                    WebMediaSelectionSwitchResolution::Unsupported
+                }
+                WebMediaSelectionSwitchIntent::ComponentSemantic(selection) => {
+                    let Some(intent) = source_state.switch_intent_for_component(selection) else {
+                        return WebMediaSelectionSwitchResolution::Stale;
+                    };
+                    WebMediaSelectionSwitchResolution::Ready(WebMediaOpenRequest::native_hls(
+                        source.clone(),
+                        intent,
+                        settings,
+                    ))
+                }
+            },
+            WebMediaSourceAdapter::Extractor {
+                locator,
+                source_state,
+            } => {
+                let selection_intent = match intent {
+                    WebMediaSelectionSwitchIntent::CatalogTarget(
+                        crate::web_media_catalog::WebMediaSelectionTarget::InstalledOnly,
+                    ) => return WebMediaSelectionSwitchResolution::NoChange,
+                    WebMediaSelectionSwitchIntent::CatalogTarget(target) => {
+                        let Some(selection_intent) =
+                            source_state.selection_intent_for_target(&target)
+                        else {
+                            return WebMediaSelectionSwitchResolution::Stale;
+                        };
+                        selection_intent
+                    }
+                    WebMediaSelectionSwitchIntent::ComponentSemantic(selection) => {
+                        source_state.selection_intent_for_component(selection)
+                    }
                 };
-                selection_intent
+                WebMediaSelectionSwitchResolution::Ready(WebMediaOpenRequest::extractor(
+                    locator.clone(),
+                    selection_intent,
+                    settings,
+                ))
             }
-            WebMediaSelectionSwitchIntent::ComponentSemantic(selection) => {
-                source_state.selection_intent_for_component(selection)
-            }
-        };
-
-        WebMediaSelectionSwitchResolution::Ready(WebMediaOpenRequest::extractor(
-            locator.clone(),
-            selection_intent,
-            settings,
-        ))
+        }
     }
 
     /// Проецирует settings change в controlled reopen без adapter dispatch у caller-а.
@@ -119,13 +140,14 @@ impl WebMediaSourceIntent {
                 }
                 WebMediaOpenRequest::direct(locator.clone(), network_config, demux_config)
             }
-            WebMediaSourceAdapter::NativeHls { source, selection } => {
-                WebMediaOpenRequest::native_hls(
-                    source.clone(),
-                    NativeHlsOpenIntent::ExactSelection(selection.clone()),
-                    adaptive_settings,
-                )
-            }
+            WebMediaSourceAdapter::NativeHls {
+                source,
+                source_state,
+            } => WebMediaOpenRequest::native_hls(
+                source.clone(),
+                source_state.installed_reopen_intent(),
+                adaptive_settings,
+            ),
             WebMediaSourceAdapter::Extractor {
                 locator,
                 source_state,

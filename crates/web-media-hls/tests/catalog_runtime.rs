@@ -206,6 +206,7 @@ fn discovery_content_proves_selected_child_and_isolates_unavailable_sibling() {
             open: &open,
             catalog_identity: catalog_identity(),
             presentation: HlsCatalogPresentation::Vod,
+            provider_default_variant_index: None,
             policy: HlsCatalogBuildPolicy {
                 catalog_limit: ComponentVariantCatalogLimit::new(8).expect("catalog limit"),
                 compatibility_edge_limit: ComponentVariantEdgeLimit::new(8).expect("edge limit"),
@@ -338,6 +339,7 @@ fn live_catalog_reopen_semantically_tracks_rotated_child_after_endpoint_replacem
             open: &discovery_open,
             catalog_identity: catalog_identity(),
             presentation: HlsCatalogPresentation::Live,
+            provider_default_variant_index: None,
             policy: HlsCatalogBuildPolicy {
                 catalog_limit: ComponentVariantCatalogLimit::new(8).expect("catalog limit"),
                 compatibility_edge_limit: ComponentVariantEdgeLimit::new(8).expect("edge limit"),

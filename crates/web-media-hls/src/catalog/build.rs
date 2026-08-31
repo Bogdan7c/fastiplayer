@@ -16,7 +16,7 @@ use super::rows::{
 };
 use super::*;
 use crate::HlsMainTrackLayoutIntent;
-use crate::open::select_master;
+use crate::open::{select_master, select_master_at_index};
 
 #[derive(Clone, Copy)]
 enum ChildUse {
@@ -68,8 +68,13 @@ pub fn build_hls_catalog(
     request: HlsCatalogBuildRequest<'_>,
     proof_port: &mut dyn HlsCatalogChildProofPort,
 ) -> Result<HlsCatalogSnapshot, HlsCatalogBuildError> {
-    let selected = select_master(request.master, request.provider_default)
-        .map_err(HlsCatalogBuildError::ProviderDefaultSelection)?;
+    let selected = match request.provider_default_variant_index {
+        Some(variant_index) => {
+            select_master_at_index(request.master, variant_index, request.provider_default)
+        }
+        None => select_master(request.master, request.provider_default),
+    }
+    .map_err(HlsCatalogBuildError::ProviderDefaultSelection)?;
     let selected_variant_index = request
         .master
         .variants

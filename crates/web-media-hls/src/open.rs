@@ -149,16 +149,31 @@ pub fn prepare_hls_vod_receipted_at_start(
 
 /// Открывает exact proven catalog selection с worker-receipted seek boundary.
 pub fn prepare_hls_catalog_vod_receipted(
+    request: HlsVodOpenRequest,
+    selection: HlsCatalogReopenSelection,
+    asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
+) -> Result<HlsVodOpenResult, HlsVodOpenError> {
+    prepare_hls_catalog_vod_receipted_at_start(
+        request,
+        selection,
+        asynchronous_seek_limits,
+        HlsVodStartIntent::Beginning,
+    )
+}
+
+/// Открывает catalog selection сразу из caller-owned restore position.
+pub fn prepare_hls_catalog_vod_receipted_at_start(
     mut request: HlsVodOpenRequest,
     selection: HlsCatalogReopenSelection,
     asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
+    start: HlsVodStartIntent,
 ) -> Result<HlsVodOpenResult, HlsVodOpenError> {
     request.selection = selection.runtime_intent();
     prepare_hls_vod_with_seek_boundary(
         request,
         Some(asynchronous_seek_limits),
         Some(selection),
-        HlsVodStartIntent::Beginning,
+        start,
     )
 }
 
@@ -218,7 +233,7 @@ fn prepare_hls_vod_with_seek_boundary(
         }
         HlsPlaylist::Master(master) => match catalog_selection.as_ref() {
             Some(selection) => {
-                select_and_load_catalog_master(master, &top_base, &request, selection)?
+                select_and_load_catalog_master(master, &top_base, &request, selection, start)?
             }
             None => select_and_load_master(master, &top_base, &request, start)?,
         },
@@ -479,6 +494,7 @@ fn select_and_load_catalog_master(
     base: &HttpRequestTarget,
     request: &HlsVodOpenRequest,
     selection: &HlsCatalogReopenSelection,
+    start: HlsVodStartIntent,
 ) -> Result<SelectedPlans, HlsVodOpenError> {
     let selected = selection.resolve_master(&master, HlsCatalogMatchMode::Exact)?;
     let main_target = base.resolve_reference(selected.main_reference.expose_for_resolution())?;
@@ -494,8 +510,10 @@ fn select_and_load_catalog_master(
         request,
         HlsContainerEvidence::Exact(selected.main_container),
         HlsInitialComponentRole::Main,
-        HlsVodStartIntent::Beginning,
+        start,
     )?;
+    // Как и обычный master open, catalog path разрешает permissive fallback только у main.
+    let alternate_audio_start = main.start_disposition.strict_component_start();
 
     let audio = selected
         .audio
@@ -512,7 +530,7 @@ fn select_and_load_catalog_master(
                 request,
                 HlsContainerEvidence::Exact(audio.container),
                 HlsInitialComponentRole::AlternateAudio,
-                HlsVodStartIntent::Beginning,
+                alternate_audio_start,
             )
         })
         .transpose()?;
@@ -603,6 +621,15 @@ pub(crate) fn select_master(
             Err(HlsVodOpenError::AmbiguousVariant)
         };
     };
+    Ok(build_selected_master(master, variant, *audio))
+}
+
+/// Собирает единый exact selection result для semantic и fresh-index master paths.
+fn build_selected_master(
+    master: &MasterPlaylist,
+    variant: &hls_playlist_core::VariantStream,
+    audio: Option<&hls_playlist_core::MediaRendition>,
+) -> SelectedMaster {
     let subtitles = variant
         .subtitle_group
         .as_deref()
@@ -618,11 +645,29 @@ pub(crate) fn select_master(
                 .collect()
         })
         .unwrap_or_default();
-    Ok(SelectedMaster {
-        variant: (*variant).clone(),
+    SelectedMaster {
+        variant: variant.clone(),
         audio: audio.filter(|rendition| rendition.uri.is_some()).cloned(),
         subtitles,
-    })
+    }
+}
+
+/// Выбирает variant по exact ordinal уже parsed fresh master-а.
+/// Ordinal не является reopen identity и не должен сохраняться между root refresh-ами.
+pub(crate) fn select_master_at_index(
+    master: &MasterPlaylist,
+    variant_index: usize,
+    intent: &HlsVariantSelectionIntent,
+) -> Result<SelectedMaster, HlsVodOpenError> {
+    let variant = master
+        .variants
+        .get(variant_index)
+        .ok_or(HlsVodOpenError::MissingVariant)?;
+    if !variant_matches(variant, intent) {
+        return Err(HlsVodOpenError::MissingVariant);
+    }
+    let audio = select_audio_rendition(master, variant, &intent.audio)?;
+    Ok(build_selected_master(master, variant, audio))
 }
 
 fn variant_matches(variant: &VariantStream, intent: &HlsVariantSelectionIntent) -> bool {

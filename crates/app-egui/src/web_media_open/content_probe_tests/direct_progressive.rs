@@ -19,9 +19,9 @@ use super::ftp_vorbis::FtpVorbisOrigin;
 use super::vorbis;
 use super::{DEMUX_EVENT_DEADLINE, FixtureOriginResponse, RangeFixtureOrigin, audio_packet_timing};
 
-/// Spy остаётся рядом с реальным direct lifecycle и падает при любом spawn attempt-е.
+/// Общий hermetic process spy падает при любом extractor spawn attempt-е.
 #[derive(Default)]
-struct ZeroProcessSpy {
+pub(crate) struct ZeroProcessSpy {
     /// Atomic counter не зависит от thread-а, на котором ошибочно вызвали бы extractor.
     invocation_count: AtomicUsize,
 }
@@ -34,14 +34,14 @@ impl ExtractorProcessLauncher for ZeroProcessSpy {
     ) -> io::Result<Child> {
         self.invocation_count.fetch_add(1, Ordering::SeqCst);
         Err(io::Error::other(
-            "direct progressive test запрещает extractor process spawn",
+            "hermetic media test запрещает extractor process spawn",
         ))
     }
 }
 
 impl ZeroProcessSpy {
     /// Возвращает exact число попыток запуска child process-а.
-    fn invocation_count(&self) -> usize {
+    pub(crate) fn invocation_count(&self) -> usize {
         self.invocation_count.load(Ordering::SeqCst)
     }
 }

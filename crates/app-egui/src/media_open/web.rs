@@ -15,7 +15,7 @@ use web_media_core::{
     WebMediaRecoveryStrategy, WebMediaSelection,
 };
 
-use super::{NativeHlsOpenIntent, NativeHlsUrl, SafeMediaLabel};
+use super::{NativeHlsOpenIntent, NativeHlsSourceState, NativeHlsUrl, SafeMediaLabel};
 
 mod source_actions;
 pub(crate) use source_actions::{
@@ -53,10 +53,10 @@ enum WebMediaSourceAdapter {
     Direct {
         locator: service_direct_media::DirectMediaUrl,
     },
-    /// Native HLS хранит только root locator и semantic selection без child URL.
+    /// Native HLS хранит root locator и neutral catalog state без child URL.
     NativeHls {
         source: NativeHlsUrl,
-        selection: web_media_hls::NativeHlsSemanticSelection,
+        source_state: Box<NativeHlsSourceState>,
     },
     /// Extractor сохраняет neutral selection и временные UI/reopen projections.
     Extractor {
@@ -78,16 +78,16 @@ impl WebMediaSourceIntent {
     }
 
     /// Создаёт proven native HLS VOD intent без временных rendition endpoints.
-    pub(crate) fn native_hls_vod(
-        source: NativeHlsUrl,
-        selection: web_media_hls::NativeHlsSemanticSelection,
-    ) -> Self {
+    pub(crate) fn native_hls_vod(source: NativeHlsUrl, source_state: NativeHlsSourceState) -> Self {
         Self {
             ingress: WebMediaIngressKind::NativeManifest,
             presentation: WebMediaPresentationKind::Vod,
             recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
             extractor_reason: None,
-            adapter: Box::new(WebMediaSourceAdapter::NativeHls { source, selection }),
+            adapter: Box::new(WebMediaSourceAdapter::NativeHls {
+                source,
+                source_state: Box::new(source_state),
+            }),
         }
     }
 
@@ -137,7 +137,10 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::Extractor { source_state, .. } => {
                 Some(source_state.neutral_selection())
             }
-            WebMediaSourceAdapter::Direct { .. } | WebMediaSourceAdapter::NativeHls { .. } => None,
+            WebMediaSourceAdapter::NativeHls { source_state, .. } => {
+                Some(source_state.neutral_selection())
+            }
+            WebMediaSourceAdapter::Direct { .. } => None,
         }
     }
 
@@ -149,7 +152,10 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::Extractor { source_state, .. } => {
                 Some(source_state.stream_configuration())
             }
-            WebMediaSourceAdapter::Direct { .. } | WebMediaSourceAdapter::NativeHls { .. } => None,
+            WebMediaSourceAdapter::NativeHls { source_state, .. } => {
+                Some(source_state.stream_configuration())
+            }
+            WebMediaSourceAdapter::Direct { .. } => None,
         }
     }
 
@@ -161,7 +167,10 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::Extractor { source_state, .. } => {
                 Some(source_state.catalog_attachment())
             }
-            WebMediaSourceAdapter::Direct { .. } | WebMediaSourceAdapter::NativeHls { .. } => None,
+            WebMediaSourceAdapter::NativeHls { source_state, .. } => {
+                Some(source_state.catalog_attachment())
+            }
+            WebMediaSourceAdapter::Direct { .. } => None,
         }
     }
 
@@ -174,11 +183,14 @@ impl WebMediaSourceIntent {
                 source_label: locator.safe_label(),
                 stream_configuration: None,
             },
-            WebMediaSourceAdapter::NativeHls { source, .. } => WebMediaSourceReadProjection {
+            WebMediaSourceAdapter::NativeHls {
+                source,
+                source_state,
+            } => WebMediaSourceReadProjection {
                 ingress: self.ingress,
                 presentation: self.presentation,
                 source_label: source.safe_label().as_str(),
-                stream_configuration: None,
+                stream_configuration: Some(source_state.stream_configuration()),
             },
             WebMediaSourceAdapter::Extractor {
                 locator,
@@ -205,11 +217,14 @@ impl WebMediaSourceIntent {
                 network_config,
                 demux_config,
             },
-            WebMediaSourceAdapter::NativeHls { source, selection } => {
+            WebMediaSourceAdapter::NativeHls {
+                source,
+                source_state,
+            } => {
                 let settings = adaptive_settings?;
                 WebMediaOpenAdapter::NativeHls {
                     source: source.clone(),
-                    intent: NativeHlsOpenIntent::ExactSelection(selection.clone()),
+                    intent: source_state.installed_reopen_intent(),
                     settings,
                 }
             }

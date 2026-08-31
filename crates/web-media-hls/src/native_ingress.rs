@@ -122,6 +122,34 @@ impl NativeHlsSemanticSelection {
     }
 }
 
+/// Fresh catalog admission дополняет semantic intent точным индексом только текущего master-а.
+/// Индекс никогда не переживает root refresh: reopen использует component semantic rematch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHlsCatalogAdmission {
+    selection: NativeHlsSemanticSelection,
+    current_master_variant_index: Option<usize>,
+}
+
+impl NativeHlsCatalogAdmission {
+    /// Возвращает provisional runtime intent до exact catalog reopen-а.
+    #[must_use]
+    pub fn runtime_intent(&self) -> HlsVariantSelectionIntent {
+        self.selection.runtime_intent()
+    }
+
+    /// Container остаётся content-probed на фактическом child payload-е.
+    #[must_use]
+    pub fn container_intent(&self) -> HlsComponentContainerIntent {
+        self.selection.container_intent()
+    }
+
+    /// Exact ordinal допустим только внутри уже parsed fresh root snapshot-а.
+    #[must_use]
+    pub const fn current_master_variant_index(&self) -> Option<usize> {
+        self.current_master_variant_index
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeHlsTopology {
     Media,
@@ -171,6 +199,77 @@ pub fn admit_native_hls_vod(
     policy: &NativeHlsSelectionPolicy,
     expected: Option<&NativeHlsSemanticSelection>,
 ) -> Result<NativeHlsSemanticSelection, NativeHlsAdmissionError> {
+    let playlist = parse_native_hls_top(document_bytes, effective_url, parser_limits)?;
+
+    match playlist {
+        HlsPlaylist::Media(media) => {
+            if !media.end_list {
+                return Err(NativeHlsAdmissionError::LiveRequiresExtractor);
+            }
+            if expected.is_some_and(|selection| selection.topology != NativeHlsTopology::Media) {
+                return Err(NativeHlsAdmissionError::ExtractorMaterialRequired);
+            }
+            Ok(native_media_selection())
+        }
+        HlsPlaylist::Master(master) => match expected {
+            Some(expected) => rematch_master(&master, expected),
+            None => select_master_low_load(&master, policy),
+        },
+    }
+}
+
+/// Проверяет native VOD profile и выбирает fresh provider-default для полного catalog discovery.
+/// В отличие от legacy low-load open-а, одинаковые semantic descriptors не требуют extractor:
+/// текущий root связывается exact ordinal-ом, а дальнейшие refresh-ы — semantic catalog selection-ом.
+pub fn admit_native_hls_vod_catalog(
+    document_bytes: &[u8],
+    effective_url: &source_core::HttpRequestTarget,
+    parser_limits: HlsParserLimits,
+    policy: &NativeHlsSelectionPolicy,
+) -> Result<NativeHlsCatalogAdmission, NativeHlsAdmissionError> {
+    let playlist = parse_native_hls_top(document_bytes, effective_url, parser_limits)?;
+
+    match playlist {
+        HlsPlaylist::Media(media) => {
+            if !media.end_list {
+                return Err(NativeHlsAdmissionError::LiveRequiresExtractor);
+            }
+            Ok(NativeHlsCatalogAdmission {
+                selection: native_media_selection(),
+                current_master_variant_index: None,
+            })
+        }
+        HlsPlaylist::Master(master) => {
+            let mut candidates = master
+                .variants
+                .iter()
+                .enumerate()
+                .filter_map(|(variant_index, variant)| {
+                    native_candidate(&master, variant_index, variant, policy)
+                })
+                .collect::<Vec<_>>();
+            if candidates.is_empty() {
+                return Err(NativeHlsAdmissionError::ExtractorMaterialRequired);
+            }
+            candidates.sort_by(|left, right| compare_candidates(left, right, policy));
+            let selected = &candidates[0];
+            Ok(NativeHlsCatalogAdmission {
+                selection: NativeHlsSemanticSelection {
+                    topology: NativeHlsTopology::Master,
+                    runtime_intent: selected.runtime_intent(),
+                },
+                current_master_variant_index: Some(selected.variant_index),
+            })
+        }
+    }
+}
+
+/// Парсит и валидирует authoritative top manifest одинаково для legacy и catalog admission-а.
+fn parse_native_hls_top(
+    document_bytes: &[u8],
+    effective_url: &source_core::HttpRequestTarget,
+    parser_limits: HlsParserLimits,
+) -> Result<HlsPlaylist, NativeHlsAdmissionError> {
     if !looks_like_hls(document_bytes) {
         return Err(NativeHlsAdmissionError::StrictlyNotHls);
     }
@@ -181,28 +280,18 @@ pub fn admit_native_hls_vod(
     })
     .map_err(NativeHlsAdmissionError::Parse)?;
     validate_initial_profile(&playlist).map_err(NativeHlsAdmissionError::Profile)?;
+    Ok(playlist)
+}
 
-    match playlist {
-        HlsPlaylist::Media(media) => {
-            if !media.end_list {
-                return Err(NativeHlsAdmissionError::LiveRequiresExtractor);
-            }
-            if expected.is_some_and(|selection| selection.topology != NativeHlsTopology::Media) {
-                return Err(NativeHlsAdmissionError::ExtractorMaterialRequired);
-            }
-            Ok(NativeHlsSemanticSelection {
-                topology: NativeHlsTopology::Media,
-                runtime_intent: HlsVariantSelectionIntent {
-                    resolution: None,
-                    codecs: None,
-                    audio: HlsAudioLayoutIntent::Muxed,
-                    main_track_layout: HlsMainTrackLayoutIntent::MuxedAv,
-                },
-            })
-        }
-        HlsPlaylist::Master(master) => match expected {
-            Some(expected) => rematch_master(&master, expected),
-            None => select_master_low_load(&master, policy),
+/// Media topology имеет единственный reconstructible muxed selection intent.
+fn native_media_selection() -> NativeHlsSemanticSelection {
+    NativeHlsSemanticSelection {
+        topology: NativeHlsTopology::Media,
+        runtime_intent: HlsVariantSelectionIntent {
+            resolution: None,
+            codecs: None,
+            audio: HlsAudioLayoutIntent::Muxed,
+            main_track_layout: HlsMainTrackLayoutIntent::MuxedAv,
         },
     }
 }
@@ -230,7 +319,10 @@ fn select_master_low_load(
     let mut candidates = master
         .variants
         .iter()
-        .filter_map(|variant| native_candidate(master, variant, policy))
+        .enumerate()
+        .filter_map(|(variant_index, variant)| {
+            native_candidate(master, variant_index, variant, policy)
+        })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
         return Err(NativeHlsAdmissionError::ExtractorMaterialRequired);
@@ -242,12 +334,7 @@ fn select_master_low_load(
         return Err(NativeHlsAdmissionError::ExtractorMaterialRequired);
     }
     let selected = &candidates[0];
-    let runtime_intent = HlsVariantSelectionIntent {
-        resolution: Some(selected.resolution),
-        codecs: Some(selected.codecs.clone()),
-        audio: selected.audio.clone(),
-        main_track_layout: selected.main_track_layout,
-    };
+    let runtime_intent = selected.runtime_intent();
     select_master(master, &runtime_intent)
         .map_err(|_| NativeHlsAdmissionError::ExtractorMaterialRequired)?;
     Ok(NativeHlsSemanticSelection {
@@ -257,6 +344,7 @@ fn select_master_low_load(
 }
 
 struct NativeMasterCandidate {
+    variant_index: usize,
     codec_rank: usize,
     resolution: (NonZeroU32, NonZeroU32),
     codecs: Box<str>,
@@ -266,8 +354,21 @@ struct NativeMasterCandidate {
     video_range: Option<HlsVideoRange>,
 }
 
+impl NativeMasterCandidate {
+    /// Проецирует ranked row в reconstructible semantic runtime intent.
+    fn runtime_intent(&self) -> HlsVariantSelectionIntent {
+        HlsVariantSelectionIntent {
+            resolution: Some(self.resolution),
+            codecs: Some(self.codecs.clone()),
+            audio: self.audio.clone(),
+            main_track_layout: self.main_track_layout,
+        }
+    }
+}
+
 fn native_candidate(
     master: &MasterPlaylist,
+    variant_index: usize,
     variant: &VariantStream,
     policy: &NativeHlsSelectionPolicy,
 ) -> Option<NativeMasterCandidate> {
@@ -345,6 +446,7 @@ fn native_candidate(
         }
     };
     Some(NativeMasterCandidate {
+        variant_index,
         codec_rank,
         resolution,
         codecs,
@@ -464,6 +566,61 @@ mod tests {
         assert!(matches!(
             admit(changed, &policy(None), Some(&selected)),
             Err(NativeHlsAdmissionError::ExtractorMaterialRequired)
+        ));
+    }
+
+    #[test]
+    fn catalog_admission_keeps_valid_ambiguous_master_native_with_fresh_exact_index() {
+        let manifest = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=16x16,CODECS=\"avc1.42c00a,mp4a.40.2\"\n\
+ts.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=16x16,CODECS=\"avc1.42c00a,mp4a.40.2\"\n\
+fmp4.m3u8\n";
+        assert!(matches!(
+            admit(manifest, &policy(None), None),
+            Err(NativeHlsAdmissionError::ExtractorMaterialRequired)
+        ));
+
+        let admitted = admit_native_hls_vod_catalog(
+            manifest.as_bytes(),
+            &target(),
+            HlsParserLimits::default(),
+            &policy(None),
+        )
+        .expect("full catalog path не должен делегировать валидный master extractor-у");
+
+        assert_eq!(admitted.current_master_variant_index(), Some(1));
+        assert_eq!(
+            admitted.runtime_intent().main_track_layout,
+            HlsMainTrackLayoutIntent::MuxedAv
+        );
+    }
+
+    #[test]
+    fn catalog_admission_keeps_media_vod_indexless_and_live_typed() {
+        let vod = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n";
+        let admitted = admit_native_hls_vod_catalog(
+            vod.as_bytes(),
+            &target(),
+            HlsParserLimits::default(),
+            &policy(None),
+        )
+        .expect("media VOD должен остаться native без fake master ordinal-а");
+        assert_eq!(admitted.current_master_variant_index(), None);
+        assert_eq!(
+            admitted.runtime_intent().main_track_layout,
+            HlsMainTrackLayoutIntent::MuxedAv
+        );
+
+        let live = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n";
+        assert!(matches!(
+            admit_native_hls_vod_catalog(
+                live.as_bytes(),
+                &target(),
+                HlsParserLimits::default(),
+                &policy(None),
+            ),
+            Err(NativeHlsAdmissionError::LiveRequiresExtractor)
         ));
     }
 

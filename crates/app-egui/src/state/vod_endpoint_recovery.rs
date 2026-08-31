@@ -470,10 +470,13 @@ impl AppState {
         let web_intent = source
             .web_intent()
             .filter(|intent| {
-                intent.recovery()
-                    == web_media_core::WebMediaRecoveryStrategy::FreshExtractionAndRematch
+                matches!(
+                    intent.recovery(),
+                    web_media_core::WebMediaRecoveryStrategy::FreshExtractionAndRematch
+                        | web_media_core::WebMediaRecoveryStrategy::RefreshRootManifestAndRematch
+                )
             })
-            .ok_or("installed recovery attachment не принадлежит extractor source")?;
+            .ok_or("installed recovery attachment не принадлежит refreshable web source")?;
         let capabilities = self
             .system_capabilities_snapshot
             .as_ref()
@@ -485,7 +488,7 @@ impl AppState {
         );
         let request = web_intent
             .controlled_reopen_request(config.network.clone(), config.player.demux, Some(settings))
-            .ok_or("extractor controlled reopen settings отсутствуют")?;
+            .ok_or("refreshable web source controlled reopen settings отсутствуют")?;
         Ok(source.wrap_reopen_request(MediaOpenSourceRequest::Web(request)))
     }
 }

@@ -12,7 +12,7 @@ mod component_variants_tests;
 mod content_probe;
 mod content_probe_fallback;
 #[cfg(test)]
-mod content_probe_tests;
+pub(crate) mod content_probe_tests;
 mod hds;
 /// Fresh extraction/rematch и process-local generation allocators.
 mod preparation;

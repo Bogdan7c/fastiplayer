@@ -54,6 +54,7 @@ pub fn discover_hls_catalog(
             master: &master,
             catalog_identity: request.catalog_identity,
             provider_default: &request.open.selection,
+            provider_default_variant_index: request.provider_default_variant_index,
             policy: request.policy,
         },
         &mut proof_port,

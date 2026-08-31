@@ -214,6 +214,8 @@ pub struct HlsCatalogBuildRequest<'a> {
     pub master: &'a MasterPlaylist,
     pub catalog_identity: ComponentVariantCatalogIdentity,
     pub provider_default: &'a HlsVariantSelectionIntent,
+    /// Exact ordinal действует только внутри текущего parsed master snapshot-а.
+    pub provider_default_variant_index: Option<usize>,
     pub policy: HlsCatalogBuildPolicy,
 }
 
@@ -222,6 +224,8 @@ pub struct HlsCatalogDiscoveryRequest<'a> {
     pub open: &'a crate::HlsVodOpenRequest,
     pub catalog_identity: ComponentVariantCatalogIdentity,
     pub presentation: HlsCatalogPresentation,
+    /// Native root admission может передать exact current-snapshot default без reopen coupling.
+    pub provider_default_variant_index: Option<usize>,
     pub policy: HlsCatalogBuildPolicy,
 }
 

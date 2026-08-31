@@ -350,6 +350,40 @@ impl WebMediaStreamConfiguration {
         })
     }
 
+    /// Строит один stable parent для native manifest; полный master inventory
+    /// устанавливается отдельно через canonical component catalog boundary.
+    pub(crate) fn from_native_manifest(
+        active_parent: ExactSelectionIdentity,
+        preference: WebMediaSelectionPreference,
+    ) -> Self {
+        let active_selection = WebMediaSelection::candidate(active_parent.clone());
+        let active_candidate = WebMediaCandidatePresentation {
+            layout: StreamLayoutKind::ContentProbed,
+            width: None,
+            height: None,
+            frame_rate: None,
+            video_bitrate: None,
+            audio_bitrate: None,
+            video_codec: None,
+            audio_codec: None,
+            dynamic_range: None,
+            containers: WebMediaContainerSummary {
+                video: None,
+                audio: None,
+            },
+        };
+        Self {
+            generation: WebMediaStreamGeneration::from_selection(&active_selection),
+            active_parent,
+            candidates: Arc::from([active_candidate.clone()]),
+            candidate_selections: Arc::from([active_selection]),
+            active_candidate,
+            preference,
+            component_variants: WebMediaComponentVariantConfiguration::Unavailable,
+            hls_subtitle_renditions: Arc::from([]),
+        }
+    }
+
     #[must_use]
     pub(crate) fn generation(&self) -> WebMediaStreamGeneration {
         self.generation

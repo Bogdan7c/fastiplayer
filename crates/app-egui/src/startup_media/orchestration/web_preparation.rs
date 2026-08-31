@@ -53,7 +53,7 @@ pub(super) fn compose_native_hls_startup_media(
     let duration = prepared.demuxer.duration();
     let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
     let safe_label = source.safe_label().clone();
-    let source_intent = WebMediaSourceIntent::native_hls_vod(source, prepared.selection);
+    let source_intent = WebMediaSourceIntent::native_hls_vod(source, prepared.source_state);
     let active_source = crate::media_open::ActiveMediaSource::Web(source_intent.clone());
     let prepared_media = compose_prepared_web_media(
         safe_label.as_str(),
@@ -76,7 +76,7 @@ pub(super) fn compose_native_hls_startup_media(
         source_intent,
         safe_label.clone(),
         None,
-        None,
+        Some(prepared.vod_endpoint_recovery),
     );
 
     Ok(ComposedNativeHlsStartupMedia {

@@ -41,7 +41,7 @@ const DECODE_GENERATION: u64 = 1;
 const MUXED_WEBM_BASE64: &str = "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";
 
 /// Headless renderer state не требует window или compositor-а.
-struct OffscreenWgpuHarness {
+pub(crate) struct OffscreenWgpuHarness {
     /// Device владеет render/upload/readback resources.
     device: wgpu::Device,
     /// Queue является production submit boundary и release fence owner-ом.
@@ -60,7 +60,7 @@ struct OffscreenWgpuHarness {
 
 impl OffscreenWgpuHarness {
     /// Создаёт Vulkan device/queue; lavapipe подходит как hermetic software adapter.
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -119,8 +119,18 @@ impl OffscreenWgpuHarness {
         }
     }
 
+    /// Даёт vertical test-у device только для production materializer-а.
+    pub(crate) const fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// Даёт vertical test-у queue для backend submission contract-а.
+    pub(crate) const fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
     /// Материализует, рисует, submit-ит и освобождает один decoded frame.
-    fn submit_and_release(
+    pub(crate) fn submit_and_release(
         &mut self,
         materializer: &HostPlanarWgpuFrameMaterializer,
         renderer_provider: &PresentFrameResourceProviderHandle,
@@ -235,9 +245,10 @@ impl OffscreenWgpuHarness {
 }
 
 /// Запускает production FFmpeg VP9 backend с host-planar output contract-ом.
-fn open_decoder(
+pub(crate) fn open_decoder(
     video_track: &media_core::TrackInfo,
     queue: &wgpu::Queue,
+    codec: VideoCodec,
 ) -> (
     Box<VideoBackendDecoderThreadHandle>,
     PresentFrameResourceProviderHandle,
@@ -250,7 +261,7 @@ fn open_decoder(
     let decoder = wrapped_backend.into_decoder_thread();
     let stream_config = VideoStreamDecodeConfig::from_requirement(
         video_track.id,
-        &VideoDecodeRequirement::new(VideoCodec::Vp9),
+        &VideoDecodeRequirement::new(codec),
         VideoFrameContract::host_yuv420_planar8(),
     )
     .with_codec_private(video_track.codec_private.clone());
@@ -262,7 +273,10 @@ fn open_decoder(
 }
 
 /// Отправляет real compressed packet и ждёт durable completion ACK.
-fn decode_packet(decoder: &VideoBackendDecoderThreadHandle, packet: Packet) -> Vec<DecodedFrame> {
+pub(crate) fn decode_packet(
+    decoder: &VideoBackendDecoderThreadHandle,
+    packet: Packet,
+) -> Vec<DecodedFrame> {
     let decode_packet = DecodePacket {
         track_id: packet.track_id,
         pts: packet.pts,
@@ -321,7 +335,7 @@ fn decode_first_frame(
 }
 
 /// Завершает FFmpeg reorder queue, если tiny fixture удержала кадр до EOS.
-fn drain_decoder(decoder: &VideoBackendDecoderThreadHandle) -> DecodedFrame {
+pub(crate) fn drain_decoder(decoder: &VideoBackendDecoderThreadHandle) -> DecodedFrame {
     let begin = decoder.begin_end_of_stream_drain(DECODE_GENERATION);
     assert!(matches!(
         begin,
@@ -406,7 +420,8 @@ fn direct_http_webm_reaches_decoded_and_submitted_renderer_frame() {
         .expect("direct WebM должен иметь video track");
 
     let mut wgpu_harness = OffscreenWgpuHarness::new();
-    let (decoder, renderer_provider) = open_decoder(&video_track, &wgpu_harness.queue);
+    let (decoder, renderer_provider) =
+        open_decoder(&video_track, &wgpu_harness.queue, VideoCodec::Vp9);
     let materializer = HostPlanarWgpuFrameMaterializer::new(
         &wgpu_harness.device,
         &wgpu_harness.queue,

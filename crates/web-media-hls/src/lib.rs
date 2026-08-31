@@ -47,14 +47,15 @@ pub use live::{
 };
 pub use manifest_profile::ValidatedVodMediaPlaylist;
 pub use native_ingress::{
-    NativeHlsAdmissionError, NativeHlsDynamicRangePolicy, NativeHlsOpenFallbackReason,
-    NativeHlsSelectionPolicy, NativeHlsSelectionPolicyError, NativeHlsSemanticSelection,
-    admit_native_hls_vod, native_hls_open_fallback_reason,
+    NativeHlsAdmissionError, NativeHlsCatalogAdmission, NativeHlsDynamicRangePolicy,
+    NativeHlsOpenFallbackReason, NativeHlsSelectionPolicy, NativeHlsSelectionPolicyError,
+    NativeHlsSemanticSelection, admit_native_hls_vod, admit_native_hls_vod_catalog,
+    native_hls_open_fallback_reason,
 };
 pub use open::{
     HlsInitialReadinessCapability, HlsVodOpenError, HlsVodOpenResult,
-    prepare_hls_catalog_vod_receipted, prepare_hls_vod, prepare_hls_vod_receipted,
-    prepare_hls_vod_receipted_at_start,
+    prepare_hls_catalog_vod_receipted, prepare_hls_catalog_vod_receipted_at_start, prepare_hls_vod,
+    prepare_hls_vod_receipted, prepare_hls_vod_receipted_at_start,
 };
 pub use plan::HlsPlanError as HlsVodPlanError;
 pub use request::{

@@ -16,6 +16,7 @@ use web_media_core::{
     ComponentVariantCatalogGeneration, ComponentVariantError, ComponentVariantSelection,
     ComponentVariantSelectionRequest, ComponentVariantSemanticSelectionRequest, DynamicRange,
     ExactSelectionIdentity, VideoComponentVariant, WebMediaSelection, WebMediaSelectionError,
+    WebMediaSemanticSelectionRequest,
 };
 
 use super::{WebMediaStreamConfiguration, WebMediaStreamGeneration, known_codec};
@@ -329,6 +330,22 @@ impl WebMediaStreamConfiguration {
                 )
             }
         }
+    }
+
+    /// Преобразует UI semantic component action в полный root-scoped reopen intent.
+    /// Ошибка означает stale/чужой catalog и не должна запускать provider I/O.
+    pub(crate) fn semantic_selection_request_for_component(
+        &self,
+        request: ComponentVariantSemanticSelectionRequest,
+    ) -> Option<WebMediaSemanticSelectionRequest> {
+        let WebMediaComponentVariantConfiguration::Installed(installed) = &self.component_variants
+        else {
+            return None;
+        };
+        let components = installed.catalog.rematch_semantic(request).ok()?;
+        WebMediaSelection::with_components(self.active_parent.clone(), components)
+            .ok()
+            .map(|selection| selection.semantic_rematch_request())
     }
 
     /// Строит reopen intent без публикации catalog-а либо exact component identities.

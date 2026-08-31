@@ -106,7 +106,7 @@ pub(super) fn prepare_source(
                     NativeHlsOpenIntent::InitialWithYtDlpFallback { fallback_locator } => {
                         (None, Some(fallback_locator))
                     }
-                    NativeHlsOpenIntent::ExactSelection(selection) => (Some(selection), None),
+                    NativeHlsOpenIntent::SemanticSelection(selection) => (Some(selection), None),
                 };
                 let mut port =
                     crate::startup_media::native_hls::ProductionNativeHlsAdmissionPort::new(
@@ -114,9 +114,11 @@ pub(super) fn prepare_source(
                             source: &source,
                             expected_selection: expected_selection.as_ref(),
                             network_config: &network_config,
+                            web_media_config: &web_media_config,
                             demux_config: &demux_config,
                             preferred_video_codec_order: &preferred_video_codec_order,
-                            preferred_video_height: web_media_config.preferred_video_height,
+                            system_capabilities: &system_capabilities,
+                            audio_capabilities,
                             start: web_media_hls::HlsVodStartIntent::Beginning,
                             cancellation: cancellation.source_token(),
                         },
@@ -144,7 +146,7 @@ pub(super) fn prepare_source(
                         let duration = prepared.duration();
                         let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
                         let active_source =
-                            WebMediaSourceIntent::native_hls_vod(source, prepared.selection);
+                            WebMediaSourceIntent::native_hls_vod(source, prepared.source_state);
                         let prepared_media = compose_prepared_web_media(
                             safe_label.as_str(),
                             prepared.demuxer,
@@ -169,7 +171,7 @@ pub(super) fn prepare_source(
                                     active_source,
                                     safe_label,
                                     None,
-                                    None,
+                                    Some(prepared.vod_endpoint_recovery),
                                 ),
                             ),
                         })

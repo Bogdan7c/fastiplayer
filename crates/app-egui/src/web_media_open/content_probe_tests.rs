@@ -43,12 +43,12 @@ mod vorbis;
 
 /// Direct N06 regressions переиспользуют те же реальные Ogg fixtures и origins.
 #[path = "content_probe_tests/direct_progressive.rs"]
-mod direct_progressive;
+pub(crate) mod direct_progressive;
 
 /// Default-feature vertical доводит direct WebM до production WGPU submit-а.
 #[cfg(feature = "ffmpeg")]
 #[path = "content_probe_tests/direct_progressive_webm.rs"]
-mod direct_progressive_webm;
+pub(crate) mod direct_progressive_webm;
 
 /// Отдельный модуль доказывает комбинацию FTP transport и Ogg/Vorbis playback.
 #[path = "content_probe_tests/ftp_vorbis.rs"]
@@ -702,7 +702,7 @@ fn assert_prepared_opus_reaches_pcm(
 }
 
 /// Переносит только public demux metadata в codec-neutral decoder config.
-fn decoder_config_from_track(audio_track: &TrackInfo) -> AudioDecoderConfig {
+pub(crate) fn decoder_config_from_track(audio_track: &TrackInfo) -> AudioDecoderConfig {
     AudioDecoderConfig::from_track_metadata(
         audio_track.id.get(),
         audio_track.codec_id.clone(),
@@ -751,7 +751,7 @@ fn next_selected_audio_packet(
 }
 
 /// Сохраняет исходную packet time base без догадок по sample rate.
-fn audio_packet_timing(packet: &Packet) -> AudioPacketTiming {
+pub(crate) fn audio_packet_timing(packet: &Packet) -> AudioPacketTiming {
     let Some(track_pts) = packet.track_pts else {
         return AudioPacketTiming::unknown();
     };

@@ -1,7 +1,16 @@
 //! Production composition selected yt-dlp HLS candidate -> uninstalled HLS VOD runtime.
 
+#[path = "web_media_hls_open/native_vod.rs"]
+mod native_vod;
 #[path = "web_media_hls_open/runtime_policy.rs"]
 mod runtime_policy;
+
+#[cfg(test)]
+pub(crate) use native_vod::prepare_native_hls_player_media;
+pub(crate) use native_vod::{
+    PrepareNativeHlsVodError, PreparedNativeHlsVod, discover_native_hls_vod_catalog,
+    prepare_native_hls_catalog_vod, prepare_native_hls_vod,
+};
 
 use std::num::{NonZeroU8, NonZeroU32};
 use std::sync::Arc;
@@ -36,10 +45,11 @@ use web_media_hls::{
     HlsEndpointRefreshPort, HlsInitialPositionProofCapability, HlsInitialPositionProofTakeOutcome,
     HlsInitialReadinessCapability, HlsLiveOpenRequest, HlsMainTrackLayoutIntent, HlsManifestInput,
     HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenRequest,
-    HlsVodRestoreFallbackReason, HlsVodSeekLandingPolicy, HlsVodStartDisposition,
+    HlsVodOpenResult, HlsVodRestoreFallbackReason, HlsVodSeekLandingPolicy, HlsVodStartDisposition,
     HlsVodStartIntent, SecretInlineMediaPlaylist, discover_hls_catalog,
     prepare_hls_catalog_live_receipted, prepare_hls_catalog_vod_receipted,
-    prepare_hls_live_receipted, prepare_hls_vod_receipted, prepare_hls_vod_receipted_at_start,
+    prepare_hls_catalog_vod_receipted_at_start, prepare_hls_live_receipted,
+    prepare_hls_vod_receipted, prepare_hls_vod_receipted_at_start,
 };
 use web_media_transport_api::{SourceGeneration, TransportProviderId};
 
@@ -54,133 +64,6 @@ pub(crate) struct PreparedHlsCandidate {
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
     pub(crate) component_variants:
         crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
-}
-
-/// Узкий native-VOD результат без extractor catalog/subtitle lifecycle attachment-ов.
-pub(crate) struct PreparedNativeHlsVod {
-    pub(crate) demuxer: Box<dyn Demuxer + Send>,
-    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
-    pub(crate) initial_position: PreparedInitialPosition,
-}
-
-/// Native open сохраняет typed HLS failure для строго ограниченного extractor fallback-а.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum PrepareNativeHlsVodError {
-    #[error("native HLS VOD runtime open failed: {0}")]
-    Open(#[source] web_media_hls::HlsVodOpenError),
-    #[error("native HLS VOD runtime потерял receipted seek handle")]
-    MissingSeekHandle,
-    #[error("native HLS VOD runtime не достиг install-ready topology: {0}")]
-    InitialTopology(#[source] anyhow::Error),
-    #[error("native HLS VOD initial-position proof нарушил requested start contract: {0:?}")]
-    InitialPositionProof(HlsInitialPositionProofTakeOutcome),
-    #[error("native HLS VOD initial-position capability не совпал с start intent")]
-    InitialPositionCapabilityMismatch,
-}
-
-impl PrepareNativeHlsVodError {
-    /// Только owner-typed live/event profile может перейти в extractor fallback.
-    #[must_use]
-    pub(crate) fn fallback_reason(&self) -> Option<web_media_hls::NativeHlsOpenFallbackReason> {
-        match self {
-            Self::Open(error) => web_media_hls::native_hls_open_fallback_reason(error),
-            Self::MissingSeekHandle
-            | Self::InitialTopology(_)
-            | Self::InitialPositionProof(_)
-            | Self::InitialPositionCapabilityMismatch => None,
-        }
-    }
-}
-
-/// Открывает уже admitted native HLS VOD через те же policy/bootstrap constants, что YtDlp HLS.
-pub(crate) fn prepare_native_hls_vod(
-    request: HlsVodOpenRequest,
-    start: HlsVodStartIntent,
-) -> std::result::Result<PreparedNativeHlsVod, PrepareNativeHlsVodError> {
-    let generation = request.generation;
-    let request = request.with_seek_landing_policy(HlsVodSeekLandingPolicy::PreferPostTargetRap);
-    let opened = prepare_hls_vod_receipted_at_start(request, hls_async_seek_limits(), start)
-        .map_err(PrepareNativeHlsVodError::Open)?;
-    let seek_handle = opened
-        .async_seek_handle()
-        .ok_or(PrepareNativeHlsVodError::MissingSeekHandle)?;
-    let start_disposition = opened.start_disposition();
-    let initial_position_proof = opened.initial_position_proof();
-    let initial_readiness = opened.initial_readiness();
-    let mut demuxer = opened.into_demuxer();
-    wait_for_initial_hls_tracks(demuxer.as_mut(), &initial_readiness)
-        .map_err(PrepareNativeHlsVodError::InitialTopology)?;
-    let initial_position = match (start_disposition, initial_position_proof) {
-        (
-            HlsVodStartDisposition::BeginningRequested,
-            HlsInitialPositionProofCapability::NotRequested,
-        ) => PreparedInitialPosition::Beginning,
-        (
-            HlsVodStartDisposition::RestoreRequested { .. },
-            HlsInitialPositionProofCapability::Deferred(port),
-        ) => match port.take_for_generation(generation) {
-            HlsInitialPositionProofTakeOutcome::Ready(proof) => {
-                let target_position = proof.target_position();
-                let result = proof.demux_seek_result();
-                let landing_policy = if result.actual_position >= target_position {
-                    PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget
-                } else {
-                    PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget
-                };
-                PreparedInitialPosition::PositionedAt {
-                    target_position,
-                    result,
-                    landing_policy,
-                }
-            }
-            outcome => return Err(PrepareNativeHlsVodError::InitialPositionProof(outcome)),
-        },
-        (
-            HlsVodStartDisposition::RestoreRejectedToBeginning {
-                reason: HlsVodRestoreFallbackReason::CheckpointOutsideVod,
-                ..
-            },
-            HlsInitialPositionProofCapability::NotRequested,
-        ) => PreparedInitialPosition::Beginning,
-        _ => return Err(PrepareNativeHlsVodError::InitialPositionCapabilityMismatch),
-    };
-    Ok(PreparedNativeHlsVod {
-        demuxer,
-        seek_port: Arc::new(HlsPreparedDemuxSeekPort {
-            handle: seek_handle,
-        }),
-        initial_position,
-    })
-}
-
-/// Переносит уже доказанный native HLS runtime через единственный player preparation boundary.
-#[cfg(test)]
-pub(crate) fn prepare_native_hls_player_media(
-    safe_label: &str,
-    prepared: PreparedNativeHlsVod,
-) -> std::result::Result<player_core::PreparedMedia, player_core::PreparedInitialPositionError> {
-    let result = crate::media_open::compose_prepared_web_media(
-        safe_label,
-        prepared.demuxer,
-        crate::media_open::PreparedWebMediaAttachments {
-            demux_seek: Some(
-                crate::media_open::PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
-                    prepared.seek_port,
-                ),
-            ),
-            initial_position: Some(prepared.initial_position),
-            ..crate::media_open::PreparedWebMediaAttachments::default()
-        },
-    );
-    match result {
-        Ok(prepared_media) => Ok(prepared_media),
-        Err(crate::media_open::PreparedWebMediaCompositionError::InitialPosition(error)) => {
-            Err(error)
-        }
-        Err(crate::media_open::PreparedWebMediaCompositionError::TimelineMode(_)) => {
-            unreachable!("native HLS compatibility fixture has no dynamic timeline")
-        }
-    }
 }
 
 struct HlsPreparedDemuxSeekPort {
@@ -326,6 +209,7 @@ pub(crate) fn prepare_hls_candidate(
                         open: &request.common,
                         catalog_identity,
                         presentation: HlsCatalogPresentation::Live,
+                        provider_default_variant_index: None,
                         policy: hls_catalog_policy()?,
                     },
                     capability_probe,
@@ -403,6 +287,7 @@ pub(crate) fn prepare_hls_candidate(
                     open: &request,
                     catalog_identity,
                     presentation: HlsCatalogPresentation::Vod,
+                    provider_default_variant_index: None,
                     policy: hls_catalog_policy()?,
                 },
                 capability_probe,

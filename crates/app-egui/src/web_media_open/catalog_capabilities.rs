@@ -18,7 +18,7 @@ pub(crate) struct AppCatalogCapabilityProbe {
 }
 
 impl AppCatalogCapabilityProbe {
-    pub(super) fn new(
+    pub(crate) fn new(
         video: capability_core::SystemCapabilities,
         audio: AudioDecodeCapabilitySnapshot,
     ) -> Self {

@@ -1,8 +1,11 @@
 //! App-owned native HLS VOD admission и ровно один extractor fallback boundary.
 
+#[path = "native_hls/vod_catalog.rs"]
+mod vod_catalog;
+
 use std::num::NonZeroU8;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -12,7 +15,7 @@ use demux_api::DemuxRegistry;
 use hls_playlist_core::HlsParserLimits;
 use media_core::{Demuxer, MediaTime, TrackInfo};
 use player_core::{PreparedDemuxSeekPort, PreparedInitialPosition};
-use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, PreferredVideoHeight, VideoCodec};
+use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, VideoCodec, WebMediaConfig};
 use source_core::{CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
 use web_media_adaptive::{
@@ -20,32 +23,31 @@ use web_media_adaptive::{
     AdaptiveResourceQueryApplication, AdaptiveRetryPolicy, AdaptiveTransportError,
 };
 use web_media_core::{
-    CandidateFormatIdentity, CandidateIdentity, CodecFamily, ExtractionGeneration,
-    SemanticIdentity, SourceIdentity,
+    CandidateFormatIdentity, CandidateIdentity, CodecFamily, ComponentVariantCatalogGeneration,
+    ComponentVariantCatalogIdentity, ExactSelectionIdentity, ExtractionGeneration,
+    SemanticIdentity, WebMediaSelection, WebMediaSelectionRematchSource, WebMediaSelectionShape,
+    WebMediaSemanticSelectionRequest,
 };
 use web_media_hls::{
-    HlsFetchedTopManifest, HlsManifestInput, HlsRequestOverrides, HlsVodOpenRequest,
-    HlsVodStartIntent, NativeHlsAdmissionError, NativeHlsSelectionPolicy,
-    NativeHlsSemanticSelection, admit_native_hls_vod,
+    HlsCatalogDiscoveryOutcome, HlsFetchedTopManifest, HlsManifestInput, HlsRequestOverrides,
+    HlsVodOpenRequest, HlsVodStartIntent, NativeHlsAdmissionError, NativeHlsSelectionPolicy,
+    admit_native_hls_vod_catalog,
 };
 use web_media_transport_api::{
-    MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
-    RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration,
+    EndpointExpiryObserver, MediaComponentIdentity, MediaComponentRole, MediaPresentation,
+    RedirectHopLimit, RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration,
     TransportOpenRequest, TransportProviderId,
 };
 
 use crate::app_wake::{
     AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
 };
-use crate::media_open::NativeHlsUrl;
+use crate::media_open::{NativeHlsSourceState, NativeHlsUrl};
 use crate::process_shutdown::{FinishedThreadJoin, join_finished_thread};
 use crate::startup_media::orchestration::{PreparedStartupMedia, StartupMediaTarget};
 
 /// Bounded redirect policy raw public HLS URL-а без secret forwarding.
 const NATIVE_HLS_REDIRECT_HOPS: u8 = 4;
-
-/// Process-local source lineage никогда не строится из locator/hash material.
-static NEXT_NATIVE_HLS_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Один exact top identity одновременно строит HTTP request и HLS reopen identity.
 struct NativeTopManifestFetchIntent {
@@ -153,7 +155,8 @@ pub(crate) struct PreparedNativeHlsMedia {
     pub(crate) demuxer: Box<dyn Demuxer + Send>,
     pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
     pub(crate) initial_position: PreparedInitialPosition,
-    pub(crate) selection: NativeHlsSemanticSelection,
+    pub(crate) source_state: NativeHlsSourceState,
+    pub(crate) vod_endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
 }
 
 impl PreparedNativeHlsMedia {
@@ -169,11 +172,13 @@ impl PreparedNativeHlsMedia {
 /// Все production inputs одного existing-worker native admission-а.
 pub(crate) struct NativeHlsPreparationRequest<'a> {
     pub(crate) source: &'a NativeHlsUrl,
-    pub(crate) expected_selection: Option<&'a NativeHlsSemanticSelection>,
+    pub(crate) expected_selection: Option<&'a WebMediaSemanticSelectionRequest>,
     pub(crate) network_config: &'a NetworkConfig,
+    pub(crate) web_media_config: &'a WebMediaConfig,
     pub(crate) demux_config: &'a PlayerDemuxConfig,
     pub(crate) preferred_video_codec_order: &'a [VideoCodec],
-    pub(crate) preferred_video_height: Option<PreferredVideoHeight>,
+    pub(crate) system_capabilities: &'a SystemCapabilities,
+    pub(crate) audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     pub(crate) start: HlsVodStartIntent,
     pub(crate) cancellation: CancellationToken,
 }
@@ -201,139 +206,20 @@ impl NativeHlsAdmissionPort for ProductionNativeHlsAdmissionPort<'_> {
             .request
             .take()
             .ok_or_else(|| anyhow!("native HLS admission port already consumed"))?;
-        prepare_native_hls_attempt(request)
-    }
-}
-
-fn prepare_native_hls_attempt(
-    request: NativeHlsPreparationRequest<'_>,
-) -> Result<NativeHlsAttempt<PreparedNativeHlsMedia>> {
-    if request.cancellation.is_cancelled() {
-        return Err(anyhow!("native HLS admission cancelled"));
-    }
-    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
-    let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)?;
-    let source_config = SourceRuntimeConfig::from_network_config(request.network_config)
-        .context("native HLS source config")?;
-    let transport_request =
-        native_transport_request(request.source, generation, request.cancellation.clone())?;
-    let http = AdaptiveHttpContext::new(
-        transport_request,
-        &source_config,
-        adaptive_limits,
-        AdaptiveRetryPolicy::new(
-            NonZeroU8::new(3).expect("native HLS retry attempts"),
-            Duration::from_millis(100),
-            Duration::from_secs(2),
-            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
-        )?,
-    )?;
-    let top_fetch = NativeTopManifestFetchIntent::new(request.source.target().clone());
-    let fetched_top = match http.fetch_resource_blocking(
-        top_fetch.request(generation, adaptive_limits.maximum_manifest_bytes),
-    ) {
-        Ok(resource) => resource,
-        Err(error) if matches!(error.http_status_code(), Some(401 | 403)) => {
-            return Ok(NativeHlsAttempt::RequiresYtDlpFallback(
-                NativeHlsFallbackReason::AuthorizationRequired,
-            ));
-        }
-        Err(AdaptiveTransportError::Cancelled) => {
-            return Err(anyhow!("native HLS top manifest fetch cancelled"));
-        }
-        Err(error) => return Err(error).context("native HLS top manifest fetch"),
-    };
-    let selection_policy = NativeHlsSelectionPolicy::new(
-        crate::web_media_quality::preferred_height_policy(request.preferred_video_height),
-        request
-            .preferred_video_codec_order
-            .iter()
-            .copied()
-            .map(native_codec_family)
-            .collect(),
-    )
-    .context("native HLS selection policy")?;
-    let selection = match admit_native_hls_vod(
-        fetched_top.bytes(),
-        fetched_top.final_target(),
-        HlsParserLimits::default(),
-        &selection_policy,
-        request.expected_selection,
-    ) {
-        Ok(selection) => selection,
-        Err(NativeHlsAdmissionError::StrictlyNotHls) => {
-            return Ok(NativeHlsAttempt::RequiresYtDlpFallback(
-                NativeHlsFallbackReason::StrictlyNotHls,
-            ));
-        }
-        Err(NativeHlsAdmissionError::ExtractorMaterialRequired) => {
-            return Ok(NativeHlsAttempt::RequiresYtDlpFallback(
-                NativeHlsFallbackReason::ExtractorMaterialRequired,
-            ));
-        }
-        Err(NativeHlsAdmissionError::LiveRequiresExtractor) => {
-            return Ok(NativeHlsAttempt::RequiresYtDlpFallback(
-                NativeHlsFallbackReason::LiveOrEventPlaylist,
-            ));
-        }
-        Err(error @ (NativeHlsAdmissionError::Parse(_) | NativeHlsAdmissionError::Profile(_))) => {
-            return Err(error).context("native HLS admission rejected malformed/profile input");
-        }
-    };
-    let demux_registry =
-        native_hls_demux_registry(request.demux_config, adaptive_limits.maximum_segment_bytes)?;
-    let hls_policy = crate::web_media_hls_open::hls_policy(adaptive_limits)?;
-    let manifest = top_fetch.into_manifest(fetched_top, &http);
-    let open_request = HlsVodOpenRequest {
-        http,
-        generation,
-        manifest,
-        selection: selection.runtime_intent(),
-        overrides: HlsRequestOverrides::new(None),
-        containers: selection.container_intent(),
-        demux_registry,
-        policy: hls_policy,
-    };
-    match crate::web_media_hls_open::prepare_native_hls_vod(open_request, request.start) {
-        Ok(prepared) => Ok(NativeHlsAttempt::Prepared(PreparedNativeHlsMedia {
-            demuxer: prepared.demuxer,
-            seek_port: prepared.seek_port,
-            initial_position: prepared.initial_position,
-            selection,
-        })),
-        Err(error) if error.fallback_reason().is_some() => Ok(
-            NativeHlsAttempt::RequiresYtDlpFallback(NativeHlsFallbackReason::LiveOrEventPlaylist),
-        ),
-        Err(error) => {
-            // Typed owner-error уже secret-safe для UI; фиксируем его до внешнего anyhow context,
-            // иначе `Error::to_string()` на install boundary оставляет только общий заголовок.
-            tracing::warn!(
-                error = %error,
-                "Native HLS VOD runtime preparation failed"
-            );
-            Err(error).context("native HLS VOD runtime preparation")
-        }
+        vod_catalog::prepare_native_hls_attempt(request)
     }
 }
 
 fn native_transport_request(
+    parent: &ExactSelectionIdentity,
     source: &NativeHlsUrl,
     generation: SourceGeneration,
     cancellation: CancellationToken,
+    endpoint_expiry_observer: Arc<dyn EndpointExpiryObserver>,
 ) -> Result<TransportOpenRequest> {
-    let source_identity = SourceIdentity::new(
-        NEXT_NATIVE_HLS_SOURCE_ID
-            .fetch_add(1, Ordering::Relaxed)
-            .max(1),
-    );
     let component = MediaComponentIdentity::new(
-        CandidateIdentity::new(
-            source_identity,
-            ExtractionGeneration::new(0),
-            CandidateFormatIdentity::new("native-hls-top")?,
-        ),
-        SemanticIdentity::new(source_identity, "native-hls-top")?,
+        parent.exact().clone(),
+        parent.semantic().clone(),
         MediaComponentRole::PresentationManifest,
     )?;
     let initial_target = source.target().clone();
@@ -352,7 +238,8 @@ fn native_transport_request(
             NATIVE_HLS_REDIRECT_HOPS,
         )?),
         cancellation,
-    )?)
+    )?
+    .with_endpoint_expiry_observer(endpoint_expiry_observer))
 }
 
 /// Строит пустой по данным, но корректно scoped HTTP context для public HLS.
@@ -555,9 +442,11 @@ fn resolve_native_hls_startup_media(
         source: &source,
         expected_selection: None,
         network_config: &app_config.network,
+        web_media_config: &app_config.web_media,
         demux_config: &app_config.player.demux,
         preferred_video_codec_order: &app_config.player.preferred_video_codec_order,
-        preferred_video_height: app_config.web_media.preferred_video_height,
+        system_capabilities,
+        audio_capabilities,
         start,
         cancellation: cancellation.clone(),
     });
