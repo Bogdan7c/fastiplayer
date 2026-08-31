@@ -9,7 +9,6 @@ use std::fmt;
 use std::sync::Arc;
 
 use player_core::{PlaybackState, PlayerSnapshot};
-use service_ytdlp::{YtDlpCandidateSelection, YtDlpCandidateSnapshot};
 use web_media_core::{
     CandidateDescriptor, CodecFamily, CodecKind, ContainerFamily, DynamicRange,
     ExactSelectionIdentity, StreamLayout, StreamLayoutKind, WebMediaSelection,
@@ -21,12 +20,9 @@ use web_media_playback_plan::{
 use crate::media_open::ActiveMediaSource;
 use crate::playlist_runtime::PlaylistViewModel;
 
-mod catalog_routes;
-pub(crate) use catalog_routes::ExtractorCatalogSelectionRoute;
 pub(crate) mod component_variants;
 use component_variants::{
-    ActiveParentCandidateSelection, WebMediaComponentVariantConfiguration,
-    WebMediaComponentVariantProjection,
+    WebMediaComponentVariantConfiguration, WebMediaComponentVariantProjection,
 };
 mod sidebar_action;
 pub(crate) use sidebar_action::{
@@ -48,10 +44,10 @@ pub(crate) struct WebMediaStreamGeneration {
 }
 
 impl WebMediaStreamGeneration {
-    /// Строит generation fence из установленного exact selection token-а.
+    /// Строит generation fence из установленного provider-neutral selection.
     #[must_use]
-    pub(crate) fn from_selection(selection: &YtDlpCandidateSelection) -> Self {
-        let identity = selection.exact_identity();
+    pub(crate) fn from_selection(selection: &WebMediaSelection) -> Self {
+        let identity = selection.parent().exact();
         Self {
             source: identity.source().value(),
             extraction: identity.generation().value(),
@@ -257,16 +253,13 @@ impl WebMediaCandidatePresentation {
     }
 }
 
-/// Installed конфигурация YtDlp source с safe projection и закрытыми switch tokens.
+/// Installed provider-neutral конфигурация web-media с secret-safe UI projection.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct WebMediaStreamConfiguration {
     generation: WebMediaStreamGeneration,
     active_parent: ExactSelectionIdentity,
-    active_parent_selection: ActiveParentCandidateSelection,
     candidates: Arc<[WebMediaCandidatePresentation]>,
-    candidate_selections: Arc<[YtDlpCandidateSelection]>,
-    /// Временный N05A→N05B extractor adapter: neutral catalog target → legacy open token.
-    catalog_selection_routes: Arc<[ExtractorCatalogSelectionRoute]>,
+    candidate_selections: Arc<[WebMediaSelection]>,
     active_candidate: WebMediaCandidatePresentation,
     preference: WebMediaSelectionPreference,
     component_variants: WebMediaComponentVariantConfiguration,
@@ -279,7 +272,6 @@ impl fmt::Debug for WebMediaStreamConfiguration {
             .debug_struct("WebMediaStreamConfiguration")
             .field("generation", &self.generation)
             .field("candidate_count", &self.candidates.len())
-            .field("catalog_route_count", &self.catalog_selection_routes.len())
             .field("active_candidate", &self.active_candidate)
             .field("preference", &self.preference)
             .field("component_variants", &self.component_variants)
@@ -292,54 +284,15 @@ impl fmt::Debug for WebMediaStreamConfiguration {
 }
 
 impl WebMediaStreamConfiguration {
-    /// Строит inventory только из candidates, которые S21C planning признаёт playable.
-    #[cfg(test)]
-    pub(crate) fn from_yt_dlp_snapshot(
-        candidate_snapshot: &YtDlpCandidateSnapshot,
+    /// Строит UI inventory только из N01/N21 neutral catalog contracts.
+    pub(crate) fn from_neutral_catalog(
         planning_snapshot: &PlanningCandidateSnapshot,
         capabilities: PlaybackCapabilitySnapshot<'_>,
         policy: &PlaybackSelectionPolicy,
-        active_selection: &YtDlpCandidateSelection,
-        preference: WebMediaSelectionPreference,
-    ) -> Result<Self, WebMediaStreamModelBuildError> {
-        let active_parent = ExactSelectionIdentity::new(
-            active_selection.exact_identity().clone(),
-            active_selection.semantic_identity().clone(),
-        )
-        .map_err(|_| WebMediaStreamModelBuildError::InvalidActiveCandidateIdentity)?;
-        let neutral_selection = WebMediaSelection::candidate(active_parent);
-        Self::from_yt_dlp_snapshot_with_neutral_selection(
-            candidate_snapshot,
-            planning_snapshot,
-            capabilities,
-            policy,
-            active_selection,
-            &neutral_selection,
-            preference,
-        )
-    }
-
-    /// Строит UI inventory, переиспользуя N01 neutral active selection adapter-а.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_yt_dlp_snapshot_with_neutral_selection(
-        candidate_snapshot: &YtDlpCandidateSnapshot,
-        planning_snapshot: &PlanningCandidateSnapshot,
-        capabilities: PlaybackCapabilitySnapshot<'_>,
-        policy: &PlaybackSelectionPolicy,
-        active_selection: &YtDlpCandidateSelection,
         neutral_selection: &WebMediaSelection,
         preference: WebMediaSelectionPreference,
     ) -> Result<Self, WebMediaStreamModelBuildError> {
-        candidate_snapshot
-            .validate_planning_snapshot_alignment(planning_snapshot)
-            .map_err(|_| WebMediaStreamModelBuildError::CandidateSnapshotAlignmentFailed)?;
-        let active_identity = active_selection.exact_identity();
         let active_parent = neutral_selection.parent().clone();
-        if active_parent.exact() != active_identity
-            || active_parent.semantic() != active_selection.semantic_identity()
-        {
-            return Err(WebMediaStreamModelBuildError::InvalidActiveCandidateIdentity);
-        }
         // BestPlayable оценивает весь inventory один раз и возвращает typed rejection
         // каждого недоступного candidate-а; source order не участвует в selection.
         let availability = plan_playback(
@@ -358,13 +311,16 @@ impl WebMediaStreamConfiguration {
         let mut candidate_selections = Vec::new();
         let mut active_candidate = None;
 
-        for candidate in candidate_snapshot.accepted_candidates() {
+        for candidate in planning_snapshot.candidates() {
             let descriptor = candidate.descriptor();
             let playable = !rejected_identities.contains(descriptor.identity());
-            let selection = candidate_snapshot
-                .selection_for(candidate)
-                .map_err(|_| WebMediaStreamModelBuildError::CandidateSelectionFailed)?;
-            let is_active = &selection == active_selection;
+            let exact_parent = ExactSelectionIdentity::new(
+                descriptor.identity().clone(),
+                descriptor.semantic_identity().clone(),
+            )
+            .map_err(|_| WebMediaStreamModelBuildError::InvalidActiveCandidateIdentity)?;
+            let selection = WebMediaSelection::candidate(exact_parent);
+            let is_active = selection.parent() == &active_parent;
             if !playable {
                 if is_active {
                     return Err(WebMediaStreamModelBuildError::ActiveCandidateNotPlayable);
@@ -383,14 +339,10 @@ impl WebMediaStreamConfiguration {
         let active_candidate =
             active_candidate.ok_or(WebMediaStreamModelBuildError::ActiveCandidateMissing)?;
         Ok(Self {
-            generation: WebMediaStreamGeneration::from_selection(active_selection),
+            generation: WebMediaStreamGeneration::from_selection(neutral_selection),
             active_parent,
-            active_parent_selection: ActiveParentCandidateSelection::Installed(Box::new(
-                active_selection.clone(),
-            )),
             candidates: candidates.into(),
             candidate_selections: candidate_selections.into(),
-            catalog_selection_routes: Arc::from([]),
             active_candidate,
             preference,
             component_variants: WebMediaComponentVariantConfiguration::Unavailable,
@@ -434,13 +386,13 @@ impl WebMediaStreamConfiguration {
         &self.hls_subtitle_renditions
     }
 
-    /// Возвращает exact+semantic token только после generation/index validation.
+    /// Возвращает neutral selection только после generation/index validation.
     #[cfg(test)]
-    pub(crate) fn candidate_selection_for_switch(
+    pub(crate) fn selection_for_switch(
         &self,
         generation: WebMediaStreamGeneration,
         candidate_index: usize,
-    ) -> Option<YtDlpCandidateSelection> {
+    ) -> Option<WebMediaSelection> {
         (self.generation == generation)
             .then(|| self.candidate_selections.get(candidate_index).cloned())
             .flatten()
@@ -451,9 +403,7 @@ impl WebMediaStreamConfiguration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WebMediaStreamModelBuildError {
     AvailabilityPlanningFailed,
-    CandidateSnapshotAlignmentFailed,
     InvalidCandidateContainer,
-    CandidateSelectionFailed,
     InvalidActiveCandidateIdentity,
     ActiveCandidateMissing,
     ActiveCandidateNotPlayable,
@@ -465,14 +415,8 @@ impl fmt::Display for WebMediaStreamModelBuildError {
             Self::AvailabilityPlanningFailed => {
                 "не удалось построить inventory playable candidates"
             }
-            Self::CandidateSnapshotAlignmentFailed => {
-                "service и planner candidate snapshots не соответствуют друг другу"
-            }
             Self::InvalidCandidateContainer => {
                 "playable candidate не имеет безопасного container summary"
-            }
-            Self::CandidateSelectionFailed => {
-                "playable candidate не удалось связать с exact switch token"
             }
             Self::InvalidActiveCandidateIdentity => {
                 "exact и semantic active candidate identities имеют разный source"

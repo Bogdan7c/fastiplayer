@@ -129,3 +129,59 @@ fn direct_and_native_read_only_projections_are_neutral_and_secret_safe() {
     }
     assert!(debug.contains("<safe-label>"));
 }
+
+#[test]
+fn installed_only_action_and_unchanged_direct_settings_are_inert() {
+    let source = WebMediaSourceIntent::direct(
+        service_direct_media::parse_direct_media_url(
+            "https://cdn.example.test/movie.mp4?token=direct-secret",
+        )
+        .expect("direct fixture locator валиден"),
+    );
+    let app_config = rustiplayer_config::AppConfig::default();
+    let settings = WebMediaOpenSettings::from_app_config(
+        &app_config,
+        &capability_core::SystemCapabilities::empty(0),
+        audio::AudioDecodeCapabilitySnapshot::empty(),
+    );
+
+    assert!(matches!(
+        source.selection_switch_request(
+            WebMediaSelectionSwitchIntent::CatalogTarget(
+                crate::web_media_catalog::WebMediaSelectionTarget::InstalledOnly,
+            ),
+            settings.clone(),
+        ),
+        WebMediaSelectionSwitchResolution::NoChange
+    ));
+
+    let inert_policy = WebMediaSettingsReconfigurePolicy {
+        direct_resource: DirectResourceSettingsAction::KeepInstalled,
+        selection: WebMediaSettingsSelectionPolicy::PreserveInstalled,
+    };
+    assert!(!source.requires_settings_reconfigure(inert_policy));
+    assert!(matches!(
+        source.settings_reconfigure_request(
+            inert_policy,
+            app_config.network.clone(),
+            app_config.player.demux,
+            settings.clone(),
+        ),
+        WebMediaSettingsReconfigureDecision::NoChange
+    ));
+
+    let WebMediaSettingsReconfigureDecision::Reopen(request) = source.settings_reconfigure_request(
+        WebMediaSettingsReconfigurePolicy {
+            direct_resource: DirectResourceSettingsAction::Rebuild,
+            selection: WebMediaSettingsSelectionPolicy::PreserveInstalled,
+        },
+        app_config.network,
+        app_config.player.demux,
+        settings,
+    ) else {
+        panic!("explicit direct rebuild обязан вернуть neutral reopen request");
+    };
+    let label = request.safe_label().to_string();
+    assert!(label.contains("cdn.example.test"));
+    assert!(!label.contains("direct-secret"));
+}

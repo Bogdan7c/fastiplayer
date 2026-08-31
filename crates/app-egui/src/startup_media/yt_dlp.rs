@@ -8,20 +8,12 @@ pub(crate) struct PreparedYtDlpStartupMedia {
     /// Metadata того же extraction generation не теряется между job и Installed.
     pub(crate) playlist_metadata: service_ytdlp::YtDlpPlaylistMetadata,
 
-    /// Canonical N01 selection и exact lifecycle kind neutral envelope-а.
-    pub(crate) neutral_selection: web_media_core::WebMediaSelection,
+    /// Reconstructible extractor state остаётся за adapter boundary.
+    pub(crate) source_state: crate::web_media_open::ExtractorMediaSourceState,
+
+    /// Exact lifecycle kind neutral envelope-а.
     pub(crate) presentation: web_media_core::WebMediaPresentationKind,
     pub(crate) extractor_reason: web_media_core::ExtractorInvocationReason,
-
-    /// Exact+semantic token, по которому restore выполняет fresh extraction/rematch.
-    pub(crate) candidate_selection: service_ytdlp::YtDlpCandidateSelection,
-    pub(crate) composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
-
-    /// UI-safe inventory того же extraction snapshot-а.
-    pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
-
-    /// Runtime-only declared yt-dlp catalog attachment.
-    pub(crate) catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
 
     /// S31L publication boundary для HLS live; VOD оставляет поле пустым.
     pub(crate) timeline_port: Option<media_core::DynamicMediaTimelinePort>,

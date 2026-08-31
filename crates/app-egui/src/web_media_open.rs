@@ -19,6 +19,7 @@ mod preparation;
 /// Concrete transport/demux registries и immutable capability snapshots одного attempt-а.
 mod runtime;
 mod smooth;
+mod source_state;
 
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
@@ -57,6 +58,7 @@ use component_variants::{
 use runtime::WebOpenRuntime;
 #[cfg(test)]
 use runtime::progressive_transport_capabilities;
+pub(crate) use source_state::ExtractorMediaSourceState;
 
 /// Separate A/V не должен опережать companion более чем на этот интервал.
 const COMPOSITE_MAX_TIMESTAMP_LEAD: Duration = Duration::from_millis(500);
@@ -87,20 +89,12 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) demuxer: Box<dyn Demuxer + Send>,
     /// Service metadata из того же extraction snapshot-а, что и exact selection.
     pub(crate) playlist_metadata: service_ytdlp::YtDlpPlaylistMetadata,
-    /// Canonical N01 exact selection, включая installed component choice.
-    pub(crate) neutral_selection: web_media_core::WebMediaSelection,
+    /// Reconstructible extractor state; provider DTO не выходит в lifecycle/UI.
+    pub(crate) source_state: ExtractorMediaSourceState,
     /// Точный lifecycle kind того же extraction generation.
     pub(crate) presentation: web_media_core::WebMediaPresentationKind,
     /// Product reason фактически выполненной extractor invocation.
     pub(crate) extractor_reason: web_media_core::ExtractorInvocationReason,
-    /// Exact установленный выбор для active source и последующего rematch-а.
-    pub(crate) candidate_selection: YtDlpCandidateSelection,
-    /// Service-owned composed intent, если installed runtime собран из inventory components.
-    pub(crate) composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
-    /// Secret-safe inventory, публикуемый только вместе с exact Installed source.
-    pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
-    /// Полный declared yt-dlp catalog публикуется только после Installed.
-    pub(crate) catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
     /// Neutral S31L port присутствует только у proven HLS live runtime.
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
     /// Worker-receipted demux seek port присутствует у static DASH/Smooth/HDS VOD.
@@ -110,6 +104,22 @@ pub(crate) struct PreparedYtDlpWebMedia {
     /// Candidate-level VOD expiry gate; live runtime сохраняет собственного refresh owner-а.
     pub(crate) vod_endpoint_recovery:
         Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+}
+
+impl PreparedYtDlpWebMedia {
+    /// Даёт extractor-focused tests только secret-safe installed projection.
+    #[cfg(test)]
+    pub(crate) const fn stream_configuration(
+        &self,
+    ) -> &crate::web_media_stream_model::WebMediaStreamConfiguration {
+        self.source_state.stream_configuration()
+    }
+
+    /// Extractor-focused tests могут проверить exact rematch token внутри adapter module.
+    #[cfg(test)]
+    pub(crate) const fn candidate_selection(&self) -> &YtDlpCandidateSelection {
+        self.source_state.candidate_selection()
+    }
 }
 
 /// Общий pre-barrier runtime result concrete transport branches.
@@ -312,12 +322,11 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let extractor_projection =
         extractor_catalog_projection.with_active_selection(&candidate_selection)?;
     let planning_snapshot = extractor_projection.catalog();
-    let stream_configuration = crate::web_media_stream_model::WebMediaStreamConfiguration::from_yt_dlp_snapshot_with_neutral_selection(
-            &candidate_snapshot,
+    let stream_configuration =
+        crate::web_media_stream_model::WebMediaStreamConfiguration::from_neutral_catalog(
             planning_snapshot,
             capabilities,
             &policy,
-            &candidate_selection,
             extractor_projection.selection(),
             selection_preference,
         )
@@ -340,9 +349,8 @@ pub(crate) fn prepare_yt_dlp_web_media(
         active_selection: &candidate_selection,
         active_composed: composed_selection.as_deref(),
     })?;
-    let stream_configuration =
-        stream_configuration.with_catalog_selection_routes(catalog_projection.routes);
     let catalog_attachment = catalog_projection.attachment;
+    let catalog_selection_routes = catalog_projection.routes.into();
     let extractor_projection = extractor_projection.with_neutral_selection(
         stream_configuration
             .neutral_selection()
@@ -373,13 +381,16 @@ pub(crate) fn prepare_yt_dlp_web_media(
     Ok(PreparedYtDlpWebMedia {
         demuxer,
         playlist_metadata,
-        neutral_selection,
+        source_state: ExtractorMediaSourceState {
+            neutral_selection,
+            candidate_selection,
+            composed_selection,
+            stream_configuration,
+            catalog_attachment,
+            catalog_selection_routes,
+        },
         presentation,
         extractor_reason,
-        candidate_selection,
-        composed_selection,
-        stream_configuration,
-        catalog_attachment,
         timeline_port: opened_candidate.timeline_port,
         demux_seek_port,
         playback_window: opened_candidate.playback_window,

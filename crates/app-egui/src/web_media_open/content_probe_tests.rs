@@ -603,7 +603,7 @@ fn assert_prepared_opus_reaches_pcm(
 ) {
     assert_eq!(
         prepared
-            .candidate_selection
+            .candidate_selection()
             .exact_identity()
             .format()
             .as_str(),
@@ -613,11 +613,14 @@ fn assert_prepared_opus_reaches_pcm(
 
     // Sidebar model фиксирует именно generic layout, а не ложный audio-only metadata guess.
     assert_eq!(
-        prepared.stream_configuration.active_candidate().layout,
+        prepared.stream_configuration().active_candidate().layout,
         StreamLayoutKind::ContentProbed
     );
     assert_eq!(
-        prepared.stream_configuration.active_candidate().audio_codec,
+        prepared
+            .stream_configuration()
+            .active_candidate()
+            .audio_codec,
         None,
         "null acodec должен остаться неизвестным до authoritative demux probe"
     );

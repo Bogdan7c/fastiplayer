@@ -48,7 +48,9 @@ pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult, prep
 pub(crate) use native_hls::{NativeHlsOpenIntent, NativeHlsUrl};
 // Все app ingress-ы собирают provider-neutral `PreparedMedia` через один boundary.
 pub(crate) use preload_budget::QueuePreloadResourceBudget;
-pub(crate) use preparation::{merge_yt_dlp_playlist_metadata, service_duration_for_timeline};
+pub(crate) use preparation::{
+    merge_yt_dlp_playlist_metadata, prepare_source_synchronously, service_duration_for_timeline,
+};
 pub(crate) use speculative::{SpeculativeMediaPreparation, SpeculativeMediaPreparationPoll};
 #[allow(
     unused_imports,
@@ -67,7 +69,9 @@ pub(crate) use types::{
 #[cfg(test)]
 pub(crate) use web::PreparedWebMediaCompositionError;
 pub(crate) use web::{
-    PreparedWebMediaAttachments, PreparedWebMediaEnvelope, PreparedWebMediaSeekAttachment,
-    WebMediaOpenRequest, WebMediaOpenSettings, WebMediaSourceAdapterBridge, WebMediaSourceIntent,
-    compose_prepared_web_media,
+    DirectResourceSettingsAction, PreparedWebMediaAttachments, PreparedWebMediaEnvelope,
+    PreparedWebMediaSeekAttachment, WebMediaOpenRequest, WebMediaOpenSettings,
+    WebMediaSelectionSwitchIntent, WebMediaSelectionSwitchResolution,
+    WebMediaSettingsReconfigureDecision, WebMediaSettingsReconfigurePolicy,
+    WebMediaSettingsSelectionPolicy, WebMediaSourceIntent, compose_prepared_web_media,
 };

@@ -1,15 +1,22 @@
+## N05B provider-neutral same-item/reopen lifecycle (2026-08-31)
+
+- UI, same-item lifecycle, settings, recovery and queue/reopen consumers now use source-owned neutral intent methods and never inspect the concrete ingress provider.
+- `ExtractorMediaSourceState` owns candidate/composed tokens and catalog reverse routes inside extractor adapter modules; `WebMediaStreamConfiguration` stores only N01 selections and safe projections.
+- The N04 compatibility bridges, temporary stream-model catalog route module and old generic web variants are removed. Active no-op, pending single-flight, Playing/Paused + position/item/lineage preservation and honest failure behavior are covered by functional tests.
+- Focused lifecycle/stream/open/settings/suspend/persistence tests, strict app Clippy and workspace all-features check passed. Full boundaries, invariants, audits and G1 exclusions: `mem:app-egui/native-web-ingress-n05b-2026-08-31`.
+
 ## N05A provider-neutral web media catalog/sidebar (2026-08-31)
 
 - `WebMediaSelectionTarget` и весь catalog model теперь provider-neutral: N01 `WebMediaSelection` targets для extractor и inert `InstalledOnly` row для direct/native HLS; exact/semantic generation fences и secret-safe Debug сохранены.
 - Read-only URL sidebar использует единый safe web projection и provider-neutral `CatalogBacked` model; один installed variant видим, но не создаёт action. Separate A/V projection выбирает максимум одну ranked audio pair на video и не строит Cartesian combinations.
-- Provider selections временно изолированы в закрытом `web_media_stream_model/catalog_routes.rs` bridge только до N05B; same-item transaction/reopen semantics не переписывались.
+- На момент N05A provider selections были изолированы во временном `web_media_stream_model/catalog_routes.rs`; N05B удалил этот bridge и перенёс reverse routes к extractor adapter owner-у (см. `mem:app-egui/native-web-ingress-n05b-2026-08-31`).
 - Focused catalog/stream/sidebar/lifecycle tests, strict app Clippy и workspace all-features check прошли. Full details and N05B removal obligation: `mem:app-egui/native-web-ingress-n05a-2026-08-31`.
 
 ## N04 unified app web envelope (2026-08-31)
 
 - `ActiveMediaSource`, `MediaOpenSourceRequest`, and `PreparedMediaDescriptor` now each expose exactly one neutral web variant; local files remain separate.
 - Direct, native HLS, and extractor preparation share one app composition boundary preserving metadata, safe label, neutral selection/catalog, exact VOD/live kind, named seek semantics, live timeline, playback window, native initial position, recovery strategy/attachment, and optional extractor reason.
-- Durable active source contains only reconstructible root intent/selection; endpoint-bearing recovery material remains descriptor/runtime-only. Controlled reopen preserves neutral selection. Typed UI/settings compatibility bridges are temporary and must be deleted by N05B before G1.
+- Durable active source contains only reconstructible root intent/selection; endpoint-bearing recovery material remains descriptor/runtime-only. Controlled reopen preserves neutral selection. N05B удалил временные UI/settings compatibility bridges до G1.
 - Local N04 commit; three 110/110 media-open cohorts, focused URL/same-item/stream/startup owners, strict Clippy and workspace all-features check passed. Public-media/GUI/hardware were NOT RUN. Full boundaries and commands: `mem:media-services/native-web-ingress-n04-2026-08-31`.
 
 ## N03 typed extractor adapter/process spy (2026-08-31)

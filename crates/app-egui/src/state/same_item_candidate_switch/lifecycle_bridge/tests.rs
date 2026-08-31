@@ -59,7 +59,7 @@ impl SameItemSwitchLifecycleStartPort for FakeSameItemSwitchContext {
     ) -> Result<MediaOpenRequestId, StrongMediaOpenError> {
         assert!(
             matches!(source_request, MediaOpenSourceRequest::Web(_)),
-            "URL action обязан передать lifecycle port-у готовый YtDlp reopen request"
+            "URL action обязан передать lifecycle port-у готовый neutral web reopen request"
         );
         self.begin_expected_active = Some(expected_active);
         self.begin_playback_intent = Some(playback_intent);
@@ -96,7 +96,7 @@ impl SameItemSwitchLifecyclePollPort for FakeSameItemSwitchContext {
                         safe_label: crate::media_open::SafeMediaLabel::from_service_safe_label(
                             "fixture.invalid",
                         ),
-                        kind: crate::media_open::MediaPreparationFailureKind::YtDlpOpen,
+                        kind: crate::media_open::MediaPreparationFailureKind::ExtractorOpen,
                     },
                 ))
             }
@@ -335,6 +335,61 @@ fn resolved_url_action_pre_barrier_failure_preserves_playback_and_restores_selec
     assert!(path.pending.is_some());
 }
 
+#[test]
+fn pending_switch_blocks_conflicting_action_without_touching_playback() {
+    let item_id = playlist_item_id(91);
+    let old_instance = media_instance_id(92);
+    let generation = WebMediaStreamGeneration::for_test(93, 1);
+    let playback = PlaybackObservation {
+        media_instance_id: old_instance,
+        position: Duration::from_secs(23),
+        state: PlaybackState::Paused,
+    };
+    let mut context = FakeSameItemSwitchContext {
+        request_id: media_open_request_id(94),
+        poll_steps: VecDeque::from([FakePollStep::Pending]),
+        begin_expected_active: None,
+        begin_playback_intent: None,
+        controller: crate::web_media_stream_model::UrlSidebarController::default(),
+        item_id,
+        source_lineage: 93,
+        visible_generation: generation,
+        playback,
+        remembered_targets: Vec::new(),
+        terminal_selector_errors: Vec::new(),
+        fallback_notice_visible: true,
+    };
+    let mut path = test_app_path();
+
+    path.start(
+        app_start(item_id, old_instance, generation, PlaybackState::Paused),
+        &mut context,
+    )
+    .expect("первый action должен занять single-flight slot");
+    let first_request_id = path
+        .pending
+        .as_ref()
+        .expect("первый switch остаётся pending")
+        .request_id;
+
+    assert!(matches!(
+        path.start(
+            app_start(item_id, old_instance, generation, PlaybackState::Paused),
+            &mut context,
+        ),
+        Err(SameItemSwitchError::Busy)
+    ));
+    assert_eq!(
+        path.pending
+            .as_ref()
+            .expect("conflicting action не снимает первый pending")
+            .request_id,
+        first_request_id
+    );
+    assert_eq!(context.playback, playback);
+    assert!(context.remembered_targets.is_empty());
+}
+
 /// Создаёт path с теми же controller/pending owners, которые временно извлекает AppState.
 fn test_app_path() -> SameItemSwitchAppPath {
     SameItemSwitchAppPath { pending: None }
@@ -347,26 +402,22 @@ fn app_start(
     parent_generation: WebMediaStreamGeneration,
     state: PlaybackState,
 ) -> SameItemSwitchAppStart {
-    let config = rustiplayer_config::AppConfig::default();
     let mut snapshot = PlayerSnapshot::empty();
     snapshot.media_instance_id = Some(media_instance_id);
     snapshot.playback_state = state;
     snapshot.set_timeline_position(media_core::MediaTime::from_duration(Duration::from_millis(
         37_250,
     )));
+    let locator = service_direct_media::parse_direct_media_url(
+        "https://media.example.test/same-item-switch.mp4",
+    )
+    .expect("direct URL fixture locator валиден");
     SameItemSwitchAppStart {
         source_request: MediaOpenSourceRequest::Web(
-            crate::media_open::WebMediaOpenRequest::extractor(
-                service_ytdlp::parse_yt_dlp_media_locator(
-                    "https://media.example.test/same-item-switch",
-                )
-                .expect("URL fixture locator валиден"),
-                crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
-                crate::media_open::WebMediaOpenSettings::from_app_config(
-                    &config,
-                    &capability_core::SystemCapabilities::empty(0),
-                    audio::AudioDecodeCapabilitySnapshot::empty(),
-                ),
+            crate::media_open::WebMediaOpenRequest::direct(
+                locator,
+                rustiplayer_config::NetworkConfig::default(),
+                rustiplayer_config::PlayerDemuxConfig::default(),
             ),
         ),
         expected_active: ActiveMediaIdentity::for_same_item_switch_test(item_id, media_instance_id),

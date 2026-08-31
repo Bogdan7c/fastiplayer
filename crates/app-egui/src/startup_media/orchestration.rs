@@ -52,7 +52,7 @@ mod pending_work_tests;
 /// Prepared ownership сохраняется до trusted allocator decision.
 pub(super) enum PreparedStartupMedia {
     Local(Box<PreparedLocalOpenResult>),
-    YtDlp {
+    Extractor {
         source_locator: service_ytdlp::YtDlpMediaLocator,
         prepared: Box<PreparedYtDlpStartupMedia>,
     },
@@ -274,7 +274,7 @@ impl StartupMediaController {
             changed = true;
             match result {
                 Ok(prepared) => self.hold_prepared(
-                    PreparedStartupMedia::YtDlp {
+                    PreparedStartupMedia::Extractor {
                         source_locator,
                         prepared: Box::new(prepared),
                     },
@@ -603,7 +603,7 @@ impl StartupMediaController {
                         });
                     })
             }
-            PreparedStartupMedia::YtDlp {
+            PreparedStartupMedia::Extractor {
                 source_locator,
                 prepared,
             } => {
@@ -632,11 +632,7 @@ impl StartupMediaController {
                 let source_intent = crate::media_open::WebMediaSourceIntent::extractor(
                     source_locator.clone(),
                     prepared.presentation,
-                    prepared.neutral_selection,
-                    prepared.candidate_selection,
-                    prepared.composed_selection,
-                    prepared.stream_configuration,
-                    prepared.catalog_attachment,
+                    prepared.source_state,
                     prepared.extractor_reason,
                 );
                 let source = ActiveMediaSource::Web(source_intent.clone());

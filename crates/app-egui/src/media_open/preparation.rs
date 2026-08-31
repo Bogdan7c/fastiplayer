@@ -281,16 +281,12 @@ pub(super) fn prepare_source(
                         error = %error,
                         "YtDlp timeline mode не прошёл PreparedMedia boundary"
                     );
-                    MediaPreparationFailureKind::YtDlpOpen
+                    MediaPreparationFailureKind::ExtractorOpen
                 })?;
                 let source = WebMediaSourceIntent::extractor(
                     locator,
                     prepared.presentation,
-                    prepared.neutral_selection,
-                    prepared.candidate_selection,
-                    prepared.composed_selection,
-                    prepared.stream_configuration,
-                    prepared.catalog_attachment,
+                    prepared.source_state,
                     prepared.extractor_reason,
                 );
                 Ok(PreparedMediaOpen {
@@ -310,6 +306,17 @@ pub(super) fn prepare_source(
     }
 }
 
+/// Выполняет тот же source preparation path синхронно для settings transaction.
+///
+/// Settings уже владеет app-side runtime fence, поэтому отдельный background
+/// coordinator здесь не создаётся; physical adapter dispatch остаётся единым.
+pub(crate) fn prepare_source_synchronously(
+    source_request: MediaOpenSourceRequest,
+) -> Result<PreparedMediaOpen, MediaPreparationFailureKind> {
+    let cancellation = super::executor::PreparationCancellation::new();
+    prepare_source(source_request, &cancellation)
+}
+
 /// Сохраняет typed component/DASH причину через anyhow context chain.
 fn classify_yt_dlp_preparation_failure(error: &anyhow::Error) -> MediaPreparationFailureKind {
     if error
@@ -327,7 +334,7 @@ fn classify_yt_dlp_preparation_failure(error: &anyhow::Error) -> MediaPreparatio
             }
         }
     } else {
-        MediaPreparationFailureKind::YtDlpOpen
+        MediaPreparationFailureKind::ExtractorOpen
     }
 }
 
@@ -533,7 +540,7 @@ mod tests {
 
         assert_eq!(
             classify_yt_dlp_preparation_failure(&error),
-            MediaPreparationFailureKind::YtDlpOpen
+            MediaPreparationFailureKind::ExtractorOpen
         );
     }
 

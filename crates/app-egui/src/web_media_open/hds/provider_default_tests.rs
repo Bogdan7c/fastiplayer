@@ -404,12 +404,14 @@ fn assert_child_hds_open() {
     .expect("null-codec HDS ProviderDefault должен открыть playable rendition");
 
     assert_eq!(
-        prepared.stream_configuration.active_candidate().layout,
+        prepared.stream_configuration().active_candidate().layout,
         StreamLayoutKind::ContentProbed
     );
     let WebMediaComponentVariantProjection::Installed(
         WebMediaInstalledComponentVariantPresentation::Coupled { coupled, .. },
-    ) = prepared.stream_configuration.component_variant_projection()
+    ) = prepared
+        .stream_configuration()
+        .component_variant_projection()
     else {
         panic!("HDS ProviderDefault должен публиковать coupled catalog");
     };

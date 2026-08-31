@@ -164,14 +164,14 @@ fn assert_vorbis_reaches_pcm_at_locator(
     .expect("prepare content-probed Ogg/Vorbis candidate");
     assert_eq!(
         prepared
-            .candidate_selection
+            .candidate_selection()
             .exact_identity()
             .format()
             .as_str(),
         expected_format_id
     );
     assert_eq!(
-        prepared.stream_configuration.active_candidate().layout,
+        prepared.stream_configuration().active_candidate().layout,
         StreamLayoutKind::ContentProbed
     );
 

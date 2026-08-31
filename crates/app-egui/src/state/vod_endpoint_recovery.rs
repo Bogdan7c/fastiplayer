@@ -469,7 +469,10 @@ impl AppState {
         let config = self.committed_app_config();
         let web_intent = source
             .web_intent()
-            .filter(|intent| intent.extractor_bridge().is_some())
+            .filter(|intent| {
+                intent.recovery()
+                    == web_media_core::WebMediaRecoveryStrategy::FreshExtractionAndRematch
+            })
             .ok_or("installed recovery attachment не принадлежит extractor source")?;
         let capabilities = self
             .system_capabilities_snapshot

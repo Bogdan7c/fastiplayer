@@ -333,6 +333,11 @@ pub(crate) struct PreparedMediaOpen {
 }
 
 impl PreparedMediaOpen {
+    /// Передаёт settings strong-install owner-у готовый player payload и descriptor.
+    pub(crate) fn into_parts(self) -> (player_core::PreparedMedia, PreparedMediaDescriptor) {
+        (self.prepared_media, self.descriptor)
+    }
+
     /// Применяет window одновременно к player payload и reconstructible descriptor.
     #[must_use]
     pub(super) fn with_playback_window(
@@ -522,7 +527,7 @@ pub(crate) enum MediaPreparationFailureKind {
     LocalSourceChanged,
     DirectOpen,
     NativeHlsOpen,
-    YtDlpOpen,
+    ExtractorOpen,
     /// Dynamic DASH валиден, но использует намеренно исключённый timing/profile contract.
     DashLiveProfileExcluded,
     /// Dynamic DASH нарушает поддерживаемую schema/model форму.

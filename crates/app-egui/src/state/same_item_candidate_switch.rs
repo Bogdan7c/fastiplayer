@@ -7,8 +7,6 @@ use render_wgpu_shell::Renderer;
 
 use crate::media_open::{MediaOpenRequestId, MediaOpenSourceRequest};
 use crate::playlist_runtime::{ActiveMediaIdentity, PlaylistRuntime};
-#[cfg(test)]
-use crate::web_media_stream_model::WebMediaSelectionPreference;
 use crate::web_media_stream_model::component_variants::{
     ComponentVariantActionError, ComponentVariantActionResolution,
 };
@@ -123,7 +121,7 @@ pub(crate) enum SameItemSwitchError {
     /// Component action не прошёл generation/axis/index validation владельца catalog-а.
     #[error(transparent)]
     ComponentAction(#[from] ComponentVariantActionError),
-    /// Active source не является переключаемым YtDlp source.
+    /// Active source не публикует переключаемый neutral catalog contract.
     #[error("active source не поддерживает same-item media switch")]
     UnsupportedSource,
     /// App/controller больше не подтверждают exact active media identity.
@@ -169,20 +167,18 @@ impl AppState {
         renderer: &Renderer,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         let active_source = self.preflight_same_item_switch()?;
-        let extractor = active_source
+        let stream_configuration = active_source
             .web_intent()
-            .and_then(crate::media_open::WebMediaSourceIntent::extractor_bridge)
+            .and_then(crate::media_open::WebMediaSourceIntent::stream_configuration)
             .ok_or(SameItemSwitchError::UnsupportedSource)?;
-        let source_locator = extractor.locator;
-        let stream_configuration = extractor.stream_configuration;
-        let (source_locator, selection_intent, kind) = match action {
+        let (selection_intent, kind) = match action {
             #[cfg(test)]
             UrlSidebarAction::Candidate {
                 generation,
                 candidate_index,
             } => {
-                let candidate_selection = stream_configuration
-                    .candidate_selection_for_switch(generation, candidate_index)
+                let selection = stream_configuration
+                    .selection_for_switch(generation, candidate_index)
                     .ok_or(SameItemSwitchError::Stale)?;
                 let candidate_presentation = stream_configuration
                     .candidates()
@@ -190,14 +186,14 @@ impl AppState {
                     .cloned()
                     .ok_or(SameItemSwitchError::Stale)?;
                 if candidate_presentation == *stream_configuration.active_candidate() {
-                    return Err(SameItemSwitchError::Stale);
+                    return Ok(UrlSidebarActionApplyOutcome::NoChange);
                 }
                 let preferred_height = candidate_presentation.height;
                 (
-                    source_locator.clone(),
-                    crate::web_media_open::YtDlpCandidateOpenIntent::exact_parent_provider_default(
-                        Box::new(candidate_selection),
-                        WebMediaSelectionPreference::ItemOverride(preferred_height),
+                    crate::media_open::WebMediaSelectionSwitchIntent::CatalogTarget(
+                        crate::web_media_catalog::WebMediaSelectionTarget::Candidate {
+                            selection: Box::new(selection),
+                        },
                     ),
                     SameItemSwitchKind::Candidate {
                         parent_generation: generation,
@@ -215,18 +211,12 @@ impl AppState {
                     }
                     ComponentVariantActionResolution::SemanticReopen(selection) => selection,
                 };
-                let active_candidate_selection = stream_configuration
-                    .active_candidate_selection_for_component_switch()
-                    .ok_or(SameItemSwitchError::Stale)?;
                 (
-                            source_locator.clone(),
-                            crate::web_media_open::YtDlpCandidateOpenIntent::exact_with_component_semantic_selection(
-                                Box::new(active_candidate_selection),
-                                stream_configuration,
-                                semantic_selection,
-                            ),
-                            SameItemSwitchKind::Component(component_action),
-                        )
+                    crate::media_open::WebMediaSelectionSwitchIntent::ComponentSemantic(
+                        semantic_selection,
+                    ),
+                    SameItemSwitchKind::Component(component_action),
+                )
             }
             UrlSidebarAction::StreamFacet {
                 parent_generation,
@@ -247,10 +237,8 @@ impl AppState {
                 if target == catalog.active_choice().target {
                     return Ok(UrlSidebarActionApplyOutcome::NoChange);
                 }
-                let selection_intent = picker_selection_intent(&target, stream_configuration)?;
                 (
-                    source_locator.clone(),
-                    selection_intent,
+                    crate::media_open::WebMediaSelectionSwitchIntent::CatalogTarget(target.clone()),
                     SameItemSwitchKind::Picker {
                         parent_generation,
                         action,
@@ -261,7 +249,6 @@ impl AppState {
         };
         self.start_resolved_same_item_switch(
             active_source,
-            source_locator,
             selection_intent,
             kind,
             playlist_runtime,
@@ -276,12 +263,10 @@ impl AppState {
         renderer: &Renderer,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         let active_source = self.preflight_same_item_switch()?;
-        let extractor = active_source
+        let stream_configuration = active_source
             .web_intent()
-            .and_then(crate::media_open::WebMediaSourceIntent::extractor_bridge)
+            .and_then(crate::media_open::WebMediaSourceIntent::stream_configuration)
             .ok_or(SameItemSwitchError::UnsupportedSource)?;
-        let source_locator = extractor.locator;
-        let stream_configuration = extractor.stream_configuration;
         if stream_configuration.generation() != pending.parent_generation {
             return Err(SameItemSwitchError::Stale);
         }
@@ -299,12 +284,9 @@ impl AppState {
         if pending.target == catalog.active_choice().target {
             return Ok(UrlSidebarActionApplyOutcome::NoChange);
         }
-        let selection_intent = picker_selection_intent(&pending.target, stream_configuration)?;
-        let source_locator = source_locator.clone();
         self.start_resolved_same_item_switch(
             active_source,
-            source_locator,
-            selection_intent,
+            crate::media_open::WebMediaSelectionSwitchIntent::CatalogTarget(pending.target.clone()),
             SameItemSwitchKind::AutomaticPicker {
                 parent_generation: pending.parent_generation,
                 target: pending.target,
@@ -331,8 +313,7 @@ impl AppState {
     fn start_resolved_same_item_switch(
         &mut self,
         active_source: ActiveMediaSource,
-        source_locator: service_ytdlp::YtDlpMediaLocator,
-        selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
+        selection_intent: crate::media_open::WebMediaSelectionSwitchIntent,
         kind: SameItemSwitchKind,
         playlist_runtime: &mut PlaylistRuntime,
         renderer: &Renderer,
@@ -361,12 +342,24 @@ impl AppState {
             &capabilities,
             self.audio_decode_capability_snapshot(),
         );
-        let physical_request =
-            MediaOpenSourceRequest::Web(crate::media_open::WebMediaOpenRequest::extractor(
-                source_locator,
-                selection_intent,
-                settings,
-            ));
+        let physical_request = match active_source
+            .web_intent()
+            .expect("same-item web source был проверен до lifecycle start")
+            .selection_switch_request(selection_intent, settings)
+        {
+            crate::media_open::WebMediaSelectionSwitchResolution::NoChange => {
+                return Ok(UrlSidebarActionApplyOutcome::NoChange);
+            }
+            crate::media_open::WebMediaSelectionSwitchResolution::Ready(request) => {
+                MediaOpenSourceRequest::Web(request)
+            }
+            crate::media_open::WebMediaSelectionSwitchResolution::Unsupported => {
+                return Err(SameItemSwitchError::UnsupportedSource);
+            }
+            crate::media_open::WebMediaSelectionSwitchResolution::Stale => {
+                return Err(SameItemSwitchError::Stale);
+            }
+        };
         let source_request = active_source.wrap_reopen_request(physical_request);
         let start = SameItemSwitchAppStart {
             source_request,
@@ -449,29 +442,19 @@ impl AppState {
 }
 
 impl ActiveMediaSource {
-    /// Возвращает freshly Installed extractor configuration без раскрытия locator-а.
-    fn yt_dlp_stream_configuration(
+    /// Возвращает freshly Installed provider-neutral configuration.
+    fn web_media_stream_configuration(
         &self,
     ) -> Option<&crate::web_media_stream_model::WebMediaStreamConfiguration> {
         self.web_intent()
-            .and_then(crate::media_open::WebMediaSourceIntent::extractor_bridge)
-            .map(|bridge| bridge.stream_configuration)
+            .and_then(crate::media_open::WebMediaSourceIntent::stream_configuration)
     }
 
-    /// Извлекает generation только из freshly Installed extractor source.
-    fn yt_dlp_stream_generation(&self) -> Option<WebMediaStreamGeneration> {
-        self.yt_dlp_stream_configuration()
+    /// Извлекает generation только из freshly Installed catalog-backed source.
+    fn web_media_stream_generation(&self) -> Option<WebMediaStreamGeneration> {
+        self.web_media_stream_configuration()
             .map(crate::web_media_stream_model::WebMediaStreamConfiguration::generation)
     }
-}
-
-fn picker_selection_intent(
-    target: &crate::web_media_catalog::WebMediaSelectionTarget,
-    stream_configuration: &crate::web_media_stream_model::WebMediaStreamConfiguration,
-) -> Result<crate::web_media_open::YtDlpCandidateOpenIntent, SameItemSwitchError> {
-    stream_configuration
-        .selection_intent_for_catalog_target(target)
-        .ok_or(SameItemSwitchError::Stale)
 }
 
 /// Start rejection сохраняет bounded UI vocabulary.

@@ -584,7 +584,7 @@ fn resolve_native_hls_startup_media(
                 cancellation,
                 is_cancelled,
             )?;
-            Ok(PreparedStartupMedia::YtDlp {
+            Ok(PreparedStartupMedia::Extractor {
                 source_locator: fallback_locator,
                 prepared: Box::new(prepared),
             })

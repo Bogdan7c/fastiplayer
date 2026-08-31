@@ -11,7 +11,6 @@
 use std::fmt;
 use std::sync::Arc;
 
-use service_ytdlp::YtDlpCandidateSelection;
 use web_media_core::{
     AudioComponentVariant, CodecFamily, CodecKind, ComponentVariantCatalog,
     ComponentVariantCatalogGeneration, ComponentVariantError, ComponentVariantSelection,
@@ -27,16 +26,6 @@ use coupled::coupled_axis;
 pub(crate) use coupled::{
     WebMediaCoupledComponentVariantAxis, WebMediaCoupledComponentVariantPresentation,
 };
-
-/// Exact parent token всегда установлен production constructor-ом.
-#[derive(Clone, PartialEq, Eq)]
-pub(super) enum ActiveParentCandidateSelection {
-    /// Reopen-safe service token, который никогда не пересекает UI projection.
-    Installed(Box<YtDlpCandidateSelection>),
-    /// Synthetic projection tests не запускают media-open и не изобретают fake token.
-    #[cfg(test)]
-    ProjectionFixture,
-}
 
 /// Конфигурация component variants, принадлежащая exact Installed web-media source.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -201,6 +190,15 @@ pub(crate) enum ComponentVariantActionResolution {
     SemanticReopen(ComponentVariantSemanticSelectionRequest),
 }
 
+/// Provider-neutral семантика component selection при controlled reopen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WebMediaComponentSelectionReopenIntent {
+    /// Provider заново выбирает canonical components активного parent-а.
+    ProviderDefault,
+    /// Fresh component catalog обязан rematch-ить refresh-stable выбор.
+    Semantic(ComponentVariantSemanticSelectionRequest),
+}
+
 /// Typed ошибки app-owned installation boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ComponentVariantInstallationError {
@@ -299,20 +297,9 @@ impl fmt::Display for ComponentVariantActionError {
 impl std::error::Error for ComponentVariantActionError {}
 
 impl WebMediaStreamConfiguration {
-    /// Возвращает exact token именно активного parent candidate-а для component reopen.
-    ///
-    /// UI не получает этот token: exact identity остаётся внутри component owner-а,
-    /// а наружу выходит только готовый reopen intent.
-    pub(crate) fn active_candidate_selection_for_component_switch(
-        &self,
-    ) -> Option<YtDlpCandidateSelection> {
-        match &self.active_parent_selection {
-            ActiveParentCandidateSelection::Installed(selection) => {
-                Some(selection.as_ref().clone())
-            }
-            #[cfg(test)]
-            ActiveParentCandidateSelection::ProjectionFixture => None,
-        }
+    /// Возвращает neutral selection активного parent-а для same-item reopen.
+    pub(crate) fn active_parent_selection(&self) -> WebMediaSelection {
+        WebMediaSelection::candidate(self.active_parent.clone())
     }
 
     /// Устанавливает independent component catalog только для exact active parent-а.
@@ -348,7 +335,7 @@ impl WebMediaStreamConfiguration {
     #[must_use]
     pub(crate) fn component_selection_reopen_intent(
         &self,
-    ) -> crate::web_media_open::YtDlpComponentSelectionOpenIntent {
+    ) -> WebMediaComponentSelectionReopenIntent {
         self.component_variants.reopen_intent()
     }
 
@@ -404,16 +391,12 @@ impl WebMediaComponentVariantConfiguration {
 
     /// Сохраняет только refresh-stable semantic выбор установленной конфигурации.
     #[must_use]
-    fn reopen_intent(&self) -> crate::web_media_open::YtDlpComponentSelectionOpenIntent {
+    fn reopen_intent(&self) -> WebMediaComponentSelectionReopenIntent {
         match self {
-            Self::Unavailable => {
-                crate::web_media_open::YtDlpComponentSelectionOpenIntent::ProviderDefault
-            }
-            Self::Installed(installed) => {
-                crate::web_media_open::YtDlpComponentSelectionOpenIntent::Semantic(
-                    installed.selection.semantic_rematch_request(),
-                )
-            }
+            Self::Unavailable => WebMediaComponentSelectionReopenIntent::ProviderDefault,
+            Self::Installed(installed) => WebMediaComponentSelectionReopenIntent::Semantic(
+                installed.selection.semantic_rematch_request(),
+            ),
         }
     }
 

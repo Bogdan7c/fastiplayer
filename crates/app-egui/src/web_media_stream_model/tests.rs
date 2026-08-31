@@ -27,13 +27,14 @@ fn configuration(
     candidates: Vec<WebMediaCandidatePresentation>,
     active_candidate: WebMediaCandidatePresentation,
 ) -> WebMediaStreamConfiguration {
+    let active_parent = exact_parent(generation);
+    let candidate_selections =
+        vec![WebMediaSelection::candidate(active_parent.clone()); candidates.len()];
     WebMediaStreamConfiguration {
         generation,
-        active_parent: exact_parent(generation),
-        active_parent_selection: ActiveParentCandidateSelection::ProjectionFixture,
+        active_parent,
         candidates: candidates.into(),
-        candidate_selections: Arc::from([]),
-        catalog_selection_routes: Arc::from([]),
+        candidate_selections: candidate_selections.into(),
         active_candidate,
         preference: WebMediaSelectionPreference::GlobalBestPlayable,
         component_variants: WebMediaComponentVariantConfiguration::Unavailable,
@@ -177,6 +178,31 @@ fn stale_generation_hides_pending_candidate_and_safe_error() {
     };
     assert_eq!(pending_selection, None);
     assert_eq!(safe_error, None);
+}
+
+#[test]
+fn stale_generation_cannot_resolve_neutral_switch_selection() {
+    let current_generation = WebMediaStreamGeneration::for_test(31, 7);
+    let stale_generation = WebMediaStreamGeneration::for_test(31, 6);
+    let active_candidate = candidate(Some(720), false);
+    let configuration = configuration(
+        current_generation,
+        vec![active_candidate.clone()],
+        active_candidate,
+    );
+
+    assert!(
+        configuration
+            .selection_for_switch(stale_generation, 0)
+            .is_none(),
+        "stale generation не должна получить exact neutral selection"
+    );
+    assert!(
+        configuration
+            .selection_for_switch(current_generation, 0)
+            .is_some(),
+        "matching generation должна получить bounded selection"
+    );
 }
 
 #[test]

@@ -418,18 +418,6 @@ fn assert_child_service_snapshot_fallback() {
         vec![planning.candidates()[0].clone()],
     )
     .expect("bounded incomplete planning fixture");
-    assert_eq!(
-        crate::web_media_stream_model::WebMediaStreamConfiguration::from_yt_dlp_snapshot(
-            &snapshot,
-            &incomplete_planning,
-            capabilities,
-            &policy,
-            &first_selection,
-            crate::web_media_stream_model::WebMediaSelectionPreference::GlobalBestPlayable,
-        )
-        .expect_err("sidebar должен отвергнуть mispaired planning snapshot"),
-        crate::web_media_stream_model::WebMediaStreamModelBuildError::CandidateSnapshotAlignmentFailed
-    );
     assert!(
         super::super::catalog::projected_parent_choice_count(
             super::super::catalog::CatalogAttachmentRequest {
@@ -445,13 +433,16 @@ fn assert_child_service_snapshot_fallback() {
         "catalog должен отвергнуть mispaired planning snapshot"
     );
 
+    let neutral_projection =
+        crate::web_media_extractor_adapter::ExtractorCatalogProjection::from_snapshot(&snapshot)
+            .and_then(|projection| projection.with_active_selection(&first_selection))
+            .expect("extractor adapter должен построить neutral active selection");
     let stream_configuration =
-        crate::web_media_stream_model::WebMediaStreamConfiguration::from_yt_dlp_snapshot(
-            &snapshot,
+        crate::web_media_stream_model::WebMediaStreamConfiguration::from_neutral_catalog(
             &planning,
             capabilities,
             &policy,
-            &first_selection,
+            neutral_projection.selection(),
             crate::web_media_stream_model::WebMediaSelectionPreference::GlobalBestPlayable,
         )
         .expect("canonical real snapshot должен построить URL stream model");

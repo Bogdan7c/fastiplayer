@@ -17,11 +17,18 @@ use web_media_core::{
 
 use super::{NativeHlsOpenIntent, NativeHlsUrl, SafeMediaLabel};
 
+mod source_actions;
+pub(crate) use source_actions::{
+    DirectResourceSettingsAction, WebMediaSelectionSwitchIntent, WebMediaSelectionSwitchResolution,
+    WebMediaSettingsReconfigureDecision, WebMediaSettingsReconfigurePolicy,
+    WebMediaSettingsSelectionPolicy,
+};
+
 /// Устойчивый app-owned web intent, публикуемый только после exact `Installed`.
 ///
-/// Neutral lifecycle facts лежат рядом с закрытым adapter bridge. Благодаря
-/// этому coordinator/recovery могут работать с одним web variant, а N05A/N05B
-/// смогут заменить legacy projections без повторной миграции lifecycle envelope.
+/// Neutral lifecycle facts лежат рядом с закрытым adapter state. Благодаря
+/// этому coordinator/recovery работают с одним web variant, не раскрывая
+/// extractor/direct/native implementation vocabulary.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct WebMediaSourceIntent {
     /// Фактический ingress, которым был открыт установленный runtime.
@@ -32,14 +39,14 @@ pub(crate) struct WebMediaSourceIntent {
     recovery: WebMediaRecoveryStrategy,
     /// Optional product reason допустим только для extractor ingress-а.
     extractor_reason: Option<ExtractorInvocationReason>,
-    /// Временный typed bridge к ещё не мигрированным N05A/N05B consumers.
+    /// Закрытое physical adapter state; lifecycle сопоставляет только neutral contracts.
     adapter: Box<WebMediaSourceAdapter>,
 }
 
 /// Закрытое adapter-owned содержимое устойчивого source intent.
 ///
-/// Variant не выходит наружу как lifecycle source vocabulary. Его accessors
-/// существуют только как временный compile bridge до N05B.
+/// Variant не выходит наружу как lifecycle source vocabulary. Intent-level
+/// методы возвращают neutral projections либо готовые open requests.
 #[derive(Clone, PartialEq, Eq)]
 enum WebMediaSourceAdapter {
     /// Direct resource целиком является active semantic selection.
@@ -54,28 +61,7 @@ enum WebMediaSourceAdapter {
     /// Extractor сохраняет neutral selection и временные UI/reopen projections.
     Extractor {
         locator: service_ytdlp::YtDlpMediaLocator,
-        neutral_selection: WebMediaSelection,
-        candidate_selection: Box<service_ytdlp::YtDlpCandidateSelection>,
-        composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
-        stream_configuration: Box<crate::web_media_stream_model::WebMediaStreamConfiguration>,
-        catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
-    },
-}
-
-/// Owned compatibility dispatch для ещё не мигрированных settings/action consumers.
-pub(crate) enum WebMediaSourceAdapterBridge {
-    Direct {
-        locator: service_direct_media::DirectMediaUrl,
-    },
-    NativeHls {
-        source: NativeHlsUrl,
-        selection: web_media_hls::NativeHlsSemanticSelection,
-    },
-    Extractor {
-        locator: service_ytdlp::YtDlpMediaLocator,
-        candidate_selection: Box<service_ytdlp::YtDlpCandidateSelection>,
-        composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
-        stream_configuration: Box<crate::web_media_stream_model::WebMediaStreamConfiguration>,
+        source_state: Box<crate::web_media_open::ExtractorMediaSourceState>,
     },
 }
 
@@ -110,11 +96,7 @@ impl WebMediaSourceIntent {
     pub(crate) fn extractor(
         locator: service_ytdlp::YtDlpMediaLocator,
         presentation: WebMediaPresentationKind,
-        neutral_selection: WebMediaSelection,
-        candidate_selection: service_ytdlp::YtDlpCandidateSelection,
-        composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
-        stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
-        catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
+        source_state: crate::web_media_open::ExtractorMediaSourceState,
         extractor_reason: ExtractorInvocationReason,
     ) -> Self {
         Self {
@@ -124,11 +106,7 @@ impl WebMediaSourceIntent {
             extractor_reason: Some(extractor_reason),
             adapter: Box::new(WebMediaSourceAdapter::Extractor {
                 locator,
-                neutral_selection,
-                candidate_selection: Box::new(candidate_selection),
-                composed_selection,
-                stream_configuration: Box::new(stream_configuration),
-                catalog_attachment,
+                source_state: Box::new(source_state),
             }),
         }
     }
@@ -156,34 +134,21 @@ impl WebMediaSourceIntent {
     /// Возвращает canonical neutral selection только catalog-backed ingress-а.
     pub(crate) const fn neutral_selection(&self) -> Option<&WebMediaSelection> {
         match &*self.adapter {
-            WebMediaSourceAdapter::Extractor {
-                neutral_selection, ..
-            } => Some(neutral_selection),
+            WebMediaSourceAdapter::Extractor { source_state, .. } => {
+                Some(source_state.neutral_selection())
+            }
             WebMediaSourceAdapter::Direct { .. } | WebMediaSourceAdapter::NativeHls { .. } => None,
         }
     }
 
-    /// Временный N05B bridge к direct locator-у.
-    pub(crate) const fn direct_locator(&self) -> Option<&service_direct_media::DirectMediaUrl> {
+    /// Возвращает provider-neutral Installed stream projection для action owner-а.
+    pub(crate) const fn stream_configuration(
+        &self,
+    ) -> Option<&crate::web_media_stream_model::WebMediaStreamConfiguration> {
         match &*self.adapter {
-            WebMediaSourceAdapter::Direct { locator } => Some(locator),
-            WebMediaSourceAdapter::NativeHls { .. } | WebMediaSourceAdapter::Extractor { .. } => {
-                None
+            WebMediaSourceAdapter::Extractor { source_state, .. } => {
+                Some(source_state.stream_configuration())
             }
-        }
-    }
-
-    /// Временный N05B bridge к extractor reopen/UI projections.
-    pub(crate) const fn extractor_bridge(&self) -> Option<ExtractorSourceBridge<'_>> {
-        match &*self.adapter {
-            WebMediaSourceAdapter::Extractor {
-                locator,
-                stream_configuration,
-                ..
-            } => Some(ExtractorSourceBridge {
-                locator,
-                stream_configuration,
-            }),
             WebMediaSourceAdapter::Direct { .. } | WebMediaSourceAdapter::NativeHls { .. } => None,
         }
     }
@@ -193,9 +158,9 @@ impl WebMediaSourceIntent {
         &self,
     ) -> Option<&crate::web_media_catalog::WebMediaCatalogAttachment> {
         match &*self.adapter {
-            WebMediaSourceAdapter::Extractor {
-                catalog_attachment, ..
-            } => Some(catalog_attachment),
+            WebMediaSourceAdapter::Extractor { source_state, .. } => {
+                Some(source_state.catalog_attachment())
+            }
             WebMediaSourceAdapter::Direct { .. } | WebMediaSourceAdapter::NativeHls { .. } => None,
         }
     }
@@ -217,37 +182,13 @@ impl WebMediaSourceIntent {
             },
             WebMediaSourceAdapter::Extractor {
                 locator,
-                stream_configuration,
+                source_state,
                 ..
             } => WebMediaSourceReadProjection {
                 ingress: self.ingress,
                 presentation: self.presentation,
                 source_label: locator.safe_label(),
-                stream_configuration: Some(stream_configuration),
-            },
-        }
-    }
-
-    /// Передаёт owned adapter bridge единственному settings rebuild dispatch-у.
-    pub(crate) fn into_adapter_bridge(self) -> WebMediaSourceAdapterBridge {
-        match *self.adapter {
-            WebMediaSourceAdapter::Direct { locator } => {
-                WebMediaSourceAdapterBridge::Direct { locator }
-            }
-            WebMediaSourceAdapter::NativeHls { source, selection } => {
-                WebMediaSourceAdapterBridge::NativeHls { source, selection }
-            }
-            WebMediaSourceAdapter::Extractor {
-                locator,
-                candidate_selection,
-                composed_selection,
-                stream_configuration,
-                ..
-            } => WebMediaSourceAdapterBridge::Extractor {
-                locator,
-                candidate_selection,
-                composed_selection,
-                stream_configuration,
+                stream_configuration: Some(source_state.stream_configuration()),
             },
         }
     }
@@ -274,29 +215,13 @@ impl WebMediaSourceIntent {
             }
             WebMediaSourceAdapter::Extractor {
                 locator,
-                candidate_selection,
-                composed_selection,
-                stream_configuration,
+                source_state,
                 ..
             } => {
                 let settings = adaptive_settings?;
-                let selection_intent = match composed_selection {
-                    Some(composed_selection) => {
-                        crate::web_media_open::YtDlpCandidateOpenIntent::composed(
-                            composed_selection.clone(),
-                            candidate_selection.clone(),
-                            stream_configuration.preference(),
-                        )
-                    }
-                    None => crate::web_media_open::YtDlpCandidateOpenIntent::
-                        exact_preserving_installed_stream_configuration(
-                            candidate_selection.clone(),
-                            stream_configuration,
-                        ),
-                };
                 WebMediaOpenAdapter::Extractor {
                     locator: locator.clone(),
-                    selection_intent,
+                    selection_intent: source_state.installed_reopen_intent(),
                     settings,
                 }
             }
@@ -322,13 +247,6 @@ impl fmt::Debug for WebMediaSourceIntent {
             )
             .finish()
     }
-}
-
-/// Borrowed compatibility projection для N05A/N05B migration.
-#[derive(Clone, Copy)]
-pub(crate) struct ExtractorSourceBridge<'a> {
-    pub(crate) locator: &'a service_ytdlp::YtDlpMediaLocator,
-    pub(crate) stream_configuration: &'a crate::web_media_stream_model::WebMediaStreamConfiguration,
 }
 
 /// Borrowed read-only N04 projection без locator/request/exact identity material.

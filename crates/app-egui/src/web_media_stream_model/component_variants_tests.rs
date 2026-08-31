@@ -261,13 +261,12 @@ pub(crate) fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStrea
         extraction: parent.exact().generation().value(),
     };
     let active_candidate = super::tests::candidate(Some(1080), false);
+    let active_selection = WebMediaSelection::candidate(parent.clone());
     WebMediaStreamConfiguration {
         generation,
         active_parent: parent,
-        active_parent_selection: ActiveParentCandidateSelection::ProjectionFixture,
         candidates: Arc::from([active_candidate.clone()]),
-        candidate_selections: Arc::from([]),
-        catalog_selection_routes: Arc::from([]),
+        candidate_selections: Arc::from([active_selection]),
         active_candidate,
         preference: WebMediaSelectionPreference::GlobalPreferredHeight(1080),
         component_variants: WebMediaComponentVariantConfiguration::Unavailable,
@@ -288,7 +287,7 @@ fn default_and_muxed_without_provider_catalog_remain_honestly_unavailable() {
     );
     assert_eq!(
         configuration.component_selection_reopen_intent(),
-        crate::web_media_open::YtDlpComponentSelectionOpenIntent::ProviderDefault
+        WebMediaComponentSelectionReopenIntent::ProviderDefault
     );
     assert_eq!(
         configuration
@@ -345,7 +344,7 @@ fn matching_catalog_install_canonicalizes_supplied_selection() {
     assert_eq!(neutral_selection.parent(), &active_parent);
     assert_eq!(
         configured.component_selection_reopen_intent(),
-        crate::web_media_open::YtDlpComponentSelectionOpenIntent::Semantic(
+        WebMediaComponentSelectionReopenIntent::Semantic(
             selection(&canonical_catalog, 1, 0).semantic_rematch_request()
         )
     );

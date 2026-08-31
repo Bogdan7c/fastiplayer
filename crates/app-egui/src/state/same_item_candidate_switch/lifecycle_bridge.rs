@@ -41,7 +41,7 @@ pub(super) trait SameItemSwitchLifecycleStartPort {
 /// Installed evidence содержит только то, что app path обязан валидировать.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct InstalledSameItemSwitchEvidence {
-    /// `None` означает нарушение инварианта: strong lifecycle установил не-YtDlp source.
+    /// `None` означает нарушение инварианта: strong lifecycle установил source без stream projection.
     generation: Option<WebMediaStreamGeneration>,
     /// Component switch разрешён только с freshly Installed component catalog.
     component_catalog_installed: bool,
@@ -500,7 +500,7 @@ impl SameItemSwitchLifecyclePollPort for ProductionSameItemSwitchPollContext<'_,
                 let installed_configuration = installed
                     .source
                     .physical_source()
-                    .yt_dlp_stream_configuration();
+                    .web_media_stream_configuration();
                 SameItemSwitchLifecyclePoll::Installed(InstalledSameItemSwitchEvidence {
                     generation: installed_configuration.map(
                         crate::web_media_stream_model::WebMediaStreamConfiguration::generation,
@@ -534,7 +534,7 @@ impl SameItemSwitchCompletionOwner for ProductionSameItemSwitchPollContext<'_, '
         self.app_state
             .active_media_source
             .as_ref()
-            .and_then(ActiveMediaSource::yt_dlp_stream_generation)
+            .and_then(ActiveMediaSource::web_media_stream_generation)
             .unwrap_or(previous_generation)
     }
 

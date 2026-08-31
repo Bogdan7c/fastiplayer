@@ -11,7 +11,56 @@ use web_media_playback_plan::{
 use crate::web_media_catalog::{
     WebMediaCatalogAttachment, WebMediaCatalogChoice, WebMediaMode, WebMediaSelectionTarget,
 };
-use crate::web_media_stream_model::ExtractorCatalogSelectionRoute;
+use crate::web_media_stream_model::WebMediaSelectionPreference;
+
+/// Extractor-private route из neutral catalog target в provider-owned open token.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) enum ExtractorCatalogSelectionRoute {
+    /// Atomic/muxed target открывает exact parent с provider-default components.
+    Candidate {
+        target: WebMediaSelectionTarget,
+        selection: Box<YtDlpCandidateSelection>,
+    },
+    /// Проверенная separate A/V pair открывается без повторного Cartesian поиска.
+    SeparateComponents {
+        target: WebMediaSelectionTarget,
+        selection: Box<YtDlpComposedSelection>,
+        parent_preference: Box<YtDlpCandidateSelection>,
+    },
+}
+
+impl ExtractorCatalogSelectionRoute {
+    /// Возвращает provider-neutral lookup key.
+    pub(super) const fn target(&self) -> &WebMediaSelectionTarget {
+        match self {
+            Self::Candidate { target, .. } | Self::SeparateComponents { target, .. } => target,
+        }
+    }
+
+    /// Строит adapter-owned open intent после exact neutral target lookup.
+    pub(super) fn selection_intent(
+        &self,
+        preference: WebMediaSelectionPreference,
+    ) -> super::YtDlpCandidateOpenIntent {
+        match self {
+            Self::Candidate { selection, .. } => {
+                super::YtDlpCandidateOpenIntent::exact_parent_provider_default(
+                    selection.clone(),
+                    preference,
+                )
+            }
+            Self::SeparateComponents {
+                selection,
+                parent_preference,
+                ..
+            } => super::YtDlpCandidateOpenIntent::composed(
+                selection.clone(),
+                parent_preference.clone(),
+                preference,
+            ),
+        }
+    }
+}
 
 pub(super) struct CatalogAttachmentProjection {
     pub(super) attachment: WebMediaCatalogAttachment,

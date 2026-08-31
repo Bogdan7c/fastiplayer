@@ -15,7 +15,9 @@ use web_media_core::{
 
 use crate::web_media_stream_model::{
     WebMediaSelectionPreference, WebMediaStreamConfiguration,
-    component_variants::ComponentVariantInstallationError,
+    component_variants::{
+        ComponentVariantInstallationError, WebMediaComponentSelectionReopenIntent,
+    },
 };
 
 use super::YtDlpCandidateOpenIntent;
@@ -67,10 +69,18 @@ impl YtDlpCandidateOpenIntent {
         selection: Box<YtDlpCandidateSelection>,
         stream_configuration: &WebMediaStreamConfiguration,
     ) -> Self {
+        let component_selection = match stream_configuration.component_selection_reopen_intent() {
+            WebMediaComponentSelectionReopenIntent::ProviderDefault => {
+                YtDlpComponentSelectionOpenIntent::ProviderDefault
+            }
+            WebMediaComponentSelectionReopenIntent::Semantic(selection) => {
+                YtDlpComponentSelectionOpenIntent::Semantic(selection)
+            }
+        };
         Self::Exact(Box::new(YtDlpExactCandidateOpenIntent {
             selection,
             preference: stream_configuration.preference(),
-            component_selection: stream_configuration.component_selection_reopen_intent(),
+            component_selection,
         }))
     }
 
