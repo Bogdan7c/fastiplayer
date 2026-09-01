@@ -252,3 +252,6 @@ fn run_worker(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
