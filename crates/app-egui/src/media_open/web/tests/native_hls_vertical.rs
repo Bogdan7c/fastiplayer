@@ -229,7 +229,7 @@ pub(super) fn decode_fixture(encoded: &str) -> Vec<u8> {
 }
 
 /// Собирает immutable loopback routes для root, TS и fMP4 вариантов.
-fn fixture_routes() -> HashMap<String, Vec<Vec<u8>>> {
+pub(super) fn fixture_routes() -> HashMap<String, Vec<Vec<u8>>> {
     HashMap::from([
         (
             "/master.m3u8".to_owned(),
@@ -460,7 +460,8 @@ fn assert_decoder_render_audio_samples(
         }
         assert!(
             Instant::now() < deadline,
-            "native HLS decoder/render/audio vertical timeout"
+            "native HLS decoder/render/audio vertical timeout: video_frames={}, audio_batches={decoded_audio_batches}",
+            decoded_video_frames.len(),
         );
     }
 

@@ -19,7 +19,7 @@ pub use open::{
 #[allow(unused_imports)]
 pub(crate) use snapshot::{
     HlsLiveComponentKind, HlsLiveComponentSnapshot, HlsLiveRefreshError, HlsLiveSegmentIdentity,
-    HlsLiveTimelineEvidence,
+    HlsLiveTimelineEvidence, HlsLiveVideoDecodeStartEvidence,
 };
 pub(crate) use timeline::HlsLiveTimelineCoordinator;
 pub(crate) use timeline::HlsLiveTransportSnapshot;

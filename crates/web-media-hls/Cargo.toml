@@ -11,6 +11,7 @@ aes.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
 cbc.workspace = true
+codec-core.workspace = true
 demux-api.workspace = true
 hls-playlist-core.workspace = true
 log.workspace = true

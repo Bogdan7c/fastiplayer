@@ -37,7 +37,8 @@ pub use h264::{
     h264_access_unit_to_annex_b_into, h264_nal_units, h264_profile_from_indication,
     h264_sps_metadata_from_avc_decoder_configuration_record, h264_sps_metadata_from_packet,
     infer_h264_packetization, parse_avc_decoder_configuration_record,
-    parse_avc3_decoder_configuration_record, parse_h264_sps_metadata, probe_h264_packet_keyframe,
+    parse_avc3_decoder_configuration_record, parse_h264_sps_metadata,
+    probe_h264_packet_in_band_decode_start, probe_h264_packet_keyframe,
 };
 pub use h265::{
     H265BitReaderError, H265ByteStreamError, H265HeaderMetadata, H265NalLengthSize, H265NalUnit,

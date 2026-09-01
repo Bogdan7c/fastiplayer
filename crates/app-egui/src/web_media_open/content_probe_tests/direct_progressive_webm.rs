@@ -448,3 +448,60 @@ fn n14a_consumer_http_webm_reaches_submitted_readback_with_exact_accounting() {
         "две bounded Range responses обязаны вернуть exact WebM fixture bytes"
     );
 }
+
+/// N14B: graceful close/restart повторно доводит direct WebM до WGPU без extractor.
+#[test]
+fn n14b_lifecycle_http_webm_close_restart_reaches_submitted_readback_without_extractor() {
+    let webm_bytes = base64::engine::general_purpose::STANDARD
+        .decode(MUXED_WEBM_BASE64)
+        .expect("decode tiny muxed WebM fixture");
+    let origin = RangeFixtureOrigin::spawn_with_response(FixtureOriginResponse::Ogg(webm_bytes));
+    let locator = origin.media_url_with_extension("webm");
+    let classified = crate::direct_progressive_open::classify_direct_media_url(&locator)
+        .expect("WebM должен классифицироваться direct");
+    let mut app_config = rustiplayer_config::AppConfig::default();
+    app_config.yt_dlp.enabled = false;
+    let mut wgpu_harness = OffscreenWgpuHarness::new();
+
+    let mut open_render_and_close = || {
+        let opened = crate::direct_progressive_open::open_direct_media(
+            &classified,
+            &app_config.network,
+            &app_config.player.demux,
+            CancellationToken::new(),
+        )
+        .expect("open direct WebM lifecycle attempt");
+        let (mut demuxer, endpoint_recovery) = opened.into_runtime_parts();
+        let video_track = demuxer
+            .tracks()
+            .iter()
+            .find(|track| track.kind == TrackKind::Video)
+            .cloned()
+            .expect("direct WebM должен иметь video track");
+        let (decoder, renderer_provider) =
+            open_decoder(&video_track, &wgpu_harness.queue, VideoCodec::Vp9);
+        let materializer = HostPlanarWgpuFrameMaterializer::new(
+            &wgpu_harness.device,
+            &wgpu_harness.queue,
+            renderer_provider.clone(),
+        );
+        let decoded_frame = decode_first_frame(demuxer.as_mut(), decoder.as_ref());
+        assert!(wgpu_harness.submit_and_release(&materializer, &renderer_provider, decoded_frame,));
+        drop(decoder);
+        drop(demuxer);
+        drop(endpoint_recovery);
+    };
+
+    open_render_and_close();
+    open_render_and_close();
+    assert_eq!(
+        origin.request_count(),
+        4,
+        "cold open и restart должны выполнить по одному exact probe/read cohort"
+    );
+    assert_eq!(
+        origin.response_body_bytes(),
+        N14A_HTTP_WEBM_INITIAL_BODY_BYTES * 2,
+        "restart должен повторить только exact WebM body cohort"
+    );
+}

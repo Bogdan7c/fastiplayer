@@ -4,17 +4,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use codec_core::{H264Packetization, probe_h264_packet_in_band_decode_start};
 use demux_api::DemuxRegistry;
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
-    Demuxer, MediaMetadata, MediaTime, Packet, TrackId, TrackInfo,
+    Demuxer, MediaMetadata, MediaTime, Packet, PacketKeyframe, TrackId, TrackInfo, TrackKind,
 };
 use web_media_transport_api::SourceGeneration;
 
 use super::refresh::{HlsLiveEndpointExpirySignal, HlsLiveRefreshControl};
 use super::{
     HlsLiveComponentKind, HlsLiveComponentSnapshot, HlsLiveSegmentIdentity,
-    HlsLiveTimelineCoordinator,
+    HlsLiveTimelineCoordinator, HlsLiveVideoDecodeStartEvidence,
 };
 use crate::epoch_demux::open_epoch_with_key_cache_and_observer;
 use crate::source::{HlsRefreshableResourceKind, HlsResourceExpiryObserver, SharedHlsKeyCache};
@@ -322,17 +323,48 @@ impl HlsLiveComponentDemuxer {
                     .ok_or_else(|| anyhow!("HLS live packet DTS overflow"))
             })
             .transpose()?;
+        let video_decode_start = self.video_decode_start_evidence(&packet)?;
         match self.factory.kind {
-            HlsLiveComponentKind::Main => self
-                .factory
-                .coordinator
-                .observe_main_packet(self.current_identity, &packet)?,
+            HlsLiveComponentKind::Main => self.factory.coordinator.observe_main_packet(
+                self.current_identity,
+                &packet,
+                video_decode_start,
+            )?,
             HlsLiveComponentKind::AlternateAudio => self
                 .factory
                 .coordinator
                 .observe_audio_packet(self.current_identity, &packet)?,
         }
         Ok(packet)
+    }
+
+    /// MPEG-TS H.264 anchor обязан пережить production decoder flush без старых SPS/PPS.
+    fn video_decode_start_evidence(
+        &self,
+        packet: &Packet,
+    ) -> Result<HlsLiveVideoDecodeStartEvidence> {
+        if packet.kind != TrackKind::Video || packet.keyframe != PacketKeyframe::Keyframe {
+            return Ok(HlsLiveVideoDecodeStartEvidence::NotProven);
+        }
+        if self.factory.container != HlsRequiredContainer::TransportStream {
+            return Ok(HlsLiveVideoDecodeStartEvidence::Proven);
+        }
+        let track = self
+            .public_tracks
+            .iter()
+            .find(|track| track.id == packet.track_id)
+            .ok_or_else(|| anyhow!("HLS live video packet потерял public track"))?;
+        if track.codec_id != "V_MPEG4/ISO/AVC" {
+            return Ok(HlsLiveVideoDecodeStartEvidence::Proven);
+        }
+        let is_self_contained =
+            probe_h264_packet_in_band_decode_start(&packet.data, H264Packetization::AnnexB)
+                .context("HLS live H.264 decode-start probe failed")?;
+        Ok(if is_self_contained {
+            HlsLiveVideoDecodeStartEvidence::Proven
+        } else {
+            HlsLiveVideoDecodeStartEvidence::NotProven
+        })
     }
 
     fn open_next_retained_segment(&mut self) -> Result<HlsLiveSegmentAdvance> {

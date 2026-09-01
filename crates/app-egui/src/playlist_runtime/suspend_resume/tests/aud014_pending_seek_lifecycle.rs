@@ -308,7 +308,7 @@ fn restored_position_after_checkpoint(
 }
 
 #[test]
-fn applied_seek_before_deadline_restores_confirmed_target_position() {
+fn n14b_lifecycle_close_restart_restores_confirmed_receipted_seek_position() {
     let (mut worker, media_instance_id) = installed_legacy_seek_worker();
     let initial_receipt =
         dispatch_exact_seek(&worker, 1, media_instance_id, Duration::from_secs(10));

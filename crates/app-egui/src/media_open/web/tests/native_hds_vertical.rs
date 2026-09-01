@@ -175,10 +175,14 @@ fn native_request_parts(
 }
 
 /// Ждёт authoritative transactional seek receipt от existing S38 worker-а.
-fn assert_vod_seek(seek_port: &dyn PreparedDemuxSeekPort) {
-    let request_id = PreparedDemuxSeekRequestId::new(12);
+fn assert_vod_seek(
+    seek_port: &dyn PreparedDemuxSeekPort,
+    request_id: u64,
+    requested_position: Duration,
+) {
+    let request_id = PreparedDemuxSeekRequestId::new(request_id);
     seek_port
-        .enqueue_seek(request_id, DemuxSeekRequest::accurate(HDS_SEEK_POSITION))
+        .enqueue_seek(request_id, DemuxSeekRequest::accurate(requested_position))
         .expect("native HDS seek должен войти в worker");
     let deadline = Instant::now() + HDS_VERTICAL_DEADLINE;
     loop {
@@ -190,7 +194,7 @@ fn assert_vod_seek(seek_port: &dyn PreparedDemuxSeekPort) {
                     receipt.outcome
                 );
             };
-            assert_eq!(result.requested_position.as_duration(), HDS_SEEK_POSITION);
+            assert_eq!(result.requested_position.as_duration(), requested_position);
             return;
         }
         assert!(Instant::now() < deadline, "native HDS seek receipt timeout");
@@ -247,7 +251,7 @@ fn n14a_consumer_hds_vod_reaches_consumers_with_exact_accounting() {
 
 /// Доказывает root handoff, eager fragment reuse, render/audio, seek и refresh.
 #[test]
-fn native_hds_switch_seek_reopen_reaches_h264_aac_without_extractor() {
+fn n14b_lifecycle_hds_vod_seek_forward_back_switch_and_reopen_reaches_consumers() {
     let server = ControlledHlsServer::start(fixture_routes());
     let process_spy = Arc::new(ZeroProcessSpy::default());
     let mut settings = native_settings();
@@ -267,12 +271,19 @@ fn native_hds_switch_seek_reopen_reaches_h264_aac_without_extractor() {
     let mut initial = prepare_native(&source, None, &settings);
     assert_exact_probe_accounting(&server, 1);
     wait_for_tracks_changed(initial.demuxer.as_mut());
-    assert_vod_seek(initial.seek_port.as_ref());
+    assert_vod_seek(initial.seek_port.as_ref(), 12, HDS_SEEK_POSITION);
     assert_decoder_render_audio_for_codec(
         initial.demuxer.as_mut(),
         &mut wgpu_harness,
         DecodeVideoCodec::H264,
     );
+    assert_vod_seek(initial.seek_port.as_ref(), 13, Duration::ZERO);
+    assert_decoder_render_audio_for_codec(
+        initial.demuxer.as_mut(),
+        &mut wgpu_harness,
+        DecodeVideoCodec::H264,
+    );
+    let accounting_after_initial_lifecycle = HdsProbeAccounting::observe(&server);
     let alternate_selection = alternate_coupled_selection(&initial.source_state);
     let expected_alternate = alternate_selection.clone();
     let initial_intent = WebMediaSourceIntent::native_hds(source.clone(), initial.source_state);
@@ -287,7 +298,7 @@ fn native_hds_switch_seek_reopen_reaches_h264_aac_without_extractor() {
     };
     let (switch_source, switch_selection, switch_settings) = native_request_parts(switch_request);
     let mut switched = prepare_native(&switch_source, Some(&switch_selection), &switch_settings);
-    assert_exact_probe_accounting(&server, 2);
+    accounting_after_initial_lifecycle.assert_one_open_attempt_added(&server);
     wait_for_tracks_changed(switched.demuxer.as_mut());
     assert_decoder_render_audio_for_codec(
         switched.demuxer.as_mut(),
@@ -303,6 +314,7 @@ fn native_hds_switch_seek_reopen_reaches_h264_aac_without_extractor() {
         switched_components.semantic_rematch_request(),
         expected_alternate
     );
+    let accounting_after_switch_lifecycle = HdsProbeAccounting::observe(&server);
 
     let switched_intent =
         WebMediaSourceIntent::native_hds(switch_source.clone(), switched.source_state);
@@ -315,7 +327,7 @@ fn native_hds_switch_seek_reopen_reaches_h264_aac_without_extractor() {
         .expect("native HDS controlled reopen требует semantic rematch");
     let (reopen_source, reopen_selection, reopen_settings) = native_request_parts(reopen_request);
     let mut reopened = prepare_native(&reopen_source, Some(&reopen_selection), &reopen_settings);
-    assert_exact_probe_accounting(&server, 3);
+    accounting_after_switch_lifecycle.assert_one_open_attempt_added(&server);
     wait_for_tracks_changed(reopened.demuxer.as_mut());
     assert_decoder_render_audio_for_codec(
         reopened.demuxer.as_mut(),
@@ -347,6 +359,39 @@ fn assert_exact_probe_accounting(server: &ControlledHlsServer, attempts: usize) 
     );
     assert_eq!(server.request_count("/vod/media/highSeg1-Frag1"), attempts);
     assert_eq!(server.request_count("/vod/media/lowSeg1-Frag1"), attempts);
+}
+
+/// Snapshot отделяет обязательные open probes от дополнительных fragment reads после seek.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HdsProbeAccounting {
+    root_requests: usize,
+    high_fragment_requests: usize,
+    low_fragment_requests: usize,
+}
+
+impl HdsProbeAccounting {
+    /// Снимает exact counters у существующего N12 loopback owner-а.
+    fn observe(server: &ControlledHlsServer) -> Self {
+        Self {
+            root_requests: server.request_count("/vod/root.f4m?token=n12-secret"),
+            high_fragment_requests: server.request_count("/vod/media/highSeg1-Frag1"),
+            low_fragment_requests: server.request_count("/vod/media/lowSeg1-Frag1"),
+        }
+    }
+
+    /// Новый switch/reopen attempt обязан добавить один root и по одному eager probe на row.
+    fn assert_one_open_attempt_added(self, server: &ControlledHlsServer) {
+        let current = Self::observe(server);
+        assert_eq!(current.root_requests, self.root_requests + 1);
+        assert_eq!(
+            current.high_fragment_requests,
+            self.high_fragment_requests + 1
+        );
+        assert_eq!(
+            current.low_fragment_requests,
+            self.low_fragment_requests + 1
+        );
+    }
 }
 
 /// Live/DRM/private/profile remain distinct; malformed/network/cancel never fallback.

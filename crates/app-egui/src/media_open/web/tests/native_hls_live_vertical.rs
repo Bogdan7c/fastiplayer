@@ -9,6 +9,7 @@ use media_core::DemuxReadEvent;
 use web_media_hls::HlsVodStartIntent;
 
 use super::super::*;
+use super::native_hls_lifecycle_n14b::PersistentHlsConsumer;
 use super::native_hls_vertical::{
     ControlledHlsServer, alternate_component_selection, assert_decoder_render_audio,
     assert_decoder_render_audio_movement, decode_fixture, native_request_parts, native_settings,
@@ -232,7 +233,7 @@ fn n14a_consumer_hls_sliding_live_reaches_consumers_with_exact_accounting() {
 
 /// Проверяет moving consumers, packet-proven window shift, expired target и process spy 0.
 #[test]
-fn native_sliding_hls_live_reaches_moving_frame_audio_and_expires_old_dvr_without_extractor() {
+fn n14b_lifecycle_hls_live_dvr_expiry_recovery_switch_has_no_false_eof() {
     let server = ControlledHlsServer::start_with_initial_failures(
         live_routes(),
         HashMap::from([("/ts-2.ts".to_owned(), 1)]),
@@ -269,7 +270,13 @@ fn native_sliding_hls_live_reaches_moving_frame_audio_and_expires_old_dvr_withou
         }
     };
     let mut wgpu_harness = OffscreenWgpuHarness::new();
-    assert_decoder_render_audio_movement(prepared.demuxer.as_mut(), &mut wgpu_harness);
+    let mut persistent_consumer =
+        PersistentHlsConsumer::new(prepared.demuxer.as_ref(), &wgpu_harness);
+    persistent_consumer.consume(prepared.demuxer.as_mut(), &mut wgpu_harness);
+    persistent_consumer.consume(prepared.demuxer.as_mut(), &mut wgpu_harness);
+    assert_retained_dvr_seek(&prepared);
+    persistent_consumer.flush_for_seek();
+    persistent_consumer.consume(prepared.demuxer.as_mut(), &mut wgpu_harness);
 
     let shifted_range = wait_for_shifted_window(&mut prepared, initial_range.start, &server);
     assert!(shifted_range.start > initial_range.start);
@@ -279,7 +286,6 @@ fn native_sliding_hls_live_reaches_moving_frame_audio_and_expires_old_dvr_withou
         2,
         "endpoint expiry должен сделать один bounded stable-root refresh"
     );
-    assert_retained_dvr_seek(&prepared);
     assert!(
         prepared.demuxer.seek(Duration::ZERO).is_err(),
         "expired DVR target нельзя clamp-ить либо принимать после window shift"

@@ -13,6 +13,8 @@ const H264_NAL_TYPE_MASK: u8 = 0b0001_1111;
 const H264_NAL_REF_IDC_MASK: u8 = 0b0110_0000;
 const H264_NAL_FORBIDDEN_ZERO_MASK: u8 = 0b1000_0000;
 const H264_NAL_TYPE_IDR_SLICE: u8 = 5;
+const H264_NAL_TYPE_SEQUENCE_PARAMETER_SET: u8 = 7;
+const H264_NAL_TYPE_PICTURE_PARAMETER_SET: u8 = 8;
 
 /// Один H.264 NAL unit без Annex B start code и без AVCC length-prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +250,33 @@ pub fn probe_h264_packet_keyframe(
     for nal_unit in nal_units {
         if nal_unit.nal_unit_type() == H264_NAL_TYPE_IDR_SLICE {
             return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+/// Возвращает `true`, только если access unit самодостаточен после decoder flush.
+///
+/// MPEG-TS не несёт AVCC codec private рядом с каждым segment-ом. Поэтому одного
+/// IDR недостаточно для worker-receipted seek: после `avcodec_flush_buffers`
+/// decoder должен снова получить и SPS, и PPS до стартового IDR.
+pub fn probe_h264_packet_in_band_decode_start(
+    packet_bytes: &[u8],
+    packetization: H264Packetization,
+) -> Result<bool, H264ByteStreamError> {
+    let nal_units = h264_nal_units(packet_bytes, packetization)?;
+    let mut has_sequence_parameter_set = false;
+    let mut has_picture_parameter_set = false;
+
+    for nal_unit in nal_units {
+        match nal_unit.nal_unit_type() {
+            H264_NAL_TYPE_SEQUENCE_PARAMETER_SET => has_sequence_parameter_set = true,
+            H264_NAL_TYPE_PICTURE_PARAMETER_SET => has_picture_parameter_set = true,
+            H264_NAL_TYPE_IDR_SLICE if has_sequence_parameter_set && has_picture_parameter_set => {
+                return Ok(true);
+            }
+            _ => {}
         }
     }
 

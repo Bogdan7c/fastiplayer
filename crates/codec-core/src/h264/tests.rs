@@ -10,7 +10,7 @@ use super::{
     H264SpsError, h264_access_unit_to_annex_b, h264_access_unit_to_annex_b_into, h264_nal_units,
     h264_sps_metadata_from_avc_decoder_configuration_record, infer_h264_packetization,
     parse_avc_decoder_configuration_record, parse_avc3_decoder_configuration_record,
-    parse_h264_sps_metadata, probe_h264_packet_keyframe,
+    parse_h264_sps_metadata, probe_h264_packet_in_band_decode_start, probe_h264_packet_keyframe,
 };
 
 fn constrained_baseline_sps() -> Vec<u8> {
@@ -406,6 +406,64 @@ fn h264_keyframe_probe_distinguishes_idr_non_idr_and_sps_only_packets() {
         !probe_h264_packet_keyframe(&parameter_sets_only, H264Packetization::AnnexB)
             .expect("SPS/PPS-only packet должен быть валидным, но не presentable keyframe")
     );
+}
+
+#[test]
+fn h264_in_band_decode_start_requires_sps_pps_and_idr_in_one_access_unit() {
+    let sequence_parameter_set = constrained_baseline_sps();
+    let picture_parameter_set = pps();
+    let self_contained_access_unit = annex_b_access_unit(&[
+        sequence_parameter_set.clone(),
+        picture_parameter_set.clone(),
+        idr_slice(),
+    ]);
+    let idr_without_parameter_sets = annex_b_access_unit(&[idr_slice()]);
+    let idr_without_picture_parameter_set =
+        annex_b_access_unit(&[sequence_parameter_set, idr_slice()]);
+    let parameter_sets_without_idr =
+        annex_b_access_unit(&[constrained_baseline_sps(), picture_parameter_set]);
+    let parameter_sets_after_idr =
+        annex_b_access_unit(&[idr_slice(), constrained_baseline_sps(), pps()]);
+
+    assert!(
+        probe_h264_packet_in_band_decode_start(
+            &self_contained_access_unit,
+            H264Packetization::AnnexB,
+        )
+        .expect("self-contained access unit должен разбираться")
+    );
+    assert!(
+        !probe_h264_packet_in_band_decode_start(
+            &idr_without_parameter_sets,
+            H264Packetization::AnnexB,
+        )
+        .expect("IDR-only access unit должен разбираться")
+    );
+    assert!(
+        !probe_h264_packet_in_band_decode_start(
+            &idr_without_picture_parameter_set,
+            H264Packetization::AnnexB,
+        )
+        .expect("SPS+IDR access unit должен разбираться")
+    );
+    assert!(
+        !probe_h264_packet_in_band_decode_start(
+            &parameter_sets_without_idr,
+            H264Packetization::AnnexB,
+        )
+        .expect("SPS/PPS-only access unit должен разбираться")
+    );
+    assert!(
+        !probe_h264_packet_in_band_decode_start(
+            &parameter_sets_after_idr,
+            H264Packetization::AnnexB,
+        )
+        .expect("parameter sets после IDR не должны считаться decode-start")
+    );
+    assert!(matches!(
+        probe_h264_packet_in_band_decode_start(&[], H264Packetization::AnnexB),
+        Err(H264ByteStreamError::MissingStartCode)
+    ));
 }
 
 #[test]

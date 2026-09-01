@@ -1,3 +1,9 @@
+## N14B cross-protocol lifecycle matrix (2026-09-02)
+
+- Focused `n14b_lifecycle` cohort даёт 17/17 functional proofs для VOD/live seek, Playing/Paused switch, queue Previous/Next/EOF/no-false-live-EOF, graceful close/restart/restore, recovery, persistence correlation и stale generation fences; каждый successful media transition снова достигает WGPU frame/readback/release или nonzero PCM.
+- N14B обнаружил и исправил owner-level HLS TS DVR defect: после production decoder flush IDR без in-band SPS/PPS больше не публикуется как seekable decode anchor. Новый codec-core probe требует ordered SPS -> PPS -> IDR; правило применяется только в web-media-hls live H.264/TS evidence, общий MPEG-TS index не менялся.
+- Direct/native extractor accounting остаётся structural/injected exact 0. Three-run 17/17 cohort, N14A 10/10 regression, codec/HLS/TS owners, strict Clippy, workspace check и fmt/diff прошли. Полный handoff: `mem:testing/native-web-ingress-n14b-2026-09-02`. Следующая session — N15, не начиналась.
+
 ## N14A hermetic protocol consumer matrix (2026-09-01)
 
 - Focused `n14a_consumer` cohort покрывает все 12 direct/HLS/DASH/Smooth/HDS/extractor-page rows; video достигает WGPU submit/readback/release, audio — nonzero PCM и advancing production clock.

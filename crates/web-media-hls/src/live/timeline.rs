@@ -9,7 +9,10 @@ use media_core::{
 use web_media_adaptive::AdaptiveHttpContext;
 use web_media_transport_api::SourceGeneration;
 
-use super::{HlsLiveComponentSnapshot, HlsLiveSegmentIdentity, HlsLiveTimelineEvidence};
+use super::{
+    HlsLiveComponentSnapshot, HlsLiveSegmentIdentity, HlsLiveTimelineEvidence,
+    HlsLiveVideoDecodeStartEvidence,
+};
 
 /// Общий owner main/audio snapshots, evidence и neutral timeline publication.
 pub(crate) struct HlsLiveTimelineCoordinator {
@@ -106,12 +109,17 @@ impl HlsLiveTimelineCoordinator {
         &self,
         identity: HlsLiveSegmentIdentity,
         packet: &Packet,
+        video_decode_start: HlsLiveVideoDecodeStartEvidence,
     ) -> Result<()> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("HLS live timeline coordinator mutex poisoned"))?;
-        state.main_evidence.observe_packet(identity, packet);
+        state.main_evidence.observe_packet_with_video_decode_start(
+            identity,
+            packet,
+            video_decode_start,
+        );
         publish_latest(&mut state)
     }
 

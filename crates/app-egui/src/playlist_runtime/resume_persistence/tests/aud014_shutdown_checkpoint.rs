@@ -43,7 +43,7 @@ fn persisted_position_for_settlement(
 }
 
 #[test]
-fn shutdown_seeking_snapshot_persists_confirmed_or_cancelled_policy_not_transient_state() {
+fn n14b_lifecycle_graceful_shutdown_persists_settled_seek_not_transient_state() {
     assert_eq!(
         persisted_position_for_settlement(LifecycleTimelineCheckpointPosition::SettledSeek(
             Duration::from_secs(90)

@@ -180,7 +180,7 @@ fn planned_manual_next(controller: &mut PlaylistController) -> PlannedPlaylistIn
 }
 
 #[test]
-fn preload_plan_preserves_current_identity_and_becomes_exact_clean_eof_install() {
+fn n14b_lifecycle_queue_next_clean_eof_commits_only_after_exact_install() {
     let (mut controller, ids, active) = controller_with_active(3, 0);
     let queue_revision_before_preload = controller.queue().revision_snapshot();
 
@@ -235,7 +235,7 @@ fn preload_plan_preserves_current_identity_and_becomes_exact_clean_eof_install()
 }
 
 #[test]
-fn playing_draining_ended_is_one_edge_and_rearms_after_replay_state() {
+fn n14b_lifecycle_queue_ignores_playing_draining_and_consumes_one_clean_eof_edge() {
     let (mut controller, ids, active) = controller_with_active(2, 0);
     for state in [PlaybackState::Playing, PlaybackState::Draining] {
         assert!(matches!(

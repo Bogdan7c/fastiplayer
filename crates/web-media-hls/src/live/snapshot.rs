@@ -207,6 +207,13 @@ struct SegmentPacketEvidence {
     packet_end: Option<Duration>,
 }
 
+/// Packet-level proof, достаточный для video decoder restart после seek flush.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsLiveVideoDecodeStartEvidence {
+    Proven,
+    NotProven,
+}
+
 /// Rolling packet/RAP evidence, жёстко привязанное к retained segment identity.
 #[derive(Debug)]
 pub(crate) struct HlsLiveTimelineEvidence {
@@ -224,9 +231,24 @@ impl HlsLiveTimelineEvidence {
 
     /// Запоминает только packet, который segment-scoped demux однозначно атрибутировал.
     pub fn observe_packet(&mut self, identity: HlsLiveSegmentIdentity, packet: &Packet) {
+        let video_decode_start = if packet.keyframe == PacketKeyframe::Keyframe {
+            HlsLiveVideoDecodeStartEvidence::Proven
+        } else {
+            HlsLiveVideoDecodeStartEvidence::NotProven
+        };
+        self.observe_packet_with_video_decode_start(identity, packet, video_decode_start);
+    }
+
+    /// Принимает codec/container-aware proof от component demux owner-а.
+    pub fn observe_packet_with_video_decode_start(
+        &mut self,
+        identity: HlsLiveSegmentIdentity,
+        packet: &Packet,
+        video_decode_start: HlsLiveVideoDecodeStartEvidence,
+    ) {
         let evidence = self.by_segment.entry(identity).or_default();
         let is_decode_anchor = match packet.kind {
-            TrackKind::Video => packet.keyframe == PacketKeyframe::Keyframe,
+            TrackKind::Video => video_decode_start == HlsLiveVideoDecodeStartEvidence::Proven,
             TrackKind::Audio => !self.requires_video_random_access,
         };
         if is_decode_anchor {
@@ -438,9 +460,17 @@ mod tests {
             &video_packet(Duration::from_secs(1), PacketKeyframe::NotKeyframe),
         );
         assert!(evidence.proven_range(&snapshot).is_none());
-        evidence.observe_packet(
+        let keyframe_packet = video_packet(Duration::from_secs(1), PacketKeyframe::Keyframe);
+        evidence.observe_packet_with_video_decode_start(
             identity,
-            &video_packet(Duration::from_secs(1), PacketKeyframe::Keyframe),
+            &keyframe_packet,
+            HlsLiveVideoDecodeStartEvidence::NotProven,
+        );
+        assert!(evidence.proven_range(&snapshot).is_none());
+        evidence.observe_packet_with_video_decode_start(
+            identity,
+            &keyframe_packet,
+            HlsLiveVideoDecodeStartEvidence::Proven,
         );
         assert!(evidence.proven_range(&snapshot).is_some());
 

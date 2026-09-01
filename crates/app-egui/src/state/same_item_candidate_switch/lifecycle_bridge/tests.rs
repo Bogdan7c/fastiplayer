@@ -172,12 +172,12 @@ impl SameItemSwitchSelectorOwner for FakeSameItemSwitchContext {
 }
 
 #[test]
-fn playing_resolved_url_action_keeps_position_and_commits_only_after_installed() {
+fn n14b_lifecycle_playing_switch_keeps_position_and_commits_only_after_installed() {
     assert_successful_url_action(PlaybackState::Playing, PlaybackIntent::StartPlaying);
 }
 
 #[test]
-fn paused_resolved_url_action_keeps_position_and_commits_only_after_installed() {
+fn n14b_lifecycle_paused_switch_keeps_position_and_commits_only_after_installed() {
     assert_successful_url_action(PlaybackState::Paused, PlaybackIntent::StartPaused);
 }
 

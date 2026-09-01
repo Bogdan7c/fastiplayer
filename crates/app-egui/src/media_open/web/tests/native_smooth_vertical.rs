@@ -244,10 +244,14 @@ fn native_request_parts(
 }
 
 /// Ждёт authoritative transactional seek receipt от existing S36 worker-а.
-fn assert_vod_seek(seek_port: &dyn PreparedDemuxSeekPort) {
-    let request_id = PreparedDemuxSeekRequestId::new(11);
+fn assert_vod_seek(
+    seek_port: &dyn PreparedDemuxSeekPort,
+    request_id: u64,
+    requested_position: Duration,
+) {
+    let request_id = PreparedDemuxSeekRequestId::new(request_id);
     seek_port
-        .enqueue_seek(request_id, DemuxSeekRequest::accurate(SMOOTH_SEEK_POSITION))
+        .enqueue_seek(request_id, DemuxSeekRequest::accurate(requested_position))
         .expect("native Smooth seek должен войти в worker");
     let deadline = Instant::now() + SMOOTH_VERTICAL_DEADLINE;
     loop {
@@ -259,10 +263,7 @@ fn assert_vod_seek(seek_port: &dyn PreparedDemuxSeekPort) {
                     receipt.outcome
                 );
             };
-            assert_eq!(
-                result.requested_position.as_duration(),
-                SMOOTH_SEEK_POSITION
-            );
+            assert_eq!(result.requested_position.as_duration(), requested_position);
             return;
         }
         assert!(
@@ -323,7 +324,7 @@ fn n14a_consumer_smooth_vod_reaches_consumers_with_exact_accounting() {
 
 /// Доказывает single root fetch, render/audio, seek, switch/reopen и process spy 0.
 #[test]
-fn native_smooth_switch_seek_reopen_reaches_h264_aac_without_extractor() {
+fn n14b_lifecycle_smooth_vod_seek_forward_back_switch_and_reopen_reaches_consumers() {
     let server = ControlledHlsServer::start(fixture_routes());
     let process_spy = Arc::new(ZeroProcessSpy::default());
     let mut settings = native_settings();
@@ -343,12 +344,27 @@ fn native_smooth_switch_seek_reopen_reaches_h264_aac_without_extractor() {
     let mut initial = prepare_native(&source, None, &settings);
     assert_eq!(server.request_count("/vod/Manifest"), 1);
     wait_for_tracks_changed(initial.demuxer.as_mut());
-    assert_vod_seek(initial.seek_port.as_ref());
+    assert_vod_seek(initial.seek_port.as_ref(), 11, SMOOTH_SEEK_POSITION);
     assert_decoder_render_audio_for_codec(
         initial.demuxer.as_mut(),
         &mut wgpu_harness,
         DecodeVideoCodec::H264,
     );
+    let mut backward_seek_attempt = prepare_native(&source, None, &settings);
+    assert_eq!(server.request_count("/vod/Manifest"), 2);
+    wait_for_tracks_changed(backward_seek_attempt.demuxer.as_mut());
+    assert_vod_seek(
+        backward_seek_attempt.seek_port.as_ref(),
+        12,
+        SMOOTH_SEEK_POSITION,
+    );
+    assert_vod_seek(backward_seek_attempt.seek_port.as_ref(), 13, Duration::ZERO);
+    assert_decoder_render_audio_for_codec(
+        backward_seek_attempt.demuxer.as_mut(),
+        &mut wgpu_harness,
+        DecodeVideoCodec::H264,
+    );
+    drop(backward_seek_attempt);
     let alternate_selection = alternate_audio_selection(&initial.source_state);
     let expected_alternate = alternate_selection.clone();
     let initial_intent = WebMediaSourceIntent::native_smooth(source.clone(), initial.source_state);
@@ -367,7 +383,7 @@ fn native_smooth_switch_seek_reopen_reaches_h264_aac_without_extractor() {
     };
     let (switch_source, switch_selection, switch_settings) = native_request_parts(switch_request);
     let mut switched = prepare_native(&switch_source, Some(&switch_selection), &switch_settings);
-    assert_eq!(server.request_count("/vod/Manifest"), 2);
+    assert_eq!(server.request_count("/vod/Manifest"), 3);
     wait_for_tracks_changed(switched.demuxer.as_mut());
     assert_decoder_render_audio_for_codec(
         switched.demuxer.as_mut(),
@@ -396,7 +412,7 @@ fn native_smooth_switch_seek_reopen_reaches_h264_aac_without_extractor() {
         .expect("native Smooth controlled reopen требует semantic rematch");
     let (reopen_source, reopen_selection, reopen_settings) = native_request_parts(reopen_request);
     let mut reopened = prepare_native(&reopen_source, Some(&reopen_selection), &reopen_settings);
-    assert_eq!(server.request_count("/vod/Manifest"), 3);
+    assert_eq!(server.request_count("/vod/Manifest"), 4);
     wait_for_tracks_changed(reopened.demuxer.as_mut());
     assert_decoder_render_audio_for_codec(
         reopened.demuxer.as_mut(),

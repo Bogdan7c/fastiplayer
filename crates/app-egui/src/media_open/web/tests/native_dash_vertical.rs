@@ -371,10 +371,14 @@ fn n14a_consumer_dash_vod_fmp4_and_webm_reach_consumers_with_exact_accounting() 
 }
 
 /// Ждёт authoritative worker receipt и проверяет requested VOD position.
-fn assert_vod_seek(seek_port: &dyn PreparedDemuxSeekPort) {
-    let request_id = PreparedDemuxSeekRequestId::new(1);
+fn assert_vod_seek(
+    seek_port: &dyn PreparedDemuxSeekPort,
+    request_id: u64,
+    requested_position: Duration,
+) {
+    let request_id = PreparedDemuxSeekRequestId::new(request_id);
     seek_port
-        .enqueue_seek(request_id, DemuxSeekRequest::accurate(DASH_SEEK_POSITION))
+        .enqueue_seek(request_id, DemuxSeekRequest::accurate(requested_position))
         .expect("native DASH VOD seek должен войти в worker");
     let deadline = Instant::now() + DASH_VERTICAL_DEADLINE;
     loop {
@@ -386,7 +390,7 @@ fn assert_vod_seek(seek_port: &dyn PreparedDemuxSeekPort) {
                     receipt.outcome
                 );
             };
-            assert_eq!(result.requested_position.as_duration(), DASH_SEEK_POSITION);
+            assert_eq!(result.requested_position.as_duration(), requested_position);
             return;
         }
         assert!(
@@ -399,7 +403,7 @@ fn assert_vod_seek(seek_port: &dyn PreparedDemuxSeekPort) {
 
 /// Доказывает one-fetch root, обе реальные rows, VOD seek, switch/reopen и process spy 0.
 #[test]
-fn native_static_dash_switch_seek_reopen_reaches_h264_aac_and_vp9_opus_without_extractor() {
+fn n14b_lifecycle_dash_vod_seek_forward_back_switch_and_reopen_reaches_consumers() {
     let server = ControlledHlsServer::start(fixture_routes());
     let process_spy = Arc::new(ZeroProcessSpy::default());
     let mut settings = native_settings();
@@ -420,7 +424,13 @@ fn native_static_dash_switch_seek_reopen_reaches_h264_aac_and_vp9_opus_without_e
     assert_eq!(server.request_count("/manifest.mpd"), 1);
     let initial_codec = selected_video_codec(&initial);
     assert_eq!(initial_codec, DecodeVideoCodec::H264);
-    assert_vod_seek(initial.seek_port.as_ref());
+    assert_vod_seek(initial.seek_port.as_ref(), 1, DASH_SEEK_POSITION);
+    assert_decoder_render_audio_for_codec(
+        initial.demuxer.as_mut(),
+        &mut wgpu_harness,
+        initial_codec,
+    );
+    assert_vod_seek(initial.seek_port.as_ref(), 2, Duration::ZERO);
     assert_decoder_render_audio_for_codec(
         initial.demuxer.as_mut(),
         &mut wgpu_harness,

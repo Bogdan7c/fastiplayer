@@ -71,7 +71,7 @@ fn seekable_snapshot(
 }
 
 #[test]
-fn exact_correlation_rejects_stale_generation_instance_and_tombstone() {
+fn n14b_lifecycle_persistence_rejects_stale_generation_instance_and_tombstone() {
     let directory = tempfile::tempdir().expect("temp directory");
     let store = Arc::new(PlaylistResumeStore::new(
         directory.path().join("playlist-resume.json"),
@@ -308,7 +308,7 @@ fn live_interval_reschedule_preserves_pending_snapshot_and_changes_next_deadline
 }
 
 #[test]
-fn startup_position_restores_only_exact_item_and_locator_fingerprint() {
+fn n14b_lifecycle_restart_restores_only_exact_item_and_locator_fingerprint() {
     let directory = tempfile::tempdir().expect("temp directory");
     let resume_path = directory.path().join("playlist-resume.json");
     let store = Arc::new(PlaylistResumeStore::new(&resume_path));

@@ -138,7 +138,7 @@ fn assert_nonzero_vorbis_pcm(demuxer: &mut dyn Demuxer) {
 
 /// Seekable HTTP Ogg проходит open/seek/reopen без extractor и duplicate root probe-а.
 #[test]
-fn seekable_http_ogg_reaches_pcm_and_preserves_request_counts_on_seek_reopen() {
+fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extractor() {
     let origin =
         RangeFixtureOrigin::spawn_with_response(FixtureOriginResponse::RequestLimitedOgg {
             ogg_bytes: vorbis::large_vorbis_fixture(),
@@ -173,6 +173,16 @@ fn seekable_http_ogg_reaches_pcm_and_preserves_request_counts_on_seek_reopen() {
         origin.request_count(),
         3,
         "seek внутри downloaded source не должен повторно разрешать/open-ить root"
+    );
+
+    first_demuxer
+        .seek(Duration::ZERO)
+        .expect("seekable direct Ogg должен принять обратный seek к началу");
+    assert_nonzero_vorbis_pcm(&mut *first_demuxer);
+    assert_eq!(
+        origin.request_count(),
+        3,
+        "обратный seek внутри downloaded source также не должен reopen-ить root"
     );
 
     drop(first_demuxer);
@@ -266,7 +276,7 @@ fn forward_only_http_ogg_reuses_initial_body_and_rejects_seek() {
 
 /// FTP Ogg проходит production provider до PCM; REST seek и reopen имеют exact RETR accounting.
 #[test]
-fn ftp_ogg_reaches_pcm_without_http_material_and_tracks_retr_seek_reopen() {
+fn n14b_lifecycle_ftp_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extractor() {
     let origin = FtpVorbisOrigin::spawn(vorbis::large_vorbis_fixture());
     let locator = origin.credentialed_media_url();
     let mut app_config = AppConfig::default();
@@ -293,11 +303,18 @@ fn ftp_ogg_reaches_pcm_without_http_material_and_tracks_retr_seek_reopen() {
     let retrievals_after_seek = origin.retrieval_count();
     assert!(retrievals_after_seek > retrievals_after_open);
 
+    first_demuxer
+        .seek(Duration::ZERO)
+        .expect("FTP REST-backed Ogg должен принять обратный seek к началу");
+    assert_nonzero_vorbis_pcm(&mut *first_demuxer);
+    let retrievals_after_backward_seek = origin.retrieval_count();
+    assert!(retrievals_after_backward_seek > retrievals_after_seek);
+
     drop(first_demuxer);
     let reopened = open_direct(&locator, &app_config);
     let (mut reopened_demuxer, _reopened_endpoint_recovery) = reopened.into_runtime_parts();
     assert_nonzero_vorbis_pcm(&mut *reopened_demuxer);
-    assert!(origin.retrieval_count() > retrievals_after_seek);
+    assert!(origin.retrieval_count() > retrievals_after_backward_seek);
 }
 
 /// N14A: FTP Ogg initial open достигает PCM/clock с exact RETR и byte accounting.

@@ -256,7 +256,7 @@ fn n14a_consumer_dash_dynamic_live_reaches_consumers_with_exact_root_accounting(
 
 /// Доказывает direct root reuse, publish ordering, DVR lifecycle и process spy 0.
 #[test]
-fn native_dynamic_dash_reaches_moving_presentation_audio_and_dvr_without_extractor() {
+fn n14b_lifecycle_dash_live_dvr_expiry_recovery_reopen_has_no_false_eof() {
     let server = ControlledHlsServer::start_with_initial_failures(
         live_routes(),
         HashMap::from([("/fmp4-6000.m4s".to_owned(), 1)]),
@@ -292,6 +292,7 @@ fn native_dynamic_dash_reaches_moving_presentation_audio_and_dvr_without_extract
     let mut wgpu_harness = OffscreenWgpuHarness::new();
     assert_decoder_render_audio(prepared.demuxer.as_mut(), &mut wgpu_harness);
     assert_retained_dvr_seek(&mut prepared);
+    assert_decoder_render_audio(prepared.demuxer.as_mut(), &mut wgpu_harness);
     let shifted_range = wait_for_shifted_window(&mut prepared, initial_range.start, &server);
     assert!(shifted_range.start > initial_range.start);
     assert!(

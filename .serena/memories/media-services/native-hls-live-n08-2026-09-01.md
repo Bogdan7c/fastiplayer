@@ -63,3 +63,10 @@ PASS:
 - Предыдущий finite path: `mem:media-services/native-hls-vod-n07-2026-09-01`.
 - Live runtime foundation: `mem:media-services/hls-live-s33-2026-07-24`.
 - AVC3/fMP4 live support: `mem:media-services/hls-live-avc3-2026-08-10`.
+
+## N14B flush-safe DVR correction (2026-09-02)
+
+- N14B strengthened the former receipt-only retained-seek proof to require post-receipt FFmpeg/WGPU frame and nonzero PCM after the same video/audio reset used by `PlayerSession`.
+- This exposed a root defect: HLS live accepted any TS H.264 IDR as a DVR decode anchor even when the retained access unit lacked SPS/PPS, so FFmpeg flush left audio progressing but video unable to restart.
+- `web-media-hls::live` now accepts an H.264/TS video anchor only with codec-core proof of ordered in-band SPS -> PPS -> IDR. Incomplete IDR packets remain valid playback packets but do not expand the seekable DVR range; fMP4/other-codec policy and ordinary MPEG-TS index semantics are unchanged.
+- Exact tests, dependency/API detail and §6.3 evidence: `mem:testing/native-web-ingress-n14b-2026-09-02`.
