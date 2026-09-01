@@ -262,22 +262,25 @@ pub(super) fn prepare_source(
                         if cancellation.is_cancelled() {
                             return Err(MediaPreparationFailureKind::Cancelled);
                         }
-                        let tracks = prepared.demuxer.tracks().to_vec();
-                        let duration = prepared.demuxer.duration();
-                        let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
-                        let active_source =
-                            WebMediaSourceIntent::native_dash(source, prepared.source_state);
+                        let crate::startup_media::native_dash::PreparedNativeDashMedia {
+                            demuxer,
+                            seek_port,
+                            source_state,
+                            lifecycle,
+                        } = prepared;
+                        let tracks = demuxer.tracks().to_vec();
+                        let duration = demuxer.duration();
+                        let metadata = demuxer.media_metadata().unwrap_or_default().tags;
+                        let runtime_attachments = lifecycle.into_web_attachments(seek_port);
+                        let active_source = WebMediaSourceIntent::native_dash(
+                            source,
+                            runtime_attachments.presentation,
+                            source_state,
+                        );
                         let prepared_media = compose_prepared_web_media(
                             safe_label.as_str(),
-                            prepared.demuxer,
-                            PreparedWebMediaAttachments {
-                                demux_seek: Some(
-                                    super::PreparedWebMediaSeekAttachment::WorkerReceipted(
-                                        prepared.seek_port,
-                                    ),
-                                ),
-                                ..PreparedWebMediaAttachments::default()
-                            },
+                            demuxer,
+                            runtime_attachments.prepared,
                         )
                         .map_err(|error| {
                             tracing::warn!(
@@ -297,7 +300,7 @@ pub(super) fn prepare_source(
                                     active_source,
                                     safe_label,
                                     None,
-                                    Some(prepared.vod_endpoint_recovery),
+                                    runtime_attachments.vod_endpoint_recovery,
                                 ),
                             ),
                         })

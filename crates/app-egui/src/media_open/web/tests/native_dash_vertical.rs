@@ -213,7 +213,7 @@ fn dash_system_capabilities() -> SystemCapabilities {
 }
 
 /// Settings запрещают extractor и сохраняют user codec preference только как policy input.
-fn native_settings() -> WebMediaOpenSettings {
+pub(super) fn native_settings() -> WebMediaOpenSettings {
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     app_config.player.preferred_video_codec_order = vec![VideoCodec::H264, VideoCodec::Vp9];
@@ -371,7 +371,11 @@ fn native_static_dash_switch_seek_reopen_reaches_h264_aac_and_vp9_opus_without_e
     );
     let alternate_selection = alternate_component_selection(&initial.source_state);
     let expected_alternate = alternate_selection.clone();
-    let initial_intent = WebMediaSourceIntent::native_dash(source.clone(), initial.source_state);
+    let initial_intent = WebMediaSourceIntent::native_dash(
+        source.clone(),
+        web_media_core::WebMediaPresentationKind::Vod,
+        initial.source_state,
+    );
     assert_eq!(
         initial_intent.recovery(),
         web_media_core::WebMediaRecoveryStrategy::RefreshRootManifestAndRematch
@@ -416,8 +420,11 @@ fn native_static_dash_switch_seek_reopen_reaches_h264_aac_and_vp9_opus_without_e
         "switch обязан сохранить stable source lineage"
     );
 
-    let switched_intent =
-        WebMediaSourceIntent::native_dash(switch_source.clone(), switched.source_state);
+    let switched_intent = WebMediaSourceIntent::native_dash(
+        switch_source.clone(),
+        web_media_core::WebMediaPresentationKind::Vod,
+        switched.source_state,
+    );
     let reopen_request = switched_intent
         .controlled_reopen_request(
             switch_settings.network_config.clone(),

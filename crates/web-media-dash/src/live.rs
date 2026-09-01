@@ -33,12 +33,15 @@ mod availability;
 mod clock;
 mod runtime;
 pub use availability::DashLiveAvailability;
-pub(crate) use clock::{DashClockFetchObservation, resolve_dash_live_clock};
-pub(crate) use runtime::prepare_dash_live_logical;
+pub use clock::DashClockFetchObservation;
+pub(crate) use clock::resolve_dash_live_clock;
 pub use runtime::{
     DashEndpointRefreshError, DashEndpointRefreshPort, DashEndpointRefreshReply,
-    DashEndpointRefreshRequest, DashLiveOpenError, DashLiveOpenRequest, DashLiveOpenResult,
-    prepare_dash_live,
+    DashEndpointRefreshRequest, DashFetchedLiveManifestInput, DashLiveOpenError,
+    DashLiveOpenRequest, DashLiveOpenResult, prepare_dash_live,
+};
+pub(crate) use runtime::{
+    DashLiveInitialManifest, DashLiveRuntimeOpenRequest, prepare_dash_live_logical,
 };
 
 /// Injected local wall clock; production implementation остаётся app-owned.

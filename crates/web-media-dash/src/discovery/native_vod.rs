@@ -46,7 +46,7 @@ pub fn discover_native_dash_vod_catalog(
         capability_probe,
         preferred_height,
     } = request;
-    let (mpd, manifest_base) = parse_fetched_dash_manifest(&http, generation, manifest, policy)?;
+    let (mpd, manifest_base) = parse_fetched_dash_manifest(&http, generation, &manifest, policy)?;
     let parent_semantic = catalog_identity.parent().semantic().clone();
     let mut proof = ProviderLaneProof {
         presentation: &mpd,

@@ -105,11 +105,15 @@ impl WebMediaSourceIntent {
         }
     }
 
-    /// Создаёт proven native static DASH intent без временных fragment endpoints.
-    pub(crate) fn native_dash(source: NativeDashUrl, source_state: NativeDashSourceState) -> Self {
+    /// Создаёт proven native DASH intent без временных fragment endpoints.
+    pub(crate) fn native_dash(
+        source: NativeDashUrl,
+        presentation: WebMediaPresentationKind,
+        source_state: NativeDashSourceState,
+    ) -> Self {
         Self {
             ingress: WebMediaIngressKind::NativeManifest,
-            presentation: WebMediaPresentationKind::Vod,
+            presentation,
             recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
             extractor_reason: None,
             adapter: Box::new(WebMediaSourceAdapter::NativeDash {

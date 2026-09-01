@@ -1,7 +1,9 @@
 //! Provider-owned DASH VOD catalog discovery и selected-lane open.
 
+mod native_live;
 mod native_vod;
 
+pub use native_live::{NativeDashLiveCatalogDiscoveryRequest, discover_native_dash_live_catalog};
 pub use native_vod::{NativeDashVodCatalogDiscoveryRequest, discover_native_dash_vod_catalog};
 
 use std::fmt;
@@ -38,8 +40,8 @@ use crate::catalog::{
 use crate::component::{DashComponentFactory, DashComponentTrackShapeError};
 use crate::live::{
     DashClockFetchObservation, DashLiveOpenError, DashLiveOpenRequest, DashLiveOpenResult,
-    DashLiveRefreshError, build_dash_live_snapshot, prepare_dash_live_logical,
-    resolve_dash_live_clock,
+    DashLiveRefreshError, DashLiveRuntimeOpenRequest, build_dash_live_snapshot,
+    prepare_dash_live_logical, resolve_dash_live_clock,
 };
 use crate::open::{
     DashVodOpenError, DashVodOpenResult, fetch_dash_manifest, parse_fetched_dash_manifest,
@@ -113,7 +115,7 @@ pub struct DashLiveCatalogDiscoveryRequest<'capabilities> {
 /// Fresh dynamic catalog и private logical-selector runtime request.
 pub struct DashDiscoveredLiveCatalog {
     lanes: DashRepresentationLaneCatalog,
-    open: DashLiveOpenRequest,
+    open: DashLiveRuntimeOpenRequest,
     _mpd: DashDynamicMpd,
     _manifest_base: HttpRequestTarget,
 }
@@ -263,7 +265,7 @@ pub fn discover_dash_vod_catalog(
             fetch_dash_manifest(&http, generation, manifest, policy)?
         }
         DashVodInput::FetchedManifest(manifest) => {
-            parse_fetched_dash_manifest(&http, generation, manifest, policy)?
+            parse_fetched_dash_manifest(&http, generation, &manifest, policy)?
         }
         DashVodInput::Serialized(_) => {
             return Err(DashVodCatalogDiscoveryError::ManifestRequired);
@@ -384,7 +386,7 @@ pub fn discover_dash_live_catalog(
     )?;
     Ok(DashDiscoveredLiveCatalog {
         lanes,
-        open,
+        open: open.into(),
         _mpd: mpd,
         _manifest_base: manifest_base,
     })

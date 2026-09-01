@@ -85,17 +85,23 @@ impl DashFetchedManifestInput {
         self.source_generation
     }
 
-    /// Передаёт parser owner-у effective base, bytes и explicit parser budgets.
-    pub(crate) fn into_parse_parts(
-        self,
-    ) -> (HttpRequestTarget, Vec<u8>, XmlBudgets, DashMpdLimits) {
-        let effective_target = self.fetched.final_target().clone();
+    /// Даёт parser owner-у borrowed body, чтобы presentation routing не копировал MPD.
+    pub(crate) fn parse_parts(&self) -> (&HttpRequestTarget, &[u8], XmlBudgets, DashMpdLimits) {
         (
-            effective_target,
-            self.fetched.into_bytes(),
+            self.fetched.final_target(),
+            self.fetched.bytes(),
             self.xml_budgets,
             self.mpd_limits,
         )
+    }
+
+    /// Восстанавливает stable root intent для последующих live refresh-ей.
+    pub(crate) fn stable_manifest(&self) -> DashManifestInput {
+        DashManifestInput {
+            target: self.selected_target.clone(),
+            xml_budgets: self.xml_budgets,
+            mpd_limits: self.mpd_limits,
+        }
     }
 }
 

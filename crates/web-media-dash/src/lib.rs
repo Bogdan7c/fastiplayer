@@ -36,19 +36,24 @@ pub use discovery::{
     DashDiscoveredVodOpenError, DashLiveCatalogDiscoveryError, DashLiveCatalogDiscoveryRequest,
     DashRepresentationCapabilityProbe, DashRepresentationCapabilityRejection,
     DashVodCatalogDiscoveryError, DashVodCatalogDiscoveryRequest,
-    NativeDashVodCatalogDiscoveryRequest, discover_dash_live_catalog, discover_dash_vod_catalog,
+    NativeDashLiveCatalogDiscoveryRequest, NativeDashVodCatalogDiscoveryRequest,
+    discover_dash_live_catalog, discover_dash_vod_catalog, discover_native_dash_live_catalog,
     discover_native_dash_vod_catalog, prepare_discovered_dash_live,
     prepare_discovered_dash_live_semantic, prepare_discovered_dash_vod,
     prepare_discovered_dash_vod_semantic,
 };
 pub use live::{
-    DashEndpointRefreshError, DashEndpointRefreshPort, DashEndpointRefreshReply,
-    DashEndpointRefreshRequest, DashLiveAvailability, DashLiveClockError, DashLiveOpenError,
-    DashLiveOpenRequest, DashLiveOpenResult, DashLiveProfileExclusion, DashLiveRefreshError,
-    DashLiveRefreshOutcome, DashLiveSnapshot, DashSynchronizedClock, DashWallClock,
-    build_dash_live_snapshot, prepare_dash_live, refresh_dash_live_snapshot,
+    DashClockFetchObservation, DashEndpointRefreshError, DashEndpointRefreshPort,
+    DashEndpointRefreshReply, DashEndpointRefreshRequest, DashFetchedLiveManifestInput,
+    DashLiveAvailability, DashLiveClockError, DashLiveOpenError, DashLiveOpenRequest,
+    DashLiveOpenResult, DashLiveProfileExclusion, DashLiveRefreshError, DashLiveRefreshOutcome,
+    DashLiveSnapshot, DashSynchronizedClock, DashWallClock, build_dash_live_snapshot,
+    prepare_dash_live, refresh_dash_live_snapshot,
 };
-pub use open::{DashVodOpenError, DashVodOpenResult, prepare_dash_vod};
+pub use open::{
+    DashFetchedPresentationKind, DashVodOpenError, DashVodOpenResult,
+    classify_fetched_dash_presentation, prepare_dash_vod,
+};
 pub use plan::DashPlanError;
 pub use request::{
     DashFetchedManifestInput, DashManifestInput, DashResourceReference, DashSerializedComponent,

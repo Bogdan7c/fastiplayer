@@ -61,7 +61,7 @@ pub(crate) struct PreparedDashCandidate {
 }
 
 /// Production local wall clock; direct UTCTiming offset применяется provider-ом.
-struct SystemDashWallClock;
+pub(crate) struct SystemDashWallClock;
 
 impl DashWallClock for SystemDashWallClock {
     fn now_utc(&self) -> DashUtcTimestamp {

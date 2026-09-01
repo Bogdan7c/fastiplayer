@@ -14,9 +14,9 @@ use web_media_adaptive::{
 use web_media_transport_api::SourceGeneration;
 
 use super::{
-    DashLiveDemuxer, DashLiveOpenError, DashLiveOpenRequest, DashLiveOpenResult,
-    DashLiveSessionTimeline, DashLiveShared, DashLiveSharedState, DashLiveTimelineCoordinator,
-    DashLiveTrackPublication, refresh,
+    DashLiveDemuxer, DashLiveInitialManifest, DashLiveOpenError, DashLiveOpenResult,
+    DashLiveRuntimeOpenRequest, DashLiveSessionTimeline, DashLiveShared, DashLiveSharedState,
+    DashLiveTimelineCoordinator, DashLiveTrackPublication, refresh,
 };
 use crate::catalog::DashLogicalRepresentationSelection;
 use crate::component::DashComponentFactory;
@@ -34,50 +34,12 @@ use crate::source::DashLiveTransportProvider;
 use crate::transactional_av::TransactionalDashAvDemuxer;
 
 pub(super) fn prepare_dash_live_with_selection(
-    request: DashLiveOpenRequest,
+    request: DashLiveRuntimeOpenRequest,
     selection: DashLiveSelection,
 ) -> std::result::Result<DashLiveOpenResult, DashLiveOpenError> {
-    let fetch_started = Instant::now();
-    let local_before_fetch = request.wall_clock.now_utc();
-    let fetched = request
-        .http
-        .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
-            request.generation,
-            request.manifest.target.clone(),
-            request.policy.maximum_manifest_bytes,
-            AdaptiveResourcePurpose::Manifest,
-            AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-        ))?;
-    let local_after_fetch = request.wall_clock.now_utc();
-    let mpd = parse_dynamic_dash_mpd(DashMpdParseRequest {
-        document_bytes: fetched.bytes(),
-        xml_budgets: request.manifest.xml_budgets,
-        limits: request.manifest.mpd_limits,
-    })?;
-    let clock = resolve_dash_live_clock(
-        &mpd.utc_timing,
-        fetched.final_target(),
-        &request.http,
-        request.generation,
-        Arc::clone(&request.wall_clock),
-        DashClockFetchObservation {
-            local_before_fetch,
-            local_after_fetch,
-        },
-    )
-    .map_err(DashLiveRefreshError::Clock)?;
-    let snapshot = build_dash_live_snapshot_with_selection(
-        mpd,
-        fetched.final_target(),
-        &selection,
-        request.policy.maximum_planned_segments,
-        &clock,
-    )?;
-    let accepted_refresh_deadline = refresh::refresh_deadline(
-        fetch_started,
-        snapshot.mpd.minimum_update_period_milliseconds,
-    )
-    .ok_or_else(|| anyhow::anyhow!("DASH initial refresh deadline overflow"))?;
+    let initial = prepare_initial_snapshot(&request, &selection)?;
+    let snapshot = initial.snapshot;
+    let accepted_refresh_deadline = initial.accepted_refresh_deadline;
     let session_timeline =
         DashLiveSessionTimeline::from_initial_snapshot(&snapshot).map_err(anyhow::Error::new)?;
     let session_availability = session_timeline
@@ -93,13 +55,15 @@ pub(super) fn prepare_dash_live_with_selection(
         request.initial_source_epoch,
     )?;
     let cancellation = request.http.cancellation().clone();
-    let refresh_request = request.clone();
+    let mut refresh_request = request.clone();
+    refresh_request.initial_manifest =
+        DashLiveInitialManifest::Fetch(initial.stable_manifest.clone());
     let shared = Arc::new(DashLiveShared {
         state: Mutex::new(DashLiveSharedState {
             snapshot,
             http: (*request.http).clone(),
             generation: request.generation,
-            manifest: request.manifest.clone(),
+            manifest: initial.stable_manifest,
             revision: 1,
             accepted_refresh_deadline,
         }),
@@ -183,6 +147,127 @@ pub(super) fn prepare_dash_live_with_selection(
     Ok(DashLiveOpenResult {
         demuxer,
         timeline_port,
+    })
+}
+
+/// Полностью staged initial snapshot и stable refresh intent без runtime mutation.
+struct PreparedInitialDashLiveSnapshot {
+    snapshot: crate::live::DashLiveSnapshot,
+    stable_manifest: crate::request::DashManifestInput,
+    accepted_refresh_deadline: Instant,
+}
+
+/// Нормализует runtime-owned fetch и direct fetched handoff в один S35 snapshot.
+fn prepare_initial_snapshot(
+    request: &DashLiveRuntimeOpenRequest,
+    selection: &DashLiveSelection,
+) -> std::result::Result<PreparedInitialDashLiveSnapshot, DashLiveOpenError> {
+    match &request.initial_manifest {
+        DashLiveInitialManifest::Fetch(manifest) => {
+            let fetch_started = Instant::now();
+            let local_before_fetch = request.wall_clock.now_utc();
+            let fetched =
+                request
+                    .http
+                    .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+                        request.generation,
+                        manifest.target.clone(),
+                        request.policy.maximum_manifest_bytes,
+                        AdaptiveResourcePurpose::Manifest,
+                        AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+                    ))?;
+            let local_after_fetch = request.wall_clock.now_utc();
+            build_initial_snapshot_from_body(
+                request,
+                selection,
+                InitialDashLiveBody {
+                    document_bytes: fetched.bytes(),
+                    manifest_base: fetched.final_target(),
+                    stable_manifest: manifest.clone(),
+                    xml_budgets: manifest.xml_budgets,
+                    mpd_limits: manifest.mpd_limits,
+                    fetch_started,
+                    observation: DashClockFetchObservation::new(
+                        local_before_fetch,
+                        local_after_fetch,
+                    ),
+                },
+            )
+        }
+        DashLiveInitialManifest::Fetched(fetched_live) => {
+            if fetched_live.manifest.source_generation() != request.generation {
+                return Err(DashLiveOpenError::FetchedManifestGenerationMismatch);
+            }
+            let (manifest_base, document_bytes, xml_budgets, mpd_limits) =
+                fetched_live.manifest.parse_parts();
+            if document_bytes.len() > request.policy.maximum_manifest_bytes.get() {
+                return Err(DashLiveOpenError::FetchedManifestExceedsPolicy);
+            }
+            let stable_manifest = fetched_live.manifest.stable_manifest();
+            build_initial_snapshot_from_body(
+                request,
+                selection,
+                InitialDashLiveBody {
+                    document_bytes,
+                    manifest_base,
+                    stable_manifest,
+                    xml_budgets,
+                    mpd_limits,
+                    fetch_started: fetched_live.fetch_started,
+                    observation: fetched_live.observation,
+                },
+            )
+        }
+    }
+}
+
+/// Borrowed body и owned stable refresh intent одной initial observation.
+struct InitialDashLiveBody<'manifest> {
+    document_bytes: &'manifest [u8],
+    manifest_base: &'manifest source_core::HttpRequestTarget,
+    stable_manifest: crate::request::DashManifestInput,
+    xml_budgets: bounded_xml_reader::XmlBudgets,
+    mpd_limits: dash_mpd_core::DashMpdLimits,
+    fetch_started: Instant,
+    observation: DashClockFetchObservation,
+}
+
+/// Строит authoritative snapshot и deadline без повторного root I/O.
+fn build_initial_snapshot_from_body(
+    request: &DashLiveRuntimeOpenRequest,
+    selection: &DashLiveSelection,
+    body: InitialDashLiveBody<'_>,
+) -> std::result::Result<PreparedInitialDashLiveSnapshot, DashLiveOpenError> {
+    let mpd = parse_dynamic_dash_mpd(DashMpdParseRequest {
+        document_bytes: body.document_bytes,
+        xml_budgets: body.xml_budgets,
+        limits: body.mpd_limits,
+    })?;
+    let clock = resolve_dash_live_clock(
+        &mpd.utc_timing,
+        body.manifest_base,
+        &request.http,
+        request.generation,
+        Arc::clone(&request.wall_clock),
+        body.observation,
+    )
+    .map_err(DashLiveRefreshError::Clock)?;
+    let snapshot = build_dash_live_snapshot_with_selection(
+        mpd,
+        body.manifest_base,
+        selection,
+        request.policy.maximum_planned_segments,
+        &clock,
+    )?;
+    let accepted_refresh_deadline = refresh::refresh_deadline(
+        body.fetch_started,
+        snapshot.mpd.minimum_update_period_milliseconds,
+    )
+    .ok_or_else(|| anyhow::anyhow!("DASH initial refresh deadline overflow"))?;
+    Ok(PreparedInitialDashLiveSnapshot {
+        snapshot,
+        stable_manifest: body.stable_manifest,
+        accepted_refresh_deadline,
     })
 }
 

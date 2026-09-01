@@ -27,6 +27,7 @@ use crate::selection::DashPresentationSelection;
 use crate::source::DashLiveTransportProvider;
 use crate::transactional_av::TransactionalDashAvDemuxer;
 
+mod initial_request;
 mod open;
 mod refresh;
 mod replacement;
@@ -34,6 +35,8 @@ mod session_timeline;
 mod timeline;
 mod track_publication;
 
+pub use initial_request::DashFetchedLiveManifestInput;
+pub(crate) use initial_request::{DashLiveInitialManifest, DashLiveRuntimeOpenRequest};
 use open::{open_plan_continuation, prepare_dash_live_with_selection, remap_resource};
 use replacement::{DashLiveReadProgress, replacement_target_for_expired_reader};
 use session_timeline::DashLiveSessionTimeline;
@@ -159,6 +162,12 @@ pub enum DashLiveOpenError {
     /// Strict dynamic schema/profile.
     #[error("DASH live MPD rejected")]
     Manifest(#[from] dash_mpd_core::DashDynamicMpdError),
+    /// Fetched MPD принадлежит другой runtime generation.
+    #[error("DASH fetched live manifest generation does not match open generation")]
+    FetchedManifestGenerationMismatch,
+    /// Fetched MPD body превышает policy текущей live open attempt.
+    #[error("DASH fetched live manifest exceeds current manifest body policy")]
+    FetchedManifestExceedsPolicy,
     /// Clock/planning availability.
     #[error("DASH live availability failed")]
     Availability(#[from] DashLiveRefreshError),
@@ -181,7 +190,7 @@ struct DashLiveShared {
     coordinator: Arc<DashLiveTimelineCoordinator>,
     endpoint_refresh: Arc<dyn DashEndpointRefreshPort>,
     endpoint_refresh_lock: Mutex<()>,
-    refresh_request: DashLiveOpenRequest,
+    refresh_request: DashLiveRuntimeOpenRequest,
     refresh_selection: DashLiveSelection,
 }
 
@@ -643,11 +652,11 @@ pub fn prepare_dash_live(
     request: DashLiveOpenRequest,
 ) -> std::result::Result<DashLiveOpenResult, DashLiveOpenError> {
     let selection = DashLiveSelection::Evidence(request.selection.clone());
-    prepare_dash_live_with_selection(request, selection)
+    prepare_dash_live_with_selection(request.into(), selection)
 }
 
 pub(crate) fn prepare_dash_live_logical(
-    request: DashLiveOpenRequest,
+    request: DashLiveRuntimeOpenRequest,
     selection: DashLogicalRepresentationSelection,
 ) -> std::result::Result<DashLiveOpenResult, DashLiveOpenError> {
     prepare_dash_live_with_selection(request, DashLiveSelection::Logical(Box::new(selection)))

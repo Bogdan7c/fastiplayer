@@ -13,11 +13,25 @@ use super::{DashLiveClockError, DashSynchronizedClock, DashWallClock};
 
 /// Local clock observation вокруг уже выполненного MPD fetch-а.
 #[derive(Clone, Copy)]
-pub(crate) struct DashClockFetchObservation {
+pub struct DashClockFetchObservation {
     /// Local UTC непосредственно перед запросом.
-    pub local_before_fetch: DashUtcTimestamp,
+    pub(crate) local_before_fetch: DashUtcTimestamp,
     /// Local UTC сразу после получения bounded body.
-    pub local_after_fetch: DashUtcTimestamp,
+    pub(crate) local_after_fetch: DashUtcTimestamp,
+}
+
+impl DashClockFetchObservation {
+    /// Связывает direct-UTC sample с точными локальными границами root fetch-а.
+    #[must_use]
+    pub const fn new(
+        local_before_fetch: DashUtcTimestamp,
+        local_after_fetch: DashUtcTimestamp,
+    ) -> Self {
+        Self {
+            local_before_fetch,
+            local_after_fetch,
+        }
+    }
 }
 
 /// Разрешает pure timing descriptor, сохраняя сеть за runtime boundary.

@@ -27,6 +27,15 @@ use crate::request::{
 };
 use crate::transactional_av::TransactionalDashAvDemuxer;
 
+/// Authoritative presentation kind уже fetched MPD без повторного root I/O.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashFetchedPresentationKind {
+    /// Static finite MPD обслуживается S34 VOD runtime-ом.
+    Vod,
+    /// Dynamic MPD должен пройти полный S35 profile parser.
+    Live,
+}
+
 /// Неустановленный ready DASH runtime.
 pub struct DashVodOpenResult {
     /// Nonblocking player-facing wrapper с already-proven initial tracks.
@@ -141,7 +150,7 @@ pub fn prepare_dash_vod(
         }
         (DashVodInput::FetchedManifest(manifest), DashVodHttpContext::Manifest(http)) => {
             let (mpd, manifest_base) =
-                parse_fetched_dash_manifest(&http, generation, manifest, policy)?;
+                parse_fetched_dash_manifest(&http, generation, &manifest, policy)?;
             let plan = build_manifest_plan(
                 &mpd,
                 &manifest_base,
@@ -210,23 +219,41 @@ pub(crate) fn fetch_dash_manifest(
 pub(crate) fn parse_fetched_dash_manifest(
     http: &AdaptiveHttpContext,
     generation: web_media_transport_api::SourceGeneration,
-    manifest: DashFetchedManifestInput,
+    manifest: &DashFetchedManifestInput,
     policy: DashVodOpenPolicy,
 ) -> Result<(DashMpd, HttpRequestTarget), DashVodOpenError> {
     ensure_context_ready(http, generation)?;
     if manifest.source_generation() != generation {
         return Err(DashVodOpenError::FetchedManifestGenerationMismatch);
     }
-    let (effective_target, document_bytes, xml_budgets, mpd_limits) = manifest.into_parse_parts();
+    let (effective_target, document_bytes, xml_budgets, mpd_limits) = manifest.parse_parts();
     if document_bytes.len() > policy.maximum_manifest_bytes.get() {
         return Err(DashVodOpenError::FetchedManifestExceedsPolicy);
     }
     let mpd = parse_dash_mpd(DashMpdParseRequest {
-        document_bytes: &document_bytes,
+        document_bytes,
         xml_budgets,
         limits: mpd_limits,
     })?;
-    Ok((mpd, effective_target))
+    Ok((mpd, effective_target.clone()))
+}
+
+/// Маршрутизирует fetched MPD по parser-owned `type`, а не по URL suffix/metadata.
+pub fn classify_fetched_dash_presentation(
+    http: &AdaptiveHttpContext,
+    generation: web_media_transport_api::SourceGeneration,
+    manifest: &DashFetchedManifestInput,
+    policy: DashVodOpenPolicy,
+) -> Result<DashFetchedPresentationKind, DashVodOpenError> {
+    match parse_fetched_dash_manifest(http, generation, manifest, policy) {
+        Ok(_) => Ok(DashFetchedPresentationKind::Vod),
+        Err(DashVodOpenError::Manifest(error))
+            if error.kind() == dash_mpd_core::DashMpdErrorKind::DynamicPresentation =>
+        {
+            Ok(DashFetchedPresentationKind::Live)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn prepare_planned_manifest_vod(

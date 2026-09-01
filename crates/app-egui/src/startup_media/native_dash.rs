@@ -4,7 +4,7 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use demux_api::DemuxRegistry;
@@ -24,9 +24,10 @@ use web_media_core::{
     WebMediaSelectionRematchSource, WebMediaSelectionShape, WebMediaSemanticSelectionRequest,
 };
 use web_media_dash::{
-    DashFetchedManifestInput, DashVodCatalogDiscoveryError, DashVodOpenError,
-    NativeDashVodCatalogDiscoveryRequest, discover_native_dash_vod_catalog,
-    prepare_discovered_dash_vod,
+    DashClockFetchObservation, DashFetchedLiveManifestInput, DashFetchedManifestInput,
+    DashFetchedPresentationKind, DashVodCatalogDiscoveryError, DashVodOpenError, DashWallClock,
+    NativeDashVodCatalogDiscoveryRequest, classify_fetched_dash_presentation,
+    discover_native_dash_vod_catalog, prepare_discovered_dash_vod,
 };
 use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
@@ -41,6 +42,9 @@ use crate::media_open::{NativeDashSourceState, NativeDashUrl};
 use crate::process_shutdown::{FinishedThreadJoin, join_finished_thread};
 
 use super::orchestration::PreparedStartupMedia;
+
+mod live_refresh;
+mod live_runtime;
 
 /// Fresh direct snapshots сохраняют source lineage, но не exact generation.
 static NEXT_NATIVE_DASH_SNAPSHOT_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -94,11 +98,79 @@ pub(crate) struct PreparedNativeDashMedia {
     pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
     /// Stable root + neutral catalog selection projection.
     pub(crate) source_state: NativeDashSourceState,
-    /// Endpoint-expiry evidence arm-ится только после Installed candidate.
-    pub(crate) vod_endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+    /// VOD recovery и live timeline нельзя случайно установить одновременно.
+    pub(crate) lifecycle: PreparedNativeDashLifecycle,
 }
 
-/// Готовит direct static MPD, не создавая второй parser/transport/runtime.
+/// Provider lifecycle attachments остаются взаимоисключающими до strong barrier-а.
+pub(crate) enum PreparedNativeDashLifecycle {
+    /// Static VOD arm-ит только endpoint recovery.
+    Vod {
+        endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+    },
+    /// Dynamic live публикует только S31L timeline port.
+    Live {
+        timeline_port: media_core::DynamicMediaTimelinePort,
+    },
+}
+
+/// Готовые neutral attachments для единого app composition boundary.
+pub(crate) struct PreparedNativeDashWebAttachments {
+    /// Exact installed presentation kind.
+    pub(crate) presentation: web_media_core::WebMediaPresentationKind,
+    /// Mutually-compatible player preparation attachments.
+    pub(crate) prepared: crate::media_open::PreparedWebMediaAttachments,
+    /// VOD-only recovery arm; live всегда возвращает `None`.
+    pub(crate) vod_endpoint_recovery:
+        Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+}
+
+impl PreparedNativeDashLifecycle {
+    /// Проецирует provider lifecycle в neutral app vocabulary.
+    pub(crate) const fn presentation(&self) -> web_media_core::WebMediaPresentationKind {
+        match self {
+            Self::Vod { .. } => web_media_core::WebMediaPresentationKind::Vod,
+            Self::Live { .. } => web_media_core::WebMediaPresentationKind::Live,
+        }
+    }
+
+    /// Собирает seek/timeline/recovery attachments без недопустимых сочетаний.
+    pub(crate) fn into_web_attachments(
+        self,
+        seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    ) -> PreparedNativeDashWebAttachments {
+        let presentation = self.presentation();
+        match self {
+            Self::Vod { endpoint_recovery } => PreparedNativeDashWebAttachments {
+                presentation,
+                prepared: crate::media_open::PreparedWebMediaAttachments {
+                    demux_seek: Some(
+                        crate::media_open::PreparedWebMediaSeekAttachment::WorkerReceipted(
+                            seek_port,
+                        ),
+                    ),
+                    ..crate::media_open::PreparedWebMediaAttachments::default()
+                },
+                vod_endpoint_recovery: Some(endpoint_recovery),
+            },
+            Self::Live { timeline_port } => PreparedNativeDashWebAttachments {
+                presentation,
+                prepared: crate::media_open::PreparedWebMediaAttachments {
+                    timeline_port: Some(timeline_port),
+                    demux_seek: Some(
+                        crate::media_open::PreparedWebMediaSeekAttachment::WorkerReceipted(
+                            seek_port,
+                        ),
+                    ),
+                    ..crate::media_open::PreparedWebMediaAttachments::default()
+                },
+                vod_endpoint_recovery: None,
+            },
+        }
+    }
+}
+
+/// Готовит direct static/dynamic MPD, не создавая второй parser/transport/runtime.
 pub(crate) fn prepare_native_dash_attempt(
     request: NativeDashPreparationRequest<'_>,
 ) -> Result<NativeDashAttempt<PreparedNativeDashMedia>> {
@@ -110,55 +182,125 @@ pub(crate) fn prepare_native_dash_attempt(
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let adaptive_limits =
         crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)?;
-    let vod_endpoint_recovery = crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
-    let transport_request = native_transport_request(
+    // До authoritative `type` transport context используется только для единственного root fetch-а.
+    let admission_transport_request = native_transport_request(
         &snapshot_identity.parent,
         request.source,
+        MediaPresentation::Vod,
+        generation,
+        request.cancellation.clone(),
+    )?;
+    let admission_http = native_adaptive_http_context(
+        admission_transport_request,
+        request.network_config,
+        adaptive_limits,
+    )?;
+
+    // Root response читается ровно один раз; parser/catalog получают owned fetched handoff.
+    let wall_clock: Arc<dyn DashWallClock> =
+        Arc::new(crate::web_media_dash_open::SystemDashWallClock);
+    let fetch_started = Instant::now();
+    let local_before_fetch = wall_clock.now_utc();
+    let fetched_manifest =
+        match admission_http.fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+            generation,
+            request.source.target().clone(),
+            adaptive_limits.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::Manifest,
+            AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+        )) {
+            Ok(fetched_manifest) => fetched_manifest,
+            Err(error) if matches!(error.http_status_code(), Some(401 | 403)) => {
+                return Ok(NativeDashAttempt::RequiresYtDlpFallback(
+                    NativeDashFallbackReason::AuthorizationRequired,
+                ));
+            }
+            Err(AdaptiveTransportError::Cancelled) => {
+                return Err(anyhow!("native DASH root fetch cancelled"));
+            }
+            Err(error) => return Err(error).context("native DASH root fetch"),
+        };
+    let local_after_fetch = wall_clock.now_utc();
+    let manifest = DashFetchedManifestInput::new(
+        request.source.target().clone(),
+        fetched_manifest,
+        &admission_http,
+        crate::web_media_dash_open::dash_xml_budgets()?,
+        crate::web_media_dash_open::dash_mpd_limits(),
+    );
+    let policy = crate::web_media_dash_open::dash_policy(adaptive_limits)?;
+    let presentation =
+        match classify_fetched_dash_presentation(&admission_http, generation, &manifest, policy) {
+            Ok(presentation) => presentation,
+            Err(error) => match native_open_fallback_reason(&error) {
+                Some(reason) => return Ok(NativeDashAttempt::RequiresYtDlpFallback(reason)),
+                None => return Err(error).context("native DASH presentation classification"),
+            },
+        };
+    let demux_registry = native_dash_demux_registry(request.demux_config)?;
+
+    if presentation == DashFetchedPresentationKind::Live {
+        let live_transport_request = native_transport_request(
+            &snapshot_identity.parent,
+            request.source,
+            MediaPresentation::Live,
+            generation,
+            request.cancellation.clone(),
+        )?;
+        let live_http = native_adaptive_http_context(
+            live_transport_request,
+            request.network_config,
+            adaptive_limits,
+        )?;
+        let prepared =
+            match live_runtime::prepare_native_dash_live(live_runtime::NativeDashLivePreparation {
+                request: &request,
+                snapshot_identity,
+                http: live_http,
+                generation,
+                manifest: DashFetchedLiveManifestInput::new(
+                    manifest,
+                    fetch_started,
+                    DashClockFetchObservation::new(local_before_fetch, local_after_fetch),
+                ),
+                demux_registry,
+            }) {
+                Ok(prepared) => prepared,
+                Err(error) if error.is_profile_exclusion() => {
+                    return Ok(NativeDashAttempt::RequiresYtDlpFallback(
+                        NativeDashFallbackReason::UnsupportedNativeProfile,
+                    ));
+                }
+                Err(error) => return Err(anyhow::Error::new(error)),
+            };
+        return Ok(NativeDashAttempt::Prepared(prepared));
+    }
+
+    let vod_endpoint_recovery = crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
+    let vod_transport_request = native_transport_request(
+        &snapshot_identity.parent,
+        request.source,
+        MediaPresentation::Vod,
         generation,
         request.cancellation.clone(),
     )?
     .with_endpoint_expiry_observer(vod_endpoint_recovery.observer());
-    let http =
-        native_adaptive_http_context(transport_request, request.network_config, adaptive_limits)?;
-
-    // Root response читается ровно один раз; parser/catalog получают owned fetched handoff.
-    let fetched_manifest = match http.fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
-        generation,
-        request.source.target().clone(),
-        adaptive_limits.maximum_manifest_bytes,
-        AdaptiveResourcePurpose::Manifest,
-        AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-    )) {
-        Ok(fetched_manifest) => fetched_manifest,
-        Err(error) if matches!(error.http_status_code(), Some(401 | 403)) => {
-            return Ok(NativeDashAttempt::RequiresYtDlpFallback(
-                NativeDashFallbackReason::AuthorizationRequired,
-            ));
-        }
-        Err(AdaptiveTransportError::Cancelled) => {
-            return Err(anyhow!("native DASH root fetch cancelled"));
-        }
-        Err(error) => return Err(error).context("native DASH root fetch"),
-    };
-    let manifest = DashFetchedManifestInput::new(
-        request.source.target().clone(),
-        fetched_manifest,
-        &http,
-        crate::web_media_dash_open::dash_xml_budgets()?,
-        crate::web_media_dash_open::dash_mpd_limits(),
-    );
-    let demux_registry = native_dash_demux_registry(request.demux_config)?;
+    let vod_http = native_adaptive_http_context(
+        vod_transport_request,
+        request.network_config,
+        adaptive_limits,
+    )?;
     let capability_probe =
         crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe::new(
             request.system_capabilities.clone(),
             request.audio_capabilities,
         );
     let discovered = match discover_native_dash_vod_catalog(NativeDashVodCatalogDiscoveryRequest {
-        http: Box::new(http),
+        http: Box::new(vod_http),
         generation,
         manifest,
         demux_registry,
-        policy: crate::web_media_dash_open::dash_policy(adaptive_limits)?,
+        policy,
         catalog_identity: snapshot_identity.catalog,
         catalog_limit: ComponentVariantCatalogLimit::new(256)?,
         compatibility_edge_limit: ComponentVariantEdgeLimit::new(4_096)?,
@@ -209,7 +351,9 @@ pub(crate) fn prepare_native_dash_attempt(
         demuxer: Box::new(opened.into_demuxer()),
         seek_port,
         source_state,
-        vod_endpoint_recovery,
+        lifecycle: PreparedNativeDashLifecycle::Vod {
+            endpoint_recovery: vod_endpoint_recovery,
+        },
     }))
 }
 
@@ -220,6 +364,21 @@ fn native_fallback_reason(
     let DashVodCatalogDiscoveryError::Open(DashVodOpenError::Manifest(error)) = error else {
         return None;
     };
+    native_manifest_fallback_reason(error)
+}
+
+/// Classification сохраняет те же initial-only fallback categories, что VOD discovery.
+fn native_open_fallback_reason(error: &DashVodOpenError) -> Option<NativeDashFallbackReason> {
+    let DashVodOpenError::Manifest(error) = error else {
+        return None;
+    };
+    native_manifest_fallback_reason(error)
+}
+
+/// Parser-owned категории не смешиваются с transport/cancellation/runtime failures.
+fn native_manifest_fallback_reason(
+    error: &dash_mpd_core::DashMpdError,
+) -> Option<NativeDashFallbackReason> {
     match error.kind() {
         dash_mpd_core::DashMpdErrorKind::InvalidRoot => {
             Some(NativeDashFallbackReason::StrictlyNotDash)
@@ -264,17 +423,18 @@ fn fresh_snapshot_identity(source: &NativeDashUrl) -> Result<NativeDashSnapshotI
 }
 
 /// Fresh parent и catalog получают одну generation и stable source lineage.
-struct NativeDashSnapshotIdentity {
+pub(super) struct NativeDashSnapshotIdentity {
     /// Exact parent текущей open attempt.
-    parent: ExactSelectionIdentity,
+    pub(super) parent: ExactSelectionIdentity,
     /// Exact component catalog generation текущей open attempt.
-    catalog: ComponentVariantCatalogIdentity,
+    pub(super) catalog: ComponentVariantCatalogIdentity,
 }
 
 /// Собирает public HTTP request с real scope proof и без retained secrets.
-fn native_transport_request(
+pub(super) fn native_transport_request(
     parent: &ExactSelectionIdentity,
     source: &NativeDashUrl,
+    presentation: MediaPresentation,
     generation: SourceGeneration,
     cancellation: CancellationToken,
 ) -> Result<TransportOpenRequest> {
@@ -289,7 +449,7 @@ fn native_transport_request(
         TransportProviderId::new("native-dash-http")?,
         component,
         initial_target,
-        MediaPresentation::Vod,
+        presentation,
         generation,
         request_context,
         RedirectPolicy::cross_origin_without_secrets(RedirectHopLimit::new(
@@ -300,7 +460,7 @@ fn native_transport_request(
 }
 
 /// Создаёт bounded adaptive context для root и Representation resources.
-fn native_adaptive_http_context(
+pub(super) fn native_adaptive_http_context(
     transport_request: TransportOpenRequest,
     network_config: &NetworkConfig,
     adaptive_limits: web_media_adaptive::AdaptiveTransportLimits,
@@ -329,7 +489,9 @@ fn native_public_request_context(initial_target: &HttpRequestTarget) -> SecretRe
 }
 
 /// Переиспользует existing Symphonia fMP4/WebM registrations.
-fn native_dash_demux_registry(demux_config: &PlayerDemuxConfig) -> Result<Arc<DemuxRegistry>> {
+pub(super) fn native_dash_demux_registry(
+    demux_config: &PlayerDemuxConfig,
+) -> Result<Arc<DemuxRegistry>> {
     let options = DemuxerOptions::from_max_consecutive_corrupted_packets(
         demux_config.max_consecutive_corrupted_packets,
     )

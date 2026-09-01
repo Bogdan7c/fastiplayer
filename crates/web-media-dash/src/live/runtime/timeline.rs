@@ -95,7 +95,7 @@ impl DashLiveTimelineCoordinator {
                 .unwrap_or(packet.pts),
         );
         let manifest = state.availability.manifest_range;
-        if packet_end <= manifest.start || packet_start >= manifest.end {
+        if packet_end < manifest.start || packet_start >= manifest.end {
             return Ok(());
         }
         let slot = match packet.kind {
@@ -107,6 +107,13 @@ impl DashLiveTimelineCoordinator {
         match slot {
             Some(evidence) if start <= evidence.range.end => {
                 evidence.range.end = evidence.range.end.max(end);
+            }
+            // Некоторые fMP4 demuxers не знают sample duration. В gap-free S35 timeline
+            // следующий фактически увиденный timestamp даёт точную правую границу RAP point-а.
+            Some(evidence)
+                if evidence.range.start == evidence.range.end && start > evidence.range.end =>
+            {
+                evidence.range.end = end.max(start);
             }
             Some(_) => {
                 *slot = (packet.kind != TrackKind::Video || packet.keyframe.is_known_keyframe())
@@ -300,6 +307,51 @@ mod tests {
             Some(media_core::TimelineRange {
                 start: MediaTime::from_duration(Duration::from_secs(8)),
                 end: MediaTime::from_duration(Duration::from_secs(9)),
+            })
+        );
+    }
+
+    /// Следующий observed timestamp завершает RAP point без выдуманной sample duration.
+    #[test]
+    fn durationless_video_rap_becomes_seekable_only_after_the_next_observed_packet() {
+        let availability = DashLiveAvailability {
+            live_edge: MediaTime::from_duration(Duration::from_secs(10)),
+            manifest_range: media_core::TimelineRange {
+                start: MediaTime::ZERO,
+                end: MediaTime::from_duration(Duration::from_secs(10)),
+            },
+        };
+        let generation = DynamicMediaTimelinePortGeneration::new(
+            NonZeroU64::new(2).expect("test generation is non-zero"),
+        );
+        let (coordinator, port) = DashLiveTimelineCoordinator::new(
+            availability,
+            true,
+            true,
+            generation,
+            DynamicMediaTimelineEpoch::new(0),
+        )
+        .expect("valid initial availability");
+        coordinator
+            .observe_packet(&packet(TrackKind::Audio, 0, 4, false))
+            .expect("audio evidence is accepted");
+        let mut first_video_rap = packet(TrackKind::Video, 0, 1, true);
+        first_video_rap.duration = None;
+        coordinator
+            .observe_packet(&first_video_rap)
+            .expect("durationless RAP point is accepted");
+        assert_eq!(port.observe().snapshot.state.seekable_range(), None);
+
+        let mut next_video_packet = packet(TrackKind::Video, 2, 1, false);
+        next_video_packet.duration = None;
+        coordinator
+            .observe_packet(&next_video_packet)
+            .expect("next observed timestamp closes the RAP evidence interval");
+        assert_eq!(
+            port.observe().snapshot.state.seekable_range(),
+            Some(media_core::TimelineRange {
+                start: MediaTime::ZERO,
+                end: MediaTime::from_duration(Duration::from_secs(2)),
             })
         );
     }

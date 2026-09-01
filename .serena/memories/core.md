@@ -1,3 +1,10 @@
+## N10 native dynamic DASH live/DVR без yt-dlp (2026-09-01)
+
+- Supported direct dynamic MPD теперь проходит native fetched-body classification/catalog и existing S35 runtime без extractor; first root GET не повторяется, а stale fetched bytes не replay-ятся после initial open.
+- Stable-root refresh, publish ordering, logical rematch, S31L DVR/expired seek и paused recovery сохранены; unsupported addressing остаётся typed profile exclusion, malformed/network/cancel — terminal no-fallback.
+- Hermetic fMP4 vertical достигает H.264 FFmpeg/WGPU и AAC nonzero PCM, доказывает window shift, endpoint recovery, semantic reopen и process spy 0. Durationless RAP evidence завершается только следующим observed timestamp-ом.
+- Полные boundaries, tests, §6.3 и limitations: `mem:media-services/native-dash-live-n10-2026-09-01`. N11 не начинался.
+
 ## N08 native HLS live/DVR без yt-dlp (2026-09-01)
 
 - Supported sliding-live и EVENT HLS теперь admitted native и идут через existing `web-media-hls::live` S33 runtime; blanket `LiveOrEventPlaylist`/`LiveRequiresExtractor` vocabulary удалена.

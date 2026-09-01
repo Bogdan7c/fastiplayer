@@ -12,8 +12,8 @@ use web_media_adaptive::{
 };
 
 use super::{
-    DashClockFetchObservation, DashEndpointRefreshReply, DashLiveOpenError, DashLiveOpenRequest,
-    DashLiveRuntimeFailure, DashLiveSelection, DashLiveShared, resolve_dash_live_clock,
+    DashClockFetchObservation, DashEndpointRefreshReply, DashLiveOpenError, DashLiveRuntimeFailure,
+    DashLiveRuntimeOpenRequest, DashLiveSelection, DashLiveShared, resolve_dash_live_clock,
 };
 use crate::live::{
     DashLiveRefreshOutcome, DashLiveSnapshot, build_dash_live_snapshot_with_selection,
@@ -22,7 +22,7 @@ use crate::live::{
 
 /// Refresh worker никогда не join-ится на player owner; cancellation обрывает loop.
 pub(super) fn spawn_refresh_worker(
-    request: DashLiveOpenRequest,
+    request: DashLiveRuntimeOpenRequest,
     selection: DashLiveSelection,
     shared: Arc<DashLiveShared>,
     fatal: Arc<Mutex<Option<DashLiveRuntimeFailure>>>,
@@ -36,7 +36,7 @@ pub(super) fn spawn_refresh_worker(
 
 /// Последовательно refresh-ит MPD; commit находится под одним snapshot mutex.
 fn run_refresh_loop(
-    request: DashLiveOpenRequest,
+    request: DashLiveRuntimeOpenRequest,
     selection: DashLiveSelection,
     shared: Arc<DashLiveShared>,
     fatal: &Mutex<Option<DashLiveRuntimeFailure>>,
@@ -109,7 +109,7 @@ struct StagedSnapshot {
 
 /// Endpoint reply fetch/parse/build/continuity-валидируется до единого runtime commit-а.
 pub(super) fn stage_and_commit_endpoint(
-    request: &DashLiveOpenRequest,
+    request: &DashLiveRuntimeOpenRequest,
     selection: &DashLiveSelection,
     shared: &DashLiveShared,
     failed_generation: web_media_transport_api::SourceGeneration,
@@ -161,7 +161,7 @@ pub(super) fn stage_and_commit_endpoint(
 
 /// Fetch/parse/build/validate нового snapshot-а до mutation.
 fn refresh_once(
-    request: &DashLiveOpenRequest,
+    request: &DashLiveRuntimeOpenRequest,
     selection: &DashLiveSelection,
     shared: &DashLiveShared,
     fetch_started: Instant,
@@ -211,7 +211,7 @@ fn refresh_once(
 
 /// Выполняет network observation и pure snapshot build без shared-state mutation.
 fn fetch_snapshot(
-    request: &DashLiveOpenRequest,
+    request: &DashLiveRuntimeOpenRequest,
     selection: &DashLiveSelection,
     http: &web_media_adaptive::AdaptiveHttpContext,
     generation: web_media_transport_api::SourceGeneration,
