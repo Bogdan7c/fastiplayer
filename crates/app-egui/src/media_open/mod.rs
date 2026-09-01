@@ -19,6 +19,8 @@ mod executor;
 )]
 pub(crate) mod local;
 mod native_dash;
+mod native_hds;
+mod native_hds_preparation;
 mod native_hls;
 mod native_smooth;
 #[allow(
@@ -48,6 +50,7 @@ pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
 // Prepared envelope is intentionally introduced before callsite migration.
 pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult, prepare_local_open};
 pub(crate) use native_dash::{NativeDashOpenIntent, NativeDashSourceState, NativeDashUrl};
+pub(crate) use native_hds::{NativeHdsOpenIntent, NativeHdsSourceState, NativeHdsUrl};
 pub(crate) use native_hls::{NativeHlsOpenIntent, NativeHlsSourceState, NativeHlsUrl};
 pub(crate) use native_smooth::{NativeSmoothOpenIntent, NativeSmoothSourceState, NativeSmoothUrl};
 // Все app ingress-ы собирают provider-neutral `PreparedMedia` через один boundary.

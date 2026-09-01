@@ -24,7 +24,8 @@ use web_media_transport_api::{MediaPresentation, TransportOpenRequest};
 
 use crate::policy::HdsVodOpenPolicy;
 use crate::resolve::{
-    HdsRenditionRejection, HdsRenditionRejectionReason, ResolvedHdsRendition, resolve_presentation,
+    HdsRenditionRejection, HdsRenditionRejectionReason, ResolvedHdsPresentation,
+    ResolvedHdsRendition, resolve_fetched_presentation, resolve_presentation,
 };
 use crate::runtime::{
     HdsDemuxPlan, HdsProbedDemuxer, HdsVodOpenResult, open_probed_transactional_demuxer,
@@ -47,6 +48,14 @@ pub struct HdsCatalogDiscoveryRequest<'capabilities> {
     pub capability_probe: &'capabilities dyn HdsRenditionCapabilityProbe,
     /// Provider-default ranking policy.
     pub preferred_height: PreferredHeightPolicy,
+}
+
+/// Direct-ingress discovery request с already-fetched root handoff-ом.
+pub struct HdsFetchedCatalogDiscoveryRequest<'capabilities> {
+    /// Existing discovery boundary и все caller-owned policies/capabilities.
+    pub discovery: HdsCatalogDiscoveryRequest<'capabilities>,
+    /// Completed bounded root response из того же source generation.
+    pub fetched_manifest: crate::HdsFetchedManifestInput,
 }
 
 /// Safe capability rejection: diagnostics не получают backend или track payload.
@@ -143,13 +152,64 @@ pub fn discover_hds_renditions(
         .cloned()
         .context("HDS catalog root target is not HTTP")?;
     let http = AdaptiveHttpContext::new(
-        request.transport_request,
+        request.transport_request.clone(),
         &request.source_config,
         request.policy.adaptive_limits,
         request.policy.adaptive_retry,
     )
     .context("HDS catalog HTTP context creation failed")?;
     let resolved = resolve_presentation(root_target, &http, request.policy)?;
+    finish_hds_rendition_discovery(request, http, resolved)
+}
+
+/// Переиспользует fetched F4M root и existing discovery/runtime без второго GET.
+pub fn discover_fetched_hds_renditions(
+    request: HdsFetchedCatalogDiscoveryRequest<'_>,
+) -> Result<HdsRenditionCatalog> {
+    let HdsFetchedCatalogDiscoveryRequest {
+        discovery,
+        fetched_manifest,
+    } = request;
+    if discovery.transport_request.presentation() != MediaPresentation::Vod {
+        bail!("fetched HDS catalog discovery accepts only VOD transport presentation");
+    }
+    let root_target = discovery
+        .transport_request
+        .target()
+        .as_http()
+        .cloned()
+        .context("fetched HDS catalog root target is not HTTP")?;
+    if fetched_manifest.http.source_generation() != discovery.transport_request.source_generation()
+    {
+        bail!("fetched HDS manifest generation does not match transport intent");
+    }
+    if fetched_manifest.selected_target != root_target {
+        bail!("fetched HDS manifest target does not match transport intent");
+    }
+    if fetched_manifest.fetched.bytes().len()
+        > discovery
+            .policy
+            .adaptive_limits
+            .maximum_manifest_bytes
+            .get()
+    {
+        bail!("fetched HDS manifest exceeds current byte budget");
+    }
+    let resolved = resolve_fetched_presentation(
+        root_target,
+        &fetched_manifest.http,
+        discovery.policy,
+        fetched_manifest.fetched,
+    )?;
+    finish_hds_rendition_discovery(discovery, fetched_manifest.http, resolved)
+}
+
+/// Общий complete-pass owner для fetched и fetch-owning discovery paths.
+fn finish_hds_rendition_discovery(
+    request: HdsCatalogDiscoveryRequest<'_>,
+    http: AdaptiveHttpContext,
+    resolved: ResolvedHdsPresentation,
+) -> Result<HdsRenditionCatalog> {
     let mut first_unavailable = resolved.first_unavailable;
     let mut rejections = resolved.rejections;
     let mut admitted = Vec::new();

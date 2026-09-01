@@ -34,6 +34,12 @@ Follow-up 2026-08-10: BBC/Akamai row сейчас имеет 6 `avc3` video vari
 - Real KWin proof on the production release binary reached Tears of Steel frames, 3312 packets, 879 decoded video frames and 799 `video_frames_presented`, with the 12:14 duration and advancing timeline. One separate existing telemetry issue remains: the overlay retained stale `VA-API VP9` text while the actual HDS content watermark and packet/config evidence were `avc1`/H.264.
 - Regression fixtures now mirror the real provider/bootstrap boundary. Focused HDS/FLV/bootstrap/app tests, strict Clippy, refactor guardrails, diff-check and the full workspace test gate pass.
 
+### N12 direct-ingress follow-up (2026-09-01)
+
+- Row 09-compatible direct HTTP(S) `.f4m` URLs now use native HDS admission without yt-dlp: syntactic suffix hint is confirmed by the F4M parser, and the fetched root is handed to existing resolve/catalog/runtime without a repeated GET.
+- Hermetic H.264/AAC vertical covers worker-receipted seek, semantic coupled switch, stable-root reopen, WGPU presentation, nonzero PCM, exact request accounting and process spy 0. This does not replace the earlier real-public/KWin acceptance and makes no new public-network claim.
+- Full boundaries, error/fallback taxonomy and §6.3 evidence: `mem:media-services/native-hds-vod-n12-2026-09-01`.
+
 
 ## Follow-up 2026-08-15: строка 10 — FTP Ogg/Vorbis
 

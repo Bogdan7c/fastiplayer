@@ -3,8 +3,9 @@ use playlist_core::SecretUrlLocator;
 use rustiplayer_config::AppConfig;
 
 use super::{
-    ImplementedYtDlpInputProviderCapability, StartupUrlClassification, StartupUrlServiceRegistry,
-    StartupUrlUnsupportedReason, classify_playlist_url, classify_startup_url,
+    ImplementedYtDlpInputProviderCapability, ServiceClassifierResult, StartupUrlClassification,
+    StartupUrlServiceRegistry, StartupUrlUnsupportedReason, classify_native_hds_startup_url,
+    classify_playlist_url, classify_startup_url,
 };
 
 fn persistence_identity(locator: &super::StartupUrlLocator) -> String {
@@ -108,6 +109,47 @@ fn manifest_path_hint_builds_native_smooth_admission_when_extractor_is_disabled(
         request,
         crate::media_open::MediaOpenSourceRequest::Web(_)
     ));
+}
+
+#[test]
+fn f4m_path_hint_builds_native_hds_admission_when_extractor_is_disabled() {
+    let exact_url = "https://cdn.example.test/vod/ROOT.F4M?signature=native-secret";
+    let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
+        panic!(".f4m hint должен выбрать native HDS admission adapter");
+    };
+    assert_eq!(persistence_identity(&locator), exact_url);
+
+    let mut app_config = AppConfig::default();
+    app_config.yt_dlp.enabled = false;
+    locator
+        .validate_config(&app_config)
+        .expect("native HDS classification не зависит от extractor availability");
+    let request = locator
+        .into_media_open_source_request(
+            &app_config,
+            &SystemCapabilities::empty(1),
+            audio::AudioDecodeCapabilitySnapshot::empty(),
+        )
+        .expect("native HDS request");
+    assert!(matches!(
+        request,
+        crate::media_open::MediaOpenSourceRequest::Web(_)
+    ));
+}
+
+#[test]
+fn f4m_hint_uses_only_the_final_path_segment_not_query_or_fragment() {
+    for url in [
+        "https://cdn.example.test/video.mp4?redirect=root.f4m",
+        "https://cdn.example.test/video.mp4#root.f4m",
+        "ftp://cdn.example.test/root.f4m",
+    ] {
+        let classification = classify_native_hds_startup_url(url);
+        assert!(
+            matches!(classification, ServiceClassifierResult::NotUrl),
+            "foreign hint не должен быть claimed: {url}"
+        );
+    }
 }
 
 #[test]

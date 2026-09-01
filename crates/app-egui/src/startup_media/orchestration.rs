@@ -165,6 +165,7 @@ impl StartupMediaController {
             && self.direct_media_startup_job.is_none()
             && self.native_hls_startup_job.is_none()
             && self.native_dash_startup_job.is_none()
+            && self.native_hds_startup_job.is_none()
             && self.native_smooth_startup_job.is_none()
             && self.local_startup_job.is_none()
         {
@@ -185,6 +186,7 @@ impl StartupMediaController {
             && self.direct_media_startup_job.is_none()
             && self.native_hls_startup_job.is_none()
             && self.native_dash_startup_job.is_none()
+            && self.native_hds_startup_job.is_none()
             && self.native_smooth_startup_job.is_none()
             && self.local_startup_job.is_none()
             && (!self.orchestration.cli_requested || self.orchestration.cli_failed)
@@ -289,6 +291,19 @@ impl StartupMediaController {
             && let Some(result) = job.try_take_result()
         {
             self.native_dash_startup_job = None;
+            changed = true;
+            match result {
+                Ok(prepared) => self.hold_prepared(prepared, playlist_runtime),
+                Err(error) => {
+                    self.handle_preparation_failure(error, app_state, playlist_runtime);
+                }
+            }
+        }
+
+        if let Some(job) = self.native_hds_startup_job.as_mut()
+            && let Some(result) = job.try_take_result()
+        {
+            self.native_hds_startup_job = None;
             changed = true;
             match result {
                 Ok(prepared) => self.hold_prepared(prepared, playlist_runtime),
@@ -471,6 +486,7 @@ impl StartupMediaController {
                     || self.direct_media_startup_job.is_some()
                     || self.native_hls_startup_job.is_some()
                     || self.native_dash_startup_job.is_some()
+                    || self.native_hds_startup_job.is_some()
                     || self.native_smooth_startup_job.is_some()
                 {
                     return;
@@ -714,6 +730,38 @@ impl StartupMediaController {
             PreparedStartupMedia::NativeDash { source, prepared } => {
                 let prepared =
                     match web_preparation::compose_native_dash_startup_media(source, *prepared) {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            self.handle_install_failure(error, is_cli, app_state);
+                            return true;
+                        }
+                    };
+                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                    prepared.prepared_media.tracks(),
+                ));
+                let input = self
+                    .prepared_url_input(
+                        prepared.prepared_media,
+                        prepared.active_source,
+                        prepared.safe_label,
+                        target,
+                    )
+                    .with_descriptor(crate::media_open::PreparedMediaDescriptor::Web(
+                        prepared.descriptor,
+                    ));
+                app_state
+                    .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)
+                    .map(|_| {
+                        pending_install = Some(StartupPendingInstall {
+                            is_cli,
+                            local_discovery: None,
+                            superseded: false,
+                        });
+                    })
+            }
+            PreparedStartupMedia::NativeHds { source, prepared } => {
+                let prepared =
+                    match web_preparation::compose_native_hds_startup_media(source, *prepared) {
                         Ok(prepared) => prepared,
                         Err(error) => {
                             self.handle_install_failure(error, is_cli, app_state);

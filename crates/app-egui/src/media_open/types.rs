@@ -528,6 +528,7 @@ pub(crate) enum MediaPreparationFailureKind {
     DirectOpen,
     NativeHlsOpen,
     NativeDashOpen,
+    NativeHdsOpen,
     NativeSmoothOpen,
     ExtractorOpen,
     /// Dynamic DASH валиден, но использует намеренно исключённый timing/profile contract.

@@ -348,6 +348,16 @@ pub(super) fn prepare_source(
                     }
                 }
             }
+            WebMediaOpenAdapterView::NativeHds {
+                source,
+                intent,
+                settings,
+            } => super::native_hds_preparation::prepare_native_hds_source(
+                source,
+                intent,
+                settings,
+                cancellation,
+            ),
             WebMediaOpenAdapterView::NativeSmooth {
                 source,
                 intent,

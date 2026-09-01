@@ -22,6 +22,12 @@ pub(crate) enum WebMediaOpenAdapterView {
         intent: NativeDashOpenIntent,
         settings: WebMediaOpenSettings,
     },
+    /// Native HDS stable F4M root и provider-neutral intent.
+    NativeHds {
+        source: NativeHdsUrl,
+        intent: NativeHdsOpenIntent,
+        settings: WebMediaOpenSettings,
+    },
     /// Native Smooth stable root и provider-neutral intent.
     NativeSmooth {
         source: NativeSmoothUrl,
@@ -62,6 +68,15 @@ impl From<WebMediaOpenAdapter> for WebMediaOpenAdapterView {
                 intent,
                 settings,
             } => Self::NativeDash {
+                source,
+                intent,
+                settings,
+            },
+            WebMediaOpenAdapter::NativeHds {
+                source,
+                intent,
+                settings,
+            } => Self::NativeHds {
                 source,
                 intent,
                 settings,

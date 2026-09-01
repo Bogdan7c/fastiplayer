@@ -16,9 +16,9 @@ use web_media_core::{
 };
 
 use super::{
-    NativeDashOpenIntent, NativeDashSourceState, NativeDashUrl, NativeHlsOpenIntent,
-    NativeHlsSourceState, NativeHlsUrl, NativeSmoothOpenIntent, NativeSmoothSourceState,
-    NativeSmoothUrl, SafeMediaLabel,
+    NativeDashOpenIntent, NativeDashSourceState, NativeDashUrl, NativeHdsOpenIntent,
+    NativeHdsSourceState, NativeHdsUrl, NativeHlsOpenIntent, NativeHlsSourceState, NativeHlsUrl,
+    NativeSmoothOpenIntent, NativeSmoothSourceState, NativeSmoothUrl, SafeMediaLabel,
 };
 
 mod adapter_view;
@@ -68,6 +68,11 @@ enum WebMediaSourceAdapter {
     NativeDash {
         source: NativeDashUrl,
         source_state: Box<NativeDashSourceState>,
+    },
+    /// Native HDS хранит stable F4M root и neutral catalog без fragment URL.
+    NativeHds {
+        source: NativeHdsUrl,
+        source_state: Box<NativeHdsSourceState>,
     },
     /// Native Smooth хранит stable root и neutral catalog state без fragment URL.
     NativeSmooth {
@@ -146,6 +151,20 @@ impl WebMediaSourceIntent {
         }
     }
 
+    /// Создаёт proven native HDS VOD intent без временных F4F endpoints.
+    pub(crate) fn native_hds(source: NativeHdsUrl, source_state: NativeHdsSourceState) -> Self {
+        Self {
+            ingress: WebMediaIngressKind::NativeManifest,
+            presentation: WebMediaPresentationKind::Vod,
+            recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
+            extractor_reason: None,
+            adapter: Box::new(WebMediaSourceAdapter::NativeHds {
+                source,
+                source_state: Box::new(source_state),
+            }),
+        }
+    }
+
     /// Создаёт extractor-backed intent из canonical neutral selection.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn extractor(
@@ -198,6 +217,9 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::NativeDash { source_state, .. } => {
                 Some(source_state.neutral_selection())
             }
+            WebMediaSourceAdapter::NativeHds { source_state, .. } => {
+                Some(source_state.neutral_selection())
+            }
             WebMediaSourceAdapter::NativeSmooth { source_state, .. } => {
                 Some(source_state.neutral_selection())
             }
@@ -219,6 +241,9 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::NativeDash { source_state, .. } => {
                 Some(source_state.stream_configuration())
             }
+            WebMediaSourceAdapter::NativeHds { source_state, .. } => {
+                Some(source_state.stream_configuration())
+            }
             WebMediaSourceAdapter::NativeSmooth { source_state, .. } => {
                 Some(source_state.stream_configuration())
             }
@@ -238,6 +263,9 @@ impl WebMediaSourceIntent {
                 Some(source_state.catalog_attachment())
             }
             WebMediaSourceAdapter::NativeDash { source_state, .. } => {
+                Some(source_state.catalog_attachment())
+            }
+            WebMediaSourceAdapter::NativeHds { source_state, .. } => {
                 Some(source_state.catalog_attachment())
             }
             WebMediaSourceAdapter::NativeSmooth { source_state, .. } => {
@@ -266,6 +294,15 @@ impl WebMediaSourceIntent {
                 stream_configuration: Some(source_state.stream_configuration()),
             },
             WebMediaSourceAdapter::NativeDash {
+                source,
+                source_state,
+            } => WebMediaSourceReadProjection {
+                ingress: self.ingress,
+                presentation: self.presentation,
+                source_label: source.safe_label().as_str(),
+                stream_configuration: Some(source_state.stream_configuration()),
+            },
+            WebMediaSourceAdapter::NativeHds {
                 source,
                 source_state,
             } => WebMediaSourceReadProjection {
@@ -325,6 +362,17 @@ impl WebMediaSourceIntent {
             } => {
                 let settings = adaptive_settings?;
                 WebMediaOpenAdapter::NativeDash {
+                    source: source.clone(),
+                    intent: source_state.installed_reopen_intent(),
+                    settings,
+                }
+            }
+            WebMediaSourceAdapter::NativeHds {
+                source,
+                source_state,
+            } => {
+                let settings = adaptive_settings?;
+                WebMediaOpenAdapter::NativeHds {
                     source: source.clone(),
                     intent: source_state.installed_reopen_intent(),
                     settings,
@@ -457,6 +505,11 @@ enum WebMediaOpenAdapter {
         intent: NativeDashOpenIntent,
         settings: WebMediaOpenSettings,
     },
+    NativeHds {
+        source: NativeHdsUrl,
+        intent: NativeHdsOpenIntent,
+        settings: WebMediaOpenSettings,
+    },
     NativeSmooth {
         source: NativeSmoothUrl,
         intent: NativeSmoothOpenIntent,
@@ -530,6 +583,21 @@ impl WebMediaOpenRequest {
         }
     }
 
+    /// Создаёт native HDS request с typed pre-Installed fallback intent.
+    pub(crate) fn native_hds(
+        source: NativeHdsUrl,
+        intent: NativeHdsOpenIntent,
+        settings: WebMediaOpenSettings,
+    ) -> Self {
+        Self {
+            adapter: Box::new(WebMediaOpenAdapter::NativeHds {
+                source,
+                intent,
+                settings,
+            }),
+        }
+    }
+
     /// Создаёт extractor request с exact typed selection intent.
     pub(crate) fn extractor(
         locator: service_ytdlp::YtDlpMediaLocator,
@@ -553,6 +621,7 @@ impl WebMediaOpenRequest {
             }
             WebMediaOpenAdapter::NativeHls { source, .. } => source.safe_label().clone(),
             WebMediaOpenAdapter::NativeDash { source, .. } => source.safe_label().clone(),
+            WebMediaOpenAdapter::NativeHds { source, .. } => source.safe_label().clone(),
             WebMediaOpenAdapter::NativeSmooth { source, .. } => source.safe_label().clone(),
             WebMediaOpenAdapter::Extractor { locator, .. } => {
                 SafeMediaLabel::from_service_safe_label(locator.safe_label())

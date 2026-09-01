@@ -1,3 +1,10 @@
+## N12 native HDS/F4M VOD без yt-dlp (2026-09-01)
+
+- Direct HTTP(S) `.f4m` теперь admitted по syntactic path hint и authoritatively подтверждается existing F4M parser; первый bounded root response передаётся existing HDS discovery/runtime без второго GET.
+- Neutral coupled catalog, exact semantic selection, worker-receipted VOD seek, switch/reopen и stable-root refresh используют existing HDS/F4F owners; durable source хранит только stable root/lineage/selection, process spy остаётся 0.
+- Initial fallback разрешён только для foreign XML root или HTTP 401/403 auth; malformed/profile/DRM/private/live/network/cancel остаются distinct typed terminal errors без fallback.
+- Hermetic three-run vertical достигает F4F -> H.264 FFmpeg -> WGPU submit/release и AAC -> nonzero PCM с exact root/Frag1 request accounting. Полные boundaries, tests, §6.3 и limitations: `mem:media-services/native-hds-vod-n12-2026-09-01`. N13A не начинался.
+
 ## N11 native Smooth Streaming VOD без yt-dlp (2026-09-01)
 
 - Direct HTTP(S) `/Manifest` теперь admitted по syntactic path hint и authoritatively подтверждается existing Smooth parser/static H.264/AAC profile; первый bounded root response передаётся existing discovery/runtime без второго GET.

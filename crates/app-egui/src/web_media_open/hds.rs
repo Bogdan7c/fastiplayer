@@ -21,12 +21,18 @@ use rustiplayer_config::NetworkConfig;
 use service_ytdlp::{YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpTransportRequestContext};
 use source_core::{CancellationToken, SourceRuntimeConfig};
 use web_media_adaptive::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
-use web_media_core::{ContainerFamily, PreferredHeightPolicy, StreamLayout, TransportFamily};
+use web_media_core::{
+    ComponentVariantCatalog, ComponentVariantCatalogIdentity, ContainerFamily,
+    ExactSelectionIdentity, PreferredHeightPolicy, StreamLayout, TransportFamily,
+    WebMediaSelection, WebMediaSelectionRematchSource, WebMediaSelectionShape,
+    WebMediaSemanticSelectionRequest,
+};
 use web_media_hds::{
-    HdsCatalogDiscoveryRequest, HdsRenditionCapabilityProbe, HdsVodOpenPolicy,
+    HdsCatalogDiscoveryRequest, HdsFetchedCatalogDiscoveryRequest, HdsFetchedManifestInput,
+    HdsRenditionCapabilityProbe, HdsVodOpenPolicy, discover_fetched_hds_renditions,
     discover_hds_renditions, prepare_discovered_hds_vod,
 };
-use web_media_transport_api::TransportProviderId;
+use web_media_transport_api::{TransportOpenRequest, TransportProviderId};
 
 #[cfg(test)]
 mod provider_default_tests;
@@ -41,6 +47,103 @@ pub(super) struct PreparedHdsCandidate {
     pub(super) playback_window: MediaPlaybackWindow,
     pub(super) component_variants:
         crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
+}
+
+/// Direct `.f4m` composition переиспользует existing HDS catalog/runtime.
+pub(crate) struct NativeHdsCandidatePreparation<'request> {
+    /// Stable-root transport intent текущей physical attempt.
+    pub(crate) transport: TransportOpenRequest,
+    /// Уже загруженный bounded root response.
+    pub(crate) fetched_manifest: HdsFetchedManifestInput,
+    /// Existing source runtime policy для child/bootstrap/F4F reads.
+    pub(crate) source_config: &'request SourceRuntimeConfig,
+    /// App network config владеет всеми HDS budgets.
+    pub(crate) network_config: &'request NetworkConfig,
+    /// Existing registry с exact F4F `OrderedSegments` factory.
+    pub(crate) demux_registry: Arc<DemuxRegistry>,
+    /// Fresh exact catalog identity текущего root snapshot-а.
+    pub(crate) catalog_identity: ComponentVariantCatalogIdentity,
+    /// Fresh parent нужен neutral semantic rematch-у.
+    pub(crate) fresh_parent: ExactSelectionIdentity,
+    /// Immutable decoder/renderer/audio capability proof.
+    pub(crate) capability_probe: &'request dyn HdsRenditionCapabilityProbe,
+    /// Provider-default height ranking.
+    pub(crate) preferred_height: PreferredHeightPolicy,
+    /// Installed semantic selection для switch/reopen.
+    pub(crate) expected_selection: Option<&'request WebMediaSemanticSelectionRequest>,
+}
+
+/// Direct HDS result до app strong-install barrier-а.
+pub(crate) struct PreparedNativeHdsCandidate {
+    /// Existing receipted HDS/F4F demux runtime.
+    pub(crate) demuxer: Box<dyn Demuxer + Send>,
+    /// Worker-owned transactional seek boundary.
+    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    /// Absolute HDS clock projection для zero-based player timeline.
+    pub(crate) playback_window: MediaPlaybackWindow,
+    /// Canonical neutral selection fresh snapshot-а.
+    pub(crate) neutral_selection: WebMediaSelection,
+    /// Provider-neutral coupled rendition catalog.
+    pub(crate) component_catalog: Arc<ComponentVariantCatalog>,
+}
+
+/// Direct ingress открывает exact fresh row и сохраняет eager demux handoff.
+pub(crate) fn prepare_native_hds_candidate(
+    request: NativeHdsCandidatePreparation<'_>,
+) -> Result<PreparedNativeHdsCandidate> {
+    let adaptive_limits =
+        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)
+            .context("Не удалось собрать native HDS adaptive transport limits")?;
+    let policy = hds_policy(adaptive_limits, request.source_config.read_timeout())?;
+    let discovered = discover_fetched_hds_renditions(HdsFetchedCatalogDiscoveryRequest {
+        discovery: HdsCatalogDiscoveryRequest {
+            transport_request: request.transport,
+            source_config: request.source_config.clone(),
+            demux_registry: request.demux_registry,
+            policy,
+            catalog_identity: request.catalog_identity,
+            capability_probe: request.capability_probe,
+            preferred_height: request.preferred_height,
+        },
+        fetched_manifest: request.fetched_manifest,
+    })
+    .context("native HDS catalog discovery failed")?;
+    let component_catalog = Arc::new(discovered.catalog().clone());
+    let neutral_selection = match request.expected_selection {
+        Some(expected) => expected
+            .rematch(
+                request.fresh_parent.clone(),
+                WebMediaSelectionRematchSource::ComponentCatalog(&component_catalog),
+            )
+            .context("native HDS semantic selection rematch failed")?,
+        None => WebMediaSelection::with_components(
+            request.fresh_parent,
+            discovered.provider_default().clone(),
+        )
+        .context("native HDS provider default нарушил catalog parent identity")?,
+    };
+    let WebMediaSelectionShape::Components(selected) = neutral_selection.shape() else {
+        bail!("native HDS selection потерял component catalog shape");
+    };
+    let web_media_core::ComponentVariantSelectionRequest::Coupled { presentation } =
+        selected.exact_selection_request()
+    else {
+        bail!("native HDS selection должна оставаться coupled A/V");
+    };
+    let opened = prepare_discovered_hds_vod(discovered, presentation)?;
+    let hds_window = opened.presentation_window();
+    let playback_window = hds_playback_window(hds_window.start(), hds_window.end_exclusive())?;
+    let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(HdsPreparedDemuxSeekPort {
+        handle: opened.async_seek_handle(),
+    });
+
+    Ok(PreparedNativeHdsCandidate {
+        demuxer: opened.into_demuxer(),
+        seek_port,
+        playback_window,
+        neutral_selection,
+        component_catalog,
+    })
 }
 
 /// Проверяет единый provider-probed HDS/F4F contract из normalized descriptor-а.

@@ -12,12 +12,12 @@ use hds_manifest_core::{
 use source_core::HttpRequestTarget;
 use url::Url;
 use web_media_adaptive::{
-    AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
-    AdaptiveResourceQueryApplication,
+    AdaptiveFetchedResource, AdaptiveHttpContext, AdaptiveResourceFetchRequest,
+    AdaptiveResourcePurpose, AdaptiveResourceQueryApplication,
 };
 use web_media_core::{PreferredHeightPolicy, VideoHeight};
 
-use crate::HdsVodOpenPolicy;
+use crate::{HdsVodOpenPolicy, error::HdsLiveProfileError};
 
 /// Refresh-stable provider identity rendition без locator/order/index material.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -211,6 +211,27 @@ pub(crate) fn resolve_presentation(
     http: &AdaptiveHttpContext,
     policy: HdsVodOpenPolicy,
 ) -> Result<ResolvedHdsPresentation> {
+    resolve_presentation_with_root(root_target, http, policy, None)
+}
+
+/// Разрешает hierarchy из уже загруженного root, не выполняя второй root GET.
+pub(crate) fn resolve_fetched_presentation(
+    root_target: HttpRequestTarget,
+    http: &AdaptiveHttpContext,
+    policy: HdsVodOpenPolicy,
+    fetched_root: AdaptiveFetchedResource,
+) -> Result<ResolvedHdsPresentation> {
+    resolve_presentation_with_root(root_target, http, policy, Some(fetched_root))
+}
+
+/// Общий resolver сохраняет existing hierarchy/bootstrap semantics и меняет
+/// только источник bytes первого root document-а.
+fn resolve_presentation_with_root(
+    root_target: HttpRequestTarget,
+    http: &AdaptiveHttpContext,
+    policy: HdsVodOpenPolicy,
+    mut fetched_root: Option<AdaptiveFetchedResource>,
+) -> Result<ResolvedHdsPresentation> {
     let mut pending = vec![PendingManifest {
         target: root_target,
         inherited: InheritedMetadata::default(),
@@ -236,13 +257,19 @@ pub(crate) fn resolve_presentation(
         visited.insert(document_identity);
 
         // Fetch/XML/schema/DRM/live document failures are presentation-fatal by contract.
-        let fetched = fetch_manifest(http, node.target)?;
+        let fetched = if node.depth == 0 {
+            fetched_root
+                .take()
+                .map_or_else(|| fetch_manifest(http, node.target.clone()), Ok)?
+        } else {
+            fetch_manifest(http, node.target.clone())?
+        };
         let final_target = fetched.final_target().clone();
         let manifest =
             parse_f4m_manifest(fetched.bytes(), policy.xml_budgets, policy.manifest_limits)
                 .with_context(|| "HDS F4M manifest parsing failed")?;
         if manifest.stream_type() == F4mStreamType::Live {
-            bail!("HDS live manifest is outside approved S38 base/VOD profile");
+            return Err(HdsLiveProfileError::Manifest.into());
         }
         rejections.extend(manifest.rejected_media().iter().map(|_| {
             HdsRenditionRejection::new(HdsRenditionRejectionReason::MalformedManifestRow)
@@ -320,7 +347,7 @@ pub(crate) fn resolve_presentation(
                 continue;
             };
             if timeline.live() {
-                bail!("HDS bootstrap is live; S38 base card accepts VOD only");
+                return Err(HdsLiveProfileError::Bootstrap.into());
             }
             let Some(duration) = manifest_metadata
                 .duration
@@ -463,7 +490,8 @@ fn fetch_manifest(
     .with_secret_forwarding(http.resource_secret_forwarding_for(&target));
     let fetched = http
         .fetch_resource_blocking(request)
-        .map_err(|error| anyhow!("HDS manifest fetch failed: {error}"))?;
+        .map_err(anyhow::Error::new)
+        .context("HDS manifest fetch failed")?;
     Ok(fetched)
 }
 

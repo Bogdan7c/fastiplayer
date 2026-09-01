@@ -17,10 +17,16 @@ pub enum F4mManifestError {
     /// XML security/schema reader отклонил input.
     #[error("F4M XML boundary rejected the manifest")]
     Xml(#[source] bounded_xml_reader::XmlReadError),
-    /// Root не является supported Adobe F4M manifest.
+    /// Well-formed XML root не является supported Adobe F4M manifest.
     #[error("F4M manifest has an unsupported root namespace or element")]
-    Root,
-    /// Unknown live-only/DRM feature не может быть безопасно проигнорирован.
+    InvalidRoot,
+    /// Manifest явно требует DRM/protected-video semantics.
+    #[error("F4M manifest requires unsupported DRM feature: {0}")]
+    DrmProtected(&'static str),
+    /// Namespaced/private extension нельзя принять как Adobe public profile.
+    #[error("F4M manifest contains a private extension: {0}")]
+    PrivateExtension(&'static str),
+    /// Unsupported profile feature не может быть безопасно проигнорирован.
     #[error("F4M manifest contains an unsupported feature: {0}")]
     UnsupportedFeature(&'static str),
     /// Required value отсутствует или содержит неверный scalar.
@@ -125,7 +131,7 @@ impl ParserState {
                     .namespace_uri()
                     .is_some_and(|namespace| F4M_NAMESPACES.contains(&namespace))
             {
-                return Err(F4mManifestError::Root);
+                return Err(F4mManifestError::InvalidRoot);
             }
         }
         if is_known_f4m_element(local_name)
@@ -134,7 +140,7 @@ impl ParserState {
                 .namespace_uri()
                 .is_some_and(|namespace| F4M_NAMESPACES.contains(&namespace))
         {
-            return Err(F4mManifestError::UnsupportedFeature(
+            return Err(F4mManifestError::PrivateExtension(
                 "foreign namespace element",
             ));
         }
@@ -159,10 +165,10 @@ impl ParserState {
                 self.active_bootstrap = Some(ActiveBootstrap::from_element(&element, self.limits)?);
             }
             "drmAdditionalHeader" => {
-                return Err(F4mManifestError::UnsupportedFeature("drmAdditionalHeader"));
+                return Err(F4mManifestError::DrmProtected("drmAdditionalHeader"));
             }
-            "signature" => return Err(F4mManifestError::UnsupportedFeature("signature")),
-            "pv-2.0" => return Err(F4mManifestError::UnsupportedFeature("pv-2.0")),
+            "signature" => return Err(F4mManifestError::DrmProtected("signature")),
+            "pv-2.0" => return Err(F4mManifestError::DrmProtected("pv-2.0")),
             "cueInfo" => return Err(F4mManifestError::UnsupportedFeature("cueInfo")),
             _ => {}
         }
@@ -176,9 +182,13 @@ impl ParserState {
 
     /// Закрывает element и commits complete media/bootstrap rows.
     fn end(&mut self, local_name: &str) -> Result<(), F4mManifestError> {
-        let opened = self.stack.pop().ok_or(F4mManifestError::Root)?;
+        let opened = self.stack.pop().ok_or(F4mManifestError::InvalidValue {
+            field: "element nesting",
+        })?;
         if opened != local_name {
-            return Err(F4mManifestError::Root);
+            return Err(F4mManifestError::InvalidValue {
+                field: "element nesting",
+            });
         }
 
         let text = std::mem::take(&mut self.text_buffer);
@@ -573,7 +583,28 @@ mod tests {
             br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><drmAdditionalHeader/></manifest>"#;
         assert!(matches!(
             parse_f4m_manifest(drm, budgets(), limits()),
-            Err(F4mManifestError::UnsupportedFeature("drmAdditionalHeader"))
+            Err(F4mManifestError::DrmProtected("drmAdditionalHeader"))
+        ));
+    }
+
+    #[test]
+    fn distinguishes_foreign_root_drm_private_extension_and_malformed_f4m() {
+        let parse = |bytes: &[u8]| parse_f4m_manifest(bytes, budgets(), limits());
+        assert!(matches!(
+            parse(b"<html/>"),
+            Err(F4mManifestError::InvalidRoot)
+        ));
+        assert!(matches!(
+            parse(br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><drmAdditionalHeader/><media url="video"/></manifest>"#),
+            Err(F4mManifestError::DrmProtected("drmAdditionalHeader"))
+        ));
+        assert!(matches!(
+            parse(br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><x:media xmlns:x="urn:private" url="video"/></manifest>"#),
+            Err(F4mManifestError::PrivateExtension("foreign namespace element"))
+        ));
+        assert!(matches!(
+            parse(br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0">"#),
+            Err(F4mManifestError::Xml(_))
         ));
     }
 
@@ -606,7 +637,7 @@ mod tests {
 
         assert_eq!(
             parse_f4m_manifest(foreign, budgets(), limits()),
-            Err(F4mManifestError::UnsupportedFeature(
+            Err(F4mManifestError::PrivateExtension(
                 "foreign namespace element"
             ))
         );

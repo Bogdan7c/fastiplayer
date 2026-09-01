@@ -7,8 +7,10 @@ use crate::startup_media::StartupMediaController;
 use crate::state::AppState;
 
 mod native_dash;
+mod native_hds;
 mod native_smooth;
 use native_dash::classify_native_dash_startup_url;
+use native_hds::classify_native_hds_startup_url;
 use native_smooth::classify_native_smooth_startup_url;
 
 /// Service-neutral type erasure для уже разобранного URL service request-а.
@@ -466,11 +468,11 @@ fn profile_excluded_input_scheme(
         .filter(|input_scheme| PROFILE_EXCLUDED_YT_DLP_INPUT_SCHEMES.contains(input_scheme))
 }
 
-/// Единственное место регистрации URL services; общий traversal не знает их семантику.
 const STARTUP_URL_SERVICE_CLASSIFIERS: &[StartupUrlServiceClassifier] = &[
     classify_native_hls_startup_url,
     classify_native_dash_startup_url,
     classify_native_smooth_startup_url,
+    classify_native_hds_startup_url,
     classify_direct_media_startup_url,
     classify_yt_dlp_startup_url,
 ];

@@ -36,6 +36,7 @@ use crate::url_service_adapter::{
 };
 
 pub(crate) mod native_dash;
+pub(crate) mod native_hds;
 pub(crate) mod native_hls;
 pub(crate) mod native_smooth;
 mod orchestration;
@@ -45,6 +46,7 @@ mod shutdown;
 mod yt_dlp;
 
 use native_dash::NativeDashStartupJob;
+use native_hds::NativeHdsStartupJob;
 use native_hls::NativeHlsStartupJob;
 use native_smooth::NativeSmoothStartupJob;
 pub(crate) use orchestration::StartupMediaPhase;
@@ -320,6 +322,9 @@ pub(crate) struct StartupMediaController {
     /// Mutually-exclusive native static DASH admission/fallback job.
     native_dash_startup_job: Option<NativeDashStartupJob>,
 
+    /// Mutually-exclusive native HDS admission/fallback job.
+    native_hds_startup_job: Option<NativeHdsStartupJob>,
+
     /// Mutually-exclusive native Smooth admission/fallback job.
     native_smooth_startup_job: Option<NativeSmoothStartupJob>,
 
@@ -374,6 +379,7 @@ impl StartupMediaController {
             direct_media_startup_job: None,
             native_hls_startup_job: None,
             native_dash_startup_job: None,
+            native_hds_startup_job: None,
             native_smooth_startup_job: None,
             local_startup_job: None,
             startup_playlist_pending: false,
@@ -413,6 +419,11 @@ impl StartupMediaController {
                     .map(NativeDashStartupJob::pending_message)
             })
             .or_else(|| {
+                self.native_hds_startup_job
+                    .as_ref()
+                    .map(NativeHdsStartupJob::pending_message)
+            })
+            .or_else(|| {
                 self.native_smooth_startup_job
                     .as_ref()
                     .map(NativeSmoothStartupJob::pending_message)
@@ -434,6 +445,7 @@ impl StartupMediaController {
             || self.direct_media_startup_job.is_some()
             || self.native_hls_startup_job.is_some()
             || self.native_dash_startup_job.is_some()
+            || self.native_hds_startup_job.is_some()
             || self.native_smooth_startup_job.is_some()
             || self.local_startup_job.is_some()
             || self.startup_playlist_pending

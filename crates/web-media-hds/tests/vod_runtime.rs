@@ -20,15 +20,19 @@ use rustiplayer_config::NetworkConfig;
 use source_core::{
     CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig, ValidatedHttpHeaders,
 };
-use web_media_adaptive::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
+use web_media_adaptive::{
+    AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
+    AdaptiveResourceQueryApplication, AdaptiveRetryPolicy, AdaptiveTransportLimits,
+};
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
     ComponentVariantCatalogIdentity, ComponentVariantSelection, ExactSelectionIdentity,
     ExtractionGeneration, PreferredHeightPolicy, SemanticIdentity, SourceIdentity,
 };
 use web_media_hds::{
-    HdsCatalogDiscoveryRequest, HdsNoPlayableRendition, HdsRenditionCapabilityProbe,
-    HdsRenditionCapabilityRejection, HdsRenditionSelection, HdsVodOpenPolicy, HdsVodOpenRequest,
+    HdsCatalogDiscoveryRequest, HdsFetchedCatalogDiscoveryRequest, HdsFetchedManifestInput,
+    HdsNoPlayableRendition, HdsRenditionCapabilityProbe, HdsRenditionCapabilityRejection,
+    HdsRenditionSelection, HdsVodOpenPolicy, HdsVodOpenRequest, discover_fetched_hds_renditions,
     discover_hds_renditions, prepare_discovered_hds_vod, prepare_hds_vod,
 };
 use web_media_transport_api::{
@@ -174,6 +178,80 @@ fn prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet() {
 
     cancellation.cancel();
     drop(demuxer);
+}
+
+/// Direct-ingress handoff переиспользует root response и eager-probed Frag1.
+#[test]
+fn fetched_root_discovery_does_not_repeat_manifest_or_selected_initial_fragment() {
+    let server = HermeticHttpServer::start(HashMap::from([
+        ("/manifest.f4m", vod_manifest()),
+        ("/media/bootstrap.bin", vod_bootstrap()),
+        ("/media/videoSeg1-Frag1", f4f_fragment(0)),
+        ("/media/videoSeg1-Frag2", f4f_fragment(1_000)),
+    ]));
+    let cancellation = CancellationToken::new();
+    let root_target = server.target("/manifest.f4m");
+    let transport = transport_request(&root_target, cancellation.clone());
+    let source_config = source_config();
+    let policy = open_policy();
+    let http = AdaptiveHttpContext::new(
+        transport.clone(),
+        &source_config,
+        policy.adaptive_limits,
+        policy.adaptive_retry,
+    )
+    .expect("fetched HDS context");
+    let fetched = http
+        .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+            transport.source_generation(),
+            root_target.clone(),
+            policy.adaptive_limits.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::Manifest,
+            AdaptiveResourceQueryApplication::BypassScopedQuery,
+        ))
+        .expect("initial direct root fetch");
+    let capabilities = FixtureHdsCapabilities::default();
+    let discovered = discover_fetched_hds_renditions(HdsFetchedCatalogDiscoveryRequest {
+        discovery: HdsCatalogDiscoveryRequest {
+            transport_request: transport,
+            source_config,
+            demux_registry: f4f_registry(),
+            policy,
+            catalog_identity: catalog_identity(17),
+            capability_probe: &capabilities,
+            preferred_height: PreferredHeightPolicy::NoPreference,
+        },
+        fetched_manifest: HdsFetchedManifestInput::new(root_target, http, fetched),
+    })
+    .expect("fetched root discovery");
+    let ComponentVariantSelection::Coupled { presentation, .. } = discovered.provider_default()
+    else {
+        panic!("HDS provider default remains coupled");
+    };
+    let selected_exact = presentation.exact_identity().clone();
+    let opened = prepare_discovered_hds_vod(discovered, selected_exact)
+        .expect("selected eager-probed HDS row opens");
+
+    let requested_paths = server.requested_paths();
+    assert_eq!(
+        requested_paths
+            .iter()
+            .filter(|path| path.as_str() == "/manifest.f4m")
+            .count(),
+        1,
+        "fetched root handoff must not issue a second manifest GET"
+    );
+    assert_eq!(
+        requested_paths
+            .iter()
+            .filter(|path| path.as_str() == "/media/videoSeg1-Frag1")
+            .count(),
+        1,
+        "selected eager probe must hand its demuxer to runtime"
+    );
+
+    cancellation.cancel();
+    drop(opened);
 }
 
 #[test]

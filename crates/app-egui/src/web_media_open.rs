@@ -14,6 +14,7 @@ mod content_probe_fallback;
 #[cfg(test)]
 pub(crate) mod content_probe_tests;
 mod hds;
+pub(crate) use hds::{NativeHdsCandidatePreparation, prepare_native_hds_candidate};
 /// Fresh extraction/rematch и process-local generation allocators.
 mod preparation;
 pub(crate) use preparation::next_dynamic_timeline_port_generation;
