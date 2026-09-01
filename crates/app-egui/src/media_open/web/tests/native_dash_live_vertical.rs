@@ -11,7 +11,8 @@ use source_core::CancellationToken;
 use super::super::*;
 use super::native_dash_vertical::native_settings;
 use super::native_hls_vertical::{
-    ControlledHlsServer, assert_decoder_render_audio, decode_fixture,
+    ControlledHlsServer, assert_decoder_render_audio, assert_decoder_render_audio_movement,
+    decode_fixture,
 };
 use crate::media_open::{NativeDashSourceState, NativeDashUrl, SafeMediaLabel};
 use crate::startup_media::native_dash::{
@@ -221,6 +222,36 @@ fn semantic_reopen_request(
     source_state: &NativeDashSourceState,
 ) -> web_media_core::WebMediaSemanticSelectionRequest {
     source_state.neutral_selection().semantic_rematch_request()
+}
+
+/// N14A: dynamic DASH initial root handoff доходит до moving consumers без recovery/switch.
+#[test]
+fn n14a_consumer_dash_dynamic_live_reaches_consumers_with_exact_root_accounting() {
+    let server = ControlledHlsServer::start(live_routes());
+    let process_spy = Arc::new(ZeroProcessSpy::default());
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
+    let source = NativeDashUrl::new(
+        server.target("/manifest.mpd"),
+        SafeMediaLabel::from_service_safe_label("N14A native DASH dynamic live"),
+    );
+    assert_eq!(server.request_count("/manifest.mpd"), 0);
+    assert_eq!(server.response_body_bytes("/manifest.mpd"), 0);
+
+    let mut prepared = prepare_native_live(&source, None, &settings);
+    assert!(matches!(
+        prepared.lifecycle,
+        PreparedNativeDashLifecycle::Live { .. }
+    ));
+    assert_eq!(server.request_count("/manifest.mpd"), 1);
+    assert_eq!(
+        server.response_body_bytes("/manifest.mpd"),
+        dynamic_manifest(5, 5, 0, 4, "initial-id").len()
+    );
+
+    let mut wgpu_harness = OffscreenWgpuHarness::new();
+    assert_decoder_render_audio_movement(prepared.demuxer.as_mut(), &mut wgpu_harness);
+    assert_eq!(process_spy.invocation_count(), 0);
 }
 
 /// Доказывает direct root reuse, publish ordering, DVR lifecycle и process spy 0.

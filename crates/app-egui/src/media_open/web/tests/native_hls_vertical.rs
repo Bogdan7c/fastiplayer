@@ -38,7 +38,9 @@ use crate::web_media_open::content_probe_tests::direct_progressive::ZeroProcessS
 use crate::web_media_open::content_probe_tests::direct_progressive_webm::{
     OffscreenWgpuHarness, decode_packet, drain_decoder, open_decoder,
 };
-use crate::web_media_open::content_probe_tests::{audio_packet_timing, decoder_config_from_track};
+use crate::web_media_open::content_probe_tests::{
+    assert_pcm_advances_clock, audio_packet_timing, decoder_config_from_track,
+};
 use crate::web_media_stream_model::component_variants::{
     ComponentVariantActionResolution, ComponentVariantSelectionAction,
     WebMediaComponentVariantAxisKind, WebMediaComponentVariantProjection,
@@ -54,6 +56,8 @@ const RESTORE_POSITION: Duration = Duration::from_millis(100);
 #[derive(Debug, Clone)]
 struct ServedRequest {
     path: String,
+    /// Длина успешного media/root body не включает HTTP headers и failure responses.
+    response_body_bytes: usize,
 }
 
 /// Локальный immutable HTTP origin обслуживает реальные production transport запросы.
@@ -111,7 +115,10 @@ impl ControlledHlsServer {
                             ("200 OK", body.as_slice())
                         })
                 };
-                request_log.push(ServedRequest { path });
+                request_log.push(ServedRequest {
+                    path,
+                    response_body_bytes: body.len(),
+                });
                 drop(request_log);
                 stream
                     .write_all(&http_response(status, body))
@@ -140,6 +147,17 @@ impl ControlledHlsServer {
             .iter()
             .filter(|request| request.path == path)
             .count()
+    }
+
+    /// Суммирует exact successful response-body bytes для одного protocol resource-а.
+    pub(super) fn response_body_bytes(&self, path: &str) -> usize {
+        self.requests
+            .lock()
+            .expect("N07 request log")
+            .iter()
+            .filter(|request| request.path == path)
+            .map(|request| request.response_body_bytes)
+            .sum()
     }
 }
 
@@ -409,11 +427,15 @@ fn assert_decoder_render_audio_samples(
                     audio_packet_timing(&packet),
                     &packet.data,
                 );
-                if !audio_decoder
+                let decoded_samples = audio_decoder
                     .decode(&encoded_packet)
-                    .expect("production AAC decoder должен декодировать native HLS packet")
-                    .is_empty()
-                {
+                    .expect("production AAC decoder должен декодировать native HLS packet");
+                if !decoded_samples.is_empty() {
+                    assert_pcm_advances_clock(
+                        &decoded_samples,
+                        audio_decoder.sample_rate(),
+                        audio_decoder.channels(),
+                    );
                     decoded_audio_batches += 1;
                 }
             }
@@ -507,6 +529,54 @@ pub(super) fn native_request_parts(
         panic!("native action обязан остаться native semantic request-ом");
     };
     (source, selection, settings)
+}
+
+/// N14A: обе HLS VOD container rows доходят до consumers без reopen/queue orchestration.
+#[test]
+fn n14a_consumer_hls_vod_ts_and_fmp4_reach_consumers_with_exact_accounting() {
+    let server = ControlledHlsServer::start(fixture_routes());
+    let process_spy = Arc::new(ZeroProcessSpy::default());
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
+    let source = NativeHlsUrl::new(
+        server.target("/master.m3u8"),
+        SafeMediaLabel::from_service_safe_label("N14A native HLS VOD"),
+    );
+    assert_eq!(server.request_count("/master.m3u8"), 0);
+    assert_eq!(server.response_body_bytes("/master.m3u8"), 0);
+    let mut wgpu_harness = OffscreenWgpuHarness::new();
+
+    let mut fmp4_media = prepare_native(&source, None, &settings, HlsVodStartIntent::Beginning);
+    assert_decoder_render_audio(fmp4_media.demuxer.as_mut(), &mut wgpu_harness);
+    let (_, _, ts_selection) = alternate_component_selection(&fmp4_media.source_state);
+    let source_intent = WebMediaSourceIntent::native_hls(
+        source.clone(),
+        web_media_core::WebMediaPresentationKind::Vod,
+        fmp4_media.source_state,
+    );
+    let WebMediaSelectionSwitchResolution::Ready(ts_request) = source_intent
+        .selection_switch_request(
+            WebMediaSelectionSwitchIntent::ComponentSemantic(ts_selection),
+            settings.clone(),
+        )
+    else {
+        panic!("N14A TS row должна создать exact native selection request");
+    };
+    let (ts_source, ts_selection, ts_settings) = native_request_parts(ts_request);
+    let mut ts_media = prepare_native(
+        &ts_source,
+        Some(&ts_selection),
+        &ts_settings,
+        HlsVodStartIntent::Beginning,
+    );
+    assert_decoder_render_audio(ts_media.demuxer.as_mut(), &mut wgpu_harness);
+
+    assert_eq!(server.request_count("/master.m3u8"), 2);
+    assert_eq!(
+        server.response_body_bytes("/master.m3u8"),
+        master_manifest(false).len() + master_manifest(true).len()
+    );
+    assert_eq!(process_spy.invocation_count(), 0);
 }
 
 /// Доказывает initial fMP4, exact switch на TS, receipted seek и semantic reopen end-to-end.

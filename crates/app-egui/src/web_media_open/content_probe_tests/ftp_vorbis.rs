@@ -34,6 +34,8 @@ pub(super) struct FtpVorbisOrigin {
     stop_requested: Arc<AtomicBool>,
     /// RETR counter доказывает настоящий проход через FTP provider.
     retrieval_count: Arc<AtomicUsize>,
+    /// Счётчик media bytes доказывает exact объём всех RETR/REST transfers.
+    transferred_body_bytes: Arc<AtomicUsize>,
     /// Join handle не оставляет detached test worker.
     worker: Option<JoinHandle<()>>,
 }
@@ -50,6 +52,8 @@ impl FtpVorbisOrigin {
         let worker_stop_requested = Arc::clone(&stop_requested);
         let retrieval_count = Arc::new(AtomicUsize::new(0));
         let worker_retrieval_count = Arc::clone(&retrieval_count);
+        let transferred_body_bytes = Arc::new(AtomicUsize::new(0));
+        let worker_transferred_body_bytes = Arc::clone(&transferred_body_bytes);
         let shared_file_bytes: Arc<[u8]> = Arc::from(file_bytes);
         let worker = thread::Builder::new()
             .name("content-probed-ftp-vorbis-origin".to_owned())
@@ -61,6 +65,7 @@ impl FtpVorbisOrigin {
                                 control_stream,
                                 shared_file_bytes.as_ref(),
                                 worker_retrieval_count.as_ref(),
+                                worker_transferred_body_bytes.as_ref(),
                             );
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -76,6 +81,7 @@ impl FtpVorbisOrigin {
             address,
             stop_requested,
             retrieval_count,
+            transferred_body_bytes,
             worker: Some(worker),
         }
     }
@@ -96,6 +102,11 @@ impl FtpVorbisOrigin {
     /// Возвращает число начатых media transfer-ов.
     pub(super) fn retrieval_count(&self) -> usize {
         self.retrieval_count.load(Ordering::SeqCst)
+    }
+
+    /// Возвращает exact число media bytes, записанных во все data connections.
+    pub(super) fn transferred_body_bytes(&self) -> usize {
+        self.transferred_body_bytes.load(Ordering::SeqCst)
     }
 }
 
@@ -182,6 +193,7 @@ fn serve_ftp_client(
     mut control_stream: TcpStream,
     file_bytes: &[u8],
     retrieval_count: &AtomicUsize,
+    transferred_body_bytes: &AtomicUsize,
 ) -> std::io::Result<()> {
     control_stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     control_stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -226,7 +238,9 @@ fn serve_ftp_client(
             let (mut data_stream, _) = listener.accept()?;
             retrieval_count.fetch_add(1, Ordering::SeqCst);
             let bounded_offset = restart_offset.min(file_bytes.len());
-            data_stream.write_all(&file_bytes[bounded_offset..])?;
+            let response_body = &file_bytes[bounded_offset..];
+            transferred_body_bytes.fetch_add(response_body.len(), Ordering::SeqCst);
+            data_stream.write_all(response_body)?;
             data_stream.shutdown(Shutdown::Both)?;
             restart_offset = 0;
             send_ftp_reply(&mut control_stream, "226 transfer complete")?;

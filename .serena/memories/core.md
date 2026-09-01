@@ -1,3 +1,9 @@
+## N14A hermetic protocol consumer matrix (2026-09-01)
+
+- Focused `n14a_consumer` cohort покрывает все 12 direct/HLS/DASH/Smooth/HDS/extractor-page rows; video достигает WGPU submit/readback/release, audio — nonzero PCM и advancing production clock.
+- Existing loopback origins теперь дают exact request/RETR/root response-body accounting; native adaptive injected process spies остаются 0, extractor page использует exact один production `PageMediaResolution` attempt.
+- Product/API/config/persistence не менялись; three-run cohort и focused owner/DTO ratchets, strict Clippy и workspace check прошли. Полный handoff: `mem:testing/native-web-ingress-n14a-2026-09-01`. Следующая session — N14B, не начиналась.
+
 ## G2 native-ingress qualification (2026-09-01)
 
 - Accumulated N06–N13B прошёл gate-only self-review, hermetic direct/HLS/DASH/Smooth/HDS verticals, `yt_dlp.enabled=false`, exact process-spy, request accounting, security/persistence/provider DTO ratchets, full pre-PR и release build.

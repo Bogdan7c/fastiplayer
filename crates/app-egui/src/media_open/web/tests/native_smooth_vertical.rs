@@ -291,6 +291,36 @@ fn wait_for_tracks_changed(demuxer: &mut dyn Demuxer) {
     }
 }
 
+/// N14A: Smooth VOD initial row достигает render/readback и PCM/clock без switch/reopen.
+#[test]
+fn n14a_consumer_smooth_vod_reaches_consumers_with_exact_accounting() {
+    let server = ControlledHlsServer::start(fixture_routes());
+    let process_spy = Arc::new(ZeroProcessSpy::default());
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
+    let source = NativeSmoothUrl::new(
+        server.target("/vod/Manifest"),
+        SafeMediaLabel::from_service_safe_label("N14A native Smooth VOD"),
+    );
+    assert_eq!(server.request_count("/vod/Manifest"), 0);
+    assert_eq!(server.response_body_bytes("/vod/Manifest"), 0);
+
+    let mut prepared = prepare_native(&source, None, &settings);
+    assert_eq!(server.request_count("/vod/Manifest"), 1);
+    assert_eq!(
+        server.response_body_bytes("/vod/Manifest"),
+        SMOOTH_MANIFEST.len()
+    );
+    wait_for_tracks_changed(prepared.demuxer.as_mut());
+    let mut wgpu_harness = OffscreenWgpuHarness::new();
+    assert_decoder_render_audio_for_codec(
+        prepared.demuxer.as_mut(),
+        &mut wgpu_harness,
+        DecodeVideoCodec::H264,
+    );
+    assert_eq!(process_spy.invocation_count(), 0);
+}
+
 /// Доказывает single root fetch, render/audio, seek, switch/reopen и process spy 0.
 #[test]
 fn native_smooth_switch_seek_reopen_reaches_h264_aac_without_extractor() {

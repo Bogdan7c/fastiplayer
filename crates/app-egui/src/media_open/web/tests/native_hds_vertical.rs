@@ -214,6 +214,37 @@ fn wait_for_tracks_changed(demuxer: &mut dyn Demuxer) {
     }
 }
 
+/// N14A: HDS VOD initial row достигает render/readback и PCM/clock без switch/reopen.
+#[test]
+fn n14a_consumer_hds_vod_reaches_consumers_with_exact_accounting() {
+    let server = ControlledHlsServer::start(fixture_routes());
+    let process_spy = Arc::new(ZeroProcessSpy::default());
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
+    let root_path = "/vod/root.f4m?token=n12-secret";
+    let source = NativeHdsUrl::new(
+        server.target(root_path),
+        SafeMediaLabel::from_service_safe_label("N14A native HDS VOD"),
+    );
+    assert_eq!(server.request_count(root_path), 0);
+    assert_eq!(server.response_body_bytes(root_path), 0);
+
+    let mut prepared = prepare_native(&source, None, &settings);
+    assert_exact_probe_accounting(&server, 1);
+    assert_eq!(
+        server.response_body_bytes(root_path),
+        vod_manifest([("high", 1_080, 6_000), ("low", 720, 3_000)]).len()
+    );
+    wait_for_tracks_changed(prepared.demuxer.as_mut());
+    let mut wgpu_harness = OffscreenWgpuHarness::new();
+    assert_decoder_render_audio_for_codec(
+        prepared.demuxer.as_mut(),
+        &mut wgpu_harness,
+        DecodeVideoCodec::H264,
+    );
+    assert_eq!(process_spy.invocation_count(), 0);
+}
+
 /// Доказывает root handoff, eager fragment reuse, render/audio, seek и refresh.
 #[test]
 fn native_hds_switch_seek_reopen_reaches_h264_aac_without_extractor() {

@@ -317,6 +317,59 @@ fn native_request_parts(
     (source, selection, settings)
 }
 
+/// N14A: DASH fMP4 и WebM rows доходят до consumers без reopen/queue orchestration.
+#[test]
+fn n14a_consumer_dash_vod_fmp4_and_webm_reach_consumers_with_exact_accounting() {
+    let server = ControlledHlsServer::start(fixture_routes());
+    let process_spy = Arc::new(ZeroProcessSpy::default());
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
+    let source = NativeDashUrl::new(
+        server.target("/manifest.mpd"),
+        SafeMediaLabel::from_service_safe_label("N14A native DASH VOD"),
+    );
+    assert_eq!(server.request_count("/manifest.mpd"), 0);
+    assert_eq!(server.response_body_bytes("/manifest.mpd"), 0);
+    let mut wgpu_harness = OffscreenWgpuHarness::new();
+
+    let mut fmp4_media = prepare_native(&source, None, &settings);
+    assert_eq!(selected_video_codec(&fmp4_media), DecodeVideoCodec::H264);
+    assert_decoder_render_audio_for_codec(
+        fmp4_media.demuxer.as_mut(),
+        &mut wgpu_harness,
+        DecodeVideoCodec::H264,
+    );
+    let webm_selection = alternate_component_selection(&fmp4_media.source_state);
+    let source_intent = WebMediaSourceIntent::native_dash(
+        source.clone(),
+        web_media_core::WebMediaPresentationKind::Vod,
+        fmp4_media.source_state,
+    );
+    let WebMediaSelectionSwitchResolution::Ready(webm_request) = source_intent
+        .selection_switch_request(
+            WebMediaSelectionSwitchIntent::ComponentSemantic(webm_selection),
+            settings.clone(),
+        )
+    else {
+        panic!("N14A WebM row должна создать exact native selection request");
+    };
+    let (webm_source, webm_selection, webm_settings) = native_request_parts(webm_request);
+    let mut webm_media = prepare_native(&webm_source, Some(&webm_selection), &webm_settings);
+    assert_eq!(selected_video_codec(&webm_media), DecodeVideoCodec::Vp9);
+    assert_decoder_render_audio_for_codec(
+        webm_media.demuxer.as_mut(),
+        &mut wgpu_harness,
+        DecodeVideoCodec::Vp9,
+    );
+
+    assert_eq!(server.request_count("/manifest.mpd"), 2);
+    assert_eq!(
+        server.response_body_bytes("/manifest.mpd"),
+        static_manifest(false).len() + static_manifest(true).len()
+    );
+    assert_eq!(process_spy.invocation_count(), 0);
+}
+
 /// Ждёт authoritative worker receipt и проверяет requested VOD position.
 fn assert_vod_seek(seek_port: &dyn PreparedDemuxSeekPort) {
     let request_id = PreparedDemuxSeekRequestId::new(1);

@@ -27,6 +27,11 @@ use super::ftp_vorbis::FtpVorbisOrigin;
 use super::vorbis;
 use super::{DEMUX_EVENT_DEADLINE, FixtureOriginResponse, RangeFixtureOrigin, audio_packet_timing};
 
+/// HTTP Range owner читает generated Vorbis fixture тремя запросами и 73 077 media bytes.
+const N14A_HTTP_OGG_INITIAL_BODY_BYTES: usize = 73_077;
+/// FTP owner читает тот же fixture шестью RETR и 219 634 media bytes до первого PCM.
+const N14A_FTP_OGG_INITIAL_BODY_BYTES: usize = 219_634;
+
 /// Общий hermetic process spy падает при любом extractor spawn attempt-е.
 #[derive(Default)]
 pub(crate) struct ZeroProcessSpy {
@@ -103,10 +108,15 @@ fn assert_nonzero_vorbis_pcm(demuxer: &mut dyn Demuxer) {
                     audio_packet_timing(&packet),
                     &packet.data,
                 );
-                let decoded = decoder
+                let decoded_samples = decoder
                     .decode(&encoded_packet)
                     .expect("decode direct Vorbis packet");
-                if !decoded.is_empty() {
+                if !decoded_samples.is_empty() {
+                    super::assert_pcm_advances_clock(
+                        &decoded_samples,
+                        decoder.sample_rate(),
+                        decoder.channels(),
+                    );
                     return;
                 }
             }
@@ -178,6 +188,33 @@ fn seekable_http_ogg_reaches_pcm_and_preserves_request_counts_on_seek_reopen() {
     assert!(
         endpoint_recovery.claim_pending_signal().is_some(),
         "полностью открытый direct source обязан arm-ить stable-resource recovery"
+    );
+}
+
+/// N14A: HTTP Ogg достигает PCM/clock с exact initial request и byte accounting.
+#[test]
+fn n14a_consumer_http_ogg_reaches_pcm_clock_with_exact_accounting() {
+    let origin =
+        RangeFixtureOrigin::spawn_with_response(FixtureOriginResponse::RequestLimitedOgg {
+            ogg_bytes: vorbis::large_vorbis_fixture(),
+            maximum_successful_requests: 3,
+        });
+    let mut app_config = AppConfig::default();
+    app_config.yt_dlp.enabled = false;
+    let locator = origin.media_url();
+    crate::direct_progressive_open::classify_direct_media_url(&locator)
+        .expect("HTTP Ogg classifier должен принять N14A fixture");
+    assert_eq!(origin.request_count(), 0);
+    assert_eq!(origin.response_body_bytes(), 0);
+
+    let opened = open_direct(&locator, &app_config);
+    let (mut demuxer, _endpoint_recovery) = opened.into_runtime_parts();
+    assert_nonzero_vorbis_pcm(demuxer.as_mut());
+
+    assert_eq!(origin.request_count(), 3);
+    assert_eq!(
+        origin.response_body_bytes(),
+        N14A_HTTP_OGG_INITIAL_BODY_BYTES
     );
 }
 
@@ -261,4 +298,27 @@ fn ftp_ogg_reaches_pcm_without_http_material_and_tracks_retr_seek_reopen() {
     let (mut reopened_demuxer, _reopened_endpoint_recovery) = reopened.into_runtime_parts();
     assert_nonzero_vorbis_pcm(&mut *reopened_demuxer);
     assert!(origin.retrieval_count() > retrievals_after_seek);
+}
+
+/// N14A: FTP Ogg initial open достигает PCM/clock с exact RETR и byte accounting.
+#[test]
+fn n14a_consumer_ftp_ogg_reaches_pcm_clock_with_exact_accounting() {
+    let origin = FtpVorbisOrigin::spawn(vorbis::large_vorbis_fixture());
+    let locator = origin.credentialed_media_url();
+    let mut app_config = AppConfig::default();
+    app_config.yt_dlp.enabled = false;
+    crate::direct_progressive_open::classify_direct_media_url(&locator)
+        .expect("FTP Ogg classifier должен принять N14A fixture");
+    assert_eq!(origin.retrieval_count(), 0);
+    assert_eq!(origin.transferred_body_bytes(), 0);
+
+    let opened = open_direct(&locator, &app_config);
+    let (mut demuxer, _endpoint_recovery) = opened.into_runtime_parts();
+    assert_nonzero_vorbis_pcm(demuxer.as_mut());
+
+    assert_eq!(origin.retrieval_count(), 6);
+    assert_eq!(
+        origin.transferred_body_bytes(),
+        N14A_FTP_OGG_INITIAL_BODY_BYTES
+    );
 }

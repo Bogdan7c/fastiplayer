@@ -54,6 +54,11 @@ pub(crate) mod direct_progressive_webm;
 #[path = "content_probe_tests/ftp_vorbis.rs"]
 mod ftp_vorbis;
 
+/// N14A consumer/page accounting и production clock proof изолированы от runtime owner-а.
+mod n14a_consumer;
+
+pub(crate) use n14a_consumer::assert_pcm_advances_clock;
+
 /// Маркер отличает изолированный child от owner test process-а без global env mutation.
 const CHILD_PROCESS_MARKER_ENV: &str = "RUSTIPLAYER_CONTENT_PROBE_CHILD";
 /// Fake extractor получает document только через своё дочернее окружение.
@@ -107,6 +112,8 @@ struct RangeFixtureOrigin {
     stop_requested: Arc<AtomicBool>,
     /// Счётчик реальных HTTP requests доказывает порядок и границу fallback-а.
     request_count: Arc<AtomicUsize>,
+    /// Счётчик media-body bytes доказывает exact data-plane расход без HTTP headers.
+    response_body_bytes: Arc<AtomicUsize>,
     /// Join handle гарантирует завершение origin worker-а до удаления fixture state.
     worker: Option<JoinHandle<()>>,
 }
@@ -144,6 +151,8 @@ impl RangeFixtureOrigin {
         let worker_stop_requested = Arc::clone(&stop_requested);
         let request_count = Arc::new(AtomicUsize::new(0));
         let worker_request_count = Arc::clone(&request_count);
+        let response_body_bytes = Arc::new(AtomicUsize::new(0));
+        let worker_response_body_bytes = Arc::clone(&response_body_bytes);
         let worker = thread::Builder::new()
             .name("content-probed-ogg-origin".to_owned())
             .spawn(move || {
@@ -154,6 +163,7 @@ impl RangeFixtureOrigin {
                                 &mut stream,
                                 &response,
                                 worker_request_count.as_ref(),
+                                worker_response_body_bytes.as_ref(),
                             );
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -169,6 +179,7 @@ impl RangeFixtureOrigin {
             address,
             stop_requested,
             request_count,
+            response_body_bytes,
             worker: Some(worker),
         }
     }
@@ -193,6 +204,11 @@ impl RangeFixtureOrigin {
     fn request_count(&self) -> usize {
         self.request_count.load(Ordering::SeqCst)
     }
+
+    /// Возвращает exact число media bytes, отправленных успешными HTTP responses.
+    fn response_body_bytes(&self) -> usize {
+        self.response_body_bytes.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for RangeFixtureOrigin {
@@ -211,6 +227,7 @@ fn respond_to_fixture_request(
     stream: &mut TcpStream,
     response: &FixtureOriginResponse,
     request_count: &AtomicUsize,
+    response_body_bytes: &AtomicUsize,
 ) {
     // Read timeout превращает оборванный client request в bounded test failure.
     stream
@@ -228,23 +245,23 @@ fn respond_to_fixture_request(
     let request = String::from_utf8_lossy(&request_bytes[..request_length]);
     match response {
         FixtureOriginResponse::Ogg(ogg_bytes) => {
-            respond_to_range_request(stream, &request, ogg_bytes);
+            respond_to_range_request(stream, &request, ogg_bytes, response_body_bytes);
         }
         FixtureOriginResponse::FullBodyOgg(ogg_bytes) => {
-            respond_to_full_body(stream, ogg_bytes);
+            respond_to_full_body(stream, ogg_bytes, response_body_bytes);
         }
         FixtureOriginResponse::CookieProtectedOgg {
             ogg_bytes,
             expected_cookie_pair,
         } if request_contains_cookie_pair(&request, expected_cookie_pair) => {
-            respond_to_range_request(stream, &request, ogg_bytes);
+            respond_to_range_request(stream, &request, ogg_bytes, response_body_bytes);
         }
         FixtureOriginResponse::CookieProtectedOgg { .. } => respond_to_not_found(stream),
         FixtureOriginResponse::RequestLimitedOgg {
             ogg_bytes,
             maximum_successful_requests,
         } if request_number <= *maximum_successful_requests => {
-            respond_to_range_request(stream, &request, ogg_bytes);
+            respond_to_range_request(stream, &request, ogg_bytes, response_body_bytes);
         }
         FixtureOriginResponse::RequestLimitedOgg { .. } => respond_to_rate_limit(stream),
         FixtureOriginResponse::NotFound => respond_to_not_found(stream),
@@ -252,7 +269,7 @@ fn respond_to_fixture_request(
 }
 
 /// Возвращает весь media body тем же response-ом, который открыл transport probe.
-fn respond_to_full_body(stream: &mut TcpStream, body: &[u8]) {
+fn respond_to_full_body(stream: &mut TcpStream, body: &[u8], response_body_bytes: &AtomicUsize) {
     let headers = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -260,6 +277,7 @@ fn respond_to_full_body(stream: &mut TcpStream, body: &[u8]) {
     stream
         .write_all(headers.as_bytes())
         .expect("write full-body Ogg headers");
+    response_body_bytes.fetch_add(body.len(), Ordering::SeqCst);
     stream.write_all(body).expect("write full-body Ogg body");
 }
 
@@ -278,7 +296,12 @@ fn request_contains_cookie_pair(request: &str, expected_cookie_pair: &str) -> bo
 }
 
 /// Возвращает exact requested byte interval настоящего Ogg resource-а.
-fn respond_to_range_request(stream: &mut TcpStream, request: &str, ogg_bytes: &[u8]) {
+fn respond_to_range_request(
+    stream: &mut TcpStream,
+    request: &str,
+    ogg_bytes: &[u8],
+    response_body_bytes: &AtomicUsize,
+) {
     // Production HTTP provider обязан открыть seekable source через bounded Range.
     let (range_start, requested_end) = request
         .lines()
@@ -298,6 +321,7 @@ fn respond_to_range_request(stream: &mut TcpStream, request: &str, ogg_bytes: &[
     stream
         .write_all(response_headers.as_bytes())
         .expect("write ContentProbed Range headers");
+    response_body_bytes.fetch_add(response_body.len(), Ordering::SeqCst);
     stream
         .write_all(response_body)
         .expect("write ContentProbed Range body");
@@ -566,6 +590,20 @@ fn prepare_content_probed_test_media_at_locator(
     locator_text: &str,
     audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
 ) -> anyhow::Result<super::PreparedYtDlpWebMedia> {
+    let extractor_adapter = service_ytdlp::YtDlpExtractorAdapter::default();
+    prepare_content_probed_test_media_with_adapter(
+        locator_text,
+        audio_capabilities,
+        &extractor_adapter,
+    )
+}
+
+/// Собирает тот же production runtime с явно injected process owner-ом N14A.
+fn prepare_content_probed_test_media_with_adapter(
+    locator_text: &str,
+    audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
+    extractor_adapter: &service_ytdlp::YtDlpExtractorAdapter,
+) -> anyhow::Result<super::PreparedYtDlpWebMedia> {
     let locator = service_ytdlp::parse_yt_dlp_media_locator(locator_text)
         .expect("parse ContentProbed media locator");
     prepare_yt_dlp_web_media(
@@ -573,7 +611,7 @@ fn prepare_content_probed_test_media_at_locator(
         &NetworkConfig::default(),
         &rustiplayer_config::WebMediaConfig::default(),
         &YtDlpConfig::default(),
-        &service_ytdlp::YtDlpExtractorAdapter::default(),
+        extractor_adapter,
         &PlayerDemuxConfig::default(),
         &[VideoCodec::Vp9],
         &capability_core::SystemCapabilities::empty(1),
@@ -701,6 +739,7 @@ fn assert_prepared_opus_reaches_pcm(
         !decoded_samples.is_empty(),
         "production Opus decoder должен вернуть ненулевой PCM buffer"
     );
+    assert_pcm_advances_clock(&decoded_samples, decoder.sample_rate(), decoder.channels());
 }
 
 /// Переносит только public demux metadata в codec-neutral decoder config.

@@ -200,6 +200,36 @@ fn assert_retained_dvr_seek(prepared: &crate::startup_media::native_hls::Prepare
     }
 }
 
+/// N14A: sliding HLS live initial window даёт moving render/readback и PCM/clock без switch/restart.
+#[test]
+fn n14a_consumer_hls_sliding_live_reaches_consumers_with_exact_accounting() {
+    let server = ControlledHlsServer::start(live_routes());
+    let process_spy = Arc::new(ZeroProcessSpy::default());
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
+    let source = NativeHlsUrl::new(
+        server.target("/master.m3u8"),
+        SafeMediaLabel::from_service_safe_label("N14A native HLS sliding live"),
+    );
+    assert_eq!(server.request_count("/master.m3u8"), 0);
+    assert_eq!(server.response_body_bytes("/master.m3u8"), 0);
+
+    let mut prepared = prepare_native(&source, None, &settings, HlsVodStartIntent::Beginning);
+    assert!(matches!(
+        prepared.lifecycle,
+        PreparedNativeHlsLifecycle::Live { .. }
+    ));
+    let mut wgpu_harness = OffscreenWgpuHarness::new();
+    assert_decoder_render_audio_movement(prepared.demuxer.as_mut(), &mut wgpu_harness);
+
+    assert_eq!(server.request_count("/master.m3u8"), 1);
+    assert_eq!(
+        server.response_body_bytes("/master.m3u8"),
+        live_master().len()
+    );
+    assert_eq!(process_spy.invocation_count(), 0);
+}
+
 /// Проверяет moving consumers, packet-proven window shift, expired target и process spy 0.
 #[test]
 fn native_sliding_hls_live_reaches_moving_frame_audio_and_expires_old_dvr_without_extractor() {
