@@ -1316,7 +1316,19 @@ fn dynamic_options_replacement_is_bounded_and_shutdown_retains_timed_out_handles
         std::thread::yield_now();
     }
 
-    for _ in 0..3 {
+    runtime
+        .handle_ui_actions(
+            vec![SettingsUiAction::RefreshOptions {
+                provider_id: audio_output_provider_id(),
+            }],
+            &mut render_adapter,
+        )
+        .expect("первый replacement должен занять active и retired slots");
+    while started_calls.load(Ordering::Acquire) < 2 {
+        std::thread::yield_now();
+    }
+
+    for _ in 0..2 {
         runtime
             .handle_ui_actions(
                 vec![SettingsUiAction::RefreshOptions {
@@ -1326,18 +1338,17 @@ fn dynamic_options_replacement_is_bounded_and_shutdown_retains_timed_out_handles
             )
             .expect("replacement refresh должен сохранять bounded latest semantics");
     }
-    assert!(
-        runtime.dynamic_options_owned_thread_count() <= 2,
-        "owner хранит не более active+retired handles"
+    assert_eq!(
+        runtime.dynamic_options_owned_thread_count(),
+        2,
+        "синхронизированный fixture должен удерживать active+retired handles"
     );
 
     assert!(matches!(
         runtime.shutdown_dynamic_options_until(crate::process_shutdown::ShutdownDeadline::after(
             Duration::from_millis(1)
         )),
-        crate::process_shutdown::ProcessOwnerShutdownOutcome::TimedOut {
-            pending_threads: 1 | 2
-        }
+        crate::process_shutdown::ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 2 }
     ));
     assert!(runtime.dynamic_options_owned_thread_count() > 0);
 
@@ -1349,6 +1360,27 @@ fn dynamic_options_replacement_is_bounded_and_shutdown_retains_timed_out_handles
         crate::process_shutdown::ProcessOwnerShutdownOutcome::Completed
     );
     assert_eq!(runtime.dynamic_options_owned_thread_count(), 0);
+}
+
+#[test]
+fn idle_dynamic_options_shutdown_is_completed_and_idempotent() {
+    let config = custom_config_for_test();
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config))
+        .expect("settings runtime должен построиться");
+
+    assert_eq!(runtime.dynamic_options_owned_thread_count(), 0);
+    assert_eq!(
+        runtime.shutdown_dynamic_options_until(crate::process_shutdown::ShutdownDeadline::after(
+            Duration::from_secs(1)
+        )),
+        crate::process_shutdown::ProcessOwnerShutdownOutcome::Completed
+    );
+    assert_eq!(
+        runtime.shutdown_dynamic_options_until(crate::process_shutdown::ShutdownDeadline::after(
+            Duration::from_secs(1)
+        )),
+        crate::process_shutdown::ProcessOwnerShutdownOutcome::AlreadyCompleted
+    );
 }
 
 #[test]
