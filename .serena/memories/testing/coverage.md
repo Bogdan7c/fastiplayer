@@ -1,4 +1,4 @@
-# Stable coverage v2 (authoritative, 2026-08-31)
+# Stable coverage v2 (authoritative, 2026-09-01)
 
 Этот документ полностью заменяет прежние Session 07B/28/S42 утверждения об aggregate v1 baseline и одном measured run. Историческая модель сохранена только внутри `coverage/baseline.json.legacy_report_only` как provenance и никогда не участвует в blocking decision.
 
@@ -6,7 +6,7 @@
 
 - `scripts/coverage.sh` — единственный shell entrypoint: `check` проверяет tracked v2 baseline, `bootstrap <proposal>` создаёт review-only proposal и не меняет tracked policy.
 - `scripts/coverage_stability.py` + `scripts/coverage_stability_schema.py` владеют source-coordinate run/cohort/baseline schemas, stable ratchet, atomic baseline-update policy и measurement-exception lifecycle.
-- `coverage/baseline.json` — schema v2. Текущий G1 tracked baseline квалифицирован exact 9/9 intersection трёх независимых cohort-ов на одной source revision; raw SHA-256 `d6bd75a3e8ded589fd4e8e9b8e9461ea1b541c92d4f22c07369849b23fd92fd2`, logical `sha256:8d6242e05724c8ccaa0d9bd118aa8b059de3f5ab1353491806493d9b4ef0b010`. Atomic transition прошёл с неизменным пустым measurement-exception ledger и подтверждён двумя fresh `scripts/coverage.sh check` с пустыми `regressions`/`universe_changes`.
+- `coverage/baseline.json` — schema v2. Текущий G2 tracked baseline квалифицирован exact 9/9 intersection трёх независимых cohort-ов на одной source revision `3f9d5f90`; raw SHA-256 `3c04e5d97e7d806dc05f481b4f536ebbc7935861d898ae7f06ffe1ab88d5050a`, logical `sha256:4295f9a05fb06ba6a11d04d5623d154c371c758224f6a88e84f7938067267afb`. Cohort hashes: `sha256:18b816b0067f5f4eda21600cbd2b8852d95e2f484a102eac8aadb2075d7ab875`, `sha256:be8657278eb85c32148f703f61045616ee87b2eae914b64468abf97308d00e6e`, `sha256:ae578adf3c0c3aa9e0365d31f8ebb1eee59a6975b9f75489290fbe26016cc7b1`. Atomic transition прошёл с неизменным пустым measurement-exception ledger и подтверждён двумя fresh `scripts/coverage.sh check` с пустыми `regressions`/`universe_changes`; оба дали check hash `sha256:92e76ae086a9b6ae8a2820411032d0231b93d00e4a5814691341613d5eeed6be`.
 - `coverage/measurement-exceptions.json` — единственный blocking exception ledger, schema v1; initial exact empty ledger SHA-256 `1f64ad40d0db9ebf1a108da65cd02c8baec6a26c41e78e85add972c6f3534a2b`.
 - `coverage/exceptions.json` и embedded v1 baseline — frozen `legacy_report_only` provenance. Они не разрешают v2 regression и не являются параллельным источником истины.
 - `coverage/policy.json` по-прежнему классифицирует blocking/informational crates. `coverage/executable-inventory-policy.json` типизированно разрешает runtime-built root только для `settings-derive/tests/trybuild`.
@@ -20,11 +20,13 @@
 5. Run/cohort/artifact publication transactional. Build, runner или publication failure восстанавливает предыдущие merge metadata и quarantined runtime root; partial stage/prewarm/run1/run2 profiles не публикуются. После успешной публикации полного cohort semantic ratchet выполняется отдельно: его exit 1 намеренно сохраняет новый cohort, variable diagnostics и `check.json` как evidence регрессии, но не меняет tracked baseline/exception ledger и не считается успешным gate. Successful cohort retains exact authoritative run3 profraw set + profdata/list for report artifact.
 6. Runtime builder policy, source identity, toolchain identity, build/runtime inventories and every published artifact are recorded in schema-v2 cohort manifest. New runtime owner fails until explicitly modeled.
 
-Текущий independently qualified G1 baseline принят на Rust 1.96.0, LLVM 22.1.2 и cargo-llvm-cov 0.8.7. Его exact workspace stable intersection: functions 15,281/19,612, lines 157,433/205,843, regions 198,245/262,103; blocking stable: functions 9,765/11,653, lines 98,353/115,061, regions 123,377/147,538.
+Текущий independently qualified G2 baseline принят на Rust 1.96.0, LLVM 22.1.2 и cargo-llvm-cov 0.8.7; source universe hash `sha256:d1f4228c0ef44e817b64e2fb5e754ce944e0581afd6a5c7f302e5ecb7142be3b`. Его exact workspace stable intersection: functions 15,652/19,879, lines 162,784/210,449, regions 204,329/267,594; blocking stable: functions 9,846/11,681, lines 99,471/115,753, regions 124,744/148,339.
 
 Для baseline update после конкурентных test-only правок один cohort статистически недостаточен. Обязательный human-reviewed qualification workflow: три независимых cohort-а на одной source revision (9 measured workspace runs), exact 9-run stable intersection, file-local audit каждого изменённого файла и два свежих обычных repeatability-check после установки tracked baseline. Aggregate workspace ratio не может скрывать file-local stable loss. CLI пока не автоматизирует cross-cohort reducer; evidence хранится вне tracked policy и сверяется вручную.
 
 Внутри каждого cohort executable logical paths/mode/size/SHA-256 обязаны быть byte-identical. Между независимыми cohort-ами ELF SHA может различаться из-за linker/compiler nondeterminism только если source/tool/profile и coordinate universes совпадают, а каждый cohort отдельно проходит fail-closed manifest validation. Это осознанная граница измерения, не гарантия reproducible build. Реальный test/build failure остаётся failure: retry, measurement exception или ослабление baseline его не легализуют.
+
+G2 qualification поймала две реальные scheduler-sensitive fixture race до установки baseline: `playlist-state::resume::worker` полагался на случайный disconnect wake sender, а app dynamic-options shutdown не синхронизировал active+retired admission и idle fallthrough. Regression commits `169ade5c` и `3f9d5f90` добавили explicit join/started-call/idle lifecycle oracles; production semantics не менялись. После каждого concurrency-sensitive изменения qualification начиналась заново на одной source revision; неуспешные cohorts/proposals не смешивались с финальными evidence.
 
 ## Baseline update policy
 

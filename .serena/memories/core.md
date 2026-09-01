@@ -1,3 +1,9 @@
+## G2 native-ingress qualification (2026-09-01)
+
+- Accumulated N06–N13B прошёл gate-only self-review, hermetic direct/HLS/DASH/Smooth/HDS verticals, `yt_dlp.enabled=false`, exact process-spy, request accounting, security/persistence/provider DTO ratchets, full pre-PR и release build.
+- Gate обнаружил и исправил только root causes: S42 module/dependency drift и четыре test/coverage fixture gaps; production feature semantics не расширялись. Stable coverage принят exact 9/9 intersection, empty ledger и двумя fresh repeatability PASS.
+- Exact hashes/counters/process set/test locations: `mem:testing/native-web-ingress-g2-2026-09-01`; authoritative baseline: `mem:testing/coverage`. Следующая session — N14A, в G2 не начиналась.
+
 ## N13B extractor invocation/redaction/persistence ratchet (2026-09-01)
 
 - App web open/reopen attempts теперь реально несут один injected `YtDlpExtractorAdapter`; native fallback и extractor-backed HLS/DASH refresh не создают скрытый Default launcher, поэтому process spy наблюдает production boundary.

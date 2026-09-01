@@ -43,6 +43,11 @@ Session 09A completed PASS on 2026-07-14. This memory complements `mem:core`, `m
 - Natural Sort and fingerprint-backed cached metadata create no discovery request. URL rows never enter local probing or network opening. Individual probe failures may remain a typed partial warning/missing sort group; cancellation/executor failure hands already verified records to the app-owned D44 salvage policy.
 
 
+## G2 coverage reliability correction (2026-09-01)
+
+- `resume::session09a_tests::job_stream_tests::cancellation_releases_frozen_verified_buffer_without_record_event` больше не пытается заморозить job до доказанного старта worker-а. Fixture использует existing blocking probe gate (`02-block-video.media`), ждёт exact started event, затем freeze, release, processed и cancel.
+- Это test-only root-cause fix `201ab746`: production executor/frontier/cancellation semantics не менялись. Focused 20-repeat и полный crate suite 52/52 прошли; финальный stable coverage квалифицирован по `mem:testing/coverage`.
+
 ## Cancellation vocabulary correction (2026-07-18)
 - После полного удаления product-фичи stop-after-current публичный `DiscoveryCancellationCause` содержит шесть причин: `UserCancelled`, `Superseded`, `TransportStop`, `StructuralInvalidation`, `LifecycleSuspended`, `LifecycleShutdown`. Удалённый `StopAfterCurrent` не должен возвращаться как неиспользуемый generic placeholder.
 - Executor/job cancellation semantics, first-writer-wins, bounded cleanup и app-neutral ownership не изменены; 52 focused tests и full workspace all-features suite прошли.
