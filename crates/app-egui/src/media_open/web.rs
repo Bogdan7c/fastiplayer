@@ -469,6 +469,8 @@ pub(crate) struct WebMediaOpenSettings {
     pub(crate) network_config: rustiplayer_config::NetworkConfig,
     pub(crate) web_media_config: rustiplayer_config::WebMediaConfig,
     pub(crate) yt_dlp_config: rustiplayer_config::YtDlpConfig,
+    /// Один injected extractor owner сопровождает весь open/reopen attempt.
+    pub(crate) extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,
     pub(crate) demux_config: rustiplayer_config::PlayerDemuxConfig,
     pub(crate) preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
     pub(crate) system_capabilities: Box<capability_core::SystemCapabilities>,
@@ -486,6 +488,7 @@ impl WebMediaOpenSettings {
             network_config: app_config.network.clone(),
             web_media_config: app_config.web_media.clone(),
             yt_dlp_config: app_config.yt_dlp.clone(),
+            extractor_adapter: service_ytdlp::YtDlpExtractorAdapter::default(),
             demux_config: app_config.player.demux,
             preferred_video_codec_order: app_config.player.preferred_video_codec_order.clone(),
             system_capabilities: Box::new(system_capabilities.clone()),

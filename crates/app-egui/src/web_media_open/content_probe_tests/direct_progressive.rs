@@ -48,6 +48,15 @@ impl ExtractorProcessLauncher for ZeroProcessSpy {
 }
 
 impl ZeroProcessSpy {
+    /// Делает spy единственным extractor owner-ом конкретного lifecycle attempt-а.
+    pub(crate) fn install_as_attempt_owner(
+        self: &Arc<Self>,
+        settings: &mut crate::media_open::WebMediaOpenSettings,
+    ) {
+        settings.yt_dlp_config.enabled = true;
+        settings.extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(self.clone());
+    }
+
     /// Возвращает exact число попыток запуска child process-а.
     pub(crate) fn invocation_count(&self) -> usize {
         self.invocation_count.load(Ordering::SeqCst)
@@ -125,12 +134,18 @@ fn seekable_http_ogg_reaches_pcm_and_preserves_request_counts_on_seek_reopen() {
             ogg_bytes: vorbis::large_vorbis_fixture(),
             maximum_successful_requests: 6,
         });
-    let process_spy = Arc::new(ZeroProcessSpy::default());
-    let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(process_spy.clone());
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
+    let locator = origin.media_url();
+    crate::direct_progressive_open::classify_direct_media_url(&locator)
+        .expect("HTTP Ogg classifier должен принять fixture");
+    assert_eq!(
+        origin.request_count(),
+        0,
+        "direct HTTP classifier не должен fetch-ить root до open"
+    );
 
-    let first_open = open_direct(&origin.media_url(), &app_config);
+    let first_open = open_direct(&locator, &app_config);
     let (mut first_demuxer, _first_endpoint_recovery) = first_open.into_runtime_parts();
     assert_eq!(first_demuxer.seekability(), DemuxSeekability::Seekable);
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
@@ -151,18 +166,13 @@ fn seekable_http_ogg_reaches_pcm_and_preserves_request_counts_on_seek_reopen() {
     );
 
     drop(first_demuxer);
-    let reopened = open_direct(&origin.media_url(), &app_config);
+    let reopened = open_direct(&locator, &app_config);
     let (mut reopened_demuxer, endpoint_recovery) = reopened.into_runtime_parts();
     assert_nonzero_vorbis_pcm(&mut *reopened_demuxer);
     assert_eq!(
         origin.request_count(),
         6,
         "explicit reopen создаёт ровно один новый open cohort"
-    );
-    assert_eq!(
-        process_spy.invocation_count(),
-        0,
-        "open/seek/reopen не запускают yt-dlp"
     );
     endpoint_recovery.observe_endpoint_expiry(direct_expiry_signal());
     assert!(
@@ -222,10 +232,15 @@ fn forward_only_http_ogg_reuses_initial_body_and_rejects_seek() {
 fn ftp_ogg_reaches_pcm_without_http_material_and_tracks_retr_seek_reopen() {
     let origin = FtpVorbisOrigin::spawn(vorbis::large_vorbis_fixture());
     let locator = origin.credentialed_media_url();
-    let process_spy = Arc::new(ZeroProcessSpy::default());
-    let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(process_spy.clone());
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
+    crate::direct_progressive_open::classify_direct_media_url(&locator)
+        .expect("FTP Ogg classifier должен принять fixture");
+    assert_eq!(
+        origin.retrieval_count(),
+        0,
+        "direct FTP classifier не должен выполнять RETR до open"
+    );
 
     let first_open = open_direct(&locator, &app_config);
     let (mut first_demuxer, _first_endpoint_recovery) = first_open.into_runtime_parts();
@@ -246,9 +261,4 @@ fn ftp_ogg_reaches_pcm_without_http_material_and_tracks_retr_seek_reopen() {
     let (mut reopened_demuxer, _reopened_endpoint_recovery) = reopened.into_runtime_parts();
     assert_nonzero_vorbis_pcm(&mut *reopened_demuxer);
     assert!(origin.retrieval_count() > retrievals_after_seek);
-    assert_eq!(
-        process_spy.invocation_count(),
-        0,
-        "FTP open/seek/reopen не запускают yt-dlp"
-    );
 }

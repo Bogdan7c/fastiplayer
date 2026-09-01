@@ -6,7 +6,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use media_core::{DemuxReadEvent, DemuxSeekRequest};
-use service_ytdlp::YtDlpExtractorAdapter;
 use source_core::CancellationToken;
 
 use super::super::*;
@@ -232,11 +231,16 @@ fn native_dynamic_dash_reaches_moving_presentation_audio_and_dvr_without_extract
         HashMap::from([("/fmp4-6000.m4s".to_owned(), 1)]),
     );
     let process_spy = Arc::new(ZeroProcessSpy::default());
-    let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(process_spy.clone());
-    let settings = native_settings();
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
     let source = NativeDashUrl::new(
         server.target("/manifest.mpd"),
         SafeMediaLabel::from_service_safe_label("controlled native DASH live"),
+    );
+    assert_eq!(
+        server.request_count("/manifest.mpd"),
+        0,
+        "syntactic live-DASH classifier не должен fetch-ить root до open"
     );
     let stable_source_identity = source.source_identity();
     let mut prepared = prepare_native_live(&source, None, &settings);
@@ -353,8 +357,8 @@ fn native_dynamic_dash_keeps_profile_network_malformed_and_cancel_failures_disti
         ),
     ]));
     let process_spy = Arc::new(ZeroProcessSpy::default());
-    let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(process_spy.clone());
-    let settings = native_settings();
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
     let source = |path: &str| {
         NativeDashUrl::new(
             server.target(path),

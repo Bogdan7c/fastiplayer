@@ -402,6 +402,11 @@ fn direct_http_webm_reaches_decoded_and_submitted_renderer_frame() {
     let locator = origin.media_url_with_extension("webm");
     let classified = crate::direct_progressive_open::classify_direct_media_url(&locator)
         .expect("WebM должен классифицироваться direct");
+    assert_eq!(
+        origin.request_count(),
+        0,
+        "syntactic classifier не имеет права загружать root resource"
+    );
     let mut app_config = rustiplayer_config::AppConfig::default();
     app_config.yt_dlp.enabled = false;
     let opened = crate::direct_progressive_open::open_direct_media(
@@ -430,8 +435,9 @@ fn direct_http_webm_reaches_decoded_and_submitted_renderer_frame() {
     let decoded_frame = decode_first_frame(demuxer.as_mut(), decoder.as_ref());
     assert_eq!(decoded_frame.generation, DECODE_GENERATION);
     assert!(wgpu_harness.submit_and_release(&materializer, &renderer_provider, decoded_frame,));
-    assert!(
-        origin.request_count() > 0,
-        "WebM open обязан выполнить HTTP request"
+    assert_eq!(
+        origin.request_count(),
+        2,
+        "direct WebM open использует exact probe/read cohort без classifier fetch-а"
     );
 }

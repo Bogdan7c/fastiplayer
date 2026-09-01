@@ -50,6 +50,7 @@ pub(super) fn allocate_component_variant_catalog_generation(
 
 /// Разрешает fresh snapshot либо re-extract + semantic rematch для exact restore.
 pub(super) fn resolve_candidate_snapshot(
+    extractor_adapter: &service_ytdlp::YtDlpExtractorAdapter,
     locator: &YtDlpMediaLocator,
     yt_dlp_config: &YtDlpConfig,
     intent: YtDlpCandidateOpenIntent,
@@ -60,15 +61,14 @@ pub(super) fn resolve_candidate_snapshot(
         YtDlpCandidateOpenIntent::BestPlayable => {
             let source = next_source_identity()?;
             let generation = ExtractionGeneration::new(INITIAL_EXTRACTION_GENERATION);
-            let snapshot = service_ytdlp::YtDlpExtractorAdapter::default()
-                .resolve_candidate_snapshot_with_cancellation(
-                    locator,
-                    source,
-                    generation,
-                    yt_dlp_config,
-                    invocation_reason,
-                    is_cancelled,
-                )?;
+            let snapshot = extractor_adapter.resolve_candidate_snapshot_with_cancellation(
+                locator,
+                source,
+                generation,
+                yt_dlp_config,
+                invocation_reason,
+                is_cancelled,
+            )?;
             Ok((
                 snapshot,
                 ResolvedCandidateIntent::Planner(SelectionRequest::BestPlayable),
@@ -83,15 +83,14 @@ pub(super) fn resolve_candidate_snapshot(
                 .value()
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("YtDlp extraction generation space исчерпан"))?;
-            let snapshot = service_ytdlp::YtDlpExtractorAdapter::default()
-                .resolve_candidate_snapshot_with_cancellation(
-                    locator,
-                    source,
-                    ExtractionGeneration::new(generation_value),
-                    yt_dlp_config,
-                    invocation_reason,
-                    is_cancelled,
-                )?;
+            let snapshot = extractor_adapter.resolve_candidate_snapshot_with_cancellation(
+                locator,
+                source,
+                ExtractionGeneration::new(generation_value),
+                yt_dlp_config,
+                invocation_reason,
+                is_cancelled,
+            )?;
             let matched = snapshot
                 .rematch_exact(&previous)
                 .context("Fresh YtDlp snapshot не содержит semantic match exact selection")?;
@@ -120,15 +119,14 @@ pub(super) fn resolve_candidate_snapshot(
                 .value()
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("YtDlp extraction generation space исчерпан"))?;
-            let snapshot = service_ytdlp::YtDlpExtractorAdapter::default()
-                .resolve_candidate_snapshot_with_cancellation(
-                    locator,
-                    source,
-                    ExtractionGeneration::new(generation_value),
-                    yt_dlp_config,
-                    invocation_reason,
-                    is_cancelled,
-                )?;
+            let snapshot = extractor_adapter.resolve_candidate_snapshot_with_cancellation(
+                locator,
+                source,
+                ExtractionGeneration::new(generation_value),
+                yt_dlp_config,
+                invocation_reason,
+                is_cancelled,
+            )?;
             let (_, selection, candidate) = snapshot
                 .rematch_composed(&composed.selection)
                 .context("Fresh YtDlp snapshot не содержит composed semantic match")?;

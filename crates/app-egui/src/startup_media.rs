@@ -679,11 +679,13 @@ pub(crate) fn resolve_yt_dlp_startup_media(
     cancellation: source_core::CancellationToken,
     is_cancelled: impl Fn() -> bool,
 ) -> Result<PreparedYtDlpStartupMedia> {
+    let extractor_adapter = service_ytdlp::YtDlpExtractorAdapter::default();
     let prepared = crate::web_media_open::prepare_yt_dlp_web_media(
         source_locator,
         &app_config.network,
         &app_config.web_media,
         &app_config.yt_dlp,
+        &extractor_adapter,
         &app_config.player.demux,
         &app_config.player.preferred_video_codec_order,
         system_capabilities,

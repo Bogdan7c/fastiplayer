@@ -16,6 +16,7 @@ use web_media_transport_api::{SourceGeneration, TransportProviderId};
 pub(crate) struct AppDashEndpointRefreshPort {
     locator: YtDlpMediaLocator,
     yt_dlp_config: YtDlpConfig,
+    extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,
     network_config: NetworkConfig,
     source_config: SourceRuntimeConfig,
     provider_id: TransportProviderId,
@@ -60,6 +61,7 @@ impl AppDashEndpointRefreshPort {
     pub(crate) fn new(
         locator: YtDlpMediaLocator,
         yt_dlp_config: YtDlpConfig,
+        extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,
         network_config: NetworkConfig,
         source_config: SourceRuntimeConfig,
         provider_id: TransportProviderId,
@@ -70,6 +72,7 @@ impl AppDashEndpointRefreshPort {
         Self {
             locator,
             yt_dlp_config,
+            extractor_adapter,
             network_config,
             source_config,
             provider_id,
@@ -91,7 +94,8 @@ impl DashEndpointRefreshPort for AppDashEndpointRefreshPort {
             return Err(DashEndpointRefreshError::Cancelled);
         }
         let extraction_generation = self.extraction_generations.allocate()?;
-        let snapshot = service_ytdlp::YtDlpExtractorAdapter::default()
+        let snapshot = self
+            .extractor_adapter
             .resolve_candidate_snapshot_with_cancellation(
                 &self.locator,
                 self.semantic_anchor.exact_identity().source(),

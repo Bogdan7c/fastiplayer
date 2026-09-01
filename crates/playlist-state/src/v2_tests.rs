@@ -480,8 +480,28 @@ fn v2_rejects_invalid_span_and_bounded_payloads_without_secret_diagnostics() {
 fn transient_request_material_is_structurally_unrepresentable_in_v2_dto() {
     let temp_dir = TempDir::new().expect("tempdir");
     let state_path = temp_dir.path().join("playlist-state.json");
+    let serialized_baseline = serialized_mixed_state();
+    let baseline_text = String::from_utf8(serialized_baseline.clone())
+        .expect("playlist-state writer обязан выдавать UTF-8 JSON");
     let baseline: Value =
-        serde_json::from_slice(&serialized_mixed_state()).expect("baseline JSON parses");
+        serde_json::from_slice(&serialized_baseline).expect("baseline JSON parses");
+
+    for forbidden_field in [
+        "format_url",
+        "manifest_url",
+        "fragment_url",
+        "key_url",
+        "signed_endpoint",
+        "query_payload",
+        "headers",
+        "cookies",
+        "authorization",
+    ] {
+        assert!(
+            !baseline_text.contains(&format!("\"{forbidden_field}\"")),
+            "playlist-state writer не должен публиковать transient field {forbidden_field}"
+        );
+    }
 
     for forbidden_kind in [
         "format_url",
@@ -489,6 +509,7 @@ fn transient_request_material_is_structurally_unrepresentable_in_v2_dto() {
         "fragment_url",
         "key_url",
         "signed_endpoint",
+        "query_payload",
         "headers",
         "cookies",
         "authorization_or_session",
@@ -508,6 +529,7 @@ fn transient_request_material_is_structurally_unrepresentable_in_v2_dto() {
         "fragment_url",
         "key_url",
         "signed_endpoint",
+        "query_payload",
         "headers",
         "cookies",
         "authorization",
@@ -517,10 +539,9 @@ fn transient_request_material_is_structurally_unrepresentable_in_v2_dto() {
             .as_object_mut()
             .expect("service locator is an object")
             .insert(forbidden_field.to_owned(), json!("must-never-persist"));
-        assert_eq!(
-            inspect_corrupt_cause(&state_path, &case),
-            CorruptStateCause::InvalidV2Payload
-        );
+        let cause = inspect_corrupt_cause(&state_path, &case);
+        assert_eq!(cause, CorruptStateCause::InvalidV2Payload);
+        assert!(!format!("{cause:?}").contains("must-never-persist"));
     }
 }
 

@@ -48,6 +48,7 @@ where
     pub(super) locator: &'context YtDlpMediaLocator,
     pub(super) network_config: &'context NetworkConfig,
     pub(super) yt_dlp_config: &'context YtDlpConfig,
+    pub(super) extractor_adapter: &'context service_ytdlp::YtDlpExtractorAdapter,
     pub(super) candidate_snapshot: &'context YtDlpCandidateSnapshot,
     pub(super) runtime: &'context WebOpenRuntime,
     pub(super) component_selection_intent: &'context YtDlpComponentSelectionOpenIntent,
@@ -97,6 +98,7 @@ where
                     crate::web_media_hls_refresh::AppHlsEndpointRefreshPort::new(
                         self.locator.clone(),
                         self.yt_dlp_config.clone(),
+                        self.extractor_adapter.clone(),
                         self.network_config.clone(),
                         self.runtime.source_config.clone(),
                         self.runtime.provider_id.clone(),
@@ -113,6 +115,7 @@ where
                     crate::web_media_dash_refresh::AppDashEndpointRefreshPort::new(
                         self.locator.clone(),
                         self.yt_dlp_config.clone(),
+                        self.extractor_adapter.clone(),
                         self.network_config.clone(),
                         self.runtime.source_config.clone(),
                         self.runtime.provider_id.clone(),

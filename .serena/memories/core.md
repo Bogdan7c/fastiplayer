@@ -1,3 +1,9 @@
+## N13B extractor invocation/redaction/persistence ratchet (2026-09-01)
+
+- App web open/reopen attempts теперь реально несут один injected `YtDlpExtractorAdapter`; native fallback и extractor-backed HLS/DASH refresh не создают скрытый Default launcher, поэтому process spy наблюдает production boundary.
+- Exact source ratchets фиксируют единственный production `Command::spawn`, candidate/topology owned-launcher entrypoints и полный app allowlist provider DTO; active source/playlist DTO shapes запрещают ephemeral endpoint/header/cookie material.
+- 11 direct rows подтверждены existing functional verticals с честным zero-spawn proof и classifier-before-open request accounting; две page fixtures дают exact `PageMediaResolution` и один разрешённый spawn. Полные boundaries/tests/§6.3: `mem:media-services/native-web-ingress-n13b-2026-09-01`. Следующая session — G2.
+
 ## N13A source-owned cross-protocol recovery/fallback closure (2026-09-01)
 
 - HLS/DASH/Smooth/HDS публикуют только neutral `WebMediaFallbackTrigger`; единый app-owned `NativeWebFallbackOwner` сохраняет exact extractor reason, допускает максимум один allowlisted pre-Installed attempt и fail-closed запрещает весь post-Installed fallback.

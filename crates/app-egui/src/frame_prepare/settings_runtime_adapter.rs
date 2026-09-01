@@ -150,6 +150,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         network_config: config.network.clone(),
                         web_media_config: config.web_media.clone(),
                         yt_dlp_config: config.yt_dlp.clone(),
+                        extractor_adapter: service_ytdlp::YtDlpExtractorAdapter::default(),
                         demux_config: config.demux,
                         preferred_video_codec_order: config.preferred_video_codec_order.clone(),
                         system_capabilities: Box::new(system_capabilities),

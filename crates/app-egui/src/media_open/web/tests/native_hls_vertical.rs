@@ -24,7 +24,6 @@ use media_core::{DemuxReadEvent, DemuxRetryHint, Demuxer, MediaTime, TrackKind};
 use player_core::PreparedInitialPosition;
 use render_wgpu_video::HostPlanarWgpuFrameMaterializer;
 use rustiplayer_config::{AppConfig, VideoCodec};
-use service_ytdlp::YtDlpExtractorAdapter;
 use source_core::CancellationToken;
 use video_frame_contract::VideoFrameContract;
 use web_media_hls::HlsVodStartIntent;
@@ -515,11 +514,16 @@ pub(super) fn native_request_parts(
 fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extractor() {
     let server = ControlledHlsServer::start(fixture_routes());
     let process_spy = Arc::new(ZeroProcessSpy::default());
-    let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(process_spy.clone());
-    let settings = native_settings();
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
     let source = NativeHlsUrl::new(
         server.target("/master.m3u8"),
         SafeMediaLabel::from_service_safe_label("controlled native HLS master"),
+    );
+    assert_eq!(
+        server.request_count("/master.m3u8"),
+        0,
+        "syntactic HLS classifier не должен fetch-ить root до open"
     );
     let stable_source_identity = source.source_identity();
     let mut wgpu_harness = OffscreenWgpuHarness::new();

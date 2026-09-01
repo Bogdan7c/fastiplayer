@@ -17,7 +17,6 @@ use codec_core::{
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer};
 use player_core::{PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, PreparedDemuxSeekRequestId};
 use rustiplayer_config::{AppConfig, VideoCodec};
-use service_ytdlp::YtDlpExtractorAdapter;
 use source_core::CancellationToken;
 use video_frame_contract::VideoFrameContract;
 use web_media_core::ComponentVariantSemanticSelectionRequest;
@@ -297,11 +296,16 @@ fn wait_for_tracks_changed(demuxer: &mut dyn Demuxer) {
 fn native_smooth_switch_seek_reopen_reaches_h264_aac_without_extractor() {
     let server = ControlledHlsServer::start(fixture_routes());
     let process_spy = Arc::new(ZeroProcessSpy::default());
-    let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(process_spy.clone());
-    let settings = native_settings();
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
     let source = NativeSmoothUrl::new(
         server.target("/vod/Manifest"),
         SafeMediaLabel::from_service_safe_label("controlled native Smooth Manifest"),
+    );
+    assert_eq!(
+        server.request_count("/vod/Manifest"),
+        0,
+        "syntactic Smooth classifier не должен fetch-ить root до open"
     );
     let stable_source_identity = source.source_identity();
     let mut wgpu_harness = OffscreenWgpuHarness::new();
@@ -462,9 +466,9 @@ fn failure_routes() -> HashMap<String, Vec<Vec<u8>>> {
 #[test]
 fn native_smooth_keeps_profile_and_terminal_failures_distinct_without_extractor() {
     let server = ControlledHlsServer::start(failure_routes());
-    let settings = native_settings();
     let process_spy = Arc::new(ZeroProcessSpy::default());
-    let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(process_spy.clone());
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
     let source = |path: &str| {
         NativeSmoothUrl::new(
             server.target(path),

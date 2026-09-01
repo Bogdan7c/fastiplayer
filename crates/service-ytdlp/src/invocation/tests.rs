@@ -161,6 +161,96 @@ printf '%s\n' '{"title":"YouTube-like title","duration":42,"is_live":false,"live
     );
 }
 
+/// Вторая public-page fixture получает тот же точный reason и ровно один spawn.
+#[cfg(unix)]
+#[test]
+fn html_page_snapshot_uses_page_reason_and_one_primary_spawn() {
+    let fixture = HermeticFixtureDirectory::create("html-page");
+    fixture.install_yt_dlp(
+        r#"#!/bin/sh
+printf '%s\n' '{"title":"HTML page title","duration":12,"is_live":false,"live_status":"not_live","webpage_url":"https://www.w3schools.com/html/mov_bbb.mp4","extractor_key":"Generic","formats":[{"format_id":"http-720","url":"https://media.invalid/mov_bbb.mp4?token=ephemeral","protocol":"https","ext":"mp4","container":"mp4","vcodec":"avc1.42001E","acodec":"mp4a.40.2","http_headers":{"Authorization":"Bearer fixture-secret"},"cookies":"session=fixture-secret"}]}'
+"#,
+    );
+    let spy = Arc::new(HermeticSpyLauncher::new(fixture.path()));
+    let adapter = YtDlpExtractorAdapter::with_process_launcher(spy.clone());
+    let locator =
+        crate::parse_yt_dlp_media_locator("https://www.w3schools.com/html/html5_video.asp")
+            .expect("parse HTML-page fixture locator");
+
+    let snapshot = adapter
+        .resolve_candidate_snapshot_with_cancellation(
+            &locator,
+            SourceIdentity::new(3004),
+            ExtractionGeneration::new(1),
+            &extractor_config(Duration::from_secs(2)),
+            ExtractorInvocationReason::PageMediaResolution,
+            &|| false,
+        )
+        .expect("resolve HTML-page candidate snapshot");
+
+    assert_eq!(snapshot.accepted_candidates().count(), 1);
+    assert_eq!(
+        spy.invocations(),
+        vec![ExtractorProcessInvocation::new(
+            ExtractorInvocationReason::PageMediaResolution,
+            ExtractorProcessPhase::CandidatePrimary,
+        )]
+    );
+    let safe_debug = format!("{snapshot:?}");
+    for secret in ["ephemeral", "fixture-secret", "Authorization", "session="] {
+        assert!(!safe_debug.contains(secret));
+    }
+}
+
+/// Собирает production Rust sources, исключая отдельные test modules.
+fn collect_production_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(directory).expect("service source directory должна читаться")
+    {
+        let path = entry.expect("service source entry должна читаться").path();
+        if path.is_dir() {
+            collect_production_rust_sources(&path, sources);
+        } else if path.extension().is_some_and(|extension| extension == "rs")
+            && path.file_name().is_none_or(|name| name != "tests.rs")
+        {
+            sources.push(path);
+        }
+    }
+}
+
+/// Все OS child starts обязаны пройти единственный instance-injected launcher.
+#[test]
+fn production_process_spawn_entrypoints_match_exact_injected_owner_allowlist() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut rust_sources = Vec::new();
+    collect_production_rust_sources(&source_root, &mut rust_sources);
+    let mut direct_spawn_sources = Vec::new();
+    let mut owned_launcher_sources = Vec::new();
+
+    for source_path in rust_sources {
+        let relative_path = source_path
+            .strip_prefix(&source_root)
+            .expect("collected service source обязан быть внутри src")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = fs::read_to_string(&source_path).expect("service Rust source должен читаться");
+        let direct_spawn_count = source.matches(".spawn()").count();
+        direct_spawn_sources.extend(std::iter::repeat_n(
+            relative_path.clone(),
+            direct_spawn_count,
+        ));
+        let owned_launcher_count = source.matches("spawn_owned_process_with_launcher(").count();
+        owned_launcher_sources.extend(std::iter::repeat_n(relative_path, owned_launcher_count));
+    }
+    direct_spawn_sources.sort();
+    owned_launcher_sources.sort();
+
+    assert_eq!(direct_spawn_sources, ["invocation.rs"]);
+    assert_eq!(
+        owned_launcher_sources,
+        ["process.rs", "process_tree.rs", "topology/process.rs"]
+    );
+}
+
 /// HTML platform-hijack recovery сохраняет formats/title и reason каждого subprocess-а.
 #[cfg(unix)]
 #[test]

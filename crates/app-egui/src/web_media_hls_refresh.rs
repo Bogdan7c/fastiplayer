@@ -16,6 +16,7 @@ use web_media_transport_api::{SourceGeneration, TransportProviderId};
 pub(crate) struct AppHlsEndpointRefreshPort {
     locator: YtDlpMediaLocator,
     yt_dlp_config: YtDlpConfig,
+    extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,
     network_config: NetworkConfig,
     source_config: SourceRuntimeConfig,
     provider_id: TransportProviderId,
@@ -28,6 +29,7 @@ impl AppHlsEndpointRefreshPort {
     pub(crate) fn new(
         locator: YtDlpMediaLocator,
         yt_dlp_config: YtDlpConfig,
+        extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,
         network_config: NetworkConfig,
         source_config: SourceRuntimeConfig,
         provider_id: TransportProviderId,
@@ -37,6 +39,7 @@ impl AppHlsEndpointRefreshPort {
         Self {
             locator,
             yt_dlp_config,
+            extractor_adapter,
             network_config,
             source_config,
             provider_id,
@@ -66,7 +69,8 @@ impl HlsEndpointRefreshPort for AppHlsEndpointRefreshPort {
             .checked_add(1)
             .map(ExtractionGeneration::new)
             .ok_or(HlsEndpointRefreshError::AttemptsExhausted)?;
-        let snapshot = service_ytdlp::YtDlpExtractorAdapter::default()
+        let snapshot = self
+            .extractor_adapter
             .resolve_candidate_snapshot_with_cancellation(
                 &self.locator,
                 previous.exact_identity().source(),

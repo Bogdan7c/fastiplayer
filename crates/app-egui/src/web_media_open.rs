@@ -205,6 +205,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
     network_config: &NetworkConfig,
     web_media_config: &WebMediaConfig,
     yt_dlp_config: &YtDlpConfig,
+    extractor_adapter: &service_ytdlp::YtDlpExtractorAdapter,
     demux_config: &PlayerDemuxConfig,
     preferred_video_codec_order: &[ConfigVideoCodec],
     system_capabilities: &capability_core::SystemCapabilities,
@@ -227,6 +228,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         YtDlpCandidateOpenIntent::Composed(composed) => composed.preference,
     };
     let (candidate_snapshot, resolved_intent) = preparation::resolve_candidate_snapshot(
+        extractor_adapter,
         locator,
         yt_dlp_config,
         intent,
@@ -268,6 +270,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         locator,
         network_config,
         yt_dlp_config,
+        extractor_adapter,
         candidate_snapshot: &candidate_snapshot,
         runtime: &runtime,
         component_selection_intent: &component_selection_intent,
@@ -615,6 +618,7 @@ mod tests {
             &NetworkConfig::default(),
             &WebMediaConfig::default(),
             &YtDlpConfig::default(),
+            &service_ytdlp::YtDlpExtractorAdapter::default(),
             &PlayerDemuxConfig::default(),
             &[ConfigVideoCodec::Vp9],
             &capability_core::SystemCapabilities::empty(1),

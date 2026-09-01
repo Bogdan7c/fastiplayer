@@ -18,7 +18,6 @@ use codec_core::{
 use media_core::{DemuxSeekRequest, TrackKind};
 use player_core::{PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, PreparedDemuxSeekRequestId};
 use rustiplayer_config::{AppConfig, VideoCodec};
-use service_ytdlp::YtDlpExtractorAdapter;
 use source_core::CancellationToken;
 use video_frame_contract::VideoFrameContract;
 
@@ -350,11 +349,16 @@ fn assert_vod_seek(seek_port: &dyn PreparedDemuxSeekPort) {
 fn native_static_dash_switch_seek_reopen_reaches_h264_aac_and_vp9_opus_without_extractor() {
     let server = ControlledHlsServer::start(fixture_routes());
     let process_spy = Arc::new(ZeroProcessSpy::default());
-    let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(process_spy.clone());
-    let settings = native_settings();
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
     let source = NativeDashUrl::new(
         server.target("/manifest.mpd"),
         SafeMediaLabel::from_service_safe_label("controlled native DASH MPD"),
+    );
+    assert_eq!(
+        server.request_count("/manifest.mpd"),
+        0,
+        "syntactic DASH classifier не должен fetch-ить root до open"
     );
     let stable_source_identity = source.source_identity();
     let mut wgpu_harness = OffscreenWgpuHarness::new();

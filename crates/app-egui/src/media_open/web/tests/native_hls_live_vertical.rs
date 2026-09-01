@@ -6,7 +6,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use media_core::DemuxReadEvent;
-use service_ytdlp::YtDlpExtractorAdapter;
 use web_media_hls::HlsVodStartIntent;
 
 use super::super::*;
@@ -209,11 +208,16 @@ fn native_sliding_hls_live_reaches_moving_frame_audio_and_expires_old_dvr_withou
         HashMap::from([("/ts-2.ts".to_owned(), 1)]),
     );
     let process_spy = Arc::new(ZeroProcessSpy::default());
-    let _extractor_adapter = YtDlpExtractorAdapter::with_process_launcher(process_spy.clone());
-    let settings = native_settings();
+    let mut settings = native_settings();
+    process_spy.install_as_attempt_owner(&mut settings);
     let source = NativeHlsUrl::new(
         server.target("/master.m3u8"),
         SafeMediaLabel::from_service_safe_label("controlled native HLS live"),
+    );
+    assert_eq!(
+        server.request_count("/master.m3u8"),
+        0,
+        "syntactic live-HLS classifier не должен fetch-ить root до open"
     );
     let mut prepared = prepare_native(&source, None, &settings, HlsVodStartIntent::Beginning);
     assert_eq!(server.request_count("/master.m3u8"), 1);
