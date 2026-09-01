@@ -55,6 +55,7 @@ impl WebMediaSourceIntent {
             }
             WebMediaSourceAdapter::NativeHls { .. }
             | WebMediaSourceAdapter::NativeDash { .. }
+            | WebMediaSourceAdapter::NativeSmooth { .. }
             | WebMediaSourceAdapter::Extractor { .. } => true,
         }
     }
@@ -117,6 +118,27 @@ impl WebMediaSourceIntent {
                     ))
                 }
             },
+            WebMediaSourceAdapter::NativeSmooth {
+                source,
+                source_state,
+            } => match intent {
+                WebMediaSelectionSwitchIntent::CatalogTarget(
+                    crate::web_media_catalog::WebMediaSelectionTarget::InstalledOnly,
+                ) => WebMediaSelectionSwitchResolution::NoChange,
+                WebMediaSelectionSwitchIntent::CatalogTarget(_) => {
+                    WebMediaSelectionSwitchResolution::Unsupported
+                }
+                WebMediaSelectionSwitchIntent::ComponentSemantic(selection) => {
+                    let Some(intent) = source_state.switch_intent_for_component(selection) else {
+                        return WebMediaSelectionSwitchResolution::Stale;
+                    };
+                    WebMediaSelectionSwitchResolution::Ready(WebMediaOpenRequest::native_smooth(
+                        source.clone(),
+                        intent,
+                        settings,
+                    ))
+                }
+            },
             WebMediaSourceAdapter::Extractor {
                 locator,
                 source_state,
@@ -173,6 +195,14 @@ impl WebMediaSourceIntent {
                 source,
                 source_state,
             } => WebMediaOpenRequest::native_dash(
+                source.clone(),
+                source_state.installed_reopen_intent(),
+                adaptive_settings,
+            ),
+            WebMediaSourceAdapter::NativeSmooth {
+                source,
+                source_state,
+            } => WebMediaOpenRequest::native_smooth(
                 source.clone(),
                 source_state.installed_reopen_intent(),
                 adaptive_settings,

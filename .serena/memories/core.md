@@ -1,3 +1,10 @@
+## N11 native Smooth Streaming VOD без yt-dlp (2026-09-01)
+
+- Direct HTTP(S) `/Manifest` теперь admitted по syntactic path hint и authoritatively подтверждается existing Smooth parser/static H.264/AAC profile; первый bounded root response передаётся existing discovery/runtime без второго GET.
+- Neutral catalog, exact semantic component selection, receipted VOD seek, switch/reopen и stable-root recovery используют существующий Smooth runtime; durable source хранит только stable root/lineage/selection, а process spy остаётся 0.
+- Initial fallback разрешён только для foreign root или HTTP 401/403 auth; network/cancel/malformed/live/DRM/private/unsupported codec/native profile остаются distinct typed terminal errors без fallback.
+- Hermetic three-run vertical достигает FFmpeg H.264 -> WGPU submit/release и AAC -> nonzero PCM с exact root request accounting. Полные boundaries, tests, §6.3 и limitations: `mem:media-services/native-smooth-vod-n11-2026-09-01`. N12 не начинался.
+
 ## N10 native dynamic DASH live/DVR без yt-dlp (2026-09-01)
 
 - Supported direct dynamic MPD теперь проходит native fetched-body classification/catalog и existing S35 runtime без extractor; first root GET не повторяется, а stale fetched bytes не replay-ятся после initial open.

@@ -23,28 +23,68 @@ use source_core::{CancellationToken, SourceRuntimeConfig};
 use symphonia_demux::PresentationWindowOrderedIsoMp4Demuxer;
 use web_media_adaptive::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
 use web_media_core::{
-    ComponentVariantCatalogLimit, PreferredHeightPolicy, StreamLayout, TransportFamily,
+    ComponentVariantCatalog, ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit,
+    ExactSelectionIdentity, PreferredHeightPolicy, StreamLayout, TransportFamily,
+    WebMediaSelection, WebMediaSelectionRematchSource, WebMediaSelectionShape,
+    WebMediaSemanticSelectionRequest,
 };
 use web_media_smooth::{
     AggregateInitializationByteLimit, FragmentInitializationLimits, FragmentInspectionLimits,
     FragmentWriteLimits, SmoothAudioDemuxOpenRequest, SmoothCatalogDiscoveryPolicy,
-    SmoothCatalogDiscoveryRequest, SmoothFragmentSourcePolicy, SmoothIsoBmffDemuxFactory,
-    SmoothManifestLimits, SmoothPreparationPolicy, SmoothPrepareRequest,
+    SmoothCatalogDiscoveryRequest, SmoothFetchedManifestInput, SmoothFragmentSourcePolicy,
+    SmoothIsoBmffDemuxFactory, SmoothManifestLimits, SmoothPreparationPolicy, SmoothPrepareRequest,
     SmoothVideoDemuxOpenRequest, SmoothVodDemuxPolicy, discover_smooth_vod_catalog,
     prepare_smooth_vod,
 };
-use web_media_transport_api::TransportProviderId;
+use web_media_transport_api::{TransportOpenRequest, TransportProviderId};
 
 use super::{PreparedComponentVariantCatalog, YtDlpComponentSelectionOpenIntent};
 
 /// Готовый до player commit-а Smooth VOD candidate.
-pub(super) struct PreparedSmoothCandidate {
+pub(crate) struct PreparedSmoothCandidate {
     /// Nonblocking demuxer с worker-owned fragment I/O.
-    pub(super) demuxer: Box<dyn Demuxer + Send>,
+    pub(crate) demuxer: Box<dyn Demuxer + Send>,
     /// Neutral receipted seek boundary этого exact runtime-а.
-    pub(super) seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
     /// Fresh catalog и установленный exact provider selection.
-    pub(super) component_variants: PreparedComponentVariantCatalog,
+    pub(crate) component_variants: PreparedComponentVariantCatalog,
+}
+
+/// Named direct-ingress request к тому же Smooth composition owner-у.
+pub(crate) struct NativeSmoothCandidatePreparation<'request> {
+    /// Provider-neutral presentation-manifest transport intent.
+    pub(crate) transport: TransportOpenRequest,
+    /// Первый root response и exact HTTP context без повторной загрузки.
+    pub(crate) fetched_manifest: SmoothFetchedManifestInput,
+    /// Shared source runtime configuration.
+    pub(crate) source_config: &'request SourceRuntimeConfig,
+    /// App network policy определяет все adaptive budgets.
+    pub(crate) network_config: &'request NetworkConfig,
+    /// Единственный production ISO-BMFF registry обеих осей.
+    pub(crate) demux_registry: Arc<DemuxRegistry>,
+    /// Fresh catalog identity текущего stable-root snapshot-а.
+    pub(crate) catalog_identity: ComponentVariantCatalogIdentity,
+    /// Fresh exact parent того же catalog snapshot-а.
+    pub(crate) fresh_parent: ExactSelectionIdentity,
+    /// Capability proof из immutable app snapshot-а.
+    pub(crate) capability_probe:
+        &'request crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+    /// Global preferred-height policy применяется только к initial provider default.
+    pub(crate) preferred_height: PreferredHeightPolicy,
+    /// Installed switch/reopen передаёт provider-neutral semantic intent.
+    pub(crate) expected_selection: Option<&'request WebMediaSemanticSelectionRequest>,
+}
+
+/// Native result возвращает neutral selection рядом с тем же opened catalog snapshot-ом.
+pub(crate) struct PreparedNativeSmoothCandidate {
+    /// Existing Smooth composite demux runtime.
+    pub(crate) demuxer: Box<dyn Demuxer + Send>,
+    /// Worker-receipted VOD seek port.
+    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    /// Canonical neutral selection установленного fresh snapshot-а.
+    pub(crate) neutral_selection: WebMediaSelection,
+    /// Тот же immutable catalog для sidebar/switch/reopen projection.
+    pub(crate) component_catalog: Arc<ComponentVariantCatalog>,
 }
 
 /// Concrete S28A adapters используют один app-owned registry.
@@ -242,6 +282,65 @@ pub(super) fn prepare_smooth_candidate(
             catalog: Arc::new(catalog),
             provider_selection: selected,
         },
+    })
+}
+
+/// Direct ingress переиспользует existing discovery/runtime и fetched root handoff.
+pub(crate) fn prepare_native_smooth_candidate(
+    request: NativeSmoothCandidatePreparation<'_>,
+) -> Result<PreparedNativeSmoothCandidate> {
+    let adaptive_limits =
+        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)
+            .context("Не удалось собрать native Smooth adaptive transport limits")?;
+    let preparation = SmoothPrepareRequest::new(
+        request.transport,
+        request.source_config,
+        request.catalog_identity.generation(),
+        request.preferred_height,
+        preparation_policy(adaptive_limits)?,
+    )
+    .with_fetched_manifest(request.fetched_manifest);
+    let factory = Arc::new(AppSmoothIsoBmffDemuxFactory::new(request.demux_registry)?);
+    let discovered = discover_smooth_vod_catalog(SmoothCatalogDiscoveryRequest::new(
+        preparation,
+        factory,
+        request.capability_probe,
+        discovery_policy(adaptive_limits)?,
+    ))
+    .context("native Smooth catalog discovery failed")?;
+    let component_catalog = Arc::new(discovered.catalog().clone());
+    let neutral_selection = match request.expected_selection {
+        Some(expected) => expected
+            .rematch(
+                request.fresh_parent.clone(),
+                WebMediaSelectionRematchSource::ComponentCatalog(&component_catalog),
+            )
+            .context("native Smooth semantic selection rematch failed")?,
+        None => WebMediaSelection::with_components(
+            request.fresh_parent,
+            discovered.provider_default_selection().clone(),
+        )
+        .context("native Smooth provider default нарушил catalog parent identity")?,
+    };
+    let WebMediaSelectionShape::Components(selected) = neutral_selection.shape() else {
+        bail!("native Smooth selection потерял component catalog shape");
+    };
+    let opened = discovered
+        .open_exact(
+            selected.exact_selection_request(),
+            fragment_source_policy(adaptive_limits)?,
+            demux_policy()?,
+        )
+        .context("native Smooth exact selection open failed")?;
+    let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(SmoothPreparedDemuxSeekPort {
+        handle: opened.async_seek_handle(),
+    });
+
+    Ok(PreparedNativeSmoothCandidate {
+        demuxer: opened.into_demuxer(),
+        seek_port,
+        neutral_selection,
+        component_catalog,
     })
 }
 

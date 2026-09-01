@@ -54,4 +54,9 @@ pub(crate) enum PreparedStartupMedia {
         source: crate::media_open::NativeDashUrl,
         prepared: Box<super::super::native_dash::PreparedNativeDashMedia>,
     },
+    /// Native Smooth сохраняет VOD recovery attachment до app composition.
+    NativeSmooth {
+        source: crate::media_open::NativeSmoothUrl,
+        prepared: Box<super::super::native_smooth::PreparedNativeSmoothMedia>,
+    },
 }

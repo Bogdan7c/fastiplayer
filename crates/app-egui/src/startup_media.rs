@@ -37,6 +37,7 @@ use crate::url_service_adapter::{
 
 pub(crate) mod native_dash;
 pub(crate) mod native_hls;
+pub(crate) mod native_smooth;
 mod orchestration;
 mod pending_install;
 mod playlist;
@@ -45,6 +46,7 @@ mod yt_dlp;
 
 use native_dash::NativeDashStartupJob;
 use native_hls::NativeHlsStartupJob;
+use native_smooth::NativeSmoothStartupJob;
 pub(crate) use orchestration::StartupMediaPhase;
 #[cfg(test)]
 pub(crate) use orchestration::apply_restored_playback_policy;
@@ -318,6 +320,9 @@ pub(crate) struct StartupMediaController {
     /// Mutually-exclusive native static DASH admission/fallback job.
     native_dash_startup_job: Option<NativeDashStartupJob>,
 
+    /// Mutually-exclusive native Smooth admission/fallback job.
+    native_smooth_startup_job: Option<NativeSmoothStartupJob>,
+
     /// Local CLI/restore preparation принадлежит startup owner-у, а не UI picker-у.
     local_startup_job: Option<crate::local_file_open::LocalFileOpenJob>,
 
@@ -369,6 +374,7 @@ impl StartupMediaController {
             direct_media_startup_job: None,
             native_hls_startup_job: None,
             native_dash_startup_job: None,
+            native_smooth_startup_job: None,
             local_startup_job: None,
             startup_playlist_pending: false,
             orchestration: StartupMediaOrchestration::new(cli_requested),
@@ -407,6 +413,11 @@ impl StartupMediaController {
                     .map(NativeDashStartupJob::pending_message)
             })
             .or_else(|| {
+                self.native_smooth_startup_job
+                    .as_ref()
+                    .map(NativeSmoothStartupJob::pending_message)
+            })
+            .or_else(|| {
                 self.local_startup_job
                     .as_ref()
                     .map(|_| "Подготовка local media...")
@@ -423,6 +434,7 @@ impl StartupMediaController {
             || self.direct_media_startup_job.is_some()
             || self.native_hls_startup_job.is_some()
             || self.native_dash_startup_job.is_some()
+            || self.native_smooth_startup_job.is_some()
             || self.local_startup_job.is_some()
             || self.startup_playlist_pending
             || self.orchestration.has_pending_work()

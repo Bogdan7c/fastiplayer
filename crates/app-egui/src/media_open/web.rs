@@ -17,7 +17,8 @@ use web_media_core::{
 
 use super::{
     NativeDashOpenIntent, NativeDashSourceState, NativeDashUrl, NativeHlsOpenIntent,
-    NativeHlsSourceState, NativeHlsUrl, SafeMediaLabel,
+    NativeHlsSourceState, NativeHlsUrl, NativeSmoothOpenIntent, NativeSmoothSourceState,
+    NativeSmoothUrl, SafeMediaLabel,
 };
 
 mod adapter_view;
@@ -68,6 +69,11 @@ enum WebMediaSourceAdapter {
         source: NativeDashUrl,
         source_state: Box<NativeDashSourceState>,
     },
+    /// Native Smooth хранит stable root и neutral catalog state без fragment URL.
+    NativeSmooth {
+        source: NativeSmoothUrl,
+        source_state: Box<NativeSmoothSourceState>,
+    },
     /// Extractor сохраняет neutral selection и временные UI/reopen projections.
     Extractor {
         locator: service_ytdlp::YtDlpMediaLocator,
@@ -117,6 +123,23 @@ impl WebMediaSourceIntent {
             recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
             extractor_reason: None,
             adapter: Box::new(WebMediaSourceAdapter::NativeDash {
+                source,
+                source_state: Box::new(source_state),
+            }),
+        }
+    }
+
+    /// Создаёт proven native Smooth VOD intent без временных fragment endpoints.
+    pub(crate) fn native_smooth(
+        source: NativeSmoothUrl,
+        source_state: NativeSmoothSourceState,
+    ) -> Self {
+        Self {
+            ingress: WebMediaIngressKind::NativeManifest,
+            presentation: WebMediaPresentationKind::Vod,
+            recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
+            extractor_reason: None,
+            adapter: Box::new(WebMediaSourceAdapter::NativeSmooth {
                 source,
                 source_state: Box::new(source_state),
             }),
@@ -175,6 +198,9 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::NativeDash { source_state, .. } => {
                 Some(source_state.neutral_selection())
             }
+            WebMediaSourceAdapter::NativeSmooth { source_state, .. } => {
+                Some(source_state.neutral_selection())
+            }
             WebMediaSourceAdapter::Direct { .. } => None,
         }
     }
@@ -193,6 +219,9 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::NativeDash { source_state, .. } => {
                 Some(source_state.stream_configuration())
             }
+            WebMediaSourceAdapter::NativeSmooth { source_state, .. } => {
+                Some(source_state.stream_configuration())
+            }
             WebMediaSourceAdapter::Direct { .. } => None,
         }
     }
@@ -209,6 +238,9 @@ impl WebMediaSourceIntent {
                 Some(source_state.catalog_attachment())
             }
             WebMediaSourceAdapter::NativeDash { source_state, .. } => {
+                Some(source_state.catalog_attachment())
+            }
+            WebMediaSourceAdapter::NativeSmooth { source_state, .. } => {
                 Some(source_state.catalog_attachment())
             }
             WebMediaSourceAdapter::Direct { .. } => None,
@@ -234,6 +266,15 @@ impl WebMediaSourceIntent {
                 stream_configuration: Some(source_state.stream_configuration()),
             },
             WebMediaSourceAdapter::NativeDash {
+                source,
+                source_state,
+            } => WebMediaSourceReadProjection {
+                ingress: self.ingress,
+                presentation: self.presentation,
+                source_label: source.safe_label().as_str(),
+                stream_configuration: Some(source_state.stream_configuration()),
+            },
+            WebMediaSourceAdapter::NativeSmooth {
                 source,
                 source_state,
             } => WebMediaSourceReadProjection {
@@ -284,6 +325,17 @@ impl WebMediaSourceIntent {
             } => {
                 let settings = adaptive_settings?;
                 WebMediaOpenAdapter::NativeDash {
+                    source: source.clone(),
+                    intent: source_state.installed_reopen_intent(),
+                    settings,
+                }
+            }
+            WebMediaSourceAdapter::NativeSmooth {
+                source,
+                source_state,
+            } => {
+                let settings = adaptive_settings?;
+                WebMediaOpenAdapter::NativeSmooth {
                     source: source.clone(),
                     intent: source_state.installed_reopen_intent(),
                     settings,
@@ -405,6 +457,11 @@ enum WebMediaOpenAdapter {
         intent: NativeDashOpenIntent,
         settings: WebMediaOpenSettings,
     },
+    NativeSmooth {
+        source: NativeSmoothUrl,
+        intent: NativeSmoothOpenIntent,
+        settings: WebMediaOpenSettings,
+    },
     Extractor {
         locator: service_ytdlp::YtDlpMediaLocator,
         selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
@@ -458,6 +515,21 @@ impl WebMediaOpenRequest {
         }
     }
 
+    /// Создаёт native Smooth request с typed pre-Installed fallback intent.
+    pub(crate) fn native_smooth(
+        source: NativeSmoothUrl,
+        intent: NativeSmoothOpenIntent,
+        settings: WebMediaOpenSettings,
+    ) -> Self {
+        Self {
+            adapter: Box::new(WebMediaOpenAdapter::NativeSmooth {
+                source,
+                intent,
+                settings,
+            }),
+        }
+    }
+
     /// Создаёт extractor request с exact typed selection intent.
     pub(crate) fn extractor(
         locator: service_ytdlp::YtDlpMediaLocator,
@@ -481,6 +553,7 @@ impl WebMediaOpenRequest {
             }
             WebMediaOpenAdapter::NativeHls { source, .. } => source.safe_label().clone(),
             WebMediaOpenAdapter::NativeDash { source, .. } => source.safe_label().clone(),
+            WebMediaOpenAdapter::NativeSmooth { source, .. } => source.safe_label().clone(),
             WebMediaOpenAdapter::Extractor { locator, .. } => {
                 SafeMediaLabel::from_service_safe_label(locator.safe_label())
             }

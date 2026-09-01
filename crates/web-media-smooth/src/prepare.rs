@@ -56,7 +56,7 @@ pub fn prepare_smooth_vod(
 
 /// Выполняет общий bounded Manifest fetch/parse, не materializing quality rows.
 pub(crate) fn prepare_manifest(
-    request: SmoothPrepareRequest<'_>,
+    mut request: SmoothPrepareRequest<'_>,
 ) -> Result<SmoothManifestPreparation, SmoothPrepareError> {
     validate_transport_profile(&request)?;
     let initial_target = request
@@ -78,23 +78,33 @@ pub(crate) fn prepare_manifest(
     let catalog_identity =
         ComponentVariantCatalogIdentity::new(parent_identity, request.catalog_generation);
 
-    let http = AdaptiveHttpContext::new(
-        request.transport,
-        request.source_config,
-        request.policy.adaptive_limits,
-        request.policy.adaptive_retry,
-    )
-    .map_err(map_fetch_error)?;
-    let fetch = AdaptiveResourceFetchRequest::full(
-        http.source_generation(),
-        initial_target,
-        http.maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
-        AdaptiveResourcePurpose::Manifest,
-        AdaptiveResourceQueryApplication::BypassScopedQuery,
-    );
-    let fetched = http
-        .fetch_resource_blocking(fetch)
-        .map_err(map_fetch_error)?;
+    let expected_generation = request.transport.source_generation();
+    let (http, fetched) = match request.fetched_manifest.take() {
+        Some(fetched_manifest) => {
+            validate_fetched_manifest_handoff(&request, &fetched_manifest)?;
+            (fetched_manifest.http, fetched_manifest.fetched)
+        }
+        None => {
+            let http = AdaptiveHttpContext::new(
+                request.transport,
+                request.source_config,
+                request.policy.adaptive_limits,
+                request.policy.adaptive_retry,
+            )
+            .map_err(map_fetch_error)?;
+            let fetch = AdaptiveResourceFetchRequest::full(
+                expected_generation,
+                initial_target,
+                http.maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
+                AdaptiveResourcePurpose::Manifest,
+                AdaptiveResourceQueryApplication::BypassScopedQuery,
+            );
+            let fetched = http
+                .fetch_resource_blocking(fetch)
+                .map_err(map_fetch_error)?;
+            (http, fetched)
+        }
+    };
     let effective_manifest_target = fetched.final_target().clone();
     let fragment_secret_forwarding =
         http.resource_secret_forwarding_for(&effective_manifest_target);
@@ -139,6 +149,25 @@ pub(crate) fn prepare_manifest(
         preferred_height: request.preferred_height,
         policy: request.policy,
     })
+}
+
+/// Повторно применяет current caller policy к fetched direct-ingress handoff-у.
+fn validate_fetched_manifest_handoff(
+    request: &SmoothPrepareRequest<'_>,
+    fetched_manifest: &crate::SmoothFetchedManifestInput,
+) -> Result<(), SmoothPrepareError> {
+    if request.transport.source_generation() != fetched_manifest.http.source_generation() {
+        return Err(SmoothPrepareError::FetchedManifestGenerationMismatch);
+    }
+    if request.transport.target().as_http() != Some(&fetched_manifest.selected_target) {
+        return Err(SmoothPrepareError::FetchedManifestTargetMismatch);
+    }
+    if fetched_manifest.fetched.bytes().len()
+        > request.policy.adaptive_limits.maximum_manifest_bytes.get()
+    {
+        return Err(SmoothPrepareError::FetchedManifestTooLarge);
+    }
+    Ok(())
 }
 
 pub(crate) fn into_prepared_catalog(
@@ -269,6 +298,10 @@ mod tests {
         CancellationToken, HttpHeader, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig,
         ValidatedHttpHeaders,
     };
+    use web_media_adaptive::{
+        AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
+        AdaptiveResourceQueryApplication,
+    };
     use web_media_core::{
         CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
         ExtractionGeneration, PreferredHeightPolicy, SemanticIdentity, SourceIdentity,
@@ -283,7 +316,10 @@ mod tests {
     use crate::test_support::{
         CANONICAL_PIFF_MANIFEST, DIFFERING_CLOCKS_MANIFEST, VALID_MANIFEST, parse, policy,
     };
-    use crate::{SmoothPrepareRequest, SmoothProfileError, prepare_smooth_vod};
+    use crate::{
+        SmoothFetchedManifestInput, SmoothPrepareError, SmoothPrepareRequest, SmoothProfileError,
+        prepare_smooth_vod,
+    };
 
     /// Принимает ровно один request и возвращает его headers test thread-у.
     fn serve_once(
@@ -335,6 +371,15 @@ mod tests {
         target: &HttpRequestTarget,
         redirects: RedirectPolicy,
     ) -> TransportOpenRequest {
+        transport_request_with_generation(target, redirects, SourceGeneration::new(17))
+    }
+
+    /// Позволяет focused fetched-handoff tests построить stale generation.
+    fn transport_request_with_generation(
+        target: &HttpRequestTarget,
+        redirects: RedirectPolicy,
+        generation: SourceGeneration,
+    ) -> TransportOpenRequest {
         let source = SourceIdentity::new(91);
         let exact = CandidateIdentity::new(
             source,
@@ -363,12 +408,38 @@ mod tests {
             component,
             target.clone(),
             MediaPresentation::Vod,
-            SourceGeneration::new(17),
+            generation,
             secrets,
             redirects,
             CancellationToken::new(),
         )
         .expect("transport request")
+    }
+
+    /// Загружает root один раз через exact context, который затем передаётся preparation-у.
+    fn fetched_manifest_handoff(
+        target: &HttpRequestTarget,
+        transport: TransportOpenRequest,
+        source_config: &SourceRuntimeConfig,
+        preparation_policy: &crate::SmoothPreparationPolicy,
+    ) -> SmoothFetchedManifestInput {
+        let http = AdaptiveHttpContext::new(
+            transport,
+            source_config,
+            preparation_policy.adaptive_limits,
+            preparation_policy.adaptive_retry,
+        )
+        .expect("adaptive context");
+        let fetched = http
+            .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+                http.source_generation(),
+                target.clone(),
+                http.maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
+                AdaptiveResourcePurpose::Manifest,
+                AdaptiveResourceQueryApplication::BypassScopedQuery,
+            ))
+            .expect("single manifest fetch");
+        SmoothFetchedManifestInput::new(target.clone(), http, fetched)
     }
 
     #[test]
@@ -512,5 +583,167 @@ mod tests {
         let diagnostics = format!("{prepared:?}");
         assert!(!diagnostics.contains("entry.ismc"));
         assert!(!diagnostics.contains("do-not-leak"));
+    }
+
+    #[test]
+    fn fetched_manifest_handoff_is_reused_without_second_root_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("manifest listener");
+        let address = listener.local_addr().expect("manifest address");
+        let target = HttpRequestTarget::parse_exact(format!("http://{address}/Manifest"))
+            .expect("manifest target");
+        let server = serve_once(listener, || {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                VALID_MANIFEST.len(),
+                VALID_MANIFEST
+            )
+            .into_bytes()
+        });
+        let source_config = SourceRuntimeConfig::from_network_config(&NetworkConfig::default())
+            .expect("source config");
+        let preparation_policy = policy(64 * 1_024);
+        let transport = transport_request(
+            &target,
+            RedirectPolicy::same_origin(
+                RedirectHopLimit::new(2).expect("redirect budget for fetched manifest handoff"),
+            ),
+        );
+        let fetched_manifest = fetched_manifest_handoff(
+            &target,
+            transport.clone(),
+            &source_config,
+            &preparation_policy,
+        );
+        let prepared = prepare_smooth_vod(
+            SmoothPrepareRequest::new(
+                transport,
+                &source_config,
+                ComponentVariantCatalogGeneration::new(44),
+                PreferredHeightPolicy::NoPreference,
+                preparation_policy,
+            )
+            .with_fetched_manifest(fetched_manifest),
+        )
+        .expect("fetched manifest preparation");
+
+        assert_eq!(prepared.catalog().identity().generation().value(), 44);
+        let request = server.join().expect("manifest server");
+        assert!(request.starts_with("GET /Manifest "));
+    }
+
+    #[test]
+    fn fetched_manifest_handoff_rejects_foreign_generation_before_parse() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("manifest listener");
+        let address = listener.local_addr().expect("manifest address");
+        let target = HttpRequestTarget::parse_exact(format!("http://{address}/Manifest"))
+            .expect("manifest target");
+        let server = serve_once(listener, || {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                VALID_MANIFEST.len(),
+                VALID_MANIFEST
+            )
+            .into_bytes()
+        });
+        let source_config = SourceRuntimeConfig::from_network_config(&NetworkConfig::default())
+            .expect("source config");
+        let preparation_policy = policy(64 * 1_024);
+        let fetched_transport = transport_request_with_generation(
+            &target,
+            RedirectPolicy::same_origin(
+                RedirectHopLimit::new(2).expect("redirect budget for fetched manifest handoff"),
+            ),
+            SourceGeneration::new(17),
+        );
+        let fetched_manifest = fetched_manifest_handoff(
+            &target,
+            fetched_transport,
+            &source_config,
+            &preparation_policy,
+        );
+        let current_transport = transport_request_with_generation(
+            &target,
+            RedirectPolicy::same_origin(
+                RedirectHopLimit::new(2).expect("redirect budget for fetched manifest handoff"),
+            ),
+            SourceGeneration::new(18),
+        );
+        let error = prepare_smooth_vod(
+            SmoothPrepareRequest::new(
+                current_transport,
+                &source_config,
+                ComponentVariantCatalogGeneration::new(44),
+                PreferredHeightPolicy::NoPreference,
+                preparation_policy,
+            )
+            .with_fetched_manifest(fetched_manifest),
+        )
+        .expect_err("foreign fetched generation должна fail closed");
+
+        assert!(matches!(
+            error,
+            SmoothPrepareError::FetchedManifestGenerationMismatch
+        ));
+        server.join().expect("manifest server");
+    }
+
+    #[test]
+    fn fetched_manifest_handoff_rejects_foreign_selected_target_before_parse() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("manifest listener");
+        let address = listener.local_addr().expect("manifest address");
+        let fetched_target = HttpRequestTarget::parse_exact(format!("http://{address}/Manifest"))
+            .expect("fetched manifest target");
+        let selected_target =
+            HttpRequestTarget::parse_exact(format!("http://{address}/OtherManifest"))
+                .expect("selected manifest target");
+        let server = serve_once(listener, || {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                VALID_MANIFEST.len(),
+                VALID_MANIFEST
+            )
+            .into_bytes()
+        });
+        let source_config = SourceRuntimeConfig::from_network_config(&NetworkConfig::default())
+            .expect("source config");
+        let preparation_policy = policy(64 * 1_024);
+        let source_generation = SourceGeneration::new(19);
+        let fetched_transport = transport_request_with_generation(
+            &fetched_target,
+            RedirectPolicy::same_origin(
+                RedirectHopLimit::new(2).expect("redirect budget for fetched manifest handoff"),
+            ),
+            source_generation,
+        );
+        let fetched_manifest = fetched_manifest_handoff(
+            &fetched_target,
+            fetched_transport,
+            &source_config,
+            &preparation_policy,
+        );
+        let current_transport = transport_request_with_generation(
+            &selected_target,
+            RedirectPolicy::same_origin(
+                RedirectHopLimit::new(2).expect("redirect budget for fetched manifest handoff"),
+            ),
+            source_generation,
+        );
+        let error = prepare_smooth_vod(
+            SmoothPrepareRequest::new(
+                current_transport,
+                &source_config,
+                ComponentVariantCatalogGeneration::new(45),
+                PreferredHeightPolicy::NoPreference,
+                preparation_policy,
+            )
+            .with_fetched_manifest(fetched_manifest),
+        )
+        .expect_err("foreign fetched target должен fail closed");
+
+        assert!(matches!(
+            error,
+            SmoothPrepareError::FetchedManifestTargetMismatch
+        ));
+        server.join().expect("manifest server");
     }
 }

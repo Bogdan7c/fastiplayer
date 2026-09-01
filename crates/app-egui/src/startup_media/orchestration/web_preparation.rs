@@ -29,6 +29,18 @@ pub(super) struct ComposedNativeDashStartupMedia {
     pub(super) descriptor: PreparedWebMediaEnvelope,
 }
 
+/// Полностью собранный native-Smooth startup envelope до strong-install barrier-а.
+pub(super) struct ComposedNativeSmoothStartupMedia {
+    /// Player-owned media с worker-receipted VOD seek attachment.
+    pub(super) prepared_media: player_core::PreparedMedia,
+    /// Durable provider-neutral source intent для lifecycle/reopen.
+    pub(super) active_source: crate::media_open::ActiveMediaSource,
+    /// Safe label передаётся UI без physical `/Manifest` locator-а.
+    pub(super) safe_label: SafeMediaLabel,
+    /// Immutable descriptor переносит tracks/catalog/recovery к Installed state.
+    pub(super) descriptor: PreparedWebMediaEnvelope,
+}
+
 /// Собирает direct startup result через тот же neutral web envelope, что обычный media-open.
 pub(super) fn compose_direct_startup_media(
     source_locator: service_direct_media::DirectMediaUrl,
@@ -128,6 +140,51 @@ pub(super) fn compose_native_dash_startup_media(
         runtime_attachments.vod_endpoint_recovery,
     );
     Ok(ComposedNativeDashStartupMedia {
+        prepared_media,
+        active_source,
+        safe_label,
+        descriptor,
+    })
+}
+
+/// Собирает native Smooth startup result через общий web composition boundary.
+pub(super) fn compose_native_smooth_startup_media(
+    source: crate::media_open::NativeSmoothUrl,
+    prepared: crate::startup_media::native_smooth::PreparedNativeSmoothMedia,
+) -> Result<ComposedNativeSmoothStartupMedia, String> {
+    let crate::startup_media::native_smooth::PreparedNativeSmoothMedia {
+        demuxer,
+        seek_port,
+        source_state,
+        endpoint_recovery,
+    } = prepared;
+    let tracks = demuxer.tracks().to_vec();
+    let duration = demuxer.duration();
+    let metadata = demuxer.media_metadata().unwrap_or_default().tags;
+    let safe_label = source.safe_label().clone();
+    let source_intent = WebMediaSourceIntent::native_smooth(source, source_state);
+    let active_source = crate::media_open::ActiveMediaSource::Web(source_intent.clone());
+    let prepared_media = compose_prepared_web_media(
+        safe_label.as_str(),
+        demuxer,
+        PreparedWebMediaAttachments {
+            demux_seek: Some(
+                crate::media_open::PreparedWebMediaSeekAttachment::WorkerReceipted(seek_port),
+            ),
+            ..PreparedWebMediaAttachments::default()
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let descriptor = PreparedWebMediaEnvelope::new(
+        tracks,
+        duration,
+        metadata,
+        source_intent,
+        safe_label.clone(),
+        None,
+        Some(endpoint_recovery),
+    );
+    Ok(ComposedNativeSmoothStartupMedia {
         prepared_media,
         active_source,
         safe_label,

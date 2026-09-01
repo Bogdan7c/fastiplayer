@@ -22,6 +22,12 @@ pub(crate) enum WebMediaOpenAdapterView {
         intent: NativeDashOpenIntent,
         settings: WebMediaOpenSettings,
     },
+    /// Native Smooth stable root и provider-neutral intent.
+    NativeSmooth {
+        source: NativeSmoothUrl,
+        intent: NativeSmoothOpenIntent,
+        settings: WebMediaOpenSettings,
+    },
     /// Extractor locator и neutral candidate selection intent.
     Extractor {
         locator: service_ytdlp::YtDlpMediaLocator,
@@ -56,6 +62,15 @@ impl From<WebMediaOpenAdapter> for WebMediaOpenAdapterView {
                 intent,
                 settings,
             } => Self::NativeDash {
+                source,
+                intent,
+                settings,
+            },
+            WebMediaOpenAdapter::NativeSmooth {
+                source,
+                intent,
+                settings,
+            } => Self::NativeSmooth {
                 source,
                 intent,
                 settings,

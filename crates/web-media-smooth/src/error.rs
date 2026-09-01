@@ -7,6 +7,31 @@ use smooth_streaming_manifest_core::SmoothManifestError;
 use web_media_adaptive::AdaptiveTransportError;
 use web_media_core::{ComponentKind, ComponentVariantError, ComponentVariantKeyError};
 
+/// Stable typed admission category без URL/XML/codec-private payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmoothPrepareFailureKind {
+    /// Caller отменил direct ingress или preparation.
+    Cancelled,
+    /// HTTP/session/provenance boundary не смог получить допустимый response.
+    Transport,
+    /// Authoritative XML root не является Smooth Streaming manifest.
+    InvalidRoot,
+    /// Manifest подтверждает live profile, который N11 намеренно не открывает.
+    LiveProfile,
+    /// Manifest требует DRM, поэтому native clear-content runtime неприменим.
+    DrmProtected,
+    /// Manifest содержит private/namespaced extension вне публичного profile.
+    PrivateExtension,
+    /// Объявленный video/audio codec отсутствует в H.264/AAC profile.
+    UnsupportedCodecProfile,
+    /// Smooth profile валиден, но выходит за границы текущего native runtime.
+    UnsupportedNativeProfile,
+    /// Документ похож на Smooth, но нарушает XML/schema/value invariants.
+    MalformedManifest,
+    /// Mapping, initialization или catalog preparation завершились ошибкой.
+    RuntimePreparation,
+}
+
 /// Безопасная причина изоляции одной sibling quality без manifest/runtime payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SmoothSiblingRejectionReason {
@@ -136,6 +161,15 @@ pub enum SmoothPrepareError {
     /// Единственный manifest fetch завершился ошибкой.
     #[error("не удалось получить Smooth manifest")]
     Fetch(#[source] AdaptiveTransportError),
+    /// Fetched handoff принадлежит другой source generation.
+    #[error("fetched Smooth manifest generation не совпадает с transport intent")]
+    FetchedManifestGenerationMismatch,
+    /// Fetched handoff был загружен не из выбранного transport root-а.
+    #[error("fetched Smooth manifest target не совпадает с transport intent")]
+    FetchedManifestTargetMismatch,
+    /// Fetched body превышает текущий caller-owned manifest budget.
+    #[error("fetched Smooth manifest превышает текущий byte budget")]
+    FetchedManifestTooLarge,
     /// Hardened XML/schema/profile parse завершился ошибкой.
     #[error("не удалось разобрать Smooth manifest")]
     Manifest(#[source] SmoothManifestError),
@@ -170,12 +204,75 @@ impl fmt::Debug for SmoothPrepareError {
 }
 
 impl SmoothPrepareError {
+    /// Проецирует nested parser/runtime taxonomy без string matching.
+    #[must_use]
+    pub const fn failure_kind(&self) -> SmoothPrepareFailureKind {
+        use smooth_streaming_manifest_core::{SmoothManifestError, SmoothProfileIncompatibility};
+
+        match self {
+            Self::Cancelled => SmoothPrepareFailureKind::Cancelled,
+            Self::TransportProfile(_) | Self::Fetch(_) => SmoothPrepareFailureKind::Transport,
+            Self::FetchedManifestGenerationMismatch
+            | Self::FetchedManifestTargetMismatch
+            | Self::FetchedManifestTooLarge => SmoothPrepareFailureKind::Transport,
+            Self::Manifest(SmoothManifestError::InvalidRoot) => {
+                SmoothPrepareFailureKind::InvalidRoot
+            }
+            Self::Manifest(SmoothManifestError::ProfileIncompatible {
+                reason: SmoothProfileIncompatibility::LiveManifest,
+            }) => SmoothPrepareFailureKind::LiveProfile,
+            Self::Manifest(SmoothManifestError::DrmProtected) => {
+                SmoothPrepareFailureKind::DrmProtected
+            }
+            Self::Manifest(SmoothManifestError::PrivateExtension) => {
+                SmoothPrepareFailureKind::PrivateExtension
+            }
+            Self::Manifest(SmoothManifestError::ProfileIncompatible {
+                reason:
+                    SmoothProfileIncompatibility::UnsupportedVideoCodec
+                    | SmoothProfileIncompatibility::UnsupportedAudioCodec
+                    | SmoothProfileIncompatibility::UnsupportedCodecProfile
+                    | SmoothProfileIncompatibility::UnsupportedAudioTag,
+            }) => SmoothPrepareFailureKind::UnsupportedCodecProfile,
+            Self::Manifest(
+                SmoothManifestError::UnsupportedVersion { .. }
+                | SmoothManifestError::ProfileIncompatible { .. }
+                | SmoothManifestError::UnsupportedConstruct { .. },
+            ) => SmoothPrepareFailureKind::UnsupportedNativeProfile,
+            Self::Manifest(
+                SmoothManifestError::Xml { .. }
+                | SmoothManifestError::LimitExceeded { .. }
+                | SmoothManifestError::MalformedSchema { .. }
+                | SmoothManifestError::InvalidUrlTemplate { .. }
+                | SmoothManifestError::InvalidTimeline { .. }
+                | SmoothManifestError::InvalidCodecConfiguration { .. }
+                | SmoothManifestError::DeclaredCountMismatch { .. },
+            ) => SmoothPrepareFailureKind::MalformedManifest,
+            Self::Manifest(SmoothManifestError::Cancelled) => SmoothPrepareFailureKind::Cancelled,
+            Self::Profile(_)
+            | Self::Mapping(_)
+            | Self::Initialization(_)
+            | Self::VariantKey(_)
+            | Self::SemanticKey(_)
+            | Self::Catalog(_) => SmoothPrepareFailureKind::RuntimePreparation,
+        }
+    }
+
+    /// Authoritative parser доказал, что well-formed document не является Smooth manifest.
+    #[must_use]
+    pub const fn is_invalid_root(&self) -> bool {
+        matches!(self.failure_kind(), SmoothPrepareFailureKind::InvalidRoot)
+    }
+
     /// Возвращает безопасное имя варианта для redacted diagnostics.
     const fn kind_name(&self) -> &'static str {
         match self {
             Self::Cancelled => "cancelled",
             Self::TransportProfile(_) => "transport-profile",
             Self::Fetch(_) => "fetch",
+            Self::FetchedManifestGenerationMismatch => "fetched-manifest-generation-mismatch",
+            Self::FetchedManifestTargetMismatch => "fetched-manifest-target-mismatch",
+            Self::FetchedManifestTooLarge => "fetched-manifest-too-large",
             Self::Manifest(_) => "manifest",
             Self::Profile(_) => "profile",
             Self::Mapping(_) => "mapping",

@@ -20,6 +20,7 @@ pub(crate) use preparation::next_dynamic_timeline_port_generation;
 /// Concrete transport/demux registries и immutable capability snapshots одного attempt-а.
 mod runtime;
 mod smooth;
+pub(crate) use smooth::{NativeSmoothCandidatePreparation, prepare_native_smooth_candidate};
 mod source_state;
 
 use std::num::{NonZeroU64, NonZeroUsize};

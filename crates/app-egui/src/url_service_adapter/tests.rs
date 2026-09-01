@@ -85,6 +85,51 @@ fn mpd_hint_builds_content_probed_native_admission_when_extractor_is_disabled() 
 }
 
 #[test]
+fn manifest_path_hint_builds_native_smooth_admission_when_extractor_is_disabled() {
+    let exact_url = "https://cdn.example.test/vod/Manifest?signature=native-secret";
+    let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
+        panic!("/Manifest hint должен выбрать native Smooth admission adapter");
+    };
+    assert_eq!(persistence_identity(&locator), exact_url);
+
+    let mut app_config = AppConfig::default();
+    app_config.yt_dlp.enabled = false;
+    locator
+        .validate_config(&app_config)
+        .expect("native Smooth classification не зависит от extractor availability");
+    let request = locator
+        .into_media_open_source_request(
+            &app_config,
+            &SystemCapabilities::empty(1),
+            audio::AudioDecodeCapabilitySnapshot::empty(),
+        )
+        .expect("native Smooth request");
+    assert!(matches!(
+        request,
+        crate::media_open::MediaOpenSourceRequest::Web(_)
+    ));
+}
+
+#[test]
+fn manifest_text_outside_final_path_segment_remains_generic() {
+    let StartupUrlClassification::Supported(locator) =
+        classify_startup_url("https://example.test/watch?next=/vod/Manifest")
+    else {
+        panic!("generic HTTP URL должен остаться поддержан");
+    };
+    let request = locator
+        .into_media_open_source_request(
+            &AppConfig::default(),
+            &SystemCapabilities::empty(1),
+            audio::AudioDecodeCapabilitySnapshot::empty(),
+        )
+        .expect("generic extractor request");
+    let crate::media_open::MediaOpenSourceRequest::Web(_) = request else {
+        panic!("generic URL должен остаться web request-ом");
+    };
+}
+
+#[test]
 fn m3u8_text_outside_url_path_remains_generic() {
     let StartupUrlClassification::Supported(locator) =
         classify_startup_url("https://example.test/watch?next=movie.m3u8")

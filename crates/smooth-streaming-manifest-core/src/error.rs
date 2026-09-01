@@ -127,6 +127,9 @@ pub enum SmoothManifestError {
         #[source]
         source: bounded_xml_reader::XmlReadError,
     },
+    /// Well-formed XML document не является Smooth client manifest.
+    #[error("document root не является SmoothStreamingMedia")]
+    InvalidRoot,
     #[error("Smooth Streaming manifest превысил обязательный budget")]
     LimitExceeded {
         limit: SmoothManifestLimitKind,
@@ -169,6 +172,7 @@ impl fmt::Debug for SmoothManifestError {
         match self {
             Self::Cancelled => formatter.write_str("Cancelled"),
             Self::Xml { .. } => formatter.write_str("Xml"),
+            Self::InvalidRoot => formatter.write_str("InvalidRoot"),
             Self::LimitExceeded { limit, maximum } => formatter
                 .debug_struct("LimitExceeded")
                 .field("limit", limit)

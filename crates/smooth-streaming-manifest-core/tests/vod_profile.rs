@@ -325,6 +325,14 @@ fn hardened_xml_rejections_preserve_exact_source() {
 }
 
 #[test]
+fn well_formed_foreign_document_is_not_a_malformed_smooth_manifest() {
+    let error = parse("<html><body>provider page</body></html>")
+        .expect_err("foreign XML root не должен проходить authoritative Smooth admission");
+
+    assert_eq!(error, SmoothManifestError::InvalidRoot);
+}
+
+#[test]
 fn private_namespaces_unknown_vocabulary_and_drm_are_distinct() {
     let private_element = valid_video_document("<x:Vendor/>", r#"xmlns:x="urn:private""#);
     assert_eq!(

@@ -348,6 +348,147 @@ pub(super) fn prepare_source(
                     }
                 }
             }
+            WebMediaOpenAdapterView::NativeSmooth {
+                source,
+                intent,
+                settings,
+            } => {
+                let WebMediaOpenSettings {
+                    network_config,
+                    web_media_config,
+                    yt_dlp_config,
+                    demux_config,
+                    preferred_video_codec_order,
+                    system_capabilities,
+                    audio_capabilities,
+                } = settings;
+                let safe_label = source.safe_label().clone();
+                let (expected_selection, fallback_locator) = match intent {
+                    super::NativeSmoothOpenIntent::InitialWithYtDlpFallback {
+                        fallback_locator,
+                    } => (None, Some(fallback_locator)),
+                    super::NativeSmoothOpenIntent::SemanticSelection(selection) => {
+                        (Some(selection), None)
+                    }
+                };
+                let attempt = crate::startup_media::native_smooth::prepare_native_smooth_attempt(
+                    crate::startup_media::native_smooth::NativeSmoothPreparationRequest {
+                        source: &source,
+                        expected_selection: expected_selection.as_ref(),
+                        network_config: &network_config,
+                        web_media_config: &web_media_config,
+                        demux_config: &demux_config,
+                        system_capabilities: &system_capabilities,
+                        audio_capabilities,
+                        cancellation: cancellation.source_token(),
+                    },
+                )
+                .map_err(|error| {
+                    tracing::warn!(
+                        source = %safe_label,
+                        error = %error,
+                        "Подготовка native Smooth завершилась ошибкой"
+                    );
+                    if cancellation.is_cancelled() {
+                        MediaPreparationFailureKind::Cancelled
+                    } else {
+                        MediaPreparationFailureKind::NativeSmoothOpen
+                    }
+                })?;
+                match attempt {
+                    crate::startup_media::native_smooth::NativeSmoothAttempt::Prepared(
+                        prepared,
+                    ) => {
+                        if cancellation.is_cancelled() {
+                            return Err(MediaPreparationFailureKind::Cancelled);
+                        }
+                        let crate::startup_media::native_smooth::PreparedNativeSmoothMedia {
+                            demuxer,
+                            seek_port,
+                            source_state,
+                            endpoint_recovery,
+                        } = prepared;
+                        let tracks = demuxer.tracks().to_vec();
+                        let duration = demuxer.duration();
+                        let metadata = demuxer.media_metadata().unwrap_or_default().tags;
+                        let active_source =
+                            WebMediaSourceIntent::native_smooth(source, source_state);
+                        let prepared_media = compose_prepared_web_media(
+                            safe_label.as_str(),
+                            demuxer,
+                            PreparedWebMediaAttachments {
+                                demux_seek: Some(
+                                    PreparedWebMediaSeekAttachment::WorkerReceipted(seek_port),
+                                ),
+                                ..PreparedWebMediaAttachments::default()
+                            },
+                        )
+                        .map_err(|error| {
+                            tracing::warn!(
+                                source = %safe_label,
+                                error = %error,
+                                "Native Smooth composition нарушила prepared attachment contract"
+                            );
+                            MediaPreparationFailureKind::NativeSmoothOpen
+                        })?;
+                        Ok(PreparedMediaOpen {
+                            prepared_media,
+                            descriptor: PreparedMediaDescriptor::Web(
+                                PreparedWebMediaEnvelope::new(
+                                    tracks,
+                                    duration,
+                                    metadata,
+                                    active_source,
+                                    safe_label,
+                                    None,
+                                    Some(endpoint_recovery),
+                                ),
+                            ),
+                        })
+                    }
+                    crate::startup_media::native_smooth::NativeSmoothAttempt::RequiresYtDlpFallback(
+                        reason,
+                    ) => {
+                        let Some(locator) = fallback_locator else {
+                            tracing::warn!(
+                                source = %safe_label,
+                                ?reason,
+                                "Exact native Smooth reopen отклонён без extractor fallback"
+                            );
+                            return Err(MediaPreparationFailureKind::NativeSmoothOpen);
+                        };
+                        if !yt_dlp_config.enabled {
+                            tracing::warn!(
+                                source = %safe_label,
+                                ?reason,
+                                "Initial native Smooth fallback запрещён отключённым extractor-ом"
+                            );
+                            return Err(MediaPreparationFailureKind::NativeSmoothOpen);
+                        }
+                        tracing::info!(
+                            source = %safe_label,
+                            ?reason,
+                            "Initial native Smooth admission передан единственному YtDlp fallback"
+                        );
+                        prepare_source(
+                            MediaOpenSourceRequest::Web(WebMediaOpenRequest::extractor(
+                                locator,
+                                crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                                WebMediaOpenSettings {
+                                    network_config,
+                                    web_media_config,
+                                    yt_dlp_config,
+                                    demux_config,
+                                    preferred_video_codec_order,
+                                    system_capabilities,
+                                    audio_capabilities,
+                                },
+                            )),
+                            cancellation,
+                        )
+                    }
+                }
+            }
             WebMediaOpenAdapterView::Extractor {
                 locator,
                 selection_intent,

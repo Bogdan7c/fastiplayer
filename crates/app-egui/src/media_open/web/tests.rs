@@ -8,6 +8,8 @@ mod native_dash_vertical;
 mod native_hls_live_vertical;
 #[path = "tests/native_hls_vertical.rs"]
 mod native_hls_vertical;
+#[path = "tests/native_smooth_vertical.rs"]
+mod native_smooth_vertical;
 
 /// Absent optional attachments не должны превращаться в скрытые adapter defaults.
 #[test]

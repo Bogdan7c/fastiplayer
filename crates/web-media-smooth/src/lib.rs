@@ -33,13 +33,13 @@ pub use discovery::{
     SmoothDiscoveredCatalog, discover_smooth_vod_catalog,
 };
 pub use error::{
-    SmoothPrepareError, SmoothProfileError, SmoothSemanticKeyError, SmoothSiblingRejection,
-    SmoothSiblingRejectionReason, SmoothTransportProfileError,
+    SmoothPrepareError, SmoothPrepareFailureKind, SmoothProfileError, SmoothSemanticKeyError,
+    SmoothSiblingRejection, SmoothSiblingRejectionReason, SmoothTransportProfileError,
 };
 pub use model::{SmoothAlignedSpan, SmoothPreparedCatalog};
 pub use policy::{AggregateInitializationByteLimit, SmoothPreparationPolicy};
 pub use prepare::prepare_smooth_vod;
-pub use request::SmoothPrepareRequest;
+pub use request::{SmoothFetchedManifestInput, SmoothPrepareRequest};
 pub use smooth_streaming_manifest_core::SmoothManifestLimits;
 pub use source::{
     SmoothAudioFragmentSource, SmoothFragmentSourceBuildError, SmoothFragmentSourceParts,

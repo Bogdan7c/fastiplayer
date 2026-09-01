@@ -20,6 +20,9 @@ pub(crate) fn require_unqualified_name(
         return Err(SmoothManifestError::PrivateExtension);
     }
     if name.local_name() != local_name {
+        if field == SmoothSchemaField::Root {
+            return Err(SmoothManifestError::InvalidRoot);
+        }
         return Err(SmoothManifestError::MalformedSchema { field });
     }
     Ok(())

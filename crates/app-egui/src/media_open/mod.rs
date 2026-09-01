@@ -20,6 +20,7 @@ mod executor;
 pub(crate) mod local;
 mod native_dash;
 mod native_hls;
+mod native_smooth;
 #[allow(
     dead_code,
     reason = "Session 10C precedes production callsite migration in 10D"
@@ -48,6 +49,7 @@ pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
 pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult, prepare_local_open};
 pub(crate) use native_dash::{NativeDashOpenIntent, NativeDashSourceState, NativeDashUrl};
 pub(crate) use native_hls::{NativeHlsOpenIntent, NativeHlsSourceState, NativeHlsUrl};
+pub(crate) use native_smooth::{NativeSmoothOpenIntent, NativeSmoothSourceState, NativeSmoothUrl};
 // Все app ingress-ы собирают provider-neutral `PreparedMedia` через один boundary.
 pub(crate) use preload_budget::QueuePreloadResourceBudget;
 pub(crate) use preparation::{
