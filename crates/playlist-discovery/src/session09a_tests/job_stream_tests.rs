@@ -179,7 +179,7 @@ fn cancellation_releases_frozen_verified_buffer_without_record_event() {
     let directory = TestDirectory::new();
     let target = directory.path.join("01-target.media");
     fs::write(&target, b"target").unwrap();
-    fs::write(directory.path.join("02-video.media"), b"sibling").unwrap();
+    fs::write(directory.path.join("02-block-video.media"), b"sibling").unwrap();
     let request = SiblingDiscoveryRequest::new(
         Arc::new(build_directory_manifest(&target).unwrap()),
         LocalMediaKind::VideoContaining,
@@ -190,9 +190,14 @@ fn cancellation_releases_frozen_verified_buffer_without_record_event() {
         ),
         DiscoveryRequestRevision::new(1),
     );
-    let (executor, _started, _gate) = fake_executor();
+    let (executor, started, gate) = fake_executor();
     let handle = executor.submit(DiscoveryRequest::Sibling(request)).unwrap();
+    assert_eq!(
+        started.recv_timeout(Duration::from_secs(2)).unwrap(),
+        "02-block-video.media"
+    );
     assert!(handle.freeze_admission());
+    gate.release();
     wait_until_processed(&handle, 1);
     assert!(handle.cancel(DiscoveryCancellationCause::StructuralInvalidation));
     assert_eq!(
