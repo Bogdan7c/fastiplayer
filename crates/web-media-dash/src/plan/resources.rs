@@ -1,6 +1,6 @@
 //! Resource, BaseURL, byte-range и serialized alignment construction.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 use dash_mpd_core::{
@@ -159,6 +159,23 @@ pub(super) fn validate_segment_base(segment_base: &DashSegmentBase) -> Result<()
         return Err(DashPlanError::ExternalSegmentBaseInitializationUnsupported);
     }
     Ok(())
+}
+
+/// Возвращает zero-based initialization prefix, пригодный только для catalog demux proof.
+pub(super) fn segment_base_catalog_probe_content_length(
+    segment_base: &DashSegmentBase,
+) -> Option<NonZeroU64> {
+    let initialization_range = segment_base
+        .initialization
+        .as_ref()
+        .and_then(|initialization| initialization.byte_range)?;
+    if initialization_range.start() != 0 {
+        return None;
+    }
+    initialization_range
+        .end()
+        .checked_add(1)
+        .and_then(NonZeroU64::new)
 }
 
 /// Строит single-period component из concrete fragments.

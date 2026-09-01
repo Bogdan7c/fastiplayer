@@ -60,6 +60,32 @@ pub(crate) enum StartupAudioProof {
     NotPresent,
 }
 
+/// Authoritative video topology текущего prepared media.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupVideoProof {
+    /// Prepared topology содержит video track и требует surface presentation.
+    Required,
+    /// Prepared topology окончательно доказала audio-only media.
+    NotPresent,
+}
+
+/// Единый preparation handoff для startup consumer gates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StartupPreparedConsumerProof {
+    /// Authoritative audio presence.
+    pub audio: StartupAudioProof,
+    /// Authoritative video presence.
+    pub video: StartupVideoProof,
+}
+
+/// Внутреннее состояние video expectation до получения prepared topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupVideoExpectation {
+    Unknown,
+    Required,
+    NotPresent,
+}
+
 /// Самодокументируемое ожидание одного startup attempt-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StartupReadinessExpectation {
@@ -121,6 +147,7 @@ struct ActiveStartupAttempt {
     media_instance_id: Option<MediaInstanceId>,
     media_opened_at: Option<Instant>,
     render_generation: Option<u64>,
+    video_expectation: StartupVideoExpectation,
     matching_target_frame: Option<MatchingTargetFrame>,
     matching_seek_committed_at: Option<Instant>,
     surface_presented_at: Option<Instant>,
@@ -170,6 +197,7 @@ impl StartupReadinessTracker {
             media_instance_id: None,
             media_opened_at: None,
             render_generation: None,
+            video_expectation: StartupVideoExpectation::Unknown,
             matching_target_frame: None,
             matching_seek_committed_at: None,
             surface_presented_at: None,
@@ -246,6 +274,22 @@ impl StartupReadinessTracker {
         }
     }
 
+    /// Применяет единый authoritative consumer proof до install barrier-а.
+    pub(crate) fn note_prepared_consumer_proof(
+        &mut self,
+        proof: StartupPreparedConsumerProof,
+        observed_at: Instant,
+    ) {
+        let Some(attempt) = self.active_attempt.as_mut() else {
+            return;
+        };
+        attempt.video_expectation = match proof.video {
+            StartupVideoProof::Required => StartupVideoExpectation::Required,
+            StartupVideoProof::NotPresent => StartupVideoExpectation::NotPresent,
+        };
+        self.note_prepared_audio_proof(proof.audio, observed_at);
+    }
+
     /// Принимает correlated player event без вывода identity из source label.
     pub(crate) fn note_player_event(
         &mut self,
@@ -315,16 +359,23 @@ impl StartupReadinessTracker {
         }
     }
 
-    /// Уточняет Unknown audio expectation только положительным наличием audio track-а.
+    /// Уточняет consumer expectations только положительным наличием track-а.
     pub(crate) fn reconcile_tracks(&mut self, snapshot: &PlayerSnapshot, observed_at: Instant) {
         let has_audio_track = snapshot
             .tracks
             .iter()
             .any(|track| track.kind == TrackKind::Audio);
+        let has_video_track = snapshot
+            .tracks
+            .iter()
+            .any(|track| track.kind == TrackKind::Video);
         let Some(attempt) = self.matching_attempt_mut(snapshot.media_instance_id) else {
             return;
         };
         attempt.render_generation = Some(snapshot.render_generation);
+        if has_video_track {
+            attempt.video_expectation = StartupVideoExpectation::Required;
+        }
 
         if has_audio_track {
             self.note_positive_audio_evidence(snapshot.media_instance_id, observed_at);
@@ -626,9 +677,16 @@ impl StartupReadinessTracker {
             return;
         };
 
-        let position_ready = match attempt.expectation.target {
-            StartupTargetExpectation::Beginning => attempt.surface_presented_at.is_some(),
-            StartupTargetExpectation::Restore { .. } => {
+        let position_ready = match (attempt.video_expectation, attempt.expectation.target) {
+            (StartupVideoExpectation::Unknown, _) => false,
+            (StartupVideoExpectation::NotPresent, StartupTargetExpectation::Beginning) => true,
+            (StartupVideoExpectation::NotPresent, StartupTargetExpectation::Restore { .. }) => {
+                attempt.matching_seek_committed_at.is_some()
+            }
+            (StartupVideoExpectation::Required, StartupTargetExpectation::Beginning) => {
+                attempt.surface_presented_at.is_some()
+            }
+            (StartupVideoExpectation::Required, StartupTargetExpectation::Restore { .. }) => {
                 attempt.matching_target_frame.is_some()
                     && attempt.matching_seek_committed_at.is_some()
                     && attempt.surface_presented_at.is_some()
@@ -675,6 +733,7 @@ impl StartupReadinessTracker {
             startup_target = ?completed_attempt.expectation.target,
             playback_expectation = ?completed_attempt.expectation.playback,
             audio_expectation = ?completed_attempt.expectation.audio,
+            video_expectation = ?completed_attempt.video_expectation,
             "Startup presentation and audio gates ready"
         );
     }

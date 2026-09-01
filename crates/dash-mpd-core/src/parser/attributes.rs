@@ -59,10 +59,22 @@ pub(crate) fn validate_attributes(
     element: &XmlElement,
     allowed: &[&str],
 ) -> Result<(), DashMpdError> {
+    validate_attributes_with_namespaced_allowlist(element, allowed, &[])
+}
+
+/// Проверяет обычные attributes и узкий allowlist exact namespace/local-name pairs.
+pub(super) fn validate_attributes_with_namespaced_allowlist(
+    element: &XmlElement,
+    allowed: &[&str],
+    allowed_namespaced: &[(&str, &str)],
+) -> Result<(), DashMpdError> {
     for attribute in element.attributes() {
-        if attribute.name().namespace_uri().is_some()
-            || !allowed.contains(&attribute.name().local_name())
-        {
+        let name = attribute.name();
+        let permitted = match name.namespace_uri() {
+            Some(namespace_uri) => allowed_namespaced.contains(&(namespace_uri, name.local_name())),
+            None => allowed.contains(&name.local_name()),
+        };
+        if !permitted {
             return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedConstruct));
         }
     }

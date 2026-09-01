@@ -30,7 +30,7 @@ mod prepared;
 mod web_preparation;
 pub(super) use prepared::PreparedStartupMedia;
 pub(crate) use prepared::apply_restored_playback_policy;
-use prepared::prepared_startup_audio_proof;
+use prepared::prepared_startup_consumer_proof;
 
 /// Read-only phase нужна scheduler/tests и не раскрывает locator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +217,10 @@ impl StartupMediaController {
     ) {
         let target = self.orchestration.target.take();
         self.orchestration.preparation_failed();
+        // `safe_error` уже прошёл protocol-specific sanitization и не содержит raw locator.
+        // Публикуем его на единственной terminal boundary, чтобы acceptance и support могли
+        // отличить source drift/unavailability от внутреннего player failure без чтения UI.
+        tracing::warn!(error = %safe_error, "Startup media preparation failed");
         self.startup_error = Some(safe_error.clone());
         app_state.set_startup_error(safe_error.clone());
 
@@ -413,7 +417,7 @@ impl StartupMediaController {
 
         let install_result = match prepared {
             PreparedStartupMedia::Local(prepared) => {
-                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                app_state.note_startup_prepared_consumer_proof(prepared_startup_consumer_proof(
                     &prepared.tracks,
                 ));
                 let path = prepared.source_path.clone();
@@ -467,7 +471,8 @@ impl StartupMediaController {
             } => {
                 let prepared = *prepared;
                 let tracks = prepared.demuxer.tracks().to_vec();
-                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(&tracks));
+                app_state
+                    .note_startup_prepared_consumer_proof(prepared_startup_consumer_proof(&tracks));
                 let demux_duration = prepared.playback_window.and_then(|window| {
                     window
                         .end_exclusive()
@@ -540,7 +545,7 @@ impl StartupMediaController {
                 prepared_media,
                 descriptor,
             } => {
-                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                app_state.note_startup_prepared_consumer_proof(prepared_startup_consumer_proof(
                     prepared_media.tracks(),
                 ));
                 let source = ActiveMediaSource::Web(descriptor.source().clone());
@@ -571,7 +576,7 @@ impl StartupMediaController {
                             return true;
                         }
                     };
-                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                app_state.note_startup_prepared_consumer_proof(prepared_startup_consumer_proof(
                     prepared.prepared_media.tracks(),
                 ));
                 let input = self
@@ -603,7 +608,7 @@ impl StartupMediaController {
                             return true;
                         }
                     };
-                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                app_state.note_startup_prepared_consumer_proof(prepared_startup_consumer_proof(
                     prepared.prepared_media.tracks(),
                 ));
                 let input = self
@@ -635,7 +640,7 @@ impl StartupMediaController {
                             return true;
                         }
                     };
-                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                app_state.note_startup_prepared_consumer_proof(prepared_startup_consumer_proof(
                     prepared.prepared_media.tracks(),
                 ));
                 let input = self
@@ -667,7 +672,7 @@ impl StartupMediaController {
                             return true;
                         }
                     };
-                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                app_state.note_startup_prepared_consumer_proof(prepared_startup_consumer_proof(
                     prepared.prepared_media.tracks(),
                 ));
                 let input = self

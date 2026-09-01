@@ -50,6 +50,24 @@ pub(crate) struct DashComponentFactory {
     live_transport: Option<Arc<dyn DashLiveTransportProvider>>,
 }
 
+/// Разделяет full playback source и bounded catalog proof без позиционного bool.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DashComponentOpenIntent {
+    /// Consumer получает полную representation и обычный seek lifecycle.
+    Playback,
+    /// Demux proof видит только manifest-declared initialization prefix, когда он доказан.
+    CatalogProof,
+}
+
+/// Намерение открытия одного Period-а вместе с точкой входа в media sequence.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DashPeriodOpenRequest {
+    /// Первый media fragment, который должен увидеть fresh demuxer.
+    first_media_index: usize,
+    /// Playback не должен наследовать bounded-view, допустимый только для catalog proof.
+    intent: DashComponentOpenIntent,
+}
+
 impl DashComponentFactory {
     /// Фиксирует dependencies без network side effects.
     pub(crate) fn new(
@@ -97,6 +115,20 @@ impl DashComponentFactory {
             self.policy,
             Arc::clone(&self.registry),
             self.live_transport.clone(),
+            DashComponentOpenIntent::Playback,
+        )
+    }
+
+    /// Открывает component для catalog track proof без сканирования media payload.
+    pub(crate) fn open_for_catalog_proof(&self) -> Result<DashComponentDemuxer> {
+        DashComponentDemuxer::open(
+            self.plan.clone(),
+            self.http.clone(),
+            self.generation,
+            self.policy,
+            Arc::clone(&self.registry),
+            self.live_transport.clone(),
+            DashComponentOpenIntent::CatalogProof,
         )
     }
 
@@ -120,6 +152,7 @@ impl DashComponentFactory {
             self.live_transport.clone(),
             period_index,
             media_index,
+            DashComponentOpenIntent::Playback,
         )?;
         replacement.validate_required_track_shape()?;
         Ok(Some(replacement))
@@ -144,6 +177,7 @@ impl DashComponentFactory {
                     self.live_transport.clone(),
                     period_index,
                     media_index,
+                    DashComponentOpenIntent::Playback,
                 )?;
                 replacement.public_tracks = stable_public_tracks.to_vec();
                 let current_tracks = replacement.current.tracks().to_vec();
@@ -186,6 +220,7 @@ impl DashComponentFactory {
                 self.live_transport.clone(),
                 period_index,
                 media_index,
+                DashComponentOpenIntent::Playback,
             )?;
             replacement.public_tracks = stable_public_tracks.to_vec();
             let current_tracks = replacement.current.tracks().to_vec();
@@ -241,6 +276,7 @@ impl DashComponentDemuxer {
         policy: DashVodOpenPolicy,
         registry: Arc<DemuxRegistry>,
         live_transport: Option<Arc<dyn DashLiveTransportProvider>>,
+        intent: DashComponentOpenIntent,
     ) -> Result<Self> {
         let mut component = Self::open_from_period(
             plan,
@@ -251,6 +287,7 @@ impl DashComponentDemuxer {
             live_transport,
             0,
             0,
+            intent,
         )?;
         component.validate_required_track_shape()?;
         if matches!(
@@ -273,6 +310,7 @@ impl DashComponentDemuxer {
         live_transport: Option<Arc<dyn DashLiveTransportProvider>>,
         period_index: usize,
         first_media_index: usize,
+        intent: DashComponentOpenIntent,
     ) -> Result<Self> {
         let period = plan
             .periods
@@ -289,7 +327,10 @@ impl DashComponentDemuxer {
             live_transport
                 .clone()
                 .map(|provider| (provider, plan.media_kind)),
-            first_media_index,
+            DashPeriodOpenRequest {
+                first_media_index,
+                intent,
+            },
         )?;
         let duration = plan.duration;
         let public_tracks = current
@@ -429,7 +470,10 @@ impl DashComponentDemuxer {
                 .live_transport
                 .clone()
                 .map(|provider| (provider, self.factory.plan.media_kind)),
-            0,
+            DashPeriodOpenRequest {
+                first_media_index: 0,
+                intent: DashComponentOpenIntent::Playback,
+            },
         )?;
         self.current_period_index = period_index;
         self.current = current;
@@ -579,7 +623,7 @@ fn open_period(
         Arc<dyn DashLiveTransportProvider>,
         dash_mpd_core::DashMediaKind,
     )>,
-    first_media_index: usize,
+    request: DashPeriodOpenRequest,
 ) -> Result<Box<dyn Demuxer + Send>> {
     let cancellation = http.cancellation().clone();
     let container = demux_container_id(period.container)?;
@@ -595,7 +639,7 @@ fn open_period(
                     resources,
                     *query_application,
                     policy.maximum_fragment_bytes,
-                    first_media_index,
+                    request.first_media_index,
                     live_transport,
                     media_kind,
                     period.timeline_start,
@@ -606,7 +650,7 @@ fn open_period(
                     resources,
                     *query_application,
                     policy.maximum_fragment_bytes,
-                    first_media_index,
+                    request.first_media_index,
                 )?,
             };
             let demuxer = registry
@@ -623,17 +667,21 @@ fn open_period(
         DashPeriodInputPlan::Range {
             target,
             query_application,
+            catalog_probe_content_length,
         } => {
-            if first_media_index != 0 {
+            if request.first_media_index != 0 {
                 anyhow::bail!("DASH SegmentBase media index must remain zero");
             }
-            let source = AdaptiveRangeByteSource::open(
-                http,
-                target.clone(),
-                generation,
-                AdaptiveRangeSourceConfig::new(policy.maximum_range_read_bytes, *query_application),
-            )
-            .context("DASH SegmentBase Range source probe failed")?;
+            let mut range_config =
+                AdaptiveRangeSourceConfig::new(policy.maximum_range_read_bytes, *query_application);
+            if request.intent == DashComponentOpenIntent::CatalogProof
+                && let Some(content_length) = catalog_probe_content_length
+            {
+                range_config = range_config.with_exposed_content_length(*content_length);
+            }
+            let source =
+                AdaptiveRangeByteSource::open(http, target.clone(), generation, range_config)
+                    .context("DASH SegmentBase Range source probe failed")?;
             let demuxer = registry
                 .open_required_container(
                     DemuxInput::byte_source(Box::new(source)),

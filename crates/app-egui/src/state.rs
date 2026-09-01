@@ -41,8 +41,7 @@ use crate::local_file_open::{
 use crate::settings_runtime::CommittedConfigSnapshot;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::startup_readiness::{
-    StartupAudioProof, StartupReadinessAbortReason, StartupReadinessExpectation,
-    StartupReadinessTracker,
+    StartupReadinessAbortReason, StartupReadinessExpectation, StartupReadinessTracker,
 };
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
@@ -675,10 +674,13 @@ impl AppState {
             .begin_attempt(expectation, Instant::now());
     }
 
-    /// Уточняет audio topology только по proof-у уже принятого prepared startup result-а.
-    pub(crate) fn note_startup_prepared_audio_proof(&mut self, proof: StartupAudioProof) {
+    /// Уточняет consumer topology только по proof-у уже принятого prepared startup result-а.
+    pub(crate) fn note_startup_prepared_consumer_proof(
+        &mut self,
+        proof: crate::startup_readiness::StartupPreparedConsumerProof,
+    ) {
         self.startup_readiness
-            .note_prepared_audio_proof(proof, Instant::now());
+            .note_prepared_consumer_proof(proof, Instant::now());
     }
 
     /// Терминально закрывает попытку, которая больше не может показать startup result.

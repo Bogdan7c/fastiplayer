@@ -122,7 +122,11 @@ pub enum HlsCatalogTrackProof {
     },
 }
 
-/// Snapshot-local proof that independently opened children share one presentation timeline.
+/// Snapshot-local proof that independently opened children cover one presentation interval.
+///
+/// Proof intentionally does not require exact per-segment `EXTINF` equality: AAC access-unit
+/// boundaries may make alternate audio durations oscillate around video boundaries while the
+/// cumulative presentation interval and discontinuity layout remain identical.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HlsCatalogAlignmentProof(u64);
 

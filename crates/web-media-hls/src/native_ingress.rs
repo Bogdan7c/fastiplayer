@@ -424,8 +424,19 @@ fn native_candidate(
                         && rendition.group_id.as_ref() == group_id
                 })
                 .collect::<Vec<_>>();
-            let [rendition] = renditions.as_slice() else {
-                return None;
+            let rendition = match renditions.as_slice() {
+                [only] => *only,
+                alternatives => {
+                    let mut defaults = alternatives
+                        .iter()
+                        .copied()
+                        .filter(|rendition| rendition.is_default);
+                    let selected = defaults.next()?;
+                    if defaults.next().is_some() {
+                        return None;
+                    }
+                    selected
+                }
             };
             let evidence = rendition_evidence(rendition)?;
             (
@@ -590,6 +601,31 @@ fmp4.m3u8\n";
             admitted.runtime_intent().main_track_layout,
             HlsMainTrackLayoutIntent::MuxedAv
         );
+    }
+
+    #[test]
+    fn alternate_audio_group_uses_unique_provider_default_without_hiding_siblings() {
+        let manifest = "#EXTM3U\n\
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"English\",LANGUAGE=\"en\",DEFAULT=YES,URI=\"en.m3u8\"\n\
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Deutsch\",LANGUAGE=\"de\",URI=\"de.m3u8\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=16x16,CODECS=\"avc1.42c00a,mp4a.40.2\",AUDIO=\"audio\"\n\
+video.m3u8\n";
+        let admitted = admit_native_hls_catalog(
+            manifest.as_bytes(),
+            &target(),
+            HlsParserLimits::default(),
+            &policy(None),
+        )
+        .expect("unique DEFAULT rendition должна открыть alternate-audio catalog");
+
+        let HlsAudioLayoutIntent::NativeGroupResolved { group_id, evidence } =
+            &admitted.runtime_intent().audio
+        else {
+            panic!("alternate audio должна сохранить group/evidence shape");
+        };
+        assert_eq!(group_id.as_ref(), "audio");
+        assert_eq!(evidence.name.as_deref(), Some("English"));
+        assert_eq!(evidence.language.as_deref(), Some("en"));
     }
 
     #[test]

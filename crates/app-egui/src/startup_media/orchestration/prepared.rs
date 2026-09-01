@@ -15,18 +15,27 @@ pub(crate) fn apply_restored_playback_policy(
     target.set_playback_intent(PlaybackIntent::from_autoplay(!config.player.start_paused));
 }
 
-/// Prepared topology — единственный app-owned источник positive/absent audio proof-а.
-pub(super) fn prepared_startup_audio_proof(
+/// Prepared topology — единственный app-owned источник authoritative consumer proof-а.
+pub(super) fn prepared_startup_consumer_proof(
     tracks: &[media_core::TrackInfo],
-) -> crate::startup_readiness::StartupAudioProof {
-    if tracks
+) -> crate::startup_readiness::StartupPreparedConsumerProof {
+    let audio = if tracks
         .iter()
         .any(|track| track.kind == media_core::TrackKind::Audio)
     {
         crate::startup_readiness::StartupAudioProof::Required
     } else {
         crate::startup_readiness::StartupAudioProof::NotPresent
-    }
+    };
+    let video = if tracks
+        .iter()
+        .any(|track| track.kind == media_core::TrackKind::Video)
+    {
+        crate::startup_readiness::StartupVideoProof::Required
+    } else {
+        crate::startup_readiness::StartupVideoProof::NotPresent
+    };
+    crate::startup_readiness::StartupPreparedConsumerProof { audio, video }
 }
 
 /// Prepared ownership сохраняется до trusted allocator decision.

@@ -62,6 +62,19 @@ const WEBM_FIRST_VP9_BLOCK_HEADER: [u8; 7] = [0xa3, 0x41, 0x08, 0x81, 0x00, 0x00
 const WEBM_VP9_ORIGIN_COMPENSATION_MS: u8 = 14;
 /// Root переставляет реальные rows, чтобы exact selection доказывал semantic rematch.
 fn static_manifest(webm_first: bool) -> Vec<u8> {
+    // Public MPD может содержать subtitle rows рядом с полностью playable A/V catalog.
+    // У плеера нет text consumer-а, поэтому такая row не должна блокировать реальные consumers.
+    let text_row = r#"
+      <AdaptationSet id="captions" contentType="text" lang="en" subsegmentAlignment="true">
+        <Representation id="captions-en" bandwidth="256" mimeType="application/mp4"
+            codecs="wvtt">
+          <BaseURL>captions.mp4</BaseURL>
+          <SegmentBase indexRange="0-31">
+            <Initialization range="0-15"/>
+          </SegmentBase>
+        </Representation>
+      </AdaptationSet>
+    "#;
     let fmp4_row = r#"
       <AdaptationSet id="fmp4" contentType="application" mimeType="application/mp4"
           codecs="avc1.42c00a,mp4a.40.2" width="16" height="16">
@@ -77,6 +90,8 @@ fn static_manifest(webm_first: bool) -> Vec<u8> {
     let webm_row = r#"
       <AdaptationSet id="webm" contentType="application" mimeType="video/webm"
           codecs="vp9,opus" width="16" height="16">
+        <Representation id="unsupported-pixel-shape" bandwidth="50000" sar="2:1"
+            width="16" height="16"/>
         <Representation id="vp9-opus" bandwidth="100000" width="16" height="16">
           <SegmentList timescale="1" duration="2">
             <Initialization sourceURL="webm-init.webm"/>
@@ -86,12 +101,15 @@ fn static_manifest(webm_first: bool) -> Vec<u8> {
       </AdaptationSet>
     "#;
     format!(
-        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd" type="static"
             mediaPresentationDuration="PT2S">
           <Period id="p0" duration="PT2S">
-            {}{}
+            {}{}{}
           </Period>
         </MPD>"#,
+        text_row,
         if webm_first { webm_row } else { fmp4_row },
         if webm_first { fmp4_row } else { webm_row },
     )

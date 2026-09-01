@@ -493,7 +493,7 @@ impl DashRepresentationLaneProofPort for ProviderLaneProof<'_> {
                 Arc::clone(self.demux_registry),
             );
             let component = factory
-                .open()
+                .open_for_catalog_proof()
                 .map_err(|error| map_component_probe_error(&error))?;
             let period_proof =
                 prove_tracks(component.tracks(), &request.contract, self.capability_probe)?;

@@ -15,7 +15,8 @@ use media_core::{
 };
 use source_core::{CancellationToken, HttpRequestTarget};
 use support::{
-    TestQueries, TestServer, adaptive_context, demux_registry, muxed_ts, open_policy, response,
+    TestQueries, TestServer, adaptive_context, audio_fmp4, demux_registry, muxed_ts, open_policy,
+    response, video_ts,
 };
 use web_media_core::{
     AudioTrackDescriptor, CandidateFormatIdentity, CandidateIdentity,
@@ -25,10 +26,10 @@ use web_media_core::{
     VideoTrackDescriptor,
 };
 use web_media_hls::{
-    HlsAudioLayoutIntent, HlsCatalogBuildPolicy, HlsCatalogCapabilityProofPort,
-    HlsCatalogCapabilityRejection, HlsCatalogDiscoveryOutcome, HlsCatalogDiscoveryRequest,
-    HlsCatalogPresentation, HlsComponentContainerIntent, HlsContainerEvidence,
-    HlsEndpointRefreshError, HlsEndpointRefreshPort, HlsEndpointRefreshReply,
+    HlsAudioLayoutIntent, HlsAudioRenditionEvidence, HlsCatalogBuildPolicy,
+    HlsCatalogCapabilityProofPort, HlsCatalogCapabilityRejection, HlsCatalogDiscoveryOutcome,
+    HlsCatalogDiscoveryRequest, HlsCatalogPresentation, HlsComponentContainerIntent,
+    HlsContainerEvidence, HlsEndpointRefreshError, HlsEndpointRefreshPort, HlsEndpointRefreshReply,
     HlsEndpointRefreshRequest, HlsLiveOpenRequest, HlsMainTrackLayoutIntent, HlsManifestInput,
     HlsProviderDefaultAudioPolicy, HlsRequestOverrides, HlsRequiredContainer,
     HlsVariantSelectionIntent, HlsVodOpenRequest, discover_hls_catalog,
@@ -240,6 +241,121 @@ fn discovery_content_proves_selected_child_and_isolates_unavailable_sibling() {
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
     .expect("catalog exact reopen ignores unrelated caller default");
+    let mut demuxer = opened.into_demuxer();
+    assert!(matches!(
+        next_ready_event(demuxer.as_mut()),
+        DemuxReadEvent::TracksChanged(_)
+    ));
+}
+
+#[test]
+fn alternate_audio_catalog_accepts_codec_boundary_extinf_variation_and_reaches_demux() {
+    let video_segment = video_ts(90_000);
+    let (audio_initialization, audio_segment) = audio_fmp4();
+    let server = TestServer::start(move |_, request| {
+        if request.request_line.contains("/master.m3u8") {
+            return response(
+                "200 OK",
+                &[],
+                b"#EXTM3U\n\
+                  #EXT-X-MEDIA:TYPE=AUDIO,URI=\"audio.m3u8\",GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"English\",DEFAULT=YES,AUTOSELECT=YES,CHANNELS=\"2\"\n\
+                  #EXT-X-STREAM-INF:BANDWIDTH=1,CODECS=\"avc1.42001e,mp4a.40.2\",RESOLUTION=640x360,AUDIO=\"audio\"\n\
+                  video.m3u8\n",
+            );
+        }
+        if request.request_line.contains("/video.m3u8") {
+            return response(
+                "200 OK",
+                &[],
+                b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:4.000,\nvideo-1.ts\n#EXTINF:4.000,\nvideo-2.ts\n#EXT-X-ENDLIST\n",
+            );
+        }
+        if request.request_line.contains("/audio.m3u8") {
+            return response(
+                "200 OK",
+                &[],
+                b"#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:5\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MAP:URI=\"audio-init.mp4\"\n#EXTINF:4.011,\naudio-1.mp4\n#EXTINF:3.989,\naudio-2.mp4\n#EXT-X-ENDLIST\n",
+            );
+        }
+        if request.request_line.contains("/video-") {
+            return response("200 OK", &[], &video_segment);
+        }
+        if request.request_line.contains("/audio-init.mp4") {
+            return response("200 OK", &[], &audio_initialization);
+        }
+        if request.request_line.contains("/audio-") {
+            return response("200 OK", &[], &audio_segment);
+        }
+        response("404 Not Found", &[], b"")
+    });
+    let generation = SourceGeneration::new(1);
+    let target = server.target("/master.m3u8");
+    let open = HlsVodOpenRequest {
+        http: adaptive_context(
+            &target,
+            CancellationToken::new(),
+            generation,
+            TestQueries::default(),
+        ),
+        generation,
+        manifest: HlsManifestInput::Fetch {
+            selected_url: target,
+        },
+        selection: HlsVariantSelectionIntent {
+            resolution: Some((
+                NonZeroU32::new(640).expect("width"),
+                NonZeroU32::new(360).expect("height"),
+            )),
+            codecs: Some("avc1.42001e,mp4a.40.2".into()),
+            audio: HlsAudioLayoutIntent::Separate(HlsAudioRenditionEvidence {
+                name: Some("English".into()),
+                language: Some("en".into()),
+                channel_count: None,
+            }),
+            main_track_layout: HlsMainTrackLayoutIntent::VideoOnly,
+        },
+        overrides: HlsRequestOverrides::new(None),
+        containers: HlsComponentContainerIntent {
+            main: HlsContainerEvidence::Exact(HlsRequiredContainer::TransportStream),
+            alternate_audio: Some(HlsContainerEvidence::Exact(
+                HlsRequiredContainer::FragmentedMp4,
+            )),
+        },
+        demux_registry: demux_registry(),
+        policy: open_policy(),
+    };
+    let mut capabilities = RecordingCapabilities::default();
+    let outcome = discover_hls_catalog(
+        HlsCatalogDiscoveryRequest {
+            open: &open,
+            catalog_identity: catalog_identity(),
+            presentation: HlsCatalogPresentation::Vod,
+            provider_default_variant_index: None,
+            policy: HlsCatalogBuildPolicy {
+                catalog_limit: ComponentVariantCatalogLimit::new(8).expect("catalog limit"),
+                compatibility_edge_limit: ComponentVariantEdgeLimit::new(8).expect("edge limit"),
+                maximum_unique_children: NonZeroUsize::new(8).expect("child limit"),
+                provider_default_audio: HlsProviderDefaultAudioPolicy::RequireDeclared,
+            },
+        },
+        &mut capabilities,
+    )
+    .expect("codec frame boundaries must not split one presentation timeline");
+    let HlsCatalogDiscoveryOutcome::Installed(snapshot) = outcome else {
+        panic!("alternate audio discovery must install a catalog");
+    };
+
+    assert_eq!(capabilities.video_calls, 1);
+    assert_eq!(capabilities.audio_calls, 1);
+    let reopen = snapshot
+        .reopen_exact(snapshot.provider_default_selection())
+        .expect("provider default remains exactly reopenable");
+    let opened = prepare_hls_catalog_vod_receipted(
+        open,
+        reopen,
+        ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
+    )
+    .expect("compatible alternate audio reaches the combined demux runtime");
     let mut demuxer = opened.into_demuxer();
     assert!(matches!(
         next_ready_event(demuxer.as_mut()),

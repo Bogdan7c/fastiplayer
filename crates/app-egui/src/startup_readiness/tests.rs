@@ -44,6 +44,22 @@ fn video_only_snapshot(media_instance_id: MediaInstanceId) -> PlayerSnapshot {
     snapshot
 }
 
+fn audio_only_snapshot(media_instance_id: MediaInstanceId) -> PlayerSnapshot {
+    let mut snapshot = PlayerSnapshot::empty();
+    snapshot.media_instance_id = Some(media_instance_id);
+    snapshot.tracks = vec![TrackSummarySnapshot {
+        id: TrackId::new(1),
+        kind: TrackKind::Audio,
+        codec_id: "A_TEST".to_owned(),
+        sample_rate: Some(48_000),
+        channels: Some(2),
+        duration: None,
+        video: None,
+        video_color_summary: None,
+    }];
+    snapshot
+}
+
 fn frame_identity(render_generation: u64, pts: Duration) -> VideoPresentFrameIdentity {
     let decoded_frame = DecodedFrame {
         generation: 7,
@@ -267,13 +283,57 @@ fn unknown_audio_does_not_infer_absence_from_video_only_snapshot() {
         .expect("Unknown audio не должен публиковать readiness");
     assert_eq!(attempt.expectation.audio, StartupAudioExpectation::Unknown);
 
-    tracker.note_prepared_audio_proof(
-        StartupAudioProof::NotPresent,
+    tracker.note_prepared_consumer_proof(
+        StartupPreparedConsumerProof {
+            audio: StartupAudioProof::NotPresent,
+            video: StartupVideoProof::Required,
+        },
         started_at + Duration::from_millis(3),
     );
     assert!(
         !tracker.has_active_attempt(),
         "только authoritative NotPresent proof закрывает audio-less gate"
+    );
+}
+
+#[test]
+fn playing_audio_only_completes_without_inventing_surface_presentation() {
+    let started_at = Instant::now();
+    let media_instance_id = media_instance(41);
+    let mut tracker = StartupReadinessTracker::new(started_at);
+    tracker.begin_attempt(
+        StartupReadinessExpectation::new(
+            StartupMediaOpenKind::Cli,
+            StartupTargetExpectation::Beginning,
+            StartupPlaybackExpectation::Playing,
+            StartupAudioExpectation::Unknown,
+        ),
+        started_at,
+    );
+    tracker.note_prepared_consumer_proof(
+        StartupPreparedConsumerProof {
+            audio: StartupAudioProof::Required,
+            video: StartupVideoProof::NotPresent,
+        },
+        started_at + Duration::from_millis(1),
+    );
+    tracker.note_player_event(
+        Some(media_instance_id),
+        &media_opened(),
+        started_at + Duration::from_millis(2),
+    );
+    tracker.reconcile_tracks(
+        &audio_only_snapshot(media_instance_id),
+        started_at + Duration::from_millis(2),
+    );
+    tracker.note_audio_playback_resumed(
+        Some(media_instance_id),
+        started_at + Duration::from_millis(3),
+    );
+
+    assert!(
+        !tracker.has_active_attempt(),
+        "authoritative audio-only topology не должна ждать несуществующий video surface"
     );
 }
 

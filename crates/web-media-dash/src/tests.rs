@@ -660,12 +660,21 @@ fn segment_base_is_range_backed_and_selection_never_picks_first_on_tie() {
     let DashPresentationPlan::Single(component) = plan else {
         panic!("single")
     };
-    let DashPeriodInputPlan::Range { target, .. } = &component.periods[0].input else {
+    let DashPeriodInputPlan::Range {
+        target,
+        catalog_probe_content_length,
+        ..
+    } = &component.periods[0].input
+    else {
         panic!("Range-backed")
     };
     assert_eq!(
         target.expose_secret_for_request(),
         "https://media.example/root/video.mp4"
+    );
+    assert_eq!(
+        catalog_probe_content_length.map(|length| length.get()),
+        Some(100)
     );
 
     let tie = parse(

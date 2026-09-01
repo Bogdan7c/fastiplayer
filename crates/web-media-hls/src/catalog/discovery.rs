@@ -24,7 +24,12 @@ use crate::source::HlsEpochSegmentSource;
 use crate::{HlsRequiredContainer, HlsVodOpenRequest};
 
 #[derive(Clone, PartialEq, Eq)]
-struct TimelineSignature(Box<[(Duration, u64)]>);
+struct TimelineSignature {
+    /// Суммарный presentation interval остаётся обязательным cross-rendition доказательством.
+    total_duration: Duration,
+    /// Разрывы должны находиться на одинаковых границах сегментов у всех rendition.
+    discontinuity_offsets: Box<[u64]>,
+}
 
 struct DiscoveryProofPort<'request, 'capability> {
     request: &'request HlsVodOpenRequest,
@@ -249,23 +254,25 @@ impl DiscoveryProofPort<'_, '_> {
             .map_or(media.discontinuity_sequence, |segment| {
                 segment.discontinuity_sequence
             });
-        let signature = TimelineSignature(
-            media
-                .segments
-                .iter()
-                .map(|segment| {
-                    Ok((
-                        parse_hls_duration(&segment.duration)
-                            .map_err(|_| ChildProofFailure::InvalidManifest)?,
-                        segment
-                            .discontinuity_sequence
-                            .checked_sub(base_discontinuity)
-                            .ok_or(ChildProofFailure::InvalidManifest)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, ChildProofFailure>>()?
-                .into_boxed_slice(),
-        );
+        let mut total_duration = Duration::ZERO;
+        let mut discontinuity_offsets = Vec::with_capacity(media.segments.len());
+        for segment in &media.segments {
+            let segment_duration = parse_hls_duration(&segment.duration)
+                .map_err(|_| ChildProofFailure::InvalidManifest)?;
+            total_duration = total_duration
+                .checked_add(segment_duration)
+                .ok_or(ChildProofFailure::InvalidManifest)?;
+            discontinuity_offsets.push(
+                segment
+                    .discontinuity_sequence
+                    .checked_sub(base_discontinuity)
+                    .ok_or(ChildProofFailure::InvalidManifest)?,
+            );
+        }
+        let signature = TimelineSignature {
+            total_duration,
+            discontinuity_offsets: discontinuity_offsets.into_boxed_slice(),
+        };
         if let Some(index) = self
             .alignments
             .iter()

@@ -14,7 +14,10 @@ fn xml_budgets() -> XmlBudgets {
 #[test]
 fn standardized_representation_metadata_is_exact_inherited_and_optional() {
     let mpd = parse(
-        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT2S">
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd"
+          mediaPresentationDuration="PT2S">
           <Period duration="PT2S">
             <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401f" width="1920" height="1080"
                 frameRate="30000/1001">
@@ -284,6 +287,37 @@ fn segment_list_and_segment_base_initialization_are_modelled() {
 }
 
 #[test]
+fn known_non_playback_text_adaptation_does_not_hide_or_mutate_av_catalog() {
+    let parsed = parse(
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT2S">
+          <Period duration="PT2S">
+            <AdaptationSet contentType="text" lang="en" subsegmentAlignment="true">
+              <Representation id="captions" mimeType="application/mp4" codecs="wvtt">
+                <BaseURL>captions.mp4</BaseURL>
+                <SegmentBase indexRange="0-31"><Initialization range="0-15"/></SegmentBase>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet contentType="text" mimeType="text/vtt" lang="fr">
+              <Representation id="captions-vtt"><BaseURL>captions.vtt</BaseURL></Representation>
+            </AdaptationSet>
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1.4d401f">
+              <Representation id="unsupported-sar" sar="2:1"/>
+              <Representation id="video"><BaseURL>video.mp4</BaseURL>
+                <SegmentBase indexRange="100-199"><Initialization range="0-99"/></SegmentBase>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>"#,
+    )
+    .expect("known subtitle row рядом с playable A/V catalog");
+
+    assert_eq!(parsed.periods[0].adaptation_sets.len(), 1);
+    let retained = &parsed.periods[0].adaptation_sets[0].representations[0];
+    assert_eq!(retained.id, "video");
+    assert_eq!(retained.media_kind, DashMediaKind::Video);
+}
+
+#[test]
 fn exact_namespace_dynamic_drm_base_cardinality_and_media_mismatch_fail_closed() {
     let cases = [
         (
@@ -294,6 +328,20 @@ fn exact_namespace_dynamic_drm_base_cardinality_and_media_mismatch_fail_closed()
             r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
                 mediaPresentationDuration="PT1S"></MPD>"#,
             DashMpdErrorKind::DynamicPresentation,
+        ),
+        (
+            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" xmlns:vendor="urn:vendor"
+                vendor:opaque="true" mediaPresentationDuration="PT1S">
+               <Period duration="PT1S"><AdaptationSet mimeType="audio/webm" codecs="opus">
+                 <Representation id="vendor-attribute"/></AdaptationSet></Period></MPD>"#,
+            DashMpdErrorKind::UnsupportedConstruct,
+        ),
+        (
+            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
+               <Period duration="PT1S"><AdaptationSet mimeType="audio/webm" codecs="opus"
+                 subsegmentAlignment="sometimes">
+                 <Representation id="bad-alignment"/></AdaptationSet></Period></MPD>"#,
+            DashMpdErrorKind::InvalidAttribute,
         ),
         (
             r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
@@ -321,6 +369,21 @@ fn exact_namespace_dynamic_drm_base_cardinality_and_media_mismatch_fail_closed()
                <Period duration="PT1S"><AdaptationSet mimeType="video/webm" codecs="avc1.4d401f">
                  <Representation id="container-mismatch"/></AdaptationSet></Period></MPD>"#,
             DashMpdErrorKind::UnsupportedMediaEvidence,
+        ),
+        (
+            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
+               <Period duration="PT1S"><AdaptationSet contentType="text"
+                 mimeType="application/mp4" codecs="unknown-text">
+                 <Representation id="unknown-text"/></AdaptationSet></Period></MPD>"#,
+            DashMpdErrorKind::UnsupportedMediaEvidence,
+        ),
+        (
+            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
+               <Period duration="PT1S"><AdaptationSet contentType="text"
+                 mimeType="application/mp4" codecs="wvtt">
+                 <ContentProtection/><Representation id="protected-text"/>
+               </AdaptationSet></Period></MPD>"#,
+            DashMpdErrorKind::ContentProtection,
         ),
         (
             r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S2M">

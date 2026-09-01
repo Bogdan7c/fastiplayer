@@ -1,6 +1,6 @@
 //! Pure finite DASH planning: BaseURL, addressing, clocks и component alignment.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 use dash_mpd_core::{
@@ -26,7 +26,7 @@ pub(crate) use continuation::{DashComponentContinuationPoint, DashPresentationCo
 use lifecycle::{component_snapshot_duration, validate_period_alignment};
 use resources::{
     build_serialized_component, plan_list, plan_template, resolve_optional_base,
-    validate_resource_alignment, validate_segment_base,
+    segment_base_catalog_probe_content_length, validate_resource_alignment, validate_segment_base,
 };
 use timeline::{DashPeriodTimelineBound, DashTimelinePlanningIntent};
 
@@ -61,6 +61,8 @@ pub(crate) enum DashPeriodInputPlan {
         target: HttpRequestTarget,
         /// Query projection для every Range read.
         query_application: AdaptiveResourceQueryApplication,
+        /// Zero-based init prefix для catalog proof; playback всегда видит full resource.
+        catalog_probe_content_length: Option<NonZeroU64>,
     },
 }
 
@@ -522,6 +524,9 @@ fn build_manifest_period(
                 DashPeriodInputPlan::Range {
                     target: representation_base,
                     query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+                    catalog_probe_content_length: segment_base_catalog_probe_content_length(
+                        segment_base,
+                    ),
                 },
                 DashTimestampMapping::MediaTimeOrigin(Duration::ZERO),
                 duration,
@@ -533,6 +538,7 @@ fn build_manifest_period(
                 DashPeriodInputPlan::Range {
                     target: representation_base,
                     query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+                    catalog_probe_content_length: None,
                 },
                 DashTimestampMapping::MediaTimeOrigin(Duration::ZERO),
                 duration,

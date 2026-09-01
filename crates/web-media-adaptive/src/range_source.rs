@@ -1,7 +1,7 @@
 //! Seekable bounded Range source поверх единой S31 HTTP policy.
 
 use std::fmt;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 use source_core::{
     ByteSource, CancellationToken, HttpRepresentationChange, HttpRequestPolicyFailure,
@@ -22,6 +22,8 @@ pub struct AdaptiveRangeSourceConfig {
     maximum_read_bytes: NonZeroUsize,
     /// Способ применения provider query material.
     query_application: AdaptiveResourceQueryApplication,
+    /// Optional consumer-visible prefix; physical response identity всё равно проверяется целиком.
+    exposed_content_length: Option<NonZeroU64>,
 }
 
 impl AdaptiveRangeSourceConfig {
@@ -34,7 +36,14 @@ impl AdaptiveRangeSourceConfig {
         Self {
             maximum_read_bytes,
             query_application,
+            exposed_content_length: None,
         }
+    }
+
+    /// Ограничивает логическую длину source доказанным prefix без изменения wire identity.
+    pub fn with_exposed_content_length(mut self, exposed_content_length: NonZeroU64) -> Self {
+        self.exposed_content_length = Some(exposed_content_length);
+        self
     }
 }
 
@@ -53,6 +62,9 @@ pub enum AdaptiveRangeSourceOpenError {
     /// Seekable representation не может быть пустой.
     #[error("adaptive Range source rejected an empty representation")]
     EmptyRepresentation,
+    /// Manifest-declared prefix не помещается в доказанную physical representation.
+    #[error("adaptive Range exposed content length exceeds the physical representation")]
+    ExposedContentLengthExceedsResource,
 }
 
 /// Seekable `ByteSource`, который не создаёт второй HTTP client и не читает full resource.
@@ -69,6 +81,8 @@ pub struct AdaptiveRangeByteSource {
     query_application: AdaptiveResourceQueryApplication,
     /// Доказанная полная длина representation.
     total_resource_bytes: u64,
+    /// Consumer-visible длина; для обычного playback равна physical длине.
+    exposed_content_bytes: u64,
     /// Exact validators initial probe-а, включая доказанное отсутствие.
     validators: SourceValidators,
     /// Текущий логический byte cursor.
@@ -85,6 +99,7 @@ impl fmt::Debug for AdaptiveRangeByteSource {
             .field("generation", &self.generation)
             .field("maximum_read_bytes", &self.maximum_read_bytes)
             .field("total_resource_bytes", &self.total_resource_bytes)
+            .field("exposed_content_bytes", &self.exposed_content_bytes)
             .field("position", &self.position)
             .finish()
     }
@@ -116,6 +131,13 @@ impl AdaptiveRangeByteSource {
         if total_resource_bytes == 0 {
             return Err(AdaptiveRangeSourceOpenError::EmptyRepresentation);
         }
+        let exposed_content_bytes = config
+            .exposed_content_length
+            .map(NonZeroU64::get)
+            .unwrap_or(total_resource_bytes);
+        if exposed_content_bytes > total_resource_bytes {
+            return Err(AdaptiveRangeSourceOpenError::ExposedContentLengthExceedsResource);
+        }
         let validators = metadata.validators();
         let fingerprint = SourceFingerprint::new(format!(
             "adaptive-range:{:016x}:{}:{total_resource_bytes}",
@@ -130,6 +152,7 @@ impl AdaptiveRangeByteSource {
             maximum_read_bytes: config.maximum_read_bytes,
             query_application: config.query_application,
             total_resource_bytes,
+            exposed_content_bytes,
             validators,
             position: 0,
             fingerprint,
@@ -178,7 +201,7 @@ impl ByteSource for AdaptiveRangeByteSource {
         if cancellation.is_cancelled() || self.context.cancellation().is_cancelled() {
             return Err(SourceError::Cancelled);
         }
-        let remaining_bytes = self.total_resource_bytes.saturating_sub(self.position);
+        let remaining_bytes = self.exposed_content_bytes.saturating_sub(self.position);
         if remaining_bytes == 0 {
             return Ok(0);
         }
@@ -229,9 +252,9 @@ impl ByteSource for AdaptiveRangeByteSource {
         self.validators.clone()
     }
 
-    /// Возвращает обязательную доказанную полную длину representation.
+    /// Возвращает consumer-visible длину; physical identity остаётся проверенной отдельно.
     fn content_length(&self) -> Option<u64> {
-        Some(self.total_resource_bytes)
+        Some(self.exposed_content_bytes)
     }
 
     /// Возвращает opaque identity без locator/header material.

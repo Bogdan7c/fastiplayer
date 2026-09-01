@@ -367,7 +367,7 @@ fn native_open_fallback_reason(error: &DashVodOpenError) -> Option<WebMediaFallb
 fn native_manifest_fallback_reason(
     error: &dash_mpd_core::DashMpdError,
 ) -> Option<WebMediaFallbackTrigger> {
-    match error.kind() {
+    let trigger = match error.kind() {
         dash_mpd_core::DashMpdErrorKind::InvalidRoot => {
             Some(WebMediaFallbackTrigger::ProviderDocument)
         }
@@ -386,7 +386,15 @@ fn native_manifest_fallback_reason(
         | dash_mpd_core::DashMpdErrorKind::InvalidAddressing
         | dash_mpd_core::DashMpdErrorKind::InvalidPeriodTimeline
         | dash_mpd_core::DashMpdErrorKind::MalformedSchema => None,
+    };
+    if trigger.is_some() {
+        // Typed parser kind не содержит locator/provider payload и пригоден для sanitized evidence.
+        tracing::warn!(
+            kind = ?error.kind(),
+            "Native DASH manifest requires compatibility fallback"
+        );
     }
+    trigger
 }
 
 /// Создаёт fresh exact parent/catalog identity без URL/hash material.

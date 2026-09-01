@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 use source_core::{ByteSource, CancellationToken, HttpRepresentationChange, SourceError};
 use web_media_transport_api::{RedirectHopLimit, RedirectPolicy, SourceGeneration};
@@ -75,6 +75,50 @@ fn range_source_proves_total_reads_partial_tail_and_never_uses_full_get() {
             .to_ascii_lowercase()
             .contains("range: bytes=")
     }));
+}
+
+#[test]
+fn exposed_prefix_bounds_consumer_reads_but_preserves_physical_range_identity() {
+    let resource = b"abcde";
+    let server = LocalServer::start(move |_index, request| {
+        let range = request
+            .headers
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("range: ")
+                    .or_else(|| line.strip_prefix("Range: "))
+            })
+            .expect("every request is Range");
+        let (start, end) = match range {
+            "bytes=0-0" => (0, 0),
+            "bytes=0-2" => (0, 2),
+            unexpected => panic!("unexpected Range {unexpected}"),
+        };
+        response(
+            "206 Partial Content",
+            &[
+                ("Content-Range", format!("bytes {start}-{end}/5")),
+                ("ETag", "\"stable\"".to_owned()),
+            ],
+            &resource[start..=end],
+        )
+    });
+    let target = server.target("/representation.bin");
+    let cancellation = CancellationToken::new();
+    let mut source = AdaptiveRangeByteSource::open(
+        context(&target, cancellation.clone(), redirect_policy(), None, None),
+        target,
+        SourceGeneration::new(1),
+        range_config().with_exposed_content_length(NonZeroU64::new(3).expect("prefix")),
+    )
+    .expect("bounded Range source opens");
+
+    assert_eq!(source.content_length(), Some(3));
+    let mut output = [0_u8; 8];
+    assert_eq!(source.read(&mut output, &cancellation).expect("prefix"), 3);
+    assert_eq!(&output[..3], b"abc");
+    assert_eq!(source.read(&mut output, &cancellation).expect("EOF"), 0);
+    assert_eq!(server.request_count(), 2);
 }
 
 #[test]

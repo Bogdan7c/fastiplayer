@@ -11,15 +11,19 @@ use crate::template::DashTemplateString;
 
 mod attributes;
 mod metadata;
+mod text_adaptation;
 
 pub(super) use attributes::{
     bounded_optional_attribute, is_name, optional_attribute, require_name, validate_attributes,
 };
 use attributes::{
     optional_positive_ratio_attribute, optional_positive_u32_attribute, optional_u64_attribute,
-    read_text_leaf, required_bounded_attribute,
+    read_text_leaf, required_bounded_attribute, validate_attributes_with_namespaced_allowlist,
 };
 use metadata::*;
+use text_adaptation::{
+    consume_non_playback_text_adaptation_set, is_non_playback_text_adaptation_set,
+};
 
 /// Narrow static profile allowlist, доказанный checked-in S34 matrix.
 pub(super) const SUPPORTED_DASH_PROFILES: &[&str] = &[
@@ -131,7 +135,7 @@ pub fn parse_dash_mpd(request: DashMpdParseRequest<'_>) -> Result<DashMpd, DashM
         return Err(DashMpdError::new(DashMpdErrorKind::DynamicPresentation));
     }
     validate_profiles(optional_attribute(&root, "profiles")?)?;
-    validate_attributes(
+    validate_attributes_with_namespaced_allowlist(
         &root,
         &[
             "id",
@@ -141,6 +145,10 @@ pub fn parse_dash_mpd(request: DashMpdParseRequest<'_>) -> Result<DashMpd, DashM
             "mediaPresentationDuration",
             "maxSegmentDuration",
         ],
+        &[(
+            "http://www.w3.org/2001/XMLSchema-instance",
+            "schemaLocation",
+        )],
     )?;
 
     let mut base_url = None;
@@ -209,16 +217,22 @@ pub(super) fn parse_period(
     let duration_milliseconds = optional_duration_attribute(&element, "duration")?;
     let mut base_url = None;
     let mut adaptation_sets = Vec::new();
+    let mut encountered_adaptation_set_count = 0_usize;
     loop {
         match cursor.next_event()? {
             Some(XmlEvent::StartElement(child)) if is_name(child.name(), "BaseURL") => {
                 set_single_base_url(&mut base_url, parse_base_url(cursor, child, limits)?)?;
             }
             Some(XmlEvent::StartElement(child)) if is_name(child.name(), "AdaptationSet") => {
-                if adaptation_sets.len() >= limits.maximum_adaptation_sets_per_period {
+                if encountered_adaptation_set_count >= limits.maximum_adaptation_sets_per_period {
                     return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
                 }
-                adaptation_sets.push(parse_adaptation_set(cursor, child, limits)?);
+                encountered_adaptation_set_count += 1;
+                if is_non_playback_text_adaptation_set(&child, limits)? {
+                    consume_non_playback_text_adaptation_set(cursor)?;
+                } else {
+                    adaptation_sets.push(parse_adaptation_set(cursor, child, limits)?);
+                }
             }
             Some(XmlEvent::StartElement(child)) if is_name(child.name(), "ContentProtection") => {
                 return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
@@ -267,6 +281,7 @@ fn parse_adaptation_set(
             "frameRate",
             "audioSamplingRate",
             "segmentAlignment",
+            "subsegmentAlignment",
             "startWithSAP",
             "par",
             "minWidth",
@@ -283,6 +298,7 @@ fn parse_adaptation_set(
     let mut base_url = None;
     let mut inherited_addressing = None;
     let mut representations = Vec::new();
+    let mut observed_unsupported_media_representation = false;
     loop {
         match cursor.next_event()? {
             Some(XmlEvent::StartElement(child)) if is_name(child.name(), "Role") => {
@@ -362,26 +378,38 @@ fn parse_adaptation_set(
                 if representations.len() >= limits.maximum_representations_per_adaptation_set {
                     return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
                 }
-                representations.push(parse_representation(
+                match parse_representation(
                     cursor,
                     child,
                     limits,
                     &hints,
                     &metadata,
                     inherited_addressing.clone(),
-                )?);
+                ) {
+                    Ok(representation) => representations.push(representation),
+                    Err(error) if error.kind() == DashMpdErrorKind::UnsupportedMediaEvidence => {
+                        observed_unsupported_media_representation = true;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "Representation") => {
                 if representations.len() >= limits.maximum_representations_per_adaptation_set {
                     return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
                 }
-                representations.push(parse_empty_representation(
+                match parse_empty_representation(
                     child,
                     limits,
                     &hints,
                     &metadata,
                     inherited_addressing.clone(),
-                )?);
+                ) {
+                    Ok(representation) => representations.push(representation),
+                    Err(error) if error.kind() == DashMpdErrorKind::UnsupportedMediaEvidence => {
+                        observed_unsupported_media_representation = true;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             Some(XmlEvent::StartElement(child)) if is_name(child.name(), "ContentProtection") => {
                 return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
@@ -397,6 +425,11 @@ fn parse_adaptation_set(
         }
     }
     if representations.is_empty() {
+        if observed_unsupported_media_representation {
+            return Err(DashMpdError::new(
+                DashMpdErrorKind::UnsupportedMediaEvidence,
+            ));
+        }
         return Err(DashMpdError::new(DashMpdErrorKind::MalformedSchema));
     }
     validate_representation_picture_aspect_ratio(declared_picture_aspect_ratio, &representations)?;
@@ -432,7 +465,6 @@ fn parse_representation(
             "sar",
         ],
     )?;
-    validate_square_sample_aspect_ratio(&element, limits)?;
     let id = required_bounded_attribute(&element, "id", limits)?;
     let bandwidth = optional_u64_attribute(&element, "bandwidth")?;
     let own_hints = media_hints(&element, limits)?;
@@ -524,6 +556,7 @@ fn parse_representation(
             }
         }
     }
+    validate_square_sample_aspect_ratio(&element, limits)?;
     let (container, media_kind, codecs) = classify_media(&effective_hints)?;
     let metadata = merge_representation_metadata(inherited_metadata, own_metadata);
     Ok(DashRepresentation {
@@ -602,6 +635,8 @@ fn validate_adaptation_constraints(
     element: &XmlElement,
     limits: DashMpdLimits,
 ) -> Result<Option<(u32, u32)>, DashMpdError> {
+    optional_boolean_attribute(element, "segmentAlignment")?;
+    optional_boolean_attribute(element, "subsegmentAlignment")?;
     let minimum_width = optional_positive_u32_attribute(element, "minWidth")?;
     let maximum_width = optional_positive_u32_attribute(element, "maxWidth")?;
     let minimum_height = optional_positive_u32_attribute(element, "minHeight")?;
