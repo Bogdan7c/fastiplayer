@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "session": "N15",
+  "observed_at": "2026-09-02",
+  "code_commit": "c330ba74",
+  "release_binary_sha256": "5cfc3c08979a07573a63d1b8d48637a40afaec250d883213bf9e1c1506a38fed",
+  "xspf": {
+    "path": "user/web-media-playlist-acceptance.xspf",
+    "sha256": "1daa973aa0f16a3be93e588dd3c83a8432b2917a5b525a05eb278776bb9c6435",
+    "rows": 13,
+    "silent_locator_replacements": 0
+  },
+  "outcome": {
+    "session_card": "PASS",
+    "available_rows_passed": 11,
+    "profile_excluded_rows": 2,
+    "player_failures": 0,
+    "source_drift": 0,
+    "source_unavailable": 0
+  },
+  "software_rows": [
+    {
+      "id": "row00",
+      "safe_title": "00 URL settings — adaptive HDR, codec, resolution и FPS",
+      "classification": "PASS",
+      "ingress": "extractor",
+      "process_to_ready_ms": 4336,
+      "extractor_spawns": 1
+    },
+    {
+      "id": "row01",
+      "safe_title": "01 HLS VOD — MPEG-TS, muxed H.264 + AAC",
+      "classification": "PASS",
+      "ingress": "native_hls",
+      "process_to_ready_ms": 18129,
+      "extractor_spawns": 0
+    },
+    {
+      "id": "row02",
+      "safe_title": "02 DASH VOD — fMP4/WebM, separate A/V",
+      "classification": "PASS",
+      "ingress": "native_dash",
+      "process_to_ready_ms": 32580,
+      "extractor_spawns": 0
+    },
+    {
+      "id": "row03",
+      "safe_title": "03 Progressive HTTP — audio-only Ogg",
+      "classification": "PASS",
+      "ingress": "native_http",
+      "process_to_ready_ms": 387,
+      "extractor_spawns": 0
+    },
+    {
+      "id": "row04",
+      "safe_title": "04 HLS live — avc3 video, варианты + DVR; HE-AAC вне профиля",
+      "classification": "PROFILE_EXCLUDED",
+      "ingress": "native_hls",
+      "process_to_ready_ms": null,
+      "extractor_spawns": 0,
+      "reason": "exact source currently requires avc3 plus HE-AAC and TTML, outside the accepted native playback profile"
+    },
+    {
+      "id": "row05",
+      "safe_title": "05 Progressive HTTP — WebM VP9 + Opus",
+      "classification": "PASS",
+      "ingress": "native_http",
+      "process_to_ready_ms": 1704,
+      "extractor_spawns": 0
+    },
+    {
+      "id": "row06",
+      "safe_title": "06 DASH live — SegmentTimeline, HTTP-XSDATE і sliding DVR",
+      "classification": "PASS",
+      "ingress": "native_dash",
+      "process_to_ready_ms": 11769,
+      "extractor_spawns": 0
+    },
+    {
+      "id": "row07",
+      "safe_title": "07 Smooth Streaming VOD — H.264 + AAC fMP4",
+      "classification": "PASS",
+      "ingress": "native_smooth",
+      "process_to_ready_ms": 1780,
+      "extractor_spawns": 0
+    },
+    {
+      "id": "row08",
+      "safe_title": "08 Progressive HTTP — ISO-BMFF MP4",
+      "classification": "PASS",
+      "ingress": "extractor",
+      "process_to_ready_ms": 1563,
+      "extractor_spawns": 1
+    },
+    {
+      "id": "row09",
+      "safe_title": "09 HDS VOD — F4M/F4F FLV-family",
+      "classification": "PASS",
+      "ingress": "native_hds",
+      "process_to_ready_ms": 16091,
+      "extractor_spawns": 0
+    },
+    {
+      "id": "row10",
+      "safe_title": "10 FTP progressive — audio-only Ogg/Vorbis",
+      "classification": "PASS",
+      "ingress": "native_ftp",
+      "process_to_ready_ms": 7156,
+      "extractor_spawns": 0
+    },
+    {
+      "id": "row11",
+      "safe_title": "11 HLS VOD — fMP4/CMAF и alternate audio",
+      "classification": "PASS",
+      "ingress": "native_hls",
+      "process_to_ready_ms": 9068,
+      "extractor_spawns": 0
+    },
+    {
+      "id": "row12",
+      "safe_title": "12 DASH VOD — WebM VP9 + Opus fragments",
+      "classification": "PROFILE_EXCLUDED",
+      "ingress": "native_dash",
+      "process_to_ready_ms": null,
+      "extractor_spawns": 0,
+      "reason": "exact source declares picture/sample aspect evidence not representable by the current square-pixel display contract"
+    }
+  ],
+  "process_spy": {
+    "cold_rows_with_spawn": ["row00", "row08"],
+    "restart_rows_with_spawn": ["row00", "row08"],
+    "cold_spawn_count_per_listed_row": 1,
+    "restart_spawn_count_per_listed_row": 1,
+    "direct_rows_with_spawn": []
+  },
+  "lifecycle": {
+    "yt_dlp_enabled_for_direct_rows": false,
+    "focused_cohort": "cargo +1.96.0 test -p app-egui n14b_lifecycle_ --locked",
+    "tests_passed": 17,
+    "tests_failed": 0,
+    "covered": [
+      "seek_forward",
+      "seek_backward",
+      "switch",
+      "live_expiry_recovery",
+      "reopen",
+      "close_restart",
+      "queue_restore",
+      "stale_generation_fence"
+    ]
+  },
+  "auto_profile": [
+    {"row": "row05", "role": "direct", "classification": "PASS", "elapsed_ms": 1903.086},
+    {"row": "row01", "role": "hls_vod", "classification": "PASS", "elapsed_ms": 2504.642},
+    {"row": "row02", "role": "dash_vod", "classification": "PASS", "elapsed_ms": 33557.811},
+    {"row": "row06", "role": "dash_live", "classification": "PASS", "elapsed_ms": 4106.087}
+  ],
+  "hardware_profile": {
+    "preflight": {
+      "classification": "PASS",
+      "adapter": "AMD Radeon 780M",
+      "driver": "Mesa 26.2.1",
+      "render_node": "renderD128",
+      "required_decode_capability": "VAProfileAV1Profile0:VAEntrypointVLD"
+    },
+    "public": [
+      {"row": "row01", "role": "hls_vod", "classification": "PASS", "elapsed_ms": 57576.371},
+      {"row": "row02", "role": "dash_vod", "classification": "PASS", "elapsed_ms": 27148.747},
+      {"row": "row06", "role": "dash_live", "classification": "PASS", "elapsed_ms": 5108.154}
+    ],
+    "local_media": [
+      {"role": "direct_vp9_sdr_auto", "classification": "PASS"},
+      {"role": "direct_av1_sdr_hardware", "classification": "PASS"},
+      {"role": "direct_av1_hdr_p010_hardware", "classification": "PASS"}
+    ],
+    "hdr_to_sdr": {
+      "classification": "PASS",
+      "monitor_hdr_required": false,
+      "decoded_boundary": "P010 10-bit 4:2:0",
+      "active_color_path": "BT.2020 PQ limited to SDR BT.709 through BT.2446-C explicit shader OETF",
+      "renderer_submits": 1192,
+      "wgpu_submit_readback_test": "PASS",
+      "bt2446c_reference_tests_passed": 13
+    }
+  },
+  "classification_sets": {
+    "source_drift": [],
+    "source_unavailable": [],
+    "player_failure": [],
+    "profile_excluded": ["row04", "row12"]
+  },
+  "privacy": {
+    "raw_locators_tracked": false,
+    "headers_or_credentials_tracked": false,
+    "raw_runtime_logs_tracked": false,
+    "large_binary_artifacts_tracked": false
+  }
+}

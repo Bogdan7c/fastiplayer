@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "session": "N15",
+  "observed_at": "2026-09-02",
+  "code_commit": "c330ba74",
+  "repetitions_per_cohort": 30,
+  "p95_method": "nearest-rank ceil(0.95*N)",
+  "units": {
+    "latency": "milliseconds",
+    "rss": "KiB",
+    "cpu_percent": "percent of one logical core",
+    "bytes": "HTTP response body bytes counted by the fixture"
+  },
+  "cohorts": {
+    "legacy_cold": {
+      "catalog_ms": {"median": 29.486, "p95": 30.569},
+      "first_consumer_ms": {"median": 29.757, "p95": 30.859},
+      "wall_ms": {"median": 73.079049, "p95": 74.236245},
+      "cpu_percent": {"median": 32.023747, "p95": 32.492383},
+      "user_cpu_ms": {"median": 9.575, "p95": 15.265},
+      "system_cpu_ms": {"median": 13.89, "p95": 17.802},
+      "rss_kib": {"median": 51320, "p95": 51712},
+      "requests": {"median": 2, "p95": 2},
+      "bytes": {"median": 123, "p95": 123},
+      "extractor_spawns": {"median": 1, "p95": 1}
+    },
+    "legacy_warm": {
+      "catalog_ms": {"median": 28.4935, "p95": 29.434},
+      "first_consumer_ms": {"median": 28.723, "p95": 29.655},
+      "wall_ms": {"median": 73.079049, "p95": 74.236245},
+      "cpu_percent": {"median": 32.023747, "p95": 32.492383},
+      "user_cpu_ms": {"median": 9.575, "p95": 15.265},
+      "system_cpu_ms": {"median": 13.89, "p95": 17.802},
+      "rss_kib": {"median": 51320, "p95": 51712},
+      "requests_cumulative": {"median": 4, "p95": 4},
+      "bytes_cumulative": {"median": 246, "p95": 246},
+      "extractor_spawns_cumulative": {"median": 2, "p95": 2}
+    },
+    "native_cold_ogg": {
+      "catalog_ms": {"median": 4.3205, "p95": 4.403},
+      "first_consumer_ms": {"median": 5.3235, "p95": 5.559},
+      "wall_ms": {"median": 19.73703, "p95": 20.125427},
+      "cpu_percent": {"median": 88.021772, "p95": 89.080454},
+      "user_cpu_ms": {"median": 7.079, "p95": 9.75},
+      "system_cpu_ms": {"median": 10.1345, "p95": 13.084},
+      "rss_kib": {"median": 47774, "p95": 48068},
+      "requests": {"median": 3, "p95": 3},
+      "bytes": {"median": 73077, "p95": 73077},
+      "extractor_spawns": {"median": 0, "p95": 0}
+    },
+    "native_warm_ogg_lifecycle": {
+      "catalog_ms": {"median": 4.3175, "p95": 4.427},
+      "first_consumer_ms": {"median": 5.304, "p95": 5.489},
+      "seek_forward_ms": {"median": 1.1135, "p95": 1.511},
+      "seek_backward_ms": {"median": 0.442, "p95": 0.718},
+      "refresh_ms": {"median": 4.126, "p95": 4.315},
+      "wall_ms": {"median": 24.622949, "p95": 25.216034},
+      "cpu_percent": {"median": 83.221545, "p95": 85.992317},
+      "user_cpu_ms": {"median": 9.914, "p95": 12.84},
+      "system_cpu_ms": {"median": 10.5835, "p95": 13.417},
+      "rss_kib": {"median": 48240, "p95": 48636},
+      "requests": {"median": 6, "p95": 6},
+      "bytes": {"median": 146154, "p95": 146154},
+      "extractor_spawns": {"median": 0, "p95": 0}
+    },
+    "native_warm_hls_lifecycle": {
+      "catalog_ms": {"median": 36.109, "p95": 37.832},
+      "first_consumer_ms": {"median": 59.287, "p95": 60.867},
+      "seek_forward_ms": {"median": 17.672, "p95": 18.216},
+      "seek_backward_ms": {"median": 20.3865, "p95": 20.641},
+      "switch_ms": {"median": 19.9015, "p95": 20.439},
+      "refresh_ms": {"median": 20.4305, "p95": 21.047},
+      "wall_ms": {"median": 156.04432, "p95": 160.284121},
+      "cpu_percent": {"median": 62.553837, "p95": 63.242865},
+      "user_cpu_ms": {"median": 52.663, "p95": 58.268},
+      "system_cpu_ms": {"median": 44.8615, "p95": 53.609},
+      "rss_kib": {"median": 97468, "p95": 97896},
+      "root_requests": {"median": 3, "p95": 3},
+      "root_bytes": {"median": 576, "p95": 576},
+      "extractor_spawns": {"median": 0, "p95": 0}
+    }
+  },
+  "matched_cold_native_vs_legacy_percent": {
+    "catalog_median": -85.35,
+    "catalog_p95": -85.60,
+    "first_consumer_median": -82.11,
+    "first_consumer_p95": -81.99,
+    "wall_median": -72.99,
+    "wall_p95": -72.89,
+    "combined_cpu_time_median": -26.64,
+    "combined_cpu_time_p95": -30.95,
+    "rss_median": -6.91,
+    "rss_p95": -7.05
+  },
+  "n00_comparison": {
+    "baseline_commit": "8633f4363a2d1e15784a6d2b2ba53e1668eaea9a",
+    "public_pass": {"n00": 11, "n15": 11},
+    "unresolved_or_profile_excluded": {"n00_not_run": 2, "n15_profile_excluded": 2},
+    "cold_extractor_spawns": {"n00": 11, "n15": 2, "change_percent": -81.82},
+    "direct_row_extractor_spawns": {"n00": 9, "n15": 0, "change_percent": -100.0},
+    "latency_note": "N00 intentionally stored single observations and no 30-run latency distribution; latency percentages therefore compare the matched 30-run N15 native and legacy fixture cohorts, not an invented N00 p95."
+  },
+  "comparison_limits": [
+    "Legacy payload bytes describe a tiny extractor metadata fixture while native bytes describe media transport, so byte totals are recorded but not treated as a throughput regression.",
+    "Warm legacy counters are cumulative across reopen while native warm Ogg and HLS cohorts include lifecycle operations; their raw values are not mislabeled as an apples-to-apples speed ratio.",
+    "CPU occupancy rises on the much shorter native wall interval, while combined user plus system CPU time decreases in the matched cold cohort."
+  ],
+  "raw_artifacts": {
+    "tracked": false,
+    "local_only": [
+      "target/native-web-ingress/n15/raw/perf-runs.json",
+      "target/native-web-ingress/n15/raw/perf-summary.json"
+    ]
+  }
+}
