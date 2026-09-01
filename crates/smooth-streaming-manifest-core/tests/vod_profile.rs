@@ -162,24 +162,27 @@ fn default_root_clock_and_cross_timescale_alignment_are_exact() {
 
 #[test]
 fn required_stream_attributes_and_quality_identity_fail_closed() {
-    for (removed, field) in [
+    for (removed, field, expected_debug) in [
         (
             r#" Chunks="2""#,
             smooth_streaming_manifest_core::SmoothSchemaField::StreamIndex,
+            "MalformedSchema { field: StreamIndex }",
         ),
         (
             r#" QualityLevels="1""#,
             smooth_streaming_manifest_core::SmoothSchemaField::StreamIndex,
+            "MalformedSchema { field: StreamIndex }",
         ),
         (
             r#" Url="QualityLevels({bitrate})/Fragments(video={start_time})""#,
             smooth_streaming_manifest_core::SmoothSchemaField::Url,
+            "MalformedSchema { field: Url }",
         ),
     ] {
-        assert_eq!(
-            parse(&VALID_V22_REPEAT.replacen(removed, "", 1)),
-            Err(SmoothManifestError::MalformedSchema { field })
-        );
+        let error = parse(&VALID_V22_REPEAT.replacen(removed, "", 1))
+            .expect_err("обязательное Smooth-поле не должно исчезать молча");
+        assert_eq!(error, SmoothManifestError::MalformedSchema { field });
+        assert_eq!(format!("{error:?}"), expected_debug);
     }
 
     let duplicate_index =
@@ -330,6 +333,11 @@ fn well_formed_foreign_document_is_not_a_malformed_smooth_manifest() {
         .expect_err("foreign XML root не должен проходить authoritative Smooth admission");
 
     assert_eq!(error, SmoothManifestError::InvalidRoot);
+    assert_eq!(format!("{error:?}"), "InvalidRoot");
+    assert_eq!(
+        error.to_string(),
+        "document root не является SmoothStreamingMedia"
+    );
 }
 
 #[test]
