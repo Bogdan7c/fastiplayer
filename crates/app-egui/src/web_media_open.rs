@@ -86,6 +86,33 @@ pub(crate) enum YtDlpCandidateOpenIntent {
     Composed(Box<component_variants::YtDlpComposedCandidateOpenIntent>),
 }
 
+/// Проверяет, что product reason соответствует media-open lifecycle, а не только selection shape.
+fn validate_extractor_reason(
+    intent: &YtDlpCandidateOpenIntent,
+    reason: web_media_core::ExtractorInvocationReason,
+) -> Result<()> {
+    let compatible = match intent {
+        YtDlpCandidateOpenIntent::BestPlayable => matches!(
+            reason,
+            web_media_core::ExtractorInvocationReason::PageMediaResolution
+                | web_media_core::ExtractorInvocationReason::ExtractorOwnedAuthorizationMaterial
+                | web_media_core::ExtractorInvocationReason::NativeProfileCompatibilityFallback
+                | web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery
+        ),
+        YtDlpCandidateOpenIntent::Exact(_) | YtDlpCandidateOpenIntent::Composed(_) => matches!(
+            reason,
+            web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery
+        ),
+    };
+    if compatible {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "extractor invocation reason {reason:?} несовместим с media-open intent"
+        ))
+    }
+}
+
 /// Результат pre-barrier подготовки, который ещё не меняет player/queue state.
 pub(crate) struct PreparedYtDlpWebMedia {
     /// Player-facing demuxer выбранного single либо compound candidate-а.
@@ -183,18 +210,12 @@ pub(crate) fn prepare_yt_dlp_web_media(
     system_capabilities: &capability_core::SystemCapabilities,
     audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     intent: YtDlpCandidateOpenIntent,
+    extractor_reason: web_media_core::ExtractorInvocationReason,
     cancellation: CancellationToken,
     is_cancelled: impl Fn() -> bool,
 ) -> Result<PreparedYtDlpWebMedia> {
     ensure_not_cancelled(&is_cancelled)?;
-    let extractor_reason = match &intent {
-        YtDlpCandidateOpenIntent::BestPlayable => {
-            web_media_core::ExtractorInvocationReason::PageMediaResolution
-        }
-        YtDlpCandidateOpenIntent::Exact(_) | YtDlpCandidateOpenIntent::Composed(_) => {
-            web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery
-        }
-    };
+    validate_extractor_reason(&intent, extractor_reason)?;
     let component_selection_intent = intent.component_selection_intent();
     let selection_preference = match &intent {
         YtDlpCandidateOpenIntent::BestPlayable => {
@@ -205,9 +226,14 @@ pub(crate) fn prepare_yt_dlp_web_media(
         YtDlpCandidateOpenIntent::Exact(exact) => exact.preference,
         YtDlpCandidateOpenIntent::Composed(composed) => composed.preference,
     };
-    let (candidate_snapshot, resolved_intent) =
-        preparation::resolve_candidate_snapshot(locator, yt_dlp_config, intent, &is_cancelled)
-            .context("Не удалось подготовить exact YtDlp candidate snapshot")?;
+    let (candidate_snapshot, resolved_intent) = preparation::resolve_candidate_snapshot(
+        locator,
+        yt_dlp_config,
+        intent,
+        extractor_reason,
+        &is_cancelled,
+    )
+    .context("Не удалось подготовить exact YtDlp candidate snapshot")?;
     // Новый узкий adapter projection локализует extractor DTO до neutral catalog boundary.
     let extractor_catalog_projection =
         crate::web_media_extractor_adapter::ExtractorCatalogProjection::from_snapshot(
@@ -556,6 +582,28 @@ mod tests {
     use symphonia_demux::DemuxerOptions;
     use web_media_core::{FtpScheme, TransportFamily};
 
+    #[test]
+    fn media_open_reason_matrix_rejects_topology_and_preserves_page_recovery_reason() {
+        for reason in [
+            web_media_core::ExtractorInvocationReason::PageMediaResolution,
+            web_media_core::ExtractorInvocationReason::ExtractorOwnedAuthorizationMaterial,
+            web_media_core::ExtractorInvocationReason::NativeProfileCompatibilityFallback,
+            web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery,
+        ] {
+            assert!(
+                validate_extractor_reason(&YtDlpCandidateOpenIntent::BestPlayable, reason).is_ok()
+            );
+        }
+        assert!(
+            validate_extractor_reason(
+                &YtDlpCandidateOpenIntent::BestPlayable,
+                web_media_core::ExtractorInvocationReason::CollectionTopologyResolution,
+            )
+            .is_err(),
+            "collection/topology reason не должен достигать media-open extractor path"
+        );
+    }
+
     /// Shutdown cancellation завершается до запуска extractor/network side effects.
     #[test]
     fn cancellation_is_a_pre_barrier_failure() {
@@ -572,6 +620,7 @@ mod tests {
             &capability_core::SystemCapabilities::empty(1),
             audio::AudioDecodeCapabilitySnapshot::empty(),
             YtDlpCandidateOpenIntent::BestPlayable,
+            web_media_core::ExtractorInvocationReason::PageMediaResolution,
             CancellationToken::new(),
             || true,
         );

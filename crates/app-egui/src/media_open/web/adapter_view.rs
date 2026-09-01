@@ -38,6 +38,7 @@ pub(crate) enum WebMediaOpenAdapterView {
     Extractor {
         locator: service_ytdlp::YtDlpMediaLocator,
         selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
+        invocation_reason: web_media_core::ExtractorInvocationReason,
         settings: WebMediaOpenSettings,
     },
 }
@@ -93,10 +94,12 @@ impl From<WebMediaOpenAdapter> for WebMediaOpenAdapterView {
             WebMediaOpenAdapter::Extractor {
                 locator,
                 selection_intent,
+                invocation_reason,
                 settings,
             } => Self::Extractor {
                 locator,
                 selection_intent,
+                invocation_reason,
                 settings,
             },
         }

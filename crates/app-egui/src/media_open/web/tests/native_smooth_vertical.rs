@@ -28,8 +28,8 @@ use crate::media_open::{
     NativeSmoothOpenIntent, NativeSmoothSourceState, NativeSmoothUrl, SafeMediaLabel,
 };
 use crate::startup_media::native_smooth::{
-    NativeSmoothAttempt, NativeSmoothFallbackReason, NativeSmoothPreparationRequest,
-    PreparedNativeSmoothMedia, prepare_native_smooth_attempt,
+    NativeSmoothAttempt, NativeSmoothPreparationRequest, PreparedNativeSmoothMedia,
+    prepare_native_smooth_attempt,
 };
 use crate::web_media_open::content_probe_tests::direct_progressive::ZeroProcessSpy;
 use crate::web_media_open::content_probe_tests::direct_progressive_webm::OffscreenWgpuHarness;
@@ -179,8 +179,8 @@ fn prepare_native(
     .expect("supported direct Smooth preparation")
     {
         NativeSmoothAttempt::Prepared(prepared) => prepared,
-        NativeSmoothAttempt::RequiresYtDlpFallback(reason) => {
-            panic!("valid Smooth VOD не имеет права требовать extractor: {reason:?}")
+        NativeSmoothAttempt::RequiresExtractorFallback(trigger) => {
+            panic!("valid Smooth VOD не имеет права требовать extractor: {trigger:?}")
         }
     }
 }
@@ -487,7 +487,9 @@ fn native_smooth_keeps_profile_and_terminal_failures_distinct_without_extractor(
     assert!(matches!(
         prepare(&source("/foreign/Manifest"), CancellationToken::new())
             .expect("foreign root должен стать typed initial fallback"),
-        NativeSmoothAttempt::RequiresYtDlpFallback(NativeSmoothFallbackReason::StrictlyNotSmooth)
+        NativeSmoothAttempt::RequiresExtractorFallback(
+            web_media_core::WebMediaFallbackTrigger::ProviderDocument
+        )
     ));
     for (path, expected_kind) in [
         (

@@ -19,6 +19,7 @@ mod executor;
 )]
 pub(crate) mod local;
 mod native_dash;
+pub(crate) mod native_fallback;
 mod native_hds;
 mod native_hds_preparation;
 mod native_hls;

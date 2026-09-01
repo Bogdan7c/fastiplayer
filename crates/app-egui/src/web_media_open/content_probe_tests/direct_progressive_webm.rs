@@ -411,7 +411,7 @@ fn direct_http_webm_reaches_decoded_and_submitted_renderer_frame() {
         CancellationToken::new(),
     )
     .expect("open direct WebM");
-    let mut demuxer = opened.into_demuxer();
+    let (mut demuxer, _endpoint_recovery) = opened.into_runtime_parts();
     let video_track = demuxer
         .tracks()
         .iter()

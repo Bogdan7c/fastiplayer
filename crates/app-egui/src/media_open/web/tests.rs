@@ -69,6 +69,38 @@ fn controlled_reopen_preserves_stable_direct_selection() {
     assert_eq!(reopened_locator, locator);
 }
 
+/// Native fallback обязан донести exact product reason до extractor adapter request-а.
+#[test]
+fn extractor_request_preserves_explicit_native_fallback_reason() {
+    let locator = service_ytdlp::parse_yt_dlp_media_locator(
+        "https://provider.example.test/watch?id=reason-secret",
+    )
+    .expect("valid extractor locator");
+    let app_config = rustiplayer_config::AppConfig::default();
+    let settings = WebMediaOpenSettings::from_app_config(
+        &app_config,
+        &capability_core::SystemCapabilities::empty(0),
+        audio::AudioDecodeCapabilitySnapshot::empty(),
+    );
+    let request = WebMediaOpenRequest::extractor(
+        locator,
+        crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+        ExtractorInvocationReason::NativeProfileCompatibilityFallback,
+        settings,
+    );
+
+    let WebMediaOpenAdapterView::Extractor {
+        invocation_reason, ..
+    } = request.into_adapter()
+    else {
+        panic!("native fallback request должен остаться extractor adapter-ом");
+    };
+    assert_eq!(
+        invocation_reason,
+        ExtractorInvocationReason::NativeProfileCompatibilityFallback
+    );
+}
+
 /// Debug active source показывает neutral facts, но никогда не раскрывает locator material.
 #[test]
 fn active_web_source_debug_redacts_raw_locator_and_temporary_material() {

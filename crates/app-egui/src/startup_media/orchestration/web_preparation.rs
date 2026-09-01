@@ -64,11 +64,19 @@ pub(super) fn compose_direct_startup_media(
     let metadata = opened_media.media_metadata().unwrap_or_default().tags;
     let safe_label = SafeMediaLabel::from_service_safe_label(&source_label);
     let source = WebMediaSourceIntent::direct(source_locator.clone());
-    let descriptor =
-        PreparedWebMediaEnvelope::new(tracks, duration, metadata, source, safe_label, None, None);
+    let (demuxer, endpoint_recovery) = opened_media.into_runtime_parts();
+    let descriptor = PreparedWebMediaEnvelope::new(
+        tracks,
+        duration,
+        metadata,
+        source,
+        safe_label,
+        None,
+        Some(endpoint_recovery),
+    );
     let prepared_media = compose_prepared_web_media(
         &source_label,
-        opened_media.into_demuxer(),
+        demuxer,
         PreparedWebMediaAttachments::default(),
     )
     .expect("direct VOD has no conflicting timeline attachments");

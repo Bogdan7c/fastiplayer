@@ -128,6 +128,7 @@ impl YtDlpStartupJob {
                         &app_config,
                         &system_capabilities,
                         audio_capabilities,
+                        web_media_core::ExtractorInvocationReason::PageMediaResolution,
                         worker_source_cancellation,
                         || worker_cancellation_requested.load(Ordering::Acquire),
                     )
@@ -674,6 +675,7 @@ pub(crate) fn resolve_yt_dlp_startup_media(
     app_config: &AppConfig,
     system_capabilities: &SystemCapabilities,
     audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
+    invocation_reason: web_media_core::ExtractorInvocationReason,
     cancellation: source_core::CancellationToken,
     is_cancelled: impl Fn() -> bool,
 ) -> Result<PreparedYtDlpStartupMedia> {
@@ -687,6 +689,7 @@ pub(crate) fn resolve_yt_dlp_startup_media(
         system_capabilities,
         audio_capabilities,
         crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+        invocation_reason,
         cancellation,
         is_cancelled,
     )

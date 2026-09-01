@@ -29,8 +29,8 @@ use web_media_adaptive::{
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, CodecFamily, ComponentVariantCatalogGeneration,
     ComponentVariantCatalogIdentity, ExactSelectionIdentity, ExtractionGeneration,
-    SemanticIdentity, WebMediaSelection, WebMediaSelectionRematchSource, WebMediaSelectionShape,
-    WebMediaSemanticSelectionRequest,
+    SemanticIdentity, WebMediaFallbackTrigger, WebMediaSelection, WebMediaSelectionRematchSource,
+    WebMediaSelectionShape, WebMediaSemanticSelectionRequest,
 };
 use web_media_hls::{
     HlsCatalogDiscoveryOutcome, HlsFetchedTopManifest, HlsManifestInput, HlsRequestOverrides,
@@ -86,19 +86,9 @@ impl NativeTopManifestFetchIntent {
     }
 }
 
-/// Typed причина единственного перехода в unchanged YtDlp open path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NativeHlsFallbackReason {
-    StrictlyNotHls,
-    ExtractorMaterialRequired,
-    AuthorizationRequired,
-}
-
-/// Native attempt либо полностью подготовлен, либо явно просит один extractor fallback.
-pub(crate) enum NativeHlsAttempt<T> {
-    Prepared(T),
-    RequiresYtDlpFallback(NativeHlsFallbackReason),
-}
+/// HLS alias общего cross-protocol native admission результата.
+pub(crate) type NativeHlsAttempt<Prepared> =
+    crate::media_open::native_fallback::NativeWebMediaAttempt<Prepared>;
 
 /// Результат settlement сохраняет фактического source owner-а.
 #[cfg(test)]
@@ -115,7 +105,7 @@ pub(crate) trait NativeHlsAdmissionPort {
     fn prepare(&mut self) -> std::result::Result<NativeHlsAttempt<Self::Prepared>, Self::Error>;
 }
 
-/// Ровно один раз вызывает fallback только для typed `RequiresYtDlpFallback`.
+/// Ровно один раз вызывает fallback только для typed neutral trigger-а.
 #[cfg(test)]
 pub(crate) fn resolve_native_hls_with_fallback<Port, Fallback, FallbackPrepared, FallbackError>(
     port: &mut Port,
@@ -126,17 +116,26 @@ pub(crate) fn resolve_native_hls_with_fallback<Port, Fallback, FallbackPrepared,
 >
 where
     Port: NativeHlsAdmissionPort,
-    Fallback: FnOnce() -> std::result::Result<FallbackPrepared, FallbackError>,
+    Fallback: FnOnce(
+        web_media_core::ExtractorInvocationReason,
+    ) -> std::result::Result<FallbackPrepared, FallbackError>,
 {
     match port.prepare().map_err(NativeHlsResolutionError::Native)? {
         NativeHlsAttempt::Prepared(prepared) => Ok(NativeHlsResolution::Native(prepared)),
-        NativeHlsAttempt::RequiresYtDlpFallback(reason) => {
+        NativeHlsAttempt::RequiresExtractorFallback(trigger) => {
+            let mut gate = web_media_core::WebMediaFallbackGate::before_installed();
+            let web_media_core::WebMediaFallbackOutcome::InvokeExtractor(reason) =
+                gate.decide(trigger)
+            else {
+                return Err(NativeHlsResolutionError::PolicyRejected);
+            };
             tracing::info!(
                 kind = "native_hls_fallback",
-                reason = ?reason,
+                ?trigger,
+                ?reason,
                 "Native HLS admission передаёт source единственному extractor fallback"
             );
-            fallback()
+            fallback(reason)
                 .map(NativeHlsResolution::YtDlpFallback)
                 .map_err(NativeHlsResolutionError::Fallback)
         }
@@ -151,6 +150,8 @@ pub(crate) enum NativeHlsResolutionError<NativeError, FallbackError> {
     Native(NativeError),
     #[error("native HLS extractor fallback failed: {0}")]
     Fallback(FallbackError),
+    #[error("native HLS extractor fallback отклонён общим policy gate-ом")]
+    PolicyRejected,
 }
 
 /// Успешный native runtime до player `PreparedMedia` boundary.
@@ -557,14 +558,22 @@ fn resolve_native_hls_startup_media(
             source,
             prepared: Box::new(prepared),
         }),
-        NativeHlsAttempt::RequiresYtDlpFallback(reason) => {
+        NativeHlsAttempt::RequiresExtractorFallback(trigger) => {
+            let mut fallback_owner =
+                crate::media_open::native_fallback::NativeWebFallbackOwner::before_installed(
+                    fallback_locator,
+                );
+            let fallback = fallback_owner
+                .claim(trigger)
+                .map_err(|rejection| anyhow!("native HLS fallback rejected: {rejection:?}"))?;
+            let (fallback_locator, invocation_reason) = fallback.into_parts();
             if !app_config.yt_dlp.enabled {
                 return Err(anyhow!(
-                    "native HLS admission requires extractor fallback ({reason:?}), но YtDlp отключён"
+                    "native HLS admission requires extractor fallback ({invocation_reason:?}), но YtDlp отключён"
                 ));
             }
             tracing::info!(
-                ?reason,
+                ?invocation_reason,
                 "CLI native HLS admission передан единственному YtDlp fallback"
             );
             let prepared = super::resolve_yt_dlp_startup_media(
@@ -572,6 +581,7 @@ fn resolve_native_hls_startup_media(
                 app_config,
                 system_capabilities,
                 audio_capabilities,
+                invocation_reason,
                 cancellation,
                 is_cancelled,
             )?;
@@ -649,7 +659,7 @@ mod tests {
             calls: 0,
         };
         let mut fallback_calls = 0;
-        let resolution = resolve_native_hls_with_fallback(&mut port, || {
+        let resolution = resolve_native_hls_with_fallback(&mut port, |_| {
             fallback_calls += 1;
             Ok::<_, Infallible>(9)
         })
@@ -662,13 +672,15 @@ mod tests {
     #[test]
     fn typed_fallback_is_called_exactly_once() {
         let mut port = FakeAdmissionPort {
-            result: Some(Ok(NativeHlsAttempt::RequiresYtDlpFallback(
-                NativeHlsFallbackReason::ExtractorMaterialRequired,
+            result: Some(Ok(NativeHlsAttempt::RequiresExtractorFallback(
+                WebMediaFallbackTrigger::ExtractorOwnedAuthorizationMaterial,
             ))),
             calls: 0,
         };
         let mut fallback_calls = 0;
-        let resolution = resolve_native_hls_with_fallback(&mut port, || {
+        let mut observed_reason = None;
+        let resolution = resolve_native_hls_with_fallback(&mut port, |reason| {
+            observed_reason = Some(reason);
             fallback_calls += 1;
             Ok::<_, Infallible>(9)
         })
@@ -676,6 +688,10 @@ mod tests {
         assert!(matches!(resolution, NativeHlsResolution::YtDlpFallback(9)));
         assert_eq!(port.calls, 1);
         assert_eq!(fallback_calls, 1);
+        assert_eq!(
+            observed_reason,
+            Some(web_media_core::ExtractorInvocationReason::ExtractorOwnedAuthorizationMaterial)
+        );
     }
 
     #[test]
@@ -685,7 +701,7 @@ mod tests {
             calls: 0,
         };
         let mut fallback_calls = 0;
-        let result = resolve_native_hls_with_fallback(&mut port, || {
+        let result = resolve_native_hls_with_fallback(&mut port, |_| {
             fallback_calls += 1;
             Ok::<_, Infallible>(9)
         });

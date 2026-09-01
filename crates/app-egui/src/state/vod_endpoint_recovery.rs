@@ -85,6 +85,48 @@ enum VodEndpointExpiryAdmissionOutcome {
     Admitted(VodEndpointRecoveryClaimPlan),
 }
 
+/// Source-owned route для уже установленного temporary endpoint failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstalledEndpointRecoveryRoute {
+    /// Reconstructible owner строит controlled reopen того же ingress lineage.
+    ReopenOwnedSource,
+    /// Endpoint без reconstructible owner-а завершается typed terminal outcome-ом.
+    TerminalUnreconstructibleEndpoint,
+}
+
+/// Typed failure построения Installed source-owned recovery request-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+enum VodEndpointRecoverySourceError {
+    /// Attachment оказался привязан не к web source.
+    #[error("installed recovery attachment не принадлежит web source")]
+    NotWebSource,
+    /// Временный endpoint не имеет reconstructible owner-а.
+    #[error("temporary endpoint не имеет reconstructible recovery owner")]
+    TerminalUnreconstructibleEndpoint,
+    /// Adaptive reopen требует отсутствующий capability snapshot.
+    #[error("system capabilities snapshot отсутствует")]
+    MissingSystemCapabilities,
+    /// Source owner не смог построить controlled reopen request.
+    #[error("refreshable web source controlled reopen settings отсутствуют")]
+    ControlledReopenUnavailable,
+}
+
+/// Исчерпывающе связывает neutral recovery strategy с Installed coordinator-ом.
+const fn installed_endpoint_recovery_route(
+    strategy: web_media_core::WebMediaRecoveryStrategy,
+) -> InstalledEndpointRecoveryRoute {
+    match strategy {
+        web_media_core::WebMediaRecoveryStrategy::ReopenStableResource
+        | web_media_core::WebMediaRecoveryStrategy::RefreshRootManifestAndRematch
+        | web_media_core::WebMediaRecoveryStrategy::FreshExtractionAndRematch => {
+            InstalledEndpointRecoveryRoute::ReopenOwnedSource
+        }
+        web_media_core::WebMediaRecoveryStrategy::TerminalUnreconstructibleEndpoint => {
+            InstalledEndpointRecoveryRoute::TerminalUnreconstructibleEndpoint
+        }
+    }
+}
+
 impl VodEndpointRecoveryPolicy {
     /// Переводит validated config в runtime units в одном месте.
     fn from_config(config: &rustiplayer_config::WebMediaConfig) -> Self {
@@ -392,7 +434,7 @@ impl AppState {
             let source_request = match self.vod_recovery_source_request(&pending.source) {
                 Ok(source_request) => source_request,
                 Err(reason) => {
-                    warn!(reason, "Не удалось построить exact VOD recovery request");
+                    warn!(?reason, "Не удалось построить exact VOD recovery request");
                     pending.claim.attachment.mark_recovery_failed();
                     return;
                 }
@@ -465,22 +507,20 @@ impl AppState {
     fn vod_recovery_source_request(
         &self,
         source: &ActiveMediaSource,
-    ) -> Result<MediaOpenSourceRequest, &'static str> {
+    ) -> Result<MediaOpenSourceRequest, VodEndpointRecoverySourceError> {
         let config = self.committed_app_config();
         let web_intent = source
             .web_intent()
-            .filter(|intent| {
-                matches!(
-                    intent.recovery(),
-                    web_media_core::WebMediaRecoveryStrategy::FreshExtractionAndRematch
-                        | web_media_core::WebMediaRecoveryStrategy::RefreshRootManifestAndRematch
-                )
-            })
-            .ok_or("installed recovery attachment не принадлежит refreshable web source")?;
+            .ok_or(VodEndpointRecoverySourceError::NotWebSource)?;
+        if installed_endpoint_recovery_route(web_intent.recovery())
+            == InstalledEndpointRecoveryRoute::TerminalUnreconstructibleEndpoint
+        {
+            return Err(VodEndpointRecoverySourceError::TerminalUnreconstructibleEndpoint);
+        }
         let capabilities = self
             .system_capabilities_snapshot
             .as_ref()
-            .ok_or("system capabilities snapshot отсутствует")?;
+            .ok_or(VodEndpointRecoverySourceError::MissingSystemCapabilities)?;
         let settings = crate::media_open::WebMediaOpenSettings::from_app_config(
             &config,
             capabilities,
@@ -488,7 +528,7 @@ impl AppState {
         );
         let request = web_intent
             .controlled_reopen_request(config.network.clone(), config.player.demux, Some(settings))
-            .ok_or("refreshable web source controlled reopen settings отсутствуют")?;
+            .ok_or(VodEndpointRecoverySourceError::ControlledReopenUnavailable)?;
         Ok(source.wrap_reopen_request(MediaOpenSourceRequest::Web(request)))
     }
 }
@@ -519,6 +559,26 @@ mod claim_policy_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_reconstructible_owner_reopens_and_ownerless_endpoint_is_terminal() {
+        for strategy in [
+            web_media_core::WebMediaRecoveryStrategy::ReopenStableResource,
+            web_media_core::WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
+            web_media_core::WebMediaRecoveryStrategy::FreshExtractionAndRematch,
+        ] {
+            assert_eq!(
+                installed_endpoint_recovery_route(strategy),
+                InstalledEndpointRecoveryRoute::ReopenOwnedSource
+            );
+        }
+        assert_eq!(
+            installed_endpoint_recovery_route(
+                web_media_core::WebMediaRecoveryStrategy::TerminalUnreconstructibleEndpoint,
+            ),
+            InstalledEndpointRecoveryRoute::TerminalUnreconstructibleEndpoint
+        );
+    }
 
     #[test]
     fn retry_policy_is_exponential_capped_and_starts_at_initial_delay() {

@@ -578,6 +578,7 @@ fn prepare_content_probed_test_media_at_locator(
         &capability_core::SystemCapabilities::empty(1),
         audio_capabilities,
         YtDlpCandidateOpenIntent::BestPlayable,
+        web_media_core::ExtractorInvocationReason::PageMediaResolution,
         CancellationToken::new(),
         || false,
     )

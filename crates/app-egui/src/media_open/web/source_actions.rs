@@ -184,6 +184,7 @@ impl WebMediaSourceIntent {
                 WebMediaSelectionSwitchResolution::Ready(WebMediaOpenRequest::extractor(
                     locator.clone(),
                     selection_intent,
+                    web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery,
                     settings,
                 ))
             }
@@ -249,7 +250,12 @@ impl WebMediaSourceIntent {
                         crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable
                     }
                 };
-                WebMediaOpenRequest::extractor(locator.clone(), selection_intent, adaptive_settings)
+                WebMediaOpenRequest::extractor(
+                    locator.clone(),
+                    selection_intent,
+                    web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery,
+                    adaptive_settings,
+                )
             }
         };
         WebMediaSettingsReconfigureDecision::Reopen(request)

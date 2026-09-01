@@ -73,9 +73,10 @@ pub(super) fn prepare_source(
                 let tracks = opened.tracks().to_vec();
                 let duration = opened.duration();
                 let metadata = opened.media_metadata().unwrap_or_default().tags;
+                let (demuxer, endpoint_recovery) = opened.into_runtime_parts();
                 let prepared_media = compose_prepared_web_media(
                     safe_label.as_str(),
-                    opened.into_demuxer(),
+                    demuxer,
                     PreparedWebMediaAttachments::default(),
                 )
                 .expect("direct VOD has no conflicting timeline attachments");
@@ -83,7 +84,13 @@ pub(super) fn prepare_source(
                 Ok(PreparedMediaOpen {
                     prepared_media,
                     descriptor: PreparedMediaDescriptor::Web(PreparedWebMediaEnvelope::new(
-                        tracks, duration, metadata, source, safe_label, None, None,
+                        tracks,
+                        duration,
+                        metadata,
+                        source,
+                        safe_label,
+                        None,
+                        Some(endpoint_recovery),
                     )),
                 })
             }
@@ -102,11 +109,17 @@ pub(super) fn prepare_source(
                     audio_capabilities,
                 } = settings;
                 let safe_label = source.safe_label().clone();
-                let (expected_selection, fallback_locator) = match intent {
-                    NativeHlsOpenIntent::InitialWithYtDlpFallback { fallback_locator } => {
-                        (None, Some(fallback_locator))
-                    }
-                    NativeHlsOpenIntent::SemanticSelection(selection) => (Some(selection), None),
+                let (expected_selection, mut fallback_owner) = match intent {
+                    NativeHlsOpenIntent::InitialWithYtDlpFallback { fallback_locator } => (
+                        None,
+                        super::native_fallback::NativeWebFallbackOwner::before_installed(
+                            fallback_locator,
+                        ),
+                    ),
+                    NativeHlsOpenIntent::SemanticSelection(selection) => (
+                        Some(selection),
+                        super::native_fallback::NativeWebFallbackOwner::installed(),
+                    ),
                 };
                 let mut port =
                     crate::startup_media::native_hls::ProductionNativeHlsAdmissionPort::new(
@@ -173,28 +186,37 @@ pub(super) fn prepare_source(
                             ),
                         })
                     }
-                    crate::startup_media::native_hls::NativeHlsAttempt::RequiresYtDlpFallback(
-                        reason,
+                    crate::startup_media::native_hls::NativeHlsAttempt::RequiresExtractorFallback(
+                        trigger,
                     ) => {
-                        let Some(locator) = fallback_locator else {
-                            // Успешный native install намеренно не хранит extractor locator:
-                            // exact reopen не имеет права молча сменить semantic stream.
+                        let fallback = fallback_owner.claim(trigger).map_err(|rejection| {
                             tracing::warn!(
                                 source = %safe_label,
-                                ?reason,
-                                "Exact native HLS reopen отклонён без extractor fallback"
+                                ?trigger,
+                                ?rejection,
+                                "Native HLS fallback отклонён единым lifecycle gate-ом"
+                            );
+                            MediaPreparationFailureKind::NativeHlsOpen
+                        })?;
+                        let (locator, invocation_reason) = fallback.into_parts();
+                        if !yt_dlp_config.enabled {
+                            tracing::warn!(
+                                source = %safe_label,
+                                ?invocation_reason,
+                                "Native HLS fallback запрещён отключённым extractor-ом"
                             );
                             return Err(MediaPreparationFailureKind::NativeHlsOpen);
-                        };
+                        }
                         tracing::info!(
                             source = %safe_label,
-                            ?reason,
+                            ?invocation_reason,
                             "Initial native HLS admission передан единственному YtDlp fallback"
                         );
                         prepare_source(
                             MediaOpenSourceRequest::Web(WebMediaOpenRequest::extractor(
                                 locator,
                                 crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                                invocation_reason,
                                 WebMediaOpenSettings {
                                     network_config,
                                     web_media_config,
@@ -225,13 +247,17 @@ pub(super) fn prepare_source(
                     audio_capabilities,
                 } = settings;
                 let safe_label = source.safe_label().clone();
-                let (expected_selection, fallback_locator) = match intent {
-                    super::NativeDashOpenIntent::InitialWithYtDlpFallback { fallback_locator } => {
-                        (None, Some(fallback_locator))
-                    }
-                    super::NativeDashOpenIntent::SemanticSelection(selection) => {
-                        (Some(selection), None)
-                    }
+                let (expected_selection, mut fallback_owner) = match intent {
+                    super::NativeDashOpenIntent::InitialWithYtDlpFallback { fallback_locator } => (
+                        None,
+                        super::native_fallback::NativeWebFallbackOwner::before_installed(
+                            fallback_locator,
+                        ),
+                    ),
+                    super::NativeDashOpenIntent::SemanticSelection(selection) => (
+                        Some(selection),
+                        super::native_fallback::NativeWebFallbackOwner::installed(),
+                    ),
                 };
                 let attempt = crate::startup_media::native_dash::prepare_native_dash_attempt(
                     crate::startup_media::native_dash::NativeDashPreparationRequest {
@@ -305,34 +331,37 @@ pub(super) fn prepare_source(
                             ),
                         })
                     }
-                    crate::startup_media::native_dash::NativeDashAttempt::RequiresYtDlpFallback(
-                        reason,
+                    crate::startup_media::native_dash::NativeDashAttempt::RequiresExtractorFallback(
+                        trigger,
                     ) => {
-                        let Some(locator) = fallback_locator else {
+                        let fallback = fallback_owner.claim(trigger).map_err(|rejection| {
                             tracing::warn!(
                                 source = %safe_label,
-                                ?reason,
-                                "Exact native DASH reopen отклонён без extractor fallback"
+                                ?trigger,
+                                ?rejection,
+                                "Native DASH fallback отклонён единым lifecycle gate-ом"
                             );
-                            return Err(MediaPreparationFailureKind::NativeDashOpen);
-                        };
+                            MediaPreparationFailureKind::NativeDashOpen
+                        })?;
+                        let (locator, invocation_reason) = fallback.into_parts();
                         if !yt_dlp_config.enabled {
                             tracing::warn!(
                                 source = %safe_label,
-                                ?reason,
+                                ?invocation_reason,
                                 "Initial native DASH fallback запрещён отключённым extractor-ом"
                             );
                             return Err(MediaPreparationFailureKind::NativeDashOpen);
                         }
                         tracing::info!(
                             source = %safe_label,
-                            ?reason,
+                            ?invocation_reason,
                             "Initial native DASH admission передан единственному YtDlp fallback"
                         );
                         prepare_source(
                             MediaOpenSourceRequest::Web(WebMediaOpenRequest::extractor(
                                 locator,
                                 crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                                invocation_reason,
                                 WebMediaOpenSettings {
                                     network_config,
                                     web_media_config,
@@ -373,13 +402,19 @@ pub(super) fn prepare_source(
                     audio_capabilities,
                 } = settings;
                 let safe_label = source.safe_label().clone();
-                let (expected_selection, fallback_locator) = match intent {
+                let (expected_selection, mut fallback_owner) = match intent {
                     super::NativeSmoothOpenIntent::InitialWithYtDlpFallback {
                         fallback_locator,
-                    } => (None, Some(fallback_locator)),
-                    super::NativeSmoothOpenIntent::SemanticSelection(selection) => {
-                        (Some(selection), None)
-                    }
+                    } => (
+                        None,
+                        super::native_fallback::NativeWebFallbackOwner::before_installed(
+                            fallback_locator,
+                        ),
+                    ),
+                    super::NativeSmoothOpenIntent::SemanticSelection(selection) => (
+                        Some(selection),
+                        super::native_fallback::NativeWebFallbackOwner::installed(),
+                    ),
                 };
                 let attempt = crate::startup_media::native_smooth::prepare_native_smooth_attempt(
                     crate::startup_media::native_smooth::NativeSmoothPreparationRequest {
@@ -456,34 +491,37 @@ pub(super) fn prepare_source(
                             ),
                         })
                     }
-                    crate::startup_media::native_smooth::NativeSmoothAttempt::RequiresYtDlpFallback(
-                        reason,
+                    crate::startup_media::native_smooth::NativeSmoothAttempt::RequiresExtractorFallback(
+                        trigger,
                     ) => {
-                        let Some(locator) = fallback_locator else {
+                        let fallback = fallback_owner.claim(trigger).map_err(|rejection| {
                             tracing::warn!(
                                 source = %safe_label,
-                                ?reason,
-                                "Exact native Smooth reopen отклонён без extractor fallback"
+                                ?trigger,
+                                ?rejection,
+                                "Native Smooth fallback отклонён единым lifecycle gate-ом"
                             );
-                            return Err(MediaPreparationFailureKind::NativeSmoothOpen);
-                        };
+                            MediaPreparationFailureKind::NativeSmoothOpen
+                        })?;
+                        let (locator, invocation_reason) = fallback.into_parts();
                         if !yt_dlp_config.enabled {
                             tracing::warn!(
                                 source = %safe_label,
-                                ?reason,
+                                ?invocation_reason,
                                 "Initial native Smooth fallback запрещён отключённым extractor-ом"
                             );
                             return Err(MediaPreparationFailureKind::NativeSmoothOpen);
                         }
                         tracing::info!(
                             source = %safe_label,
-                            ?reason,
+                            ?invocation_reason,
                             "Initial native Smooth admission передан единственному YtDlp fallback"
                         );
                         prepare_source(
                             MediaOpenSourceRequest::Web(WebMediaOpenRequest::extractor(
                                 locator,
                                 crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                                invocation_reason,
                                 WebMediaOpenSettings {
                                     network_config,
                                     web_media_config,
@@ -502,6 +540,7 @@ pub(super) fn prepare_source(
             WebMediaOpenAdapterView::Extractor {
                 locator,
                 selection_intent,
+                invocation_reason,
                 settings,
             } => {
                 let WebMediaOpenSettings {
@@ -524,6 +563,7 @@ pub(super) fn prepare_source(
                 &system_capabilities,
                 audio_capabilities,
                 selection_intent,
+                invocation_reason,
                 cancellation.source_token(),
                 || cancellation.is_cancelled(),
             )

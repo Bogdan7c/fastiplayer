@@ -92,7 +92,9 @@ impl WebMediaSourceIntent {
         Self {
             ingress: WebMediaIngressKind::DirectResource,
             presentation: WebMediaPresentationKind::Vod,
-            recovery: WebMediaRecoveryStrategy::ReopenStableResource,
+            recovery: WebMediaRecoveryStrategy::for_reconstructible_ingress(
+                WebMediaIngressKind::DirectResource,
+            ),
             extractor_reason: None,
             adapter: Box::new(WebMediaSourceAdapter::Direct { locator }),
         }
@@ -107,7 +109,9 @@ impl WebMediaSourceIntent {
         Self {
             ingress: WebMediaIngressKind::NativeManifest,
             presentation,
-            recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
+            recovery: WebMediaRecoveryStrategy::for_reconstructible_ingress(
+                WebMediaIngressKind::NativeManifest,
+            ),
             extractor_reason: None,
             adapter: Box::new(WebMediaSourceAdapter::NativeHls {
                 source,
@@ -125,7 +129,9 @@ impl WebMediaSourceIntent {
         Self {
             ingress: WebMediaIngressKind::NativeManifest,
             presentation,
-            recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
+            recovery: WebMediaRecoveryStrategy::for_reconstructible_ingress(
+                WebMediaIngressKind::NativeManifest,
+            ),
             extractor_reason: None,
             adapter: Box::new(WebMediaSourceAdapter::NativeDash {
                 source,
@@ -142,7 +148,9 @@ impl WebMediaSourceIntent {
         Self {
             ingress: WebMediaIngressKind::NativeManifest,
             presentation: WebMediaPresentationKind::Vod,
-            recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
+            recovery: WebMediaRecoveryStrategy::for_reconstructible_ingress(
+                WebMediaIngressKind::NativeManifest,
+            ),
             extractor_reason: None,
             adapter: Box::new(WebMediaSourceAdapter::NativeSmooth {
                 source,
@@ -156,7 +164,9 @@ impl WebMediaSourceIntent {
         Self {
             ingress: WebMediaIngressKind::NativeManifest,
             presentation: WebMediaPresentationKind::Vod,
-            recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
+            recovery: WebMediaRecoveryStrategy::for_reconstructible_ingress(
+                WebMediaIngressKind::NativeManifest,
+            ),
             extractor_reason: None,
             adapter: Box::new(WebMediaSourceAdapter::NativeHds {
                 source,
@@ -176,7 +186,9 @@ impl WebMediaSourceIntent {
         Self {
             ingress: WebMediaIngressKind::ExtractorBacked,
             presentation,
-            recovery: WebMediaRecoveryStrategy::FreshExtractionAndRematch,
+            recovery: WebMediaRecoveryStrategy::for_reconstructible_ingress(
+                WebMediaIngressKind::ExtractorBacked,
+            ),
             extractor_reason: Some(extractor_reason),
             adapter: Box::new(WebMediaSourceAdapter::Extractor {
                 locator,
@@ -398,6 +410,7 @@ impl WebMediaSourceIntent {
                 WebMediaOpenAdapter::Extractor {
                     locator: locator.clone(),
                     selection_intent: source_state.installed_reopen_intent(),
+                    invocation_reason: ExtractorInvocationReason::ExtractorBackedRecovery,
                     settings,
                 }
             }
@@ -518,6 +531,7 @@ enum WebMediaOpenAdapter {
     Extractor {
         locator: service_ytdlp::YtDlpMediaLocator,
         selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
+        invocation_reason: ExtractorInvocationReason,
         settings: WebMediaOpenSettings,
     },
 }
@@ -602,12 +616,14 @@ impl WebMediaOpenRequest {
     pub(crate) fn extractor(
         locator: service_ytdlp::YtDlpMediaLocator,
         selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
+        invocation_reason: ExtractorInvocationReason,
         settings: WebMediaOpenSettings,
     ) -> Self {
         Self {
             adapter: Box::new(WebMediaOpenAdapter::Extractor {
                 locator,
                 selection_intent,
+                invocation_reason,
                 settings,
             }),
         }

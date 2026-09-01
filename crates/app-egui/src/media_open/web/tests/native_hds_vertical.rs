@@ -27,8 +27,8 @@ use super::super::*;
 use super::native_hls_vertical::{ControlledHlsServer, assert_decoder_render_audio_for_codec};
 use crate::media_open::{NativeHdsOpenIntent, NativeHdsSourceState, NativeHdsUrl, SafeMediaLabel};
 use crate::startup_media::native_hds::{
-    NativeHdsAttempt, NativeHdsFallbackReason, NativeHdsPreparationRequest, PreparedNativeHdsMedia,
-    native_hds_failure_kind, prepare_native_hds_attempt,
+    NativeHdsAttempt, NativeHdsPreparationRequest, PreparedNativeHdsMedia, native_hds_failure_kind,
+    prepare_native_hds_attempt,
 };
 use crate::web_media_open::content_probe_tests::direct_progressive::ZeroProcessSpy;
 use crate::web_media_open::content_probe_tests::direct_progressive_webm::OffscreenWgpuHarness;
@@ -120,8 +120,8 @@ fn prepare_native(
     .expect("supported direct HDS preparation")
     {
         NativeHdsAttempt::Prepared(prepared) => prepared,
-        NativeHdsAttempt::RequiresYtDlpFallback(reason) => {
-            panic!("valid HDS VOD не имеет права требовать extractor: {reason:?}")
+        NativeHdsAttempt::RequiresExtractorFallback(trigger) => {
+            panic!("valid HDS VOD не имеет права требовать extractor: {trigger:?}")
         }
     }
 }
@@ -343,7 +343,9 @@ fn native_hds_keeps_profile_and_terminal_failures_distinct_without_extractor() {
     assert!(matches!(
         prepare(&source("/foreign.f4m"), CancellationToken::new())
             .expect("foreign root должен стать typed initial fallback"),
-        NativeHdsAttempt::RequiresYtDlpFallback(NativeHdsFallbackReason::StrictlyNotHds)
+        NativeHdsAttempt::RequiresExtractorFallback(
+            web_media_core::WebMediaFallbackTrigger::ProviderDocument
+        )
     ));
     for (path, expected_kind) in [
         (

@@ -18,7 +18,7 @@ use web_media_adaptive::{
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
     ComponentVariantCatalogIdentity, ExactSelectionIdentity, ExtractionGeneration,
-    SemanticIdentity, WebMediaSemanticSelectionRequest,
+    SemanticIdentity, WebMediaFallbackTrigger, WebMediaSemanticSelectionRequest,
 };
 use web_media_smooth::{SmoothFetchedManifestInput, SmoothPrepareError};
 use web_media_transport_api::{
@@ -41,22 +41,9 @@ static NEXT_NATIVE_SMOOTH_SNAPSHOT_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// Direct Smooth redirect budget совпадает с другими native manifest ingress-ами.
 const NATIVE_SMOOTH_REDIRECT_HOPS: u8 = 5;
 
-/// Единственные причины допустимого initial pre-Installed extractor fallback-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NativeSmoothFallbackReason {
-    /// `/Manifest` hint вернул well-formed document с чужим root element-ом.
-    StrictlyNotSmooth,
-    /// Authoritative сервер требует extractor-owned authorization material.
-    AuthorizationRequired,
-}
-
-/// Результат content-based native Smooth admission до strong install barrier-а.
-pub(crate) enum NativeSmoothAttempt<Prepared> {
-    /// Static H.264/AAC Smooth VOD полностью подготовлен existing runtime-ом.
-    Prepared(Prepared),
-    /// Только initial request может передать source extractor adapter-у.
-    RequiresYtDlpFallback(NativeSmoothFallbackReason),
-}
+/// Smooth alias общего cross-protocol native admission результата.
+pub(crate) type NativeSmoothAttempt<Prepared> =
+    crate::media_open::native_fallback::NativeWebMediaAttempt<Prepared>;
 
 /// Все production inputs одной native Smooth attempt.
 pub(crate) struct NativeSmoothPreparationRequest<'request> {
@@ -132,8 +119,8 @@ pub(crate) fn prepare_native_smooth_attempt(
     )) {
         Ok(fetched_manifest) => fetched_manifest,
         Err(error) if matches!(error.http_status_code(), Some(401 | 403)) => {
-            return Ok(NativeSmoothAttempt::RequiresYtDlpFallback(
-                NativeSmoothFallbackReason::AuthorizationRequired,
+            return Ok(NativeSmoothAttempt::RequiresExtractorFallback(
+                WebMediaFallbackTrigger::ExtractorOwnedAuthorizationMaterial,
             ));
         }
         Err(AdaptiveTransportError::Cancelled) => {
@@ -168,8 +155,8 @@ pub(crate) fn prepare_native_smooth_attempt(
     }) {
         Ok(prepared) => prepared,
         Err(error) if native_fallback_reason(&error).is_some() => {
-            return Ok(NativeSmoothAttempt::RequiresYtDlpFallback(
-                NativeSmoothFallbackReason::StrictlyNotSmooth,
+            return Ok(NativeSmoothAttempt::RequiresExtractorFallback(
+                WebMediaFallbackTrigger::ProviderDocument,
             ));
         }
         Err(error) => return Err(error),
@@ -192,14 +179,14 @@ pub(crate) fn prepare_native_smooth_attempt(
 }
 
 /// Только parser-owned invalid root открывает page-extractor fallback gate.
-fn native_fallback_reason(error: &anyhow::Error) -> Option<NativeSmoothFallbackReason> {
+fn native_fallback_reason(error: &anyhow::Error) -> Option<WebMediaFallbackTrigger> {
     error.chain().find_map(|cause| {
         cause
             .downcast_ref::<SmoothPrepareError>()
             .and_then(|error| {
                 error
                     .is_invalid_root()
-                    .then_some(NativeSmoothFallbackReason::StrictlyNotSmooth)
+                    .then_some(WebMediaFallbackTrigger::ProviderDocument)
             })
     })
 }
@@ -403,14 +390,22 @@ fn resolve_native_smooth_startup_media(
             source,
             prepared: Box::new(prepared),
         }),
-        NativeSmoothAttempt::RequiresYtDlpFallback(reason) => {
+        NativeSmoothAttempt::RequiresExtractorFallback(trigger) => {
+            let mut fallback_owner =
+                crate::media_open::native_fallback::NativeWebFallbackOwner::before_installed(
+                    fallback_locator,
+                );
+            let fallback = fallback_owner
+                .claim(trigger)
+                .map_err(|rejection| anyhow!("native Smooth fallback rejected: {rejection:?}"))?;
+            let (fallback_locator, invocation_reason) = fallback.into_parts();
             if !app_config.yt_dlp.enabled {
                 return Err(anyhow!(
-                    "native Smooth admission requires extractor fallback ({reason:?}), но YtDlp отключён"
+                    "native Smooth admission requires extractor fallback ({invocation_reason:?}), но YtDlp отключён"
                 ));
             }
             tracing::info!(
-                ?reason,
+                ?invocation_reason,
                 "CLI native Smooth admission передан единственному YtDlp fallback"
             );
             let prepared = super::resolve_yt_dlp_startup_media(
@@ -418,6 +413,7 @@ fn resolve_native_smooth_startup_media(
                 app_config,
                 system_capabilities,
                 audio_capabilities,
+                invocation_reason,
                 cancellation,
                 is_cancelled,
             )?;

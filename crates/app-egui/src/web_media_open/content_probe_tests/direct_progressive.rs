@@ -14,6 +14,14 @@ use rustiplayer_config::AppConfig;
 use service_ytdlp::{ExtractorProcessInvocation, ExtractorProcessLauncher, YtDlpExtractorAdapter};
 use source_core::CancellationToken;
 use symphonia_demux::DemuxSeekability;
+use web_media_core::{
+    CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, SemanticIdentity,
+    SourceIdentity,
+};
+use web_media_transport_api::{
+    EndpointExpiryObserver, EndpointExpiryReason, EndpointExpiryResourceKind, EndpointExpirySignal,
+    MediaComponentIdentity, MediaComponentRole, SourceGeneration,
+};
 
 use super::ftp_vorbis::FtpVorbisOrigin;
 use super::vorbis;
@@ -123,7 +131,7 @@ fn seekable_http_ogg_reaches_pcm_and_preserves_request_counts_on_seek_reopen() {
     app_config.yt_dlp.enabled = false;
 
     let first_open = open_direct(&origin.media_url(), &app_config);
-    let mut first_demuxer = first_open.into_demuxer();
+    let (mut first_demuxer, _first_endpoint_recovery) = first_open.into_runtime_parts();
     assert_eq!(first_demuxer.seekability(), DemuxSeekability::Seekable);
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     assert_eq!(
@@ -144,7 +152,7 @@ fn seekable_http_ogg_reaches_pcm_and_preserves_request_counts_on_seek_reopen() {
 
     drop(first_demuxer);
     let reopened = open_direct(&origin.media_url(), &app_config);
-    let mut reopened_demuxer = reopened.into_demuxer();
+    let (mut reopened_demuxer, endpoint_recovery) = reopened.into_runtime_parts();
     assert_nonzero_vorbis_pcm(&mut *reopened_demuxer);
     assert_eq!(
         origin.request_count(),
@@ -156,6 +164,32 @@ fn seekable_http_ogg_reaches_pcm_and_preserves_request_counts_on_seek_reopen() {
         0,
         "open/seek/reopen не запускают yt-dlp"
     );
+    endpoint_recovery.observe_endpoint_expiry(direct_expiry_signal());
+    assert!(
+        endpoint_recovery.claim_pending_signal().is_some(),
+        "полностью открытый direct source обязан arm-ить stable-resource recovery"
+    );
+}
+
+/// Строит typed late-expiry signal без URL или другого transport material.
+fn direct_expiry_signal() -> EndpointExpirySignal {
+    let source = SourceIdentity::new(7001);
+    let component = MediaComponentIdentity::new(
+        CandidateIdentity::new(
+            source,
+            ExtractionGeneration::new(1),
+            CandidateFormatIdentity::new("direct-recovery-fixture").expect("format identity"),
+        ),
+        SemanticIdentity::new(source, "direct-recovery-fixture").expect("semantic identity"),
+        MediaComponentRole::Muxed,
+    )
+    .expect("component identity shares source lineage");
+    EndpointExpirySignal::new(
+        component,
+        SourceGeneration::new(1),
+        EndpointExpiryResourceKind::ProgressiveRange,
+        EndpointExpiryReason::AuthorizationExpired,
+    )
 }
 
 /// HTTP `200` body передаётся demux worker-у и остаётся честно forward-only.
@@ -167,7 +201,7 @@ fn forward_only_http_ogg_reuses_initial_body_and_rejects_seek() {
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     let opened = open_direct(&origin.media_url(), &app_config);
-    let mut demuxer = opened.into_demuxer();
+    let (mut demuxer, _endpoint_recovery) = opened.into_runtime_parts();
     assert!(matches!(
         demuxer.seekability(),
         DemuxSeekability::NotSeekable { .. }
@@ -194,7 +228,7 @@ fn ftp_ogg_reaches_pcm_without_http_material_and_tracks_retr_seek_reopen() {
     app_config.yt_dlp.enabled = false;
 
     let first_open = open_direct(&locator, &app_config);
-    let mut first_demuxer = first_open.into_demuxer();
+    let (mut first_demuxer, _first_endpoint_recovery) = first_open.into_runtime_parts();
     assert_eq!(first_demuxer.seekability(), DemuxSeekability::Seekable);
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     let retrievals_after_open = origin.retrieval_count();
@@ -209,7 +243,7 @@ fn ftp_ogg_reaches_pcm_without_http_material_and_tracks_retr_seek_reopen() {
 
     drop(first_demuxer);
     let reopened = open_direct(&locator, &app_config);
-    let mut reopened_demuxer = reopened.into_demuxer();
+    let (mut reopened_demuxer, _reopened_endpoint_recovery) = reopened.into_runtime_parts();
     assert_nonzero_vorbis_pcm(&mut *reopened_demuxer);
     assert!(origin.retrieval_count() > retrievals_after_seek);
     assert_eq!(

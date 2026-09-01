@@ -53,6 +53,7 @@ pub(super) fn resolve_candidate_snapshot(
     locator: &YtDlpMediaLocator,
     yt_dlp_config: &YtDlpConfig,
     intent: YtDlpCandidateOpenIntent,
+    invocation_reason: web_media_core::ExtractorInvocationReason,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(YtDlpCandidateSnapshot, ResolvedCandidateIntent)> {
     match intent {
@@ -65,7 +66,7 @@ pub(super) fn resolve_candidate_snapshot(
                     source,
                     generation,
                     yt_dlp_config,
-                    web_media_core::ExtractorInvocationReason::PageMediaResolution,
+                    invocation_reason,
                     is_cancelled,
                 )?;
             Ok((
@@ -88,7 +89,7 @@ pub(super) fn resolve_candidate_snapshot(
                     source,
                     ExtractionGeneration::new(generation_value),
                     yt_dlp_config,
-                    web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery,
+                    invocation_reason,
                     is_cancelled,
                 )?;
             let matched = snapshot
@@ -125,7 +126,7 @@ pub(super) fn resolve_candidate_snapshot(
                     source,
                     ExtractionGeneration::new(generation_value),
                     yt_dlp_config,
-                    web_media_core::ExtractorInvocationReason::ExtractorBackedRecovery,
+                    invocation_reason,
                     is_cancelled,
                 )?;
             let (_, selection, candidate) = snapshot

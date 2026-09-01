@@ -91,13 +91,19 @@ impl MediaOpenSourceRequest {
                     super::web::WebMediaOpenAdapterView::Extractor {
                         locator,
                         selection_intent,
+                        invocation_reason,
                         mut settings,
                     } => {
                         limit_network_resources(
                             &mut settings.network_config,
                             budget.ytdlp_component_mebibytes(),
                         );
-                        super::WebMediaOpenRequest::extractor(locator, selection_intent, settings)
+                        super::WebMediaOpenRequest::extractor(
+                            locator,
+                            selection_intent,
+                            invocation_reason,
+                            settings,
+                        )
                     }
                 };
                 Self::Web(request)

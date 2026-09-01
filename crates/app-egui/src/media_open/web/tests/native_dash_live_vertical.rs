@@ -16,8 +16,8 @@ use super::native_hls_vertical::{
 };
 use crate::media_open::{NativeDashSourceState, NativeDashUrl, SafeMediaLabel};
 use crate::startup_media::native_dash::{
-    NativeDashAttempt, NativeDashFallbackReason, NativeDashPreparationRequest,
-    PreparedNativeDashLifecycle, PreparedNativeDashMedia, prepare_native_dash_attempt,
+    NativeDashAttempt, NativeDashPreparationRequest, PreparedNativeDashLifecycle,
+    PreparedNativeDashMedia, prepare_native_dash_attempt,
 };
 use crate::web_media_open::content_probe_tests::direct_progressive::ZeroProcessSpy;
 use crate::web_media_open::content_probe_tests::direct_progressive_webm::OffscreenWgpuHarness;
@@ -138,8 +138,8 @@ fn prepare_native_live(
     .expect("native dynamic DASH admission должен пройти")
     {
         NativeDashAttempt::Prepared(prepared) => prepared,
-        NativeDashAttempt::RequiresYtDlpFallback(reason) => {
-            panic!("supported dynamic MPD не имеет права требовать extractor: {reason:?}")
+        NativeDashAttempt::RequiresExtractorFallback(trigger) => {
+            panic!("supported dynamic MPD не имеет права требовать extractor: {trigger:?}")
         }
     }
 }
@@ -328,6 +328,16 @@ fn native_dynamic_dash_keeps_profile_network_malformed_and_cancel_failures_disti
     let server = ControlledHlsServer::start(HashMap::from([
         ("/unsupported.mpd".to_owned(), vec![unsupported_manifest]),
         (
+            "/drm.mpd".to_owned(),
+            vec![
+                br#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
+                  <Period duration="PT1S"><AdaptationSet mimeType="video/mp4" codecs="avc1.4d401f">
+                    <ContentProtection/><Representation id="v"/>
+                  </AdaptationSet></Period></MPD>"#
+                    .to_vec(),
+            ],
+        ),
+        (
             "/malformed.mpd".to_owned(),
             vec![
                 br#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
@@ -367,13 +377,17 @@ fn native_dynamic_dash_keeps_profile_network_malformed_and_cancel_failures_disti
     assert!(matches!(
         prepare(&source("/unsupported.mpd"), CancellationToken::new())
             .expect("unsupported addressing должен остаться typed profile result"),
-        NativeDashAttempt::RequiresYtDlpFallback(
-            NativeDashFallbackReason::UnsupportedNativeProfile
+        NativeDashAttempt::RequiresExtractorFallback(
+            web_media_core::WebMediaFallbackTrigger::UnsupportedNativeProfile
         )
     ));
     assert!(
         prepare(&source("/malformed.mpd"), CancellationToken::new()).is_err(),
         "malformed dynamic MPD не имеет права fallback-иться"
+    );
+    assert!(
+        prepare(&source("/drm.mpd"), CancellationToken::new()).is_err(),
+        "DASH ContentProtection не является native-profile fallback-ом"
     );
     assert!(
         prepare(&source("/missing.mpd"), CancellationToken::new()).is_err(),

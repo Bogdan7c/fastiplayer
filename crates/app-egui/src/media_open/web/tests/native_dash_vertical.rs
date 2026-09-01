@@ -243,8 +243,8 @@ fn prepare_native(
     .expect("native static DASH admission должен пройти")
     {
         NativeDashAttempt::Prepared(prepared) => prepared,
-        NativeDashAttempt::RequiresYtDlpFallback(reason) => {
-            panic!("валидный static MPD не имеет права требовать extractor: {reason:?}")
+        NativeDashAttempt::RequiresExtractorFallback(trigger) => {
+            panic!("валидный static MPD не имеет права требовать extractor: {trigger:?}")
         }
     }
 }

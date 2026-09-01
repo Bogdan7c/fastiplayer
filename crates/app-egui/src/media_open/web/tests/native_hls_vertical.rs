@@ -328,8 +328,8 @@ pub(super) fn prepare_native(
     match NativeHlsAdmissionPort::prepare(&mut port).expect("native HLS admission должен пройти")
     {
         NativeHlsAttempt::Prepared(prepared) => prepared,
-        NativeHlsAttempt::RequiresYtDlpFallback(reason) => {
-            panic!("валидный N07 HLS VOD не имеет права требовать extractor: {reason:?}")
+        NativeHlsAttempt::RequiresExtractorFallback(trigger) => {
+            panic!("валидный N07 HLS VOD не имеет права требовать extractor: {trigger:?}")
         }
     }
 }

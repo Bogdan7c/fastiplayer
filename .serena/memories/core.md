@@ -1,3 +1,10 @@
+## N13A source-owned cross-protocol recovery/fallback closure (2026-09-01)
+
+- HLS/DASH/Smooth/HDS публикуют только neutral `WebMediaFallbackTrigger`; единый app-owned `NativeWebFallbackOwner` сохраняет exact extractor reason, допускает максимум один allowlisted pre-Installed attempt и fail-closed запрещает весь post-Installed fallback.
+- Cancellation/network/malformed/expired/backpressure/invariant/decoder/render terminal; DASH DRM terminal. Page/extractor rows сохраняют locator и выполняют fresh extraction + semantic rematch только как `ExtractorBackedRecovery`.
+- Direct HTTP/FTP получили armed endpoint recovery attachment; все reconstructible owners reopen-ятся от stable root, а ownerless temporary endpoint даёт typed terminal error.
+- Полные boundaries, matrix/vertical evidence, §6.3 и известный no-default test-feature gap: `mem:media-services/native-web-ingress-n13a-2026-09-01`. N13B не начинался.
+
 ## N12 native HDS/F4M VOD без yt-dlp (2026-09-01)
 
 - Direct HTTP(S) `.f4m` теперь admitted по syntactic path hint и authoritatively подтверждается existing F4M parser; первый bounded root response передаётся existing HDS discovery/runtime без второго GET.

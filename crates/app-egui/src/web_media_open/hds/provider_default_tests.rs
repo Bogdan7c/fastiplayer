@@ -398,6 +398,7 @@ fn assert_child_hds_open() {
         &h264_system_capabilities(),
         audio_decoder_factory.audio_decode_capability_snapshot(),
         YtDlpCandidateOpenIntent::BestPlayable,
+        web_media_core::ExtractorInvocationReason::PageMediaResolution,
         CancellationToken::new(),
         || false,
     )
@@ -507,6 +508,7 @@ fn assert_child_hds_transport_failure_is_terminal() {
         &h264_system_capabilities(),
         audio_decoder_factory.audio_decode_capability_snapshot(),
         YtDlpCandidateOpenIntent::BestPlayable,
+        web_media_core::ExtractorInvocationReason::PageMediaResolution,
         CancellationToken::new(),
         || false,
     ) {

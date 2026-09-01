@@ -20,8 +20,9 @@ use web_media_adaptive::{
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
     ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit, ComponentVariantEdgeLimit,
-    ExactSelectionIdentity, ExtractionGeneration, SemanticIdentity, WebMediaSelection,
-    WebMediaSelectionRematchSource, WebMediaSelectionShape, WebMediaSemanticSelectionRequest,
+    ExactSelectionIdentity, ExtractionGeneration, SemanticIdentity, WebMediaFallbackTrigger,
+    WebMediaSelection, WebMediaSelectionRematchSource, WebMediaSelectionShape,
+    WebMediaSemanticSelectionRequest,
 };
 use web_media_dash::{
     DashClockFetchObservation, DashFetchedLiveManifestInput, DashFetchedManifestInput,
@@ -51,24 +52,9 @@ static NEXT_NATIVE_DASH_SNAPSHOT_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// Public native MPD redirects используют тот же bounded hop count, что native HLS.
 const NATIVE_DASH_REDIRECT_HOPS: u8 = 5;
 
-/// Единственные typed причины допустимого pre-Installed extractor fallback-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NativeDashFallbackReason {
-    /// URL с `.mpd` вернул документ, который parser доказал как не-MPD.
-    StrictlyNotDash,
-    /// Authoritative сервер требует extractor-owned authorization material.
-    AuthorizationRequired,
-    /// Валидный MPD использует пока не admitted native profile.
-    UnsupportedNativeProfile,
-}
-
-/// Результат content-based native DASH admission до strong install barrier-а.
-pub(crate) enum NativeDashAttempt<Prepared> {
-    /// Static MPD полностью подготовлен существующим DASH runtime-ом.
-    Prepared(Prepared),
-    /// Только initial request может передать source extractor adapter-у.
-    RequiresYtDlpFallback(NativeDashFallbackReason),
-}
+/// DASH alias общего cross-protocol native admission результата.
+pub(crate) type NativeDashAttempt<Prepared> =
+    crate::media_open::native_fallback::NativeWebMediaAttempt<Prepared>;
 
 /// Все production inputs одной native static DASH attempt.
 pub(crate) struct NativeDashPreparationRequest<'request> {
@@ -211,8 +197,8 @@ pub(crate) fn prepare_native_dash_attempt(
         )) {
             Ok(fetched_manifest) => fetched_manifest,
             Err(error) if matches!(error.http_status_code(), Some(401 | 403)) => {
-                return Ok(NativeDashAttempt::RequiresYtDlpFallback(
-                    NativeDashFallbackReason::AuthorizationRequired,
+                return Ok(NativeDashAttempt::RequiresExtractorFallback(
+                    WebMediaFallbackTrigger::ExtractorOwnedAuthorizationMaterial,
                 ));
             }
             Err(AdaptiveTransportError::Cancelled) => {
@@ -233,7 +219,9 @@ pub(crate) fn prepare_native_dash_attempt(
         match classify_fetched_dash_presentation(&admission_http, generation, &manifest, policy) {
             Ok(presentation) => presentation,
             Err(error) => match native_open_fallback_reason(&error) {
-                Some(reason) => return Ok(NativeDashAttempt::RequiresYtDlpFallback(reason)),
+                Some(trigger) => {
+                    return Ok(NativeDashAttempt::RequiresExtractorFallback(trigger));
+                }
                 None => return Err(error).context("native DASH presentation classification"),
             },
         };
@@ -267,8 +255,8 @@ pub(crate) fn prepare_native_dash_attempt(
             }) {
                 Ok(prepared) => prepared,
                 Err(error) if error.is_profile_exclusion() => {
-                    return Ok(NativeDashAttempt::RequiresYtDlpFallback(
-                        NativeDashFallbackReason::UnsupportedNativeProfile,
+                    return Ok(NativeDashAttempt::RequiresExtractorFallback(
+                        WebMediaFallbackTrigger::UnsupportedNativeProfile,
                     ));
                 }
                 Err(error) => return Err(anyhow::Error::new(error)),
@@ -311,7 +299,9 @@ pub(crate) fn prepare_native_dash_attempt(
     }) {
         Ok(discovered) => discovered,
         Err(error) => match native_fallback_reason(&error) {
-            Some(reason) => return Ok(NativeDashAttempt::RequiresYtDlpFallback(reason)),
+            Some(trigger) => {
+                return Ok(NativeDashAttempt::RequiresExtractorFallback(trigger));
+            }
             None => return Err(error).context("native DASH static catalog discovery"),
         },
     };
@@ -358,9 +348,7 @@ pub(crate) fn prepare_native_dash_attempt(
 }
 
 /// Только parser-owned content/profile categories могут открыть fallback gate.
-fn native_fallback_reason(
-    error: &DashVodCatalogDiscoveryError,
-) -> Option<NativeDashFallbackReason> {
+fn native_fallback_reason(error: &DashVodCatalogDiscoveryError) -> Option<WebMediaFallbackTrigger> {
     let DashVodCatalogDiscoveryError::Open(DashVodOpenError::Manifest(error)) = error else {
         return None;
     };
@@ -368,7 +356,7 @@ fn native_fallback_reason(
 }
 
 /// Classification сохраняет те же initial-only fallback categories, что VOD discovery.
-fn native_open_fallback_reason(error: &DashVodOpenError) -> Option<NativeDashFallbackReason> {
+fn native_open_fallback_reason(error: &DashVodOpenError) -> Option<WebMediaFallbackTrigger> {
     let DashVodOpenError::Manifest(error) = error else {
         return None;
     };
@@ -378,20 +366,20 @@ fn native_open_fallback_reason(error: &DashVodOpenError) -> Option<NativeDashFal
 /// Parser-owned категории не смешиваются с transport/cancellation/runtime failures.
 fn native_manifest_fallback_reason(
     error: &dash_mpd_core::DashMpdError,
-) -> Option<NativeDashFallbackReason> {
+) -> Option<WebMediaFallbackTrigger> {
     match error.kind() {
         dash_mpd_core::DashMpdErrorKind::InvalidRoot => {
-            Some(NativeDashFallbackReason::StrictlyNotDash)
+            Some(WebMediaFallbackTrigger::ProviderDocument)
         }
         dash_mpd_core::DashMpdErrorKind::DynamicPresentation
         | dash_mpd_core::DashMpdErrorKind::UnsupportedProfile
         | dash_mpd_core::DashMpdErrorKind::UnsupportedAvailabilityOffset
         | dash_mpd_core::DashMpdErrorKind::UnsupportedConstruct
-        | dash_mpd_core::DashMpdErrorKind::ContentProtection
         | dash_mpd_core::DashMpdErrorKind::UnsupportedMediaEvidence => {
-            Some(NativeDashFallbackReason::UnsupportedNativeProfile)
+            Some(WebMediaFallbackTrigger::UnsupportedNativeProfile)
         }
-        dash_mpd_core::DashMpdErrorKind::Xml
+        dash_mpd_core::DashMpdErrorKind::ContentProtection
+        | dash_mpd_core::DashMpdErrorKind::Xml
         | dash_mpd_core::DashMpdErrorKind::InvalidAttribute
         | dash_mpd_core::DashMpdErrorKind::MultipleBaseUrls
         | dash_mpd_core::DashMpdErrorKind::LimitExceeded
@@ -623,14 +611,22 @@ fn resolve_native_dash_startup_media(
             source,
             prepared: Box::new(prepared),
         }),
-        NativeDashAttempt::RequiresYtDlpFallback(reason) => {
+        NativeDashAttempt::RequiresExtractorFallback(trigger) => {
+            let mut fallback_owner =
+                crate::media_open::native_fallback::NativeWebFallbackOwner::before_installed(
+                    fallback_locator,
+                );
+            let fallback = fallback_owner
+                .claim(trigger)
+                .map_err(|rejection| anyhow!("native DASH fallback rejected: {rejection:?}"))?;
+            let (fallback_locator, invocation_reason) = fallback.into_parts();
             if !app_config.yt_dlp.enabled {
                 return Err(anyhow!(
-                    "native DASH admission requires extractor fallback ({reason:?}), но YtDlp отключён"
+                    "native DASH admission requires extractor fallback ({invocation_reason:?}), но YtDlp отключён"
                 ));
             }
             tracing::info!(
-                ?reason,
+                ?invocation_reason,
                 "CLI native DASH admission передан единственному YtDlp fallback"
             );
             let prepared = super::resolve_yt_dlp_startup_media(
@@ -638,6 +634,7 @@ fn resolve_native_dash_startup_media(
                 app_config,
                 system_capabilities,
                 audio_capabilities,
+                invocation_reason,
                 cancellation,
                 is_cancelled,
             )?;

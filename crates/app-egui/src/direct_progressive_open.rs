@@ -46,6 +46,8 @@ pub(crate) struct DirectProgressiveOpenResult {
     source_label: String,
     /// Demuxer, готовый к передаче player owner-у.
     demuxer: Box<dyn Demuxer + Send>,
+    /// Stable-resource recovery gate, armed только после полного direct open-а.
+    endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
     /// Snapshot треков до перемещения demuxer-а.
     tracks: Vec<TrackInfo>,
     /// Snapshot container duration.
@@ -77,10 +79,15 @@ impl DirectProgressiveOpenResult {
         self.demuxer.media_metadata()
     }
 
-    /// Передаёт demuxer единственному playback owner-у.
+    /// Передаёт demuxer и Installed recovery attachment общему composition owner-у.
     #[must_use]
-    pub(crate) fn into_demuxer(self) -> Box<dyn Demuxer + Send> {
-        self.demuxer
+    pub(crate) fn into_runtime_parts(
+        self,
+    ) -> (
+        Box<dyn Demuxer + Send>,
+        crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+    ) {
+        (self.demuxer, self.endpoint_recovery)
     }
 }
 
@@ -122,6 +129,7 @@ pub(crate) fn open_direct_media(
 
     let request_target = locator.request_target_for_open();
     let component = build_direct_component_identity()?;
+    let endpoint_recovery = crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
     let request = match request_target {
         TransportRequestTarget::Http(target) => {
             let secret_scope =
@@ -139,6 +147,7 @@ pub(crate) fn open_direct_media(
                 cancellation.clone(),
             )
             .context("Direct HTTP request нарушает secret-scope contract")?
+            .with_endpoint_expiry_observer(endpoint_recovery.observer())
         }
         TransportRequestTarget::Ftp(target) => TransportOpenRequest::for_ftp(
             ftp_provider_id,
@@ -148,7 +157,8 @@ pub(crate) fn open_direct_media(
             SourceGeneration::new(INITIAL_SOURCE_GENERATION),
             cancellation.clone(),
         )
-        .context("Direct FTP request нарушает no-HTTP-material contract")?,
+        .context("Direct FTP request нарушает no-HTTP-material contract")?
+        .with_endpoint_expiry_observer(endpoint_recovery.observer()),
     };
 
     let opened_transport = transport_registry
@@ -190,6 +200,8 @@ pub(crate) fn open_direct_media(
             )
         }
     };
+    endpoint_recovery.arm_after_candidate_finalization();
+    let demuxer = endpoint_recovery.wrap_demuxer(demuxer);
 
     debug!(
         source = %locator,
@@ -203,6 +215,7 @@ pub(crate) fn open_direct_media(
         tracks: demuxer.tracks().to_vec(),
         duration: demuxer.duration(),
         demuxer,
+        endpoint_recovery,
     })
 }
 

@@ -18,7 +18,7 @@ use web_media_adaptive::{
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
     ComponentVariantCatalogIdentity, ExactSelectionIdentity, ExtractionGeneration,
-    SemanticIdentity, WebMediaSemanticSelectionRequest,
+    SemanticIdentity, WebMediaFallbackTrigger, WebMediaSemanticSelectionRequest,
 };
 use web_media_hds::{HdsFetchedManifestInput, HdsPrepareFailureKind};
 use web_media_transport_api::{
@@ -41,22 +41,9 @@ static NEXT_NATIVE_HDS_SNAPSHOT_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// Direct HDS redirect budget совпадает с другими native manifest ingress-ами.
 const NATIVE_HDS_REDIRECT_HOPS: u8 = 5;
 
-/// Единственные причины допустимого initial pre-Installed extractor fallback-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NativeHdsFallbackReason {
-    /// `.f4m` hint вернул well-formed document с чужим root element-ом.
-    StrictlyNotHds,
-    /// Authoritative сервер требует extractor-owned authorization material.
-    AuthorizationRequired,
-}
-
-/// Результат content-based native HDS admission до strong install barrier-а.
-pub(crate) enum NativeHdsAttempt<Prepared> {
-    /// H.264/AAC HDS VOD полностью подготовлен existing runtime-ом.
-    Prepared(Prepared),
-    /// Только initial request может передать source extractor adapter-у.
-    RequiresYtDlpFallback(NativeHdsFallbackReason),
-}
+/// HDS alias общего cross-protocol native admission результата.
+pub(crate) type NativeHdsAttempt<Prepared> =
+    crate::media_open::native_fallback::NativeWebMediaAttempt<Prepared>;
 
 /// Все production inputs одной native HDS attempt.
 pub(crate) struct NativeHdsPreparationRequest<'request> {
@@ -134,8 +121,8 @@ pub(crate) fn prepare_native_hds_attempt(
     )) {
         Ok(fetched_manifest) => fetched_manifest,
         Err(error) if matches!(error.http_status_code(), Some(401 | 403)) => {
-            return Ok(NativeHdsAttempt::RequiresYtDlpFallback(
-                NativeHdsFallbackReason::AuthorizationRequired,
+            return Ok(NativeHdsAttempt::RequiresExtractorFallback(
+                WebMediaFallbackTrigger::ExtractorOwnedAuthorizationMaterial,
             ));
         }
         Err(error @ AdaptiveTransportError::Cancelled) => {
@@ -170,8 +157,8 @@ pub(crate) fn prepare_native_hds_attempt(
     }) {
         Ok(prepared) => prepared,
         Err(error) if native_hds_failure_kind(&error) == HdsPrepareFailureKind::InvalidRoot => {
-            return Ok(NativeHdsAttempt::RequiresYtDlpFallback(
-                NativeHdsFallbackReason::StrictlyNotHds,
+            return Ok(NativeHdsAttempt::RequiresExtractorFallback(
+                WebMediaFallbackTrigger::ProviderDocument,
             ));
         }
         Err(error) => return Err(error),
@@ -395,14 +382,22 @@ fn resolve_native_hds_startup_media(
             source,
             prepared: Box::new(prepared),
         }),
-        NativeHdsAttempt::RequiresYtDlpFallback(reason) => {
+        NativeHdsAttempt::RequiresExtractorFallback(trigger) => {
+            let mut fallback_owner =
+                crate::media_open::native_fallback::NativeWebFallbackOwner::before_installed(
+                    fallback_locator,
+                );
+            let fallback = fallback_owner
+                .claim(trigger)
+                .map_err(|rejection| anyhow!("native HDS fallback rejected: {rejection:?}"))?;
+            let (fallback_locator, invocation_reason) = fallback.into_parts();
             if !app_config.yt_dlp.enabled {
                 return Err(anyhow!(
-                    "native HDS admission requires extractor fallback ({reason:?}), но YtDlp отключён"
+                    "native HDS admission requires extractor fallback ({invocation_reason:?}), но YtDlp отключён"
                 ));
             }
             tracing::info!(
-                ?reason,
+                ?invocation_reason,
                 "CLI native HDS admission передан единственному YtDlp fallback"
             );
             let prepared = super::resolve_yt_dlp_startup_media(
@@ -410,6 +405,7 @@ fn resolve_native_hds_startup_media(
                 app_config,
                 system_capabilities,
                 audio_capabilities,
+                invocation_reason,
                 cancellation,
                 is_cancelled,
             )?;

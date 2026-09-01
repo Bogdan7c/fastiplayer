@@ -256,6 +256,7 @@ impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
             crate::media_open::WebMediaOpenRequest::extractor(
                 self.locator,
                 crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                web_media_core::ExtractorInvocationReason::PageMediaResolution,
                 crate::media_open::WebMediaOpenSettings::from_app_config(
                     app_config,
                     system_capabilities,

@@ -41,8 +41,8 @@ pub(super) fn prepare_native_hls_attempt(
     ) {
         Ok(resource) => resource,
         Err(error) if matches!(error.http_status_code(), Some(401 | 403)) => {
-            return Ok(NativeHlsAttempt::RequiresYtDlpFallback(
-                NativeHlsFallbackReason::AuthorizationRequired,
+            return Ok(NativeHlsAttempt::RequiresExtractorFallback(
+                WebMediaFallbackTrigger::ExtractorOwnedAuthorizationMaterial,
             ));
         }
         Err(AdaptiveTransportError::Cancelled) => {
@@ -70,13 +70,13 @@ pub(super) fn prepare_native_hls_attempt(
     ) {
         Ok(selection) => selection,
         Err(NativeHlsAdmissionError::StrictlyNotHls) => {
-            return Ok(NativeHlsAttempt::RequiresYtDlpFallback(
-                NativeHlsFallbackReason::StrictlyNotHls,
+            return Ok(NativeHlsAttempt::RequiresExtractorFallback(
+                WebMediaFallbackTrigger::ProviderDocument,
             ));
         }
         Err(NativeHlsAdmissionError::ExtractorMaterialRequired) => {
-            return Ok(NativeHlsAttempt::RequiresYtDlpFallback(
-                NativeHlsFallbackReason::ExtractorMaterialRequired,
+            return Ok(NativeHlsAttempt::RequiresExtractorFallback(
+                WebMediaFallbackTrigger::ExtractorOwnedAuthorizationMaterial,
             ));
         }
         Err(error @ (NativeHlsAdmissionError::Parse(_) | NativeHlsAdmissionError::Profile(_))) => {

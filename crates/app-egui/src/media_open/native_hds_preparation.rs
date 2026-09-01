@@ -27,11 +27,15 @@ pub(super) fn prepare_native_hds_source(
         audio_capabilities,
     } = settings;
     let safe_label = source.safe_label().clone();
-    let (expected_selection, fallback_locator) = match intent {
-        NativeHdsOpenIntent::InitialWithYtDlpFallback { fallback_locator } => {
-            (None, Some(fallback_locator))
-        }
-        NativeHdsOpenIntent::SemanticSelection(selection) => (Some(selection), None),
+    let (expected_selection, mut fallback_owner) = match intent {
+        NativeHdsOpenIntent::InitialWithYtDlpFallback { fallback_locator } => (
+            None,
+            super::native_fallback::NativeWebFallbackOwner::before_installed(fallback_locator),
+        ),
+        NativeHdsOpenIntent::SemanticSelection(selection) => (
+            Some(selection),
+            super::native_fallback::NativeWebFallbackOwner::installed(),
+        ),
     };
     let attempt = crate::startup_media::native_hds::prepare_native_hds_attempt(
         crate::startup_media::native_hds::NativeHdsPreparationRequest {
@@ -66,32 +70,35 @@ pub(super) fn prepare_native_hds_source(
             }
             install_prepared_native_hds(source, safe_label, prepared)
         }
-        crate::startup_media::native_hds::NativeHdsAttempt::RequiresYtDlpFallback(reason) => {
-            let Some(locator) = fallback_locator else {
+        crate::startup_media::native_hds::NativeHdsAttempt::RequiresExtractorFallback(trigger) => {
+            let fallback = fallback_owner.claim(trigger).map_err(|rejection| {
                 tracing::warn!(
                     source = %safe_label,
-                    ?reason,
-                    "Exact native HDS reopen отклонён без extractor fallback"
+                    ?trigger,
+                    ?rejection,
+                    "Native HDS fallback отклонён единым lifecycle gate-ом"
                 );
-                return Err(MediaPreparationFailureKind::NativeHdsOpen);
-            };
+                MediaPreparationFailureKind::NativeHdsOpen
+            })?;
+            let (locator, invocation_reason) = fallback.into_parts();
             if !yt_dlp_config.enabled {
                 tracing::warn!(
                     source = %safe_label,
-                    ?reason,
+                    ?invocation_reason,
                     "Initial native HDS fallback запрещён отключённым extractor-ом"
                 );
                 return Err(MediaPreparationFailureKind::NativeHdsOpen);
             }
             tracing::info!(
                 source = %safe_label,
-                ?reason,
+                ?invocation_reason,
                 "Initial native HDS admission передан единственному YtDlp fallback"
             );
             super::preparation::prepare_source(
                 MediaOpenSourceRequest::Web(WebMediaOpenRequest::extractor(
                     locator,
                     crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                    invocation_reason,
                     WebMediaOpenSettings {
                         network_config,
                         web_media_config,
