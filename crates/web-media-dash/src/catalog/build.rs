@@ -121,8 +121,12 @@ pub(super) fn build(
         ));
     }
 
-    let provider_default_keys =
-        provider_default_lane_keys(&lanes, request.presentation, request.provider_default)?;
+    let provider_default_keys = match request.provider_default {
+        DashRepresentationLaneProviderDefault::ExactEvidence(provider_default) => {
+            provider_default_lane_keys(&lanes, request.presentation, provider_default)?
+        }
+        DashRepresentationLaneProviderDefault::NativePreferredHeight(_) => Vec::new(),
+    };
     let mut proven_lanes = Vec::with_capacity(lanes.len());
     for (index, logical) in lanes.into_iter().enumerate() {
         let probe = DashRepresentationLaneProbe {
@@ -360,12 +364,19 @@ pub(super) fn build(
             audio_only,
         },
     )?;
-    let provider_default = provider_default_selection(
-        &catalog,
-        &published,
-        request.presentation,
-        request.provider_default,
-    )?;
+    let provider_default = match request.provider_default {
+        DashRepresentationLaneProviderDefault::ExactEvidence(provider_default) => {
+            provider_default_selection(
+                &catalog,
+                &published,
+                request.presentation,
+                provider_default,
+            )?
+        }
+        DashRepresentationLaneProviderDefault::NativePreferredHeight(preferred_height) => {
+            native_provider_default_selection(&catalog, preferred_height)?
+        }
+    };
     Ok(DashRepresentationLaneCatalog {
         catalog,
         provider_default,

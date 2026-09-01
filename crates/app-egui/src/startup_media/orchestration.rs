@@ -9,13 +9,13 @@ use std::sync::Arc;
 use player_core::PlaybackIntent;
 
 use crate::local_file_open::LocalFileOpenResult;
-use crate::media_open::{ActiveMediaSource, PreparedLocalOpenResult, SafeMediaLabel};
+use crate::media_open::{ActiveMediaSource, SafeMediaLabel};
 use crate::playlist_runtime::StartupRestoreTarget;
 use crate::startup_readiness::StartupMediaOpenKind;
 use crate::state::PreparedSingleMediaOpen;
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
 
-use super::{PreparedYtDlpStartupMedia, StartupMediaController};
+use super::StartupMediaController;
 
 /// Чья подготовка сейчас владеет единственным startup media slot-ом.
 pub(super) enum StartupMediaTarget {
@@ -23,50 +23,14 @@ pub(super) enum StartupMediaTarget {
     RestoredCurrent(StartupRestoreTarget),
 }
 
-/// Применяет актуальную config policy к domain target до strong-open admission.
-pub(crate) fn apply_restored_playback_policy(
-    target: &mut StartupRestoreTarget,
-    config: &rustiplayer_config::AppConfig,
-) {
-    target.set_playback_intent(PlaybackIntent::from_autoplay(!config.player.start_paused));
-}
-
-/// Prepared topology — единственный app-owned источник positive/absent audio proof-а.
-fn prepared_startup_audio_proof(
-    tracks: &[media_core::TrackInfo],
-) -> crate::startup_readiness::StartupAudioProof {
-    if tracks
-        .iter()
-        .any(|track| track.kind == media_core::TrackKind::Audio)
-    {
-        crate::startup_readiness::StartupAudioProof::Required
-    } else {
-        crate::startup_readiness::StartupAudioProof::NotPresent
-    }
-}
-
 #[cfg(test)]
 #[path = "orchestration/pending_work_tests.rs"]
 mod pending_work_tests;
+mod prepared;
 mod web_preparation;
-
-/// Prepared ownership сохраняется до trusted allocator decision.
-pub(super) enum PreparedStartupMedia {
-    Local(Box<PreparedLocalOpenResult>),
-    Extractor {
-        source_locator: service_ytdlp::YtDlpMediaLocator,
-        prepared: Box<PreparedYtDlpStartupMedia>,
-    },
-    Direct {
-        source_locator: service_direct_media::DirectMediaUrl,
-        prepared_media: player_core::PreparedMedia,
-        descriptor: Box<crate::media_open::PreparedWebMediaEnvelope>,
-    },
-    NativeHls {
-        source: crate::media_open::NativeHlsUrl,
-        prepared: Box<super::native_hls::PreparedNativeHlsMedia>,
-    },
-}
+pub(super) use prepared::PreparedStartupMedia;
+pub(crate) use prepared::apply_restored_playback_policy;
+use prepared::prepared_startup_audio_proof;
 
 /// Read-only phase нужна scheduler/tests и не раскрывает locator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +164,7 @@ impl StartupMediaController {
             && self.yt_dlp_startup_job.is_none()
             && self.direct_media_startup_job.is_none()
             && self.native_hls_startup_job.is_none()
+            && self.native_dash_startup_job.is_none()
             && self.local_startup_job.is_none()
         {
             self.orchestration.prepared = None;
@@ -218,6 +183,7 @@ impl StartupMediaController {
             && self.yt_dlp_startup_job.is_none()
             && self.direct_media_startup_job.is_none()
             && self.native_hls_startup_job.is_none()
+            && self.native_dash_startup_job.is_none()
             && self.local_startup_job.is_none()
             && (!self.orchestration.cli_requested || self.orchestration.cli_failed)
             && !structurally_superseded
@@ -308,6 +274,19 @@ impl StartupMediaController {
             && let Some(result) = job.try_take_result()
         {
             self.native_hls_startup_job = None;
+            changed = true;
+            match result {
+                Ok(prepared) => self.hold_prepared(prepared, playlist_runtime),
+                Err(error) => {
+                    self.handle_preparation_failure(error, app_state, playlist_runtime);
+                }
+            }
+        }
+
+        if let Some(job) = self.native_dash_startup_job.as_mut()
+            && let Some(result) = job.try_take_result()
+        {
+            self.native_dash_startup_job = None;
             changed = true;
             match result {
                 Ok(prepared) => self.hold_prepared(prepared, playlist_runtime),
@@ -476,6 +455,7 @@ impl StartupMediaController {
                 if self.yt_dlp_startup_job.is_some()
                     || self.direct_media_startup_job.is_some()
                     || self.native_hls_startup_job.is_some()
+                    || self.native_dash_startup_job.is_some()
                 {
                     return;
                 }
@@ -686,6 +666,38 @@ impl StartupMediaController {
             PreparedStartupMedia::NativeHls { source, prepared } => {
                 let prepared =
                     match web_preparation::compose_native_hls_startup_media(source, *prepared) {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            self.handle_install_failure(error, is_cli, app_state);
+                            return true;
+                        }
+                    };
+                app_state.note_startup_prepared_audio_proof(prepared_startup_audio_proof(
+                    prepared.prepared_media.tracks(),
+                ));
+                let input = self
+                    .prepared_url_input(
+                        prepared.prepared_media,
+                        prepared.active_source,
+                        prepared.safe_label,
+                        target,
+                    )
+                    .with_descriptor(crate::media_open::PreparedMediaDescriptor::Web(
+                        prepared.descriptor,
+                    ));
+                app_state
+                    .begin_prepared_media_strong(playlist_runtime, renderer, input, playback_intent)
+                    .map(|_| {
+                        pending_install = Some(StartupPendingInstall {
+                            is_cli,
+                            local_discovery: None,
+                            superseded: false,
+                        });
+                    })
+            }
+            PreparedStartupMedia::NativeDash { source, prepared } => {
+                let prepared =
+                    match web_preparation::compose_native_dash_startup_media(source, *prepared) {
                         Ok(prepared) => prepared,
                         Err(error) => {
                             self.handle_install_failure(error, is_cli, app_state);

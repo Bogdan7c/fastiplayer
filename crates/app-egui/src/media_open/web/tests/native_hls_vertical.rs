@@ -339,7 +339,16 @@ pub(super) fn assert_decoder_render_audio(
     demuxer: &mut dyn Demuxer,
     wgpu_harness: &mut OffscreenWgpuHarness,
 ) {
-    assert_decoder_render_audio_samples(demuxer, wgpu_harness, 1);
+    assert_decoder_render_audio_for_codec(demuxer, wgpu_harness, DecodeVideoCodec::H264);
+}
+
+/// Проверяет общий adaptive consumer path для явно доказанного video codec-а и actual audio track-а.
+pub(super) fn assert_decoder_render_audio_for_codec(
+    demuxer: &mut dyn Demuxer,
+    wgpu_harness: &mut OffscreenWgpuHarness,
+    video_codec: DecodeVideoCodec,
+) {
+    assert_decoder_render_audio_samples(demuxer, wgpu_harness, video_codec, 1);
 }
 
 /// Live vertical требует как минимум два successive frame/audio результата одним decoder lifecycle.
@@ -347,13 +356,14 @@ pub(super) fn assert_decoder_render_audio_movement(
     demuxer: &mut dyn Demuxer,
     wgpu_harness: &mut OffscreenWgpuHarness,
 ) {
-    assert_decoder_render_audio_samples(demuxer, wgpu_harness, 2);
+    assert_decoder_render_audio_samples(demuxer, wgpu_harness, DecodeVideoCodec::H264, 2);
 }
 
 /// Один decoder lifecycle сохраняет SPS/PPS и доказывает движение, не переоткрываясь mid-stream.
 fn assert_decoder_render_audio_samples(
     demuxer: &mut dyn Demuxer,
     wgpu_harness: &mut OffscreenWgpuHarness,
+    video_codec: DecodeVideoCodec,
     minimum_samples: usize,
 ) {
     let video_track = demuxer
@@ -369,7 +379,7 @@ fn assert_decoder_render_audio_samples(
         .cloned()
         .expect("native HLS variant должен публиковать audio track");
     let (video_decoder, renderer_provider) =
-        open_decoder(&video_track, wgpu_harness.queue(), DecodeVideoCodec::H264);
+        open_decoder(&video_track, wgpu_harness.queue(), video_codec);
     let materializer = HostPlanarWgpuFrameMaterializer::new(
         wgpu_harness.device(),
         wgpu_harness.queue(),

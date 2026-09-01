@@ -1,5 +1,9 @@
 //! Provider-owned DASH VOD catalog discovery и selected-lane open.
 
+mod native_vod;
+
+pub use native_vod::{NativeDashVodCatalogDiscoveryRequest, discover_native_dash_vod_catalog};
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -26,10 +30,10 @@ use crate::catalog::{
     DashLogicalRepresentationSelection, DashRepresentationLaneCatalog,
     DashRepresentationLaneCatalogBuildError, DashRepresentationLaneCatalogBuildRequest,
     DashRepresentationLaneProbe, DashRepresentationLaneProbeError, DashRepresentationLaneProof,
-    DashRepresentationLaneProofPort, DashRepresentationLaneRejection,
-    DashRepresentationLaneSelectionError, DashRepresentationLaneTimelineMode, LaneContract,
-    audio_descriptor, build_dash_representation_lane_catalog, dynamic_range, normalized_codec,
-    video_descriptor,
+    DashRepresentationLaneProofPort, DashRepresentationLaneProviderDefault,
+    DashRepresentationLaneRejection, DashRepresentationLaneSelectionError,
+    DashRepresentationLaneTimelineMode, LaneContract, audio_descriptor,
+    build_dash_representation_lane_catalog, dynamic_range, normalized_codec, video_descriptor,
 };
 use crate::component::{DashComponentFactory, DashComponentTrackShapeError};
 use crate::live::{
@@ -38,7 +42,8 @@ use crate::live::{
     resolve_dash_live_clock,
 };
 use crate::open::{
-    DashVodOpenError, DashVodOpenResult, fetch_dash_manifest, prepare_planned_manifest_vod,
+    DashVodOpenError, DashVodOpenResult, fetch_dash_manifest, parse_fetched_dash_manifest,
+    prepare_planned_manifest_vod,
 };
 use crate::plan::{
     DashComponentPlan, DashPlanError, DashPresentationPlan,
@@ -250,11 +255,20 @@ pub fn discover_dash_vod_catalog(
         demux_registry,
         policy,
     } = open;
-    let (DashVodHttpContext::Manifest(http), DashVodInput::Manifest(manifest)) = (http, input)
-    else {
+    let DashVodHttpContext::Manifest(http) = http else {
         return Err(DashVodCatalogDiscoveryError::ManifestRequired);
     };
-    let (mpd, manifest_base) = fetch_dash_manifest(&http, generation, manifest, policy)?;
+    let (mpd, manifest_base) = match input {
+        DashVodInput::Manifest(manifest) => {
+            fetch_dash_manifest(&http, generation, manifest, policy)?
+        }
+        DashVodInput::FetchedManifest(manifest) => {
+            parse_fetched_dash_manifest(&http, generation, manifest, policy)?
+        }
+        DashVodInput::Serialized(_) => {
+            return Err(DashVodCatalogDiscoveryError::ManifestRequired);
+        }
+    };
     let parent_semantic = catalog_identity.parent().semantic().clone();
     let mut proof = ProviderLaneProof {
         presentation: &mpd,
@@ -272,7 +286,7 @@ pub fn discover_dash_vod_catalog(
             manifest_base: &manifest_base,
             catalog_identity,
             parent_semantic: &parent_semantic,
-            provider_default: &selection,
+            provider_default: DashRepresentationLaneProviderDefault::ExactEvidence(&selection),
             catalog_limit,
             compatibility_edge_limit,
             maximum_planned_segments: policy.maximum_planned_segments,
@@ -360,7 +374,7 @@ pub fn discover_dash_live_catalog(
             manifest_base: &manifest_base,
             catalog_identity,
             parent_semantic: &parent_semantic,
-            provider_default: &open.selection,
+            provider_default: DashRepresentationLaneProviderDefault::ExactEvidence(&open.selection),
             catalog_limit,
             compatibility_edge_limit,
             maximum_planned_segments: open.policy.maximum_planned_segments,

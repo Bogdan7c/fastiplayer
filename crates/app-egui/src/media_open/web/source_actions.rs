@@ -53,9 +53,9 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::Direct { .. } => {
                 policy.direct_resource == DirectResourceSettingsAction::Rebuild
             }
-            WebMediaSourceAdapter::NativeHls { .. } | WebMediaSourceAdapter::Extractor { .. } => {
-                true
-            }
+            WebMediaSourceAdapter::NativeHls { .. }
+            | WebMediaSourceAdapter::NativeDash { .. }
+            | WebMediaSourceAdapter::Extractor { .. } => true,
         }
     }
 
@@ -90,6 +90,27 @@ impl WebMediaSourceIntent {
                         return WebMediaSelectionSwitchResolution::Stale;
                     };
                     WebMediaSelectionSwitchResolution::Ready(WebMediaOpenRequest::native_hls(
+                        source.clone(),
+                        intent,
+                        settings,
+                    ))
+                }
+            },
+            WebMediaSourceAdapter::NativeDash {
+                source,
+                source_state,
+            } => match intent {
+                WebMediaSelectionSwitchIntent::CatalogTarget(
+                    crate::web_media_catalog::WebMediaSelectionTarget::InstalledOnly,
+                ) => WebMediaSelectionSwitchResolution::NoChange,
+                WebMediaSelectionSwitchIntent::CatalogTarget(_) => {
+                    WebMediaSelectionSwitchResolution::Unsupported
+                }
+                WebMediaSelectionSwitchIntent::ComponentSemantic(selection) => {
+                    let Some(intent) = source_state.switch_intent_for_component(selection) else {
+                        return WebMediaSelectionSwitchResolution::Stale;
+                    };
+                    WebMediaSelectionSwitchResolution::Ready(WebMediaOpenRequest::native_dash(
                         source.clone(),
                         intent,
                         settings,
@@ -144,6 +165,14 @@ impl WebMediaSourceIntent {
                 source,
                 source_state,
             } => WebMediaOpenRequest::native_hls(
+                source.clone(),
+                source_state.installed_reopen_intent(),
+                adaptive_settings,
+            ),
+            WebMediaSourceAdapter::NativeDash {
+                source,
+                source_state,
+            } => WebMediaOpenRequest::native_dash(
                 source.clone(),
                 source_state.installed_reopen_intent(),
                 adaptive_settings,

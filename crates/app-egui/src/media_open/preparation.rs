@@ -210,6 +210,141 @@ pub(super) fn prepare_source(
                     }
                 }
             }
+            WebMediaOpenAdapterView::NativeDash {
+                source,
+                intent,
+                settings,
+            } => {
+                let WebMediaOpenSettings {
+                    network_config,
+                    web_media_config,
+                    yt_dlp_config,
+                    demux_config,
+                    preferred_video_codec_order,
+                    system_capabilities,
+                    audio_capabilities,
+                } = settings;
+                let safe_label = source.safe_label().clone();
+                let (expected_selection, fallback_locator) = match intent {
+                    super::NativeDashOpenIntent::InitialWithYtDlpFallback { fallback_locator } => {
+                        (None, Some(fallback_locator))
+                    }
+                    super::NativeDashOpenIntent::SemanticSelection(selection) => {
+                        (Some(selection), None)
+                    }
+                };
+                let attempt = crate::startup_media::native_dash::prepare_native_dash_attempt(
+                    crate::startup_media::native_dash::NativeDashPreparationRequest {
+                        source: &source,
+                        expected_selection: expected_selection.as_ref(),
+                        network_config: &network_config,
+                        web_media_config: &web_media_config,
+                        demux_config: &demux_config,
+                        system_capabilities: &system_capabilities,
+                        audio_capabilities,
+                        cancellation: cancellation.source_token(),
+                    },
+                )
+                .map_err(|error| {
+                    tracing::warn!(
+                        source = %safe_label,
+                        error = %error,
+                        "Подготовка native DASH завершилась ошибкой"
+                    );
+                    if cancellation.is_cancelled() {
+                        MediaPreparationFailureKind::Cancelled
+                    } else {
+                        MediaPreparationFailureKind::NativeDashOpen
+                    }
+                })?;
+                match attempt {
+                    crate::startup_media::native_dash::NativeDashAttempt::Prepared(prepared) => {
+                        if cancellation.is_cancelled() {
+                            return Err(MediaPreparationFailureKind::Cancelled);
+                        }
+                        let tracks = prepared.demuxer.tracks().to_vec();
+                        let duration = prepared.demuxer.duration();
+                        let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
+                        let active_source =
+                            WebMediaSourceIntent::native_dash(source, prepared.source_state);
+                        let prepared_media = compose_prepared_web_media(
+                            safe_label.as_str(),
+                            prepared.demuxer,
+                            PreparedWebMediaAttachments {
+                                demux_seek: Some(
+                                    super::PreparedWebMediaSeekAttachment::WorkerReceipted(
+                                        prepared.seek_port,
+                                    ),
+                                ),
+                                ..PreparedWebMediaAttachments::default()
+                            },
+                        )
+                        .map_err(|error| {
+                            tracing::warn!(
+                                source = %safe_label,
+                                error = %error,
+                                "Native DASH composition нарушила prepared attachment contract"
+                            );
+                            MediaPreparationFailureKind::NativeDashOpen
+                        })?;
+                        Ok(PreparedMediaOpen {
+                            prepared_media,
+                            descriptor: PreparedMediaDescriptor::Web(
+                                PreparedWebMediaEnvelope::new(
+                                    tracks,
+                                    duration,
+                                    metadata,
+                                    active_source,
+                                    safe_label,
+                                    None,
+                                    Some(prepared.vod_endpoint_recovery),
+                                ),
+                            ),
+                        })
+                    }
+                    crate::startup_media::native_dash::NativeDashAttempt::RequiresYtDlpFallback(
+                        reason,
+                    ) => {
+                        let Some(locator) = fallback_locator else {
+                            tracing::warn!(
+                                source = %safe_label,
+                                ?reason,
+                                "Exact native DASH reopen отклонён без extractor fallback"
+                            );
+                            return Err(MediaPreparationFailureKind::NativeDashOpen);
+                        };
+                        if !yt_dlp_config.enabled {
+                            tracing::warn!(
+                                source = %safe_label,
+                                ?reason,
+                                "Initial native DASH fallback запрещён отключённым extractor-ом"
+                            );
+                            return Err(MediaPreparationFailureKind::NativeDashOpen);
+                        }
+                        tracing::info!(
+                            source = %safe_label,
+                            ?reason,
+                            "Initial native DASH admission передан единственному YtDlp fallback"
+                        );
+                        prepare_source(
+                            MediaOpenSourceRequest::Web(WebMediaOpenRequest::extractor(
+                                locator,
+                                crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+                                WebMediaOpenSettings {
+                                    network_config,
+                                    web_media_config,
+                                    yt_dlp_config,
+                                    demux_config,
+                                    preferred_video_codec_order,
+                                    system_capabilities,
+                                    audio_capabilities,
+                                },
+                            )),
+                            cancellation,
+                        )
+                    }
+                }
+            }
             WebMediaOpenAdapterView::Extractor {
                 locator,
                 selection_intent,

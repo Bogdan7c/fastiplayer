@@ -59,6 +59,32 @@ fn m3u8_hint_builds_native_admission_with_one_typed_fallback() {
 }
 
 #[test]
+fn mpd_hint_builds_content_probed_native_admission_when_extractor_is_disabled() {
+    let exact_url = "https://cdn.example.test/video.mpd?signature=native-secret";
+    let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
+        panic!("mpd hint должен выбрать native DASH admission adapter");
+    };
+    assert_eq!(persistence_identity(&locator), exact_url);
+
+    let mut app_config = AppConfig::default();
+    app_config.yt_dlp.enabled = false;
+    locator
+        .validate_config(&app_config)
+        .expect("native DASH classification не зависит от extractor availability");
+    let request = locator
+        .into_media_open_source_request(
+            &app_config,
+            &SystemCapabilities::empty(1),
+            audio::AudioDecodeCapabilitySnapshot::empty(),
+        )
+        .expect("native DASH request");
+    assert!(matches!(
+        request,
+        crate::media_open::MediaOpenSourceRequest::Web(_)
+    ));
+}
+
+#[test]
 fn m3u8_text_outside_url_path_remains_generic() {
     let StartupUrlClassification::Supported(locator) =
         classify_startup_url("https://example.test/watch?next=movie.m3u8")

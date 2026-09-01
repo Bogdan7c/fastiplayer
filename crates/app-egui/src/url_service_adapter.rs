@@ -6,6 +6,9 @@ use rustiplayer_config::AppConfig;
 use crate::startup_media::StartupMediaController;
 use crate::state::AppState;
 
+mod native_dash;
+use native_dash::classify_native_dash_startup_url;
+
 /// Service-neutral type erasure для уже разобранного URL service request-а.
 pub(crate) struct StartupUrlLocator(Box<dyn StartupUrlServiceAdapter>);
 
@@ -464,6 +467,7 @@ fn profile_excluded_input_scheme(
 /// Единственное место регистрации URL services; общий traversal не знает их семантику.
 const STARTUP_URL_SERVICE_CLASSIFIERS: &[StartupUrlServiceClassifier] = &[
     classify_native_hls_startup_url,
+    classify_native_dash_startup_url,
     classify_direct_media_startup_url,
     classify_yt_dlp_startup_url,
 ];

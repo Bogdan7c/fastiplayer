@@ -15,9 +15,14 @@ use web_media_core::{
     WebMediaRecoveryStrategy, WebMediaSelection,
 };
 
-use super::{NativeHlsOpenIntent, NativeHlsSourceState, NativeHlsUrl, SafeMediaLabel};
+use super::{
+    NativeDashOpenIntent, NativeDashSourceState, NativeDashUrl, NativeHlsOpenIntent,
+    NativeHlsSourceState, NativeHlsUrl, SafeMediaLabel,
+};
 
+mod adapter_view;
 mod source_actions;
+pub(super) use adapter_view::WebMediaOpenAdapterView;
 pub(crate) use source_actions::{
     DirectResourceSettingsAction, WebMediaSelectionSwitchIntent, WebMediaSelectionSwitchResolution,
     WebMediaSettingsReconfigureDecision, WebMediaSettingsReconfigurePolicy,
@@ -58,6 +63,11 @@ enum WebMediaSourceAdapter {
         source: NativeHlsUrl,
         source_state: Box<NativeHlsSourceState>,
     },
+    /// Native DASH хранит stable MPD root и neutral catalog state без fragment URL.
+    NativeDash {
+        source: NativeDashUrl,
+        source_state: Box<NativeDashSourceState>,
+    },
     /// Extractor сохраняет neutral selection и временные UI/reopen projections.
     Extractor {
         locator: service_ytdlp::YtDlpMediaLocator,
@@ -89,6 +99,20 @@ impl WebMediaSourceIntent {
             recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
             extractor_reason: None,
             adapter: Box::new(WebMediaSourceAdapter::NativeHls {
+                source,
+                source_state: Box::new(source_state),
+            }),
+        }
+    }
+
+    /// Создаёт proven native static DASH intent без временных fragment endpoints.
+    pub(crate) fn native_dash(source: NativeDashUrl, source_state: NativeDashSourceState) -> Self {
+        Self {
+            ingress: WebMediaIngressKind::NativeManifest,
+            presentation: WebMediaPresentationKind::Vod,
+            recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
+            extractor_reason: None,
+            adapter: Box::new(WebMediaSourceAdapter::NativeDash {
                 source,
                 source_state: Box::new(source_state),
             }),
@@ -144,6 +168,9 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::NativeHls { source_state, .. } => {
                 Some(source_state.neutral_selection())
             }
+            WebMediaSourceAdapter::NativeDash { source_state, .. } => {
+                Some(source_state.neutral_selection())
+            }
             WebMediaSourceAdapter::Direct { .. } => None,
         }
     }
@@ -157,6 +184,9 @@ impl WebMediaSourceIntent {
                 Some(source_state.stream_configuration())
             }
             WebMediaSourceAdapter::NativeHls { source_state, .. } => {
+                Some(source_state.stream_configuration())
+            }
+            WebMediaSourceAdapter::NativeDash { source_state, .. } => {
                 Some(source_state.stream_configuration())
             }
             WebMediaSourceAdapter::Direct { .. } => None,
@@ -174,6 +204,9 @@ impl WebMediaSourceIntent {
             WebMediaSourceAdapter::NativeHls { source_state, .. } => {
                 Some(source_state.catalog_attachment())
             }
+            WebMediaSourceAdapter::NativeDash { source_state, .. } => {
+                Some(source_state.catalog_attachment())
+            }
             WebMediaSourceAdapter::Direct { .. } => None,
         }
     }
@@ -188,6 +221,15 @@ impl WebMediaSourceIntent {
                 stream_configuration: None,
             },
             WebMediaSourceAdapter::NativeHls {
+                source,
+                source_state,
+            } => WebMediaSourceReadProjection {
+                ingress: self.ingress,
+                presentation: self.presentation,
+                source_label: source.safe_label().as_str(),
+                stream_configuration: Some(source_state.stream_configuration()),
+            },
+            WebMediaSourceAdapter::NativeDash {
                 source,
                 source_state,
             } => WebMediaSourceReadProjection {
@@ -227,6 +269,17 @@ impl WebMediaSourceIntent {
             } => {
                 let settings = adaptive_settings?;
                 WebMediaOpenAdapter::NativeHls {
+                    source: source.clone(),
+                    intent: source_state.installed_reopen_intent(),
+                    settings,
+                }
+            }
+            WebMediaSourceAdapter::NativeDash {
+                source,
+                source_state,
+            } => {
+                let settings = adaptive_settings?;
+                WebMediaOpenAdapter::NativeDash {
                     source: source.clone(),
                     intent: source_state.installed_reopen_intent(),
                     settings,
@@ -343,6 +396,11 @@ enum WebMediaOpenAdapter {
         intent: NativeHlsOpenIntent,
         settings: WebMediaOpenSettings,
     },
+    NativeDash {
+        source: NativeDashUrl,
+        intent: NativeDashOpenIntent,
+        settings: WebMediaOpenSettings,
+    },
     Extractor {
         locator: service_ytdlp::YtDlpMediaLocator,
         selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
@@ -381,6 +439,21 @@ impl WebMediaOpenRequest {
         }
     }
 
+    /// Создаёт native DASH request с typed pre-Installed fallback intent.
+    pub(crate) fn native_dash(
+        source: NativeDashUrl,
+        intent: NativeDashOpenIntent,
+        settings: WebMediaOpenSettings,
+    ) -> Self {
+        Self {
+            adapter: Box::new(WebMediaOpenAdapter::NativeDash {
+                source,
+                intent,
+                settings,
+            }),
+        }
+    }
+
     /// Создаёт extractor request с exact typed selection intent.
     pub(crate) fn extractor(
         locator: service_ytdlp::YtDlpMediaLocator,
@@ -403,6 +476,7 @@ impl WebMediaOpenRequest {
                 SafeMediaLabel::from_service_safe_label(locator.safe_label())
             }
             WebMediaOpenAdapter::NativeHls { source, .. } => source.safe_label().clone(),
+            WebMediaOpenAdapter::NativeDash { source, .. } => source.safe_label().clone(),
             WebMediaOpenAdapter::Extractor { locator, .. } => {
                 SafeMediaLabel::from_service_safe_label(locator.safe_label())
             }
@@ -567,59 +641,6 @@ pub(crate) fn compose_prepared_web_media(
             Ok(prepared_media.with_prepared_initial_position(initial_position)?)
         }
         None => Ok(prepared_media),
-    }
-}
-
-/// Внутренний adapter payload нужен только `media_open::preparation`.
-pub(super) enum WebMediaOpenAdapterView {
-    Direct {
-        locator: service_direct_media::DirectMediaUrl,
-        network_config: rustiplayer_config::NetworkConfig,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
-    },
-    NativeHls {
-        source: NativeHlsUrl,
-        intent: NativeHlsOpenIntent,
-        settings: WebMediaOpenSettings,
-    },
-    Extractor {
-        locator: service_ytdlp::YtDlpMediaLocator,
-        selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
-        settings: WebMediaOpenSettings,
-    },
-}
-
-impl From<WebMediaOpenAdapter> for WebMediaOpenAdapterView {
-    fn from(adapter: WebMediaOpenAdapter) -> Self {
-        match adapter {
-            WebMediaOpenAdapter::Direct {
-                locator,
-                network_config,
-                demux_config,
-            } => Self::Direct {
-                locator,
-                network_config,
-                demux_config,
-            },
-            WebMediaOpenAdapter::NativeHls {
-                source,
-                intent,
-                settings,
-            } => Self::NativeHls {
-                source,
-                intent,
-                settings,
-            },
-            WebMediaOpenAdapter::Extractor {
-                locator,
-                selection_intent,
-                settings,
-            } => Self::Extractor {
-                locator,
-                selection_intent,
-                settings,
-            },
-        }
     }
 }
 

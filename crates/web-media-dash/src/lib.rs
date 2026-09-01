@@ -26,17 +26,20 @@ pub use catalog::{
     DashRepresentationLaneCatalog, DashRepresentationLaneCatalogBuildError,
     DashRepresentationLaneCatalogBuildRequest, DashRepresentationLaneProbe,
     DashRepresentationLaneProbeError, DashRepresentationLaneProbeId, DashRepresentationLaneProof,
-    DashRepresentationLaneProofPort, DashRepresentationLaneRejection,
-    DashRepresentationLaneRejectionReason, DashRepresentationLaneSelectionError,
-    DashRepresentationLaneTimelineMode, build_dash_representation_lane_catalog,
+    DashRepresentationLaneProofPort, DashRepresentationLaneProviderDefault,
+    DashRepresentationLaneRejection, DashRepresentationLaneRejectionReason,
+    DashRepresentationLaneSelectionError, DashRepresentationLaneTimelineMode,
+    build_dash_representation_lane_catalog,
 };
 pub use discovery::{
     DashDiscoveredLiveCatalog, DashDiscoveredLiveOpenError, DashDiscoveredVodCatalog,
     DashDiscoveredVodOpenError, DashLiveCatalogDiscoveryError, DashLiveCatalogDiscoveryRequest,
     DashRepresentationCapabilityProbe, DashRepresentationCapabilityRejection,
-    DashVodCatalogDiscoveryError, DashVodCatalogDiscoveryRequest, discover_dash_live_catalog,
-    discover_dash_vod_catalog, prepare_discovered_dash_live, prepare_discovered_dash_live_semantic,
-    prepare_discovered_dash_vod, prepare_discovered_dash_vod_semantic,
+    DashVodCatalogDiscoveryError, DashVodCatalogDiscoveryRequest,
+    NativeDashVodCatalogDiscoveryRequest, discover_dash_live_catalog, discover_dash_vod_catalog,
+    discover_native_dash_vod_catalog, prepare_discovered_dash_live,
+    prepare_discovered_dash_live_semantic, prepare_discovered_dash_vod,
+    prepare_discovered_dash_vod_semantic,
 };
 pub use live::{
     DashEndpointRefreshError, DashEndpointRefreshPort, DashEndpointRefreshReply,
@@ -48,9 +51,9 @@ pub use live::{
 pub use open::{DashVodOpenError, DashVodOpenResult, prepare_dash_vod};
 pub use plan::DashPlanError;
 pub use request::{
-    DashManifestInput, DashResourceReference, DashSerializedComponent, DashSerializedFragment,
-    DashSerializedFragmentKind, DashSerializedPresentation, DashVodHttpContext, DashVodInput,
-    DashVodOpenPolicy, DashVodOpenRequest,
+    DashFetchedManifestInput, DashManifestInput, DashResourceReference, DashSerializedComponent,
+    DashSerializedFragment, DashSerializedFragmentKind, DashSerializedPresentation,
+    DashVodHttpContext, DashVodInput, DashVodOpenPolicy, DashVodOpenRequest,
 };
 pub use selection::{
     DashPresentationSelection, DashRepresentationEvidence, DashRepresentationSelectionError,

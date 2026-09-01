@@ -18,6 +18,7 @@ mod executor;
     reason = "Session 10C precedes production callsite migration in 10D"
 )]
 pub(crate) mod local;
+mod native_dash;
 mod native_hls;
 #[allow(
     dead_code,
@@ -45,6 +46,7 @@ pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
 #[allow(unused_imports)]
 // Prepared envelope is intentionally introduced before callsite migration.
 pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult, prepare_local_open};
+pub(crate) use native_dash::{NativeDashOpenIntent, NativeDashSourceState, NativeDashUrl};
 pub(crate) use native_hls::{NativeHlsOpenIntent, NativeHlsSourceState, NativeHlsUrl};
 // Все app ingress-ы собирают provider-neutral `PreparedMedia` через один boundary.
 pub(crate) use preload_budget::QueuePreloadResourceBudget;

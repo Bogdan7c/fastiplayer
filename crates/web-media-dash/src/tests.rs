@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -22,13 +22,15 @@ use source_core::{
 };
 use symphonia_demux::{DemuxerOptions, SymphoniaDemuxFactory};
 use web_media_adaptive::{
-    AdaptiveHttpContext, AdaptiveResourceQueryApplication, AdaptiveRetryPolicy,
-    AdaptiveTransportError, AdaptiveTransportLimits,
+    AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
+    AdaptiveResourceQueryApplication, AdaptiveRetryPolicy, AdaptiveTransportError,
+    AdaptiveTransportLimits,
 };
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
     ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit, ComponentVariantEdgeLimit,
-    ExactSelectionIdentity, ExtractionGeneration, SemanticIdentity, SourceIdentity,
+    ExactSelectionIdentity, ExtractionGeneration, PreferredHeightPolicy, SemanticIdentity,
+    SourceIdentity,
 };
 use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
@@ -41,13 +43,15 @@ use crate::plan::{
     build_serialized_plan,
 };
 use crate::{
-    DashManifestInput, DashPresentationSelection, DashRepresentationCapabilityProbe,
-    DashRepresentationCapabilityRejection, DashRepresentationEvidence,
-    DashRepresentationSelectionError, DashResourceReference, DashSerializedComponent,
-    DashSerializedFragment, DashSerializedFragmentKind, DashSerializedPresentation,
-    DashVideoDimensions, DashVodCatalogDiscoveryRequest, DashVodHttpContext, DashVodInput,
-    DashVodOpenError, DashVodOpenPolicy, DashVodOpenRequest, discover_dash_vod_catalog,
-    prepare_dash_vod, prepare_discovered_dash_vod, prepare_discovered_dash_vod_semantic,
+    DashFetchedManifestInput, DashManifestInput, DashPresentationSelection,
+    DashRepresentationCapabilityProbe, DashRepresentationCapabilityRejection,
+    DashRepresentationEvidence, DashRepresentationSelectionError, DashResourceReference,
+    DashSerializedComponent, DashSerializedFragment, DashSerializedFragmentKind,
+    DashSerializedPresentation, DashVideoDimensions, DashVodCatalogDiscoveryRequest,
+    DashVodHttpContext, DashVodInput, DashVodOpenError, DashVodOpenPolicy, DashVodOpenRequest,
+    NativeDashVodCatalogDiscoveryRequest, discover_dash_vod_catalog,
+    discover_native_dash_vod_catalog, prepare_dash_vod, prepare_discovered_dash_vod,
+    prepare_discovered_dash_vod_semantic,
 };
 
 struct AcceptAllDashCapabilities;
@@ -127,6 +131,7 @@ fn base() -> HttpRequestTarget {
 struct FixtureServer {
     address: std::net::SocketAddr,
     stop: Arc<AtomicBool>,
+    manifest_requests: Arc<AtomicUsize>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -249,6 +254,8 @@ impl FixtureServer {
         let address = listener.local_addr().expect("fixture address");
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
+        let manifest_requests = Arc::new(AtomicUsize::new(0));
+        let worker_manifest_requests = Arc::clone(&manifest_requests);
         let thread = thread::spawn(move || {
             while !worker_stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -257,6 +264,7 @@ impl FixtureServer {
                         let read = stream.read(&mut request).expect("read fixture request");
                         let request = String::from_utf8_lossy(&request[..read]);
                         let body = if request.starts_with("GET /manifest.mpd ") {
+                            worker_manifest_requests.fetch_add(1, Ordering::Relaxed);
                             manifest
                                 .as_ref()
                                 .expect("manifest fixture configured")
@@ -294,6 +302,7 @@ impl FixtureServer {
         Self {
             address,
             stop,
+            manifest_requests,
             thread: Some(thread),
         }
     }
@@ -301,6 +310,10 @@ impl FixtureServer {
     fn target(&self, path: &str) -> HttpRequestTarget {
         HttpRequestTarget::parse_exact(format!("http://{}{path}", self.address))
             .expect("fixture target")
+    }
+
+    fn manifest_request_count(&self) -> usize {
+        self.manifest_requests.load(Ordering::Relaxed)
     }
 }
 
@@ -1161,6 +1174,166 @@ fn discovered_multi_period_vod_opens_exact_and_semantic_selection() {
     let semantic_open = prepare_discovered_dash_vod_semantic(semantic_catalog, semantic)
         .expect("semantic discovered open");
     assert_eq!(semantic_open.duration(), Duration::from_secs(2));
+}
+
+#[test]
+fn native_fetched_manifest_discovery_reuses_single_root_response() {
+    let (initialization, first, second) = muxed_fmp4();
+    let manifest = r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+        mediaPresentationDuration="PT2S">
+      <Period duration="PT2S">
+        <AdaptationSet contentType="application" mimeType="application/mp4"
+          codecs="avc1.4d401f,mp4a.40.2">
+          <Representation id="muxed" width="16" height="16">
+            <SegmentList timescale="1" duration="1">
+              <Initialization sourceURL="init.mp4"/>
+              <SegmentURL media="one.m4s"/>
+              <SegmentURL media="two.m4s"/>
+            </SegmentList>
+          </Representation>
+        </AdaptationSet>
+      </Period>
+    </MPD>"#
+        .to_owned();
+    let server = FixtureServer::start_with_manifest(manifest, initialization, first, second);
+    let generation = SourceGeneration::new(7);
+    let manifest_target = server.target("/manifest.mpd");
+    let http = adaptive_context(&manifest_target, CancellationToken::new(), generation);
+    let policy = open_policy();
+    let fetched = http
+        .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+            generation,
+            manifest_target.clone(),
+            policy.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::Manifest,
+            AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+        ))
+        .expect("single authoritative root fetch");
+    let parser_input = manifest_input(manifest_target.clone());
+    let fetched_input = DashFetchedManifestInput::new(
+        manifest_target,
+        fetched,
+        &http,
+        parser_input.xml_budgets,
+        parser_input.mpd_limits,
+    );
+    let discovered = discover_native_dash_vod_catalog(NativeDashVodCatalogDiscoveryRequest {
+        http: Box::new(http),
+        generation,
+        manifest: fetched_input,
+        demux_registry: demux_registry(),
+        policy,
+        catalog_identity: catalog_identity(7),
+        catalog_limit: ComponentVariantCatalogLimit::new(8).expect("catalog limit"),
+        compatibility_edge_limit: ComponentVariantEdgeLimit::new(8).expect("edge limit"),
+        capability_probe: &AcceptAllDashCapabilities,
+        preferred_height: PreferredHeightPolicy::NoPreference,
+    })
+    .expect("native fetched discovery");
+    let selected = discovered.provider_default().clone();
+    let opened =
+        prepare_discovered_dash_vod(discovered, selected).expect("open discovered native row");
+    assert_eq!(opened.duration(), Duration::from_secs(2));
+    assert_eq!(server.manifest_request_count(), 1);
+}
+
+#[test]
+fn fetched_manifest_handoff_rejects_a_different_runtime_generation() {
+    let server =
+        FixtureServer::start_with_manifest("<MPD/>".to_owned(), Vec::new(), Vec::new(), Vec::new());
+    let manifest_target = server.target("/manifest.mpd");
+    let fetched_generation = SourceGeneration::new(41);
+    let fetched_http = adaptive_context(
+        &manifest_target,
+        CancellationToken::new(),
+        fetched_generation,
+    );
+    let policy = open_policy();
+    let fetched = fetched_http
+        .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+            fetched_generation,
+            manifest_target.clone(),
+            policy.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::Manifest,
+            AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+        ))
+        .expect("fetch manifest with original generation");
+    let parser_input = manifest_input(manifest_target.clone());
+    let fetched_input = DashFetchedManifestInput::new(
+        manifest_target.clone(),
+        fetched,
+        &fetched_http,
+        parser_input.xml_budgets,
+        parser_input.mpd_limits,
+    );
+    let current_generation = SourceGeneration::new(42);
+    let current_http = adaptive_context(
+        &manifest_target,
+        CancellationToken::new(),
+        current_generation,
+    );
+    let error = prepare_dash_vod(DashVodOpenRequest {
+        http: DashVodHttpContext::Manifest(Box::new(current_http)),
+        generation: current_generation,
+        input: DashVodInput::FetchedManifest(fetched_input),
+        selection: DashPresentationSelection::Single {
+            main: evidence(DashMediaKind::Muxed, DashContainer::IsoBmff, None),
+        },
+        demux_registry: demux_registry(),
+        policy,
+    })
+    .expect_err("cross-generation fetched handoff must fail closed");
+
+    assert!(matches!(
+        error,
+        DashVodOpenError::FetchedManifestGenerationMismatch
+    ));
+    assert_eq!(server.manifest_request_count(), 1);
+}
+
+#[test]
+fn fetched_manifest_handoff_rechecks_current_body_policy() {
+    let server =
+        FixtureServer::start_with_manifest("<MPD/>".to_owned(), Vec::new(), Vec::new(), Vec::new());
+    let manifest_target = server.target("/manifest.mpd");
+    let generation = SourceGeneration::new(43);
+    let http = adaptive_context(&manifest_target, CancellationToken::new(), generation);
+    let mut policy = open_policy();
+    let fetched = http
+        .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+            generation,
+            manifest_target.clone(),
+            policy.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::Manifest,
+            AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+        ))
+        .expect("fetch manifest under transport bound");
+    let parser_input = manifest_input(manifest_target.clone());
+    let fetched_input = DashFetchedManifestInput::new(
+        manifest_target,
+        fetched,
+        &http,
+        parser_input.xml_budgets,
+        parser_input.mpd_limits,
+    );
+    policy.maximum_manifest_bytes = NonZeroUsize::new(1).expect("non-zero policy");
+    let error = prepare_dash_vod(DashVodOpenRequest {
+        http: DashVodHttpContext::Manifest(Box::new(http)),
+        generation,
+        input: DashVodInput::FetchedManifest(fetched_input),
+        selection: DashPresentationSelection::Single {
+            main: evidence(DashMediaKind::Muxed, DashContainer::IsoBmff, None),
+        },
+        demux_registry: demux_registry(),
+        policy,
+    })
+    .expect_err("handoff must recheck the current open policy");
+
+    assert!(matches!(
+        error,
+        DashVodOpenError::FetchedManifestExceedsPolicy
+    ));
+    assert_eq!(server.manifest_request_count(), 1);
 }
 
 #[test]

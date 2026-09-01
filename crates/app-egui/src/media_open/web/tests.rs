@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "tests/native_dash_vertical.rs"]
+mod native_dash_vertical;
 #[path = "tests/native_hls_live_vertical.rs"]
 mod native_hls_live_vertical;
 #[path = "tests/native_hls_vertical.rs"]

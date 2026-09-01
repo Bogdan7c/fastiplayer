@@ -55,6 +55,17 @@ impl MediaOpenSourceRequest {
                         );
                         super::WebMediaOpenRequest::native_hls(source, intent, settings)
                     }
+                    super::web::WebMediaOpenAdapterView::NativeDash {
+                        source,
+                        intent,
+                        mut settings,
+                    } => {
+                        limit_network_resources(
+                            &mut settings.network_config,
+                            budget.ytdlp_component_mebibytes(),
+                        );
+                        super::WebMediaOpenRequest::native_dash(source, intent, settings)
+                    }
                     super::web::WebMediaOpenAdapterView::Extractor {
                         locator,
                         selection_intent,

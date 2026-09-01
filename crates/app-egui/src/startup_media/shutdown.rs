@@ -5,7 +5,10 @@ use std::thread::JoinHandle;
 
 use tracing::warn;
 
-use super::{DirectMediaStartupJob, NativeHlsStartupJob, StartupMediaController, YtDlpStartupJob};
+use super::{
+    DirectMediaStartupJob, NativeDashStartupJob, NativeHlsStartupJob, StartupMediaController,
+    YtDlpStartupJob,
+};
 use crate::process_shutdown::{
     FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_thread_until,
 };
@@ -60,6 +63,22 @@ impl Drop for NativeHlsStartupJob {
     }
 }
 
+impl NativeDashStartupJob {
+    /// Cooperative-cancel-ит root/probe runtime и bounded-join-ит opener.
+    fn shutdown_until(&mut self, deadline: ShutdownDeadline) -> ProcessOwnerShutdownOutcome {
+        self.cancellation_requested.store(true, Ordering::Release);
+        self.source_cancellation.cancel();
+        shutdown_single_thread(&mut self.join_handle, deadline)
+    }
+}
+
+impl Drop for NativeDashStartupJob {
+    fn drop(&mut self) {
+        self.cancellation_requested.store(true, Ordering::Release);
+        join_startup_thread_on_fail_safe_drop(&mut self.join_handle, "Native DASH startup opener");
+    }
+}
+
 impl StartupMediaController {
     /// Закрывает admission и bounded-завершает все принадлежащие startup jobs.
     pub(crate) fn shutdown_until(
@@ -83,6 +102,10 @@ impl StartupMediaController {
             job.cancellation_requested.store(true, Ordering::Release);
         }
         if let Some(job) = self.native_hls_startup_job.as_ref() {
+            job.cancellation_requested.store(true, Ordering::Release);
+            job.source_cancellation.cancel();
+        }
+        if let Some(job) = self.native_dash_startup_job.as_ref() {
             job.cancellation_requested.store(true, Ordering::Release);
             job.source_cancellation.cancel();
         }
@@ -117,6 +140,16 @@ impl StartupMediaController {
             );
             if job.join_handle.is_none() {
                 self.native_hls_startup_job = None;
+            }
+        }
+        if let Some(job) = self.native_dash_startup_job.as_mut() {
+            accumulate_shutdown_outcome(
+                job.shutdown_until(deadline),
+                &mut panicked_threads,
+                &mut pending_threads,
+            );
+            if job.join_handle.is_none() {
+                self.native_dash_startup_job = None;
             }
         }
         if let Some(job) = self.local_startup_job.as_mut() {
@@ -165,6 +198,7 @@ impl StartupMediaController {
         if self.yt_dlp_startup_job.is_some()
             || self.direct_media_startup_job.is_some()
             || self.native_hls_startup_job.is_some()
+            || self.native_dash_startup_job.is_some()
             || self.local_startup_job.is_some()
         {
             return Some(

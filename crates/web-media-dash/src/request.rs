@@ -13,7 +13,9 @@ use demux_api::{
 };
 use media_core::DemuxRetryHint;
 use source_core::{HttpBoundedByteRange, HttpRequestTarget};
-use web_media_adaptive::{AdaptiveHttpContext, AdaptiveResourceQueryApplication};
+use web_media_adaptive::{
+    AdaptiveFetchedResource, AdaptiveHttpContext, AdaptiveResourceQueryApplication,
+};
 use web_media_transport_api::SourceGeneration;
 
 use crate::DashPresentationSelection;
@@ -35,6 +37,76 @@ impl fmt::Debug for DashManifestInput {
         formatter
             .debug_struct("DashManifestInput")
             .field("target", &self.target)
+            .field("xml_budgets", &self.xml_budgets)
+            .field("mpd_limits", &self.mpd_limits)
+            .finish()
+    }
+}
+
+/// Уже загруженный bounded MPD с provenance исходного HTTP context-а.
+///
+/// Этот type-state нужен direct ingress-у: суффикс `.mpd` только выбирает
+/// adapter, а authoritative response body один раз загружается transport owner-ом
+/// и затем без второго root request-а передаётся DASH parser/catalog owner-у.
+pub struct DashFetchedManifestInput {
+    /// Selected root target сохраняет identity первой попытки, но не печатается.
+    selected_target: HttpRequestTarget,
+    /// Effective redirect target и exact bounded response body.
+    fetched: AdaptiveFetchedResource,
+    /// Generation context-а, который действительно получил response.
+    source_generation: SourceGeneration,
+    /// Обязательные S04X XML budgets.
+    xml_budgets: XmlBudgets,
+    /// Обязательные S34A schema/profile bounds.
+    mpd_limits: DashMpdLimits,
+}
+
+impl DashFetchedManifestInput {
+    /// Связывает fetched response с exact context generation без копирования body.
+    #[must_use]
+    pub fn new(
+        selected_target: HttpRequestTarget,
+        fetched: AdaptiveFetchedResource,
+        http: &AdaptiveHttpContext,
+        xml_budgets: XmlBudgets,
+        mpd_limits: DashMpdLimits,
+    ) -> Self {
+        Self {
+            selected_target,
+            fetched,
+            source_generation: http.source_generation(),
+            xml_budgets,
+            mpd_limits,
+        }
+    }
+
+    /// Возвращает generation provenance для fail-closed handoff-а.
+    pub(crate) const fn source_generation(&self) -> SourceGeneration {
+        self.source_generation
+    }
+
+    /// Передаёт parser owner-у effective base, bytes и explicit parser budgets.
+    pub(crate) fn into_parse_parts(
+        self,
+    ) -> (HttpRequestTarget, Vec<u8>, XmlBudgets, DashMpdLimits) {
+        let effective_target = self.fetched.final_target().clone();
+        (
+            effective_target,
+            self.fetched.into_bytes(),
+            self.xml_budgets,
+            self.mpd_limits,
+        )
+    }
+}
+
+impl fmt::Debug for DashFetchedManifestInput {
+    /// Не раскрывает selected/effective path, query или response body.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DashFetchedManifestInput")
+            .field("selected_target", &self.selected_target)
+            .field("fetched", &self.fetched)
+            .field("source_generation", &self.source_generation)
             .field("xml_budgets", &self.xml_budgets)
             .field("mpd_limits", &self.mpd_limits)
             .finish()
@@ -157,10 +229,12 @@ pub enum DashSerializedPresentation {
 }
 
 /// Ровно один authoritative input path.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum DashVodInput {
     /// Fetch и parse static MPD.
     Manifest(DashManifestInput),
+    /// Parse уже fetched static MPD без повторного root request-а.
+    FetchedManifest(DashFetchedManifestInput),
     /// Concrete single-period fragments; MPD fallback после ошибки запрещён типом.
     Serialized(DashSerializedPresentation),
 }

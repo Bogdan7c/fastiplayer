@@ -23,8 +23,9 @@ use web_media_core::{
     ComponentVariantSelectionRequest, ComponentVariantSemanticIdentity,
     ComponentVariantSemanticKey, CoupledComponentVariant, CoupledVariantExactIdentity,
     CoupledVariantSemanticIdentity, DynamicRange, FrameRate, LanguageTag,
-    MAX_COMPONENT_VARIANT_KEY_UTF8_BYTES, NormalizedCodec, RawCodecIdentity, SampleRate,
-    SemanticIdentity, VideoComponentVariant, VideoHeight, VideoTrackDescriptor, VideoWidth,
+    MAX_COMPONENT_VARIANT_KEY_UTF8_BYTES, NormalizedCodec, PreferredHeightPolicy, RawCodecIdentity,
+    SampleRate, SemanticIdentity, VideoComponentVariant, VideoHeight, VideoTrackDescriptor,
+    VideoWidth,
 };
 
 use crate::selection::{
@@ -136,8 +137,8 @@ pub struct DashRepresentationLaneCatalogBuildRequest<'request> {
     pub catalog_identity: ComponentVariantCatalogIdentity,
     /// Refresh-stable parent selection identity.
     pub parent_semantic: &'request SemanticIdentity,
-    /// Authoritative outer candidate selection.
-    pub provider_default: &'request DashPresentationSelection,
+    /// Exact extractor evidence либо native deterministic ranking policy.
+    pub provider_default: DashRepresentationLaneProviderDefault<'request>,
     /// Additive row budget.
     pub catalog_limit: ComponentVariantCatalogLimit,
     /// Sparse compatibility edge budget.
@@ -146,6 +147,15 @@ pub struct DashRepresentationLaneCatalogBuildRequest<'request> {
     pub maximum_planned_segments: NonZeroUsize,
     /// Static/dynamic timeline semantics.
     pub timeline_mode: DashRepresentationLaneTimelineMode,
+}
+
+/// Источник default selection не смешивает extractor evidence и native ranking.
+#[derive(Debug, Clone, Copy)]
+pub enum DashRepresentationLaneProviderDefault<'presentation> {
+    /// Existing extractor projection обязана exact-совпасть с proven lane.
+    ExactEvidence(&'presentation DashPresentationSelection),
+    /// Direct MPD выбирает полный playable layout из уже filtered catalog-а.
+    NativePreferredHeight(PreferredHeightPolicy),
 }
 
 /// Почему отдельная structurally isolated sibling lane не опубликована.
@@ -739,6 +749,80 @@ fn provider_default_selection(
                 })
         }
     }
+}
+
+/// Выбирает native default только из реально опубликованных selectable relations.
+///
+/// Приоритет сохраняет полную presentation: proven separate A/V, затем coupled,
+/// затем честный video-only и audio-only fallback. Пары никогда не строятся как
+/// Cartesian rows: каждая separate selection проверяется catalog compatibility.
+fn native_provider_default_selection(
+    catalog: &ComponentVariantCatalog,
+    preferred_height: PreferredHeightPolicy,
+) -> Result<ComponentVariantSelection, DashRepresentationLaneCatalogBuildError> {
+    let mut ranked_video = catalog
+        .required_video_variants()
+        .map_or_else(|_| Vec::new(), |video| video.iter().collect::<Vec<_>>());
+    ranked_video.sort_by(|left, right| {
+        preferred_height.compare(left.track().height(), right.track().height())
+    });
+
+    if let (Some(compatibility), Ok(audio)) =
+        (catalog.compatibility(), catalog.required_audio_variants())
+    {
+        for video in &ranked_video {
+            if let Some(audio) = audio
+                .iter()
+                .find(|audio| compatibility.allows(video.exact_identity(), audio.exact_identity()))
+            {
+                return catalog
+                    .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
+                        video: video.exact_identity().clone(),
+                        audio: audio.exact_identity().clone(),
+                    })
+                    .map_err(Into::into);
+            }
+        }
+    }
+
+    let coupled = catalog
+        .coupled_presentations()
+        .iter()
+        .min_by(|left, right| {
+            preferred_height.compare(left.video().height(), right.video().height())
+        });
+    if let Some(coupled) = coupled {
+        return catalog
+            .select_exact(ComponentVariantSelectionRequest::Coupled {
+                presentation: coupled.exact_identity().clone(),
+            })
+            .map_err(Into::into);
+    }
+
+    if let Some(video) = ranked_video
+        .into_iter()
+        .find(|video| catalog.is_video_only_selectable(video.exact_identity()))
+    {
+        return catalog
+            .select_exact(ComponentVariantSelectionRequest::VideoOnly {
+                video: video.exact_identity().clone(),
+            })
+            .map_err(Into::into);
+    }
+
+    if let Ok(audio) = catalog.required_audio_variants()
+        && let Some(audio) = audio
+            .iter()
+            .find(|audio| catalog.is_audio_only_selectable(audio.exact_identity()))
+    {
+        return catalog
+            .select_exact(ComponentVariantSelectionRequest::AudioOnly {
+                audio: audio.exact_identity().clone(),
+            })
+            .map_err(Into::into);
+    }
+
+    Err(DashRepresentationLaneCatalogBuildError::NoSelectableLane)
 }
 
 fn unique_default_row<'rows>(

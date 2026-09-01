@@ -79,6 +79,13 @@ struct DashPreparedDemuxSeekPort {
     handle: ProgressiveAsyncSeekHandle,
 }
 
+/// Адаптирует existing DASH async seek handle к provider-neutral player boundary.
+pub(crate) fn prepared_dash_seek_port(
+    handle: ProgressiveAsyncSeekHandle,
+) -> Arc<dyn PreparedDemuxSeekPort> {
+    Arc::new(DashPreparedDemuxSeekPort { handle })
+}
+
 impl PreparedDemuxSeekPort for DashPreparedDemuxSeekPort {
     /// Строит exact runtime fence из player-owned request identity.
     fn enqueue_seek(
@@ -229,10 +236,10 @@ pub(crate) fn prepare_dash_candidate(
             }
         };
         let (demuxer, seek_handle, timeline_port) = opened.into_parts();
-        let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(DashPreparedDemuxSeekPort {
-            handle: seek_handle
-                .ok_or_else(|| anyhow!("DASH live runtime не опубликовал receipted seek handle"))?,
-        });
+        let seek_port =
+            prepared_dash_seek_port(seek_handle.ok_or_else(|| {
+                anyhow!("DASH live runtime не опубликовал receipted seek handle")
+            })?);
         return Ok(PreparedDashCandidate {
             demuxer: Box::new(demuxer),
             seek_port,
@@ -273,9 +280,7 @@ pub(crate) fn prepare_dash_candidate(
             )
         }
     };
-    let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(DashPreparedDemuxSeekPort {
-        handle: opened.async_seek_handle(),
-    });
+    let seek_port = prepared_dash_seek_port(opened.async_seek_handle());
     Ok(PreparedDashCandidate {
         demuxer: Box::new(opened.into_demuxer()),
         seek_port,
@@ -350,7 +355,9 @@ fn presentation_input(
             let http = single.http.clone();
             let input = component_input(single)?;
             let http = match input {
-                DashVodInput::Manifest(_) => DashVodHttpContext::Manifest(Box::new(http)),
+                DashVodInput::Manifest(_) | DashVodInput::FetchedManifest(_) => {
+                    DashVodHttpContext::Manifest(Box::new(http))
+                }
                 DashVodInput::Serialized(_) => DashVodHttpContext::SerializedSingle(Box::new(http)),
             };
             Ok((http, input))
@@ -666,7 +673,7 @@ fn dash_media_kind(role: MediaComponentRole) -> Result<DashMediaKind> {
 }
 
 /// Обязательные S04X budgets задаются composition owner-ом.
-fn dash_xml_budgets() -> Result<XmlBudgets> {
+pub(crate) fn dash_xml_budgets() -> Result<XmlBudgets> {
     XmlBudgets::builder()
         .maximum_document_bytes(2 * 1_024 * 1_024)
         .maximum_depth(48)
@@ -683,7 +690,7 @@ fn dash_xml_budgets() -> Result<XmlBudgets> {
 }
 
 /// Bounded static MPD profile limits.
-const fn dash_mpd_limits() -> DashMpdLimits {
+pub(crate) const fn dash_mpd_limits() -> DashMpdLimits {
     DashMpdLimits {
         maximum_periods: 64,
         maximum_adaptation_sets_per_period: 64,
@@ -695,7 +702,7 @@ const fn dash_mpd_limits() -> DashMpdLimits {
 }
 
 /// Runtime queue/range/scan policy использует app-owned network budget.
-fn dash_policy(limits: AdaptiveTransportLimits) -> Result<DashVodOpenPolicy> {
+pub(crate) fn dash_policy(limits: AdaptiveTransportLimits) -> Result<DashVodOpenPolicy> {
     Ok(DashVodOpenPolicy {
         maximum_manifest_bytes: limits.maximum_manifest_bytes,
         maximum_fragment_bytes: limits.maximum_segment_bytes,

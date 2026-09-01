@@ -35,6 +35,7 @@ use crate::url_service_adapter::{
     StartupUrlClassification, StartupUrlLocator, classify_startup_url,
 };
 
+pub(crate) mod native_dash;
 pub(crate) mod native_hls;
 mod orchestration;
 mod pending_install;
@@ -42,6 +43,7 @@ mod playlist;
 mod shutdown;
 mod yt_dlp;
 
+use native_dash::NativeDashStartupJob;
 use native_hls::NativeHlsStartupJob;
 pub(crate) use orchestration::StartupMediaPhase;
 #[cfg(test)]
@@ -313,6 +315,9 @@ pub(crate) struct StartupMediaController {
     /// Mutually-exclusive native HLS admission/fallback job.
     native_hls_startup_job: Option<NativeHlsStartupJob>,
 
+    /// Mutually-exclusive native static DASH admission/fallback job.
+    native_dash_startup_job: Option<NativeDashStartupJob>,
+
     /// Local CLI/restore preparation принадлежит startup owner-у, а не UI picker-у.
     local_startup_job: Option<crate::local_file_open::LocalFileOpenJob>,
 
@@ -363,6 +368,7 @@ impl StartupMediaController {
             yt_dlp_startup_job: None,
             direct_media_startup_job: None,
             native_hls_startup_job: None,
+            native_dash_startup_job: None,
             local_startup_job: None,
             startup_playlist_pending: false,
             orchestration: StartupMediaOrchestration::new(cli_requested),
@@ -396,6 +402,11 @@ impl StartupMediaController {
                     .map(NativeHlsStartupJob::pending_message)
             })
             .or_else(|| {
+                self.native_dash_startup_job
+                    .as_ref()
+                    .map(NativeDashStartupJob::pending_message)
+            })
+            .or_else(|| {
                 self.local_startup_job
                     .as_ref()
                     .map(|_| "Подготовка local media...")
@@ -411,6 +422,7 @@ impl StartupMediaController {
         self.yt_dlp_startup_job.is_some()
             || self.direct_media_startup_job.is_some()
             || self.native_hls_startup_job.is_some()
+            || self.native_dash_startup_job.is_some()
             || self.local_startup_job.is_some()
             || self.startup_playlist_pending
             || self.orchestration.has_pending_work()

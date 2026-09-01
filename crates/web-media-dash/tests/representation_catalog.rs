@@ -16,8 +16,8 @@ use web_media_dash::{
     DashLogicalRepresentationSelection, DashPresentationSelection, DashRepresentationEvidence,
     DashRepresentationLaneCatalogBuildError, DashRepresentationLaneCatalogBuildRequest,
     DashRepresentationLaneProbe, DashRepresentationLaneProbeError, DashRepresentationLaneProof,
-    DashRepresentationLaneProofPort, DashRepresentationLaneRejectionReason,
-    DashRepresentationLaneTimelineMode, DashVideoDimensions,
+    DashRepresentationLaneProofPort, DashRepresentationLaneProviderDefault,
+    DashRepresentationLaneRejectionReason, DashRepresentationLaneTimelineMode, DashVideoDimensions,
     build_dash_representation_lane_catalog,
 };
 
@@ -165,7 +165,9 @@ fn build_with_proof(
             .expect("manifest target"),
             catalog_identity,
             parent_semantic: &parent_semantic,
-            provider_default,
+            provider_default: DashRepresentationLaneProviderDefault::ExactEvidence(
+                provider_default,
+            ),
             catalog_limit: ComponentVariantCatalogLimit::new(64).expect("catalog limit"),
             compatibility_edge_limit: ComponentVariantEdgeLimit::new(256).expect("edge limit"),
             maximum_planned_segments: NonZeroUsize::new(256).expect("segment limit"),

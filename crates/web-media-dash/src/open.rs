@@ -22,7 +22,8 @@ use crate::plan::{
     DashPlanError, DashPresentationPlan, build_manifest_plan, build_serialized_plan,
 };
 use crate::request::{
-    DashManifestInput, DashVodHttpContext, DashVodInput, DashVodOpenPolicy, DashVodOpenRequest,
+    DashFetchedManifestInput, DashManifestInput, DashVodHttpContext, DashVodInput,
+    DashVodOpenPolicy, DashVodOpenRequest,
 };
 use crate::transactional_av::TransactionalDashAvDemuxer;
 
@@ -87,6 +88,12 @@ pub enum DashVodOpenError {
     /// HTTP context layout не совпал с authoritative DASH input/layout.
     #[error("DASH HTTP context layout does not match presentation input")]
     ContextLayout,
+    /// Fetched MPD принадлежит другой runtime generation.
+    #[error("DASH fetched manifest generation does not match open generation")]
+    FetchedManifestGenerationMismatch,
+    /// Fetched MPD body превышает policy текущей open attempt.
+    #[error("DASH fetched manifest exceeds current manifest body policy")]
+    FetchedManifestExceedsPolicy,
 }
 
 /// Contexts, уже сопоставленные exact planned component roles.
@@ -117,6 +124,24 @@ pub fn prepare_dash_vod(
     let (plan, contexts) = match (input, http) {
         (DashVodInput::Manifest(manifest), DashVodHttpContext::Manifest(http)) => {
             let (mpd, manifest_base) = fetch_dash_manifest(&http, generation, manifest, policy)?;
+            let plan = build_manifest_plan(
+                &mpd,
+                &manifest_base,
+                &selection,
+                policy.maximum_planned_segments,
+            )?;
+            let contexts = match &plan {
+                DashPresentationPlan::Single(_) => PlannedHttpContexts::Single(http),
+                DashPresentationPlan::Separate { .. } => PlannedHttpContexts::Separate {
+                    video: http.clone(),
+                    audio: http,
+                },
+            };
+            (plan, contexts)
+        }
+        (DashVodInput::FetchedManifest(manifest), DashVodHttpContext::Manifest(http)) => {
+            let (mpd, manifest_base) =
+                parse_fetched_dash_manifest(&http, generation, manifest, policy)?;
             let plan = build_manifest_plan(
                 &mpd,
                 &manifest_base,
@@ -179,6 +204,29 @@ pub(crate) fn fetch_dash_manifest(
         limits: manifest.mpd_limits,
     })?;
     Ok((mpd, fetched.final_target().clone()))
+}
+
+/// Парсит уже fetched MPD, сохраняя generation/body-policy boundary текущей попытки.
+pub(crate) fn parse_fetched_dash_manifest(
+    http: &AdaptiveHttpContext,
+    generation: web_media_transport_api::SourceGeneration,
+    manifest: DashFetchedManifestInput,
+    policy: DashVodOpenPolicy,
+) -> Result<(DashMpd, HttpRequestTarget), DashVodOpenError> {
+    ensure_context_ready(http, generation)?;
+    if manifest.source_generation() != generation {
+        return Err(DashVodOpenError::FetchedManifestGenerationMismatch);
+    }
+    let (effective_target, document_bytes, xml_budgets, mpd_limits) = manifest.into_parse_parts();
+    if document_bytes.len() > policy.maximum_manifest_bytes.get() {
+        return Err(DashVodOpenError::FetchedManifestExceedsPolicy);
+    }
+    let mpd = parse_dash_mpd(DashMpdParseRequest {
+        document_bytes: &document_bytes,
+        xml_budgets,
+        limits: mpd_limits,
+    })?;
+    Ok((mpd, effective_target))
 }
 
 pub(crate) fn prepare_planned_manifest_vod(
