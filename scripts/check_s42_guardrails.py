@@ -74,6 +74,10 @@ REQUIRED_NORMAL_DEPENDENCIES = {
     "source-core": frozenset({"reqwest"}),
     "media-prefetch": frozenset({"source-core"}),
     "web-media-http": frozenset({"media-prefetch", "source-core"}),
+}
+
+# Classification-only owners не должны снова забирать concrete transport/prefetch edges.
+FORBIDDEN_NORMAL_DEPENDENCIES = {
     "service-direct-media": frozenset({"media-prefetch", "web-media-http"}),
 }
 
@@ -327,6 +331,19 @@ def find_dependency_violations(
                 Violation(
                     location=owner,
                     rule="обязательный HTTP/cache/prefetch ownership edge отсутствует",
+                    evidence=dependency,
+                )
+            )
+    # Classification/locator boundary не может регрессировать обратно в transport owner-а.
+    for owner, forbidden_dependencies in FORBIDDEN_NORMAL_DEPENDENCIES.items():
+        # Missing owner безопасен здесь: release workspace completeness проверяют required owners.
+        actual_dependencies = normal_dependencies.get(owner, frozenset())
+        # Exact intersection называет каждую запрещённую ownership edge отдельно.
+        for dependency in sorted(actual_dependencies & forbidden_dependencies):
+            violations.append(
+                Violation(
+                    location=owner,
+                    rule="transport ownership edge запрещена classification-only owner-у",
                     evidence=dependency,
                 )
             )

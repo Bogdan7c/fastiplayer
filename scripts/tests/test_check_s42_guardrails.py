@@ -170,6 +170,32 @@ class S42DependencyGuardrailTests(unittest.TestCase):
             },
         )
 
+    # Direct-media service после N06 остаётся только classification/locator boundary.
+    def test_service_direct_media_transport_ownership_edges_fail(self):
+        """Transport/prefetch dependencies не могут вернуться в service-direct-media."""
+
+        # Базовый graph содержит только актуальных concrete owners.
+        normal_dependencies, all_dependencies = passing_dependency_maps()
+        # Rogue regression возвращает обе удалённые N06 ownership edges.
+        forbidden_edges = frozenset({"media-prefetch", "web-media-http"})
+        normal_dependencies["service-direct-media"] = forbidden_edges
+        all_dependencies["service-direct-media"] = forbidden_edges
+        # Guardrail обязан назвать обе physical ownership регрессии.
+        violations = GUARDRAIL.find_dependency_violations(
+            normal_dependencies,
+            all_dependencies,
+        )
+        # Exact set не позволяет ослабить правило до общего boolean failure.
+        self.assertEqual(
+            {"media-prefetch", "web-media-http"},
+            {
+                violation.evidence
+                for violation in violations
+                if violation.location == "service-direct-media"
+                and "classification-only" in violation.rule
+            },
+        )
+
 
 # Source tests проверяют declarations, а не случайные слова/comment fixtures.
 class S42SourceGuardrailTests(unittest.TestCase):
