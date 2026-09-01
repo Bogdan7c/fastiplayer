@@ -30,7 +30,8 @@ pub use catalog::{
     HlsCatalogDiscoveryOutcome, HlsCatalogDiscoveryRequest, HlsCatalogPresentation,
     HlsCatalogReopenError, HlsCatalogReopenSelection, HlsCatalogSiblingRejection,
     HlsCatalogSiblingRejectionReason, HlsCatalogSnapshot, HlsCatalogTopologySeed,
-    HlsCatalogTrackProof, build_hls_catalog, discover_hls_catalog, seed_hls_catalog_topology,
+    HlsCatalogTrackProof, HlsProviderDefaultAudioPolicy, build_hls_catalog,
+    detect_hls_catalog_presentation, discover_hls_catalog, seed_hls_catalog_topology,
 };
 pub use crypto::{Aes128CbcDecryptError, DecryptedBytes, decrypt_aes128_cbc_pkcs7};
 pub use initial_position_proof::{
@@ -48,9 +49,8 @@ pub use live::{
 pub use manifest_profile::ValidatedVodMediaPlaylist;
 pub use native_ingress::{
     NativeHlsAdmissionError, NativeHlsCatalogAdmission, NativeHlsDynamicRangePolicy,
-    NativeHlsOpenFallbackReason, NativeHlsSelectionPolicy, NativeHlsSelectionPolicyError,
-    NativeHlsSemanticSelection, admit_native_hls_vod, admit_native_hls_vod_catalog,
-    native_hls_open_fallback_reason,
+    NativeHlsPresentationEvidence, NativeHlsSelectionPolicy, NativeHlsSelectionPolicyError,
+    NativeHlsSemanticSelection, admit_native_hls, admit_native_hls_catalog,
 };
 pub use open::{
     HlsInitialReadinessCapability, HlsVodOpenError, HlsVodOpenResult,

@@ -79,6 +79,7 @@ fn policy() -> HlsCatalogBuildPolicy {
         catalog_limit: ComponentVariantCatalogLimit::new(32).expect("catalog limit"),
         compatibility_edge_limit: ComponentVariantEdgeLimit::new(64).expect("edge limit"),
         maximum_unique_children: NonZeroUsize::new(16).expect("child limit"),
+        provider_default_audio: HlsProviderDefaultAudioPolicy::RequireDeclared,
     }
 }
 
@@ -416,6 +417,54 @@ fn rejected_sibling_is_isolated_but_rejected_default_is_fatal() {
         Err(HlsCatalogBuildError::ProviderDefaultRejected {
             reason: HlsCatalogSiblingRejectionReason::UnsupportedContainer
         })
+    ));
+}
+
+#[test]
+fn unsupported_default_alternate_audio_is_row_local_when_native_policy_allows_omission() {
+    let master = master(
+        "#EXTM3U\n\
+         #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"HE-AAC\",LANGUAGE=\"en\",CHANNELS=\"2\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8\"\n\
+         #EXT-X-STREAM-INF:BANDWIDTH=1000,CODECS=\"avc1.640028,mp4a.40.5\",RESOLUTION=1280x720,AUDIO=\"aac\"\n\
+         video.m3u8\n",
+    );
+    let mut intent = separate_intent(1280, 720, "HE-AAC");
+    intent.codecs = Some("avc1.640028,mp4a.40.5".into());
+    let mut proofs = ProofQueue {
+        replies: VecDeque::from([
+            Ok(video_proof()),
+            Err(HlsCatalogChildProofError::Rejected(
+                HlsCatalogSiblingRejectionReason::CapabilityRejected,
+            )),
+        ]),
+        calls: Vec::new(),
+    };
+    let snapshot = build_hls_catalog(
+        HlsCatalogBuildRequest {
+            master: &master,
+            catalog_identity: catalog_identity(3, 3),
+            provider_default: &intent,
+            provider_default_variant_index: None,
+            policy: policy().with_provider_default_audio(
+                HlsProviderDefaultAudioPolicy::AllowUnsupportedOmission,
+            ),
+        },
+        &mut proofs,
+    )
+    .expect("unsupported alternate audio не должен отравлять proven video");
+
+    assert_eq!(
+        snapshot.catalog().required_video_variants().unwrap().len(),
+        1
+    );
+    assert!(
+        snapshot.catalog().required_audio_variants().is_err(),
+        "video-only catalog не должен публиковать fake required audio axis"
+    );
+    assert_eq!(snapshot.sibling_rejections().len(), 1);
+    assert!(matches!(
+        snapshot.provider_default_selection(),
+        web_media_core::ComponentVariantSelection::VideoOnly { .. }
     ));
 }
 

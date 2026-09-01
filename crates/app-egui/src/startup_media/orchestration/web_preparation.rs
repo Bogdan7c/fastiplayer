@@ -53,20 +53,17 @@ pub(super) fn compose_native_hls_startup_media(
     let duration = prepared.demuxer.duration();
     let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
     let safe_label = source.safe_label().clone();
-    let source_intent = WebMediaSourceIntent::native_hls_vod(source, prepared.source_state);
+    let runtime_attachments = prepared.lifecycle.into_web_attachments(prepared.seek_port);
+    let source_intent = WebMediaSourceIntent::native_hls(
+        source,
+        runtime_attachments.presentation,
+        prepared.source_state,
+    );
     let active_source = crate::media_open::ActiveMediaSource::Web(source_intent.clone());
     let prepared_media = compose_prepared_web_media(
         safe_label.as_str(),
         prepared.demuxer,
-        PreparedWebMediaAttachments {
-            demux_seek: Some(
-                crate::media_open::PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
-                    prepared.seek_port,
-                ),
-            ),
-            initial_position: Some(prepared.initial_position),
-            ..PreparedWebMediaAttachments::default()
-        },
+        runtime_attachments.prepared,
     )
     .map_err(|error| error.to_string())?;
     let descriptor = PreparedWebMediaEnvelope::new(
@@ -76,7 +73,7 @@ pub(super) fn compose_native_hls_startup_media(
         source_intent,
         safe_label.clone(),
         None,
-        Some(prepared.vod_endpoint_recovery),
+        runtime_attachments.vod_endpoint_recovery,
     );
 
     Ok(ComposedNativeHlsStartupMedia {

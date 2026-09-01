@@ -2,15 +2,21 @@ use std::time::Duration;
 
 use demux_api::{DemuxHints, DemuxInput};
 use hls_playlist_core::{
-    HlsPlaylist, MediaContainerIntent, MediaPlaylist, validate_initial_profile,
-    validate_live_profile, validate_vod_profile,
+    HlsParseRequest, HlsParserLimits, HlsPlaylist, MediaContainerIntent, MediaPlaylist,
+    parse_hls_playlist, validate_initial_profile, validate_live_profile, validate_vod_profile,
 };
 use media_core::{TrackInfo, TrackKind};
 use source_core::HttpRequestTarget;
-use web_media_adaptive::{AdaptiveResourcePurpose, AdaptiveTransportError};
+use web_media_adaptive::{
+    AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
+    AdaptiveResourceQueryApplication, AdaptiveTransportError,
+};
+use web_media_transport_api::SourceGeneration;
 
 use super::*;
-use crate::open::{fetch_manifest, load_top_playlist, parse_playlist};
+use crate::open::{
+    fetch_manifest, load_top_playlist, parse_playlist, select_master, select_master_at_index,
+};
 use crate::plan::{
     HlsComponentPlan, build_component_plan, build_segment_scoped_component_plan, parse_hls_duration,
 };
@@ -26,6 +32,74 @@ struct DiscoveryProofPort<'request, 'capability> {
     presentation: HlsCatalogPresentation,
     capability: &'capability mut dyn HlsCatalogCapabilityProofPort,
     alignments: Vec<TimelineSignature>,
+}
+
+/// Определяет VOD/live presentation по selected media child, когда top manifest является master-ом.
+///
+/// Root повторно не загружается: `FetchedTop` остаётся authoritative handoff-ом. Child probe
+/// намеренно не становится durable identity и повторяется внутри полного capability catalog-а.
+pub fn detect_hls_catalog_presentation(
+    fetched_top: &web_media_adaptive::AdaptiveFetchedResource,
+    http: &AdaptiveHttpContext,
+    generation: SourceGeneration,
+    selection: &crate::HlsVariantSelectionIntent,
+    provider_default_variant_index: Option<usize>,
+    parser_limits: HlsParserLimits,
+) -> Result<HlsCatalogPresentation, HlsCatalogDiscoveryError> {
+    let playlist = parse_hls_playlist(HlsParseRequest {
+        document_bytes: fetched_top.bytes(),
+        reference_base: Some(fetched_top.final_target().expose_secret_for_request()),
+        limits: parser_limits,
+    })
+    .map_err(HlsVodOpenError::Parse)?;
+    validate_initial_profile(&playlist).map_err(HlsVodOpenError::Profile)?;
+    let HlsPlaylist::Master(master) = playlist else {
+        return Err(HlsVodOpenError::MissingVariant.into());
+    };
+    let selected = match provider_default_variant_index {
+        Some(variant_index) => select_master_at_index(&master, variant_index, selection),
+        None => select_master(&master, selection),
+    }?;
+    let child_target = fetched_top
+        .final_target()
+        .resolve_reference(selected.variant.uri.expose_for_resolution())
+        .map_err(HlsVodOpenError::from)?;
+    let child_resource = http
+        .fetch_resource_blocking(
+            AdaptiveResourceFetchRequest::full(
+                generation,
+                child_target.clone(),
+                http.maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
+                AdaptiveResourcePurpose::Manifest,
+                AdaptiveResourceQueryApplication::BypassScopedQuery,
+            )
+            .with_secret_forwarding(http.resource_secret_forwarding_for(&child_target)),
+        )
+        .map_err(HlsVodOpenError::from)?;
+    let child_playlist = parse_hls_playlist(HlsParseRequest {
+        document_bytes: child_resource.bytes(),
+        reference_base: Some(child_resource.final_target().expose_secret_for_request()),
+        limits: parser_limits,
+    })
+    .map_err(HlsVodOpenError::Parse)?;
+    let HlsPlaylist::Media(media) = child_playlist else {
+        return Err(HlsVodOpenError::NestedMasterPlaylist.into());
+    };
+    let presentation = if media.end_list {
+        HlsCatalogPresentation::Vod
+    } else {
+        HlsCatalogPresentation::Live
+    };
+    let media_playlist = HlsPlaylist::Media(media);
+    match presentation {
+        HlsCatalogPresentation::Vod => {
+            validate_vod_profile(&media_playlist, None).map_err(HlsVodOpenError::Profile)?;
+        }
+        HlsCatalogPresentation::Live => {
+            validate_live_profile(&media_playlist, None).map_err(HlsVodOpenError::Profile)?;
+        }
+    }
+    Ok(presentation)
 }
 
 /// Загружает authoritative master быстро и отдельно доказывает bounded sibling catalog.

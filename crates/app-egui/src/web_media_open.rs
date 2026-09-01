@@ -16,6 +16,7 @@ pub(crate) mod content_probe_tests;
 mod hds;
 /// Fresh extraction/rematch и process-local generation allocators.
 mod preparation;
+pub(crate) use preparation::next_dynamic_timeline_port_generation;
 /// Concrete transport/demux registries и immutable capability snapshots одного attempt-а.
 mod runtime;
 mod smooth;

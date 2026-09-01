@@ -28,8 +28,8 @@ use super::{
 };
 use crate::catalog::{HlsCatalogMatchMode, HlsCatalogReopenError, HlsCatalogReopenSelection};
 use crate::open::{
-    HlsVodOpenError, required_audio_container, required_main_container, select_master,
-    validate_key_fetch_bound,
+    HlsVodOpenError, load_top_playlist, required_audio_container, required_main_container,
+    select_master, validate_key_fetch_bound,
 };
 use crate::plan::{HlsComponentPlan, HlsPlanError, build_segment_scoped_component_plan};
 use crate::{
@@ -130,7 +130,7 @@ pub fn prepare_hls_live(
 }
 
 fn prepare_hls_live_with_catalog(
-    request: HlsLiveOpenRequest,
+    mut request: HlsLiveOpenRequest,
     catalog_selection: Option<HlsCatalogReopenSelection>,
 ) -> Result<HlsLiveOpenResult, HlsLiveOpenError> {
     validate_key_fetch_bound(&request.common)?;
@@ -140,6 +140,17 @@ fn prepare_hls_live_with_catalog(
         catalog_selection.as_ref(),
         HlsCatalogMatchMode::Exact,
     )?;
+    // Receipted top bytes принадлежат только initial attempt. Refresh owner всегда возвращается
+    // к stable selected root и никогда не replay-ит stale fetched snapshot.
+    request.common.manifest = match &request.common.manifest {
+        HlsManifestInput::Fetch { selected_url }
+        | HlsManifestInput::InlineMedia { selected_url, .. } => HlsManifestInput::Fetch {
+            selected_url: selected_url.clone(),
+        },
+        HlsManifestInput::FetchedTop(fetched) => HlsManifestInput::Fetch {
+            selected_url: fetched.selected_url().clone(),
+        },
+    };
     let shared_edge = initial.main_plan.duration.max(
         initial
             .audio_plan
@@ -319,11 +330,17 @@ pub(super) fn load_selected_live(
     catalog_selection: Option<&HlsCatalogReopenSelection>,
     catalog_match_mode: HlsCatalogMatchMode,
 ) -> Result<SelectedLiveResources, HlsLiveOpenError> {
-    let HlsManifestInput::Fetch { selected_url } = &request.manifest else {
-        return Err(HlsLiveOpenError::InlineManifestCannotRefresh);
+    let selected_url = match &request.manifest {
+        HlsManifestInput::Fetch { selected_url } => selected_url.clone(),
+        HlsManifestInput::FetchedTop(fetched) => fetched.selected_url().clone(),
+        HlsManifestInput::InlineMedia { .. } => {
+            return Err(HlsLiveOpenError::InlineManifestCannotRefresh);
+        }
     };
-    let top_resource = fetch_manifest(&request.http, request.generation, selected_url.clone())?;
-    let top = parse_playlist(&top_resource, request)?;
+    let (top, top_base, was_inline) = load_top_playlist(request)?;
+    if was_inline {
+        return Err(HlsLiveOpenError::InlineManifestCannotRefresh);
+    }
     validate_initial_profile(&top)?;
     match top {
         HlsPlaylist::Media(media) => {
@@ -339,13 +356,12 @@ pub(super) fn load_selected_live(
             ) {
                 return Err(HlsVodOpenError::SeparateAudioRequiresMaster.into());
             }
-            let main_container =
-                required_main_container(&media, top_resource.final_target(), request)?;
+            let main_container = required_main_container(&media, &top_base, request)?;
             validate_live_media(&media, main_container, refresh_profile)?;
             let plan = build_segment_scoped_component_plan(
                 &media,
                 main_container,
-                top_resource.final_target(),
+                &top_base,
                 &request.overrides,
             )?;
             plan.validate_resource_bound(
@@ -356,7 +372,7 @@ pub(super) fn load_selected_live(
             Ok(SelectedLiveResources {
                 main_media: media,
                 main_plan: plan,
-                main_reload_target: selected_url.clone(),
+                main_reload_target: selected_url,
                 main_container,
                 main_track_layout: request.selection.main_track_layout,
                 audio_media: None,
@@ -405,9 +421,8 @@ pub(super) fn load_selected_live(
                     selected.subtitles,
                 )
             };
-            let main_reload_target = top_resource
-                .final_target()
-                .resolve_reference(main_reference.expose_for_resolution())?;
+            let main_reload_target =
+                top_base.resolve_reference(main_reference.expose_for_resolution())?;
             let main_resource = fetch_manifest(
                 &request.http,
                 request.generation,
@@ -431,9 +446,7 @@ pub(super) fn load_selected_live(
             )?;
             let (audio_media, audio_plan, audio_reload_target, audio_container) =
                 if let Some(reference) = audio_reference {
-                    let target = top_resource
-                        .final_target()
-                        .resolve_reference(reference.expose_for_resolution())?;
+                    let target = top_base.resolve_reference(reference.expose_for_resolution())?;
                     let resource =
                         fetch_manifest(&request.http, request.generation, target.clone())?;
                     let HlsPlaylist::Media(media) = parse_playlist(&resource, request)? else {

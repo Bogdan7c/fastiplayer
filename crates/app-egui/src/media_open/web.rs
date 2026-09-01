@@ -77,11 +77,15 @@ impl WebMediaSourceIntent {
         }
     }
 
-    /// Создаёт proven native HLS VOD intent без временных rendition endpoints.
-    pub(crate) fn native_hls_vod(source: NativeHlsUrl, source_state: NativeHlsSourceState) -> Self {
+    /// Создаёт proven native HLS intent без временных rendition endpoints.
+    pub(crate) fn native_hls(
+        source: NativeHlsUrl,
+        presentation: WebMediaPresentationKind,
+        source_state: NativeHlsSourceState,
+    ) -> Self {
         Self {
             ingress: WebMediaIngressKind::NativeManifest,
-            presentation: WebMediaPresentationKind::Vod,
+            presentation,
             recovery: WebMediaRecoveryStrategy::RefreshRootManifestAndRematch,
             extractor_reason: None,
             adapter: Box::new(WebMediaSourceAdapter::NativeHls {

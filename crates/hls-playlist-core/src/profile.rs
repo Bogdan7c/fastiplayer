@@ -100,7 +100,7 @@ pub fn validate_vod_profile(
     Ok(())
 }
 
-/// Проверяет initial S33 sliding-live profile.
+/// Проверяет initial S33 sliding/EVENT live profile.
 ///
 /// Live intent приходит от service descriptor-а. Эта функция намеренно не
 /// выводит live только из отсутствующего `EXT-X-ENDLIST`.
@@ -133,7 +133,9 @@ fn validate_live_media_profile(
     if media.end_list && !allow_end_list {
         return Err(HlsProfileError::EndedLivePlaylist);
     }
-    if media.playlist_type.is_some() {
+    // EVENT остаётся live presentation: playlist только дополняется и может завершиться
+    // ENDLIST на refresh-е. Явный VOD без ENDLIST не должен маскироваться live runtime-ом.
+    if media.playlist_type == Some(HlsPlaylistType::Vod) {
         return Err(HlsProfileError::LivePlaylistType);
     }
     validate_initial_profile(playlist)?;

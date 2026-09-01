@@ -1,4 +1,4 @@
-//! App-owned identity и reopen intent для доказанного native HLS VOD.
+//! App-owned identity и reopen intent для доказанного native HLS VOD/live источника.
 
 use std::fmt;
 use std::sync::Arc;

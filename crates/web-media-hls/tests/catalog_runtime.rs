@@ -30,8 +30,9 @@ use web_media_hls::{
     HlsCatalogPresentation, HlsComponentContainerIntent, HlsContainerEvidence,
     HlsEndpointRefreshError, HlsEndpointRefreshPort, HlsEndpointRefreshReply,
     HlsEndpointRefreshRequest, HlsLiveOpenRequest, HlsMainTrackLayoutIntent, HlsManifestInput,
-    HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenRequest,
-    discover_hls_catalog, prepare_hls_catalog_live_receipted, prepare_hls_catalog_vod_receipted,
+    HlsProviderDefaultAudioPolicy, HlsRequestOverrides, HlsRequiredContainer,
+    HlsVariantSelectionIntent, HlsVodOpenRequest, discover_hls_catalog,
+    prepare_hls_catalog_live_receipted, prepare_hls_catalog_vod_receipted,
 };
 use web_media_transport_api::SourceGeneration;
 
@@ -211,6 +212,7 @@ fn discovery_content_proves_selected_child_and_isolates_unavailable_sibling() {
                 catalog_limit: ComponentVariantCatalogLimit::new(8).expect("catalog limit"),
                 compatibility_edge_limit: ComponentVariantEdgeLimit::new(8).expect("edge limit"),
                 maximum_unique_children: NonZeroUsize::new(8).expect("child limit"),
+                provider_default_audio: HlsProviderDefaultAudioPolicy::RequireDeclared,
             },
         },
         &mut capabilities,
@@ -344,6 +346,7 @@ fn live_catalog_reopen_semantically_tracks_rotated_child_after_endpoint_replacem
                 catalog_limit: ComponentVariantCatalogLimit::new(8).expect("catalog limit"),
                 compatibility_edge_limit: ComponentVariantEdgeLimit::new(8).expect("edge limit"),
                 maximum_unique_children: NonZeroUsize::new(8).expect("child limit"),
+                provider_default_audio: HlsProviderDefaultAudioPolicy::RequireDeclared,
             },
         },
         &mut capabilities,

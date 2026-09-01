@@ -24,19 +24,7 @@ pub(crate) enum PrepareNativeHlsVodError {
     InitialPositionCapabilityMismatch,
 }
 
-impl PrepareNativeHlsVodError {
-    /// Только owner-typed live/event profile может перейти в extractor fallback.
-    #[must_use]
-    pub(crate) fn fallback_reason(&self) -> Option<web_media_hls::NativeHlsOpenFallbackReason> {
-        match self {
-            Self::Open(error) => web_media_hls::native_hls_open_fallback_reason(error),
-            Self::MissingSeekHandle
-            | Self::InitialTopology(_)
-            | Self::InitialPositionProof(_)
-            | Self::InitialPositionCapabilityMismatch => None,
-        }
-    }
-}
+impl PrepareNativeHlsVodError {}
 
 /// Открывает уже admitted native HLS VOD через те же policy/bootstrap constants, что YtDlp HLS.
 pub(crate) fn prepare_native_hls_vod(
@@ -126,9 +114,10 @@ fn finalize_native_hls_vod(
 }
 
 /// Строит capability-filtered HLS catalog из уже переданного fetched root manifest-а.
-pub(crate) fn discover_native_hls_vod_catalog(
+pub(crate) fn discover_native_hls_catalog(
     request: &HlsVodOpenRequest,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
+    presentation: HlsCatalogPresentation,
     provider_default_variant_index: Option<usize>,
     system_capabilities: &capability_core::SystemCapabilities,
     audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
@@ -142,13 +131,15 @@ pub(crate) fn discover_native_hls_vod_catalog(
         HlsCatalogDiscoveryRequest {
             open: request,
             catalog_identity,
-            presentation: HlsCatalogPresentation::Vod,
+            presentation,
             provider_default_variant_index,
-            policy: hls_catalog_policy()?,
+            policy: hls_catalog_policy()?.with_provider_default_audio(
+                web_media_hls::HlsProviderDefaultAudioPolicy::AllowUnsupportedOmission,
+            ),
         },
         &mut capability_probe,
     )
-    .context("native HLS VOD catalog discovery завершился ошибкой")
+    .context("native HLS catalog discovery завершился ошибкой")
 }
 
 /// Переносит уже доказанный native HLS runtime через единственный player preparation boundary.

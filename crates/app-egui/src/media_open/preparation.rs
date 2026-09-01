@@ -129,7 +129,7 @@ pub(super) fn prepare_source(
                             tracing::warn!(
                                 source = %safe_label,
                                 error = %error,
-                                "Подготовка native HLS VOD завершилась ошибкой"
+                                "Подготовка native HLS завершилась ошибкой"
                             );
                             if cancellation.is_cancelled() {
                                 MediaPreparationFailureKind::Cancelled
@@ -145,22 +145,19 @@ pub(super) fn prepare_source(
                         let tracks = prepared.tracks().to_vec();
                         let duration = prepared.duration();
                         let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
-                        let active_source =
-                            WebMediaSourceIntent::native_hls_vod(source, prepared.source_state);
+                        let runtime_attachments =
+                            prepared.lifecycle.into_web_attachments(prepared.seek_port);
+                        let active_source = WebMediaSourceIntent::native_hls(
+                            source,
+                            runtime_attachments.presentation,
+                            prepared.source_state,
+                        );
                         let prepared_media = compose_prepared_web_media(
                             safe_label.as_str(),
                             prepared.demuxer,
-                            PreparedWebMediaAttachments {
-                                demux_seek: Some(
-                                    PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
-                                        prepared.seek_port,
-                                    ),
-                                ),
-                                initial_position: Some(prepared.initial_position),
-                                ..PreparedWebMediaAttachments::default()
-                            },
+                            runtime_attachments.prepared,
                         )
-                        .expect("native HLS VOD has no conflicting timeline attachments");
+                        .expect("native HLS lifecycle produced compatible timeline attachments");
                         Ok(PreparedMediaOpen {
                             prepared_media,
                             descriptor: PreparedMediaDescriptor::Web(
@@ -171,7 +168,7 @@ pub(super) fn prepare_source(
                                     active_source,
                                     safe_label,
                                     None,
-                                    Some(prepared.vod_endpoint_recovery),
+                                    runtime_attachments.vod_endpoint_recovery,
                                 ),
                             ),
                         })

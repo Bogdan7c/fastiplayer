@@ -16,8 +16,9 @@ use web_media_core::{
 
 use crate::open::select_master;
 use crate::{
-    HlsAudioLayoutIntent, HlsAudioRenditionEvidence, HlsComponentContainerIntent,
-    HlsContainerEvidence, HlsMainTrackLayoutIntent, HlsVariantSelectionIntent, HlsVodOpenError,
+    HlsAudioLayoutIntent, HlsAudioRenditionEvidence, HlsCatalogPresentation,
+    HlsComponentContainerIntent, HlsContainerEvidence, HlsMainTrackLayoutIntent,
+    HlsVariantSelectionIntent,
 };
 
 /// Low-load policy выбора только по authoritative master attributes.
@@ -128,6 +129,7 @@ impl NativeHlsSemanticSelection {
 pub struct NativeHlsCatalogAdmission {
     selection: NativeHlsSemanticSelection,
     current_master_variant_index: Option<usize>,
+    presentation_evidence: NativeHlsPresentationEvidence,
 }
 
 impl NativeHlsCatalogAdmission {
@@ -148,6 +150,21 @@ impl NativeHlsCatalogAdmission {
     pub const fn current_master_variant_index(&self) -> Option<usize> {
         self.current_master_variant_index
     }
+
+    /// Top media manifest доказывает presentation сразу; master требует ровно один child probe.
+    #[must_use]
+    pub const fn presentation_evidence(&self) -> NativeHlsPresentationEvidence {
+        self.presentation_evidence
+    }
+}
+
+/// Источник authoritative VOD/live решения без эвристик по URL или extractor metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeHlsPresentationEvidence {
+    /// Top-level media manifest сам содержит ENDLIST либо live/event semantics.
+    TopMedia(HlsCatalogPresentation),
+    /// Master не объявляет presentation; selected media child должен быть content-probed.
+    SelectedMasterChild,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,36 +180,17 @@ pub enum NativeHlsAdmissionError {
     StrictlyNotHls,
     #[error("HLS manifest не содержит достаточных declared selection evidence")]
     ExtractorMaterialRequired,
-    #[error("live HLS остаётся на существующем extractor-owned path")]
-    LiveRequiresExtractor,
     #[error("HLS manifest malformed: {0}")]
     Parse(#[source] HlsParseError),
     #[error("HLS manifest profile rejected: {0}")]
     Profile(#[source] HlsProfileError),
 }
 
-/// Единственный post-admission VOD open outcome, который безопасно возвращать extractor-у.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeHlsOpenFallbackReason {
-    /// Selected media child оказался sliding либо EVENT playlist-ом.
-    LiveOrEventPlaylist,
-}
-
-/// Не превращает malformed/unsupported HLS в fallback после уже доказанного top manifest-а.
-#[must_use]
-pub const fn native_hls_open_fallback_reason(
-    error: &HlsVodOpenError,
-) -> Option<NativeHlsOpenFallbackReason> {
-    match error {
-        HlsVodOpenError::Profile(HlsProfileError::NonVod | HlsProfileError::EventPlaylist) => {
-            Some(NativeHlsOpenFallbackReason::LiveOrEventPlaylist)
-        }
-        _ => None,
-    }
-}
-
-/// Строго доказывает VOD media manifest либо выбирает один master row без sibling fetch-ов.
-pub fn admit_native_hls_vod(
+/// Допускает media manifest либо выбирает один master row без sibling fetch-ов.
+///
+/// Presentation определяется отдельным typed evidence в полном catalog admission; этот
+/// low-load helper намеренно не превращает отсутствие `EXT-X-ENDLIST` в extractor fallback.
+pub fn admit_native_hls(
     document_bytes: &[u8],
     effective_url: &source_core::HttpRequestTarget,
     parser_limits: HlsParserLimits,
@@ -202,10 +200,7 @@ pub fn admit_native_hls_vod(
     let playlist = parse_native_hls_top(document_bytes, effective_url, parser_limits)?;
 
     match playlist {
-        HlsPlaylist::Media(media) => {
-            if !media.end_list {
-                return Err(NativeHlsAdmissionError::LiveRequiresExtractor);
-            }
+        HlsPlaylist::Media(_) => {
             if expected.is_some_and(|selection| selection.topology != NativeHlsTopology::Media) {
                 return Err(NativeHlsAdmissionError::ExtractorMaterialRequired);
             }
@@ -218,10 +213,10 @@ pub fn admit_native_hls_vod(
     }
 }
 
-/// Проверяет native VOD profile и выбирает fresh provider-default для полного catalog discovery.
+/// Проверяет native HLS top profile и выбирает fresh provider-default для полного catalog discovery.
 /// В отличие от legacy low-load open-а, одинаковые semantic descriptors не требуют extractor:
 /// текущий root связывается exact ordinal-ом, а дальнейшие refresh-ы — semantic catalog selection-ом.
-pub fn admit_native_hls_vod_catalog(
+pub fn admit_native_hls_catalog(
     document_bytes: &[u8],
     effective_url: &source_core::HttpRequestTarget,
     parser_limits: HlsParserLimits,
@@ -230,15 +225,15 @@ pub fn admit_native_hls_vod_catalog(
     let playlist = parse_native_hls_top(document_bytes, effective_url, parser_limits)?;
 
     match playlist {
-        HlsPlaylist::Media(media) => {
-            if !media.end_list {
-                return Err(NativeHlsAdmissionError::LiveRequiresExtractor);
-            }
-            Ok(NativeHlsCatalogAdmission {
-                selection: native_media_selection(),
-                current_master_variant_index: None,
-            })
-        }
+        HlsPlaylist::Media(media) => Ok(NativeHlsCatalogAdmission {
+            selection: native_media_selection(),
+            current_master_variant_index: None,
+            presentation_evidence: NativeHlsPresentationEvidence::TopMedia(if media.end_list {
+                HlsCatalogPresentation::Vod
+            } else {
+                HlsCatalogPresentation::Live
+            }),
+        }),
         HlsPlaylist::Master(master) => {
             let mut candidates = master
                 .variants
@@ -259,6 +254,7 @@ pub fn admit_native_hls_vod_catalog(
                     runtime_intent: selected.runtime_intent(),
                 },
                 current_master_variant_index: Some(selected.variant_index),
+                presentation_evidence: NativeHlsPresentationEvidence::SelectedMasterChild,
             })
         }
     }
@@ -528,7 +524,7 @@ mod tests {
         policy: &NativeHlsSelectionPolicy,
         expected: Option<&NativeHlsSemanticSelection>,
     ) -> Result<NativeHlsSemanticSelection, NativeHlsAdmissionError> {
-        admit_native_hls_vod(
+        admit_native_hls(
             manifest.as_bytes(),
             &target(),
             HlsParserLimits::default(),
@@ -581,7 +577,7 @@ fmp4.m3u8\n";
             Err(NativeHlsAdmissionError::ExtractorMaterialRequired)
         ));
 
-        let admitted = admit_native_hls_vod_catalog(
+        let admitted = admit_native_hls_catalog(
             manifest.as_bytes(),
             &target(),
             HlsParserLimits::default(),
@@ -597,31 +593,41 @@ fmp4.m3u8\n";
     }
 
     #[test]
-    fn catalog_admission_keeps_media_vod_indexless_and_live_typed() {
+    fn catalog_admission_keeps_media_presentation_typed() {
         let vod = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n";
-        let admitted = admit_native_hls_vod_catalog(
+        let admitted_vod = admit_native_hls_catalog(
             vod.as_bytes(),
             &target(),
             HlsParserLimits::default(),
             &policy(None),
         )
         .expect("media VOD должен остаться native без fake master ordinal-а");
-        assert_eq!(admitted.current_master_variant_index(), None);
+        assert_eq!(admitted_vod.current_master_variant_index(), None);
         assert_eq!(
-            admitted.runtime_intent().main_track_layout,
+            admitted_vod.presentation_evidence(),
+            NativeHlsPresentationEvidence::TopMedia(HlsCatalogPresentation::Vod)
+        );
+        assert_eq!(
+            admitted_vod.runtime_intent().main_track_layout,
             HlsMainTrackLayoutIntent::MuxedAv
         );
 
-        let live = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n";
-        assert!(matches!(
-            admit_native_hls_vod_catalog(
-                live.as_bytes(),
+        for live_manifest in [
+            "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n",
+            "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n",
+        ] {
+            let admitted_live = admit_native_hls_catalog(
+                live_manifest.as_bytes(),
                 &target(),
                 HlsParserLimits::default(),
                 &policy(None),
-            ),
-            Err(NativeHlsAdmissionError::LiveRequiresExtractor)
-        ));
+            )
+            .expect("supported sliding/event media должен остаться native");
+            assert_eq!(
+                admitted_live.presentation_evidence(),
+                NativeHlsPresentationEvidence::TopMedia(HlsCatalogPresentation::Live)
+            );
+        }
     }
 
     #[test]
@@ -645,7 +651,7 @@ video.m3u8\n";
     }
 
     #[test]
-    fn missing_master_evidence_and_live_media_require_typed_fallback() {
+    fn missing_master_evidence_falls_back_but_live_media_stays_native() {
         let missing = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nchild.m3u8\n";
         assert!(matches!(
             admit(missing, &policy(None), None),
@@ -653,10 +659,7 @@ video.m3u8\n";
         ));
 
         let live = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nseg.ts\n";
-        assert!(matches!(
-            admit(live, &policy(None), None),
-            Err(NativeHlsAdmissionError::LiveRequiresExtractor)
-        ));
+        assert!(admit(live, &policy(None), None).is_ok());
     }
 
     #[test]
@@ -669,24 +672,6 @@ video.m3u8\n";
             admit("#EXTM3U\n#EXT-X-TARGETDURATION:nope\n", &policy(None), None),
             Err(NativeHlsAdmissionError::Parse(_))
         ));
-    }
-
-    #[test]
-    fn only_live_profile_open_error_allows_post_admission_fallback() {
-        assert_eq!(
-            native_hls_open_fallback_reason(&HlsVodOpenError::Profile(HlsProfileError::NonVod,)),
-            Some(NativeHlsOpenFallbackReason::LiveOrEventPlaylist)
-        );
-        assert_eq!(
-            native_hls_open_fallback_reason(&HlsVodOpenError::Profile(
-                HlsProfileError::UnsupportedEncryptionMethod,
-            )),
-            None
-        );
-        assert_eq!(
-            native_hls_open_fallback_reason(&HlsVodOpenError::MissingVariant),
-            None
-        );
     }
 
     #[test]

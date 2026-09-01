@@ -1,3 +1,10 @@
+## N08 native HLS live/DVR без yt-dlp (2026-09-01)
+
+- Supported sliding-live и EVENT HLS теперь admitted native и идут через existing `web-media-hls::live` S33 runtime; blanket `LiveOrEventPlaylist`/`LiveRequiresExtractor` vocabulary удалена.
+- App native HLS composition типизирует VOD/live lifecycle: live получает dynamic timeline + worker-receipted DVR seek + stable-root endpoint refresh, VOD сохраняет initial position и отдельный endpoint recovery.
+- Hermetic vertical доказал moving H.264 decoder/WGPU frames, AAC nonzero PCM, window shift, retained/expired DVR seek, endpoint recovery, semantic TS->fMP4 Playing/Paused switch и process spy 0; HE-AAC alternate row изолируется локально.
+- Local commit `feat(hls): admit live manifests without yt-dlp`; полные boundaries, failure semantics, tests и §6.3 handoff: `mem:media-services/native-hls-live-n08-2026-09-01`. N09 не начинался.
+
 ## N07 native HLS VOD catalog/switch/reopen (2026-09-01)
 
 - Existing native HLS VOD path теперь публикует полный neutral TS/fMP4 component catalog и проходит initial/switch/reopen через один FetchedTop handoff без extractor для valid supported finite profile.

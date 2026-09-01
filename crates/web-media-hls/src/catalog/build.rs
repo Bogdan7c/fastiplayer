@@ -96,8 +96,12 @@ pub fn build_hls_catalog(
             maximum: request.policy.maximum_unique_children.get(),
         });
     }
-    let selected_children =
-        selected_child_ids(&children, selected_variant_index, selected_audio_index);
+    let selected_children = selected_child_ids(
+        &children,
+        selected_variant_index,
+        selected_audio_index,
+        request.policy.provider_default_audio,
+    );
     let mut rejections = Vec::new();
     for child in &mut children {
         match proof_port.prove_child(HlsCatalogChildProbe {
@@ -256,6 +260,7 @@ pub fn build_hls_catalog(
         request.provider_default,
         selected_variant_index,
         selected_audio_index,
+        request.policy.provider_default_audio,
         &videos,
         &audios,
         &coupled,
@@ -387,13 +392,17 @@ fn selected_child_ids(
     children: &[UniqueChild<'_>],
     variant_index: usize,
     audio_index: Option<usize>,
+    audio_policy: HlsProviderDefaultAudioPolicy,
 ) -> Vec<HlsCatalogChildId> {
     children
         .iter()
         .filter(|child| {
             child.uses.iter().any(|child_use| match child_use {
                 ChildUse::Variant(index) => *index == variant_index,
-                ChildUse::AlternateAudio(index) => audio_index == Some(*index),
+                ChildUse::AlternateAudio(index) => {
+                    audio_policy == HlsProviderDefaultAudioPolicy::RequireDeclared
+                        && audio_index == Some(*index)
+                }
             })
         })
         .map(|child| child.id)
@@ -548,6 +557,7 @@ fn provider_default_request(
     intent: &crate::HlsVariantSelectionIntent,
     variant_index: usize,
     audio_index: Option<usize>,
+    audio_policy: HlsProviderDefaultAudioPolicy,
     videos: &[PendingVideo],
     audios: &[PendingAudio],
     coupled: &[PendingCoupled],
@@ -578,16 +588,25 @@ fn provider_default_request(
                 })?;
             match audio_index {
                 Some(audio_index) => {
-                    let audio = audios
+                    match audios
                         .iter()
                         .find(|row| row.origin == AudioOrigin::Rendition(audio_index))
-                        .ok_or(HlsCatalogBuildError::ProviderDefaultRejected {
+                    {
+                        Some(audio) => Ok(ComponentVariantSelectionRequest::VideoAndAudio {
+                            video: video.variant.exact_identity().clone(),
+                            audio: audio.variant.exact_identity().clone(),
+                        }),
+                        None if audio_policy
+                            == HlsProviderDefaultAudioPolicy::AllowUnsupportedOmission =>
+                        {
+                            Ok(ComponentVariantSelectionRequest::VideoOnly {
+                                video: video.variant.exact_identity().clone(),
+                            })
+                        }
+                        None => Err(HlsCatalogBuildError::ProviderDefaultRejected {
                             reason: HlsCatalogSiblingRejectionReason::UnsupportedTrackShape,
-                        })?;
-                    Ok(ComponentVariantSelectionRequest::VideoAndAudio {
-                        video: video.variant.exact_identity().clone(),
-                        audio: audio.variant.exact_identity().clone(),
-                    })
+                        }),
+                    }
                 }
                 None => Ok(ComponentVariantSelectionRequest::VideoOnly {
                     video: video.variant.exact_identity().clone(),

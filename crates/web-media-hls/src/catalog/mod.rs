@@ -25,7 +25,7 @@ use web_media_core::{
 use crate::{HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenError};
 
 pub use build::build_hls_catalog;
-pub use discovery::discover_hls_catalog;
+pub use discovery::{detect_hls_catalog_presentation, discover_hls_catalog};
 pub(crate) use reopen::HlsCatalogMatchMode;
 pub use reopen::{HlsCatalogReopenError, HlsCatalogReopenSelection};
 
@@ -207,6 +207,29 @@ pub struct HlsCatalogBuildPolicy {
     pub catalog_limit: ComponentVariantCatalogLimit,
     pub compatibility_edge_limit: ComponentVariantEdgeLimit,
     pub maximum_unique_children: NonZeroUsize,
+    pub provider_default_audio: HlsProviderDefaultAudioPolicy,
+}
+
+impl HlsCatalogBuildPolicy {
+    /// Native admission может сохранить доказанное video, если declared alternate audio
+    /// отклонён capability probe-ом. Extractor-backed exact selection остаётся строгим.
+    #[must_use]
+    pub const fn with_provider_default_audio(
+        mut self,
+        provider_default_audio: HlsProviderDefaultAudioPolicy,
+    ) -> Self {
+        self.provider_default_audio = provider_default_audio;
+        self
+    }
+}
+
+/// Определяет, является ли alternate audio обязательной частью provider-default selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlsProviderDefaultAudioPolicy {
+    /// Exact provider candidate обязан сохранить declared audio rendition.
+    RequireDeclared,
+    /// Неподдержанный alternate audio становится row-local rejection, сохраняя video-only row.
+    AllowUnsupportedOmission,
 }
 
 /// Pure provider build request; master document уже обязан пройти parsing/profile validation.

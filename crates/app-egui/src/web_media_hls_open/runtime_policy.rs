@@ -53,6 +53,7 @@ pub(super) fn hls_catalog_policy() -> Result<HlsCatalogBuildPolicy> {
         compatibility_edge_limit: web_media_core::ComponentVariantEdgeLimit::new(4_096)?,
         maximum_unique_children: NonZeroUsize::new(256)
             .expect("HLS catalog child limit is non-zero"),
+        provider_default_audio: web_media_hls::HlsProviderDefaultAudioPolicy::RequireDeclared,
     })
 }
 

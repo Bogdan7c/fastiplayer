@@ -53,7 +53,7 @@ pub enum HlsProfileError {
     NonVod,
     #[error("media playlist уже завершён и не является initial live snapshot")]
     EndedLivePlaylist,
-    #[error("EXT-X-PLAYLIST-TYPE несовместим со sliding live profile")]
+    #[error("EXT-X-PLAYLIST-TYPE:VOD несовместим с initial live profile")]
     LivePlaylistType,
     #[error("HLS encryption method не входит в initial profile")]
     UnsupportedEncryptionMethod,

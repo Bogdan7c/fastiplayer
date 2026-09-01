@@ -1,15 +1,20 @@
 //! Production composition selected yt-dlp HLS candidate -> uninstalled HLS VOD runtime.
 
+#[path = "web_media_hls_open/native_live.rs"]
+mod native_live;
 #[path = "web_media_hls_open/native_vod.rs"]
 mod native_vod;
 #[path = "web_media_hls_open/runtime_policy.rs"]
 mod runtime_policy;
 
+pub(crate) use native_live::{
+    PreparedNativeHlsLive, prepare_native_hls_catalog_live, prepare_native_hls_live,
+};
 #[cfg(test)]
 pub(crate) use native_vod::prepare_native_hls_player_media;
 pub(crate) use native_vod::{
-    PrepareNativeHlsVodError, PreparedNativeHlsVod, discover_native_hls_vod_catalog,
-    prepare_native_hls_catalog_vod, prepare_native_hls_vod,
+    PreparedNativeHlsVod, discover_native_hls_catalog, prepare_native_hls_catalog_vod,
+    prepare_native_hls_vod,
 };
 
 use std::num::{NonZeroU8, NonZeroU32};

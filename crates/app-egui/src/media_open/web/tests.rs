@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "tests/native_hls_live_vertical.rs"]
+mod native_hls_live_vertical;
 #[path = "tests/native_hls_vertical.rs"]
 mod native_hls_vertical;
 
@@ -120,7 +122,11 @@ fn direct_and_native_read_only_projections_are_neutral_and_secret_safe() {
         ),
     )
     .unwrap();
-    let native = WebMediaSourceIntent::native_hls_vod(native_source, native_source_state);
+    let native = WebMediaSourceIntent::native_hls(
+        native_source,
+        WebMediaPresentationKind::Vod,
+        native_source_state,
+    );
     let native_projection = native.read_only_projection();
     assert_eq!(
         native_projection.ingress,

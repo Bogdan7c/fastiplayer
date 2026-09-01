@@ -58,7 +58,7 @@ struct ServedRequest {
 }
 
 /// Локальный immutable HTTP origin обслуживает реальные production transport запросы.
-struct ControlledHlsServer {
+pub(super) struct ControlledHlsServer {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<ServedRequest>>>,
@@ -67,7 +67,15 @@ struct ControlledHlsServer {
 
 impl ControlledHlsServer {
     /// Запускает единственный blocking accept worker над фиксированным route snapshot-ом.
-    fn start(routes: HashMap<String, Vec<Vec<u8>>>) -> Self {
+    pub(super) fn start(routes: HashMap<String, Vec<Vec<u8>>>) -> Self {
+        Self::start_with_initial_failures(routes, HashMap::new())
+    }
+
+    /// Позволяет live vertical-у доказать endpoint recovery через bounded initial 410 budget.
+    pub(super) fn start_with_initial_failures(
+        routes: HashMap<String, Vec<Vec<u8>>>,
+        initial_failure_budgets: HashMap<String, usize>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind N07 HLS fixture origin");
         let address = listener.local_addr().expect("N07 HLS fixture address");
         let stop = Arc::new(AtomicBool::new(false));
@@ -87,14 +95,23 @@ impl ControlledHlsServer {
                     .iter()
                     .filter(|request| request.path == path)
                     .count();
-                let response = routes.get(&path).and_then(|responses| {
-                    responses
-                        .get(route_request_index)
-                        .or_else(|| responses.last())
-                });
-                let (status, body) = response.map_or(("404 Not Found", &[][..]), |body| {
-                    ("200 OK", body.as_slice())
-                });
+                let initial_failure_budget =
+                    initial_failure_budgets.get(&path).copied().unwrap_or(0);
+                let (status, body) = if route_request_index < initial_failure_budget {
+                    ("410 Gone", &[][..])
+                } else {
+                    let successful_request_index = route_request_index - initial_failure_budget;
+                    routes
+                        .get(&path)
+                        .and_then(|responses| {
+                            responses
+                                .get(successful_request_index)
+                                .or_else(|| responses.last())
+                        })
+                        .map_or(("404 Not Found", &[][..]), |body| {
+                            ("200 OK", body.as_slice())
+                        })
+                };
                 request_log.push(ServedRequest { path });
                 drop(request_log);
                 stream
@@ -111,13 +128,13 @@ impl ControlledHlsServer {
     }
 
     /// Строит exact HTTP target локального route-а.
-    fn target(&self, path: &str) -> source_core::HttpRequestTarget {
+    pub(super) fn target(&self, path: &str) -> source_core::HttpRequestTarget {
         source_core::HttpRequestTarget::parse_exact(format!("http://{}{path}", self.address))
             .expect("валидный N07 HTTP target")
     }
 
     /// Возвращает точное число GET-ов выбранного route-а.
-    fn request_count(&self, path: &str) -> usize {
+    pub(super) fn request_count(&self, path: &str) -> usize {
         self.requests
             .lock()
             .expect("N07 request log")
@@ -188,7 +205,7 @@ fn master_manifest(fmp4_first: bool) -> Vec<u8> {
 }
 
 /// Декодирует repository fixture; никакой внешний генератор в test runtime не вызывается.
-fn decode_fixture(encoded: &str) -> Vec<u8> {
+pub(super) fn decode_fixture(encoded: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
         .decode(encoded.split_whitespace().collect::<String>())
         .expect("N07 fixture должен быть валидным base64")
@@ -276,7 +293,7 @@ fn h264_system_capabilities() -> SystemCapabilities {
 }
 
 /// Settings используют production AAC capability probe и запрещают extractor fallback policy.
-fn native_settings() -> WebMediaOpenSettings {
+pub(super) fn native_settings() -> WebMediaOpenSettings {
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     app_config.player.preferred_video_codec_order = vec![VideoCodec::H264];
@@ -290,7 +307,7 @@ fn native_settings() -> WebMediaOpenSettings {
 }
 
 /// Вызывает production native admission с явным semantic rematch и start intent-ом.
-fn prepare_native(
+pub(super) fn prepare_native(
     source: &NativeHlsUrl,
     expected_selection: Option<&web_media_core::WebMediaSemanticSelectionRequest>,
     settings: &WebMediaOpenSettings,
@@ -317,8 +334,28 @@ fn prepare_native(
     }
 }
 
-/// Проверяет полный consumer path: H.264 packet -> frame -> WGPU и AAC packet -> PCM.
-fn assert_decoder_render_audio(demuxer: &mut dyn Demuxer, wgpu_harness: &mut OffscreenWgpuHarness) {
+/// Проверяет минимальный consumer path: H.264 packet -> frame -> WGPU и AAC packet -> PCM.
+pub(super) fn assert_decoder_render_audio(
+    demuxer: &mut dyn Demuxer,
+    wgpu_harness: &mut OffscreenWgpuHarness,
+) {
+    assert_decoder_render_audio_samples(demuxer, wgpu_harness, 1);
+}
+
+/// Live vertical требует как минимум два successive frame/audio результата одним decoder lifecycle.
+pub(super) fn assert_decoder_render_audio_movement(
+    demuxer: &mut dyn Demuxer,
+    wgpu_harness: &mut OffscreenWgpuHarness,
+) {
+    assert_decoder_render_audio_samples(demuxer, wgpu_harness, 2);
+}
+
+/// Один decoder lifecycle сохраняет SPS/PPS и доказывает движение, не переоткрываясь mid-stream.
+fn assert_decoder_render_audio_samples(
+    demuxer: &mut dyn Demuxer,
+    wgpu_harness: &mut OffscreenWgpuHarness,
+    minimum_samples: usize,
+) {
     let video_track = demuxer
         .tracks()
         .iter()
@@ -343,18 +380,18 @@ fn assert_decoder_render_audio(demuxer: &mut dyn Demuxer, wgpu_harness: &mut Off
         .create_decoder(decoder_config_from_track(&audio_track))
         .expect("production AAC decoder должен принять native HLS track");
     let deadline = Instant::now() + VERTICAL_DEADLINE;
-    let mut decoded_video_frame = None;
-    let mut decoded_audio = false;
+    let mut decoded_video_frames = Vec::new();
+    let mut decoded_audio_batches = 0_usize;
 
-    while decoded_video_frame.is_none() || !decoded_audio {
+    while decoded_video_frames.len() < minimum_samples || decoded_audio_batches < minimum_samples {
         match demuxer.next_event().expect("читать native HLS demux event") {
             DemuxReadEvent::Packet(packet) if packet.track_id == video_track.id => {
-                let mut decoded_frames = decode_packet(video_decoder.as_ref(), packet);
-                if decoded_video_frame.is_none() {
-                    decoded_video_frame = decoded_frames.pop();
-                }
-                for unused_frame in decoded_frames {
-                    video_decoder.release_frame(unused_frame.resource_handle);
+                for decoded_frame in decode_packet(video_decoder.as_ref(), packet) {
+                    if decoded_video_frames.len() < minimum_samples {
+                        decoded_video_frames.push(decoded_frame);
+                    } else {
+                        video_decoder.release_frame(decoded_frame.resource_handle);
+                    }
                 }
             }
             DemuxReadEvent::Packet(packet) if packet.track_id == audio_track.id => {
@@ -363,10 +400,13 @@ fn assert_decoder_render_audio(demuxer: &mut dyn Demuxer, wgpu_harness: &mut Off
                     audio_packet_timing(&packet),
                     &packet.data,
                 );
-                decoded_audio = !audio_decoder
+                if !audio_decoder
                     .decode(&encoded_packet)
                     .expect("production AAC decoder должен декодировать native HLS packet")
-                    .is_empty();
+                    .is_empty()
+                {
+                    decoded_audio_batches += 1;
+                }
             }
             DemuxReadEvent::Packet(_)
             | DemuxReadEvent::TracksChanged(_)
@@ -378,10 +418,13 @@ fn assert_decoder_render_audio(demuxer: &mut dyn Demuxer, wgpu_harness: &mut Off
                 panic!("native HLS vertical превысил readiness deadline: {hint:?}")
             }
             DemuxReadEvent::EndOfStream => {
-                if decoded_video_frame.is_none() {
-                    decoded_video_frame = Some(drain_decoder(video_decoder.as_ref()));
+                if decoded_video_frames.len() < minimum_samples {
+                    decoded_video_frames.push(drain_decoder(video_decoder.as_ref()));
                 }
-                assert!(decoded_audio, "native HLS достиг EOS до первого AAC PCM");
+                assert!(
+                    decoded_audio_batches >= minimum_samples,
+                    "native HLS достиг EOS до требуемого числа AAC PCM batches"
+                );
             }
         }
         assert!(
@@ -390,16 +433,18 @@ fn assert_decoder_render_audio(demuxer: &mut dyn Demuxer, wgpu_harness: &mut Off
         );
     }
 
-    let decoded_video_frame = decoded_video_frame.expect("H.264 frame обязан быть декодирован");
-    assert!(wgpu_harness.submit_and_release(
-        &materializer,
-        &renderer_provider,
-        decoded_video_frame,
-    ));
+    assert_eq!(decoded_video_frames.len(), minimum_samples);
+    for decoded_video_frame in decoded_video_frames {
+        assert!(wgpu_harness.submit_and_release(
+            &materializer,
+            &renderer_provider,
+            decoded_video_frame,
+        ));
+    }
 }
 
 /// Возвращает active row и semantic request второй coupled rendition.
-fn alternate_component_selection(
+pub(super) fn alternate_component_selection(
     source_state: &NativeHlsSourceState,
 ) -> (
     usize,
@@ -437,7 +482,7 @@ fn alternate_component_selection(
 }
 
 /// Из neutral request извлекает только native semantic selection, без extractor material.
-fn native_request_parts(
+pub(super) fn native_request_parts(
     request: WebMediaOpenRequest,
 ) -> (
     NativeHlsUrl,
@@ -480,7 +525,11 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
     );
     assert_eq!(alternate_index, 0, "switch должен выбрать TS row");
     let expected_ts_selection = alternate_selection.clone();
-    let initial_intent = WebMediaSourceIntent::native_hls_vod(source.clone(), initial.source_state);
+    let initial_intent = WebMediaSourceIntent::native_hls(
+        source.clone(),
+        web_media_core::WebMediaPresentationKind::Vod,
+        initial.source_state,
+    );
     assert_eq!(
         initial_intent.recovery(),
         web_media_core::WebMediaRecoveryStrategy::RefreshRootManifestAndRematch
@@ -503,11 +552,11 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
     assert_eq!(server.request_count("/master.m3u8"), 2);
     assert!(
         matches!(
-            switched.initial_position,
-            PreparedInitialPosition::PositionedAt { .. }
+            switched.vod_initial_position(),
+            Some(PreparedInitialPosition::PositionedAt { .. })
         ),
         "switch должен вернуть authoritative seek receipt: {:?}",
-        switched.initial_position
+        switched.vod_initial_position()
     );
     assert_decoder_render_audio(switched.demuxer.as_mut(), &mut wgpu_harness);
     let WebMediaComponentVariantProjection::Installed(
@@ -541,8 +590,11 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
         "switch обязан сохранить stable source lineage"
     );
 
-    let switched_intent =
-        WebMediaSourceIntent::native_hls_vod(switch_source.clone(), switched.source_state);
+    let switched_intent = WebMediaSourceIntent::native_hls(
+        switch_source.clone(),
+        web_media_core::WebMediaPresentationKind::Vod,
+        switched.source_state,
+    );
     let reopen_request = switched_intent
         .controlled_reopen_request(
             switch_settings.network_config.clone(),
@@ -560,11 +612,11 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
     assert_eq!(server.request_count("/master.m3u8"), 3);
     assert!(
         matches!(
-            reopened.initial_position,
-            PreparedInitialPosition::PositionedAt { .. }
+            reopened.vod_initial_position(),
+            Some(PreparedInitialPosition::PositionedAt { .. })
         ),
         "reopen должен вернуть authoritative seek receipt: {:?}",
-        reopened.initial_position
+        reopened.vod_initial_position()
     );
     assert_decoder_render_audio(reopened.demuxer.as_mut(), &mut wgpu_harness);
     let WebMediaComponentVariantProjection::Installed(

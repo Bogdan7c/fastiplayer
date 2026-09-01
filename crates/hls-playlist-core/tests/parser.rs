@@ -223,8 +223,21 @@ fn live_profile_distinguishes_initial_refresh_end_and_ll_hls() {
          a.ts\n",
     )
     .expect("valid EVENT media");
+    assert!(
+        validate_live_profile(&event, Some(MediaContainerIntent::TransportStream)).is_ok(),
+        "EVENT остаётся append-only live profile"
+    );
+
+    let false_vod = parse(
+        "#EXTM3U\n\
+         #EXT-X-PLAYLIST-TYPE:VOD\n\
+         #EXT-X-TARGETDURATION:6\n\
+         #EXTINF:6,\n\
+         a.ts\n",
+    )
+    .expect("structurally valid but incomplete VOD media");
     assert_eq!(
-        validate_live_profile(&event, Some(MediaContainerIntent::TransportStream)),
+        validate_live_profile(&false_vod, Some(MediaContainerIntent::TransportStream)),
         Err(HlsProfileError::LivePlaylistType)
     );
 

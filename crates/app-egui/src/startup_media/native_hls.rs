@@ -1,7 +1,10 @@
-//! App-owned native HLS VOD admission и ровно один extractor fallback boundary.
+//! App-owned native HLS admission и ровно один pre-admission extractor fallback boundary.
+
+#[path = "native_hls/live_refresh.rs"]
+mod live_refresh;
 
 #[path = "native_hls/vod_catalog.rs"]
-mod vod_catalog;
+mod catalog_runtime;
 
 use std::num::NonZeroU8;
 use std::sync::Arc;
@@ -13,7 +16,7 @@ use anyhow::{Context, Result, anyhow};
 use capability_core::SystemCapabilities;
 use demux_api::DemuxRegistry;
 use hls_playlist_core::HlsParserLimits;
-use media_core::{Demuxer, MediaTime, TrackInfo};
+use media_core::{Demuxer, DynamicMediaTimelinePort, MediaTime, TrackInfo};
 use player_core::{PreparedDemuxSeekPort, PreparedInitialPosition};
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, VideoCodec, WebMediaConfig};
 use source_core::{CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig};
@@ -21,6 +24,7 @@ use symphonia_demux::DemuxerOptions;
 use web_media_adaptive::{
     AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
     AdaptiveResourceQueryApplication, AdaptiveRetryPolicy, AdaptiveTransportError,
+    AdaptiveTransportLimits,
 };
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, CodecFamily, ComponentVariantCatalogGeneration,
@@ -31,11 +35,11 @@ use web_media_core::{
 use web_media_hls::{
     HlsCatalogDiscoveryOutcome, HlsFetchedTopManifest, HlsManifestInput, HlsRequestOverrides,
     HlsVodOpenRequest, HlsVodStartIntent, NativeHlsAdmissionError, NativeHlsSelectionPolicy,
-    admit_native_hls_vod_catalog,
+    admit_native_hls_catalog,
 };
 use web_media_transport_api::{
-    EndpointExpiryObserver, MediaComponentIdentity, MediaComponentRole, MediaPresentation,
-    RedirectHopLimit, RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration,
+    MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
+    RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration,
     TransportOpenRequest, TransportProviderId,
 };
 
@@ -87,7 +91,6 @@ impl NativeTopManifestFetchIntent {
 pub(crate) enum NativeHlsFallbackReason {
     StrictlyNotHls,
     ExtractorMaterialRequired,
-    LiveOrEventPlaylist,
     AuthorizationRequired,
 }
 
@@ -154,9 +157,76 @@ pub(crate) enum NativeHlsResolutionError<NativeError, FallbackError> {
 pub(crate) struct PreparedNativeHlsMedia {
     pub(crate) demuxer: Box<dyn Demuxer + Send>,
     pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
-    pub(crate) initial_position: PreparedInitialPosition,
     pub(crate) source_state: NativeHlsSourceState,
-    pub(crate) vod_endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+    pub(crate) lifecycle: PreparedNativeHlsLifecycle,
+}
+
+/// Не позволяет случайно смешать VOD restore/recovery с live timeline ownership.
+pub(crate) enum PreparedNativeHlsLifecycle {
+    Vod {
+        initial_position: PreparedInitialPosition,
+        endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+    },
+    Live {
+        timeline_port: DynamicMediaTimelinePort,
+    },
+}
+
+impl PreparedNativeHlsLifecycle {
+    /// Возвращает exact provider-neutral lifecycle kind для durable source envelope-а.
+    pub(crate) const fn presentation(&self) -> web_media_core::WebMediaPresentationKind {
+        match self {
+            Self::Vod { .. } => web_media_core::WebMediaPresentationKind::Vod,
+            Self::Live { .. } => web_media_core::WebMediaPresentationKind::Live,
+        }
+    }
+
+    /// Преобразует lifecycle в mutually-compatible pre-barrier attachments одного web open-а.
+    pub(crate) fn into_web_attachments(
+        self,
+        seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    ) -> PreparedNativeHlsWebAttachments {
+        let presentation = self.presentation();
+        match self {
+            Self::Vod {
+                initial_position,
+                endpoint_recovery,
+            } => PreparedNativeHlsWebAttachments {
+                presentation,
+                prepared: crate::media_open::PreparedWebMediaAttachments {
+                    demux_seek: Some(
+                        crate::media_open::PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
+                            seek_port,
+                        ),
+                    ),
+                    initial_position: Some(initial_position),
+                    ..crate::media_open::PreparedWebMediaAttachments::default()
+                },
+                vod_endpoint_recovery: Some(endpoint_recovery),
+            },
+            Self::Live { timeline_port } => PreparedNativeHlsWebAttachments {
+                presentation,
+                prepared: crate::media_open::PreparedWebMediaAttachments {
+                    timeline_port: Some(timeline_port),
+                    demux_seek: Some(
+                        crate::media_open::PreparedWebMediaSeekAttachment::WorkerReceipted(
+                            seek_port,
+                        ),
+                    ),
+                    ..crate::media_open::PreparedWebMediaAttachments::default()
+                },
+                vod_endpoint_recovery: None,
+            },
+        }
+    }
+}
+
+/// Named composition payload не даёт потерять live timeline или прикрепить VOD recovery к live.
+pub(crate) struct PreparedNativeHlsWebAttachments {
+    pub(crate) presentation: web_media_core::WebMediaPresentationKind,
+    pub(crate) prepared: crate::media_open::PreparedWebMediaAttachments,
+    pub(crate) vod_endpoint_recovery:
+        Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 impl PreparedNativeHlsMedia {
@@ -166,6 +236,17 @@ impl PreparedNativeHlsMedia {
 
     pub(crate) fn duration(&self) -> Option<Duration> {
         self.demuxer.duration()
+    }
+
+    /// VOD-only proof accessor не позволяет live случайно имитировать persistent restore.
+    #[cfg(test)]
+    pub(crate) const fn vod_initial_position(&self) -> Option<PreparedInitialPosition> {
+        match &self.lifecycle {
+            PreparedNativeHlsLifecycle::Vod {
+                initial_position, ..
+            } => Some(*initial_position),
+            PreparedNativeHlsLifecycle::Live { .. } => None,
+        }
     }
 }
 
@@ -206,16 +287,16 @@ impl NativeHlsAdmissionPort for ProductionNativeHlsAdmissionPort<'_> {
             .request
             .take()
             .ok_or_else(|| anyhow!("native HLS admission port already consumed"))?;
-        vod_catalog::prepare_native_hls_attempt(request)
+        catalog_runtime::prepare_native_hls_attempt(request)
     }
 }
 
 fn native_transport_request(
     parent: &ExactSelectionIdentity,
     source: &NativeHlsUrl,
+    presentation: MediaPresentation,
     generation: SourceGeneration,
     cancellation: CancellationToken,
-    endpoint_expiry_observer: Arc<dyn EndpointExpiryObserver>,
 ) -> Result<TransportOpenRequest> {
     let component = MediaComponentIdentity::new(
         parent.exact().clone(),
@@ -231,15 +312,36 @@ fn native_transport_request(
         TransportProviderId::new("native-hls-http")?,
         component,
         initial_target,
-        MediaPresentation::Vod,
+        presentation,
         generation,
         public_request_context,
         RedirectPolicy::cross_origin_without_secrets(RedirectHopLimit::new(
             NATIVE_HLS_REDIRECT_HOPS,
         )?),
         cancellation,
-    )?
-    .with_endpoint_expiry_observer(endpoint_expiry_observer))
+    )?)
+}
+
+/// Собирает единую native HLS HTTP policy для initial open и stable-root endpoint refresh.
+fn native_adaptive_http_context(
+    transport_request: TransportOpenRequest,
+    network_config: &NetworkConfig,
+    adaptive_limits: AdaptiveTransportLimits,
+) -> Result<AdaptiveHttpContext> {
+    let source_config = SourceRuntimeConfig::from_network_config(network_config)
+        .context("native HLS source config")?;
+    AdaptiveHttpContext::new(
+        transport_request,
+        &source_config,
+        adaptive_limits,
+        AdaptiveRetryPolicy::new(
+            NonZeroU8::new(3).expect("native HLS retry attempts"),
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
+        )?,
+    )
+    .map_err(anyhow::Error::new)
 }
 
 /// Строит пустой по данным, но корректно scoped HTTP context для public HLS.
@@ -340,7 +442,7 @@ impl NativeHlsStartupJob {
             })
             .map_err(|error| format!("Не удалось запустить native HLS startup opener: {error}"))?;
         Ok(Self {
-            pending_message: "Проверка native HLS VOD...".to_owned(),
+            pending_message: "Проверка native HLS...".to_owned(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -391,7 +493,7 @@ impl super::StartupMediaController {
             app_state.set_startup_error(error);
             return;
         }
-        app_state.set_startup_pending("Проверка native HLS VOD...".to_owned());
+        app_state.set_startup_pending("Проверка native HLS...".to_owned());
         let start = match self.orchestration.target.as_ref() {
             Some(StartupMediaTarget::RestoredCurrent(target)) => match target.position() {
                 crate::playlist_runtime::StartupPosition::KeepStart => HlsVodStartIntent::Beginning,
@@ -561,7 +663,7 @@ mod tests {
     fn typed_fallback_is_called_exactly_once() {
         let mut port = FakeAdmissionPort {
             result: Some(Ok(NativeHlsAttempt::RequiresYtDlpFallback(
-                NativeHlsFallbackReason::LiveOrEventPlaylist,
+                NativeHlsFallbackReason::ExtractorMaterialRequired,
             ))),
             calls: 0,
         };
