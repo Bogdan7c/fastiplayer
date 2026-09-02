@@ -1,4 +1,22 @@
 {
-  "measurement_exceptions": [],
-  "schema_version": 1
+  "schema_version": 1,
+  "measurement_exceptions": [
+    {
+      "domain": "crate:web-media-adaptive",
+      "metric": "regions",
+      "previous": {
+        "stable": 2890,
+        "total": 3239
+      },
+      "allowed": {
+        "stable": 2904,
+        "total": 3255
+      },
+      "previous_universe_hash": "sha256:873164a09fe34e2680520748d02273541921a3800931bbed5ddbb293b43e5732",
+      "current_universe_hash": "sha256:0a61eaa976d554aaeb568a38be11e2dd54fa9c4b41d9480700bea837dad6bac8",
+      "reason": "N14 добавил manifest-declared exposed-prefix boundary и функциональный regression для превышения объявленной длины. Новая вселенная содержит 16 дополнительных region coordinates; девять независимых workspace-run доказали 14 из них стабильными, exact loss в неизменённых вселенных отсутствует.",
+      "review_by": "2026-12-01",
+      "follow_up": "При следующем изменении web-media-adaptive повторить девять независимых workspace-run и удалить запись, если stable ratio восстановится без потери exact coordinates."
+    }
+  ]
 }
