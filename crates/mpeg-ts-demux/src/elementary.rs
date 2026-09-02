@@ -1,8 +1,7 @@
 use bytes::Bytes;
 use codec_core::{
-    H264Packetization, H265PacketDecodeStartProbe, H265Packetization,
-    probe_h264_packet_in_band_decode_start, probe_h264_packet_keyframe,
-    probe_h265_packet_decode_start,
+    H264PacketDecodeStartProbe, H264Packetization, H265PacketDecodeStartProbe, H265Packetization,
+    probe_h264_packet_decode_start, probe_h265_packet_decode_start,
 };
 use media_core::{PacketDecodeStartInitialization, PacketKeyframe};
 
@@ -149,19 +148,21 @@ pub(crate) fn classify_video_access_unit(
             PacketDecodeStartInitialization::RequiresTrackConfiguration,
         )
     } else {
-        let keyframe = probe_h264_packet_keyframe(payload, H264Packetization::AnnexB)
-            .map(PacketKeyframe::from_known)
+        let probe = probe_h264_packet_decode_start(payload, H264Packetization::AnnexB)
             .map_err(|error| malformed(&format!("H.264 Annex-B AU: {error}")))?;
-        let includes_in_band_configuration = if keyframe.is_known_keyframe() {
-            probe_h264_packet_in_band_decode_start(payload, H264Packetization::AnnexB)
-                .map_err(|error| malformed(&format!("H.264 Annex-B AU: {error}")))?
-        } else {
-            false
-        };
-        let initialization = if includes_in_band_configuration {
-            PacketDecodeStartInitialization::IncludesInBandConfiguration
-        } else {
-            PacketDecodeStartInitialization::RequiresTrackConfiguration
+        let (keyframe, initialization) = match probe {
+            H264PacketDecodeStartProbe::NotKeyframe => (
+                PacketKeyframe::NotKeyframe,
+                PacketDecodeStartInitialization::RequiresTrackConfiguration,
+            ),
+            H264PacketDecodeStartProbe::RequiresTrackConfiguration => (
+                PacketKeyframe::Keyframe,
+                PacketDecodeStartInitialization::RequiresTrackConfiguration,
+            ),
+            H264PacketDecodeStartProbe::IncludesInBandConfiguration => (
+                PacketKeyframe::Keyframe,
+                PacketDecodeStartInitialization::IncludesInBandConfiguration,
+            ),
         };
         (keyframe, initialization)
     };

@@ -6,11 +6,13 @@ use crate::{
 
 use super::{
     AVC_LENGTH_SIZE_MINUS_ONE_MASK, AVC_SPS_COUNT_MASK, AvcDecoderConfigurationRecordError,
-    H264ByteStreamError, H264NalLengthSize, H264Packetization, H264ParameterSetInjection,
-    H264SpsError, h264_access_unit_to_annex_b, h264_access_unit_to_annex_b_into, h264_nal_units,
+    H264ByteStreamError, H264NalLengthSize, H264PacketDecodeStartProbe, H264Packetization,
+    H264ParameterSetInjection, H264SpsError, h264_access_unit_to_annex_b,
+    h264_access_unit_to_annex_b_into, h264_nal_units,
     h264_sps_metadata_from_avc_decoder_configuration_record, infer_h264_packetization,
     parse_avc_decoder_configuration_record, parse_avc3_decoder_configuration_record,
-    parse_h264_sps_metadata, probe_h264_packet_in_band_decode_start, probe_h264_packet_keyframe,
+    parse_h264_sps_metadata, probe_h264_packet_decode_start,
+    probe_h264_packet_in_band_decode_start, probe_h264_packet_keyframe,
 };
 
 fn constrained_baseline_sps() -> Vec<u8> {
@@ -424,6 +426,22 @@ fn h264_in_band_decode_start_requires_sps_pps_and_idr_in_one_access_unit() {
         annex_b_access_unit(&[constrained_baseline_sps(), picture_parameter_set]);
     let parameter_sets_after_idr =
         annex_b_access_unit(&[idr_slice(), constrained_baseline_sps(), pps()]);
+
+    assert_eq!(
+        probe_h264_packet_decode_start(&self_contained_access_unit, H264Packetization::AnnexB)
+            .expect("self-contained typed probe должен разбираться"),
+        H264PacketDecodeStartProbe::IncludesInBandConfiguration
+    );
+    assert_eq!(
+        probe_h264_packet_decode_start(&idr_without_parameter_sets, H264Packetization::AnnexB)
+            .expect("IDR-only typed probe должен разбираться"),
+        H264PacketDecodeStartProbe::RequiresTrackConfiguration
+    );
+    assert_eq!(
+        probe_h264_packet_decode_start(&parameter_sets_without_idr, H264Packetization::AnnexB)
+            .expect("non-IDR typed probe должен разбираться"),
+        H264PacketDecodeStartProbe::NotKeyframe
+    );
 
     assert!(
         probe_h264_packet_in_band_decode_start(

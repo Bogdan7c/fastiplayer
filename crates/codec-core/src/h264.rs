@@ -12,8 +12,9 @@ use crate::{
 mod bytestream;
 use bytestream::parse_nal_header;
 pub use bytestream::{
-    H264ByteStreamError, H264NalUnit, H264ParameterSetInjection, h264_access_unit_to_annex_b,
-    h264_access_unit_to_annex_b_into, h264_nal_units, infer_h264_packetization,
+    H264ByteStreamError, H264NalUnit, H264PacketDecodeStartProbe, H264ParameterSetInjection,
+    h264_access_unit_to_annex_b, h264_access_unit_to_annex_b_into, h264_nal_units,
+    infer_h264_packetization, probe_h264_packet_decode_start,
     probe_h264_packet_in_band_decode_start, probe_h264_packet_keyframe,
 };
 

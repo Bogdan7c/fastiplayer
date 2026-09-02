@@ -245,15 +245,61 @@ pub fn probe_h264_packet_keyframe(
     packet_bytes: &[u8],
     packetization: H264Packetization,
 ) -> Result<bool, H264ByteStreamError> {
+    let probe = probe_h264_packet_decode_start(packet_bytes, packetization)?;
+    Ok(probe.is_keyframe())
+}
+
+/// Полная H.264 decode-start классификация одного access unit-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum H264PacketDecodeStartProbe {
+    /// Access unit не содержит IDR и требует предыдущие reference pictures.
+    NotKeyframe,
+
+    /// IDR присутствует, но SPS/PPS должны прийти из track config или раньше.
+    RequiresTrackConfiguration,
+
+    /// SPS и PPS идут перед IDR в этом же access unit-е.
+    IncludesInBandConfiguration,
+}
+
+impl H264PacketDecodeStartProbe {
+    /// Проверяет random-access picture независимо от источника decoder config.
+    #[must_use]
+    pub const fn is_keyframe(self) -> bool {
+        !matches!(self, Self::NotKeyframe)
+    }
+
+    /// Проверяет self-contained post-flush initialization.
+    #[must_use]
+    pub const fn includes_in_band_configuration(self) -> bool {
+        matches!(self, Self::IncludesInBandConfiguration)
+    }
+}
+
+/// За один NAL pass различает inter-frame, IDR с внешним config и self-contained IDR.
+pub fn probe_h264_packet_decode_start(
+    packet_bytes: &[u8],
+    packetization: H264Packetization,
+) -> Result<H264PacketDecodeStartProbe, H264ByteStreamError> {
     let nal_units = h264_nal_units(packet_bytes, packetization)?;
+    let mut has_sequence_parameter_set = false;
+    let mut has_picture_parameter_set = false;
 
     for nal_unit in nal_units {
-        if nal_unit.nal_unit_type() == H264_NAL_TYPE_IDR_SLICE {
-            return Ok(true);
+        match nal_unit.nal_unit_type() {
+            H264_NAL_TYPE_SEQUENCE_PARAMETER_SET => has_sequence_parameter_set = true,
+            H264_NAL_TYPE_PICTURE_PARAMETER_SET => has_picture_parameter_set = true,
+            H264_NAL_TYPE_IDR_SLICE if has_sequence_parameter_set && has_picture_parameter_set => {
+                return Ok(H264PacketDecodeStartProbe::IncludesInBandConfiguration);
+            }
+            H264_NAL_TYPE_IDR_SLICE => {
+                return Ok(H264PacketDecodeStartProbe::RequiresTrackConfiguration);
+            }
+            _ => {}
         }
     }
 
-    Ok(false)
+    Ok(H264PacketDecodeStartProbe::NotKeyframe)
 }
 
 /// Возвращает `true`, только если access unit самодостаточен после decoder flush.
@@ -265,22 +311,8 @@ pub fn probe_h264_packet_in_band_decode_start(
     packet_bytes: &[u8],
     packetization: H264Packetization,
 ) -> Result<bool, H264ByteStreamError> {
-    let nal_units = h264_nal_units(packet_bytes, packetization)?;
-    let mut has_sequence_parameter_set = false;
-    let mut has_picture_parameter_set = false;
-
-    for nal_unit in nal_units {
-        match nal_unit.nal_unit_type() {
-            H264_NAL_TYPE_SEQUENCE_PARAMETER_SET => has_sequence_parameter_set = true,
-            H264_NAL_TYPE_PICTURE_PARAMETER_SET => has_picture_parameter_set = true,
-            H264_NAL_TYPE_IDR_SLICE if has_sequence_parameter_set && has_picture_parameter_set => {
-                return Ok(true);
-            }
-            _ => {}
-        }
-    }
-
-    Ok(false)
+    let probe = probe_h264_packet_decode_start(packet_bytes, packetization)?;
+    Ok(probe.includes_in_band_configuration())
 }
 
 fn annex_b_nal_units(packet_bytes: &[u8]) -> Result<Vec<H264NalUnit<'_>>, H264ByteStreamError> {
