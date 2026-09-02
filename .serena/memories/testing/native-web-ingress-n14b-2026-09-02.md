@@ -1,5 +1,10 @@
 # N14B cross-protocol seek/switch/queue/restart lifecycle (2026-09-02)
 
+## G3 addendum
+
+- N14B `queue Next/EOF/Previous` proof использовал две rows одного HLS root и поэтому не доказывал переход между разными ingress owners. G3 добавил `media_open/web/tests/native_cross_source_playlist.rs`: durable queue проходит `HLS → DASH → Smooth → DASH`, держит старый source живым до consumer success нового и только затем commit-ит preview; каждый шаг достигает video decode/WGPU readback + nonzero PCM, process spy 0.
+- Этот proof закрывает production media/queue boundary, но не windowed `AppState`/UI Next. Для точного remaining UI issue нужна конкретная row pair + symptom. Authoritative G3 handoff: `mem:testing/native-web-ingress-g3-2026-09-02`.
+
 ## Outcome
 
 - Добавлен единый focused filter `n14b_lifecycle`: 17 functional tests закрепляют VOD/live seek, Playing/Paused same-item switch, queue Previous/Next/clean EOF, no-false-live-EOF, graceful close/restart/restore, recovery, persistence correlation и stale generation fences.

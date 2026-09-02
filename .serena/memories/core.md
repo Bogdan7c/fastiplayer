@@ -1,3 +1,10 @@
+## G3 native-ingress final qualification (2026-09-02)
+
+- G3 architecture/security audit подтвердил единый neutral web active-source/catalog plane, exact process set `{row00,row08}`, zero spawn для 11 direct rows при `yt_dlp.enabled=false`, pre-Installed-only fallback и отсутствие persisted/logged temporary secrets/endpoints.
+- Добавлен отсутствовавший functional cross-source queue proof `HLS → DASH → Smooth → DASH`: каждый transition достигает video decode/WGPU readback + nonzero PCM до queue commit, process spy 0. Тест покрывает media/queue boundary, но не windowed AppState/UI Next; для точного remaining UI issue нужна конкретная row pair + symptom.
+- Gate исправил owner-level DASH ignored-subtitle validation, восстановил neutral decode-start ownership (`media-core` evidence, H.264 single-pass classifier) и закрыл пять test/coverage gaps: adaptive exposed prefix, playlist worker disconnect, pre-cancelled preparation, stale mismatched progressive seek и playback-intent wake → exact session/snapshot consumer. Финальный coverage baseline квалифицирован exact 9/9 intersection и двумя fresh PASS; hashes/counts и discarded-attempt audit находятся в `mem:testing/native-web-ingress-g3-2026-09-02` и `mem:testing/coverage`.
+- Public N15 acceptance: 11 PASS, rows 04/12 PROFILE_EXCLUDED, process set `{00,08}`, настоящий HDR display NOT RUN; HDR→SDR evidence PASS. Новую feature-wave после G3 не начинать.
+
 ## N14B cross-protocol lifecycle matrix (2026-09-02)
 
 - Focused `n14b_lifecycle` cohort даёт 17/17 functional proofs для VOD/live seek, Playing/Paused switch, queue Previous/Next/EOF/no-false-live-EOF, graceful close/restart/restore, recovery, persistence correlation и stale generation fences; каждый successful media transition снова достигает WGPU frame/readback/release или nonzero PCM.

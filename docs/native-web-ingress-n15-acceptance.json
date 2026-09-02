@@ -18,6 +18,34 @@
     "source_drift": 0,
     "source_unavailable": 0
   },
+  "g3_qualification": {
+    "source_commit": "d61a2d87",
+    "release_binary_sha256": "15db8697bc15d78d13201ff3883086adf0992d1deb4dfa874ab814f88bcc452f",
+    "cross_source_playlist": {
+      "sequence": ["native_hls", "native_dash", "native_smooth", "native_dash"],
+      "consumer_before_queue_commit": true,
+      "video_decode_wgpu_readback": true,
+      "nonzero_pcm": true,
+      "extractor_spawns": 0,
+      "windowed_app_state_ui_next": "NOT_RUN"
+    },
+    "coverage": {
+      "qualification_runs": 9,
+      "fresh_repeatability_checks": 2,
+      "logical_baseline_hash": "sha256:ff51d2799a3562816de9a5f919bedb5594dc96c93b772e6e9d45c9f94b7f9743",
+      "tracked_baseline_sha256": "8c98f6acb996d9520b58703d29efb3f150bd8ba2cb60813610f1edd4936cf67b",
+      "workspace_stable": {
+        "functions": [15696, 19914],
+        "lines": [163462, 211068],
+        "regions": [205271, 268471]
+      },
+      "atomic_transition": "PASS",
+      "fresh_checks": ["PASS", "PASS"]
+    },
+    "canonical_pre_pr": "PASS",
+    "release_workspace_build": "PASS",
+    "real_hdr_display_output_mode": "NOT_RUN"
+  },
   "software_rows": [
     {
       "id": "row00",
@@ -129,6 +157,14 @@
   "process_spy": {
     "cold_rows_with_spawn": ["row00", "row08"],
     "restart_rows_with_spawn": ["row00", "row08"],
+    "reason_by_row": {
+      "row00": "PageMediaResolution",
+      "row08": "PageMediaResolution"
+    },
+    "primary_phase_by_row": {
+      "row00": "CandidatePrimary",
+      "row08": "CandidatePrimary"
+    },
     "cold_spawn_count_per_listed_row": 1,
     "restart_spawn_count_per_listed_row": 1,
     "direct_rows_with_spawn": []
