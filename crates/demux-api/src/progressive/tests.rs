@@ -406,16 +406,23 @@ struct CommandSeekableDemuxer {
     packet_emitted: bool,
 }
 
-/// Первый seek блокируется и падает, чтобы test успел supersede его новой generation.
-struct SlowFailingSeekDemuxer {
+#[derive(Clone, Copy)]
+enum ControlledFirstSeekOutcome {
+    Failure,
+    MismatchedAnchor,
+}
+
+/// Первый seek блокируется с управляемым outcome, пока test публикует новую generation.
+struct SlowControlledSeekDemuxer {
     first_seek_started: SyncSender<()>,
     release_first_seek: Receiver<()>,
+    first_seek_outcome: ControlledFirstSeekOutcome,
     seek_count: usize,
     position: Duration,
     packet_emitted: bool,
 }
 
-impl Demuxer for SlowFailingSeekDemuxer {
+impl Demuxer for SlowControlledSeekDemuxer {
     fn tracks(&self) -> &[TrackInfo] {
         &[]
     }
@@ -456,7 +463,20 @@ impl Demuxer for SlowFailingSeekDemuxer {
             self.release_first_seek
                 .recv()
                 .expect("test releases first seek");
-            anyhow::bail!("superseded seek failure");
+            match self.first_seek_outcome {
+                ControlledFirstSeekOutcome::Failure => {
+                    anyhow::bail!("superseded seek failure");
+                }
+                ControlledFirstSeekOutcome::MismatchedAnchor => {
+                    return Ok(DemuxSeekResult {
+                        requested_position: MediaTime::from_duration(request.timestamp),
+                        actual_position: MediaTime::from_duration(
+                            request.timestamp + Duration::from_secs(1),
+                        ),
+                        actual_track_timestamp: None,
+                    });
+                }
+            }
         }
         self.position = request.timestamp;
         self.packet_emitted = false;
@@ -1531,6 +1551,19 @@ fn seekable_worker_wakes_after_eof_and_drops_superseded_generation_output() {
 
 #[test]
 fn stale_failing_seek_does_not_stop_worker_before_latest_command() {
+    assert_stale_controlled_seek_does_not_stop_latest_command(ControlledFirstSeekOutcome::Failure);
+}
+
+#[test]
+fn stale_mismatched_seek_does_not_stop_worker_before_latest_command() {
+    assert_stale_controlled_seek_does_not_stop_latest_command(
+        ControlledFirstSeekOutcome::MismatchedAnchor,
+    );
+}
+
+fn assert_stale_controlled_seek_does_not_stop_latest_command(
+    first_seek_outcome: ControlledFirstSeekOutcome,
+) {
     let (seek_started_sender, seek_started_receiver) = sync_channel(1);
     let (release_sender, release_receiver) = sync_channel(1);
     let controller = ProgressiveSeekController::new(|request| {
@@ -1542,9 +1575,10 @@ fn stale_failing_seek_does_not_stop_worker_before_latest_command() {
     });
     let mut progressive = ProgressiveDemuxer::new_deferred_seekable(
         move || {
-            Ok(Box::new(SlowFailingSeekDemuxer {
+            Ok(Box::new(SlowControlledSeekDemuxer {
                 first_seek_started: seek_started_sender,
                 release_first_seek: release_receiver,
+                first_seek_outcome,
                 seek_count: 0,
                 position: Duration::ZERO,
                 packet_emitted: false,
