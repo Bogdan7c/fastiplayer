@@ -107,7 +107,7 @@ fn exposed_prefix_bounds_consumer_reads_but_preserves_physical_range_identity() 
     let cancellation = CancellationToken::new();
     let mut source = AdaptiveRangeByteSource::open(
         context(&target, cancellation.clone(), redirect_policy(), None, None),
-        target,
+        target.clone(),
         SourceGeneration::new(1),
         range_config().with_exposed_content_length(NonZeroU64::new(3).expect("prefix")),
     )
@@ -119,6 +119,19 @@ fn exposed_prefix_bounds_consumer_reads_but_preserves_physical_range_identity() 
     assert_eq!(&output[..3], b"abc");
     assert_eq!(source.read(&mut output, &cancellation).expect("EOF"), 0);
     assert_eq!(server.request_count(), 2);
+
+    let oversized_prefix = AdaptiveRangeByteSource::open(
+        context(&target, cancellation, redirect_policy(), None, None),
+        target,
+        SourceGeneration::new(1),
+        range_config().with_exposed_content_length(NonZeroU64::new(6).expect("prefix")),
+    )
+    .expect_err("logical prefix cannot exceed the proven physical representation");
+    assert!(matches!(
+        oversized_prefix,
+        AdaptiveRangeSourceOpenError::ExposedContentLengthExceedsResource
+    ));
+    assert_eq!(server.request_count(), 3);
 }
 
 #[test]
