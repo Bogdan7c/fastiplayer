@@ -516,7 +516,7 @@ impl PlayerWorkerRuntime {
         }
     }
 
-    fn wait_for_worker_wakeup_until_event(
+    pub(super) fn wait_for_worker_wakeup_until_event(
         &mut self,
         timeline_activity: Option<crate::session::DynamicTimelineWaitSource>,
     ) -> bool {
