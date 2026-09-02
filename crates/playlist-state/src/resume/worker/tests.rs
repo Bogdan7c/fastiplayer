@@ -27,4 +27,31 @@ fn disconnected_wake_endpoint_stops_worker_without_spin() {
     join_handle
         .join()
         .expect("resume disconnect regression worker не должен panic");
+
+    // Второй вызов выполняет тот же production loop в test-owner thread: это делает exact
+    // disconnected exit наблюдаемым без зависимости от thread-local coverage flush timing.
+    let direct_store = Arc::new(PlaylistResumeStore::new(
+        directory
+            .path()
+            .join("direct-disconnected-worker-resume.json"),
+    ));
+    let direct_shared = Arc::new(Mutex::new(SharedState::new()));
+    let direct_shutdown_requested = Arc::new(AtomicBool::new(false));
+    let (direct_wake_tx, direct_wake_rx) = mpsc::sync_channel(1);
+    let (direct_completion_tx, direct_completion_rx) = mpsc::sync_channel(1);
+    drop(direct_wake_tx);
+
+    run_worker(
+        direct_store,
+        direct_shared,
+        direct_shutdown_requested,
+        direct_wake_rx,
+        direct_completion_tx,
+    );
+
+    assert_eq!(
+        direct_completion_rx.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected),
+        "wake disconnect не должен маскироваться под shutdown completion",
+    );
 }
