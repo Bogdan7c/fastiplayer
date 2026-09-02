@@ -547,6 +547,44 @@ mod shutdown_tests {
     }
 
     #[test]
+    fn already_cancelled_work_is_rejected_before_task_execution() {
+        let cancellation = Arc::new(PreparationCancellation::new());
+        cancellation.cancel(MediaInstallCancellationCause::LifecycleShutdown);
+        let result_slot = Arc::new(PreparationResultSlot::new());
+        let task_was_called = Arc::new(AtomicBool::new(false));
+        let task_was_called_by_worker = Arc::clone(&task_was_called);
+        let pending_work = PreparationWork::new(
+            Arc::clone(&cancellation),
+            Arc::clone(&result_slot),
+            move |_| {
+                task_was_called_by_worker.store(true, Ordering::Release);
+                Err(MediaPreparationFailureKind::WorkerPanicked)
+            },
+        );
+        let shared = Arc::new(PreparationExecutorShared {
+            state: Mutex::new(PreparationExecutorState {
+                pending_latest: Some(pending_work),
+                shutting_down: true,
+                worker_started: true,
+            }),
+            ready: Condvar::new(),
+            wake_port: AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime),
+            state_lost: AtomicBool::new(false),
+        });
+
+        PreparationExecutor::run(shared);
+
+        assert!(
+            !task_was_called.load(Ordering::Acquire),
+            "pre-cancelled work must never execute its task"
+        );
+        assert!(matches!(
+            result_slot.take(),
+            Ok(Some(Err(MediaPreparationFailureKind::Cancelled)))
+        ));
+    }
+
+    #[test]
     fn worker_thread_panic_is_typed() {
         let executor = disconnected_executor();
         executor
