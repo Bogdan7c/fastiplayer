@@ -56,6 +56,19 @@ impl From<bool> for PacketKeyframe {
     }
 }
 
+/// Источник decoder configuration, доступный рядом с video decode-start packet-ом.
+///
+/// `PacketKeyframe` доказывает random-access picture, а этот контракт отдельно
+/// сообщает, переживёт ли packet decoder reset без ранее принятого codec config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketDecodeStartInitialization {
+    /// Decoder должен получить configuration из track metadata или прошлых packet-ов.
+    RequiresTrackConfiguration,
+
+    /// Packet содержит required configuration перед собственным decode-start picture.
+    IncludesInBandConfiguration,
+}
+
 /// Минимальная единица codec data, которую demuxer передаёт pipeline-у.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Packet {
@@ -92,6 +105,9 @@ pub struct Packet {
     /// Явная keyframe-классификация для video packets.
     pub keyframe: PacketKeyframe,
 
+    /// Отдельное доказательство self-contained decoder initialization.
+    decode_start_initialization: PacketDecodeStartInitialization,
+
     /// Точная граница показа, которой владеет neutral packet boundary.
     presentation_window: PacketPresentationWindow,
 
@@ -121,6 +137,8 @@ impl Packet {
             track_duration: None,
             byte_offset: None,
             keyframe: PacketKeyframe::from_known(keyframe),
+            decode_start_initialization:
+                PacketDecodeStartInitialization::RequiresTrackConfiguration,
             presentation_window: PacketPresentationWindow::Unbounded,
             data,
         }
@@ -147,6 +165,8 @@ impl Packet {
             track_duration: None,
             byte_offset: None,
             keyframe,
+            decode_start_initialization:
+                PacketDecodeStartInitialization::RequiresTrackConfiguration,
             presentation_window: PacketPresentationWindow::Unbounded,
             data,
         }
@@ -156,6 +176,22 @@ impl Packet {
     #[must_use]
     pub const fn presentation_window(&self) -> PacketPresentationWindow {
         self.presentation_window
+    }
+
+    /// Возвращает typed evidence о configuration для decoder reset boundary.
+    #[must_use]
+    pub const fn decode_start_initialization(&self) -> PacketDecodeStartInitialization {
+        self.decode_start_initialization
+    }
+
+    /// Присоединяет доказательство владельца codec/container packetization.
+    #[must_use]
+    pub const fn with_decode_start_initialization(
+        mut self,
+        initialization: PacketDecodeStartInitialization,
+    ) -> Self {
+        self.decode_start_initialization = initialization;
+        self
     }
 
     /// Присоединяет заранее проверенное exact-окно к согласованному packet track clock.
@@ -286,9 +322,9 @@ mod tests {
     use bytes::Bytes;
 
     use crate::{
-        ExactPresentationWindow, Packet, PacketKeyframe, PacketPresentationWindow,
-        PacketPresentationWindowAssignmentError, TimeBase, TrackDuration, TrackId, TrackKind,
-        TrackTimestamp,
+        ExactPresentationWindow, Packet, PacketDecodeStartInitialization, PacketKeyframe,
+        PacketPresentationWindow, PacketPresentationWindowAssignmentError, TimeBase, TrackDuration,
+        TrackId, TrackKind, TrackTimestamp,
     };
 
     #[test]
@@ -325,6 +361,31 @@ mod tests {
 
         assert_eq!(packet.keyframe, PacketKeyframe::Unknown);
         assert_eq!(packet.keyframe.as_known_bool(), None);
+    }
+
+    #[test]
+    fn packet_keeps_decode_start_initialization_separate_from_keyframe() {
+        let packet = Packet::new_with_keyframe_unbounded(
+            TrackId::new(7),
+            TrackKind::Video,
+            Duration::from_millis(42),
+            None,
+            PacketKeyframe::Keyframe,
+            Bytes::from_static(b"annex-b"),
+        );
+        assert_eq!(
+            packet.decode_start_initialization(),
+            PacketDecodeStartInitialization::RequiresTrackConfiguration
+        );
+
+        let self_contained_packet = packet.with_decode_start_initialization(
+            PacketDecodeStartInitialization::IncludesInBandConfiguration,
+        );
+        assert_eq!(
+            self_contained_packet.decode_start_initialization(),
+            PacketDecodeStartInitialization::IncludesInBandConfiguration
+        );
+        assert_eq!(self_contained_packet.keyframe, PacketKeyframe::Keyframe);
     }
 
     #[test]

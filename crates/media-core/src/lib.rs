@@ -33,7 +33,7 @@ pub use metadata::{
     DiscNumber, MediaContainerMetadata, MediaMetadata, MediaTagMetadata, TrackNumber,
     TvEpisodeNumber, TvSeasonNumber,
 };
-pub use packet::{Packet, PacketKeyframe};
+pub use packet::{Packet, PacketDecodeStartInitialization, PacketKeyframe};
 pub use presentation_window::{
     ExactPresentationWindow, ExactPresentationWindowError, PacketPresentationWindow,
     PacketPresentationWindowAssignmentError,

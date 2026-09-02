@@ -5972,7 +5972,6 @@ dependencies = [
  "anyhow",
  "bytes",
  "cbc",
- "codec-core",
  "demux-api",
  "hls-playlist-core",
  "log",

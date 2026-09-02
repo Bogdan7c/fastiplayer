@@ -557,6 +557,7 @@ impl MpegTsDemuxer {
             frame.bytes,
         )
         .with_track_timestamps(Some(track_pts), track_dts)
+        .with_decode_start_initialization(frame.decode_start_initialization)
         .with_byte_offset(byte_offset);
         if let Some(duration_units) = frame.duration_90khz {
             let track_duration = TrackDuration::new(track_id, duration_units, mpeg_clock());

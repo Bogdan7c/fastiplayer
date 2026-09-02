@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use codec_core::{H264Packetization, probe_h264_packet_in_band_decode_start};
 use demux_api::DemuxRegistry;
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
-    Demuxer, MediaMetadata, MediaTime, Packet, PacketKeyframe, TrackId, TrackInfo, TrackKind,
+    Demuxer, MediaMetadata, MediaTime, Packet, PacketDecodeStartInitialization, PacketKeyframe,
+    TrackId, TrackInfo, TrackKind,
 };
 use web_media_transport_api::SourceGeneration;
 
@@ -357,14 +357,15 @@ impl HlsLiveComponentDemuxer {
         if track.codec_id != "V_MPEG4/ISO/AVC" {
             return Ok(HlsLiveVideoDecodeStartEvidence::Proven);
         }
-        let is_self_contained =
-            probe_h264_packet_in_band_decode_start(&packet.data, H264Packetization::AnnexB)
-                .context("HLS live H.264 decode-start probe failed")?;
-        Ok(if is_self_contained {
-            HlsLiveVideoDecodeStartEvidence::Proven
-        } else {
-            HlsLiveVideoDecodeStartEvidence::NotProven
-        })
+        Ok(
+            if packet.decode_start_initialization()
+                == PacketDecodeStartInitialization::IncludesInBandConfiguration
+            {
+                HlsLiveVideoDecodeStartEvidence::Proven
+            } else {
+                HlsLiveVideoDecodeStartEvidence::NotProven
+            },
+        )
     }
 
     fn open_next_retained_segment(&mut self) -> Result<HlsLiveSegmentAdvance> {

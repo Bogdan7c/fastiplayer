@@ -14,7 +14,10 @@ use demux_api::{
     OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
     OrderedSegmentSequence, OrderedSegmentSource,
 };
-use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, TrackKind, VideoPacketFraming};
+use media_core::{
+    DemuxReadEvent, DemuxSeekRequest, Demuxer, PacketDecodeStartInitialization, TrackKind,
+    VideoPacketFraming,
+};
 use source_core::{
     ByteSource, CancellationToken, LocalFileSource, Seekability, SourceFingerprint, SourceResult,
     SourceValidators,
@@ -1234,6 +1237,32 @@ fn one_video_pes_with_two_auds_yields_two_access_units() {
     assert_eq!(access_units.len(), 2);
     assert!(access_units[0].keyframe.is_known_keyframe());
     assert!(!access_units[1].keyframe.is_known_keyframe());
+}
+
+#[test]
+fn h264_access_unit_exposes_in_band_initialization_without_changing_keyframe_semantics() {
+    let self_contained_access_unit = [
+        0, 0, 1, 0x67, 0x42, 0, 0x1e, 0, 0, 1, 0x68, 0xce, 0, 0, 1, 0x65, 0x80,
+    ];
+    let idr_without_parameter_sets = [0, 0, 1, 0x65, 0x80];
+
+    let self_contained =
+        crate::elementary::classify_video_access_unit(&self_contained_access_unit, false)
+            .expect("self-contained H.264 AU должен классифицироваться");
+    let external_configuration =
+        crate::elementary::classify_video_access_unit(&idr_without_parameter_sets, false)
+            .expect("IDR-only H.264 AU должен оставаться валидным keyframe");
+
+    assert!(self_contained.keyframe.is_known_keyframe());
+    assert_eq!(
+        self_contained.decode_start_initialization,
+        PacketDecodeStartInitialization::IncludesInBandConfiguration
+    );
+    assert!(external_configuration.keyframe.is_known_keyframe());
+    assert_eq!(
+        external_configuration.decode_start_initialization,
+        PacketDecodeStartInitialization::RequiresTrackConfiguration
+    );
 }
 
 #[test]

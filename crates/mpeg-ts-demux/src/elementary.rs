@@ -1,9 +1,10 @@
 use bytes::Bytes;
 use codec_core::{
-    H264Packetization, H265PacketDecodeStartProbe, H265Packetization, probe_h264_packet_keyframe,
+    H264Packetization, H265PacketDecodeStartProbe, H265Packetization,
+    probe_h264_packet_in_band_decode_start, probe_h264_packet_keyframe,
     probe_h265_packet_decode_start,
 };
-use media_core::PacketKeyframe;
+use media_core::{PacketDecodeStartInitialization, PacketKeyframe};
 
 use crate::MpegTsDemuxError;
 
@@ -14,6 +15,8 @@ pub(crate) struct ElementaryPacket {
     pub(crate) bytes: Bytes,
     /// Точная/неизвестная decode-start классификация.
     pub(crate) keyframe: PacketKeyframe,
+    /// Наличие required decoder configuration перед decode-start picture.
+    pub(crate) decode_start_initialization: PacketDecodeStartInitialization,
     /// Sample rate, доказанный audio frame header-ом.
     pub(crate) sample_rate: Option<u32>,
     /// Channel count, доказанный ADTS header-ом.
@@ -69,6 +72,8 @@ pub(crate) fn drain_adts_frames(
         frames.push(ElementaryPacket {
             bytes: raw_frame,
             keyframe: PacketKeyframe::NotKeyframe,
+            decode_start_initialization:
+                PacketDecodeStartInitialization::RequiresTrackConfiguration,
             sample_rate: Some(sample_rate),
             channels: Some(channels),
             audio_codec_id: Some("A_AAC"),
@@ -97,6 +102,8 @@ pub(crate) fn drain_mpeg_audio_frames(
         frames.push(ElementaryPacket {
             bytes: Bytes::copy_from_slice(&payload[cursor..cursor + header.frame_length]),
             keyframe: PacketKeyframe::NotKeyframe,
+            decode_start_initialization:
+                PacketDecodeStartInitialization::RequiresTrackConfiguration,
             sample_rate: Some(header.sample_rate),
             channels: None,
             audio_codec_id: Some(header.codec_id),
@@ -129,22 +136,39 @@ pub(crate) fn classify_video_access_unit(
     payload: &[u8],
     is_h265: bool,
 ) -> Result<ElementaryPacket, MpegTsDemuxError> {
-    let keyframe = if is_h265 {
-        match probe_h265_packet_decode_start(payload, H265Packetization::AnnexB) {
+    let (keyframe, decode_start_initialization) = if is_h265 {
+        let keyframe = match probe_h265_packet_decode_start(payload, H265Packetization::AnnexB) {
             H265PacketDecodeStartProbe::DecodeStart => PacketKeyframe::Keyframe,
             H265PacketDecodeStartProbe::NotDecodeStart => PacketKeyframe::NotKeyframe,
             H265PacketDecodeStartProbe::Uncertain(error) => {
                 return Err(malformed(&format!("H.265 Annex-B AU: {error}")));
             }
-        }
+        };
+        (
+            keyframe,
+            PacketDecodeStartInitialization::RequiresTrackConfiguration,
+        )
     } else {
-        probe_h264_packet_keyframe(payload, H264Packetization::AnnexB)
+        let keyframe = probe_h264_packet_keyframe(payload, H264Packetization::AnnexB)
             .map(PacketKeyframe::from_known)
-            .map_err(|error| malformed(&format!("H.264 Annex-B AU: {error}")))?
+            .map_err(|error| malformed(&format!("H.264 Annex-B AU: {error}")))?;
+        let includes_in_band_configuration = if keyframe.is_known_keyframe() {
+            probe_h264_packet_in_band_decode_start(payload, H264Packetization::AnnexB)
+                .map_err(|error| malformed(&format!("H.264 Annex-B AU: {error}")))?
+        } else {
+            false
+        };
+        let initialization = if includes_in_band_configuration {
+            PacketDecodeStartInitialization::IncludesInBandConfiguration
+        } else {
+            PacketDecodeStartInitialization::RequiresTrackConfiguration
+        };
+        (keyframe, initialization)
     };
     Ok(ElementaryPacket {
         bytes: Bytes::copy_from_slice(payload),
         keyframe,
+        decode_start_initialization,
         sample_rate: None,
         channels: None,
         audio_codec_id: None,
