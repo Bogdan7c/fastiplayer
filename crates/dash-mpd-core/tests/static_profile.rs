@@ -379,6 +379,13 @@ fn exact_namespace_dynamic_drm_base_cardinality_and_media_mismatch_fail_closed()
         ),
         (
             r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
+               <Period duration="PT1S"><AdaptationSet contentType="text">
+                 <Representation id="provider-drift" mimeType="application/octet-stream"/>
+               </AdaptationSet></Period></MPD>"#,
+            DashMpdErrorKind::UnsupportedMediaEvidence,
+        ),
+        (
+            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
                <Period duration="PT1S"><AdaptationSet contentType="text"
                  mimeType="application/mp4" codecs="wvtt">
                  <ContentProtection/><Representation id="protected-text"/>

@@ -21,9 +21,7 @@ use attributes::{
     read_text_leaf, required_bounded_attribute, validate_attributes_with_namespaced_allowlist,
 };
 use metadata::*;
-use text_adaptation::{
-    consume_non_playback_text_adaptation_set, is_non_playback_text_adaptation_set,
-};
+use text_adaptation::{consume_non_playback_text_adaptation_set, is_declared_text_adaptation_set};
 
 /// Narrow static profile allowlist, доказанный checked-in S34 matrix.
 pub(super) const SUPPORTED_DASH_PROFILES: &[&str] = &[
@@ -228,8 +226,8 @@ pub(super) fn parse_period(
                     return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
                 }
                 encountered_adaptation_set_count += 1;
-                if is_non_playback_text_adaptation_set(&child, limits)? {
-                    consume_non_playback_text_adaptation_set(cursor)?;
+                if is_declared_text_adaptation_set(&child, limits)? {
+                    consume_non_playback_text_adaptation_set(cursor, &child, limits)?;
                 } else {
                     adaptation_sets.push(parse_adaptation_set(cursor, child, limits)?);
                 }
