@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "tests/native_cross_source_playlist.rs"]
+mod native_cross_source_playlist;
 #[path = "tests/native_dash_live_vertical.rs"]
 mod native_dash_live_vertical;
 #[path = "tests/native_dash_vertical.rs"]

@@ -164,7 +164,7 @@ fn split_fmp4_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 /// Собирает immutable MPD, fMP4 и WebM routes поверх loopback production HTTP transport-а.
-fn fixture_routes() -> HashMap<String, Vec<Vec<u8>>> {
+pub(super) fn fixture_routes() -> HashMap<String, Vec<Vec<u8>>> {
     let (webm_initialization, webm_media) = split_webm_fixture();
     let (fmp4_initialization, fmp4_first, fmp4_second) = split_fmp4_fixture();
     HashMap::from([
@@ -242,7 +242,7 @@ pub(super) fn native_settings() -> WebMediaOpenSettings {
 }
 
 /// Вызывает direct static DASH admission с optional installed semantic selection.
-fn prepare_native(
+pub(super) fn prepare_native(
     source: &NativeDashUrl,
     expected_selection: Option<&web_media_core::WebMediaSemanticSelectionRequest>,
     settings: &WebMediaOpenSettings,

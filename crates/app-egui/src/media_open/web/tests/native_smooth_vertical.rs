@@ -68,7 +68,7 @@ const AUDIO_SECOND: &[u8] = include_bytes!(
 );
 
 /// Loopback origin обслуживает только реально доказанные component rows.
-fn fixture_routes() -> HashMap<String, Vec<Vec<u8>>> {
+pub(super) fn fixture_routes() -> HashMap<String, Vec<Vec<u8>>> {
     HashMap::from([
         ("/vod/Manifest".to_owned(), vec![SMOOTH_MANIFEST.to_vec()]),
         (
@@ -143,7 +143,7 @@ fn h264_system_capabilities() -> SystemCapabilities {
 }
 
 /// Settings запрещают extractor и используют production AAC capability probe.
-fn native_settings() -> WebMediaOpenSettings {
+pub(super) fn native_settings() -> WebMediaOpenSettings {
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     app_config.web_media.preferred_video_height = Some(
@@ -160,7 +160,7 @@ fn native_settings() -> WebMediaOpenSettings {
 }
 
 /// Выполняет production native preparation и запрещает fallback для valid fixture-а.
-fn prepare_native(
+pub(super) fn prepare_native(
     source: &NativeSmoothUrl,
     expected_selection: Option<&web_media_core::WebMediaSemanticSelectionRequest>,
     settings: &WebMediaOpenSettings,
@@ -275,7 +275,7 @@ fn assert_vod_seek(
 }
 
 /// Existing Smooth runtime публикует stable A/V tracks асинхронно до seek admission.
-fn wait_for_tracks_changed(demuxer: &mut dyn Demuxer) {
+pub(super) fn wait_for_tracks_changed(demuxer: &mut dyn Demuxer) {
     let deadline = Instant::now() + SMOOTH_VERTICAL_DEADLINE;
     loop {
         assert!(
