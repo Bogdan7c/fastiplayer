@@ -8,7 +8,7 @@ use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, SwapchainTransferMode,
 };
-use render_wgpu_shell::{ShellPresentMode, SurfacePresentSettings};
+use render_wgpu_shell::{ShellPresentMode, SurfaceAlphaPreference, SurfacePresentSettings};
 use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig, VulkanPresentMode};
 use tracing::warn;
 
@@ -27,6 +27,7 @@ pub(crate) fn surface_present_settings_from_config(
     SurfacePresentSettings {
         present_mode,
         max_frame_latency: app_config.render.vulkan.max_frame_latency,
+        alpha_preference: SurfaceAlphaPreference::TransparentPreferred,
     }
 }
 
@@ -145,5 +146,16 @@ mod tests {
         let settings = hdr_to_sdr_settings_from_config(&AppConfig::default());
 
         assert_eq!(settings, HdrToSdrSettings::default());
+    }
+
+    /// Первичное создание renderer-а всегда запрашивает прозрачную surface-композицию.
+    #[test]
+    fn initial_surface_settings_prefer_transparency() {
+        let settings = surface_present_settings_from_config(&AppConfig::default());
+
+        assert_eq!(
+            settings.alpha_preference,
+            SurfaceAlphaPreference::TransparentPreferred
+        );
     }
 }

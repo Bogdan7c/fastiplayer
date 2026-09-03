@@ -49,6 +49,7 @@ mod web_media_open;
 mod web_media_quality;
 mod web_media_stream_model;
 mod web_media_vod_recovery;
+mod window_corner_policy;
 
 use anyhow::{Context, Result};
 use tracing::info;

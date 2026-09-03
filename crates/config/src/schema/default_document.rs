@@ -337,6 +337,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "corner_radius_px = 12",
+        "# Радиус прозрачного контура окна; 0 отключает скругление, диапазон 0..24 px.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[ui.sidebar]",
         "# Геометрия общей панели Playlist/Settings/URL/Info.",
     );

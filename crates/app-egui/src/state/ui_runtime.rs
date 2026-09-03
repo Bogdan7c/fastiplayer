@@ -176,7 +176,6 @@ impl AppState {
         playlist_models: PlaylistUiFrameModels<'_>,
     ) -> RenderedAppUi {
         let render_ui_started_at = Instant::now();
-
         let pre_ui_setup_started_at = Instant::now();
         let player_snapshot = frame_context.player_snapshot();
         let is_playing = player_snapshot.playback_state == PlaybackState::Playing;
@@ -427,6 +426,7 @@ impl AppState {
                 .and_then(|binding| playlist_ui_output.into_visible_hint(binding)),
             video_viewport_rect,
             video_exclusion_rects,
+            window_corner_mask: self.window_corner_mask(window),
             timings: AppUiRenderTimings {
                 total: render_ui_started_at.elapsed(),
                 pre_ui_setup: pre_ui_setup_elapsed,

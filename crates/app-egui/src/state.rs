@@ -199,6 +199,9 @@ pub(crate) struct RenderedAppUi {
     /// UI-области, под которыми video pass не должен рисовать кадр.
     pub(crate) video_exclusion_rects: Vec<egui::Rect>,
 
+    /// Контур кадра, разрешённый из committed config и текущего состояния окна.
+    pub(crate) window_corner_mask: render_wgpu_shell::WindowCornerMask,
+
     /// Timing внутренних участков `render_ui`.
     pub(crate) timings: AppUiRenderTimings,
 }
@@ -565,6 +568,18 @@ impl AppState {
         let live_scrub_settings = self.live_scrub_settings_snapshot();
         self.timeline_ui_state
             .defer_live_scrub_settings_change(live_scrub_settings);
+    }
+
+    /// Разрешает committed контур с учётом текущего native window state.
+    pub(crate) fn window_corner_mask(
+        &self,
+        window: &winit::window::Window,
+    ) -> render_wgpu_shell::WindowCornerMask {
+        crate::window_corner_policy::resolve_window_corner_mask(
+            self.committed_config_snapshot.window_corner_radius_points(),
+            window.is_maximized(),
+            window.fullscreen().is_some(),
+        )
     }
 
     /// Явно возвращает live host к последней сохранённой ширине после persistence failure.

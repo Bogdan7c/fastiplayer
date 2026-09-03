@@ -98,6 +98,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "ui.language",
     "ui.skin",
     "ui.window.titlebar_height_px",
+    "ui.window.corner_radius_px",
     "ui.sidebar.width_points",
     "ui.settings.live_preview_max_hz",
     "ui.animations.reduced_motion",
@@ -597,6 +598,12 @@ fn metadata_ranges_match_validation_constants() {
         "ui.window.titlebar_height_px",
         validation::MIN_TITLEBAR_HEIGHT_PX,
         validation::MAX_TITLEBAR_HEIGHT_PX,
+    );
+    assert_integer_range(
+        &registry,
+        "ui.window.corner_radius_px",
+        crate::MIN_WINDOW_CORNER_RADIUS_PX,
+        crate::MAX_WINDOW_CORNER_RADIUS_PX,
     );
 }
 

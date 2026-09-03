@@ -17,6 +17,7 @@ pub(super) struct PreparedUiFrame {
     pub(super) screen: render_wgpu_shell::RenderScreenDescriptor,
     pub(super) video_viewport: RenderViewport,
     pub(super) video_exclusion_rects: Vec<RenderViewport>,
+    pub(super) window_corner_mask: render_wgpu_shell::WindowCornerMask,
     pub(super) requested_repaint: bool,
     pub(super) settings_actions: Vec<crate::settings_ui::SettingsUiAction>,
     pub(super) sidebar_width_change: Option<crate::ui::sidebar::SidebarWidthChange>,
@@ -78,6 +79,7 @@ pub(super) fn prepare_ui_frame(
         playlist_visible_items_hint,
         video_viewport_rect,
         video_exclusion_rects,
+        window_corner_mask,
         timings: app_ui_timings,
     } = rendered_app_ui;
 
@@ -120,6 +122,7 @@ pub(super) fn prepare_ui_frame(
         },
         video_viewport,
         video_exclusion_rects,
+        window_corner_mask,
         requested_repaint,
         settings_actions,
         sidebar_width_change,

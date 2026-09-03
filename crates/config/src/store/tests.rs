@@ -729,6 +729,7 @@ fn schema_version_10_defaults_include_web_media_and_existing_policies() {
     );
     assert_eq!(config.ui.skin, "minimal");
     assert_eq!(config.ui.window.titlebar_height_px, 40);
+    assert_eq!(config.ui.window.corner_radius_px, 12);
     assert_eq!(config.ui.settings.live_preview_max_hz, 60);
 }
 
@@ -869,6 +870,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(created_toml.contains("skin = \"minimal\""));
     assert!(created_toml.contains("[ui.window]"));
     assert!(created_toml.contains("titlebar_height_px = 40"));
+    assert!(created_toml.contains("corner_radius_px = 12"));
     assert!(created_toml.contains("[ui.settings]"));
     assert!(created_toml.contains("live_preview_max_hz = 60"));
     assert!(created_toml.contains("[render.hdr_to_sdr]"));
@@ -954,6 +956,7 @@ skin = "minimal"
 
     assert!(!loaded.config.ui.show_telemetry);
     assert_eq!(loaded.config.ui.window.titlebar_height_px, 40);
+    assert_eq!(loaded.config.ui.window.corner_radius_px, 12);
     assert_eq!(
         loaded.config.ui.sidebar.width_points,
         crate::DEFAULT_SIDEBAR_WIDTH_POINTS
@@ -1305,6 +1308,43 @@ titlebar_height_px = {invalid_titlebar_height_px}
 
         assert!(error.to_string().contains("ui.window.titlebar_height_px"));
     }
+}
+
+/// Радиус принимает обе границы и default, но отвергает первое значение вне диапазона.
+#[test]
+fn ui_window_corner_radius_validation_uses_zero_through_twenty_four_range() {
+    for valid_radius in [0_u16, 12_u16, 24_u16] {
+        let mut config = AppConfig::default();
+        config.ui.window.corner_radius_px = valid_radius;
+        config
+            .validate()
+            .expect("valid window corner radius accepted");
+    }
+
+    let mut config = AppConfig::default();
+    config.ui.window.corner_radius_px = 25;
+    let error = config
+        .validate()
+        .expect_err("oversized corner radius rejected");
+
+    assert!(error.to_string().contains("ui.window.corner_radius_px"));
+}
+
+/// Additive поле schema v10 получает default без отдельной миграции.
+#[test]
+fn schema_v10_without_window_corner_radius_loads_default() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    let legacy_document = include_str!("../../tests/fixtures/current_schema_v10.toml")
+        .replace(
+            "# Радиус прозрачного контура окна; 0 отключает скругление, диапазон 0..24 px.\ncorner_radius_px = 12\n",
+            "",
+        );
+    fs::write(&config_path, legacy_document).expect("legacy schema v10 fixture written");
+
+    let loaded = load_from_path(&config_path).expect("schema v10 without additive field loaded");
+
+    assert_eq!(loaded.config.ui.window.corner_radius_px, 12);
 }
 
 /// Проверяет валидацию времени анимации sidebar: 0 валиден («без анимации»),

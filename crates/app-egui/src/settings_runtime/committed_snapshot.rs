@@ -121,6 +121,12 @@ impl CommittedConfigSnapshot {
     pub(crate) fn titlebar_height_points(&self) -> f32 {
         f32::from(self.config.ui.window.titlebar_height_px)
     }
+
+    /// Committed радиус контура окна в egui points; draft сюда не попадает до Apply/OK.
+    #[must_use]
+    pub(crate) fn window_corner_radius_points(&self) -> f32 {
+        f32::from(self.config.ui.window.corner_radius_px)
+    }
 }
 
 /// Renderer settings, которые применяются один раз при создании runtime renderer-а.

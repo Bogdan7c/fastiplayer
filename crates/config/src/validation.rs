@@ -674,6 +674,13 @@ fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
         MAX_TITLEBAR_HEIGHT_PX,
     )?;
 
+    validate_u16_range(
+        "ui.window.corner_radius_px",
+        config.ui.window.corner_radius_px,
+        crate::MIN_WINDOW_CORNER_RADIUS_PX,
+        crate::MAX_WINDOW_CORNER_RADIUS_PX,
+    )?;
+
     Ok(())
 }
 

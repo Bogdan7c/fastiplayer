@@ -133,6 +133,8 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             // оставляет вертикальное ограничение практически на усмотрение compositor-а.
             .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, 1.0))
             .with_decorations(false)
+            // X11 требует запросить alpha-capable native window до создания WGPU surface.
+            .with_transparent(true)
             .with_visible(true);
 
         let window = match event_loop.create_window(window_attributes) {

@@ -4,6 +4,8 @@ use render_core::RenderViewport;
 use render_wgpu_video::WgpuRenderableFrame;
 use winit::window::Window;
 
+use crate::WindowCornerMask;
+
 /// Итог одного render-frame вызова.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderFrameOutcome {
@@ -44,6 +46,9 @@ pub struct RenderFrameStageTimings {
     /// Egui overlay pass поверх video output.
     pub egui_render: Duration,
 
+    /// Финальная маска общего контура окна после video и egui.
+    pub window_corner_mask: Duration,
+
     /// Синхронная часть `queue.submit(...)`.
     pub queue_submit: Duration,
 
@@ -79,6 +84,7 @@ impl RenderFrameStageTimings {
             ("surface_view_creation", self.surface_view_creation),
             ("video_render", self.video_render),
             ("egui_render", self.egui_render),
+            ("window_corner_mask", self.window_corner_mask),
             ("queue_submit", self.queue_submit),
             ("device_poll", self.device_poll),
             ("pre_present_notify", self.pre_present_notify),
@@ -166,6 +172,9 @@ pub struct RenderFrameInput<'frame> {
 
     /// Renderer-neutral области, где video pass не должен рисовать кадр.
     pub video_exclusion_rects: Vec<RenderViewport>,
+
+    /// Разрешённая app-слоем форма текущего desktop-кадра.
+    pub window_corner_mask: WindowCornerMask,
 }
 
 /// Зажимает app-computed video viewport к текущему swapchain target-у.
@@ -255,14 +264,15 @@ mod tests {
         let stages = RenderFrameStageTimings {
             surface_acquire: Duration::from_millis(7),
             device_poll: Duration::from_millis(11),
+            window_corner_mask: Duration::from_millis(13),
             surface_present: Duration::from_millis(5),
             ..RenderFrameStageTimings::default()
         };
 
         let slowest_stage = stages.slowest_stage();
 
-        assert_eq!(slowest_stage.name, "device_poll");
-        assert_eq!(slowest_stage.elapsed, Duration::from_millis(11));
+        assert_eq!(slowest_stage.name, "window_corner_mask");
+        assert_eq!(slowest_stage.elapsed, Duration::from_millis(13));
     }
 
     #[test]

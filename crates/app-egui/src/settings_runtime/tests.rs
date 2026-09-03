@@ -605,6 +605,103 @@ fn committed_snapshot_maps_titlebar_height_to_points() {
     assert_eq!(custom_snapshot.titlebar_height_points(), 64.0);
 }
 
+/// Snapshot активирует только committed радиус, переданный после успешного Apply/OK.
+#[test]
+fn committed_snapshot_maps_window_corner_radius_to_points() {
+    let mut config = custom_config_for_test();
+    assert_eq!(
+        CommittedConfigSnapshot::from_config(&config).window_corner_radius_points(),
+        12.0
+    );
+
+    config.ui.window.corner_radius_px = 24;
+    assert_eq!(
+        CommittedConfigSnapshot::from_config(&config).window_corner_radius_points(),
+        24.0
+    );
+}
+
+/// Draft и Cancel не меняют активный контур, а успешный Apply синхронизирует snapshot.
+#[test]
+fn window_corner_radius_activates_only_after_successful_apply() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("window-corner-radius-apply");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime should build");
+    let mut adapter = RecordingRuntimeAdapter::from_config(&config).expect("adapter should build");
+
+    runtime
+        .handle_ui_actions_with_runtime_adapter(
+            vec![
+                SettingsUiAction::Open,
+                SettingsUiAction::SetValue {
+                    setting_id: SettingId::from("ui.window.corner_radius_px"),
+                    value: SettingValue::Integer(24),
+                },
+            ],
+            &mut adapter,
+        )
+        .expect("corner radius draft accepted");
+    assert_eq!(
+        runtime.committed_snapshot().window_corner_radius_points(),
+        12.0
+    );
+
+    runtime
+        .handle_ui_actions_with_runtime_adapter(vec![SettingsUiAction::Cancel], &mut adapter)
+        .expect("Cancel discards corner radius draft");
+    assert_eq!(
+        runtime.committed_snapshot().window_corner_radius_points(),
+        12.0
+    );
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("ui.window.corner_radius_px"),
+                value: SettingValue::Integer(24),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+    assert_eq!(
+        runtime.committed_snapshot().window_corner_radius_points(),
+        24.0
+    );
+    assert_eq!(
+        adapter
+            .committed_snapshots
+            .last()
+            .expect("successful Apply syncs app snapshot")
+            .window_corner_radius_points(),
+        24.0
+    );
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("ui.window.corner_radius_px"),
+                value: SettingValue::Integer(0),
+            },
+            SettingsUiAction::Ok,
+        ],
+        &mut adapter,
+    );
+    assert_eq!(
+        runtime.committed_snapshot().window_corner_radius_points(),
+        0.0
+    );
+    remove_file_if_exists(&path);
+}
+
 #[test]
 fn committed_snapshot_updates_hotkey_seek_policy_without_synthetic_event() {
     let mut config = AppConfig::default();

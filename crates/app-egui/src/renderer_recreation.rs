@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use render_core::RenderLiveSettingsAdapter;
 use render_wgpu_shell::{
-    Renderer, RendererGpuDrainError, ShellPresentMode, SurfacePresentSettings,
+    Renderer, RendererGpuDrainError, ShellPresentMode, SurfaceAlphaPreference,
+    SurfacePresentSettings,
 };
 use render_wgpu_video::WgpuFrameTextureViewMaterializer;
 use rustiplayer_config::{RenderProfile, VulkanPresentMode};
@@ -386,6 +387,7 @@ fn surface_settings(settings: &RenderCommittedSettingsUpdate) -> SurfacePresentS
     SurfacePresentSettings {
         present_mode,
         max_frame_latency: settings.vulkan.max_frame_latency,
+        alpha_preference: SurfaceAlphaPreference::TransparentPreferred,
     }
 }
 
@@ -737,5 +739,16 @@ mod tests {
         coordinator.set_surface_event_pending(false);
         let retried = coordinator.recreate(&mut lifecycle, &settings(), &settings());
         assert_eq!(retried, AppRouteApplyResult::Applied);
+    }
+
+    /// Controlled recreation сохраняет запрос прозрачной композиции нового surface-а.
+    #[test]
+    fn controlled_recreation_preserves_transparent_surface_preference() {
+        let surface_settings = surface_settings(&settings());
+
+        assert_eq!(
+            surface_settings.alpha_preference,
+            SurfaceAlphaPreference::TransparentPreferred
+        );
     }
 }

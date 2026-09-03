@@ -38,6 +38,9 @@ use crate::frame::{
     RenderFrameStageTimings, RenderFrameTiming, clamp_video_exclusion_rects_to_screen,
     clamp_video_viewport_to_screen,
 };
+use crate::surface_alpha::choose_alpha_mode;
+use crate::surface_settings::{SurfacePresentSettings, choose_present_mode};
+use crate::window_corner_mask::{SurfaceAlphaEncoding, WindowCornerMaskRenderer};
 
 /// Превращает длительность в миллисекунды для числовых tracing fields.
 fn duration_ms(duration: Duration) -> f64 {
@@ -83,91 +86,6 @@ fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> Result<wgpu::Textur
         .context("Surface capabilities не вернул ни одного texture format")
 }
 
-/// Предпочтительный present mode swapchain-а в нейтральной форме.
-///
-/// Живёт в shell-слое, чтобы композиция (`app-egui`) могла прокинуть выбор из
-/// config без зависимости shell -> `rustiplayer-config`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShellPresentMode {
-    /// Авто: предпочесть FIFO (VSync), иначе первый доступный режим backend-а.
-    Auto,
-
-    /// FIFO: классический VSync, present блокирует до кадрового интервала.
-    Fifo,
-
-    /// Mailbox: triple-buffer, present не блокирует, новый кадр вытесняет очередь.
-    Mailbox,
-
-    /// Immediate: без синхронизации (возможен tearing).
-    Immediate,
-}
-
-/// Нейтральные surface present настройки, прокидываемые в shell из композиции.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SurfacePresentSettings {
-    /// Предпочтительный present mode.
-    pub present_mode: ShellPresentMode,
-
-    /// Желаемая глубина swapchain latency (в кадрах); 0 нормализуется к 1.
-    pub max_frame_latency: u32,
-}
-
-impl Default for SurfacePresentSettings {
-    /// Безопасный VSync default, совпадающий с прежним hardcoded поведением shell.
-    fn default() -> Self {
-        Self {
-            present_mode: ShellPresentMode::Auto,
-            max_frame_latency: 2,
-        }
-    }
-}
-
-/// Выбирает present mode с учётом предпочтения и без тихого fallback на пустой список.
-fn choose_present_mode(
-    present_modes: &[wgpu::PresentMode],
-    preference: ShellPresentMode,
-) -> Result<wgpu::PresentMode> {
-    // Auto и недоступный запрошенный режим откатываются к FIFO -> первый доступный.
-    let auto_choice = || -> Result<wgpu::PresentMode> {
-        if present_modes.contains(&wgpu::PresentMode::Fifo) {
-            return Ok(wgpu::PresentMode::Fifo);
-        }
-        present_modes
-            .first()
-            .copied()
-            .context("Surface capabilities не вернул ни одного present mode")
-    };
-
-    let requested = match preference {
-        ShellPresentMode::Auto => return auto_choice(),
-        ShellPresentMode::Fifo => wgpu::PresentMode::Fifo,
-        ShellPresentMode::Mailbox => wgpu::PresentMode::Mailbox,
-        ShellPresentMode::Immediate => wgpu::PresentMode::Immediate,
-    };
-
-    if present_modes.contains(&requested) {
-        return Ok(requested);
-    }
-
-    // Запрошенный режим surface не поддерживает: явный warn и безопасный fallback,
-    // вместо тихого выбора чего попало.
-    tracing::warn!(
-        requested = ?requested,
-        available = ?present_modes,
-        "Запрошенный present mode не поддержан surface-ом; откат к FIFO/первому доступному"
-    );
-    auto_choice()
-}
-
-/// Выбирает alpha mode без неявного panic на некорректных capabilities.
-fn choose_alpha_mode(alpha_modes: &[wgpu::CompositeAlphaMode]) -> Result<wgpu::CompositeAlphaMode> {
-    // Phase 8.5 не вводит отдельную alpha policy, поэтому используем первый режим backend-а.
-    alpha_modes
-        .first()
-        .copied()
-        .context("Surface capabilities не вернул ни одного alpha mode")
-}
-
 /// GPU ресурсы: device, queue, surface и их конфигурация.
 ///
 /// Владеет всеми wgpu объектами, необходимыми для рендеринга.
@@ -196,6 +114,9 @@ pub struct GpuContext {
 
     /// Typed device-lost state, который callback WGPU публикует lifecycle owner-у.
     device_lost: Arc<Mutex<Option<GpuDeviceLost>>>,
+
+    /// Подтверждённое surface-кодирование alpha; `None` запрещает прозрачную маску.
+    window_alpha_encoding: Option<SurfaceAlphaEncoding>,
 }
 
 /// Доказанный WGPU device-lost cause без string flattening lifecycle state-а.
@@ -328,7 +249,8 @@ impl GpuContext {
 
         let present_mode =
             choose_present_mode(&surface_caps.present_modes, surface_present.present_mode)?;
-        let alpha_mode = choose_alpha_mode(&surface_caps.alpha_modes)?;
+        let (alpha_mode, window_alpha_encoding) =
+            choose_alpha_mode(&surface_caps.alpha_modes, surface_present.alpha_preference)?;
 
         // 0 кадров latency недопустимо для swapchain — нормализуем к 1.
         let desired_maximum_frame_latency = surface_present.max_frame_latency.max(1);
@@ -365,6 +287,7 @@ impl GpuContext {
             surface_config,
             surface_format,
             device_lost,
+            window_alpha_encoding,
         })
     }
 
@@ -398,6 +321,9 @@ pub struct Renderer {
 
     /// Video renderer facade — скрывает конкретный NV12 shader/backend детали.
     video_renderer: WgpuVideoRenderer,
+
+    /// Финальный compositor контура; отсутствует при opaque/inherit surface fallback.
+    window_corner_mask_renderer: Option<WindowCornerMaskRenderer>,
 }
 
 impl Renderer {
@@ -413,6 +339,9 @@ impl Renderer {
 
         let egui_compositor = EguiCompositor::new(&gpu.device, gpu.surface_format);
         let video_renderer = WgpuVideoRenderer::new(&gpu.device, gpu.surface_format);
+        let window_corner_mask_renderer = gpu.window_alpha_encoding.map(|alpha_encoding| {
+            WindowCornerMaskRenderer::new(&gpu.device, gpu.surface_format, alpha_encoding)
+        });
 
         info!("Рендерер полностью инициализирован");
 
@@ -420,6 +349,7 @@ impl Renderer {
             gpu,
             egui_compositor,
             video_renderer,
+            window_corner_mask_renderer,
         })
     }
 
@@ -518,14 +448,15 @@ impl Renderer {
         self.video_renderer.set_hdr_to_sdr_settings(settings);
     }
 
-    /// Рендерит один полный кадр: видео + egui overlay.
+    /// Рендерит один полный кадр: видео + egui overlay + контур desktop-окна.
     ///
     /// Последовательность:
     /// 1. Обновляем egui textures/buffers
     /// 2. Получаем surface texture из swapchain
     /// 3. Рендерим video frame через backend facade или очищаем target
     /// 4. Рендерим egui поверх видео
-    /// 5. Submit и present
+    /// 5. Последним pass-ом применяем прозрачный контур окна
+    /// 6. Submit и present
     pub fn render_frame(&mut self, input: RenderFrameInput<'_>) -> RenderFrameOutcome {
         let renderer_started_at = Instant::now();
         let RenderFrameInput {
@@ -536,6 +467,7 @@ impl Renderer {
             screen,
             video_viewport,
             video_exclusion_rects,
+            window_corner_mask,
         } = input;
         let video_frame: Option<&WgpuRenderableFrame<'_>> = video_frame;
         let clamped_video_viewport = clamp_video_viewport_to_screen(video_viewport, &screen);
@@ -699,6 +631,23 @@ impl Renderer {
         );
         let egui_render_elapsed = stage_started_at.elapsed();
 
+        // Маска идёт строго последней: она одинаково обрезает video, egui и hover surfaces.
+        let stage_started_at = Instant::now();
+        if let Some(mask_renderer) = &self.window_corner_mask_renderer {
+            mask_renderer.render(
+                &self.gpu.queue,
+                &mut encoder,
+                &surface_view,
+                [
+                    self.gpu.surface_config.width,
+                    self.gpu.surface_config.height,
+                ],
+                screen.pixels_per_point,
+                window_corner_mask,
+            );
+        }
+        let window_corner_mask_elapsed = stage_started_at.elapsed();
+
         // Отправляем команды на GPU
         let stage_started_at = Instant::now();
         self.gpu.queue.submit(
@@ -739,6 +688,7 @@ impl Renderer {
             surface_view_creation: surface_view_creation_elapsed,
             video_render: video_render_elapsed,
             egui_render: egui_render_elapsed,
+            window_corner_mask: window_corner_mask_elapsed,
             queue_submit: queue_submit_elapsed,
             device_poll: device_poll_elapsed,
             pre_present_notify: pre_present_notify_elapsed,
@@ -804,64 +754,6 @@ mod tests {
             error
                 .to_string()
                 .contains("Surface capabilities не вернул ни одного texture format")
-        );
-    }
-
-    /// Auto предпочитает FIFO как безопасный VSync default, когда он доступен.
-    #[test]
-    fn present_mode_auto_prefers_fifo_when_available() {
-        let present_modes = [wgpu::PresentMode::Immediate, wgpu::PresentMode::Fifo];
-
-        let selected_present_mode = choose_present_mode(&present_modes, ShellPresentMode::Auto)
-            .expect("present mode selected");
-
-        assert_eq!(selected_present_mode, wgpu::PresentMode::Fifo);
-    }
-
-    /// Явный запрошенный поддерживаемый режим (Mailbox) выбирается как есть.
-    #[test]
-    fn present_mode_uses_requested_when_supported() {
-        let present_modes = [wgpu::PresentMode::Fifo, wgpu::PresentMode::Mailbox];
-
-        let selected_present_mode = choose_present_mode(&present_modes, ShellPresentMode::Mailbox)
-            .expect("present mode selected");
-
-        assert_eq!(selected_present_mode, wgpu::PresentMode::Mailbox);
-    }
-
-    /// Запрошенный, но не поддержанный режим откатывается к FIFO без ошибки.
-    #[test]
-    fn present_mode_falls_back_to_fifo_when_requested_unsupported() {
-        let present_modes = [wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate];
-
-        let selected_present_mode = choose_present_mode(&present_modes, ShellPresentMode::Mailbox)
-            .expect("present mode selected");
-
-        assert_eq!(selected_present_mode, wgpu::PresentMode::Fifo);
-    }
-
-    /// Проверяет явную ошибку вместо panic при пустом списке present modes.
-    #[test]
-    fn empty_present_mode_list_is_reported_as_error() {
-        let error = choose_present_mode(&[], ShellPresentMode::Auto)
-            .expect_err("empty present mode list rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("Surface capabilities не вернул ни одного present mode")
-        );
-    }
-
-    /// Проверяет явную ошибку вместо panic при пустом списке alpha modes.
-    #[test]
-    fn empty_alpha_mode_list_is_reported_as_error() {
-        let error = choose_alpha_mode(&[]).expect_err("empty alpha mode list rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("Surface capabilities не вернул ни одного alpha mode")
         );
     }
 }
