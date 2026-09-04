@@ -1,10 +1,11 @@
 # GitHub Actions CI
 
-## Public launch S03: SoundTouch prerequisite для all-target jobs (2026-09-04)
+## Public launch S03: all-target CI prerequisites и bounded artifacts (2026-09-04)
 
 - `Workspace tests (all features)` и `Coverage ratchet` компилируют Cargo examples, включая `audio-timestretch/examples/backend_shootout`, который линкуется с системной `libSoundTouch` через crate `soundtouch`/`soundtouch-ffi`.
-- GitHub-hosted jobs получают отдельные чистые VM, поэтому оба job явно устанавливают Ubuntu 24.04 package `libsoundtouch-dev` в собственном `Install native build dependencies` step. Отсутствие пакета было подтверждено одинаковым `rust-lld: unable to find library -lSoundTouch` в обоих jobs run `33902335187`; это CI-environment fallout, а не coverage regression.
-- `scripts/tests/test_ci_native_prerequisites.py::CiNativePrerequisitesTests::test_all_target_jobs_install_native_link_dependencies` закрепляет exact native package inventory независимо для jobs `tests` и `coverage`, чтобы пакет одной VM не мог маскировать другую и чтобы dependency creep оставался видимым.
+- GitHub-hosted jobs получают отдельные чистые VM, поэтому оба job явно устанавливают Ubuntu 24.04 packages `libsoundtouch-dev`, `libvulkan1` и `mesa-vulkan-drivers` в собственном `Install native build dependencies` step. SoundTouch закрывает `backend_shootout` link, а Mesa lavapipe предоставляет headless Vulkan adapter для media-to-render functional tests. Отсутствие SoundTouch было подтверждено run `33902335187`; отсутствие Vulkan runtime — 16 одинаковыми `Adapter NotFound` failures в workspace job run `33913206255`. Это CI-environment fallout, а не coverage regression.
+- После установки SoundTouch run `33905310274` дважды воспроизводимо исчерпал диск стандартных runners в этих двух jobs (`rustc-LLVM`/runner `System.IO.IOException: No space left on device`). Принятая owner policy: только jobs `tests` и `coverage` задают job-local `CARGO_PROFILE_TEST_DEBUG=0`. Это уменьшает test-profile DWARF artifacts, не меняя тестовый состав, LLVM coverage mapping, baseline или локальные Cargo profiles.
+- `scripts/tests/test_ci_native_prerequisites.py::CiNativePrerequisitesTests::test_all_target_jobs_have_bounded_artifacts_and_native_dependencies` закрепляет exact debug profile и native package inventory независимо для jobs `tests` и `coverage`, чтобы настройка одной VM не могла маскировать другую.
 
 ## Stable coverage v2 override (2026-08-30)
 

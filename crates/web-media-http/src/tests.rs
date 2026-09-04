@@ -144,7 +144,7 @@ impl Drop for TestServer {
     }
 }
 
-/// Читает request headers и пишет один bounded response.
+/// Читает request headers и пишет один bounded response с явным закрытием соединения.
 fn handle_connection(
     stream: &mut TcpStream,
     body: &[u8],
@@ -167,12 +167,16 @@ fn handle_connection(
         }
         TestServerBehavior::Unauthorized => {
             stream
-                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
                 .expect("write unauthorized response");
         }
         TestServerBehavior::Forbidden => {
             stream
-                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
                 .expect("write forbidden response");
         }
         TestServerBehavior::ExpireAfterRequests {
@@ -180,12 +184,15 @@ fn handle_connection(
         } if request_number <= *successful_requests => respond_range(stream, body, &request),
         TestServerBehavior::ExpireAfterRequests { .. } => {
             stream
-                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
                 .expect("write expired endpoint response");
         }
         TestServerBehavior::Redirect { target } if request.starts_with("GET /start ") => {
-            let response =
-                format!("HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\n\r\n");
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
             stream
                 .write_all(response.as_bytes())
                 .expect("write redirect response");
@@ -196,7 +203,7 @@ fn handle_connection(
             serialized_cookie,
         } if request.starts_with("GET /start ") => {
             let response = format!(
-                "HTTP/1.1 302 Found\r\nLocation: {target}\r\nSet-Cookie: {serialized_cookie}\r\nContent-Length: 0\r\n\r\n"
+                "HTTP/1.1 302 Found\r\nLocation: {target}\r\nSet-Cookie: {serialized_cookie}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             );
             stream
                 .write_all(response.as_bytes())
@@ -250,7 +257,10 @@ fn read_request(stream: &mut TcpStream) -> String {
 
 /// Возвращает полный body и намеренно игнорирует Range.
 fn respond_full(stream: &mut TcpStream, body: &[u8]) {
-    let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
     stream
         .write_all(headers.as_bytes())
         .expect("write full headers");
@@ -297,7 +307,7 @@ fn respond_range_with_optional_cookie(
         .map(|cookie| format!("Set-Cookie: {cookie}\r\n"))
         .unwrap_or_default();
     let headers = format!(
-        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\n{set_cookie_header}\r\n",
+        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nConnection: close\r\n{set_cookie_header}\r\n",
         selected.len(),
         body.len()
     );
