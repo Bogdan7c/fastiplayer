@@ -53,11 +53,13 @@ suites. Local-media regressions получают только explicit `--scenar
 отдельно принимает только явно переданные `--case` + `--url`/`--fixture` через
 `scripts/progressive-web-smoke.sh`.
 
-Clean Ubuntu 24.04 runner явно устанавливает только native build dependencies:
+All-target jobs `Workspace tests (all features)` и `Coverage ratchet` на своих
+clean Ubuntu 24.04 runners явно устанавливают только native build dependencies:
 `clang`, `libclang-dev`, `libasound2-dev`, `libavcodec-dev`, `libavutil-dev`,
-`libgbm-dev`, `libva-dev` и `pkg-config`. Они нужны для bindgen, CPAL/ALSA,
-FFmpeg, GBM и VA-API compile/link paths. WGPU/Vulkan в blocking CI только компилируется: GPU, VA
-display, звуковое устройство и окно не требуются и не эмулируются.
+`libgbm-dev`, `libsoundtouch-dev`, `libva-dev` и `pkg-config`. Они нужны для
+bindgen, CPAL/ALSA, FFmpeg, GBM, VA-API и линковки SoundTouch backend example.
+WGPU/Vulkan в blocking CI только компилируется: GPU, VA display, звуковое
+устройство и окно не требуются и не эмулируются.
 
 Toolchain-policy matrix устанавливает тот же workspace minimum явно, включая
 прямой `libdrm-dev`: ALSA, libavcodec/libavutil, VA-API/DRM/GBM,

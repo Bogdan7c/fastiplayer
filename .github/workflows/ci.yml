@@ -72,11 +72,11 @@ jobs:
         with:
           # Нулевой fetch-depth предоставляет origin/base без отдельного API token flow.
           fetch-depth: 0
-      # Native headers совпадают с all-features workspace test boundary.
+      # Native headers и link libraries покрывают все targets clean coverage build.
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libsoundtouch-dev libva-dev pkg-config
       # LLVM tools предоставляют llvm-profdata и llvm-cov exact primary toolchain release.
       - name: Install LLVM coverage tools
         run: rustup component add llvm-tools-preview
@@ -319,11 +319,11 @@ jobs:
     steps:
       # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
       - uses: actions/checkout@v4
-      # Пакеты дают compile/link dependencies, но не эмулируют GPU, VA display или DAC.
+      # Пакеты дают compile/link dependencies всех targets, но не эмулируют GPU, VA display или DAC.
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libsoundtouch-dev libva-dev pkg-config
       # Test artifacts хранятся отдельно от lint/docs modes.
       - uses: actions/cache@v4
         with:

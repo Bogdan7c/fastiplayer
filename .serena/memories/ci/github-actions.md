@@ -1,5 +1,11 @@
 # GitHub Actions CI
 
+## Public launch S03: SoundTouch prerequisite для all-target jobs (2026-09-04)
+
+- `Workspace tests (all features)` и `Coverage ratchet` компилируют Cargo examples, включая `audio-timestretch/examples/backend_shootout`, который линкуется с системной `libSoundTouch` через crate `soundtouch`/`soundtouch-ffi`.
+- GitHub-hosted jobs получают отдельные чистые VM, поэтому оба job явно устанавливают Ubuntu 24.04 package `libsoundtouch-dev` в собственном `Install native build dependencies` step. Отсутствие пакета было подтверждено одинаковым `rust-lld: unable to find library -lSoundTouch` в обоих jobs run `33902335187`; это CI-environment fallout, а не coverage regression.
+- `scripts/tests/test_ci_native_prerequisites.py::CiNativePrerequisitesTests::test_all_target_jobs_install_native_link_dependencies` закрепляет exact native package inventory независимо для jobs `tests` и `coverage`, чтобы пакет одной VM не мог маскировать другую и чтобы dependency creep оставался видимым.
+
 ## Stable coverage v2 override (2026-08-30)
 
 - Этот раздел supersedes более старые coverage-v1 paragraphs ниже. Authoritative architecture/methodology: `mem:testing/coverage`.

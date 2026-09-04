@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Закрепляет S01 CI-контракты toolchain, native deps и libva headers."""
+"""Закрепляет S01/S03 CI-контракты toolchain, native deps и libva headers."""
 
 from __future__ import annotations
 
@@ -31,6 +31,20 @@ EXPECTED_WORKSPACE_NATIVE_PACKAGES = frozenset(
         "libavutil-dev",
         "libdrm-dev",
         "libgbm-dev",
+        "libva-dev",
+        "pkg-config",
+    }
+)
+# Tests и coverage компилируют Cargo examples и поэтому линкуют SoundTouch backend.
+EXPECTED_ALL_TARGET_NATIVE_PACKAGES = frozenset(
+    {
+        "clang",
+        "libclang-dev",
+        "libasound2-dev",
+        "libavcodec-dev",
+        "libavutil-dev",
+        "libgbm-dev",
+        "libsoundtouch-dev",
         "libva-dev",
         "pkg-config",
     }
@@ -121,13 +135,13 @@ def apt_install_packages(step_source: str) -> frozenset[str]:
 
 
 class CiNativePrerequisitesTests(unittest.TestCase):
-    """Проверяет реальные S01 workflow owners и compatibility branches."""
+    """Проверяет реальные S01/S03 workflow owners и compatibility branches."""
 
     @classmethod
     def setUpClass(cls) -> None:
         """Читает production workflows один раз для всего focused suite."""
 
-        # Основной CI source нужен трём независимым contract tests.
+        # Основной CI source нужен четырём независимым contract tests.
         cls.ci_workflow = read_workflow(CI_WORKFLOW_PATH)
         # Toolchain source нужен exact native dependency inventory test.
         cls.toolchain_workflow = read_workflow(TOOLCHAIN_WORKFLOW_PATH)
@@ -164,6 +178,26 @@ class CiNativePrerequisitesTests(unittest.TestCase):
             EXPECTED_WORKSPACE_NATIVE_PACKAGES,
             apt_install_packages(install_step),
         )
+
+    def test_all_target_jobs_install_native_link_dependencies(self) -> None:
+        """Tests и coverage VM получают libraries для сборки всех Cargo targets."""
+
+        # Каждая GitHub-hosted job работает на отдельной VM и владеет своим apt inventory.
+        for job_identifier in ("tests", "coverage"):
+            # Subtest сохраняет точное имя job при выпадении любого native dependency.
+            with self.subTest(job_identifier=job_identifier):
+                # Job извлекается отдельно, чтобы package одной VM не маскировал другую.
+                all_target_job = extract_job(self.ci_workflow, job_identifier)
+                # Именованный step является единственным владельцем native inventory этой VM.
+                install_step = extract_named_step(
+                    all_target_job,
+                    "Install native build dependencies",
+                )
+                # Exact set закрепляет SoundTouch для backend_shootout и запрещает package creep.
+                self.assertEqual(
+                    EXPECTED_ALL_TARGET_NATIVE_PACKAGES,
+                    apt_install_packages(install_step),
+                )
 
     def test_cros_libva_workflow_compiles_against_real_pre_and_post_1_23_headers(self) -> None:
         """Две distro jobs компилируют production constructor по обе стороны ABI boundary."""

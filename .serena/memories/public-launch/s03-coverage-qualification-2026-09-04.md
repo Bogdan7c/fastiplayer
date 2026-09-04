@@ -36,4 +36,4 @@ Fresh repeat checks:
 
 ## Gates
 
-Финальный `scripts/pre-pr-checks.sh` зелёный: guardrails, rustfmt, dependency policy, workspace tests/doc-tests, strict Clippy, strict rustdoc, app no-default-features и MSRV 1.92. Explicit `cargo +1.96.0 build --workspace --all-features --release --locked` зелёный. Coverage commands и GitHub workflow topology не менялись; см. `mem:testing/coverage` и `mem:task_completion`.
+Финальный `scripts/pre-pr-checks.sh` зелёный: guardrails, rustfmt, dependency policy, workspace tests/doc-tests, strict Clippy, strict rustdoc, app no-default-features и MSRV 1.92. Explicit `cargo +1.96.0 build --workspace --all-features --release --locked` зелёный. Coverage commands и GitHub workflow topology не менялись. Первый private push выявил одинаковый missing `libSoundTouch` link prerequisite в all-target jobs `Workspace tests (all features)` и `Coverage ratchet`; обе отдельные Ubuntu VM теперь устанавливают `libsoundtouch-dev`, а exact inventory закреплён source-level contract test. Подробности: `mem:ci/github-actions`; общие completion rules: `mem:task_completion`.
