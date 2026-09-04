@@ -1,151 +1,171 @@
-# rustiplayer
+<p align="center">
+  <img src="LOGO.png" alt="Rustiplayer logo" width="160">
+</p>
 
-`rustiplayer` — desktop-видеоплеер на Rust для Linux. Основной путь воспроизведения
-использует VA-API decode и WGPU/Vulkan render; software fallback использует FFmpeg.
-Проект находится в активной разработке и пока не является готовым portable release.
+# Rustiplayer
 
-## Требования
+A Rust-first desktop media player built for hardware-accelerated playback, responsive controls, and efficient use of real hardware.
 
-- Linux x86_64 с Vulkan-capable GPU/driver;
-- Rust toolchain `1.96.0` из `rust-toolchain.toml`; поддерживаемый MSRV — `1.92.0`;
-- `clang`, `libclang`, `pkg-config`, development headers ALSA, FFmpeg, GBM и VA-API;
-- `yt-dlp 2026.07.04` в `PATH` для утверждённого web-media profile. Другой
-  release не принимается S42 manual acceptance как совместимый.
+[![CI](https://github.com/Bogdan7c/rustiplayer/actions/workflows/ci.yml/badge.svg)](https://github.com/Bogdan7c/rustiplayer/actions/workflows/ci.yml)
+[![Toolchain policy](https://github.com/Bogdan7c/rustiplayer/actions/workflows/toolchain-policy.yml/badge.svg)](https://github.com/Bogdan7c/rustiplayer/actions/workflows/toolchain-policy.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Для Ubuntu 24.04 compile dependencies соответствуют CI:
+**Active development · Pre-alpha · Linux-first.** Built and maintained by one core maintainer. Expect rough edges and source builds while the project works toward 1.0.
 
-```bash
-sudo apt-get install clang libclang-dev libasound2-dev libavcodec-dev \
-  libavutil-dev libgbm-dev libva-dev pkg-config
+> **Runtime screenshot — pending S08.** A real playback capture from a ThinkPad T480s will appear here. See the [T480s evidence checklist](docs/benchmarks/thinkpad-t480s.md).
+
+<!-- S08: replace this placeholder with the real T480s runtime screenshot at
+     docs/assets/rustiplayer-t480s-main.png only after playback is verified.
+     Never fill this slot with docs/design/general.png or another design concept. -->
+
+## Why Rustiplayer exists
+
+Playing media well means coordinating untrusted inputs, decoders, GPU resources, audio clocks, and user interaction without making the application hard to maintain.
+
+- **Performance by design.** VA-API hardware decoding and WGPU/Vulkan rendering keep supported video work on the GPU. Compatible DMA-BUF frames can reach the renderer without a CPU pixel copy; software-decoded frames still use GPU color conversion.
+- **A lighter native playback path.** The desktop UI uses egui/winit, with bounded workers and resource budgets. Supported direct network sources avoid an extractor subprocess. Low overhead is a design priority; whole-application memory and power claims await the T480s baseline.
+- **Design and everyday UX matter.** Playback controls, an interactive seek timeline, playlist navigation, and settings live in the native application. A cohesive UI redesign is still on the roadmap; [design concepts](docs/design/README.md) are clearly labeled as concepts.
+- **Change settings while the application is running.** Settings have explicit runtime owners, live previews where supported, and transactional Apply/rollback. Changes that need a decoder, source, audio output, or renderer rebuild use controlled reconfiguration; busy playback operations can require an explicit retry.
+- **Real hardware is the target.** Efficient playback on low-power laptops matters alongside correctness. Existing hardware evidence and the planned T480s measurements are kept separate from synthetic tests.
+- **A safer, modular Rust orchestration layer.** Source, decode, frame lifetime, rendering, and session control have explicit contracts. Untrusted media and network manifests are a serious attack surface: Rust helps manage ownership, while native libraries, drivers, and unsafe/FFI boundaries still need careful review.
+
+## Verified capabilities
+
+- Local media playback through Rust demux adapters, VA-API hardware decode or FFmpeg software decode, and WGPU rendering, within the supported codec/frame profiles.
+- GPU HDR → SDR tone mapping, including verified AV1 10-bit P010 → BT.2446-C → SDR BT.709. This is **not native HDR display output**.
+- Native progressive HTTP(S)/FTP(S), HLS VOD/live/DVR, DASH VOD/live/DVR, and supported static Smooth Streaming and HDS profiles. Web pages can use the optional system `yt-dlp` adapter.
+- Audio playback, seeking, stream selection, and source reopen/recovery within the accepted media profiles.
+- M3U/M3U8, XSPF, and CUE playlist import/export, queue persistence, and playback-position restore.
+- Runtime settings application and playback/render diagnostics for investigating actual behavior.
+
+[N15 acceptance](docs/native-web-ingress-n15-acceptance.md) records 11 successful source rows reaching the startup presentation/audio gate, two explicit profile exclusions, and real hardware checks. The [compatibility matrix](docs/web-media-compatibility-matrix.md) defines the narrower container, codec, and protocol contracts; a protocol name alone does not promise every variant.
+
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    source["Source / network"] --> demux["Demux / discovery"]
+    demux --> decode["Video decode"]
+    decode --> contract["Frame contract"]
+    contract --> color["Color / HDR processing"]
+    color --> renderer["WGPU renderer"]
+    renderer --> present["Presentation"]
+    demux --> audio["Audio decode / processing"]
+    audio --> output["Audio output / clock"]
+    decode -.-> diagnostics["Diagnostics"]
+    renderer -.-> diagnostics
+    output -.-> diagnostics
 ```
 
-## Сборка и проверки
+Color/HDR processing runs inside the GPU rendering path; the diagram separates its responsibility, not an extra CPU conversion step. The application composes these parts while `player-core` owns playback scheduling and lifecycle. Read [ARCHITECTURE.md](ARCHITECTURE.md) for ownership, resource release, settings transactions, and test boundaries.
+
+## Current platform and support matrix
+
+| Area | Current status | Evidence / boundary |
+| --- | --- | --- |
+| Linux x86_64 | Primary development and runtime target; Vulkan required | [Build and CI policy](docs/continuous-integration.md) |
+| Linux VA-API | Implemented; support depends on GPU, driver, codec/profile, and renderer import compatibility | [N15 hardware acceptance](docs/native-web-ingress-n15-acceptance.md#auto-и-hardware): Radeon 780M / Mesa 26.2.1; representative AV1 and VP9 evidence |
+| FFmpeg software decoding | Enabled in the default build; rendering still requires the GPU | [Frame and backend boundaries](ARCHITECTURE.md#video-frames-and-gpu-ownership) |
+| HDR → SDR | Verified on the existing SDR output path | [N15 evidence](docs/native-web-ingress-n15-acceptance.md#auto-и-hardware) |
+| Native HDR display output | Not implemented; real HDR display acceptance not run | No HDR-monitor claim |
+| ThinkPad T480s | Runtime screenshot and performance qualification pending S08 | [Pending report](docs/benchmarks/thinkpad-t480s.md) |
+| Windows | Native application support is planned before 1.0; not currently supported | Roadmap item 8 |
+| macOS | Not supported; outside the roadmap through 1.0 | No delivery commitment |
+
+## Performance: measured scope first
+
+The existing **N15 native-versus-legacy ingress experiment** measured fixture-based source opening, with 30 successful repetitions per cohort and nearest-rank p95. It compares the legacy extractor fixture with native Ogg ingress. These are not whole-player startup, steady-state video, battery-life, or VLC measurements.
+
+| Matched cold metric | Legacy median / p95 | Native median / p95 |
+| --- | ---: | ---: |
+| Catalog preparation | 29.486 / 30.569 ms | 4.321 / 4.403 ms |
+| First consumer | 29.757 / 30.859 ms | 5.324 / 5.559 ms |
+| Experiment wall time | 73.079 / 74.236 ms | 19.737 / 20.125 ms |
+| Maximum RSS | 51,320 / 51,712 KiB | 47,774 / 48,068 KiB |
+
+In this experiment, median catalog latency fell **85.35%** and median first-consumer latency fell **82.11%**. These results support the narrower benefit of avoiding extractor work on native sources. Payload-byte counters differ between paths and are not a throughput comparison.
+
+The [benchmark policy and methodology guide](docs/benchmarks/README.md#existing-n15-ingress-experiment) links the full [N15 methodology and acceptance report](docs/native-web-ingress-n15-acceptance.md#performance-30-cold--30-warm) and [machine-readable aggregates](docs/native-web-ingress-n15-performance.json), including warm cohorts and limitations. Original per-run samples are not in the public tree.
+
+**VLC comparison:** no comparable VLC results have been published here. The separate [T480s baseline](docs/benchmarks/thinkpad-t480s.md) remains pending; a comparison may be added only if the playback paths and measurement conditions can be made equivalent.
+
+## Current limitations
+
+- Pre-alpha software: Linux-first source builds, incomplete platform coverage, and a UI still undergoing redesign. The current interface contains Russian text; localization is planned.
+- Hardware acceleration is capability-dependent. The existence of a codec backend or a Vulkan device does not prove a particular file will play through hardware decode.
+- Native HDR output and CPU readback fallback are not implemented. A working Vulkan renderer is required even for software video decode.
+- Subtitle descriptors in manifests do not imply subtitle playback. A native subtitle engine and a published compatibility matrix remain roadmap work.
+- DRM, RTSP/RTP/MMS, RTMP wire playback, and private live extractor state are outside the supported profile. Smooth Streaming and HDS are static VOD only.
+- Some exact profiles are rejected intentionally: N15 excludes its avc3/HE-AAC/TTML HLS row and a DASH row whose aspect metadata cannot be represented correctly by the current display contract.
+- Web-page extraction depends on a compatible system `yt-dlp`, its extractors, server availability, and accepted media profiles. User configuration, plugins, and cookies are a trusted external environment; FFmpeg is not a hidden network/demux fallback.
+- The N15 cross-source queue regression proves media consumers before queue commit; it does not prove every windowed UI Next transition. See [acceptance limitations](docs/native-web-ingress-n15-acceptance.md#known-limitations).
+
+## Quick start
+
+Build prerequisites: Linux x86_64, a Vulkan-capable GPU/driver, Rust **1.96.0** from [rust-toolchain.toml](rust-toolchain.toml), a C/C++ toolchain, `clang`/`libclang`, `pkg-config`, and development headers for ALSA, FFmpeg, GBM/DRM, and VA-API. The locked MSRV check uses Rust **1.92.0**.
+
+Ubuntu 24.04 package names, aligned with the repository's CI prerequisites:
 
 ```bash
-cargo +1.96.0 build --workspace --locked
-cargo +1.96.0 test --workspace --locked
+sudo apt-get update
+sudo apt-get install build-essential clang libclang-dev pkg-config \
+  libasound2-dev libavcodec-dev libavutil-dev libdrm-dev libgbm-dev libva-dev \
+  libvulkan1 mesa-vulkan-drivers
+
+git clone https://github.com/Bogdan7c/rustiplayer.git
+cd rustiplayer
+cargo build -p app-egui --release --locked
+./target/release/rustiplayer /path/to/media.mp4
+```
+
+Install Rust through rustup before building; the repository pins the toolchain. Mesa packages above do not replace the correct VA-API driver for your GPU. Supply your own local media file and run in a graphical desktop session with access to the render device and audio output.
+
+For web-page extraction, install system `yt-dlp` separately. The repository's accepted extractor profile uses **2026.07.04**; other versions are not automatically acceptance-qualified. Supported native direct sources do not require it. See the [web-media matrix](docs/web-media-compatibility-matrix.md).
+
+The default application feature includes FFmpeg software decoding. The build boundary without it is checked with:
+
+```bash
+cargo check -p app-egui --no-default-features --locked
+```
+
+## Testing and quality
+
+The repository has workspace tests, strict Clippy/rustdoc, formatting and architectural guardrails, locked toolchain/MSRV checks, dependency policy, and a stable-coverage ratchet. Functional media tests reach WGPU submission/readback or nonzero PCM; real display, VA-API import, and audio-device acceptance remain separate.
+
+```bash
+cargo test --workspace --all-features --locked
 scripts/pre-pr-checks.sh
 ```
 
-Default feature приложения компилирует FFmpeg software decode. Проверить feature-off
-boundary можно командой:
+Full tests also need the [CI test prerequisites and tool versions](docs/continuous-integration.md), including `libsoundtouch-dev` and a headless Vulkan adapter where no GPU is available. The pre-PR wrapper runs the repository checks; coverage has its own command and qualification policy.
 
-```bash
-cargo +1.96.0 check -p app-egui --no-default-features --locked
-```
+Read [CI](docs/continuous-integration.md), [coverage](docs/code-coverage.md), [manual media regressions](docs/manual-media-regressions.md), and [runtime acceptance](docs/runtime-acceptance-manifest.md). The [documentation index](docs/README.md) marks English and Russian documents explicitly. AI tooling is optional and is not required to build or contribute.
 
-Запуск локального файла:
+## Roadmap to 1.0
 
-```bash
-cargo run -p app-egui -- /path/to/media.mp4
-```
+The implementation order is fixed; these are planned milestones, not current capabilities:
 
-## Dependency policy
+1. Build a native Rust subtitle engine with a broad, published text/styled/bitmap format compatibility matrix.
+2. Add a browser media-handoff bridge and browser extension.
+3. Complete the cohesive application redesign, including replacement of the prototype settings UI.
+4. Make application colors and appearance fully configurable from settings.
+5. Add localization infrastructure and initial translations.
+6. Add an OpenGL ES 2.0 renderer for older Linux hardware.
+7. Add drag-and-drop for local files and URLs.
+8. Complete native Windows application support.
 
-Основной policy tool — `cargo-deny 0.20.2`: он проверяет RustSec advisories,
-licenses, sources и показывает duplicate versions. `cargo-machete 0.9.2` выполняет
-только отдельную проверку unused direct dependencies, потому что cargo-deny не
-анализирует использование crate в исходном коде.
+macOS is outside the roadmap through 1.0.
 
-```bash
-cargo install cargo-deny --version 0.20.2 --locked
-cargo install cargo-machete --version 0.9.2 --locked
-scripts/ci-checks.sh dependencies
-```
+## Contributing
 
-Vulnerability и unsound advisories блокируют gate. Yanked и unmaintained findings
-всегда публикуются, но сами по себе не блокируют. В `cargo-deny 0.20` нет уровня
-`warn` для unmaintained, поэтому `deny.warnings.toml` запускается как отдельный
-non-blocking report после blocking policy из `deny.toml`.
+Start with the [architecture](ARCHITECTURE.md), [engineering docs](docs/README.md), and [contributor/agent rules](AGENTS.md). Focused reproductions, testable fixes, and documentation improvements are useful contributions. The dedicated `CONTRIBUTING.md` and support guide are pending S07; [AI-assisted development](docs/ai-development.md) explains the optional maintainer workflow.
 
-Разрешены crates.io, versioned workspace/path dependencies и семь
-инвентаризированных local patches. Новый Git source требует pinned `rev` и
-документированных owner, причины и критерия удаления до изменения source policy.
-Первый аудит и backlog находятся в
-`docs/dependency-report-2026-07-10.md`.
+## Security
 
-## Web media
+Treat media, network manifests, native decoding, GPU imports, and upstream FFI as security-sensitive boundaries. See the [trust-boundary overview](ARCHITECTURE.md#trust-boundaries) and [dependency policy](docs/continuous-integration.md). Do not put credentials, private media URLs, or exploit details in public issues. `SECURITY.md` is pending S07; GitHub Private Vulnerability Reporting is planned for the public launch and is not claimed to be enabled yet.
 
-URL service принимает exact HTTP, HTTPS, FTP и FTPS locator-ы. Утверждённый
-runtime profile включает progressive HTTP/FTP, HLS VOD/live/DVR, DASH
-VOD/live/DVR, static ISM/MSS H.264+AAC VOD и static HDS/F4M/F4F VOD. Поддержка
-ограничена exact containers/codecs/profile rows; произвольный результат
-extractor-а не становится совместимым автоматически.
+## Maintainer and license
 
-Playlist layer поддерживает M3U/M3U8, XSPF и CUE import/export. Public
-single/playlist/channel/search и `multi_video` topology проходят bounded
-preview/commit path. `multi_video` остаётся одной first-class top-level Group
-entry с part-level navigation.
+**Bogdan Korolyov ([Bogdan7c](https://github.com/Bogdan7c))** is the sole core maintainer. The dedicated `MAINTAINERS.md` is pending S07.
 
-RTSP/RTP/MMS, RTMP wire playback, private live extractor state и DRM явно
-исключены. ISM и HDS заявлены только как static VOD; subtitle descriptors не
-означают subtitle playback. Точная matrix:
-[web-media compatibility](docs/web-media-compatibility-matrix.md).
-
-Production extraction намеренно сохраняет обычный system/user `yt-dlp` config,
-plugins и cookies как trusted user environment boundary. Rustiplayer-owned arguments не
-добавляют download/write/exec/postprocessor/mark-watched options и приложение не
-сохраняет app-owned browser/cookie credentials. Exact locator, который
-пользователь явно подтвердил, остаётся durable reopen identity, поэтому
-credential-like material внутри самого locator также сохраняется; transient
-headers, cookies и resolved targets в playlist state не попадают. User
-config/plugins являются trusted external code; их side effects находятся вне
-app guarantee.
-
-## Runtime limitations
-
-- CI компилирует код, но не проверяет реальный Vulkan/VA-API display, GPU import,
-  аудиоустройство или воспроизведение media;
-- hardware decode рассчитан на Linux VA-API; native Windows/macOS backends отсутствуют;
-- software decode требует совместимые FFmpeg runtime libraries;
-- native HDR output и CPU readback fallback не реализованы;
-- hardware/software codec availability зависит от GPU driver и FFmpeg build;
-- DRM playback не реализован;
-- generic web URL playback зависит от совместимого system `yt-dlp`, extractor-а,
-  доступности сервера и совпадения результата с утверждённой compatibility matrix;
-- FFmpeg используется только как software decoder, не как hidden network,
-  demux или RTMP fallback.
-
-В S42 hardware claim ограничен owner-approved S27 exception: exact
-`VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420/NV12, capability
-intersection only. Более широкое hardware acceptance не заявлено; current
-hardware manual rerun имеет статус `NOT RUN`: у владельца сейчас нет
-совместимого VA-API device для opt-in rerun.
-
-Runtime acceptance выполняется отдельно:
-
-```bash
-scripts/final-acceptance.sh
-scripts/ytdlp-compatibility.sh
-scripts/playback-smoke.sh --mode probe-only
-scripts/media-regression.sh --list-scenarios
-scripts/progressive-web-smoke.sh --help
-```
-
-Последний S42 automated run от 2026-07-25 завершён `PASS`: primary Rust 1.96.0,
-locked MSRV 1.92, hermetic suites, strict Clippy/rustdoc/fmt, dependency
-inventory, guardrails и coverage ratchet прошли.
-
-Automated S42 gate не запускает пользовательские URL/fixtures. Manual часть
-остаётся `NOT RUN`, пока пользователь явно не передал полный corpus и не
-проверил generated checklist:
-[S42 final acceptance](docs/web-media-s42-final-acceptance.md). Значения
-operational errors и безопасные действия описаны в
-[web-media operational errors](docs/web-media-operational-errors.md).
-Scoped profile trace хранится в `final-acceptance-s42.json`, а полный
-machine-readable §14 goal→code/tests trace — отдельно в
-`roadmap-trace-s42.json`; оба проверяются hermetic Cargo target-ом и не
-подменяют manual acceptance.
-
-## Лицензирование
-
-First-party workspace code лицензирован под MIT, см. `LICENSE`. Первый commit и
-текущий license change относятся к 2026 году, поэтому стандартная строка copyright
-содержит один год: `2026 Bogdan7c`.
-
-Семь каталогов `crates/*-patch` являются модифицированными upstream crates, не
-first-party MIT-кодом. `cros-codecs` и `cros-libva` сохраняют BSD-3-Clause;
-`symphonia-codec-aac`, `symphonia-format-caf`,
-`symphonia-format-isomp4` и `symphonia-format-mkv` сохраняют MPL-2.0;
-`wayland-scanner` сохраняет MIT. Каждый patch сохраняет собственные upstream
-license files/notices и соответствующие file-level obligations.
+First-party workspace code is [MIT licensed](LICENSE). The seven [patched upstream crates](docs/dependency-patches.toml) retain their own licenses and notices: BSD-3-Clause for cros-codecs/cros-libva, MPL-2.0 for the four Symphonia patches, and MIT for wayland-scanner.

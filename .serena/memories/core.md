@@ -1,3 +1,9 @@
+## Public launch S06: English OSS landing (2026-09-05)
+
+- README.md is the English pre-alpha/Linux-first landing; ARCHITECTURE.md describes current boundaries; docs/README.md indexes engineering docs with language labels. Russian deep docs remain intact.
+- Benchmark policy and NOT RUN T480s placeholder live in docs/benchmarks/. N15 fixture ingress aggregates must not be presented as whole-player/T480s/VLC results; original per-run samples are not public.
+- S07 must replace pending community entry points with dedicated document links; S08 supplies real T480s evidence, S09 integrates it. Owner-approved external plan corrections preserve this sequence. Details: `mem:public-launch/s06-oss-landing-2026-09-05`.
+
 ## Public launch S05: public-safe AI tooling (2026-09-05)
 
 - `AGENTS.md` переведён на английский с сохранением правил. Owner уточнил: русские комментарии нужны к ключевой логике, неочевидным решениям и инвариантам, не к каждой строке. См. `mem:conventions`.
