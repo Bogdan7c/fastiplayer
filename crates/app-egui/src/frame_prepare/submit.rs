@@ -52,6 +52,18 @@ pub(super) fn submit_render_frame(
             target: VIDEO_RENDER_ACCEPTANCE_TARGET,
             "video frame submitted to renderer"
         );
+        if let Some(identity) = startup_frame_identity {
+            // Acceptance различает новые PTS и повторный submit того же кадра.
+            // Событие находится за Presented gate; UI redraw сам по себе его
+            // не создаёт. Это surface handoff, а не доказательство scanout.
+            tracing::trace!(
+                target: VIDEO_RENDER_ACCEPTANCE_TARGET,
+                frame_pts_ns = ?identity.pts().as_nanos(),
+                render_generation = identity.render_generation(),
+                decoded_generation = identity.decoded_generation(),
+                "current video frame submitted to surface"
+            );
+        }
     }
 
     match render_frame_outcome {
