@@ -85,6 +85,8 @@ pub struct PrefetchDiagnostics {
 /// Общее состояние prefetch-слоя, защищённое одним mutex-ом.
 #[derive(Debug)]
 pub(crate) struct PrefetchSharedState {
+    /// Близкий forward seek сохраняет последовательное окно и между active fetch-ами.
+    sequential_seek_budget_bytes: u64,
     /// Sliding RAM window, из которого foreground читает без обращения к сети.
     pub buffer: PrefetchBufferState,
 
@@ -105,25 +107,37 @@ pub(crate) struct PrefetchSharedState {
 }
 
 impl PrefetchSharedState {
-    /// Переносит logical cursor в ещё не опубликованную часть active fetch-а.
+    /// Переносит cursor в active fetch либо ближайшее последовательное чтение.
     ///
     /// Возвращаемое значение описывает exact intent: `true` означает, что seek
-    /// уже будет удовлетворён текущим request-ом и reset/cancel не требуется.
-    pub(crate) fn stage_forward_seek_into_active_fetch(&mut self, offset: u64) -> bool {
+    /// будет удовлетворён без reset/cancel текущего последовательного окна.
+    pub(crate) fn stage_forward_seek_into_prefetch(&mut self, offset: u64) -> bool {
         let active_fetch_will_materialize_offset = self
             .active_fetch
             .as_ref()
             .is_some_and(|active_fetch| active_fetch.can_materialize(offset));
-        if !active_fetch_will_materialize_offset {
+        // После append worker отпускает mutex до выбора следующего fetch-а.
+        // Этот scheduling gap не должен превращать близкий metadata seek в
+        // reset окна и повторное скачивание начала. Бюджет не больше initial
+        // chunk: дальний seek сохраняет прежнюю cancel/refetch semantics.
+        let buffered_end = self.buffer.buffered_end();
+        let next_fetch_will_materialize_offset = self.active_fetch.is_none()
+            && self.seek_request.is_none()
+            && self.fatal_error.is_none()
+            && !self.shutdown
+            && self.buffer.needs_fetch()
+            && offset >= buffered_end
+            && offset - buffered_end < self.sequential_seek_budget_bytes;
+        if !active_fetch_will_materialize_offset && !next_fetch_will_materialize_offset {
             return false;
         }
 
-        let buffered_end = self.buffer.buffered_end();
         self.buffer.stage_cursor_ahead(offset);
         tracing::debug!(
             offset,
             buffered_end,
-            "media prefetch foreground seek присоединился к active fetch"
+            next_fetch_will_materialize_offset,
+            "media prefetch foreground seek сохранил последовательное чтение"
         );
         true
     }
@@ -142,9 +156,10 @@ pub(crate) struct PrefetchShared {
 impl PrefetchShared {
     /// Создаёт shared state вокруг уже настроенного RAM-буфера.
     #[must_use]
-    pub fn new(buffer: PrefetchBufferState) -> Self {
+    pub fn new(buffer: PrefetchBufferState, config: crate::PrefetchConfig) -> Self {
         Self {
             state: Mutex::new(PrefetchSharedState {
+                sequential_seek_budget_bytes: config.initial_chunk_bytes(),
                 buffer,
                 seek_request: None,
                 active_fetch: None,

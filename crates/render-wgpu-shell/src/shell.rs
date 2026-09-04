@@ -469,6 +469,17 @@ impl Renderer {
             video_exclusion_rects,
             window_corner_mask,
         } = input;
+        // Window::inner_size может измениться до доставки Resized, особенно в XWayland.
+        // Surface должна соответствовать размеру подготовленного UI до acquire:
+        // иначе egui scissor выходит за старый attachment при fullscreen переходе.
+        if [
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+        ] != screen.size_in_pixels
+        {
+            self.gpu
+                .resize(screen.size_in_pixels[0], screen.size_in_pixels[1]);
+        }
         let video_frame: Option<&WgpuRenderableFrame<'_>> = video_frame;
         let clamped_video_viewport = clamp_video_viewport_to_screen(video_viewport, &screen);
         let clamped_video_exclusion_rects =

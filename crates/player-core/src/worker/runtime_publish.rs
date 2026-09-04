@@ -1,5 +1,16 @@
 use super::*;
 
+/// Publisher latest snapshot поверх bounded channel.
+pub(super) struct LatestSnapshotPublisher {
+    /// Общий с consumer-ом барьер атомарной замены latest snapshot.
+    pub(super) publication_lock: Arc<Mutex<()>>,
+    /// Sender snapshot'ов в app shell.
+    pub(super) snapshot_tx: Sender<PlayerSnapshot>,
+
+    /// Receiver clone нужен worker-у для политики `latest wins`.
+    pub(super) snapshot_rx_for_drain_latest: Receiver<PlayerSnapshot>,
+}
+
 impl LatestSnapshotPublisher {
     /// Создаёт publisher с private drain receiver clone.
     pub(super) fn new(
@@ -7,6 +18,7 @@ impl LatestSnapshotPublisher {
         snapshot_rx_for_drain_latest: Receiver<PlayerSnapshot>,
     ) -> Self {
         Self {
+            publication_lock: Arc::new(Mutex::new(())),
             snapshot_tx,
             snapshot_rx_for_drain_latest,
         }
@@ -14,6 +26,13 @@ impl LatestSnapshotPublisher {
 
     /// Публикует latest snapshot, удаляя устаревший pending snapshot.
     fn publish(&self, snapshot: PlayerSnapshot) {
+        // Ни I/O, ни построение snapshot не выполняются под lock. Он закрывает
+        // только короткую замену канального slot-а, чтобы Installed ack оставался
+        // доказательством доступности snapshot даже при следующем publish.
+        let _publication = self
+            .publication_lock
+            .lock()
+            .expect("snapshot publication lock");
         drain_receiver_without_blocking(&self.snapshot_rx_for_drain_latest);
         if let Err(error) = self.snapshot_tx.try_send(snapshot) {
             match error {

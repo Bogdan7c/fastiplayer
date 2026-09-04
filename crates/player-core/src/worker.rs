@@ -1,6 +1,6 @@
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -63,6 +63,7 @@ mod handle;
 mod media_install_compatibility;
 mod runtime_commands;
 mod runtime_publish;
+use runtime_publish::LatestSnapshotPublisher;
 mod runtime_timeline;
 mod runtime_wait;
 mod sender;
@@ -525,6 +526,9 @@ pub struct PlayerWorker {
     /// Канал latest snapshot от worker-а.
     snapshot_rx: Receiver<PlayerSnapshot>,
 
+    /// Не позволяет consumer-у увидеть промежуток drain -> publish latest snapshot.
+    snapshot_publication_lock: Arc<Mutex<()>>,
+
     /// Последний snapshot, прочитанный shell-ом.
     cached_snapshot: PlayerSnapshot,
 
@@ -660,15 +664,6 @@ enum WorkerCommand {
         /// One-shot response channel для реального apply report-а.
         response_tx: Sender<PlayerRuntimeApplyReport>,
     },
-}
-
-/// Publisher latest snapshot поверх bounded channel.
-struct LatestSnapshotPublisher {
-    /// Sender snapshot'ов в app shell.
-    snapshot_tx: Sender<PlayerSnapshot>,
-
-    /// Receiver clone нужен worker-у для политики `latest wins`.
-    snapshot_rx_for_drain_latest: Receiver<PlayerSnapshot>,
 }
 
 /// Stable id одного activity receiver-а внутри worker runtime.

@@ -533,6 +533,7 @@ pub(super) fn native_request_parts(
 }
 
 /// N14A: обе HLS VOD container rows доходят до consumers без reopen/queue orchestration.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14a_consumer_hls_vod_ts_and_fmp4_reach_consumers_with_exact_accounting() {
     let server = ControlledHlsServer::start(fixture_routes());
@@ -581,6 +582,7 @@ fn n14a_consumer_hls_vod_ts_and_fmp4_reach_consumers_with_exact_accounting() {
 }
 
 /// Доказывает initial fMP4, exact switch на TS, receipted seek и semantic reopen end-to-end.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extractor() {
     let server = ControlledHlsServer::start(fixture_routes());

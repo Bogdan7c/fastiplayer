@@ -22,6 +22,9 @@ use crate::{
     PlayerWorkerSendError, PreparedMedia,
 };
 
+#[path = "tests/snapshot_publication.rs"]
+mod snapshot_publication;
+
 /// Empty prepared demuxer для no-audio/no-video worker transaction.
 struct EmptyDemuxer;
 

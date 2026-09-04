@@ -225,6 +225,7 @@ fn semantic_reopen_request(
 }
 
 /// N14A: dynamic DASH initial root handoff доходит до moving consumers без recovery/switch.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14a_consumer_dash_dynamic_live_reaches_consumers_with_exact_root_accounting() {
     let server = ControlledHlsServer::start(live_routes());
@@ -255,6 +256,7 @@ fn n14a_consumer_dash_dynamic_live_reaches_consumers_with_exact_root_accounting(
 }
 
 /// Доказывает direct root reuse, publish ordering, DVR lifecycle и process spy 0.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14b_lifecycle_dash_live_dvr_expiry_recovery_reopen_has_no_false_eof() {
     let server = ControlledHlsServer::start_with_initial_failures(

@@ -395,6 +395,7 @@ fn assert_resource_released(
 }
 
 /// HTTP WebM достигает decoded, drawn, submitted, completed и released frame boundary.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14a_consumer_http_webm_reaches_submitted_readback_with_exact_accounting() {
     let webm_bytes = base64::engine::general_purpose::STANDARD
@@ -450,6 +451,7 @@ fn n14a_consumer_http_webm_reaches_submitted_readback_with_exact_accounting() {
 }
 
 /// N14B: graceful close/restart повторно доводит direct WebM до WGPU без extractor.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14b_lifecycle_http_webm_close_restart_reaches_submitted_readback_without_extractor() {
     let webm_bytes = base64::engine::general_purpose::STANDARD

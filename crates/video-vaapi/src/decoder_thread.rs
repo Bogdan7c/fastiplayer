@@ -206,7 +206,9 @@ impl VideoDecodeThread {
             stream_config: Arc::new(Mutex::new(None)),
             end_of_stream_drain_state,
             config,
-            backend_name: "VA-API VP9",
+            // Thread обслуживает разные codec adapters; конкретный codec появляется
+            // только после configure_stream и отдельно отражается в diagnostics.
+            backend_name: "VA-API",
         })
     }
 

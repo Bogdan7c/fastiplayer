@@ -336,6 +336,7 @@ fn native_request_parts(
 }
 
 /// N14A: DASH fMP4 и WebM rows доходят до consumers без reopen/queue orchestration.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14a_consumer_dash_vod_fmp4_and_webm_reach_consumers_with_exact_accounting() {
     let server = ControlledHlsServer::start(fixture_routes());
@@ -420,6 +421,7 @@ fn assert_vod_seek(
 }
 
 /// Доказывает one-fetch root, обе реальные rows, VOD seek, switch/reopen и process spy 0.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14b_lifecycle_dash_vod_seek_forward_back_switch_and_reopen_reaches_consumers() {
     let server = ControlledHlsServer::start(fixture_routes());

@@ -31,6 +31,8 @@ impl PlayerWorker {
             admission_closed,
         };
         let snapshot_rx_for_worker = snapshot_rx.clone();
+        let snapshot_publisher = LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx_for_worker);
+        let snapshot_publication_lock = Arc::clone(&snapshot_publisher.publication_lock);
 
         let worker_started_at = Instant::now();
         let join_handle = thread::Builder::new()
@@ -61,10 +63,7 @@ impl PlayerWorker {
                     playback_intent_control,
                     playback_intent_wake_rx,
                     _playback_intent_wake_tx_guard: playback_intent_wake_tx,
-                    snapshot_publisher: LatestSnapshotPublisher::new(
-                        snapshot_tx,
-                        snapshot_rx_for_worker,
-                    ),
+                    snapshot_publisher,
                     event_tx,
                     render_bridge,
                     shutdown_rx,
@@ -86,6 +85,7 @@ impl PlayerWorker {
         Ok(Self {
             command_sender,
             snapshot_rx,
+            snapshot_publication_lock,
             cached_snapshot: PlayerSnapshot::empty(),
             event_rx,
             render_bridge_client,
@@ -281,11 +281,17 @@ impl PlayerWorker {
             .try_send_worker_command(WorkerCommand::RenderError(error))
     }
 
-    /// Возвращает последний snapshot, не блокируя UI.
+    /// Возвращает последний snapshot без ожидания нового worker output-а.
     #[must_use]
     pub fn latest_snapshot(&mut self, frame_counters: FrameCounters) -> PlayerSnapshot {
-        for snapshot in self.snapshot_rx.try_iter() {
-            self.cached_snapshot = snapshot;
+        {
+            let _publication = self
+                .snapshot_publication_lock
+                .lock()
+                .expect("snapshot publication lock");
+            for snapshot in self.snapshot_rx.try_iter() {
+                self.cached_snapshot = snapshot;
+            }
         }
 
         let mut snapshot = self.cached_snapshot.clone();

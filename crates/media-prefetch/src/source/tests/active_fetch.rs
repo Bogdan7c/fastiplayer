@@ -4,6 +4,39 @@ use std::sync::mpsc;
 
 use super::*;
 
+/// Останавливает worker до первого fetch: foreground видит тот же scheduling gap,
+/// что между публикацией очередного chunk-а и выбором следующего request-а.
+#[test]
+fn nearby_seek_before_fetch_starts_preserves_bytes_and_backward_read() {
+    let bytes = sample_bytes(96);
+    let (inner, handle) = FakeByteSource::seekable(bytes.clone());
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let mut source = PrefetchingByteSource::new_with_spawner(
+        Box::new(inner),
+        test_config(8, 16, 48),
+        move |run| {
+            thread::Builder::new().spawn(move || {
+                release_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("release worker");
+                run();
+            })
+        },
+    )
+    .expect("spawn gated prefetch worker");
+    source.seek(6).expect("nearby seek before active fetch");
+    release_tx.send(()).expect("start actual source reads");
+    let mut output = [0; 2];
+    assert_eq!(source.read(&mut output, &token()).unwrap(), 2);
+    assert_eq!(output, bytes[6..8]);
+    source.seek(0).expect("metadata probe returns to start");
+    assert_eq!(source.read(&mut output, &token()).unwrap(), 2);
+    assert_eq!(output, bytes[..2]);
+    assert_eq!(source.diagnostics().refetches, 0);
+    assert_eq!(source.diagnostics().cancelled_fetches, 0);
+    assert_eq!(handle.read_records()[0].offset, 0);
+}
+
 /// Источник удерживает первый read до foreground seek-а и затем возвращает ordinary error.
 struct ControlledStaleFailureSource {
     /// Bytes для успешного refetch после stale failure.

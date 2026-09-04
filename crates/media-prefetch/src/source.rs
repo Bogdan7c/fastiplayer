@@ -102,7 +102,7 @@ impl PrefetchingByteSource {
         let worker_cancellation = CancellationToken::new();
         let buffer =
             PrefetchBufferState::new(start_position, config.window_bytes(), config.chunk_bytes());
-        let shared = Arc::new(PrefetchShared::new(buffer));
+        let shared = Arc::new(PrefetchShared::new(buffer, config));
         let worker = PrefetchWorker::new(
             inner,
             Arc::clone(&shared),

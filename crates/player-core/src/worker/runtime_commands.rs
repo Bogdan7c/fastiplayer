@@ -122,6 +122,10 @@ impl PlayerWorkerRuntime {
                 outcome_tx,
             }) => {
                 let outcome = self.session.apply_staged_media_install_control(control);
+                // Coordinator читает Installed только после control receipt. Публикуем
+                // соответствующий snapshot до receipt, иначе UI может увидеть новый
+                // Installed вместе со старым media_instance_id и ошибочно освободить media.
+                self.publish_session_outputs();
                 if outcome_tx.send(outcome).is_err() {
                     warn!("Media install control outcome receiver was dropped");
                 }

@@ -504,27 +504,31 @@ mod shutdown_tests {
 
     #[test]
     fn timeout_retains_worker_handle_and_later_reaps_it() {
-        let executor = disconnected_executor();
-        let release = Arc::new(AtomicBool::new(false));
-        let started = Arc::new(AtomicBool::new(false));
-        let worker_release = Arc::clone(&release);
-        let worker_started = Arc::clone(&started);
+        // Проверяем один удерживаемый handle. При pool из двух threads короткий
+        // deadline вправе застать ещё и idle worker до его выхода из condvar.
+        let executor = PreparationExecutor::new_single_worker(AppWakePort::disconnected(
+            AppWakeOwner::PlaylistRuntime,
+        ));
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         executor
             .submit_latest(PreparationWork::new(
                 Arc::new(PreparationCancellation::new()),
                 Arc::new(PreparationResultSlot::new()),
                 move |_| {
-                    worker_started.store(true, Ordering::Release);
-                    while !worker_release.load(Ordering::Acquire) {
-                        std::thread::yield_now();
-                    }
+                    started_tx
+                        .send(())
+                        .expect("test waits for real worker start");
+                    // Drop sender-а при assertion panic также освобождает worker:
+                    // ошибочный тест не должен навсегда зависать в executor Drop.
+                    release_rx.recv().expect("test releases held worker");
                     Err(MediaPreparationFailureKind::Cancelled)
                 },
             ))
             .expect("test work должен стартовать");
-        while !started.load(Ordering::Acquire) {
-            std::thread::yield_now();
-        }
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker starts before shutdown test");
 
         assert_eq!(
             executor.shutdown_until(ShutdownDeadline::after(Duration::from_millis(1))),
@@ -539,7 +543,7 @@ mod shutdown_tests {
                 .any(|worker_handle| !worker_handle.is_finished())
         );
 
-        release.store(true, Ordering::Release);
+        release_tx.send(()).expect("release exact pending worker");
         assert_eq!(
             executor.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
             ProcessOwnerShutdownOutcome::Completed

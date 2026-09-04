@@ -41,7 +41,7 @@ pub(crate) fn apply_prefetch_seek(
         return Ok(());
     }
 
-    if state.stage_forward_seek_into_active_fetch(offset) {
+    if state.stage_forward_seek_into_prefetch(offset) {
         *logical_position = offset;
         shared.notify_all();
         return Ok(());

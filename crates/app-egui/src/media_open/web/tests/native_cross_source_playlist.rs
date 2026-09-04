@@ -85,6 +85,7 @@ fn commit_after_consumer(
 }
 
 /// Доказывает HLS -> DASH -> Smooth -> DASH через одну очередь и один renderer consumer.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14b_cross_source_playlist_reaches_consumers_before_each_queue_commit() {
     let hls_server = ControlledHlsServer::start(hls_fixture_routes());

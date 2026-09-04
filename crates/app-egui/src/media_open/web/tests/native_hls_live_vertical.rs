@@ -202,6 +202,7 @@ fn assert_retained_dvr_seek(prepared: &crate::startup_media::native_hls::Prepare
 }
 
 /// N14A: sliding HLS live initial window даёт moving render/readback и PCM/clock без switch/restart.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14a_consumer_hls_sliding_live_reaches_consumers_with_exact_accounting() {
     let server = ControlledHlsServer::start(live_routes());
@@ -232,6 +233,7 @@ fn n14a_consumer_hls_sliding_live_reaches_consumers_with_exact_accounting() {
 }
 
 /// Проверяет moving consumers, packet-proven window shift, expired target и process spy 0.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14b_lifecycle_hls_live_dvr_expiry_recovery_switch_has_no_false_eof() {
     let server = ControlledHlsServer::start_with_initial_failures(

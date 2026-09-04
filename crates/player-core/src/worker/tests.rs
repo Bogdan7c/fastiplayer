@@ -16,6 +16,9 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 use video_present_core::VideoFrameLeaseConfig;
 
 use super::*;
+
+#[path = "tests/snapshot_read.rs"]
+mod snapshot_read;
 use crate::media_install::AcceptedPlaybackIntent;
 use crate::{
     ExactMediaTransportAction, MediaInstallCompletion, MediaInstallPhase, MediaInstanceId,
@@ -252,7 +255,7 @@ fn drain_events_until(
     events
 }
 
-fn runtime_for_tests(last_tick_at: Instant) -> PlayerWorkerRuntime {
+pub(super) fn runtime_for_tests(last_tick_at: Instant) -> PlayerWorkerRuntime {
     runtime_for_tests_with_command_sender(last_tick_at).0
 }
 
@@ -485,6 +488,7 @@ fn worker_with_latest_handoffs_for_tests(
 
     (
         PlayerWorker {
+            snapshot_publication_lock: Arc::new(Mutex::new(())),
             command_sender,
             snapshot_rx,
             cached_snapshot: PlayerSnapshot::empty(),
@@ -515,6 +519,7 @@ fn worker_with_terminal_thread_for_tests(
     let admission_closed = Arc::new(AtomicBool::new(false));
 
     PlayerWorker {
+        snapshot_publication_lock: Arc::new(Mutex::new(())),
         command_sender: PlayerCommandSender {
             command_tx,
             playback_intent_control,

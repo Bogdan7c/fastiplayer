@@ -45,8 +45,7 @@ mod vorbis;
 #[path = "content_probe_tests/direct_progressive.rs"]
 pub(crate) mod direct_progressive;
 
-/// Default-feature vertical доводит direct WebM до production WGPU submit-а.
-#[cfg(feature = "ffmpeg")]
+/// Общий WGPU harness доступен и failure-path тестам без FFmpeg; video tests gated локально.
 #[path = "content_probe_tests/direct_progressive_webm.rs"]
 pub(crate) mod direct_progressive_webm;
 

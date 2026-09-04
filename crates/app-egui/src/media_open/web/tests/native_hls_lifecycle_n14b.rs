@@ -274,6 +274,7 @@ fn stale_component_action(
 }
 
 /// Закрепляет VOD seek, switch, queue, graceful close/restart/restore и stale fencing.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14b_lifecycle_hls_vod_seek_switch_queue_restart_restore_and_stale_fence() {
     let server = ControlledHlsServer::start(fixture_routes());

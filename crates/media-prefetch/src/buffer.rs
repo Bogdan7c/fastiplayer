@@ -154,9 +154,9 @@ impl PrefetchBufferState {
         self.evict_before_lookback();
     }
 
-    /// Ставит logical cursor впереди готового буфера, пока active fetch несёт этот offset.
+    /// Ставит cursor впереди буфера до active fetch либо близкого sequential read.
     ///
-    /// Проверку диапазона active fetch-а выполняет `PrefetchingByteSource`, потому
+    /// Проверку диапазона и бюджета выполняет shared prefetch owner, потому
     /// buffer намеренно не знает о worker token/lifecycle. До append-а чтение будет
     /// ждать на condvar; после append-а обычный `available_from_cursor` увидит bytes.
     pub fn stage_cursor_ahead(&mut self, offset: u64) {

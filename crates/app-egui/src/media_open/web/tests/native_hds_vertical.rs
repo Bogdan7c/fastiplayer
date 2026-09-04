@@ -219,6 +219,7 @@ fn wait_for_tracks_changed(demuxer: &mut dyn Demuxer) {
 }
 
 /// N14A: HDS VOD initial row достигает render/readback и PCM/clock без switch/reopen.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14a_consumer_hds_vod_reaches_consumers_with_exact_accounting() {
     let server = ControlledHlsServer::start(fixture_routes());
@@ -250,6 +251,7 @@ fn n14a_consumer_hds_vod_reaches_consumers_with_exact_accounting() {
 }
 
 /// Доказывает root handoff, eager fragment reuse, render/audio, seek и refresh.
+#[cfg(feature = "ffmpeg")]
 #[test]
 fn n14b_lifecycle_hds_vod_seek_forward_back_switch_and_reopen_reaches_consumers() {
     let server = ControlledHlsServer::start(fixture_routes());
