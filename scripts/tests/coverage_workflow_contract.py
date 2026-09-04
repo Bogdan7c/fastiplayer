@@ -236,8 +236,25 @@ def validate_coverage_workflow_contract(coverage_workflow: str) -> None:
         _yaml_key_count(coverage_job, 4, "strategy") == 0,
         "coverage job не допускает strategy",
     )
-    # Job-level env не может переопределить root reproducibility contract.
-    _require(_yaml_key_count(coverage_job, 4, "env") == 0, "coverage job не допускает env")
+    # Job-level env имеет одного owner-а для единственного bounded-artifact override.
+    _require(_yaml_key_count(coverage_job, 4, "env") == 1, "coverage job обязан иметь один env owner")
+    # Mapping извлекается отдельно, чтобы hidden test-thread override оставался запрещён.
+    coverage_job_env_lines = _indented_block_lines(coverage_job, "    env:", 6)
+    # Raw document позволяет запретить quoted aliases и duplicate semantic keys.
+    coverage_job_env_document = "\n".join(coverage_job_env_lines)
+    # Только canonical plain key может управлять размером test-profile artifacts.
+    _require_canonical_mapping_keys(coverage_job_env_document, 6, "coverage job env")
+    # Комментарии не входят в exact environment inventory.
+    coverage_job_env_entries = tuple(
+        stripped_line
+        for line in coverage_job_env_lines
+        if (stripped_line := line.strip()) and not stripped_line.startswith("#")
+    )
+    # Полный DWARF отключён, а concurrency и coverage flags нельзя подменить через env.
+    _require(
+        coverage_job_env_entries == ('CARGO_PROFILE_TEST_DEBUG: "0"',),
+        "coverage job env обязан содержать только exact bounded-debug override",
+    )
 
     # Единственный steps owner исключает YAML override проверенной sequence.
     _require(_yaml_key_count(coverage_job, 4, "steps") == 1, "coverage steps owner неоднозначен")
@@ -257,7 +274,7 @@ def validate_coverage_workflow_contract(coverage_workflow: str) -> None:
         "measured step обязан запускать scripts/coverage.sh check",
     )
     _require(_yaml_key_count(measured_step, 8, "if") == 0, "measured step не допускает if")
-    # Measured step наследует только проверенный root env без local override.
+    # Measured step наследует проверенные root/job env без дополнительного override.
     _require(_yaml_key_count(measured_step, 8, "env") == 0, "measured step не допускает env")
     _require(
         _yaml_key_count(measured_step, 8, "continue-on-error") == 0,
