@@ -158,14 +158,14 @@ macOS is outside the roadmap through 1.0.
 
 ## Contributing
 
-Start with the [architecture](ARCHITECTURE.md), [engineering docs](docs/README.md), and [contributor/agent rules](AGENTS.md). Focused reproductions, testable fixes, and documentation improvements are useful contributions. The dedicated `CONTRIBUTING.md` and support guide are pending S07; [AI-assisted development](docs/ai-development.md) explains the optional maintainer workflow.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for build/check commands, issue selection, architecture boundaries, and separate hardware acceptance. [SUPPORT.md](SUPPORT.md) routes bugs, proposals, and questions; Discussions is planned for public launch (S12). Focused reproductions, testable fixes, and documentation improvements are useful contributions. [AI-assisted development](docs/ai-development.md) explains the optional maintainer workflow.
 
 ## Security
 
-Treat media, network manifests, native decoding, GPU imports, and upstream FFI as security-sensitive boundaries. See the [trust-boundary overview](ARCHITECTURE.md#trust-boundaries) and [dependency policy](docs/continuous-integration.md). Do not put credentials, private media URLs, or exploit details in public issues. `SECURITY.md` is pending S07; GitHub Private Vulnerability Reporting is planned for the public launch and is not claimed to be enabled yet.
+Treat media, network manifests, native decoding, GPU imports, and upstream FFI as security-sensitive boundaries. See the [trust-boundary overview](ARCHITECTURE.md#trust-boundaries) and [dependency policy](docs/continuous-integration.md). Do not put credentials, private media URLs, or exploit details in public issues. Follow [SECURITY.md](SECURITY.md) for reporting instructions, including what to do while private reporting is unavailable. GitHub Private Vulnerability Reporting is planned for the public launch (S12) and is not claimed to be enabled yet.
 
 ## Maintainer and license
 
-**Bogdan Korolyov ([Bogdan7c](https://github.com/Bogdan7c))** is the sole core maintainer. The dedicated `MAINTAINERS.md` is pending S07.
+**Bogdan Korolyov ([Bogdan7c](https://github.com/Bogdan7c))** is the sole core maintainer. See [MAINTAINERS.md](MAINTAINERS.md) for ownership and the deliberately deferred Code of Conduct pending a separate private enforcement contact. The [changelog](CHANGELOG.md) and [local alpha release draft](docs/releases/v0.1.0-alpha.1.md) describe the planned source-only first development release; no release is published by these documents.
 
 First-party workspace code is [MIT licensed](LICENSE). The seven [patched upstream crates](docs/dependency-patches.toml) retain their own licenses and notices: BSD-3-Clause for cros-codecs/cros-libva, MPL-2.0 for the four Symphonia patches, and MIT for wayland-scanner.

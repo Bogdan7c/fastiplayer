@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+# До S12 ведём через документы: Discussions и private reporting ещё planned.
+contact_links:
+  - name: Questions and exploratory ideas (Discussions planned)
+    url: https://github.com/Bogdan7c/rustiplayer/blob/main/SUPPORT.md
+    about: Read support routing; Discussions is planned for public launch, not yet enabled.
+  - name: Security vulnerability (private reporting planned)
+    url: https://github.com/Bogdan7c/rustiplayer/blob/main/SECURITY.md
+    about: Follow the security policy. Never disclose vulnerabilities in a public issue.

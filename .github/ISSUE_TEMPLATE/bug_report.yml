@@ -1,0 +1,116 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Rustiplayer.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues and read SUPPORT.md first. For suspected vulnerabilities, follow SECURITY.md instead of this public form.
+        Do not attach private media or paste signed/private media URLs, tokens, cookies, authorization headers, or unsanitized logs.
+        Write "unknown" or "not applicable" with a reason if a technical detail cannot be determined.
+  - type: input
+    id: revision
+    attributes:
+      label: Rustiplayer version or commit
+      description: Include the commit SHA, build features, and whether this was a release or debug build.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and desktop session
+      description: Distribution/version, kernel, and Wayland or X11 if applicable.
+    validations:
+      required: true
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU
+      description: CPU model and architecture.
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      description: GPU model(s) and the device used by Rustiplayer, if known.
+    validations:
+      required: true
+  - type: textarea
+    id: drivers
+    attributes:
+      label: Driver, Mesa, and libva versions
+      description: Include GPU/VA-API driver, Mesa and libva versions; add FFmpeg or yt-dlp version when relevant. Mark unavailable details explicitly.
+    validations:
+      required: true
+  - type: dropdown
+    id: input_type
+    attributes:
+      label: Input type
+      options:
+        - Local file
+        - Progressive HTTP(S)
+        - FTP(S)
+        - HLS
+        - DASH
+        - Smooth Streaming
+        - HDS
+        - Web page via yt-dlp
+        - Playlist or CUE
+        - No media open
+        - Other or unknown (describe in reproduction)
+    validations:
+      required: true
+  - type: input
+    id: codec
+    attributes:
+      label: Container and codec/profile
+      description: Video/audio codecs, bit depth, resolution, HDR/SDR, and container if known. Do not paste a private media URL.
+    validations:
+      required: true
+  - type: input
+    id: playback_path
+    attributes:
+      label: Playback path
+      description: Auto/hardware/software decode setting and actual decoder/render path if known; say unknown when unverified.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Minimal numbered steps from launch to failure. Describe media properties; use only authorized public samples or synthetic inputs if a sample is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include frequency and whether another revision worked, if known.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Paste the relevant excerpt after reviewing URLs, query strings, headers, paths and personal information. If unavailable, explain why. Review attachments and screenshots too.
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: This report and its logs/attachments contain no sensitive media URLs, signed/private links, credentials, tokens, cookies, or authorization headers.
+          required: true
+        - label: This is not a private vulnerability report; I will follow SECURITY.md for suspected security issues.
+          required: true

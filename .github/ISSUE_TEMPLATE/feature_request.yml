@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a concrete improvement with a clear user problem and scope.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the README roadmap and search existing issues first. General questions and exploratory ideas belong in Discussions after it opens (planned for S12); see SUPPORT.md.
+        This public form does not imply feature acceptance or scheduling. For vulnerabilities, follow SECURITY.md.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What are you trying to do, and what currently prevents it?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and scope
+      description: Describe a concrete outcome and how a user could verify that it works.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe workarounds or other approaches, or explain why none are available.
+    validations:
+      required: true
+  - type: textarea
+    id: roadmap
+    attributes:
+      label: Roadmap and affected platforms
+      description: Link related issues where available and explain the relationship to the ordered roadmap; include relevant media profiles or hardware requirements.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and read the roadmap.
+          required: true
+        - label: This proposal contains no sensitive media URLs, credentials, private logs, or media I cannot redistribute.
+          required: true

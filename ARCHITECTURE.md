@@ -76,7 +76,7 @@ Media files and network manifests are untrusted. Rust ownership and modular APIs
 - System yt-dlp configuration/plugins/cookies are trusted external environment, with side effects outside the app's guarantees. FFmpeg is used for software video decode, not as a hidden network or demux fallback.
 - Upstream patches preserve their licenses and safety obligations. Dependency checks, FFI review, and hardware validation complement Rust's type system.
 
-Read [operational errors](docs/web-media-operational-errors.md), [dependency policy](docs/continuous-integration.md), and the [panic/invariant policy](docs/panic-invariant-policy.md). The dedicated security reporting document is pending S07.
+Read [operational errors](docs/web-media-operational-errors.md), [dependency policy](docs/continuous-integration.md), and the [panic/invariant policy](docs/panic-invariant-policy.md). Follow [SECURITY.md](SECURITY.md) for private vulnerability reporting and its planned launch status.
 
 ## Validation map
 

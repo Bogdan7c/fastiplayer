@@ -2,7 +2,7 @@
 
 - README.md is the English pre-alpha/Linux-first landing; ARCHITECTURE.md describes current boundaries; docs/README.md indexes engineering docs with language labels. Russian deep docs remain intact.
 - Benchmark policy and NOT RUN T480s placeholder live in docs/benchmarks/. N15 fixture ingress aggregates must not be presented as whole-player/T480s/VLC results; original per-run samples are not public.
-- S07 must replace pending community entry points with dedicated document links; S08 supplies real T480s evidence, S09 integrates it. Owner-approved external plan corrections preserve this sequence. Details: `mem:public-launch/s06-oss-landing-2026-09-05`.
+- S07 community files and local alpha release draft now exist; README/docs index/architecture link the dedicated guides. Discussions and private vulnerability reporting remain planned until S12; CODE_OF_CONDUCT remains deferred pending a separate private enforcement contact. See `mem:public-launch/s07-community-health-2026-09-05`. S08 supplies real T480s evidence and S09 integrates it and aligns the Cargo version. S06 evidence policy: `mem:public-launch/s06-oss-landing-2026-09-05`.
 
 ## Public launch S05: public-safe AI tooling (2026-09-05)
 
