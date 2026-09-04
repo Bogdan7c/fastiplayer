@@ -39,6 +39,11 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 - Playlist state worker outcomes use the shared typed `AppWake` route. The mailbox publish epoch closes the sibling-owner race while draining `wake_pending`; defensive timed polling remains only fallback. Persistence and startup owners live in process-lifetime `PlaylistRuntime`, not renderer-bound AppState.
 - Full contract: `mem:app-egui/playlist-persistence-s14`.
 
+## Public launch S02 layout update (2026-09-04)
+
+- Application-side `PlayerTimelineWakeBridge` и его startup factory теперь находятся в `state/startup_context.rs`; player snapshot payload ownership и `AppWakeOwner::PlayerTimeline` semantics не менялись.
+- Focused application/player boundary test также находится в `state/startup_context.rs`. Полный handoff: `mem:public-launch/s02-module-boundary-split-2026-09-04`.
+
 
 ## Session 17 startup scheduling (2026-07-16)
 - Loading, prepared-awaiting-allocator и renderer-bound stepwise Applying входят в pending-work scheduler; startup poll не вызывает blocking strong install. Wake/defensive poll продвигают exact transaction при `ControlFlow::Wait`. Полный контракт: `mem:app-egui/startup-orchestration-s17`.

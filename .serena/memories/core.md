@@ -1,4 +1,10 @@
-## Public launch S00: private user-docs extraction (2026-09-04)
+## Public launch S02: module boundary splits (2026-09-04)
+
+- `app-egui/state.rs` и `web-media-dash/discovery.rs` снова проходят size guardrails после refactor-only split-а.
+- Startup context/wake bridge теперь в `state/startup_context.rs`; provider DASH lane proof/validation/error mapping — в `discovery/lane_proof.rs`. Public API, playback/error/selection/accounting semantics не менялись.
+- Focused app/player/DASH tests, пять native DASH consumer verticals, guardrails, strict Clippy, Rust 1.96 workspace check, fmt/diff и Serena audit прошли. Полный handoff: `mem:public-launch/s02-module-boundary-split-2026-09-04`.
+
+# Public launch S00: private user-docs extraction (2026-09-04)
 
 - `user/` удалён из tracked tree и защищён корневым `/user/` ignore; приватные документы сохранены вне репозитория в mode-0700 timestamped backup, включая recoverable original и opaque copy.
 - Pre-S00 Git state сохранён full `git bundle --all` с 45 refs, stash и 35 registered worktree HEADs; verify/list-heads/mirror-clone/fsck/checksums прошли.

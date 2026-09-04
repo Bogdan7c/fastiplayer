@@ -70,3 +70,8 @@ PASS:
 По §6.3 не запускались full workspace tests, public-network, GUI/hardware, MSRV, dependency/release/coverage/pre-PR gates. Следующая session: N10; в N09 она не начиналась.
 
 Связанные memories: `mem:core`, `mem:media-services/dash-vod-s34-2026-07-24`, `mem:media-services/adaptive-transport-s31-2026-07-23`, `mem:media-services/native-web-ingress-n01-2026-08-31`, `mem:media-services/native-hls-vod-n07-2026-09-01`, `mem:testing/native-web-ingress-g1-2026-08-31`.
+
+## Public launch S02 layout update (2026-09-04)
+
+- Provider-owned representation lane proof, track validators, descriptor builders, codec matching и probe-error mapping перенесены без изменения semantics в `discovery/lane_proof.rs`; static VOD orchestration остаётся в `discovery.rs`/`discovery/native_vod.rs`.
+- Точные новые tests и verification: `mem:public-launch/s02-module-boundary-split-2026-09-04`.

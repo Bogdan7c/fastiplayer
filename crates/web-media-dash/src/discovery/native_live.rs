@@ -73,7 +73,7 @@ pub fn discover_native_dash_live_catalog(
     .map_err(DashLiveOpenError::from)?;
 
     let parent_semantic = request.catalog_identity.parent().semantic().clone();
-    let mut proof = ProviderLaneProof {
+    let mut proof = ProviderLaneProof::new(ProviderLaneProofContext {
         presentation: &mpd.presentation,
         manifest_base: &manifest_base,
         http: &request.http,
@@ -82,7 +82,7 @@ pub fn discover_native_dash_live_catalog(
         policy: request.policy,
         capability_probe: request.capability_probe,
         timeline_mode: DashRepresentationLaneTimelineMode::Dynamic,
-    };
+    });
     let lanes = build_dash_representation_lane_catalog(
         DashRepresentationLaneCatalogBuildRequest {
             presentation: &mpd.presentation,

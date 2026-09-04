@@ -48,7 +48,7 @@ pub fn discover_native_dash_vod_catalog(
     } = request;
     let (mpd, manifest_base) = parse_fetched_dash_manifest(&http, generation, &manifest, policy)?;
     let parent_semantic = catalog_identity.parent().semantic().clone();
-    let mut proof = ProviderLaneProof {
+    let mut proof = ProviderLaneProof::new(ProviderLaneProofContext {
         presentation: &mpd,
         manifest_base: &manifest_base,
         http: &http,
@@ -57,7 +57,7 @@ pub fn discover_native_dash_vod_catalog(
         policy,
         capability_probe,
         timeline_mode: DashRepresentationLaneTimelineMode::Static,
-    };
+    });
     let lanes = build_dash_representation_lane_catalog(
         DashRepresentationLaneCatalogBuildRequest {
             presentation: &mpd,

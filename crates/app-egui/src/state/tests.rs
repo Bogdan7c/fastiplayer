@@ -46,6 +46,7 @@ fn state_source_for_architecture_tests() -> String {
         include_str!("media_jobs.rs"),
         include_str!("main_visual_override.rs"),
         include_str!("present_frame_cache.rs"),
+        include_str!("startup_context.rs"),
         include_str!("telemetry_panel.rs"),
         include_str!("ui_runtime.rs"),
         include_str!("video_backend.rs"),

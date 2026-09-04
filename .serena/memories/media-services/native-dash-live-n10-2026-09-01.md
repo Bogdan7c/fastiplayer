@@ -63,3 +63,8 @@ PASS:
 По §6.3 не запускались full workspace tests, public-network acceptance, GUI/hardware, MSRV, dependency/release/pre-PR/coverage gates.
 
 Связанные memories: `mem:media-services/dash-live-s35-2026-07-24`, `mem:player-core/dynamic-live-timeline-s31l-2026-07-23`, `mem:media-services/native-dash-vod-n09-2026-09-01`.
+
+## Public launch S02 layout update (2026-09-04)
+
+- Dynamic discovery продолжает владеть fetch/parse/clock/open orchestration в `discovery.rs`/`discovery/native_live.rs`, а shared provider lane proof теперь изолирован в `discovery/lane_proof.rs` без изменения live selection, refresh или failure semantics.
+- Точные новые tests и verification: `mem:public-launch/s02-module-boundary-split-2026-09-04`.

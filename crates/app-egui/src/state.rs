@@ -73,6 +73,7 @@ pub(crate) use playlist_transport::settle_timeline_seek_receipts_until;
 mod present_frame_cache;
 mod same_item_candidate_switch;
 mod sidebar_controller;
+mod startup_context;
 mod strong_media_open;
 mod suspended_media_resume;
 pub(crate) use strong_media_open::{
@@ -93,6 +94,8 @@ pub(crate) use media_jobs::ActiveMediaSource;
 #[allow(unused_imports)]
 pub use present_frame_cache::PresentFrameAcquisition;
 pub use present_frame_cache::RenderablePresentFrame;
+pub(crate) use startup_context::AppStateStartupContext;
+use startup_context::player_timeline_wake_bridge;
 pub(crate) use video_backend::{
     BackendSwapVideoCheckpoint, BackendSwapVideoPhase, VideoPipelineRebuildError,
     VideoPipelineRebuildRequest,
@@ -365,33 +368,6 @@ pub struct AppState {
 /// анимация продолжается плавно, а не прыгает к концу.
 const MAX_SIDEBAR_SLIDE_FRAME_DT_SECONDS: f32 = 0.1;
 
-/// Payload-free adapter между player worker и process-owned winit wake port.
-struct PlayerTimelineWakeBridge {
-    wake_port: AppWakePort,
-}
-
-impl player_core::PlayerWorkerTimelineWake for PlayerTimelineWakeBridge {
-    fn wake_player_timeline(&self) {
-        let _delivery = self.wake_port.request_wake();
-    }
-}
-
-/// Process-origin и безопасная startup-ошибка передаются в AppState одним typed контекстом.
-pub(crate) struct AppStateStartupContext {
-    process_started_at: Instant,
-    startup_error: Option<String>,
-}
-
-impl AppStateStartupContext {
-    /// Создаёт точный startup-контекст до запуска player worker-а.
-    pub(crate) fn new(process_started_at: Instant, startup_error: Option<String>) -> Self {
-        Self {
-            process_started_at,
-            startup_error,
-        }
-    }
-}
-
 impl AppState {
     /// Создаёт новое состояние приложения и запускает playback worker.
     #[instrument(skip(
@@ -428,10 +404,7 @@ impl AppState {
             audio::AudioDecodeCapabilityProvider::audio_decode_capability_snapshot(
                 audio_decoder_factory.as_ref(),
             );
-        let timeline_activity_wake: Arc<dyn player_core::PlayerWorkerTimelineWake> =
-            Arc::new(PlayerTimelineWakeBridge {
-                wake_port: player_timeline_wake_port,
-            });
+        let timeline_activity_wake = player_timeline_wake_bridge(player_timeline_wake_port);
         let worker_config =
             PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
                 .with_audio_decoder_factory(audio_decoder_factory)

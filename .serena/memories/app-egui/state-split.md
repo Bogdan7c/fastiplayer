@@ -20,3 +20,9 @@ S14 refactor-only split moved `crates/app-egui/src/state.rs` implementation deta
 Visibility policy for this split: no new `pub(crate)`/`pub` boundary beyond preserving existing public/internal API paths; cross-child helpers use only `pub(super)` inside the private `state` parent module. Behavior, config, diagnostics, UI layout/sidebar viewport behavior, backend selection, cached-frame lifecycle, and test assertions were intended to remain unchanged.
 
 Focused checks used for this split: `cargo test -p app-egui state`, `cargo test -p app-egui`, `cargo fmt --all --check`.
+
+## Public launch S02 follow-up (2026-09-04)
+
+- `AppStateStartupContext`, приватный `PlayerTimelineWakeBridge` и wake factory перенесены из `state.rs` в `state/startup_context.rs`; `AppState` остаётся application-state owner-ом, а прежний `crate::state::AppStateStartupContext` сохранён internal re-export-ом.
+- Новый functional boundary test находится в `state/startup_context.rs`; combined source guard в `state/tests.rs` включает новый файл.
+- Полный refactor/verification handoff: `mem:public-launch/s02-module-boundary-split-2026-09-04`.
