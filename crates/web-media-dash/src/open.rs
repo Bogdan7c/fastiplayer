@@ -25,7 +25,7 @@ use crate::request::{
     DashFetchedManifestInput, DashManifestInput, DashVodHttpContext, DashVodInput,
     DashVodOpenPolicy, DashVodOpenRequest,
 };
-use crate::transactional_av::TransactionalDashAvDemuxer;
+use crate::transactional_av::{TransactionalDashAvDemuxer, prepare_dash_component_pair};
 
 /// Authoritative presentation kind уже fetched MPD без повторного root I/O.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,12 +313,9 @@ fn prepare_planned_dash_vod(
             );
             let audio_factory =
                 DashComponentFactory::new(audio, *audio_http, generation, policy, demux_registry);
-            let video = video_factory
-                .open()
-                .map_err(DashVodOpenError::ComponentReadiness)?;
-            let audio = audio_factory
-                .open()
-                .map_err(DashVodOpenError::ComponentReadiness)?;
+            let (video, audio) =
+                prepare_dash_component_pair(|| video_factory.open(), || audio_factory.open())
+                    .map_err(DashVodOpenError::ComponentReadiness)?;
             let composite = TransactionalDashAvDemuxer::new(
                 video_factory,
                 audio_factory,

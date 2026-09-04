@@ -259,21 +259,32 @@ fn controlled_http_context(
 #[test]
 fn valid_native_restore_crosses_hls_app_player_preparation_without_second_seek() {
     let requested_position = Duration::from_secs(355);
-    // Native HLS VOD intentionally lands on the first proven manifest boundary after the request.
-    let target_segment =
+    // Native HLS VOD starts from the containing decode-safe RAP; player hides preroll to target.
+    let containing_segment =
+        muxed_restore_segment(Duration::from_secs(350), Duration::from_millis(355_040));
+    let following_segment =
         muxed_restore_segment(Duration::from_secs(360), Duration::from_millis(360_040));
     let manifest = restore_manifest();
-    let target_segment_bytes = target_segment.len();
+    let containing_segment_bytes = containing_segment.len();
+    let following_segment_bytes = following_segment.len();
     let server = ControlledHlsServer::start(HashMap::from([
         ("/restore.m3u8".to_owned(), manifest),
-        ("/target.ts".to_owned(), target_segment),
+        ("/containing.ts".to_owned(), containing_segment),
+        ("/target.ts".to_owned(), following_segment),
     ]));
 
     let prepared_hls = prepare_native_hls_vod(
         native_hls_request(&server, "/restore.m3u8"),
         HlsVodStartIntent::RestoreOrBeginning(MediaTime::from_duration(requested_position)),
     )
-    .expect("valid native HLS restore preparation");
+    .unwrap_or_else(|error| {
+        panic!(
+            "valid native HLS restore preparation: {error:#}; requests: containing={}, previous={}, target={}",
+            server.request_count("/containing.ts"),
+            server.request_count("/unused-34.ts"),
+            server.request_count("/target.ts")
+        )
+    });
     let receipt_probe = Arc::clone(&prepared_hls.seek_port);
     let PreparedInitialPosition::PositionedAt {
         target_position,
@@ -285,10 +296,10 @@ fn valid_native_restore_crosses_hls_app_player_preparation_without_second_seek()
     };
     assert_eq!(target_position.as_duration(), requested_position);
     assert_eq!(result.requested_position.as_duration(), requested_position);
-    assert!(result.actual_position.as_duration() >= requested_position);
+    assert!(result.actual_position.as_duration() <= requested_position);
     assert_eq!(
         landing_policy,
-        PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget
+        PreparedDemuxSeekLandingPolicy::DecodeForwardToTarget
     );
     assert_eq!(receipt_probe.poll_seek_receipt(), None);
 
@@ -307,8 +318,15 @@ fn valid_native_restore_crosses_hls_app_player_preparation_without_second_seek()
     assert_eq!(server.request_count("/restore.m3u8"), 1);
     assert_eq!(server.request_count("/target.ts"), 1);
     assert_eq!(server.request_count("/unused-0.ts"), 0);
-    assert_eq!(server.request_count("/containing.ts"), 0);
-    assert_eq!(server.served_body_bytes("/target.ts"), target_segment_bytes);
+    assert_eq!(server.request_count("/containing.ts"), 1);
+    assert_eq!(
+        server.served_body_bytes("/containing.ts"),
+        containing_segment_bytes
+    );
+    assert_eq!(
+        server.served_body_bytes("/target.ts"),
+        following_segment_bytes
+    );
 }
 
 #[test]

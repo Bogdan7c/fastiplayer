@@ -101,6 +101,17 @@ fn deferred_hls_like_absent_codec_keeps_resolution_switch_and_automatic_codec() 
         })
         .expect("resolution switch");
     assert_eq!(*switch, WebMediaSelectionTarget::Fixture(1080));
+    let higher = catalog
+        .automatic_quality_target(WebMediaAutomaticQualityDirection::Higher)
+        .expect("automatic upshift");
+    assert_eq!(higher.height, 1080);
+    assert_eq!(higher.target, WebMediaSelectionTarget::Fixture(1080));
+    assert!(
+        catalog
+            .automatic_quality_target(WebMediaAutomaticQualityDirection::Lower)
+            .is_none(),
+        "720p — нижняя ступень этого fixture"
+    );
 }
 
 #[test]

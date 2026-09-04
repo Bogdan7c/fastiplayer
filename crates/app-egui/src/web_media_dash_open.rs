@@ -48,6 +48,18 @@ use web_media_dash::{
 };
 use web_media_transport_api::{MediaComponentRole, TransportProviderId};
 
+/// Bounded fan-out для коротких DASH catalog probes.
+///
+/// Значение покрывает типичный крупный публичный VOD MPD одной-двумя волнами запросов, но не
+/// создаёт лишнюю конкуренцию за HTTP/2 connection и blocking worker-ы.
+const MAXIMUM_PARALLEL_DASH_CATALOG_PROBES: usize = 16;
+
+/// Одна MiB-страница покрывает пачку MP4/WebM packets без заметной задержки первого Range read-а.
+const DASH_RANGE_READ_AHEAD_BYTES: usize = 1_024 * 1_024;
+
+/// Init/index и текущий media window должны сосуществовать без unbounded cache growth.
+const MAXIMUM_CACHED_DASH_RANGE_PAGES: usize = 2;
+
 /// Результат pre-barrier DASH preparation.
 pub(crate) struct PreparedDashCandidate {
     /// Ready nonblocking demuxer.
@@ -706,8 +718,13 @@ pub(crate) fn dash_policy(limits: AdaptiveTransportLimits) -> Result<DashVodOpen
     Ok(DashVodOpenPolicy {
         maximum_manifest_bytes: limits.maximum_manifest_bytes,
         maximum_fragment_bytes: limits.maximum_segment_bytes,
-        maximum_range_read_bytes: limits.maximum_segment_bytes,
+        maximum_range_read_bytes: NonZeroUsize::new(DASH_RANGE_READ_AHEAD_BYTES)
+            .expect("DASH Range read-ahead bytes"),
+        maximum_cached_range_pages: NonZeroUsize::new(MAXIMUM_CACHED_DASH_RANGE_PAGES)
+            .expect("DASH cached Range pages"),
         maximum_planned_segments: limits.maximum_snapshot_segments,
+        maximum_parallel_catalog_probes: NonZeroUsize::new(MAXIMUM_PARALLEL_DASH_CATALOG_PROBES)
+            .expect("DASH parallel catalog probes"),
         demux_sniff_budget: DemuxSniffBudget::new(
             NonZeroUsize::new(64 * 1_024).expect("DASH sniff bytes"),
             NonZeroUsize::new(8).expect("DASH sniff segments"),

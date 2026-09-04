@@ -32,6 +32,7 @@ use crate::{
 };
 
 mod container_probe;
+pub(crate) use container_probe::open_epoch_probe;
 mod deferred_initial;
 mod result;
 
@@ -264,7 +265,7 @@ fn prepare_hls_vod_with_seek_boundary(
         .map(|_| SharedHlsSeekIndex::new(policy.maximum_seek_index_entries.get()));
     let preview_main_index = main_seek_index.clone();
     let preview_audio_index = audio_seek_index.clone();
-    let seek_controller = ProgressiveSeekController::new(move |request| {
+    let seek_controller = ProgressiveSeekController::manifest_reanchored(move |request| {
         let main_result = preview_main_index.lock().preview_and_pin(request)?;
         if let Some(audio_index) = &preview_audio_index {
             audio_index

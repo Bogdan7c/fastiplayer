@@ -26,8 +26,9 @@ use super::{
     ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
     ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt, ProgressiveDemuxBufferLimits,
     ProgressiveDemuxPacketTooLargeError, ProgressiveDemuxReadiness, ProgressiveDemuxReadinessPort,
-    ProgressiveDemuxStartupError, ProgressiveDemuxer, ProgressiveRuntimeGeneration,
-    ProgressiveSeekController, ProgressiveSeekFence, ProgressiveSeekRequestId,
+    ProgressiveDemuxStartupError, ProgressiveDemuxer, ProgressivePreviewWorkerResultPolicy,
+    ProgressiveRuntimeGeneration, ProgressiveSeekController, ProgressiveSeekFence,
+    ProgressiveSeekRequestId,
 };
 
 mod preview_cancellation;
@@ -1366,6 +1367,7 @@ fn eof_wait_observes_preexisting_seek_without_blocking() {
         generation: 1,
         request,
         preview,
+        worker_result_policy: ProgressivePreviewWorkerResultPolicy::ExactPreview,
         cancellation: DemuxSeekCancellationToken::new(),
     });
     // Неотменённый token заставляет проверку дойти именно до pending seek.
@@ -1547,6 +1549,62 @@ fn seekable_worker_wakes_after_eof_and_drops_superseded_generation_output() {
         panic!("latest seek packet expected");
     };
     assert_eq!(packet.pts, Duration::from_secs(2));
+}
+
+#[test]
+fn manifest_reanchored_preview_publishes_fresh_target_generation() {
+    let controller = ProgressiveSeekController::manifest_reanchored(|request| {
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            // Моделируем старый observed index, который существенно отстаёт от drag target-а.
+            actual_position: MediaTime::from_duration(
+                request.timestamp.saturating_sub(Duration::from_secs(5)),
+            ),
+            actual_track_timestamp: None,
+        })
+    });
+    let mut progressive = ProgressiveDemuxer::new_deferred_seekable(
+        || {
+            Ok(Box::new(CommandSeekableDemuxer {
+                position: Duration::ZERO,
+                packet_emitted: false,
+            }))
+        },
+        controller,
+        CancellationToken::new(),
+        limits(4, 16),
+        retry_hint(),
+    )
+    .expect("manifest-reanchored seekable worker starts");
+
+    assert!(matches!(
+        poll_until_event(&mut progressive).expect("initial tracks"),
+        DemuxReadEvent::TracksChanged(_)
+    ));
+    assert!(matches!(
+        poll_until_event(&mut progressive).expect("initial packet"),
+        DemuxReadEvent::Packet(_)
+    ));
+    assert!(matches!(
+        poll_until_event(&mut progressive).expect("initial EOF"),
+        DemuxReadEvent::EndOfStream
+    ));
+
+    let target = Duration::from_secs(8);
+    let preview = progressive
+        .seek_with_request(DemuxSeekRequest::decode_point_before(target))
+        .expect("nonblocking observed preview accepted");
+    assert_eq!(
+        preview.actual_position.as_duration(),
+        Duration::from_secs(3)
+    );
+
+    let DemuxReadEvent::Packet(packet) =
+        poll_until_event(&mut progressive).expect("fresh manifest target packet")
+    else {
+        panic!("fresh manifest target packet expected");
+    };
+    assert_eq!(packet.pts, target);
 }
 
 #[test]

@@ -3,6 +3,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+use bytes::Bytes;
 use media_core::DemuxSeekCancellationToken;
 use source_core::{
     CancellationToken, CurrentThreadAsyncExecutor, HttpBoundedByteRange, HttpRangeResponseMetadata,
@@ -185,6 +186,28 @@ impl AdaptiveHttpContext {
         let resource_diagnostics = HttpResourceDiagnostics::started(
             FetchPurpose::from(request.purpose).resource_purpose(),
         );
+        let cache_key = self.completed_cache_key(&request);
+        let cached_replay = cache_key
+            .as_ref()
+            .and_then(|cache_key| self.lock_completed_resource_cache().replay(cache_key));
+        if let Some(cached_replay) = cached_replay {
+            let (replay_chunks, replay_bytes) = cached_replay.diagnostic_shape();
+            resource_diagnostics.record_cache_outcome(
+                HttpResourceCacheOutcome::Replay,
+                replay_chunks,
+                replay_bytes,
+            );
+            return Ok(Self::buffered_resource_from_replay(cached_replay));
+        }
+        resource_diagnostics.record_cache_outcome(
+            if cache_key.is_some() {
+                HttpResourceCacheOutcome::Miss
+            } else {
+                HttpResourceCacheOutcome::Ineligible
+            },
+            0,
+            0,
+        );
         let mut attempt = std::num::NonZeroU8::MIN;
         loop {
             let result = fetch_with_redirects(
@@ -203,11 +226,15 @@ impl AdaptiveHttpContext {
             );
             match result {
                 Ok(success) => {
-                    return Ok(AdaptiveFetchedResource {
+                    let fetched_resource = AdaptiveFetchedResource {
                         final_target: success.final_target,
                         bytes: success.bytes,
                         range_metadata: success.range_metadata,
-                    });
+                    };
+                    if let Some(cache_key) = cache_key {
+                        self.cache_buffered_resource(cache_key, &fetched_resource);
+                    }
+                    return Ok(fetched_resource);
                 }
                 Err(error) if error.is_retryable() && attempt < self.retry.maximum_attempts() => {
                     let delay = self
@@ -220,6 +247,36 @@ impl AdaptiveHttpContext {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Материализует completed replay для buffered caller-а без нового network side effect.
+    fn buffered_resource_from_replay(
+        replay: crate::completed_resource_cache::CompletedResourceReplay,
+    ) -> AdaptiveFetchedResource {
+        let (final_target, chunks, range_metadata) = replay.into_parts();
+        let mut bytes = Vec::new();
+        for chunk in chunks.iter() {
+            bytes.extend_from_slice(chunk);
+        }
+        AdaptiveFetchedResource {
+            final_target,
+            bytes,
+            range_metadata,
+        }
+    }
+
+    /// Кладёт только полностью полученный buffered response в общий bounded VOD LRU.
+    fn cache_buffered_resource(
+        &self,
+        cache_key: CompletedResourceCacheKey,
+        fetched_resource: &AdaptiveFetchedResource,
+    ) {
+        self.lock_completed_resource_cache().insert_completed(
+            cache_key,
+            fetched_resource.final_target.clone(),
+            vec![Bytes::copy_from_slice(&fetched_resource.bytes)],
+            fetched_resource.range_metadata.clone(),
+        );
     }
 
     /// Открывает bounded resource body до полной загрузки на текущем demux worker-е.

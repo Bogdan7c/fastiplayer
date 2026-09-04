@@ -26,6 +26,24 @@ pub(crate) enum WebMediaFacet {
     DynamicRange,
 }
 
+/// Направление ровно одной автоматической quality-ступени.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WebMediaAutomaticQualityDirection {
+    /// Следующая доступная высота ниже active rendition.
+    Lower,
+    /// Следующая доступная высота выше active rendition.
+    Higher,
+}
+
+/// Exact target, выбранный catalog-ом для одной автоматической quality-ступени.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct WebMediaAutomaticQualityTarget {
+    /// Высота выбранной ступени для hysteresis/cooldown контроллера.
+    pub(crate) height: u32,
+    /// Catalog-owned exact selection; контроллер не конструирует identity самостоятельно.
+    pub(crate) target: WebMediaSelectionTarget,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum WebMediaFacetOption {
     Mode(WebMediaMode),
@@ -305,6 +323,37 @@ impl WebMediaCatalog {
         let choice_index =
             web_media_playback_plan::select_grouped_opaque_alternative(&alternatives).ok()?;
         self.choices.get(choice_index).map(|choice| &choice.target)
+    }
+
+    /// Находит соседнюю resolution-ступень, сохраняя максимально возможное число остальных facets.
+    ///
+    /// Метод намеренно использует тот же dependent-facet resolver, что ручной picker: automatic
+    /// controller не получает прямой доступ к внутреннему `choices` и не создаёт fake комбинации.
+    pub(crate) fn automatic_quality_target(
+        &self,
+        direction: WebMediaAutomaticQualityDirection,
+    ) -> Option<WebMediaAutomaticQualityTarget> {
+        let active = self.active_choice();
+        let active_resolution = facet_value(active, WebMediaFacet::Resolution)?;
+        let options = self.options_for(WebMediaFacet::Resolution, active);
+        let active_index = options
+            .iter()
+            .position(|option| *option == active_resolution)?;
+        let target_index = match direction {
+            WebMediaAutomaticQualityDirection::Lower => active_index.checked_add(1)?,
+            WebMediaAutomaticQualityDirection::Higher => active_index.checked_sub(1)?,
+        };
+        let WebMediaFacetOption::Resolution { height, .. } = *options.get(target_index)? else {
+            return None;
+        };
+        let target = self
+            .resolve_facet_action(WebMediaFacetAction {
+                generation: self.generation,
+                facet: WebMediaFacet::Resolution,
+                option_index: target_index,
+            })?
+            .clone();
+        Some(WebMediaAutomaticQualityTarget { height, target })
     }
 
     fn options_for(

@@ -981,7 +981,9 @@ fn open_policy() -> DashVodOpenPolicy {
         maximum_manifest_bytes: non_zero(64 * 1_024),
         maximum_fragment_bytes: non_zero(256 * 1_024),
         maximum_range_read_bytes: non_zero(16 * 1_024),
+        maximum_cached_range_pages: non_zero(2),
         maximum_planned_segments: non_zero(4),
+        maximum_parallel_catalog_probes: non_zero(4),
         demux_sniff_budget: DemuxSniffBudget::new(
             non_zero(64 * 1_024),
             non_zero(4),

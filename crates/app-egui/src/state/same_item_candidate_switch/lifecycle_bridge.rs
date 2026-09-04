@@ -329,6 +329,12 @@ impl SameItemSwitchAppPath {
                 }
                 owner.clear_web_media_fallback_notice();
             }
+            SameItemSwitchKind::AdaptiveQuality { .. } => {
+                // Runtime adaptation меняет только installed exact target. Persisted item
+                // preference остаётся `Automatic`, иначе следующий reopen стал бы ручным.
+                owner.record_component_switch_installed();
+                owner.clear_web_media_fallback_notice();
+            }
         }
         SameItemSwitchAppPoll::Installed
     }

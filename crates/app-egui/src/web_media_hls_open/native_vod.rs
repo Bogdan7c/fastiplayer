@@ -32,7 +32,10 @@ pub(crate) fn prepare_native_hls_vod(
     start: HlsVodStartIntent,
 ) -> std::result::Result<PreparedNativeHlsVod, PrepareNativeHlsVodError> {
     let generation = request.generation;
-    let request = request.with_seek_landing_policy(HlsVodSeekLandingPolicy::PreferPostTargetRap);
+    // Точный пользовательский seek обязан начинаться с decode-safe RAP не позже target-а.
+    // Player скроет preroll до цели; выбор следующего сегмента здесь давал заметный overshoot.
+    let request =
+        request.with_seek_landing_policy(HlsVodSeekLandingPolicy::DecodeFromOrBeforeTarget);
     let opened = prepare_hls_vod_receipted_at_start(request, hls_async_seek_limits(), start)
         .map_err(PrepareNativeHlsVodError::Open)?;
     finalize_native_hls_vod(opened, generation)
@@ -45,7 +48,9 @@ pub(crate) fn prepare_native_hls_catalog_vod(
     start: HlsVodStartIntent,
 ) -> std::result::Result<PreparedNativeHlsVod, PrepareNativeHlsVodError> {
     let generation = request.generation;
-    let request = request.with_seek_landing_policy(HlsVodSeekLandingPolicy::PreferPostTargetRap);
+    // Catalog reopen сохраняет ту же точную семантику, что и provider-default runtime.
+    let request =
+        request.with_seek_landing_policy(HlsVodSeekLandingPolicy::DecodeFromOrBeforeTarget);
     let opened = prepare_hls_catalog_vod_receipted_at_start(
         request,
         selection,

@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bounded_xml_reader::XmlBudgets;
 use dash_mpd_core::{
@@ -132,6 +132,15 @@ struct FixtureServer {
     address: std::net::SocketAddr,
     stop: Arc<AtomicBool>,
     manifest_requests: Arc<AtomicUsize>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+/// HTTP fixture с независимой обработкой соединений, чтобы тест видел именно
+/// provider concurrency, а не случайную последовательность accept loop-а.
+struct ParallelCatalogFixtureServer {
+    address: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    maximum_active_initializations: Arc<AtomicUsize>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -327,6 +336,109 @@ impl Drop for FixtureServer {
     }
 }
 
+impl ParallelCatalogFixtureServer {
+    /// Поднимает manifest с четырьмя fully playable muxed lanes и задерживает
+    /// каждый независимый initialization response на одинаковое время.
+    fn start(
+        manifest: String,
+        initialization: Vec<u8>,
+        first: Vec<u8>,
+        second: Vec<u8>,
+        initialization_delay: Duration,
+    ) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind parallel DASH fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking parallel DASH fixture");
+        let address = listener.local_addr().expect("parallel fixture address");
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let maximum_active_initializations = Arc::new(AtomicUsize::new(0));
+        let worker_maximum_active = Arc::clone(&maximum_active_initializations);
+        let manifest = Arc::new(manifest.into_bytes());
+        let initialization = Arc::new(initialization);
+        let first = Arc::new(first);
+        let second = Arc::new(second);
+        let thread = thread::spawn(move || {
+            let active_initializations = Arc::new(AtomicUsize::new(0));
+            while !worker_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let connection_manifest = Arc::clone(&manifest);
+                        let connection_initialization = Arc::clone(&initialization);
+                        let connection_first = Arc::clone(&first);
+                        let connection_second = Arc::clone(&second);
+                        let connection_active = Arc::clone(&active_initializations);
+                        let connection_maximum_active = Arc::clone(&worker_maximum_active);
+                        thread::spawn(move || {
+                            let mut request_bytes = [0_u8; 4 * 1_024];
+                            let read = stream
+                                .read(&mut request_bytes)
+                                .expect("read parallel DASH fixture request");
+                            let request = String::from_utf8_lossy(&request_bytes[..read]);
+                            let is_initialization = request.starts_with("GET /init-");
+                            let body = if request.starts_with("GET /manifest.mpd ") {
+                                connection_manifest
+                            } else if is_initialization {
+                                connection_initialization
+                            } else if request.starts_with("GET /one-") {
+                                connection_first
+                            } else if request.starts_with("GET /two-") {
+                                connection_second
+                            } else {
+                                panic!("unexpected parallel DASH fixture request line")
+                            };
+                            if is_initialization {
+                                let active = connection_active.fetch_add(1, Ordering::AcqRel) + 1;
+                                connection_maximum_active.fetch_max(active, Ordering::AcqRel);
+                                thread::sleep(initialization_delay);
+                                connection_active.fetch_sub(1, Ordering::AcqRel);
+                            }
+                            let mut response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            )
+                            .into_bytes();
+                            response.extend_from_slice(&body);
+                            stream
+                                .write_all(&response)
+                                .expect("write parallel DASH fixture response");
+                        });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("parallel DASH fixture accept failed: {error}"),
+                }
+            }
+        });
+        Self {
+            address,
+            stop,
+            maximum_active_initializations,
+            thread: Some(thread),
+        }
+    }
+
+    fn target(&self, path: &str) -> HttpRequestTarget {
+        HttpRequestTarget::parse_exact(format!("http://{}{path}", self.address))
+            .expect("parallel DASH fixture target")
+    }
+
+    fn maximum_active_initializations(&self) -> usize {
+        self.maximum_active_initializations.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for ParallelCatalogFixtureServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("parallel DASH fixture stops");
+        }
+    }
+}
+
 fn adaptive_context(
     target: &HttpRequestTarget,
     cancellation: CancellationToken,
@@ -393,7 +505,9 @@ fn open_policy() -> DashVodOpenPolicy {
         maximum_manifest_bytes: NonZeroUsize::new(64 * 1_024).expect("manifest bytes"),
         maximum_fragment_bytes: NonZeroUsize::new(256 * 1_024).expect("fragment bytes"),
         maximum_range_read_bytes: NonZeroUsize::new(16 * 1_024).expect("Range bytes"),
+        maximum_cached_range_pages: NonZeroUsize::new(2).expect("cached Range pages"),
         maximum_planned_segments: NonZeroUsize::new(64).expect("segments"),
+        maximum_parallel_catalog_probes: NonZeroUsize::new(4).expect("parallel catalog probes"),
         demux_sniff_budget: DemuxSniffBudget::new(
             NonZeroUsize::new(8 * 1_024).expect("sniff bytes"),
             NonZeroUsize::new(4).expect("sniff segments"),
@@ -1244,6 +1358,113 @@ fn native_fetched_manifest_discovery_reuses_single_root_response() {
         prepare_discovered_dash_vod(discovered, selected).expect("open discovered native row");
     assert_eq!(opened.duration(), Duration::from_secs(2));
     assert_eq!(server.manifest_request_count(), 1);
+}
+
+#[test]
+fn native_catalog_proves_slow_initializations_concurrently_and_opens_selected_packet() {
+    let (initialization, first, second) = muxed_fmp4();
+    let representation_rows = (0..4)
+        .map(|ordinal| {
+            format!(
+                r#"<Representation id="lane-{ordinal}" bandwidth="{}" width="16" height="16">
+                     <SegmentList timescale="1" duration="1">
+                       <Initialization sourceURL="init-{ordinal}.mp4"/>
+                       <SegmentURL media="one-{ordinal}.m4s"/>
+                       <SegmentURL media="two-{ordinal}.m4s"/>
+                     </SegmentList>
+                   </Representation>"#,
+                100_000 + ordinal * 10_000
+            )
+        })
+        .collect::<String>();
+    let manifest = format!(
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT2S">
+             <Period duration="PT2S">
+               <AdaptationSet contentType="application" mimeType="application/mp4"
+                 codecs="avc1.4d401f,mp4a.40.2">
+                 {representation_rows}
+               </AdaptationSet>
+             </Period>
+           </MPD>"#
+    );
+    let manifest_for_handoff = manifest.clone();
+    let initialization_delay = Duration::from_millis(200);
+    let server = ParallelCatalogFixtureServer::start(
+        manifest,
+        initialization,
+        first,
+        second,
+        initialization_delay,
+    );
+    let generation = SourceGeneration::new(8);
+    let manifest_target = server.target("/manifest.mpd");
+    let http = adaptive_context(&manifest_target, CancellationToken::new(), generation);
+    let policy = open_policy();
+    let fetched_manifest = http
+        .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+            generation,
+            manifest_target.clone(),
+            policy.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::Manifest,
+            AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+        ))
+        .expect("parallel fixture root fetch");
+    assert_eq!(fetched_manifest.bytes(), manifest_for_handoff.as_bytes());
+    let parser_input = manifest_input(manifest_target.clone());
+    let fetched_input = DashFetchedManifestInput::new(
+        manifest_target,
+        fetched_manifest,
+        &http,
+        parser_input.xml_budgets,
+        parser_input.mpd_limits,
+    );
+
+    let discovery_started = Instant::now();
+    let discovered = discover_native_dash_vod_catalog(NativeDashVodCatalogDiscoveryRequest {
+        http: Box::new(http),
+        generation,
+        manifest: fetched_input,
+        demux_registry: demux_registry(),
+        policy,
+        catalog_identity: catalog_identity(8),
+        catalog_limit: ComponentVariantCatalogLimit::new(8).expect("catalog limit"),
+        compatibility_edge_limit: ComponentVariantEdgeLimit::new(8).expect("edge limit"),
+        capability_probe: &AcceptAllDashCapabilities,
+        preferred_height: PreferredHeightPolicy::NoPreference,
+    })
+    .expect("parallel native DASH discovery");
+    let discovery_elapsed = discovery_started.elapsed();
+
+    assert_eq!(discovered.catalog().stored_variant_count(), 4);
+    assert!(
+        server.maximum_active_initializations() >= 4,
+        "all four initialization proof requests must overlap"
+    );
+    assert!(
+        discovery_elapsed < initialization_delay * 3,
+        "bounded parallel proof must not serialize four delayed requests: {discovery_elapsed:?}"
+    );
+
+    let selected = discovered.provider_default().clone();
+    let opened = prepare_discovered_dash_vod(discovered, selected)
+        .expect("selected DASH lane opens after parallel catalog proof");
+    let mut demuxer = opened.into_demuxer();
+    let packet_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match demuxer.next_event().expect("selected DASH runtime event") {
+            DemuxReadEvent::Packet(_) => break,
+            DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::TemporarilyUnavailable(_) if Instant::now() < packet_deadline => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            DemuxReadEvent::TemporarilyUnavailable(_) => {
+                panic!("selected DASH runtime packet readiness timeout")
+            }
+            DemuxReadEvent::EndOfStream => {
+                panic!("selected DASH runtime ended before its first packet")
+            }
+        }
+    }
 }
 
 #[test]

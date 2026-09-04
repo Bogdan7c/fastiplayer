@@ -3,6 +3,7 @@
 mod timestamp;
 
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -672,8 +673,14 @@ fn open_period(
             if request.first_media_index != 0 {
                 anyhow::bail!("DASH SegmentBase media index must remain zero");
             }
-            let mut range_config =
-                AdaptiveRangeSourceConfig::new(policy.maximum_range_read_bytes, *query_application);
+            let mut range_config = AdaptiveRangeSourceConfig::new(
+                policy.maximum_range_read_bytes,
+                NonZeroUsize::new(policy.demux_sniff_budget.max_bytes())
+                    .expect("DASH demux sniff bytes are non-zero"),
+                policy.maximum_cached_range_pages,
+                *query_application,
+            )
+            .context("DASH SegmentBase Range page policy is invalid")?;
             if request.intent == DashComponentOpenIntent::CatalogProof
                 && let Some(content_length) = catalog_probe_content_length
             {

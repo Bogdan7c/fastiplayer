@@ -11,14 +11,25 @@ use web_media_core::{
 /// Compile-time guard не позволяет config и neutral contract незаметно разойтись по bounds.
 const _: () = assert!(CONFIG_MAX_VIDEO_HEIGHT == MAX_VIDEO_HEIGHT);
 
+/// Стартовая ступень автоматического качества.
+///
+/// 720p совпадает с исходным viewport приложения и не заставляет первый playback ждать тяжёлую
+/// 1080p/4K rendition до того, как runtime успел получить evidence устойчивости сети.
+pub(crate) const AUTOMATIC_STARTUP_VIDEO_HEIGHT_PIXELS: u32 = 720;
+
 /// Преобразует persisted global preference в neutral selection policy.
 ///
-/// `None` означает обычный `BestPlayable`: height не участвует в ordering.
+/// `None` означает автоматический fast-start. Явная высота остаётся строгим user preference.
 pub(crate) fn preferred_height_policy(
     preferred_height: Option<ConfigPreferredVideoHeight>,
 ) -> PreferredHeightPolicy {
     match preferred_height {
-        None => PreferredHeightPolicy::NoPreference,
+        None => {
+            let startup_height =
+                WebPreferredVideoHeight::new(AUTOMATIC_STARTUP_VIDEO_HEIGHT_PIXELS)
+                    .expect("automatic startup height входит в neutral bounds");
+            PreferredHeightPolicy::Prefer(startup_height)
+        }
         Some(preferred_height) => {
             let neutral_height = WebPreferredVideoHeight::new(preferred_height.pixels())
                 .expect("compile-time synchronized bounds гарантируют infallible mapping");
@@ -32,10 +43,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn none_keeps_best_playable_without_height_ranking() {
+    fn none_uses_latency_first_automatic_startup_height() {
+        let PreferredHeightPolicy::Prefer(startup_height) = preferred_height_policy(None) else {
+            panic!("automatic mode должен иметь bounded startup ступень");
+        };
         assert_eq!(
-            preferred_height_policy(None),
-            PreferredHeightPolicy::NoPreference
+            startup_height.height().pixels(),
+            AUTOMATIC_STARTUP_VIDEO_HEIGHT_PIXELS
         );
     }
 

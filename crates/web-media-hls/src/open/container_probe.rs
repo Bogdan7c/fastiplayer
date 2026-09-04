@@ -1,12 +1,12 @@
 //! Legacy live/container proof path, отделённый от VOD target-aware initial handoff.
 
-use demux_api::{DemuxHints, DemuxInput};
+use demux_api::{DemuxHints, DemuxOpenError, DemuxProbeRejection, DemuxProbedOpen};
 use hls_playlist_core::MediaPlaylist;
 use source_core::HttpRequestTarget;
 use web_media_adaptive::AdaptiveResourcePurpose;
 
 use super::HlsVodOpenError;
-use crate::plan::{HlsPlanError, build_component_plan};
+use crate::plan::{HlsEpochPlan, HlsPlanError, build_component_plan};
 use crate::source::HlsEpochSegmentSource;
 use crate::{HlsContainerEvidence, HlsRequiredContainer, HlsVodOpenRequest};
 
@@ -72,25 +72,10 @@ fn probe_component_container(
         .first()
         .cloned()
         .ok_or(HlsPlanError::EmptyMediaPlaylist)?;
-    let cancellation = request.http.cancellation().clone();
-    let source = HlsEpochSegmentSource::new(
-        request.http.clone(),
-        request.generation,
-        first_epoch,
-        request.policy.maximum_key_resource_bytes,
-    );
-    let opened = request
-        .demux_registry
-        .open_probed(
-            DemuxInput::ordered_segments(Box::new(source)),
-            DemuxHints::none(),
-            request.policy.demux_sniff_budget,
-            cancellation,
-        )
-        .map_err(|error| match role {
-            ContainerProbeRole::Main => HlsVodOpenError::MainContainerProbeOpen(error),
-            ContainerProbeRole::AlternateAudio => HlsVodOpenError::AudioContainerProbeOpen(error),
-        })?;
+    let opened = open_epoch_probe(request, first_epoch).map_err(|error| match role {
+        ContainerProbeRole::Main => HlsVodOpenError::MainContainerProbeOpen(error),
+        ContainerProbeRole::AlternateAudio => HlsVodOpenError::AudioContainerProbeOpen(error),
+    })?;
     let transport_stream = HlsRequiredContainer::TransportStream
         .demux_container_id()
         .map_err(|_| unsupported_container(role))?;
@@ -101,6 +86,51 @@ fn probe_component_container(
         container if container == &transport_stream => Ok(HlsRequiredContainer::TransportStream),
         container if container == &fragmented_mp4 => Ok(HlsRequiredContainer::FragmentedMp4),
         _ => Err(unsupported_container(role)),
+    }
+}
+
+/// Открывает container probe через pull-stream и сохраняет segmented fallback для fMP4 factory.
+///
+/// Transport Stream factory умеет определить tracks по небольшому bounded префиксу. Старый
+/// `OrderedSegments` boundary сначала скачивал целиком многомегабайтный media segment, хотя
+/// catalog/runtime нужен был только PSI/probe. Для factory без streaming capability (сейчас это
+/// fMP4) повторяем probe через прежний контракт, не превращая сетевые и parse-ошибки в fallback.
+pub(crate) fn open_epoch_probe(
+    request: &HlsVodOpenRequest,
+    first_epoch: HlsEpochPlan,
+) -> Result<DemuxProbedOpen, DemuxOpenError> {
+    let streaming_source = HlsEpochSegmentSource::new(
+        request.http.clone(),
+        request.generation,
+        first_epoch.clone(),
+        request.policy.maximum_key_resource_bytes,
+    );
+    let streaming_result = request.demux_registry.open_probed(
+        streaming_source.into_demux_input(HlsRequiredContainer::TransportStream),
+        DemuxHints::none(),
+        request.policy.demux_sniff_budget,
+        request.http.cancellation().clone(),
+    );
+    match streaming_result {
+        Ok(opened) => Ok(opened),
+        Err(
+            DemuxOpenError::NoMatch
+            | DemuxOpenError::ProbeRejected(DemuxProbeRejection::UnsupportedInput { .. }),
+        ) => {
+            let segmented_source = HlsEpochSegmentSource::new(
+                request.http.clone(),
+                request.generation,
+                first_epoch,
+                request.policy.maximum_key_resource_bytes,
+            );
+            request.demux_registry.open_probed(
+                segmented_source.into_demux_input(HlsRequiredContainer::FragmentedMp4),
+                DemuxHints::none(),
+                request.policy.demux_sniff_budget,
+                request.http.cancellation().clone(),
+            )
+        }
+        Err(error) => Err(error),
     }
 }
 

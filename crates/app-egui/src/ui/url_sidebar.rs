@@ -289,7 +289,9 @@ fn wrapped_value(ui: &mut Ui, label: &str, value: &str) {
 
 fn preference_label(preference: WebMediaSelectionPreference) -> String {
     match preference {
-        WebMediaSelectionPreference::GlobalBestPlayable => "Глобально: лучший доступный".to_owned(),
+        WebMediaSelectionPreference::GlobalBestPlayable => {
+            "Глобально: авто (быстрый старт)".to_owned()
+        }
         WebMediaSelectionPreference::GlobalPreferredHeight(height) => {
             format!("Глобально: предпочитать {height}p")
         }

@@ -251,11 +251,12 @@ impl Demuxer for TransactionalHlsAvDemuxer {
         request: DemuxSeekRequest,
         cancellation: DemuxSeekCancellationToken,
     ) -> Result<DemuxSeekResult> {
-        self.seek_cancellable_component_pair(
-            request,
-            HlsComponentSeekIntent::PreviewedExactAnchor,
-            cancellation,
-        )
+        let intent = if request.mode == media_core::DemuxSeekMode::DecodePointBefore {
+            HlsComponentSeekIntent::ReceiptedManifestCandidate
+        } else {
+            HlsComponentSeekIntent::PreviewedExactAnchor
+        };
+        self.seek_cancellable_component_pair(request, intent, cancellation)
     }
 
     fn seek_with_receipted_request(

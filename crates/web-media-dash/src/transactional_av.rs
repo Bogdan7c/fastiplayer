@@ -1,8 +1,9 @@
 //! Atomic separate-A/V seek поверх offside prepared component replacements.
 
+use std::thread;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use demux_api::{
     CompositeAvDemuxer, CompositeAvPublicTrackIds, CompositeAvTrackSelection,
     CompositeComponentLeadPolicy,
@@ -13,6 +14,36 @@ use media_core::{
 };
 
 use crate::component::{DashComponentDemuxer, DashComponentFactory};
+
+/// Параллельно готовит независимые DASH video/audio components и возвращает их только парой.
+///
+/// Оба scoped worker-а всегда join-ятся до возврата. Ошибка или panic любой ветки не публикует
+/// частично подготовленный компонент вызывающему коду.
+pub(crate) fn prepare_dash_component_pair<Video, Audio>(
+    prepare_video: impl FnOnce() -> Result<Video> + Send,
+    prepare_audio: impl FnOnce() -> Result<Audio> + Send,
+) -> Result<(Video, Audio)>
+where
+    Video: Send,
+    Audio: Send,
+{
+    thread::scope(|scope| {
+        let video_worker = scope.spawn(prepare_video);
+        let audio_worker = scope.spawn(prepare_audio);
+
+        // Join выполняем для обеих веток до propagation ошибки: иначе panic второй ветки
+        // автоматически всплыл бы из thread::scope и обошёл наш typed error boundary.
+        let video_outcome = video_worker.join();
+        let audio_outcome = audio_worker.join();
+        let video = video_outcome
+            .map_err(|_| anyhow!("DASH video component preparation worker panicked"))?
+            .context("DASH video component preparation failed")?;
+        let audio = audio_outcome
+            .map_err(|_| anyhow!("DASH audio component preparation worker panicked"))?
+            .context("DASH audio component preparation failed")?;
+        Ok((video, audio))
+    })
+}
 
 /// DASH-owned wrapper, который не допускает partially committed video/audio seek.
 pub(crate) struct TransactionalDashAvDemuxer {
@@ -93,11 +124,14 @@ impl TransactionalDashAvDemuxer {
                 "stable public audio",
             )?,
         );
-        let (video, mut video_result) =
-            video_factory.prepare_seek_replacement(request, &video_public_tracks)?;
-        let (audio, _audio_result) = audio_factory.prepare_seek_replacement(
-            DemuxSeekRequest::accurate(request.timestamp),
-            &audio_public_tracks,
+        let ((video, mut video_result), (audio, _audio_result)) = prepare_dash_component_pair(
+            || video_factory.prepare_seek_replacement(request, &video_public_tracks),
+            || {
+                audio_factory.prepare_seek_replacement(
+                    DemuxSeekRequest::accurate(request.timestamp),
+                    &audio_public_tracks,
+                )
+            },
         )?;
         let selection = CompositeAvTrackSelection::new(
             exactly_one_track(video.tracks(), TrackKind::Video, "prepared video")?,
@@ -200,12 +234,15 @@ impl Demuxer for TransactionalDashAvDemuxer {
 /// Выполняет обе подготовки/composition до единственной mutation active state.
 fn transact_component_pair<Active, Video, Audio, Output>(
     active: &mut Active,
-    prepare_video: impl FnOnce() -> Result<Video>,
-    prepare_audio: impl FnOnce() -> Result<Audio>,
+    prepare_video: impl FnOnce() -> Result<Video> + Send,
+    prepare_audio: impl FnOnce() -> Result<Audio> + Send,
     compose: impl FnOnce(Video, Audio) -> Result<(Active, Output)>,
-) -> Result<Output> {
-    let video = prepare_video()?;
-    let audio = prepare_audio()?;
+) -> Result<Output>
+where
+    Video: Send,
+    Audio: Send,
+{
+    let (video, audio) = prepare_dash_component_pair(prepare_video, prepare_audio)?;
     let (replacement, result) = compose(video, audio)?;
     *active = replacement;
     Ok(result)
@@ -239,4 +276,44 @@ fn exact_component_tracks(
         .collect::<Vec<_>>();
     exactly_one_track(&component_tracks, kind, label)?;
     Ok(component_tracks)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+
+    use super::*;
+
+    /// Настоящая transactional boundary обязана overlap-ить обе подготовки и commit-ить один раз.
+    #[test]
+    fn component_pair_prepares_concurrently_before_single_commit() {
+        let active_preparations = Arc::new(AtomicUsize::new(0));
+        let maximum_active_preparations = Arc::new(AtomicUsize::new(0));
+        let prepare = |value| {
+            let active_preparations = Arc::clone(&active_preparations);
+            let maximum_active_preparations = Arc::clone(&maximum_active_preparations);
+            move || {
+                let active = active_preparations.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum_active_preparations.fetch_max(active, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(25));
+                active_preparations.fetch_sub(1, Ordering::SeqCst);
+                Ok(value)
+            }
+        };
+        let mut active_state = 7_u8;
+
+        let output = transact_component_pair(
+            &mut active_state,
+            prepare(11_u8),
+            prepare(13_u8),
+            |video, audio| Ok((video + audio, "ready")),
+        )
+        .expect("parallel pair transaction");
+
+        assert_eq!(maximum_active_preparations.load(Ordering::SeqCst), 2);
+        assert_eq!(active_state, 24);
+        assert_eq!(output, "ready");
+    }
 }

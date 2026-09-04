@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use demux_api::{DemuxHints, DemuxInput};
 use hls_playlist_core::{
     HlsParseRequest, HlsParserLimits, HlsPlaylist, MediaContainerIntent, MediaPlaylist,
     parse_hls_playlist, validate_initial_profile, validate_live_profile, validate_vod_profile,
@@ -15,12 +14,12 @@ use web_media_transport_api::SourceGeneration;
 
 use super::*;
 use crate::open::{
-    fetch_manifest, load_top_playlist, parse_playlist, select_master, select_master_at_index,
+    fetch_manifest, load_top_playlist, open_epoch_probe, parse_playlist, select_master,
+    select_master_at_index,
 };
 use crate::plan::{
     HlsComponentPlan, build_component_plan, build_segment_scoped_component_plan, parse_hls_duration,
 };
-use crate::source::HlsEpochSegmentSource;
 use crate::{HlsRequiredContainer, HlsVodOpenRequest};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -185,21 +184,7 @@ impl DiscoveryProofPort<'_, '_> {
             .first()
             .cloned()
             .ok_or(ChildProofFailure::InvalidManifest)?;
-        let source = HlsEpochSegmentSource::new(
-            self.request.http.clone(),
-            self.request.generation,
-            first_epoch,
-            self.request.policy.maximum_key_resource_bytes,
-        );
-        let opened = self
-            .request
-            .demux_registry
-            .open_probed(
-                DemuxInput::ordered_segments(Box::new(source)),
-                DemuxHints::none(),
-                self.request.policy.demux_sniff_budget,
-                self.request.http.cancellation().clone(),
-            )
+        let opened = open_epoch_probe(self.request, first_epoch)
             .map_err(|_| ChildProofFailure::UnsupportedContainer)?;
         let container = required_container(opened.container())?;
         self.validate_profile(&media, Some(container))?;

@@ -1,15 +1,32 @@
+use std::time::Instant;
+
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::web_media_catalog::{
-    WebMediaCatalogCorrelation, WebMediaCatalogScope, WebMediaCatalogState, WebMediaSelectionTarget,
+    WebMediaAutomaticQualityDirection, WebMediaCatalogCorrelation, WebMediaCatalogScope,
+    WebMediaCatalogState, WebMediaSelectionTarget,
 };
+use crate::web_media_stream_model::WebMediaSelectionPreference;
 
 use super::AppState;
+use super::automatic_web_media_quality::{
+    AutomaticWebMediaQualityDecision, AutomaticWebMediaQualityObservation,
+};
+
+/// Причина автоматического switch-а определяет, можно ли сохранять target как user preference.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AutomaticWebMediaSwitchPurpose {
+    /// Восстановление уже сохранённого пользователем выбора обязано оставить preference.
+    RememberedPreference,
+    /// Runtime adaptation не имеет права превращаться в ручной item override.
+    AdaptiveQuality,
+}
 
 #[derive(Clone)]
 pub(super) struct PendingAutomaticWebMediaSwitch {
     pub(super) parent_generation: crate::web_media_stream_model::WebMediaStreamGeneration,
     pub(super) catalog_generation: u64,
     pub(super) target: WebMediaSelectionTarget,
+    pub(super) purpose: AutomaticWebMediaSwitchPurpose,
 }
 
 impl AppState {
@@ -32,6 +49,7 @@ impl AppState {
             playlist_runtime.clear_web_media_catalog();
             self.web_media_catalog_state = WebMediaCatalogState::Inactive;
             self.pending_automatic_web_media_switch = None;
+            self.automatic_web_media_quality.reset();
             self.web_media_fallback_notice = false;
             return;
         };
@@ -39,6 +57,7 @@ impl AppState {
             playlist_runtime.clear_web_media_catalog();
             self.web_media_catalog_state = WebMediaCatalogState::Inactive;
             self.pending_automatic_web_media_switch = None;
+            self.automatic_web_media_quality.reset();
             self.web_media_fallback_notice = false;
             return;
         };
@@ -52,6 +71,7 @@ impl AppState {
             playlist_runtime.clear_web_media_catalog();
             self.web_media_catalog_state = WebMediaCatalogState::Inactive;
             self.pending_automatic_web_media_switch = None;
+            self.automatic_web_media_quality.reset();
             self.web_media_fallback_notice = false;
             return;
         };
@@ -79,13 +99,15 @@ impl AppState {
             catalog_attachment,
         );
         self.web_media_catalog_state = playlist_runtime.web_media_catalog_state();
-        if stream_configuration.is_none() {
+        let Some(stream_configuration) = stream_configuration else {
             self.pending_automatic_web_media_switch = None;
+            self.automatic_web_media_quality.reset();
             self.web_media_fallback_notice = false;
             return;
-        }
+        };
         let WebMediaCatalogScope::Item(item_id) = scope else {
             self.pending_automatic_web_media_switch = None;
+            self.automatic_web_media_quality.reset();
             self.web_media_fallback_notice = false;
             return;
         };
@@ -96,7 +118,29 @@ impl AppState {
             self.web_media_fallback_notice = false;
             return;
         };
-        let Some(preference) = playlist_runtime.remembered_web_media_preference(item_id) else {
+        let catalog = std::sync::Arc::clone(catalog);
+        let remembered_preference = playlist_runtime.remembered_web_media_preference(item_id);
+        if stream_configuration.preference() == WebMediaSelectionPreference::GlobalBestPlayable
+            && remembered_preference.is_none()
+        {
+            self.web_media_fallback_notice = false;
+            if self
+                .pending_automatic_web_media_switch
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.purpose == AutomaticWebMediaSwitchPurpose::AdaptiveQuality
+                })
+            {
+                return;
+            }
+            if self.same_item_switch.is_none() {
+                self.pending_automatic_web_media_switch =
+                    self.automatic_quality_switch_for(item_id, catalog.as_ref(), Instant::now());
+            }
+            return;
+        }
+        self.automatic_web_media_quality.reset();
+        let Some(preference) = remembered_preference else {
             self.pending_automatic_web_media_switch = None;
             self.web_media_fallback_notice = false;
             return;
@@ -110,6 +154,7 @@ impl AppState {
                                 parent_generation,
                                 catalog_generation: catalog.generation(),
                                 target: target.clone(),
+                                purpose: AutomaticWebMediaSwitchPurpose::RememberedPreference,
                             }
                         });
                 } else {
@@ -131,6 +176,37 @@ impl AppState {
         }
     }
 
+    /// Преобразует player evidence в exact adjacent catalog target без fake combination logic.
+    fn automatic_quality_switch_for(
+        &mut self,
+        item_id: playlist_core::PlaylistItemId,
+        catalog: &crate::web_media_catalog::WebMediaCatalog,
+        now: Instant,
+    ) -> Option<PendingAutomaticWebMediaSwitch> {
+        let active_height = catalog.active_choice().video.as_ref()?.height()?.pixels();
+        let lower = catalog.automatic_quality_target(WebMediaAutomaticQualityDirection::Lower);
+        let higher = catalog.automatic_quality_target(WebMediaAutomaticQualityDirection::Higher);
+        let media_instance_id = self.last_player_snapshot.media_instance_id?;
+        let observation = AutomaticWebMediaQualityObservation::from_snapshot(
+            item_id,
+            media_instance_id,
+            &self.last_player_snapshot,
+            active_height,
+            lower.is_some(),
+            higher.as_ref().map(|target| target.height),
+        );
+        let selected = match self.automatic_web_media_quality.observe(observation, now)? {
+            AutomaticWebMediaQualityDecision::Lower => lower?,
+            AutomaticWebMediaQualityDecision::Higher => higher?,
+        };
+        Some(PendingAutomaticWebMediaSwitch {
+            parent_generation: catalog.parent_generation()?,
+            catalog_generation: catalog.generation(),
+            target: selected.target,
+            purpose: AutomaticWebMediaSwitchPurpose::AdaptiveQuality,
+        })
+    }
+
     pub(crate) fn apply_automatic_web_media_preference(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
@@ -146,7 +222,7 @@ impl AppState {
                 false
             }
             Err(error) => {
-                tracing::warn!(error = %error, "Automatic remembered stream switch rejected");
+                tracing::warn!(error = %error, "Automatic web-media stream switch rejected");
                 false
             }
         }

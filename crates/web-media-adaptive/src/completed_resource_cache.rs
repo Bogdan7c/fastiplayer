@@ -247,7 +247,6 @@ impl CompletedResourceCache {
     }
 
     /// Принимает полностью завершённый response через тот же общий reservation contract.
-    #[cfg(test)]
     pub(crate) fn insert_completed(
         &mut self,
         key: CompletedResourceCacheKey,
@@ -320,7 +319,6 @@ pub(crate) fn completed_chunk_charge_bytes(chunk: &Bytes) -> Option<usize> {
 }
 
 /// Полный charge готового entry без копирования payload-а.
-#[cfg(test)]
 fn completed_entry_charge_bytes(
     key: &CompletedResourceCacheKey,
     final_target: &HttpRequestTarget,

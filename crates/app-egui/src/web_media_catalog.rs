@@ -9,8 +9,9 @@ pub(crate) use coordinator::{
     WebMediaCatalogCoordinator, WebMediaCatalogCorrelation, WebMediaCatalogScope,
 };
 pub(crate) use model::{
-    WebMediaCatalogChoice, WebMediaCatalogState, WebMediaFacetAction, WebMediaFacetOption,
-    WebMediaMode, WebMediaRememberedPreference, WebMediaSelectionTarget,
+    WebMediaAutomaticQualityDirection, WebMediaCatalog, WebMediaCatalogChoice,
+    WebMediaCatalogState, WebMediaFacetAction, WebMediaFacetOption, WebMediaMode,
+    WebMediaRememberedPreference, WebMediaSelectionTarget,
 };
 
 /// Собирает functional fixture через те же installed-only attachment/model boundaries.

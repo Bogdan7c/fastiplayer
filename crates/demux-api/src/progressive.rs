@@ -112,6 +112,16 @@ pub struct ProgressiveDemuxWorkerStoppedError;
 #[derive(Clone)]
 pub struct ProgressiveSeekController {
     preview: Arc<dyn Fn(DemuxSeekRequest) -> Result<DemuxSeekResult> + Send + Sync>,
+    worker_result_policy: ProgressivePreviewWorkerResultPolicy,
+}
+
+/// Определяет, обязан ли blocking worker воспроизвести preview anchor буквально.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProgressivePreviewWorkerResultPolicy {
+    /// Обычный byte/container seek обязан вернуть тот же доказанный packet boundary.
+    ExactPreview,
+    /// Manifest provider может заменить старый observed anchor свежим decode point до target-а.
+    ManifestReanchoredDecodePoint,
 }
 
 impl ProgressiveSeekController {
@@ -122,12 +132,34 @@ impl ProgressiveSeekController {
     {
         Self {
             preview: Arc::new(preview),
+            worker_result_policy: ProgressivePreviewWorkerResultPolicy::ExactPreview,
+        }
+    }
+
+    /// Создаёт controller для manifest provider-а, который уточняет anchor внутри worker-а.
+    ///
+    /// Caller всё ещё получает nonblocking observed preview. Worker вправе заменить только
+    /// `DecodePointBefore` anchor и только на позицию не позже той же цели; поэтому player floor
+    /// остаётся корректным, а provider не обязан читать от старого packet index до target-а.
+    pub fn manifest_reanchored<F>(preview: F) -> Self
+    where
+        F: Fn(DemuxSeekRequest) -> Result<DemuxSeekResult> + Send + Sync + 'static,
+    {
+        Self {
+            preview: Arc::new(preview),
+            worker_result_policy:
+                ProgressivePreviewWorkerResultPolicy::ManifestReanchoredDecodePoint,
         }
     }
 
     /// Возвращает доказанный результат, не выполняя blocking work.
     fn preview(&self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
         (self.preview)(request)
+    }
+
+    /// Возвращает provider-scoped invariant проверки результата blocking worker-а.
+    const fn worker_result_policy(&self) -> ProgressivePreviewWorkerResultPolicy {
+        self.worker_result_policy
     }
 }
 
@@ -724,6 +756,7 @@ impl Demuxer for ProgressiveDemuxer {
             generation: queue.current_generation,
             request,
             preview,
+            worker_result_policy: controller.worker_result_policy(),
             cancellation: request_cancellation,
         });
         self.end_of_stream_generation = None;

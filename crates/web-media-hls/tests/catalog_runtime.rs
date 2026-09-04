@@ -3,6 +3,7 @@
 #[allow(dead_code)]
 mod support;
 
+use std::io::Write;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -15,8 +16,8 @@ use media_core::{
 };
 use source_core::{CancellationToken, HttpRequestTarget};
 use support::{
-    TestQueries, TestServer, adaptive_context, audio_fmp4, demux_registry, muxed_ts, open_policy,
-    response, video_ts,
+    TestQueries, TestServer, adaptive_context, audio_fmp4, demux_registry,
+    large_muxed_ts_segment_with_early_landing, muxed_ts, open_policy, response, video_ts,
 };
 use web_media_core::{
     AudioTrackDescriptor, CandidateFormatIdentity, CandidateIdentity,
@@ -246,6 +247,124 @@ fn discovery_content_proves_selected_child_and_isolates_unavailable_sibling() {
         next_ready_event(demuxer.as_mut()),
         DemuxReadEvent::TracksChanged(_)
     ));
+}
+
+#[test]
+fn transport_stream_catalog_probe_returns_before_large_segment_tail() {
+    let large_segment = large_muxed_ts_segment_with_early_landing(90_000);
+    let (probe_prefix, delayed_tail) = large_segment.split_at(256 * 1024);
+    let probe_prefix = probe_prefix.to_vec();
+    let delayed_tail = delayed_tail.to_vec();
+    let release_tail = Arc::new(AtomicBool::new(false));
+    let server = TestServer::start_streaming({
+        let release_tail = Arc::clone(&release_tail);
+        move |_, request, stream| {
+            if request.request_line.contains("/master.m3u8") {
+                stream
+                    .write_all(&response(
+                        "200 OK",
+                        &[],
+                        b"#EXTM3U\n\
+                          #EXT-X-STREAM-INF:BANDWIDTH=1,CODECS=\"avc1.42001e,mp4a.40.2\",RESOLUTION=640x360\n\
+                          selected.m3u8\n",
+                    ))
+                    .expect("write master response");
+                return;
+            }
+            if request.request_line.contains("/selected.m3u8") {
+                stream
+                    .write_all(&response(
+                        "200 OK",
+                        &[],
+                        b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n",
+                    ))
+                    .expect("write child response");
+                return;
+            }
+            if request.request_line.contains("/segment.ts") {
+                let content_length = probe_prefix.len() + delayed_tail.len();
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+                );
+                stream
+                    .write_all(headers.as_bytes())
+                    .expect("write segment headers");
+                stream.write_all(&probe_prefix).expect("write probe prefix");
+                stream.flush().expect("flush probe prefix");
+
+                let wait_deadline = Instant::now() + Duration::from_secs(2);
+                while !release_tail.load(Ordering::Acquire) && Instant::now() < wait_deadline {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                let _ = stream.write_all(&delayed_tail);
+                return;
+            }
+            stream
+                .write_all(&response("404 Not Found", &[], b""))
+                .expect("write not-found response");
+        }
+    });
+    let generation = SourceGeneration::new(1);
+    let target = server.target("/master.m3u8");
+    let open = HlsVodOpenRequest {
+        http: adaptive_context(
+            &target,
+            CancellationToken::new(),
+            generation,
+            TestQueries::default(),
+        ),
+        generation,
+        manifest: HlsManifestInput::Fetch {
+            selected_url: target,
+        },
+        selection: HlsVariantSelectionIntent {
+            resolution: Some((
+                NonZeroU32::new(640).expect("width"),
+                NonZeroU32::new(360).expect("height"),
+            )),
+            codecs: Some("avc1.42001e,mp4a.40.2".into()),
+            audio: HlsAudioLayoutIntent::Muxed,
+            main_track_layout: HlsMainTrackLayoutIntent::MuxedAv,
+        },
+        overrides: HlsRequestOverrides::new(None),
+        containers: HlsComponentContainerIntent {
+            main: HlsContainerEvidence::ContentProbe,
+            alternate_audio: None,
+        },
+        demux_registry: demux_registry(),
+        policy: open_policy(),
+    };
+    let mut capabilities = RecordingCapabilities::default();
+    let started_at = Instant::now();
+    let outcome = discover_hls_catalog(
+        HlsCatalogDiscoveryRequest {
+            open: &open,
+            catalog_identity: catalog_identity(),
+            presentation: HlsCatalogPresentation::Vod,
+            provider_default_variant_index: None,
+            policy: HlsCatalogBuildPolicy {
+                catalog_limit: ComponentVariantCatalogLimit::new(8).expect("catalog limit"),
+                compatibility_edge_limit: ComponentVariantEdgeLimit::new(8).expect("edge limit"),
+                maximum_unique_children: NonZeroUsize::new(8).expect("child limit"),
+                provider_default_audio: HlsProviderDefaultAudioPolicy::RequireDeclared,
+            },
+        },
+        &mut capabilities,
+    )
+    .expect("bounded TS prefix must prove the catalog child");
+    let elapsed = started_at.elapsed();
+    release_tail.store(true, Ordering::Release);
+
+    assert!(
+        matches!(outcome, HlsCatalogDiscoveryOutcome::Installed(_)),
+        "catalog must be installed from the real streamed demux probe"
+    );
+    assert_eq!(capabilities.video_calls, 1);
+    assert_eq!(capabilities.audio_calls, 1);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "TS catalog probe waited for the delayed segment tail: {elapsed:?}"
+    );
 }
 
 #[test]

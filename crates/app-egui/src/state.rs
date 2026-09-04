@@ -61,6 +61,7 @@ use crate::video_pipeline_selector::{
     select_video_pipeline_plan,
 };
 
+mod automatic_web_media_quality;
 mod main_visual_override;
 mod media_jobs;
 pub(crate) use media_jobs::playback_intent_from_snapshot;
@@ -348,6 +349,8 @@ pub struct AppState {
     /// Ephemeral pending/error state URL content; Installed source остаётся authoritative.
     url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController,
     web_media_catalog_state: crate::web_media_catalog::WebMediaCatalogState,
+    /// Hysteresis автоматического качества; catalog/player остаются read-only inputs.
+    automatic_web_media_quality: automatic_web_media_quality::AutomaticWebMediaQualityController,
     pending_automatic_web_media_switch: Option<web_media_catalog::PendingAutomaticWebMediaSwitch>,
     web_media_fallback_notice: bool,
 
@@ -493,6 +496,8 @@ impl AppState {
             sidebar_controller: SidebarController::default(),
             url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController::default(),
             web_media_catalog_state: crate::web_media_catalog::WebMediaCatalogState::Inactive,
+            automatic_web_media_quality:
+                automatic_web_media_quality::AutomaticWebMediaQualityController::default(),
             pending_automatic_web_media_switch: None,
             web_media_fallback_notice: false,
             sidebar_host_state,

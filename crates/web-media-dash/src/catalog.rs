@@ -120,13 +120,27 @@ pub enum DashRepresentationLaneProbeError {
     ManifestEvidenceConflict,
 }
 
-/// Provider composition hook; вызывается ровно один раз на logical lane.
+/// Provider composition hook; доказывает каждый logical lane ровно один раз.
 pub trait DashRepresentationLaneProofPort {
     /// Выполняет transport/content/demux/capability proof и возвращает neutral descriptors.
     fn prove_lane(
         &mut self,
         request: DashRepresentationLaneProbe,
     ) -> Result<DashRepresentationLaneProof, DashRepresentationLaneProbeError>;
+
+    /// Доказывает подготовленный batch, сохраняя входной порядок результатов.
+    ///
+    /// Default сохраняет прежнюю последовательную семантику для простых injected port-ов.
+    /// Production provider переопределяет метод bounded-параллельным сетевым проходом.
+    fn prove_lanes(
+        &mut self,
+        requests: Vec<DashRepresentationLaneProbe>,
+    ) -> Vec<Result<DashRepresentationLaneProof, DashRepresentationLaneProbeError>> {
+        requests
+            .into_iter()
+            .map(|request| self.prove_lane(request))
+            .collect()
+    }
 }
 
 /// Полный caller-owned request без скрытых catalog/edge/segment budgets.
@@ -310,6 +324,9 @@ pub enum DashRepresentationLaneCatalogBuildError {
     /// Potential compatibility relation превышает caller budget до scanning.
     #[error("DASH logical representation compatibility budget exceeded")]
     CompatibilityBudget,
+    /// Provider нарушил batch contract и вернул не по одному outcome на lane.
+    #[error("DASH representation lane proof batch is incomplete")]
+    IncompleteProofBatch,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]

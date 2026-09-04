@@ -270,8 +270,12 @@ pub struct DashVodOpenPolicy {
     pub maximum_fragment_bytes: NonZeroUsize,
     /// Максимум одного SegmentBase Range read-а.
     pub maximum_range_read_bytes: NonZeroUsize,
+    /// Максимум одновременно удерживаемых SegmentBase Range-страниц на component.
+    pub maximum_cached_range_pages: NonZeroUsize,
     /// Максимум planned media fragments на component.
     pub maximum_planned_segments: NonZeroUsize,
+    /// Максимум одновременно выполняемых catalog content/capability proof-ов.
+    pub maximum_parallel_catalog_probes: NonZeroUsize,
     /// Registry sniff/replay bounds.
     pub demux_sniff_budget: DemuxSniffBudget,
     /// Progressive worker queue bounds.

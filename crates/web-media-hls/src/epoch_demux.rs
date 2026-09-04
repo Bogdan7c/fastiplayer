@@ -636,8 +636,15 @@ impl Demuxer for HlsComponentDemuxer {
             self.active_read_control.clone(),
         )
         .with_seek_cancellation(cancellation.clone());
-        let (replacement, result) =
-            factory.prepare_seek_replacement(request, &self.public_tracks)?;
+        // Worker уточняет observed preview через manifest, чтобы дальний drag не декодировал
+        // весь ещё не наблюдавшийся диапазон. Progressive boundary разрешает только safe
+        // `DecodePointBefore` reanchor не позже исходной цели.
+        let (replacement, result) = if request.mode == media_core::DemuxSeekMode::DecodePointBefore
+        {
+            factory.prepare_receipted_seek_replacement(request, &self.public_tracks)?
+        } else {
+            factory.prepare_seek_replacement(request, &self.public_tracks)?
+        };
         match cancellation.complete() {
             DemuxSeekCancellationCompletion::Completed => {
                 self.commit_prepared_replacement(replacement, result)

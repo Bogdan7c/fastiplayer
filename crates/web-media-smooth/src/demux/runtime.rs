@@ -2,9 +2,10 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use demux_api::{
     CompositeAvDemuxer, CompositeAvPublicTrackIds, CompositeAvTrackSelection,
     ProgressiveAsyncSeekHandle, ProgressiveDemuxer, ProgressiveRuntimeGeneration,
@@ -279,20 +280,33 @@ fn open_components(
     cancellation: source_core::CancellationToken,
     sniff_budget: demux_api::DemuxSniffBudget,
 ) -> anyhow::Result<SmoothOpenedComponents> {
-    let video = factory
-        .open_video(SmoothVideoDemuxOpenRequest::new(
-            Box::new(sources.video),
-            cancellation.clone(),
-            sniff_budget,
-        ))
+    let video_cancellation = cancellation.clone();
+    let (video_outcome, audio_outcome) = thread::scope(|scope| {
+        let video_worker = scope.spawn(|| {
+            factory.open_video(SmoothVideoDemuxOpenRequest::new(
+                Box::new(sources.video),
+                video_cancellation,
+                sniff_budget,
+            ))
+        });
+        let audio_worker = scope.spawn(|| {
+            factory.open_audio(SmoothAudioDemuxOpenRequest::new(
+                Box::new(sources.audio),
+                cancellation,
+                sniff_budget,
+            ))
+        });
+
+        // Явно join-им обе ветки, чтобы panic превратился в обычную preparation-ошибку,
+        // а scope не размотал весь media-open worker.
+        (video_worker.join(), audio_worker.join())
+    });
+    let video = video_outcome
+        .map_err(|_| anyhow!("Smooth video ISO-BMFF readiness worker panicked"))?
         .context("Smooth video ISO-BMFF readiness failed")?;
     let video_track_id = exactly_one_track(video.tracks(), TrackKind::Video, "video")?;
-    let audio = factory
-        .open_audio(SmoothAudioDemuxOpenRequest::new(
-            Box::new(sources.audio),
-            cancellation,
-            sniff_budget,
-        ))
+    let audio = audio_outcome
+        .map_err(|_| anyhow!("Smooth audio ISO-BMFF readiness worker panicked"))?
         .context("Smooth audio ISO-BMFF readiness failed")?;
     let audio_track_id = exactly_one_track(audio.tracks(), TrackKind::Audio, "audio")?;
     Ok(SmoothOpenedComponents {

@@ -1,3 +1,9 @@
+## Native network fast-start / responsive seek (2026-09-04)
+
+- HLS x36xhzz regression root cause was full first-TS download per catalog sibling plus stale preview anchor reuse. Catalog now uses bounded pull-stream TS proof with fMP4-only fallback; native final seek uses fresh manifest reanchor and containing-segment decode-forward. Final public cold open ~1.61 s vs ~18.3 s, +120 s seek 448 ms to correct frame with zero pre-target presentation.
+- DASH root causes were sequential lane/catalog proof, serialized A/V preparation, and one HTTP Range RTT per demux packet. Catalog proof is bounded-parallel (app 16), A/V open/seek is scoped-parallel and atomic, and SegmentBase owns 64 KiB latency / 1 MiB throughput / two-page read-ahead plus completed-only shared VOD replay. Public +30 s seek ~1.50 s, of which 1.467 s is the single CDN Range request and 33 ms is decode/present.
+- Smooth A/V preparation is scoped-parallel and atomic. Automatic quality starts at 720p, upshifts only after stable evidence, downshifts on underrun/750 ms buffering, and never changes strict manual height preference or persists an adaptive step. Full invariants, tests, external caveats and commands: `mem:media-services/native-network-fast-start-responsive-seek-2026-09-04`.
+
 ## G3 native-ingress final qualification (2026-09-02)
 
 - G3 architecture/security audit подтвердил единый neutral web active-source/catalog plane, exact process set `{row00,row08}`, zero spawn для 11 direct rows при `yt_dlp.enabled=false`, pre-Installed-only fallback и отсутствие persisted/logged temporary secrets/endpoints.

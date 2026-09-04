@@ -64,7 +64,7 @@ const BOOTSTRAP_FAILURE_CHILD_TEST_NAME: &str = "web_media_open::hds::provider_d
 /// Test-only endpoint возвращает число fetch-ей второго fragment selected row.
 const SELECTED_SECOND_FRAGMENT_COUNT_ENDPOINT: &str = "/__selected-second-fragment-count";
 /// Exact media path нужен и owner-, и child-side assertions.
-const SELECTED_SECOND_FRAGMENT_PATH: &str = "/media/playable-highSeg1-Frag2";
+const SELECTED_SECOND_FRAGMENT_PATH: &str = "/media/playable-lowSeg1-Frag2";
 /// Все network/worker ожидания ограничены одним коротким deadline-ом.
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -419,8 +419,10 @@ fn assert_child_hds_open() {
     };
     assert_eq!(coupled.variants.len(), 2);
     assert_eq!(coupled.active_index, 0);
-    assert_eq!(coupled.variants[0].video.height, Some(1080));
-    assert_eq!(coupled.variants[1].video.height, Some(720));
+    // Автоматический режим начинает с latency-first 720p, а 1080p оставляет
+    // соседней доказанной ступенью для последующего адаптивного повышения.
+    assert_eq!(coupled.variants[0].video.height, Some(720));
+    assert_eq!(coupled.variants[1].video.height, Some(1080));
 
     assert_av_tracks_and_packets(prepared.demuxer.as_mut());
 

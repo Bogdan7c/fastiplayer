@@ -7,7 +7,9 @@ pub use native_live::{NativeDashLiveCatalogDiscoveryRequest, discover_native_das
 pub use native_vod::{NativeDashVodCatalogDiscoveryRequest, discover_native_dash_vod_catalog};
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread;
 
 use dash_mpd_core::{
     DashDynamicMpd, DashMediaKind, DashMpd, DashMpdParseRequest, parse_dynamic_dash_mpd,
@@ -460,9 +462,11 @@ struct ProviderLaneProof<'proof> {
     timeline_mode: DashRepresentationLaneTimelineMode,
 }
 
-impl DashRepresentationLaneProofPort for ProviderLaneProof<'_> {
-    fn prove_lane(
-        &mut self,
+impl ProviderLaneProof<'_> {
+    /// Доказывает одну lane без mutable состояния: независимые HTTP/demux jobs могут
+    /// безопасно разделять immutable MPD, registry и один pooled HTTP source session.
+    fn prove_lane_shared(
+        &self,
         request: DashRepresentationLaneProbe,
     ) -> Result<DashRepresentationLaneProof, DashRepresentationLaneProbeError> {
         let logical = DashLogicalRepresentationSelection::Single(request.logical_lane);
@@ -503,6 +507,97 @@ impl DashRepresentationLaneProofPort for ProviderLaneProof<'_> {
             proof = Some(period_proof);
         }
         proof.ok_or(DashRepresentationLaneProbeError::UnsupportedTrackShape)
+    }
+
+    /// Выполняет bounded complete pass и восстанавливает manifest-independent lane order.
+    fn prove_lanes_bounded(
+        &self,
+        requests: Vec<DashRepresentationLaneProbe>,
+    ) -> Vec<Result<DashRepresentationLaneProof, DashRepresentationLaneProbeError>> {
+        let worker_count = self
+            .policy
+            .maximum_parallel_catalog_probes
+            .get()
+            .min(requests.len());
+        if worker_count <= 1 {
+            return requests
+                .into_iter()
+                .map(|request| self.prove_lane_shared(request))
+                .collect();
+        }
+
+        let next_request_index = AtomicUsize::new(0);
+        let (result_sender, result_receiver) = mpsc::sync_channel(requests.len());
+        thread::scope(|scope| {
+            let mut workers = Vec::with_capacity(worker_count);
+            for worker_index in 0..worker_count {
+                let worker_sender = result_sender.clone();
+                let worker_requests = &requests;
+                let worker_next_index = &next_request_index;
+                let worker_name = format!("dash-catalog-probe-{worker_index}");
+                let Ok(worker) =
+                    thread::Builder::new()
+                        .name(worker_name)
+                        .spawn_scoped(scope, move || {
+                            loop {
+                                let request_index =
+                                    worker_next_index.fetch_add(1, Ordering::Relaxed);
+                                let Some(request) = worker_requests.get(request_index) else {
+                                    break;
+                                };
+                                let outcome = self.prove_lane_shared(request.clone());
+                                if worker_sender.send((request_index, outcome)).is_err() {
+                                    break;
+                                }
+                            }
+                        })
+                else {
+                    // Уже запущенные workers подхватят весь remaining batch. Если ОС не
+                    // дала создать даже первый поток, ниже missing rows пройдут синхронно.
+                    break;
+                };
+                workers.push(worker);
+            }
+            drop(result_sender);
+            for worker in workers {
+                let _ = worker.join();
+            }
+        });
+
+        let mut indexed_results = result_receiver.into_iter().collect::<Vec<_>>();
+        indexed_results.sort_unstable_by_key(|(request_index, _outcome)| *request_index);
+        let mut received_results = indexed_results.into_iter().peekable();
+        requests
+            .into_iter()
+            .enumerate()
+            .map(|(request_index, request)| {
+                if received_results
+                    .peek()
+                    .is_some_and(|(received_index, _outcome)| *received_index == request_index)
+                {
+                    return received_results.next().expect("peeked DASH proof result").1;
+                }
+                // Panic/spawn failure изолируется одной lane и не превращает catalog
+                // discovery в hang или silently missing result.
+                self.prove_lane_shared(request)
+            })
+            .collect()
+    }
+}
+
+impl DashRepresentationLaneProofPort for ProviderLaneProof<'_> {
+    fn prove_lane(
+        &mut self,
+        request: DashRepresentationLaneProbe,
+    ) -> Result<DashRepresentationLaneProof, DashRepresentationLaneProbeError> {
+        self.prove_lane_shared(request)
+    }
+
+    fn prove_lanes(
+        &mut self,
+        requests: Vec<DashRepresentationLaneProbe>,
+    ) -> Vec<Result<DashRepresentationLaneProof, DashRepresentationLaneProbeError>> {
+        self.prove_lanes_bounded(requests)
     }
 }
 

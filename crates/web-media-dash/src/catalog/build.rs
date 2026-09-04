@@ -127,7 +127,7 @@ pub(super) fn build(
         }
         DashRepresentationLaneProviderDefault::NativePreferredHeight(_) => Vec::new(),
     };
-    let mut proven_lanes = Vec::with_capacity(lanes.len());
+    let mut proof_inputs = Vec::with_capacity(lanes.len());
     for (index, logical) in lanes.into_iter().enumerate() {
         let probe = DashRepresentationLaneProbe {
             lane: DashRepresentationLaneProbeId(index.saturating_add(1) as u64),
@@ -156,7 +156,20 @@ pub(super) fn build(
             ));
             continue;
         }
-        let proof = match proof_port.prove_lane(probe) {
+        proof_inputs.push((logical, probe));
+    }
+    let proof_requests = proof_inputs
+        .iter()
+        .map(|(_logical, probe)| probe.clone())
+        .collect();
+    let proof_results = proof_port.prove_lanes(proof_requests);
+    if proof_results.len() != proof_inputs.len() {
+        return Err(DashRepresentationLaneCatalogBuildError::IncompleteProofBatch);
+    }
+
+    let mut proven_lanes = Vec::with_capacity(proof_inputs.len());
+    for ((logical, _probe), proof_result) in proof_inputs.into_iter().zip(proof_results) {
+        let proof = match proof_result {
             Ok(proof) => proof,
             Err(DashRepresentationLaneProbeError::Cancelled) => {
                 return Err(DashRepresentationLaneCatalogBuildError::Cancelled);

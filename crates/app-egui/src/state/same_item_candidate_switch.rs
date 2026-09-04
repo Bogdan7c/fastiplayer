@@ -50,6 +50,10 @@ enum SameItemSwitchKind {
         parent_generation: WebMediaStreamGeneration,
         target: crate::web_media_catalog::WebMediaSelectionTarget,
     },
+    /// Automatic runtime quality step не сохраняется как manual item preference.
+    AdaptiveQuality {
+        parent_generation: WebMediaStreamGeneration,
+    },
 }
 
 impl SameItemSwitchKind {
@@ -76,6 +80,9 @@ impl SameItemSwitchKind {
             },
             Self::AutomaticPicker {
                 parent_generation, ..
+            }
+            | Self::AdaptiveQuality {
+                parent_generation, ..
             } => UrlSidebarPendingSelection::AutomaticStreamRestore {
                 parent_generation: *parent_generation,
             },
@@ -94,6 +101,9 @@ impl SameItemSwitchKind {
                 parent_generation, ..
             }
             | Self::AutomaticPicker {
+                parent_generation, ..
+            }
+            | Self::AdaptiveQuality {
                 parent_generation, ..
             } => *parent_generation,
         }
@@ -284,13 +294,23 @@ impl AppState {
         if pending.target == catalog.active_choice().target {
             return Ok(UrlSidebarActionApplyOutcome::NoChange);
         }
+        let switch_kind = match pending.purpose {
+            super::web_media_catalog::AutomaticWebMediaSwitchPurpose::RememberedPreference => {
+                SameItemSwitchKind::AutomaticPicker {
+                    parent_generation: pending.parent_generation,
+                    target: pending.target.clone(),
+                }
+            }
+            super::web_media_catalog::AutomaticWebMediaSwitchPurpose::AdaptiveQuality => {
+                SameItemSwitchKind::AdaptiveQuality {
+                    parent_generation: pending.parent_generation,
+                }
+            }
+        };
         self.start_resolved_same_item_switch(
             active_source,
             crate::media_open::WebMediaSelectionSwitchIntent::CatalogTarget(pending.target.clone()),
-            SameItemSwitchKind::AutomaticPicker {
-                parent_generation: pending.parent_generation,
-                target: pending.target,
-            },
+            switch_kind,
             playlist_runtime,
             renderer,
         )

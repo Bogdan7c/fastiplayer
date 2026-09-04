@@ -181,6 +181,68 @@ fn n14b_lifecycle_paused_switch_keeps_position_and_commits_only_after_installed(
     assert_successful_url_action(PlaybackState::Paused, PlaybackIntent::StartPaused);
 }
 
+#[test]
+fn adaptive_quality_switch_keeps_position_without_persisting_manual_preference() {
+    let item_id = playlist_item_id(42);
+    let old_instance = media_instance_id(53);
+    let new_instance = media_instance_id(54);
+    let old_generation = WebMediaStreamGeneration::for_test(62, 1);
+    let new_generation = WebMediaStreamGeneration::for_test(62, 2);
+    let old_playback = PlaybackObservation {
+        media_instance_id: old_instance,
+        position: Duration::from_millis(37_250),
+        state: PlaybackState::Playing,
+    };
+    let mut context = FakeSameItemSwitchContext {
+        request_id: media_open_request_id(72),
+        poll_steps: VecDeque::from([
+            FakePollStep::Pending,
+            FakePollStep::Installed {
+                media_instance_id: new_instance,
+                generation: new_generation,
+            },
+        ]),
+        begin_expected_active: None,
+        begin_playback_intent: None,
+        controller: crate::web_media_stream_model::UrlSidebarController::default(),
+        item_id,
+        source_lineage: 62,
+        visible_generation: old_generation,
+        playback: old_playback,
+        remembered_targets: Vec::new(),
+        terminal_selector_errors: Vec::new(),
+        fallback_notice_visible: true,
+    };
+    let mut start = app_start(
+        item_id,
+        old_instance,
+        old_generation,
+        PlaybackState::Playing,
+    );
+    start.kind = SameItemSwitchKind::AdaptiveQuality {
+        parent_generation: old_generation,
+    };
+    let mut path = test_app_path();
+
+    assert_eq!(
+        path.start(start, &mut context)
+            .expect("adaptive quality switch start"),
+        UrlSidebarActionApplyOutcome::Started
+    );
+    assert_eq!(context.playback, old_playback);
+    assert_eq!(path.poll(&mut context), SameItemSwitchAppPoll::Pending);
+    assert_eq!(context.playback, old_playback);
+    assert_eq!(path.poll(&mut context), SameItemSwitchAppPoll::Installed);
+    assert_eq!(context.playback.media_instance_id, new_instance);
+    assert_eq!(context.playback.position, old_playback.position);
+    assert_eq!(context.playback.state, PlaybackState::Playing);
+    assert!(
+        context.remembered_targets.is_empty(),
+        "runtime adaptation не должна становиться manual item preference"
+    );
+    assert!(!context.fallback_notice_visible);
+}
+
 /// Оба stable states проходят один production app path, но с разным exact intent.
 fn assert_successful_url_action(state: PlaybackState, expected_intent: PlaybackIntent) {
     let item_id = playlist_item_id(41);

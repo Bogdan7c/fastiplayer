@@ -14,7 +14,8 @@ use source_core::CancellationToken;
 use super::{
     ProgressiveAsyncSeekLimits, ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt,
     ProgressiveDemuxBufferLimits, ProgressiveDemuxPacketTooLargeError,
-    ProgressiveRuntimeGeneration, ProgressiveSeekAnchorMismatchError, ProgressiveSeekFence,
+    ProgressivePreviewWorkerResultPolicy, ProgressiveRuntimeGeneration,
+    ProgressiveSeekAnchorMismatchError, ProgressiveSeekFence,
 };
 
 /// Максимальная пауза worker-а до повторной проверки cancellation при backpressure.
@@ -52,6 +53,8 @@ pub(super) enum ProgressiveSeekCommand {
         request: DemuxSeekRequest,
         /// Уже опубликованный player-у доказанный anchor.
         preview: DemuxSeekResult,
+        /// Provider-scoped invariant между synchronous preview и fresh worker anchor.
+        worker_result_policy: ProgressivePreviewWorkerResultPolicy,
         /// Newer preview либо receipted intent отменяет blocking transport этого seek-а.
         cancellation: DemuxSeekCancellationToken,
     },
@@ -356,11 +359,18 @@ pub(super) fn run_seekable_progressive_worker(
                 ProgressiveSeekCommand::Previewed {
                     request,
                     preview,
+                    worker_result_policy,
                     cancellation: seek_cancellation,
                     ..
                 } => {
                     match inner.seek_with_cancellable_preview_request(request, seek_cancellation) {
-                        Ok(worker_result) if worker_result == preview => {}
+                        Ok(worker_result)
+                            if preview_worker_result_is_compatible(
+                                worker_result_policy,
+                                request,
+                                preview,
+                                worker_result,
+                            ) => {}
                         Ok(worker_result) => {
                             let outcome = push_progressive_message(
                                 &shared,
@@ -484,6 +494,27 @@ pub(super) fn run_seekable_progressive_worker(
                     ProgressivePushOutcome::Stale => {}
                 }
             }
+        }
+    }
+}
+
+/// Проверяет только тот диапазон расхождения, который не нарушает decoder output floor.
+fn preview_worker_result_is_compatible(
+    policy: ProgressivePreviewWorkerResultPolicy,
+    request: DemuxSeekRequest,
+    preview: DemuxSeekResult,
+    worker_result: DemuxSeekResult,
+) -> bool {
+    match policy {
+        ProgressivePreviewWorkerResultPolicy::ExactPreview => worker_result == preview,
+        ProgressivePreviewWorkerResultPolicy::ManifestReanchoredDecodePoint => {
+            let requested_position = media_core::MediaTime::from_duration(request.timestamp);
+            worker_result == preview
+                || (request.mode == media_core::DemuxSeekMode::DecodePointBefore
+                    && preview.requested_position == requested_position
+                    && preview.actual_position.as_duration() <= request.timestamp
+                    && worker_result.requested_position == requested_position
+                    && worker_result.actual_position.as_duration() <= request.timestamp)
         }
     }
 }

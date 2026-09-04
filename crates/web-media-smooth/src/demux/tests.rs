@@ -66,6 +66,60 @@ impl SmoothIsoBmffDemuxFactory for TestSymphoniaFactory {
     }
 }
 
+/// Production adapter с наблюдением overlap двух независимых component open-ов.
+#[derive(Default)]
+struct OverlappingSymphoniaFactory {
+    /// Число adapter open-ов, которые прямо сейчас находятся внутри readiness.
+    active_opens: AtomicUsize,
+    /// Максимальное одновременно наблюдавшееся число adapter open-ов.
+    maximum_active_opens: AtomicUsize,
+}
+
+impl OverlappingSymphoniaFactory {
+    /// Выполняет настоящий adapter open, оставляя короткое окно для детерминированного overlap.
+    fn observe_open<Output>(
+        &self,
+        open: impl FnOnce() -> anyhow::Result<Output>,
+    ) -> anyhow::Result<Output> {
+        let active = self.active_opens.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum_active_opens
+            .fetch_max(active, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(25));
+        let outcome = open();
+        self.active_opens.fetch_sub(1, Ordering::SeqCst);
+        outcome
+    }
+
+    /// Возвращает доказанный максимум concurrency для startup либо seek транзакции.
+    fn maximum_active_opens(&self) -> usize {
+        self.maximum_active_opens.load(Ordering::SeqCst)
+    }
+
+    /// Начинает отдельное наблюдение следующей операции.
+    fn reset_observation(&self) {
+        assert_eq!(self.active_opens.load(Ordering::SeqCst), 0);
+        self.maximum_active_opens.store(0, Ordering::SeqCst);
+    }
+}
+
+impl SmoothIsoBmffDemuxFactory for OverlappingSymphoniaFactory {
+    /// Открывает настоящий video adapter и учитывает его concurrency interval.
+    fn open_video(
+        &self,
+        request: SmoothVideoDemuxOpenRequest,
+    ) -> anyhow::Result<Box<dyn Demuxer + Send>> {
+        self.observe_open(|| TestSymphoniaFactory.open_video(request))
+    }
+
+    /// Открывает настоящий audio adapter и учитывает его concurrency interval.
+    fn open_audio(
+        &self,
+        request: SmoothAudioDemuxOpenRequest,
+    ) -> anyhow::Result<Box<dyn Demuxer + Send>> {
+        self.observe_open(|| TestSymphoniaFactory.open_audio(request))
+    }
+}
+
 /// Factory probe, который доказывает worker thread без fragment fetch.
 struct ThreadProbeFactory {
     caller_thread: thread::ThreadId,
@@ -109,12 +163,12 @@ impl SmoothIsoBmffDemuxFactory for ThreadProbeFactory {
         anyhow::bail!("intentional worker probe failure")
     }
 
-    /// Audio не должен открываться после video failure.
+    /// Параллельная audio ветка тоже возвращает намеренную probe-ошибку.
     fn open_audio(
         &self,
         _request: SmoothAudioDemuxOpenRequest,
     ) -> anyhow::Result<Box<dyn Demuxer + Send>> {
-        anyhow::bail!("audio factory must not run after video failure")
+        anyhow::bail!("intentional audio worker probe failure")
     }
 }
 
@@ -185,8 +239,9 @@ fn canonical_sources_publish_stable_av_tracks_and_manifest_duration() {
     let origin = FixtureOrigin::start();
     let sources = selected_sources(&origin);
     let expected_duration = sources.aligned_span().end_exclusive();
+    let factory = Arc::new(OverlappingSymphoniaFactory::default());
     let result = sources
-        .into_progressive_demuxer(Arc::new(TestSymphoniaFactory), demux_policy())
+        .into_progressive_demuxer(factory.clone(), demux_policy())
         .expect("progressive Smooth runtime");
 
     assert_eq!(
@@ -210,6 +265,11 @@ fn canonical_sources_publish_stable_av_tracks_and_manifest_duration() {
     assert_eq!(update.tracks.len(), 2);
     assert_eq!(update.tracks[0].kind, TrackKind::Video);
     assert_eq!(update.tracks[1].kind, TrackKind::Audio);
+    assert_eq!(
+        factory.maximum_active_opens(),
+        2,
+        "Smooth startup обязан готовить независимые A/V adapters параллельно"
+    );
 
     let public_video_track_id = update.tracks[0].id;
     let public_audio_track_id = update.tracks[1].id;
@@ -249,12 +309,14 @@ fn canonical_sources_publish_stable_av_tracks_and_manifest_duration() {
 fn receipted_seek_rebuilds_both_axes_at_exact_manifest_anchors() {
     let origin = FixtureOrigin::start();
     let sources = selected_sources(&origin);
+    let factory = Arc::new(OverlappingSymphoniaFactory::default());
     let result = sources
-        .into_progressive_demuxer(Arc::new(TestSymphoniaFactory), demux_policy())
+        .into_progressive_demuxer(factory.clone(), demux_policy())
         .expect("seekable Smooth runtime");
     let handle = result.async_seek_handle();
     let mut demuxer = result.into_demuxer();
     wait_for_tracks_changed(demuxer.as_mut());
+    factory.reset_observation();
     let fence = ProgressiveSeekFence {
         runtime_generation: handle.runtime_generation(),
         request_id: ProgressiveSeekRequestId::new(1),
@@ -282,11 +344,23 @@ fn receipted_seek_rebuilds_both_axes_at_exact_manifest_anchors() {
         seek_result.actual_position.as_duration(),
         Duration::from_secs(4)
     );
+    assert_eq!(
+        factory.maximum_active_opens(),
+        2,
+        "Smooth seek обязан готовить независимые A/V replacements параллельно"
+    );
     let requests = origin.request_targets();
-    assert!(requests.ends_with(&[
-        "/media/QualityLevels(1501000)/Fragments(video_eng=40000000)".to_owned(),
-        "/media/QualityLevels(64008)/Fragments(audio_eng=39680000)".to_owned(),
-    ]));
+    let replacement_requests = &requests[requests.len().saturating_sub(2)..];
+    assert!(
+        replacement_requests.iter().any(|target| {
+            target == "/media/QualityLevels(1501000)/Fragments(video_eng=40000000)"
+        })
+    );
+    assert!(
+        replacement_requests.iter().any(|target| {
+            target == "/media/QualityLevels(64008)/Fragments(audio_eng=39680000)"
+        })
+    );
 }
 
 #[test]
