@@ -48,7 +48,7 @@
 - Local locked format/check/strict Clippy/docs/all-features tests/app-no-default/MSRV and all four direct patch suites pass on `a9d3c86`.
 - `scripts/ci-checks.sh dependencies` remains blocking on RUSTSEC-2026-0194/0195 (`wayland-scanner 0.31.10 -> quick-xml 0.39.3`); licenses/sources/bans pass and cargo-machete reports no unused direct deps. RUSTSEC-2026-0150 marks `audiopus_sys 0.2.2` unmaintained as non-blocking visibility.
 - Coverage ratchet is also currently red due the external-test filename classification described in `mem:testing/coverage`; do not treat a green unit suite as overall CI readiness.
-- GitHub rulesets and `main` protection APIs were rechecked and still return the private-repo-without-Pro HTTP 403 limitation. Full evidence: root `readiness_report_2026-07-12.md`.
+- GitHub rulesets and `main` protection APIs were rechecked and still return the private-repo-without-Pro HTTP 403 limitation. Full evidence: `docs/history/readiness_report_2026-07-12.md` (historical snapshot, not current readiness).
 
 ## Playlist Session 21 dependency inventory (2026-07-16)
 

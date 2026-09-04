@@ -1,6 +1,6 @@
 # Conventions
 
-- Historical agent rules (alwaysApply) live in `<REMOVED_HARNESS>/rules/*.mdc` and harden AGENTS.md discipline for every Agent chat: `serena-memories`, `architecture-boundaries-no-debt`, `decision-gate`, `cause-not-symptom`, `context7-before-code`, `quality-loop`, `scope-discipline`. They do not replace AGENTS.md; conflict → follow AGENTS.md and tighten the rule.
+- Public launch S04: project instructions belong to `AGENTS.md`; retained tooling is `.codex/`, `.serena/` and Serena-related scripts. Non-Codex harness was removed from the physical/index tree and guarded by exact `.gitignore` names. `.agents/` was empty and left untouched; no placeholder files were added. Details: `mem:public-launch/s04-root-cleanup-2026-09-05`.
 - Mandatory local workflow from AGENTS.md: before code edits or writing code, make a Context7 checkpoint for any touched external libraries/API/CLI; before code tasks, run Serena `initial_instructions` if not yet read, activate the project, read `mem:core` plus relevant memories, and use Serena symbols/references for codebase questions; solve root causes, not symptoms.
 - Stop and ask before important architecture/API/behavior decisions, especially if Sonar or a refactor suggests changing public API, module ownership, or playback semantics.
 - Before implementing a feature, briefly state architecture: owner modules/state, boundary methods, invariants that must not change, and focused tests.

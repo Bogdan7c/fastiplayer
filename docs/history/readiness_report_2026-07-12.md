@@ -1,5 +1,9 @@
 # Rustiplayer readiness report — 2026-07-12
 
+> Исторический отчёт для snapshot `a9d3c86`, не текущий статус готовности проекта.
+> В S04 перенесён из корня; результаты сохранены. Follow-up документы из `user/`
+> находятся в приватном архиве S00 и недоступны по публичным ссылкам.
+
 ## Verdict
 
 **Итог: `NOT READY` для безусловного старта крупного feature roadmap.**
@@ -101,7 +105,7 @@ Clean tests и создание JSON/LCOV/HTML завершились успеш
 
 Причина доказана по current LLVM file inventory и документации `cargo-llvm-cov`: default regex исключает каталоги `tests/`, файлы `tests.rs` и `*_tests.rs`. Исходный baseline учитывал тестовые функции, пока они находились inline внутри production-файлов. Decomposition sessions перенесли те же тесты в отдельные test modules; LLVM перестал включать их в report. Это объясняет резкое изменение `config`, `render-core`, `video-core` и `codec-core` без исчезновения самих тестов.
 
-Нельзя просто записать current counters как новый baseline: сначала требуется отдельное решение о стабильной классификации test code и точные versioned exceptions для осознанной миграции. См. [coverage follow-up](user/session_28_followup_coverage_baseline_after_decomposition_2026-07-12.md).
+Нельзя просто записать current counters как новый baseline: сначала требуется отдельное решение о стабильной классификации test code и точные versioned exceptions для осознанной миграции. См. приватный coverage follow-up `session_28_followup_coverage_baseline_after_decomposition_2026-07-12.md` (архив S00).
 
 ## Повторный census относительно baseline
 
@@ -265,8 +269,9 @@ Hover preview/predecode/hover budget lanes остаются удалёнными
 
 ## Bounded follow-ups
 
-- [Blocking quick-xml advisories](user/session_28_followup_dependency_advisories_2026-07-12.md)
-- [Coverage baseline after decomposition](user/session_28_followup_coverage_baseline_after_decomposition_2026-07-12.md)
-- [Unmaintained audiopus dependency](user/session_28_followup_audiopus_maintenance_2026-07-12.md)
-- [Smoke dry-run outcome vocabulary](user/session_28_followup_smoke_dry_run_outcome_2026-07-12.md)
+Следующие документы сохранены в приватном архиве S00:
 
+- Blocking quick-xml advisories — `session_28_followup_dependency_advisories_2026-07-12.md`.
+- Coverage baseline after decomposition — `session_28_followup_coverage_baseline_after_decomposition_2026-07-12.md`.
+- Unmaintained audiopus dependency — `session_28_followup_audiopus_maintenance_2026-07-12.md`.
+- Smoke dry-run outcome vocabulary — `session_28_followup_smoke_dry_run_outcome_2026-07-12.md`.

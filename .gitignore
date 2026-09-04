@@ -28,3 +28,17 @@ test-assets/
 
 # Личные пользовательские документы хранятся вне публичного репозитория.
 /user/
+
+# Non-Codex harness: точные имена, включая вложенные конфиги.
+.claude/
+.cursor/
+.opencode/
+CLAUDE.md
+CLAUDE.local.md
+.claude.json
+.cursorrules
+.cursorignore
+.cursorindexingignore
+opencode.json
+opencode.jsonc
+/sub_old
