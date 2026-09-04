@@ -5,7 +5,7 @@
 - Stop and ask before important architecture/API/behavior decisions, especially if Sonar or a refactor suggests changing public API, module ownership, or playback semantics.
 - Before implementing a feature, briefly state architecture: owner modules/state, boundary methods, invariants that must not change, and focused tests.
 - Keep code production-ready and readable; avoid one giant function, vague names (`data`, `temp`, `obj`, `arr` without context), silent error swallowing, hardcoded config, IO/business/formatting mixing, and unexplained magic.
-- User explicitly asks for Russian documentation/comments. Add useful Russian comments for non-obvious code; avoid useless line-by-line noise that only restates syntax unless user insists in the active turn.
+- The owner requires thorough Russian documentation and comments for key production-code logic, non-obvious decisions and important invariants. Do not comment every line or merely restate syntax. This is the owner's explicit clarification during S05 (2026-09-05), superseding the previous every-line requirement.
 - Module ownership rule: external code should not read/change another module's storage fields when an intent boundary method can express the operation.
 - Boundary APIs describe intent and preserve state/error distinctions: absent resource, backpressure, fatal error, no-op, counters, and release paths must not collapse into ambiguous `bool` if caller semantics differ.
 - Ownership/lifecycle stays at the layer that owns it. Do not hide release, generation, scheduler semantics, or accounting decisions inside convenience methods that shift responsibility.

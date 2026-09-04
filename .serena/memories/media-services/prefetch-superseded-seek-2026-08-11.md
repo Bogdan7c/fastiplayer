@@ -83,4 +83,4 @@ capability и Symphonia container routing не были причиной.
   storage node остаётся недоступен. Она удалена из acceptance как невалидный
   внешний oracle, а не замаскирована длинным timeout-ом.
 
-См. также `mem:media-services/progressive-http-s22-2026-07-22` и `mem:web-playback/content-probed-runtime-fallback`.
+См. также `mem:media-services/progressive-http-s22-2026-07-22` и `mem:media-services/content-probed-runtime-fallback-2026-08-05`.

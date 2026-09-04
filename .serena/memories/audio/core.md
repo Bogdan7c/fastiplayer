@@ -27,7 +27,7 @@
 - `cargo test -p audio-core`
 - `cargo test -p audio-signalsmith`
 - `cargo test -p audio`
-- `cargo test -p 'path+file://<REPO_ROOT>/crates/symphonia-codec-aac-patch#symphonia-codec-aac@0.6.0'`
+- `cargo test --manifest-path crates/symphonia-codec-aac-patch/Cargo.toml --locked`
 - `cargo test -p audio-timestretch`
 - Полный release gate дополнительно описан в `mem:task_completion` и `mem:player-core/playback-rate-contract-s32`.
 

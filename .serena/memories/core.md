@@ -1,3 +1,10 @@
+## Public launch S05: public-safe AI tooling (2026-09-05)
+
+- `AGENTS.md` переведён на английский с сохранением правил. Owner уточнил: русские комментарии нужны к ключевой логике, неочевидным решениям и инвариантам, не к каждой строке. См. `mem:conventions`.
+- `.serena/project.yml` использует `rustiplayer`; fresh MCP activation по пути и имени проверена. Старый работающий MCP server кэширует прежнее имя до reconnect/restart.
+- Codex hooks сохранены как optional maintainer tooling и отключены по умолчанию для fresh clone; opt-in и внешние зависимости описаны в `docs/ai-development.md`. Cargo/CI не зависят от AI tooling.
+- Personal paths и owner-local media filenames заменены описательными placeholders; технические/root-cause/codec сведения сохранены. Current workflow и семь standalone patches: `mem:task_completion`, `mem:suggested_commands`. Итоги и границы current-tree scan: `mem:public-launch/s05-public-ai-tooling-2026-09-05`.
+
 ## Public launch S02: module boundary splits (2026-09-04)
 
 - `app-egui/state.rs` и `web-media-dash/discovery.rs` снова проходят size guardrails после refactor-only split-а.

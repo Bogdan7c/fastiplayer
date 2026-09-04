@@ -1,90 +1,82 @@
-ВСЕГДА СВЕРЯЕМСЯ С CONTEXT7 ПЕРЕД ПРАВКАМИ ИЛИ НАПИСАНИЕМ КОДА!!!!
+ALWAYS CONSULT CONTEXT7 BEFORE EDITING OR WRITING CODE!!!!
 
-Мат и неформальное общение - крайне приветствую
+Profanity and informal communication are very welcome.
 
+Before starting a coding task:
+- Call Serena `initial_instructions` if they have not yet been read in the current session.
+- Activate the project.
+- Read `mem:core` and the relevant memories.
+- If memories are clearly outdated relative to the current code or AGENTS.md, update them before making edits.
 
- Перед началом задач по коду:
-  - вызвать Serena `initial_instructions`, если они ещё не читались в текущей сессии;
-  - активировать проект;
-  - прочитать `mem:core` и релевантные memories;
-  - если memories явно устарели относительно текущего кода/AGENTS.md, обновить их до правок.
+After completing code changes:
+- Assess whether architectural boundaries, public/internal APIs, workflows, validation commands, important invariants, known limitations, or the locations of key tests have changed.
+- If so, explicitly update the relevant Serena memories through `write_memory`/`edit_memory`.
+- If the changes are local and do not change project knowledge, do not update memories, but state in the final response that memory updates were not required.
 
-  После завершения правок по коду:
-  - оценить, изменились ли архитектурные boundaries, публичные/internal API, workflow, команды проверки, важные
-  инварианты, known limitations или расположение ключевых тестов;
-  - если да, явно обновить релевантные Serena memories через `write_memory`/`edit_memory`;
-  - если изменения локальные и не меняют проектные знания, memory не обновлять, но в финальном ответе указать, что
-  обновление memories не требовалось.
+WHEN SOLVING CODE PROBLEMS, FIND THE ROOT CAUSE, NOT JUST THE SYMPTOM!!
 
-ПРИ РЕШЕНИИ ПРОБЛЕМ С КОДОМ, ИЩЕМ ПРИЧИНУ, А НЕ СЛЕДСТВИЕ!!
+## Rules for writing tests
 
-Правила написания тестов
-Обязательно пиши тесты в коде на проверку работоспособности функционала, а не только на хелперы или на определенные внутренние стадии. Пример: тест на то, что видео из источника не только читается, но возпроизводится (доходит до стадии рендера). 
+Always write tests in the code that verify working functionality, rather than only helpers or particular internal stages. For example, test that video from a source is not merely read, but actually played back (reaches the rendering stage).
 
-Пользователь не разбирается в программировании, но берет ответственность за важные решения по архитектуре. Когда что-то спрашиваешь, описывай варианты простым языком, чтобы можно было понять и выбрать подходящий варианты.
-Это "вайбкодинг на максималках" - мы не просим ИИ все сделать за нас, мы принимаем решения и вникаем в процесс, учимся в AI-assist development
+The user does not have a programming background, but takes responsibility for important architectural decisions. When asking a question, explain the options in plain language so the user can understand them and choose an appropriate option.
 
+This is "vibe coding taken to the max": we are not asking AI to do everything for us; we make decisions, understand the process, and learn AI-assisted development.
 
-используй MCP Serena автоматически для задач по коду:
-- перед началом coding task вызвать Serena `initial_instructions`, если они ещё не были прочитаны в текущей сессии;
-- после активации проекта читать релевантные Serena memories, начиная с `mem:core`, если onboarding уже выполнен;
-- для изучения кода сначала использовать Serena `get_symbols_overview`, `find_symbol`, `find_declaration`, `find_referencing_symbols` и `find_implementations`, а не читать целые файлы без необходимости;
-- перед изменением boundary/API проверять ссылки, реализации и diagnostics через Serena;
-- для безопасных точечных изменений на уровне целого символа предпочитать Serena symbolic editing, если это точнее обычного patch;
-- если onboarding Serena не выполнен, выполнить его перед первой серьёзной задачей по проекту и записать memories.
+Use MCP Serena automatically for coding tasks:
+- Before starting a coding task, call Serena `initial_instructions` if they have not yet been read in the current session.
+- After activating the project, read the relevant Serena memories, starting with `mem:core`, if onboarding has already been completed.
+- To explore code, first use Serena `get_symbols_overview`, `find_symbol`, `find_declaration`, `find_referencing_symbols`, and `find_implementations`, rather than reading entire files unnecessarily.
+- Before changing a boundary/API, check references, implementations, and diagnostics through Serena.
+- For safe, targeted changes to an entire symbol, prefer Serena symbolic editing when it is more precise than a regular patch.
+- If Serena onboarding has not been completed, complete it before the first substantial project task and write the memories.
 
+If an important decision needs to be made during the work, stop, ask the user, and discuss it.
 
+## Architectural rules for new features
 
-Если в процессе рабты нужно принять какое-то важное решение -  остранавливаемся и спрашиваем, обсуждаем
+The project is no longer a prototype. Implement new features so the system can be extended, tested, and repaired in specific areas without rewriting neighboring modules.
 
-  ## Архитектурные правила для новых фич
+These rules apply to every part of the project: player-core, render, decoder, worker, session/tick, media opening, diagnostics, config, and future modules. `PlaybackPipeline` is an example of this approach, not an exception.
 
-  Проект уже не прототип. Новые фичи пишем так, чтобы систему можно было точечно расширять, тестировать и чинить без переписывания соседних модулей.
+1. A module owns its data and invariants. External code must not read or modify its internal fields directly when the operation can be expressed through a meaningful internal API.
 
-  Эти правила применяются ко всем частям проекта: player-core, render, decoder, worker, session/tick, media opening, diagnostics, config и будущим модулям. `PlaybackPipeline` — пример подхода, а не исключение.
+2. Internal APIs must describe intent, not storage layout. Good examples: `can_send_video_decode_packets()`, `release_frame_to_video_decoder()`, `drain_completed_*()`. Bad example: inspecting a specific field in another module for convenience.
 
+3. Do not couple modules through knowledge of a particular implementation. `session`, `tick`, scheduler, decoder, render, and pipeline must depend on contracts and boundary methods, not on whichever thread, queue, backend, or field happens to be inside.
 
-  1. Модуль владеет своими данными и инвариантами. Внешний код не должен читать/менять внутренние поля напрямую, если это можно выразить через осмысленный internal API.
+4. Keep ownership and lifecycle responsibilities at the correct layer. Do not hide important decisions about ownership, release, generation, scheduler semantics, or accounting inside a "convenience" method if that changes a layer's responsibility.
 
-  2. Internal API должен описывать намерение, а не устройство хранения. Хорошо: `can_send_video_decode_packets()`, `release_frame_to_video_decoder()`, `drain_completed_*()`. Плохо: проверки конкретного поля из другого модуля ради
-  удобства.
+5. If a new feature requires direct access to another module's field, treat that as an architectural smell first. Either add a small method to the state owner or explicitly explain why direct access is actually necessary here.
 
-  3. Не связываем модули знанием конкретной реализации. `session`, `tick`, scheduler, decoder, render и pipeline должны зависеть от контрактов и boundary methods, а не от того, какой именно thread, queue, backend или field сейчас
-  внутри.
+6. Boundary methods must preserve existing error and state semantics: absent resources, backpressure, fatal errors, no-ops, counters, and release paths must not be collapsed into a single generic `bool` when the caller needs to distinguish them.
 
-  4. Ownership и lifecycle держим на правильном уровне. Не прячем важные решения о владении, release, generation, scheduler semantics или accounting внутрь “удобного” метода, если это меняет ответственность слоя.
+7. For every new boundary/API, add focused tests for an absent resource, an active fake/stub, an error, edge-case accounting, and confirmation that the method does not change state it should not own.
 
-  5. Если новая фича требует прямого доступа к чужому полю, сначала считаем это архитектурным запахом. Либо добавляем маленький метод у владельца состояния, либо явно объясняем, почему прямой доступ здесь действительно нужен.
+8. Do not combine cosmetic refactoring with a feature. An architectural boundary change must be a separate, deliberate change with a clear reason and validation.
 
-  6. Методы boundary должны сохранять старую семантику ошибок и состояний: absent resource, backpressure, fatal error, no-op, counters и release paths не должны сливаться в один общий `bool`, если вызывающему коду важно различие.
+9. Before implementing a feature, briefly describe the architecture: which modules own the state, which methods form the boundaries, which invariants must not be broken, and which tests will enforce them.
 
-  7. Для каждого нового boundary/API добавляем focused tests: отсутствующий ресурс, активный fake/stub, ошибка, edge-case accounting, и проверка, что метод не меняет состояние, которым не должен владеть.
+## Module size and Rust API design rules
 
-  8. Не делаем косметический рефакторинг вместе с фичей. Если меняется архитектурная граница, это отдельное осознанное изменение с понятной причиной и проверками.
+1. Do not bloat central modules or crates. For Rustiplayer, this is especially important for `app-egui`, `player-core`, `render-wgpu-video`, `video-frame-contract`, and `video-backend-api`: new logic must go into the module that owns the relevant state and invariants, not the largest or most convenient file.
 
-  9. Перед реализацией фичи кратко описываем архитектуру: какие модули владеют состоянием, какие методы являются границей, какие инварианты нельзя нарушить, какие тесты это закрепят.
+2. If a file is already approaching 700–800 lines, put a new feature in a separate module by default. An exception is acceptable only for a small, local change; in that case, explicitly explain why a new module would reduce readability or fragment one coherent invariant.
 
+3. New Rust boundary/internal APIs must be self-documenting at the call site. Do not add positional `bool` arguments, ambiguous `Option` values, or numbers or strings with unclear meaning when an `enum`, newtype, named method, or separate intent method can express that meaning. If an existing API forces an unclear literal, add a short comment naming the parameter at the call site.
 
-  ## Правила размера модулей и формы Rust API
+Write clean, maintainable, production-ready code.
+Propose the architecture first, then implement it.
+After implementation, perform a self-review and improve the code if you find problems.
+Do not sacrifice readability for brevity.
+Document production code thoroughly in Russian so the owner can understand it.
 
-  1. Не раздуваем центральные модули и crate-ы. Для rustiplayer это особенно важно для `app-egui`, `player-core`, `render-wgpu-video`, `video-frame-contract` и `video-backend-api`: новая логика должна попадать к модулю, который владеет соответствующим состоянием и инвариантами, а не в самый большой или самый удобный файл.
+Comment key production-code logic, non-obvious decisions, and important invariants in Russian so the owner can understand them. Do not comment every line or merely restate the syntax.
 
-  2. Если файл уже близок к 700-800 строкам, новая фича по умолчанию выносится в отдельный модуль. Исключение допустимо только при маленькой локальной правке; тогда явно объясняем, почему новый модуль ухудшил бы читаемость или раздробил один связный инвариант.
-
-  3. Новые Rust boundary/internal API должны быть самодокументирующимися на месте вызова. Не добавляем позиционные `bool`, мутные `Option`, числа или строки с неочевидным смыслом, если можно выразить смысл через `enum`, `newtype`, named method или отдельный intent-method. Если старый API вынуждает передать неочевидный литерал, добавляем короткий комментарий с именем параметра у callsite.
-
-
-Напиши чистый, поддерживаемый код в стиле production-ready.
-Сначала предложи архитектуру, потом реализацию.
-После реализации сделай self-review и улучши код, если видишь проблемы.
-Не жертвуй читаемостью ради краткости.
-Тщательно документируй на русском, чтобы я понимал код
-
-Комментируй каждую строку на русском, чтобы я понимал код
-Запрещено:
-- писать всё в одной функции
-- использовать непонятные имена вроде data, temp, obj, arr без контекста
-- молча игнорировать ошибки
-- хардкодить конфиг
-- смешивать ввод/вывод, бизнес-логику и форматирование
-- писать “магический” код без объяснения
+The following are prohibited:
+- Putting everything in one function.
+- Using unclear names such as `data`, `temp`, `obj`, or `arr` without context.
+- Silently ignoring errors.
+- Hardcoding configuration.
+- Mixing input/output, business logic, and formatting.
+- Writing "magic" code without an explanation.

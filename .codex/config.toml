@@ -1,4 +1,5 @@
 model_reasoning_summary = "detailed"
 model_verbosity = "high"
 [features]
-hooks = true
+# Optional maintainer tooling; see docs/ai-development.md.
+hooks = false
