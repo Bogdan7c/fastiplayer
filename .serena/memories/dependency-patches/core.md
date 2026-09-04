@@ -62,3 +62,10 @@
 ## ISO-BMFF `avc3` extension (2026-08-10)
 
 - Local ISO patch теперь различает `avc1` и `avc3` и публикует in-band parameter-set metadata для neutral demux boundary. Removal gate требует upstream-equivalent этого различия. Полный contract и проверки: `mem:media-services/hls-live-avc3-2026-08-10`.
+
+## Public launch S01: VP9 encode header compatibility (2026-09-04)
+
+- Официальный libva commit `0bcf883a700e8959e5f0995f52040dc051af2b8f` добавил одновременно `VAEncPictureParameterBufferVP9.seg_id_block_size` и `va_reserved8[3]`, уменьшив `va_reserved` с `VA_PADDING_MEDIUM` до `VA_PADDING_MEDIUM - 1`. Полный размер структуры не изменился; новая семантика для неиспользуемого segment map остаётся zero.
+- Точная API-граница — VA-API 1.23 / libva 2.23.0: официальный tag 2.22.0 (API 1.22) обоих полей не содержит, tag 2.23.0 (API 1.23) содержит. Не использовать существующий `libva_1_21_or_higher`: он относится к отдельным AV1 fields.
+- `crates/cros-libva-patch/build.rs` объявляет и выставляет `libva_1_23_or_higher`; `EncPictureParameterBufferVP9::new` инициализирует новые поля нулями только под этим cfg, а старые bindings получают прежний struct literal без неизвестных fields. Android cfg inventory синхронизирован.
+- Focused production-constructor test: `buffer::vp9::tests::encode_picture_constructor_zeroes_reserved_storage_for_detected_headers`. Реальная compile matrix: Ubuntu 24.04/VA-API 1.20 legacy job плюс Ubuntu 26.04/VA-API 1.23 new-header job в `.github/workflows/ci.yml`. Decode ownership, accounting, error semantics и public API не менялись.

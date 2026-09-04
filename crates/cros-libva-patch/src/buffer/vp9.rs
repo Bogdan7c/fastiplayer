@@ -434,7 +434,11 @@ impl EncPictureParameterBufferVP9 {
             skip_frame_flag,
             number_skip_frames,
             skip_frames_size,
+            // VA-API 1.23 выделил этот byte из прежнего reserved u32.
+            #[cfg(libva_1_23_or_higher)]
             seg_id_block_size: 0,
+            // Оставшиеся три bytes того же слова сохраняют прежнее нулевое значение.
+            #[cfg(libva_1_23_or_higher)]
             va_reserved8: Default::default(),
             va_reserved: Default::default(),
         }))
@@ -442,5 +446,105 @@ impl EncPictureParameterBufferVP9 {
 
     pub(crate) fn inner_mut(&mut self) -> &mut bindings::VAEncPictureParameterBufferVP9 {
         &mut self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EncPictureParameterBufferVP9, VP9EncPicFlags, VP9EncRefFlags};
+
+    /// Создаёт нейтральные reference flags для проверки production constructor-а.
+    fn zeroed_reference_flags() -> VP9EncRefFlags {
+        VP9EncRefFlags::new(
+            0, // force_kf
+            0, // ref_frame_ctrl_l0
+            0, // ref_frame_ctrl_l1
+            0, // ref_last_idx
+            0, // ref_last_sign_bias
+            0, // ref_gf_idx
+            0, // ref_gf_sign_bias
+            0, // ref_arf_idx
+            0, // ref_arf_sign_bias
+            0, // temporal_id
+        )
+    }
+
+    /// Создаёт нейтральные picture flags без изменения encode semantics.
+    fn zeroed_picture_flags() -> VP9EncPicFlags {
+        VP9EncPicFlags::new(
+            0, // frame_type
+            0, // show_frame
+            0, // error_resilient_mode
+            0, // intra_only
+            0, // allow_high_precision_mv
+            0, // mcomp_filter_type
+            0, // frame_parallel_decoding_mode
+            0, // reset_frame_context
+            0, // refresh_frame_context
+            0, // frame_context_idx
+            0, // segmentation_enabled
+            0, // segmentation_temporal_update
+            0, // segmentation_update_map
+            0, // lossless_mode
+            0, // comp_prediction_mode
+            0, // auto_segmentation
+            0, // super_frame_flag
+        )
+    }
+
+    #[test]
+    fn encode_picture_constructor_zeroes_reserved_storage_for_detected_headers() {
+        // Flags создаются production wrappers, чтобы test прошёл тот же bindgen boundary.
+        let reference_flags = zeroed_reference_flags();
+        // Picture flags отделены от reference flags так же, как в encoder callsite.
+        let picture_flags = zeroed_picture_flags();
+        // Constructor компилируется против фактически установленных libva headers.
+        let mut picture_parameters = EncPictureParameterBufferVP9::new(
+            16,      // frame_width_src
+            16,      // frame_height_src
+            16,      // frame_width_dst
+            16,      // frame_height_dst
+            1,       // reconstructed_frame
+            [2; 8],  // reference_frames
+            3,       // coded_buf
+            &reference_flags,
+            &picture_flags,
+            0,       // refresh_frame_flags
+            0,       // luma_ac_qindex
+            0,       // luma_dc_qindex_delta
+            0,       // chroma_ac_qindex_delta
+            0,       // chroma_dc_qindex_delta
+            0,       // filter_level
+            0,       // sharpness_level
+            [0; 4],  // ref_lf_delta
+            [0; 2],  // mode_lf_delta
+            0,       // bit_offset_ref_lf_delta
+            0,       // bit_offset_mode_lf_delta
+            0,       // bit_offset_lf_level
+            0,       // bit_offset_qindex
+            0,       // bit_offset_first_partition_size
+            0,       // bit_offset_segmentation
+            0,       // bit_size_segmentation
+            0,       // log2_tile_rows
+            0,       // log2_tile_columns
+            0,       // skip_frame_flag
+            0,       // number_skip_frames
+            0,       // skip_frames_size
+        );
+        // Raw binding нужен только test-у для проверки ABI-reserved storage.
+        let raw_picture_parameters = picture_parameters.inner_mut();
+
+        // VA-API 1.23 превратил первый reserved u32 в один field и три reserved bytes.
+        #[cfg(libva_1_23_or_higher)]
+        {
+            assert_eq!(0, raw_picture_parameters.seg_id_block_size);
+            assert_eq!([0; 3], raw_picture_parameters.va_reserved8);
+        }
+
+        // Остаток reserved массива обязан быть нулевым на обеих версиях layout.
+        assert!(raw_picture_parameters
+            .va_reserved
+            .iter()
+            .all(|reserved_word| *reserved_word == 0));
     }
 }

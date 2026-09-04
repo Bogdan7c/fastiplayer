@@ -59,6 +59,17 @@ Clean Ubuntu 24.04 runner явно устанавливает только nativ
 FFmpeg, GBM и VA-API compile/link paths. WGPU/Vulkan в blocking CI только компилируется: GPU, VA
 display, звуковое устройство и окно не требуются и не эмулируются.
 
+Toolchain-policy matrix устанавливает тот же workspace minimum явно, включая
+прямой `libdrm-dev`: ALSA, libavcodec/libavutil, VA-API/DRM/GBM,
+clang/libclang и pkg-config. `Format and guardrails` отдельно устанавливает
+exact Rust 1.96.0 + `rustfmt`, а `Strict Clippy` — exact Rust 1.96.0 +
+`clippy`, поэтому quality jobs не зависят от состава runner tool cache.
+
+Совместимость cros-libva с системными headers проверяется по обе стороны
+границы VA-API 1.23. Ubuntu 24.04 job утверждает API 1.20 и отсутствие новых
+VP9 fields; Ubuntu 26.04 job утверждает API 1.23 и наличие обоих fields. После
+проверки header каждый job запускает полный standalone locked crate test/build.
+
 ## Будущие required checks для main
 
 Сейчас репозиторий намеренно остаётся приватным без GitHub Pro. На этом тарифе
@@ -79,6 +90,7 @@ GitHub не предоставляет rulesets/branch protection для дан�
 - `MSRV (Rust 1.92.0)`
 - `Dependency policy`
 - `Dependency patch (cros-libva)`
+- `Dependency patch (cros-libva, VA-API 1.23)`
 - `Dependency patch (cros-codecs)`
 - `Dependency patch (symphonia-format-caf)`
 - `Dependency patch (symphonia-format-isomp4)`
@@ -91,7 +103,7 @@ GitHub не предоставляет rulesets/branch protection для дан�
 Operational checklist:
 
 1. Требовать pull request перед merge в `main`.
-2. Требовать все шестнадцать status checks выше.
+2. Требовать все семнадцать status checks выше.
 3. Требовать актуальную ветку перед merge (`Require branches to be up to date`).
 4. Запретить merge при failed, pending или stale required checks.
 5. Не добавлять `Real playback smoke (manual, non-blocking)` в required checks.

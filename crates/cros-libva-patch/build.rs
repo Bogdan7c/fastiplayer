@@ -62,6 +62,7 @@ fn get_va_version(va_h_path: &str) -> (u32, u32) {
 fn main() {
     // Объявляем все версионные cfg, которые этот build script может выставить,
     // чтобы `unexpected_cfgs` не ругался независимо от обнаруженной версии libva.
+    println!("cargo::rustc-check-cfg=cfg(libva_1_23_or_higher)");
     println!("cargo::rustc-check-cfg=cfg(libva_1_16_or_higher)");
     println!("cargo::rustc-check-cfg=cfg(libva_1_19_or_higher)");
     println!("cargo::rustc-check-cfg=cfg(libva_1_20_or_higher)");
@@ -106,6 +107,10 @@ fn main() {
         major > desired_major || (major == desired_major && minor >= desired_minor)
     };
 
+    // Оба новых поля VP9 picture parameters появились вместе только в VA-API 1.23.
+    if va_check_version(1, 23) {
+        println!("cargo::rustc-cfg=libva_1_23_or_higher");
+    }
     if va_check_version(1, 21) {
         println!("cargo::rustc-cfg=libva_1_21_or_higher");
     }

@@ -27,6 +27,7 @@ rust_library {
     ],
 
     cfgs: [
+        "libva_1_23_or_higher",
         "libva_1_21_or_higher",
         "libva_1_20_or_higher",
         "libva_1_19_or_higher",

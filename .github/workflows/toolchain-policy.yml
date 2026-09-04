@@ -51,11 +51,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # 2026-06-30
         with:
           toolchain: ${{ matrix.toolchain }}
-      # Default features app-egui компилируют ffmpeg-sys-next и требуют Linux development headers.
-      - name: Install FFmpeg development prerequisites
+      # Default workspace включает CPAL, FFmpeg, VA-API/DRM/GBM и bindgen native boundaries.
+      - name: Install workspace native prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --yes pkg-config ffmpeg libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libdrm-dev libgbm-dev libva-dev pkg-config
       # Явный +version сохраняет раздельное доказательство MSRV и основного toolchain.
       - name: Check locked workspace
         run: cargo +${{ matrix.toolchain }} check --workspace --locked

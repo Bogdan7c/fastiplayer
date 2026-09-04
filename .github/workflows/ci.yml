@@ -151,9 +151,48 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends clang libclang-dev libgbm-dev libva-dev pkg-config
+      # Noble поставляет libva 2.20 / VA-API 1.20: это реальный pre-1.23 bindgen path.
+      - name: Assert legacy VA-API 1.20 headers
+        if: matrix.patch == 'cros-libva'
+        run: |
+          grep --extended-regexp --quiet '^#define VA_MAJOR_VERSION[[:space:]]+1$' /usr/include/va/va_version.h
+          grep --extended-regexp --quiet '^#define VA_MINOR_VERSION[[:space:]]+20$' /usr/include/va/va_version.h
+          if grep --extended-regexp --quiet '^[[:space:]]*uint8_t[[:space:]]+(seg_id_block_size|va_reserved8)' /usr/include/va/va_enc_vp9.h; then
+            echo 'Ubuntu 24.04 compatibility job unexpectedly contains VA-API 1.23 VP9 fields' >&2
+            exit 1
+          fi
       # Direct manifest command доказывает независимость fork-а от workspace membership.
       - name: Run standalone locked tests
         run: cargo test --manifest-path "${{ matrix.manifest }}" --locked
+
+  # Отдельный compile gate исполняет новый VP9 layout на настоящих distro headers.
+  cros-libva-new-headers:
+    # Имя явно показывает вторую сторону compatibility boundary.
+    name: Dependency patch (cros-libva, VA-API 1.23)
+    # Resolute поставляет libva 2.23 / VA-API 1.23 с обоими новыми VP9 fields.
+    runs-on: ubuntu-26.04
+    steps:
+      # Checkout предоставляет standalone manifest и его собственный lock-файл.
+      - uses: actions/checkout@v4
+      # Exact primary Rust исключает зависимость от preview image tool cache.
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # 2026-06-30
+        with:
+          toolchain: 1.96.0
+      # Cros-libva нужны только libva headers/libs, pkg-config и clang для bindgen.
+      - name: Install cros-libva native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libva-dev pkg-config
+      # Проверка не позволяет обновлению runner незаметно перестать исполнять cfg 1.23.
+      - name: Assert VA-API 1.23 headers
+        run: |
+          grep --extended-regexp --quiet '^#define VA_MAJOR_VERSION[[:space:]]+1$' /usr/include/va/va_version.h
+          grep --extended-regexp --quiet '^#define VA_MINOR_VERSION[[:space:]]+23$' /usr/include/va/va_version.h
+          grep --extended-regexp --quiet '^[[:space:]]*uint8_t[[:space:]]+seg_id_block_size;' /usr/include/va/va_enc_vp9.h
+          grep --extended-regexp --quiet '^[[:space:]]*uint8_t[[:space:]]+va_reserved8\[3\];' /usr/include/va/va_enc_vp9.h
+      # Полная генерация bindings и crate tests компилируют production constructor с новым layout.
+      - name: Run standalone locked tests against VA-API 1.23
+        run: cargo test --manifest-path crates/cros-libva-patch/Cargo.toml --locked
 
   # Focused suite подтверждает, что root replace реально интегрированы в workspace dependents.
   dependency-patch-integration:
@@ -201,6 +240,11 @@ jobs:
     steps:
       # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
       - uses: actions/checkout@v4
+      # Runner явно получает exact rustfmt, даже если toolchain уже был частично предустановлен.
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # 2026-06-30
+        with:
+          toolchain: 1.96.0
+          components: rustfmt
       # Repo runner содержит единственную реализацию этой группы команд.
       - name: Run format and guardrails
         run: scripts/ci-checks.sh format-guardrails
@@ -214,6 +258,11 @@ jobs:
     steps:
       # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
       - uses: actions/checkout@v4
+      # Runner явно получает exact Clippy component вместо зависимости от image tool cache.
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # 2026-06-30
+        with:
+          toolchain: 1.96.0
+          components: clippy
       # Native headers нужны FFmpeg, VA-API и CPAL compile paths; GPU не запускается.
       - name: Install native build dependencies
         run: |

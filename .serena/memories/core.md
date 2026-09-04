@@ -1,3 +1,9 @@
+## Public launch S00: private user-docs extraction (2026-09-04)
+
+- `user/` удалён из tracked tree и защищён корневым `/user/` ignore; приватные документы сохранены вне репозитория в mode-0700 timestamped backup, включая recoverable original и opaque copy.
+- Pre-S00 Git state сохранён full `git bundle --all` с 45 refs, stash и 35 registered worktree HEADs; verify/list-heads/mirror-clone/fsck/checksums прошли.
+- Commit: `a57a29d28015f2f74e095d1841cabbf39704035e`, parent `c2adea8bcbfa6fbd546231b076c5359790288aee`; history rewrite/push не выполнялись. Полный handoff: `mem:public-launch/s00-user-backup-2026-09-04`.
+
 ## Native network fast-start / responsive seek (2026-09-04)
 
 - HLS x36xhzz regression root cause was full first-TS download per catalog sibling plus stale preview anchor reuse. Catalog now uses bounded pull-stream TS proof with fMP4-only fallback; native final seek uses fresh manifest reanchor and containing-segment decode-forward. Final public cold open ~1.61 s vs ~18.3 s, +120 s seek 448 ms to correct frame with zero pre-target presentation.
