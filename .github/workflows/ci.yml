@@ -76,11 +76,11 @@ jobs:
         with:
           # Нулевой fetch-depth предоставляет origin/base без отдельного API token flow.
           fetch-depth: 0
-      # Native headers и link libraries покрывают все targets clean coverage build.
+      # Native SDK и lavapipe покрывают clean coverage build и WGPU acceptance tests.
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libsoundtouch-dev libva-dev pkg-config
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libsoundtouch-dev libva-dev libvulkan1 mesa-vulkan-drivers pkg-config
       # LLVM tools предоставляют llvm-profdata и llvm-cov exact primary toolchain release.
       - name: Install LLVM coverage tools
         run: rustup component add llvm-tools-preview
@@ -327,11 +327,11 @@ jobs:
     steps:
       # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
       - uses: actions/checkout@v4
-      # Пакеты дают compile/link dependencies всех targets, но не эмулируют GPU, VA display или DAC.
+      # Native SDK и lavapipe дают link dependencies и headless WGPU adapter всем tests.
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libsoundtouch-dev libva-dev pkg-config
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libsoundtouch-dev libva-dev libvulkan1 mesa-vulkan-drivers pkg-config
       # Test artifacts хранятся отдельно от lint/docs modes.
       - uses: actions/cache@v4
         with:

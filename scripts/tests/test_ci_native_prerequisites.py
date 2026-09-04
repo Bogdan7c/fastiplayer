@@ -46,6 +46,8 @@ EXPECTED_ALL_TARGET_NATIVE_PACKAGES = frozenset(
         "libgbm-dev",
         "libsoundtouch-dev",
         "libva-dev",
+        "libvulkan1",
+        "mesa-vulkan-drivers",
         "pkg-config",
     }
 )
@@ -200,7 +202,7 @@ class CiNativePrerequisitesTests(unittest.TestCase):
                     all_target_job,
                     "Install native build dependencies",
                 )
-                # Exact set закрепляет SoundTouch для backend_shootout и запрещает package creep.
+                # Exact set закрепляет SoundTouch/lavapipe и запрещает package creep.
                 self.assertEqual(
                     EXPECTED_ALL_TARGET_NATIVE_PACKAGES,
                     apt_install_packages(install_step),

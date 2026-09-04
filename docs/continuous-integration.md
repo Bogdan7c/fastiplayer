@@ -56,13 +56,14 @@ suites. Local-media regressions получают только explicit `--scenar
 All-target jobs `Workspace tests (all features)` и `Coverage ratchet` на своих
 clean Ubuntu 24.04 runners явно устанавливают только native build dependencies:
 `clang`, `libclang-dev`, `libasound2-dev`, `libavcodec-dev`, `libavutil-dev`,
-`libgbm-dev`, `libsoundtouch-dev`, `libva-dev` и `pkg-config`. Они нужны для
-bindgen, CPAL/ALSA, FFmpeg, GBM, VA-API и линковки SoundTouch backend example.
+`libgbm-dev`, `libsoundtouch-dev`, `libva-dev`, `libvulkan1`,
+`mesa-vulkan-drivers` и `pkg-config`. Они нужны для bindgen, CPAL/ALSA, FFmpeg,
+GBM, VA-API, линковки SoundTouch backend example и headless lavapipe adapter.
 Обе jobs задают job-local `CARGO_PROFILE_TEST_DEBUG=0`: LLVM coverage mapping и
 состав тестов сохраняются, а полный DWARF не переполняет диск hosted runner до
 запуска test binaries. Остальные jobs и локальные Cargo profiles не меняются.
-WGPU/Vulkan в blocking CI только компилируется: GPU, VA display, звуковое
-устройство и окно не требуются и не эмулируются.
+WGPU acceptance в этих jobs выполняется через software Vulkan/lavapipe; реальный
+GPU, VA display, звуковое устройство и окно не требуются и не эмулируются.
 
 Toolchain-policy matrix устанавливает тот же workspace minimum явно, включая
 прямой `libdrm-dev`: ALSA, libavcodec/libavutil, VA-API/DRM/GBM,
