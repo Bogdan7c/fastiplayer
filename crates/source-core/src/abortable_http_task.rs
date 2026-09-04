@@ -281,18 +281,23 @@ mod tests {
 
     fn take_result(executor: &AbortableHttpTaskExecutor<usize>) -> usize {
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        loop {
-            // Deadline и yield исполняются на каждой итерации, поэтому test coverage
-            // не зависит от того, успел ли immediate future завершиться до первого poll-а.
+        // Бесконечный ленивый iterator сохраняет polling, не создавая локальную ветку,
+        // покрытие которой зависело от того, успел ли worker завершиться до первого poll-а.
+        std::iter::repeat_with(|| {
+            // Deadline превращает зависший worker в точный test failure.
             assert!(
                 std::time::Instant::now() < deadline,
                 "latest task timed out"
             );
+            // Yield даёт worker-у CPU без привязки корректности к длительности sleep-а.
             std::thread::yield_now();
-            if let Some(result) = executor.try_take().expect("poll result") {
-                return result;
-            }
-        }
+            // Ошибка остановленного worker-а не маскируется как отсутствие результата.
+            executor.try_take().expect("poll result")
+        })
+        // Стандартный adapter сам продолжает polling до первого опубликованного результата.
+        .find_map(|maybe_result| maybe_result)
+        // repeat_with бесконечен, поэтому None возможен только при нарушении std-контракта.
+        .expect("infinite polling iterator must yield a result before the deadline")
     }
 
     /// Публичная ошибка worker-а сохраняет точную и source-free диагностику.

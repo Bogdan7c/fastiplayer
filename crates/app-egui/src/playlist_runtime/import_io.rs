@@ -666,14 +666,29 @@ mod tests {
             wake_port,
             job: Some(job),
         };
-        while !owner
-            .job
-            .as_ref()
-            .and_then(|job| job.join_handle.as_ref())
-            .is_some_and(JoinHandle::is_finished)
-        {
+        // Deadline превращает зависший import worker в точный test failure.
+        let completion_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        // Ленивый iterator всегда выполняет polling closure хотя бы один раз и поэтому
+        // не создаёт schedule-зависимое покрытие отдельного тела while.
+        std::iter::repeat_with(|| {
+            // Проверка deadline выполняется на каждом poll-е.
+            assert!(
+                std::time::Instant::now() < completion_deadline,
+                "playlist import worker timed out"
+            );
+            // Yield даёт worker-у CPU без недетерминированной длительности sleep-а.
             std::thread::yield_now();
-        }
+            // Completion считается опубликованным только после завершения worker thread.
+            owner
+                .job
+                .as_ref()
+                .and_then(|job| job.join_handle.as_ref())
+                .is_some_and(JoinHandle::is_finished)
+        })
+        // Стандартный adapter продолжает polling до первого подтверждённого завершения.
+        .find(|worker_finished| *worker_finished)
+        // repeat_with бесконечен, поэтому None возможен только при нарушении std-контракта.
+        .expect("infinite polling iterator must observe worker completion before deadline");
 
         owner.cancel_active();
         let completion = owner.drain().expect("published terminal completion");

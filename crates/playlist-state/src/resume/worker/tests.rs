@@ -39,6 +39,11 @@ fn disconnected_wake_endpoint_stops_worker_without_spin() {
     let direct_shutdown_requested = Arc::new(AtomicBool::new(false));
     let (direct_wake_tx, direct_wake_rx) = mpsc::sync_channel(1);
     let (direct_completion_tx, direct_completion_rx) = mpsc::sync_channel(1);
+    // Один wake без pending snapshot детерминированно проверяет возврат production loop к ожиданию.
+    direct_wake_tx
+        .try_send(())
+        .expect("stale wake должен поместиться в пустой bounded channel");
+    // Disconnect после stale wake обязан завершить worker без fake shutdown completion.
     drop(direct_wake_tx);
 
     run_worker(

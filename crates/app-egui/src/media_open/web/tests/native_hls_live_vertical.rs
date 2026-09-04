@@ -258,22 +258,22 @@ fn n14b_lifecycle_hls_live_dvr_expiry_recovery_switch_has_no_false_eof() {
         "live duration обязана остаться unknown"
     );
 
+    let mut wgpu_harness = OffscreenWgpuHarness::new();
+    let mut persistent_consumer =
+        PersistentHlsConsumer::new(prepared.demuxer.as_ref(), &wgpu_harness);
+    persistent_consumer.consume(prepared.demuxer.as_mut(), &mut wgpu_harness);
+    persistent_consumer.consume(prepared.demuxer.as_mut(), &mut wgpu_harness);
     let initial_range = match &prepared.lifecycle {
         PreparedNativeHlsLifecycle::Live { timeline_port } => timeline_port
             .observe()
             .snapshot
             .state
             .availability_range()
-            .expect("initial live manifest должен публиковать availability"),
+            .expect("consumer packets должны доказать initial availability"),
         PreparedNativeHlsLifecycle::Vod { .. } => {
             panic!("sliding manifest ошибочно открыт как VOD")
         }
     };
-    let mut wgpu_harness = OffscreenWgpuHarness::new();
-    let mut persistent_consumer =
-        PersistentHlsConsumer::new(prepared.demuxer.as_ref(), &wgpu_harness);
-    persistent_consumer.consume(prepared.demuxer.as_mut(), &mut wgpu_harness);
-    persistent_consumer.consume(prepared.demuxer.as_mut(), &mut wgpu_harness);
     assert_retained_dvr_seek(&prepared);
     persistent_consumer.flush_for_seek();
     persistent_consumer.consume(prepared.demuxer.as_mut(), &mut wgpu_harness);
