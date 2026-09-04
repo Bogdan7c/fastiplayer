@@ -58,6 +58,9 @@ clean Ubuntu 24.04 runners явно устанавливают только nati
 `clang`, `libclang-dev`, `libasound2-dev`, `libavcodec-dev`, `libavutil-dev`,
 `libgbm-dev`, `libsoundtouch-dev`, `libva-dev` и `pkg-config`. Они нужны для
 bindgen, CPAL/ALSA, FFmpeg, GBM, VA-API и линковки SoundTouch backend example.
+Обе jobs задают job-local `CARGO_PROFILE_TEST_DEBUG=0`: LLVM coverage mapping и
+состав тестов сохраняются, а полный DWARF не переполняет диск hosted runner до
+запуска test binaries. Остальные jobs и локальные Cargo profiles не меняются.
 WGPU/Vulkan в blocking CI только компилируется: GPU, VA display, звуковое
 устройство и окно не требуются и не эмулируются.
 

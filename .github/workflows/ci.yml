@@ -66,6 +66,10 @@ jobs:
     name: Coverage ratchet
     # Тот же Ubuntu ABI сохраняет baseline сопоставимым с hermetic workspace tests.
     runs-on: ubuntu-24.04
+    # Job-local профиль сокращает instrumented artifacts, не меняя coverage mapping.
+    env:
+      # Полный DWARF переполняет диск стандартного runner при clean all-target build.
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       # Полная история нужна только для сравнения baseline PR с целевой веткой.
       - uses: actions/checkout@v4
@@ -316,6 +320,10 @@ jobs:
     name: Workspace tests (all features)
     # Ubuntu 24.04 фиксирует системный ABI вместо плавающего ubuntu-latest.
     runs-on: ubuntu-24.04
+    # Job-local профиль сокращает all-target artifacts, не меняя состав тестов.
+    env:
+      # Полный DWARF переполняет диск стандартного runner до запуска test binaries.
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
       - uses: actions/checkout@v4

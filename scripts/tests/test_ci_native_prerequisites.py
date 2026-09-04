@@ -49,6 +49,8 @@ EXPECTED_ALL_TARGET_NATIVE_PACKAGES = frozenset(
         "pkg-config",
     }
 )
+# Обе тяжёлые jobs обязаны отключать полный DWARF в Cargo test profile.
+EXPECTED_ALL_TARGET_TEST_PROFILE_DEBUG = '      CARGO_PROFILE_TEST_DEBUG: "0"'
 # Standalone cros-libva не компилирует audio/FFmpeg/GBM consumers.
 EXPECTED_CROS_LIBVA_NATIVE_PACKAGES = frozenset(
     {"clang", "libclang-dev", "libva-dev", "pkg-config"}
@@ -179,8 +181,8 @@ class CiNativePrerequisitesTests(unittest.TestCase):
             apt_install_packages(install_step),
         )
 
-    def test_all_target_jobs_install_native_link_dependencies(self) -> None:
-        """Tests и coverage VM получают libraries для сборки всех Cargo targets."""
+    def test_all_target_jobs_have_bounded_artifacts_and_native_dependencies(self) -> None:
+        """Tests и coverage VM получают bounded profile и все native libraries."""
 
         # Каждая GitHub-hosted job работает на отдельной VM и владеет своим apt inventory.
         for job_identifier in ("tests", "coverage"):
@@ -188,6 +190,11 @@ class CiNativePrerequisitesTests(unittest.TestCase):
             with self.subTest(job_identifier=job_identifier):
                 # Job извлекается отдельно, чтобы package одной VM не маскировал другую.
                 all_target_job = extract_job(self.ci_workflow, job_identifier)
+                # Exact job-level env не позволяет полному DWARF снова переполнить runner.
+                self.assertIn(
+                    EXPECTED_ALL_TARGET_TEST_PROFILE_DEBUG,
+                    all_target_job.splitlines(),
+                )
                 # Именованный step является единственным владельцем native inventory этой VM.
                 install_step = extract_named_step(
                     all_target_job,
