@@ -221,6 +221,9 @@ instrumented flags: `cargo-llvm-cov` передаёт wrapper environment тол
 дочерним процессам, а coverage runner владеет изолированным Cargo target и
 profile directory.
 
+Квалификация исправления S12 с тремя независимыми cohort и проверкой по файлам:
+[отчёт 2026-09-05](coverage-qualification-2026-09-05.md).
+
 ## Осознанное обновление v2 baseline
 
 PR job читает предыдущую пару JSON непосредственно из base-ветки и запускает

@@ -12,3 +12,5 @@
 - No production Rust APIs, behavior, dependency versions, test locations or CI policy changed in this publication preparation.
 
 - Owner then approved the coverage export architecture fix. LLVM multi-object export was proven order-dependent (0 versus 6 calls with identical profile/binaries); per-executable JSON export plus exact coordinate union corrects this without changing 3-run intersection or blocking policy. See mem:testing/coverage. Baseline qualification and all final-SHA remote CI remain required before the already authorized release; no additional publication approval is needed.
+
+- Corrected export completed nine-run source qualification on c8bd926b; reviewed baseline f2a813b5 and ten exact bounded transition rows are documented in docs/coverage-qualification-2026-09-05.md. Full source/tool/universe and within-cohort binary validations PASS, baseline transition validator PASS. Installation alone does not qualify a release: two fresh checks and all final public SHA remote gates remain mandatory. Keep subsequent runtime outcomes in the private global handoff to avoid changing a qualified SHA for status-only updates.
