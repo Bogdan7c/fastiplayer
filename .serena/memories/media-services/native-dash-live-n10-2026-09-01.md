@@ -32,7 +32,7 @@
 ## Hermetic functional evidence
 
 Основная vertical:
-`crates/app-egui/src/media_open/web/tests/native_dash_live_vertical.rs::native_dynamic_dash_reaches_moving_presentation_audio_and_dvr_without_extractor`.
+`crates/app-egui/src/media_open/web/tests/native_dash_live_vertical.rs::n14b_lifecycle_dash_live_dvr_expiry_recovery_reopen_has_no_false_eof`; N14A initial-consumer contract is `n14a_consumer_dash_dynamic_live_reaches_consumers_with_exact_root_accounting`.
 
 Она доказывает:
 - initial root GET exact 1 и fetched handoff без второго GET;
@@ -68,3 +68,5 @@ PASS:
 
 - Dynamic discovery продолжает владеть fetch/parse/clock/open orchestration в `discovery.rs`/`discovery/native_live.rs`, а shared provider lane proof теперь изолирован в `discovery/lane_proof.rs` без изменения live selection, refresh или failure semantics.
 - Точные новые tests и verification: `mem:public-launch/s02-module-boundary-split-2026-09-04`.
+
+S12 hosted qualification at2ae6d65d exposed a test accounting race: dynamic fixture minimumUpdatePeriod50ms allows a legitimate periodic MPD GET before prepare_native_live returns to the assertion; total root count was2 instead of1. Test-server child module native_hls_vertical/request_accounting.rs owns initial_root_accounting(root,initial_media): immutable request-log prefix before first init-resource request, None until that boundary. Runtime open.rs opens initial components before spawning refresh worker, so this prefix proves the initial fetched handoff without counting later refresh. Both N14A/N14B retain exact initial root count1; N14A also exactinitialbodybytes. Classifier count0, later61refresh/windowshift,endpointrecovery,decoder/render/audio andprocess-spy0 assertions unchanged. Real HTTP oracle verifies missing boundary, duplicate initial GET remains2, later refresh excluded from initial but retained in totalcount. No production clock/deadline/API change. Focused3DASHtests+HTTPoracle andstrictappClippyPASS; fullnewSHAqualification required.

@@ -742,3 +742,6 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
         "valid TS/fMP4 open, seek, switch и reopen не запускают extractor"
     );
 }
+
+#[path = "native_hls_vertical/request_accounting.rs"]
+mod request_accounting;

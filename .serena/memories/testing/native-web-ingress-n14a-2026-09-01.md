@@ -23,7 +23,7 @@
 - HLS VOD TS/fMP4: root 0 before open, 2 root GET after two row opens, body bytes equal exact first+second master snapshots, injected process spy 0.
 - HLS sliding live: root 0 before open, exact one initial master GET/body before consumer movement, process spy 0.
 - DASH VOD fMP4/WebM: root 0 before open, 2 root GET and exact two MPD snapshot byte sum, process spy 0.
-- DASH dynamic live: root 0 before open, exact one initial MPD GET/body before consumer movement, process spy 0.
+- DASH dynamic live: root 0 before open, exact one initial MPD GET/body in the request-log prefix before initial media open, process spy 0. Later periodic refresh may run before the caller resumes; it remains visible in total accounting and must not be mistaken for duplicate initial handoff (S12 correction).
 - Smooth VOD and HDS VOD: root 0 before open, exact one root GET/body, process spy 0; HDS также сохраняет existing exact eager Frag1 probe accounting.
 - Direct paths structurally не имеют extractor adapter boundary и работают при disabled extractor; adaptive owners используют fail-fast injected spy и требуют exact 0; page row требует exact 1.
 

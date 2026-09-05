@@ -244,9 +244,12 @@ fn n14a_consumer_dash_dynamic_live_reaches_consumers_with_exact_root_accounting(
         prepared.lifecycle,
         PreparedNativeDashLifecycle::Live { .. }
     ));
-    assert_eq!(server.request_count("/manifest.mpd"), 1);
+    let initial_root = server
+        .initial_root_accounting("/manifest.mpd", "/fmp4-init.mp4")
+        .expect("initial component open must follow root handoff");
+    assert_eq!(initial_root.requests, 1);
     assert_eq!(
-        server.response_body_bytes("/manifest.mpd"),
+        initial_root.body_bytes,
         dynamic_manifest(5, 5, 0, 4, "initial-id").len()
     );
 
@@ -277,7 +280,10 @@ fn n14b_lifecycle_dash_live_dvr_expiry_recovery_reopen_has_no_false_eof() {
     );
     let stable_source_identity = source.source_identity();
     let mut prepared = prepare_native_live(&source, None, &settings);
-    assert_eq!(server.request_count("/manifest.mpd"), 1);
+    let initial_root = server
+        .initial_root_accounting("/manifest.mpd", "/fmp4-init.mp4")
+        .expect("initial component open must follow root handoff");
+    assert_eq!(initial_root.requests, 1);
     assert_eq!(prepared.demuxer.duration(), None);
     let initial_range = match &prepared.lifecycle {
         PreparedNativeDashLifecycle::Live { timeline_port } => timeline_port
