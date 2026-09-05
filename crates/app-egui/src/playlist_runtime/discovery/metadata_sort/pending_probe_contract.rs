@@ -223,3 +223,6 @@ fn pending_discovery_probe_drains_empty_then_prepares_exact_sort_after_real_wake
             .is_none()
     );
 }
+
+#[path = "tests/premature_probe_wakes.rs"]
+mod premature_probe_wakes;
