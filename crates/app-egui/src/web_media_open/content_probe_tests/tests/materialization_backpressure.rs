@@ -22,29 +22,37 @@ use super::{MUXED_WEBM_BASE64, OffscreenWgpuHarness, decode_first_frame, open_de
 /// Общий bounded срок ожидания готовности одного кадра в acceptance harness.
 const MATERIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Ждёт только штатный Busy; missing/unsupported/fatal сохраняют исходную семантику.
+/// Тестовое расширение consumer-а; production materializer остаётся неблокирующим.
 ///
-/// Decoder thread может кратко удерживать pool mutex после публикации кадра.
-/// Production materializer намеренно не блокируется: повторная попытка принадлежит
-/// consumer-у. В offscreen harness предыдущий GPU submit уже ожидается отдельно;
-/// здесь yield даёт владельцу CPU-пула закончить работу без произвольного sleep.
-/// Отдельный tests-модуль и короткое имя callable сохраняют квалифицированные
-/// координаты исходного harness, включая span самого вызываемого выражения.
-pub(super) fn wait_for_yuv(
-    materializer: &HostPlanarWgpuFrameMaterializer,
-    frame: &DecodedFrame,
-) -> HostPlanarWgpuTextureViewLookup {
-    let deadline = Instant::now() + MATERIALIZATION_TIMEOUT;
-    loop {
-        let lookup = materializer.try_host_planar_texture_view_lookup(frame);
-        if !matches!(lookup, HostPlanarWgpuTextureViewLookup::Busy { .. }) {
-            return lookup;
+/// Форма метода и длина имени сохраняют оба LLVM span в исходном harness:
+/// receiver и полное выражение вызова. Новые coverage exclusions не требуются.
+pub(super) trait AwaitHostPlanarViews {
+    /// Ждёт только Busy; missing/unsupported/fatal сохраняют исходную семантику.
+    fn wait_host_planar_texture_view_ready(
+        &self,
+        frame: &DecodedFrame,
+    ) -> HostPlanarWgpuTextureViewLookup;
+}
+
+impl AwaitHostPlanarViews for HostPlanarWgpuFrameMaterializer {
+    fn wait_host_planar_texture_view_ready(
+        &self,
+        frame: &DecodedFrame,
+    ) -> HostPlanarWgpuTextureViewLookup {
+        // Decoder может держать pool mutex сразу после публикации кадра.
+        // Повтор принадлежит consumer-у; предыдущий GPU submit harness ждёт отдельно.
+        let deadline = Instant::now() + MATERIALIZATION_TIMEOUT;
+        loop {
+            let lookup = self.try_host_planar_texture_view_lookup(frame);
+            if !matches!(lookup, HostPlanarWgpuTextureViewLookup::Busy { .. }) {
+                return lookup;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "HostPlanar materialization deadline exceeded"
+            );
+            thread::yield_now();
         }
-        assert!(
-            Instant::now() < deadline,
-            "HostPlanar materialization deadline exceeded"
-        );
-        thread::yield_now();
     }
 }
 

@@ -139,7 +139,7 @@ impl OffscreenWgpuHarness {
         frame: DecodedFrame,
     ) -> bool {
         let resource_handle = frame.resource_handle;
-        let uploaded_views = match wait_for_yuv(materializer, &frame) {
+        let uploaded_views = match materializer.wait_host_planar_texture_view_ready(&frame) {
             HostPlanarWgpuTextureViewLookup::Ready { views, .. } => views,
             HostPlanarWgpuTextureViewLookup::Busy { .. } => {
                 panic!("HostPlanar materializer неожиданно занят")
@@ -514,4 +514,4 @@ mod eof_render;
 
 #[path = "tests/materialization_backpressure.rs"]
 mod materialization_backpressure;
-use materialization_backpressure::wait_for_yuv;
+use materialization_backpressure::AwaitHostPlanarViews as _;
