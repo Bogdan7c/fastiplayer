@@ -17,7 +17,7 @@ The existing [N15 methodology and acceptance report](../native-web-ingress-n15-a
 
 **Reproducibility limit:** the public tree contains sanitized aggregates, not original per-run samples. N15 raw artifacts were retained locally under ignored `target/native-web-ingress/n15/`, and its exact owner-controlled acceptance corpus is not distributed. The linked report includes the recorded commands and corpus checksum, but this is not a self-contained public benchmark kit. Do not invent raw samples, confidence intervals, a runnable N15 performance command, or broader results to fill that gap. Functional consumer tests can be rerun using the commands in the report; they are not substitutes for the original timing cohorts.
 
-The [ThinkPad T480s report](thinkpad-t480s.md) is a separate S08 task, with no results yet. N15 is not a VLC comparison.
+The [ThinkPad T480s report](thinkpad-t480s.md) is a separate completed S08 experiment with raw playback measurements, a real runtime capture and explicit comparison limits. N15 is not a VLC comparison.
 
 ## Rules for new benchmark reports
 
@@ -39,6 +39,6 @@ If equivalent conditions cannot be established, **omit the VLC comparison table*
 
 ## Screenshots and publication
 
-A screenshot must show the real application playing the documented fixture. Design concepts are never runtime evidence. Check for personal paths, notifications, URLs, and credentials before publishing. S08's expected main capture is `docs/assets/rustiplayer-t480s-main.png`; it does not exist yet and is intentionally not linked as an image.
+A screenshot must show the real application playing the documented fixture. Design concepts are never runtime evidence. Check for personal paths, notifications, URLs, and credentials before publishing. S08's real main-window capture is [rustiplayer-t480s-main.png](../assets/rustiplayer-t480s-main.png); its source and movie attribution are recorded in the T480s report.
 
 Update the landing page only after reviewing the report, raw results, and playback evidence together. Keep N15 and T480s provenance separate. Benchmark-policy changes do not retrospectively make the older N15 aggregates satisfy newer raw-data requirements.
