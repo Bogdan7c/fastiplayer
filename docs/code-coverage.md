@@ -71,6 +71,31 @@ tool identity или source-coordinate universe не превращается в
 `baseline.legacy_report_only` и проверяются только как историческая provenance.
 Legacy compact summary, LCOV и HTML также являются report-only diagnostics.
 
+## Отдельный экспорт каждого executable
+
+LLVM 22.1.2 может потерять выполненную функцию при одном общем export нескольких
+ELF: для одних и тех же binaries и merged profile перестановка двух `-object`
+воспроизводимо меняла count с 0 на 6. Поэтому blocking surface строится через
+`coverage_object_export.py` и `coverage_object_union.py`:
+
+- adapter получает exact object argv и source filters от pinned `cargo-llvm-cov`;
+- каждый object сверяется с frozen parent/runtime executable inventory по SHA-256;
+- каждый single-object JSON сохраняется с checksum в `objects/run-N/`;
+- extractor отдельно валидирует topology, counts и source paths каждого JSON;
+- coordinate universes и covered sets объединяются через set union внутри run;
+  повторные копии одной функции не увеличивают denominator или execution counts;
+- объединённый source inventory обязан совпасть с полным workspace inventory;
+  пропущенный, изменённый или malformed export прерывает проверку;
+- три measured run по-прежнему пересекаются: covered в одном run не означает stable.
+
+Это исправление реализации прежнего правила объединения instantiations по exact
+source coordinates; сами определения lines/functions/regions и schema v2 baseline
+не меняются. `cohort-manifest.json.coordinate_export` явно фиксирует исправленный
+метод и отделяет старый multi-object export как report-only. `raw/run-N.json`,
+legacy summary, LCOV и HTML сохраняются для диагностики; blocking state теперь
+вычисляется из полного набора `objects/run-N/*.json.gz`. Baseline update требует
+обычного file-local review и квалификации девятью запусками, описанных ниже.
+
 ## Один build, typed prewarm и три запуска
 
 Runner владеет полным lifecycle одного cohort:

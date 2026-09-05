@@ -167,6 +167,12 @@ class FakeCoverageExecutor(CommandExecutor):
             return self.completed(arguments)
 
         if "report" in arguments:
+            export_config = environment.get("RUSTIPLAYER_COVERAGE_EXPORT_CONFIG")
+            if export_config:
+                config = json.loads(Path(export_config).read_text())
+                output = Path(config["output_directory"])
+                output.mkdir(parents=True)
+                (output / "manifest.json").write_text('{"schema_version":1}')
             self.report_count += 1
             self.write_merge_inputs()
             if "--output-path" in arguments:
@@ -287,10 +293,12 @@ class FakeCoverageExecutor(CommandExecutor):
             )
         )
         if exact_arguments[0] == self.config.rustc_command:
+            if "--print" in exact_arguments:
+                return self.completed(exact_arguments, str(self.config.repo_root / "toolchain"))
             llvm_version = "99.0.0" if self.tool_is_mutated else "22.1.2"
             return self.completed(
                 exact_arguments,
-                f"rustc 1.96.0\nrelease: 1.96.0\nLLVM version: {llvm_version}\n",
+                f"rustc 1.96.0\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: {llvm_version}\n",
             )
         if exact_arguments[0] == self.config.cargo_command:
             return self.run_cargo(exact_arguments, exact_environment)

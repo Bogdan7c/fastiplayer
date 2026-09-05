@@ -325,6 +325,8 @@ def _build_surfaces(
     covered: dict[str, set[str]],
     policy: dict[str, Any],
     relative_files: list[str],
+    *,
+    source_scope: str = "workspace",
 ) -> dict[str, Any]:
     # Coordinate tuples сортируются по source path/position, а не по строковой
     # записи чисел (`100` не должен предшествовать `20`).
@@ -358,7 +360,7 @@ def _build_surfaces(
             observed_crates.add(owner)
             owner_indices[metric].setdefault(owner, []).append(index)
     missing_crates = expected_crates - observed_crates
-    if missing_crates:
+    if missing_crates and source_scope == "workspace":
         raise ValueError(f"coverage coordinate universe не содержит crate-ы: {sorted(missing_crates)}")
     domains: dict[str, dict[str, Any]] = {}
     domain_crates: dict[str, set[str]] = {
@@ -397,7 +399,11 @@ def extract_run_state(
     profile_document: Any,
     repo_root: Path,
     run_label: str,
+    *,
+    source_scope: str = "workspace",
 ) -> dict[str, Any]:
+    if source_scope not in {"workspace", "executable"}:
+        raise ValueError("неизвестный source scope")
     policy = validate_policy(policy_document)
     profile = validate_profile_manifest(profile_document, policy)
     if not isinstance(run_label, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", run_label):
@@ -481,7 +487,7 @@ def extract_run_state(
         raise ValueError("files[] содержит duplicate normalized path")
     observed_crates = {crate_name(path) for path in relative_files}
     missing_crates = expected_crates - observed_crates
-    if missing_crates:
+    if missing_crates and source_scope == "workspace":
         raise ValueError(f"files[] не содержит policy crate-ы: {sorted(missing_crates)}")
     file_universe = set(relative_files)
     functions, covered_functions, regions, covered_regions = _function_coordinates(
@@ -493,7 +499,9 @@ def extract_run_state(
         "functions": covered_functions,
         "regions": covered_regions,
     }
-    stable_source = _build_surfaces(universes, covered, policy, relative_files)
+    stable_source = _build_surfaces(
+        universes, covered, policy, relative_files, source_scope=source_scope
+    )
 
     parsed_totals = _validate_summary(datum["totals"], "data[0].totals")
     if file_summary_totals != parsed_totals:
@@ -550,6 +558,8 @@ def extract_run_state(
             "covered_delta": region_covered_delta,
         },
     }
+    for owner in missing_crates:
+        legacy_by_crate[owner] = {metric: {"covered": 0, "total": 0} for metric in METRICS}
     legacy_domains = _legacy_domains(legacy_by_crate, policy)
     state = {
         "schema_version": RUN_SCHEMA_VERSION,
@@ -608,6 +618,7 @@ def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
     extract.add_argument("--input", type=Path, required=True, metavar="FULL_JSON")
     extract.add_argument("--profile-manifest", type=Path, required=True)
     extract.add_argument("--run-label", required=True)
+    extract.add_argument("--object-reports", type=Path)
     extract.add_argument("--output", type=Path, required=True, metavar="STATE_JSON")
     return parser.parse_args(arguments)
 
@@ -623,6 +634,13 @@ def main(arguments: list[str] | None = None) -> int:
                 parsed.repo_root,
                 parsed.run_label,
             )
+            if parsed.object_reports is not None:
+                from coverage_object_union import combine_object_reports
+
+                state = combine_object_reports(
+                    state, parsed.object_reports, read_json(parsed.policy),
+                    read_json(parsed.profile_manifest), parsed.repo_root, parsed.run_label,
+                )
             write_json_atomic(parsed.output, state)
             print(f"Stable coverage run state записан: {parsed.output}")
             return 0

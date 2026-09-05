@@ -344,7 +344,15 @@ class StableCoverageRunner:
         lcov_path = stage / "legacy" / f"{run_label}.lcov"
         full_json_path.parent.mkdir(parents=True, exist_ok=True)
         summary_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cargo_report("--json", "--output-path", str(full_json_path))
+        from coverage_object_export import collect_workspace_exports
+
+        object_manifest_path = collect_workspace_exports(
+            self.config, self.executor, self.base_environment, stage, run_label,
+            full_json_path, source_manifest, build_reference, runtime_references,
+        )
+        build_reference.assert_unchanged("instrumented build после exports")
+        assert_unchanged("source inventory после exports", source_manifest,
+                         git_source_manifest(self.config.repo_root))
         if not full_json_path.is_file() or full_json_path.stat().st_size == 0:
             raise CoverageRunnerError(f"full JSON report пуст для {run_label}")
         self.verify_merge_inputs(profiles)
@@ -381,6 +389,8 @@ class StableCoverageRunner:
                 str(self.config.repo_root),
                 "--input",
                 str(full_json_path),
+                "--object-reports",
+                str(object_manifest_path),
                 "--profile-manifest",
                 str(profile_identity_path),
                 "--run-label",
@@ -443,6 +453,11 @@ class StableCoverageRunner:
                     "cargo_llvm_cov_release": tool_identity.cargo_llvm_cov_release,
                 },
                 "merge_metadata": merge_metadata.manifest(),
+                "coordinate_export": {
+                    "schema_version": 1,
+                    "method": "per-executable-json-coordinate-union",
+                    "legacy_reports": "wrapper-multi-object-report-only",
+                },
                 "artifacts": artifact_hashes,
             },
         )
