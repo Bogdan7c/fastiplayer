@@ -52,3 +52,8 @@
 - Seekable adaptive demux control, concrete live refresh cadence и endpoint refresh mapping не должны добавляться в этот crate без отдельного boundary decision.
 
 Связанные memories: `mem:core`, `mem:media-services/core`, `mem:media-services/direct-media`, `mem:media-services/secret-safe-locators-s10b`, `mem:media-services/web-transport-s21t-2026-07-21`, `mem:media-services/progressive-http-s22-2026-07-22`, `mem:demux-api/core`.
+
+## S12 active-read cancellation proof (2026-09-05)
+
+- `tests/blocking_resource_fetch/cancellation_priority.rs` отдельно проверяет source/seek cancellation уже armed active HTTP body: consumer получает Cancelled дважды, bytes=0, socket закрыт, запрос один, независимый token не отменён, active slot освобождён.
+- `restartable_read_interruption::test_observation` находится в `tests/restartable_read_observation.rs`, только cfg(test). Метод владельца `wait_until_network_read_is_active` read-only наблюдает phase; fixture держит body stalled до отмены. Deadline означает bounded failure, не успешную синхронизацию по времени. Production API/semantics не меняются.

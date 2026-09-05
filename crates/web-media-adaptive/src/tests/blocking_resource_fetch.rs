@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod cancellation_priority;
+
 /// HTTP fixture публикует headers и ждёт физического закрытия body reader-а.
 struct StalledBodyServer {
     /// Exact target для production adaptive boundary.

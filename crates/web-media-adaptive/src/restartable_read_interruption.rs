@@ -480,3 +480,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/restartable_read_observation.rs"]
+mod test_observation;

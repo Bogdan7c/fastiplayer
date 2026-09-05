@@ -31,3 +31,7 @@
 - HLS composition передаёт `AdaptiveTransportLimits::maximum_segment_bytes`; это позволяет дочитать topology evidence до конца уже bounded segment-а, когда один AAC PES перемежается тысячами video packets.
 - Cutoff посреди declared PES нельзя путать с EOF/corruption: раньше strict finalization корректно отвергал неполный PES, но неполноту создавал сам probe. Настоящий truncated resource по-прежнему fail-closed.
 - Functional owner test сначала воспроизводит failure прежнего default cutoff, затем доказывает video+audio packet playback с resource budget. Полный runtime evidence: `mem:media-services/hls-ts-resource-bounded-initial-probe-2026-08-24`.
+
+## S12 cancellation priority proof (2026-09-05)
+
+- `tests/cancellation_priority.rs` отменяет source token внутри ordered-resource read перед возвратом restartable error. Consumer уже получил настоящие AAC packets; затем получает typed `MpegTsDemuxError::Cancelled`, не EOF/interruption. Производственный contract не изменён.

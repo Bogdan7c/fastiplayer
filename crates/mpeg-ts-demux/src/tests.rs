@@ -31,6 +31,8 @@ const PMT_PID: u16 = 0x0100;
 const VIDEO_PID: u16 = 0x0101;
 const AUDIO_PID: u16 = 0x0102;
 
+mod cancellation_priority;
+
 /// Hermetic builder производит только минимальные deterministic 188-byte fixtures.
 struct TsFixtureBuilder {
     bytes: Vec<u8>,
