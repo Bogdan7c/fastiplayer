@@ -10,7 +10,7 @@ Notable project changes are recorded here in a Keep a Changelog-like structure. 
 
 ## [0.1.0-alpha.1] — Unreleased draft
 
-Planned first public development release, with tag name `v0.1.0-alpha.1`. Linux-first, source-only, active development / pre-alpha. No tag, release date, downloadable binary, or published release is asserted here. Workspace version alignment is a later launch-preparation step.
+Planned first public development release, with tag name `v0.1.0-alpha.1`. Linux-first, source-only, active development / pre-alpha. No tag, release date, downloadable binary, or published release is asserted here. Workspace packages and their internal version requirements are aligned to `0.1.0-alpha.1`; the Cargo lockfile is updated with Cargo.
 
 ### Added
 
@@ -19,11 +19,17 @@ Planned first public development release, with tag name `v0.1.0-alpha.1`. Linux-
 - Native progressive HTTP(S)/FTP(S), HLS and DASH VOD/live/DVR, and supported static Smooth Streaming/HDS profiles; optional system `yt-dlp` for web pages.
 - Public architecture/contribution/security/support documentation, maintainer ownership, and GitHub issue/PR templates.
 
+### Release preparation
+
+- Integrated the real T480s runtime screenshot and separately scoped hardware/software CPU/RSS evidence, preserving measured source/binary identity and raw samples.
+- Kept N15 ingress measurements separate and replaced removed owner-local acceptance fixture references with explicit placeholders and local setup instructions.
+- S08 fixed media-install snapshot publication ordering, near-forward prefetch seek races, and XWayland fullscreen surface resizing before the recorded measurements.
+
 ### Known limitations
 
 - Vulkan remains required for rendering; hardware decode depends on the GPU, driver, codec/profile, and frame-import compatibility.
 - Native HDR display output, a native subtitle engine, and native Windows application support are not implemented. macOS is outside the roadmap through 1.0.
 - Streaming support is profile-limited; DRM and several protocol variants are unsupported. The UI contains Russian text and remains under development.
-- T480s screenshot/performance qualification is pending. Existing N15 ingress measurements do not establish whole-player or VLC performance.
+- T480s results describe the recorded S08 binary and specific workloads, not a new alpha measurement or perfect 60 FPS. AV1 is software-only on this machine; equivalent AV1 VLC output was not established. N15 ingress remains a separate experiment.
 
 See the [draft release notes](docs/releases/v0.1.0-alpha.1.md), [accepted profiles](docs/web-media-compatibility-matrix.md), and [N15 evidence and limitations](docs/native-web-ingress-n15-acceptance.md) for the exact scope.

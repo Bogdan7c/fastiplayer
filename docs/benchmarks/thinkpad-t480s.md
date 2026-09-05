@@ -125,7 +125,7 @@ Startup, first-frame and seek latency distributions are **not measured**. Existi
 
 ## Reproduction commands
 
-Run from the repository root in the same active KDE Wayland desktop session. Required tools include the release player, VLC, FFmpeg with VA-API encoders, Python 3, Spectacle and `qdbus6`. The collector uses Linux `/proc` and `/sys`; the fullscreen helper targets only the process it launched and unloads its temporary KWin script afterward.
+Run from the repository root in the same active KDE Wayland desktop session. Required tools include the release player, VLC, FFmpeg with VA-API encoders, Python 3, Spectacle and `qdbus6`. The collector uses Linux `/proc` and `/sys`; the fullscreen helper targets only the process it launched and unloads its temporary KWin script afterward. The current collector requires readable values from every enumerated thermal zone. S09 validation on another computer encountered Linux `ENODATA` while reading a thermal sensor, before spawning the measured process; its two collector tests therefore failed on that host. This is a known collector portability limitation, not a new playback result or a revision of the successful T480s cohort.
 
 ```sh
 cargo build -p app-egui --release --locked

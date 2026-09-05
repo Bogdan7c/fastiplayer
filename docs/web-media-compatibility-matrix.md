@@ -49,7 +49,7 @@ HTTP(S) locator-ом. Scheme сам по себе не доказывает cont
 
 Один последовательный ручной прогон всех двенадцати `Implemented` rows и
 полной вкладки настроек потока URL описан в
-[`web-media-playlist-acceptance.md`](web-media-playlist-acceptance.md). Его
+локальной инструкции к `<owner-local fixture>` (не распространяется). Его
 публичные URL являются заменяемыми runtime fixtures, а не новым источником
 истины для compatibility profile; `SOURCE DRIFT` не считается `PASS`.
 

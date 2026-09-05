@@ -2,7 +2,7 @@
 
 ## Scope и authoritative acceptance
 
-- G3 завершён на `main` одним агентом без feature-wave. Exact `user/web-media-playlist-acceptance.xspf`: 13 rows, SHA-256 `1daa973aa0f16a3be93e588dd3c83a8432b2917a5b525a05eb278776bb9c6435`.
+- G3 завершён на `main` одним агентом без feature-wave. Exact `<owner-local fixture>`: 13 rows, SHA-256 `1daa973aa0f16a3be93e588dd3c83a8432b2917a5b525a05eb278776bb9c6435`.
 - Public N15: 11 available rows PASS through real startup A/V presentation; rows 04/12 честно `PROFILE_EXCLUDED`. Exact cold и restart process set `{row00,row08}`; обе причины `PageMediaResolution`, phase `CandidatePrimary`. 11 direct rows работают с `yt_dlp.enabled=false` и дают zero spawn. Public drift/fallback не маскировался.
 - Performance authoritative dataset: `docs/native-web-ingress-n15-performance.json`. Cold native vs extractor median reductions: catalog 85.35%, first consumer 82.11%, wall 72.99%, combined CPU 26.64%, RSS 6.91%; p95 reductions 85.60%, 81.99%, 72.89%, 30.95%, 7.05%. Warm Ogg p95 catalog/consumer/seek-fwd/seek-back/refresh = 4.427/5.489/1.511/0.718/4.315 ms, 0 spawns. Warm HLS = 37.832/60.867/18.216/20.641/21.047 ms plus switch 20.439 ms, 0 spawns.
 - Hardware evidence PASS on AMD Radeon 780M/Mesa: VP9 SDR auto, AV1 SDR/HDR P010 hardware, BT.2020 PQ → BT.709 BT.2446-C and WGPU readback. Настоящий HDR display/output mode NOT RUN; доказан HDR→SDR на SDR output.

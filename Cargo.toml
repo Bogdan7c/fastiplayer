@@ -135,7 +135,7 @@ opt-level = 3
 opt-level = 3
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT"
@@ -144,20 +144,20 @@ license = "MIT"
 wgpu = { version = "29", features = ["vulkan"] }
 winit = "0.30"
 egui = "0.34"
-ui-artwork-egui = { version = "0.1.0", path = "crates/ui-artwork-egui" }
+ui-artwork-egui = { version = "0.1.0-alpha.1", path = "crates/ui-artwork-egui" }
 egui-winit = "0.34"
 egui-wgpu = "0.34"
 pollster = "0.4"
 anyhow = "1.0"
 etcetera = "0.11"
-rustiplayer-config = { version = "0.1.0", path = "crates/config" }
-animation-core = { version = "0.1.0", path = "crates/animation-core" }
-audio-core = { version = "0.1.0", path = "crates/audio-core" }
-audio-signalsmith = { version = "0.1.0", path = "crates/audio-signalsmith" }
+rustiplayer-config = { version = "0.1.0-alpha.1", path = "crates/config" }
+animation-core = { version = "0.1.0-alpha.1", path = "crates/animation-core" }
+audio-core = { version = "0.1.0-alpha.1", path = "crates/audio-core" }
+audio-signalsmith = { version = "0.1.0-alpha.1", path = "crates/audio-signalsmith" }
 
-audio = { version = "0.1.0", path = "crates/audio" }
-capability-core = { version = "0.1.0", path = "crates/capability-core" }
-codec-core = { version = "0.1.0", path = "crates/codec-core" }
+audio = { version = "0.1.0-alpha.1", path = "crates/audio" }
+capability-core = { version = "0.1.0-alpha.1", path = "crates/capability-core" }
+codec-core = { version = "0.1.0-alpha.1", path = "crates/codec-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -176,55 +176,55 @@ crossbeam-channel = "0.5"
 ringbuf = "0.4"
 rand = "0.10.2"
 libloading = "0.8"
-vp9-parser = { version = "0.1.0", path = "crates/vp9-parser" }
-video-frame-contract = { version = "0.1.0", path = "crates/video-frame-contract" }
-video-core = { version = "0.1.0", path = "crates/video-core" }
-video-backend-api = { version = "0.1.0", path = "crates/video-backend-api" }
-video-present-core = { version = "0.1.0", path = "crates/video-present-core" }
-video-ffmpeg = { version = "0.1.0", path = "crates/video-ffmpeg" }
-video-vaapi = { version = "0.1.0", path = "crates/video-vaapi" }
-render-core = { version = "0.1.0", path = "crates/render-core" }
-render-wgpu-video = { version = "0.1.0", path = "crates/render-wgpu-video" }
-render-wgpu-shell = { version = "0.1.0", path = "crates/render-wgpu-shell" }
-player-core = { version = "0.1.0", path = "crates/player-core" }
-bounded-work-executor = { version = "0.1.0", path = "crates/bounded-work-executor" }
-atomic-file-store = { version = "0.1.0", path = "crates/atomic-file-store" }
-natural-sort-key = { version = "0.1.0", path = "crates/natural-sort-key" }
-playlist-core = { version = "0.1.0", path = "crates/playlist-core" }
-playlist-io = { version = "0.1.0", path = "crates/playlist-io" }
-hls-playlist-core = { version = "0.1.0", path = "crates/hls-playlist-core" }
-playlist-discovery = { version = "0.1.0", path = "crates/playlist-discovery" }
-playlist-state = { version = "0.1.0", path = "crates/playlist-state" }
-desktop-integration = { version = "0.1.0", path = "crates/desktop-integration" }
-frame-server-core = { version = "0.1.0", path = "crates/frame-server-core" }
-media-core = { version = "0.1.0", path = "crates/media-core" }
-demux-api = { version = "0.1.0", path = "crates/demux-api" }
-mpeg-ts-demux = { version = "0.1.0", path = "crates/mpeg-ts-demux" }
-flv-demux = { version = "0.1.0", path = "crates/flv-demux" }
-symphonia-demux = { version = "0.1.0", path = "crates/symphonia-demux" }
-service-direct-media = { version = "0.1.0", path = "crates/service-direct-media" }
-service-ytdlp = { version = "0.1.0", path = "crates/service-ytdlp" }
-source-core = { version = "0.1.0", path = "crates/source-core" }
-media-prefetch = { version = "0.1.0", path = "crates/media-prefetch" }
-web-media-core = { version = "0.1.0", path = "crates/web-media-core" }
-web-media-playback-plan = { version = "0.1.0", path = "crates/web-media-playback-plan" }
-web-media-transport-api = { version = "0.1.0", path = "crates/web-media-transport-api" }
-web-media-adaptive = { version = "0.1.0", path = "crates/web-media-adaptive" }
-web-media-hds = { version = "0.1.0", path = "crates/web-media-hds" }
-web-media-hls = { version = "0.1.0", path = "crates/web-media-hls" }
-web-media-http = { version = "0.1.0", path = "crates/web-media-http" }
-web-media-ftp = { version = "0.1.0", path = "crates/web-media-ftp" }
-bounded-xml-reader = { version = "0.1.0", path = "crates/bounded-xml-reader" }
-hds-manifest-core = { version = "0.1.0", path = "crates/hds-manifest-core" }
-dash-mpd-core = { version = "0.1.0", path = "crates/dash-mpd-core" }
-smooth-streaming-manifest-core = { version = "0.1.0", path = "crates/smooth-streaming-manifest-core" }
-smooth-streaming-fmp4 = { version = "0.1.0", path = "crates/smooth-streaming-fmp4" }
+vp9-parser = { version = "0.1.0-alpha.1", path = "crates/vp9-parser" }
+video-frame-contract = { version = "0.1.0-alpha.1", path = "crates/video-frame-contract" }
+video-core = { version = "0.1.0-alpha.1", path = "crates/video-core" }
+video-backend-api = { version = "0.1.0-alpha.1", path = "crates/video-backend-api" }
+video-present-core = { version = "0.1.0-alpha.1", path = "crates/video-present-core" }
+video-ffmpeg = { version = "0.1.0-alpha.1", path = "crates/video-ffmpeg" }
+video-vaapi = { version = "0.1.0-alpha.1", path = "crates/video-vaapi" }
+render-core = { version = "0.1.0-alpha.1", path = "crates/render-core" }
+render-wgpu-video = { version = "0.1.0-alpha.1", path = "crates/render-wgpu-video" }
+render-wgpu-shell = { version = "0.1.0-alpha.1", path = "crates/render-wgpu-shell" }
+player-core = { version = "0.1.0-alpha.1", path = "crates/player-core" }
+bounded-work-executor = { version = "0.1.0-alpha.1", path = "crates/bounded-work-executor" }
+atomic-file-store = { version = "0.1.0-alpha.1", path = "crates/atomic-file-store" }
+natural-sort-key = { version = "0.1.0-alpha.1", path = "crates/natural-sort-key" }
+playlist-core = { version = "0.1.0-alpha.1", path = "crates/playlist-core" }
+playlist-io = { version = "0.1.0-alpha.1", path = "crates/playlist-io" }
+hls-playlist-core = { version = "0.1.0-alpha.1", path = "crates/hls-playlist-core" }
+playlist-discovery = { version = "0.1.0-alpha.1", path = "crates/playlist-discovery" }
+playlist-state = { version = "0.1.0-alpha.1", path = "crates/playlist-state" }
+desktop-integration = { version = "0.1.0-alpha.1", path = "crates/desktop-integration" }
+frame-server-core = { version = "0.1.0-alpha.1", path = "crates/frame-server-core" }
+media-core = { version = "0.1.0-alpha.1", path = "crates/media-core" }
+demux-api = { version = "0.1.0-alpha.1", path = "crates/demux-api" }
+mpeg-ts-demux = { version = "0.1.0-alpha.1", path = "crates/mpeg-ts-demux" }
+flv-demux = { version = "0.1.0-alpha.1", path = "crates/flv-demux" }
+symphonia-demux = { version = "0.1.0-alpha.1", path = "crates/symphonia-demux" }
+service-direct-media = { version = "0.1.0-alpha.1", path = "crates/service-direct-media" }
+service-ytdlp = { version = "0.1.0-alpha.1", path = "crates/service-ytdlp" }
+source-core = { version = "0.1.0-alpha.1", path = "crates/source-core" }
+media-prefetch = { version = "0.1.0-alpha.1", path = "crates/media-prefetch" }
+web-media-core = { version = "0.1.0-alpha.1", path = "crates/web-media-core" }
+web-media-playback-plan = { version = "0.1.0-alpha.1", path = "crates/web-media-playback-plan" }
+web-media-transport-api = { version = "0.1.0-alpha.1", path = "crates/web-media-transport-api" }
+web-media-adaptive = { version = "0.1.0-alpha.1", path = "crates/web-media-adaptive" }
+web-media-hds = { version = "0.1.0-alpha.1", path = "crates/web-media-hds" }
+web-media-hls = { version = "0.1.0-alpha.1", path = "crates/web-media-hls" }
+web-media-http = { version = "0.1.0-alpha.1", path = "crates/web-media-http" }
+web-media-ftp = { version = "0.1.0-alpha.1", path = "crates/web-media-ftp" }
+bounded-xml-reader = { version = "0.1.0-alpha.1", path = "crates/bounded-xml-reader" }
+hds-manifest-core = { version = "0.1.0-alpha.1", path = "crates/hds-manifest-core" }
+dash-mpd-core = { version = "0.1.0-alpha.1", path = "crates/dash-mpd-core" }
+smooth-streaming-manifest-core = { version = "0.1.0-alpha.1", path = "crates/smooth-streaming-manifest-core" }
+smooth-streaming-fmp4 = { version = "0.1.0-alpha.1", path = "crates/smooth-streaming-fmp4" }
 symphonia-format-isomp4 = "0.6"
-web-media-smooth = { version = "0.1.0", path = "crates/web-media-smooth" }
-web-media-dash = { version = "0.1.0", path = "crates/web-media-dash" }
-settings-core = { version = "0.1.0", path = "crates/settings-core" }
-settings-derive = { version = "0.1.0", path = "crates/settings-derive" }
-rustiplayer-settings = { version = "0.1.0", path = "crates/rustiplayer-settings" }
+web-media-smooth = { version = "0.1.0-alpha.1", path = "crates/web-media-smooth" }
+web-media-dash = { version = "0.1.0-alpha.1", path = "crates/web-media-dash" }
+settings-core = { version = "0.1.0-alpha.1", path = "crates/settings-core" }
+settings-derive = { version = "0.1.0-alpha.1", path = "crates/settings-derive" }
+rustiplayer-settings = { version = "0.1.0-alpha.1", path = "crates/rustiplayer-settings" }
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = "2.0"

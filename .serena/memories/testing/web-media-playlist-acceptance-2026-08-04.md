@@ -1,6 +1,6 @@
 # Ручная web-media playlist acceptance (2026-08-04)
 
-- Добавлены `user/web-media-playlist-acceptance.xspf` и `user/web-media-playlist-acceptance.md`.
+- Добавлены `<owner-local fixture>` и `user/web-media-playlist-acceptance.md`.
 - XSPF содержит 13 top-level public resources: отдельный rich YouTube URL-settings case плюс двенадцать крупных compatibility rows (progressive ISO-BMFF, progressive WebM, progressive audio, HLS TS VOD, HLS fMP4 VOD, HLS live/DVR candidate, DASH fMP4 VOD, DASH WebM VOD, DASH live/DVR, Smooth VOD, HDS VOD, FTP progressive).
 - Порядок намеренно чередует transport owners и media layouts, чтобы ручной прогон проверял queue transitions, seek, EOF и stale-resource cleanup, а не только isolated open.
 - Инструкция делает обязательной полную проверку единственной вкладки URL: secret-safe projection, status, dependent mode/codec/resolution/FPS/HDR selectors, Playing/Paused same-item switch, pending disable, active no-op, fallback/error и HLS/DASH variants.

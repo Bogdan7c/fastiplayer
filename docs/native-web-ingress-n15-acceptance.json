@@ -5,7 +5,7 @@
   "code_commit": "c330ba74",
   "release_binary_sha256": "5cfc3c08979a07573a63d1b8d48637a40afaec250d883213bf9e1c1506a38fed",
   "xspf": {
-    "path": "user/web-media-playlist-acceptance.xspf",
+    "path": "<owner-local fixture>",
     "sha256": "1daa973aa0f16a3be93e588dd3c83a8432b2917a5b525a05eb278776bb9c6435",
     "rows": 13,
     "silent_locator_replacements": 0

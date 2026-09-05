@@ -12,21 +12,19 @@ A Rust-first desktop media player built for hardware-accelerated playback, respo
 
 **Active development · Pre-alpha · Linux-first.** Built and maintained by one core maintainer. Expect rough edges and source builds while the project works toward 1.0.
 
-> **Runtime screenshot — pending S08.** A real playback capture from a ThinkPad T480s will appear here. See the [T480s evidence checklist](docs/benchmarks/thinkpad-t480s.md).
+![Rustiplayer playing Big Buck Bunny on a ThinkPad T480s](docs/assets/rustiplayer-t480s-main.png)
 
-<!-- S08: replace this placeholder with the real T480s runtime screenshot at
-     docs/assets/rustiplayer-t480s-main.png only after playback is verified.
-     Never fill this slot with docs/design/general.png or another design concept. -->
+Actual native Wayland capture: AV1 4K60 SDR source, software decoding, 1280×720 window. Movie frame: © 2008 Blender Foundation, CC BY 3.0; [attribution and capture provenance](docs/assets/README.md). The screenshot is separate from the fullscreen performance measurements below.
 
 ## Why Rustiplayer exists
 
 Playing media well means coordinating untrusted inputs, decoders, GPU resources, audio clocks, and user interaction without making the application hard to maintain.
 
 - **Performance by design.** VA-API hardware decoding and WGPU/Vulkan rendering keep supported video work on the GPU. Compatible DMA-BUF frames can reach the renderer without a CPU pixel copy; software-decoded frames still use GPU color conversion.
-- **A lighter native playback path.** The desktop UI uses egui/winit, with bounded workers and resource budgets. Supported direct network sources avoid an extractor subprocess. Low overhead is a design priority; whole-application memory and power claims await the T480s baseline.
+- **A lighter native playback path.** The desktop UI uses egui/winit, with bounded workers and resource budgets. Supported direct network sources avoid an extractor subprocess. Low overhead is a design priority; the measured T480s process CPU/RSS baseline below is workload-specific, and power has not been measured.
 - **Design and everyday UX matter.** Playback controls, an interactive seek timeline, playlist navigation, and settings live in the native application. A cohesive UI redesign is still on the roadmap; [design concepts](docs/design/README.md) are clearly labeled as concepts.
 - **Change settings while the application is running.** Settings have explicit runtime owners, live previews where supported, and transactional Apply/rollback. Changes that need a decoder, source, audio output, or renderer rebuild use controlled reconfiguration; busy playback operations can require an explicit retry.
-- **Real hardware is the target.** Efficient playback on low-power laptops matters alongside correctness. Existing hardware evidence and the planned T480s measurements are kept separate from synthetic tests.
+- **Real hardware is the target.** Efficient playback on low-power laptops matters alongside correctness. Existing hardware evidence and the completed T480s measurements are kept separate from synthetic tests.
 - **A safer, modular Rust orchestration layer.** Source, decode, frame lifetime, rendering, and session control have explicit contracts. Untrusted media and network manifests are a serious attack surface: Rust helps manage ownership, while native libraries, drivers, and unsafe/FFI boundaries still need careful review.
 
 ## Verified capabilities
@@ -68,11 +66,13 @@ Color/HDR processing runs inside the GPU rendering path; the diagram separates i
 | FFmpeg software decoding | Enabled in the default build; rendering still requires the GPU | [Frame and backend boundaries](ARCHITECTURE.md#video-frames-and-gpu-ownership) |
 | HDR → SDR | Verified on the existing SDR output path | [N15 evidence](docs/native-web-ingress-n15-acceptance.md#auto-и-hardware) |
 | Native HDR display output | Not implemented; real HDR display acceptance not run | No HDR-monitor claim |
-| ThinkPad T480s | Runtime screenshot and performance qualification pending S08 | [Pending report](docs/benchmarks/thinkpad-t480s.md) |
+| ThinkPad T480s | H.264/HEVC hardware and AV1 software playback through surface submission; process CPU/RSS measured | [Measured report and limitations](docs/benchmarks/thinkpad-t480s.md) |
 | Windows | Native application support is planned before 1.0; not currently supported | Roadmap item 8 |
 | macOS | Not supported; outside the roadmap through 1.0 | No delivery commitment |
 
 ## Performance: measured scope first
+
+### N15 ingress experiment — 2026-09-02, revision `c330ba74`
 
 The existing **N15 native-versus-legacy ingress experiment** measured fixture-based source opening, with 30 successful repetitions per cohort and nearest-rank p95. It compares the legacy extractor fixture with native Ogg ingress. These are not whole-player startup, steady-state video, battery-life, or VLC measurements.
 
@@ -87,7 +87,24 @@ In this experiment, median catalog latency fell **85.35%** and median first-cons
 
 The [benchmark policy and methodology guide](docs/benchmarks/README.md#existing-n15-ingress-experiment) links the full [N15 methodology and acceptance report](docs/native-web-ingress-n15-acceptance.md#performance-30-cold--30-warm) and [machine-readable aggregates](docs/native-web-ingress-n15-performance.json), including warm cohorts and limitations. Original per-run samples are not in the public tree.
 
-**VLC comparison:** no comparable VLC results have been published here. The separate [T480s baseline](docs/benchmarks/thinkpad-t480s.md) remains pending; a comparison may be added only if the playback paths and measurement conditions can be made equivalent.
+### T480s playback baseline — 2026-09-05, revision `9165200c`
+
+Intel Core i5-8350U / UHD 620, AC power, KDE Wayland session, both players fullscreen through XWayland on the same 1920×1080 display. Each workload/player had three warm-ups and five 60-second scored runs, with the full fixture read before each launch. Audio decoding/output remained active at zero gain. CPU uses **100% = one logical CPU**; RSS is the per-run mean of process samples, excluding compositor, audio-server and GPU memory.
+
+The hardware control uses the same synthetic files and `/proc` collector. Rustiplayer uses Vulkan/DMA-BUF and frame tracing; VLC 3.0.23 uses OpenGL/VA-API conversion and verbose diagnostics. These are whole-player resource observations with different rendering and diagnostic costs, not a decoder-efficiency or smoothness ranking.
+
+| Hardware workload | Player | Process CPU median (min–max) | Mean RSS median (min–max), MiB |
+| --- | --- | ---: | ---: |
+| H.264 1080p60 | Rustiplayer | 16.88% (16.73–17.15%) | 87.21 (86.80–90.36) |
+| H.264 1080p60 | VLC | 4.77% (4.72–5.02%) | 126.93 (126.73–127.15) |
+| HEVC 4K60 | Rustiplayer | 30.42% (30.22–30.58%) | 87.90 (87.62–90.37) |
+| HEVC 4K60 | VLC | 5.75% (5.53–5.82%) | 300.23 (299.91–300.36) |
+
+VLC used less process CPU; Rustiplayer used less process RSS in these hardware workloads. The HEVC fixture is an upscaled synthetic pattern, not natural 4K content. Surface submission and active audio were confirmed; equal unique physical scanout and comparable dropped-frame counts were not established.
+
+The separate **Rustiplayer AV1 4K60 SDR software baseline** measured CPU median **356.70%** (352.21–358.16%) and mean RSS median **269.32 MiB** (268.19–269.67 MiB). The T480s has no AV1 hardware profile. No AV1 VLC comparison is presented because equivalent delivered video work was not established. Continued render-boundary playback does not prove perfect 60 FPS or zero drops.
+
+See the [full T480s method, fixtures, build checksum and limitations](docs/benchmarks/thinkpad-t480s.md), [raw samples and statistics](docs/benchmarks/thinkpad-t480s.json), and [excluded preparation history](docs/benchmarks/thinkpad-t480s-preparation.json). These results belong to the recorded pre-alpha binary, not a fresh measurement of `0.1.0-alpha.1`. Startup/seek distributions, HDR, subtitles, energy and battery life were not measured in S08. N15 ingress latency/RSS above belongs to a different experiment and machine.
 
 ## Current limitations
 

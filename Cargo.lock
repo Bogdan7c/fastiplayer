@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "animation-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "anyhow"
@@ -141,7 +141,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "app-egui"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "animation-core",
  "anyhow",
@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "atomic-file-store"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "tempfile",
 ]
@@ -457,7 +457,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "audio-core",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "audio-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "thiserror 2.0.18",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "audio-signalsmith"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "audio-core",
@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "audio-timestretch"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "audio-core",
@@ -668,11 +668,11 @@ dependencies = [
 
 [[package]]
 name = "bounded-work-executor"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "bounded-xml-reader"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "quick-xml",
  "thiserror 2.0.18",
@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "capability-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "codec-core",
  "render-core",
@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "codec-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1189,7 +1189,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dash-mpd-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bounded-xml-reader",
  "thiserror 2.0.18",
@@ -1317,7 +1317,7 @@ dependencies = [
 
 [[package]]
 name = "demux-api"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1335,7 +1335,7 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
 name = "desktop-integration"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "crossbeam-channel",
  "media-core",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "flv-demux"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1789,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "frame-server-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "codec-core",
  "media-core",
@@ -2069,7 +2069,7 @@ checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
 
 [[package]]
 name = "hds-manifest-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bounded-xml-reader",
  "thiserror 2.0.18",
@@ -2101,7 +2101,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hls-playlist-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "thiserror 2.0.18",
  "unicode-normalization",
@@ -2676,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "media-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2687,7 +2687,7 @@ dependencies = [
 
 [[package]]
 name = "media-prefetch"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "source-core",
  "thiserror 2.0.18",
@@ -2757,7 +2757,7 @@ dependencies = [
 
 [[package]]
 name = "mpeg-ts-demux"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2797,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "natural-sort-key"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "ndk"
@@ -3471,7 +3471,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "player-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "audio-core",
@@ -3492,7 +3492,7 @@ dependencies = [
 
 [[package]]
 name = "playlist-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "media-core",
  "natural-sort-key",
@@ -3501,7 +3501,7 @@ dependencies = [
 
 [[package]]
 name = "playlist-discovery"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "media-core",
  "natural-sort-key",
@@ -3512,7 +3512,7 @@ dependencies = [
 
 [[package]]
 name = "playlist-io"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bounded-xml-reader",
  "hls-playlist-core",
@@ -3523,7 +3523,7 @@ dependencies = [
 
 [[package]]
 name = "playlist-state"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "atomic-file-store",
  "libc",
@@ -3926,7 +3926,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "render-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "codec-core",
  "serde",
@@ -3935,7 +3935,7 @@ dependencies = [
 
 [[package]]
 name = "render-wgpu-shell"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "egui",
@@ -3950,7 +3950,7 @@ dependencies = [
 
 [[package]]
 name = "render-wgpu-video"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "ash",
@@ -4102,7 +4102,7 @@ dependencies = [
 
 [[package]]
 name = "rustiplayer-config"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "etcetera",
  "serde",
@@ -4116,7 +4116,7 @@ dependencies = [
 
 [[package]]
 name = "rustiplayer-settings"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "player-core",
  "render-core",
@@ -4321,7 +4321,7 @@ dependencies = [
 
 [[package]]
 name = "service-direct-media"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "demux-api",
  "source-core",
@@ -4333,7 +4333,7 @@ dependencies = [
 
 [[package]]
 name = "service-ytdlp"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "audio-core",
@@ -4353,11 +4353,11 @@ dependencies = [
 
 [[package]]
 name = "settings-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "settings-derive"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4540,7 +4540,7 @@ dependencies = [
 
 [[package]]
 name = "smooth-streaming-fmp4"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bounded-xml-reader",
  "smooth-streaming-manifest-core",
@@ -4550,7 +4550,7 @@ dependencies = [
 
 [[package]]
 name = "smooth-streaming-manifest-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bounded-xml-reader",
  "thiserror 2.0.18",
@@ -4587,7 +4587,7 @@ dependencies = [
 
 [[package]]
 name = "source-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bytes",
  "cookie",
@@ -4791,7 +4791,7 @@ dependencies = [
 
 [[package]]
 name = "symphonia-demux"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "audio",
@@ -5390,7 +5390,7 @@ dependencies = [
 
 [[package]]
 name = "ui-artwork-egui"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "egui",
 ]
@@ -5516,7 +5516,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video-backend-api"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "codec-core",
@@ -5527,7 +5527,7 @@ dependencies = [
 
 [[package]]
 name = "video-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5540,7 +5540,7 @@ dependencies = [
 
 [[package]]
 name = "video-ffmpeg"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5567,14 +5567,14 @@ dependencies = [
 
 [[package]]
 name = "video-frame-contract"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "video-present-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "codec-core",
  "video-backend-api",
@@ -5584,7 +5584,7 @@ dependencies = [
 
 [[package]]
 name = "video-vaapi"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5605,7 +5605,7 @@ dependencies = [
 
 [[package]]
 name = "vp9-parser"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "thiserror 2.0.18",
 ]
@@ -5899,7 +5899,7 @@ dependencies = [
 
 [[package]]
 name = "web-media-adaptive"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "atomic-waker",
@@ -5915,11 +5915,11 @@ dependencies = [
 
 [[package]]
 name = "web-media-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "web-media-dash"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bounded-xml-reader",
@@ -5938,7 +5938,7 @@ dependencies = [
 
 [[package]]
 name = "web-media-ftp"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "rustiplayer-config",
  "source-core",
@@ -5948,7 +5948,7 @@ dependencies = [
 
 [[package]]
 name = "web-media-hds"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bounded-xml-reader",
@@ -5966,7 +5966,7 @@ dependencies = [
 
 [[package]]
 name = "web-media-hls"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "aes",
  "anyhow",
@@ -5990,7 +5990,7 @@ dependencies = [
 
 [[package]]
 name = "web-media-http"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -6006,7 +6006,7 @@ dependencies = [
 
 [[package]]
 name = "web-media-playback-plan"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "audio-core",
  "capability-core",
@@ -6018,7 +6018,7 @@ dependencies = [
 
 [[package]]
 name = "web-media-smooth"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bounded-xml-reader",
@@ -6040,7 +6040,7 @@ dependencies = [
 
 [[package]]
 name = "web-media-transport-api"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "source-core",
  "thiserror 2.0.18",

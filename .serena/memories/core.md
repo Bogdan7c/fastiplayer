@@ -1,8 +1,8 @@
 ## Public launch S06: English OSS landing (2026-09-05)
 
 - README.md is the English pre-alpha/Linux-first landing; ARCHITECTURE.md describes current boundaries; docs/README.md indexes engineering docs with language labels. Russian deep docs remain intact.
-- Benchmark policy and NOT RUN T480s placeholder live in docs/benchmarks/. N15 fixture ingress aggregates must not be presented as whole-player/T480s/VLC results; original per-run samples are not public.
-- S07 community files and local alpha release draft now exist; README/docs index/architecture link the dedicated guides. Discussions and private vulnerability reporting remain planned until S12; CODE_OF_CONDUCT remains deferred pending a separate private enforcement contact. See `mem:public-launch/s07-community-health-2026-09-05`. S08 supplies real T480s evidence and S09 integrates it and aligns the Cargo version. S06 evidence policy: `mem:public-launch/s06-oss-landing-2026-09-05`.
+- Benchmark policy and completed S08 T480s playback evidence live in docs/benchmarks/. Measured source `9165200c` passed both automatic workflows; evidence commit `c16da1e7` was blocked before jobs started by GitHub account billing/spending limits. See `mem:public-launch/s08-t480s-runtime-fixes-2026-09-05`. N15 fixture ingress aggregates must not be presented as whole-player/T480s/VLC results; original per-run samples are not public.
+- S07 community files and local alpha release draft now exist; README/docs index/architecture link the dedicated guides. Discussions and private vulnerability reporting remain planned until S12; CODE_OF_CONDUCT remains deferred pending a separate private enforcement contact. See `mem:public-launch/s07-community-health-2026-09-05`. S08 supplied real T480s evidence; S09 integrates the screenshot/scoped results and aligns all 58 workspace versions plus internal requirements to `0.1.0-alpha.1`. See `mem:public-launch/s09-alpha-preparation-2026-09-05` for validation and the private CI billing blocker. S06 evidence policy: `mem:public-launch/s06-oss-landing-2026-09-05`.
 
 ## Public launch S05: public-safe AI tooling (2026-09-05)
 

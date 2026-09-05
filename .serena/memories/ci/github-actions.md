@@ -1,3 +1,7 @@
+# Current S08/S09 policy override (2026-09-05)
+
+Full measured coverage is workflow_dispatch-only by explicit owner decision in S08; automatic CI retains Coverage baseline policy and functional/quality checks. Historical blocking-coverage paragraphs below are superseded; see `mem:testing/coverage`. Public launch plans allow direct maintainer pushes and prohibit main deletion/force-push; do not infer PR-only rules from historical advice below. Measured source `9165200c` passed CI 33934211412 and Toolchain policy 33934211484. Evidence source `c16da1e7` workflows 33937177688/33937177658 failed before execution because GitHub reported account payments/spending-limit restriction; this is not a test failure.
+
 # GitHub Actions CI
 
 ## Public launch S03: all-target CI prerequisites и bounded artifacts (2026-09-04)

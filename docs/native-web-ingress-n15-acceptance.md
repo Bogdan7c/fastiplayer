@@ -1,7 +1,8 @@
 # N15 — public acceptance и performance
 
-Session N15 завершена 2026-09-02 на code commit `c330ba74`. Exact
-`user/web-media-playlist-acceptance.xspf` содержит 13 строк и имеет SHA-256
+Session N15 завершена 2026-09-02 на code commit `c330ba74`.
+
+Исторический `<owner-local fixture>` не распространяется с проектом. Для новых проверок создайте локальный XSPF из законно доступных вам media inputs; иной corpus не воспроизводит exact N15 measurements. Зафиксированный corpus содержит 13 строк и имеет SHA-256
 `1daa973aa0f16a3be93e588dd3c83a8432b2917a5b525a05eb278776bb9c6435`.
 Locator-ы не заменялись; raw URL, headers, credentials, runtime logs и большие
 media artifacts в tracked evidence не попали.
@@ -168,9 +169,11 @@ XDG profile. Конкретный временный profile path, media paths �
 сохраняются в tracked evidence. Воспроизводимая форма и blocking проверки:
 
 ```bash
-sha256sum user/web-media-playlist-acceptance.xspf
+# Set this to your own locally created XSPF playlist; it is not distributed.
+OWNER_LOCAL_FIXTURE=./acceptance-local.xspf
+sha256sum "$OWNER_LOCAL_FIXTURE"
 env XDG_CONFIG_HOME=/tmp/rustiplayer-native-ingress-g3 \
-  target/release/rustiplayer user/web-media-playlist-acceptance.xspf
+  target/release/rustiplayer "$OWNER_LOCAL_FIXTURE"
 cargo +1.96.0 test -p app-egui --all-features --locked n14a_consumer -- --nocapture
 cargo +1.96.0 test -p app-egui --all-features --locked n14b_lifecycle -- --nocapture
 cargo +1.96.0 test -p app-egui --all-features --locked \

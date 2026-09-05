@@ -33,7 +33,7 @@
 - `scripts/tests/playback-smoke-self-test.sh` — parser, dry-run и полный current-schema config generate/parse без GUI.
 - `scripts/progressive-web-smoke.sh` — S42 manual opt-in только для явно
   переданных URL/fixtures; неполная matrix остаётся `NOT RUN`.
-- [`web-media-playlist-acceptance.md`](web-media-playlist-acceptance.md) —
+- локальная инструкция к `<owner-local fixture>` (не распространяется) —
   отдельный ручной прогон одной смешанной XSPF-очереди по двенадцати крупным
   transport rows плюс полный сценарий вкладки настроек потока URL. Он удобен
   для последовательного поиска runtime-дефектов, но не заменяет 29-case S42

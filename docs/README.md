@@ -36,7 +36,7 @@ Start with the English [project overview and build instructions](../README.md) a
 | [N15 acceptance results](native-web-ingress-n15-acceptance.json) | JSON | Sanitized recorded outcomes |
 | [N15 performance aggregates](native-web-ingress-n15-performance.json) | JSON | Thirty-run cohorts and comparison limits; not raw samples |
 | [Benchmark policy](benchmarks/README.md) | EN | Publication rules and N15 methodology guide |
-| [ThinkPad T480s](benchmarks/thinkpad-t480s.md) | EN | S08 placeholder; no results yet |
+| [ThinkPad T480s](benchmarks/thinkpad-t480s.md) | EN | Measured S08 hardware/software playback, raw samples, runtime capture and comparison limits |
 | [Hardware evidence context](hardware/README.md) | RU | Why capability dumps are not playback acceptance |
 
 ## Media profiles and behavior

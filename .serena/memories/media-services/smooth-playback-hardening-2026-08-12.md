@@ -9,6 +9,6 @@
 ## Verification/invariants
 - Runtime Smooth functional proof requires both audio and video packets with PTS >= 4 seconds, crossing the first fragment boundary and reaching the demux/render path.
 - Canonical tests prove PIFF signed restoration and the opposite standard-v0-unsigned behavior, audio cross-fragment continuation, larger-gap rejection, stable A/V tracks and request-context corroboration.
-- Manual release GUI acceptance on 2026-08-12 imported `user/web-media-playlist-acceptance.xspf` and played positions 1–8 forward, reverse and random (`3,7,2,8,1,6,4,5`). Position 8 advanced from PTS 00:11 to 00:46 with increasing video/audio packet counters and changing rendered frames; positions 9+ were never selected.
+- Manual release GUI acceptance on 2026-08-12 imported `<owner-local fixture>` and played positions 1–8 forward, reverse and random (`3,7,2,8,1,6,4,5`). Position 8 advanced from PTS 00:11 to 00:46 with increasing video/audio packet counters and changing rendered frames; positions 9+ were never selected.
 
 Related: `mem:media-services/smooth-request-projection-s36p1-2026-07-25`, `mem:media-services/smooth-streaming-fmp4-s36f1b-2026-07-25`, `mem:media-services/smooth-fragment-sources-s36p3-2026-07-25`, `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
