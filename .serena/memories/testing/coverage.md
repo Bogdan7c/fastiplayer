@@ -1,4 +1,13 @@
-# Stable coverage v2 (authoritative, 2026-09-04)
+# Stable coverage v2 (authoritative, updated 2026-09-05)
+
+## Owner-approved S08 workflow change (2026-09-05)
+
+Owner explicitly approved moving the expensive three-run coverage measurement out of required push/PR CI into `.github/workflows/coverage.yml` (`Coverage (manual)`, workflow_dispatch only). `scripts/coverage.sh check` still performs the same full build, three runs, stable-coordinate ratchet and artifact validation; no baseline or measurement exception was lowered. CI keeps a fast `Coverage baseline policy` job: tracked schema validation on push/PR and exact previous/proposed pair validation on PR. All functional workspace, no-default-feature, WGPU/FFmpeg vertical seek, Clippy and other checks remain automatic. Historical references below to blocking measurement describe the manual command's exit semantics, not an obligatory main/PR coverage status.
+
+Reason: the old coverage CI spent18m15s on clean instrumented build plus three full runs. The50k shared-payload oracle itself was O(N²); S08 replaced repeated queue/snapshot searches with length-checked pairwise IDs and Arc sharing assertions over all50000rows. Ordinary all-features playlist-core130tests now0.65s versus183.10s in the earlier local run. Production snapshot logic unchanged. New split-workflow validator is `scripts/tests/coverage_split_workflow_contract.py`; existing adversarial shell/env tests retained via a validated view of both actual workflows.
+
+The final automatic old coverage run33931378033 at source1cc181e1 passed all three test executions but failed stable-coordinate ratchet. This failure is retained as historical evidence and is NOT described as fixed by the workflow move. No automatic rebaseline/retry is authorized by the move.
+
 
 Этот документ полностью заменяет прежние Session 07B/28/S42 утверждения об aggregate v1 baseline и одном measured run. Историческая модель сохранена только внутри `coverage/baseline.json.legacy_report_only` как provenance и никогда не участвует в blocking decision.
 

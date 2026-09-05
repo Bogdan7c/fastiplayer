@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Pure helper владеет constrained YAML selected-key/indentation validation.
 import coverage_workflow_contract as WORKFLOW_CONTRACT  # noqa: E402
+import coverage_split_workflow_contract as SPLIT_CONTRACT  # noqa: E402
 
 
 # Функция читает versioned script как UTF-8 contract artifact.
@@ -73,6 +74,38 @@ class S42ReleaseRunnerTests(unittest.TestCase):
         )
 
     # Coverage check обязан иметь v2 preflight, общий runner и post-suite stable ratchet.
+    def test_manual_coverage_and_required_baseline_policy_are_separate(self):
+        """Реальные workflows не возвращают дорогой gate в обычный push/PR."""
+        main = (REPO_ROOT / '.github/workflows/ci.yml').read_text()
+        manual = (REPO_ROOT / '.github/workflows/coverage.yml').read_text()
+        SPLIT_CONTRACT.coverage_validation_document(main, manual)
+        mutations = [
+            (main + '\n# scripts/coverage.sh check\n', manual),
+            (main, manual.replace('  workflow_dispatch:', '  push:')),
+            (main, manual.replace('  workflow_dispatch:', '  workflow_dispatch:\n  pull_request:')),
+            (main.replace('    name: Coverage baseline policy\n', '    name: Coverage baseline policy\n    if: false\n'), manual),
+            (main.replace('    name: Coverage baseline policy\n', '    name: Coverage baseline policy\n    continue-on-error: true\n'), manual),
+            (main.replace('    name: Coverage baseline policy\n', '    name: Coverage baseline policy\n    name: Shadow\n'), manual),
+            (main.replace('  pull_request:', '  workflow_dispatch:'), manual),
+            (main.replace('--previous-measurement-exceptions /tmp/coverage-previous-measurement-exceptions.json', '--previous-measurement-exceptions coverage/measurement-exceptions.json'), manual),
+            (main, manual.replace('scripts/coverage.sh check', 'scripts/coverage.sh report')),
+            (main, manual.replace('    name: Coverage ratchet\n', '    name: Coverage ratchet\n    continue-on-error: true\n')),
+        ]
+        schema_header = '      - name: Validate tracked coverage policy\n'
+        for override in ['if: false', 'continue-on-error: true', 'shell: bash {0}']:
+            mutations.append((main.replace(schema_header, schema_header + f'        {override}\n'), manual))
+        for command in [
+            'python3 scripts/coverage_stability.py validate --kind baseline --input coverage/baseline.json',
+            'python3 scripts/coverage_stability.py validate --kind measurement-exceptions --input coverage/measurement-exceptions.json',
+        ]:
+            mutations.append((main.replace('          ' + command + '\n', ''), manual))
+        mutations.append((main.replace(schema_header, schema_header + schema_header), manual))
+        mutations.append((main.replace('    name: Coverage baseline policy\n', '    name: Coverage baseline policy\n    defaults:\n      run:\n        shell: bash {0}\n'), manual))
+        for index, (changed_main, changed_manual) in enumerate(mutations):
+            with self.subTest(mutation=index):
+                with self.assertRaises(WORKFLOW_CONTRACT.CoverageWorkflowContractError):
+                    SPLIT_CONTRACT.coverage_validation_document(changed_main, changed_manual)
+
     def test_coverage_check_composes_stable_preflight_suite_and_ratchet(self):
         """Coverage owner не может вернуть legacy aggregate в blocking execution path."""
 
@@ -115,8 +148,9 @@ class S42ReleaseRunnerTests(unittest.TestCase):
         self.assertIn('--measurement-exceptions "${MEASUREMENT_EXCEPTIONS_PATH}"', coverage_script)
 
         # Workflow является отдельной границей: он передаёт base/current pair в pure v2 validator.
-        coverage_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(
-            encoding="utf-8"
+        coverage_workflow = SPLIT_CONTRACT.coverage_validation_document(
+            (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+            (REPO_ROOT / ".github/workflows/coverage.yml").read_text(encoding="utf-8"),
         )
         # Production workflow обязан пройти тот же strict validator, что и mutations ниже.
         WORKFLOW_CONTRACT.validate_coverage_workflow_contract(coverage_workflow)

@@ -1,0 +1,61 @@
+# Полный трёхпрогонный coverage запускается владельцем отдельно от обычного CI.
+name: Coverage (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-manual-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    # Стабильное имя ручного job; не входит в required push/PR checks.
+    name: Coverage ratchet
+    # Тот же Ubuntu ABI сохраняет baseline сопоставимым с hermetic workspace tests.
+    runs-on: ubuntu-24.04
+    # Job-local профиль сокращает instrumented artifacts, не меняя coverage mapping.
+    env:
+      # Полный DWARF переполняет диск стандартного runner при clean all-target build.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      # Полная история нужна только для сравнения baseline PR с целевой веткой.
+      - uses: actions/checkout@v4
+        with:
+          # Нулевой fetch-depth предоставляет origin/base без отдельного API token flow.
+          fetch-depth: 0
+      # Native SDK и lavapipe покрывают clean coverage build и WGPU acceptance tests.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libsoundtouch-dev libva-dev libvulkan1 mesa-vulkan-drivers pkg-config
+      # LLVM tools предоставляют llvm-profdata и llvm-cov exact primary toolchain release.
+      - name: Install LLVM coverage tools
+        run: rustup component add llvm-tools-preview
+      # Exact release закреплён одновременно workflow, runner и versioned policy.
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+      # Clean runner строит artifacts и применяет workspace/pure-crate ratchet.
+      - name: Run clean coverage suite and ratchet
+        run: scripts/coverage.sh check
+      # Report публикуется даже при regression, чтобы сразу видеть непокрытые owners.
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Стабильное имя упрощает поиск report-а в любом run.
+          name: coverage-report
+          # Raw summary, compact risk map, LCOV и HTML не попадают в Git.
+          path: |
+            target/coverage/
+            target/llvm-cov-target/*.profraw
+            target/llvm-cov-target/*.profdata
+          # Отсутствующий artifact означает поломку coverage workflow и должен быть видимым failure.
+          if-no-files-found: error

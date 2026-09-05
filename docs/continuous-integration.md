@@ -17,8 +17,14 @@ scripts/pre-pr-checks.sh
 Отдельный CI job можно воспроизвести, передав runner-у имя проверки из
 `scripts/ci-checks.sh --help`. Все Cargo-команды используют `--locked`.
 
-Измеримый coverage ratchet запускается отдельно командой
-`scripts/coverage.sh check`. Runner один раз строит instrumented workspace,
+По решению владельца от 2026-09-05 дорогой coverage ratchet запускается вручную:
+workflow `.github/workflows/coverage.yml` (`Coverage (manual)`, только
+`workflow_dispatch`) либо команда `scripts/coverage.sh check`. Он не входит
+в обязательные push/PR checks. Все функциональные workspace/no-default tests,
+FFmpeg/WGPU vertical seek и остальные quality gates остаются автоматическими.
+Быстрый job `Coverage baseline policy` валидирует tracked policy на каждом push/PR
+и защищает previous/proposed baseline pair на PR без instrumented build.
+Coverage runner один раз строит instrumented workspace,
 typed-prewarm-ит объявленные runtime Cargo roots и выполняет ровно три одинаковых
 normal-concurrency запуска. Blocking baseline schema v2 хранит exact
 source-coordinate sets: 3/3 coordinates считаются stable, 1/3–2/3 публикуются
@@ -35,8 +41,9 @@ malformed base artifact является failure; режима «принять 
 не разрешает новый decrement.
 
 Raw JSON, LCOV, HTML и compact ratio summary сохраняются как report-only artifact
-`coverage-report`; blocking status принадлежит только stable cohort и v2
-ratchet. Cohort manifest schema v2 фиксирует source/tool inventories, parent
+`coverage-report`; результат ручного измерения принадлежит только stable cohort
+и v2 ratchet. Ручной workflow возвращает failure при regression, а не маскирует
+его через `continue-on-error`. Cohort manifest schema v2 фиксирует source/tool inventories, parent
 executables и typed runtime executable roots. До публикации runner fail-closed
 отклоняет LCOV с top-bit execution counter corruption, mutation executable set,
 symlink escape и partial/orphaned quarantine. Полная методика, команды
@@ -53,7 +60,7 @@ suites. Local-media regressions получают только explicit `--scenar
 отдельно принимает только явно переданные `--case` + `--url`/`--fixture` через
 `scripts/progressive-web-smoke.sh`.
 
-All-target jobs `Workspace tests (all features)` и `Coverage ratchet` на своих
+All-target jobs `Workspace tests (all features)` и ручной `Coverage ratchet` на своих
 clean Ubuntu 24.04 runners явно устанавливают только native build dependencies:
 `clang`, `libclang-dev`, `libasound2-dev`, `libavcodec-dev`, `libavutil-dev`,
 `libgbm-dev`, `libsoundtouch-dev`, `libva-dev`, `libvulkan1`,
@@ -104,15 +111,17 @@ GitHub не предоставляет rulesets/branch protection для дан�
 - `Dependency patch (symphonia-format-mkv)`
 - `Dependency patch (wayland-scanner)`
 - `Dependency patch integration`
-- `Coverage ratchet`
+- `Coverage baseline policy`
+- `Vertical seek acceptance (FFmpeg + WGPU)`
 
 Operational checklist:
 
 1. Требовать pull request перед merge в `main`.
-2. Требовать все семнадцать status checks выше.
+2. Требовать все восемнадцать status checks выше.
 3. Требовать актуальную ветку перед merge (`Require branches to be up to date`).
 4. Запретить merge при failed, pending или stale required checks.
-5. Не добавлять `Real playback smoke (manual, non-blocking)` в required checks.
+5. Не добавлять `Real playback smoke (manual, non-blocking)` и ручной
+   `Coverage ratchet` в required checks.
 6. Проверить настройки отдельным pull request с заведомо сломанной проверкой,
    затем удалить тестовую поломку.
 

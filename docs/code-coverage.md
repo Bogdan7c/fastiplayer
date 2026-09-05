@@ -1,6 +1,16 @@
 # Стабильная карта покрытия исходного кода
 
-## Что именно блокирует CI
+## Ручной coverage и обязательная защита baseline
+
+С 2026-09-05, по решению владельца, полное трёхпрогонное измерение вынесено
+из обычного push/PR CI в `.github/workflows/coverage.yml` (`Coverage (manual)`).
+Оно запускается через Actions → Coverage (manual) → Run workflow либо локальной
+командой ниже. В обязательном CI остаётся быстрый `Coverage baseline policy`:
+проверка schemas и PR previous/proposed pair без компиляции workspace.
+Функциональные тесты и реальные FFmpeg/WGPU acceptance gates не отключались.
+Термин blocking ratchet далее относится к exit status ручной команды: regression
+по-прежнему завершает её с ошибкой. Успешный обычный CI сам по себе не означает
+успешное новое измерение покрытия.
 
 Coverage gate — это ratchet проверенного поведения, а не соревнование за общий
 процент. Команда `scripts/coverage.sh check` строит одно instrumented workspace и
@@ -22,7 +32,7 @@ cargo test --workspace --all-features --locked --no-fail-fast
 
 Variable coordinate не считается стабильной и не может подменить потерянную
 stable coordinate. При неизменном source universe исчезновение любой конкретной
-stable coordinate блокирует merge, даже если другая coordinate стала covered и
+stable coordinate отклоняет ручную coverage-проверку, даже если другая coordinate стала covered и
 общий процент выглядит тем же. При изменении source universe сравниваются exact
 целочисленные пары `stable/total`; округлённые проценты в решении не участвуют.
 

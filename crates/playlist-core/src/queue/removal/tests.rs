@@ -155,8 +155,16 @@ fn fifty_thousand_row_snapshot_shares_every_heavy_payload() {
     };
     let snapshot = queue.capture_removal_snapshot();
 
-    assert!(
-        ids.iter()
-            .all(|item_id| snapshot.shares_item_payload_with(&queue, *item_id))
-    );
+    // Проверяем весь hard-cap snapshot за один проход. Поиск каждого ID
+    // от начала queue/snapshot превращал этот oracle в O(N²), хотя сам
+    // production snapshot копирует shared handles за O(N).
+    assert_eq!(snapshot.entries.len(), ids.len());
+    assert_eq!(queue.entries.len(), ids.len());
+    for ((snapshot_entry, queue_entry), item_id) in
+        snapshot.entries.iter().zip(&queue.entries).zip(ids)
+    {
+        let snapshot_item = snapshot_entry.item(item_id).expect("snapshot row identity");
+        let queue_item = queue_entry.item(item_id).expect("queue row identity");
+        assert!(snapshot_item.shares_payload_with(queue_item));
+    }
 }

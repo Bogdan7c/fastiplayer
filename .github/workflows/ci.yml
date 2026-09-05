@@ -60,33 +60,18 @@ jobs:
           WGPU_BACKEND: vulkan
         run: scripts/media-regression.sh --scenario h264-ts-seek-wgpu-ffmpeg --path /tmp/rustiplayer-aud013-vertical-seek.ts
 
-  # Coverage является отдельным измеримым gate и не смешивает instrumented artifacts с tests job.
-  coverage:
-    # Стабильное имя используется будущей branch protection.
-    name: Coverage ratchet
-    # Тот же Ubuntu ABI сохраняет baseline сопоставимым с hermetic workspace tests.
+  # Быстрый PR guard сохраняет защиту baseline без instrumented build.
+  coverage-baseline-policy:
+    name: Coverage baseline policy
     runs-on: ubuntu-24.04
-    # Job-local профиль сокращает instrumented artifacts, не меняя coverage mapping.
-    env:
-      # Полный DWARF переполняет диск стандартного runner при clean all-target build.
-      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
-      # Полная история нужна только для сравнения baseline PR с целевой веткой.
       - uses: actions/checkout@v4
         with:
-          # Нулевой fetch-depth предоставляет origin/base без отдельного API token flow.
           fetch-depth: 0
-      # Native SDK и lavapipe покрывают clean coverage build и WGPU acceptance tests.
-      - name: Install native build dependencies
+      - name: Validate tracked coverage policy
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libsoundtouch-dev libva-dev libvulkan1 mesa-vulkan-drivers pkg-config
-      # LLVM tools предоставляют llvm-profdata и llvm-cov exact primary toolchain release.
-      - name: Install LLVM coverage tools
-        run: rustup component add llvm-tools-preview
-      # Exact release закреплён одновременно workflow, runner и versioned policy.
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+          python3 scripts/coverage_stability.py validate --kind baseline --input coverage/baseline.json
+          python3 scripts/coverage_stability.py validate --kind measurement-exceptions --input coverage/measurement-exceptions.json
       # PR не может снизить versioned baseline без точечной bounded exception.
       - name: Validate baseline update policy
         if: github.event_name == 'pull_request'
@@ -101,23 +86,6 @@ jobs:
             --previous-measurement-exceptions /tmp/coverage-previous-measurement-exceptions.json \
             --proposed-baseline coverage/baseline.json \
             --proposed-measurement-exceptions coverage/measurement-exceptions.json
-      # Clean runner строит artifacts и применяет workspace/pure-crate ratchet.
-      - name: Run clean coverage suite and ratchet
-        run: scripts/coverage.sh check
-      # Report публикуется даже при regression, чтобы сразу видеть непокрытые owners.
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          # Стабильное имя упрощает поиск report-а в любом run.
-          name: coverage-report
-          # Raw summary, compact risk map, LCOV и HTML не попадают в Git.
-          path: |
-            target/coverage/
-            target/llvm-cov-target/*.profraw
-            target/llvm-cov-target/*.profdata
-          # Отсутствующий artifact означает поломку coverage workflow и должен быть видимым failure.
-          if-no-files-found: error
 
   # Каждый matrix entry является отдельным GitHub Actions job для одного standalone fork.
   dependency-patch-tests:

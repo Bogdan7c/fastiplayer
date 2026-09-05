@@ -246,21 +246,3 @@ impl PlaylistQueue {
         })
     }
 }
-
-#[cfg(test)]
-impl PlaylistRemovalSnapshot {
-    /// Доказывает, что snapshot делит locator/metadata allocation с исходной queue.
-    pub(crate) fn shares_item_payload_with(
-        &self,
-        queue: &PlaylistQueue,
-        item_id: PlaylistItemId,
-    ) -> bool {
-        let snapshot_item = self.entries.iter().find_map(|entry| entry.item(item_id));
-        let queue_item = queue.item(item_id);
-        snapshot_item
-            .zip(queue_item)
-            .is_some_and(|(snapshot_item, queue_item)| {
-                snapshot_item.shares_payload_with(queue_item)
-            })
-    }
-}

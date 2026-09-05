@@ -13,6 +13,8 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 # Основной workflow владеет format, Clippy и standalone dependency-patch gates.
 CI_WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
+# Полное instrumented измерение вынесено в отдельный manual workflow.
+COVERAGE_WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "coverage.yml"
 # Отдельный workflow доказывает workspace check на primary toolchain и MSRV.
 TOOLCHAIN_WORKFLOW_PATH = (
     REPOSITORY_ROOT / ".github" / "workflows" / "toolchain-policy.yml"
@@ -147,6 +149,7 @@ class CiNativePrerequisitesTests(unittest.TestCase):
 
         # Основной CI source нужен четырём независимым contract tests.
         cls.ci_workflow = read_workflow(CI_WORKFLOW_PATH)
+        cls.coverage_workflow = read_workflow(COVERAGE_WORKFLOW_PATH)
         # Toolchain source нужен exact native dependency inventory test.
         cls.toolchain_workflow = read_workflow(TOOLCHAIN_WORKFLOW_PATH)
 
@@ -191,7 +194,8 @@ class CiNativePrerequisitesTests(unittest.TestCase):
             # Subtest сохраняет точное имя job при выпадении любого native dependency.
             with self.subTest(job_identifier=job_identifier):
                 # Job извлекается отдельно, чтобы package одной VM не маскировал другую.
-                all_target_job = extract_job(self.ci_workflow, job_identifier)
+                workflow = self.coverage_workflow if job_identifier == 'coverage' else self.ci_workflow
+                all_target_job = extract_job(workflow, job_identifier)
                 # Exact job-level env не позволяет полному DWARF снова переполнить runner.
                 self.assertIn(
                     EXPECTED_ALL_TARGET_TEST_PROFILE_DEBUG,
