@@ -60,7 +60,7 @@ def coverage_validation_document(main_workflow: str, manual_workflow: str) -> st
     # использует main root, поэтому их различие нельзя молча скрывать.
     manual_environment = contract._indented_block_lines(manual_workflow, 'env:', 2)
     entries = tuple(line.strip() for line in manual_environment if line.strip() and not line.strip().startswith('#'))
-    contract._require(entries == ('CARGO_INCREMENTAL: "0"', 'CARGO_TERM_COLOR: always'), 'manual Cargo environment changed')
+    contract._require(entries == ('RUSTIPLAYER_TEST_SCOPE: hosted', 'CARGO_INCREMENTAL: "0"', 'CARGO_TERM_COLOR: always'), 'manual Cargo environment changed')
     combined_job = measured_job.replace(measured_header, update_step + measured_header, 1)
     document = main_workflow.split('jobs:\n', 1)[0] + 'jobs:\n  coverage:\n' + combined_job
     contract.validate_coverage_workflow_contract(document)

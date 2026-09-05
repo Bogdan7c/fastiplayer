@@ -24,6 +24,8 @@ concurrency:
 
 # Общие значения делают Cargo execution воспроизводимым во всех jobs.
 env:
+  # Физический GBM/VA-API проверяется только локально; SDK и fake tests остаются.
+  RUSTIPLAYER_TEST_SCOPE: hosted
   # Отключённый incremental уменьшает нестабильность и размер CI cache.
   CARGO_INCREMENTAL: "0"
   # Цветной вывод остаётся читаемым в GitHub Actions log.

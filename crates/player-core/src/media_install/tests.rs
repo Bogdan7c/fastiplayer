@@ -2,6 +2,18 @@ use std::num::NonZeroU64;
 
 use super::*;
 
+#[test]
+fn synchronous_receipt_reports_missing_owner_instead_of_waiting_forever() {
+    let (receipt, port) = MediaInstallReceipt::new(test_request_id(907));
+    drop(port);
+    assert!(matches!(
+        receipt.wait_for_signal(),
+        Err(MediaInstallReceiptWaitError::MissingOwnerOutcome)
+    ));
+    assert!(receipt.try_take_ready_to_commit().is_none());
+    assert!(receipt.try_take_completion().is_none());
+}
+
 /// Создаёт deterministic request ID без влияния process allocator-а.
 fn test_request_id(raw_identity: u64) -> MediaInstallRequestId {
     MediaInstallRequestId::from_non_zero(

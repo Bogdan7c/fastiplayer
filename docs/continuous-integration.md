@@ -1,5 +1,13 @@
 # Continuous integration и required checks
 
+Физические GBM/VA-API и DMA-heap тесты выполняются только локально.
+`CI` и `Coverage (manual)` явно задают `RUSTIPLAYER_TEST_SCOPE=hosted` и
+фильтруют пять аппаратных tests до выполнения. Native headers, SDK integration,
+программные VA-API tests и FFmpeg/WGPU через software adapter остаются удалёнными.
+Полный локальный coverage и hosted coverage имеют отдельную ответственность;
+точный контракт и сохранение аппаратных diagnostics описаны в
+[coverage policy](code-coverage.md#локальное-hardware-покрытие-и-hosted-software-gate).
+
 ## Единый источник команд
 
 Blocking workflow и локальная проверка вызывают один repo runner:

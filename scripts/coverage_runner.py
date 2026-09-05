@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from test_execution_scope import LOCAL_HARDWARE_TESTS, execution_scope, scoped_test_command
+
 from coverage_executable_inventory import (
     PrebuiltExecutableReference,
     RuntimeExecutableReference,
@@ -85,6 +87,7 @@ class StableCoverageRunner:
             config.executable_inventory_policy_path
         )
         self.base_environment = dict(os.environ)
+        self.test_execution_scope = execution_scope()
         # Ambient serialization нельзя выдавать за normal-concurrency acceptance.
         self.base_environment.pop("RUST_TEST_THREADS", None)
         # Wrapper override фиксирует raw/report root; direct Cargo build ниже получает свой target.
@@ -301,7 +304,7 @@ class StableCoverageRunner:
             "--no-fail-fast",
         ]
         self.executor.run(
-            run_arguments,
+            scoped_test_command(run_arguments, self.test_execution_scope),
             cwd=self.config.repo_root,
             environment=run_environment,
         )
@@ -453,6 +456,10 @@ class StableCoverageRunner:
                     "cargo_llvm_cov_release": tool_identity.cargo_llvm_cov_release,
                 },
                 "merge_metadata": merge_metadata.manifest(),
+                "execution_scope": {
+                    "name": self.test_execution_scope.value,
+                    "local_hardware_tests": list(LOCAL_HARDWARE_TESTS),
+                },
                 "coordinate_export": {
                     "schema_version": 1,
                     "method": "per-executable-json-coordinate-union",

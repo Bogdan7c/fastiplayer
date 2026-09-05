@@ -173,7 +173,7 @@ def validate_coverage_workflow_contract(coverage_workflow: str) -> None:
     )
     # Exact ambient pair фиксирует воспроизводимый Cargo mode без test serialization.
     _require(
-        root_env_entries == ('CARGO_INCREMENTAL: "0"', "CARGO_TERM_COLOR: always"),
+        root_env_entries == ('RUSTIPLAYER_TEST_SCOPE: hosted', 'CARGO_INCREMENTAL: "0"', "CARGO_TERM_COLOR: always"),
         "workflow root env обязан содержать exact Cargo pair",
     )
     # PR-trigger извлекается только из проверенного canonical `on` owner-а.

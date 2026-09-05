@@ -12,6 +12,10 @@ from typing import Any
 
 import coverage_coordinate_model as model
 import coverage_legacy_schema as legacy
+from coverage_execution_scope import (
+    LOCAL_HARDWARE_SOURCES, split_scope_regressions, validate_hosted_cohort_manifest,
+)
+from test_execution_scope import TestExecutionScope, execution_scope
 from coverage_stability_schema import (
     BASELINE_SCHEMA_VERSION,
     COHORT_SCHEMA_VERSION,
@@ -434,6 +438,7 @@ def check_baseline(
     exception_document: Any,
     *,
     allow_universe_update: bool,
+    test_scope: TestExecutionScope = TestExecutionScope.LOCAL,
 ) -> tuple[bool, dict[str, Any]]:
     """Проверяет measurement против baseline, не переиспользуя provenance rows.
 
@@ -447,7 +452,9 @@ def check_baseline(
     exceptions = validate_measurement_exceptions(exception_document)
     transition = _compare_stable_transition(baseline, cohort, exceptions)
     changes = transition["changes"]
-    regressions = transition["regressions"]
+    regressions, local_hardware_losses = split_scope_regressions(
+        transition["regressions"], test_scope
+    )
     files_changed = transition["files_changed"]
     policy_changed = transition["policy_changed"]
     update_required = bool(changes or files_changed or policy_changed)
@@ -465,6 +472,13 @@ def check_baseline(
         "consumed_exception_count": len(transition["consumed_exceptions"]),
         "legacy_report_only": "legacy counters/exceptions do not authorize stable-source loss",
     }
+    if test_scope is TestExecutionScope.HOSTED:
+        report["execution_scope"] = {
+            "name": test_scope.value,
+            "local_hardware_sources": sorted(LOCAL_HARDWARE_SOURCES),
+            "local_hardware_losses": local_hardware_losses,
+            "local_hardware_qualification_required": True,
+        }
     report["check_hash"] = model.content_hash(report)
     return passed, report
 
@@ -622,11 +636,15 @@ def main(arguments: list[str] | None = None) -> int:
             print(f"Stable coverage baseline v2 записан: {parsed.output}")
             return 0
         if parsed.command == "check":
+            selected_scope = execution_scope()
+            if selected_scope is TestExecutionScope.HOSTED:
+                validate_hosted_cohort_manifest(parsed.cohort)
             passed, report = check_baseline(
                 model.read_json(parsed.baseline),
                 model.read_json(parsed.cohort),
                 model.read_json(parsed.measurement_exceptions),
                 allow_universe_update=parsed.allow_universe_update,
+                test_scope=selected_scope,
             )
             model.write_json_atomic(parsed.output, report)
             print(f"Stable coverage check: {report['status']}")

@@ -223,7 +223,7 @@ run_dependency_patches() {
     # Inventory проверяется до compile, чтобы structural failure был понятнее Cargo errors.
     run_step "dependency patch inventory" python3 "${SCRIPT_DIRECTORY}/check-dependency-patches.py"
     # Dependent crates покрывают VA-API, MP4/Matroska demux, AAC audio, Smooth fMP4 adapter и preparation boundary.
-    run_step "dependency patch integration tests" cargo +"${PRIMARY_RUST_TOOLCHAIN}" test -p video-vaapi -p symphonia-demux -p audio -p smooth-streaming-fmp4 -p web-media-smooth --locked
+    run_step "dependency patch integration tests" python3 "${SCRIPT_DIRECTORY}/test_execution_scope.py" cargo +"${PRIMARY_RUST_TOOLCHAIN}" test -p video-vaapi -p symphonia-demux -p audio -p smooth-streaming-fmp4 -p web-media-smooth --locked
 }
 
 # Функция запускает direct hermetic suite каждого standalone local patch-а.
@@ -314,7 +314,7 @@ run_tests() {
     # Hermetic suite не зависит от случайного directory override rustup.
     require_rust_release "workspace test gate" "${PRIMARY_RUST_TOOLCHAIN}"
     # --no-fail-fast сохраняет diagnostics всех независимых failing test binaries.
-    run_step "workspace tests" cargo +"${PRIMARY_RUST_TOOLCHAIN}" test --workspace --all-features --locked --no-fail-fast
+    run_step "workspace tests" python3 "${SCRIPT_DIRECTORY}/test_execution_scope.py" cargo +"${PRIMARY_RUST_TOOLCHAIN}" test --workspace --all-features --locked --no-fail-fast
 }
 
 # Функция закрепляет поддерживаемую сборку app-egui без FFmpeg default feature.

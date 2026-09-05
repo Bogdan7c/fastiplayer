@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -16,10 +18,16 @@ FIXTURE_ROOT = REPO_ROOT / "scripts/tests/fixtures/coverage_stable"
 sys.path.insert(0, str(FIXTURE_ROOT))
 
 from fixture_factory import build_report  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from test_execution_scope import LOCAL_HARDWARE_TESTS
 
 
 class StableCoverageCliTests(unittest.TestCase):
     def setUp(self):
+        # Fixture моделирует локальный CLI независимо от host workflow environment.
+        self.cli_environment = dict(os.environ)
+        self.cli_environment.pop("GITHUB_ACTIONS", None)
+        self.cli_environment["RUSTIPLAYER_TEST_SCOPE"] = "local"
         self.temporary_directory = tempfile.TemporaryDirectory(prefix="coverage-stable-cli-")
         self.workspace = Path(self.temporary_directory.name)
         (self.workspace / "Cargo.toml").write_text("[workspace]\nmembers=[]\n", encoding="utf-8")
@@ -51,6 +59,7 @@ class StableCoverageCliTests(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            env=self.cli_environment,
         )
 
     def extract(self, raw_path: Path, label: str, output: Path):
@@ -111,6 +120,28 @@ class StableCoverageCliTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return state_paths, cohort_path, diagnostics_path, baseline_path
+
+    def test_hosted_check_requires_matching_scope_and_exact_cohort_bytes(self):
+        _, cohort, _, baseline = self.valid_artifacts()
+        self.cli_environment.update(GITHUB_ACTIONS="true", RUSTIPLAYER_TEST_SCOPE="hosted")
+        arguments = ("check", "--baseline", baseline, "--cohort", cohort,
+                     "--measurement-exceptions", self.measurement_exceptions_path,
+                     "--output", self.workspace / "hosted-check.json")
+        self.assertEqual(self.run_cli("coverage_stability.py", *arguments).returncode, 2)
+        content = cohort.read_bytes()
+        manifest = {
+            "execution_scope": {"name": "hosted", "local_hardware_tests": list(LOCAL_HARDWARE_TESTS)},
+            "artifacts": [{"path": cohort.name, "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}],
+        }
+        self.write_json("cohort-manifest.json", manifest)
+        result = self.run_cli("coverage_stability.py", *arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest["artifacts"][0]["sha256"] = "0" * 64
+        self.write_json("cohort-manifest.json", manifest)
+        self.assertEqual(self.run_cli("coverage_stability.py", *arguments).returncode, 2)
+        manifest["execution_scope"]["name"] = "local"
+        self.write_json("cohort-manifest.json", manifest)
+        self.assertEqual(self.run_cli("coverage_stability.py", *arguments).returncode, 2)
 
     def test_vertical_pass_variable_regression_and_corruption_exit_contract(self):
         state_paths = []

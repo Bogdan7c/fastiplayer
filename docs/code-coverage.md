@@ -1,5 +1,39 @@
 # Стабильная карта покрытия исходного кода
 
+## Локальное hardware-покрытие и hosted software gate
+
+По решению владельца от 2026-09-05 физические GBM/VA-API и DMA-heap тесты
+выполняются только на локальной машине. Workflows явно задают
+`RUSTIPLAYER_TEST_SCOPE=hosted`; общий `scripts/test_execution_scope.py` добавляет
+libtest `--skip` для пяти именованных аппаратных тестов. Они компилируются,
+но их тела не запускаются даже при наличии устройства на hosted runner.
+Программные проверки descriptor-ов, fake decoder-ов, SDK/headers и зависимостей
+остаются в CI. Локальный scope по умолчанию — `local`; неизвестное значение
+завершает проверку ошибкой.
+
+Baseline и полные измерения не урезаются. Hosted gate отдельно записывает exact
+потери в `gbm_allocator.rs`, `linear_gbm_frame.rs` и `dma_heap.rs` из `video-vaapi`
+как `execution_scope.local_hardware_losses`. Эти владельцы реального ресурса
+квалифицируются полным локальным gate, включая их программные ветви. Остальной
+workspace сохраняет прежний strict ratchet. Разделение не разрешает смену
+coordinate universe, tool/profile provenance, baseline или снижение ratios.
+Raw JSON, HTML, LCOV и risk map сохраняют аппаратные участки видимыми.
+Hosted check требует cohort manifest с совпадающим execution scope и списком
+аппаратных тестов; локальный `check` не применяет аппаратных исключений.
+
+```bash
+# Полный локальный gate, включая доступное физическое оборудование.
+RUSTIPLAYER_TEST_SCOPE=local scripts/coverage.sh check
+# Воспроизведение состава software suite GitHub на локальной машине.
+RUSTIPLAYER_TEST_SCOPE=hosted scripts/ci-checks.sh tests
+```
+
+Для выпуска нужны оба доказательства на одном final SHA: полный локальный PASS
+и полный применимый удалённый CI PASS. Отсутствующее локальное устройство
+фиксируется как недоступная аппаратная проверка, а не успешное выполнение её
+тела. Existing manual hardware-acceptance workflow не заменяет локальные проверки
+GBM/VA-API и не входит в hosted launch qualification.
+
 ## Ручной coverage и обязательная защита baseline
 
 С 2026-09-05, по решению владельца, полное трёхпрогонное измерение вынесено

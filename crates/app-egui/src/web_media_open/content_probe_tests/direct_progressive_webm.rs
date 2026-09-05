@@ -507,3 +507,7 @@ fn n14b_lifecycle_http_webm_close_restart_reaches_submitted_readback_without_ext
         "restart должен повторить только exact WebM body cohort"
     );
 }
+
+#[cfg(feature = "ffmpeg")]
+#[path = "tests/eof_render.rs"]
+mod eof_render;
