@@ -1,5 +1,7 @@
 //! Focused lifecycle/provenance tests нового параллельного adapter-а.
 
+mod source_failure;
+
 use std::collections::VecDeque;
 use std::io::Read;
 use std::num::{NonZeroU32, NonZeroUsize};

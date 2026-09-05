@@ -656,26 +656,37 @@ fn demuxer_uses_media_info_duration_when_tracks_do_not_have_duration() {
 
 #[test]
 fn demuxer_maps_per_track_display_orientation_metadata() {
-    let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
-        .with_display_orientation_metadata(1, VideoDisplayOrientation::Rotate270Clockwise);
-
-    let demuxer = SymphoniaDemuxer::from_format_reader(
-        Box::new(reader),
-        "video-orientation",
-        HashMap::new(),
-        DemuxSeekability::Seekable,
-        DemuxerOptions::default(),
-    )
-    .expect("fake demuxer должен открыть video track с orientation metadata");
-    let video_metadata = demuxer.tracks()[0]
-        .video
-        .as_ref()
-        .expect("orientation должна создать video metadata");
-
-    assert_eq!(
-        video_metadata.orientation,
-        VideoDisplayOrientation::Rotate270Clockwise
-    );
+    for orientation in [
+        VideoDisplayOrientation::Identity,
+        VideoDisplayOrientation::Rotate90Clockwise,
+        VideoDisplayOrientation::Rotate180,
+        VideoDisplayOrientation::Rotate270Clockwise,
+    ] {
+        // Metadata приходит в runtime. Black box не позволяет оптимизированному
+        // codec-core свернуть const conversion и обойти проверяемый round-trip.
+        let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+            .with_display_orientation_metadata(1, std::hint::black_box(orientation));
+        let demuxer = SymphoniaDemuxer::from_format_reader(
+            Box::new(reader),
+            "video-orientation",
+            HashMap::new(),
+            DemuxSeekability::Seekable,
+            DemuxerOptions::default(),
+        )
+        .expect("fake demuxer должен открыть video track с orientation metadata");
+        let video_metadata = demuxer.tracks()[0].video.as_ref();
+        if orientation == VideoDisplayOrientation::Identity {
+            // Identity без других display overrides не создаёт лишнюю metadata.
+            assert!(video_metadata.is_none());
+        } else {
+            assert_eq!(
+                video_metadata
+                    .expect("rotation должна создать video metadata")
+                    .orientation,
+                orientation
+            );
+        }
+    }
 }
 
 #[test]

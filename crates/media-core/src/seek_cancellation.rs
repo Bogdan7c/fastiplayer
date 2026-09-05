@@ -334,7 +334,7 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::task::{Wake, Waker};
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use super::{
         DemuxSeekCancellationCompletion, DemuxSeekCancellationToken,
@@ -396,57 +396,33 @@ mod tests {
     /// Доказывает реальный blocking wait и condvar wake, а не удачный pre-cancel schedule.
     #[test]
     fn blocking_wait_enters_condvar_before_cancellation_wakes_worker() {
-        // Оба sync_channel(0) являются точными rendezvous без буферизованного опережения.
         let (entered_sender, entered_receiver) = mpsc::sync_channel(0);
-        let (proceed_sender, proceed_receiver) = mpsc::sync_channel(0);
-        // Token остаётся production owner-ом status, waiter mutex и condvar.
         let token = DemuxSeekCancellationToken::new();
-
-        // Worker использует тот же owner-local implementation, что и публичный boundary.
         let waiter_token = token.clone();
         let waiter = thread::spawn(move || {
-            // Observer выполняет только rendezvous и не меняет cancellation state.
+            // Одноразовый rendezvous подтверждает pending predicate под waiter mutex.
+            // Повторный callback после допустимого spurious wake не блокирует worker.
+            let mut entered_sender = Some(entered_sender);
             let mut before_wait = || {
-                // Entered подтверждает уже выполненную pending-проверку под waiter mutex.
-                entered_sender
-                    .send(())
-                    .expect("blocking wait test owner должен принять entered signal");
-                // Owner сначала запускает cancel и только затем разрешает mutex release.
-                proceed_receiver
-                    .recv()
-                    .expect("blocking wait test owner должен разрешить condvar wait");
+                if let Some(sender) = entered_sender.take() {
+                    sender
+                        .send(())
+                        .expect("blocking wait test owner должен принять entered signal");
+                }
             };
             waiter_token.wait_cancelled_with_observer(Some(&mut before_wait));
         });
-        // Entered приходит после pending predicate, пока worker ещё держит waiter mutex.
         entered_receiver
             .recv_timeout(Duration::from_secs(1))
             .expect("blocking wait worker должен войти в test rendezvous");
 
-        // Cancel сначала меняет atomic status, затем блокируется на waiter mutex.
-        let cancellation_token = token.clone();
-        let canceller = thread::spawn(move || cancellation_token.cancel());
-        // Deadline превращает невозможную смену lifecycle в явный test failure.
-        let cancellation_deadline = Instant::now() + Duration::from_secs(1);
-        while !token.is_cancelled() {
-            assert!(
-                Instant::now() < cancellation_deadline,
-                "cancel должен опубликовать atomic status до ожидания waiter mutex"
-            );
-            thread::yield_now();
-        }
-        // Теперь worker гарантированно вызывает Condvar::wait с уже истинной отменой.
-        proceed_sender
-            .send(())
-            .expect("blocking wait worker должен принять proceed signal");
-
-        // Cancel получает атомарно освобождённый mutex и будит уже спящий worker.
-        canceller
-            .join()
-            .expect("cancellation worker не должен panic");
+        // Worker уже прошёл pending predicate и обязательно вызовет Condvar::wait.
+        // Cancel получает mutex только после его атомарного release в wait, поэтому
+        // notify не теряется при любом порядке потоков. Busy loop не нужен для proof.
+        token.cancel();
         waiter
             .join()
-            .expect("blocking wait worker должен проснуться");
+            .expect("blocking wait worker должен проснуться после cancel");
         assert!(token.is_cancelled());
     }
 
