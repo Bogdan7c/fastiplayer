@@ -767,7 +767,6 @@ impl AppState {
             debug!("Local file open job уже активен, повторный dialog не запускаем");
             return;
         }
-
         match LocalFileOpenJob::spawn_picker(window, self.local_file_open_wake_port.clone()) {
             Ok(job) => {
                 self.local_file_open_job = Some(job);
@@ -829,4 +828,5 @@ impl AppState {
     }
 }
 #[cfg(test)]
-include!("center_overlay_tests.rs");
+#[path = "center_overlay_tests.rs"]
+mod center_overlay_tests;
