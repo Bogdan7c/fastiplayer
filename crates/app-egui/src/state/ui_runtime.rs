@@ -386,7 +386,7 @@ impl AppState {
             let stage_started_at = Instant::now();
             playlist_confirmation_action = Self::render_center_overlay(
                 ui,
-                is_playing,
+                player_snapshot.playback_state,
                 error_message,
                 pending_message,
                 playlist_models.import_preview,
@@ -779,11 +779,10 @@ impl AppState {
             }
         }
     }
-
-    /// Рендерит центральный overlay состояния.
+    /// Стартовая подсказка принадлежит только Idle: пауза, seek и EOF сохраняют media.
     fn render_center_overlay(
         ui: &mut egui::Ui,
-        is_playing: bool,
+        playback_state: PlaybackState,
         error_message: Option<&str>,
         pending_message: Option<&str>,
         playlist_import_preview: Option<&crate::playlist_runtime::PlaylistImportPreview>,
@@ -811,16 +810,15 @@ impl AppState {
                         ui.add_space(40.0);
                         ui.colored_label(egui::Color32::LIGHT_BLUE, message);
                     });
-                } else if !is_playing {
+                } else if playback_state == PlaybackState::Idle {
                     ui.vertical_centered(|ui| {
                         ui.add_space(40.0);
-                        ui.heading("Press Play to start");
+                        ui.heading("Open a file or URL to start");
                     });
                 }
             });
         confirmation_action
     }
-
     /// Собирает frame counters из текущей телеметрии.
     pub(super) fn frame_counters_snapshot(&self) -> FrameCounters {
         FrameCounters {
@@ -830,3 +828,5 @@ impl AppState {
         }
     }
 }
+#[cfg(test)]
+include!("center_overlay_tests.rs");
