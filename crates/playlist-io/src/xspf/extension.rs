@@ -1,4 +1,4 @@
-//! Versioned Rustiplayer playlist-level XSPF extension.
+//! Versioned Fastiplayer playlist-level XSPF extension.
 
 use bounded_xml_reader::{XmlElement, XmlEvent};
 use url::Url;
@@ -12,9 +12,9 @@ use super::parser::{
 };
 use super::schema::parse_positive_u32;
 use super::uri::validate_application_uri;
-use super::{RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE, XSPF_NAMESPACE};
+use super::{FASTIPLAYER_XSPF_EXTENSION_NAMESPACE, XSPF_NAMESPACE};
 
-/// Playlist-level extension исполняет только exact Rustiplayer application URI.
+/// Playlist-level extension исполняет только exact Fastiplayer application URI.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn parse_playlist_extension(
     cursor: &mut EventCursor<'_>,
@@ -23,22 +23,22 @@ pub(super) fn parse_playlist_extension(
     parent_base: &Url,
     limits: XspfParserLimits,
     groups: &mut Vec<XspfGroup>,
-    rustiplayer_extension_seen: &mut bool,
+    fastiplayer_extension_seen: &mut bool,
 ) -> Result<(), XspfParseError> {
     validate_attributes(&element, &["application"])?;
     let extension_base = element_base(&element, parent_base)?;
     let application = required_unqualified_attribute(&element, "application")?;
     validate_application_uri(application)?;
 
-    if application != RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE {
+    if application != FASTIPLAYER_XSPF_EXTENSION_NAMESPACE {
         return skip_open_element(cursor, element.name(), is_empty);
     }
-    if *rustiplayer_extension_seen {
+    if *fastiplayer_extension_seen {
         return Err(XspfParseError::new(
-            XspfParseErrorKind::DuplicateRustiplayerExtension,
+            XspfParseErrorKind::DuplicateFastiplayerExtension,
         ));
     }
-    *rustiplayer_extension_seen = true;
+    *fastiplayer_extension_seen = true;
     if is_empty {
         return Ok(());
     }
@@ -82,9 +82,9 @@ pub(super) fn parse_track_extension(
     let _extension_base = element_base(&element, parent_base)?;
     let application = required_unqualified_attribute(&element, "application")?;
     validate_application_uri(application)?;
-    if application == RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE {
+    if application == FASTIPLAYER_XSPF_EXTENSION_NAMESPACE {
         return Err(XspfParseError::new(
-            XspfParseErrorKind::RustiplayerExtensionWrongScope,
+            XspfParseErrorKind::FastiplayerExtensionWrongScope,
         ));
     }
     skip_open_element(cursor, element.name(), is_empty)
@@ -99,7 +99,7 @@ fn parse_group(
 ) -> Result<XspfGroup, XspfParseError> {
     require_name(
         element.name(),
-        RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE,
+        FASTIPLAYER_XSPF_EXTENSION_NAMESPACE,
         "group",
     )?;
     validate_attributes(&element, &["firstTrack", "trackCount"])?;
@@ -137,7 +137,7 @@ fn parse_group(
 
     match cursor.next_container_event()? {
         Some(XmlEvent::EndElement(name)) => {
-            require_name(&name, RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE, "group")?;
+            require_name(&name, FASTIPLAYER_XSPF_EXTENSION_NAMESPACE, "group")?;
         }
         Some(_) => {
             return Err(XspfParseError::new(XspfParseErrorKind::UnexpectedElement));
@@ -157,7 +157,7 @@ fn parse_extension_group_location(
 ) -> Result<XspfLocationCandidate, XspfParseError> {
     require_name(
         element.name(),
-        RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE,
+        FASTIPLAYER_XSPF_EXTENSION_NAMESPACE,
         "location",
     )?;
     parse_location(cursor, element, is_empty, parent_base)

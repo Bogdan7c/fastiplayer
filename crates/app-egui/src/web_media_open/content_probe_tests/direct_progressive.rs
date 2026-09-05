@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use audio::decoder::EncodedAudioPacket;
 use audio::{AudioDecoderFactory, ProductionAudioDecoderFactory};
+use fastiplayer_config::AppConfig;
 use media_core::{DemuxReadEvent, DemuxRetryHint, Demuxer, TrackKind};
-use rustiplayer_config::AppConfig;
 use service_ytdlp::{ExtractorProcessInvocation, ExtractorProcessLauncher, YtDlpExtractorAdapter};
 use source_core::CancellationToken;
 use symphonia_demux::DemuxSeekability;

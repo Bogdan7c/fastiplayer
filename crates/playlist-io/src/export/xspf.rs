@@ -1,8 +1,8 @@
-//! XSPF v1 serializer с playlist-level Rustiplayer group extension.
+//! XSPF v1 serializer с playlist-level Fastiplayer group extension.
 
 use std::fmt::Write;
 
-use crate::{RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE, XSPF_NAMESPACE};
+use crate::{FASTIPLAYER_XSPF_EXTENSION_NAMESPACE, XSPF_NAMESPACE};
 
 use super::{
     PreparedPlaylistExport, export_title, push_xml_attribute, push_xml_text,
@@ -14,7 +14,7 @@ pub(super) fn serialize(plan: &PreparedPlaylistExport) -> String {
     let mut output = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     writeln!(
         output,
-        "<playlist version=\"1\" xmlns=\"{XSPF_NAMESPACE}\" xmlns:rp=\"{RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE}\">"
+        "<playlist version=\"1\" xmlns=\"{XSPF_NAMESPACE}\" xmlns:rp=\"{FASTIPLAYER_XSPF_EXTENSION_NAMESPACE}\">"
     )
     .expect("String formatting infallible");
     push_group_extension(&mut output, plan);
@@ -58,7 +58,7 @@ fn push_group_extension(output: &mut String, plan: &PreparedPlaylistExport) {
         return;
     }
     output.push_str("  <extension application=\"");
-    push_xml_attribute(output, RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE);
+    push_xml_attribute(output, FASTIPLAYER_XSPF_EXTENSION_NAMESPACE);
     output.push_str("\">\n");
     for group in &plan.groups {
         writeln!(

@@ -406,7 +406,7 @@ mod tests {
     fn source_guardrail_settings_ui_has_no_runtime_or_project_config_refs() {
         let settings_ui_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/settings_ui");
         let forbidden_patterns = [
-            concat!("rustiplayer_", "config").to_string(),
+            concat!("fastiplayer_", "config").to_string(),
             format!("{}{}", "app", "config"),
             format!("{}{}", "player", "worker"),
             concat!("render_", "wg", "pu").to_string(),
@@ -460,7 +460,7 @@ mod tests {
                     SettingEditor::Text(TextDescriptor::new(TextFormat::SingleLine)),
                     settings_core::SettingValueType::Text,
                 ),
-                SettingValue::Text("rustiplayer".to_string()),
+                SettingValue::Text("fastiplayer".to_string()),
             ),
             SettingsUiField::new(
                 descriptor(

@@ -53,24 +53,24 @@ const ISOMP4_METADATA_INFO: MetadataInfo = MetadataInfo {
     long_name: "ISO Base Media File Format",
 };
 
-const RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG: &str =
-    "rustiplayer.display_orientation.clockwise_degrees";
-const RUSTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG: &str =
-    "rustiplayer.video.h264.parameter_sets_in_band";
-const RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG: &str = "rustiplayer.video.color.full_range";
-const RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG: &str =
-    "rustiplayer.video.color.matrix_coefficients_h273";
-const RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG: &str = "rustiplayer.video.color.primaries_h273";
-const RUSTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG: &str =
-    "rustiplayer.video.color.transfer_characteristics_h273";
-const RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG: &str =
-    "rustiplayer.video.hdr.mastering_display.max_luminance_nits";
-const RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG: &str =
-    "rustiplayer.video.hdr.mastering_display.min_luminance_nits";
-const RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG: &str =
-    "rustiplayer.video.hdr.max_content_light_level_nits";
-const RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG: &str =
-    "rustiplayer.video.hdr.max_frame_average_light_level_nits";
+const FASTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG: &str =
+    "fastiplayer.display_orientation.clockwise_degrees";
+const FASTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG: &str =
+    "fastiplayer.video.h264.parameter_sets_in_band";
+const FASTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG: &str = "fastiplayer.video.color.full_range";
+const FASTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG: &str =
+    "fastiplayer.video.color.matrix_coefficients_h273";
+const FASTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG: &str = "fastiplayer.video.color.primaries_h273";
+const FASTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG: &str =
+    "fastiplayer.video.color.transfer_characteristics_h273";
+const FASTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG: &str =
+    "fastiplayer.video.hdr.mastering_display.max_luminance_nits";
+const FASTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG: &str =
+    "fastiplayer.video.hdr.mastering_display.min_luminance_nits";
+const FASTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG: &str =
+    "fastiplayer.video.hdr.max_content_light_level_nits";
+const FASTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG: &str =
+    "fastiplayer.video.hdr.max_frame_average_light_level_nits";
 const PCM_FRAMES_PER_READER_PACKET: u32 = 1024;
 
 pub struct TrackState {
@@ -710,7 +710,7 @@ impl<'s> IsoMp4Reader<'s> {
         if let Some(rev) = moov.take_metadata() {
             metadata.push(rev);
         }
-        append_track_rustiplayer_metadata(&mut metadata, &moov.traks);
+        append_track_fastiplayer_metadata(&mut metadata, &moov.traks);
 
         // Create a track and track state for each Track (trak) atom.
         let mut tracks = Vec::with_capacity(moov.traks.len());
@@ -1241,9 +1241,9 @@ impl<'s> IsoMp4Reader<'s> {
 ///
 /// Symphonia 0.6 `Track`/`VideoCodecParameters` не имеют полей для display transform и HDR
 /// container side metadata, поэтому локальный MP4 patch передаёт только нейтральные raw tags.
-fn append_track_rustiplayer_metadata(metadata: &mut MetadataLog, traks: &[TrakAtom]) {
+fn append_track_fastiplayer_metadata(metadata: &mut MetadataLog, traks: &[TrakAtom]) {
     let mut metadata_builder = MetadataBuilder::new(ISOMP4_METADATA_INFO);
-    let mut has_rustiplayer_metadata = false;
+    let mut has_fastiplayer_metadata = false;
 
     for trak in traks {
         let mut track_metadata_builder = PerTrackMetadataBuilder::new(u64::from(trak.tkhd.id));
@@ -1257,11 +1257,11 @@ fn append_track_rustiplayer_metadata(metadata: &mut MetadataLog, traks: &[TrakAt
 
         if has_track_metadata {
             metadata_builder.add_track(track_metadata_builder.build());
-            has_rustiplayer_metadata = true;
+            has_fastiplayer_metadata = true;
         }
     }
 
-    if has_rustiplayer_metadata {
+    if has_fastiplayer_metadata {
         metadata.push_front(metadata_builder.build());
     }
 }
@@ -1280,7 +1280,7 @@ fn append_track_display_orientation_tags(
     }
 
     track_metadata_builder.add_tag(Tag::new_from_parts(
-        RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
+        FASTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
         u64::from(clockwise_degrees),
         None,
     ));
@@ -1300,7 +1300,7 @@ fn append_track_h264_parameter_set_tags(
     }
 
     track_metadata_builder.add_tag(Tag::new_from_parts(
-        RUSTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG,
+        FASTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG,
         true,
         None,
     ));
@@ -1323,22 +1323,22 @@ fn append_track_video_color_tags(
         .and_then(|colour_information| colour_information.nclx)
     {
         track_metadata_builder.add_tag(Tag::new_from_parts(
-            RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG,
+            FASTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG,
             nclx.full_range_flag,
             None,
         ));
         track_metadata_builder.add_tag(Tag::new_from_parts(
-            RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG,
+            FASTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG,
             u64::from(nclx.matrix_coefficients),
             None,
         ));
         track_metadata_builder.add_tag(Tag::new_from_parts(
-            RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG,
+            FASTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG,
             u64::from(nclx.color_primaries),
             None,
         ));
         track_metadata_builder.add_tag(Tag::new_from_parts(
-            RUSTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG,
+            FASTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG,
             u64::from(nclx.transfer_characteristics),
             None,
         ));
@@ -1347,12 +1347,12 @@ fn append_track_video_color_tags(
 
     if let Some(mastering_display) = visual_sample_entry.mastering_display_colour_volume {
         track_metadata_builder.add_tag(Tag::new_from_parts(
-            RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG,
+            FASTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG,
             f64::from(mastering_display.max_luminance_nits),
             None,
         ));
         track_metadata_builder.add_tag(Tag::new_from_parts(
-            RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG,
+            FASTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG,
             f64::from(mastering_display.min_luminance_nits),
             None,
         ));
@@ -1361,12 +1361,12 @@ fn append_track_video_color_tags(
 
     if let Some(content_light_level) = visual_sample_entry.content_light_level {
         track_metadata_builder.add_tag(Tag::new_from_parts(
-            RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG,
+            FASTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG,
             u64::from(content_light_level.max_content_light_level_nits),
             None,
         ));
         track_metadata_builder.add_tag(Tag::new_from_parts(
-            RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG,
+            FASTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG,
             u64::from(content_light_level.max_frame_average_light_level_nits),
             None,
         ));

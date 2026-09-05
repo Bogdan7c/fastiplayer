@@ -13,10 +13,10 @@ use demux_api::{
     ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt, ProgressiveDemuxBufferLimits,
     ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
+use fastiplayer_config::NetworkConfig;
 use flv_demux::{FlvDemuxFactory, FlvDemuxOptions};
 use hds_manifest_core::{F4mManifestLimits, HdsBootstrapLimits};
 use media_core::{DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, Demuxer, TrackKind};
-use rustiplayer_config::NetworkConfig;
 use source_core::{
     CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig, ValidatedHttpHeaders,
 };

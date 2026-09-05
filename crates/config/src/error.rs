@@ -10,7 +10,7 @@ pub type ConfigResult<T> = Result<T, ConfigError>;
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// Платформа не вернула стандартный config-dir для текущего пользователя.
-    #[error("не удалось определить пользовательскую config-директорию rustiplayer")]
+    #[error("не удалось определить пользовательскую config-директорию fastiplayer")]
     ProjectDirsUnavailable,
 
     /// Не удалось проверить состояние config-файла перед чтением или созданием.

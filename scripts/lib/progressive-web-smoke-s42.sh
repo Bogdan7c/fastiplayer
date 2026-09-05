@@ -8,11 +8,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 fi
 
 # Повторный source мог бы переинициализировать arrays после parsing.
-if [[ "${RUSTIPLAYER_S42_LIBRARY_LOADED:-false}" == "true" ]]; then
+if [[ "${FASTIPLAYER_S42_LIBRARY_LOADED:-false}" == "true" ]]; then
     return 0
 fi
 # Guard становится readonly после первого успешного source.
-readonly RUSTIPLAYER_S42_LIBRARY_LOADED="true"
+readonly FASTIPLAYER_S42_LIBRARY_LOADED="true"
 
 # S42 принимает manual evidence только от exact release утверждённого profile.
 readonly EXPECTED_YTDLP_VERSION="2026.07.04"
@@ -349,16 +349,16 @@ redact_runtime_log() {
     fi
     # Environment сохраняет literal backslashes.
     env \
-        "RUSTIPLAYER_REDACT_INPUT=${exact_input}" \
-        "RUSTIPLAYER_REDACT_KIND=${input_kind}" \
-        "RUSTIPLAYER_REDACT_BASENAME=${fixture_basename}" \
-        "RUSTIPLAYER_REDACT_ENCODED_BASENAME=${encoded_fixture_basename}" \
+        "FASTIPLAYER_REDACT_INPUT=${exact_input}" \
+        "FASTIPLAYER_REDACT_KIND=${input_kind}" \
+        "FASTIPLAYER_REDACT_BASENAME=${fixture_basename}" \
+        "FASTIPLAYER_REDACT_ENCODED_BASENAME=${encoded_fixture_basename}" \
         awk '
         BEGIN {
-            exact_input = ENVIRON["RUSTIPLAYER_REDACT_INPUT"]
-            input_kind = ENVIRON["RUSTIPLAYER_REDACT_KIND"]
-            fixture_basename = ENVIRON["RUSTIPLAYER_REDACT_BASENAME"]
-            encoded_fixture_basename = ENVIRON["RUSTIPLAYER_REDACT_ENCODED_BASENAME"]
+            exact_input = ENVIRON["FASTIPLAYER_REDACT_INPUT"]
+            input_kind = ENVIRON["FASTIPLAYER_REDACT_KIND"]
+            fixture_basename = ENVIRON["FASTIPLAYER_REDACT_BASENAME"]
+            encoded_fixture_basename = ENVIRON["FASTIPLAYER_REDACT_ENCODED_BASENAME"]
         }
         function replace_exact(text, secret, position) {
             if (secret == "") {
@@ -498,12 +498,12 @@ write_report_header() {
             printf 'Compatibility profile source commit: `%s`\n' "${S42_PROFILE_SOURCE_COMMIT}"
             printf 'Workspace HEAD commit: `%s`\n' "${workspace_commit}"
             printf 'Workspace state: `%s`\n' "${workspace_tree_state}"
-            printf 'Rustiplayer binary origin: `%s`\n' "${selected_binary_origin}"
-            printf 'Rustiplayer binary SHA-256: `%s`\n' "${selected_binary_sha256}"
+            printf 'Fastiplayer binary origin: `%s`\n' "${selected_binary_origin}"
+            printf 'Fastiplayer binary SHA-256: `%s`\n' "${selected_binary_sha256}"
             if [[ "${selected_binary_origin}" == "runner-built-from-current-worktree" ]]; then
-                printf 'Rustiplayer source association: current worktree; dirty state is not reproducible from HEAD alone\n'
+                printf 'Fastiplayer source association: current worktree; dirty state is not reproducible from HEAD alone\n'
             else
-                printf 'Rustiplayer source association: external prebuilt; workspace HEAD is not asserted as its source\n'
+                printf 'Fastiplayer source association: external prebuilt; workspace HEAD is not asserted as its source\n'
             fi
             printf 'System yt-dlp version: `%s`\n' "${observed_ytdlp_version}"
             printf 'System yt-dlp executable SHA-256: `%s`\n' "${observed_ytdlp_sha256}"

@@ -387,7 +387,7 @@ pub(crate) enum MediaOpenSourceRequest {
     Local {
         path: PathBuf,
         expected_fingerprint: Option<LocalMediaFingerprint>,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
+        demux_config: fastiplayer_config::PlayerDemuxConfig,
     },
     Web(super::web::WebMediaOpenRequest),
     PlaybackWindow {

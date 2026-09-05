@@ -1,6 +1,6 @@
 //! Truthful mapping checked setting contracts в coarse app apply report.
 
-use rustiplayer_settings::{AppRuntimeRoute, SettingApplyMechanism, setting_application_contract};
+use fastiplayer_settings::{AppRuntimeRoute, SettingApplyMechanism, setting_application_contract};
 use settings_core::{ApplyMechanism, SettingId, SettingsError, SettingsResult};
 
 /// Выводит MediaService report mechanism только из checked contract matrix.

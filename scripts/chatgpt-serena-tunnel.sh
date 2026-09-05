@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly profile="rustiplayer-chatgpt-readonly"
+readonly profile="fastiplayer-chatgpt-readonly"
 action="${1:-run}"
 
 case "$action" in

@@ -1,6 +1,6 @@
 use super::*;
 
-use rustiplayer_config::WebMediaConfig;
+use fastiplayer_config::WebMediaConfig;
 
 const RECOVERY_SETTING_NAMES: [&str; 5] = [
     "web_media.vod_endpoint_recovery_enabled",
@@ -140,7 +140,7 @@ fn recovery_policy_success_applies_exact_target_then_persists_finalizes_and_sync
         adapter.committed_snapshots[0].as_config().web_media,
         requested_web_media
     );
-    let persisted = rustiplayer_config::load_from_path(&path)
+    let persisted = fastiplayer_config::load_from_path(&path)
         .expect("persisted recovery policy должна читаться");
     assert_eq!(persisted.config.web_media, requested_web_media);
     remove_file_if_exists(&path);

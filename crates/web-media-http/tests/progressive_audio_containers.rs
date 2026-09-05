@@ -12,11 +12,11 @@ use demux_api::{
     DemuxContainerId, DemuxHints, DemuxInput, DemuxRegistry, DemuxSniffBudget,
     DemuxSourceExtension, ProgressiveDemuxBufferLimits, ProgressiveDemuxer,
 };
+use fastiplayer_config::NetworkConfig;
 use media_core::{
     DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, DemuxSeekability, Demuxer, MediaDemuxError,
     Packet, TrackKind,
 };
-use rustiplayer_config::NetworkConfig;
 use source_core::{CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig};
 use symphonia_demux::{DemuxerOptions, SymphoniaDemuxFactory};
 use web_media_core::{

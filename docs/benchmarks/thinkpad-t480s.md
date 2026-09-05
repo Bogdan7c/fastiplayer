@@ -1,5 +1,7 @@
 # ThinkPad T480s playback evidence
 
+Product names and result labels were normalized to Fastiplayer after the rename. All measurements, dates, samples and original source/binary hashes still refer to the historical revisions recorded below. Original labels remain available in Git history; these results are not measurements of the renamed build.
+
 **Measured on 2026-09-05.** All 18 final warm-ups and 30 scored attempts completed on AC power: three warm-ups and five 60-second measurements for each player/scenario. No final scored attempt was excluded. Hardware H.264/HEVC and software AV1 remain separate workloads.
 
 The [machine-readable evidence](thinkpad-t480s.json) contains every final raw sample, render identity, VLC counter query, validation result and cohort statistic. The [preparation archive](thinkpad-t480s-preparation.json) retains 100 earlier attempts with their original provenance, including failed and excluded attempts. The native Wayland screenshot validation is also retained separately in the final JSON. None of those preparation/capture measurements enters the scored statistics.
@@ -8,33 +10,33 @@ The [machine-readable evidence](thinkpad-t480s.json) contains every final raw sa
 
 ### Hardware playback: process CPU and resident memory
 
-These are whole-player resource observations for the same synthetic file, hardware decode mode, display/session, fullscreen window, mute policy and collector. Rustiplayer uses Vulkan/DMA-BUF with per-frame diagnostic tracing; VLC uses OpenGL/VA-API conversion with verbose diagnostics. Their rendering implementations and diagnostic overhead differ. Exact equality of unique physically displayed frames is not established, so this table is not a decoder-efficiency, smoothness or speed ranking.
+These are whole-player resource observations for the same synthetic file, hardware decode mode, display/session, fullscreen window, mute policy and collector. Fastiplayer uses Vulkan/DMA-BUF with per-frame diagnostic tracing; VLC uses OpenGL/VA-API conversion with verbose diagnostics. Their rendering implementations and diagnostic overhead differ. Exact equality of unique physically displayed frames is not established, so this table is not a decoder-efficiency, smoothness or speed ranking.
 
 Each cell is **p50 / p95 / observed min–max** across five runs. CPU uses **100% = one logical CPU**. RSS is the per-run mean of resident-memory samples, converted from KiB to MiB; it does not measure total system or GPU memory. With five runs, nearest-rank p95 equals the maximum.
 
 | Synthetic source | Player | CPU (%) — p50 / p95 / min–max | RSS (MiB) — p50 / p95 / min–max |
 | --- | --- | --- | --- |
-| H.264 1080p60, hardware | Rustiplayer | 16.88 / 17.15 / 16.73–17.15 | 87.21 / 90.36 / 86.80–90.36 |
+| H.264 1080p60, hardware | Fastiplayer | 16.88 / 17.15 / 16.73–17.15 | 87.21 / 90.36 / 86.80–90.36 |
 | H.264 1080p60, hardware | VLC | 4.77 / 5.02 / 4.72–5.02 | 126.93 / 127.15 / 126.73–127.15 |
-| HEVC 4K60, hardware | Rustiplayer | 30.42 / 30.58 / 30.22–30.58 | 87.90 / 90.37 / 87.62–90.37 |
+| HEVC 4K60, hardware | Fastiplayer | 30.42 / 30.58 / 30.22–30.58 | 87.90 / 90.37 / 87.62–90.37 |
 | HEVC 4K60, hardware | VLC | 5.75 / 5.82 / 5.53–5.82 | 300.23 / 300.36 / 299.91–300.36 |
 
-VLC used less process CPU in these hardware scenarios; Rustiplayer used less process RSS. Both continued video and audio processing. Rustiplayer recorded 3528–3596 distinct frame identities for H.264 and 3492–3597 for HEVC across its separate approximately 60-second log intervals. These are not proof that every source frame reached physical scanout and cannot be converted into VLC-compatible dropped frames. VLC's separate counter intervals were approximately 65 seconds and must not be directly compared with those handoff counts. The HEVC source is a simple upscaled synthetic pattern, not a representative natural 4K movie.
+VLC used less process CPU in these hardware scenarios; Fastiplayer used less process RSS. Both continued video and audio processing. Fastiplayer recorded 3528–3596 distinct frame identities for H.264 and 3492–3597 for HEVC across its separate approximately 60-second log intervals. These are not proof that every source frame reached physical scanout and cannot be converted into VLC-compatible dropped frames. VLC's separate counter intervals were approximately 65 seconds and must not be directly compared with those handoff counts. The HEVC source is a simple upscaled synthetic pattern, not a representative natural 4K movie.
 
 ### AV1 4K60 SDR: software baseline and control limitations
 
-The owner-supplied Big Buck Bunny AV1 file was tested with software decoding in both players. This T480s exposes no AV1 hardware decode support. Rustiplayer's five-run baseline is:
+The owner-supplied Big Buck Bunny AV1 file was tested with software decoding in both players. This T480s exposes no AV1 hardware decode support. Fastiplayer's five-run baseline is:
 
 | Metric | p50 | p95, nearest rank | Observed min–max |
 | --- | --- | --- | --- |
 | Process CPU, 100% = one logical CPU | 356.70% | 358.16% | 352.21–358.16% |
 | Per-run mean RSS | 269.32 MiB | 269.67 MiB | 268.19–269.67 MiB |
 
-Rustiplayer's five observation intervals contained **3549, 3502, 3397, 3573 and 3475 distinct frame identities** handed to the surface. Their PTS spans were 59.983–60.017 seconds. Software decode, demux, audio decoder/output/resume and surface submission were confirmed. This demonstrates continued playback through the render boundary; it is not a claim of perfect 60 FPS or zero dropped frames.
+Fastiplayer's five observation intervals contained **3549, 3502, 3397, 3573 and 3475 distinct frame identities** handed to the surface. Their PTS spans were 59.983–60.017 seconds. Software decode, demux, audio decoder/output/resume and surface submission were confirmed. This demonstrates continued playback through the render boundary; it is not a claim of perfect 60 FPS or zero dropped frames.
 
-Separately, VLC's own `frames_lost` deltas were **936, 938, 953, 940 and 942**, while `frames_displayed` deltas were **2979, 2961, 2962, 2961 and 2973**. These counters cover separately recorded intervals of approximately 65.005–65.016 seconds. Media time advanced by 65 seconds, audio buffers advanced and the audio-buffer lost delta was zero. The actual selected AV1 decoder was dav1d. These are VLC-specific diagnostics, not the same metric as Rustiplayer frame identities.
+Separately, VLC's own `frames_lost` deltas were **936, 938, 953, 940 and 942**, while `frames_displayed` deltas were **2979, 2961, 2962, 2961 and 2973**. These counters cover separately recorded intervals of approximately 65.005–65.016 seconds. Media time advanced by 65 seconds, audio buffers advanced and the audio-buffer lost delta was zero. The actual selected AV1 decoder was dav1d. These are VLC-specific diagnostics, not the same metric as Fastiplayer frame identities.
 
-**No AV1 CPU/RSS comparison table or speed ratio is published.** Equivalent delivered video work cannot be established with these different frame counters, and the observed VLC losses make an equal-output efficiency claim inappropriate. All VLC raw CPU/RSS samples and descriptive aggregates remain in the JSON. An attempt's `eligible_for_scored_statistics` flag validates that individual measurement; it does not certify cross-player comparability. The evidence supports continued Rustiplayer software playback and VLC's reported losses in this configuration, not a universal performance advantage.
+**No AV1 CPU/RSS comparison table or speed ratio is published.** Equivalent delivered video work cannot be established with these different frame counters, and the observed VLC losses make an equal-output efficiency claim inappropriate. All VLC raw CPU/RSS samples and descriptive aggregates remain in the JSON. An attempt's `eligible_for_scored_statistics` flag validates that individual measurement; it does not certify cross-player comparability. The evidence supports continued Fastiplayer software playback and VLC's reported losses in this configuration, not a universal performance advantage.
 
 ## Source and system
 
@@ -54,7 +56,7 @@ Executed build: `cargo build --release -p app-egui`, then verified from the comm
 
 The measured source passed automatic CI run 33934211412 and Toolchain policy run 33934211484. Before this final source qualification, the runtime fixes passed 4470 workspace/all-features tests with 23 ignored, strict workspace Clippy, and 300 repetitions of the unchanged HTTP/Ogg playback regression without a failure. The benchmark collector's functional tests measure a real busy process with allocated memory and retain an early process exit as excluded. A second independent review recalculated all 30 CPU/RSS results from samples, checked aggregate statistics, reviewed the screenshot and sanitized artifacts, and assessed the claim boundaries above.
 
-Source and executable identity are cohort-level attestations. Rustiplayer's binary checksum was checked before the final warm-ups and again after collection; the collector did not hash every launch independently. VLC's executable checksum was taken at report assembly and is recorded in JSON. No rebuild, test suite or local compilation ran during scored windows. The desktop and collection tools remained active; this was not an otherwise isolated machine.
+Source and executable identity are cohort-level attestations. Fastiplayer's binary checksum was checked before the final warm-ups and again after collection; the collector did not hash every launch independently. VLC's executable checksum was taken at report assembly and is recorded in JSON. No rebuild, test suite or local compilation ran during scored windows. The desktop and collection tools remained active; this was not an otherwise isolated machine.
 
 | Component | Observed value |
 | --- | --- |
@@ -74,7 +76,7 @@ Source and executable identity are cohort-level attestations. Rustiplayer's bina
 | Power policy | powersave governor, performance EPP, turbo enabled; scored runs require AC |
 | Audio | decoder/output active; player volume/gain zero; no audible-output claim |
 
-`/dev/dri/card1` and `/dev/dri/renderD128` were accessible to the desktop runtime. VA-API capabilities include H.264, HEVC Main/Main10 and VP9 profiles 0/2; no AV1 hardware profile is exposed. Actual H.264 and HEVC playback logs confirm stream-specific VA-API configuration, followed by current-frame surface handoffs and audio startup. Rustiplayer uses its VA-API → DMA-BUF → Vulkan/WGPU path. The mandatory AV1 case uses the FFmpeg software → host upload → WGPU path and remains explicitly labelled software.
+`/dev/dri/card1` and `/dev/dri/renderD128` were accessible to the desktop runtime. VA-API capabilities include H.264, HEVC Main/Main10 and VP9 profiles 0/2; no AV1 hardware profile is exposed. Actual H.264 and HEVC playback logs confirm stream-specific VA-API configuration, followed by current-frame surface handoffs and audio startup. Fastiplayer uses its VA-API → DMA-BUF → Vulkan/WGPU path. The mandatory AV1 case uses the FFmpeg software → host upload → WGPU path and remains explicitly labelled software.
 
 ## Fixtures and rights
 
@@ -96,18 +98,18 @@ e647620fa682a1ca46dcc0c02465f97513241e13e998afd68cdf39c842f00c3b  big-buck-bunny
 
 ## Actual runtime capture
 
-![Rustiplayer playing Big Buck Bunny AV1 4K60 SDR on the T480s](../assets/rustiplayer-t480s-main.png)
+The historical T480s screenshot is preserved in the [tagged asset directory](https://github.com/Bogdan7c/fastiplayer/tree/v0.1.0-alpha.1/docs/assets). It is no longer the current product demo.
 
-This unedited 1280×720 Spectacle capture shows the native Wayland main window at approximately 00:24. It uses the source and binary above. It is separate from the matched fullscreen XWayland measurement configuration. The source is 4K60; the laptop panel and captured window are not 4K displays. The movie frame attribution is in [assets/README.md](../assets/README.md).
+This unedited 1280×720 Spectacle capture shows the native Wayland main window at approximately 00:24. It uses the source and binary above. It is separate from the matched fullscreen XWayland measurement configuration. The source is 4K60; the laptop panel and captured window are not 4K displays. Movie attribution: © 2008 Blender Foundation, CC BY 3.0.
 
 Screenshot SHA-256: `3ea5f8781b0b46d9b8ec42baee7db992874123bf5f0a60c60f485c480e950f88`.
 ## Method and interpretation
 
 The following method was used for the completed scored cohort.
 
-The scored configuration is an **instrumented release build**; instrumentation here means runtime diagnostic tracing in the ordinary Cargo release profile. Rustiplayer logs a current-frame identity after a successful video-containing `Presented` renderer outcome. Formatting and writing those events are included in its CPU cost; their timing overhead is not assumed to be zero. VLC uses its distribution build, verbose runtime diagnostics and the oldrc statistics interface. These are whole-player observations, not an isolated decoder microbenchmark.
+The scored configuration is an **instrumented release build**; instrumentation here means runtime diagnostic tracing in the ordinary Cargo release profile. Fastiplayer logs a current-frame identity after a successful video-containing `Presented` renderer outcome. Formatting and writing those events are included in its CPU cost; their timing overhead is not assumed to be zero. VLC uses its distribution build, verbose runtime diagnostics and the oldrc statistics interface. These are whole-player observations, not an isolated decoder microbenchmark.
 
-Each player/scenario receives at least three warm-up launches followed by five independent 60-second measurements. Every launch receives fresh application configuration, data and cache directories. The entire fixture is sequentially read before spawn to request a warm filesystem page cache; caches are not dropped, and residency is not asserted. Rustiplayer sibling discovery and next-item preloading are disabled. Playback starts at the beginning, unpaused, with volume/gain zero; decoding and the audio output path remain active. No subtitles or HDR processing are enabled in these SDR scenarios.
+Each player/scenario receives at least three warm-up launches followed by five independent 60-second measurements. Every launch receives fresh application configuration, data and cache directories. The entire fixture is sequentially read before spawn to request a warm filesystem page cache; caches are not dropped, and residency is not asserted. Fastiplayer sibling discovery and next-item preloading are disabled. Playback starts at the beginning, unpaused, with volume/gain zero; decoding and the audio output path remain active. No subtitles or HDR processing are enabled in these SDR scenarios.
 
 The CPU window is scheduled at process launch +20 seconds and ends 60 seconds after its first process sample. Preparation, including the before screenshot, must finish before the deadline or the attempt is excluded. This is a launch-relative interval, not exact synchronization to the same media timestamp. Samples retain their actual monotonic timestamps. The before/after screenshot and VLC counter queries have separately recorded times and are not treated as the CPU-window endpoints.
 
@@ -115,9 +117,9 @@ CPU is `100 × Δ(utime + stime) / CLK_TCK / Δmonotonic_seconds`, from Linux `/
 
 The first/last process samples define CPU time. Samples are deadline-aligned, including the final sample; delayed reads do not create a burst of catch-up samples. An early process exit, missing initial surface/audio proof, absent current-frame events, preparation overrun, capture failure, observed child process or forced kill is retained and excluded. SIGTERM after the completed observation window is normal cleanup, not a playback crash. Slow valid attempts are retained.
 
-Rustiplayer's raw render events contain `(render_generation, decoded_generation, pts_ns)`. Repeated identities are distinguishable from new frames. The log byte offsets and monotonic observation times define a separate interval close to the CPU window; an offset can intersect a log line. This is **surface handoff evidence, not physical scanout**, and its event count is not labelled precise display FPS. UI redraw FPS is not used as unique-frame throughput. There is no validated cross-player dropped-frame counter.
+Fastiplayer's raw render events contain `(render_generation, decoded_generation, pts_ns)`. Repeated identities are distinguishable from new frames. The log byte offsets and monotonic observation times define a separate interval close to the CPU window; an offset can intersect a log line. This is **surface handoff evidence, not physical scanout**, and its event count is not labelled precise display FPS. UI redraw FPS is not used as unique-frame throughput. There is no validated cross-player dropped-frame counter.
 
-VLC's oldrc `frames displayed` and `frames lost` counters are retained with both query intervals. In VLC 3.0.23, the displayed counter increments after the video-output display call, and the scheduling path can redisplay an existing picture. Lost counters therefore remain VLC-specific diagnostics; neither displayed nor lost values are equated with Rustiplayer's unique PTS handoffs. See the [VLC 3.0.23 video-output implementation](https://github.com/videolan/vlc/blob/3.0.23/src/video_output/video_output.c).
+VLC's oldrc `frames displayed` and `frames lost` counters are retained with both query intervals. In VLC 3.0.23, the displayed counter increments after the video-output display call, and the scheduling path can redisplay an existing picture. Lost counters therefore remain VLC-specific diagnostics; neither displayed nor lost values are equated with Fastiplayer's unique PTS handoffs. See the [VLC 3.0.23 video-output implementation](https://github.com/videolan/vlc/blob/3.0.23/src/video_output/video_output.c).
 
 For a homogeneous five-run cohort, p50 is the median, p95 is nearest rank `ceil(0.95 × 5)` (the maximum with this small sample), and range is observed minimum–maximum. CPU statistics aggregate per-run CPU occupancy; RSS statistics aggregate per-run sample means. No codecs, players, revisions, warm-ups or failed attempts are pooled. Five runs do not establish tail reliability, a confidence interval or a general performance ranking.
 
@@ -136,19 +138,19 @@ python3 docs/benchmarks/tools/t480s/make_fixtures.py ./benchmark-fixtures
 sha256sum benchmark-fixtures/*.mp4
 python3 docs/benchmarks/tools/t480s/run_cohorts.py \
   --phase warmup --directory ./benchmark-output \
-  --fixtures ./benchmark-fixtures --binary ./target/release/rustiplayer
+  --fixtures ./benchmark-fixtures --binary ./target/release/fastiplayer
 python3 docs/benchmarks/tools/t480s/run_cohorts.py \
   --phase measurement --directory ./benchmark-output \
-  --fixtures ./benchmark-fixtures --binary ./target/release/rustiplayer
+  --fixtures ./benchmark-fixtures --binary ./target/release/fastiplayer
 # Recalculate the published statistics from validated raw attempts:
 python3 docs/benchmarks/tools/t480s/aggregate.py \
   docs/benchmarks/thinkpad-t480s.json
 ```
 
-Both scored players use fullscreen XWayland on the same 1920×1080 display inside the Wayland session. Rustiplayer renders through Vulkan; VLC uses its OpenGL video output. The helper removes `WAYLAND_DISPLAY`/`WAYLAND_SOCKET` for both launched players. VLC's native Wayland video-output configuration failed during preparation, so it was not mixed into the matched fullscreen cohort. An implementation difference between Vulkan and OpenGL is retained as a whole-player configuration difference, not described as an identical rendering pipeline.
+Both scored players use fullscreen XWayland on the same 1920×1080 display inside the Wayland session. Fastiplayer renders through Vulkan; VLC uses its OpenGL video output. The helper removes `WAYLAND_DISPLAY`/`WAYLAND_SOCKET` for both launched players. VLC's native Wayland video-output configuration failed during preparation, so it was not mixed into the matched fullscreen cohort. An implementation difference between Vulkan and OpenGL is retained as a whole-player configuration difference, not described as an identical rendering pipeline.
 
-The runner alternates player order within each scenario: Rustiplayer then VLC on odd repetitions, VLC then Rustiplayer on even repetitions. Scenario order is H.264, HEVC, AV1. It reads the full file before every launch, applies the checked-in hardware/software TOML template, and stops on a collection failure. Existing attempt directories are never overwritten. Preserve a failed attempt and use a new ID/directory after diagnosing it. Raw runtime logs and intermediate screenshots remain local because logs can contain local media paths; publish only sanitized observations and reviewed captures.
+The runner alternates player order within each scenario: Fastiplayer then VLC on odd repetitions, VLC then Fastiplayer on even repetitions. Scenario order is H.264, HEVC, AV1. It reads the full file before every launch, applies the checked-in hardware/software TOML template, and stops on a collection failure. Existing attempt directories are never overwritten. Preserve a failed attempt and use a new ID/directory after diagnosing it. Raw runtime logs and intermediate screenshots remain local because logs can contain local media paths; publish only sanitized observations and reviewed captures.
 
-The runner expands VLC to `--ignore-config --no-one-instance --intf dummy --extraintf oldrc --rc-fake-tty`, a per-attempt Unix control socket, `--vout=gl --fullscreen --no-video-title-show --gain=0 -vv`, and the same fixture. Hardware cases use `--avcodec-hw=vaapi`; AV1 uses `--avcodec-hw=none`. Rustiplayer uses `RUST_LOG=info,rustiplayer::video_render_acceptance=trace` and a fresh per-attempt XDG configuration containing the appropriate checked-in template.
+The runner expands VLC to `--ignore-config --no-one-instance --intf dummy --extraintf oldrc --rc-fake-tty`, a per-attempt Unix control socket, `--vout=gl --fullscreen --no-video-title-show --gain=0 -vv`, and the same fixture. Hardware cases use `--avcodec-hw=vaapi`; AV1 uses `--avcodec-hw=none`. Fastiplayer uses `RUST_LOG=info,fastiplayer::video_render_acceptance=trace` and a fresh per-attempt XDG configuration containing the appropriate checked-in template.
 
-VLC logs identify AV1 decoding as dav1d 1.5.4 with eight threads. Rustiplayer's software configuration uses its automatic thread policy (`sw_decode_threads = 0`); the runtime evidence identifies the FFmpeg software backend, not an independently verified identical inner decoder/thread configuration. These settings describe each whole player and must not be presented as a controlled comparison of the same decoder implementation.
+VLC logs identify AV1 decoding as dav1d 1.5.4 with eight threads. Fastiplayer's software configuration uses its automatic thread policy (`sw_decode_threads = 0`); the runtime evidence identifies the FFmpeg software backend, not an independently verified identical inner decoder/thread configuration. These settings describe each whole player and must not be presented as a controlled comparison of the same decoder implementation.

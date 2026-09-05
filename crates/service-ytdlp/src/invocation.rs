@@ -115,7 +115,7 @@ impl YtDlpExtractorAdapter {
         locator: &crate::YtDlpMediaLocator,
         source: web_media_core::SourceIdentity,
         generation: web_media_core::ExtractionGeneration,
-        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
+        yt_dlp_config: &fastiplayer_config::YtDlpConfig,
         invocation_reason: ExtractorInvocationReason,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<crate::YtDlpCandidateSnapshot, crate::YtDlpServiceError> {
@@ -134,7 +134,7 @@ impl YtDlpExtractorAdapter {
     pub fn extract_topology_with_budgets(
         &self,
         locator: &crate::YtDlpMediaLocator,
-        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
+        yt_dlp_config: &fastiplayer_config::YtDlpConfig,
         budgets: crate::YtDlpTopologyBudgets,
         invocation_reason: ExtractorInvocationReason,
         is_cancelled: &dyn Fn() -> bool,
@@ -153,7 +153,7 @@ impl YtDlpExtractorAdapter {
     pub fn resolve_playlist_metadata_with_cancellation(
         &self,
         locator: &crate::YtDlpMediaLocator,
-        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
+        yt_dlp_config: &fastiplayer_config::YtDlpConfig,
         invocation_reason: ExtractorInvocationReason,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<crate::YtDlpPlaylistMetadata, crate::YtDlpServiceError> {

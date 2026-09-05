@@ -27,6 +27,7 @@ use demux_api::{
     ProgressiveAsyncSeekOutcome, ProgressiveDemuxReadiness, ProgressiveSeekFence,
     ProgressiveSeekRequestId,
 };
+use fastiplayer_config::NetworkConfig;
 use media_core::{
     DemuxReadEvent, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePort,
     DynamicMediaTimelinePortGeneration, TrackKind,
@@ -36,7 +37,6 @@ use player_core::{
     PreparedDemuxSeekPort, PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
     PreparedInitialPosition,
 };
-use rustiplayer_config::NetworkConfig;
 use service_ytdlp::{
     YtDlpHlsManifestInputKind, YtDlpNormalizedCandidate, YtDlpTransportRequestContext,
 };

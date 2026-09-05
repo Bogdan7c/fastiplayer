@@ -1,4 +1,4 @@
-use rustiplayer_config::{PlaylistConfig, PlaylistErrorBehavior as ConfigErrorBehavior};
+use fastiplayer_config::{PlaylistConfig, PlaylistErrorBehavior as ConfigErrorBehavior};
 
 use playlist_core::RepeatMode;
 
@@ -38,7 +38,7 @@ impl PlaylistDiscoveryPolicyRevision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FutureDiscoveryPolicy {
     pub(super) load_siblings: bool,
-    pub(super) sibling_media_filter: rustiplayer_config::PlaylistSiblingMediaFilter,
+    pub(super) sibling_media_filter: fastiplayer_config::PlaylistSiblingMediaFilter,
     pub(super) revision: PlaylistDiscoveryPolicyRevision,
 }
 
@@ -178,9 +178,9 @@ impl PlaylistSettingsOwner {
     pub(super) fn initialize_new_queue_policy(&self, controller: &mut PlaylistController) {
         controller.set_error_behavior(controller_error_behavior(self.committed.error_behavior));
         controller.repeat_mode = match self.committed.playback_behavior {
-            rustiplayer_config::PlaylistPlaybackBehavior::StopAfterLast => RepeatMode::StopAtEnd,
-            rustiplayer_config::PlaylistPlaybackBehavior::RepeatQueue => RepeatMode::RepeatQueue,
-            rustiplayer_config::PlaylistPlaybackBehavior::RepeatOne => RepeatMode::RepeatOne,
+            fastiplayer_config::PlaylistPlaybackBehavior::StopAfterLast => RepeatMode::StopAtEnd,
+            fastiplayer_config::PlaylistPlaybackBehavior::RepeatQueue => RepeatMode::RepeatQueue,
+            fastiplayer_config::PlaylistPlaybackBehavior::RepeatOne => RepeatMode::RepeatOne,
         };
     }
 
@@ -400,11 +400,11 @@ fn controller_error_behavior(behavior: ConfigErrorBehavior) -> PlaylistErrorBeha
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use playlist_core::RepeatMode;
-    use rustiplayer_config::{
+    use fastiplayer_config::{
         PlaylistErrorBehavior as ConfigErrorBehavior, PlaylistPlaybackBehavior,
         PlaylistSiblingMediaFilter,
     };
+    use playlist_core::RepeatMode;
 
     use super::*;
 

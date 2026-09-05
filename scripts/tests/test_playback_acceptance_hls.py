@@ -344,7 +344,7 @@ class HlsManifestSelectionAcceptanceTests(unittest.TestCase):
 
     def test_legacy_report_adds_empty_hls_sections_without_changing_existing_rows(self):
         analyzer = PlaybackAcceptanceAnalyzer(scenario="legacy-no-hls")
-        analyzer.parse_lines(["DEBUG === rustiplayer ==="], "legacy.log")
+        analyzer.parse_lines(["DEBUG === fastiplayer ==="], "legacy.log")
 
         report = analyzer.to_dict()
         self.assertEqual(report["hls_manifest_selections"], [])

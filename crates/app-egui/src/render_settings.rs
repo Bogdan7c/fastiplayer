@@ -4,12 +4,12 @@
 //! чистое преобразование валидированного `AppConfig` в типы `render-core`.
 
 use anyhow::{Result, bail};
+use fastiplayer_config::{AppConfig, HdrToSdrOperatorConfig, VulkanPresentMode};
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, SwapchainTransferMode,
 };
 use render_wgpu_shell::{ShellPresentMode, SurfaceAlphaPreference, SurfacePresentSettings};
-use rustiplayer_config::{AppConfig, HdrToSdrOperatorConfig, VulkanPresentMode};
 use tracing::warn;
 
 /// Преобразует пользовательский `[render.vulkan]` config в нейтральные shell
@@ -34,7 +34,7 @@ pub(crate) fn surface_present_settings_from_config(
 /// Логирует legacy tone mapping placeholder, который Phase 10 не превращает в UI preset.
 pub(crate) fn warn_legacy_tone_mapping_config(app_config: &AppConfig) {
     let tone_mapping_is_disabled =
-        app_config.render.tone_mapping == rustiplayer_config::ToneMappingMode::Disabled;
+        app_config.render.tone_mapping == fastiplayer_config::ToneMappingMode::Disabled;
 
     if tone_mapping_is_disabled {
         return;

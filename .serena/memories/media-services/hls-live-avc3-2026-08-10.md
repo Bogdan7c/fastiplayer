@@ -8,7 +8,7 @@
 
 ## Владельцы и boundaries
 
-- `symphonia-format-isomp4-patch` владеет точным различением sample entry `avc1`/`avc3` и публикует per-track raw tag `rustiplayer.video.h264.parameter_sets_in_band=true` только для `avc3`.
+- `symphonia-format-isomp4-patch` владеет точным различением sample entry `avc1`/`avc3` и публикует per-track raw tag `fastiplayer.video.h264.parameter_sets_in_band=true` только для `avc3`.
 - `symphonia-demux` переводит tag в нейтральный `VideoPacketFraming::LengthPrefixedWithInBandParameterSets`. Mapper применяет это evidence только к video track с exact codec id `V_MPEG4/ISO/AVC`; чужой tag не может перекрасить VP9 или другой codec.
 - `codec-core` разделяет строгий `parse_avc_decoder_configuration_record` (`avc1`, SPS/PPS обязательны) и `parse_avc3_decoder_configuration_record` (`avc3`, in-band parameter sets допустимы). `H264Packetization` сохраняет это различие typed-вариантом.
 - `player-core` преобразует neutral framing в decoder stream config. Missing/malformed `avc3 avcC` остаётся typed `UnsupportedVideoCodec` до configure decoder-а.
@@ -20,7 +20,7 @@
 - `avc1` contract не ослаблен: configuration record без SPS/PPS отклоняется.
 - `avc3` не угадывается по URL/расширению; его доказывает ISO BMFF sample entry.
 - Любой live HLS обязан иметь непустой authoritative track snapshot до Installed, не только deferred-codec layout.
-- На 2026-08-10 master публикует 6 video variants `avc3` (192x108 .. 896x504) и alternate audio `mp4a.40.5` (HE-AAC). Текущий Rustiplayer audio profile поддерживает AAC-LC, поэтому эта acceptance row доказывает video/live/DVR без обещания звука; HE-AAC требует отдельного decoder scope.
+- На 2026-08-10 master публикует 6 video variants `avc3` (192x108 .. 896x504) и alternate audio `mp4a.40.5` (HE-AAC). Текущий fastiplayer audio profile поддерживает AAC-LC, поэтому эта acceptance row доказывает video/live/DVR без обещания звука; HE-AAC требует отдельного decoder scope.
 - Выбранный 896x504 media playlist имел 234 segment-а и sliding window 898.560 s.
 
 ## Проверки

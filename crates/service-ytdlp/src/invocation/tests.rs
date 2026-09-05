@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustiplayer_config::YtDlpConfig;
+use fastiplayer_config::YtDlpConfig;
 use web_media_core::{ExtractionGeneration, ExtractorInvocationReason, SourceIdentity};
 
 use super::{
@@ -31,7 +31,7 @@ impl HermeticFixtureDirectory {
     fn create(label: &str) -> Self {
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "rustiplayer-n03-{label}-{}-{sequence}",
+            "fastiplayer-n03-{label}-{}-{sequence}",
             std::process::id()
         ));
         fs::create_dir(&path).expect("create N03 hermetic fixture directory");

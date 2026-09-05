@@ -6,7 +6,7 @@ use playlist_core::{
     LocalLocator,
 };
 use playlist_io::{
-    RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE, XspfDocumentSource, XspfExportIneligible,
+    FASTIPLAYER_XSPF_EXTENSION_NAMESPACE, XspfDocumentSource, XspfExportIneligible,
     XspfExportLocation, XspfParseError, XspfParseErrorKind, XspfParseRequest, XspfParserLimits,
     XspfPlaylist, parse_xspf_document,
 };
@@ -330,7 +330,7 @@ fn model_limits_cannot_claim_more_than_domain_capacity() {
 }
 
 #[test]
-fn rustiplayer_extension_uses_one_playlist_level_group_record() {
+fn fastiplayer_extension_uses_one_playlist_level_group_record() {
     let document = format!(
         r#"<playlist xmlns="http://xspf.org/ns/0/" xmlns:rp="{extension}" version="1">
           <extension application="{extension}" xml:base="https://service.example/">
@@ -344,7 +344,7 @@ fn rustiplayer_extension_uses_one_playlist_level_group_record() {
             <track><location>single.mp4</location></track>
           </trackList>
         </playlist>"#,
-        extension = RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE,
+        extension = FASTIPLAYER_XSPF_EXTENSION_NAMESPACE,
     );
 
     let playlist = parse_network(&document).expect("known group extension");
@@ -369,7 +369,7 @@ fn invalid_or_overlapping_group_ranges_are_rejected_after_track_list() {
           </extension>
           <trackList><track/><track/></trackList>
         </playlist>"#,
-        extension = RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE,
+        extension = FASTIPLAYER_XSPF_EXTENSION_NAMESPACE,
     );
 
     assert_eq!(
@@ -416,5 +416,22 @@ fn export_location_percent_encodes_native_path_and_rejects_foreign_identity() {
     assert_eq!(
         XspfExportLocation::from_durable_locator(&foreign_locator),
         Err(XspfExportIneligible::ForeignPlatformPath)
+    );
+}
+
+#[test]
+fn foreign_product_extension_keeps_standard_tracks_without_importing_groups() {
+    let document = r#"<playlist xmlns="http://xspf.org/ns/0/" version="1">
+      <extension application="urn:formerplayer:xspf:playlist-extension:1">
+        <group xmlns="urn:formerplayer:xspf:playlist-extension:1" firstTrack="1" trackCount="2"/>
+      </extension>
+      <trackList><track><location>movie.mp4</location></track></trackList>
+    </playlist>"#;
+    let playlist = parse_network(document).expect("foreign extension remains unknown");
+    assert!(playlist.groups().is_empty());
+    assert_eq!(playlist.tracks().len(), 1);
+    assert_eq!(
+        location_uri(&playlist, 0, 0),
+        "https://example.invalid/lists/movie.mp4"
     );
 }

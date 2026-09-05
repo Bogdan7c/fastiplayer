@@ -111,7 +111,7 @@ fn pending_eof_publication_reaches_real_wgpu_submit_readback_and_release() {
         &origin.media_url_with_extension("webm"),
     )
     .expect("direct URL");
-    let config = rustiplayer_config::AppConfig::default();
+    let config = fastiplayer_config::AppConfig::default();
     let opened = crate::direct_progressive_open::open_direct_media(
         &classified,
         &config.network,

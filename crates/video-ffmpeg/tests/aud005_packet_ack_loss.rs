@@ -341,9 +341,9 @@ fn drain_decoder_to_terminal_eof(
 #[ignore = "requires explicit generated MPEG-TS fixture and system FFmpeg libraries"]
 fn accurate_seek_eof_preserves_all_packet_completions() {
     // Fixture задаётся явно и не попадает в hermetic default test suite.
-    let asset_path = std::env::var_os("RUSTIPLAYER_MEDIA_PATH")
+    let asset_path = std::env::var_os("FASTIPLAYER_MEDIA_PATH")
         .map(std::path::PathBuf::from)
-        .expect("RUSTIPLAYER_MEDIA_PATH должен указывать на generated AUD-005 MPEG-TS");
+        .expect("FASTIPLAYER_MEDIA_PATH должен указывать на generated AUD-005 MPEG-TS");
 
     // Production demux выполняет seek и формирует реальный post-seek preroll burst.
     let (video_track_id, actual_seek_position, post_seek_packets) =

@@ -51,12 +51,12 @@ impl<'frame> FrameSettingsRuntimeAdapter<'frame> {
 
 /// Полный config snapshot для staged active-media reopen-а.
 struct ActiveMediaReconfigureConfig {
-    network: rustiplayer_config::NetworkConfig,
-    web_media: rustiplayer_config::WebMediaConfig,
-    yt_dlp: rustiplayer_config::YtDlpConfig,
-    demux: rustiplayer_config::PlayerDemuxConfig,
-    preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
-    video_backend_preference: rustiplayer_config::VideoBackendPreference,
+    network: fastiplayer_config::NetworkConfig,
+    web_media: fastiplayer_config::WebMediaConfig,
+    yt_dlp: fastiplayer_config::YtDlpConfig,
+    demux: fastiplayer_config::PlayerDemuxConfig,
+    preferred_video_codec_order: Vec<fastiplayer_config::VideoCodec>,
+    video_backend_preference: fastiplayer_config::VideoBackendPreference,
     reselect_web_media_stream: bool,
     rebuild_remote_source: bool,
     rebuild_local_source: bool,
@@ -249,28 +249,28 @@ impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
 impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
     fn preflight_settings_transaction(
         &mut self,
-        routes: &[rustiplayer_settings::RuntimeCommittedRoute],
+        routes: &[fastiplayer_settings::RuntimeCommittedRoute],
     ) -> Result<(), SettingsRuntimePreflightFailure> {
         if routes
             .iter()
-            .any(|route| route.route == rustiplayer_settings::AppRuntimeRoute::Playlist)
+            .any(|route| route.route == fastiplayer_settings::AppRuntimeRoute::Playlist)
         {
             self.playlist_runtime
                 .preflight_playlist_settings()
                 .map_err(|message| SettingsRuntimePreflightFailure {
-                    route: rustiplayer_settings::AppRuntimeRoute::Playlist,
+                    route: fastiplayer_settings::AppRuntimeRoute::Playlist,
                     result: AppRouteApplyResult::Failed { message },
                 })?;
         }
 
         let touches_renderer = routes
             .iter()
-            .any(|route| route.route == rustiplayer_settings::AppRuntimeRoute::RenderCommitted);
+            .any(|route| route.route == fastiplayer_settings::AppRuntimeRoute::RenderCommitted);
         if touches_renderer
             && let Some(activity) = self.renderer_lifecycle.settings_recreation_activity()
         {
             return Err(SettingsRuntimePreflightFailure {
-                route: rustiplayer_settings::AppRuntimeRoute::RenderCommitted,
+                route: fastiplayer_settings::AppRuntimeRoute::RenderCommitted,
                 result: AppRouteApplyResult::RuntimeBusy { activity },
             });
         }
@@ -278,9 +278,9 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         let touches_player_boundary = routes.iter().any(|route| {
             matches!(
                 route.route,
-                rustiplayer_settings::AppRuntimeRoute::Player
-                    | rustiplayer_settings::AppRuntimeRoute::MediaService
-                    | rustiplayer_settings::AppRuntimeRoute::FrameServer
+                fastiplayer_settings::AppRuntimeRoute::Player
+                    | fastiplayer_settings::AppRuntimeRoute::MediaService
+                    | fastiplayer_settings::AppRuntimeRoute::FrameServer
             )
         });
         if !touches_player_boundary {
@@ -335,7 +335,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
 
     fn apply_playlist_runtime_settings(
         &mut self,
-        update: &rustiplayer_settings::PlaylistRuntimeSettingsUpdate,
+        update: &fastiplayer_settings::PlaylistRuntimeSettingsUpdate,
     ) -> AppRouteApplyResult {
         match self
             .playlist_runtime
@@ -379,13 +379,13 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                 || self.app_state.video_backend_preference(),
                 |backend_update| match backend_update.preference {
                     player_core::PlayerRuntimeVideoBackendPreference::Auto => {
-                        rustiplayer_config::VideoBackendPreference::Auto
+                        fastiplayer_config::VideoBackendPreference::Auto
                     }
                     player_core::PlayerRuntimeVideoBackendPreference::Hardware => {
-                        rustiplayer_config::VideoBackendPreference::Hardware
+                        fastiplayer_config::VideoBackendPreference::Hardware
                     }
                     player_core::PlayerRuntimeVideoBackendPreference::Software => {
-                        rustiplayer_config::VideoBackendPreference::Software
+                        fastiplayer_config::VideoBackendPreference::Software
                     }
                 },
             );

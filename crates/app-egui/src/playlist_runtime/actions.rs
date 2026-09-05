@@ -131,7 +131,7 @@ impl PlaylistRuntime {
     pub(crate) fn append_playlist_url(
         &mut self,
         input: &str,
-        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
+        yt_dlp_config: &fastiplayer_config::YtDlpConfig,
     ) -> Result<UrlAppendActionOutcome, UrlAppendValidationError> {
         if !self
             .admission_open
@@ -312,13 +312,13 @@ mod tests {
         let first = runtime
             .append_playlist_url(
                 "https://media.example.test/video2.mp4",
-                &rustiplayer_config::YtDlpConfig::default(),
+                &fastiplayer_config::YtDlpConfig::default(),
             )
             .expect("pure direct classification");
         let second = runtime
             .append_playlist_url(
                 "https://media.example.test/video2.mp4",
-                &rustiplayer_config::YtDlpConfig::default(),
+                &fastiplayer_config::YtDlpConfig::default(),
             )
             .expect("duplicate remains valid");
         assert_eq!(first, UrlAppendActionOutcome::Appended { item_count: 1 });
@@ -334,7 +334,7 @@ mod tests {
         let raw = "https://user:password@media.example.test/video.mp4?token=secret";
         assert_eq!(
             runtime
-                .append_playlist_url(raw, &rustiplayer_config::YtDlpConfig::default())
+                .append_playlist_url(raw, &fastiplayer_config::YtDlpConfig::default())
                 .expect("pure classification"),
             UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision
         );
@@ -348,7 +348,7 @@ mod tests {
         assert!(model.reasons().sensitive_url_persistence());
         assert!(!format!("{model:?}").contains("token=secret"));
         runtime
-            .append_playlist_url(raw, &rustiplayer_config::YtDlpConfig::default())
+            .append_playlist_url(raw, &fastiplayer_config::YtDlpConfig::default())
             .expect("new exact intent");
         assert!(matches!(
             runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
@@ -376,7 +376,7 @@ mod tests {
         let mut runtime = runtime();
         let raw = "https://user:password@media.example.test/video.mp4?token=secret";
         runtime
-            .append_playlist_url(raw, &rustiplayer_config::YtDlpConfig::default())
+            .append_playlist_url(raw, &fastiplayer_config::YtDlpConfig::default())
             .expect("pending decision");
         let model = runtime.pending_playlist_confirmation().expect("model");
         assert!(matches!(
@@ -389,13 +389,13 @@ mod tests {
         assert_eq!(runtime.controller.queue().top_level_entry_count(), 0);
 
         runtime
-            .append_playlist_url(raw, &rustiplayer_config::YtDlpConfig::default())
+            .append_playlist_url(raw, &fastiplayer_config::YtDlpConfig::default())
             .expect("second pending decision");
         let stale = runtime.pending_playlist_confirmation().expect("model");
         runtime
             .append_playlist_url(
                 "https://media.example.test/other.mp4",
-                &rustiplayer_config::YtDlpConfig::default(),
+                &fastiplayer_config::YtDlpConfig::default(),
             )
             .expect("new action commits and supersedes pending slot");
         assert!(matches!(
@@ -407,7 +407,7 @@ mod tests {
         ));
         let malformed = "https://user:password@[invalid]/video.mp4?token=secret";
         let error = runtime
-            .append_playlist_url(malformed, &rustiplayer_config::YtDlpConfig::default())
+            .append_playlist_url(malformed, &fastiplayer_config::YtDlpConfig::default())
             .expect_err("invalid URL rejected");
         let formatted = format!("{error:?}");
         for secret in ["password", "token=secret"] {

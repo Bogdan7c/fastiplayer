@@ -1,12 +1,12 @@
-# Contributing to Rustiplayer
+# Contributing to Fastiplayer
 
-Rustiplayer is Linux-first software in active development / pre-alpha. Reproducible bug reports, focused fixes, consumer-level tests, and clear documentation are welcome. One core maintainer reviews contributions; response times are not guaranteed.
+Fastiplayer is Linux-first software in active development / pre-alpha. Reproducible bug reports, focused fixes, consumer-level tests, and clear documentation are welcome. One core maintainer reviews contributions; response times are not guaranteed.
 
 ## Choose work and the right channel
 
 1. Read the [current limitations and ordered roadmap](README.md#current-limitations), then search existing issues and pull requests before opening another one.
-2. Report broken behavior through the [bug report form](https://github.com/Bogdan7c/rustiplayer/issues/new?template=bug_report.yml). Include a small, shareable reproduction and the environment that actually failed.
-3. Use the [feature request form](https://github.com/Bogdan7c/rustiplayer/issues/new?template=feature_request.yml) for a concrete proposal with a user problem, expected behavior, and scope. General questions and exploratory ideas belong in [Discussions](https://github.com/Bogdan7c/rustiplayer/discussions); see [SUPPORT.md](SUPPORT.md) for routing.
+2. Report broken behavior through the [bug report form](https://github.com/Bogdan7c/fastiplayer/issues/new?template=bug_report.yml). Include a small, shareable reproduction and the environment that actually failed.
+3. Use the [feature request form](https://github.com/Bogdan7c/fastiplayer/issues/new?template=feature_request.yml) for a concrete proposal with a user problem, expected behavior, and scope. General questions and exploratory ideas belong in [Discussions](https://github.com/Bogdan7c/fastiplayer/discussions); see [SUPPORT.md](SUPPORT.md) for routing.
 4. Prefer a bounded issue with clear expected behavior and an identifiable owning module. Confirm scope with the maintainer before a substantial feature or architectural change. A large roadmap issue is not automatically a beginner task; `good first issue` is appropriate only for an actually scoped small task. No such issue or assignment is promised by this guide.
 5. For suspected vulnerabilities, follow [SECURITY.md](SECURITY.md); do not use a public issue or pull request to disclose them.
 
@@ -26,12 +26,12 @@ sudo apt-get install build-essential clang libclang-dev pkg-config \
 These package names describe the CI environment; they are not a claim that every Linux distribution uses them. Actual playback also needs a graphical session, a working Vulkan renderer, audio output, and the appropriate VA-API driver for hardware decode.
 
 ```bash
-git clone https://github.com/Bogdan7c/rustiplayer.git
-cd rustiplayer
+git clone https://github.com/Bogdan7c/fastiplayer.git
+cd fastiplayer
 cargo build -p app-egui --release --locked
 ```
 
-The executable is `target/release/rustiplayer`. Before public launch, cloning requires repository access. Public unauthenticated cloning is a launch verification item. System `yt-dlp` is optional for supported web-page extraction; native direct sources do not require it. See the [media compatibility matrix](docs/web-media-compatibility-matrix.md) for its accepted version and profiles.
+The executable is `target/release/fastiplayer`. Before public launch, cloning requires repository access. Public unauthenticated cloning is a launch verification item. System `yt-dlp` is optional for supported web-page extraction; native direct sources do not require it. See the [media compatibility matrix](docs/web-media-compatibility-matrix.md) for its accepted version and profiles.
 
 ## Ordinary contributor checks
 

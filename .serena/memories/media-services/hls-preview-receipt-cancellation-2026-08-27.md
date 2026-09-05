@@ -14,7 +14,7 @@ A newly packet-proven manifest anchor is no longer inserted into the shared prev
 
 Separate A/V uses one shared token for video and audio. Both sources are activated only after commit authorization; both staged selections are committed together immediately before the composite swap.
 
-Committed selection evidence публикуется через neutral `log` facade как INFO target `rustiplayer::hls_manifest_selection`. Marker содержит только HLS-owned safe scalars; concrete backend остаётся в composition root. Публикация остаётся внутри authorized staged commit, поэтому cancellation/failure/stale path не создаёт marker.
+Committed selection evidence публикуется через neutral `log` facade как INFO target `fastiplayer::hls_manifest_selection`. Marker содержит только HLS-owned safe scalars; concrete backend остаётся в composition root. Публикация остаётся внутри authorized staged commit, поэтому cancellation/failure/stale path не создаёт marker.
 
 ## AES media/key physical cancellation
 

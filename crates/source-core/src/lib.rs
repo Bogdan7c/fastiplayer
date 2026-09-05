@@ -1,4 +1,4 @@
-//! Нейтральный byte-source слой rustiplayer.
+//! Нейтральный byte-source слой fastiplayer.
 //!
 //! Crate владеет только чтением bytes из локальных файлов, HTTP Range источников,
 //! progressive FTP(S) источников, metadata источника и RAM range cache. Здесь

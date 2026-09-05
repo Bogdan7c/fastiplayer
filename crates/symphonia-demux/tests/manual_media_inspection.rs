@@ -9,7 +9,7 @@ use symphonia_demux::SymphoniaDemuxer;
 #[ignore = "manual media regression; use scripts/media-regression.sh"]
 fn selected_media_is_openable_and_reports_detected_tracks() -> Result<()> {
     let path = selected_media_path()?;
-    let scenario = std::env::var("RUSTIPLAYER_MEDIA_SCENARIO")
+    let scenario = std::env::var("FASTIPLAYER_MEDIA_SCENARIO")
         .unwrap_or_else(|_| "manual-inspection".to_string());
     let demuxer = SymphoniaDemuxer::from_file(&path)?;
     ensure!(

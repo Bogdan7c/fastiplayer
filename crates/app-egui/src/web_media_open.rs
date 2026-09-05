@@ -31,12 +31,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use demux_api::{CompositeAvDemuxer, CompositeAvTrackSelection, CompositeComponentLeadPolicy};
-use media_core::{
-    Demuxer, DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration, TrackId, TrackKind,
-};
-use rustiplayer_config::{
+use fastiplayer_config::{
     NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, WebMediaConfig,
     WebMediaHdrSelection, YtDlpConfig,
+};
+use media_core::{
+    Demuxer, DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration, TrackId, TrackKind,
 };
 use service_ytdlp::{
     YtDlpCandidateSelection, YtDlpCandidateSnapshot, YtDlpLiveIntent, YtDlpMediaLocator,

@@ -12,6 +12,7 @@ from typing import Any
 
 import coverage_coordinate_model as model
 import coverage_legacy_schema as legacy
+from coverage_identity_migration import verify_registered_migration
 from coverage_execution_scope import (
     LOCAL_HARDWARE_SOURCES, split_scope_regressions, validate_hosted_cohort_manifest,
 )
@@ -498,6 +499,10 @@ def check_baseline_update(
     previous_exception_document: Any,
     proposed_baseline_document: Any,
     proposed_exception_document: Any,
+    *,
+    identity_migrations: Any = None,
+    previous_policy: Any = None,
+    proposed_policy: Any = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Проверяет atomic v2 baseline+exception transition без legacy waiver-а."""
 
@@ -511,6 +516,19 @@ def check_baseline_update(
     proposed_exceptions = validate_measurement_exceptions(
         proposed_exception_document
     )
+    migration_inputs = (identity_migrations, previous_policy, proposed_policy)
+    if any(value is not None for value in migration_inputs):
+        if any(value is None for value in migration_inputs):
+            raise ValueError("identity migration требует реестр и обе policy")
+        if verify_registered_migration(
+            previous_baseline, proposed_baseline,
+            previous_exception_document, proposed_exception_document,
+            previous_policy, proposed_policy, identity_migrations,
+        ):
+            # Только точная биекция сохраняет квалификацию, включая legacy архив.
+            report = {"status": "pass", "kind": "coverage-identity-migration", "regressions": []}
+            report["check_hash"] = model.content_hash(report)
+            return True, report
     transition = _compare_stable_transition(
         previous_baseline, proposed_baseline, proposed_exceptions
     )
@@ -591,6 +609,9 @@ def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
         help="проверить atomic v2 baseline и measurement-exceptions transition",
     )
     update.add_argument("--previous-baseline", type=Path, required=True)
+    update.add_argument("--identity-migrations", type=Path)
+    update.add_argument("--previous-policy", type=Path)
+    update.add_argument("--proposed-policy", type=Path)
     update.add_argument(
         "--previous-measurement-exceptions", type=Path, required=True
     )
@@ -655,6 +676,9 @@ def main(arguments: list[str] | None = None) -> int:
                 model.read_json(parsed.previous_measurement_exceptions),
                 model.read_json(parsed.proposed_baseline),
                 model.read_json(parsed.proposed_measurement_exceptions),
+                identity_migrations=(model.read_json(parsed.identity_migrations) if parsed.identity_migrations else None),
+                previous_policy=(model.read_json(parsed.previous_policy) if parsed.previous_policy else None),
+                proposed_policy=(model.read_json(parsed.proposed_policy) if parsed.proposed_policy else None),
             )
             print(f"Stable coverage baseline update: {report['status']}")
             if not passed:

@@ -10,7 +10,7 @@ Notable project changes are recorded here in a Keep a Changelog-like structure. 
 
 ## [0.1.0-alpha.1]
 
-First public development release scope, with tag name `v0.1.0-alpha.1`: Linux-first, source-only, active development / pre-alpha. Publication status and generated source archives are available on the [Releases page](https://github.com/Bogdan7c/rustiplayer/releases); no portable binaries are provided. Workspace packages and their internal version requirements are aligned to `0.1.0-alpha.1`; the Cargo lockfile is updated with Cargo.
+First public development release scope, with tag name `v0.1.0-alpha.1`: Linux-first, source-only, active development / pre-alpha. Publication status and generated source archives are available on the [Releases page](https://github.com/Bogdan7c/fastiplayer/releases); no portable binaries are provided. Workspace packages and their internal version requirements are aligned to `0.1.0-alpha.1`; the Cargo lockfile is updated with Cargo.
 
 ### Added
 

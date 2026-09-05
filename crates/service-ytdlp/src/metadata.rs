@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rustiplayer_config::YtDlpConfig;
+use fastiplayer_config::YtDlpConfig;
 use web_media_core::ExtractorInvocationReason;
 
 use crate::dto::YtDlpMetadata;

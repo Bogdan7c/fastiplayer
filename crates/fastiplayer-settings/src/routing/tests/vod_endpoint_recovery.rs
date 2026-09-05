@@ -1,5 +1,5 @@
 use super::*;
-use rustiplayer_config::{PreferredVideoHeight, WebMediaHdrSelection};
+use fastiplayer_config::{PreferredVideoHeight, WebMediaHdrSelection};
 
 #[test]
 fn changes_form_one_exact_media_service_route() {

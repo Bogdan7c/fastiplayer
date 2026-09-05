@@ -30,7 +30,7 @@ use snapshot_properties::{full_dynamic_player_properties, mpris_metadata_values}
 use track_identity::{encode_track_key, media_time_to_mpris_microseconds};
 
 /// Единственное process base name: fallback suffix и late retry запрещены D78.
-const MPRIS_BUS_NAME: &str = "org.mpris.MediaPlayer2.rustiplayer";
+const MPRIS_BUS_NAME: &str = "org.mpris.MediaPlayer2.fastiplayer";
 const MPRIS_OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 const MPRIS_PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 
@@ -257,11 +257,11 @@ impl MprisRootInterface {
     }
     #[zbus(property)]
     fn identity(&self) -> &str {
-        "Rustiplayer"
+        "Fastiplayer"
     }
     #[zbus(property)]
     fn desktop_entry(&self) -> &str {
-        "rustiplayer"
+        "fastiplayer"
     }
     #[zbus(property)]
     fn supported_uri_schemes(&self) -> Vec<&str> {

@@ -8,7 +8,7 @@ pub const DEFAULT_MAX_XSPF_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_MAX_XSPF_DEPTH: usize = 32;
 /// Token budget ограничивает документы с огромным числом пустых constructs.
 pub const DEFAULT_MAX_XSPF_TOKENS: usize = 250_000;
-/// Один XSPF/Rustiplayer element не нуждается в десятках attributes.
+/// Один XSPF/Fastiplayer element не нуждается в десятках attributes.
 pub const DEFAULT_MAX_XSPF_ATTRIBUTES_PER_ELEMENT: usize = 16;
 /// Total attribute count закрывает distributed attribute flood.
 pub const DEFAULT_MAX_XSPF_ATTRIBUTE_COUNT: usize = 100_000;
@@ -38,7 +38,7 @@ pub struct XspfParserLimits {
     maximum_tracks: usize,
     /// Каждый track имеет отдельный ordered location-candidate cap.
     maximum_locations_per_track: usize,
-    /// Rustiplayer extension имеет отдельный group-record cap.
+    /// Fastiplayer extension имеет отдельный group-record cap.
     maximum_groups: usize,
 }
 
@@ -65,7 +65,7 @@ impl XspfParserLimits {
         self
     }
 
-    /// Задаёт maximum Rustiplayer group records.
+    /// Задаёт maximum Fastiplayer group records.
     pub const fn with_maximum_groups(mut self, maximum: usize) -> Self {
         self.maximum_groups = maximum;
         self

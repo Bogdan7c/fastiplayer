@@ -7,9 +7,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use fastiplayer_config::{NetworkConfig, PlayerDemuxConfig, WebMediaConfig};
 use media_core::Demuxer;
 use player_core::PreparedDemuxSeekPort;
-use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, WebMediaConfig};
 use source_core::{CancellationToken, HttpPathScope, SourceRuntimeConfig};
 use web_media_adaptive::{
     AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
@@ -287,7 +287,7 @@ impl NativeSmoothStartupJob {
     pub(super) fn spawn(
         source: NativeSmoothUrl,
         fallback_locator: service_ytdlp::YtDlpMediaLocator,
-        app_config: rustiplayer_config::AppConfig,
+        app_config: fastiplayer_config::AppConfig,
         system_capabilities: capability_core::SystemCapabilities,
         audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
         wake_port: AppWakePort,
@@ -370,7 +370,7 @@ impl NativeSmoothStartupJob {
 fn resolve_native_smooth_startup_media(
     source: NativeSmoothUrl,
     fallback_locator: service_ytdlp::YtDlpMediaLocator,
-    app_config: &rustiplayer_config::AppConfig,
+    app_config: &fastiplayer_config::AppConfig,
     system_capabilities: &capability_core::SystemCapabilities,
     audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     cancellation: CancellationToken,
@@ -432,7 +432,7 @@ impl super::StartupMediaController {
         source: NativeSmoothUrl,
         fallback_locator: service_ytdlp::YtDlpMediaLocator,
         app_state: &mut crate::state::AppState,
-        app_config: &rustiplayer_config::AppConfig,
+        app_config: &fastiplayer_config::AppConfig,
         system_capabilities: &capability_core::SystemCapabilities,
     ) {
         if let Some(error) = self.startup_job_admission_error() {

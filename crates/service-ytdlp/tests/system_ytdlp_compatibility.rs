@@ -1,4 +1,4 @@
-//! Development-only проверка совместимости системного `yt-dlp` с production boundaries Rustiplayer.
+//! Development-only проверка совместимости системного `yt-dlp` с production boundaries Fastiplayer.
 
 use std::error::Error;
 use std::io::{self, Read, Write};
@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use rustiplayer_config::YtDlpConfig;
+use fastiplayer_config::YtDlpConfig;
 use service_ytdlp::{
     YtDlpTopology, extract_yt_dlp_topology_with_config, parse_yt_dlp_media_locator,
     resolve_yt_dlp_candidate_snapshot_with_config,
@@ -16,7 +16,7 @@ use service_ytdlp::{
 use web_media_core::{ExtractionGeneration, SourceIdentity};
 
 /// Stable title делает локальный HTML fixture понятным в ручном `yt-dlp` diagnostic output.
-const FIXTURE_TITLE: &str = "Rustiplayer yt-dlp compatibility fixture";
+const FIXTURE_TITLE: &str = "Fastiplayer yt-dlp compatibility fixture";
 
 /// Маленький ISO BMFF prefix достаточен для безопасного HTTP probe без реального media download.
 const MEDIA_PREFIX: &[u8] = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2";

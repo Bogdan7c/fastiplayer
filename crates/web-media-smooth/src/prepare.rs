@@ -293,7 +293,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use rustiplayer_config::NetworkConfig;
+    use fastiplayer_config::NetworkConfig;
     use source_core::{
         CancellationToken, HttpHeader, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig,
         ValidatedHttpHeaders,

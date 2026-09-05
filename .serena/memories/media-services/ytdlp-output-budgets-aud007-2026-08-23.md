@@ -9,7 +9,7 @@
 ## Архитектура и defaults
 
 - Новый owner `crates/service-ytdlp/src/process_output.rs` владеет single-item output/structure invariant. `process.rs` только оркестрирует existing `OwnedProcess` lifecycle.
-- Независимые defaults в `rustiplayer_config::YtDlpConfig`: stdout 64 MiB, stderr 8 MiB, JSON values 1,000,000.
+- Независимые defaults в `fastiplayer_config::YtDlpConfig`: stdout 64 MiB, stderr 8 MiB, JSON values 1,000,000.
 - Реальный corpus system `yt-dlp 2026.08.19` с production args: maximum 826,324 bytes / 11,857 JSON values; defaults дают примерно 81x/84x запас для исследованных обычных, music, multilingual, 4K/8K и lyrics-heavy single-item cases.
 - Settings paths: `yt_dlp.single_item_stdout_limit_bytes`, `yt_dlp.single_item_stderr_limit_bytes`, `yt_dlp.single_item_json_node_limit`. Config maxima: 1 GiB, 64 MiB, 10,000,000.
 - `YtDlpConfig::validate()` доступен отдельно от полного `AppConfig`; `YtDlpProcessOutputBudgets::from_config` не позволяет direct service caller-у обойти config maxima.

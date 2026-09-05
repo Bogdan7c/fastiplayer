@@ -171,8 +171,8 @@ run_selected_test() {
     printf 'RUN: scenario=%s; path=%s\n' "${scenario_name}" "${selected_path}" >&2
     if [[ "${test_target}" == "lib" ]]; then
         if ! env \
-            "RUSTIPLAYER_MEDIA_PATH=${selected_path}" \
-            "RUSTIPLAYER_MEDIA_SCENARIO=${scenario_name}" \
+            "FASTIPLAYER_MEDIA_PATH=${selected_path}" \
+            "FASTIPLAYER_MEDIA_SCENARIO=${scenario_name}" \
             cargo +1.96.0 test -p "${package_name}" "${package_feature_arguments[@]}" --locked --lib "${test_name}" -- --ignored --exact --nocapture; then
             print_failed "selected assertion failed"
             exit "${FAILURE_EXIT_CODE}"
@@ -181,8 +181,8 @@ run_selected_test() {
     fi
 
     if ! env \
-        "RUSTIPLAYER_MEDIA_PATH=${selected_path}" \
-        "RUSTIPLAYER_MEDIA_SCENARIO=${scenario_name}" \
+        "FASTIPLAYER_MEDIA_PATH=${selected_path}" \
+        "FASTIPLAYER_MEDIA_SCENARIO=${scenario_name}" \
         cargo +1.96.0 test -p "${package_name}" "${package_feature_arguments[@]}" --locked --test "${test_target}" "${test_name}" -- --ignored --exact --nocapture; then
         print_failed "selected assertion failed"
         exit "${FAILURE_EXIT_CODE}"
@@ -196,8 +196,8 @@ run_inspection() {
     fi
 
     if ! env \
-        "RUSTIPLAYER_MEDIA_PATH=${selected_path}" \
-        "RUSTIPLAYER_MEDIA_SCENARIO=${scenario_name}" \
+        "FASTIPLAYER_MEDIA_PATH=${selected_path}" \
+        "FASTIPLAYER_MEDIA_SCENARIO=${scenario_name}" \
         cargo +1.96.0 test -p symphonia-demux --locked --test manual_media_inspection selected_media_is_openable_and_reports_detected_tracks -- --ignored --exact --nocapture; then
         print_failed "selected file could not be inspected as media"
         exit "${FAILURE_EXIT_CODE}"

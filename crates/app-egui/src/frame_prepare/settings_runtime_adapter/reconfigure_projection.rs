@@ -93,20 +93,20 @@ pub(super) const fn settings_boundary_activity_from_player(
 
 /// Находит первый затронутый player/media owner для точного preflight report-а.
 pub(super) fn first_player_route(
-    routes: &[rustiplayer_settings::RuntimeCommittedRoute],
-) -> rustiplayer_settings::AppRuntimeRoute {
+    routes: &[fastiplayer_settings::RuntimeCommittedRoute],
+) -> fastiplayer_settings::AppRuntimeRoute {
     routes
         .iter()
         .map(|route| route.route)
         .find(|route| {
             matches!(
                 route,
-                rustiplayer_settings::AppRuntimeRoute::Player
-                    | rustiplayer_settings::AppRuntimeRoute::MediaService
-                    | rustiplayer_settings::AppRuntimeRoute::FrameServer
+                fastiplayer_settings::AppRuntimeRoute::Player
+                    | fastiplayer_settings::AppRuntimeRoute::MediaService
+                    | fastiplayer_settings::AppRuntimeRoute::FrameServer
             )
         })
-        .unwrap_or(rustiplayer_settings::AppRuntimeRoute::Player)
+        .unwrap_or(fastiplayer_settings::AppRuntimeRoute::Player)
 }
 
 /// Строит typed player report, если app-owned pipeline rebuild не стартовал.

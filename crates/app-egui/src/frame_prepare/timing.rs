@@ -13,7 +13,7 @@ use super::input_snapshot::AppFrameInputTimings;
 use super::ui_prepare::UiPrepareTimings;
 
 /// Tracing target для чистого включения render frame timings без packet debug шума.
-const RENDER_FRAME_TIMING_TARGET: &str = "rustiplayer::render_frame_timing";
+const RENDER_FRAME_TIMING_TARGET: &str = "fastiplayer::render_frame_timing";
 
 /// Fallback budget для startup/opening кадров, пока player snapshot ещё не измерил frame duration.
 const DEFAULT_RENDER_FRAME_BUDGET: Duration = Duration::from_nanos(16_666_667);

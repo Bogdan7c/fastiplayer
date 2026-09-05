@@ -1,4 +1,4 @@
-//! TOML-конфигурация rustiplayer.
+//! TOML-конфигурация fastiplayer.
 //!
 //! Crate отвечает только за пользовательский config: схему, defaults,
 //! validation и чтение/создание файла на платформенном config-пути.

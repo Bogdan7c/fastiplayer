@@ -18,6 +18,12 @@ pub use application_contract::{
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use fastiplayer_config::{
+    AppConfig, FrameServerConfig, HdrToSdrOperatorConfig, NetworkConfig, OpenGlesConfig,
+    PlayerDemuxConfig, PlaylistConfig, RenderProfile, ToneMappingMode as ConfigToneMappingMode,
+    UiConfig, VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig,
+    YtDlpConfig, save_validated_atomic_at,
+};
 use player_core::{
     PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate, PlayerRuntimeVideoBackendPreference,
     PlayerTickConfig, PlayerWorkerConfig,
@@ -25,12 +31,6 @@ use player_core::{
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, RenderLiveSettings, RenderLiveSettingsUpdate, SwapchainTransferMode,
-};
-use rustiplayer_config::{
-    AppConfig, FrameServerConfig, HdrToSdrOperatorConfig, NetworkConfig, OpenGlesConfig,
-    PlayerDemuxConfig, PlaylistConfig, RenderProfile, ToneMappingMode as ConfigToneMappingMode,
-    UiConfig, VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig,
-    YtDlpConfig, save_validated_atomic_at,
 };
 use settings_core::{
     ApplyMechanism, ApplyRouteReport, ApplyRouteResult, CommittedApplyRequest,

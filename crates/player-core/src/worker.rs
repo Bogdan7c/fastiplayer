@@ -6,11 +6,11 @@ use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
+use fastiplayer_config::{
+    FrameServerConfig as PersistedFrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
+};
 use frame_server_core::{
     FrameServerConfig as RuntimeFrameServerConfig, LiveScrubDecodeMode, ValidatedFrameServerConfig,
-};
-use rustiplayer_config::{
-    FrameServerConfig as PersistedFrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
 };
 use tracing::{debug, warn};
 use video_core::{
@@ -199,7 +199,7 @@ impl PlayerWorkerConfig {
 
     /// Создаёт worker config напрямую из validated app config.
     #[must_use]
-    pub fn from_app_config(config: &rustiplayer_config::AppConfig) -> Self {
+    pub fn from_app_config(config: &fastiplayer_config::AppConfig) -> Self {
         Self {
             coarse_wakeup_interval: DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL,
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
@@ -257,7 +257,7 @@ impl PlayerWorkerConfig {
     /// Возвращает decoder-thread limits из validated app config для shell-owned backend factory.
     #[must_use]
     pub fn decoder_thread_config_from_app_config(
-        config: &rustiplayer_config::AppConfig,
+        config: &fastiplayer_config::AppConfig,
     ) -> PlayerVideoDecoderThreadConfig {
         decoder_thread_config_from_app_config(config)
     }
@@ -265,7 +265,7 @@ impl PlayerWorkerConfig {
     /// Возвращает validated frame-server policy тем же маппингом, что startup worker config.
     #[must_use]
     pub fn frame_server_config_from_app_config(
-        config: &rustiplayer_config::AppConfig,
+        config: &fastiplayer_config::AppConfig,
     ) -> ValidatedFrameServerConfig {
         runtime_frame_server_config_from_persisted(&config.frame_server)
             .validate()
@@ -282,7 +282,7 @@ impl Default for PlayerWorkerConfig {
 
 /// Конвертирует validated TOML config в bounded decoder thread limits.
 fn decoder_thread_config_from_app_config(
-    config: &rustiplayer_config::AppConfig,
+    config: &fastiplayer_config::AppConfig,
 ) -> PlayerVideoDecoderThreadConfig {
     PlayerVideoDecoderThreadConfig {
         packet_channel_frames: config.video.decoder_packet_channel_frames,

@@ -12,7 +12,7 @@ readonly PLAYBACK_SMOKE="${REPO_ROOT}/scripts/playback-smoke.sh"
 # Exact AV1 Profile 0 decode entrypoint обязателен для обеих hardware suites.
 readonly AV1_VAAPI_PROFILE_REGEX='^[[:space:]]*VAProfileAV1Profile0[[:space:]]*:[[:space:]]*VAEntrypointVLD([[:space:]]|$)'
 # Explicit DRM node делает preflight независимым от X11/Wayland; override поддерживает multi-GPU hosts.
-readonly VAAPI_RENDER_NODE="${RUSTIPLAYER_SMOKE_VAAPI_RENDER_NODE:-/dev/dri/renderD128}"
+readonly VAAPI_RENDER_NODE="${FASTIPLAYER_SMOKE_VAAPI_RENDER_NODE:-/dev/dri/renderD128}"
 
 # Выбранная suite отсутствует до явного --suite.
 acceptance_suite=""

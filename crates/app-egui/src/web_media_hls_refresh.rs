@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use rustiplayer_config::{NetworkConfig, YtDlpConfig};
+use fastiplayer_config::{NetworkConfig, YtDlpConfig};
 use service_ytdlp::{YtDlpCandidateSelection, YtDlpLiveIntent, YtDlpMediaLocator};
 use source_core::{CancellationToken, SourceRuntimeConfig};
 use web_media_core::ExtractionGeneration;

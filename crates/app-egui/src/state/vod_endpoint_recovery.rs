@@ -129,7 +129,7 @@ const fn installed_endpoint_recovery_route(
 
 impl VodEndpointRecoveryPolicy {
     /// Переводит validated config в runtime units в одном месте.
-    fn from_config(config: &rustiplayer_config::WebMediaConfig) -> Self {
+    fn from_config(config: &fastiplayer_config::WebMediaConfig) -> Self {
         Self {
             enabled: config.vod_endpoint_recovery_enabled,
             max_consecutive_attempts: config.vod_endpoint_recovery_max_consecutive_attempts,
@@ -176,7 +176,7 @@ impl InstalledVodEndpointRecoveryClaimAdmission {
     /// Claims signal и строит immutable plan только после config и обеих identity fences.
     fn admit_claim_from_runtime_facts(
         &self,
-        config: &rustiplayer_config::WebMediaConfig,
+        config: &fastiplayer_config::WebMediaConfig,
         player_snapshot: &PlayerSnapshot,
         expected_active: Option<ActiveMediaIdentity>,
         now: Instant,
@@ -272,7 +272,7 @@ impl VodEndpointRecoveryRuntimeState {
     /// Атомарно добавляет real Installed source только к полностью admitted owned plan-у.
     fn claim_pending_expiry_from_runtime_facts(
         &mut self,
-        config: &rustiplayer_config::WebMediaConfig,
+        config: &fastiplayer_config::WebMediaConfig,
         player_snapshot: &PlayerSnapshot,
         expected_active: Option<ActiveMediaIdentity>,
         now: Instant,

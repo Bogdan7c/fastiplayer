@@ -1,4 +1,4 @@
-use rustiplayer_config::AppConfig;
+use fastiplayer_config::AppConfig;
 
 use super::{
     AppRuntimeRoute, MediaServiceRuntimeSettingsUpdate, RouteInput, RuntimeCommittedRoute,

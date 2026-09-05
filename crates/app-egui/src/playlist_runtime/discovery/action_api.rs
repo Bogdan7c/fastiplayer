@@ -50,7 +50,7 @@ impl PlaylistRuntime {
     pub(crate) fn request_visible_metadata_refresh(
         &mut self,
         item_ids: &[PlaylistItemId],
-        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
+        yt_dlp_config: &fastiplayer_config::YtDlpConfig,
     ) -> VisibleRefreshRequestOutcome {
         let Some(controller) = self.controller.as_ref() else {
             return VisibleRefreshRequestOutcome::default();

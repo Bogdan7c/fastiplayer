@@ -1,6 +1,6 @@
-# Rustiplayer architecture
+# Fastiplayer architecture
 
-Rustiplayer separates playback policy, media transport, decoding, frame lifetime, rendering, and the desktop shell. The application is the composition root; the playback core consumes contracts rather than concrete GPU or decoder implementations. This document describes the current implementation, not the 1.0 roadmap.
+Fastiplayer separates playback policy, media transport, decoding, frame lifetime, rendering, and the desktop shell. The application is the composition root; the playback core consumes contracts rather than concrete GPU or decoder implementations. This document describes the current implementation, not the 1.0 roadmap.
 
 For supported media and measured outcomes, use the [compatibility matrix](docs/web-media-compatibility-matrix.md) and [N15 acceptance](docs/native-web-ingress-n15-acceptance.md). More detailed engineering documents are indexed in [docs/README.md](docs/README.md); most are in Russian.
 
@@ -9,7 +9,7 @@ For supported media and measured outcomes, use the [compatibility matrix](docs/w
 | Responsibility | State owner / implementation | Boundary |
 | --- | --- | --- |
 | Desktop UI and composition | [app-egui](crates/app-egui/src), egui/winit | User intents, source preparation, concrete backend/renderer selection, window lifecycle |
-| Settings schema and transactions | [config](crates/config/src), [settings-core](crates/settings-core/src), [rustiplayer-settings](crates/rustiplayer-settings/src) | Validated descriptors, typed application routes, persistence and rollback |
+| Settings schema and transactions | [config](crates/config/src), [settings-core](crates/settings-core/src), [fastiplayer-settings](crates/fastiplayer-settings/src) | Validated descriptors, typed application routes, persistence and rollback |
 | Queue and durable identity | [playlist-core](crates/playlist-core/src), [playlist-state](crates/playlist-state/src), playlist-io/discovery | Queue edits, import/export, restore, source identity |
 | Byte sources and transport | [source-core](crates/source-core/src), web-media-http/ftp, media-prefetch | Bounded reads, seek/cancellation, transport accounting |
 | Web discovery and source lifecycle | [web-media-core](crates/web-media-core/src), protocol-specific web-media crates | Provider-neutral catalogs, semantic selection, stable-root reopen/recovery |
@@ -60,7 +60,7 @@ Diagnostics are produced at their owning boundaries: transport request/byte acco
 
 ## Settings while running
 
-The [application-contract matrix](crates/rustiplayer-settings/src/application_contract.rs) maps editable settings to owners and intent-based application mechanisms. The [app transaction adapter](crates/app-egui/src/settings_runtime/transaction.rs) connects those contracts to runtime owners.
+The [application-contract matrix](crates/fastiplayer-settings/src/application_contract.rs) maps editable settings to owners and intent-based application mechanisms. The [app transaction adapter](crates/app-egui/src/settings_runtime/transaction.rs) connects those contracts to runtime owners.
 
 Applying settings validates the draft, checks generation/busy conditions, applies runtime routes in order, persists atomically, and finalizes committed state. Failure compensates completed work in reverse order; apply and rollback errors remain separately visible. Busy/conflict outcomes preserve the draft for an explicit retry rather than silently queuing changes.
 
@@ -84,7 +84,7 @@ Read [operational errors](docs/web-media-operational-errors.md), [dependency pol
 | --- | --- |
 | Concrete backend independence and module size | [Architectural guardrails](scripts/check-refactor-guardrails.py) |
 | Correct frame representation | [Frame-contract tests](crates/video-frame-contract/src), [render tests](crates/render-wgpu-video/src) |
-| Settings apply, failure, compensation, busy/conflict | [Settings runtime tests](crates/app-egui/src/settings_runtime/tests.rs), [application contracts](crates/rustiplayer-settings/src/application_contract.rs) |
+| Settings apply, failure, compensation, busy/conflict | [Settings runtime tests](crates/app-egui/src/settings_runtime/tests.rs), [application contracts](crates/fastiplayer-settings/src/application_contract.rs) |
 | Sources reach video/audio consumers | N14A/N14B suites and cross-source regression documented in [N15](docs/native-web-ingress-n15-acceptance.md) |
 | Seek lands through decode and rendering | [CI vertical seek acceptance](.github/workflows/ci.yml), [manual regressions](docs/manual-media-regressions.md) |
 | Actual device playback | [N15 hardware evidence](docs/native-web-ingress-n15-acceptance.md); [manual hardware workflow](.github/workflows/hardware-acceptance.yml) |

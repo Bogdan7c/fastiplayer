@@ -1,6 +1,6 @@
 //! Native stable-root endpoint refresh для direct dynamic DASH.
 
-use rustiplayer_config::NetworkConfig;
+use fastiplayer_config::NetworkConfig;
 use source_core::CancellationToken;
 use web_media_core::ExactSelectionIdentity;
 use web_media_dash::{

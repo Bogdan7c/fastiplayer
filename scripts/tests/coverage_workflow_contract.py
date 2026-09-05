@@ -173,7 +173,7 @@ def validate_coverage_workflow_contract(coverage_workflow: str) -> None:
     )
     # Exact ambient pair фиксирует воспроизводимый Cargo mode без test serialization.
     _require(
-        root_env_entries == ('RUSTIPLAYER_TEST_SCOPE: hosted', 'CARGO_INCREMENTAL: "0"', "CARGO_TERM_COLOR: always"),
+        root_env_entries == ('FASTIPLAYER_TEST_SCOPE: hosted', 'CARGO_INCREMENTAL: "0"', "CARGO_TERM_COLOR: always"),
         "workflow root env обязан содержать exact Cargo pair",
     )
     # PR-trigger извлекается только из проверенного canonical `on` owner-а.
@@ -334,11 +334,15 @@ def validate_coverage_workflow_contract(coverage_workflow: str) -> None:
         "--previous-measurement-exceptions /tmp/coverage-previous-measurement-exceptions.json",
         "--proposed-baseline coverage/baseline.json",
         "--proposed-measurement-exceptions coverage/measurement-exceptions.json",
+        "--identity-migrations coverage/identity-migrations.json",
+        "--previous-policy /tmp/coverage-previous-policy.json",
+        "--proposed-policy coverage/policy.json",
     )
     # Expected raw content включает two-space shell continuation indentation.
     expected_update_lines = (
         previous_baseline_extract,
         previous_exceptions_extract,
+        'git show "${COVERAGE_BASE_REF}:coverage/policy.json" > /tmp/coverage-previous-policy.json',
         f"{update_command} \\",
         *(f"  {argument} \\" for argument in update_arguments[:-1]),
         f"  {update_arguments[-1]}",

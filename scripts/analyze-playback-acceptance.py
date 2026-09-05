@@ -19,7 +19,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Analyze rustiplayer startup/seek acceptance telemetry without "
+            "Analyze fastiplayer startup/seek acceptance telemetry without "
             "launching the application."
         )
     )

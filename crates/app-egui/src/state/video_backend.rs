@@ -35,7 +35,7 @@ impl std::fmt::Display for VideoPipelineRebuildError {
 /// Именованный request controlled video-pipeline rebuild-а.
 pub(crate) struct VideoPipelineRebuildRequest<'resource> {
     /// User policy выбора backend-а.
-    pub(crate) backend_preference: rustiplayer_config::VideoBackendPreference,
+    pub(crate) backend_preference: fastiplayer_config::VideoBackendPreference,
     /// Lifecycle intent, определяющий retryable busy semantics.
     pub(crate) install_intent: player_core::PlayerVideoBackendInstallIntent,
     /// Queue/pool/thread config нового decoder-а.

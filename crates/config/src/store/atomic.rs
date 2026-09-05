@@ -30,7 +30,7 @@ pub(super) fn save_validated(path: &Path, config: &AppConfig) -> ConfigResult<()
     }
 
     sync_parent_directory_best_effort(path);
-    info!(path = %path.display(), "Сохранён config rustiplayer через atomic rename");
+    info!(path = %path.display(), "Сохранён config fastiplayer через atomic rename");
     Ok(())
 }
 

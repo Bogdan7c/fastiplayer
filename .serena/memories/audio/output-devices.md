@@ -11,4 +11,4 @@ Public API:
 
 CPAL 0.15 limitation:
 - Local dependency is CPAL 0.15.3. It has `DeviceTrait::name()` but no stable backend `DeviceId`, so `audio::devices` uses best-effort ids `cpal-0.15-name:<escaped-name>[#duplicate-index]` for non-default devices.
-- Keep this limitation contained in `audio::devices`; settings-core, app-egui, and rustiplayer-settings should treat ids as opaque strings.
+- Keep this limitation contained in `audio::devices`; settings-core, app-egui, and fastiplayer-settings should treat ids as opaque strings.

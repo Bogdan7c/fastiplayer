@@ -15,7 +15,7 @@ readonly USAGE_ERROR_EXIT_CODE=2
 readonly DEFAULT_FFMPEG_VERSION="8.1.1"
 
 # Отдельный каталог внутри target не попадает в Git и не требует root-доступа.
-readonly DEFAULT_PREFIX_ROOT_NAME="rustiplayer-ffmpeg"
+readonly DEFAULT_PREFIX_ROOT_NAME="fastiplayer-ffmpeg"
 
 # Функция печатает ошибку в stderr с единым префиксом.
 print_error() {
@@ -156,15 +156,15 @@ print_help() {
     cat <<'USAGE'
 Usage: scripts/tooling/build-ffmpeg-lgpl.sh [options]
 
-Build FFmpeg 8.1.x as local shared LGPL libav* tooling for rustiplayer.
+Build FFmpeg 8.1.x as local shared LGPL libav* tooling for fastiplayer.
 This does not add FFmpeg to Cargo workspace and does not make playback depend on it.
 
 Options:
   -h, --help                    Show this help.
       --dry-run                 Print planned commands without downloading/building.
       --version VERSION         FFmpeg stable 8.1.x version (default: 8.1.1).
-      --prefix PATH             Install prefix (default: target/rustiplayer-ffmpeg/VERSION).
-      --work-dir PATH           Build/cache directory (default: target/rustiplayer-ffmpeg/build).
+      --prefix PATH             Install prefix (default: target/fastiplayer-ffmpeg/VERSION).
+      --work-dir PATH           Build/cache directory (default: target/fastiplayer-ffmpeg/build).
       --source-dir PATH         Use an already unpacked FFmpeg source tree.
       --source-archive PATH     Use an existing ffmpeg-VERSION.tar.xz archive.
       --url URL                 Download source archive from URL.
@@ -175,15 +175,15 @@ Options:
       --disable-swscale         Explicitly skip libswscale (default).
 
 Environment:
-  RUSTIPLAYER_FFMPEG_VERSION
-  RUSTIPLAYER_FFMPEG_PREFIX
-  RUSTIPLAYER_FFMPEG_WORK_DIR
-  RUSTIPLAYER_FFMPEG_SOURCE_DIR
-  RUSTIPLAYER_FFMPEG_SOURCE_ARCHIVE
-  RUSTIPLAYER_FFMPEG_URL
-  RUSTIPLAYER_FFMPEG_JOBS
-  RUSTIPLAYER_FFMPEG_ENABLE_SWRESAMPLE
-  RUSTIPLAYER_FFMPEG_ENABLE_SWSCALE
+  FASTIPLAYER_FFMPEG_VERSION
+  FASTIPLAYER_FFMPEG_PREFIX
+  FASTIPLAYER_FFMPEG_WORK_DIR
+  FASTIPLAYER_FFMPEG_SOURCE_DIR
+  FASTIPLAYER_FFMPEG_SOURCE_ARCHIVE
+  FASTIPLAYER_FFMPEG_URL
+  FASTIPLAYER_FFMPEG_JOBS
+  FASTIPLAYER_FFMPEG_ENABLE_SWRESAMPLE
+  FASTIPLAYER_FFMPEG_ENABLE_SWSCALE
 USAGE
 }
 
@@ -255,7 +255,7 @@ build_configure_options() {
     # libavcodec является единственной обязательной FFmpeg decode library для будущего software path.
     add_configure_option "--enable-avcodec"
 
-    # libavformat не нужен: demuxing в rustiplayer остаётся за существующими media crates.
+    # libavformat не нужен: demuxing в fastiplayer остаётся за существующими media crates.
     add_configure_option "--disable-avformat"
 
     # libavdevice не нужен без FFmpeg CLI/device IO.
@@ -461,7 +461,7 @@ print_environment_exports() {
     printf 'export LD_LIBRARY_PATH=%q\n' "${ffmpeg_prefix}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
     # Guardrail формулируется здесь, потому что это самый частый источник путаницы.
-    printf '\nGuardrail: этот prefix не делает rustiplayer runtime-зависимым от FFmpeg.\n'
+    printf '\nGuardrail: этот prefix не делает fastiplayer runtime-зависимым от FFmpeg.\n'
 }
 
 # Функция разбирает CLI options и выставляет runtime variables.
@@ -643,7 +643,7 @@ validate_inputs() {
     # make -j требует положительное целое число.
     if [[ ! "${make_jobs}" =~ ^[1-9][0-9]*$ ]]; then
         # Нечисловой jobs лучше поймать до запуска make.
-        fail_usage "--jobs/RUSTIPLAYER_FFMPEG_JOBS должен быть положительным целым числом"
+        fail_usage "--jobs/FASTIPLAYER_FFMPEG_JOBS должен быть положительным целым числом"
     fi
 
     # source-dir и source-archive одновременно создают неоднозначный source of truth.
@@ -689,37 +689,37 @@ main() {
     repo_root="$(cd -- "${script_directory}/../.." >/dev/null 2>&1 && pwd)"
 
     # Env var version имеет приоритет над hardcoded default.
-    ffmpeg_version="${RUSTIPLAYER_FFMPEG_VERSION:-${DEFAULT_FFMPEG_VERSION}}"
+    ffmpeg_version="${FASTIPLAYER_FFMPEG_VERSION:-${DEFAULT_FFMPEG_VERSION}}"
 
     # Env prefix считается явным и не будет изменён после --version.
-    ffmpeg_prefix_is_explicit="$([[ -n "${RUSTIPLAYER_FFMPEG_PREFIX:-}" ]] && printf '1' || printf '0')"
+    ffmpeg_prefix_is_explicit="$([[ -n "${FASTIPLAYER_FFMPEG_PREFIX:-}" ]] && printf '1' || printf '0')"
 
     # Prefix из env берется сразу; default заполнится после parsing.
-    ffmpeg_prefix="${RUSTIPLAYER_FFMPEG_PREFIX:-}"
+    ffmpeg_prefix="${FASTIPLAYER_FFMPEG_PREFIX:-}"
 
     # Work dir по умолчанию лежит внутри ignored target.
-    work_directory="${RUSTIPLAYER_FFMPEG_WORK_DIR:-${repo_root}/target/${DEFAULT_PREFIX_ROOT_NAME}/build}"
+    work_directory="${FASTIPLAYER_FFMPEG_WORK_DIR:-${repo_root}/target/${DEFAULT_PREFIX_ROOT_NAME}/build}"
 
     # Source dir может указывать на уже распакованный FFmpeg checkout/tarball.
-    source_directory="${RUSTIPLAYER_FFMPEG_SOURCE_DIR:-}"
+    source_directory="${FASTIPLAYER_FFMPEG_SOURCE_DIR:-}"
 
     # Source archive может указывать на заранее скачанный ffmpeg-VERSION.tar.xz.
-    source_archive="${RUSTIPLAYER_FFMPEG_SOURCE_ARCHIVE:-}"
+    source_archive="${FASTIPLAYER_FFMPEG_SOURCE_ARCHIVE:-}"
 
     # Env URL считается явным и не будет изменён после --version.
-    download_url_is_explicit="$([[ -n "${RUSTIPLAYER_FFMPEG_URL:-}" ]] && printf '1' || printf '0')"
+    download_url_is_explicit="$([[ -n "${FASTIPLAYER_FFMPEG_URL:-}" ]] && printf '1' || printf '0')"
 
     # URL из env берется сразу; default заполнится после parsing.
-    download_url="${RUSTIPLAYER_FFMPEG_URL:-}"
+    download_url="${FASTIPLAYER_FFMPEG_URL:-}"
 
     # Jobs из env или CPU count управляют только скоростью make.
-    make_jobs="${RUSTIPLAYER_FFMPEG_JOBS:-$(detect_default_jobs)}"
+    make_jobs="${FASTIPLAYER_FFMPEG_JOBS:-$(detect_default_jobs)}"
 
     # libswresample выключен по умолчанию.
-    enable_swresample="${RUSTIPLAYER_FFMPEG_ENABLE_SWRESAMPLE:-0}"
+    enable_swresample="${FASTIPLAYER_FFMPEG_ENABLE_SWRESAMPLE:-0}"
 
     # libswscale выключен по умолчанию.
-    enable_swscale="${RUSTIPLAYER_FFMPEG_ENABLE_SWSCALE:-0}"
+    enable_swscale="${FASTIPLAYER_FFMPEG_ENABLE_SWSCALE:-0}"
 
     # Dry-run выключен по умолчанию.
     dry_run="0"

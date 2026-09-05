@@ -59,7 +59,7 @@ These rules apply to every part of the project: player-core, render, decoder, wo
 
 ## Module size and Rust API design rules
 
-1. Do not bloat central modules or crates. For Rustiplayer, this is especially important for `app-egui`, `player-core`, `render-wgpu-video`, `video-frame-contract`, and `video-backend-api`: new logic must go into the module that owns the relevant state and invariants, not the largest or most convenient file.
+1. Do not bloat central modules or crates. For Fastiplayer, this is especially important for `app-egui`, `player-core`, `render-wgpu-video`, `video-frame-contract`, and `video-backend-api`: new logic must go into the module that owns the relevant state and invariants, not the largest or most convenient file.
 
 2. If a file is already approaching 700–800 lines, put a new feature in a separate module by default. An exception is acceptable only for a small, local change; in that case, explicitly explain why a new module would reduce readability or fragment one coherent invariant.
 

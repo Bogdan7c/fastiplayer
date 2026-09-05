@@ -596,7 +596,7 @@ impl PlaylistRuntime {
     /// Pure URL classifier/controller boundary выполняется после egui render.
     pub(crate) fn submit_playlist_url_draft(
         &mut self,
-        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
+        yt_dlp_config: &fastiplayer_config::YtDlpConfig,
     ) -> bool {
         let input = self.ui_interaction.url_draft().text().to_string();
         match self.append_playlist_url(&input, yt_dlp_config) {

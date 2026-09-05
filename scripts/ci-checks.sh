@@ -38,7 +38,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/service-direct-media
     crates/settings-core
     crates/settings-derive
-    crates/rustiplayer-settings
+    crates/fastiplayer-settings
     crates/web-media-core
     crates/web-media-playback-plan
     crates/web-media-http

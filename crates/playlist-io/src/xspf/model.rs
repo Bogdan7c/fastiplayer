@@ -176,7 +176,7 @@ impl XspfGroup {
 pub struct XspfPlaylist {
     /// Flattened XSPF tracks сохраняют document order.
     tracks: Vec<XspfTrack>,
-    /// Rustiplayer compound ranges ссылаются на flattened order.
+    /// Fastiplayer compound ranges ссылаются на flattened order.
     groups: Vec<XspfGroup>,
 }
 

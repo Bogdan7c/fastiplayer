@@ -9,7 +9,7 @@ readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Проверяемый runner всегда вызывается по exact absolute path.
 readonly COMPATIBILITY_RUNNER="${REPO_ROOT}/scripts/ytdlp-compatibility.sh"
 # Временный каталог изолирует fake executables и invocation evidence от repository tree.
-temporary_directory="$(mktemp -d -t rustiplayer-ytdlp-compatibility-self-test.XXXXXX)"
+temporary_directory="$(mktemp -d -t fastiplayer-ytdlp-compatibility-self-test.XXXXXX)"
 # Fake PATH directory не может случайно перехватить команды вне этого self-test process tree.
 readonly FAKE_BIN_DIRECTORY="${temporary_directory}/bin"
 # Cargo argv записывается отдельно и затем проверяется как observable runner contract.
@@ -66,7 +66,7 @@ if [[ "$#" -ne 1 || "$1" != "--version" ]]; then
     exit 97
 fi
 # Специальный env switch проверяет typed shell failure version probe-а.
-if [[ "${RUSTIPLAYER_FAKE_YTDLP_VERSION_FAILURE:-0}" == "1" ]]; then
+if [[ "${FASTIPLAYER_FAKE_YTDLP_VERSION_FAILURE:-0}" == "1" ]]; then
     exit 23
 fi
 # Произвольная future version доказывает отсутствие version allowlist в runner-е.
@@ -77,9 +77,9 @@ EOF
 cat >"${FAKE_BIN_DIRECTORY}/cargo" <<'EOF'
 #!/usr/bin/env bash
 # Exact argv сохраняется для assertions вызывающего self-test.
-printf '%s\n' "$*" >"${RUSTIPLAYER_FAKE_CARGO_ARGUMENTS_LOG}"
+printf '%s\n' "$*" >"${FASTIPLAYER_FAKE_CARGO_ARGUMENTS_LOG}"
 # Exit status моделирует success либо нарушенный Rust compatibility contract.
-exit "${RUSTIPLAYER_FAKE_CARGO_EXIT_CODE:-0}"
+exit "${FASTIPLAYER_FAKE_CARGO_EXIT_CODE:-0}"
 EOF
 
 # Executable bits делают fake commands наблюдаемыми через обычный `command -v`.
@@ -105,8 +105,8 @@ require_output "${unknown_argument_output}" "unknown argument '--unknown-option'
 # Success scenario подменяет только два внешних executable, сохраняя настоящий runner code.
 success_output="$(env \
     "PATH=${FAKE_BIN_DIRECTORY}:${PATH}" \
-    "RUSTIPLAYER_FAKE_CARGO_ARGUMENTS_LOG=${CARGO_ARGUMENTS_LOG}" \
-    "RUSTIPLAYER_FAKE_CARGO_EXIT_CODE=0" \
+    "FASTIPLAYER_FAKE_CARGO_ARGUMENTS_LOG=${CARGO_ARGUMENTS_LOG}" \
+    "FASTIPLAYER_FAKE_CARGO_EXIT_CODE=0" \
     "${COMPATIBILITY_RUNNER}" 2>&1)"
 # Future version не блокируется номером и попадает только в diagnostic marker.
 require_output "${success_output}" "version=2099.12.31"
@@ -119,8 +119,8 @@ require_output "$(<"${CARGO_ARGUMENTS_LOG}")" \
 # Cargo failure моделирует несовместимый system runtime либо rejected production output.
 if cargo_failure_output="$(env \
     "PATH=${FAKE_BIN_DIRECTORY}:${PATH}" \
-    "RUSTIPLAYER_FAKE_CARGO_ARGUMENTS_LOG=${CARGO_ARGUMENTS_LOG}" \
-    "RUSTIPLAYER_FAKE_CARGO_EXIT_CODE=19" \
+    "FASTIPLAYER_FAKE_CARGO_ARGUMENTS_LOG=${CARGO_ARGUMENTS_LOG}" \
+    "FASTIPLAYER_FAKE_CARGO_EXIT_CODE=19" \
     "${COMPATIBILITY_RUNNER}" 2>&1)"; then
     # Runner не имеет права превращать failed Rust test в success.
     printf 'FAIL: failed Cargo compatibility test завершился успешно\n' >&2
@@ -136,8 +136,8 @@ require_absent "${cargo_failure_output}" "PASSED: system yt-dlp compatibility"
 # Version command failure останавливает runner до Cargo invocation.
 if version_failure_output="$(env \
     "PATH=${FAKE_BIN_DIRECTORY}:${PATH}" \
-    "RUSTIPLAYER_FAKE_CARGO_ARGUMENTS_LOG=${CARGO_ARGUMENTS_LOG}" \
-    "RUSTIPLAYER_FAKE_YTDLP_VERSION_FAILURE=1" \
+    "FASTIPLAYER_FAKE_CARGO_ARGUMENTS_LOG=${CARGO_ARGUMENTS_LOG}" \
+    "FASTIPLAYER_FAKE_YTDLP_VERSION_FAILURE=1" \
     "${COMPATIBILITY_RUNNER}" 2>&1)"; then
     # Неработающий diagnostic command не должен считаться совместимым executable.
     printf 'FAIL: failed yt-dlp --version завершился успешно\n' >&2

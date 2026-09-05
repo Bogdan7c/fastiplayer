@@ -15,10 +15,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use capability_core::SystemCapabilities;
 use demux_api::DemuxRegistry;
+use fastiplayer_config::{NetworkConfig, PlayerDemuxConfig, VideoCodec, WebMediaConfig};
 use hls_playlist_core::HlsParserLimits;
 use media_core::{Demuxer, DynamicMediaTimelinePort, MediaTime, TrackInfo};
 use player_core::{PreparedDemuxSeekPort, PreparedInitialPosition};
-use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, VideoCodec, WebMediaConfig};
 use source_core::{CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
 use web_media_adaptive::{
@@ -402,7 +402,7 @@ impl NativeHlsStartupJob {
         source: NativeHlsUrl,
         fallback_locator: service_ytdlp::YtDlpMediaLocator,
         start: HlsVodStartIntent,
-        app_config: rustiplayer_config::AppConfig,
+        app_config: fastiplayer_config::AppConfig,
         system_capabilities: SystemCapabilities,
         audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
         wake_port: AppWakePort,
@@ -485,7 +485,7 @@ impl super::StartupMediaController {
         source: NativeHlsUrl,
         fallback_locator: service_ytdlp::YtDlpMediaLocator,
         app_state: &mut crate::state::AppState,
-        app_config: &rustiplayer_config::AppConfig,
+        app_config: &fastiplayer_config::AppConfig,
         system_capabilities: &SystemCapabilities,
     ) {
         if let Some(error) = self.startup_job_admission_error() {
@@ -530,7 +530,7 @@ impl super::StartupMediaController {
 /// Выполняет native HLS admission и ровно один fallback внутри одного startup worker-а.
 fn resolve_native_hls_startup_media(
     request: NativeHlsStartupResolveRequest,
-    app_config: &rustiplayer_config::AppConfig,
+    app_config: &fastiplayer_config::AppConfig,
     system_capabilities: &SystemCapabilities,
     audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     cancellation: source_core::CancellationToken,

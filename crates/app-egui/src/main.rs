@@ -71,7 +71,7 @@ fn main() -> Result<()> {
         loaded_config,
         initial_media,
         startup_error: cli_startup_error,
-    } = bootstrap_process().context("Process bootstrap rustiplayer завершился ошибкой")?;
+    } = bootstrap_process().context("Process bootstrap fastiplayer завершился ошибкой")?;
 
     // Инициализируем tracing.
     tracing_subscriber::fmt()
@@ -85,7 +85,7 @@ fn main() -> Result<()> {
 
     info!(
         process_elapsed_ms = process_started_at.elapsed().as_secs_f64() * 1_000.0,
-        "=== rustiplayer ==="
+        "=== fastiplayer ==="
     );
     info!("Запуск приложения");
 
@@ -94,7 +94,7 @@ fn main() -> Result<()> {
         "Process config/instance bootstrap complete"
     );
 
-    info!(created = loaded_config.created, "Config rustiplayer готов");
+    info!(created = loaded_config.created, "Config fastiplayer готов");
 
     // Один typed event loop принимает только лёгкие owner wake events.
     let event_loop = EventLoop::<AppWakeEvent>::with_user_event()

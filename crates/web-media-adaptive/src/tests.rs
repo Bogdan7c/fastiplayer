@@ -13,10 +13,10 @@ use demux_api::{
     OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentSequence,
     ProgressiveDemuxBufferLimits,
 };
+use fastiplayer_config::NetworkConfig;
 use media_core::{
     DemuxReadEvent, DemuxRetryHint, DemuxSeekResult, Demuxer, MediaMetadata, TrackInfo,
 };
-use rustiplayer_config::NetworkConfig;
 use source_core::{
     CancellationToken, HttpHeader, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig,
     ValidatedHttpHeaders,

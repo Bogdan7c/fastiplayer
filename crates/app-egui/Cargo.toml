@@ -6,12 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "rustiplayer"
+name = "fastiplayer"
 path = "src/main.rs"
 
 [features]
 # FFmpeg software decode включён по умолчанию для debug и release сборок
-# бинаря `rustiplayer`. Сборка без FFmpeg: `--no-default-features`.
+# бинаря `fastiplayer`. Сборка без FFmpeg: `--no-default-features`.
 default = ["ffmpeg"]
 ffmpeg = ["video-ffmpeg/ffmpeg"]
 
@@ -26,8 +26,8 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-rustiplayer-config.workspace = true
-rustiplayer-settings.workspace = true
+fastiplayer-config.workspace = true
+fastiplayer-settings.workspace = true
 settings-core.workspace = true
 source-core.workspace = true
 capability-core.workspace = true

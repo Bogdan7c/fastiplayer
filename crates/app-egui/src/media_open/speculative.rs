@@ -146,7 +146,7 @@ mod tests {
             .start(MediaOpenSourceRequest::Local {
                 path: fixture_path.clone(),
                 expected_fingerprint: None,
-                demux_config: rustiplayer_config::PlayerDemuxConfig::default(),
+                demux_config: fastiplayer_config::PlayerDemuxConfig::default(),
             })
             .expect("speculative local preparation starts");
 

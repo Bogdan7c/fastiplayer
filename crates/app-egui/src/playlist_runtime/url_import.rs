@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LockResult, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
-use rustiplayer_config::YtDlpConfig;
+use fastiplayer_config::YtDlpConfig;
 
 use crate::app_wake::AppWakePort;
 use crate::process_shutdown::{

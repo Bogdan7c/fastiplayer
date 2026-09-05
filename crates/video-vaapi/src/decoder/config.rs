@@ -20,7 +20,7 @@ pub const DEFAULT_DECODER_READY_QUEUE_FRAMES: usize = 8;
 /// Это не user-facing TOML config: переменная нужна, чтобы быстро сравнить
 /// несколько bounds на одной сборке без изменения `video-core` API.
 pub(super) const SUPPRESSED_RECLAIM_QUEUE_BOUND_OVERRIDE_ENV: &str =
-    "RUSTIPLAYER_VAAPI_MAX_SUPPRESSED_RECLAIM_FRAMES";
+    "FASTIPLAYER_VAAPI_MAX_SUPPRESSED_RECLAIM_FRAMES";
 
 /// Ориентировочный reserve под codec DPB/reference pressure.
 ///

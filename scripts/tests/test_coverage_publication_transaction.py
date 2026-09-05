@@ -32,8 +32,8 @@ class CoveragePublicationTransactionTests(unittest.TestCase):
         repo_root = Path(temporary_directory.name)
         profile_directory = repo_root / "target" / "llvm-cov-target"
         profile_directory.mkdir(parents=True)
-        old_list = profile_directory / "rustiplayer-profraw-list"
-        old_profdata = profile_directory / "rustiplayer.profdata"
+        old_list = profile_directory / "fastiplayer-profraw-list"
+        old_profdata = profile_directory / "fastiplayer.profdata"
         old_list.write_bytes(b"old-list")
         old_profdata.write_bytes(b"old-profdata")
         artifact_parent = repo_root / "target" / "coverage"
@@ -81,10 +81,10 @@ class CoveragePublicationTransactionTests(unittest.TestCase):
             self.assertEqual((final / "accepted.txt").read_bytes(), b"previous")
             self.assertEqual((stage / "accepted.txt").read_bytes(), b"current")
             self.assertEqual(
-                (profile / "rustiplayer-profraw-list").read_bytes(), b"old-list"
+                (profile / "fastiplayer-profraw-list").read_bytes(), b"old-list"
             )
             self.assertEqual(
-                (profile / "rustiplayer.profdata").read_bytes(), b"old-profdata"
+                (profile / "fastiplayer.profdata").read_bytes(), b"old-profdata"
             )
         finally:
             temporary_directory.cleanup()
@@ -119,7 +119,7 @@ class CoveragePublicationTransactionTests(unittest.TestCase):
                 self.assertIn("следующий publication", warning)
                 self.assertEqual((final / "accepted.txt").read_bytes(), b"current")
                 self.assertEqual(
-                    (profile / "rustiplayer-profraw-list").read_bytes(), b"current-list"
+                    (profile / "fastiplayer-profraw-list").read_bytes(), b"current-list"
                 )
                 self.assertEqual((retired / "accepted.txt").read_bytes(), b"previous")
                 next_stage = final.parent / ".stable.stage-next"

@@ -3,8 +3,8 @@
 ## Ownership и публичная форма
 
 - `CURRENT_SCHEMA_VERSION = 10`; актуальный TOML содержит отдельную defaulted strict-секцию `[web_media]`.
-- `rustiplayer_config::WebMediaConfig` владеет provider-neutral политикой web media: `hdr_selection`, `preferred_video_height` и всеми пятью `vod_endpoint_recovery_*` значениями.
-- `rustiplayer_config::WebMediaHdrSelection` заменяет provider-specific `YtDlpHdrSelection`.
+- `fastiplayer_config::WebMediaConfig` владеет provider-neutral политикой web media: `hdr_selection`, `preferred_video_height` и всеми пятью `vod_endpoint_recovery_*` значениями.
+- `fastiplayer_config::WebMediaHdrSelection` заменяет provider-specific `YtDlpHdrSelection`.
 - `YtDlpConfig` теперь содержит только process/extractor controls: `enabled`, timeout и stdout/stderr/JSON limits. Качество и recovery больше не являются частью boundary yt-dlp.
 - Settings registry разделён на `web_media_settings.rs` и process-only `yt_dlp_settings.rs`. Stable IDs политики имеют префикс `web_media.*`, route id — `web_media`; labels и descriptions говорят о веб-медиа, а не о качестве yt-dlp.
 
@@ -30,6 +30,6 @@
 - Functional config test загружает реальный v9-файл, мигрирует, валидирует, атомарно сохраняет, повторно загружает и проверяет byte/semantic roundtrip и сохранение custom user values.
 - Отдельные tests закрепляют conflict/unknown rejection, registry/accessor ownership и provider-neutral labels.
 - Settings apply tests проходят draft -> runtime owner -> persistence -> committed snapshot; отдельно проверены preferred-height rebuild и recovery success/rollback.
-- Gate N02: config tests, rustiplayer-settings tests, focused app settings/recovery tests, strict affected-package Clippy и workspace `--all-targets --all-features --locked` check.
+- Gate N02: config tests, fastiplayer-settings tests, focused app settings/recovery tests, strict affected-package Clippy и workspace `--all-targets --all-features --locked` check.
 
 Related: `mem:config/schema-store-decomposition-s23`, `mem:config/schema-v7-quality-preference-2026-07-21`, `mem:settings-ui/application-contract-s08`.

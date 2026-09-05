@@ -30,7 +30,7 @@ LOCAL_HARDWARE_TESTS = (
 def execution_scope() -> TestExecutionScope:
     """Неизвестное значение не может молча отключить часть qualification."""
 
-    scope = TestExecutionScope(os.environ.get("RUSTIPLAYER_TEST_SCOPE", "local"))
+    scope = TestExecutionScope(os.environ.get("FASTIPLAYER_TEST_SCOPE", "local"))
     if os.environ.get("GITHUB_ACTIONS") == "true" and scope is not TestExecutionScope.HOSTED:
         raise ValueError("GitHub Actions requires explicit hosted test scope")
     return scope

@@ -43,10 +43,10 @@ timeline или sidebar state нового поколения.
 Production extraction намеренно сохраняет обычный lookup system/user `yt-dlp`
 config, plugins и cookie options. Это manual opt-in trust boundary:
 
-- Rustiplayer не просит и не сохраняет app-owned cookie/browser credential;
+- Fastiplayer не просит и не сохраняет app-owned cookie/browser credential;
 - exact acknowledged locator хранится отдельно от transient target, headers,
   cookies и extractor payload;
-- Rustiplayer-owned argv не добавляет download/write/exec/postprocessor или
+- Fastiplayer-owned argv не добавляет download/write/exec/postprocessor или
   `--mark-watched` options;
 - user config может добавить такие options, plugin является исполняемым Python
   code, а user-owned cookie jar может быть изменён самим `yt-dlp`; эти side
@@ -61,7 +61,7 @@ report и runtime launch.
 Допустимы safe case ID, typed error category, source generation, provider ID,
 container/codec identities в установленных bounds, exit status, profile ID,
 workspace HEAD и только его `clean`/`dirty` classification, binary origin,
-Rustiplayer executable SHA-256, `yt-dlp` version и его executable SHA-256.
+Fastiplayer executable SHA-256, `yt-dlp` version и его executable SHA-256.
 Для explicit external `--binary` workspace HEAD не является source provenance;
 report обязан говорить это явно.
 

@@ -192,7 +192,7 @@ impl TestDirectory {
         static NEXT: AtomicUsize = AtomicUsize::new(1);
         let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "rustiplayer-discovery-session09a-{}-{sequence}",
+            "fastiplayer-discovery-session09a-{}-{sequence}",
             std::process::id()
         ));
         fs::create_dir(&path).unwrap();

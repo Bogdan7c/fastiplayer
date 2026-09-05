@@ -7,16 +7,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use player_core::{
-    PlayerRuntimeApplyResult, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate,
-    PlayerWorkerConfig,
-};
-use render_core::{
-    RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
-    RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate,
-};
-use rustiplayer_config::{AppConfig, LoadedConfig, VideoBackendPreference};
-use rustiplayer_settings::{
+use fastiplayer_config::{AppConfig, LoadedConfig, VideoBackendPreference};
+use fastiplayer_settings::{
     AppRouteApplyResult, AppRuntimeRoute, AppRuntimeRouteApplier, AppRuntimeRouteGroup,
     AppRuntimeRouteGroupUpdate, FrameServerRuntimeSettingsUpdate,
     MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
@@ -24,6 +16,14 @@ use rustiplayer_settings::{
     RendererRecreationApplyErrorKind, RuntimeCommittedRoute, RuntimeCommittedUpdate,
     SettingStateOwner, SettingsApplyFailure, SettingsBoundaryActivity,
     render_live_settings_from_config,
+};
+use player_core::{
+    PlayerRuntimeApplyResult, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate,
+    PlayerWorkerConfig,
+};
+use render_core::{
+    RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
+    RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate,
 };
 use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyRouteResult, OptionProviderId, RollbackResult, SettingId,
@@ -48,7 +48,7 @@ mod web_media_recovery_apply;
 fn loaded_config_for_test(config: AppConfig) -> LoadedConfig {
     LoadedConfig {
         config,
-        path: PathBuf::from("/tmp/rustiplayer-settings-runtime-test.toml"),
+        path: PathBuf::from("/tmp/fastiplayer-settings-runtime-test.toml"),
         created: false,
     }
 }
@@ -63,7 +63,7 @@ fn loaded_config_for_test_at(config: AppConfig, path: PathBuf) -> LoadedConfig {
 
 fn temp_config_path(test_name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "rustiplayer-settings-runtime-{test_name}-{}.toml",
+        "fastiplayer-settings-runtime-{test_name}-{}.toml",
         std::process::id()
     ))
 }
@@ -315,7 +315,7 @@ struct RecordingRuntimeAdapter {
     renderer_recreation_result: AppRouteApplyResult,
     renderer_recreation_updates:
         Vec<(RenderCommittedSettingsUpdate, RenderCommittedSettingsUpdate)>,
-    preflight_failure: Option<(rustiplayer_settings::AppRuntimeRoute, AppRouteApplyResult)>,
+    preflight_failure: Option<(fastiplayer_settings::AppRuntimeRoute, AppRouteApplyResult)>,
     preflight_calls: usize,
     committed_snapshots: Vec<CommittedConfigSnapshot>,
     restored_sidebar_widths: Vec<SidebarWidthPoints>,
@@ -517,7 +517,7 @@ fn startup_config_snapshot_parity() {
     assert_eq!(runtime.committed_config(), &config);
     assert_eq!(
         runtime.config_path(),
-        PathBuf::from("/tmp/rustiplayer-settings-runtime-test.toml").as_path()
+        PathBuf::from("/tmp/fastiplayer-settings-runtime-test.toml").as_path()
     );
     assert_eq!(runtime.store_path(), runtime.config_path());
     assert!(runtime.latest_apply_report().is_none());
@@ -2148,7 +2148,7 @@ fn next_item_preload_transaction_applies_once_then_persists_and_finalizes() {
         requested_max_hold_ms
     );
     assert_eq!(runtime.committed_config().playlist, requested_playlist);
-    let persisted = rustiplayer_config::load_from_path(&path)
+    let persisted = fastiplayer_config::load_from_path(&path)
         .expect("persisted preload config должен читаться");
     assert_eq!(persisted.config.playlist, requested_playlist);
     remove_file_if_exists(&path);
@@ -2191,7 +2191,7 @@ fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {
             .committed_config()
             .web_media
             .preferred_video_height
-            .map(rustiplayer_config::PreferredVideoHeight::pixels),
+            .map(fastiplayer_config::PreferredVideoHeight::pixels),
         Some(1080)
     );
 
@@ -2199,13 +2199,13 @@ fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {
     assert!(persisted.contains("preferred_video_height = 1080"));
     assert!(!persisted.contains("item_video_height_override"));
 
-    let reopened = rustiplayer_config::load_from_path(&path).expect("persisted settings reopen");
+    let reopened = fastiplayer_config::load_from_path(&path).expect("persisted settings reopen");
     assert_eq!(
         reopened
             .config
             .web_media
             .preferred_video_height
-            .map(rustiplayer_config::PreferredVideoHeight::pixels),
+            .map(fastiplayer_config::PreferredVideoHeight::pixels),
         Some(1080)
     );
     remove_file_if_exists(&path);
@@ -2647,7 +2647,7 @@ fn sidebar_resize_debounce_coalesces_and_persists_latest_width() {
         480
     );
     let persisted =
-        rustiplayer_config::load_from_path(&path).expect("persisted sidebar config should reload");
+        fastiplayer_config::load_from_path(&path).expect("persisted sidebar config should reload");
     assert_eq!(persisted.config.ui.sidebar.width_points, 480);
     remove_file_if_exists(&path);
 }

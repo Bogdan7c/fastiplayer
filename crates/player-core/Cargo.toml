@@ -18,7 +18,7 @@ codec-core = { workspace = true }
 crossbeam-channel = { workspace = true }
 frame-server-core = { workspace = true }
 media-core = { workspace = true }
-rustiplayer-config = { workspace = true }
+fastiplayer-config = { workspace = true }
 tracing = { workspace = true }
 video-backend-api = { workspace = true }
 video-core = { workspace = true }

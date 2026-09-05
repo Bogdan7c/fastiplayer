@@ -673,7 +673,7 @@ pub(crate) fn dynamic_range(color: DashColorMetadata) -> DynamicRange {
 }
 
 fn semantic_key(contract: &LaneContract) -> Option<String> {
-    let mut canonical = String::from("rustiplayer-dash-lane-v1|");
+    let mut canonical = String::from("fastiplayer-dash-lane-v1|");
     use std::fmt::Write as _;
     write!(
         &mut canonical,

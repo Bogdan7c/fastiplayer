@@ -1,4 +1,4 @@
-# Rustiplayer readiness report — 2026-07-12
+# Fastiplayer readiness report — 2026-07-12
 
 > Исторический отчёт для snapshot `a9d3c86`, не текущий статус готовности проекта.
 > В S04 перенесён из корня; результаты сохранены. Follow-up документы из `user/`
@@ -70,7 +70,7 @@ GitHub branch protection остаётся owner-approved operational limitation.
 
 ## Fixture hermeticity
 
-В first-party source нет обращения к `test-assets/`. Serena reference audit нашёл `RUSTIPLAYER_MEDIA_PATH` только в:
+В first-party source нет обращения к `test-assets/`. Serena reference audit нашёл `FASTIPLAYER_MEDIA_PATH` только в:
 
 - одном `service-direct-media` manual test;
 - трёх `service-youtube` manual transport tests;
@@ -99,7 +99,7 @@ Clean tests и создание JSON/LCOV/HTML завершились успеш
 | `config` | 2,390 / 2,624 | 1,195 / 1,403 |
 | `player-core` | 12,553 / 15,157 | 12,784 / 15,518 |
 | `render-core` | 1,476 / 1,635 | 775 / 932 |
-| `rustiplayer-settings` | 890 / 1,026 | 1,180 / 1,411 |
+| `fastiplayer-settings` | 890 / 1,026 | 1,180 / 1,411 |
 | `service-direct-media` | 370 / 489 | 370 / 493 |
 | `video-core` | 1,491 / 1,697 | 849 / 1,033 |
 
@@ -131,7 +131,7 @@ Scope для line census: tracked `*.rs`, `*.py`, `*.sh` внутри `crates/` 
 
 | Файл | Физические строки |
 | --- | ---: |
-| `rustiplayer-settings/src/routing.rs` | 1,860 |
+| `fastiplayer-settings/src/routing.rs` | 1,860 |
 | `player-core/src/diagnostics.rs` | 1,848 |
 | `capability-core/src/selection.rs` | 1,646 |
 | `video-vaapi/src/codec_adapter.rs` | 1,580 |
@@ -260,7 +260,7 @@ scripts/media-regression.sh --scenario <NAME> --path <FILE>
 
 - playback/session — через `PlayerCommand`, worker/session boundary и focused lifecycle tests;
 - media opening/network — внутри `service-direct-media`, `service-youtube`, `media-prefetch`, не в `player-core`;
-- settings — через neutral `settings-core`, project routing `rustiplayer-settings` и app-owned runtime adapters;
+- settings — через neutral `settings-core`, project routing `fastiplayer-settings` и app-owned runtime adapters;
 - renderer/backend — через frame/backend/render contracts без concrete dependencies в neutral crates;
 - codec support — внутри codec-owned parser/requirement/adapter modules с typed rejection и media matrix;
 - новые hardware paths — только после заранее названных Intel/AMD/driver scenarios.

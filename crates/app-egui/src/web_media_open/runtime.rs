@@ -13,8 +13,8 @@ use demux_api::{
     DemuxRegistry, DemuxSniffBudget, DemuxSourceExtension, ProgressiveDemuxBufferLimits,
     ProgressiveDemuxer,
 };
+use fastiplayer_config::{NetworkConfig, PlayerDemuxConfig};
 use media_core::{DemuxRetryHint, Demuxer};
-use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig};
 use service_ytdlp::{
     YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpProgressiveTransportRequestContext,
 };

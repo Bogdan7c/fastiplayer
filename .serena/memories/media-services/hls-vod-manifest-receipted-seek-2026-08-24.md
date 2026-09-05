@@ -57,7 +57,7 @@
 
 ### Secret-safe committed-selection diagnostics
 
-- `HlsManifestSegmentSeekMarker` публикуется через neutral `log` facade на INFO target `rustiplayer::hls_manifest_selection`; concrete logger остаётся composition-root ownership.
+- `HlsManifestSegmentSeekMarker` публикуется через neutral `log` facade на INFO target `fastiplayer::hls_manifest_selection`; concrete logger остаётся composition-root ownership.
 - Marker хранит phase, component role, opaque HLS-local selection ID, landing policy, source generation, requested target, actual/decode anchor и kind, media/discontinuity sequence, global/epoch/restart indexes и half-open segment interval. URI/query/header/cookie/token/key/map/hash/cache/resource/request IDs отсутствуют.
 - `scripts/playback_acceptance_hls.py` разбирает exact Display schema независимо от public seek correlation. ID opaque и unique per log source; числовая monotonic order не является schema invariant. Strict analyzer fail-closed проверяет enum/domain/interval/anchor/duplicate anomalies.
 

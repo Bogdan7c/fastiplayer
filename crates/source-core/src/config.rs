@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rustiplayer_config::NetworkConfig;
+use fastiplayer_config::NetworkConfig;
 
 use crate::{SourceError, SourceResult};
 
@@ -103,7 +103,7 @@ impl SourceRuntimeConfig {
 
 #[cfg(test)]
 mod tests {
-    use rustiplayer_config::NetworkConfig;
+    use fastiplayer_config::NetworkConfig;
 
     use super::*;
 

@@ -391,13 +391,13 @@ impl fmt::Debug for WebMediaSourceReadProjection<'_> {
 /// Общий immutable settings snapshot одного web open/reopen.
 #[derive(Clone)]
 pub(crate) struct WebMediaOpenSettings {
-    pub(crate) network_config: rustiplayer_config::NetworkConfig,
-    pub(crate) web_media_config: rustiplayer_config::WebMediaConfig,
-    pub(crate) yt_dlp_config: rustiplayer_config::YtDlpConfig,
+    pub(crate) network_config: fastiplayer_config::NetworkConfig,
+    pub(crate) web_media_config: fastiplayer_config::WebMediaConfig,
+    pub(crate) yt_dlp_config: fastiplayer_config::YtDlpConfig,
     /// Один injected extractor owner сопровождает весь open/reopen attempt.
     pub(crate) extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,
-    pub(crate) demux_config: rustiplayer_config::PlayerDemuxConfig,
-    pub(crate) preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
+    pub(crate) demux_config: fastiplayer_config::PlayerDemuxConfig,
+    pub(crate) preferred_video_codec_order: Vec<fastiplayer_config::VideoCodec>,
     pub(crate) system_capabilities: Box<capability_core::SystemCapabilities>,
     pub(crate) audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
 }
@@ -405,7 +405,7 @@ pub(crate) struct WebMediaOpenSettings {
 impl WebMediaOpenSettings {
     /// Снимает один immutable settings/capability snapshot до background open.
     pub(crate) fn from_app_config(
-        app_config: &rustiplayer_config::AppConfig,
+        app_config: &fastiplayer_config::AppConfig,
         system_capabilities: &capability_core::SystemCapabilities,
         audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     ) -> Self {
@@ -433,8 +433,8 @@ pub(crate) struct WebMediaOpenRequest {
 enum WebMediaOpenAdapter {
     Direct {
         locator: service_direct_media::DirectMediaUrl,
-        network_config: rustiplayer_config::NetworkConfig,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
+        network_config: fastiplayer_config::NetworkConfig,
+        demux_config: fastiplayer_config::PlayerDemuxConfig,
     },
     NativeHls {
         source: NativeHlsUrl,
@@ -468,8 +468,8 @@ impl WebMediaOpenRequest {
     /// Создаёт direct request без extractor-capable settings.
     pub(crate) fn direct(
         locator: service_direct_media::DirectMediaUrl,
-        network_config: rustiplayer_config::NetworkConfig,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
+        network_config: fastiplayer_config::NetworkConfig,
+        demux_config: fastiplayer_config::PlayerDemuxConfig,
     ) -> Self {
         Self {
             adapter: Box::new(WebMediaOpenAdapter::Direct {

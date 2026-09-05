@@ -24,7 +24,7 @@ const FTP_VORBIS_CHILD_TEST_NAME: &str = "web_media_open::content_probe_tests::f
 const FTP_VORBIS_FORMAT_ID: &str = "ogg";
 
 /// Child получает exact FTP locator отдельно от redacted extractor document boundary.
-const FTP_MEDIA_LOCATOR_ENV: &str = "RUSTIPLAYER_CONTENT_PROBE_FTP_LOCATOR";
+const FTP_MEDIA_LOCATOR_ENV: &str = "FASTIPLAYER_CONTENT_PROBE_FTP_LOCATOR";
 
 /// Loopback FTP origin владеет media bytes и завершением worker-а.
 pub(super) struct FtpVorbisOrigin {
@@ -177,7 +177,7 @@ fn install_fake_ftp_yt_dlp(fake_tools_directory: &Path) {
         "test \"$3\" = \"--simulate\"\n",
         "test \"$4\" = \"--dump-single-json\"\n",
         "test \"$5\" = \"--no-playlist\"\n",
-        "printf '%s\\n' \"${RUSTIPLAYER_CONTENT_PROBE_YTDLP_JSON:?missing fixture JSON}\"\n",
+        "printf '%s\\n' \"${FASTIPLAYER_CONTENT_PROBE_YTDLP_JSON:?missing fixture JSON}\"\n",
     );
     fs::write(&executable_path, script).expect("write strict FTP fake yt-dlp executable");
     let mut permissions = fs::metadata(&executable_path)
@@ -197,7 +197,7 @@ fn serve_ftp_client(
 ) -> std::io::Result<()> {
     control_stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     control_stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    send_ftp_reply(&mut control_stream, "220 rustiplayer FTP fixture ready")?;
+    send_ftp_reply(&mut control_stream, "220 fastiplayer FTP fixture ready")?;
     let mut restart_offset = 0_usize;
     let mut passive_listener: Option<TcpListener> = None;
 

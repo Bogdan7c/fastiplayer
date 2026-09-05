@@ -294,7 +294,7 @@ impl AppState {
             let window_chrome_output = window_chrome::show(
                 ui,
                 WindowChromeInput {
-                    title: "Rustiplayer",
+                    title: "Fastiplayer",
                     height_points: titlebar_height_points,
                     is_maximized: window_is_maximized,
                     style: WindowChromeStyle::from_controls_style(controls_style),

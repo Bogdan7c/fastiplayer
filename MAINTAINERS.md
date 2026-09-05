@@ -1,6 +1,6 @@
 # Maintainers
 
-Rustiplayer has **one core maintainer**:
+Fastiplayer has **one core maintainer**:
 
 | Name | GitHub | Responsibility |
 | --- | --- | --- |

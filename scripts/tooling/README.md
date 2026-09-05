@@ -9,7 +9,7 @@
 
 - `scripts/tooling/build-ffmpeg-lgpl.sh` владеет только download/configure/make/install workflow.
 - Runtime capability проверяется optional probe-ом в `video-ffmpeg`: отсутствие
-  FFmpeg не должно мешать старту `rustiplayer`.
+  FFmpeg не должно мешать старту `fastiplayer`.
 - Demuxing остаётся в существующих media crates; этот tooling не собирает `libavformat`.
 - CPU conversion не становится playback path: `libswscale` и `libswresample` выключены по умолчанию и включаются только явным opt-in для будущих header/build проверок.
 - FFmpeg hardware acceleration не используется: native hardware path остаётся за текущими backend crates.
@@ -41,7 +41,7 @@ scripts/tooling/build-ffmpeg-lgpl.sh
 Собрать в явный prefix, например системный локальный каталог:
 
 ```bash
-scripts/tooling/build-ffmpeg-lgpl.sh --prefix /rustiplayer-ffmpeg
+scripts/tooling/build-ffmpeg-lgpl.sh --prefix /fastiplayer-ffmpeg
 ```
 
 Если архив уже скачан и сеть не нужна:
@@ -60,23 +60,23 @@ scripts/tooling/build-ffmpeg-lgpl.sh \
 
 ## Env Vars
 
-- `RUSTIPLAYER_FFMPEG_VERSION` - версия FFmpeg stable 8.1.x, default `8.1.1`.
-- `RUSTIPLAYER_FFMPEG_PREFIX` - install prefix, default `target/rustiplayer-ffmpeg/<version>`.
-- `RUSTIPLAYER_FFMPEG_WORK_DIR` - каталог downloads/source/build cache, default `target/rustiplayer-ffmpeg/build`.
-- `RUSTIPLAYER_FFMPEG_SOURCE_DIR` - уже распакованный source tree с `configure`.
-- `RUSTIPLAYER_FFMPEG_SOURCE_ARCHIVE` - локальный `ffmpeg-<version>.tar.xz`.
-- `RUSTIPLAYER_FFMPEG_URL` - mirror URL для source archive.
-- `RUSTIPLAYER_FFMPEG_JOBS` - число parallel `make` jobs.
-- `RUSTIPLAYER_FFMPEG_ENABLE_SWRESAMPLE` - `0`/`1`, default `0`.
-- `RUSTIPLAYER_FFMPEG_ENABLE_SWSCALE` - `0`/`1`, default `0`.
+- `FASTIPLAYER_FFMPEG_VERSION` - версия FFmpeg stable 8.1.x, default `8.1.1`.
+- `FASTIPLAYER_FFMPEG_PREFIX` - install prefix, default `target/fastiplayer-ffmpeg/<version>`.
+- `FASTIPLAYER_FFMPEG_WORK_DIR` - каталог downloads/source/build cache, default `target/fastiplayer-ffmpeg/build`.
+- `FASTIPLAYER_FFMPEG_SOURCE_DIR` - уже распакованный source tree с `configure`.
+- `FASTIPLAYER_FFMPEG_SOURCE_ARCHIVE` - локальный `ffmpeg-<version>.tar.xz`.
+- `FASTIPLAYER_FFMPEG_URL` - mirror URL для source archive.
+- `FASTIPLAYER_FFMPEG_JOBS` - число parallel `make` jobs.
+- `FASTIPLAYER_FFMPEG_ENABLE_SWRESAMPLE` - `0`/`1`, default `0`.
+- `FASTIPLAYER_FFMPEG_ENABLE_SWSCALE` - `0`/`1`, default `0`.
 
 После установки explicit FFmpeg build/runtime проверки должны смотреть в
 локальный prefix явно:
 
 ```bash
-export FFMPEG_DIR="$RUSTIPLAYER_FFMPEG_PREFIX"
-export PKG_CONFIG_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-export LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export FFMPEG_DIR="$FASTIPLAYER_FFMPEG_PREFIX"
+export PKG_CONFIG_PATH="$FASTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export LD_LIBRARY_PATH="$FASTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
 `FFMPEG_DIR` нужен `ffmpeg-sys-next` при explicit prefix-е. `PKG_CONFIG_PATH`
@@ -88,18 +88,18 @@ export LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LI
 Проверить explicit FFmpeg build path:
 
 ```bash
-FFMPEG_DIR="$RUSTIPLAYER_FFMPEG_PREFIX" \
-PKG_CONFIG_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
-LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+FFMPEG_DIR="$FASTIPLAYER_FFMPEG_PREFIX" \
+PKG_CONFIG_PATH="$FASTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+LD_LIBRARY_PATH="$FASTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 cargo check -p video-ffmpeg --features ffmpeg
 ```
 
 Проверить real runtime probe, если local FFmpeg runtime установлен:
 
 ```bash
-FFMPEG_DIR="$RUSTIPLAYER_FFMPEG_PREFIX" \
-PKG_CONFIG_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
-LD_LIBRARY_PATH="$RUSTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+FFMPEG_DIR="$FASTIPLAYER_FFMPEG_PREFIX" \
+PKG_CONFIG_PATH="$FASTIPLAYER_FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+LD_LIBRARY_PATH="$FASTIPLAYER_FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 cargo test -p video-ffmpeg --features ffmpeg \
   --test ffmpeg_runtime_probe -- --ignored --exact \
   installed_ffmpeg_runtime_probe_reports_available_runtime

@@ -82,7 +82,7 @@ impl UnsupportedVideoRequirement {
             .unwrap_or_else(|| "не найден подходящий аппаратный decoder".to_string());
 
         format!(
-            "Не найден аппаратно поддерживаемый видеопоток.\nПричина: {reason}.\nВидео требует: {}.\nСистема поддерживает: {}.\nSoftware fallback для видео отключен политикой rustiplayer.",
+            "Не найден аппаратно поддерживаемый видеопоток.\nПричина: {reason}.\nВидео требует: {}.\nСистема поддерживает: {}.\nSoftware fallback для видео отключен политикой fastiplayer.",
             self.requirement.describe(),
             self.supported_formats_summary
         )

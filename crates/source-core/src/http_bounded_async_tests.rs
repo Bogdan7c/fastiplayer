@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustiplayer_config::NetworkConfig;
+use fastiplayer_config::NetworkConfig;
 use tokio::runtime::Builder;
 
 use crate::{

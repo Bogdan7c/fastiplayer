@@ -131,7 +131,7 @@ fn parse_playlist(
     let mut tracks = Vec::new();
     let mut groups = Vec::new();
     let mut track_list_seen = false;
-    let mut rustiplayer_extension_seen = false;
+    let mut fastiplayer_extension_seen = false;
 
     loop {
         match cursor.next_container_event()? {
@@ -146,7 +146,7 @@ fn parse_playlist(
                     &mut tracks,
                     &mut groups,
                     &mut track_list_seen,
-                    &mut rustiplayer_extension_seen,
+                    &mut fastiplayer_extension_seen,
                 )?;
             }
             Some(XmlEvent::EmptyElement(element)) => {
@@ -160,7 +160,7 @@ fn parse_playlist(
                     &mut tracks,
                     &mut groups,
                     &mut track_list_seen,
-                    &mut rustiplayer_extension_seen,
+                    &mut fastiplayer_extension_seen,
                 )?;
             }
             Some(XmlEvent::EndElement(name)) => {
@@ -193,7 +193,7 @@ fn parse_playlist_child(
     tracks: &mut Vec<XspfTrack>,
     groups: &mut Vec<XspfGroup>,
     track_list_seen: &mut bool,
-    rustiplayer_extension_seen: &mut bool,
+    fastiplayer_extension_seen: &mut bool,
 ) -> Result<(), XspfParseError> {
     require_namespace(element.name(), XSPF_NAMESPACE)?;
     match element.name().local_name() {
@@ -233,7 +233,7 @@ fn parse_playlist_child(
                 parent_base,
                 limits,
                 groups,
-                rustiplayer_extension_seen,
+                fastiplayer_extension_seen,
             )
         }
         "trackList" => {

@@ -581,7 +581,7 @@ mod runtime_loader {
         fn missing_runtime_library_maps_to_typed_failure_without_panic() {
             let failure = match load_library(
                 FfmpegRuntimeLibrary::LibAvUtil,
-                &["rustiplayer-definitely-missing-libavutil-for-probe-test"],
+                &["fastiplayer-definitely-missing-libavutil-for-probe-test"],
             ) {
                 Ok(_) => panic!("missing runtime candidate unexpectedly loaded"),
                 Err(failure) => failure,

@@ -1,8 +1,8 @@
 use std::num::NonZeroU64;
 
+use fastiplayer_config::WebMediaConfig;
 use media_core::MediaTime;
 use player_core::{MediaInstallRequestId, PlaybackState, PlayerSnapshot};
-use rustiplayer_config::WebMediaConfig;
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, SemanticIdentity,
     SourceIdentity,

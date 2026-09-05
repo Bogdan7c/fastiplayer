@@ -25,7 +25,7 @@ impl TestDirectory {
     fn new(label: &str) -> Self {
         let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "rustiplayer-manifest-{label}-{}-{sequence}",
+            "fastiplayer-manifest-{label}-{}-{sequence}",
             std::process::id()
         ));
         fs::create_dir(&path).expect("test directory must be created");

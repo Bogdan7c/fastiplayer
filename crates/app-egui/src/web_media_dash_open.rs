@@ -13,6 +13,7 @@ use demux_api::{
     ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits, ProgressiveSeekFence,
     ProgressiveSeekRequestId,
 };
+use fastiplayer_config::NetworkConfig;
 use media_core::{
     DemuxRetryHint, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePort,
     DynamicMediaTimelinePortGeneration,
@@ -21,7 +22,6 @@ use player_core::{
     PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome, PreparedDemuxSeekPort,
     PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
 };
-use rustiplayer_config::NetworkConfig;
 use service_ytdlp::{
     YtDlpDashFragmentLocatorKind, YtDlpDashFragmentRole, YtDlpDashInputKind,
     YtDlpDashRequestMaterial, YtDlpDashTransportComponent, YtDlpLiveIntent,

@@ -25,9 +25,9 @@ use crate::render_settings::{
     surface_present_settings_from_config, warn_legacy_tone_mapping_config,
 };
 use crate::system_capabilities::probe_system_capabilities;
+use fastiplayer_config::{ConfigPaths, LoadedConfig};
 use playlist_state::{PlaylistResumeStore, PlaylistStateStore};
 use render_wgpu_shell::Renderer;
-use rustiplayer_config::{ConfigPaths, LoadedConfig};
 use tracing::{debug, info};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 

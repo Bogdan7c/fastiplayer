@@ -6,9 +6,9 @@ use demux_api::{
     DemuxFactoryOpenError, DemuxHints, DemuxInput, DemuxOpenError, DemuxProbeRejection,
     DemuxRegistry, DemuxSniffBudget, DemuxSourceExtension,
 };
+use fastiplayer_config::PlayerDemuxConfig;
 use media_core::Demuxer;
 use player_core::PreparedMedia;
-use rustiplayer_config::PlayerDemuxConfig;
 use source_core::{CancellationToken, LocalFileSource};
 
 /// Audio/container extensions, которые показываем пользователю как быстрые подсказки.
@@ -170,7 +170,7 @@ mod tests {
             crate::media_open::local::tests::mpeg_ts_h264_aac_bytes(),
         )
         .expect("write generated TS");
-        let config = rustiplayer_config::PlayerDemuxConfig::default();
+        let config = fastiplayer_config::PlayerDemuxConfig::default();
 
         let prepared = prepare_local_file(&path, &config).expect("prepare local TS");
         let rebuilt = open_local_demuxer(&path, &config).expect("rebuild local TS demuxer");
@@ -203,7 +203,7 @@ mod tests {
         let error = match open_local_demuxer_from_source(
             source,
             Some("ts"),
-            &rustiplayer_config::PlayerDemuxConfig::default(),
+            &fastiplayer_config::PlayerDemuxConfig::default(),
             cancellation,
         ) {
             Ok(_) => panic!("cancelled registry probe must not return demuxer"),

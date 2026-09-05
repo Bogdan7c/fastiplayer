@@ -25,11 +25,11 @@ ffmpeg -hide_banner -loglevel error \
   -t 4 -c:v libx264 -preset ultrafast -profile:v baseline \
   -bf 0 -g 5 -keyint_min 5 -sc_threshold 0 -pix_fmt yuv420p -an \
   -muxpreload 0 -muxdelay 0 -mpegts_flags +resend_headers \
-  -f mpegts -y /tmp/rustiplayer-aud003-pts-only.ts
+  -f mpegts -y /tmp/fastiplayer-aud003-pts-only.ts
 
 scripts/media-regression.sh \
   --scenario h264-ts-pts-only-ffmpeg \
-  --path /tmp/rustiplayer-aud003-pts-only.ts
+  --path /tmp/fastiplayer-aud003-pts-only.ts
 ```
 
 Сценарий принудительно запускает `ffmpeg-sw`, materialize-ит AVFrame-backed кадры через обычный
@@ -42,7 +42,7 @@ Web-media/app UX is checked separately through the S42 manual runner:
 scripts/progressive-web-smoke.sh \
   --case progressive-http-matroska-webm \
   --url 'https://explicit-user-selected.example/media.webm' \
-  --report /tmp/rustiplayer-progressive-web-report.md
+  --report /tmp/fastiplayer-progressive-web-report.md
 ```
 
 Every media input must be an explicit `--case` + `--url`/`--fixture` pair to count toward S42.

@@ -1,6 +1,6 @@
 //! Exact destination policy одного apply либо compensating rollback прохода.
 
-use rustiplayer_config::{AppConfig, VideoBackendPreference};
+use fastiplayer_config::{AppConfig, VideoBackendPreference};
 
 /// Immutable cross-route policy, построенная до первой runtime owner mutation.
 ///

@@ -103,7 +103,7 @@ fn track_paths_are_valid_non_reserved_and_distinguish_duplicate_rows() {
     };
     let first_path = encode_track_key(first).expect("valid path");
     let second_path = encode_track_key(second).expect("valid path");
-    assert!(first_path.starts_with("/com/rustiplayer/Track/"));
+    assert!(first_path.starts_with("/com/fastiplayer/Track/"));
     assert_ne!(first_path, second_path);
     assert!(ObjectPath::try_from(first_path).is_ok());
 }
@@ -113,7 +113,7 @@ fn external_track_path_uses_lineage_only() {
     let key = DesktopTrackKey::ExternalMedia { lineage: 17 };
     assert_eq!(
         encode_track_key(key).expect("valid path"),
-        "/com/rustiplayer/Track/x0000000000000011"
+        "/com/fastiplayer/Track/x0000000000000011"
     );
 }
 
@@ -257,8 +257,8 @@ fn stale_and_invalid_set_position_are_noop_before_backpressured_enqueue() {
     let interface = interface(snapshot, Arc::clone(&sink));
 
     let stale_path =
-        ObjectPath::try_from("/com/rustiplayer/Track/x0000000000000018").expect("valid stale path");
-    let active_path = ObjectPath::try_from("/com/rustiplayer/Track/x0000000000000011")
+        ObjectPath::try_from("/com/fastiplayer/Track/x0000000000000018").expect("valid stale path");
+    let active_path = ObjectPath::try_from("/com/fastiplayer/Track/x0000000000000011")
         .expect("valid active path");
     assert!(interface.set_position(stale_path, 1_000_000).is_ok());
     assert!(interface.set_position(active_path.clone(), -1).is_ok());
@@ -281,7 +281,7 @@ fn occupied_bus_name_is_typed_separately_from_backend_failure() {
 #[test]
 fn bus_claim_uses_fixed_base_name_without_replacement_or_fallback() {
     let source = include_str!("../linux.rs");
-    assert_eq!(MPRIS_BUS_NAME, "org.mpris.MediaPlayer2.rustiplayer");
+    assert_eq!(MPRIS_BUS_NAME, "org.mpris.MediaPlayer2.fastiplayer");
     assert!(source.contains(".name(MPRIS_BUS_NAME)"));
     assert!(source.contains(".allow_name_replacements(false)"));
     assert!(source.contains(".replace_existing_names(false)"));

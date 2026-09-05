@@ -10,7 +10,7 @@ use crate::validation;
 
 /// Persisted TOML shape для `[frame_server]`.
 ///
-/// Этот type намеренно живёт в `rustiplayer-config`: runtime/core mapping будет
+/// Этот type намеренно живёт в `fastiplayer-config`: runtime/core mapping будет
 /// отдельной boundary-задачей и не должен создавать dependency на `frame-server-core`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]

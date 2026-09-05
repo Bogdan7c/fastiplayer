@@ -2,8 +2,8 @@
 
 use std::time::{Duration, Instant};
 
+use fastiplayer_config::PlaylistConfig;
 use player_core::{MediaInstallCancellationCause, PlaybackState, PlayerSnapshot};
-use rustiplayer_config::PlaylistConfig;
 
 use crate::app_wake::AppWakePort;
 use crate::media_open::{

@@ -61,7 +61,7 @@ fn compound(label: &str, part_count: usize) -> PlaylistImportEntryDraft {
 fn runtime() -> PlaylistRuntime {
     let wake = AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime);
     let mut runtime =
-        PlaylistRuntime::new_with_config(wake, rustiplayer_config::PlaylistConfig::default());
+        PlaylistRuntime::new_with_config(wake, fastiplayer_config::PlaylistConfig::default());
     runtime.controller.install(PlaylistController::new());
     runtime
 }

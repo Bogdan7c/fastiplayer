@@ -30,9 +30,9 @@ fi
 # shellcheck source=lib/progressive-web-smoke-s42.sh
 source "${S42_MANUAL_LIBRARY}"
 # Default binary соответствует package app-egui и release build output.
-readonly DEFAULT_RUSTIPLAYER_BINARY="${REPO_ROOT}/target/release/rustiplayer"
+readonly DEFAULT_FASTIPLAYER_BINARY="${REPO_ROOT}/target/release/fastiplayer"
 # Отдельный env override не позволяет обычному RUST_LOG незаметно изменить report surface.
-readonly PROGRESSIVE_WEB_RUST_LOG="${RUSTIPLAYER_PROGRESSIVE_WEB_RUST_LOG:-${DEFAULT_PROGRESSIVE_WEB_RUST_LOG}}"
+readonly PROGRESSIVE_WEB_RUST_LOG="${FASTIPLAYER_PROGRESSIVE_WEB_RUST_LOG:-${DEFAULT_PROGRESSIVE_WEB_RUST_LOG}}"
 
 # Pending case связывает следующий explicit --url/--fixture с безопасной ролью.
 pending_case_id=""
@@ -90,11 +90,11 @@ Usage:
   scripts/progressive-web-smoke.sh --case CASE_ID --fixture FILE --report FILE [OPTIONS]
   scripts/progressive-web-smoke.sh --url URL [--url URL ...] --report FILE [OPTIONS]
 
-Runs the release Rustiplayer binary only for explicit HTTP/HTTPS/FTP/FTPS URLs or
+Runs the release Fastiplayer binary only for explicit HTTP/HTTPS/FTP/FTPS URLs or
 local fixtures supplied by the user. Named CASE_ID values are safe report labels;
 raw URL/fixture identities are never retained. The real run requires exact system
 yt-dlp 2026.07.04, preserves its normal config/plugin/cookie lookup, and records
-workspace clean/dirty state, exact Rustiplayer/yt-dlp executable hashes and only
+workspace clean/dirty state, exact Fastiplayer/yt-dlp executable hashes and only
 redacted runtime logs.
 
 Options:
@@ -318,20 +318,20 @@ require_command() {
     fi
 }
 
-# Вычисляет exact digest уже выбранного Rustiplayer executable.
+# Вычисляет exact digest уже выбранного Fastiplayer executable.
 record_selected_binary_provenance() {
     # SHA utility возвращает digest и path; path в report не сохраняется.
     local sha256_output
     # Нечитаемый либо изменившийся executable блокирует неполный provenance.
     if ! sha256_output="$(sha256sum -- "${selected_binary}")"; then
-        print_error "не удалось вычислить SHA-256 Rustiplayer binary"
+        print_error "не удалось вычислить SHA-256 Fastiplayer binary"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # Первый whitespace-delimited field является exact digest.
     selected_binary_sha256="${sha256_output%% *}"
     # Malformed output нельзя выдавать за executable identity.
     if [[ ! "${selected_binary_sha256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        print_error "SHA-256 Rustiplayer binary имеет некорректный формат"
+        print_error "SHA-256 Fastiplayer binary имеет некорректный формат"
         exit "${FAILURE_EXIT_CODE}"
     fi
 }
@@ -357,12 +357,12 @@ prepare_binary() {
         # Default workflow компилирует ровно production app package на pinned primary Rust.
         cargo +1.96.0 build --release -p app-egui --locked
         # Build обязан создать canonical executable до network/GUI запуска.
-        if [[ ! -x "${DEFAULT_RUSTIPLAYER_BINARY}" ]]; then
-            print_error "release build не создал executable rustiplayer"
+        if [[ ! -x "${DEFAULT_FASTIPLAYER_BINARY}" ]]; then
+            print_error "release build не создал executable fastiplayer"
             exit "${FAILURE_EXIT_CODE}"
         fi
         # Последующие scenarios используют один и тот же проверенный binary.
-        selected_binary="${DEFAULT_RUSTIPLAYER_BINARY}"
+        selected_binary="${DEFAULT_FASTIPLAYER_BINARY}"
         # Origin честно указывает на текущий worktree, а clean/dirty хранится отдельно.
         selected_binary_origin="runner-built-from-current-worktree"
     fi
@@ -373,7 +373,7 @@ prepare_binary() {
 # Raw runtime directory создаётся только после успешного build/preflight.
 create_runtime_directory() {
     # mktemp гарантирует process-unique directory в системном temporary root.
-    runtime_directory="$(mktemp -d -t rustiplayer-progressive-web.XXXXXX)"
+    runtime_directory="$(mktemp -d -t fastiplayer-progressive-web.XXXXXX)"
 }
 
 # Один scenario запускает app с exact argv input и сразу sanitizes raw log.

@@ -9,7 +9,7 @@ mod parser_tests;
 mod process;
 mod reopen;
 
-use rustiplayer_config::YtDlpConfig;
+use fastiplayer_config::YtDlpConfig;
 use serde_json::{Value, json};
 use web_media_core::ExtractorInvocationReason;
 

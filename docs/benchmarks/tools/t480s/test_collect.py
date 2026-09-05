@@ -16,7 +16,7 @@ class CollectorRuntimeTests(unittest.TestCase):
         completed = subprocess.run([
             sys.executable, str(Path(__file__).with_name('collect.py')),
             '--attempt', '1', '--phase', 'validation',
-            '--scenario', 'av1-4k60-sw', '--player', 'rustiplayer',
+            '--scenario', 'av1-4k60-sw', '--player', 'fastiplayer',
             '--settle', '0', '--window-start', '0.2', '--duration', '1.2',
             '--output', str(root / 'result.json'), '--log', str(root / 'runtime.log'),
             '--', sys.executable, '-c', command,

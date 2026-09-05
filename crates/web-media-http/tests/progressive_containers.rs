@@ -16,10 +16,10 @@ use demux_api::{
     DemuxHints, DemuxInput, DemuxRegistry, DemuxSniffBudget, DemuxSourceExtension,
     ProgressiveDemuxBufferLimits, ProgressiveDemuxer,
 };
+use fastiplayer_config::NetworkConfig;
 use media_core::{
     DemuxReadEvent, DemuxRetryHint, DemuxSeekability, Demuxer, Packet, TrackId, TrackKind,
 };
-use rustiplayer_config::NetworkConfig;
 use source_core::{
     CancellationToken, HttpPathScope, HttpRequestTarget, LocalFileSource, SourceRuntimeConfig,
 };
@@ -124,7 +124,7 @@ impl TemporaryMediaFile {
     fn new(body: &[u8]) -> Self {
         let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "rustiplayer-s28a1-{}-{sequence}.fixture",
+            "fastiplayer-s28a1-{}-{sequence}.fixture",
             std::process::id()
         ));
         fs::write(&path, body).expect("write local ISO BMFF fixture");

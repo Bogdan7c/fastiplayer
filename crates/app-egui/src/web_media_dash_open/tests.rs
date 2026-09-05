@@ -4,7 +4,7 @@ use std::num::NonZeroU8;
 use std::time::Duration;
 
 use dash_mpd_core::{DashContainer, DashMediaKind};
-use rustiplayer_config::NetworkConfig;
+use fastiplayer_config::NetworkConfig;
 use service_ytdlp::{YtDlpDashFragmentLocatorKind, YtDlpDashFragmentRole, YtDlpLiveIntent};
 use source_core::{
     CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig, ValidatedHttpHeaders,

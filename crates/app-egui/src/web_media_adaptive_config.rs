@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use rustiplayer_config::NetworkConfig;
+use fastiplayer_config::NetworkConfig;
 use web_media_adaptive::AdaptiveTransportLimits;
 use web_media_transport_api::SourceGeneration;
 

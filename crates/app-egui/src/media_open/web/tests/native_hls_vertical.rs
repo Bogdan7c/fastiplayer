@@ -20,10 +20,10 @@ use codec_core::{
     BitDepth, ChromaSubsampling, DecodeBackendId, H264Profile, SupportedVideoDecodeFormat,
     VideoCodec as DecodeVideoCodec, VideoProfile,
 };
+use fastiplayer_config::{AppConfig, VideoCodec};
 use media_core::{DemuxReadEvent, DemuxRetryHint, Demuxer, MediaTime, TrackKind};
 use player_core::PreparedInitialPosition;
 use render_wgpu_video::HostPlanarWgpuFrameMaterializer;
-use rustiplayer_config::{AppConfig, VideoCodec};
 use source_core::CancellationToken;
 use video_frame_contract::VideoFrameContract;
 use web_media_hls::HlsVodStartIntent;

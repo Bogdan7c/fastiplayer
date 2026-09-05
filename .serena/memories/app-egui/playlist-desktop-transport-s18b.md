@@ -11,7 +11,7 @@ For `TimelineMode::Live`, desktop/MPRIS metadata never exposes `mpris:length`; `
 
 ## Desktop boundary
 - `desktop-integration` не зависит от `player-core`. Его public neutral vocabulary: `DesktopCommand`, `DesktopTransportAction`, `DesktopTrackKey`, `DesktopTimelineSeekOutcome`, `EffectiveVolume`, revisioned `DesktopSnapshotView`.
-- Linux запрашивает только `org.mpris.MediaPlayer2.rustiplayer` через zbus 5.15 с explicit `.allow_name_replacements(false).replace_existing_names(false)`; default DoNotQueue сохраняется. `zbus::Error::NameTaken` маппится в typed non-fatal `MprisBusNameUnavailable`, остальные connection/spawn errors остаются отдельными backend outcomes.
+- Linux запрашивает только `org.mpris.MediaPlayer2.fastiplayer` через zbus 5.15 с explicit `.allow_name_replacements(false).replace_existing_names(false)`; default DoNotQueue сохраняется. `zbus::Error::NameTaken` маппится в typed non-fatal `MprisBusNameUnavailable`, остальные connection/spawn errors остаются отдельными backend outcomes.
 - Neutral commands идут в bounded sync mailbox и будят общий D38/D76 `AppWakeOwner::PlaylistRuntime`; UI thread drain-ит их. Full/Disconnected возвращаются только после разрешённой capability реальной попытки enqueue. Detached commands не становятся hidden playback queue.
 - MPRIS false-capability policy: Next/Previous/Play/Pause/Seek/SetPosition — no-effect; PlayPause использует error при `CanPause=false`; Rate=0 следует Pause capability. Stale/invalid SetPosition отсекается до app enqueue и остаётся spec no-op.
 - Fixed rate contract: Rate/MinimumRate/MaximumRate = 1.0; 1 и другой finite nonzero — no-op/best-fit, 0 — Pause, non-finite — InvalidArgs.
@@ -24,7 +24,7 @@ For `TimelineMode::Live`, desktop/MPRIS metadata never exposes `mpris:length`; `
 
 ## Track identity
 - App owner фиксирует key только при successful active lineage. Playlist item key = lineage + stable Item ID; external key = lineage only. Same-lineage reinstall/suspend/rebind и tombstone сохраняют exact key/path; pending/failure не меняют его; новая lineage переключает.
-- Только `desktop-integration::platform::linux::track_identity` кодирует checked non-reserved `/com/rustiplayer/Track/...` object paths. Playlist controller/domain и player-core не содержат zbus/D-Bus types. `HasTrackList=false` сохранён.
+- Только `desktop-integration::platform::linux::track_identity` кодирует checked non-reserved `/com/fastiplayer/Track/...` object paths. Playlist controller/domain и player-core не содержат zbus/D-Bus types. `HasTrackList=false` сохранён.
 
 ## Timeline seek
 - App отдельно разрешает signed relative Seek и SetPosition. Underflow clamp-ится к zero; strict known beyond-end идёт в общий MPRIS Next; unknown arithmetic overflow — typed no-op. Stale track/invalid range не enqueue-ятся в player.

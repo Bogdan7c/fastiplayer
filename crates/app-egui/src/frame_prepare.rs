@@ -2,6 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use fastiplayer_settings::{
+    AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
+    RenderCommittedSettingsUpdate, SettingsBoundaryActivity,
+};
 use player_core::{
     PlayerError, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
@@ -13,10 +17,6 @@ use render_core::{
 };
 use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, Renderer};
 use render_wgpu_video::WgpuRenderableFrame;
-use rustiplayer_settings::{
-    AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
-    RenderCommittedSettingsUpdate, SettingsBoundaryActivity,
-};
 use settings_core::{SettingId, SettingsResult};
 use tracing::{error, instrument, warn};
 use video_core::DecodedPixelFormat;

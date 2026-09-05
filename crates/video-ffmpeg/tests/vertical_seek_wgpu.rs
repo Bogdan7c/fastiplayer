@@ -585,9 +585,9 @@ fn assert_resource_released(
 #[ignore = "requires explicit generated MPEG-TS, system FFmpeg libraries and Vulkan adapter"]
 fn h264_mpeg_ts_reaches_wgpu_submit_and_release_before_and_after_seek() {
     // Corpus передаётся явно: тест ничего не скачивает и не использует неясные fixtures.
-    let asset_path = std::env::var_os("RUSTIPLAYER_MEDIA_PATH")
+    let asset_path = std::env::var_os("FASTIPLAYER_MEDIA_PATH")
         .map(std::path::PathBuf::from)
-        .expect("RUSTIPLAYER_MEDIA_PATH должен указывать на generated MPEG-TS");
+        .expect("FASTIPLAYER_MEDIA_PATH должен указывать на generated MPEG-TS");
 
     // Один demuxer и один decoder сохраняют production seek lifecycle между поколениями.
     let mut demuxer = open_demuxer(&asset_path);

@@ -143,7 +143,7 @@ fn h264_startup_decode_point_accepts_first_keyframe() -> Result<()> {
 }
 
 #[test]
-#[ignore = "manual fragmented MP4 regression; use RUSTIPLAYER_MEDIA_PATH"]
+#[ignore = "manual fragmented MP4 regression; use FASTIPLAYER_MEDIA_PATH"]
 fn h264_fragmented_mp4_middle_seek_uses_indexed_anchor() -> Result<()> {
     let path = selected_media_path()?;
     let mut demuxer = open_h264_media(&path, "h264-fragmented-mp4-middle-seek")?;

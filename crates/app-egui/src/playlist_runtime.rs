@@ -387,14 +387,14 @@ impl PlaylistRuntime {
     /// Создаёт runtime один раз вместе с `AppShell`, до любого `AppState`.
     #[cfg(test)]
     pub(crate) fn new(wake_port: AppWakePort) -> Self {
-        Self::new_with_config(wake_port, rustiplayer_config::PlaylistConfig::default())
+        Self::new_with_config(wake_port, fastiplayer_config::PlaylistConfig::default())
     }
 
     /// Создаёт runtime с policy из уже валидированного startup config.
     #[cfg(test)]
     pub(crate) fn new_with_config(
         wake_port: AppWakePort,
-        playlist_config: rustiplayer_config::PlaylistConfig,
+        playlist_config: fastiplayer_config::PlaylistConfig,
     ) -> Self {
         Self::new_with_resume_policy(wake_port, playlist_config, true)
     }
@@ -402,7 +402,7 @@ impl PlaylistRuntime {
     /// Production constructor дополнительно принимает существующую player enable-policy.
     pub(crate) fn new_with_resume_policy(
         wake_port: AppWakePort,
-        playlist_config: rustiplayer_config::PlaylistConfig,
+        playlist_config: fastiplayer_config::PlaylistConfig,
         resume_last_position: bool,
     ) -> Self {
         let ui_interaction = ui_interaction::PlaylistUiInteractionOwner::new(wake_port.clone());
@@ -475,7 +475,7 @@ impl PlaylistRuntime {
 
     pub(crate) fn stage_playlist_settings(
         &mut self,
-        requested: rustiplayer_config::PlaylistConfig,
+        requested: fastiplayer_config::PlaylistConfig,
     ) -> Result<bool, settings::PlaylistSettingsStageError> {
         let controller = self.controller.as_mut().ok_or_else(|| {
             settings::PlaylistSettingsStageError::Failed(

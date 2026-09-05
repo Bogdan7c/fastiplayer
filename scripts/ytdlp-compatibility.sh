@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Development-only runner проверяет системный yt-dlp через production boundaries Rustiplayer.
+# Development-only runner проверяет системный yt-dlp через production boundaries Fastiplayer.
 
 # Строгий shell mode запрещает продолжать работу после необработанной ошибки.
 set -Eeuo pipefail
@@ -36,7 +36,7 @@ print_help() {
     cat <<'EOF'
 Usage: scripts/ytdlp-compatibility.sh
 
-Checks the system yt-dlp executable through Rustiplayer's real candidate and
+Checks the system yt-dlp executable through Fastiplayer's real candidate and
 topology production APIs using a deterministic loopback HTTP fixture.
 
 The check is development-only. A temporary shim adds --ignore-config and
@@ -55,7 +55,7 @@ EOF
 # Создаёт временный command `yt-dlp`, который изолирует только development check.
 create_hermetic_yt_dlp_shim() {
     # Mktemp атомарно создаёт owner-only directory вне repository tree.
-    compatibility_directory="$(mktemp -d -t rustiplayer-ytdlp-compatibility.XXXXXX)"
+    compatibility_directory="$(mktemp -d -t fastiplayer-ytdlp-compatibility.XXXXXX)"
     # Exact shim path должен называться `yt-dlp`, потому что production boundary ищет это имя в PATH.
     local shim_path="${compatibility_directory}/yt-dlp"
     # Quoted heredoc сохраняет runtime environment reference без преждевременной interpolation.
@@ -64,7 +64,7 @@ create_hermetic_yt_dlp_shim() {
 # Strict mode запрещает продолжение после отсутствующего executable либо failed exec setup.
 set -Eeuo pipefail
 # System executable передаётся owner runner-ом как exact absolute diagnostic path.
-readonly SYSTEM_YT_DLP_EXECUTABLE="${RUSTIPLAYER_SYSTEM_YT_DLP_EXECUTABLE:?missing system yt-dlp executable}"
+readonly SYSTEM_YT_DLP_EXECUTABLE="${FASTIPLAYER_SYSTEM_YT_DLP_EXECUTABLE:?missing system yt-dlp executable}"
 # Exec сохраняет production arguments, добавляя только development isolation prefix.
 exec "${SYSTEM_YT_DLP_EXECUTABLE}" --ignore-config --no-plugin-dirs "$@"
 EOF
@@ -150,7 +150,7 @@ main() {
     # Ignored integration test является единственным владельцем локального fixture и assertions.
     if ! env \
         "PATH=${compatibility_directory}:${PATH}" \
-        "RUSTIPLAYER_SYSTEM_YT_DLP_EXECUTABLE=${yt_dlp_executable}" \
+        "FASTIPLAYER_SYSTEM_YT_DLP_EXECUTABLE=${yt_dlp_executable}" \
         cargo +1.96.0 test \
         -p service-ytdlp \
         --locked \

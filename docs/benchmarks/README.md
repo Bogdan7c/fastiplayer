@@ -1,6 +1,8 @@
 # Benchmark policy
 
-Rustiplayer publishes measurements with their scope, environment, and limitations. Performance is a project priority; published claims must describe the operation actually measured. A faster source-opening fixture does not establish lower video playback CPU use, battery savings, or superiority over another player.
+Product names and result labels were normalized to Fastiplayer after the rename. All measurements, dates, samples and original source/binary hashes still refer to the historical revisions recorded below. Original labels remain available in Git history; these results are not measurements of the renamed build.
+
+Fastiplayer publishes measurements with their scope, environment, and limitations. Performance is a project priority; published claims must describe the operation actually measured. A faster source-opening fixture does not establish lower video playback CPU use, battery savings, or superiority over another player.
 
 ## Existing N15 ingress experiment
 
@@ -35,10 +37,10 @@ Use release builds and at least three warm-up runs. For steady-state playback, c
 
 A VLC control must use the same file, display/session, confirmed hardware decoding, audio/mute policy, warm-up count, five 60-second windows, and CPU/RSS collector/process scope. Compare dropped frames only when both counters mean the same thing. Record VLC version and settings, including processing that could alter workload.
 
-If equivalent conditions cannot be established, **omit the VLC comparison table** and publish the Rustiplayer hardware baseline with the reason. There is no requirement to produce a favorable outcome or a comparison at all. Do not use an unqualified “faster than VLC” headline.
+If equivalent conditions cannot be established, **omit the VLC comparison table** and publish the Fastiplayer hardware baseline with the reason. There is no requirement to produce a favorable outcome or a comparison at all. Do not use an unqualified “faster than VLC” headline.
 
 ## Screenshots and publication
 
-A screenshot must show the real application playing the documented fixture. Design concepts are never runtime evidence. Check for personal paths, notifications, URLs, and credentials before publishing. S08's real main-window capture is [rustiplayer-t480s-main.png](../assets/rustiplayer-t480s-main.png); its source and movie attribution are recorded in the T480s report.
+A screenshot must show the real application playing the documented fixture. Design concepts are never runtime evidence. Check for personal paths, notifications, URLs, and credentials before publishing. S08's real main-window capture is preserved in the [tagged asset directory](https://github.com/Bogdan7c/fastiplayer/tree/v0.1.0-alpha.1/docs/assets); its source and movie attribution are recorded in the T480s report.
 
 Update the landing page only after reviewing the report, raw results, and playback evidence together. Keep N15 and T480s provenance separate. Benchmark-policy changes do not retrospectively make the older N15 aggregates satisfy newer raw-data requirements.

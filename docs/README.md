@@ -62,7 +62,6 @@ Start with the English [project overview and build instructions](../README.md) a
 | [XML dependency audit S04X](dependency-audit-s04x-2026-07-20.md) | RU | Safe XML parser/advisory closure |
 | [AES-128 dependency audit S32A](dependency-audit-s32a-hls-aes-2026-07-23.md) | RU | HLS cryptographic dependency review |
 | [FFmpeg build tooling](../scripts/tooling/README.md) | RU | Optional local LGPL build tooling; historical feature-default notes must be checked against current Cargo manifests |
-| [Design concepts](design/README.md) | RU | Labeled mockups, not runtime screenshots |
 | [Historical reports](history/README.md) | RU | Reading dated evidence in context |
 | [Readiness report, 2026-07-12](history/readiness_report_2026-07-12.md) | RU | Historical snapshot; not current release readiness |
 

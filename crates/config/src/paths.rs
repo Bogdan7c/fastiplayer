@@ -14,18 +14,18 @@ const PLAYLIST_STATE_FILE_NAME: &str = "playlist-state.json";
 const PLAYLIST_RESUME_FILE_NAME: &str = "playlist-resume.json";
 
 /// Имя стабильного lock artifact, который нельзя удалять между запусками.
-const APP_INSTANCE_LOCK_FILE_NAME: &str = "rustiplayer.instance.lock";
+const APP_INSTANCE_LOCK_FILE_NAME: &str = "fastiplayer.instance.lock";
 
 /// Имя каталога приложения внутри платформенного config-dir.
-const APP_CONFIG_DIRECTORY_NAME: &str = "rustiplayer";
+const APP_CONFIG_DIRECTORY_NAME: &str = "fastiplayer";
 
 /// Стандартные пути config-слоя для текущего пользователя.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigPaths {
-    /// Директория config-файла, например `~/.config/rustiplayer`.
+    /// Директория config-файла, например `~/.config/fastiplayer`.
     pub config_dir: PathBuf,
 
-    /// Полный путь к TOML-файлу, например `~/.config/rustiplayer/config.toml`.
+    /// Полный путь к TOML-файлу, например `~/.config/fastiplayer/config.toml`.
     pub config_file: PathBuf,
 }
 
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn derived_paths_share_the_trusted_config_owner() {
-        let config_root = PathBuf::from("platform-config-root").join("rustiplayer");
+        let config_root = PathBuf::from("platform-config-root").join("fastiplayer");
         let paths = ConfigPaths::from_config_dir(&config_root);
 
         assert_eq!(paths.config_dir(), config_root);
@@ -105,7 +105,7 @@ mod tests {
         );
         assert_eq!(
             paths.app_instance_lock_file(),
-            config_root.join("rustiplayer.instance.lock")
+            config_root.join("fastiplayer.instance.lock")
         );
     }
 }

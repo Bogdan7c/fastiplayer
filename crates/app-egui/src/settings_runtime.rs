@@ -9,6 +9,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use fastiplayer_config::{
+    AppConfig, FrameServerLiveScrubDecodeModeConfig, LoadedConfig, NetworkConfig,
+    PlayerDemuxConfig, RenderProfile, ToneMappingMode, UiConfig, VideoBackendPreference,
+    VulkanConfig, WebMediaConfig, YtDlpConfig,
+};
+use fastiplayer_settings::{
+    AppConfigStore, AppConfigValidator, AppRouteApplyReport, AppRouteApplyResult,
+    AppRouteGroupReport, AppRuntimeRouteApplier, AppRuntimeRouteGroup, AppRuntimeRouteGroupUpdate,
+    FrameServerRuntimeSettingsUpdate, MediaServiceRuntimeSettingsUpdate,
+    PlayerCommittedSettingsUpdate, PlaylistRuntimeSettingsUpdate, RENDER_PREVIEW_ROUTE_ID,
+    RenderCommittedSettingsUpdate, RuntimeCommittedRoute, RuntimeCommittedUpdate,
+    SettingsBoundaryActivity, UiRuntimeSettingsUpdate, app_config_registry,
+    committed_routes_for_updates, render_live_settings_from_config,
+};
 use player_core::{
     PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,
@@ -20,20 +34,6 @@ use render_core::{
 };
 #[cfg(test)]
 use render_core::{RenderLiveApplyReport, RenderLiveSettingsError};
-use rustiplayer_config::{
-    AppConfig, FrameServerLiveScrubDecodeModeConfig, LoadedConfig, NetworkConfig,
-    PlayerDemuxConfig, RenderProfile, ToneMappingMode, UiConfig, VideoBackendPreference,
-    VulkanConfig, WebMediaConfig, YtDlpConfig,
-};
-use rustiplayer_settings::{
-    AppConfigStore, AppConfigValidator, AppRouteApplyReport, AppRouteApplyResult,
-    AppRouteGroupReport, AppRuntimeRouteApplier, AppRuntimeRouteGroup, AppRuntimeRouteGroupUpdate,
-    FrameServerRuntimeSettingsUpdate, MediaServiceRuntimeSettingsUpdate,
-    PlayerCommittedSettingsUpdate, PlaylistRuntimeSettingsUpdate, RENDER_PREVIEW_ROUTE_ID,
-    RenderCommittedSettingsUpdate, RuntimeCommittedRoute, RuntimeCommittedUpdate,
-    SettingsBoundaryActivity, UiRuntimeSettingsUpdate, app_config_registry,
-    committed_routes_for_updates, render_live_settings_from_config,
-};
 use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,
     CommittedApplyRequest, CommittedFinalizeRequest, CommittedRollbackRequest,
@@ -428,7 +428,7 @@ impl SettingsRuntime {
     where
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
-        tracing::debug!(target: "rustiplayer::settings_actions", ?action, "settings UI action");
+        tracing::debug!(target: "fastiplayer::settings_actions", ?action, "settings UI action");
         match action {
             SettingsUiAction::Open => self.open_settings(),
             SettingsUiAction::ToggleOpen => {

@@ -4,7 +4,7 @@
 
 По решению владельца от 2026-09-05 физические GBM/VA-API и DMA-heap тесты
 выполняются только на локальной машине. Workflows явно задают
-`RUSTIPLAYER_TEST_SCOPE=hosted`; общий `scripts/test_execution_scope.py` добавляет
+`FASTIPLAYER_TEST_SCOPE=hosted`; общий `scripts/test_execution_scope.py` добавляет
 libtest `--skip` для пяти именованных аппаратных тестов. Они компилируются,
 но их тела не запускаются даже при наличии устройства на hosted runner.
 Программные проверки descriptor-ов, fake decoder-ов, SDK/headers и зависимостей
@@ -23,9 +23,9 @@ Hosted check требует cohort manifest с совпадающим execution 
 
 ```bash
 # Полный локальный gate, включая доступное физическое оборудование.
-RUSTIPLAYER_TEST_SCOPE=local scripts/coverage.sh check
+FASTIPLAYER_TEST_SCOPE=local scripts/coverage.sh check
 # Воспроизведение состава software suite GitHub на локальной машине.
-RUSTIPLAYER_TEST_SCOPE=hosted scripts/ci-checks.sh tests
+FASTIPLAYER_TEST_SCOPE=hosted scripts/ci-checks.sh tests
 ```
 
 Для выпуска нужны оба доказательства на одном final SHA: полный локальный PASS
@@ -318,3 +318,23 @@ default filename regex: каталоги `tests`, `examples`, `benches`, а та
 Новое исключение допустимо только для действительно generated binding или
 ручного hardware-only исходника. В policy нужен exact path, а здесь — владелец
 генерации либо причина, почему hosted hermetic execution невозможен.
+
+## Approved product identity migration
+
+`coverage/identity-migrations.json` pins the exact logical SHA-256 hashes of both
+v2 baselines, both policies and both measurement-exception ledgers. The registry
+stores the new name; the old identity is inferred from the input source owners.
+`coverage_identity_migration.py` independently reconstructs the full bijection:
+file sorting, both region file indices, coordinate sorting, domain membership,
+stable sets and derived hashes. All counters, measurement settings, owner
+classification and exception history are preserved. Only that exact transition
+may normalize the embedded historical package labels. Schema v2 is unchanged.
+
+`check-baseline-update` accepts the optional group `--identity-migrations`,
+`--previous-policy`, `--proposed-policy`. CI passes all three alongside the
+existing baseline/ledger pair. Without a matching registration the ordinary
+strict validator remains in force. A changed registry alone cannot authorize
+loss: the deterministic migration result must also match the proposed document.
+CLI regression tests live in `scripts/tests/test_coverage_identity_migration.py`.
+Two fresh full `scripts/coverage.sh check` runs are required after migration;
+their results never automatically lower the qualified baseline.

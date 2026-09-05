@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use demux_api::DemuxRegistry;
+use fastiplayer_config::{NetworkConfig, PlayerDemuxConfig, WebMediaConfig};
 use media_core::Demuxer;
 use player_core::PreparedDemuxSeekPort;
-use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, WebMediaConfig};
 use source_core::{CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
 use web_media_adaptive::{
@@ -520,7 +520,7 @@ impl NativeDashStartupJob {
     pub(super) fn spawn(
         source: NativeDashUrl,
         fallback_locator: service_ytdlp::YtDlpMediaLocator,
-        app_config: rustiplayer_config::AppConfig,
+        app_config: fastiplayer_config::AppConfig,
         system_capabilities: capability_core::SystemCapabilities,
         audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
         wake_port: AppWakePort,
@@ -599,7 +599,7 @@ impl NativeDashStartupJob {
 fn resolve_native_dash_startup_media(
     source: NativeDashUrl,
     fallback_locator: service_ytdlp::YtDlpMediaLocator,
-    app_config: &rustiplayer_config::AppConfig,
+    app_config: &fastiplayer_config::AppConfig,
     system_capabilities: &capability_core::SystemCapabilities,
     audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     cancellation: CancellationToken,
@@ -661,7 +661,7 @@ impl super::StartupMediaController {
         source: NativeDashUrl,
         fallback_locator: service_ytdlp::YtDlpMediaLocator,
         app_state: &mut crate::state::AppState,
-        app_config: &rustiplayer_config::AppConfig,
+        app_config: &fastiplayer_config::AppConfig,
         system_capabilities: &capability_core::SystemCapabilities,
     ) {
         if let Some(error) = self.startup_job_admission_error() {

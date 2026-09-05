@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use rustiplayer_config::NetworkConfig;
+use fastiplayer_config::NetworkConfig;
 use source_core::{CancellationToken, FtpRequestTarget, SourceRuntimeConfig};
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, SemanticIdentity,

@@ -157,7 +157,7 @@ impl Drop for OwnedProcess {
     fn drop(&mut self) {
         if let Err(error) = self.finish() {
             // Drop не может вернуть ошибку, но silent cleanup failure здесь недопустим.
-            eprintln!("rustiplayer: аварийная очистка owned process завершилась ошибкой: {error}");
+            eprintln!("fastiplayer: аварийная очистка owned process завершилась ошибкой: {error}");
         }
     }
 }

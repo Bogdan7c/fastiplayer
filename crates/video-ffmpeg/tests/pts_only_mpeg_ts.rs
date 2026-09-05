@@ -262,9 +262,9 @@ fn assert_first_three_pts_increase(evidence: &ScenarioEvidence, scenario_name: &
 #[test]
 #[ignore = "requires explicit generated PTS-only MPEG-TS and system FFmpeg libraries"]
 fn pts_only_mpeg_ts_materializes_increasing_frames_after_start_and_seek() {
-    let asset_path = std::env::var_os("RUSTIPLAYER_MEDIA_PATH")
+    let asset_path = std::env::var_os("FASTIPLAYER_MEDIA_PATH")
         .map(std::path::PathBuf::from)
-        .expect("RUSTIPLAYER_MEDIA_PATH должен указывать на generated MPEG-TS");
+        .expect("FASTIPLAYER_MEDIA_PATH должен указывать на generated MPEG-TS");
 
     let mut start_demuxer = open_demuxer(&asset_path);
     let video_track_id = start_demuxer

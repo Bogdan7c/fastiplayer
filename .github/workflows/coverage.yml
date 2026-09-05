@@ -13,7 +13,7 @@ concurrency:
 
 env:
   # Аппаратные тесты фильтруются до libtest execution даже при наличии render node.
-  RUSTIPLAYER_TEST_SCOPE: hosted
+  FASTIPLAYER_TEST_SCOPE: hosted
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
 

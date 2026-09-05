@@ -15,9 +15,9 @@ use codec_core::{
     BitDepth, ChromaSubsampling, DecodeBackendId, H264Profile, SupportedVideoDecodeFormat,
     VideoCodec as DecodeVideoCodec, VideoProfile, Vp9Profile,
 };
+use fastiplayer_config::{AppConfig, VideoCodec};
 use media_core::{DemuxSeekRequest, TrackKind};
 use player_core::{PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, PreparedDemuxSeekRequestId};
-use rustiplayer_config::{AppConfig, VideoCodec};
 use source_core::CancellationToken;
 use video_frame_contract::VideoFrameContract;
 

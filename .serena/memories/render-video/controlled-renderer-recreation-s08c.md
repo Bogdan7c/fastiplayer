@@ -9,7 +9,7 @@
 - WGPU device lost отслеживается через `Device::set_device_lost_callback`; drain различает device lost, timeout, wrong submission index и poisoned lifecycle state.
 - `RenderProfile::OpenGles` остаётся нереализованным renderer backend-ом и теперь возвращает typed `UnsupportedProfile` с сохранением active Vulkan path вместо ложного success/deferred restart.
 - Focused fake lifecycle tests: success, no active video, resource busy, creation failure+restore, device lost+rollback failure, active DMA-BUF lease order, HostPlanar preservation, commit failure, resize/fullscreen conflict+retry. Settings tests закрепляют commit snapshot only after success и same-draft retry. Exactly-once release guard имеет render-wgpu-video unit test.
-- Проверки 08C: app-egui 234 tests; player-core 474; render-wgpu-video 92; render-wgpu-shell 12; rustiplayer-settings 15; strict targeted Clippy; `cargo +1.96.0 check --workspace --locked`; refactor guardrails; playback smoke probe-only including installed FFmpeg runtime probe.
+- Проверки 08C: app-egui 234 tests; player-core 474; render-wgpu-video 92; render-wgpu-shell 12; fastiplayer-settings 15; strict targeted Clippy; `cargo +1.96.0 check --workspace --locked`; refactor guardrails; playback smoke probe-only including installed FFmpeg runtime probe.
 - End-to-end persistence order всё ещё принадлежит Session 08D: settings-core пока persist-ит перед runtime apply и фиксирует `PersistedRuntimeDiverged` на failure; 08C не удаляет этот transitional contract.
 
 ## S25 integration note (2026-07-22)

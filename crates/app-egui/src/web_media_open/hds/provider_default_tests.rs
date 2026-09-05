@@ -29,13 +29,13 @@ use codec_core::{
     BitDepth, ChromaSubsampling, DecodeBackendId, H264Profile, SupportedVideoDecodeFormat,
     VideoCodec as DecodeVideoCodec, VideoProfile,
 };
+use fastiplayer_config::{
+    NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YtDlpConfig,
+};
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, TrackKind};
 use player_core::{
     PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, PreparedDemuxSeekReceipt,
     PreparedDemuxSeekRequestId,
-};
-use rustiplayer_config::{
-    NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YtDlpConfig,
 };
 use source_core::CancellationToken;
 use tempfile::TempDir;
@@ -50,11 +50,11 @@ use super::super::content_probe::ContentProbeRejection;
 use super::super::{YtDlpCandidateOpenIntent, prepare_yt_dlp_web_media};
 
 /// Маркер разделяет owner и child без изменения process-global environment.
-const CHILD_PROCESS_MARKER_ENV: &str = "RUSTIPLAYER_HDS_PROVIDER_DEFAULT_CHILD";
+const CHILD_PROCESS_MARKER_ENV: &str = "FASTIPLAYER_HDS_PROVIDER_DEFAULT_CHILD";
 /// Fake extractor получает точный document только через child-local environment.
-const YT_DLP_DOCUMENT_ENV: &str = "RUSTIPLAYER_HDS_PROVIDER_DEFAULT_YTDLP_JSON";
+const YT_DLP_DOCUMENT_ENV: &str = "FASTIPLAYER_HDS_PROVIDER_DEFAULT_YTDLP_JSON";
 /// Child получает только loopback test-origin address для наблюдения fetch count.
-const HDS_FIXTURE_ORIGIN_ADDRESS_ENV: &str = "RUSTIPLAYER_HDS_PROVIDER_DEFAULT_ORIGIN_ADDRESS";
+const HDS_FIXTURE_ORIGIN_ADDRESS_ENV: &str = "FASTIPLAYER_HDS_PROVIDER_DEFAULT_ORIGIN_ADDRESS";
 /// Exact libtest path не запускает соседние тесты повторно в subprocess-е.
 const CHILD_TEST_NAME: &str = "web_media_open::hds::provider_default_tests::null_codec_provider_default_filters_unsupported_hds_and_opens_playable_catalog";
 /// Второй exact child доказывает terminal classification transport failure-а.
@@ -391,7 +391,7 @@ fn assert_child_hds_open() {
     let mut prepared = prepare_yt_dlp_web_media(
         &locator,
         &NetworkConfig::default(),
-        &rustiplayer_config::WebMediaConfig::default(),
+        &fastiplayer_config::WebMediaConfig::default(),
         &YtDlpConfig::default(),
         &service_ytdlp::YtDlpExtractorAdapter::default(),
         &PlayerDemuxConfig::default(),
@@ -504,7 +504,7 @@ fn assert_child_hds_transport_failure_is_terminal() {
     let error = match prepare_yt_dlp_web_media(
         &locator,
         &NetworkConfig::default(),
-        &rustiplayer_config::WebMediaConfig::default(),
+        &fastiplayer_config::WebMediaConfig::default(),
         &YtDlpConfig::default(),
         &service_ytdlp::YtDlpExtractorAdapter::default(),
         &PlayerDemuxConfig::default(),
@@ -657,7 +657,7 @@ fn install_fake_yt_dlp(fake_tools_directory: &Path) {
     let script = concat!(
         "#!/bin/sh\n",
         "set -eu\n",
-        "printf '%s\\n' \"${RUSTIPLAYER_HDS_PROVIDER_DEFAULT_YTDLP_JSON:?missing fixture JSON}\"\n",
+        "printf '%s\\n' \"${FASTIPLAYER_HDS_PROVIDER_DEFAULT_YTDLP_JSON:?missing fixture JSON}\"\n",
     );
     fs::write(&executable_path, script).expect("write fake HDS yt-dlp executable");
     let mut permissions = fs::metadata(&executable_path)

@@ -9,7 +9,7 @@ use web_media_transport_api::SourceGeneration;
 use crate::HlsVodSeekLandingPolicy;
 use crate::seek::{HlsSeekAnchor, HlsSeekAnchorKind};
 
-const HLS_MANIFEST_SELECTION_LOG_TARGET: &str = "rustiplayer::hls_manifest_selection";
+const HLS_MANIFEST_SELECTION_LOG_TARGET: &str = "fastiplayer::hls_manifest_selection";
 
 /// Семантическая стадия HLS seek-а без смешения preview и final receipt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

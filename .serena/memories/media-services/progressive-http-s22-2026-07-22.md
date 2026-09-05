@@ -55,7 +55,7 @@
 
 ## HTTP client identity и error taxonomy hardening (2026-08-10)
 
-- `source-core/src/http_client.rs` — единый owner common blocking Reqwest builder-а для `HttpRangeSource` и `HttpSourceSession`, включая initial probe, последующие Range reads и adaptive helper paths. Builder задаёт connect/read timeout и публичный descriptive User-Agent `rustiplayer/<version> (https://github.com/Bogdan7c/rustiplayer)`.
+- `source-core/src/http_client.rs` — единый owner common blocking Reqwest builder-а для `HttpRangeSource` и `HttpSourceSession`, включая initial probe, последующие Range reads и adaptive helper paths. Builder задаёт connect/read timeout и публичный descriptive User-Agent `fastiplayer/<version> (https://github.com/Bogdan7c/fastiplayer)`.
 - User-Agent — публичная идентичность клиента, а не credential: он не хранится в `SecretRequestContext`, не участвует в credential forwarding и может быть осознанно переопределён explicit request header. Wikimedia-подобные endpoints отклоняют пустой UA; hermetic tests теперь проверяют общий UA на probe и Range requests.
 - HTTP 401 и proxy 407 остаются `ProviderError::Authentication`; обычный 403 без authentication challenge отображается в новый typed `TransportFailure::AccessDenied`. Запрещено превращать 403 в выдуманный `CredentialsMissing`.
 - Acceptance row 05 `Big_buck_bunny_720p_5mb.webm` проверен end-to-end: seekable Range open, WebM demux, VP9 render, six-channel Opus decode/mix и drain до конца.

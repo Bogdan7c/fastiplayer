@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible incorrect behavior in Rustiplayer.
+description: Report reproducible incorrect behavior in Fastiplayer.
 title: "[Bug]: "
 body:
   - type: markdown
@@ -11,7 +11,7 @@ body:
   - type: input
     id: revision
     attributes:
-      label: Rustiplayer version or commit
+      label: Fastiplayer version or commit
       description: Include the commit SHA, build features, and whether this was a release or debug build.
     validations:
       required: true
@@ -33,7 +33,7 @@ body:
     id: gpu
     attributes:
       label: GPU
-      description: GPU model(s) and the device used by Rustiplayer, if known.
+      description: GPU model(s) and the device used by Fastiplayer, if known.
     validations:
       required: true
   - type: textarea

@@ -1,6 +1,6 @@
 //! Controlled runtime fallback policy для DMA-BUF layout, известного только после first frame.
 
-use rustiplayer_config::VideoBackendPreference;
+use fastiplayer_config::VideoBackendPreference;
 use video_core::DmaBufDescriptorRejection;
 
 use crate::state::VideoPipelineRebuildError;

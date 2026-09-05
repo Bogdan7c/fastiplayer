@@ -2,7 +2,7 @@
 
 use std::{env, path::PathBuf, process::ExitCode};
 
-use rustiplayer_config::{
+use fastiplayer_config::{
     AppConfig, VideoBackendPreference, load_from_path, save_validated_atomic_at,
 };
 
@@ -51,10 +51,10 @@ fn parse_current_config(config_path: PathBuf) -> Result<(), String> {
     let loaded = load_from_path(&config_path)
         .map_err(|error| format!("current config не прошёл production parse: {error}"))?;
     // Current smoke не должен незаметно войти в legacy migration path.
-    if loaded.config.schema_version != rustiplayer_config::CURRENT_SCHEMA_VERSION {
+    if loaded.config.schema_version != fastiplayer_config::CURRENT_SCHEMA_VERSION {
         return Err(format!(
             "ожидалась schema version {}, получена {}",
-            rustiplayer_config::CURRENT_SCHEMA_VERSION,
+            fastiplayer_config::CURRENT_SCHEMA_VERSION,
             loaded.config.schema_version
         ));
     }

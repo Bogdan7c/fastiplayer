@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
+use fastiplayer_config::AppConfig;
 use media_core::{PacketKeyframe, TrackId, TrackKind, TrackTimestamp};
-use rustiplayer_config::AppConfig;
 
 use super::presentation_scheduler::video_present_queue_limit;
 use crate::PipelinePauseReason;

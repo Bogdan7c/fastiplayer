@@ -1,12 +1,12 @@
 [package]
-name = "rustiplayer-config"
+name = "fastiplayer-config"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [lib]
-name = "rustiplayer_config"
+name = "fastiplayer_config"
 path = "src/lib.rs"
 
 [dependencies]

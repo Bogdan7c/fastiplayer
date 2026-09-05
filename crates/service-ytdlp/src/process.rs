@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustiplayer_config::YtDlpConfig;
+use fastiplayer_config::YtDlpConfig;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use web_media_core::ExtractorInvocationReason;

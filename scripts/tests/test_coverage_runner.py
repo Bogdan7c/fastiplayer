@@ -167,7 +167,7 @@ class FakeCoverageExecutor(CommandExecutor):
             return self.completed(arguments)
 
         if "report" in arguments:
-            export_config = environment.get("RUSTIPLAYER_COVERAGE_EXPORT_CONFIG")
+            export_config = environment.get("FASTIPLAYER_COVERAGE_EXPORT_CONFIG")
             if export_config:
                 config = json.loads(Path(export_config).read_text())
                 output = Path(config["output_directory"])

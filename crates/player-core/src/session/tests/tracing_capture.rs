@@ -14,11 +14,11 @@ use tracing::{Event, Level, Metadata, Subscriber};
 ///
 /// Marker передаётся только через `Command::env`, поэтому параллельные parent tests
 /// не меняют process-global environment друг друга.
-const ISOLATED_TRACING_TEST_CHILD_ENV: &str = "RUSTIPLAYER_PLAYER_CORE_ISOLATED_TRACING_TEST_CHILD";
+const ISOLATED_TRACING_TEST_CHILD_ENV: &str = "FASTIPLAYER_PLAYER_CORE_ISOLATED_TRACING_TEST_CHILD";
 
 /// Stable stdout marker, которым child доказывает, что exact test действительно выбран.
 const ISOLATED_TRACING_TEST_EXECUTION_MARKER: &str =
-    "rustiplayer isolated tracing child executes exact test: ";
+    "fastiplayer isolated tracing child executes exact test: ";
 
 /// Роль текущего процесса в test-only tracing isolation protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

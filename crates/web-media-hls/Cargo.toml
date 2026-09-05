@@ -25,6 +25,6 @@ zeroize.workspace = true
 [dev-dependencies]
 # Concrete factories живут только в hermetic composition fixtures.
 mpeg-ts-demux.workspace = true
-rustiplayer-config.workspace = true
+fastiplayer-config.workspace = true
 symphonia-demux.workspace = true
 symphonia-format-isomp4.workspace = true

@@ -9,11 +9,11 @@ use reqwest::{Client as AsyncClient, ClientBuilder as AsyncClientBuilder};
 
 use crate::SourceRuntimeConfig;
 
-/// Публичная identity Rustiplayer и контактный URL проекта для HTTP-серверов.
-const RUSTIPLAYER_HTTP_USER_AGENT: &str = concat!(
-    "rustiplayer/",
+/// Публичная identity Fastiplayer и контактный URL проекта для HTTP-серверов.
+const FASTIPLAYER_HTTP_USER_AGENT: &str = concat!(
+    "fastiplayer/",
     env!("CARGO_PKG_VERSION"),
-    " (https://github.com/Bogdan7c/rustiplayer)"
+    " (https://github.com/Bogdan7c/fastiplayer)"
 );
 
 /// Создаёт общий Reqwest builder с source-owned timeout и identity policy.
@@ -24,7 +24,7 @@ pub(crate) fn blocking_http_client_builder(
     source_config: &SourceRuntimeConfig,
 ) -> BlockingClientBuilder {
     BlockingClient::builder()
-        .user_agent(RUSTIPLAYER_HTTP_USER_AGENT)
+        .user_agent(FASTIPLAYER_HTTP_USER_AGENT)
         .connect_timeout(source_config.connect_timeout())
         .timeout(source_config.read_timeout())
 }
@@ -38,21 +38,21 @@ pub(crate) fn blocking_http_client_builder(
 /// streaming body из-за backpressure.
 pub(crate) fn async_http_client_builder(source_config: &SourceRuntimeConfig) -> AsyncClientBuilder {
     AsyncClient::builder()
-        .user_agent(RUSTIPLAYER_HTTP_USER_AGENT)
+        .user_agent(FASTIPLAYER_HTTP_USER_AGENT)
         .connect_timeout(source_config.connect_timeout())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::RUSTIPLAYER_HTTP_USER_AGENT;
+    use super::FASTIPLAYER_HTTP_USER_AGENT;
 
     /// Identity должна содержать product, version и стабильный contact URL.
     #[test]
     fn default_user_agent_is_descriptive_and_contactable() {
-        assert!(RUSTIPLAYER_HTTP_USER_AGENT.starts_with("rustiplayer/"));
-        assert!(RUSTIPLAYER_HTTP_USER_AGENT.contains(env!("CARGO_PKG_VERSION")));
-        assert!(RUSTIPLAYER_HTTP_USER_AGENT.contains("https://github.com/Bogdan7c/rustiplayer"));
-        assert!(!RUSTIPLAYER_HTTP_USER_AGENT.contains('\n'));
-        assert!(!RUSTIPLAYER_HTTP_USER_AGENT.contains('\r'));
+        assert!(FASTIPLAYER_HTTP_USER_AGENT.starts_with("fastiplayer/"));
+        assert!(FASTIPLAYER_HTTP_USER_AGENT.contains(env!("CARGO_PKG_VERSION")));
+        assert!(FASTIPLAYER_HTTP_USER_AGENT.contains("https://github.com/Bogdan7c/fastiplayer"));
+        assert!(!FASTIPLAYER_HTTP_USER_AGENT.contains('\n'));
+        assert!(!FASTIPLAYER_HTTP_USER_AGENT.contains('\r'));
     }
 }

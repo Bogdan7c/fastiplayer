@@ -8,7 +8,7 @@ readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Тестируемый runner всегда вызывается по абсолютному пути.
 readonly PLAYBACK_SMOKE="${REPO_ROOT}/scripts/playback-smoke.sh"
 # Временные файлы принадлежат только этому self-test run.
-temporary_directory="$(mktemp -d -t rustiplayer-smoke-self-test.XXXXXX)"
+temporary_directory="$(mktemp -d -t fastiplayer-smoke-self-test.XXXXXX)"
 
 # Cleanup удаляет только созданный self-test-ом temporary directory.
 cleanup() {
@@ -46,7 +46,7 @@ require_absent "${playback_smoke_source}" "0 | 124 | 137)"
 require_output "${playback_smoke_source}" "VA-API codec adapter configured for stream"
 require_output "${playback_smoke_source}" "Zero-copy DMA-BUF resource registered"
 require_output "${playback_smoke_source}" "video frame submitted to renderer"
-require_output "${playback_smoke_source}" "rustiplayer::video_render_acceptance=trace"
+require_output "${playback_smoke_source}" "fastiplayer::video_render_acceptance=trace"
 
 # Пустой invocation является NOT RUN, а не ложным acceptance pass.
 missing_selection_output="$(${PLAYBACK_SMOKE} 2>&1)"
@@ -95,7 +95,7 @@ fake_render_node="${temporary_directory}/renderD128"
 touch "${fake_render_node}"
 set +e
 missing_av1_profile_output="$(PATH="${vainfo_shim_directory}:${PATH}" \
-    RUSTIPLAYER_SMOKE_VAAPI_RENDER_NODE="${fake_render_node}" \
+    FASTIPLAYER_SMOKE_VAAPI_RENDER_NODE="${fake_render_node}" \
     "${PLAYBACK_SMOKE}" --mode hardware-only --duration 1 \
     --vp9 "${temporary_directory}/vp9.mp4" \
     --av1 "${temporary_directory}/av1.mp4" \
@@ -157,7 +157,7 @@ require_absent "${probe_dry_run_output}" "PASS: FFmpeg runtime probe acceptance"
 # Прямой legacy-migration dry-run также должен завершиться успешно без запуска Cargo.
 legacy_dry_run_output="$(${PLAYBACK_SMOKE} --mode legacy-migration --dry-run 2>&1)"
 # Вывод команды сохраняет полезность dry-run как проверяемого плана запуска.
-require_output "${legacy_dry_run_output}" "cargo test -p rustiplayer-config --locked legacy_"
+require_output "${legacy_dry_run_output}" "cargo test -p fastiplayer-config --locked legacy_"
 # Outcome явно сообщает, что legacy migration только была бы запущена.
 require_output "${legacy_dry_run_output}" "DRY-RUN: WOULD RUN explicitly selected legacy config migration smoke; no checks were executed"
 # Главный regression invariant запрещает тот же PASS, который выдаёт реальный успешный smoke.
@@ -171,8 +171,8 @@ mkdir -p "${cargo_shim_directory}"
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -Eeuo pipefail' \
-    'printf '\''%s\n'\'' "$*" >> "${RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_LOG:?}"' \
-    'exit "${RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_EXIT_CODE:-0}"' \
+    'printf '\''%s\n'\'' "$*" >> "${FASTIPLAYER_SMOKE_SELF_TEST_CARGO_LOG:?}"' \
+    'exit "${FASTIPLAYER_SMOKE_SELF_TEST_CARGO_EXIT_CODE:-0}"' \
     >"${cargo_shim_directory}/cargo"
 # Исполняемый бит делает shim полноценной process boundary заменой Cargo.
 chmod +x "${cargo_shim_directory}/cargo"
@@ -180,8 +180,8 @@ chmod +x "${cargo_shim_directory}/cargo"
 successful_probe_cargo_log="${temporary_directory}/successful-probe-cargo.log"
 # Нулевой exit code shim-а позволяет обеим probe-командам реально завершиться успешно.
 successful_probe_output="$(PATH="${cargo_shim_directory}:${PATH}" \
-    RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_LOG="${successful_probe_cargo_log}" \
-    RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_EXIT_CODE=0 \
+    FASTIPLAYER_SMOKE_SELF_TEST_CARGO_LOG="${successful_probe_cargo_log}" \
+    FASTIPLAYER_SMOKE_SELF_TEST_CARGO_EXIT_CODE=0 \
     "${PLAYBACK_SMOKE}" --mode probe-only 2>&1)"
 # Production PASS допустим только после двух успешных process boundary вызовов.
 require_output "${successful_probe_output}" "PASS: FFmpeg runtime probe acceptance"
@@ -200,8 +200,8 @@ failing_probe_cargo_log="${temporary_directory}/failing-probe-cargo.log"
 set +e
 # Управляемый exit 17 моделирует реальную ошибку Cargo без зависимости от host runtime.
 failing_probe_output="$(PATH="${cargo_shim_directory}:${PATH}" \
-    RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_LOG="${failing_probe_cargo_log}" \
-    RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_EXIT_CODE=17 \
+    FASTIPLAYER_SMOKE_SELF_TEST_CARGO_LOG="${failing_probe_cargo_log}" \
+    FASTIPLAYER_SMOKE_SELF_TEST_CARGO_EXIT_CODE=17 \
     "${PLAYBACK_SMOKE}" --mode probe-only 2>&1)"
 # Код процесса сохраняется до возврата self-test-а в fail-fast режим.
 failing_probe_status=$?
@@ -222,7 +222,7 @@ fi
 
 # Config helper создаёт полный current-schema TOML без GUI.
 current_config_path="${temporary_directory}/current-config.toml"
-cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
+cargo run --quiet --locked -p fastiplayer-config --example smoke_config -- \
     generate-current "${current_config_path}" software
 # Ключи доказывают current schema v10, playback overrides и provider-neutral web-media policy.
 grep -Fqx 'schema_version = 10' "${current_config_path}"
@@ -233,7 +233,7 @@ grep -Fqx 'hdr_selection = "sdr_only"' "${current_config_path}"
 # Отдельная process-only секция extractor-а остаётся обязательной частью current schema.
 grep -Fqx '[yt_dlp]' "${current_config_path}"
 # Production loader подтверждает parse без запуска приложения.
-cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
+cargo run --quiet --locked -p fastiplayer-config --example smoke_config -- \
     parse-current "${current_config_path}"
 
 # Manifest без suite явно сообщает NOT RUN.

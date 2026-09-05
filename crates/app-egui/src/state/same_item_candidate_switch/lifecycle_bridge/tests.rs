@@ -478,8 +478,8 @@ fn app_start(
         source_request: MediaOpenSourceRequest::Web(
             crate::media_open::WebMediaOpenRequest::direct(
                 locator,
-                rustiplayer_config::NetworkConfig::default(),
-                rustiplayer_config::PlayerDemuxConfig::default(),
+                fastiplayer_config::NetworkConfig::default(),
+                fastiplayer_config::PlayerDemuxConfig::default(),
             ),
         ),
         expected_active: ActiveMediaIdentity::for_same_item_switch_test(item_id, media_instance_id),

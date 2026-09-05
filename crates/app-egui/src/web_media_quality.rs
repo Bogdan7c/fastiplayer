@@ -1,6 +1,6 @@
 //! Composition mapping между persisted config и neutral web-media policy.
 
-use rustiplayer_config::{
+use fastiplayer_config::{
     MAX_PREFERRED_VIDEO_HEIGHT as CONFIG_MAX_VIDEO_HEIGHT,
     PreferredVideoHeight as ConfigPreferredVideoHeight,
 };

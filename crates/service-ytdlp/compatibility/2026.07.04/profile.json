@@ -47,7 +47,7 @@
       "loads_system_config": false,
       "loads_plugins": false,
       "loads_cookie_file": false,
-      "guarantee": "rustiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
+      "guarantee": "fastiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
     },
     "hermetic_selected": {
       "argv_before_selector": [
@@ -62,12 +62,12 @@
         "generic:impersonate",
         "--format"
       ],
-      "selector_placeholder": "<rustiplayer-owned-selector>",
+      "selector_placeholder": "<fastiplayer-owned-selector>",
       "url_placeholder": "<exact-approved-http-https-ftp-or-ftps-locator>",
       "loads_system_config": false,
       "loads_plugins": false,
       "loads_cookie_file": false,
-      "guarantee": "rustiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
+      "guarantee": "fastiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
     },
     "hermetic_topology": {
       "argv_before_url": [
@@ -89,7 +89,7 @@
       "loads_cookie_file": false,
       "output_contract": "line_delimited_lazy_entries_followed_by_authoritative_single_json_root",
       "n_entries_authoritative": false,
-      "guarantee": "rustiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
+      "guarantee": "fastiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
     },
     "manual_opt_in_inventory": {
       "argv_before_url": [
@@ -105,7 +105,7 @@
       "loads_system_config": true,
       "loads_plugins": true,
       "loads_cookie_file": "user_config_may_enable",
-      "guarantee": "rustiplayer_owned_arguments_only",
+      "guarantee": "fastiplayer_owned_arguments_only",
       "outside_app_guarantee": [
         "trusted_user_config_may_add_side_effects",
         "trusted_plugin_import_or_execution_may_add_side_effects",
@@ -123,12 +123,12 @@
         "generic:impersonate",
         "--format"
       ],
-      "selector_placeholder": "<rustiplayer-owned-selector>",
+      "selector_placeholder": "<fastiplayer-owned-selector>",
       "url_placeholder": "<exact-approved-http-https-ftp-or-ftps-locator>",
       "loads_system_config": true,
       "loads_plugins": true,
       "loads_cookie_file": "user_config_may_enable",
-      "guarantee": "rustiplayer_owned_arguments_only",
+      "guarantee": "fastiplayer_owned_arguments_only",
       "outside_app_guarantee": [
         "trusted_user_config_may_add_side_effects",
         "trusted_plugin_import_or_execution_may_add_side_effects",
@@ -153,7 +153,7 @@
       "loads_cookie_file": "user_config_may_enable",
       "output_contract": "line_delimited_lazy_entries_followed_by_authoritative_single_json_root",
       "n_entries_authoritative": false,
-      "guarantee": "rustiplayer_owned_arguments_only",
+      "guarantee": "fastiplayer_owned_arguments_only",
       "outside_app_guarantee": [
         "trusted_user_config_may_add_side_effects",
         "trusted_plugin_import_or_execution_may_add_side_effects",

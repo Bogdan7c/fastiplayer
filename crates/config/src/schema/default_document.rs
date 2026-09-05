@@ -328,7 +328,7 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "[ui.window]",
-        "# Настройки кастомного заголовка окна Rustiplayer.",
+        "# Настройки кастомного заголовка окна Fastiplayer.",
     );
     insert_default_config_comment(
         toml_text,

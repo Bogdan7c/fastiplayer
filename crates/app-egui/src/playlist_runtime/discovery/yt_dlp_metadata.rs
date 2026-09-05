@@ -9,8 +9,8 @@ use bounded_work_executor::{
     BoundedExecutor, CancellationToken, ExecutorConfig, SubmitError, TaskFailure, TaskHandle,
     TaskPoll,
 };
+use fastiplayer_config::YtDlpConfig;
 use playlist_core::{PlaylistItemId, PlaylistLocator, PlaylistMetadataPatch};
-use rustiplayer_config::YtDlpConfig;
 
 use crate::app_wake::AppWakePort;
 use crate::playlist_runtime::controller::PlaylistController;

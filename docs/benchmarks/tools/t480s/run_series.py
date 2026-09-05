@@ -32,7 +32,7 @@ def run_series(arguments):
         environment['XDG_DATA_HOME'] = str(attempt_root / 'data')
         environment['XDG_CACHE_HOME'] = str(attempt_root / 'cache')
         environment['NO_COLOR'] = '1'
-        environment['RUST_LOG'] = 'info,rustiplayer::video_render_acceptance=trace'
+        environment['RUST_LOG'] = 'info,fastiplayer::video_render_acceptance=trace'
         fixture = arguments.fixtures / scenario_files[arguments.scenario]
         if arguments.preload_fixture:
             # Одинаковое последовательное чтение задаёт warm page-cache policy
@@ -55,9 +55,9 @@ def run_series(arguments):
         if arguments.window_mode == 'xwayland-fullscreen':
             collector.extend(['--fullscreen-controller', str(tooling / 'fullscreen.py'),
                               '--expected-capture-size', *map(str, arguments.display_size)])
-        if arguments.player == 'rustiplayer':
+        if arguments.player == 'fastiplayer':
             collector.append('--require-rust-startup')
-            config_dir = attempt_root / 'config' / 'rustiplayer'
+            config_dir = attempt_root / 'config' / 'fastiplayer'
             config_dir.mkdir(parents=True)
             shutil.copyfile(template, config_dir / 'config.toml')
             command = [str(arguments.binary), str(fixture)]
@@ -88,7 +88,7 @@ def main():
     parser.add_argument('--preload-fixture', action='store_true')
     parser.add_argument('--phase', choices=['warmup', 'measurement'], required=True)
     parser.add_argument('--scenario', choices=['h264-1080p60-hw', 'hevc-4k60-hw', 'av1-4k60-sw'], required=True)
-    parser.add_argument('--player', choices=['rustiplayer', 'vlc'], required=True)
+    parser.add_argument('--player', choices=['fastiplayer', 'vlc'], required=True)
     parser.add_argument('--count', type=int, required=True)
     parser.add_argument('--display-size', type=int, nargs=2, default=[1920, 1080])
     parser.add_argument('--first-attempt', type=int, default=1)

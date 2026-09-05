@@ -182,8 +182,8 @@ fn cancelled_web_request_stops_before_adapter_dispatch() {
     let request = crate::media_open::MediaOpenSourceRequest::Web(
         crate::media_open::WebMediaOpenRequest::direct(
             locator,
-            rustiplayer_config::NetworkConfig::default(),
-            rustiplayer_config::PlayerDemuxConfig::default(),
+            fastiplayer_config::NetworkConfig::default(),
+            fastiplayer_config::PlayerDemuxConfig::default(),
         ),
     );
 

@@ -1,7 +1,7 @@
 use std::fmt;
 
 use capability_core::SystemCapabilities;
-use rustiplayer_config::AppConfig;
+use fastiplayer_config::AppConfig;
 
 use crate::startup_media::StartupMediaController;
 use crate::state::AppState;

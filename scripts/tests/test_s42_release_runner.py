@@ -346,9 +346,9 @@ class S42ReleaseRunnerTests(unittest.TestCase):
         # Любой success suffix на final line не должен маскировать validator exit 1/2.
         masked_update_variants = {
             suffix_name: replace_workflow_anchor(
-                "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n",
-                "            --proposed-measurement-exceptions "
-                f"coverage/measurement-exceptions.json {suffix}\n",
+                "            --proposed-policy coverage/policy.json\n",
+                "            --proposed-policy "
+                f"coverage/policy.json {suffix}\n",
             )
             for suffix_name, suffix in (
                 ("or-colon", "|| :"),
@@ -372,13 +372,13 @@ class S42ReleaseRunnerTests(unittest.TestCase):
         )
         # Blank line после final argument тоже запрещена exact frozen scalar contract-ом.
         blank_line_after_update = replace_workflow_anchor(
-            "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n",
-            "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n\n",
+            "            --proposed-policy coverage/policy.json\n",
+            "            --proposed-policy coverage/policy.json\n\n",
         )
         # Scanner обязан продолжить scalar после blank line и увидеть extra executable command.
         extra_command_after_blank = replace_workflow_anchor(
-            "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n",
-            "            --proposed-measurement-exceptions coverage/measurement-exceptions.json\n"
+            "            --proposed-policy coverage/policy.json\n",
+            "            --proposed-policy coverage/policy.json\n"
             "\n          echo unexpected-extra-command\n",
         )
         # Duplicate mapping key `name` не может override-ить public lifecycle step labels.

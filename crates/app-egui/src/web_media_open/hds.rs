@@ -11,13 +11,13 @@ use demux_api::{
     ProgressiveAsyncSeekLimits, ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits,
     ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
+use fastiplayer_config::NetworkConfig;
 use hds_manifest_core::{F4mManifestLimits, HdsBootstrapLimits};
 use media_core::{DemuxRetryHint, Demuxer, MediaTime};
 use player_core::{
     MediaPlaybackWindow, PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome,
     PreparedDemuxSeekPort, PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
 };
-use rustiplayer_config::NetworkConfig;
 use service_ytdlp::{YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpTransportRequestContext};
 use source_core::{CancellationToken, SourceRuntimeConfig};
 use web_media_adaptive::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
@@ -410,7 +410,7 @@ fn map_enqueue_error(error: ProgressiveAsyncSeekEnqueueError) -> PreparedDemuxSe
 #[cfg(test)]
 mod tests {
     use super::{ensure_hds_vod_intent, hds_playback_window, hds_policy};
-    use rustiplayer_config::NetworkConfig;
+    use fastiplayer_config::NetworkConfig;
     use service_ytdlp::YtDlpLiveIntent;
     use source_core::SourceRuntimeConfig;
     use std::time::Duration;

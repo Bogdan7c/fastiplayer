@@ -201,8 +201,8 @@ fn info() -> Vec<u8> {
         &[
             unsigned(id::TIMESTAMP_SCALE, 1_000_000),
             element(id::DURATION, &1_200_f64.to_be_bytes()),
-            string(id::MUXING_APP, "rustiplayer-s28b"),
-            string(id::WRITING_APP, "rustiplayer-s28b"),
+            string(id::MUXING_APP, "fastiplayer-s28b"),
+            string(id::WRITING_APP, "fastiplayer-s28b"),
         ],
     )
 }

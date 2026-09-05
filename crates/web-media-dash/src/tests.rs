@@ -15,8 +15,8 @@ use demux_api::{
     ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits, ProgressiveSeekFence,
     ProgressiveSeekRequestId,
 };
+use fastiplayer_config::NetworkConfig;
 use media_core::{DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, Demuxer};
-use rustiplayer_config::NetworkConfig;
 use source_core::{
     CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig, ValidatedHttpHeaders,
 };

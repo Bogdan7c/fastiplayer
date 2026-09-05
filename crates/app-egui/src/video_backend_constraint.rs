@@ -1,7 +1,7 @@
 //! Composition mapping committed app config в нейтральный media-install constraint.
 
+use fastiplayer_config::VideoBackendPreference;
 use player_core::MediaInstallVideoBackendConstraint;
-use rustiplayer_config::VideoBackendPreference;
 
 /// Захватывает backend policy одного staged media install request-а.
 ///

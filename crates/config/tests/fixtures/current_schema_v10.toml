@@ -198,7 +198,7 @@ language = "ru"
 # UI skin id; unknown id является config error.
 skin = "minimal"
 
-# Настройки кастомного заголовка окна Rustiplayer.
+# Настройки кастомного заголовка окна Fastiplayer.
 [ui.window]
 # Высота кастомного titlebar в логических UI px.
 titlebar_height_px = 40

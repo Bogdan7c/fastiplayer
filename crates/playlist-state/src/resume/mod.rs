@@ -46,7 +46,7 @@ const MAX_PLAYLIST_RESUME_BYTES: u64 = 64 * 1024;
 const MAX_PLAYLIST_RESUME_ENVELOPE_BYTES: u64 = 128 * 1024;
 
 /// Domain separator не позволяет спутать fingerprint с SHA-256 другого artifact-а.
-const LOCATOR_FINGERPRINT_DOMAIN: &[u8] = b"rustiplayer/playlist-resume/locator/v1";
+const LOCATOR_FINGERPRINT_DOMAIN: &[u8] = b"fastiplayer/playlist-resume/locator/v1";
 
 /// Exact checkpoint одного stable item.
 #[derive(Clone, PartialEq, Eq)]

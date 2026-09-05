@@ -1,14 +1,14 @@
 # Window corner presentation contract (2026-09-03)
 
 ## Ownership and data flow
-- rustiplayer-config owns user intent in `ui.window.corner_radius_px: u16`, default 12 logical px, valid 0..=24. Schema remains v10 because the field is additive and `UiWindowConfig` uses `serde(default)`.
+- fastiplayer-config owns user intent in `ui.window.corner_radius_px: u16`, default 12 logical px, valid 0..=24. Schema remains v10 because the field is additive and `UiWindowConfig` uses `serde(default)`.
 - Settings changes use the existing `ui.apply` route. Only the committed snapshot is visible to frame rendering; draft edits and Cancel must not change the active window contour.
 - app-egui owns native window-state policy. `CommittedConfigSnapshot::window_corner_radius_points()` provides configured intent; `window_corner_policy::resolve_window_corner_mask` returns square for radius 0, maximized, or fullscreen, and restores the committed radius when returning to normal state.
 - render-wgpu-shell owns surface alpha selection and final composition. `RenderFrameInput::window_corner_mask` is the typed frame boundary. Do not move this responsibility into render-wgpu-video; the video viewport, aspect ratio, letterbox and exclusion rectangles are independent of desktop-window shape.
 
 ## Window and surface lifecycle
 - The winit window is created with `.with_transparent(true)` from the start, which is required for X11 transparency behavior.
-- Rustiplayer passes `SurfaceAlphaPreference::TransparentPreferred` both during initial renderer construction and controlled renderer recreation.
+- fastiplayer passes `SurfaceAlphaPreference::TransparentPreferred` both during initial renderer construction and controlled renderer recreation.
 - Alpha selection order for TransparentPreferred is PreMultiplied, PostMultiplied, Opaque, Inherit. Empty capabilities remain an initialization error.
 - Only PreMultiplied/PostMultiplied produce a `SurfaceAlphaEncoding` and create `WindowCornerMaskRenderer`. Opaque/Inherit keep the app running, warn once, and use a square/no-pass fallback to avoid black corners.
 

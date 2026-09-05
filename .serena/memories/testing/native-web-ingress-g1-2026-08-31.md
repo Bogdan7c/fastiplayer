@@ -4,7 +4,7 @@
 
 - Gate-only session завершила accumulated N01–N05B foundation без feature logic. Neutral core purity, config schema v10 single source of truth, YtDlp DTO isolation behind extractor adapters, durable secret-safe source intent и exact typed process reasons прошли self-review.
 - Process-spy parity доказана отдельно: `service-ytdlp::invocation::tests` page/extractor fixtures проходят через injected launcher и реально spawn-ят controlled children; `app-egui::native_direct_fixture_cannot_reach_extractor_launcher` подтверждает zero spawn для native direct ingress.
-- Финальные gates PASS: fmt/diff, focused web-media-core/config/rustiplayer-settings/service-ytdlp/app no-default suites, strict affected Clippy, workspace all-targets/all-features check+tests, rustdoc, `scripts/pre-pr-checks.sh`, refactor/S42 guardrails, release workspace all-features build и Serena references/diagnostics audit.
+- Финальные gates PASS: fmt/diff, focused web-media-core/config/fastiplayer-settings/service-ytdlp/app no-default suites, strict affected Clippy, workspace all-targets/all-features check+tests, rustdoc, `scripts/pre-pr-checks.sh`, refactor/S42 guardrails, release workspace all-features build и Serena references/diagnostics audit.
 
 ## Gate-only corrections
 

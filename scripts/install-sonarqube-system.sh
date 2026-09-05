@@ -44,7 +44,7 @@ readonly SONARQUBE_TEMP_DIR="${SONARQUBE_TEMP_DIR:-/var/cache/sonarqube/temp}"
 readonly SONARQUBE_SERVICE_PATH="${SONARQUBE_SERVICE_PATH:-/etc/systemd/system/sonarqube.service}"
 
 # Временный каталог хранит ZIP-файлы и распакованные архивы только на время установки.
-readonly INSTALL_WORK_DIR="${INSTALL_WORK_DIR:-/tmp/rustiplayer-sonarqube-install}"
+readonly INSTALL_WORK_DIR="${INSTALL_WORK_DIR:-/tmp/fastiplayer-sonarqube-install}"
 
 # Официальный ZIP SonarQube берется из CDN SonarSource.
 readonly SONARQUBE_ZIP_URL="https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-${SONARQUBE_VERSION}.zip"
@@ -322,7 +322,7 @@ configure_sonarqube_properties() {
     remove_active_property "sonar.path.temp"
 
     # Отделяем локальный блок от штатных настроек SonarQube.
-    printf '\n# Локальная системная установка Rustiplayer.\n' >>"${sonar_properties_path}"
+    printf '\n# Локальная системная установка Fastiplayer.\n' >>"${sonar_properties_path}"
 
     # Веб-интерфейс слушает только loopback, чтобы локальная оценка не открывала порт в сеть.
     append_property "sonar.web.host" "127.0.0.1"
@@ -350,7 +350,7 @@ install_systemd_service() {
 
     # heredoc создает unit целиком, чтобы не собирать systemd-конфиг по кускам.
     cat >"${SONARQUBE_SERVICE_PATH}" <<UNIT
-# Локальный SonarQube Community Build для анализа Rustiplayer.
+# Локальный SonarQube Community Build для анализа Fastiplayer.
 [Unit]
 # Описание видно в systemctl status.
 Description=SonarQube Community Build

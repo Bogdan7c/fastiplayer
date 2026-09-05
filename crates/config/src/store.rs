@@ -79,7 +79,7 @@ fn create_default_config(path: PathBuf) -> ConfigResult<LoadedConfig> {
 
     match atomic::write_new_config_file(&path, &toml_text) {
         Ok(()) => {
-            info!(path = %path.display(), "Создан default config rustiplayer");
+            info!(path = %path.display(), "Создан default config fastiplayer");
             Ok(LoadedConfig {
                 config,
                 path,

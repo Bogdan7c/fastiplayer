@@ -24,8 +24,8 @@ use audio::decoder::{
     AudioDecoderConfig, AudioPacketTimeBase, AudioPacketTiming, EncodedAudioPacket,
 };
 use audio::{AudioDecodeCapabilityProvider, AudioDecoderFactory, ProductionAudioDecoderFactory};
+use fastiplayer_config::{NetworkConfig, PlayerDemuxConfig, VideoCodec, YtDlpConfig};
 use media_core::{DemuxReadEvent, DemuxRetryHint, Demuxer, Packet, TrackInfo, TrackKind};
-use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, VideoCodec, YtDlpConfig};
 use source_core::CancellationToken;
 use tempfile::TempDir;
 use web_media_core::StreamLayoutKind;
@@ -59,9 +59,9 @@ mod n14a_consumer;
 pub(crate) use n14a_consumer::assert_pcm_advances_clock;
 
 /// Маркер отличает изолированный child от owner test process-а без global env mutation.
-const CHILD_PROCESS_MARKER_ENV: &str = "RUSTIPLAYER_CONTENT_PROBE_CHILD";
+const CHILD_PROCESS_MARKER_ENV: &str = "FASTIPLAYER_CONTENT_PROBE_CHILD";
 /// Fake extractor получает document только через своё дочернее окружение.
-const YT_DLP_DOCUMENT_ENV: &str = "RUSTIPLAYER_CONTENT_PROBE_YTDLP_JSON";
+const YT_DLP_DOCUMENT_ENV: &str = "FASTIPLAYER_CONTENT_PROBE_YTDLP_JSON";
 /// Exact libtest path не запускает соседние тесты внутри subprocess-а.
 const CHILD_TEST_NAME: &str =
     "web_media_open::content_probe_tests::http_ogg_opus_null_codecs_reach_production_pcm";
@@ -527,7 +527,7 @@ fn install_fake_yt_dlp(fake_tools_directory: &Path) {
     let script = concat!(
         "#!/bin/sh\n",
         "set -eu\n",
-        "printf '%s\\n' \"${RUSTIPLAYER_CONTENT_PROBE_YTDLP_JSON:?missing fixture JSON}\"\n",
+        "printf '%s\\n' \"${FASTIPLAYER_CONTENT_PROBE_YTDLP_JSON:?missing fixture JSON}\"\n",
     );
     fs::write(&executable_path, script).expect("write fake yt-dlp executable");
     let mut permissions = fs::metadata(&executable_path)
@@ -608,7 +608,7 @@ fn prepare_content_probed_test_media_with_adapter(
     prepare_yt_dlp_web_media(
         &locator,
         &NetworkConfig::default(),
-        &rustiplayer_config::WebMediaConfig::default(),
+        &fastiplayer_config::WebMediaConfig::default(),
         &YtDlpConfig::default(),
         extractor_adapter,
         &PlayerDemuxConfig::default(),

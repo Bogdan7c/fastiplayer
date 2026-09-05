@@ -8,7 +8,7 @@ use std::io::{self, Read};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use rustiplayer_config::YtDlpConfig;
+use fastiplayer_config::YtDlpConfig;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use crate::error::YtDlpServiceError;

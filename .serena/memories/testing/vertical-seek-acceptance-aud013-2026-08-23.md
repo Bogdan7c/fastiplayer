@@ -25,11 +25,11 @@ ffmpeg -hide_banner -loglevel error \
   -t 4 -c:v libx264 -preset ultrafast -profile:v baseline \
   -bf 0 -g 5 -keyint_min 5 -sc_threshold 0 -pix_fmt yuv420p -an \
   -muxpreload 0 -muxdelay 0 -mpegts_flags +resend_headers \
-  -f mpegts -y /tmp/rustiplayer-aud013-vertical-seek.ts
+  -f mpegts -y /tmp/fastiplayer-aud013-vertical-seek.ts
 
 scripts/media-regression.sh \
   --scenario h264-ts-seek-wgpu-ffmpeg \
-  --path /tmp/rustiplayer-aud013-vertical-seek.ts
+  --path /tmp/fastiplayer-aud013-vertical-seek.ts
 ```
 
 Observed marker:

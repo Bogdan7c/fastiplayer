@@ -9,8 +9,8 @@ use demux_api::{
     DemuxHints, DemuxInput, DemuxSniffBudget, DemuxSourceExtension, ProgressiveDemuxBufferLimits,
     ProgressiveDemuxer,
 };
+use fastiplayer_config::{NetworkConfig, PlayerDemuxConfig};
 use media_core::{DemuxRetryHint, Demuxer};
-use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig};
 use source_core::{CancellationToken, HttpPathScope, SourceRuntimeConfig};
 use symphonia_demux::{DemuxerOptions, MediaMetadata, TrackInfo};
 use tracing::debug;

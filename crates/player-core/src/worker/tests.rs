@@ -971,7 +971,7 @@ fn player_worker_exposes_decoder_thread_config_for_backend_factory() {
 fn decoder_thread_config_maps_software_surface_pool_independently() {
     // sw_decoder_surface_pool_frames должен попадать именно в software_frame_pool_frames,
     // не затрагивая hardware decoder_surface_pool_frames.
-    let mut config = rustiplayer_config::AppConfig::default();
+    let mut config = fastiplayer_config::AppConfig::default();
     config.video.decoder_surface_pool_frames = 24;
     config.video.sw_decoder_surface_pool_frames = 6;
 

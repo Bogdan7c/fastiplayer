@@ -12,12 +12,12 @@ use demux_api::{
     ProgressiveAsyncSeekLimits, ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits,
     ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
+use fastiplayer_config::NetworkConfig;
 use media_core::{DemuxRetryHint, Demuxer};
 use player_core::{
     PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome, PreparedDemuxSeekPort,
     PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
 };
-use rustiplayer_config::NetworkConfig;
 use service_ytdlp::{YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpTransportRequestContext};
 use source_core::{CancellationToken, SourceRuntimeConfig};
 use symphonia_demux::PresentationWindowOrderedIsoMp4Demuxer;

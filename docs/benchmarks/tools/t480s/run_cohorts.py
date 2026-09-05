@@ -17,7 +17,7 @@ def main():
     runner = Path(__file__).with_name('run_series.py')
     for scenario in ['h264-1080p60-hw', 'hevc-4k60-hw', 'av1-4k60-sw']:
         for attempt in range(1, count + 1):
-            players = ['rustiplayer', 'vlc'] if attempt % 2 else ['vlc', 'rustiplayer']
+            players = ['fastiplayer', 'vlc'] if attempt % 2 else ['vlc', 'fastiplayer']
             for player in players:
                 # AC проверяется перед каждым scored attempt, чтобы смена
                 # питания не становилась неявным условием следующего sample.

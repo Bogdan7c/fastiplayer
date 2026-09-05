@@ -1,6 +1,6 @@
 # AI-assisted development
 
-Rustiplayer keeps its owner instructions in [AGENTS.md](../AGENTS.md), project
+Fastiplayer keeps its owner instructions in [AGENTS.md](../AGENTS.md), project
 knowledge in `.serena/memories/`, and optional Codex settings in `.codex/`.
 These tools support maintenance; Cargo builds, tests, CI, and running the player
 must work without Codex, Context7, Serena, or an AI account. See the
@@ -34,14 +34,14 @@ depth are not reasons to delete knowledge.
 
 ## Serena project identity and portability
 
-The project name in [`.serena/project.yml`](../.serena/project.yml) is `rustiplayer`.
+The project name in [`.serena/project.yml`](../.serena/project.yml) is `fastiplayer`.
 Activate a new checkout by its own directory through `activate_project`; do not
 copy another maintainer's absolute path. Once registered in that server, it can
 also be activated by name.
 
 A running Serena process may retain the old project name in memory after the YAML
 is edited. Restart/reconnect the MCP server and activate the checkout directory
-again, then verify `get_current_config` and activation by `rustiplayer`. This is
+again, then verify `get_current_config` and activation by `fastiplayer`. This is
 server state; it does not require changing the name back or committing local
 Serena registration files.
 
@@ -75,7 +75,7 @@ measurements and limitations when sanitizing examples.
 | `Stop` | `serena-hooks cleanup --client=codex` | Clean up the hook's session state. |
 
 These commands require a separately installed `serena-hooks` executable on the
-Codex process's `PATH`. Rustiplayer does not install or bundle it. It is optional
+Codex process's `PATH`. Fastiplayer does not install or bundle it. It is optional
 maintainer tooling, not a dependency of the player, Cargo, or CI. The executable
 is distinct from the Serena MCP connection: having one does not establish the other.
 

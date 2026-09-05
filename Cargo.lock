@@ -158,6 +158,8 @@ dependencies = [
  "desktop-integration",
  "egui",
  "egui-winit",
+ "fastiplayer-config",
+ "fastiplayer-settings",
  "flate2",
  "flv-demux",
  "frame-server-core",
@@ -178,8 +180,6 @@ dependencies = [
  "render-wgpu-shell",
  "render-wgpu-video",
  "rfd",
- "rustiplayer-config",
- "rustiplayer-settings",
  "service-direct-media",
  "service-ytdlp",
  "settings-core",
@@ -1655,6 +1655,30 @@ name = "extended"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
+
+[[package]]
+name = "fastiplayer-config"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "etcetera",
+ "serde",
+ "settings-core",
+ "settings-derive",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
+name = "fastiplayer-settings"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "fastiplayer-config",
+ "player-core",
+ "render-core",
+ "settings-core",
+]
 
 [[package]]
 name = "fastrand"
@@ -3479,10 +3503,10 @@ dependencies = [
  "capability-core",
  "codec-core",
  "crossbeam-channel",
+ "fastiplayer-config",
  "frame-server-core",
  "media-core",
  "render-core",
- "rustiplayer-config",
  "tracing",
  "video-backend-api",
  "video-core",
@@ -4101,30 +4125,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustiplayer-config"
-version = "0.1.0-alpha.1"
-dependencies = [
- "etcetera",
- "serde",
- "settings-core",
- "settings-derive",
- "tempfile",
- "thiserror 2.0.18",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
-]
-
-[[package]]
-name = "rustiplayer-settings"
-version = "0.1.0-alpha.1"
-dependencies = [
- "player-core",
- "render-core",
- "rustiplayer-config",
- "settings-core",
-]
-
-[[package]]
 name = "rustix"
 version = "0.38.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4338,8 +4338,8 @@ dependencies = [
  "anyhow",
  "audio-core",
  "codec-core",
+ "fastiplayer-config",
  "libc",
- "rustiplayer-config",
  "serde",
  "serde_json",
  "source-core",
@@ -4591,10 +4591,10 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "bytes",
  "cookie",
+ "fastiplayer-config",
  "percent-encoding",
  "rcgen",
  "reqwest",
- "rustiplayer-config",
  "rustls",
  "suppaftp",
  "tempfile",
@@ -5905,8 +5905,8 @@ dependencies = [
  "atomic-waker",
  "bytes",
  "demux-api",
+ "fastiplayer-config",
  "media-core",
- "rustiplayer-config",
  "source-core",
  "thiserror 2.0.18",
  "web-media-core",
@@ -5926,8 +5926,8 @@ dependencies = [
  "bytes",
  "dash-mpd-core",
  "demux-api",
+ "fastiplayer-config",
  "media-core",
- "rustiplayer-config",
  "source-core",
  "symphonia-demux",
  "thiserror 2.0.18",
@@ -5940,7 +5940,7 @@ dependencies = [
 name = "web-media-ftp"
 version = "0.1.0-alpha.1"
 dependencies = [
- "rustiplayer-config",
+ "fastiplayer-config",
  "source-core",
  "web-media-core",
  "web-media-transport-api",
@@ -5953,10 +5953,10 @@ dependencies = [
  "anyhow",
  "bounded-xml-reader",
  "demux-api",
+ "fastiplayer-config",
  "flv-demux",
  "hds-manifest-core",
  "media-core",
- "rustiplayer-config",
  "source-core",
  "url",
  "web-media-adaptive",
@@ -5973,11 +5973,11 @@ dependencies = [
  "bytes",
  "cbc",
  "demux-api",
+ "fastiplayer-config",
  "hls-playlist-core",
  "log",
  "media-core",
  "mpeg-ts-demux",
- "rustiplayer-config",
  "source-core",
  "symphonia-demux",
  "symphonia-format-isomp4 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -5995,9 +5995,9 @@ dependencies = [
  "anyhow",
  "base64",
  "demux-api",
+ "fastiplayer-config",
  "media-core",
  "media-prefetch",
- "rustiplayer-config",
  "source-core",
  "symphonia-demux",
  "web-media-core",
@@ -6024,8 +6024,8 @@ dependencies = [
  "bounded-xml-reader",
  "bytes",
  "demux-api",
+ "fastiplayer-config",
  "media-core",
- "rustiplayer-config",
  "sha2",
  "smooth-streaming-fmp4",
  "smooth-streaming-manifest-core",

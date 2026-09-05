@@ -56,8 +56,8 @@ fn controlled_reopen_preserves_stable_direct_selection() {
 
     let request = source
         .controlled_reopen_request(
-            rustiplayer_config::NetworkConfig::default(),
-            rustiplayer_config::PlayerDemuxConfig::default(),
+            fastiplayer_config::NetworkConfig::default(),
+            fastiplayer_config::PlayerDemuxConfig::default(),
             None,
         )
         .expect("direct reopen не требует adaptive capabilities");
@@ -80,7 +80,7 @@ fn extractor_request_preserves_explicit_native_fallback_reason() {
         "https://provider.example.test/watch?id=reason-secret",
     )
     .expect("valid extractor locator");
-    let app_config = rustiplayer_config::AppConfig::default();
+    let app_config = fastiplayer_config::AppConfig::default();
     let settings = WebMediaOpenSettings::from_app_config(
         &app_config,
         &capability_core::SystemCapabilities::empty(0),
@@ -162,7 +162,7 @@ fn direct_and_native_read_only_projections_are_neutral_and_secret_safe() {
         web_media_core::WebMediaSelection::candidate(native_parent),
         None,
         crate::web_media_stream_model::WebMediaSelectionPreference::from_global_config(
-            &rustiplayer_config::WebMediaConfig::default(),
+            &fastiplayer_config::WebMediaConfig::default(),
         ),
     )
     .unwrap();
@@ -194,7 +194,7 @@ fn installed_only_action_and_unchanged_direct_settings_are_inert() {
         )
         .expect("direct fixture locator валиден"),
     );
-    let app_config = rustiplayer_config::AppConfig::default();
+    let app_config = fastiplayer_config::AppConfig::default();
     let settings = WebMediaOpenSettings::from_app_config(
         &app_config,
         &capability_core::SystemCapabilities::empty(0),

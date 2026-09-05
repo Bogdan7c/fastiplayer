@@ -77,7 +77,7 @@ fn inline_url_draft_survives_views_and_confirmation_is_render_only() {
     runtime.open_playlist_url_editor();
     runtime.update_playlist_url_draft("не URL с token=secret".to_string());
 
-    assert!(runtime.submit_playlist_url_draft(&rustiplayer_config::YtDlpConfig::default()));
+    assert!(runtime.submit_playlist_url_draft(&fastiplayer_config::YtDlpConfig::default()));
     let invalid = runtime.playlist_interaction_model();
     assert!(invalid.url_editor_open);
     assert_eq!(invalid.url_text, "не URL с token=secret");
@@ -88,14 +88,14 @@ fn inline_url_draft_survives_views_and_confirmation_is_render_only() {
 
     let sensitive = "https://user:password@media.example.test/video.mp4?token=secret";
     runtime.update_playlist_url_draft(sensitive.to_string());
-    assert!(runtime.submit_playlist_url_draft(&rustiplayer_config::YtDlpConfig::default()));
+    assert!(runtime.submit_playlist_url_draft(&fastiplayer_config::YtDlpConfig::default()));
     let confirmation = runtime
         .pending_playlist_confirmation()
         .expect("sensitive URL должен ждать typed decision");
     assert_eq!(runtime.playlist_interaction_model().url_text, sensitive);
     assert!(!format!("{confirmation:?}").contains("token=secret"));
 
-    assert!(runtime.submit_playlist_url_draft(&rustiplayer_config::YtDlpConfig::default()));
+    assert!(runtime.submit_playlist_url_draft(&fastiplayer_config::YtDlpConfig::default()));
     let stale_outcome = runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
         intent_id: confirmation.intent_id(),
         decision: QueueReplacementConfirmationDecision::Confirm,

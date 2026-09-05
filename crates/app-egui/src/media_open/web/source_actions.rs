@@ -195,8 +195,8 @@ impl WebMediaSourceIntent {
     pub(crate) fn settings_reconfigure_request(
         &self,
         policy: WebMediaSettingsReconfigurePolicy,
-        network_config: rustiplayer_config::NetworkConfig,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
+        network_config: fastiplayer_config::NetworkConfig,
+        demux_config: fastiplayer_config::PlayerDemuxConfig,
         adaptive_settings: WebMediaOpenSettings,
     ) -> WebMediaSettingsReconfigureDecision {
         let request = match &*self.adapter {
@@ -265,8 +265,8 @@ impl WebMediaSourceIntent {
 impl WebMediaSourceIntent {
     pub(crate) fn controlled_reopen_request(
         &self,
-        network_config: rustiplayer_config::NetworkConfig,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
+        network_config: fastiplayer_config::NetworkConfig,
+        demux_config: fastiplayer_config::PlayerDemuxConfig,
         adaptive_settings: Option<WebMediaOpenSettings>,
     ) -> Option<WebMediaOpenRequest> {
         let adapter = match &*self.adapter {

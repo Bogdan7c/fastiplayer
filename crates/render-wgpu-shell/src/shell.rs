@@ -175,7 +175,7 @@ impl GpuContext {
     /// 3. Adapter — выбор GPU
     /// 4. Device/Queue — с feature gates, нужными video renderer boundary
     /// 5. Surface configuration — настройка swapchain
-    #[instrument(skip(window), fields(window = "rustiplayer"))]
+    #[instrument(skip(window), fields(window = "fastiplayer"))]
     pub async fn new(window: Arc<Window>, surface_present: SurfacePresentSettings) -> Result<Self> {
         info!("Инициализация WGPU Vulkan instance");
 
@@ -219,7 +219,7 @@ impl GpuContext {
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("rustiplayer device"),
+                label: Some("fastiplayer device"),
                 required_features,
                 required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,

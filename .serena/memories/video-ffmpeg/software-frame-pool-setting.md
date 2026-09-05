@@ -5,7 +5,7 @@ Software (FFmpeg) 4K60 playback (AV1 SDR) не держал стабильные
 проседал до 45 при СВОБОДНЫХ CPU/GPU. Декод НЕ узкое место (AV1 SDR ~126fps
 декода, present queue полна, `drops_decoder_starvation=0`).
 
-## Диагноз (по `rustiplayer::render_frame_timing` логам)
+## Диагноз (по `fastiplayer::render_frame_timing` логам)
 Узкое место — host→GPU upload software-кадра (`video_prepare` /
 `video_texture_lookup` в `app-egui/frame_prepare.rs`), на главном render-потоке
 каждый кадр. На медленных кадрах upload 15-32ms при бюджете vsync 16.7ms. CPU/GPU
@@ -38,12 +38,12 @@ surface — дешёвый GPU descriptor; software-кадр — полный ho
   новый `PlayerRuntimeSettingId::VideoSoftwareDecoderSurfacePoolFrames`.
 - `config/schema.rs`: поле + `#[setting(apply="video.apply")]`, default 8, default
   TOML comment, registry list, registry range test; `validation.rs` range (1..=64).
-- `rustiplayer-settings`: добавлено в `player_decoder_thread_setting` +
+- `fastiplayer-settings`: добавлено в `player_decoder_thread_setting` +
   `player_runtime_setting_id` → идёт через ту же controlled-rebuild группу
   `PlayerDecoderThreadConfig`, что делает настройку ЖИВОЙ (app-egui
   `rebuild_video_pipeline_with_decoder_config` пересоздаёт backend на лету).
 - Focused tests: player-core `decoder_thread_config_maps_software_surface_pool_independently`,
-  rustiplayer-settings `software_surface_pool_route_updates_decoder_thread_config`,
+  fastiplayer-settings `software_surface_pool_route_updates_decoder_thread_config`,
   video-core normalized() assertion.
 
 Миграция НЕ нужна: `VideoConfig` = `#[serde(default, deny_unknown_fields)]`, поэтому

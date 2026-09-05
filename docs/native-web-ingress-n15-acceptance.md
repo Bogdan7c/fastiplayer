@@ -1,5 +1,7 @@
 # N15 — public acceptance и performance
 
+Product names and result labels were normalized to Fastiplayer after the rename. All measurements, dates, samples and original source/binary hashes still refer to the historical revisions recorded below. Original labels remain available in Git history; these results are not measurements of the renamed build.
+
 Session N15 завершена 2026-09-02 на code commit `c330ba74`.
 
 Исторический `<owner-local fixture>` не распространяется с проектом. Для новых проверок создайте локальный XSPF из законно доступных вам media inputs; иной corpus не воспроизводит exact N15 measurements. Зафиксированный corpus содержит 13 строк и имеет SHA-256
@@ -172,8 +174,8 @@ XDG profile. Конкретный временный profile path, media paths �
 # Set this to your own locally created XSPF playlist; it is not distributed.
 OWNER_LOCAL_FIXTURE=./acceptance-local.xspf
 sha256sum "$OWNER_LOCAL_FIXTURE"
-env XDG_CONFIG_HOME=/tmp/rustiplayer-native-ingress-g3 \
-  target/release/rustiplayer "$OWNER_LOCAL_FIXTURE"
+env XDG_CONFIG_HOME=/tmp/fastiplayer-native-ingress-g3 \
+  target/release/fastiplayer "$OWNER_LOCAL_FIXTURE"
 cargo +1.96.0 test -p app-egui --all-features --locked n14a_consumer -- --nocapture
 cargo +1.96.0 test -p app-egui --all-features --locked n14b_lifecycle -- --nocapture
 cargo +1.96.0 test -p app-egui --all-features --locked \

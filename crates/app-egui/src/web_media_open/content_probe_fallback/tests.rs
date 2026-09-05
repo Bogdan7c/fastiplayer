@@ -24,9 +24,9 @@ use web_media_core::{
 use super::*;
 
 /// Изолирует fake `yt-dlp` PATH от параллельных tests текущего process-а.
-const FALLBACK_CHILD_MARKER_ENV: &str = "RUSTIPLAYER_FALLBACK_CHILD";
+const FALLBACK_CHILD_MARKER_ENV: &str = "FASTIPLAYER_FALLBACK_CHILD";
 /// Передаёт synthetic extractor document только isolated child process-у.
-const FALLBACK_DOCUMENT_ENV: &str = "RUSTIPLAYER_FALLBACK_YTDLP_JSON";
+const FALLBACK_DOCUMENT_ENV: &str = "FASTIPLAYER_FALLBACK_YTDLP_JSON";
 /// Exact test name исключает повторный запуск всего app test binary.
 const FALLBACK_CHILD_TEST_NAME: &str = "web_media_open::content_probe_fallback::tests::service_snapshot_ranking_keeps_successful_selection_and_exact_is_single_attempt";
 /// Проверяет fallback со selected-only лучшего audio на inventory audio.
@@ -260,7 +260,7 @@ fn assert_child_catalog_choice_count(expected_choice_count: usize) {
         .expect("map catalog snapshot to planner");
     let runtime = super::super::WebOpenRuntime::new(
         &NetworkConfig::default(),
-        &rustiplayer_config::PlayerDemuxConfig::default(),
+        &fastiplayer_config::PlayerDemuxConfig::default(),
     )
     .expect("create catalog runtime capability registries");
     let system_capabilities = h264_test_system_capabilities();
@@ -273,8 +273,8 @@ fn assert_child_catalog_choice_count(expected_choice_count: usize) {
         audio_capabilities,
     );
     let policy = super::super::selection_policy(
-        &rustiplayer_config::WebMediaConfig::default(),
-        &[rustiplayer_config::VideoCodec::H264],
+        &fastiplayer_config::WebMediaConfig::default(),
+        &[fastiplayer_config::VideoCodec::H264],
     )
     .expect("create catalog playback policy");
     let active_candidate = snapshot
@@ -354,7 +354,7 @@ fn assert_child_service_snapshot_fallback() {
         .expect("map real service snapshot to planner");
     let runtime = super::super::WebOpenRuntime::new(
         &NetworkConfig::default(),
-        &rustiplayer_config::PlayerDemuxConfig::default(),
+        &fastiplayer_config::PlayerDemuxConfig::default(),
     )
     .expect("create app runtime capability registries");
     let system_capabilities = capability_core::SystemCapabilities::empty(1);
@@ -366,8 +366,8 @@ fn assert_child_service_snapshot_fallback() {
         audio_capabilities,
     );
     let policy = super::super::selection_policy(
-        &rustiplayer_config::WebMediaConfig::default(),
-        &[rustiplayer_config::VideoCodec::Vp9],
+        &fastiplayer_config::WebMediaConfig::default(),
+        &[fastiplayer_config::VideoCodec::Vp9],
     )
     .expect("create app playback policy");
     let ranked = ranked_best_playable_candidates(&snapshot, &planning, capabilities, &policy)
@@ -521,7 +521,7 @@ fn install_fake_yt_dlp(fake_tools_directory: &Path) {
     let script = concat!(
         "#!/bin/sh\n",
         "set -eu\n",
-        "printf '%s\\n' \"${RUSTIPLAYER_FALLBACK_YTDLP_JSON:?missing fixture JSON}\"\n",
+        "printf '%s\\n' \"${FASTIPLAYER_FALLBACK_YTDLP_JSON:?missing fixture JSON}\"\n",
     );
     fs::write(&executable_path, script).expect("write fallback fake yt-dlp");
     let mut permissions = fs::metadata(&executable_path)

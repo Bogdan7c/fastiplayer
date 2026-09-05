@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use rustiplayer_config::NetworkConfig;
+use fastiplayer_config::NetworkConfig;
 use source_core::{
     CancellationToken, HttpHeader, HttpPathScope, HttpRequestTarget, SourceError,
     SourceRuntimeConfig, StreamingByteSource, ValidatedHttpHeaders,
@@ -502,13 +502,13 @@ fn range_source_uses_existing_prefetch_path() {
     assert!(
         requests
             .iter()
-            .all(|request| request.contains("user-agent: rustiplayer/")),
+            .all(|request| request.contains("user-agent: fastiplayer/")),
         "initial probe и каждый Range read обязаны нести общую HTTP client identity"
     );
     assert!(
         requests
             .iter()
-            .all(|request| request.contains("https://github.com/Bogdan7c/rustiplayer")),
+            .all(|request| request.contains("https://github.com/Bogdan7c/fastiplayer")),
         "HTTP client identity должна оставлять server-у стабильный contact URL"
     );
 }

@@ -30,7 +30,7 @@ No URI/path/query/header/cookie/token/key/map locator/hash/cache key/resource id
 
 Пользователь выбрал вариант A: `web-media-hls` имеет узкую normal dependency на workspace `log = 0.4.29`. Guardrail разрешает только neutral facade с явным инвариантом: concrete logger/backend принадлежит composition root, HLS не зависит от `tracing`, subscriber-а или app.
 
-`HlsManifestSegmentSeekMarker::emit()` публикует INFO record с target `rustiplayer::hls_manifest_selection`; message — только точный secret-safe `Display` marker. App `tracing-subscriber` собирается с default `tracing-log` bridge, поэтому существующий default INFO runtime filter принимает facade record без дополнительного HLS/app API. Unit capture logger ставится один раз без panic внутри `OnceLock`, сериализует capture и принимает только current test thread/точный target, поэтому параллельные unit tests не загрязняют доказательство.
+`HlsManifestSegmentSeekMarker::emit()` публикует INFO record с target `fastiplayer::hls_manifest_selection`; message — только точный secret-safe `Display` marker. App `tracing-subscriber` собирается с default `tracing-log` bridge, поэтому существующий default INFO runtime filter принимает facade record без дополнительного HLS/app API. Unit capture logger ставится один раз без panic внутри `OnceLock`, сериализует capture и принимает только current test thread/точный target, поэтому параллельные unit tests не загрязняют доказательство.
 
 Commit ordering не изменён: `emit()` остаётся вызываемым только из authorized staged commit. Cancelled, failed, superseded и stale candidates marker не публикуют. Отдельный real release acceptance 2026-08-28 подтвердил production emission и zero-marker paths; snapshot приведён ниже.
 
@@ -39,7 +39,7 @@ Commit ordering не изменён: `emit()` остаётся вызываем�
 - `scripts/playback_acceptance_hls.py` parses the exact `Display` line into independent selection records and deliberately has no public seek/scrub correlation input.
 - All numeric formatter fields are strict decimal u64. Known enums, nonzero opaque selection-ID uniqueness within one log source, half-open interval and provable anchor/role consistency are fail-closed typed anomalies surfaced through JSON, table and `--strict`. Numeric ID order is not a schema invariant because staging allocation and commit-time emission are separate lifecycle points; same-role `2 -> 1` is valid.
 - Cold (`initial_open|initial_restore`) and warm (`preview|final_receipt`) rows retain requested target, exact selected segment and actual/decode anchors separately by component role. Legacy/non-HLS reports add empty HLS sections without inventing missing-marker anomalies.
-- Production INFO marker доступен offline consumer-у через target `rustiplayer::hls_manifest_selection`; parser по-прежнему не приписывает ему public-operation correlation. Отдельный release GUI run 2026-08-28 прошёл strict analyzer с production filter и подтвердил exact schema.
+- Production INFO marker доступен offline consumer-у через target `fastiplayer::hls_manifest_selection`; parser по-прежнему не приписывает ему public-operation correlation. Отдельный release GUI run 2026-08-28 прошёл strict analyzer с production filter и подтвердил exact schema.
 
 ## Confirmed tests/checks
 

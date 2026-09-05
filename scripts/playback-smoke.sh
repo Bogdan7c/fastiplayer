@@ -14,13 +14,13 @@ readonly SKIPPED_EXIT_CODE=3
 readonly DEFAULT_DURATION_SECONDS=20
 
 # Лог-фильтр включает info markers, starvation summary и dedicated renderer acceptance trace.
-readonly DEFAULT_SMOKE_RUST_LOG="info,player_core::worker::runtime_publish=debug,rustiplayer::video_render_acceptance=trace"
+readonly DEFAULT_SMOKE_RUST_LOG="info,player_core::worker::runtime_publish=debug,fastiplayer::video_render_acceptance=trace"
 
 # Exact AV1 Profile 0 decode entrypoint обязателен для hardware/full AV1 acceptance.
 readonly AV1_VAAPI_PROFILE_REGEX='^[[:space:]]*VAProfileAV1Profile0[[:space:]]*:[[:space:]]*VAEntrypointVLD([[:space:]]|$)'
 
 # Hardware runner проверяет explicit DRM node; override существует только для test/multi-GPU hosts.
-readonly VAAPI_RENDER_NODE="${RUSTIPLAYER_SMOKE_VAAPI_RENDER_NODE:-/dev/dri/renderD128}"
+readonly VAAPI_RENDER_NODE="${FASTIPLAYER_SMOKE_VAAPI_RENDER_NODE:-/dev/dri/renderD128}"
 
 # Positive playback scenarios не должны встречать эти известные fatal/regression markers.
 readonly POSITIVE_FORBIDDEN_REGEX="InvalidData|Error parsing OBU data|No start code|resource table is full|Decoder thread disconnected|panicked at|thread .* panicked|panic in a function that cannot unwind|UnsupportedRenderFormat|missing render resources|PlayerEvent::FatalError"
@@ -36,10 +36,10 @@ readonly SCRIPT_DIRECTORY="${script_directory}"
 readonly REPO_ROOT="${repo_root}"
 
 # Release binary, который строит `cargo build --release -p app-egui`.
-readonly RUSTIPLAYER_BINARY="${REPO_ROOT}/target/release/rustiplayer"
+readonly FASTIPLAYER_BINARY="${REPO_ROOT}/target/release/fastiplayer"
 
 # Пользовательский override оставлен отдельной переменной, чтобы обычный RUST_LOG не ломал checks.
-readonly SMOKE_RUST_LOG="${RUSTIPLAYER_SMOKE_RUST_LOG:-${DEFAULT_SMOKE_RUST_LOG}}"
+readonly SMOKE_RUST_LOG="${FASTIPLAYER_SMOKE_RUST_LOG:-${DEFAULT_SMOKE_RUST_LOG}}"
 
 # Режим запуска задаётся явно, чтобы script не угадывал media matrix пользователя.
 smoke_mode=""
@@ -371,7 +371,7 @@ ensure_runtime_directory() {
     fi
 
     # mktemp создаёт уникальный каталог в системном temp.
-    runtime_directory="$(mktemp -d -t rustiplayer-playback-smoke.XXXXXX)"
+    runtime_directory="$(mktemp -d -t fastiplayer-playback-smoke.XXXXXX)"
 
     # Подкаталоги разделяют stderr logs и XDG_CONFIG_HOME дерева сценариев.
     mkdir -p -- "${runtime_directory}/logs" "${runtime_directory}/configs"
@@ -545,18 +545,18 @@ write_scenario_config() {
     # video.preferred_backend передаётся вторым аргументом.
     local backend_preference="$2"
 
-    # Rustiplayer ищет config в `$XDG_CONFIG_HOME/rustiplayer/config.toml`.
-    local config_file="${config_home}/rustiplayer/config.toml"
+    # Fastiplayer ищет config в `$XDG_CONFIG_HOME/fastiplayer/config.toml`.
+    local config_file="${config_home}/fastiplayer/config.toml"
 
     # Создаём только isolated config tree текущего сценария.
     mkdir -p -- "$(dirname -- "${config_file}")"
 
     # Config-crate остаётся единственным владельцем полного набора schema v9 fields/defaults.
-    cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
+    cargo run --quiet --locked -p fastiplayer-config --example smoke_config -- \
         generate-current "${config_file}" "${backend_preference}"
 
     # Тем же production loader-ом доказываем strict current parse до запуска GUI.
-    cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
+    cargo run --quiet --locked -p fastiplayer-config --example smoke_config -- \
         parse-current "${config_file}"
 }
 
@@ -582,15 +582,15 @@ run_playback_scenario() {
             timeout \
             --kill-after=5s \
             "${duration_seconds}s" \
-            "${RUSTIPLAYER_BINARY}" \
+            "${FASTIPLAYER_BINARY}" \
             "${asset_path}"
         last_scenario_log="<dry-run>/logs/${scenario_name}.log"
         return
     fi
 
     # Release binary должен быть результатом предыдущего cargo build шага.
-    if [[ ! -x "${RUSTIPLAYER_BINARY}" ]]; then
-        print_error "release binary не найден или не executable: ${RUSTIPLAYER_BINARY}"
+    if [[ ! -x "${FASTIPLAYER_BINARY}" ]]; then
+        print_error "release binary не найден или не executable: ${FASTIPLAYER_BINARY}"
         exit 1
     fi
 
@@ -621,7 +621,7 @@ run_playback_scenario() {
         timeout \
         --kill-after=5s \
         "${duration_seconds}s" \
-        "${RUSTIPLAYER_BINARY}" \
+        "${FASTIPLAYER_BINARY}" \
         "${asset_path}" \
         >"${log_path}" 2>&1
     local playback_status=$?
@@ -786,7 +786,7 @@ run_legacy_migration_smoke() {
     # Названные focused tests закрепляют v2/v3/v4 migration, не участвуя в generated config path.
     run_step \
         "legacy config migration smoke" \
-        cargo test -p rustiplayer-config --locked legacy_
+        cargo test -p fastiplayer-config --locked legacy_
     # Единый outcome boundary не позволяет dry-run заявить успешную legacy migration.
     report_acceptance_outcome "explicitly selected legacy config migration smoke"
 }

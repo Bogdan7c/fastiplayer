@@ -49,6 +49,6 @@
 
 ## Замерочный harness
 `/tmp/rusti-perf-test/measure.sh` + `analyze.py` (в /tmp, эфемерные): 30с прогон с
-`RUST_LOG=rustiplayer::render_frame_timing=trace`, XDG_CONFIG_HOME-подмена конфига,
+`RUST_LOG=fastiplayer::render_frame_timing=trace`, XDG_CONFIG_HOME-подмена конфига,
 per-stage перцентили и CPU по потокам из /proc. Логи испорчены ANSI-кодами — grep
 только после `sed 's/\x1b\[[0-9;]*m//g'`. Не запускать замер параллельно с cargo.

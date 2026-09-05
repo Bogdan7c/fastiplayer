@@ -52,7 +52,7 @@ Topology profile намеренно сочетает два official dump реж
 - `--dump-json` публикует child entries line-by-line по мере lazy enumeration;
 - `--dump-single-json` завершает output authoritative root object-ом;
 - `--flat-playlist` не выполняет full extraction formats для child URL results;
-- `--lazy-playlist` отключает `n_entries`, поэтому Rustiplayer никогда не
+- `--lazy-playlist` отключает `n_entries`, поэтому Fastiplayer никогда не
   использует это поле для allocation, progress или completeness.
 
 Production topology suffix не содержит hermetic prefix и продолжает читать
@@ -67,7 +67,7 @@ environment и проверяют exact ordered argv.
 аргументом. `--skip-download` намеренно не используется: upstream разрешает ему
 писать связанные metadata-файлы.
 
-Rustiplayer-owned argv не содержит и не запрашивает:
+Fastiplayer-owned argv не содержит и не запрашивает:
 
 - `--no-simulate`, download или output;
 - write/print-to-file metadata, subtitle, thumbnail, link или page behavior;
@@ -84,7 +84,7 @@ Rustiplayer-owned argv не содержит и не запрашивает:
 
 Текущий production process owner запускает тот же extraction suffix без
 `--ignore-config` и `--no-plugin-dirs`. Это осознанный product contract:
-Rustiplayer наследует trusted user config, cookies и plugins так же, как прямой
+Fastiplayer наследует trusted user config, cookies и plugins так же, как прямой
 запуск system `yt-dlp`. Исторические manifest keys сохраняют имя
 `manual_opt_in_*`, но не являются утверждением о runtime version gate либо
 герметичном production process.
@@ -92,7 +92,7 @@ Rustiplayer наследует trusted user config, cookies и plugins так ж
 Произвольный trusted user config может добавить write/exec/postprocessor,
 mark-watched, authentication или другое поведение. Все plugins импортируются как
 Python code без upstream safety checks и могут иметь side effects уже при
-импорте. Эти side effects находятся вне Rustiplayer guarantee.
+импорте. Эти side effects находятся вне Fastiplayer guarantee.
 
 `--cookies FILE` означает не только чтение: pinned upstream описывает файл как
 источник, в который cookie jar также dump-ится. Поэтому user-owned cookie jar
@@ -150,7 +150,7 @@ Sanitizer:
 - `RequiresLiveExtractorState` — JSON потерял объектную семантику или path
   требует живого Python/extractor state.
 
-`downloader_options` — internal поле и никогда не исполняется Rustiplayer.
+`downloader_options` — internal поле и никогда не исполняется Fastiplayer.
 Единственное узкое исключение — bounded positive integer
 `downloader_options.http_chunk_size`: оно нормализуется в нейтральный предел
 одного HTTP Range-запроса, а не передаётся downloader-у как executable config.
@@ -252,7 +252,7 @@ Manifest хранит exact aliases без схлопывания неизвес
 
 `http_dash_segments_generator` не является alias обычного serializable DASH
 path: pinned downloader умеет re-extract при строковом sanitized generator
-marker, а Rustiplayer не сохраняет живое состояние.
+marker, а Fastiplayer не сохраняет живое состояние.
 
 ## Target rows
 
@@ -375,7 +375,7 @@ Manual runner `scripts/progressive-web-smoke.sh` принимает только
 переданные пользователем HTTP/HTTPS/FTP/FTPS URL или local fixtures и требует
 safe named case ID для зачёта S42 matrix. Реальный запуск fail-closed проверяет
 exact system `yt-dlp 2026.07.04`, записывает workspace HEAD с `clean`/`dirty`
-classification, Rustiplayer binary origin/SHA-256 и yt-dlp executable SHA-256.
+classification, Fastiplayer binary origin/SHA-256 и yt-dlp executable SHA-256.
 Runner-built binary связывается с current worktree; explicit external prebuilt
 не приписывается workspace HEAD. Raw URL, fixture path, headers, cookies или
 extractor payload не сохраняются. Даже полный набор cases получает статус
@@ -403,7 +403,7 @@ capability intersection only. Hermetic gate фиксирует этот узки
 - RTMP wire family — `ProfileExcluded`, потому что S39 доказал только identity.
 
 Пользовательский system config, cookie jars и plugins остаются trusted external
-code. Rustiplayer-owned argv не добавляет download/write/exec/postprocessor или
+code. Fastiplayer-owned argv не добавляет download/write/exec/postprocessor или
 mark-watched behavior, однако side effects user config/plugins находятся вне
 app guarantee.
 

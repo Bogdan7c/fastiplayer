@@ -101,7 +101,7 @@ pub(crate) struct YtDlpSerializedFormat {
     pub(crate) hls_aes: Option<Value>,
     /// Browser fingerprint requirement.
     pub(crate) impersonate: Option<Value>,
-    /// Internal downloader state, которое Rustiplayer никогда не исполняет.
+    /// Internal downloader state, которое Fastiplayer никогда не исполняет.
     pub(crate) downloader_options: Option<Value>,
     /// Private BunnyCDN state из pinned source.
     #[serde(rename = "_bunnycdn_ping_data")]

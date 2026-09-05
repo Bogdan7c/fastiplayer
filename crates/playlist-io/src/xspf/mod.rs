@@ -17,10 +17,10 @@ mod schema;
 // URI module централизует strict references, inherited xml:base и document base.
 mod uri;
 
-// Public constants фиксируют exact XSPF и Rustiplayer extension namespaces.
+// Public constants фиксируют exact XSPF и Fastiplayer extension namespaces.
 pub const XSPF_NAMESPACE: &str = "http://xspf.org/ns/0/";
 // Version входит в URI, поэтому несовместимая child schema потребует новый namespace.
-pub const RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE: &str = "urn:rustiplayer:xspf:playlist-extension:1";
+pub const FASTIPLAYER_XSPF_EXTENSION_NAMESPACE: &str = "urn:fastiplayer:xspf:playlist-extension:1";
 
 // Export facade не раскрывает url::Url и secret-bearing formatting.
 pub use export::{XspfExportIneligible, XspfExportLocation};

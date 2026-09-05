@@ -22,5 +22,5 @@ web-media-core.workspace = true
 web-media-transport-api.workspace = true
 
 [dev-dependencies]
-rustiplayer-config.workspace = true
+fastiplayer-config.workspace = true
 symphonia-demux.workspace = true

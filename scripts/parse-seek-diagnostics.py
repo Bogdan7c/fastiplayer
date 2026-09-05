@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Разбор structured seek diagnostics логов rustiplayer.
+"""Разбор structured seek diagnostics логов fastiplayer.
 
 Parser работает только с опубликованными final-seek markers. Он не принимает
 playback-решений и не читает runtime state напрямую: входом являются обычные
@@ -511,7 +511,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     """Создаёт CLI без внешних зависимостей."""
 
     parser = argparse.ArgumentParser(
-        description="Parse rustiplayer final seek diagnostics logs.",
+        description="Parse fastiplayer final seek diagnostics logs.",
     )
     parser.add_argument(
         "logs",

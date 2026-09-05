@@ -334,7 +334,7 @@ mod tests {
         fn new() -> Self {
             let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "rustiplayer-playlist-discovery-{}-{sequence}",
+                "fastiplayer-playlist-discovery-{}-{sequence}",
                 std::process::id()
             ));
             fs::create_dir(&path).expect("test directory must be created");

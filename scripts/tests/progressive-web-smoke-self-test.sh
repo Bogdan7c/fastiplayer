@@ -11,7 +11,7 @@ readonly PROGRESSIVE_WEB_SMOKE="${REPO_ROOT}/scripts/progressive-web-smoke.sh"
 # S42 owner module проверяется отдельно и затем используется как источник allowlist.
 readonly S42_LIBRARY="${REPO_ROOT}/scripts/lib/progressive-web-smoke-s42.sh"
 # Temporary root принадлежит только этому process.
-temporary_directory="$(mktemp -d -t rustiplayer-progressive-web-self-test.XXXXXX)"
+temporary_directory="$(mktemp -d -t fastiplayer-progressive-web-self-test.XXXXXX)"
 
 # Cleanup удаляет только exact mktemp directory.
 cleanup() {
@@ -109,8 +109,8 @@ fake_ytdlp="${fake_tools_directory}/yt-dlp"
 {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' '# Hermetic provenance fixture.'
-    printf '%s\n' 'if [[ -n "${RUSTIPLAYER_SELFTEST_COLLISION_PATH:-}" ]]; then'
-    printf '%s\n' '    printf '\''competitor-owned\n'\'' >"${RUSTIPLAYER_SELFTEST_COLLISION_PATH}"'
+    printf '%s\n' 'if [[ -n "${FASTIPLAYER_SELFTEST_COLLISION_PATH:-}" ]]; then'
+    printf '%s\n' '    printf '\''competitor-owned\n'\'' >"${FASTIPLAYER_SELFTEST_COLLISION_PATH}"'
     printf '%s\n' 'fi'
     printf '%s\n' 'printf '\''2026.07.04\n'\'''
 } >"${fake_ytdlp}"
@@ -118,7 +118,7 @@ fake_ytdlp="${fake_tools_directory}/yt-dlp"
 chmod +x -- "${fake_ytdlp}"
 
 # Fake app печатает input и representative secrets только для redactor test-а.
-fake_binary="${temporary_directory}/fake-rustiplayer"
+fake_binary="${temporary_directory}/fake-fastiplayer"
 # Generated executable получает raw input как первый argv.
 {
     printf '%s\n' '#!/usr/bin/env bash'
@@ -261,7 +261,7 @@ fi
 collision_report_path="${temporary_directory}/collision-report.txt"
 # Exclusive create обязан завершить runner failure и сохранить чужой artifact.
 if collision_output="$(
-    RUSTIPLAYER_SELFTEST_COLLISION_PATH="${collision_report_path}" \
+    FASTIPLAYER_SELFTEST_COLLISION_PATH="${collision_report_path}" \
         PATH="${fake_tools_directory}:${PATH}" \
         "${PROGRESSIVE_WEB_SMOKE}" \
         --case public-single \
@@ -284,7 +284,7 @@ if [[ "${collision_report_content}" != "competitor-owned" ]]; then
 fi
 
 # Failing app проверяет honest report outcome после successful provenance.
-failing_binary="${temporary_directory}/failing-rustiplayer"
+failing_binary="${temporary_directory}/failing-fastiplayer"
 # Fixture печатает raw input, затем возвращает unexpected status.
 {
     printf '%s\n' '#!/usr/bin/env bash'
@@ -314,7 +314,7 @@ require_output "${failure_report_content}" "S42 matrix status: NOT RUN"
 require_absent "${failure_report_content}" "${explicit_url_one}"
 
 # SIGKILL fixture доказывает, что status 137 не выдаётся за graceful timebox.
-sigkill_binary="${temporary_directory}/sigkill-rustiplayer"
+sigkill_binary="${temporary_directory}/sigkill-fastiplayer"
 # Generated process завершает себя SIGKILL без network/GUI ожидания.
 {
     printf '%s\n' '#!/usr/bin/env bash'
@@ -349,7 +349,7 @@ relative_fixture_path="${relative_fixture_directory}/private playlist.m3u8"
 # Минимальный readable playlist проходит local fixture preflight.
 printf '%s\n' '#EXTM3U' >"${relative_fixture_path}"
 # Fake app печатает canonical, file-URI и standalone percent-encoded формы.
-fixture_echo_binary="${temporary_directory}/fixture-echo-rustiplayer"
+fixture_echo_binary="${temporary_directory}/fixture-echo-fastiplayer"
 # Script fixture не выполняет filesystem/network side effects.
 {
     printf '%s\n' '#!/usr/bin/env bash'
@@ -427,8 +427,8 @@ require_output "${complete_report_content}" "Missing required case count: 0"
 require_output "${complete_report_content}" "Outcome: MANUAL REVIEW REQUIRED"
 require_output "${complete_report_content}" 'Compatibility profile ID: `yt-dlp-2026.07.04-serializable-v1`'
 require_output "${complete_report_content}" "Workspace state: \`${expected_workspace_state}\`"
-require_output "${complete_report_content}" 'Rustiplayer binary origin: `explicit-external-prebuilt`'
-require_output "${complete_report_content}" "Rustiplayer binary SHA-256: \`${fake_binary_sha256}\`"
+require_output "${complete_report_content}" 'Fastiplayer binary origin: `explicit-external-prebuilt`'
+require_output "${complete_report_content}" "Fastiplayer binary SHA-256: \`${fake_binary_sha256}\`"
 require_output "${complete_report_content}" "workspace HEAD is not asserted as its source"
 require_output "${complete_report_content}" 'RTMP family: `ProfileExcluded`'
 require_output "${complete_report_content}" 'HDS live/DVR: `NoApprovedRow`'

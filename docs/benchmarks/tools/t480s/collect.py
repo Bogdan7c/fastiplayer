@@ -296,7 +296,7 @@ def main():
     parser.add_argument('--attempt', required=True, type=int)
     parser.add_argument('--phase', choices=['warmup', 'measurement', 'validation'], required=True)
     parser.add_argument('--scenario', required=True, choices=['h264-1080p60-hw', 'hevc-4k60-hw', 'av1-4k60-sw'])
-    parser.add_argument('--player', choices=['rustiplayer', 'vlc'], required=True)
+    parser.add_argument('--player', choices=['fastiplayer', 'vlc'], required=True)
     parser.add_argument('--settle', type=float, default=15)
     parser.add_argument('--window-start', type=float, default=20)
     parser.add_argument('--duration', type=float, default=60)

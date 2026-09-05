@@ -8,11 +8,11 @@ use crate::{DesktopIntegrationError, DesktopIntegrationResult, DesktopTrackKey};
 pub(super) fn encode_track_key(key: DesktopTrackKey) -> DesktopIntegrationResult<String> {
     let path = match key {
         DesktopTrackKey::PlaylistItem { lineage, item_id } => format!(
-            "/com/rustiplayer/Track/q{lineage:016x}_i{:016x}",
+            "/com/fastiplayer/Track/q{lineage:016x}_i{:016x}",
             item_id.get()
         ),
         DesktopTrackKey::ExternalMedia { lineage } => {
-            format!("/com/rustiplayer/Track/x{lineage:016x}")
+            format!("/com/fastiplayer/Track/x{lineage:016x}")
         }
     };
     ObjectPath::try_from(path.as_str())

@@ -1,28 +1,28 @@
 <p align="center">
-  <img src="LOGO.png" alt="Rustiplayer logo" width="160">
+  <img src="LOGO.png" alt="Fastiplayer logo" width="160">
 </p>
 
-# Rustiplayer
+# Fastiplayer
 
 A Rust-first desktop media player built for hardware-accelerated playback, responsive controls, and efficient use of real hardware.
 
-[![CI](https://github.com/Bogdan7c/rustiplayer/actions/workflows/ci.yml/badge.svg)](https://github.com/Bogdan7c/rustiplayer/actions/workflows/ci.yml)
-[![Toolchain policy](https://github.com/Bogdan7c/rustiplayer/actions/workflows/toolchain-policy.yml/badge.svg)](https://github.com/Bogdan7c/rustiplayer/actions/workflows/toolchain-policy.yml)
+[![CI](https://github.com/Bogdan7c/fastiplayer/actions/workflows/ci.yml/badge.svg)](https://github.com/Bogdan7c/fastiplayer/actions/workflows/ci.yml)
+[![Toolchain policy](https://github.com/Bogdan7c/fastiplayer/actions/workflows/toolchain-policy.yml/badge.svg)](https://github.com/Bogdan7c/fastiplayer/actions/workflows/toolchain-policy.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Active development · Pre-alpha · Linux-first.** Built and maintained by one core maintainer. Expect rough edges and source builds while the project works toward 1.0.
 
-![Rustiplayer playing Big Buck Bunny on a ThinkPad T480s](docs/assets/rustiplayer-t480s-main.png)
+![Fastiplayer playing Big Buck Bunny](docs/assets/fastiplayer-main.png)
 
 Actual native Wayland capture: AV1 4K60 SDR source, software decoding, 1280×720 window. Movie frame: © 2008 Blender Foundation, CC BY 3.0; [attribution and capture provenance](docs/assets/README.md). The screenshot is separate from the fullscreen performance measurements below.
 
-## Why Rustiplayer exists
+## Why Fastiplayer exists
 
 Playing media well means coordinating untrusted inputs, decoders, GPU resources, audio clocks, and user interaction without making the application hard to maintain.
 
 - **Performance by design.** VA-API hardware decoding and WGPU/Vulkan rendering keep supported video work on the GPU. Compatible DMA-BUF frames can reach the renderer without a CPU pixel copy; software-decoded frames still use GPU color conversion.
 - **A lighter native playback path.** The desktop UI uses egui/winit, with bounded workers and resource budgets. Supported direct network sources avoid an extractor subprocess. Low overhead is a design priority; the measured T480s process CPU/RSS baseline below is workload-specific, and power has not been measured.
-- **Design and everyday UX matter.** Playback controls, an interactive seek timeline, playlist navigation, and settings live in the native application. A cohesive UI redesign is still on the roadmap; [design concepts](docs/design/README.md) are clearly labeled as concepts.
+- **Design and everyday UX matter.** Playback controls, an interactive seek timeline, playlist navigation, and settings live in the native application. A cohesive UI redesign is still on the roadmap..
 - **Change settings while the application is running.** Settings have explicit runtime owners, live previews where supported, and transactional Apply/rollback. Changes that need a decoder, source, audio output, or renderer rebuild use controlled reconfiguration; busy playback operations can require an explicit retry.
 - **Real hardware is the target.** Efficient playback on low-power laptops matters alongside correctness. Existing hardware evidence and the completed T480s measurements are kept separate from synthetic tests.
 - **A safer, modular Rust orchestration layer.** Source, decode, frame lifetime, rendering, and session control have explicit contracts. Untrusted media and network manifests are a serious attack surface: Rust helps manage ownership, while native libraries, drivers, and unsafe/FFI boundaries still need careful review.
@@ -91,18 +91,18 @@ The [benchmark policy and methodology guide](docs/benchmarks/README.md#existing-
 
 Intel Core i5-8350U / UHD 620, AC power, KDE Wayland session, both players fullscreen through XWayland on the same 1920×1080 display. Each workload/player had three warm-ups and five 60-second scored runs, with the full fixture read before each launch. Audio decoding/output remained active at zero gain. CPU uses **100% = one logical CPU**; RSS is the per-run mean of process samples, excluding compositor, audio-server and GPU memory.
 
-The hardware control uses the same synthetic files and `/proc` collector. Rustiplayer uses Vulkan/DMA-BUF and frame tracing; VLC 3.0.23 uses OpenGL/VA-API conversion and verbose diagnostics. These are whole-player resource observations with different rendering and diagnostic costs, not a decoder-efficiency or smoothness ranking.
+The hardware control uses the same synthetic files and `/proc` collector. Fastiplayer uses Vulkan/DMA-BUF and frame tracing; VLC 3.0.23 uses OpenGL/VA-API conversion and verbose diagnostics. These are whole-player resource observations with different rendering and diagnostic costs, not a decoder-efficiency or smoothness ranking.
 
 | Hardware workload | Player | Process CPU median (min–max) | Mean RSS median (min–max), MiB |
 | --- | --- | ---: | ---: |
-| H.264 1080p60 | Rustiplayer | 16.88% (16.73–17.15%) | 87.21 (86.80–90.36) |
+| H.264 1080p60 | Fastiplayer | 16.88% (16.73–17.15%) | 87.21 (86.80–90.36) |
 | H.264 1080p60 | VLC | 4.77% (4.72–5.02%) | 126.93 (126.73–127.15) |
-| HEVC 4K60 | Rustiplayer | 30.42% (30.22–30.58%) | 87.90 (87.62–90.37) |
+| HEVC 4K60 | Fastiplayer | 30.42% (30.22–30.58%) | 87.90 (87.62–90.37) |
 | HEVC 4K60 | VLC | 5.75% (5.53–5.82%) | 300.23 (299.91–300.36) |
 
-VLC used less process CPU; Rustiplayer used less process RSS in these hardware workloads. The HEVC fixture is an upscaled synthetic pattern, not natural 4K content. Surface submission and active audio were confirmed; equal unique physical scanout and comparable dropped-frame counts were not established.
+VLC used less process CPU; Fastiplayer used less process RSS in these hardware workloads. The HEVC fixture is an upscaled synthetic pattern, not natural 4K content. Surface submission and active audio were confirmed; equal unique physical scanout and comparable dropped-frame counts were not established.
 
-The separate **Rustiplayer AV1 4K60 SDR software baseline** measured CPU median **356.70%** (352.21–358.16%) and mean RSS median **269.32 MiB** (268.19–269.67 MiB). The T480s has no AV1 hardware profile. No AV1 VLC comparison is presented because equivalent delivered video work was not established. Continued render-boundary playback does not prove perfect 60 FPS or zero drops.
+The separate **Fastiplayer AV1 4K60 SDR software baseline** measured CPU median **356.70%** (352.21–358.16%) and mean RSS median **269.32 MiB** (268.19–269.67 MiB). The T480s has no AV1 hardware profile. No AV1 VLC comparison is presented because equivalent delivered video work was not established. Continued render-boundary playback does not prove perfect 60 FPS or zero drops.
 
 See the [full T480s method, fixtures, build checksum and limitations](docs/benchmarks/thinkpad-t480s.md), [raw samples and statistics](docs/benchmarks/thinkpad-t480s.json), and [excluded preparation history](docs/benchmarks/thinkpad-t480s-preparation.json). These results belong to the recorded pre-alpha binary, not a fresh measurement of `0.1.0-alpha.1`. Startup/seek distributions, HDR, subtitles, energy and battery life were not measured in S08. N15 ingress latency/RSS above belongs to a different experiment and machine.
 
@@ -129,10 +129,10 @@ sudo apt-get install build-essential clang libclang-dev pkg-config \
   libasound2-dev libavcodec-dev libavutil-dev libdrm-dev libgbm-dev libva-dev \
   libvulkan1 mesa-vulkan-drivers
 
-git clone https://github.com/Bogdan7c/rustiplayer.git
-cd rustiplayer
+git clone https://github.com/Bogdan7c/fastiplayer.git
+cd fastiplayer
 cargo build -p app-egui --release --locked
-./target/release/rustiplayer /path/to/media.mp4
+./target/release/fastiplayer /path/to/media.mp4
 ```
 
 Install Rust through rustup before building; the repository pins the toolchain. Mesa packages above do not replace the correct VA-API driver for your GPU. Supply your own local media file and run in a graphical desktop session with access to the render device and audio output.
@@ -160,29 +160,29 @@ Read [CI](docs/continuous-integration.md), [coverage](docs/code-coverage.md), [m
 
 ## Roadmap to 1.0
 
-The implementation order is fixed in [milestone 1.0](https://github.com/Bogdan7c/rustiplayer/milestone/1); these are planned capabilities:
+The implementation order is fixed in [milestone 1.0](https://github.com/Bogdan7c/fastiplayer/milestone/1); these are planned capabilities:
 
-1. [Build a native Rust subtitle engine with a broad, published text/styled/bitmap format compatibility matrix.](https://github.com/Bogdan7c/rustiplayer/issues/1)
-2. [Add a browser media-handoff bridge and browser extension.](https://github.com/Bogdan7c/rustiplayer/issues/2)
-3. [Complete the cohesive application redesign, including replacement of the prototype settings UI.](https://github.com/Bogdan7c/rustiplayer/issues/3)
-4. [Make application colors and appearance fully configurable from settings.](https://github.com/Bogdan7c/rustiplayer/issues/4)
-5. [Add localization infrastructure and initial translations.](https://github.com/Bogdan7c/rustiplayer/issues/5)
-6. [Add an OpenGL ES 2.0 renderer for older Linux hardware.](https://github.com/Bogdan7c/rustiplayer/issues/6)
-7. [Add drag-and-drop for local files and URLs.](https://github.com/Bogdan7c/rustiplayer/issues/7)
-8. [Complete native Windows application support.](https://github.com/Bogdan7c/rustiplayer/issues/8)
+1. [Build a native Rust subtitle engine with a broad, published text/styled/bitmap format compatibility matrix.](https://github.com/Bogdan7c/fastiplayer/issues/1)
+2. [Add a browser media-handoff bridge and browser extension.](https://github.com/Bogdan7c/fastiplayer/issues/2)
+3. [Complete the cohesive application redesign, including replacement of the prototype settings UI.](https://github.com/Bogdan7c/fastiplayer/issues/3)
+4. [Make application colors and appearance fully configurable from settings.](https://github.com/Bogdan7c/fastiplayer/issues/4)
+5. [Add localization infrastructure and initial translations.](https://github.com/Bogdan7c/fastiplayer/issues/5)
+6. [Add an OpenGL ES 2.0 renderer for older Linux hardware.](https://github.com/Bogdan7c/fastiplayer/issues/6)
+7. [Add drag-and-drop for local files and URLs.](https://github.com/Bogdan7c/fastiplayer/issues/7)
+8. [Complete native Windows application support.](https://github.com/Bogdan7c/fastiplayer/issues/8)
 
 macOS is outside the roadmap through 1.0.
 
 ## Contributing
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md) for build/check commands, issue selection, architecture boundaries, and separate hardware acceptance. [SUPPORT.md](SUPPORT.md) routes bugs, proposals, and questions; [Discussions](https://github.com/Bogdan7c/rustiplayer/discussions) is open for questions and ideas. Focused reproductions, testable fixes, and documentation improvements are useful contributions. [AI-assisted development](docs/ai-development.md) explains the optional maintainer workflow.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for build/check commands, issue selection, architecture boundaries, and separate hardware acceptance. [SUPPORT.md](SUPPORT.md) routes bugs, proposals, and questions; [Discussions](https://github.com/Bogdan7c/fastiplayer/discussions) is open for questions and ideas. Focused reproductions, testable fixes, and documentation improvements are useful contributions. [AI-assisted development](docs/ai-development.md) explains the optional maintainer workflow.
 
 ## Security
 
-Treat media, network manifests, native decoding, GPU imports, and upstream FFI as security-sensitive boundaries. See the [trust-boundary overview](ARCHITECTURE.md#trust-boundaries) and [dependency policy](docs/continuous-integration.md). Do not put credentials, private media URLs, or exploit details in public issues. Follow [SECURITY.md](SECURITY.md) for reporting instructions, including what to do while private reporting is unavailable. [GitHub Private Vulnerability Reporting](https://github.com/Bogdan7c/rustiplayer/security/advisories/new) is enabled.
+Treat media, network manifests, native decoding, GPU imports, and upstream FFI as security-sensitive boundaries. See the [trust-boundary overview](ARCHITECTURE.md#trust-boundaries) and [dependency policy](docs/continuous-integration.md). Do not put credentials, private media URLs, or exploit details in public issues. Follow [SECURITY.md](SECURITY.md) for reporting instructions, including what to do while private reporting is unavailable. [GitHub Private Vulnerability Reporting](https://github.com/Bogdan7c/fastiplayer/security/advisories/new) is enabled.
 
 ## Maintainer and license
 
-**Bogdan Korolyov ([Bogdan7c](https://github.com/Bogdan7c))** is the sole core maintainer. See [MAINTAINERS.md](MAINTAINERS.md) for ownership and the deliberately deferred Code of Conduct pending a separate private enforcement contact. The [changelog](CHANGELOG.md) and [alpha release notes](docs/releases/v0.1.0-alpha.1.md) describe the source-only first development release. Published versions appear on the [Releases page](https://github.com/Bogdan7c/rustiplayer/releases).
+**Bogdan Korolyov ([Bogdan7c](https://github.com/Bogdan7c))** is the sole core maintainer. See [MAINTAINERS.md](MAINTAINERS.md) for ownership and the deliberately deferred Code of Conduct pending a separate private enforcement contact. The [changelog](CHANGELOG.md) and [alpha release notes](docs/releases/v0.1.0-alpha.1.md) describe the source-only first development release. Published versions appear on the [Releases page](https://github.com/Bogdan7c/fastiplayer/releases).
 
 First-party workspace code is [MIT licensed](LICENSE). The seven [patched upstream crates](docs/dependency-patches.toml) retain their own licenses and notices: BSD-3-Clause for cros-codecs/cros-libva, MPL-2.0 for the four Symphonia patches, and MIT for wayland-scanner.

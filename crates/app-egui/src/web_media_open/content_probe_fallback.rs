@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use rustiplayer_config::{NetworkConfig, YtDlpConfig};
+use fastiplayer_config::{NetworkConfig, YtDlpConfig};
 use service_ytdlp::{
     YtDlpCandidateSelection, YtDlpCandidateSnapshot, YtDlpMediaLocator, YtDlpNormalizedCandidate,
 };

@@ -32,13 +32,13 @@
 - `app-egui::web_media_vod_recovery::tests`: old demux publication hold, A/V/resource coalescing, generation visibility and pre-finalization speculative expiry isolation.
 - `state::strong_media_open::pending::same_lineage::tests::exact_recovery_position_overrides_only_position_not_fresh_controls`: late-seek position overrides only position.
 - `state::vod_endpoint_recovery::tests::retry_policy_is_exponential_capped_and_starts_at_initial_delay`.
-- `rustiplayer-config::store::tests::yt_dlp_vod_recovery_policy_bounds_are_validated_as_one_contract`.
+- `fastiplayer-config::store::tests::yt_dlp_vod_recovery_policy_bounds_are_validated_as_one_contract`.
 - HDS regression `null_codec_provider_default_filters_unsupported_hds_and_opens_playable_catalog` specifically guards the speculative-404 poisoning bug found in self-review.
 
 ## Verification
 
 - `cargo test -p app-egui --no-default-features --locked`: 955/955.
-- `cargo test -p rustiplayer-config --locked`: 92/92.
+- `cargo test -p fastiplayer-config --locked`: 92/92.
 - `cargo test -p web-media-adaptive --locked`: 34/34.
 - `cargo test -p web-media-http --locked`: 15 unit plus 2 audio and 6 progressive integration tests.
 - `cargo test -p web-media-transport-api --locked`: 7/7.

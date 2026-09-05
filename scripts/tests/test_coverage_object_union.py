@@ -148,7 +148,7 @@ class ObjectUnionTests(unittest.TestCase):
                 [sys.executable, str(SCRIPTS / "coverage_object_export.py"), "export",
                  "-instr-profile=" + str(profile_path),
                  *[arg for binary in order for arg in ["-object", str(binary)]]],
-                env=dict(os.environ, RUSTIPLAYER_COVERAGE_EXPORT_CONFIG=str(config)),
+                env=dict(os.environ, FASTIPLAYER_COVERAGE_EXPORT_CONFIG=str(config)),
                 capture_output=True, text=True, check=True,
             )
             legacy = extract_run_state(json.loads(execution.stdout), self.policy,

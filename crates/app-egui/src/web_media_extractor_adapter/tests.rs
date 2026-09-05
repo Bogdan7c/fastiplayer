@@ -73,7 +73,7 @@ impl ExtractorProcessLauncher for ProjectionFixtureLauncher {
 #[test]
 fn hermetic_snapshot_projects_formats_metadata_selection_and_presentation() {
     let fixture_directory = std::env::temp_dir().join(format!(
-        "rustiplayer-n03-app-projection-{}",
+        "fastiplayer-n03-app-projection-{}",
         std::process::id()
     ));
     if fixture_directory.exists() {
@@ -106,9 +106,9 @@ printf '%s\n' '{"title":"Projected HTML media","duration":17,"is_live":false,"fo
             &locator,
             SourceIdentity::new(3017),
             ExtractionGeneration::new(1),
-            &rustiplayer_config::YtDlpConfig {
+            &fastiplayer_config::YtDlpConfig {
                 resolve_timeout_ms: 2_000,
-                ..rustiplayer_config::YtDlpConfig::default()
+                ..fastiplayer_config::YtDlpConfig::default()
             },
             ExtractorInvocationReason::PageMediaResolution,
             &|| false,

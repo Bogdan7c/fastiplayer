@@ -1,6 +1,6 @@
 //! Project-agnostic contracts for settings metadata, registry access and diffs.
 //!
-//! `settings-core` does not know about rustiplayer config structs, UI widgets,
+//! `settings-core` does not know about fastiplayer config structs, UI widgets,
 //! render backends, GPU resources or operating-system option providers. It owns
 //! the neutral vocabulary that project-specific crates can bind to real storage.
 

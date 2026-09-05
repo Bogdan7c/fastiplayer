@@ -60,7 +60,7 @@ class RealCargoWithFixtureCoordinates(CommandExecutor):
 
 
 @unittest.skipUnless(
-    os.environ.get("RUSTIPLAYER_RUN_REAL_COVERAGE_RUNNER") == "1",
+    os.environ.get("FASTIPLAYER_RUN_REAL_COVERAGE_RUNNER") == "1",
     "opt-in: требуется pinned cargo-llvm-cov 0.8.7 + Rust 1.96.0",
 )
 class RealCargoCoverageRunnerTests(unittest.TestCase):
@@ -117,8 +117,8 @@ class RealCargoCoverageRunnerTests(unittest.TestCase):
             )
             # Реальный bootstrap blocker: старые wrapper list/profdata пережили прошлый run.
             config.profile_directory.mkdir(parents=True, exist_ok=True)
-            stale_list = config.profile_directory / "rustiplayer-profraw-list"
-            stale_profdata = config.profile_directory / "rustiplayer.profdata"
+            stale_list = config.profile_directory / "fastiplayer-profraw-list"
+            stale_profdata = config.profile_directory / "fastiplayer.profdata"
             stale_list.write_bytes(b"stale-real-profile-list\n")
             stale_profdata.write_bytes(b"stale-real-profdata\n")
             StableCoverageRunner(config, RealCargoWithFixtureCoordinates()).run()

@@ -5,8 +5,8 @@
 //! intersection. Исполнение выбранного плана остаётся в `AppState`.
 
 use capability_core::{SupportedVideoOutput, SystemCapabilities};
+use fastiplayer_config::VideoBackendPreference;
 use player_core::{PlayerVideoDecoderThreadConfig, VideoDecodeRequirement};
-use rustiplayer_config::VideoBackendPreference;
 use thiserror::Error;
 use video_backend_api::DetachedVideoBackendSelection;
 use video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID;

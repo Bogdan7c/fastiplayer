@@ -16,7 +16,7 @@ use snapshots::{
 
 /// Typed read-only preflight rejection tied to the owner that is busy.
 pub(crate) struct SettingsRuntimePreflightFailure {
-    pub(crate) route: rustiplayer_settings::AppRuntimeRoute,
+    pub(crate) route: fastiplayer_settings::AppRuntimeRoute,
     pub(crate) result: AppRouteApplyResult,
 }
 
@@ -219,7 +219,7 @@ pub(super) struct SettingsRuntimeRouteAppliers {
     pub(super) media_service: MediaServiceRuntimeSnapshot,
 
     /// Последний committed Frame Server snapshot после успешного live policy apply.
-    pub(super) frame_server: rustiplayer_config::FrameServerConfig,
+    pub(super) frame_server: fastiplayer_config::FrameServerConfig,
 }
 
 impl SettingsRuntimeRouteAppliers {

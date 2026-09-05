@@ -57,12 +57,12 @@ class MergeMetadataTransactionTests(unittest.TestCase):
         """Все неполные старые формы изолируются, а unrelated файл не затрагивается."""
 
         scenarios = {
-            "empty-list": {"rustiplayer-profraw-list": b""},
+            "empty-list": {"fastiplayer-profraw-list": b""},
             "list-and-profdata": {
-                "rustiplayer-profraw-list": b"/old/profile.profraw\n",
-                "rustiplayer.profdata": b"old-profdata",
+                "fastiplayer-profraw-list": b"/old/profile.profraw\n",
+                "fastiplayer.profdata": b"old-profdata",
             },
-            "profdata-only": {"rustiplayer.profdata": b"orphan-profdata"},
+            "profdata-only": {"fastiplayer.profdata": b"orphan-profdata"},
         }
         for scenario, originals in scenarios.items():
             with self.subTest(scenario=scenario):
@@ -244,8 +244,8 @@ class MergeMetadataTransactionTests(unittest.TestCase):
         temporary_directory, profile, _stage, _final, transaction = fixture
         try:
             originals = {
-                "rustiplayer-profraw-list": b"old-list",
-                "rustiplayer.profdata": b"old-profdata",
+                "fastiplayer-profraw-list": b"old-list",
+                "fastiplayer.profdata": b"old-profdata",
             }
             self.seed_files(profile, originals)
             transaction.begin()
@@ -263,8 +263,8 @@ class MergeMetadataTransactionTests(unittest.TestCase):
         temporary_directory, profile, stage, _final, transaction = fixture
         try:
             originals = {
-                "rustiplayer-profraw-list": b"old-list",
-                "rustiplayer.profdata": b"old-profdata",
+                "fastiplayer-profraw-list": b"old-list",
+                "fastiplayer.profdata": b"old-profdata",
             }
             self.seed_files(profile, originals)
             transaction.begin()

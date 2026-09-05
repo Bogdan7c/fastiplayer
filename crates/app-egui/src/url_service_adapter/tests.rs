@@ -1,6 +1,6 @@
 use capability_core::SystemCapabilities;
+use fastiplayer_config::AppConfig;
 use playlist_core::SecretUrlLocator;
-use rustiplayer_config::AppConfig;
 
 use super::{
     ImplementedYtDlpInputProviderCapability, ServiceClassifierResult, StartupUrlClassification,

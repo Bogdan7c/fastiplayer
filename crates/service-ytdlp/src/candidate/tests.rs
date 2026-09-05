@@ -1,4 +1,4 @@
-use rustiplayer_config::YtDlpConfig;
+use fastiplayer_config::YtDlpConfig;
 use serde_json::{Value, json};
 use source_core::{CancellationToken, HttpRequestTarget};
 use web_media_core::{

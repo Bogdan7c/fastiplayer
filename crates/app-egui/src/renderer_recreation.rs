@@ -6,19 +6,19 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use fastiplayer_config::{RenderProfile, VulkanPresentMode};
+use fastiplayer_settings::{
+    AppRouteApplyResult, RenderCommittedSettingsUpdate, RendererRecreationApplyError,
+    RendererRecreationApplyErrorKind, RendererRecreationRollbackError,
+    RendererRecreationRollbackErrorKind, SettingStateOwner, SettingsApplyFailure,
+    SettingsBoundaryActivity,
+};
 use render_core::RenderLiveSettingsAdapter;
 use render_wgpu_shell::{
     Renderer, RendererGpuDrainError, ShellPresentMode, SurfaceAlphaPreference,
     SurfacePresentSettings,
 };
 use render_wgpu_video::WgpuFrameTextureViewMaterializer;
-use rustiplayer_config::{RenderProfile, VulkanPresentMode};
-use rustiplayer_settings::{
-    AppRouteApplyResult, RenderCommittedSettingsUpdate, RendererRecreationApplyError,
-    RendererRecreationApplyErrorKind, RendererRecreationRollbackError,
-    RendererRecreationRollbackErrorKind, SettingStateOwner, SettingsApplyFailure,
-    SettingsBoundaryActivity,
-};
 use winit::window::Window;
 
 use crate::state::AppState;
@@ -527,7 +527,7 @@ mod tests {
     }
 
     fn settings() -> RenderCommittedSettingsUpdate {
-        let config = rustiplayer_config::AppConfig::default();
+        let config = fastiplayer_config::AppConfig::default();
         RenderCommittedSettingsUpdate {
             profile: config.render.profile,
             tone_mapping: config.render.tone_mapping,

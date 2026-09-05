@@ -14,7 +14,7 @@ const FFMPEG_FEATURE_ENV: &str = "CARGO_FEATURE_FFMPEG";
 const FFMPEG_SYS_PREFIX_ENV: &str = "FFMPEG_DIR";
 
 /// Проектный env var из tooling; сам `ffmpeg-sys-next` его не читает.
-const RUSTIPLAYER_PREFIX_ENV: &str = "RUSTIPLAYER_FFMPEG_PREFIX";
+const FASTIPLAYER_PREFIX_ENV: &str = "FASTIPLAYER_FFMPEG_PREFIX";
 
 /// Минимальный набор dynamic libav*, нужный software video decoder scaffold-у.
 const REQUIRED_PKG_CONFIG_LIBS: &[&str] = &["libavutil", "libavcodec"];
@@ -42,7 +42,7 @@ fn main() {
 fn emit_rerun_inputs() {
     println!("cargo:rerun-if-env-changed={FFMPEG_FEATURE_ENV}");
     println!("cargo:rerun-if-env-changed={FFMPEG_SYS_PREFIX_ENV}");
-    println!("cargo:rerun-if-env-changed={RUSTIPLAYER_PREFIX_ENV}");
+    println!("cargo:rerun-if-env-changed={FASTIPLAYER_PREFIX_ENV}");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR");
@@ -62,10 +62,10 @@ fn explicit_ffmpeg_prefix() -> Result<Option<PathBuf>, String> {
         return Ok(Some(PathBuf::from(prefix)));
     }
 
-    if let Some(project_prefix) = env::var_os(RUSTIPLAYER_PREFIX_ENV) {
+    if let Some(project_prefix) = env::var_os(FASTIPLAYER_PREFIX_ENV) {
         let project_prefix = PathBuf::from(project_prefix);
         return Err(format!(
-            "FFmpeg feature включён, но задан только {RUSTIPLAYER_PREFIX_ENV}={}. \
+            "FFmpeg feature включён, но задан только {FASTIPLAYER_PREFIX_ENV}={}. \
              `ffmpeg-sys-next` читает {FFMPEG_SYS_PREFIX_ENV}, поэтому выставь \
              {FFMPEG_SYS_PREFIX_ENV}={} или добавь prefix pkg-config directory в PKG_CONFIG_PATH.",
             project_prefix.display(),

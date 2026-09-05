@@ -8,7 +8,7 @@ Architecture:
 - Dynamic option refresh happens on settings window open, when selecting a section containing dynamic providers, and through the explicit refresh action. Provider failures are converted into `SettingOptionsStatus::Unavailable` with an option-provider error message; they must not break the whole settings window.
 - `audio` owns CPAL output device enumeration and selection. Public owner API: `AudioOutputDeviceController`, `AudioOutputDeviceInfo`, `AudioOutputDeviceSelectionChange`, `AudioOutputDeviceError`, `DEFAULT_AUDIO_OUTPUT_DEVICE_ID`, and `list_output_devices()`. CPAL types stay private to `audio`.
 - `CpalAudioOutputFactory::new(controller)` receives the shared audio device controller from settings runtime. `AudioOutput::new_with_device_id(...)` resolves the selected stable id inside `audio`; `AudioOutput::new(...)` still uses the default output device.
-- `rustiplayer-settings` routes `audio.output_device` through `PlayerCommittedSettingsUpdate.audio_output_device_id` and `AppRuntimeRouteGroup::PlayerAudioOutputDevice`, not through deferred boundary settings.
+- `fastiplayer-settings` routes `audio.output_device` through `PlayerCommittedSettingsUpdate.audio_output_device_id` and `AppRuntimeRouteGroup::PlayerAudioOutputDevice`, not through deferred boundary settings.
 
 Important limitation:
 - The project currently uses CPAL 0.15.3, which does not expose backend `DeviceId`. The current stable id scheme is best-effort: `default` for system default, otherwise `cpal-0.15-name:<percent-escaped-display-name>[#duplicate-index]`. It is stable while the backend returns the same device name/order. A future CPAL upgrade with real device IDs should only require changes inside `audio::devices`, preserving the neutral boundary.

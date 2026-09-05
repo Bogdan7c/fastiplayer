@@ -14,8 +14,8 @@ use demux_api::{
     PresentationWindowOrderedSegment, PresentationWindowOrderedSegmentReadOutcome,
     PresentationWindowOrderedSegmentSource,
 };
+use fastiplayer_config::NetworkConfig;
 use media_core::PacketPresentationWindow;
-use rustiplayer_config::NetworkConfig;
 use smooth_streaming_fmp4::{
     SmoothFragmentIndex, SmoothFragmentPlanRequest, SmoothFragmentReconstructionRequest,
     SmoothReconstructedFragment, SmoothStreamOrdinal, SmoothTrackMappingRequest,

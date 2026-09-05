@@ -15,9 +15,9 @@ use codec_core::{
     BitDepth, ChromaSubsampling, DecodeBackendId, H264Profile, SupportedVideoDecodeFormat,
     VideoCodec as DecodeVideoCodec, VideoProfile,
 };
+use fastiplayer_config::{AppConfig, VideoCodec};
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer};
 use player_core::{PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, PreparedDemuxSeekRequestId};
-use rustiplayer_config::{AppConfig, VideoCodec};
 use source_core::CancellationToken;
 use video_frame_contract::VideoFrameContract;
 use web_media_core::ComponentVariantSemanticSelectionRequest;
@@ -89,7 +89,7 @@ fn native_settings() -> WebMediaOpenSettings {
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     app_config.web_media.preferred_video_height =
-        Some(rustiplayer_config::PreferredVideoHeight::new(1_080).expect("valid HDS height"));
+        Some(fastiplayer_config::PreferredVideoHeight::new(1_080).expect("valid HDS height"));
     app_config.player.preferred_video_codec_order = vec![VideoCodec::H264];
     let audio_capabilities =
         ProductionAudioDecoderFactory::default().audio_decode_capability_snapshot();

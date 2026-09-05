@@ -7,9 +7,9 @@ use media_core::TrackInfo;
 
 /// Читает единственный путь, который manual runner передал выбранному regression test.
 pub fn selected_media_path() -> Result<PathBuf> {
-    let selected_path = std::env::var_os("RUSTIPLAYER_MEDIA_PATH")
+    let selected_path = std::env::var_os("FASTIPLAYER_MEDIA_PATH")
         .map(PathBuf::from)
-        .context("RUSTIPLAYER_MEDIA_PATH must select one local media file")?;
+        .context("FASTIPLAYER_MEDIA_PATH must select one local media file")?;
     let metadata = std::fs::metadata(&selected_path)
         .with_context(|| format!("read selected media metadata: {}", selected_path.display()))?;
     ensure!(

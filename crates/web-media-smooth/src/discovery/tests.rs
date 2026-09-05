@@ -2,8 +2,8 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use demux_api::DemuxSniffBudget;
+use fastiplayer_config::NetworkConfig;
 use media_core::TrackInfo;
-use rustiplayer_config::NetworkConfig;
 use source_core::SourceRuntimeConfig;
 use web_media_core::{
     ComponentKind, ComponentVariantCatalogGeneration, ComponentVariantSelectionRequest,

@@ -82,16 +82,16 @@ pub enum XspfParseErrorKind {
     TrackLimitExceeded,
     /// Per-track ordered location budget исчерпан.
     LocationLimitExceeded,
-    /// Rustiplayer group-record budget исчерпан.
+    /// Fastiplayer group-record budget исчерпан.
     GroupLimitExceeded,
     /// Track budget превышает canonical retained capacity.
     TrackLimitExceedsDomainCapacity,
     /// Group budget превышает canonical top-level capacity.
     GroupLimitExceedsDomainCapacity,
-    /// Known Rustiplayer extension объявлен больше одного раза.
-    DuplicateRustiplayerExtension,
+    /// Known Fastiplayer extension объявлен больше одного раза.
+    DuplicateFastiplayerExtension,
     /// Known playlist extension ошибочно помещён внутрь track.
-    RustiplayerExtensionWrongScope,
+    FastiplayerExtensionWrongScope,
     /// Group не содержит mandatory root location.
     MissingGroupLocation,
     /// Group range выходит за tracks, перекрывается или нарушает order.
@@ -126,11 +126,11 @@ impl fmt::Display for XspfParseErrorKind {
             Self::GroupLimitExceedsDomainCapacity => {
                 formatter.write_str("group budget превышает domain capacity")
             }
-            Self::DuplicateRustiplayerExtension => {
-                formatter.write_str("Rustiplayer extension повторён")
+            Self::DuplicateFastiplayerExtension => {
+                formatter.write_str("Fastiplayer extension повторён")
             }
-            Self::RustiplayerExtensionWrongScope => {
-                formatter.write_str("Rustiplayer extension находится в неправильном scope")
+            Self::FastiplayerExtensionWrongScope => {
+                formatter.write_str("Fastiplayer extension находится в неправильном scope")
             }
             Self::MissingGroupLocation => formatter.write_str("group location отсутствует"),
             Self::InvalidGroupRange => formatter.write_str("group range некорректен"),

@@ -825,7 +825,7 @@ fn invalid_scheduler_decode_ahead_target_fails_validation() {
 #[test]
 fn missing_config_is_created_with_defaults() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
-    let config_path = temp_dir.path().join("rustiplayer").join("config.toml");
+    let config_path = temp_dir.path().join("fastiplayer").join("config.toml");
 
     let loaded = load_or_create_at(&config_path).expect("default config created");
 

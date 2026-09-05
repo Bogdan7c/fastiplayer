@@ -44,7 +44,7 @@ def passing_startup() -> list[str]:
 
     target = "Restore { target_position: 355s }"
     return [
-        log_line(0, "=== rustiplayer ==="),
+        log_line(0, "=== fastiplayer ==="),
         log_line(
             10,
             "startup_attempt_id=7 process_elapsed_ms=10 "

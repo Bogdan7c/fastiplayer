@@ -13,26 +13,26 @@ use tracing::debug;
 
 use crate::symphonia_api::FormatReaderBox;
 
-pub(super) const RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG: &str =
-    "rustiplayer.display_orientation.clockwise_degrees";
-pub(super) const RUSTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG: &str =
-    "rustiplayer.video.h264.parameter_sets_in_band";
-pub(super) const RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG: &str =
-    "rustiplayer.video.color.full_range";
-pub(super) const RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG: &str =
-    "rustiplayer.video.color.matrix_coefficients_h273";
-pub(super) const RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG: &str =
-    "rustiplayer.video.color.primaries_h273";
-pub(super) const RUSTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG: &str =
-    "rustiplayer.video.color.transfer_characteristics_h273";
-pub(super) const RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG: &str =
-    "rustiplayer.video.hdr.mastering_display.max_luminance_nits";
-pub(super) const RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG: &str =
-    "rustiplayer.video.hdr.mastering_display.min_luminance_nits";
-pub(super) const RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG: &str =
-    "rustiplayer.video.hdr.max_content_light_level_nits";
-pub(super) const RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG: &str =
-    "rustiplayer.video.hdr.max_frame_average_light_level_nits";
+pub(super) const FASTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG: &str =
+    "fastiplayer.display_orientation.clockwise_degrees";
+pub(super) const FASTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG: &str =
+    "fastiplayer.video.h264.parameter_sets_in_band";
+pub(super) const FASTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG: &str =
+    "fastiplayer.video.color.full_range";
+pub(super) const FASTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG: &str =
+    "fastiplayer.video.color.matrix_coefficients_h273";
+pub(super) const FASTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG: &str =
+    "fastiplayer.video.color.primaries_h273";
+pub(super) const FASTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG: &str =
+    "fastiplayer.video.color.transfer_characteristics_h273";
+pub(super) const FASTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG: &str =
+    "fastiplayer.video.hdr.mastering_display.max_luminance_nits";
+pub(super) const FASTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG: &str =
+    "fastiplayer.video.hdr.mastering_display.min_luminance_nits";
+pub(super) const FASTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG: &str =
+    "fastiplayer.video.hdr.max_content_light_level_nits";
+pub(super) const FASTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG: &str =
+    "fastiplayer.video.hdr.max_frame_average_light_level_nits";
 
 /// Короткая сводка того, что Symphonia 0.6 уже принесла на format-level boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,7 @@ pub(super) fn display_orientations_from_metadata(
 
     for per_track_metadata in &revision.per_track {
         for tag in &per_track_metadata.metadata.tags {
-            if tag.raw.key != RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG {
+            if tag.raw.key != FASTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG {
                 continue;
             }
 
@@ -185,7 +185,7 @@ pub(super) fn video_packet_framings_from_metadata(
             continue;
         };
         for tag in &per_track_metadata.metadata.tags {
-            if tag.raw.key != RUSTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG {
+            if tag.raw.key != FASTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG {
                 continue;
             }
             match bool_from_raw_value(&tag.raw.value) {
@@ -325,7 +325,7 @@ fn apply_mp4_video_color_tag(
     raw_value: &RawValue,
 ) -> bool {
     match tag_key {
-        RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG => {
+        FASTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG => {
             match bool_from_raw_value(raw_value) {
                 Some(full_range) => {
                     color_tags.range = Some(if full_range {
@@ -338,7 +338,7 @@ fn apply_mp4_video_color_tag(
             }
             true
         }
-        RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG => {
+        FASTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG => {
             match u64_from_raw_value(raw_value) {
                 Some(value) => {
                     color_tags.matrix = Some(MatrixCoefficients::from_h273_value(value));
@@ -347,7 +347,7 @@ fn apply_mp4_video_color_tag(
             }
             true
         }
-        RUSTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG => {
+        FASTIPLAYER_VIDEO_COLOR_PRIMARIES_H273_TAG => {
             match u64_from_raw_value(raw_value) {
                 Some(value) => {
                     color_tags.primaries = Some(ColorPrimaries::from_h273_value(value));
@@ -356,7 +356,7 @@ fn apply_mp4_video_color_tag(
             }
             true
         }
-        RUSTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG => {
+        FASTIPLAYER_VIDEO_COLOR_TRANSFER_CHARACTERISTICS_H273_TAG => {
             match u64_from_raw_value(raw_value) {
                 Some(value) => {
                     color_tags.transfer = Some(TransferFunction::from_h273_value(value));
@@ -365,28 +365,28 @@ fn apply_mp4_video_color_tag(
             }
             true
         }
-        RUSTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG => {
+        FASTIPLAYER_VIDEO_HDR_MAX_LUMINANCE_NITS_TAG => {
             match f32_from_raw_value(raw_value) {
                 Some(value) => color_tags.max_luminance_nits = Some(value),
                 None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
             }
             true
         }
-        RUSTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG => {
+        FASTIPLAYER_VIDEO_HDR_MIN_LUMINANCE_NITS_TAG => {
             match f32_from_raw_value(raw_value) {
                 Some(value) => color_tags.min_luminance_nits = Some(value),
                 None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
             }
             true
         }
-        RUSTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG => {
+        FASTIPLAYER_VIDEO_HDR_MAX_CLL_NITS_TAG => {
             match u32_from_raw_value(raw_value) {
                 Some(value) => color_tags.max_content_light_level_nits = Some(value),
                 None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),
             }
             true
         }
-        RUSTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG => {
+        FASTIPLAYER_VIDEO_HDR_MAX_FALL_NITS_TAG => {
             match u32_from_raw_value(raw_value) {
                 Some(value) => color_tags.max_frame_average_light_level_nits = Some(value),
                 None => log_unsupported_mp4_video_color_tag_value(tag_key, raw_value),

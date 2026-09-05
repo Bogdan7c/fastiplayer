@@ -11,7 +11,7 @@ use super::{
 };
 
 /// Fixed comparison origin; эта строка никогда не используется для запроса.
-const RELATIVE_FRAGMENT_SENTINEL_BASE: &str = "https://rustiplayer.invalid/dash-base/";
+const RELATIVE_FRAGMENT_SENTINEL_BASE: &str = "https://fastiplayer.invalid/dash-base/";
 
 /// Выбранный authoritative DASH input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -691,7 +691,7 @@ mod tests {
 
         for unsafe_path in [
             "//evil.invalid/network-path.m4s",
-            "//rustiplayer.invalid/same-origin-network-path.m4s",
+            "//fastiplayer.invalid/same-origin-network-path.m4s",
             r"\\evil.invalid\backslash-network-path.m4s",
             "https://evil.invalid/cross-origin.m4s",
             "http://[invalid-ipv6",

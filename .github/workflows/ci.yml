@@ -25,7 +25,7 @@ concurrency:
 # Общие значения делают Cargo execution воспроизводимым во всех jobs.
 env:
   # Физический GBM/VA-API проверяется только локально; SDK и fake tests остаются.
-  RUSTIPLAYER_TEST_SCOPE: hosted
+  FASTIPLAYER_TEST_SCOPE: hosted
   # Отключённый incremental уменьшает нестабильность и размер CI cache.
   CARGO_INCREMENTAL: "0"
   # Цветной вывод остаётся читаемым в GitHub Actions log.
@@ -54,13 +54,13 @@ jobs:
             -t 4 -c:v libx264 -preset ultrafast -profile:v baseline \
             -bf 0 -g 5 -keyint_min 5 -sc_threshold 0 -pix_fmt yuv420p -an \
             -muxpreload 0 -muxdelay 0 -mpegts_flags +resend_headers \
-            -f mpegts -y /tmp/rustiplayer-aud013-vertical-seek.ts
+            -f mpegts -y /tmp/fastiplayer-aud013-vertical-seek.ts
       # Repo runner передаёт explicit path и запускает только exact ignored acceptance test.
       - name: Run production vertical seek acceptance
         env:
           # Принудительно выбираем Vulkan; display server и swapchain тесту не нужны.
           WGPU_BACKEND: vulkan
-        run: scripts/media-regression.sh --scenario h264-ts-seek-wgpu-ffmpeg --path /tmp/rustiplayer-aud013-vertical-seek.ts
+        run: scripts/media-regression.sh --scenario h264-ts-seek-wgpu-ffmpeg --path /tmp/fastiplayer-aud013-vertical-seek.ts
 
   # Быстрый PR guard сохраняет защиту baseline без instrumented build.
   coverage-baseline-policy:
@@ -83,11 +83,15 @@ jobs:
         run: |
           git show "${COVERAGE_BASE_REF}:coverage/baseline.json" > /tmp/coverage-previous-baseline.json
           git show "${COVERAGE_BASE_REF}:coverage/measurement-exceptions.json" > /tmp/coverage-previous-measurement-exceptions.json
+          git show "${COVERAGE_BASE_REF}:coverage/policy.json" > /tmp/coverage-previous-policy.json
           python3 scripts/coverage_stability.py check-baseline-update \
             --previous-baseline /tmp/coverage-previous-baseline.json \
             --previous-measurement-exceptions /tmp/coverage-previous-measurement-exceptions.json \
             --proposed-baseline coverage/baseline.json \
-            --proposed-measurement-exceptions coverage/measurement-exceptions.json
+            --proposed-measurement-exceptions coverage/measurement-exceptions.json \
+            --identity-migrations coverage/identity-migrations.json \
+            --previous-policy /tmp/coverage-previous-policy.json \
+            --proposed-policy coverage/policy.json
 
   # Каждый matrix entry является отдельным GitHub Actions job для одного standalone fork.
   dependency-patch-tests:

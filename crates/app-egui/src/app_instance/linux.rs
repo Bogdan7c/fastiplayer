@@ -5,7 +5,7 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 
-use rustiplayer_config::ConfigPaths;
+use fastiplayer_config::ConfigPaths;
 
 use super::{
     AppInstanceLease, AppInstanceLeaseError, AppInstanceLeaseIoOperation, AppInstanceLeasePlatform,
@@ -205,7 +205,7 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
 
-    use rustiplayer_config::ConfigPaths;
+    use fastiplayer_config::ConfigPaths;
     use tempfile::TempDir;
 
     use super::{acquire_linux_guard, effective_user_id, validate_lock_metadata};
@@ -219,7 +219,7 @@ mod tests {
     static LEASE_TEST_SERIALIZATION: Mutex<()> = Mutex::new(());
 
     /// Однозначный pipe-сигнал: owner уже выполнил первый retry после захвата lease.
-    const ORDERED_CONTENDER_OWNER_READY: &str = "rustiplayer-ordered-contender-owner-ready";
+    const ORDERED_CONTENDER_OWNER_READY: &str = "fastiplayer-ordered-contender-owner-ready";
 
     fn serialize_lease_test() -> MutexGuard<'static, ()> {
         LEASE_TEST_SERIALIZATION
@@ -372,13 +372,13 @@ mod tests {
         let start_file = root.path().join("start");
         let contender_done_file = root.path().join("contender-done");
         let mut first = subprocess_command(&config_dir, "contend")
-            .env("RUSTIPLAYER_TEST_START_FILE", &start_file)
-            .env("RUSTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
+            .env("FASTIPLAYER_TEST_START_FILE", &start_file)
+            .env("FASTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
             .spawn()
             .expect("first contender");
         let mut second = subprocess_command(&config_dir, "contend")
-            .env("RUSTIPLAYER_TEST_START_FILE", &start_file)
-            .env("RUSTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
+            .env("FASTIPLAYER_TEST_START_FILE", &start_file)
+            .env("FASTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
             .spawn()
             .expect("second contender");
         fs::write(&start_file, []).expect("release contenders");
@@ -410,7 +410,7 @@ mod tests {
         let start_file = root.path().join("start");
         let contender_done_file = root.path().join("contender-done");
         let mut owner = subprocess_command(&config_dir, "ordered-contender-owner")
-            .env("RUSTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
+            .env("FASTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
             .stderr(Stdio::piped())
             .spawn()
             .expect("ordered owner");
@@ -423,8 +423,8 @@ mod tests {
 
         fs::write(&start_file, []).expect("release typed contender");
         let contender_status = subprocess_command(&config_dir, "contend")
-            .env("RUSTIPLAYER_TEST_START_FILE", &start_file)
-            .env("RUSTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
+            .env("FASTIPLAYER_TEST_START_FILE", &start_file)
+            .env("FASTIPLAYER_TEST_CONTENDER_DONE", &contender_done_file)
             .status()
             .expect("typed contender status");
         let owner_status = owner.wait().expect("ordered owner status");
@@ -442,7 +442,7 @@ mod tests {
         let config_dir = root.path().join("config");
         let ready_file = root.path().join("ready");
         let mut owner = subprocess_command(&config_dir, "hold")
-            .env("RUSTIPLAYER_TEST_READY_FILE", &ready_file)
+            .env("FASTIPLAYER_TEST_READY_FILE", &ready_file)
             .spawn()
             .expect("holding owner");
         for _ in 0..100 {
@@ -473,7 +473,7 @@ mod tests {
         let config_dir = root.path().join("config");
         let child_pid_file = root.path().join("child.pid");
         let status = subprocess_command(&config_dir, "spawn-child")
-            .env("RUSTIPLAYER_TEST_CHILD_PID_FILE", &child_pid_file)
+            .env("FASTIPLAYER_TEST_CHILD_PID_FILE", &child_pid_file)
             .status()
             .expect("parent helper");
 
@@ -495,14 +495,14 @@ mod tests {
         reason = "helper intentionally exits while its proof child remains alive to verify CLOEXEC"
     )]
     fn subprocess_lease_helper() {
-        let Ok(config_dir) = std::env::var("RUSTIPLAYER_TEST_LEASE_ROOT") else {
+        let Ok(config_dir) = std::env::var("FASTIPLAYER_TEST_LEASE_ROOT") else {
             return;
         };
-        let action = std::env::var("RUSTIPLAYER_TEST_LEASE_ACTION").expect("helper action");
+        let action = std::env::var("FASTIPLAYER_TEST_LEASE_ACTION").expect("helper action");
         let paths = ConfigPaths::from_config_dir(config_dir);
 
         if action == "contend" {
-            let start_file = std::env::var("RUSTIPLAYER_TEST_START_FILE").expect("start file");
+            let start_file = std::env::var("FASTIPLAYER_TEST_START_FILE").expect("start file");
             while !std::path::Path::new(&start_file).exists() {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -512,7 +512,7 @@ mod tests {
             Ok(lease) => lease,
             Err(AppInstanceLeaseError::AlreadyRunning) if action == "contend" => {
                 let contender_done =
-                    std::env::var("RUSTIPLAYER_TEST_CONTENDER_DONE").expect("contender done file");
+                    std::env::var("FASTIPLAYER_TEST_CONTENDER_DONE").expect("contender done file");
                 fs::write(contender_done, []).expect("publish contention result");
                 std::process::exit(23);
             }
@@ -523,7 +523,7 @@ mod tests {
             "abort" => std::process::abort(),
             "contend" | "ordered-contender-owner" => {
                 let contender_done =
-                    std::env::var("RUSTIPLAYER_TEST_CONTENDER_DONE").expect("contender done file");
+                    std::env::var("FASTIPLAYER_TEST_CONTENDER_DONE").expect("contender done file");
                 for attempt in 0..200 {
                     if std::path::Path::new(&contender_done).exists() {
                         return;
@@ -536,7 +536,7 @@ mod tests {
                 std::process::exit(24);
             }
             "hold" => {
-                let ready_file = std::env::var("RUSTIPLAYER_TEST_READY_FILE").expect("ready file");
+                let ready_file = std::env::var("FASTIPLAYER_TEST_READY_FILE").expect("ready file");
                 fs::write(ready_file, []).expect("write ready marker");
                 loop {
                     std::thread::sleep(Duration::from_secs(1));
@@ -548,7 +548,7 @@ mod tests {
                     .spawn()
                     .expect("spawn proof child");
                 let pid_path =
-                    std::env::var("RUSTIPLAYER_TEST_CHILD_PID_FILE").expect("child pid path");
+                    std::env::var("FASTIPLAYER_TEST_CHILD_PID_FILE").expect("child pid path");
                 fs::write(pid_path, child.id().to_string()).expect("write child pid");
                 drop(lease);
             }
@@ -562,8 +562,8 @@ mod tests {
             .arg("--exact")
             .arg("app_instance::linux::tests::subprocess_lease_helper")
             .arg("--nocapture")
-            .env("RUSTIPLAYER_TEST_LEASE_ROOT", config_dir)
-            .env("RUSTIPLAYER_TEST_LEASE_ACTION", action);
+            .env("FASTIPLAYER_TEST_LEASE_ROOT", config_dir)
+            .env("FASTIPLAYER_TEST_LEASE_ACTION", action);
         command
     }
 }

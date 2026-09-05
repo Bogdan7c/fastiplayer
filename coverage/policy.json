@@ -34,7 +34,7 @@
     "playlist-io",
     "playlist-state",
     "render-core",
-    "rustiplayer-settings",
+    "fastiplayer-settings",
     "service-direct-media",
     "settings-core",
     "settings-derive",

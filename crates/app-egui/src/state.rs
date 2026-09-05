@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
+use fastiplayer_config::FrameServerLiveScrubDecodeModeConfig;
+use fastiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use player_core::{
     FrameCounters, MediaInstanceId, PlaybackRate, PlaybackState, PlayerCommand, PlayerEvent,
     PlayerRenderError, PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
@@ -21,8 +23,6 @@ use render_wgpu_video::{
     WgpuFrameTextureViews, WgpuSubmissionQueueBinding, WgpuSubmissionQueueRebindError,
     wrap_video_backend_for_wgpu_submission,
 };
-use rustiplayer_config::FrameServerLiveScrubDecodeModeConfig;
-use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, info, instrument, warn};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
 use video_present_core::{VideoFrameLease, VideoPresentFrameIdentity};
@@ -600,17 +600,17 @@ impl AppState {
     }
 
     /// Возвращает committed backend policy для rebuild-ов, не вызванных её изменением.
-    pub(crate) fn video_backend_preference(&self) -> rustiplayer_config::VideoBackendPreference {
+    pub(crate) fn video_backend_preference(&self) -> fastiplayer_config::VideoBackendPreference {
         self.committed_config_snapshot.video_backend_preference()
     }
 
     /// Захватывает committed YtDlp policy для новой playlist metadata задачи.
-    pub(crate) fn yt_dlp_metadata_config(&self) -> rustiplayer_config::YtDlpConfig {
+    pub(crate) fn yt_dlp_metadata_config(&self) -> fastiplayer_config::YtDlpConfig {
         self.committed_config_snapshot.yt_dlp_metadata_config()
     }
 
     /// Клонирует committed config только для staged owner rebuild-а.
-    pub(crate) fn committed_app_config(&self) -> rustiplayer_config::AppConfig {
+    pub(crate) fn committed_app_config(&self) -> fastiplayer_config::AppConfig {
         self.committed_config_snapshot.as_config().clone()
     }
 

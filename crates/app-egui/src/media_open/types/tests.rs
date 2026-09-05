@@ -46,7 +46,7 @@ fn playback_window_identity_wraps_reopen_request_without_source_specific_types()
     let request = source.wrap_reopen_request(MediaOpenSourceRequest::Local {
         path: PathBuf::from("fixture.flac"),
         expected_fingerprint: None,
-        demux_config: rustiplayer_config::PlayerDemuxConfig::default(),
+        demux_config: fastiplayer_config::PlayerDemuxConfig::default(),
     });
 
     assert_eq!(source.playback_window(), Some(semantic_identity));

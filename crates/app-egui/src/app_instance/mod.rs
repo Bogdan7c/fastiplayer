@@ -7,7 +7,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 
-use rustiplayer_config::{ConfigError, ConfigPaths, LoadedConfig};
+use fastiplayer_config::{ConfigError, ConfigPaths, LoadedConfig};
 use thiserror::Error;
 
 use crate::startup_media::{InitialMedia, resolve_initial_media_argument};
@@ -152,7 +152,7 @@ pub(crate) enum UnsafeAppInstanceArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum AppInstanceLeaseError {
     /// Другой процесс уже удерживает stable lock inode.
-    #[error("другой экземпляр rustiplayer уже запущен")]
+    #[error("другой экземпляр fastiplayer уже запущен")]
     AlreadyRunning,
 
     /// Безопасная операция завершилась системной I/O ошибкой.
@@ -204,7 +204,7 @@ pub(crate) enum ProcessBootstrapError {
     #[error("не удалось получить право запуска: {0}")]
     Lease(#[from] AppInstanceLeaseError),
 
-    #[error("не удалось загрузить config rustiplayer: {0}")]
+    #[error("не удалось загрузить config fastiplayer: {0}")]
     LoadConfig(ConfigError),
 }
 
@@ -215,7 +215,7 @@ pub(crate) fn bootstrap_process() -> Result<ProcessBootstrap, ProcessBootstrapEr
         std::env::args_os().skip(1),
         ConfigPaths::discover,
         &platform,
-        |paths| rustiplayer_config::load_or_create_at(paths.config_file()),
+        |paths| fastiplayer_config::load_or_create_at(paths.config_file()),
         |process_args, _paths, loaded_config| {
             resolve_initial_media_argument(process_args.take_initial_media(), &loaded_config.config)
         },
@@ -284,7 +284,7 @@ mod tests {
     use std::ffi::OsString;
     use std::rc::Rc;
 
-    use rustiplayer_config::ConfigPaths;
+    use fastiplayer_config::ConfigPaths;
 
     use super::{
         AppInstanceLease, AppInstanceLeaseError, AppInstanceLeaseIoOperation,

@@ -9,8 +9,8 @@
 
 ## Verification
 
-- Focused locked/all-feature suites passed: `rustiplayer-config` 93 tests; `dash-mpd-core` 17 integration tests; `web-media-dash` 48 unit/integration tests.
-- Combined `cargo test -p rustiplayer-config -p dash-mpd-core -p web-media-dash --all-features --locked` passed.
-- `cargo clippy -p rustiplayer-config -p dash-mpd-core -p web-media-dash --all-targets --all-features --locked -- -D warnings`, `cargo fmt --all -- --check`, `git diff --check`, and `python3 scripts/check-refactor-guardrails.py` passed.
+- Focused locked/all-feature suites passed: `fastiplayer-config` 93 tests; `dash-mpd-core` 17 integration tests; `web-media-dash` 48 unit/integration tests.
+- Combined `cargo test -p fastiplayer-config -p dash-mpd-core -p web-media-dash --all-features --locked` passed.
+- `cargo clippy -p fastiplayer-config -p dash-mpd-core -p web-media-dash --all-targets --all-features --locked -- -D warnings`, `cargo fmt --all -- --check`, `git diff --check`, and `python3 scripts/check-refactor-guardrails.py` passed.
 - Serena diagnostics are empty for all six split files after project reactivation refreshed the new-module index.
 - `python3 scripts/check_s42_guardrails.py` remains exit 1 for the known global inventory: coordinated legacy/stale baseline mismatches plus active new-production hard-limit violations in `crates/web-media-adaptive/src/fetch.rs` (1,135 > 800) and `crates/web-media-dash/src/live/runtime.rs` (1,080 > 800). The scoped Wave 4 delta appears solely as the expected stale reduction for `crates/config/src/validation.rs` (baseline 852, current 788); `scripts/module-size-baseline.json` was intentionally not edited. Both scoped DASH parents pass the hard line limit and do not appear in the violations.

@@ -128,7 +128,7 @@ pub struct UiWindowConfig {
         label_id = "settings.ui.window.titlebar_height_px.label",
         label_ru = "Высота заголовка окна",
         description_id = "settings.ui.window.titlebar_height_px.description",
-        description_ru = "Высота кастомного titlebar Rustiplayer в логических UI pixels.",
+        description_ru = "Высота кастомного titlebar Fastiplayer в логических UI pixels.",
         help_id = "settings.ui.window.titlebar_height_px.help",
         help_ru = "Панель остаётся overlay поверх видео: viewport не сжимается и exclusion rect не добавляется.",
         editor = "integer",

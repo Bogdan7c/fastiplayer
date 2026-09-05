@@ -11,10 +11,10 @@ use std::time::Duration;
 use demux_api::{
     CompositeComponentLeadPolicy, DemuxRegistry, DemuxSniffBudget, ProgressiveDemuxBufferLimits,
 };
+use fastiplayer_config::NetworkConfig;
 use hls_playlist_core::HlsParserLimits;
 use media_core::DemuxRetryHint;
 use mpeg_ts_demux::{MpegTsDemuxFactory, MpegTsDemuxOptions};
-use rustiplayer_config::NetworkConfig;
 use source_core::{
     CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig, ValidatedHttpHeaders,
 };

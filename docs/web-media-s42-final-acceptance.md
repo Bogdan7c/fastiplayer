@@ -126,8 +126,8 @@ scripts/progressive-web-smoke.sh \
   --case public-single --url 'https://user-selected.example/watch' \
   --case ftp-ftps-progressive --url 'ftps://user-selected.example/media.bin' \
   --duration 120 \
-  --binary target/release/rustiplayer \
-  --report /tmp/rustiplayer-s42-manual.md
+  --binary target/release/fastiplayer \
+  --report /tmp/fastiplayer-s42-manual.md
 ```
 
 Без `--binary` runner сам собирает `app-egui` release на Rust `1.96.0` с
@@ -192,7 +192,7 @@ yt-dlp --ignore-config --no-plugin-dirs --version
 
 - profile ID и pinned source commit;
 - current workspace HEAD и только его `clean`/`dirty` classification;
-- origin и SHA-256 реально запущенного Rustiplayer binary;
+- origin и SHA-256 реально запущенного Fastiplayer binary;
 - runner-built source association с current worktree либо честный
   `external prebuilt`, для которого workspace HEAD не объявляется source
   provenance;
@@ -202,7 +202,7 @@ yt-dlp --ignore-config --no-plugin-dirs --version
 
 Version probe изолирован от user config/plugins, но production app run
 намеренно сохраняет обычный system/user config/plugin/cookie lookup. Это
-trusted external code: его side effects находятся вне Rustiplayer guarantee.
+trusted external code: его side effects находятся вне Fastiplayer guarantee.
 
 ## Outcome contract
 

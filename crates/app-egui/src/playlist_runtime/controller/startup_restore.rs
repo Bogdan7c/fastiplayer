@@ -273,7 +273,7 @@ mod playback_policy_tests {
     fn cold_resume_autoplay_preserves_checkpoint_and_stages_start_playing_intent() {
         let checkpoint = Duration::from_secs(355);
         let mut target = restored_target(StartupPosition::Restore(checkpoint));
-        let mut config = rustiplayer_config::AppConfig::default();
+        let mut config = fastiplayer_config::AppConfig::default();
         config.player.start_paused = false;
 
         crate::startup_media::apply_restored_playback_policy(&mut target, &config);
@@ -285,7 +285,7 @@ mod playback_policy_tests {
     #[test]
     fn startup_at_zero_autoplay_keeps_exact_start_and_stages_start_playing_intent() {
         let mut target = restored_target(StartupPosition::KeepStart);
-        let mut config = rustiplayer_config::AppConfig::default();
+        let mut config = fastiplayer_config::AppConfig::default();
         config.player.start_paused = false;
 
         crate::startup_media::apply_restored_playback_policy(&mut target, &config);
@@ -298,7 +298,7 @@ mod playback_policy_tests {
     fn configured_pause_remains_paused_without_losing_resume_checkpoint() {
         let checkpoint = Duration::from_secs(355);
         let mut target = restored_target(StartupPosition::Restore(checkpoint));
-        let mut config = rustiplayer_config::AppConfig::default();
+        let mut config = fastiplayer_config::AppConfig::default();
         config.player.start_paused = true;
 
         crate::startup_media::apply_restored_playback_policy(&mut target, &config);

@@ -37,7 +37,7 @@ Functional/transition coverage includes:
 
 Final checks:
 
-- `cargo test -p rustiplayer-config --locked`: 93 passed.
+- `cargo test -p fastiplayer-config --locked`: 93 passed.
 - `cargo test -p app-egui --no-default-features --locked`: 970 passed.
 - strict affected all-target Clippy with `-D warnings`, rustfmt and `git diff --check`: PASS.
 

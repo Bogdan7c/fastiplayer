@@ -20,9 +20,9 @@ use playlist_io::{
 };
 
 /// Fixed local document target даёт deterministic reversible relative paths.
-const M3U8_TARGET: &str = "/tmp/rustiplayer-export/list.m3u8";
+const M3U8_TARGET: &str = "/tmp/fastiplayer-export/list.m3u8";
 /// XSPF использует отдельное extension, но тот же base directory.
-const XSPF_TARGET: &str = "/tmp/rustiplayer-export/list.xspf";
+const XSPF_TARGET: &str = "/tmp/fastiplayer-export/list.xspf";
 
 /// Test-only service owner сохраняет exact direct URL и даёт stable portable service URL.
 struct TestLocatorPolicy {
@@ -81,7 +81,7 @@ fn queue_fixture() -> QueueFixture {
         vec![
             PlaylistItemDraft::local(
                 LocalLocator::Native(
-                    Path::new("/tmp/rustiplayer-export/media/part one.webm").to_path_buf(),
+                    Path::new("/tmp/fastiplayer-export/media/part one.webm").to_path_buf(),
                 ),
                 None,
                 metadata("Часть & один", Some(2_000), Some(1)),
@@ -226,7 +226,7 @@ fn xspf_roundtrip_preserves_flattened_identity_and_compound_extension() {
     );
     assert_eq!(
         parsed.tracks()[1].location_candidates()[0].expose_uri_for_admission(),
-        "file:///tmp/rustiplayer-export/media/part%20one.webm"
+        "file:///tmp/fastiplayer-export/media/part%20one.webm"
     );
     assert_eq!(parsed.groups().len(), 1);
     assert_eq!(parsed.groups()[0].first_track().get(), 2);
@@ -268,7 +268,7 @@ fn m3u8_roundtrip_restores_relative_local_path_and_url_duplicates() {
             .reopen_locator()
             .expose_local_for_reopen()
             .and_then(LocalLocator::expose_native_path_for_persistence),
-        Some(Path::new("/tmp/rustiplayer-export/media/part one.webm"))
+        Some(Path::new("/tmp/fastiplayer-export/media/part one.webm"))
     );
     let duplicate_count = drafts
         .iter()
@@ -288,7 +288,7 @@ fn m3u8_roundtrip_restores_relative_local_path_and_url_duplicates() {
 
 #[test]
 fn m3u8_uses_file_uri_when_relative_filename_would_be_misread_as_uri_scheme() {
-    let native_path = Path::new("/tmp/rustiplayer-export/media:clip.webm");
+    let native_path = Path::new("/tmp/fastiplayer-export/media:clip.webm");
     let draft = PlaylistItemDraft::local(
         LocalLocator::Native(native_path.to_path_buf()),
         None,
@@ -307,7 +307,7 @@ fn m3u8_uses_file_uri_when_relative_filename_would_be_misread_as_uri_scheme() {
     assert!(
         serialized
             .as_str()
-            .contains("file:///tmp/rustiplayer-export/media:clip.webm")
+            .contains("file:///tmp/fastiplayer-export/media:clip.webm")
     );
     let parsed = parse_m3u_document(M3uParseRequest::new(
         serialized.as_bytes(),
@@ -404,7 +404,7 @@ fn non_utf_local_path_is_typed_ineligible_and_error_is_secret_safe() {
     use std::os::unix::ffi::OsStringExt;
 
     let secret_filename = OsString::from_vec(b"private-\xFF-token.webm".to_vec());
-    let native_path = Path::new("/tmp/rustiplayer-export").join(secret_filename);
+    let native_path = Path::new("/tmp/fastiplayer-export").join(secret_filename);
     let draft = PlaylistItemDraft::local(
         LocalLocator::Native(native_path),
         None,

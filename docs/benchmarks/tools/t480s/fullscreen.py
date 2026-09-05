@@ -6,8 +6,8 @@ import sys
 import tempfile
 
 pid = int(sys.argv[1])
-plugin = f'rustiplayer-s08-{pid}'
-with tempfile.TemporaryDirectory(prefix='rustiplayer-s08-kwin-') as directory:
+plugin = f'fastiplayer-s08-{pid}'
+with tempfile.TemporaryDirectory(prefix='fastiplayer-s08-kwin-') as directory:
     script = Path(directory) / 'fullscreen.js'
     # PID ограничивает изменение окном собственного запущенного процесса.
     script.write_text(

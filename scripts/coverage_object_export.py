@@ -21,7 +21,7 @@ from coverage_coordinate_model import read_json, write_json_atomic
 from coverage_runner_support import sha256_file
 
 
-CONFIG_ENV = "RUSTIPLAYER_COVERAGE_EXPORT_CONFIG"
+CONFIG_ENV = "FASTIPLAYER_COVERAGE_EXPORT_CONFIG"
 
 
 def split_objects(arguments: list[str]) -> tuple[list[str], list[str]]:

@@ -490,7 +490,7 @@ impl<'de> Visitor<'de> for VideoBackendPreferenceVisitor {
             LEGACY_VAAPI_VIDEO_BACKEND_PREFERENCE => Ok(VideoBackendPreference::Hardware),
             REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE => Err(E::custom(
                 "video.preferred_backend = \"vulkan\" удалён; замените его на \"auto\", \
-                 чтобы Rustiplayer выбрал поддерживаемый backend, или на \"hardware\", чтобы \
+                 чтобы Fastiplayer выбрал поддерживаемый backend, или на \"hardware\", чтобы \
                  явно требовать native hardware decode",
             )),
             unknown_value => Err(E::unknown_variant(

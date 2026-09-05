@@ -10,10 +10,10 @@ use std::thread;
 use std::time::Duration;
 
 use demux_api::DemuxRegistry;
+use fastiplayer_config::NetworkConfig;
 use media_core::MediaTime;
 use mpeg_ts_demux::{MpegTsDemuxFactory, MpegTsDemuxOptions};
 use player_core::{PreparedDemuxSeekLandingPolicy, PreparedInitialPosition};
-use rustiplayer_config::NetworkConfig;
 use source_core::{
     CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig, ValidatedHttpHeaders,
 };

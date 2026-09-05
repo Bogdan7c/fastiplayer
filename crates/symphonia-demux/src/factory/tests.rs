@@ -34,7 +34,7 @@ impl TemporaryMediaFile {
     fn new(extension: &str, bytes: &[u8]) -> Self {
         let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "rustiplayer-demux-factory-{}-{sequence}.{extension}",
+            "fastiplayer-demux-factory-{}-{sequence}.{extension}",
             std::process::id()
         ));
         fs::write(&path, bytes).expect("write hermetic media fixture");

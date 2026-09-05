@@ -78,10 +78,10 @@ class ExecutionScopeTests(unittest.TestCase):
         for name in LOCAL_HARDWARE_TESTS:
             expected += ["--skip", name]
         self.assertEqual(scoped_test_command(command, TestExecutionScope.HOSTED), expected)
-        with patch.dict(os.environ, {"RUSTIPLAYER_TEST_SCOPE": "typo"}):
+        with patch.dict(os.environ, {"FASTIPLAYER_TEST_SCOPE": "typo"}):
             with self.assertRaises(ValueError):
                 execution_scope()
-        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUSTIPLAYER_TEST_SCOPE": "local"}):
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "FASTIPLAYER_TEST_SCOPE": "local"}):
             with self.assertRaises(ValueError):
                 execution_scope()
 

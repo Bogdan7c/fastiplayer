@@ -4,10 +4,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use fastiplayer_config::PlayerDemuxConfig;
 use media_core::{MediaTagMetadata, TrackInfo};
 use player_core::PreparedMedia;
 use playlist_discovery::{LocalMediaFingerprint, LocalMediaKind, classify_local_media_tracks};
-use rustiplayer_config::PlayerDemuxConfig;
 use source_core::{CancellationToken, LocalFileMetadataSnapshot, LocalFileSource};
 
 use super::{ActiveMediaSource, PreparedMediaOpen, SafeMediaLabel};

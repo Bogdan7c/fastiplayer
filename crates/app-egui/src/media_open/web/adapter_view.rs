@@ -7,8 +7,8 @@ pub(crate) enum WebMediaOpenAdapterView {
     /// Direct progressive resource без adaptive catalog-а.
     Direct {
         locator: service_direct_media::DirectMediaUrl,
-        network_config: rustiplayer_config::NetworkConfig,
-        demux_config: rustiplayer_config::PlayerDemuxConfig,
+        network_config: fastiplayer_config::NetworkConfig,
+        demux_config: fastiplayer_config::PlayerDemuxConfig,
     },
     /// Native HLS root и provider-neutral intent.
     NativeHls {

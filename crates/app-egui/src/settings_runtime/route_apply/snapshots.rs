@@ -212,7 +212,7 @@ pub(super) struct RenderCommittedRuntimeSnapshot {
     vulkan: VulkanConfig,
 
     /// OpenGL ES committed settings.
-    opengles: rustiplayer_config::OpenGlesConfig,
+    opengles: fastiplayer_config::OpenGlesConfig,
 }
 
 impl RenderCommittedRuntimeSnapshot {

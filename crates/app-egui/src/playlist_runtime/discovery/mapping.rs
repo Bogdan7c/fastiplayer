@@ -15,13 +15,13 @@ use playlist_discovery::{
 use super::ActiveDiscoveryScope;
 
 pub(super) fn sibling_filter(
-    filter: rustiplayer_config::PlaylistSiblingMediaFilter,
+    filter: fastiplayer_config::PlaylistSiblingMediaFilter,
 ) -> SiblingFilter {
     match filter {
-        rustiplayer_config::PlaylistSiblingMediaFilter::VideoOnly => SiblingFilter::VideoOnly,
-        rustiplayer_config::PlaylistSiblingMediaFilter::AllMedia => SiblingFilter::AllMedia,
-        rustiplayer_config::PlaylistSiblingMediaFilter::AudioOnly => SiblingFilter::AudioOnly,
-        rustiplayer_config::PlaylistSiblingMediaFilter::SameAsOpened => SiblingFilter::SameAsOpened,
+        fastiplayer_config::PlaylistSiblingMediaFilter::VideoOnly => SiblingFilter::VideoOnly,
+        fastiplayer_config::PlaylistSiblingMediaFilter::AllMedia => SiblingFilter::AllMedia,
+        fastiplayer_config::PlaylistSiblingMediaFilter::AudioOnly => SiblingFilter::AudioOnly,
+        fastiplayer_config::PlaylistSiblingMediaFilter::SameAsOpened => SiblingFilter::SameAsOpened,
     }
 }
 

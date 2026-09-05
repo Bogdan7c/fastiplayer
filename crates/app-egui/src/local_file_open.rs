@@ -5,8 +5,8 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
+use fastiplayer_config::PlayerDemuxConfig;
 use pollster::FutureExt as _;
-use rustiplayer_config::PlayerDemuxConfig;
 use tracing::{debug, warn};
 use winit::window::Window;
 

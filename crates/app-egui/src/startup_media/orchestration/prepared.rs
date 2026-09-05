@@ -10,7 +10,7 @@ use super::super::PreparedYtDlpStartupMedia;
 /// Применяет актуальную config policy к domain target до strong-open admission.
 pub(crate) fn apply_restored_playback_policy(
     target: &mut StartupRestoreTarget,
-    config: &rustiplayer_config::AppConfig,
+    config: &fastiplayer_config::AppConfig,
 ) {
     target.set_playback_intent(PlaybackIntent::from_autoplay(!config.player.start_paused));
 }

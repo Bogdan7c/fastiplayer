@@ -38,7 +38,7 @@ impl RecoveryTempDirectory {
                 .unwrap_or_default()
                 .as_nanos();
             let path = base.join(format!(
-                "rustiplayer-ytdlp-recovery-{}-{timestamp}-{sequence}",
+                "fastiplayer-ytdlp-recovery-{}-{timestamp}-{sequence}",
                 std::process::id()
             ));
             let mut directory_builder = fs::DirBuilder::new();

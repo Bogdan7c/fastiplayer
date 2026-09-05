@@ -270,7 +270,7 @@ impl AacDecoder {
 
         // Check complexity.
         //
-        // rustiplayer patch: убрали ограничение `channels.count() > 2` и явно
+        // fastiplayer patch: убрали ограничение `channels.count() > 2` и явно
         // сопоставляем AAC element tags с canonical Symphonia planes. Поэтому
         // multichannel synthesis не путает coded AAC order с buffer lane order.
         if asc.object_type != AudioObjectType::Lc || asc.sbr_present || asc.samples != 1024 {

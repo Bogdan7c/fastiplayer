@@ -121,7 +121,7 @@ impl MediaOpenSourceRequest {
 
 /// Сохраняет invariant `initial <= chunk <= window` после уменьшения window.
 fn limit_network_resources(
-    network_config: &mut rustiplayer_config::NetworkConfig,
+    network_config: &mut fastiplayer_config::NetworkConfig,
     component_budget_mebibytes: u64,
 ) {
     let component_budget_mebibytes = component_budget_mebibytes.max(1);
@@ -158,17 +158,17 @@ mod tests {
             Some(media_core::MediaTime::from_secs(20)),
         )
         .expect("valid playback window");
-        let network_config = rustiplayer_config::NetworkConfig {
+        let network_config = fastiplayer_config::NetworkConfig {
             read_ahead_mb: 256,
             prefetch_chunk_mb: 128,
             prefetch_initial_chunk_kb: 96 * 1_024,
-            ..rustiplayer_config::NetworkConfig::default()
+            ..fastiplayer_config::NetworkConfig::default()
         };
         let request = MediaOpenSourceRequest::PlaybackWindow {
             source: Box::new(MediaOpenSourceRequest::Web(WebMediaOpenRequest::direct(
                 direct_locator.clone(),
                 network_config,
-                rustiplayer_config::PlayerDemuxConfig::default(),
+                fastiplayer_config::PlayerDemuxConfig::default(),
             ))),
             semantic_identity,
         };
@@ -204,11 +204,11 @@ mod tests {
 
     #[test]
     fn does_not_inflate_small_or_local_requests() {
-        let small_network_config = rustiplayer_config::NetworkConfig {
+        let small_network_config = fastiplayer_config::NetworkConfig {
             read_ahead_mb: 24,
             prefetch_chunk_mb: 8,
             prefetch_initial_chunk_kb: 512,
-            ..rustiplayer_config::NetworkConfig::default()
+            ..fastiplayer_config::NetworkConfig::default()
         };
         let direct_locator = crate::direct_progressive_open::classify_direct_media_url(
             "https://example.com/already-small.mp4",
@@ -217,13 +217,13 @@ mod tests {
         let projected_direct = MediaOpenSourceRequest::Web(WebMediaOpenRequest::direct(
             direct_locator,
             small_network_config,
-            rustiplayer_config::PlayerDemuxConfig::default(),
+            fastiplayer_config::PlayerDemuxConfig::default(),
         ))
         .with_queue_preload_budget(QueuePreloadResourceBudget::from_validated_config(64));
         let projected_local = MediaOpenSourceRequest::Local {
             path: PathBuf::from("fixture.flac"),
             expected_fingerprint: None,
-            demux_config: rustiplayer_config::PlayerDemuxConfig::default(),
+            demux_config: fastiplayer_config::PlayerDemuxConfig::default(),
         }
         .with_queue_preload_budget(QueuePreloadResourceBudget::from_validated_config(64));
 

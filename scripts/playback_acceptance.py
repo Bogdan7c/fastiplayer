@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-PROCESS_START_MARKERS = ("=== rustiplayer ===", "Запуск приложения")
+PROCESS_START_MARKERS = ("=== fastiplayer ===", "Запуск приложения")
 STARTUP_MEDIA_OPEN_ACCEPTED_MARKER = "Startup media-open/restore accepted"
 MEDIA_OPEN_ACCEPTED_MARKERS = (
     STARTUP_MEDIA_OPEN_ACCEPTED_MARKER,

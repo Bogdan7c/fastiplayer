@@ -15,6 +15,6 @@ anyhow.workspace = true
 base64 = "0.22"
 demux-api.workspace = true
 media-core.workspace = true
-rustiplayer-config.workspace = true
+fastiplayer-config.workspace = true
 symphonia-demux.workspace = true
 web-media-core.workspace = true

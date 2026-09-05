@@ -26,7 +26,7 @@ impl SettingsValidator<AppConfig> for AppConfigValidator {
     }
 }
 
-/// Atomic TOML persister backed by `rustiplayer-config::save_validated_atomic_at`.
+/// Atomic TOML persister backed by `fastiplayer-config::save_validated_atomic_at`.
 #[derive(Debug, Clone)]
 pub struct AppConfigStore {
     path: PathBuf,
@@ -49,7 +49,7 @@ impl AppConfigStore {
 impl SettingsPersister<AppConfig> for AppConfigStore {
     fn persist(&mut self, request: PersistRequest<'_, AppConfig>) -> SettingsResult<PersistReport> {
         // Важный invariant: этот метод не делает partial write сам; вся durability
-        // политика остаётся внутри `rustiplayer-config`.
+        // политика остаётся внутри `fastiplayer-config`.
         save_validated_atomic_at(&self.path, request.document)
             .map_err(settings_error_from_display)?;
 

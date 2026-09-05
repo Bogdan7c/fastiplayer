@@ -568,7 +568,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "failed_playback",
       "clock_ticks_per_second": 100,
@@ -643,12 +643,12 @@
       ],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "native/warmup-h264-1080p60-hw-rustiplayer-01/warmup-h264-1080p60-hw-rustiplayer-01-before.png",
+        "file": "native/warmup-h264-1080p60-hw-fastiplayer-01/warmup-h264-1080p60-hw-fastiplayer-01-before.png",
         "capture_end_elapsed_seconds": 3.5160966990001725
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "native/warmup-h264-1080p60-hw-rustiplayer-01/warmup-h264-1080p60-hw-rustiplayer-01-after.png",
+        "file": "native/warmup-h264-1080p60-hw-fastiplayer-01/warmup-h264-1080p60-hw-fastiplayer-01-after.png",
         "capture_end_elapsed_seconds": 9.033359219999966
       },
       "forced_kill": false,
@@ -658,7 +658,7 @@
       "rss_kib_sample_mean": 72880.0,
       "rss_kib_sample_min": 72880,
       "rss_kib_sample_max": 72880,
-      "id": "native/warmup-h264-1080p60-hw-rustiplayer-01",
+      "id": "native/warmup-h264-1080p60-hw-fastiplayer-01",
       "runtime_proofs": {
         "first_surface_frame": false,
         "audio_playback_resumed": false,
@@ -667,16 +667,16 @@
       },
       "eligible_for_published_steady_state_statistics": false,
       "exclusion_from_steady_state_reason": "warm-up or failed preparation; S07 green preflight failed; no scored series begun",
-      "original_attempt_label": "warmup-h264-1080p60-hw-rustiplayer-01",
+      "original_attempt_label": "warmup-h264-1080p60-hw-fastiplayer-01",
       "display_backend": "wayland",
-      "original_raw_record": "native/warmup-h264-1080p60-hw-rustiplayer-01/measurement.json"
+      "original_raw_record": "native/warmup-h264-1080p60-hw-fastiplayer-01/measurement.json"
     },
     {
       "schema_version": 1,
       "attempt": 2,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -749,12 +749,12 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "native/warmup-h264-1080p60-hw-rustiplayer-02/warmup-h264-1080p60-hw-rustiplayer-02-before.png",
+        "file": "native/warmup-h264-1080p60-hw-fastiplayer-02/warmup-h264-1080p60-hw-fastiplayer-02-before.png",
         "capture_end_elapsed_seconds": 3.565968628000064
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "native/warmup-h264-1080p60-hw-rustiplayer-02/warmup-h264-1080p60-hw-rustiplayer-02-after.png",
+        "file": "native/warmup-h264-1080p60-hw-fastiplayer-02/warmup-h264-1080p60-hw-fastiplayer-02-after.png",
         "capture_end_elapsed_seconds": 9.133394155000133
       },
       "forced_kill": false,
@@ -764,7 +764,7 @@
       "rss_kib_sample_mean": 86116.66666666667,
       "rss_kib_sample_min": 86104,
       "rss_kib_sample_max": 86124,
-      "id": "native/warmup-h264-1080p60-hw-rustiplayer-02",
+      "id": "native/warmup-h264-1080p60-hw-fastiplayer-02",
       "runtime_proofs": {
         "first_surface_frame": true,
         "audio_playback_resumed": true,
@@ -773,16 +773,16 @@
       },
       "eligible_for_published_steady_state_statistics": false,
       "exclusion_from_steady_state_reason": "warm-up or failed preparation; S07 green preflight failed; no scored series begun",
-      "original_attempt_label": "warmup-h264-1080p60-hw-rustiplayer-02",
+      "original_attempt_label": "warmup-h264-1080p60-hw-fastiplayer-02",
       "display_backend": "wayland",
-      "original_raw_record": "native/warmup-h264-1080p60-hw-rustiplayer-02/measurement.json"
+      "original_raw_record": "native/warmup-h264-1080p60-hw-fastiplayer-02/measurement.json"
     },
     {
       "schema_version": 1,
       "attempt": 3,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -855,12 +855,12 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "native/warmup-h264-1080p60-hw-rustiplayer-03/warmup-h264-1080p60-hw-rustiplayer-03-before.png",
+        "file": "native/warmup-h264-1080p60-hw-fastiplayer-03/warmup-h264-1080p60-hw-fastiplayer-03-before.png",
         "capture_end_elapsed_seconds": 3.5658590929997445
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "native/warmup-h264-1080p60-hw-rustiplayer-03/warmup-h264-1080p60-hw-rustiplayer-03-after.png",
+        "file": "native/warmup-h264-1080p60-hw-fastiplayer-03/warmup-h264-1080p60-hw-fastiplayer-03-after.png",
         "capture_end_elapsed_seconds": 9.133412145999955
       },
       "forced_kill": false,
@@ -870,7 +870,7 @@
       "rss_kib_sample_mean": 85995.33333333333,
       "rss_kib_sample_min": 85984,
       "rss_kib_sample_max": 86004,
-      "id": "native/warmup-h264-1080p60-hw-rustiplayer-03",
+      "id": "native/warmup-h264-1080p60-hw-fastiplayer-03",
       "runtime_proofs": {
         "first_surface_frame": true,
         "audio_playback_resumed": true,
@@ -879,16 +879,16 @@
       },
       "eligible_for_published_steady_state_statistics": false,
       "exclusion_from_steady_state_reason": "warm-up or failed preparation; S07 green preflight failed; no scored series begun",
-      "original_attempt_label": "warmup-h264-1080p60-hw-rustiplayer-03",
+      "original_attempt_label": "warmup-h264-1080p60-hw-fastiplayer-03",
       "display_backend": "wayland",
-      "original_raw_record": "native/warmup-h264-1080p60-hw-rustiplayer-03/measurement.json"
+      "original_raw_record": "native/warmup-h264-1080p60-hw-fastiplayer-03/measurement.json"
     },
     {
       "schema_version": 1,
       "attempt": 4,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -961,7 +961,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "native/warmup-h264-1080p60-hw-rustiplayer-04/warmup-h264-1080p60-hw-rustiplayer-04-before.png",
+        "file": "native/warmup-h264-1080p60-hw-fastiplayer-04/warmup-h264-1080p60-hw-fastiplayer-04-before.png",
         "capture_end_elapsed_seconds": 3.565992197000014
       },
       "startup_proofs_before_window": {
@@ -970,7 +970,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "native/warmup-h264-1080p60-hw-rustiplayer-04/warmup-h264-1080p60-hw-rustiplayer-04-after.png",
+        "file": "native/warmup-h264-1080p60-hw-fastiplayer-04/warmup-h264-1080p60-hw-fastiplayer-04-after.png",
         "capture_end_elapsed_seconds": 9.134977367999909
       },
       "forced_kill": false,
@@ -980,7 +980,7 @@
       "rss_kib_sample_mean": 86114.66666666667,
       "rss_kib_sample_min": 85912,
       "rss_kib_sample_max": 86160,
-      "id": "native/warmup-h264-1080p60-hw-rustiplayer-04",
+      "id": "native/warmup-h264-1080p60-hw-fastiplayer-04",
       "runtime_proofs": {
         "first_surface_frame": true,
         "audio_playback_resumed": true,
@@ -989,16 +989,16 @@
       },
       "eligible_for_published_steady_state_statistics": false,
       "exclusion_from_steady_state_reason": "warm-up or failed preparation; S07 green preflight failed; no scored series begun",
-      "original_attempt_label": "warmup-h264-1080p60-hw-rustiplayer-04",
+      "original_attempt_label": "warmup-h264-1080p60-hw-fastiplayer-04",
       "display_backend": "wayland",
-      "original_raw_record": "native/warmup-h264-1080p60-hw-rustiplayer-04/measurement.json"
+      "original_raw_record": "native/warmup-h264-1080p60-hw-fastiplayer-04/measurement.json"
     },
     {
       "schema_version": 1,
       "attempt": 1,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -1071,7 +1071,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "native/warmup-hevc-4k60-hw-rustiplayer-01/warmup-hevc-4k60-hw-rustiplayer-01-before.png",
+        "file": "native/warmup-hevc-4k60-hw-fastiplayer-01/warmup-hevc-4k60-hw-fastiplayer-01-before.png",
         "capture_end_elapsed_seconds": 3.6158834960001514
       },
       "startup_proofs_before_window": {
@@ -1080,7 +1080,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "native/warmup-hevc-4k60-hw-rustiplayer-01/warmup-hevc-4k60-hw-rustiplayer-01-after.png",
+        "file": "native/warmup-hevc-4k60-hw-fastiplayer-01/warmup-hevc-4k60-hw-fastiplayer-01-after.png",
         "capture_end_elapsed_seconds": 9.233622126999762
       },
       "forced_kill": false,
@@ -1090,7 +1090,7 @@
       "rss_kib_sample_mean": 87239.33333333333,
       "rss_kib_sample_min": 87220,
       "rss_kib_sample_max": 87256,
-      "id": "native/warmup-hevc-4k60-hw-rustiplayer-01",
+      "id": "native/warmup-hevc-4k60-hw-fastiplayer-01",
       "runtime_proofs": {
         "first_surface_frame": true,
         "audio_playback_resumed": true,
@@ -1099,16 +1099,16 @@
       },
       "eligible_for_published_steady_state_statistics": false,
       "exclusion_from_steady_state_reason": "warm-up or failed preparation; S07 green preflight failed; no scored series begun",
-      "original_attempt_label": "warmup-hevc-4k60-hw-rustiplayer-01",
+      "original_attempt_label": "warmup-hevc-4k60-hw-fastiplayer-01",
       "display_backend": "wayland",
-      "original_raw_record": "native/warmup-hevc-4k60-hw-rustiplayer-01/measurement.json"
+      "original_raw_record": "native/warmup-hevc-4k60-hw-fastiplayer-01/measurement.json"
     },
     {
       "schema_version": 1,
       "attempt": 2,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -1181,7 +1181,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "native/warmup-hevc-4k60-hw-rustiplayer-02/warmup-hevc-4k60-hw-rustiplayer-02-before.png",
+        "file": "native/warmup-hevc-4k60-hw-fastiplayer-02/warmup-hevc-4k60-hw-fastiplayer-02-before.png",
         "capture_end_elapsed_seconds": 3.6163729410000087
       },
       "startup_proofs_before_window": {
@@ -1190,7 +1190,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "native/warmup-hevc-4k60-hw-rustiplayer-02/warmup-hevc-4k60-hw-rustiplayer-02-after.png",
+        "file": "native/warmup-hevc-4k60-hw-fastiplayer-02/warmup-hevc-4k60-hw-fastiplayer-02-after.png",
         "capture_end_elapsed_seconds": 9.234285351999915
       },
       "forced_kill": false,
@@ -1200,7 +1200,7 @@
       "rss_kib_sample_mean": 87357.33333333333,
       "rss_kib_sample_min": 87336,
       "rss_kib_sample_max": 87372,
-      "id": "native/warmup-hevc-4k60-hw-rustiplayer-02",
+      "id": "native/warmup-hevc-4k60-hw-fastiplayer-02",
       "runtime_proofs": {
         "first_surface_frame": true,
         "audio_playback_resumed": true,
@@ -1209,16 +1209,16 @@
       },
       "eligible_for_published_steady_state_statistics": false,
       "exclusion_from_steady_state_reason": "warm-up or failed preparation; S07 green preflight failed; no scored series begun",
-      "original_attempt_label": "warmup-hevc-4k60-hw-rustiplayer-02",
+      "original_attempt_label": "warmup-hevc-4k60-hw-fastiplayer-02",
       "display_backend": "wayland",
-      "original_raw_record": "native/warmup-hevc-4k60-hw-rustiplayer-02/measurement.json"
+      "original_raw_record": "native/warmup-hevc-4k60-hw-fastiplayer-02/measurement.json"
     },
     {
       "schema_version": 1,
       "attempt": 3,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "failed_playback",
       "clock_ticks_per_second": 100,
@@ -1233,7 +1233,7 @@
       ],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "native/warmup-hevc-4k60-hw-rustiplayer-03/warmup-hevc-4k60-hw-rustiplayer-03-before.png",
+        "file": "native/warmup-hevc-4k60-hw-fastiplayer-03/warmup-hevc-4k60-hw-fastiplayer-03-before.png",
         "capture_end_elapsed_seconds": 3.515402460000132
       },
       "startup_proofs_before_window": {
@@ -1242,7 +1242,7 @@
       },
       "forced_kill": false,
       "exit_code_after_cleanup": -15,
-      "id": "native/warmup-hevc-4k60-hw-rustiplayer-03",
+      "id": "native/warmup-hevc-4k60-hw-fastiplayer-03",
       "runtime_proofs": {
         "first_surface_frame": false,
         "audio_playback_resumed": false,
@@ -1251,16 +1251,16 @@
       },
       "eligible_for_published_steady_state_statistics": false,
       "exclusion_from_steady_state_reason": "warm-up or failed preparation; S07 green preflight failed; no scored series begun",
-      "original_attempt_label": "warmup-hevc-4k60-hw-rustiplayer-03",
+      "original_attempt_label": "warmup-hevc-4k60-hw-fastiplayer-03",
       "display_backend": "wayland",
-      "original_raw_record": "native/warmup-hevc-4k60-hw-rustiplayer-03/measurement.json"
+      "original_raw_record": "native/warmup-hevc-4k60-hw-fastiplayer-03/measurement.json"
     },
     {
       "schema_version": 1,
       "attempt": 4,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -1333,7 +1333,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "native/warmup-hevc-4k60-hw-rustiplayer-04/warmup-hevc-4k60-hw-rustiplayer-04-before.png",
+        "file": "native/warmup-hevc-4k60-hw-fastiplayer-04/warmup-hevc-4k60-hw-fastiplayer-04-before.png",
         "capture_end_elapsed_seconds": 3.6171994880000966
       },
       "startup_proofs_before_window": {
@@ -1342,7 +1342,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "native/warmup-hevc-4k60-hw-rustiplayer-04/warmup-hevc-4k60-hw-rustiplayer-04-after.png",
+        "file": "native/warmup-hevc-4k60-hw-fastiplayer-04/warmup-hevc-4k60-hw-fastiplayer-04-after.png",
         "capture_end_elapsed_seconds": 9.23492635499997
       },
       "forced_kill": false,
@@ -1352,7 +1352,7 @@
       "rss_kib_sample_mean": 86932.66666666667,
       "rss_kib_sample_min": 86744,
       "rss_kib_sample_max": 86972,
-      "id": "native/warmup-hevc-4k60-hw-rustiplayer-04",
+      "id": "native/warmup-hevc-4k60-hw-fastiplayer-04",
       "runtime_proofs": {
         "first_surface_frame": true,
         "audio_playback_resumed": true,
@@ -1361,16 +1361,16 @@
       },
       "eligible_for_published_steady_state_statistics": false,
       "exclusion_from_steady_state_reason": "warm-up or failed preparation; S07 green preflight failed; no scored series begun",
-      "original_attempt_label": "warmup-hevc-4k60-hw-rustiplayer-04",
+      "original_attempt_label": "warmup-hevc-4k60-hw-fastiplayer-04",
       "display_backend": "wayland",
-      "original_raw_record": "native/warmup-hevc-4k60-hw-rustiplayer-04/measurement.json"
+      "original_raw_record": "native/warmup-hevc-4k60-hw-fastiplayer-04/measurement.json"
     },
     {
       "schema_version": 1,
       "attempt": 1,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "status": "excluded",
       "clock_ticks_per_second": 100,
       "settle_seconds": 3.0,
@@ -1383,17 +1383,17 @@
       ],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "runs/warmup-h264-1080p60-hw-rustiplayer-01/warmup-h264-1080p60-hw-rustiplayer-01-before.png",
+        "file": "runs/warmup-h264-1080p60-hw-fastiplayer-01/warmup-h264-1080p60-hw-fastiplayer-01-before.png",
         "capture_end_elapsed_seconds": 3.565666056000282
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "runs/warmup-h264-1080p60-hw-rustiplayer-01/warmup-h264-1080p60-hw-rustiplayer-01-after.png",
+        "file": "runs/warmup-h264-1080p60-hw-fastiplayer-01/warmup-h264-1080p60-hw-fastiplayer-01-after.png",
         "capture_end_elapsed_seconds": 4.1310387759999685
       },
       "forced_kill": false,
       "exit_code_after_cleanup": -6,
-      "id": "runs/warmup-h264-1080p60-hw-rustiplayer-01",
+      "id": "runs/warmup-h264-1080p60-hw-fastiplayer-01",
       "runtime_proofs": {
         "first_surface_frame": true,
         "audio_playback_resumed": true,
@@ -1402,10 +1402,10 @@
       },
       "eligible_for_published_steady_state_statistics": false,
       "exclusion_from_steady_state_reason": "warm-up or failed preparation; S07 green preflight failed; no scored series begun",
-      "original_attempt_label": "warmup-h264-1080p60-hw-rustiplayer-01",
+      "original_attempt_label": "warmup-h264-1080p60-hw-fastiplayer-01",
       "window_mode": "xwayland-fullscreen",
       "display_backend": "xwayland",
-      "original_raw_record": "runs/warmup-h264-1080p60-hw-rustiplayer-01/measurement.json"
+      "original_raw_record": "runs/warmup-h264-1080p60-hw-fastiplayer-01/measurement.json"
     }
   ],
   "preliminary_attempts": [
@@ -1542,7 +1542,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -1615,7 +1615,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-before.png",
         "capture_end_elapsed_seconds": 3.766634245000205
       },
       "startup_proofs_before_window": {
@@ -1624,7 +1624,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-after.png",
         "capture_end_elapsed_seconds": 9.585028203000547
       },
       "forced_kill": false,
@@ -1634,7 +1634,7 @@
       "rss_kib_sample_mean": 86434.66666666667,
       "rss_kib_sample_min": 86424,
       "rss_kib_sample_max": 86448,
-      "id": "fixed-native/warmup-h264-1080p60-hw-rustiplayer-01",
+      "id": "fixed-native/warmup-h264-1080p60-hw-fastiplayer-01",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -1646,7 +1646,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -1719,7 +1719,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-before.png",
         "capture_end_elapsed_seconds": 3.916121452999505
       },
       "startup_proofs_before_window": {
@@ -1728,7 +1728,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-after.png",
         "capture_end_elapsed_seconds": 9.73467172799974
       },
       "forced_kill": false,
@@ -1738,7 +1738,7 @@
       "rss_kib_sample_mean": 87424.66666666667,
       "rss_kib_sample_min": 87312,
       "rss_kib_sample_max": 87452,
-      "id": "fixed-native/warmup-h264-1080p60-hw-rustiplayer-02",
+      "id": "fixed-native/warmup-h264-1080p60-hw-fastiplayer-02",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -1750,7 +1750,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -1823,7 +1823,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-before.png",
         "capture_end_elapsed_seconds": 4.1269838850003
       },
       "startup_proofs_before_window": {
@@ -1832,7 +1832,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-after.png",
         "capture_end_elapsed_seconds": 9.945443217000502
       },
       "forced_kill": false,
@@ -1842,7 +1842,7 @@
       "rss_kib_sample_mean": 87328.66666666667,
       "rss_kib_sample_min": 87320,
       "rss_kib_sample_max": 87340,
-      "id": "fixed-native/warmup-h264-1080p60-hw-rustiplayer-03",
+      "id": "fixed-native/warmup-h264-1080p60-hw-fastiplayer-03",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -1854,7 +1854,7 @@
       "attempt": 4,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -1927,7 +1927,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-04-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-04-before.png",
         "capture_end_elapsed_seconds": 3.9162897850001173
       },
       "startup_proofs_before_window": {
@@ -1936,7 +1936,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-04-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-04-after.png",
         "capture_end_elapsed_seconds": 9.784797950000211
       },
       "forced_kill": false,
@@ -1946,7 +1946,7 @@
       "rss_kib_sample_mean": 87569.33333333333,
       "rss_kib_sample_min": 87552,
       "rss_kib_sample_max": 87576,
-      "id": "fixed-native/warmup-h264-1080p60-hw-rustiplayer-04",
+      "id": "fixed-native/warmup-h264-1080p60-hw-fastiplayer-04",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -1958,7 +1958,7 @@
       "attempt": 5,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2031,7 +2031,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-05-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-05-before.png",
         "capture_end_elapsed_seconds": 3.866161158000068
       },
       "startup_proofs_before_window": {
@@ -2040,7 +2040,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-05-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-05-after.png",
         "capture_end_elapsed_seconds": 9.584051600999373
       },
       "forced_kill": false,
@@ -2050,7 +2050,7 @@
       "rss_kib_sample_mean": 87335.33333333333,
       "rss_kib_sample_min": 87320,
       "rss_kib_sample_max": 87356,
-      "id": "fixed-native/warmup-h264-1080p60-hw-rustiplayer-05",
+      "id": "fixed-native/warmup-h264-1080p60-hw-fastiplayer-05",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2062,7 +2062,7 @@
       "attempt": 6,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2135,7 +2135,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-06-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-06-before.png",
         "capture_end_elapsed_seconds": 3.6154373549998127
       },
       "startup_proofs_before_window": {
@@ -2144,7 +2144,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-06-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-06-after.png",
         "capture_end_elapsed_seconds": 9.183035240999743
       },
       "forced_kill": false,
@@ -2154,7 +2154,7 @@
       "rss_kib_sample_mean": 87514.66666666667,
       "rss_kib_sample_min": 87472,
       "rss_kib_sample_max": 87560,
-      "id": "fixed-native/warmup-h264-1080p60-hw-rustiplayer-06",
+      "id": "fixed-native/warmup-h264-1080p60-hw-fastiplayer-06",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2166,7 +2166,7 @@
       "attempt": 7,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2239,7 +2239,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-07-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-07-before.png",
         "capture_end_elapsed_seconds": 3.565506744999766
       },
       "startup_proofs_before_window": {
@@ -2248,7 +2248,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-07-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-07-after.png",
         "capture_end_elapsed_seconds": 9.134086791999835
       },
       "forced_kill": false,
@@ -2258,7 +2258,7 @@
       "rss_kib_sample_mean": 87172.0,
       "rss_kib_sample_min": 87160,
       "rss_kib_sample_max": 87184,
-      "id": "fixed-native/warmup-h264-1080p60-hw-rustiplayer-07",
+      "id": "fixed-native/warmup-h264-1080p60-hw-fastiplayer-07",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2270,7 +2270,7 @@
       "attempt": 8,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2343,7 +2343,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-08-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-08-before.png",
         "capture_end_elapsed_seconds": 3.5656483599996136
       },
       "startup_proofs_before_window": {
@@ -2352,7 +2352,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-08-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-08-after.png",
         "capture_end_elapsed_seconds": 9.13316616099928
       },
       "forced_kill": false,
@@ -2362,7 +2362,7 @@
       "rss_kib_sample_mean": 87415.33333333333,
       "rss_kib_sample_min": 87328,
       "rss_kib_sample_max": 87444,
-      "id": "fixed-native/warmup-h264-1080p60-hw-rustiplayer-08",
+      "id": "fixed-native/warmup-h264-1080p60-hw-fastiplayer-08",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2374,7 +2374,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2447,7 +2447,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-before.png",
         "capture_end_elapsed_seconds": 4.01861032800025
       },
       "startup_proofs_before_window": {
@@ -2456,7 +2456,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-after.png",
         "capture_end_elapsed_seconds": 10.24731642900042
       },
       "forced_kill": false,
@@ -2466,7 +2466,7 @@
       "rss_kib_sample_mean": 87568.0,
       "rss_kib_sample_min": 87556,
       "rss_kib_sample_max": 87580,
-      "id": "fixed-native/warmup-hevc-4k60-hw-rustiplayer-01",
+      "id": "fixed-native/warmup-hevc-4k60-hw-fastiplayer-01",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2478,7 +2478,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2551,7 +2551,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-before.png",
         "capture_end_elapsed_seconds": 4.424094290000539
       },
       "startup_proofs_before_window": {
@@ -2560,7 +2560,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-after.png",
         "capture_end_elapsed_seconds": 10.041930123999919
       },
       "forced_kill": false,
@@ -2570,7 +2570,7 @@
       "rss_kib_sample_mean": 88784.66666666667,
       "rss_kib_sample_min": 88776,
       "rss_kib_sample_max": 88788,
-      "id": "fixed-native/warmup-hevc-4k60-hw-rustiplayer-02",
+      "id": "fixed-native/warmup-hevc-4k60-hw-fastiplayer-02",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2582,7 +2582,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2655,7 +2655,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-before.png",
         "capture_end_elapsed_seconds": 3.6157972099999824
       },
       "startup_proofs_before_window": {
@@ -2664,7 +2664,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-after.png",
         "capture_end_elapsed_seconds": 11.611420254000222
       },
       "forced_kill": false,
@@ -2674,7 +2674,7 @@
       "rss_kib_sample_mean": 88208.66666666667,
       "rss_kib_sample_min": 87052,
       "rss_kib_sample_max": 89168,
-      "id": "fixed-native/warmup-hevc-4k60-hw-rustiplayer-03",
+      "id": "fixed-native/warmup-hevc-4k60-hw-fastiplayer-03",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2686,7 +2686,7 @@
       "attempt": 4,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2759,7 +2759,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-04-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-04-before.png",
         "capture_end_elapsed_seconds": 5.839919249000559
       },
       "startup_proofs_before_window": {
@@ -2768,7 +2768,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-04-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-04-after.png",
         "capture_end_elapsed_seconds": 13.734896218000358
       },
       "forced_kill": false,
@@ -2778,7 +2778,7 @@
       "rss_kib_sample_mean": 91315.33333333333,
       "rss_kib_sample_min": 89956,
       "rss_kib_sample_max": 92364,
-      "id": "fixed-native/warmup-hevc-4k60-hw-rustiplayer-04",
+      "id": "fixed-native/warmup-hevc-4k60-hw-fastiplayer-04",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2790,7 +2790,7 @@
       "attempt": 5,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2863,7 +2863,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-05-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-05-before.png",
         "capture_end_elapsed_seconds": 5.781591494000168
       },
       "startup_proofs_before_window": {
@@ -2872,7 +2872,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-05-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-05-after.png",
         "capture_end_elapsed_seconds": 14.432978697999715
       },
       "forced_kill": false,
@@ -2882,7 +2882,7 @@
       "rss_kib_sample_mean": 91667.33333333333,
       "rss_kib_sample_min": 89640,
       "rss_kib_sample_max": 93348,
-      "id": "fixed-native/warmup-hevc-4k60-hw-rustiplayer-05",
+      "id": "fixed-native/warmup-hevc-4k60-hw-fastiplayer-05",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2894,7 +2894,7 @@
       "attempt": 6,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -2967,7 +2967,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-06-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-06-before.png",
         "capture_end_elapsed_seconds": 6.13835644899973
       },
       "startup_proofs_before_window": {
@@ -2976,7 +2976,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-06-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-06-after.png",
         "capture_end_elapsed_seconds": 14.697934683999847
       },
       "forced_kill": false,
@@ -2986,7 +2986,7 @@
       "rss_kib_sample_mean": 91445.33333333333,
       "rss_kib_sample_min": 89936,
       "rss_kib_sample_max": 92752,
-      "id": "fixed-native/warmup-hevc-4k60-hw-rustiplayer-06",
+      "id": "fixed-native/warmup-hevc-4k60-hw-fastiplayer-06",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -2998,7 +2998,7 @@
       "attempt": 7,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -3071,7 +3071,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-07-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-07-before.png",
         "capture_end_elapsed_seconds": 5.994201213999986
       },
       "startup_proofs_before_window": {
@@ -3080,7 +3080,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-07-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-07-after.png",
         "capture_end_elapsed_seconds": 14.198897829999623
       },
       "forced_kill": false,
@@ -3090,7 +3090,7 @@
       "rss_kib_sample_mean": 92161.33333333333,
       "rss_kib_sample_min": 90476,
       "rss_kib_sample_max": 93548,
-      "id": "fixed-native/warmup-hevc-4k60-hw-rustiplayer-07",
+      "id": "fixed-native/warmup-hevc-4k60-hw-fastiplayer-07",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -3102,7 +3102,7 @@
       "attempt": 8,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -3185,7 +3185,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-08-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-08-before.png",
         "capture_end_elapsed_seconds": 5.734799801000008
       },
       "startup_proofs_before_window": {
@@ -3194,7 +3194,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-08-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-08-after.png",
         "capture_end_elapsed_seconds": 14.00222634199963
       },
       "forced_kill": false,
@@ -3204,7 +3204,7 @@
       "rss_kib_sample_mean": 92083.42857142857,
       "rss_kib_sample_min": 90444,
       "rss_kib_sample_max": 93244,
-      "id": "fixed-native/warmup-hevc-4k60-hw-rustiplayer-08",
+      "id": "fixed-native/warmup-hevc-4k60-hw-fastiplayer-08",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -3216,7 +3216,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -3289,7 +3289,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-01-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 4.525319004000266
@@ -3300,7 +3300,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-01-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 11.768353304999437
@@ -3312,7 +3312,7 @@
       "rss_kib_sample_mean": 276762.0,
       "rss_kib_sample_min": 275412,
       "rss_kib_sample_max": 277732,
-      "id": "fixed-xwayland/warmup-av1-4k60-sw-rustiplayer-01",
+      "id": "fixed-xwayland/warmup-av1-4k60-sw-fastiplayer-01",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -3324,7 +3324,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -3397,7 +3397,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-02-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 4.3291356580002684
@@ -3408,7 +3408,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-02-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 11.695319876999747
@@ -3420,7 +3420,7 @@
       "rss_kib_sample_mean": 273893.3333333333,
       "rss_kib_sample_min": 272408,
       "rss_kib_sample_max": 275040,
-      "id": "fixed-xwayland/warmup-av1-4k60-sw-rustiplayer-02",
+      "id": "fixed-xwayland/warmup-av1-4k60-sw-fastiplayer-02",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -3432,7 +3432,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -3505,7 +3505,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-03-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 4.372728948000258
@@ -3516,7 +3516,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-03-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 11.621945515000334
@@ -3528,7 +3528,7 @@
       "rss_kib_sample_mean": 276858.0,
       "rss_kib_sample_min": 275568,
       "rss_kib_sample_max": 277896,
-      "id": "fixed-xwayland/warmup-av1-4k60-sw-rustiplayer-03",
+      "id": "fixed-xwayland/warmup-av1-4k60-sw-fastiplayer-03",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -3918,7 +3918,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -3991,7 +3991,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-before.png",
         "capture_end_elapsed_seconds": 6.033521273000588
       },
       "startup_proofs_before_window": {
@@ -4000,7 +4000,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-after.png",
         "capture_end_elapsed_seconds": 13.526112488000763
       },
       "forced_kill": false,
@@ -4010,7 +4010,7 @@
       "rss_kib_sample_mean": 90595.33333333333,
       "rss_kib_sample_min": 90592,
       "rss_kib_sample_max": 90596,
-      "id": "fixed-xwayland/warmup-h264-1080p60-hw-rustiplayer-01",
+      "id": "fixed-xwayland/warmup-h264-1080p60-hw-fastiplayer-01",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -4022,7 +4022,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -4095,7 +4095,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-before.png",
         "capture_end_elapsed_seconds": 5.880272821999824
       },
       "startup_proofs_before_window": {
@@ -4104,7 +4104,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-after.png",
         "capture_end_elapsed_seconds": 13.282100899999932
       },
       "forced_kill": false,
@@ -4114,7 +4114,7 @@
       "rss_kib_sample_mean": 88141.33333333333,
       "rss_kib_sample_min": 88132,
       "rss_kib_sample_max": 88148,
-      "id": "fixed-xwayland/warmup-h264-1080p60-hw-rustiplayer-02",
+      "id": "fixed-xwayland/warmup-h264-1080p60-hw-fastiplayer-02",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -4126,7 +4126,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -4199,7 +4199,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-before.png",
         "capture_end_elapsed_seconds": 5.59566394400008
       },
       "startup_proofs_before_window": {
@@ -4208,7 +4208,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-after.png",
         "capture_end_elapsed_seconds": 13.641562718999921
       },
       "forced_kill": false,
@@ -4218,7 +4218,7 @@
       "rss_kib_sample_mean": 87949.33333333333,
       "rss_kib_sample_min": 87936,
       "rss_kib_sample_max": 87956,
-      "id": "fixed-xwayland/warmup-h264-1080p60-hw-rustiplayer-03",
+      "id": "fixed-xwayland/warmup-h264-1080p60-hw-fastiplayer-03",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -4596,7 +4596,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -4669,7 +4669,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-before.png",
         "capture_end_elapsed_seconds": 7.1623955479999495
       },
       "startup_proofs_before_window": {
@@ -4678,7 +4678,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-after.png",
         "capture_end_elapsed_seconds": 16.423249116999614
       },
       "forced_kill": false,
@@ -4688,7 +4688,7 @@
       "rss_kib_sample_mean": 97714.66666666667,
       "rss_kib_sample_min": 94124,
       "rss_kib_sample_max": 100104,
-      "id": "fixed-xwayland/warmup-hevc-4k60-hw-rustiplayer-01",
+      "id": "fixed-xwayland/warmup-hevc-4k60-hw-fastiplayer-01",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -4700,7 +4700,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -4773,7 +4773,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-before.png",
         "capture_end_elapsed_seconds": 6.290613162000227
       },
       "startup_proofs_before_window": {
@@ -4782,7 +4782,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-after.png",
         "capture_end_elapsed_seconds": 15.101142893000542
       },
       "forced_kill": false,
@@ -4792,7 +4792,7 @@
       "rss_kib_sample_mean": 96818.0,
       "rss_kib_sample_min": 94496,
       "rss_kib_sample_max": 98804,
-      "id": "fixed-xwayland/warmup-hevc-4k60-hw-rustiplayer-02",
+      "id": "fixed-xwayland/warmup-hevc-4k60-hw-fastiplayer-02",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -4804,7 +4804,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -4877,7 +4877,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-before.png",
         "capture_end_elapsed_seconds": 7.267010672999277
       },
       "startup_proofs_before_window": {
@@ -4886,7 +4886,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-after.png",
         "capture_end_elapsed_seconds": 16.80610859799981
       },
       "forced_kill": false,
@@ -4896,7 +4896,7 @@
       "rss_kib_sample_mean": 95817.33333333333,
       "rss_kib_sample_min": 94152,
       "rss_kib_sample_max": 97352,
-      "id": "fixed-xwayland/warmup-hevc-4k60-hw-rustiplayer-03",
+      "id": "fixed-xwayland/warmup-hevc-4k60-hw-fastiplayer-03",
       "source_revision": "working tree preceding 1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "859d54e4a333f6f3d894c0436c068e0f6207917acac915bf1deb2c2fdb4febc8",
       "eligible_for_scored_statistics": false,
@@ -5286,7 +5286,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -5412,7 +5412,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-01-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.8688908950007317
@@ -7233,7 +7233,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-01-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 16.79632004099949
@@ -7295,7 +7295,7 @@
       "rss_kib_sample_mean": 277093.71428571426,
       "rss_kib_sample_min": 276792,
       "rss_kib_sample_max": 277952,
-      "id": "ac-cohorts/warmup-av1-4k60-sw-rustiplayer-01",
+      "id": "ac-cohorts/warmup-av1-4k60-sw-fastiplayer-01",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -7307,7 +7307,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -7422,7 +7422,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-02-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.9668315119997715
@@ -9225,7 +9225,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-02-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 16.74994033099938
@@ -9287,7 +9287,7 @@
       "rss_kib_sample_mean": 278838.6666666667,
       "rss_kib_sample_min": 278380,
       "rss_kib_sample_max": 279464,
-      "id": "ac-cohorts/warmup-av1-4k60-sw-rustiplayer-02",
+      "id": "ac-cohorts/warmup-av1-4k60-sw-fastiplayer-02",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -9299,7 +9299,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -9414,7 +9414,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-03-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 4.069483970999499
@@ -11223,7 +11223,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-03-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 16.898283378000997
@@ -11285,7 +11285,7 @@
       "rss_kib_sample_mean": 277601.3333333333,
       "rss_kib_sample_min": 277228,
       "rss_kib_sample_max": 278328,
-      "id": "ac-cohorts/warmup-av1-4k60-sw-rustiplayer-03",
+      "id": "ac-cohorts/warmup-av1-4k60-sw-fastiplayer-03",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -11974,7 +11974,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -12093,7 +12093,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.6664385989997754
@@ -13908,7 +13908,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.621536934999313
@@ -13970,7 +13970,7 @@
       "rss_kib_sample_mean": 88093.14285714286,
       "rss_kib_sample_min": 88092,
       "rss_kib_sample_max": 88096,
-      "id": "ac-cohorts/warmup-h264-1080p60-hw-rustiplayer-01",
+      "id": "ac-cohorts/warmup-h264-1080p60-hw-fastiplayer-01",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -13982,7 +13982,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -14108,7 +14108,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.616103972000019
@@ -15923,7 +15923,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.673821985000359
@@ -15985,7 +15985,7 @@
       "rss_kib_sample_mean": 88421.71428571429,
       "rss_kib_sample_min": 88420,
       "rss_kib_sample_max": 88424,
-      "id": "ac-cohorts/warmup-h264-1080p60-hw-rustiplayer-02",
+      "id": "ac-cohorts/warmup-h264-1080p60-hw-fastiplayer-02",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -15997,7 +15997,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -16123,7 +16123,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.6661982089999583
@@ -17938,7 +17938,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.623456045000239
@@ -18000,7 +18000,7 @@
       "rss_kib_sample_mean": 87756.57142857143,
       "rss_kib_sample_min": 87752,
       "rss_kib_sample_max": 87768,
-      "id": "ac-cohorts/warmup-h264-1080p60-hw-rustiplayer-03",
+      "id": "ac-cohorts/warmup-h264-1080p60-hw-fastiplayer-03",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -18683,7 +18683,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -18798,7 +18798,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.716691138999522
@@ -20613,7 +20613,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.723147247999805
@@ -20675,7 +20675,7 @@
       "rss_kib_sample_mean": 88836.0,
       "rss_kib_sample_min": 88836,
       "rss_kib_sample_max": 88836,
-      "id": "ac-cohorts/warmup-hevc-4k60-hw-rustiplayer-01",
+      "id": "ac-cohorts/warmup-hevc-4k60-hw-fastiplayer-01",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -20687,7 +20687,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -20813,7 +20813,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.6666208309998183
@@ -22628,7 +22628,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.674170770000273
@@ -22690,7 +22690,7 @@
       "rss_kib_sample_mean": 88618.28571428571,
       "rss_kib_sample_min": 88580,
       "rss_kib_sample_max": 88636,
-      "id": "ac-cohorts/warmup-hevc-4k60-hw-rustiplayer-02",
+      "id": "ac-cohorts/warmup-hevc-4k60-hw-fastiplayer-02",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -22702,7 +22702,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -22817,7 +22817,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.666151078999974
@@ -24632,7 +24632,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.671412466999755
@@ -24694,7 +24694,7 @@
       "rss_kib_sample_mean": 88864.66666666667,
       "rss_kib_sample_min": 88860,
       "rss_kib_sample_max": 88872,
-      "id": "ac-cohorts/warmup-hevc-4k60-hw-rustiplayer-03",
+      "id": "ac-cohorts/warmup-hevc-4k60-hw-fastiplayer-03",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -25383,7 +25383,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -25456,7 +25456,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-01-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.8173096549999173
@@ -25467,7 +25467,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-01-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 10.603176042999621
@@ -25479,7 +25479,7 @@
       "rss_kib_sample_mean": 273734.6666666667,
       "rss_kib_sample_min": 272452,
       "rss_kib_sample_max": 275004,
-      "id": "qualified/warmup-av1-4k60-sw-rustiplayer-01",
+      "id": "qualified/warmup-av1-4k60-sw-fastiplayer-01",
       "source_revision": "1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "6ccb7bd353e071104b02cac8b3b917cf9ed59017763ace90f201ee2ec64963a3",
       "eligible_for_scored_statistics": false,
@@ -25491,7 +25491,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -25564,7 +25564,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-02-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 4.119224947000475
@@ -25575,7 +25575,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-02-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 11.062079543000436
@@ -25587,7 +25587,7 @@
       "rss_kib_sample_mean": 274697.3333333333,
       "rss_kib_sample_min": 273512,
       "rss_kib_sample_max": 275636,
-      "id": "qualified/warmup-av1-4k60-sw-rustiplayer-02",
+      "id": "qualified/warmup-av1-4k60-sw-fastiplayer-02",
       "source_revision": "1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "6ccb7bd353e071104b02cac8b3b917cf9ed59017763ace90f201ee2ec64963a3",
       "eligible_for_scored_statistics": false,
@@ -25599,7 +25599,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -25682,7 +25682,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-03-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 4.072477253000216
@@ -25693,7 +25693,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-03-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 10.772814343999926
@@ -25705,7 +25705,7 @@
       "rss_kib_sample_mean": 275498.28571428574,
       "rss_kib_sample_min": 273936,
       "rss_kib_sample_max": 276556,
-      "id": "qualified/warmup-av1-4k60-sw-rustiplayer-03",
+      "id": "qualified/warmup-av1-4k60-sw-fastiplayer-03",
       "source_revision": "1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "6ccb7bd353e071104b02cac8b3b917cf9ed59017763ace90f201ee2ec64963a3",
       "eligible_for_scored_statistics": false,
@@ -25717,7 +25717,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -25790,7 +25790,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.6161560709997502
@@ -25801,7 +25801,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 9.234355029999278
@@ -25813,7 +25813,7 @@
       "rss_kib_sample_mean": 89976.0,
       "rss_kib_sample_min": 89900,
       "rss_kib_sample_max": 89996,
-      "id": "qualified/warmup-h264-1080p60-hw-rustiplayer-01",
+      "id": "qualified/warmup-h264-1080p60-hw-fastiplayer-01",
       "source_revision": "1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "6ccb7bd353e071104b02cac8b3b917cf9ed59017763ace90f201ee2ec64963a3",
       "eligible_for_scored_statistics": false,
@@ -25825,7 +25825,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -25898,7 +25898,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.6661902980004015
@@ -25909,7 +25909,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 9.334265207000499
@@ -25921,7 +25921,7 @@
       "rss_kib_sample_mean": 89422.66666666667,
       "rss_kib_sample_min": 89340,
       "rss_kib_sample_max": 89444,
-      "id": "qualified/warmup-h264-1080p60-hw-rustiplayer-02",
+      "id": "qualified/warmup-h264-1080p60-hw-fastiplayer-02",
       "source_revision": "1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "6ccb7bd353e071104b02cac8b3b917cf9ed59017763ace90f201ee2ec64963a3",
       "eligible_for_scored_statistics": false,
@@ -25933,7 +25933,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -26006,7 +26006,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.6670131300006688
@@ -26017,7 +26017,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 9.335232359000656
@@ -26029,7 +26029,7 @@
       "rss_kib_sample_mean": 89474.66666666667,
       "rss_kib_sample_min": 89324,
       "rss_kib_sample_max": 89536,
-      "id": "qualified/warmup-h264-1080p60-hw-rustiplayer-03",
+      "id": "qualified/warmup-h264-1080p60-hw-fastiplayer-03",
       "source_revision": "1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "6ccb7bd353e071104b02cac8b3b917cf9ed59017763ace90f201ee2ec64963a3",
       "eligible_for_scored_statistics": false,
@@ -26041,7 +26041,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -26114,7 +26114,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.7165537170003518
@@ -26125,7 +26125,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 9.43584263899993
@@ -26137,7 +26137,7 @@
       "rss_kib_sample_mean": 90639.33333333333,
       "rss_kib_sample_min": 90428,
       "rss_kib_sample_max": 90688,
-      "id": "qualified/warmup-hevc-4k60-hw-rustiplayer-01",
+      "id": "qualified/warmup-hevc-4k60-hw-fastiplayer-01",
       "source_revision": "1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "6ccb7bd353e071104b02cac8b3b917cf9ed59017763ace90f201ee2ec64963a3",
       "eligible_for_scored_statistics": false,
@@ -26149,7 +26149,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -26222,7 +26222,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.7161876160007523
@@ -26233,7 +26233,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 9.434252299000036
@@ -26245,7 +26245,7 @@
       "rss_kib_sample_mean": 90220.66666666667,
       "rss_kib_sample_min": 90040,
       "rss_kib_sample_max": 90312,
-      "id": "qualified/warmup-hevc-4k60-hw-rustiplayer-02",
+      "id": "qualified/warmup-hevc-4k60-hw-fastiplayer-02",
       "source_revision": "1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "6ccb7bd353e071104b02cac8b3b917cf9ed59017763ace90f201ee2ec64963a3",
       "eligible_for_scored_statistics": false,
@@ -26257,7 +26257,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -26330,7 +26330,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.7164545750001707
@@ -26341,7 +26341,7 @@
       },
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 9.434744257000602
@@ -26353,7 +26353,7 @@
       "rss_kib_sample_mean": 90574.0,
       "rss_kib_sample_min": 90552,
       "rss_kib_sample_max": 90584,
-      "id": "qualified/warmup-hevc-4k60-hw-rustiplayer-03",
+      "id": "qualified/warmup-hevc-4k60-hw-fastiplayer-03",
       "source_revision": "1e88de86c99fbc00b734246a13f2c5a9e8d2cfd8",
       "rust_binary_sha256": "6ccb7bd353e071104b02cac8b3b917cf9ed59017763ace90f201ee2ec64963a3",
       "eligible_for_scored_statistics": false,
@@ -26365,7 +26365,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -26449,7 +26449,7 @@
       "exclusions": [],
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-01-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 4.025897409999743
@@ -27964,7 +27964,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-01-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 16.49595660900013
@@ -27976,7 +27976,7 @@
       "rss_kib_sample_mean": 277264.0,
       "rss_kib_sample_min": 276900,
       "rss_kib_sample_max": 278008,
-      "id": "final-qualified/warmup-av1-4k60-sw-rustiplayer-01",
+      "id": "final-qualified/warmup-av1-4k60-sw-fastiplayer-01",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -27988,7 +27988,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -28097,7 +28097,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-02-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 4.071145955000247
@@ -29602,7 +29602,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-02-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 16.782245393000267
@@ -29649,7 +29649,7 @@
       "rss_kib_sample_mean": 274930.0,
       "rss_kib_sample_min": 274436,
       "rss_kib_sample_max": 275692,
-      "id": "final-qualified/warmup-av1-4k60-sw-rustiplayer-02",
+      "id": "final-qualified/warmup-av1-4k60-sw-fastiplayer-02",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -29661,7 +29661,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -29780,7 +29780,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-03-before.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 4.018296413999451
@@ -31290,7 +31290,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-av1-4k60-sw-rustiplayer-03-after.png",
+        "file": "warmup-av1-4k60-sw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 16.80913569399945
@@ -31337,7 +31337,7 @@
       "rss_kib_sample_mean": 274988.0,
       "rss_kib_sample_min": 274484,
       "rss_kib_sample_max": 275768,
-      "id": "final-qualified/warmup-av1-4k60-sw-rustiplayer-03",
+      "id": "final-qualified/warmup-av1-4k60-sw-fastiplayer-03",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -31962,7 +31962,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -32071,7 +32071,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.666476542000055
@@ -33586,7 +33586,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-01-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.61990674000026
@@ -33633,7 +33633,7 @@
       "rss_kib_sample_mean": 90638.0,
       "rss_kib_sample_min": 90636,
       "rss_kib_sample_max": 90640,
-      "id": "final-qualified/warmup-h264-1080p60-hw-rustiplayer-01",
+      "id": "final-qualified/warmup-h264-1080p60-hw-fastiplayer-01",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -33645,7 +33645,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -33754,7 +33754,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.61752310600059
@@ -35269,7 +35269,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-02-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.669500786000754
@@ -35316,7 +35316,7 @@
       "rss_kib_sample_mean": 88350.66666666667,
       "rss_kib_sample_min": 88348,
       "rss_kib_sample_max": 88352,
-      "id": "final-qualified/warmup-h264-1080p60-hw-rustiplayer-02",
+      "id": "final-qualified/warmup-h264-1080p60-hw-fastiplayer-02",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -35328,7 +35328,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "h264-1080p60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -35447,7 +35447,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-before.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.6162653279998267
@@ -36967,7 +36967,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-h264-1080p60-hw-rustiplayer-03-after.png",
+        "file": "warmup-h264-1080p60-hw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.621970517999216
@@ -37014,7 +37014,7 @@
       "rss_kib_sample_mean": 88186.28571428571,
       "rss_kib_sample_min": 88172,
       "rss_kib_sample_max": 88192,
-      "id": "final-qualified/warmup-h264-1080p60-hw-rustiplayer-03",
+      "id": "final-qualified/warmup-h264-1080p60-hw-fastiplayer-03",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -37649,7 +37649,7 @@
       "attempt": 1,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -37768,7 +37768,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.7161530090006636
@@ -39288,7 +39288,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-01-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-01-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.672276055000111
@@ -39335,7 +39335,7 @@
       "rss_kib_sample_mean": 89083.42857142857,
       "rss_kib_sample_min": 89020,
       "rss_kib_sample_max": 89160,
-      "id": "final-qualified/warmup-hevc-4k60-hw-rustiplayer-01",
+      "id": "final-qualified/warmup-hevc-4k60-hw-fastiplayer-01",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -39347,7 +39347,7 @@
       "attempt": 2,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -39456,7 +39456,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.666061009999794
@@ -40971,7 +40971,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-02-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-02-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.719742949999272
@@ -41018,7 +41018,7 @@
       "rss_kib_sample_mean": 91336.0,
       "rss_kib_sample_min": 91336,
       "rss_kib_sample_max": 91336,
-      "id": "final-qualified/warmup-hevc-4k60-hw-rustiplayer-02",
+      "id": "final-qualified/warmup-hevc-4k60-hw-fastiplayer-02",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -41030,7 +41030,7 @@
       "attempt": 3,
       "phase": "warmup",
       "scenario": "hevc-4k60-hw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "xwayland-fullscreen",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -41139,7 +41139,7 @@
       },
       "vlc_before_window": null,
       "before_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-before.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-before.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 3.716315019999456
@@ -42654,7 +42654,7 @@
       ],
       "vlc_after_window": null,
       "after_window_capture": {
-        "file": "warmup-hevc-4k60-hw-rustiplayer-03-after.png",
+        "file": "warmup-hevc-4k60-hw-fastiplayer-03-after.png",
         "width": 1920,
         "height": 1080,
         "capture_end_elapsed_seconds": 15.72054492299958
@@ -42701,7 +42701,7 @@
       "rss_kib_sample_mean": 87532.66666666667,
       "rss_kib_sample_min": 86616,
       "rss_kib_sample_max": 88456,
-      "id": "final-qualified/warmup-hevc-4k60-hw-rustiplayer-03",
+      "id": "final-qualified/warmup-hevc-4k60-hw-fastiplayer-03",
       "source_revision": "1cc181e1ea0fd502b6636fba8a9d2ee1367d0687",
       "rust_binary_sha256": "7ff9fb595a96a93aca9166748e66883c058e40a8fe141c614711aab42936a230",
       "eligible_for_scored_statistics": false,
@@ -43562,7 +43562,7 @@
       "attempt": 1,
       "phase": "validation",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,
@@ -47980,7 +47980,7 @@
       "attempt": 1,
       "phase": "validation",
       "scenario": "av1-4k60-sw",
-      "player": "rustiplayer",
+      "player": "fastiplayer",
       "window_mode": "native-window",
       "status": "collected_pending_playback_review",
       "clock_ticks_per_second": 100,

@@ -25,7 +25,7 @@
 
 ## Regression anchor
 
-`crates/video-ffmpeg/tests/aud005_packet_ack_loss.rs::accurate_seek_eof_preserves_all_packet_completions` — ignored real regression с explicit `RUSTIPLAYER_MEDIA_PATH`.
+`crates/video-ffmpeg/tests/aud005_packet_ack_loss.rs::accurate_seek_eof_preserves_all_packet_completions` — ignored real regression с explicit `fastiplayer_MEDIA_PATH`.
 
 Тест:
 
@@ -48,13 +48,13 @@ ffmpeg -hide_banner -loglevel error \
   -t 4 -c:v libx264 -preset ultrafast -profile:v baseline \
   -bf 0 -g 30 -keyint_min 30 -sc_threshold 0 -pix_fmt yuv420p -an \
   -muxpreload 0 -muxdelay 0 -mpegts_flags +resend_headers \
-  -f mpegts -y /tmp/rustiplayer-aud005-ack-loss.ts
+  -f mpegts -y /tmp/fastiplayer-aud005-ack-loss.ts
 ```
 
 Real regression command:
 
 ```bash
-env RUSTIPLAYER_MEDIA_PATH=/tmp/rustiplayer-aud005-ack-loss.ts \
+env fastiplayer_MEDIA_PATH=/tmp/fastiplayer-aud005-ack-loss.ts \
   cargo +1.96.0 test -p video-ffmpeg --features ffmpeg --locked \
   --test aud005_packet_ack_loss -- --ignored --exact \
   accurate_seek_eof_preserves_all_packet_completions --nocapture

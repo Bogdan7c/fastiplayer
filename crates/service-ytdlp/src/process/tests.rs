@@ -49,7 +49,7 @@ fn test_directory(label: &str) -> PathBuf {
             .unwrap_or_default()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "rustiplayer-ytdlp-test-{label}-{}-{timestamp}-{sequence}",
+            "fastiplayer-ytdlp-test-{label}-{}-{timestamp}-{sequence}",
             std::process::id()
         ));
         match fs::create_dir(&path) {

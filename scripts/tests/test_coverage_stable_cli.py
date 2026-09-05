@@ -27,7 +27,7 @@ class StableCoverageCliTests(unittest.TestCase):
         # Fixture моделирует локальный CLI независимо от host workflow environment.
         self.cli_environment = dict(os.environ)
         self.cli_environment.pop("GITHUB_ACTIONS", None)
-        self.cli_environment["RUSTIPLAYER_TEST_SCOPE"] = "local"
+        self.cli_environment["FASTIPLAYER_TEST_SCOPE"] = "local"
         self.temporary_directory = tempfile.TemporaryDirectory(prefix="coverage-stable-cli-")
         self.workspace = Path(self.temporary_directory.name)
         (self.workspace / "Cargo.toml").write_text("[workspace]\nmembers=[]\n", encoding="utf-8")
@@ -123,7 +123,7 @@ class StableCoverageCliTests(unittest.TestCase):
 
     def test_hosted_check_requires_matching_scope_and_exact_cohort_bytes(self):
         _, cohort, _, baseline = self.valid_artifacts()
-        self.cli_environment.update(GITHUB_ACTIONS="true", RUSTIPLAYER_TEST_SCOPE="hosted")
+        self.cli_environment.update(GITHUB_ACTIONS="true", FASTIPLAYER_TEST_SCOPE="hosted")
         arguments = ("check", "--baseline", baseline, "--cohort", cohort,
                      "--measurement-exceptions", self.measurement_exceptions_path,
                      "--output", self.workspace / "hosted-check.json")

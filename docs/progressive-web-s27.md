@@ -42,7 +42,7 @@ Canonical focused commands:
 
 ```bash
 cargo +1.96.0 test --locked \
-  -p audio-core -p audio -p rustiplayer-config \
+  -p audio-core -p audio -p fastiplayer-config \
   -p web-media-core -p web-media-playback-plan \
   -p web-media-transport-api -p web-media-http \
   -p source-core -p service-ytdlp
@@ -73,16 +73,16 @@ scripts/progressive-web-smoke.sh \
   --case progressive-http-iso-bmff \
   --url 'https://explicit-user-selected.example/media.mp4' \
   --duration 120 \
-  --report /tmp/rustiplayer-progressive-web-s42.md
+  --report /tmp/fastiplayer-progressive-web-s42.md
 ```
 
 Без `--binary` runner сначала собирает release `app-egui`. С уже собранным
-binary можно передать `--binary target/release/rustiplayer`. `--dry-run`
+binary можно передать `--binary target/release/fastiplayer`. `--dry-run`
 проверяет selection, но не создаёт report и не считается acceptance. Старый
 повторяемый `--url` синтаксис сохранён как `legacy-url-N`, однако не закрывает
 S42 matrix row.
 
-Report всегда фиксирует SHA-256 реально запущенного Rustiplayer binary, его
+Report всегда фиксирует SHA-256 реально запущенного Fastiplayer binary, его
 origin и `clean`/`dirty` состояние workspace. Для runner-built binary source
 association относится к текущему worktree; dirty worktree не выдаётся за
 воспроизводимый HEAD. Explicit `--binary` считается external prebuilt, и report
@@ -137,6 +137,6 @@ Raw stdout/stderr каждого запуска сначала попадает 
   ручными, а hermetic lifecycle contracts закреплены focused tests.
 - Trusted system yt-dlp config/plugins могут иметь собственные side effects. Gate доказывает
   только отсутствие дополнительных download/write/exec/postprocessor/mark-watched options со
-  стороны Rustiplayer и отсутствие raw secrets в сохранённом report.
+  стороны Fastiplayer и отсутствие raw secrets в сохранённом report.
 - При принудительном `SIGKILL` всей shell process group cleanup trap невозможно гарантировать;
   штатный exit, handled failure и timeout удаляют raw temporary logs.

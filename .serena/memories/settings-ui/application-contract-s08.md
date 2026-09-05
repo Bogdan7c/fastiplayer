@@ -7,7 +7,7 @@
 - Полный config/selection contract: `mem:config/schema-v7-quality-preference-2026-07-21`.
 
 
-- Session 08 (2026-07-11) added the checked application matrix in `crates/rustiplayer-settings/src/application_contract.rs`.
+- Session 08 (2026-07-11) added the checked application matrix in `crates/fastiplayer-settings/src/application_contract.rs`.
 - `SettingApplicationContract` maps every editable `AppConfig` descriptor to exactly one `AppRuntimeRoute`, `SettingStateOwner`, intent-based `SettingApplyMechanism`, rollback owner, and focused test scenario set.
 - The mapping deliberately matches stable setting ids explicitly rather than by prefix. `every_editable_setting_has_one_checked_live_application_contract` iterates the generated registry, so a newly editable descriptor without a matrix row fails the focused test.
 - `runtime_route_from_descriptor` validates that descriptor metadata and the checked matrix select the same project route before building an executor plan.
@@ -74,7 +74,7 @@
 - `route_diff` агрегирует четыре изменения в одну typed `PlaylistRuntimeSettingsUpdate` с полным `PlaylistConfig`; preload policy не дробится на независимые runtime mutations.
 - Forward executor вызывает `apply_playlist_runtime_settings(update)`, а compensating path — только `rollback_playlist_runtime_settings()`. Typed `Applied/Noop/PartialFailure/Failed/Busy/Conflict` проходит через общий route report без сведения к `bool`.
 - Транзакционный порядок подтверждён функционально: success = один apply -> atomic persistence -> finalize -> committed snapshot; persistence failure = один apply -> ровно один rollback, без finalize, committed config остаётся прежним.
-- Проверки: focused contract/routing/settings tests, `app-egui` 1005/1005 для `--no-default-features` и `--all-features`, strict clippy обеих app matrices и `rustiplayer-settings`, S41/S42 acceptance, format/refactor guardrails. Полный `cargo test -p rustiplayer-settings --locked` не заявляется зелёным: 17 passed/1 failed на внешнем незакрытом контракте `yt_dlp.vod_endpoint_recovery_enabled`.
+- Проверки: focused contract/routing/settings tests, `app-egui` 1005/1005 для `--no-default-features` и `--all-features`, strict clippy обеих app matrices и `fastiplayer-settings`, S41/S42 acceptance, format/refactor guardrails. Полный `cargo test -p fastiplayer-settings --locked` не заявляется зелёным: 17 passed/1 failed на внешнем незакрытом контракте `yt_dlp.vod_endpoint_recovery_enabled`.
 
 ## AUD-009 — checked VOD endpoint recovery settings contract (2026-08-27)
 
@@ -83,4 +83,4 @@
 - Live apply меняет policy только для следующего естественного expiry claim-а; уже захваченная recovery-цепочка продолжает использовать свой immutable policy snapshot. Новый owner enum, restart/deferred mechanism и немедленное вмешательство в claimed recovery не добавлялись.
 - `runtime_route_plan_from_diff` агрегирует одновременное изменение всех пяти полей в ровно один `MediaService` route: единственный source route `yt_dlp`, exact registry-stable ordered набор ID, одна группа `MediaYtDlp` и полный целевой `YtDlpConfig` внутри существующего `MediaServiceRuntimeSettingsUpdate`.
 - Exact contract и routing regressions вынесены в focused private children `application_contract/tests/vod_endpoint_recovery.rs` и `routing/tests/vod_endpoint_recovery.rs`; центральный `application_contract.rs` остаётся 680 строк, legacy-ratcheted `routing.rs` — ровно 1939.
-- Проверки: `rustiplayer-settings` 20/20 и doc-tests 0/0; config registry 1/1; strict all-target Clippy; rustfmt/diff/refactor/S42 guardrails; S41 3/3; S42 24/24; Serena diagnostics чисты.
+- Проверки: `fastiplayer-settings` 20/20 и doc-tests 0/0; config registry 1/1; strict all-target Clippy; rustfmt/diff/refactor/S42 guardrails; S41 3/3; S42 24/24; Serena diagnostics чисты.

@@ -1,6 +1,10 @@
+# Актуальный статус публикации (2026-09-05)
+
+GitHub API подтверждает: `v0.1.0-alpha.1` опубликован 2026-09-05T12:12:14Z. Старые утверждения ниже об отсутствии релиза, незавершённой публикации и планируемых каналах описывают прошлые этапы и не являются текущим ограничением. Владелец согласовал полное переименование в Fastiplayer с сохранением тега, версий и истории. Контракт переименования: `mem:project-identity/fastiplayer-2026-09-05`; фактические результаты проверок и переноса: `mem:global/fastiplayer-rename-verification-2026-09-05`.
+
 # S12 public repository and community routes (2026-09-05)
 
-- Owner approved S12 opening after the read-only gate. Repository Bogdan7c/rustiplayer is now public. Opening SHA was 046e6de1fa6da5161da0881208368c131b770d18; this does not establish release qualification.
+- Owner approved S12 opening after the read-only gate. Repository Bogdan7c/fastiplayer is now public. Opening SHA was 046e6de1fa6da5161da0881208368c131b770d18; this does not establish release qualification.
 - Discussions and GitHub Private Vulnerability Reporting are enabled and verified. SECURITY.md, SUPPORT.md, README.md, CONTRIBUTING.md and issue chooser now route to active channels; this supersedes planned-channel statements in mem:public-launch/s07-community-health-2026-09-05 and mem:core.
 - Main ruleset 22317252 is active with deletion and non_fast_forward rules, no bypass actors, no required-PR rule. Ordinary maintainer pushes remain allowed.
 - Milestone 1.0 is milestone/1. Roadmap issues #1–#8 follow the owner-approved order, have concrete scope and functional acceptance criteria, and do not carry good first issue. Eleven useful labels exist. Homepage is empty; repository description and sixteen topics match the launch plan.

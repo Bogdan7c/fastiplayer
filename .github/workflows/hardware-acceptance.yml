@@ -50,7 +50,7 @@ jobs:
     # Видимое имя подчёркивает opt-in host-specific runtime scope.
     name: Real playback smoke (manual, non-blocking)
     # Labels требуют подготовленный Linux host с GPU/VA-API/audio/display.
-    runs-on: [self-hosted, linux, x64, rustiplayer-hardware]
+    runs-on: [self-hosted, linux, x64, fastiplayer-hardware]
     steps:
       # Checkout major закреплён, как и в blocking workflow.
       - uses: actions/checkout@v4

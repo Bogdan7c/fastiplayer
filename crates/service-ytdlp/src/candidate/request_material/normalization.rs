@@ -70,7 +70,7 @@ fn reject_excluded_material(
 
 /// Выделяет только безопасный declarative `http_chunk_size` из downloader options.
 ///
-/// Любой иной ключ остаётся fail-closed: Rustiplayer не исполняет downloader
+/// Любой иной ключ остаётся fail-closed: Fastiplayer не исполняет downloader
 /// state и не пытается угадывать семантику будущих yt-dlp options.
 fn normalize_http_range_request_limit(
     raw_downloader_options: Option<&Value>,

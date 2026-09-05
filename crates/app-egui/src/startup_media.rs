@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use capability_core::SystemCapabilities;
 use codec_core::VideoCodec as RuntimeVideoCodec;
-use rustiplayer_config::{
+use fastiplayer_config::{
     AppConfig, NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec,
 };
 use tracing::{debug, info, warn};

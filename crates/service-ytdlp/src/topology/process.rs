@@ -727,7 +727,7 @@ printf '%s\n' '{"_type":"video","id":"ftp-audio"}'
     fn create_script(body: &str) -> PathBuf {
         let sequence = SCRIPT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "rustiplayer-ytdlp-topology-{}-{sequence}.sh",
+            "fastiplayer-ytdlp-topology-{}-{sequence}.sh",
             std::process::id()
         ));
         fs::write(&path, body).expect("test script должен записаться");

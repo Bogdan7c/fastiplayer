@@ -127,7 +127,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         info!("Resumed: создание окна");
 
         let window_attributes = Window::default_attributes()
-            .with_title("Rustiplayer")
+            .with_title("Fastiplayer")
             .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720))
             // Ширина гарантирует полный порядок transport controls; единичная высота
             // оставляет вертикальное ограничение практически на усмотрение compositor-а.

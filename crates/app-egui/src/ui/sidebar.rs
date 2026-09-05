@@ -4,7 +4,7 @@
 //! являются только сменяемым содержимым и не владеют шириной или resize-state.
 
 use egui::Ui;
-use rustiplayer_config::{MAX_SIDEBAR_WIDTH_POINTS, MIN_SIDEBAR_WIDTH_POINTS};
+use fastiplayer_config::{MAX_SIDEBAR_WIDTH_POINTS, MIN_SIDEBAR_WIDTH_POINTS};
 
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel, layout};
 use crate::state::{ContentSlideDirection, SidebarContentTransition, SidebarSection};
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn all_sections_share_one_width_policy() {
-        assert_eq!(rustiplayer_config::DEFAULT_SIDEBAR_WIDTH_POINTS, 420);
+        assert_eq!(fastiplayer_config::DEFAULT_SIDEBAR_WIDTH_POINTS, 420);
         assert_eq!(MIN_SIDEBAR_WIDTH_POINTS, 350);
         assert_eq!(MAX_SIDEBAR_WIDTH_POINTS, 600);
     }
@@ -361,7 +361,7 @@ mod tests {
     fn fully_open_headless_panel_drag_updates_live_host_width() {
         let egui_ctx = egui::Context::default();
         let mut host =
-            SidebarHostState::from_committed(rustiplayer_config::DEFAULT_SIDEBAR_WIDTH_POINTS);
+            SidebarHostState::from_committed(fastiplayer_config::DEFAULT_SIDEBAR_WIDTH_POINTS);
         let resize_handle = egui::pos2(420.0, 200.0);
 
         let warmup = render_host(

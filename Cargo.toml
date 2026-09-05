@@ -16,7 +16,7 @@ members = [
     "crates/service-direct-media",
     "crates/settings-core",
     "crates/settings-derive",
-    "crates/rustiplayer-settings",
+    "crates/fastiplayer-settings",
     "crates/web-media-core",
     "crates/web-media-playback-plan",
     "crates/web-media-transport-api",
@@ -150,7 +150,7 @@ egui-wgpu = "0.34"
 pollster = "0.4"
 anyhow = "1.0"
 etcetera = "0.11"
-rustiplayer-config = { version = "0.1.0-alpha.1", path = "crates/config" }
+fastiplayer-config = { version = "0.1.0-alpha.1", path = "crates/config" }
 animation-core = { version = "0.1.0-alpha.1", path = "crates/animation-core" }
 audio-core = { version = "0.1.0-alpha.1", path = "crates/audio-core" }
 audio-signalsmith = { version = "0.1.0-alpha.1", path = "crates/audio-signalsmith" }
@@ -224,7 +224,7 @@ web-media-smooth = { version = "0.1.0-alpha.1", path = "crates/web-media-smooth"
 web-media-dash = { version = "0.1.0-alpha.1", path = "crates/web-media-dash" }
 settings-core = { version = "0.1.0-alpha.1", path = "crates/settings-core" }
 settings-derive = { version = "0.1.0-alpha.1", path = "crates/settings-derive" }
-rustiplayer-settings = { version = "0.1.0-alpha.1", path = "crates/rustiplayer-settings" }
+fastiplayer-settings = { version = "0.1.0-alpha.1", path = "crates/fastiplayer-settings" }
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = "2.0"
