@@ -39,3 +39,5 @@
 - fmt, `git diff --check`, refactor guardrails PASS.
 
 Related memories: `mem:core`, `mem:media-services/hls-vod-s32b-2026-07-23`, `mem:media-services/hls-vod-s32c-2026-07-23`, `mem:media-services/hls-live-s33-2026-07-24`, `mem:testing/hls-ts-vod-runtime-fix-2026-08-04`.
+
+S12 qualification (2026-09-05) exposed a scheduling-sensitive test precondition: the integration test stopped at audio PTS>=150s, which may arrive before the video RAP of segment5. DecodePointBefore correctly selected the latest proven video RAP120s, contradicting the test's assumed150s. The fixture now waits for the actual video Keyframe at150s before issuing seek155s; HlsComponentDemuxer::remap_packet commits index evidence before publishing that packet. Production compaction/seek semantics are unchanged. Exact150s landing/keyframe and at-most-one fetch of segment5 assertions remain. Failed local fullcheck at a444e396 preserved privately; newSHA requires complete local/remote qualification.

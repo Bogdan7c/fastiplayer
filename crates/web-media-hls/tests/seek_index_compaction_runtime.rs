@@ -170,10 +170,14 @@ fn late_seek_after_tiny_index_compaction_restarts_directly_from_latest_segment()
         next_ready_event(&mut *demuxer).expect("initial compacted-index tracks"),
     );
 
+    // Audio на 150 s может выйти раньше video RAP того же segment-а. Для
+    // decode-safe seek требуется наблюдённый keyframe, а не опережающий audio PTS.
     loop {
         match next_ready_event(&mut *demuxer).expect("observe every HLS segment") {
             DemuxReadEvent::Packet(packet)
-                if packet.kind == TrackKind::Audio && packet.pts >= Duration::from_secs(150) =>
+                if packet.kind == TrackKind::Video
+                    && packet.keyframe == PacketKeyframe::Keyframe
+                    && packet.pts == Duration::from_secs(150) =>
             {
                 break;
             }
