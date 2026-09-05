@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn shutdown_timeout_retains_handle_and_later_reaps_it() {
-        let release = Arc::new(shutdown_observation::ObservedRelease::new());
+        let release = Arc::new(ReleaseBit::new());
         let worker_release = Arc::clone(&release);
         let mut job = test_job(std::thread::spawn(move || {
             while !worker_release.load(Ordering::Acquire) {
@@ -501,4 +501,5 @@ mod tests {
     }
 
     mod shutdown_observation;
+    use shutdown_observation::ObservedRelease as ReleaseBit;
 }
