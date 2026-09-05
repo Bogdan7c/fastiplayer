@@ -30,3 +30,6 @@
 - N04 не начат; push не выполнялся.
 
 Related: `mem:core`, `mem:media-services/native-web-ingress-n01-2026-08-31`, `mem:media-services/ytdlp-process-owner-2026-08-05`, `mem:media-services/ytdlp-candidate-normalization-s19-2026-07-21`, `mem:media-services/generic-site-open-2026-07-27`.
+
+## S12 launch stabilization (2026-09-05)
+The former missing user/ evidence reference is historical; current sanitized full service-ytdlp suite passes. Hosted coverage exposed a spy assertion conflating OS spawn attempts with successfully created processes (two CandidatePrimary attempts versus one expected process). Existing production ETXTBSY retry remains unchanged. HermeticSpyLauncher now retains every attempt with Started{pid} or Failed{errno}; successful_invocations asserts that only ETXTBSY failures may precede a retry with the exact same reason/phase, and rejects unfinished retries/other errors. New invocation/tests/spawn_attempts.rs consumer holds the actual executable open for writing, records the real OS ETXTBSY, releases writer after failure, and verifies production retry reaches a parsed candidate snapshot with one actual process. Raw attempts remain inspectable; no attempts are silently discarded. Full service-ytdlp all-features/locked tests and strict all-targets Clippy PASS. No production API/lifecycle/budget changes.

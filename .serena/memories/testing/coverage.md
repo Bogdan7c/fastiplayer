@@ -85,3 +85,6 @@ S12 next software stabilization after aad65470 hosted ratchet: all suites passed
 
 
 The first 61ec39ea local cohort passed all tests and had regressions=[], but failed universe validation solely because the new executor_start_observation helper was placed outside tests/. Exact diff: one test-only file, +27lines/+3functions/+42regions, no removed coordinates or other changes. Moved the cfg(test)-only helper into media_open/tests/ under existing test-source policy, with no baseline/ledger or filtering-policy change. Full new-SHA qualification must restart.
+
+
+S12 d60960d0 hosted run failed during a service-ytdlp test, before cohort publication: spy expected one primary process but counted two OS spawn attempts. Test-only invocation spy now records real Started PID / Failed errno per attempt and separately validates successful invocations, allowing only the existing ETXTBSY retry with preserved identity. Real executable-writer consumer proves OS failure→production retry→parsed snapshot→one created process. See media-services/native-web-ingress-n03-2026-08-31. No production/baseline/policy changes; fresh exact-SHA qualification required. d609 local check1 PASS remains historical; second check was cancelled after remote failure.

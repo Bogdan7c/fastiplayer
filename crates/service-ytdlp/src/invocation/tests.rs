@@ -63,12 +63,12 @@ impl Drop for HermeticFixtureDirectory {
     }
 }
 
-/// Instance-owned launcher одновременно изолирует PATH и записывает каждый spawn attempt.
+/// Instance-owned launcher изолирует PATH и сохраняет outcome каждой spawn attempt.
 struct HermeticSpyLauncher {
     /// Fixture directory с executable под production именем.
     executable_directory: PathBuf,
     /// Typed invocation events без argv/URL/output payload.
-    invocations: Mutex<Vec<ExtractorProcessInvocation>>,
+    attempts: Mutex<Vec<SpawnAttempt>>,
 }
 
 impl HermeticSpyLauncher {
@@ -76,13 +76,19 @@ impl HermeticSpyLauncher {
     fn new(executable_directory: &Path) -> Self {
         Self {
             executable_directory: executable_directory.to_path_buf(),
-            invocations: Mutex::new(Vec::new()),
+            attempts: Mutex::new(Vec::new()),
         }
     }
 
-    /// Возвращает immutable snapshot recorded events.
-    fn invocations(&self) -> Vec<ExtractorProcessInvocation> {
-        self.invocations
+    /// Возвращает успешные запуски; неуспешные попытки остаются в полном журнале.
+    /// Только предусмотренный production-контрактом ETXTBSY может предшествовать
+    /// повтору той же invocation; другая ошибка либо смена reason/phase провалит тест.
+    fn successful_invocations(&self) -> Vec<ExtractorProcessInvocation> {
+        successful_invocations_from_attempts(&self.attempts())
+    }
+
+    fn attempts(&self) -> Vec<SpawnAttempt> {
+        self.attempts
             .lock()
             .expect("hermetic spy invocation lock")
             .clone()
@@ -95,17 +101,27 @@ impl ExtractorProcessLauncher for HermeticSpyLauncher {
         command: &mut Command,
         invocation: ExtractorProcessInvocation,
     ) -> io::Result<Child> {
-        self.invocations
-            .lock()
-            .map_err(|_| io::Error::other("hermetic spy invocation lock poisoned"))?
-            .push(invocation);
         let mut command_path = OsString::from(&self.executable_directory);
         if let Some(system_path) = std::env::var_os("PATH") {
             command_path.push(":");
             command_path.push(system_path);
         }
         command.env("PATH", command_path);
-        command.spawn()
+        let mut attempts = self
+            .attempts
+            .lock()
+            .map_err(|_| io::Error::other("hermetic spy invocation lock poisoned"))?;
+        let spawned = command.spawn();
+        attempts.push(SpawnAttempt {
+            invocation,
+            outcome: match &spawned {
+                Ok(child) => SpawnAttemptOutcome::Started { pid: child.id() },
+                Err(error) => SpawnAttemptOutcome::Failed {
+                    errno: error.raw_os_error(),
+                },
+            },
+        });
+        spawned
     }
 }
 
@@ -153,7 +169,7 @@ printf '%s\n' '{"title":"YouTube-like title","duration":42,"is_live":false,"live
         Some(Duration::from_secs(42))
     );
     assert_eq!(
-        spy.invocations(),
+        spy.successful_invocations(),
         vec![ExtractorProcessInvocation::new(
             ExtractorInvocationReason::PageMediaResolution,
             ExtractorProcessPhase::CandidatePrimary,
@@ -190,7 +206,7 @@ printf '%s\n' '{"title":"HTML page title","duration":12,"is_live":false,"live_st
 
     assert_eq!(snapshot.accepted_candidates().count(), 1);
     assert_eq!(
-        spy.invocations(),
+        spy.successful_invocations(),
         vec![ExtractorProcessInvocation::new(
             ExtractorInvocationReason::PageMediaResolution,
             ExtractorProcessPhase::CandidatePrimary,
@@ -300,7 +316,7 @@ fi
         Some(Duration::from_secs(9))
     );
     assert_eq!(
-        spy.invocations()
+        spy.successful_invocations()
             .into_iter()
             .map(|invocation| (invocation.reason(), invocation.phase()))
             .collect::<Vec<_>>(),
@@ -350,7 +366,7 @@ printf '%s\n' \
 
     assert!(topology.as_playlist().is_some());
     assert_eq!(
-        spy.invocations(),
+        spy.successful_invocations(),
         vec![ExtractorProcessInvocation::new(
             ExtractorInvocationReason::CollectionTopologyResolution,
             ExtractorProcessPhase::TopologyPrimary,
@@ -407,7 +423,7 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
     }
     assert!(!process_is_running(descendant_id));
     assert_eq!(
-        spy.invocations()
+        spy.successful_invocations()
             .into_iter()
             .map(ExtractorProcessInvocation::reason)
             .collect::<Vec<_>>(),
@@ -424,3 +440,7 @@ fn process_is_running(process_id: i32) -> bool {
     let result = unsafe { libc::kill(process_id, 0) };
     result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
+
+#[path = "tests/spawn_attempts.rs"]
+mod spawn_attempts;
+use spawn_attempts::{SpawnAttempt, SpawnAttemptOutcome, successful_invocations_from_attempts};
