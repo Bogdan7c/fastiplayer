@@ -1,4 +1,4 @@
-# Engineering documentation
+# Fastiplayer documentation
 
 Start with the English [project overview and build instructions](../README.md) and [architecture](../ARCHITECTURE.md). This index preserves the existing deep engineering documents in their original language; English headings inside Russian documents do not make them English translations.
 
@@ -9,6 +9,9 @@ Start with the English [project overview and build instructions](../README.md) a
 | Document | Language | Purpose |
 | --- | --- | --- |
 | [Landing page](../README.md) | EN | Status, features, build, limitations and ordered roadmap |
+| [Vision](vision.md) | EN | Product principles, multimedia foundation, and future directions |
+| [Demo](demo.md) | EN | Real playback, queue and settings captures, with a short video |
+| [Capture provenance](assets/README.md) | EN | Media attribution, capture environment and artifact checksums |
 | [Architecture](../ARCHITECTURE.md) | EN | Owners, API boundaries, frame lifetime and settings transactions |
 | [Contributor/agent rules](../AGENTS.md) | EN | Engineering conventions and owner decision boundaries |
 | [AI-assisted development](ai-development.md) | EN | Optional Codex/Serena workflow; not a build requirement |
@@ -65,4 +68,4 @@ Start with the English [project overview and build instructions](../README.md) a
 | [Historical reports](history/README.md) | RU | Reading dated evidence in context |
 | [Readiness report, 2026-07-12](history/readiness_report_2026-07-12.md) | RU | Historical snapshot; not current release readiness |
 
-Public launch work must keep genuine runtime captures separate from design concepts and native-ingress experiments separate from whole-player performance comparisons. No private fixtures or external owner documents are required just to read this index.
+Runtime captures demonstrate the application; dated measurements establish their own narrower results. Native-ingress experiments and whole-player performance comparisons remain separate. No private fixtures or external owner documents are required to read this index.

@@ -14,4 +14,4 @@ Use [CONTRIBUTING.md](CONTRIBUTING.md) for contributions, [SUPPORT.md](SUPPORT.m
 
 A `CODE_OF_CONDUCT.md` is deliberately deferred until a separate private enforcement contact has been established and its handling responsibility agreed. No such contact is currently designated. Do not repurpose GitHub Private Vulnerability Reporting as a conduct-reporting channel. Contributors are still asked to communicate respectfully.
 
-GitHub Discussions and Private Vulnerability Reporting remain planned until their actual enablement at public launch (S12). This file does not enable GitHub settings. Funding configuration is not part of this launch preparation.
+[GitHub Discussions](https://github.com/Bogdan7c/fastiplayer/discussions) and [Private Vulnerability Reporting](https://github.com/Bogdan7c/fastiplayer/security/advisories/new) are enabled. See [Support](SUPPORT.md) and [Security](SECURITY.md) for their respective routes. The project is open to support with development tools and equipment through Discussions.

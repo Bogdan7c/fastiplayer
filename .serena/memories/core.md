@@ -1,12 +1,16 @@
+# S12.5 public presentation (2026-09-05)
+
+README introduces the alpha through the actual application, with `docs/vision.md`, `docs/demo.md` and `docs/assets/README.md` as product/demo/provenance entry points. Current stage is `Early alpha · Active development · Linux-first · Source builds`. Working features, priorities and future directions are separate; ordered roadmap, historical benchmarks and existing alpha release remain preserved. See `mem:public-launch/s125-public-presentation-2026-09-05`. Idle-only center hint behavior and painted-output regression tests: `mem:app-egui/center-overlay-state-2026-09-05`.
+
 # Актуальный статус публикации (2026-09-05)
 
 GitHub API подтверждает: `v0.1.0-alpha.1` опубликован 2026-09-05T12:12:14Z. Старые утверждения ниже об отсутствии релиза, незавершённой публикации и планируемых каналах описывают прошлые этапы и не являются текущим ограничением. Владелец согласовал полное переименование в Fastiplayer с сохранением тега, версий и истории. Контракт переименования: `mem:project-identity/fastiplayer-2026-09-05`; фактические результаты проверок и переноса: `mem:global/fastiplayer-rename-verification-2026-09-05`.
 
 ## Public launch S06: English OSS landing (2026-09-05)
 
-- README.md is the English pre-alpha/Linux-first landing; ARCHITECTURE.md describes current boundaries; docs/README.md indexes engineering docs with language labels. Russian deep docs remain intact.
+- README.md is the English Linux-first source-build landing; ARCHITECTURE.md describes current boundaries; docs/README.md indexes engineering docs with language labels. Russian deep docs remain intact.
 - Benchmark policy and completed S08 T480s playback evidence live in docs/benchmarks/. Measured source `9165200c` passed both automatic workflows; evidence commit `c16da1e7` was blocked before jobs started by GitHub account billing/spending limits. See `mem:public-launch/s08-t480s-runtime-fixes-2026-09-05`. N15 fixture ingress aggregates must not be presented as whole-player/T480s/VLC results; original per-run samples are not public.
-- S07 community files and local alpha release draft now exist; README/docs index/architecture link the dedicated guides. Discussions and private vulnerability reporting remain planned until S12; CODE_OF_CONDUCT remains deferred pending a separate private enforcement contact. See `mem:public-launch/s07-community-health-2026-09-05`. S08 supplied real T480s evidence; S09 integrates the screenshot/scoped results and aligns all 58 workspace versions plus internal requirements to `0.1.0-alpha.1`. See `mem:public-launch/s09-alpha-preparation-2026-09-05` for validation and the private CI billing blocker. S06 evidence policy: `mem:public-launch/s06-oss-landing-2026-09-05`.
+- S07 community files and local alpha release draft now exist; README/docs index/architecture link the dedicated guides. Discussions and private vulnerability reporting are enabled (S12 completed); CODE_OF_CONDUCT remains deferred pending a separate private enforcement contact. See `mem:public-launch/s07-community-health-2026-09-05`. S08 supplied real T480s evidence; S09 integrates the screenshot/scoped results and aligns all 58 workspace versions plus internal requirements to `0.1.0-alpha.1`. See `mem:public-launch/s09-alpha-preparation-2026-09-05` for validation and the private CI billing blocker. S06 evidence policy: `mem:public-launch/s06-oss-landing-2026-09-05`.
 
 ## Public launch S05: public-safe AI tooling (2026-09-05)
 

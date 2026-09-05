@@ -1,5 +1,21 @@
 # AI-assisted development
 
+Fastiplayer is led by a human maintainer, with AI used to help implement,
+investigate, and review changes. The maintainer sets the product direction,
+chooses architectural tradeoffs, and remains responsible for what is accepted
+and published. Important decisions are discussed in plain language before work
+proceeds.
+
+Generated code is a starting point for review and verification. The workflow
+requires finding root causes, respecting module ownership, checking the result,
+and testing observable behavior. For media work, that means video reaching
+rendering or audio reaching its consumer, rather than merely reading a source.
+Automated checks and separate hardware acceptance provide evidence within their
+recorded scope; they do not make every generated change correct by default.
+
+The [vision](vision.md) explains what these decisions serve. The rest of this
+document describes the optional tools and the concrete maintenance workflow.
+
 Fastiplayer keeps its owner instructions in [AGENTS.md](../AGENTS.md), project
 knowledge in `.serena/memories/`, and optional Codex settings in `.codex/`.
 These tools support maintenance; Cargo builds, tests, CI, and running the player
@@ -11,9 +27,9 @@ must work without Codex, Context7, Serena, or an AI account. See the
 
 Read AGENTS.md in full. Its English translation preserves the owner's rules,
 including Russian documentation and comments for key production-code logic,
-non-obvious decisions and invariants. The owner explicitly clarified during S05
-that comments on every line are unnecessary. Explain important choices in plain
-language and stop to discuss important decisions before implementing them.
+non-obvious decisions and invariants. Comments on every line are unnecessary.
+Explain important choices in plain language and stop to discuss important
+decisions before implementing them.
 
 Before a coding task, read Serena `initial_instructions` once per session,
 activate the checkout, and read `mem:core` plus relevant memories. Complete

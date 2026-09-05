@@ -1,6 +1,8 @@
 # Contributing to Fastiplayer
 
-Fastiplayer is Linux-first software in active development / pre-alpha. Reproducible bug reports, focused fixes, consumer-level tests, and clear documentation are welcome. One core maintainer reviews contributions; response times are not guaranteed.
+**Early alpha · Active development · Linux-first · Source builds**
+
+Fastiplayer is unfinished software. Trying the player and sharing reproducible feedback is a useful place to start. Focused fixes, consumer-level tests, and clear documentation are also welcome under the rules below. One core maintainer reviews contributions; response times are not guaranteed.
 
 ## Choose work and the right channel
 
@@ -31,7 +33,7 @@ cd fastiplayer
 cargo build -p app-egui --release --locked
 ```
 
-The executable is `target/release/fastiplayer`. Before public launch, cloning requires repository access. Public unauthenticated cloning is a launch verification item. System `yt-dlp` is optional for supported web-page extraction; native direct sources do not require it. See the [media compatibility matrix](docs/web-media-compatibility-matrix.md) for its accepted version and profiles.
+The executable is `target/release/fastiplayer`. The repository is public. System `yt-dlp` is optional for supported web-page extraction; native direct sources do not require it. See the [media compatibility matrix](docs/web-media-compatibility-matrix.md) for its accepted version and profiles.
 
 ## Ordinary contributor checks
 
@@ -48,7 +50,7 @@ cargo check -p app-egui --no-default-features --locked
 
 Workspace tests need the native test dependencies above and a headless Vulkan adapter (Mesa lavapipe is used in CI). They include tests that reach rendered-frame readback or nonzero PCM, but do not qualify your physical display, VA-API driver, or speakers. Some tests create loopback servers; a sandbox that forbids sockets must allow the test process to bind locally. Do not change production behavior to accommodate a sandbox restriction.
 
-Command verification during S07 (2026-09-05): the clone command succeeded with existing maintainer access and fetched the same revision as the working checkout; the release build and all six ordinary checks above passed in the working checkout. This was not an anonymous public clone or a clean Ubuntu installation test. Build artifacts/dependencies were already available locally. The all-features tests were run with loopback sockets allowed; hardware acceptance was not rerun for these documentation changes.
+Earlier command-verification scope is preserved in the [dated launch documentation context](docs/history/public-guide-verification-2026-09-05.md).
 
 The complete pre-PR workflow is described in [CI](docs/continuous-integration.md): `scripts/pre-pr-checks.sh` delegates to `scripts/ci-checks.sh all`, adding dependency policy, all seven standalone upstream patch suites, patch integration, and MSRV. It needs Python 3, Rust 1.92.0, cargo-deny 0.20.2, and cargo-machete 0.9.2 in addition to the primary toolchain. Coverage has a separate [qualification workflow](docs/code-coverage.md); never hand-edit its machine-generated baseline to make a change pass.
 

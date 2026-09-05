@@ -1,6 +1,8 @@
 # Security policy
 
-Fastiplayer is in active development / pre-alpha. There is no stable or LTS security-support promise. Reports affecting current `main` and the `v0.1.0-alpha.1` development release line are welcome; fixes are expected on the current development line, without a guaranteed backport schedule or response SLA.
+**Early alpha · Active development · Linux-first · Source builds**
+
+Fastiplayer is unfinished software. There is no stable or LTS security-support promise. Reports affecting current `main` and the `v0.1.0-alpha.1` development release line are welcome; fixes are expected on the current development line, without a guaranteed backport schedule or response SLA.
 
 ## Report a vulnerability privately
 
