@@ -2069,3 +2069,6 @@ fn render_error_command_updates_player_error_snapshot() {
                 if error.kind == PlayerErrorKind::UnsupportedRenderFormat))
     );
 }
+
+#[path = "tests/queued_intent.rs"]
+mod queued_intent;

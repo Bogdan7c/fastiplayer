@@ -1,5 +1,6 @@
 //! Управляемая EOF publication доводит настоящий VP9 кадр до WGPU readback.
 
+use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,7 +30,9 @@ impl Demuxer for EndedDemuxer {
 /// Управляет только очередностью публикации; ресурс и release принадлежат real backend.
 struct ScheduledEofDecoder {
     decoder: Box<VideoBackendDecoderThreadHandle>,
-    frame: Mutex<Option<DecodedFrame>>,
+    tail_decoder: Box<VideoBackendDecoderThreadHandle>,
+    frames: Mutex<VecDeque<DecodedFrame>>,
+    released_tail_frames: AtomicUsize,
     state_reads: AtomicUsize,
     begin_calls: AtomicUsize,
 }
@@ -58,7 +61,7 @@ impl video_core::VideoDecoderThreadHandle for ScheduledEofDecoder {
                 generation: DECODE_GENERATION,
             }
         } else {
-            assert!(self.frame.lock().expect("frame mailbox").is_none());
+            assert!(self.frames.lock().expect("frame mailbox").is_empty());
             VideoDecoderEndOfStreamDrainState::Drained {
                 generation: DECODE_GENERATION,
             }
@@ -68,10 +71,12 @@ impl video_core::VideoDecoderThreadHandle for ScheduledEofDecoder {
         if self.state_reads.load(Ordering::SeqCst) == 0 {
             return None;
         }
-        self.frame.lock().expect("frame mailbox").take()
+        self.frames.lock().expect("frame mailbox").pop_front()
     }
     fn release_frame(&self, handle: video_core::FrameResourceHandle) {
-        self.decoder.release_frame(handle);
+        // Лишний кадр принадлежит второму настоящему decoder pool.
+        self.tail_decoder.release_frame(handle);
+        self.released_tail_frames.fetch_add(1, Ordering::SeqCst);
     }
     fn try_recv_diagnostic_event(&self) -> Option<video_core::VideoDecoderDiagnosticEvent> {
         self.decoder.try_recv_diagnostic_event()
@@ -122,11 +127,25 @@ fn pending_eof_publication_reaches_real_wgpu_submit_readback_and_release() {
         .expect("VP9 track");
     let mut renderer = OffscreenWgpuHarness::new();
     let (decoder, provider) = open_decoder(track, &renderer.queue, VideoCodec::Vp9);
+    let (tail_decoder, _) = open_decoder(track, &renderer.queue, VideoCodec::Vp9);
     let frame = decode_first_frame(demuxer.as_mut(), decoder.as_ref());
-    // Только test mailbox удерживает уже декодированный кадр до первого pending poll.
+    // Первый helper полностью drain-ит fixture; второй независимый decoder
+    // даёт настоящий дополнительный ресурс, не повторяя EOS завершённого worker-а.
+    let reopened = crate::direct_progressive_open::open_direct_media(
+        &classified,
+        &config.network,
+        &config.player.demux,
+        CancellationToken::new(),
+    )
+    .expect("reopen WebM for second real frame");
+    let (mut tail_demuxer, _tail_recovery) = reopened.into_runtime_parts();
+    let second_frame = decode_first_frame(tail_demuxer.as_mut(), tail_decoder.as_ref());
+    // Два реальных кадра гарантируют release лишнего EOF tail, а первый доходит до render.
     let scheduled = ScheduledEofDecoder {
         decoder,
-        frame: Mutex::new(Some(frame)),
+        tail_decoder,
+        frames: Mutex::new(VecDeque::from([frame, second_frame])),
+        released_tail_frames: AtomicUsize::new(0),
         state_reads: AtomicUsize::new(0),
         begin_calls: AtomicUsize::new(0),
     };
@@ -136,4 +155,5 @@ fn pending_eof_publication_reaches_real_wgpu_submit_readback_and_release() {
     assert!(renderer.submit_and_release(&materializer, &provider, tail));
     assert_eq!(scheduled.state_reads.load(Ordering::SeqCst), 2);
     assert_eq!(scheduled.begin_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(scheduled.released_tail_frames.load(Ordering::SeqCst), 1);
 }

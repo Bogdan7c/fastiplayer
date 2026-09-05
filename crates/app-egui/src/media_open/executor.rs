@@ -438,7 +438,7 @@ mod shutdown_tests {
         let executor = PreparationExecutor::new_single_worker(AppWakePort::disconnected(
             AppWakeOwner::PlaylistRuntime,
         ));
-        let first_started = Arc::new(AtomicBool::new(false));
+        let first_started = Arc::new(StartLatch::new(false));
         let release_first = Arc::new(AtomicBool::new(false));
         let first_started_by_worker = Arc::clone(&first_started);
         let release_first_for_worker = Arc::clone(&release_first);
@@ -606,3 +606,10 @@ mod shutdown_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "executor_start_observation.rs"]
+mod start_observation;
+
+#[cfg(test)]
+use start_observation::StartLatch;

@@ -340,3 +340,6 @@ fn worker_panic_keeps_exact_generation_for_owner_correlation() {
         }
     ));
 }
+
+#[path = "tests/pending_writer.rs"]
+mod pending_writer;

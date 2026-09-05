@@ -1073,3 +1073,6 @@ fn decode_base64(encoded: &str) -> Vec<u8> {
     }
     decoded
 }
+
+#[path = "live_runtime/no_suffix.rs"]
+mod no_suffix;

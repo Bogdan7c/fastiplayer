@@ -22,3 +22,6 @@
 - PASS focused: `playlist-io` 69, `atomic-file-store` 8, `ui-artwork-egui` 29, `service-ytdlp` locator 5; S11 runtime tests покрывают atomic/durability, sensitive no-touch + 0600, cancel/stale/conflict/shutdown/panic и no queue/revision mutation.
 - PASS: strict app Clippy default/all-features и no-default (`-D warnings`, только documented baseline allowance `clippy::large_enum_variant`), strict artwork/service Clippy, Rust 1.96 locked workspace all-targets/all-features check, rustfmt, `git diff --check`, refactor guardrails.
 - Serena diagnostics чистые для tracked touched boundaries; новые untracked `export_io/tests.rs` и `toolbar/export_menu.rs` временно дали stale unresolved/unlinked IDE signals, тогда как Cargo test/check/Clippy authoritative и полностью зелёные.
+
+
+S12 deterministic lifecycle coverage: export_io/tests/pending_writer.rs holds a real writer before mutation using channel rendezvous; owner.drain must report pending and retain ownership. After release, the actual atomic writer produces durable M3U8 bytes, owner returns exactly one Written terminal and closes the job. Production export contracts unchanged. This removes scheduling dependence from StillRunning and owner pending drain paths.
