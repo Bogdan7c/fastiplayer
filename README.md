@@ -18,11 +18,11 @@ Fastiplayer already plays local and network media. The everyday experience is st
 
 ## See it in action
 
-[![Fastiplayer playing Big Buck Bunny](docs/assets/fastiplayer-main.png)](docs/demo.md)
+[![Fastiplayer playing Big Buck Bunny](docs/assets/fastiplayer-playback.png)](docs/demo.md)
 
-**[Watch the short demo →](https://github.com/Bogdan7c/fastiplayer/blob/main/docs/assets/fastiplayer-demo.mp4)** — open a local file, play, pause, resume, seek, and explore the queue and settings.
+**[Download the 39-second demo → (MP4, 5.3 MB)](https://github.com/Bogdan7c/fastiplayer/raw/refs/heads/main/docs/assets/fastiplayer-demo.mp4)** — open a local file, play, pause, resume, seek, and explore the queue and settings.
 
-Real application captures from the current development computer, with English captions in the demo. Movie imagery: © 2008 Blender Foundation, CC BY 3.0. See [more screenshots](docs/demo.md) and [media attribution and capture details](docs/assets/README.md). These captures are separate from the historical ThinkPad T480s measurements.
+Download the MP4 and open it in your player; GitHub does not provide an inline preview for this file. These are real application captures from the current development computer, with English captions in the demo. Movie imagery: © 2008 Blender Foundation, CC BY 3.0. See [more screenshots](docs/demo.md) and [media attribution and capture details](docs/assets/README.md). These captures are separate from the historical ThinkPad T480s measurements.
 
 ## What guides the project
 

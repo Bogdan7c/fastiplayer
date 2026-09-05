@@ -2,13 +2,15 @@
 
 **Early alpha · Active development · Linux-first · Source builds**
 
-[Watch the 39-second MP4 demo](https://github.com/Bogdan7c/fastiplayer/blob/main/docs/assets/fastiplayer-demo.mp4) · [Download the MP4](https://github.com/Bogdan7c/fastiplayer/raw/refs/heads/main/docs/assets/fastiplayer-demo.mp4) · [Build and run](../README.md#quick-start)
+[Download the 39-second demo (MP4, 5.3 MB)](https://github.com/Bogdan7c/fastiplayer/raw/refs/heads/main/docs/assets/fastiplayer-demo.mp4) · [Build and run](../README.md#quick-start)
+
+Download the MP4 and open it in your player. GitHub does not provide an inline preview for this file.
 
 This is the real application running on the current development computer. The video has English captions below the captured window. Its interface still includes Russian text; the settings design and localization remain roadmap work.
 
 ## Playback
 
-![Fastiplayer playing a local Big Buck Bunny excerpt with its timeline and playback controls visible](assets/fastiplayer-main.png)
+![Fastiplayer playing a local Big Buck Bunny excerpt with its timeline and playback controls visible](assets/fastiplayer-playback.png)
 
 Local H.264 video with AAC audio, using FFmpeg software decoding and the WGPU/Vulkan renderer. Pause preserves the picture; resume continues playback without a start instruction over the film.
 

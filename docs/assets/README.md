@@ -16,7 +16,7 @@ preserve the picture without that instruction.
 
 ## Published captures
 
-- `fastiplayer-main.png`: actual local playback with controls visible.
+- `fastiplayer-playback.png`: actual local playback with controls visible.
 - `fastiplayer-queue.png`: actual queue sidebar with two authorized excerpts.
 - `fastiplayer-settings.png`: actual audio settings sidebar during playback.
 - `fastiplayer-demo.mp4`: **39 seconds**, H.264/yuv420p, **1280×816**, 30 fps
