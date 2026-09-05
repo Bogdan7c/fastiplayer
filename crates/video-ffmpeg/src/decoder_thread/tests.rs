@@ -11,6 +11,9 @@ use video_core::VideoDecoderActivityWaitOutcome;
 use super::test_support::*;
 use super::*;
 
+#[cfg(feature = "ffmpeg")]
+mod shutdown_priority;
+
 #[test]
 fn start_decoder_thread_reports_feature_disabled_without_ffmpeg() {
     if cfg!(feature = "ffmpeg") {
