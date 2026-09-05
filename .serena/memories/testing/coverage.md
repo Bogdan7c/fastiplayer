@@ -54,3 +54,8 @@ Legacy `coverage_metrics.py check-baseline-update` was deleted; v1 report-only h
 - Focused tests: `scripts/tests/test_coverage_baseline_update.py`, `test_coverage_stability.py`, `test_coverage_metrics.py`, runner/inventory/quarantine/publication suites.
 - CI wiring oracle: `scripts/tests/test_s42_release_runner.py::S42ReleaseRunnerTests::test_coverage_check_composes_stable_preflight_suite_and_ratchet`; pure canonical workflow parser: `scripts/tests/coverage_workflow_contract.py`.
 - Human contract: `docs/code-coverage.md`; CI overview: `docs/continuous-integration.md`.
+
+
+## S12 diagnostic finding (2026-09-05; fix pending)
+
+LLVM 22.1.2 combined multi-object export can erase executed coverage based on object order. Reproduced with immutable aud005_packet_ack_loss-f0d69a04cd253e17 and matroska_decode_requirement-1097bd05d94baaa3 binaries at aa30af3d: identical merged profile, codec-core ChromaSubsampling::from_matroska_subsampling count is 0 with the former object first and 6 with the latter first (6 when exported alone). All measured tests passed. This supersedes constant-folding-only explanation of the S12 codec loss. No policy/baseline/workflow fix installed. Do not paper over by sorting test names or lowering baseline. Proposed per-executable export with exact coordinate union needs owner architectural decision and explicit methodology/baseline qualification. Private global S11/S12 handoff holds full diagnostic paths and pending status; public main remains 38ac21c, alpha unreleased.
