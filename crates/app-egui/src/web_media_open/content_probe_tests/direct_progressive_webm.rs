@@ -139,7 +139,7 @@ impl OffscreenWgpuHarness {
         frame: DecodedFrame,
     ) -> bool {
         let resource_handle = frame.resource_handle;
-        let uploaded_views = match materializer.try_host_planar_texture_view_lookup(&frame) {
+        let uploaded_views = match wait_for_host_planar_texture_views(materializer, &frame) {
             HostPlanarWgpuTextureViewLookup::Ready { views, .. } => views,
             HostPlanarWgpuTextureViewLookup::Busy { .. } => {
                 panic!("HostPlanar materializer неожиданно занят")
@@ -511,3 +511,7 @@ fn n14b_lifecycle_http_webm_close_restart_reaches_submitted_readback_without_ext
 #[cfg(feature = "ffmpeg")]
 #[path = "tests/eof_render.rs"]
 mod eof_render;
+
+#[path = "tests/materialization_backpressure.rs"]
+mod materialization_backpressure;
+use materialization_backpressure::wait_for_host_planar_texture_views;

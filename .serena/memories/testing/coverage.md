@@ -92,3 +92,6 @@ The first 61ec39ea local cohort passed all tests and had regressions=[], but fai
 
 
 S12 d60960d0 hosted run failed during a service-ytdlp test, before cohort publication: spy expected one primary process but counted two OS spawn attempts. Test-only invocation spy now records real Started PID / Failed errno per attempt and separately validates successful invocations, allowing only the existing ETXTBSY retry with preserved identity. Real executable-writer consumer proves OS failure→production retry→parsed snapshot→one created process. See media-services/native-web-ingress-n03-2026-08-31. No production/baseline/policy changes; fresh exact-SHA qualification required. d609 local check1 PASS remains historical; second check was cancelled after remote failure.
+
+
+Fastiplayer rename repeatability exposed a test-owned HostPlanar descriptor Busy race in direct HTTP WebM close/restart acceptance. The bounded offscreen consumer correction and deterministic real-render regression live in `mem:testing/webm-materializer-backpressure-2026-09-05`. No baseline/policy/ledger change is authorized by this failure; runtime outcomes are recorded in `mem:global/fastiplayer-rename-verification-2026-09-05`.
