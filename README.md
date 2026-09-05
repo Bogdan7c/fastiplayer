@@ -160,29 +160,29 @@ Read [CI](docs/continuous-integration.md), [coverage](docs/code-coverage.md), [m
 
 ## Roadmap to 1.0
 
-The implementation order is fixed; these are planned milestones, not current capabilities:
+The implementation order is fixed in [milestone 1.0](https://github.com/Bogdan7c/rustiplayer/milestone/1); these are planned capabilities:
 
-1. Build a native Rust subtitle engine with a broad, published text/styled/bitmap format compatibility matrix.
-2. Add a browser media-handoff bridge and browser extension.
-3. Complete the cohesive application redesign, including replacement of the prototype settings UI.
-4. Make application colors and appearance fully configurable from settings.
-5. Add localization infrastructure and initial translations.
-6. Add an OpenGL ES 2.0 renderer for older Linux hardware.
-7. Add drag-and-drop for local files and URLs.
-8. Complete native Windows application support.
+1. [Build a native Rust subtitle engine with a broad, published text/styled/bitmap format compatibility matrix.](https://github.com/Bogdan7c/rustiplayer/issues/1)
+2. [Add a browser media-handoff bridge and browser extension.](https://github.com/Bogdan7c/rustiplayer/issues/2)
+3. [Complete the cohesive application redesign, including replacement of the prototype settings UI.](https://github.com/Bogdan7c/rustiplayer/issues/3)
+4. [Make application colors and appearance fully configurable from settings.](https://github.com/Bogdan7c/rustiplayer/issues/4)
+5. [Add localization infrastructure and initial translations.](https://github.com/Bogdan7c/rustiplayer/issues/5)
+6. [Add an OpenGL ES 2.0 renderer for older Linux hardware.](https://github.com/Bogdan7c/rustiplayer/issues/6)
+7. [Add drag-and-drop for local files and URLs.](https://github.com/Bogdan7c/rustiplayer/issues/7)
+8. [Complete native Windows application support.](https://github.com/Bogdan7c/rustiplayer/issues/8)
 
 macOS is outside the roadmap through 1.0.
 
 ## Contributing
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md) for build/check commands, issue selection, architecture boundaries, and separate hardware acceptance. [SUPPORT.md](SUPPORT.md) routes bugs, proposals, and questions; Discussions is planned for public launch (S12). Focused reproductions, testable fixes, and documentation improvements are useful contributions. [AI-assisted development](docs/ai-development.md) explains the optional maintainer workflow.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for build/check commands, issue selection, architecture boundaries, and separate hardware acceptance. [SUPPORT.md](SUPPORT.md) routes bugs, proposals, and questions; [Discussions](https://github.com/Bogdan7c/rustiplayer/discussions) is open for questions and ideas. Focused reproductions, testable fixes, and documentation improvements are useful contributions. [AI-assisted development](docs/ai-development.md) explains the optional maintainer workflow.
 
 ## Security
 
-Treat media, network manifests, native decoding, GPU imports, and upstream FFI as security-sensitive boundaries. See the [trust-boundary overview](ARCHITECTURE.md#trust-boundaries) and [dependency policy](docs/continuous-integration.md). Do not put credentials, private media URLs, or exploit details in public issues. Follow [SECURITY.md](SECURITY.md) for reporting instructions, including what to do while private reporting is unavailable. GitHub Private Vulnerability Reporting is planned for the public launch (S12) and is not claimed to be enabled yet.
+Treat media, network manifests, native decoding, GPU imports, and upstream FFI as security-sensitive boundaries. See the [trust-boundary overview](ARCHITECTURE.md#trust-boundaries) and [dependency policy](docs/continuous-integration.md). Do not put credentials, private media URLs, or exploit details in public issues. Follow [SECURITY.md](SECURITY.md) for reporting instructions, including what to do while private reporting is unavailable. [GitHub Private Vulnerability Reporting](https://github.com/Bogdan7c/rustiplayer/security/advisories/new) is enabled.
 
 ## Maintainer and license
 
-**Bogdan Korolyov ([Bogdan7c](https://github.com/Bogdan7c))** is the sole core maintainer. See [MAINTAINERS.md](MAINTAINERS.md) for ownership and the deliberately deferred Code of Conduct pending a separate private enforcement contact. The [changelog](CHANGELOG.md) and [local alpha release draft](docs/releases/v0.1.0-alpha.1.md) describe the planned source-only first development release; no release is published by these documents.
+**Bogdan Korolyov ([Bogdan7c](https://github.com/Bogdan7c))** is the sole core maintainer. See [MAINTAINERS.md](MAINTAINERS.md) for ownership and the deliberately deferred Code of Conduct pending a separate private enforcement contact. The [changelog](CHANGELOG.md) and [alpha release notes](docs/releases/v0.1.0-alpha.1.md) describe the source-only first development release. Published versions appear on the [Releases page](https://github.com/Bogdan7c/rustiplayer/releases).
 
 First-party workspace code is [MIT licensed](LICENSE). The seven [patched upstream crates](docs/dependency-patches.toml) retain their own licenses and notices: BSD-3-Clause for cros-codecs/cros-libva, MPL-2.0 for the four Symphonia patches, and MIT for wayland-scanner.

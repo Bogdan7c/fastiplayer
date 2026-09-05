@@ -8,9 +8,9 @@ Notable project changes are recorded here in a Keep a Changelog-like structure. 
 
 - Continue the ordered [roadmap to 1.0](README.md#roadmap-to-10); roadmap entries are not shipped features.
 
-## [0.1.0-alpha.1] — Unreleased draft
+## [0.1.0-alpha.1]
 
-Planned first public development release, with tag name `v0.1.0-alpha.1`. Linux-first, source-only, active development / pre-alpha. No tag, release date, downloadable binary, or published release is asserted here. Workspace packages and their internal version requirements are aligned to `0.1.0-alpha.1`; the Cargo lockfile is updated with Cargo.
+First public development release scope, with tag name `v0.1.0-alpha.1`: Linux-first, source-only, active development / pre-alpha. Publication status and generated source archives are available on the [Releases page](https://github.com/Bogdan7c/rustiplayer/releases); no portable binaries are provided. Workspace packages and their internal version requirements are aligned to `0.1.0-alpha.1`; the Cargo lockfile is updated with Cargo.
 
 ### Added
 
@@ -32,4 +32,4 @@ Planned first public development release, with tag name `v0.1.0-alpha.1`. Linux-
 - Streaming support is profile-limited; DRM and several protocol variants are unsupported. The UI contains Russian text and remains under development.
 - T480s results describe the recorded S08 binary and specific workloads, not a new alpha measurement or perfect 60 FPS. AV1 is software-only on this machine; equivalent AV1 VLC output was not established. N15 ingress remains a separate experiment.
 
-See the [draft release notes](docs/releases/v0.1.0-alpha.1.md), [accepted profiles](docs/web-media-compatibility-matrix.md), and [N15 evidence and limitations](docs/native-web-ingress-n15-acceptance.md) for the exact scope.
+See the [release notes](docs/releases/v0.1.0-alpha.1.md), [accepted profiles](docs/web-media-compatibility-matrix.md), and [N15 evidence and limitations](docs/native-web-ingress-n15-acceptance.md) for the exact scope.

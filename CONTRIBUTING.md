@@ -6,7 +6,7 @@ Rustiplayer is Linux-first software in active development / pre-alpha. Reproduci
 
 1. Read the [current limitations and ordered roadmap](README.md#current-limitations), then search existing issues and pull requests before opening another one.
 2. Report broken behavior through the [bug report form](https://github.com/Bogdan7c/rustiplayer/issues/new?template=bug_report.yml). Include a small, shareable reproduction and the environment that actually failed.
-3. Use the [feature request form](https://github.com/Bogdan7c/rustiplayer/issues/new?template=feature_request.yml) for a concrete proposal with a user problem, expected behavior, and scope. General questions and exploratory ideas belong in Discussions once enabled; see [SUPPORT.md](SUPPORT.md) for the current planned status.
+3. Use the [feature request form](https://github.com/Bogdan7c/rustiplayer/issues/new?template=feature_request.yml) for a concrete proposal with a user problem, expected behavior, and scope. General questions and exploratory ideas belong in [Discussions](https://github.com/Bogdan7c/rustiplayer/discussions); see [SUPPORT.md](SUPPORT.md) for routing.
 4. Prefer a bounded issue with clear expected behavior and an identifiable owning module. Confirm scope with the maintainer before a substantial feature or architectural change. A large roadmap issue is not automatically a beginner task; `good first issue` is appropriate only for an actually scoped small task. No such issue or assignment is promised by this guide.
 5. For suspected vulnerabilities, follow [SECURITY.md](SECURITY.md); do not use a public issue or pull request to disclose them.
 

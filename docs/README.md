@@ -13,11 +13,11 @@ Start with the English [project overview and build instructions](../README.md) a
 | [Contributor/agent rules](../AGENTS.md) | EN | Engineering conventions and owner decision boundaries |
 | [AI-assisted development](ai-development.md) | EN | Optional Codex/Serena workflow; not a build requirement |
 | [Contributing](../CONTRIBUTING.md) | EN | Issue selection, verified commands, architecture and separate hardware acceptance |
-| [Security](../SECURITY.md) | EN | Untrusted input and private reporting policy; channel planned for S12 |
-| [Support](../SUPPORT.md) | EN | Bugs/proposals routing; Discussions planned for S12 |
+| [Security](../SECURITY.md) | EN | Untrusted input and private reporting policy; private reporting enabled |
+| [Support](../SUPPORT.md) | EN | Bugs/proposals routing; Discussions enabled |
 | [Maintainers](../MAINTAINERS.md) | EN | Sole core maintainer and deliberately deferred conduct enforcement contact |
-| [Changelog](../CHANGELOG.md) | EN | Development history and unreleased alpha section |
-| [Alpha release notes draft](releases/v0.1.0-alpha.1.md) | EN | Local source-only prerelease draft, evidence and publication handoff |
+| [Changelog](../CHANGELOG.md) | EN | Development history and alpha release scope |
+| [Alpha release notes](releases/v0.1.0-alpha.1.md) | EN | Source-only prerelease scope, evidence and limitations |
 | [Issue forms and chooser](../.github/ISSUE_TEMPLATE) | EN | Bug/feature forms and support/security routes (YAML; internal comment in RU) |
 | [Pull request template](../.github/pull_request_template.md) | EN | Problem, scope, contributor checks and hardware evidence |
 | [Code owners](../.github/CODEOWNERS) | RU comment / GitHub syntax | Global review owner Bogdan7c |

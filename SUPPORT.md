@@ -6,10 +6,10 @@ Rustiplayer is Linux-first, active development / pre-alpha software maintained b
 | --- | --- |
 | Reproducible bug | Search existing issues, then use the [bug report form](https://github.com/Bogdan7c/rustiplayer/issues/new?template=bug_report.yml) |
 | Concrete feature proposal | Search the roadmap/issues, then use the [feature request form](https://github.com/Bogdan7c/rustiplayer/issues/new?template=feature_request.yml) |
-| Usage question or exploratory idea | GitHub Discussions, **planned for public launch (S12), not yet claimed enabled** |
-| Suspected vulnerability | Follow [SECURITY.md](SECURITY.md); GitHub Private Vulnerability Reporting is **planned for S12**, with instructions there for an unavailable channel |
+| Usage question or exploratory idea | [GitHub Discussions](https://github.com/Bogdan7c/rustiplayer/discussions) |
+| Suspected vulnerability | Follow [SECURITY.md](SECURITY.md); GitHub Private Vulnerability Reporting is enabled, with fallback instructions there if the channel is unavailable |
 
-Once Discussions is opened, use the repository's Discussions tab for questions and ideas. Until then, consult the [documentation index](docs/README.md); there is no dedicated general-question channel promised here. Use the feature form only when the idea is concrete enough to describe a user problem and expected behavior.
+Use [Discussions](https://github.com/Bogdan7c/rustiplayer/discussions) for questions and exploratory ideas, and consult the [documentation index](docs/README.md). Use the feature form only when the idea is concrete enough to describe a user problem and expected behavior.
 
 Bug reports should provide the exact revision, OS, CPU/GPU, driver/Mesa/libva versions, input type, codec/profile, reproduction steps, and sanitized logs. Write `unknown` or `not applicable` with a reason when a field cannot be determined. A small authorized reproduction is more useful than an inaccessible private streaming link.
 
