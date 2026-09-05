@@ -1,0 +1,7 @@
+# Deterministic metadata Pending consumer test
+
+`crates/app-egui/src/playlist_runtime/discovery/yt_dlp_metadata/tests/pending_completion.rs` exercises the real metadata owner and playlist controller. A gated resolver signals worker entry and cannot complete until the test has drained Pending and coalesced a repeated demand. Releasing the gate must update the same queue item's title exactly once. This ensures Pending retains the active job and reaches the actual queue consumer, independent of CPU scheduling. The worker is released before assertions to avoid blocking teardown on assertion failure.
+
+The previous asynchronous tests could finish the resolver before the first drain, leaving the qualified production Pending line unexecuted in a full coverage cohort. Production state/API and coverage baseline/policy/ledger remain unchanged; the new test resides in an already excluded tests module.
+
+Focused command: `cargo test -p app-egui --all-features --locked pending_drain_retains_exact_job`. Run full pre-PR and coverage sequentially; concurrent trybuild builds can contaminate the frozen coverage target. Final qualification outcomes: `mem:global/fastiplayer-rename-verification-2026-09-05`.

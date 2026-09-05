@@ -28,8 +28,9 @@ const MATERIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Production materializer намеренно не блокируется: повторная попытка принадлежит
 /// consumer-у. В offscreen harness предыдущий GPU submit уже ожидается отдельно;
 /// здесь yield даёт владельцу CPU-пула закончить работу без произвольного sleep.
-/// Отдельный tests-модуль сохраняет квалифицированную геометрию исходного harness.
-pub(super) fn wait_for_host_planar_texture_views(
+/// Отдельный tests-модуль и короткое имя callable сохраняют квалифицированные
+/// координаты исходного harness, включая span самого вызываемого выражения.
+pub(super) fn wait_for_yuv(
     materializer: &HostPlanarWgpuFrameMaterializer,
     frame: &DecodedFrame,
 ) -> HostPlanarWgpuTextureViewLookup {

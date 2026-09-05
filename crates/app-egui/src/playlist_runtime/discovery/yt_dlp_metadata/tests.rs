@@ -263,3 +263,5 @@ fn unavailable_executor_reports_typed_outcome_without_running_resolver() {
         None
     );
 }
+
+mod pending_completion;
