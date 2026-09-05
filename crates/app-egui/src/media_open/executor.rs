@@ -608,7 +608,7 @@ mod shutdown_tests {
 }
 
 #[cfg(test)]
-#[path = "executor_start_observation.rs"]
+#[path = "tests/executor_start_observation.rs"]
 mod start_observation;
 
 #[cfg(test)]
