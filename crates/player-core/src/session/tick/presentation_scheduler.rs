@@ -341,6 +341,19 @@ pub(super) fn present_live_scrub_preroll_roll(
     session: &mut PlayerSession,
     tick_result: &mut PlayerTickResult,
 ) -> bool {
+    // После landing держим цель до следующего drag/release. Запаузенный audio
+    // clock здесь ожидаем: обычная stall recovery иначе прокрутила бы очередь
+    // вплоть до EOF, хотя пользователь продолжает удерживать одну позицию.
+    if session.seek_runtime.active_seek_landing_is_live_scrub()
+        && session
+            .seek_runtime
+            .active_commit()
+            .is_some_and(|commit| session.seek_presented_frame_ready(commit))
+    {
+        repeat_present_video_frame(session, tick_result, None);
+        return true;
+    }
+
     if !session.active_seek_presents_preroll_progressively() {
         return false;
     }

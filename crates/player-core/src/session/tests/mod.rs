@@ -67,6 +67,7 @@ mod prepared_demux_seek_av;
 mod prepared_initial_position;
 mod scrub;
 mod scrub_driver;
+mod scrub_hold;
 mod seek_commit_gates;
 mod seek_completion;
 mod seek_diagnostics;

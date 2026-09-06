@@ -13,6 +13,7 @@
 - Focused coverage in `crates/player-core/src/session/tests/scrub.rs`: missing preview, policy-specific simple fallback, valid visible-vs-latest targets, stale scrub generation, source/backend/track mismatch, active live reuse, and decoder flush error.
 - Verified with `cargo test -p player-core` (478 tests), `cargo test -p app-egui` (241 tests), locked workspace check, strict Clippy for player/app, fmt, and refactor guardrails.
 - Related base knowledge: `mem:player-core/core`, `mem:frame-server/core`.
+- Live drag target hold/backpressure fix (2026-09-06): `mem:player-core/live-drag-target-hold-2026-09-06`. Во время удержания landing scheduler не применяет audio-stall recovery, decoder I/O сохраняет bounded queue, tiny forward extension переиспользует уже подходящий presented frame. Release policy не менялась.
 
 
 ## S13 playback-window уточнение (2026-07-20)

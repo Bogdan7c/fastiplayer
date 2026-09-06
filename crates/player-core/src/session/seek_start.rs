@@ -499,6 +499,13 @@ impl PlayerSession {
 
         self.enter_seek_landing_public_scrubbing(target_position);
 
+        // Generation не менялся: уже показанный target-or-after кадр остаётся
+        // landing для маленького сдвига внутри его интервала. Повторяем evidence
+        // для новой цели, иначе каждый drag event принудительно съедает ещё кадр.
+        if let Some(frame_pts) = self.pipeline.present_video_frame().map(|frame| frame.pts) {
+            self.note_presented_frame_for_seek(frame_pts);
+        }
+
         debug!(
             kind = "seek",
             old_target_ms = current_target.as_millis(),
