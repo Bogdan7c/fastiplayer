@@ -11,3 +11,7 @@
 - General tool/equipment support routes to Discussions. No FUNDING/payment/equipment lists, team recruiting, new release, sponsor messages, profile edits or new Discussions posts in this task.
 - Existing source-only v0.1.0-alpha.1 tag/archive must remain unchanged. Ordinary direct main pushes are authorized for this session after verification. Mandatory CI and Toolchain policy must be checked on final published SHA. Manual coverage remains separate; no baseline/gates changed.
 - UI behavior/test location: `mem:app-egui/center-overlay-state-2026-09-05`. Full final runtime/remote outcomes should go into a separate handoff after publication so status updates do not invalidate the qualified SHA.
+
+
+## Замена трейлера 2026-09-06
+Актуальная демонстрация — публичный YouTube https://www.youtube.com/watch?v=eMfzBhpSF8M на @bogdan7c: 72 s, 1080p60, настоящий OBS → Resolve монтаж, исходный звук Sintel CC BY 3.0. Новые README/demo/assets/vision заменяют старую немую демонстрацию; описание выше сохраняет исторический контекст S12.5. Полные параметры, текущий статус обложки и артефакты: `mem:public-launch/s125-trailer-preparation-blocked-2026-09-06`. Live drag исправлен отдельным агентом в 0638b476; агент самостоятельно выполнил проверки, commit и push. Не повторять расследование бага как часть упаковки.

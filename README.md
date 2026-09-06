@@ -18,11 +18,11 @@ Fastiplayer already plays local and network media. The everyday experience is st
 
 ## See it in action
 
-[![Fastiplayer playing Big Buck Bunny](docs/assets/fastiplayer-playback.png)](docs/demo.md)
+[![Watch Fastiplayer: live scrubbing, speed and real-time color — 72-second trailer](docs/assets/fastiplayer-trailer-cover.png)](https://www.youtube.com/watch?v=eMfzBhpSF8M)
 
-**[Download the 39-second demo → (MP4, 5.3 MB)](https://github.com/Bogdan7c/fastiplayer/raw/refs/heads/main/docs/assets/fastiplayer-demo.mp4)** — open a local file, play, pause, resume, seek, and explore the queue and settings.
+**[Watch the 72-second trailer on YouTube →](https://www.youtube.com/watch?v=eMfzBhpSF8M)** — **1080p60, with sound.** Change playback speed, drag forward and backward through the main picture, adjust video color during playback, and see the panels and controls move.
 
-Download the MP4 and open it in your player; GitHub does not provide an inline preview for this file. These are real application captures from the current development computer, with English captions in the demo. Movie imagery: © 2008 Blender Foundation, CC BY 3.0. See [more screenshots](docs/demo.md) and [media attribution and capture details](docs/assets/README.md). These captures are separate from the historical ThinkPad T480s measurements.
+Real application footage recorded in OBS and edited in DaVinci Resolve, with continuous demonstrations at their captured speed. The soundtrack is the player's actual output from the authorized film, with no added music or voice-over. Film and audio: **Sintel © copyright Blender Foundation**, CC BY 3.0. See [timecodes and screenshots](docs/demo.md) and [attribution and capture details](docs/assets/README.md). This is a product demonstration on the current development computer, separate from the historical ThinkPad T480s measurements.
 
 ## What guides the project
 
@@ -37,6 +37,10 @@ Read the [vision](docs/vision.md) for the longer view and the multimedia archite
 ## What works today
 
 - **Local video and audio**, playback controls, seeking, and stream selection within supported media profiles. Video uses VA-API hardware decoding where supported, or FFmpeg software decoding, with WGPU/Vulkan rendering.
+- **Playback speed with pitch-preserving time stretching.** Hear the pace change from 1.0× to 1.5× and back in the trailer; pause preserves the picture and resume continues playback.
+- **Live timeline scrubbing.** Drag in either direction and watch the main picture follow, then release to resume playback. Ordinary playback audio pauses during the drag; this is not reverse-audio scrubbing. File drag-and-drop remains on the roadmap.
+- **Real-time video color controls**, including saturation and contrast with live preview and reset. These adjust the video image; fuller customization of the application's appearance is planned separately.
+- **Animated panels and controls** connect playback, queue navigation, and settings within the same window. The interface and settings design are still evolving.
 - **Network playback:** native progressive HTTP(S)/FTP(S), HLS and DASH VOD/live/DVR, and supported static Smooth Streaming and HDS profiles. Web-page extraction can use optional system `yt-dlp`.
 - **A persistent queue:** M3U/M3U8, XSPF, and CUE import/export, queue navigation, and playback-position restore. [See the queue](docs/demo.md#queue).
 - **Runtime settings**, live previews where supported, and controlled Apply/rollback. Some changes rebuild the affected playback component; busy operations can require a retry. [See settings](docs/demo.md#settings).

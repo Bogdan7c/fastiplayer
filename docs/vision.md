@@ -4,7 +4,7 @@ Watching a film, listening to an album, or opening a stream should feel easy. Fa
 
 **Early alpha · Active development · Linux-first · Source builds**
 
-That is the direction, and the alpha is a working step toward it. Local and supported network playback, queue management, runtime settings, and GPU media processing already exist. The interface, compatibility, installation experience, and platform coverage are still developing. [See the actual application](demo.md), [build it](../README.md#quick-start), or check the [current limitations](../README.md#current-limitations).
+That is the direction, and the alpha is a working step toward it. Live timeline scrubbing, playback speed control, real-time video color adjustments, animated controls, local and supported network playback, and queue management already exist. The interface, compatibility, installation experience, and platform coverage are still developing. [Watch the 72-second trailer with sound](https://www.youtube.com/watch?v=eMfzBhpSF8M), [see the demonstrations in detail](demo.md), [build it](../README.md#quick-start), or check the [current limitations](../README.md#current-limitations).
 
 ## Lightness with evidence
 
@@ -16,13 +16,13 @@ These are engineering priorities, not a promise of universally lower resource us
 
 The interface should give the media space while making the next action easy to find. Playback controls, timeline interaction, the queue, and settings should feel like parts of one application. Small details matter: pausing a film should preserve the image without adding an irrelevant instruction to start playback.
 
-The current application demonstrates that intent, but does not yet deliver the finished design everywhere. Completing the cohesive redesign, including the prototype settings interface, is an explicit roadmap item. Responsiveness also needs functional checks: a source opening successfully is useful only when its video reaches rendering or its audio reaches the consumer.
+The current application demonstrates that intent through live timeline scrubbing: the main picture follows a drag in either direction, and playback continues after release. Animated panels and controls connect the queue and settings to playback. The [trailer](demo.md) shows these interactions in continuous, real-time captures. Completing the cohesive redesign, including the prototype settings interface, remains an explicit roadmap item. Responsiveness also needs functional checks: a source opening successfully is useful only when its video reaches rendering or its audio reaches the consumer.
 
 ## Control without making every task complicated
 
-People should be able to adjust the player to their needs. Today there are runtime settings, live previews where supported, and explicit Apply/rollback behavior. The component that owns a setting validates and applies it; changes that require a rebuild use controlled reconfiguration.
+People should be able to adjust the player to their needs. Playback speed uses pitch-preserving time stretching. Video saturation, contrast, and other color controls preview their effect during playback and can be reset. Runtime settings provide live previews where supported and explicit Apply/rollback behavior. The component that owns a setting validates and applies it; changes that require a rebuild use controlled reconfiguration.
 
-Fuller control over application colors and appearance is planned. Localization and a smoother installation experience are also part of making the player approachable in everyday use. Easy use out of the box is a development direction; the current release requires a source build.
+Fuller control over application colors and appearance is planned separately from the existing video color correction. Localization and a smoother installation experience are also part of making the player approachable in everyday use. Easy use out of the box is a development direction; the current release requires a source build.
 
 ## Capable playback, understandable choices
 

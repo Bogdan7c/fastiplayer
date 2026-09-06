@@ -2,43 +2,49 @@
 
 **Early alpha · Active development · Linux-first · Source builds**
 
-[Download the 39-second demo (MP4, 5.3 MB)](https://github.com/Bogdan7c/fastiplayer/raw/refs/heads/main/docs/assets/fastiplayer-demo.mp4) · [Build and run](../README.md#quick-start)
+[![Watch the Fastiplayer trailer: live scrubbing, speed and color](assets/fastiplayer-trailer-cover.png)](https://www.youtube.com/watch?v=eMfzBhpSF8M)
 
-Download the MP4 and open it in your player. GitHub does not provide an inline preview for this file.
+**[Watch on YouTube — 72 seconds, 1080p60, with sound](https://www.youtube.com/watch?v=eMfzBhpSF8M)** · [Build and run](../README.md#quick-start)
 
-This is the real application running on the current development computer. The video has English captions below the captured window. Its interface still includes Russian text; the settings design and localization remain roadmap work.
+This is the real application on the current development computer, recorded in OBS Studio and edited in DaVinci Resolve. Each feature is shown in a continuous segment at its captured speed. English titles sit clear of the timeline and color controls. The interface still includes Russian text; its settings design and localization remain roadmap work.
+
+## What the trailer shows
+
+| Time | Interaction and result |
+| --- | --- |
+| [00:00–00:05](https://www.youtube.com/watch?v=eMfzBhpSF8M&t=0s) | Playback in your hands: film playback and movement of the queue panel. |
+| [00:05–00:23](https://www.youtube.com/watch?v=eMfzBhpSF8M&t=5s) | Playback speed rises from 1.0× to 1.5× and returns to 1.0× with the player's original audio output. Pause keeps the picture; resume continues without a start instruction over the film. |
+| [00:23–00:39](https://www.youtube.com/watch?v=eMfzBhpSF8M&t=23s) | Live timeline scrubbing: a continuous forward, backward, and forward drag changes the main picture; release resumes playback. |
+| [00:39–00:57](https://www.youtube.com/watch?v=eMfzBhpSF8M&t=39s) | Real-time video color: reduce saturation to monochrome, increase it, reset, change contrast, and reset again while the film keeps playing. |
+| [00:57–01:07](https://www.youtube.com/watch?v=eMfzBhpSF8M&t=57s) | Queue and settings panels open and close; playback controls animate as their state changes. |
+| [01:07–01:12](https://www.youtube.com/watch?v=eMfzBhpSF8M&t=67s) | Fastiplayer, the current alpha status, and an invitation to explore the source on GitHub. |
+
+Speed control changes tempo through pitch-preserving time stretching. It is distinct from timeline dragging: ordinary playback audio pauses during a drag and resumes after release. The trailer does not claim reverse-audio scrubbing or a separate pitch-shift control. Live timeline scrubbing is already implemented; drag-and-drop for files and URLs remains future work.
+
+Video color controls adjust the film image. Fuller customization of the application's colors and appearance is a separate roadmap item. The color episode has no editorial color correction applied to the captured player image.
 
 ## Playback
 
-![Fastiplayer playing a local Big Buck Bunny excerpt with its timeline and playback controls visible](assets/fastiplayer-playback.png)
+![Fastiplayer playing Sintel with the main picture, timeline, and playback controls visible](assets/fastiplayer-playback.png)
 
-Local H.264 video with AAC audio, using FFmpeg software decoding and the WGPU/Vulkan renderer. Pause preserves the picture; resume continues playback without a start instruction over the film.
+Local H.264 video with AAC source audio, using VA-API hardware decoding and WGPU/Vulkan rendering. This frame follows the live timeline drag and shows resumed playback. The source film runs at 24 FPS; OBS captures the application at 60 FPS.
 
 ## Queue
 
-![Fastiplayer queue showing two local Big Buck Bunny excerpts alongside the playing video](assets/fastiplayer-queue.png)
+![Fastiplayer queue showing the authorized Sintel Trailer beside the playing film](assets/fastiplayer-queue.png)
 
-The queue shares the window with playback. These two authorized local excerpts demonstrate the existing queue interface; their names are the only media locators visible in the captures.
+The queue shares the window with playback. Only the public film name is visible; no local path appears. The trailer shows the panel opening and closing. Playlist import/export and persistence are working capabilities described in the [README](../README.md#what-works-today), but are not exercised in this short trailer.
 
 ## Settings
 
-![Fastiplayer runtime settings open to audio controls while the film remains visible](assets/fastiplayer-settings.png)
+![Fastiplayer live video color controls with saturation raised to 2.45 during playback](assets/fastiplayer-settings.png)
 
-Settings open in the same sidebar as the queue. Runtime Apply/rollback and live previews are available where supported; the demo shows opening the settings panel. It does not demonstrate a settings change or imply that the planned settings redesign is complete.
+The screenshot shows an intentionally strong saturation adjustment and its live effect. The trailer also shows monochrome, increased contrast, and restoration of the original values. Runtime settings still use the existing unfinished interface; this demonstration does not imply that the planned settings redesign is complete.
 
-## Video transcript
+## Sound and capture
 
-| Time | Action / caption |
-| --- | --- |
-| 00:00–00:05 | Open a local file. The system picker is outside the captured player window. |
-| 00:05–00:11 | Play local media. |
-| 00:11–00:14 | Pause and keep the picture. |
-| 00:14–00:19 | Resume playback. |
-| 00:19–00:23 | Seek with the timeline. |
-| 00:23–00:29 | Explore the persistent queue. |
-| 00:29–00:35 | Open runtime settings; the interface is still evolving. |
-| 00:35–00:39 | Fastiplayer — early alpha, Linux-first, source builds. |
+The only soundtrack is the actual player output from the licensed film. No background music, narration, microphone, or artificial interface sounds were added. Silence during dragging and the demonstrated pause reflects application behavior.
 
-The recording is silent; the player's audio pipeline was active at zero gain. The captured window runs at 1280×720, with an added caption band in the MP4. This is a product demonstration, not a frame-rate, latency, or resource benchmark.
+OBS captured the isolated player window at **1920×1080, 60 FPS**, with **PCM 24-bit / 48 kHz stereo**. Resolve assembled six video segments with their corresponding original audio, native English titles, and a short audio fade at the end. The recording was not sped up, interpolated, or color-graded to imitate application behavior. This is a product demonstration, not a latency, frame-delivery, or resource benchmark, and is separate from the historical ThinkPad T480s measurements.
 
-Movie imagery: **Big Buck Bunny**, © 2008 Blender Foundation / www.bigbuckbunny.org, licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). The film was excerpted and remuxed for playback; the screen recording adds the player interface and English captions. [Full attribution, environment, source revision, and checksums](assets/README.md).
+Film and audio: **Sintel © copyright Blender Foundation | durian.blender.org**, licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). Excerpts shown inside Fastiplayer; edited screen capture with English titles. [Full attribution, source revision, capture parameters, and checksums](assets/README.md).

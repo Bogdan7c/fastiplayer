@@ -1,89 +1,63 @@
 # Runtime assets and attribution
 
-These are genuine Fastiplayer captures made on **2026-09-05** on the current
-development computer: **AMD Ryzen 7 7840HS / Radeon 780M**, Linux
-**7.2.2-1-cachyos**, KDE Plasma Wayland session. The application ran through
-**XWayland**, with **FFmpeg software decoding** and **WGPU/Vulkan rendering**.
-The player window is **1280×720**. A separate temporary profile used audio volume
-**0.0**; audio decoding and output remained active (48 kHz, six-channel decoded
-AAC; the default device initialized stereo F32 output).
+The [72-second trailer](https://www.youtube.com/watch?v=eMfzBhpSF8M) and these genuine Fastiplayer captures were made on **2026-09-06** on the current development computer: **AMD Ryzen 7 7840HS / Radeon 780M**, Linux **7.2.2-1-cachyos**, KDE Plasma Wayland. The player used **VA-API H.264 hardware decoding**, NV12 DMA-BUF video frames, and **WGPU/Vulkan rendering** through XWayland.
 
-Source revision: [`fab01307b18c824071db55be3659b80f3178e57f`](https://github.com/Bogdan7c/fastiplayer/commit/fab01307b18c824071db55be3659b80f3178e57f).
-Build: `cargo build -p app-egui --release --locked`, Rust **1.96.0**.
-Package versions remain **0.1.0-alpha.1**. The UI correction in this revision
-limits the initial instruction to Idle; pause and other active-media states
-preserve the picture without that instruction.
+Source revision: [`0638b476bba429e4f80d617c3a5e73319cd80984`](https://github.com/Bogdan7c/fastiplayer/commit/0638b476bba429e4f80d617c3a5e73319cd80984).
+Build: `cargo build -p app-egui --release --locked`, default features, Rust **1.96.0**. Package versions remain **0.1.0-alpha.1**. The capture uses a separate temporary application profile, preserving the user's configuration.
 
-## Published captures
+## Published assets
 
-- `fastiplayer-playback.png`: actual local playback with controls visible.
-  `fastiplayer-main.png` retains identical bytes as a compatibility alias for
-  existing links in the published alpha release notes.
-- `fastiplayer-queue.png`: actual queue sidebar with two authorized excerpts.
-- `fastiplayer-settings.png`: actual audio settings sidebar during playback.
-- `fastiplayer-demo.mp4`: **39 seconds**, H.264/yuv420p, **1280×816**, 30 fps
-  screen recording with a 96-pixel English caption band below the player window.
-  This capture rate is an encoding choice, not a claim about delivered playback FPS.
+- `fastiplayer-trailer-cover.png`: a genuine final-card frame at 01:10.5 from the trailer, including native Resolve titles over the captured application.
+- `fastiplayer-playback.png`: resumed playback following a live timeline drag.
+- `fastiplayer-main.png`: identical bytes to the playback screenshot, preserving the compatible path used in existing alpha release notes.
+- `fastiplayer-queue.png`: the queue sidebar with the authorized Sintel Trailer alongside playback.
+- `fastiplayer-settings.png`: video color settings during playback, with saturation deliberately raised to 2.45 to show its effect.
 
-PNG captures come directly from FFmpeg X11 window capture with the pointer
-excluded; the player UI and movie frames are not retouched. The MP4 records only
-the player window, with the pointer included. The system file picker is outside
-that capture and this omission is captioned. The recording is continuous; the
-only presentation changes are compression and the added caption/attribution band.
-No microphone, desktop audio, private media, personal paths, configuration files,
-or other desktop windows are included. The [demo page](../demo.md) provides a
-text transcript and distinguishes the demonstrated actions from future features.
+Screenshots are **1920×1080 PNG** frames extracted from the real OBS recordings, with the recorded cursor included. The cover is extracted from the finished trailer. The player UI and movie frames are not retouched. The [demo page](../demo.md) supplies timecodes and distinguishes the demonstrated interactions from future features.
 
-These assets demonstrate the current application. They are **not performance
-measurements**, and are **not the historical ThinkPad T480s captures**. The
-[T480s report](../benchmarks/thinkpad-t480s.md) and
-[tagged asset directory](https://github.com/Bogdan7c/fastiplayer/tree/v0.1.0-alpha.1/docs/assets)
-preserve that earlier evidence with its own provenance. The previous development
-screenshot remains in Git history at
-[`b575045f`](https://github.com/Bogdan7c/fastiplayer/tree/b575045fd905e46baea1b5534a2eafda10ddb39d/docs/assets).
+Video is hosted on YouTube. Large recordings, film media, the DNxHR master, and the Resolve `.drp` project are kept outside Git. The previous silent 39-second MP4 is superseded by this trailer; its historical bytes remain in Git history. Existing releases and tags are unchanged.
 
-## Film source and transformations
+These captures are **not performance measurements** and are **not the historical ThinkPad T480s captures**. The [T480s report](../benchmarks/thinkpad-t480s.md) and [tagged asset directory](https://github.com/Bogdan7c/fastiplayer/tree/v0.1.0-alpha.1/docs/assets) retain their own provenance. The September 5 presentation and Big Buck Bunny attribution remain in [the preceding asset documentation](https://github.com/Bogdan7c/fastiplayer/blob/0638b476bba429e4f80d617c3a5e73319cd80984/docs/assets/README.md).
 
-Movie imagery is from **Big Buck Bunny**:
-**© 2008 Blender Foundation / www.bigbuckbunny.org**.
-The film is licensed under [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/),
-as stated on the [Blender Foundation project page](https://peach.blender.org/about/).
-These captures do not imply endorsement by the Blender Foundation.
+## Recording, editing, and verification
 
-Source: the official
-[`big_buck_bunny_720p_h264.mov.zip` archive](https://download.blender.org/peach/bigbuckbunny_movies/big_buck_bunny_720p_h264.mov.zip).
-The extracted film has H.264 **1280×720 at 24 fps** video and six-channel AAC audio.
-For this demonstration, two local MP4 excerpts were made with FFmpeg stream copy:
-`-ss 15 -t 120` and `-ss 180 -t 90`, mapping the first video and first audio streams
-with `-map 0:v:0 -map 0:a:0 -c copy -movflags +faststart`. Seeking occurred before
-input; boundaries follow the source's keyframe/timestamp behavior. The video and
-audio were not re-encoded for these playback fixtures. Other source tracks were
-not selected. The original MOV was rejected by this build's container-opening
-path; this demo establishes playback of the derived MP4s only.
+| Stage | Actual parameters |
+| --- | --- |
+| OBS Studio | Flatpak **32.2.2**; separate profile and scene collection; **1920×1080, 60 FPS**; PipeWire capture of the player window only. |
+| Recording video | Hybrid MOV; **H.264 High**, x264 CRF 16, veryfast, 1-second keyframe interval; NV12 / Rec.709 limited range. |
+| Recording audio | **PCM signed 24-bit little-endian, 48 kHz, stereo**, track 1; isolated player-output monitor, −3 dB input gain, unmuted; monitoring off; no microphone or duplicate desktop mix. |
+| Editing | **DaVinci Resolve Studio 21.0.4**; 1920×1080 / 60 FPS timeline; six continuous real-time source segments, corresponding audio, native Fusion Text+ titles, final card and a short final audio fade. |
+| Resolve master | MOV, **DNxHR HQ**, 8-bit 4:2:2 / Rec.709; PCM 24-bit / 48 kHz stereo; **72.000 seconds, 4,320 video frames**. |
+| YouTube upload | MP4, H.264 High / yuv420p / Rec.709, **1920×1080 at 60/1 FPS**; AAC-LC 48 kHz stereo; 72.000 seconds. Final encoding: x264 slow, CRF 18, AAC target 320 kbit/s (measured average about 259 kbit/s). |
 
-The screenshot and video imagery combine those film excerpts with the running
-player. The published screen recording is re-encoded and adds English captions
-and attribution. The film source files and full downloaded archive are not
-bundled in this repository.
+The OBS → Resolve chain was tested before principal recording with real video and audio import and a short edited export. Final selected takes reported zero skipped rendering or encoding frames in OBS. Frame timestamps and codecs were checked with `ffprobe`; the film's 24 FPS was not used as proof of 60 FPS UI capture.
+
+One-second interior PCM checks in all six master segments matched their corresponding OBS samples byte for byte at the expected edit positions. Full final-file playback reached EOF without a decoding error. The upload file measured −18.0 dBFS mean and −3.1 dBFS peak with FFmpeg `volumedetect`; real output-device monitoring also confirmed nonzero sound. YouTube playback was checked at **1920×1080@60**, with source audio reaching the output device. These checks are scoped media-verification evidence, not a listening-quality or physical-display benchmark.
+
+The demonstrations are not retimed or frame-interpolated. Color changes come from the application's controls, with no Resolve color grade applied to the player image. Only the authorized source-film audio is used: no added music, narration, or UI effects. Private paths, microphone audio, desktop notifications, configuration, and other application windows are excluded from the published footage.
+
+## Film source and license
+
+Film and included audio: **Sintel © copyright Blender Foundation | durian.blender.org**.
+
+The [official sharing terms](https://durian.blender.org/sharing/) license the Durian project's published content under [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/), permitting reuse, editing, and commercial distribution with attribution. These captures do not imply endorsement by the Blender Foundation. Separately licensed soundtrack releases are not used.
+
+Source: the official [`sintel_trailer-1080p.mp4`](https://download.blender.org/durian/trailer/sintel_trailer-1080p.mp4), **H.264, 1920×1080 at 24 FPS**, AAC 48 kHz stereo, 52.208 seconds. The downloaded MP4 is played directly in Fastiplayer. Excerpts appear inside the recorded application; the screen capture is edited and compressed, with English titles added. The source movie and standalone audio are not bundled in the repository.
 
 ## Logo
 
-[`LOGO.png`](../../LOGO.png) is the unchanged original sign.
-`fastiplayer-mark.svg` embeds those exact PNG bytes on a permanent dark background
-with padding. It neither redraws nor recolors the sign. This presentation keeps
-the white mark visible in both light and dark GitHub themes.
+[`LOGO.png`](../../LOGO.png) is the unchanged original sign. `fastiplayer-mark.svg` embeds those exact PNG bytes on a permanent dark background with padding. It neither redraws nor recolors the sign, keeping the white mark visible in light and dark GitHub themes.
 
 ## SHA-256
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Playback screenshot | `3332caf6f65891024dc19004b03f1929962ef67ab4c8bbd659101f69b68faa2f` |
-| Queue screenshot | `c2799507fd664cff69c68db4f187de84540e44dacd260e37f0c1e1d6110389e5` |
-| Settings screenshot | `d8bf73dc1f5be4746ebb0fa61c8fc22e5bb22f1bd131ad1b4c1fcba8b6f47888` |
-| Captioned MP4 | `ac0dbef0fb79079ce92ff6b901a7896195ef28ed67f7e9419c446362c44d6935` |
+| Trailer cover | `038e1ce5b04251e8a27a0293f9ad6420f137b83c86df6ed3fbe09dc32f90848c` |
+| Playback screenshot / main alias | `52119803082f4b8d6b36e469357ea2702a4359786555e02e3b73e8670f2f2f15` |
+| Queue screenshot | `b0177f1bf5548232a469b1020846ca431a983850bc013f47cb0367d6c6970d1c` |
+| Settings screenshot | `6bc96bfc351a93ee45172a0b3b7f0ff2b4387050c5c2d8076e40d2a0f39fbe74` |
+| YouTube upload MP4 | `558470d240ec3c6df155bc12694416facecf5e42a7c7e1853170dabb58f7bb94` |
+| Official Sintel Trailer MP4 | `34bbd52a4b89fdf63c8ace50b268da26653a59508288100cd3c23de276db7931` |
+| Capture executable | `b94e278e49cb5fb725c89eb9cfb0460346cf8ed4a85189219b733714c61a5e91` |
 | Logo presentation | `5e30f2766b499d56b4c22e56869bff21af7aebb9c6ac3333db2eb13eecc1d9a6` |
 | Original logo | `a97b93fd3cebed1911194f6ec45d3f13ed5d0cef6c4f1d9d014e60c4e1b4c3f8` |
-| Capture executable | `6534a8452d1f9d83c1cc8a8e0205f50a2efcde11189ac32c9049f3b4c2a5f226` |
-| Extracted official MOV | `45c8bafeb9a53df7f491198d2e71529701bcf1cd51805782089fac1d32869f9b` |
-| Opening excerpt MP4 | `560fcac63e08bd6f4d628725e27989f73acbf9f18f071ad55731a005612511d6` |
-| Later excerpt MP4 | `73031919c1f7ce5b7643d144f9cdcf953988b0241ab3081386e429eea9127fa5` |
