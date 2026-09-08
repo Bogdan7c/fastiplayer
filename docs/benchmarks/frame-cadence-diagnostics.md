@@ -30,7 +30,7 @@ Within the single render thread, correlate events in order:
 | `current video frame submitted to surface` | `app-egui::frame_prepare::submit` | Existing handoff event behind the `Presented` gate |
 | `render frame stage timings` | `app-egui::frame_prepare::timing` | Existing durations, including blocking surface wait |
 
-Optional fields on the prepared event remain absent when there is no frame.
+Optional identity values on the prepared event are `None` when there is no frame.
 Frame identity uses PTS and render/decode generations, never allocation identity.
 Surface events also cover UI-only frames; correlate with the preceding prepared
 event rather than treating every acquisition as a video frame. A renderer failure
