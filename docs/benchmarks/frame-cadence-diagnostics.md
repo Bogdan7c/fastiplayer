@@ -24,6 +24,7 @@ Within the single render thread, correlate events in order:
 
 | Event | Owner | Meaning |
 | --- | --- | --- |
+| `latest video frame published` | `player-core::LatestPresentFrameHandoff` | New nonempty lease is available after unlocking the handoff slot and dropping its previous owner; PTS and render/decode generations identify this publication |
 | `video frame prepared for surface` | `app-egui::frame_prepare::submit` | Exact prepared PTS/generations, acquisition reason, texture lookup outcome and whether a video input exists, before entering the renderer |
 | `surface acquire started` | `render-wgpu-shell::Renderer` | Immediately before attempting surface acquisition |
 | `surface acquire finished` | `render-wgpu-shell::Renderer` | Acquisition/recovery returned; `acquired=false` is a dropped attempt |
@@ -80,3 +81,47 @@ integration regression must drive the production selection/acquisition ordering
 and assert fresh rendered output when the next eligible frame is published during
 acquisition. Changing the snapshot characterization's expected pixels alone would
 not provide that regression.
+
+## Production ordering regression
+
+Linux manual acceptance in `app_instance/cadence_acceptance.rs` now drives the
+real process bootstrap, AppShell, worker, configured decoder and X11 swapchain.
+Supply an existing isolated baseline config and a local H.264 60fps fixture.
+Run each test alone in its own process, outside the sandbox:
+
+```sh
+export CADENCE_MEDIA=/absolute/path/to/h264-60fps.mp4
+export CADENCE_CONFIG=/absolute/path/to/baseline-config.toml
+cargo test -p app-egui --locked -- --ignored --exact \
+  app_instance::cadence_acceptance::published_before_preparation_reaches_same_surface_handoff --nocapture
+cargo test -p app-egui --locked -- --ignored --exact \
+  app_instance::cadence_acceptance::published_during_acquisition_reaches_same_surface_handoff --nocapture
+```
+
+The first is the passing control. The second currently **fails intentionally at
+the freshness assertion** (`CADENCE_FRESHNESS_DEFECT`); fixing playback belongs to
+the next change. Normal contributor checks skip these explicit manual tests; a
+green ordinary suite does not mean the freshness regression passes. Missing media,
+display/backend failure, Busy, dropped acquisition and barrier timeouts must not
+be classified as successful reproductions.
+
+After 30 real handoffs the test subscriber parks the worker just after a new lease
+is published, outside the handoff lock. Once that frame has been presented, the
+control releases the worker and waits for the next publication before the next
+preparation. The regression instead releases it at the next acquisition-start
+event, after the same frame has already been prepared. It waits for a newer
+publication before allowing the normal surface call to proceed. Both then check
+the actual Presented-gated handoff and matching generations. The required new PTS
+must reach that handoff; an older PTS fails. Only the relative ordering is fixed,
+not wall-clock times or startup PTS. Barriers time out after 3s; the application
+deadline is 25s and all process owners use the ordinary shutdown path.
+
+Three retained hardware pairs passed the control and failed the freshness check
+through Ready on VA-API H.264. This establishes the early-preparation cause for
+the reproduced Ready path. It does not attribute every repeat in the historical
+1397/1800 run, diagnose Busy contention, prove physical scanout or qualify CPU/RAM
+parity. The production integration checks real surface handoff; pixel readback
+remains in the separate offscreen test. The proposed correction is to obtain the
+worker-selected video input after successful acquisition, preserving typed failure,
+fallback, generation, lease and GPU-completion responsibilities. Its API design
+must be reviewed separately; this diagnostic change does not implement it.

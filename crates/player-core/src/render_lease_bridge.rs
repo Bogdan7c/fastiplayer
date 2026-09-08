@@ -86,11 +86,23 @@ impl LatestPresentFrameHandoff {
 
     /// Публикует новый latest frame и dropping старого lease-а выполняет вне mutex guard-а.
     pub(crate) fn publish(&self, frame: Option<VideoFrameLease>) {
+        let published_identity = frame.as_ref().map(present_frame_identity_from_lease);
         let previous_frame = {
             let mut guard = self.latest_frame_guard();
             std::mem::replace(&mut *guard, frame)
         };
         drop(previous_frame);
+        // Маркер подтверждает доступность lease после unlock и release старого owner-а.
+        // Subscriber не должен наблюдать публикацию, пока render ещё не может её прочитать.
+        if let Some(identity) = published_identity {
+            tracing::trace!(
+                target: "fastiplayer::frame_cadence",
+                frame_pts_ns = ?identity.pts().as_nanos(),
+                render_generation = identity.render_generation(),
+                decoded_generation = identity.decoded_generation(),
+                "latest video frame published"
+            );
+        }
     }
 
     /// Возвращает identity текущего slot-а, чтобы worker не создавал новый lease без причины.
