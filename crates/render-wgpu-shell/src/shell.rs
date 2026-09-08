@@ -521,6 +521,9 @@ impl Renderer {
         let egui_buffer_update_elapsed = stage_started_at.elapsed();
 
         // Получаем surface texture для текущего кадра
+        // Отдельный opt-in target позволяет связать ожидание поверхности с
+        // выбором lease в app, не включая общий высокочастотный GPU debug log.
+        tracing::trace!(target: "fastiplayer::frame_cadence", "surface acquire started");
         let stage_started_at = Instant::now();
         let surface_acquire_started_at = stage_started_at;
         let surface_texture_result = match self.gpu.surface.get_current_texture() {
@@ -588,6 +591,13 @@ impl Renderer {
                 ))
             }
         };
+        // Это wall wait, а не CPU work. Завершающее событие есть и при drop:
+        // анализ не должен принимать неудачное acquisition за успешный present.
+        tracing::trace!(
+            target: "fastiplayer::frame_cadence",
+            acquired = surface_texture_result.is_ok(),
+            "surface acquire finished"
+        );
         let surface_texture = match surface_texture_result {
             Ok(surface_texture) => surface_texture,
             Err(dropped_frame) => {

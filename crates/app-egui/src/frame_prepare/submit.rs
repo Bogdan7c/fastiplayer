@@ -34,6 +34,20 @@ pub(super) fn submit_render_frame(
     let submitted_video_frame = video_frame.is_some();
     let startup_frame_identity = prepared_video_frame.current_frame_identity();
 
+    // Фиксируем именно уже подготовленный lease до блокирующего surface acquire.
+    // Вместе с handoff trace это отличает ранний выбор от Busy reuse; событие
+    // не получает новый lease и не меняет его submission/release состояние.
+    tracing::trace!(
+        target: "fastiplayer::frame_cadence",
+        frame_pts_ns = ?startup_frame_identity.map(|identity| identity.pts().as_nanos()),
+        render_generation = ?startup_frame_identity.map(|identity| identity.render_generation()),
+        decoded_generation = ?startup_frame_identity.map(|identity| identity.decoded_generation()),
+        acquisition = prepared_video_frame.acquisition_state,
+        texture_lookup = prepared_video_frame.texture_view_lookup_state,
+        has_video_input = submitted_video_frame,
+        "video frame prepared for surface"
+    );
+
     let render_frame_outcome = renderer.render_frame(render_wgpu_shell::RenderFrameInput {
         window,
         video_frame: video_frame.as_ref(),
