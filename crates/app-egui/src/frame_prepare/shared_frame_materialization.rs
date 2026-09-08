@@ -3,6 +3,10 @@
 //! Модуль намеренно не выбирает playback/scrub priority и не трогает UI layout.
 //! Он только связывает shared lease, renderer materializer lookup и typed app policy.
 
+#[cfg(test)]
+#[path = "cadence_tests.rs"]
+mod cadence_tests;
+
 use std::time::{Duration, Instant};
 
 use render_wgpu_video::{

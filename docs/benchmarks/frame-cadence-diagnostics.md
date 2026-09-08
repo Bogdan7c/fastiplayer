@@ -54,3 +54,29 @@ release pressure. A deterministic regression should reach changing rendered pixe
 under controlled clock/acquisition timing before approving a scheduler change.
 Do not equate expected repeats for 24/30 fps video on a 60 Hz display with a missed
 60 fps update. Submission counts alone do not establish equal smoothness.
+
+## Deterministic snapshot characterization
+
+Run outside the filesystem/device sandbox:
+
+```sh
+cargo test -p app-egui frame_prepare::shared_frame_materialization::cadence_tests:: --locked
+```
+
+`frame_prepare/cadence_tests.rs` publishes two distinct 2×2 YUV resources in a
+fixed order. The production materializer, `PreparedVideoFrame` input conversion
+and WGPU video renderer draw into a 64×64 offscreen attachment. Test-only
+readback proves that retaining the early snapshot repeats the previous pixels,
+while preparing after publication changes the pixels. Shared leases survive
+publication and drawing; the harness waits for GPU completion before dropping
+them and checks exactly one submitted release per resource.
+
+This passing characterization intentionally documents current snapshot behavior.
+It is **not** the failing regression required to approve a render-loop fix: the
+publisher is scripted, there is no real worker/media clock or blocking swapchain,
+and the fake release sink does not test the decoder's GPU release bridge. It also
+does not test Busy fallback or attribute the historical 1397/1800 failure. A future
+integration regression must drive the production selection/acquisition ordering
+and assert fresh rendered output when the next eligible frame is published during
+acquisition. Changing the snapshot characterization's expected pixels alone would
+not provide that regression.
