@@ -4,6 +4,10 @@ Product names and result labels were normalized to Fastiplayer after the rename.
 
 Fastiplayer publishes measurements with their scope, environment, and limitations. Performance is a project priority; published claims must describe the operation actually measured. A faster source-opening fixture does not establish lower video playback CPU use, battery savings, or superiority over another player.
 
+## Local measurement development
+
+The [2026-09-08 AMD local baseline](local-cpu-baseline-2026-09-08.md) and [measurement tools](tools/local/README.md) use a separately frozen local protocol. They preserve the historical S08 results and do not claim equal smoothness or replace T480s qualification.
+
 ## Existing N15 ingress experiment
 
 The existing [N15 methodology and acceptance report](../native-web-ingress-n15-acceptance.md#performance-30-cold--30-warm) is in Russian. Its [performance aggregates](../native-web-ingress-n15-performance.json) and [acceptance outcomes](../native-web-ingress-n15-acceptance.json) record the measured data. This English guide makes the scope and reproducibility limits explicit.
