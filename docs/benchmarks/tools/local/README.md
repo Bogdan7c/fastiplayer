@@ -10,7 +10,8 @@ files and publish only reviewed, anonymized evidence.
 - `service.py` owns one transient **user** systemd service per attempt. The player
   and all descendants enter its cgroup before exec. No CPU/memory/power limits or
   personal settings are changed. Cleanup targets only that unit and records exit
-  status before removing it.
+  status before removing it. Only the ephemeral VLC socket uses a short private
+  subdirectory of XDG_RUNTIME_DIR; long artifact paths remain supported.
 - `host.py` reads process `/proc/PID/stat`, `smaps_rollup`, cgroup v2 `cpu.stat`,
   separate charged cgroup memory, and background/power observations.
 - `evidence.py` checks the exact media inode/current input, actual backend, window,
@@ -35,7 +36,8 @@ Run tests/build/playback outside the sandbox per the project policy.
 cc -Wall -Wextra -Werror -O2 docs/benchmarks/tools/local/window_owner.c \
   -lxcb -lxcb-res -o /absolute/artifact-directory/window-owner
 python3 -m unittest discover -s docs/benchmarks/tools/local -p 'test_*.py' -v
-python3 docs/benchmarks/tools/local/smoke.py /absolute/fastiplayer-spec.json /absolute/new-smoke
+python3 docs/benchmarks/tools/local/smoke.py /absolute/fastiplayer-spec.json /absolute/new-smoke \
+  --vlc-spec /absolute/vlc-spec.json
 python3 docs/benchmarks/tools/local/collect.py /absolute/spec.json /absolute/new-attempt
 python3 docs/benchmarks/tools/local/run_series.py /absolute/plan.json /absolute/new-series
 python3 docs/benchmarks/tools/local/analyze.py /absolute/new-series

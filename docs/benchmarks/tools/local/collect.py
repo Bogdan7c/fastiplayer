@@ -10,6 +10,7 @@ import shutil
 import statistics
 import subprocess
 import time
+import tempfile
 
 import evidence
 from host import cpu_percent, probe_media, sample, sha256, write_json
@@ -47,6 +48,7 @@ def collect(spec, directory):
                                    'sampled maxima miss transient memory between samples',
                                    'physical scanout and speaker output are not measured']}
     service = None
+    control_directory = None
     try:
         warmup, duration, interval = (float(spec[k]) for k in ('warmup_seconds', 'duration_seconds', 'interval_seconds'))
         if not all(math.isfinite(v) for v in (warmup, duration, interval)) or warmup < 3 or duration <= 0 or interval <= 0 or interval > duration:
@@ -69,7 +71,11 @@ def collect(spec, directory):
         config_dir = directory / 'config/fastiplayer'
         config_dir.mkdir()
         shutil.copyfile(config, config_dir / 'config.toml')
-        socket_path = directory / 'control.sock'
+        # AF_UNIX ограничивает длину адреса независимо от допустимой длины
+        # artifact path. Только эфемерный IPC живёт в коротком runtime-каталоге.
+        control_directory = tempfile.TemporaryDirectory(prefix='fi-bench-', dir=os.environ['XDG_RUNTIME_DIR'])
+        socket_path = Path(control_directory.name) / 'rc'
+        observation['control_socket'] = str(socket_path)
         command = [str(binary), str(media)] if player == 'fastiplayer' else [
             str(binary), '--ignore-config', '--no-one-instance', '--intf', 'dummy',
             '--extraintf', 'oldrc', '--rc-fake-tty', f'--rc-unix={socket_path}',
@@ -139,6 +145,11 @@ def collect(spec, directory):
                     observation['failures'].append('forced kill during cleanup')
             except (OSError, RuntimeError) as error:
                 observation['failures'].append(f'cleanup: {error}')
+        if control_directory is not None:
+            try:
+                control_directory.cleanup()
+            except OSError as error:
+                observation['failures'].append(f'IPC cleanup: {error}')
         if observation['failures']:
             observation['status'] = 'INVALID'
         write_json(directory / 'result.json', observation)

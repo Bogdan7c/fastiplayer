@@ -33,6 +33,7 @@ class SnapshotReportTests(unittest.TestCase):
             report = json.loads((root / 'report.json').read_text())['comparisons'][0]
             self.assertEqual(report['cpu']['status'], 'WIN')
             self.assertEqual(report['memory_kib_differences']['pss_sum_kib_mean']['status'], 'WORSE')
+            self.assertEqual(report['memory_kib_differences']['pss_sum_kib_mean']['unit'], 'KiB')
             self.assertEqual(report['quality_and_host_equivalence'], 'MANUAL REVIEW REQUIRED')
             changed = root / 'current/attempts/1/result.json'
             payload = json.loads(changed.read_text())

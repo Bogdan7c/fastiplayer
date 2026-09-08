@@ -11,7 +11,7 @@ from host import write_json
 LOOKS = (3, 6, 9)
 
 
-def comparison(differences, quantization_bound):
+def comparison(differences, quantization_bound, *, unit="percentage_points"):
     """Консервативный Student interval: t=10 для каждого из трёх planned looks.
 
     Для df>=2 двухсторонняя tail probability меньше 0.01; union bound трёх
@@ -26,8 +26,8 @@ def comparison(differences, quantization_bound):
     radius = 10 * deviation / math.sqrt(len(differences)) + quantization_bound
     low, high = center - radius, center + radius
     return {'status': 'WIN' if high < 0 else 'WORSE' if low > 0 else 'INCONCLUSIVE',
-            'n': len(differences), 'mean_difference_pp': center, 'stdev_difference_pp': deviation,
-            'interval_pp': [low, high], 'quantization_bound_pp': quantization_bound,
+            'n': len(differences), 'unit': unit, 'mean_difference': center, 'stdev_difference': deviation,
+            'interval': [low, high], 'quantization_bound': quantization_bound,
             'parity': 'exact equality cannot be established by finite noisy samples; no loss margin authorized'}
 
 

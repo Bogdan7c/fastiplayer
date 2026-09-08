@@ -49,7 +49,7 @@ def compare(before_root, current_root):
         for metric in ('rss_sum_kib', 'pss_sum_kib'):
             for statistic in ('mean', 'sampled_max'):
                 memory[f'{metric}_{statistic}'] = comparison([
-                    b['metrics'][metric][statistic] - a['metrics'][metric][statistic] for a, b in pairs], 1)
+                    b['metrics'][metric][statistic] - a['metrics'][metric][statistic] for a, b in pairs], 1, unit='KiB')
         output.append({'scenario': scenario, 'mode': mode,
                        'before_snapshot': first['spec']['snapshot'],
                        'current_snapshot': pairs[0][1]['spec']['snapshot'],
