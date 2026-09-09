@@ -9,10 +9,32 @@ use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::window::Window;
 
 fn input(window: &Window) -> RenderFrameInput<'_> {
+    // Текстура нужна текущему UI draw, хотя этот же delta уже пометил её retired.
+    // Преждевременный free сломает реальный overlay render на каждом пути теста.
+    let texture_id = egui::TextureId::Managed(17);
+    let mut mesh = egui::Mesh::with_texture(texture_id);
+    let rectangle = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(8.0, 8.0));
+    mesh.add_rect_with_uv(
+        rectangle,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
     RenderFrameInput {
         window,
-        egui_paint_jobs: Vec::new(),
-        egui_textures_delta: egui::TexturesDelta::default(),
+        egui_paint_jobs: vec![egui::ClippedPrimitive {
+            clip_rect: rectangle,
+            primitive: egui::epaint::Primitive::Mesh(mesh),
+        }],
+        egui_textures_delta: egui::TexturesDelta {
+            set: vec![(
+                texture_id,
+                egui::epaint::ImageDelta::full(
+                    egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                    egui::TextureOptions::NEAREST,
+                ),
+            )],
+            free: vec![texture_id],
+        },
         screen: RenderScreenDescriptor {
             size_in_pixels: [64, 64],
             pixels_per_point: 1.0,

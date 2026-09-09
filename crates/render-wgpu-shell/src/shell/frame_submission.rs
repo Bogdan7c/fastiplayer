@@ -215,6 +215,15 @@ impl AcquiredRenderFrame<'_, '_> {
         self.renderer
     }
 
+    /// Освобождает retired atlas entries ровно один раз, включая отказ от кадра.
+    fn free_retired_ui_textures(&mut self) {
+        self.renderer
+            .egui_compositor
+            .free_retired_textures(&self.egui_textures_delta);
+        // Drop страхует только незавершённую отправку; повторное освобождение не требуется.
+        self.egui_textures_delta.free.clear();
+    }
+
     /// Потребляет полученную поверхность с video input, выбранным ПОСЛЕ acquire.
     /// Lease принадлежит app; этот метод не принимает решений о decoder release.
     pub fn render(mut self, video_frame: Option<&WgpuRenderableFrame<'_>>) -> RenderFrameOutcome {
@@ -299,6 +308,8 @@ impl AcquiredRenderFrame<'_, '_> {
                 .drain(..)
                 .chain(std::iter::once(encoder.finish())),
         );
+        // Сохраняем прежний lifecycle: free после submit, но до poll/present.
+        self.free_retired_ui_textures();
         let queue_submit_elapsed = stage_started_at.elapsed();
 
         // Продвигаем wgpu callbacks для submitted work.
@@ -350,8 +361,6 @@ impl Drop for AcquiredRenderFrame<'_, '_> {
     fn drop(&mut self) {
         // Encoder уже submitted либо будет отброшен: retired UI resources больше не
         // нужны будущей отправке. Предыдущие submit-ы удерживаются самим wgpu.
-        self.renderer
-            .egui_compositor
-            .free_retired_textures(&self.egui_textures_delta);
+        self.free_retired_ui_textures();
     }
 }
