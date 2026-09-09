@@ -15,6 +15,9 @@ use crate::startup_media::{InitialMedia, resolve_initial_media_argument};
 #[cfg(target_os = "linux")]
 mod linux;
 
+#[cfg(all(test, target_os = "linux"))]
+mod cadence_acceptance;
+
 /// Уже разобранные process arguments без lossy UTF-8 преобразования media path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessArgs {
