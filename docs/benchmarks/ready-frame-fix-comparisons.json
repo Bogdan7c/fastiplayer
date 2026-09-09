@@ -1,0 +1,1187 @@
+{
+  "measured_commit": "ca657f2c8ad5dff6ee203932ecfff8c7a2378f9e",
+  "current_vs_vlc": [
+    {
+      "scenario": "real-h264-1080p24",
+      "mode": "diagnostic",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 4.509796553323888,
+        "stdev_difference": 0.03509646348323255,
+        "interval": [
+          4.173834574477123,
+          4.845758532170652
+        ],
+        "quantization_bound": 0.13333245245028283,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 6.481677314815354,
+          "cpu_min": 6.4455228302370635,
+          "cpu_max": 6.512363641651787,
+          "cpu_stdev": 0.03375424535465189,
+          "rss_mean_mib": 110.18855794270833,
+          "pss_mean_mib": 67.62461344401042,
+          "rss_sampled_max_mib": 110.89453125,
+          "pss_sampled_max_mib": 68.3271484375
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 1.971880761491466,
+          "cpu_min": 1.9452566940846667,
+          "cpu_max": 2.006695880183285,
+          "cpu_stdev": 0.03152797786063246,
+          "rss_mean_mib": 144.12093098958334,
+          "pss_mean_mib": 80.12544759114583,
+          "rss_sampled_max_mib": 145.34375,
+          "pss_sampled_max_mib": 81.4560546875
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    },
+    {
+      "scenario": "real-h264-1080p24",
+      "mode": "quiet",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 4.344274456267564,
+        "stdev_difference": 0.024740698191760002,
+        "interval": [
+          4.068101344054319,
+          4.620447568480809
+        ],
+        "quantization_bound": 0.13333262460372572,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 6.314997109039546,
+          "cpu_min": 6.293523025551537,
+          "cpu_max": 6.351066240905418,
+          "cpu_stdev": 0.031425578533733865,
+          "rss_mean_mib": 110.78629557291667,
+          "pss_mean_mib": 68.0076904296875,
+          "rss_sampled_max_mib": 111.58984375,
+          "pss_sampled_max_mib": 68.806640625
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 1.9707226527719826,
+          "cpu_min": 1.9654764796331656,
+          "cpu_max": 1.9787389158083608,
+          "cpu_stdev": 0.007051815500685575,
+          "rss_mean_mib": 143.981201171875,
+          "pss_mean_mib": 79.960205078125,
+          "rss_sampled_max_mib": 144.93359375,
+          "pss_sampled_max_mib": 80.875
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    },
+    {
+      "scenario": "real-h264-1080p30",
+      "mode": "diagnostic",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 4.420289793868832,
+        "stdev_difference": 0.0639887449002098,
+        "interval": [
+          3.9175181400907615,
+          4.923061447646903
+        ],
+        "quantization_bound": 0.13333246284564648,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 6.928617141060361,
+          "cpu_min": 6.841122003031565,
+          "cpu_max": 6.976021582641494,
+          "cpu_stdev": 0.07586120287062376,
+          "rss_mean_mib": 116.14314778645833,
+          "pss_mean_mib": 73.54217529296875,
+          "rss_sampled_max_mib": 116.5703125,
+          "pss_sampled_max_mib": 74.0087890625
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 2.5083273471915284,
+          "cpu_min": 2.493109608835192,
+          "cpu_max": 2.5255662770964147,
+          "cpu_stdev": 0.016322461214893794,
+          "rss_mean_mib": 192.86678059895834,
+          "pss_mean_mib": 128.83976236979166,
+          "rss_sampled_max_mib": 193.73046875,
+          "pss_sampled_max_mib": 129.734375
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    },
+    {
+      "scenario": "real-h264-1080p30",
+      "mode": "quiet",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 4.234246978816588,
+        "stdev_difference": 0.04524527035537515,
+        "interval": [
+          3.8396905913323125,
+          4.628803366300864
+        ],
+        "quantization_bound": 0.13333269729194344,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 6.7487695324115,
+          "cpu_min": 6.69702805294487,
+          "cpu_max": 6.786638758576756,
+          "cpu_stdev": 0.04638802862489675,
+          "rss_mean_mib": 116.24853515625,
+          "pss_mean_mib": 73.6539306640625,
+          "rss_sampled_max_mib": 116.53515625,
+          "pss_sampled_max_mib": 73.953125
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 2.5145225535949125,
+          "cpu_min": 2.5113806131870198,
+          "cpu_max": 2.520699196243227,
+          "cpu_stdev": 0.005349398172680303,
+          "rss_mean_mib": 192.80989583333334,
+          "pss_mean_mib": 128.77006022135416,
+          "rss_sampled_max_mib": 192.9609375,
+          "pss_sampled_max_mib": 129.037109375
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    },
+    {
+      "scenario": "real-h264-1080p60",
+      "mode": "diagnostic",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 5.132171746330756,
+        "stdev_difference": 0.13280665563693073,
+        "interval": [
+          4.232079263681184,
+          6.032264228980328
+        ],
+        "quantization_bound": 0.13333289882801302,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 8.502671687209865,
+          "cpu_min": 8.450065796254504,
+          "cpu_max": 8.551674553611209,
+          "cpu_stdev": 0.05090011033726785,
+          "rss_mean_mib": 111.49259440104167,
+          "pss_mean_mib": 68.82230631510417,
+          "rss_sampled_max_mib": 112.21875,
+          "pss_sampled_max_mib": 69.41796875
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 3.37049994087911,
+          "cpu_min": 3.248279973950834,
+          "cpu_max": 3.5583355707421873,
+          "cpu_stdev": 0.16511414140584907,
+          "rss_mean_mib": 157.65592447916666,
+          "pss_mean_mib": 93.60384114583333,
+          "rss_sampled_max_mib": 158.05859375,
+          "pss_sampled_max_mib": 93.923828125
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    },
+    {
+      "scenario": "real-h264-1080p60",
+      "mode": "quiet",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 5.009931428266456,
+        "stdev_difference": 0.07762487017673536,
+        "interval": [
+          4.428431492933735,
+          5.591431363599177
+        ],
+        "quantization_bound": 0.13333253840924128,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 8.443572140423603,
+          "cpu_min": 8.26364014441098,
+          "cpu_max": 8.63759738242614,
+          "cpu_stdev": 0.18737654242962481,
+          "rss_mean_mib": 111.72770182291667,
+          "pss_mean_mib": 69.07696533203125,
+          "rss_sampled_max_mib": 112.11328125,
+          "pss_sampled_max_mib": 69.3115234375
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 3.4336407121571466,
+          "cpu_min": 3.3256300864083848,
+          "cpu_max": 3.5453791657545284,
+          "cpu_stdev": 0.10992195865122283,
+          "rss_mean_mib": 157.19938151041666,
+          "pss_mean_mib": 93.25748697916667,
+          "rss_sampled_max_mib": 157.84765625,
+          "pss_sampled_max_mib": 93.857421875
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    },
+    {
+      "scenario": "synthetic-h264-1080p60",
+      "mode": "diagnostic",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 5.104145657629244,
+        "stdev_difference": 0.0886303833863996,
+        "interval": [
+          4.5257714092124655,
+          5.682519906046023
+        ],
+        "quantization_bound": 0.06666649135160314,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 8.524753456563388,
+          "cpu_min": 8.429997831357623,
+          "cpu_max": 8.713236265667556,
+          "cpu_stdev": 0.1632317108246096,
+          "rss_mean_mib": 111.6197496639785,
+          "pss_mean_mib": 69.04302125336022,
+          "rss_sampled_max_mib": 112.05859375,
+          "pss_sampled_max_mib": 69.5693359375
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 3.4206077989341446,
+          "cpu_min": 3.2975617995530317,
+          "cpu_max": 3.5380590030639194,
+          "cpu_stdev": 0.12034617785608161,
+          "rss_mean_mib": 146.70367103494624,
+          "pss_mean_mib": 82.67034190188171,
+          "rss_sampled_max_mib": 146.94140625,
+          "pss_sampled_max_mib": 82.9951171875
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    },
+    {
+      "scenario": "synthetic-h264-1080p60",
+      "mode": "quiet",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 5.18865079850557,
+        "stdev_difference": 0.15257410728854318,
+        "interval": [
+          4.24109733954739,
+          6.13620425746375
+        ],
+        "quantization_bound": 0.0666664398141073,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 8.434908850335798,
+          "cpu_min": 8.340968284020045,
+          "cpu_max": 8.582410774458232,
+          "cpu_stdev": 0.12932607368516202,
+          "rss_mean_mib": 111.68338373655914,
+          "pss_mean_mib": 68.96840347782258,
+          "rss_sampled_max_mib": 112.0546875,
+          "pss_sampled_max_mib": 69.1796875
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 3.2462580518302278,
+          "cpu_min": 3.2179939914169133,
+          "cpu_max": 3.291000685525183,
+          "cpu_stdev": 0.039193773474921055,
+          "rss_mean_mib": 146.3927251344086,
+          "pss_mean_mib": 82.39060399865592,
+          "rss_sampled_max_mib": 146.55078125,
+          "pss_sampled_max_mib": 82.6005859375
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    },
+    {
+      "scenario": "synthetic-hevc-4k60",
+      "mode": "diagnostic",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 7.305427401670735,
+        "stdev_difference": 0.10984979515213135,
+        "interval": [
+          6.604542775416569,
+          8.006312027924901
+        ],
+        "quantization_bound": 0.06666653823908324,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 11.444530679692818,
+          "cpu_min": 11.409766896183596,
+          "cpu_max": 11.487431203745263,
+          "cpu_stdev": 0.03946632839851096,
+          "rss_mean_mib": 112.61181115591398,
+          "pss_mean_mib": 70.04788306451613,
+          "rss_sampled_max_mib": 113.6640625,
+          "pss_sampled_max_mib": 71.1181640625
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 4.139103278022083,
+          "cpu_min": 4.0220148703879675,
+          "cpu_max": 4.215065911820183,
+          "cpu_stdev": 0.1028867003296545,
+          "rss_mean_mib": 312.55892977150535,
+          "pss_mean_mib": 248.47270875336022,
+          "rss_sampled_max_mib": 312.73828125,
+          "pss_sampled_max_mib": 248.6630859375
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    },
+    {
+      "scenario": "synthetic-hevc-4k60",
+      "mode": "quiet",
+      "resource_verdict": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 7.2391661107552165,
+        "stdev_difference": 0.17730360072769083,
+        "interval": [
+          6.148836830145954,
+          8.32949539136448
+        ],
+        "quantization_bound": 0.0666664645250406,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "players": {
+        "fastiplayer": {
+          "n": 3,
+          "cpu_mean": 11.375607282994348,
+          "cpu_min": 11.26576250736981,
+          "cpu_max": 11.502066558103467,
+          "cpu_stdev": 0.11902492299147242,
+          "rss_mean_mib": 112.12852822580645,
+          "pss_mean_mib": 69.47995421706989,
+          "rss_sampled_max_mib": 112.5703125,
+          "pss_sampled_max_mib": 69.849609375
+        },
+        "vlc": {
+          "n": 3,
+          "cpu_mean": 4.136441172239131,
+          "cpu_min": 4.065762518780155,
+          "cpu_max": 4.173009322596174,
+          "cpu_stdev": 0.061221842904213,
+          "rss_mean_mib": 312.6090389784946,
+          "pss_mean_mib": 248.50023101478496,
+          "rss_sampled_max_mib": 312.671875,
+          "pss_sampled_max_mib": 248.61328125
+        }
+      },
+      "equal_quality": "NOT ESTABLISHED",
+      "invalid_attempts": []
+    }
+  ],
+  "original_vs_current": [
+    {
+      "scenario": "real-h264-1080p24",
+      "mode": "diagnostic",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "INCONCLUSIVE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.2359557558432431,
+        "stdev_difference": 0.09923257904974409,
+        "interval": [
+          -0.4702971397575959,
+          0.9422086514440822
+        ],
+        "quantization_bound": 0.13333333333333333,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -136.91666666666666,
+          "stdev_difference": 804.8143160588866,
+          "interval": [
+            -4784.514286909294,
+            4510.68095357596
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -225.33333333333334,
+          "stdev_difference": 662.0010070485795,
+          "interval": [
+            -4048.3979295663407,
+            3597.7312628996738
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -76.95833333333333,
+          "stdev_difference": 682.9111980536586,
+          "interval": [
+            -4020.74797362223,
+            3866.831306955563
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -165.33333333333334,
+          "stdev_difference": 535.7474529415267,
+          "interval": [
+            -3259.472695067802,
+            2928.806028401135
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    },
+    {
+      "scenario": "real-h264-1080p24",
+      "mode": "quiet",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "INCONCLUSIVE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.2340111410140843,
+        "stdev_difference": 0.03572750083985345,
+        "interval": [
+          -0.10559501459286877,
+          0.5736172966210373
+        ],
+        "quantization_bound": 0.13333333333333333,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 669.5833333333334,
+          "stdev_difference": 1246.6832078893713,
+          "interval": [
+            -6529.145523357814,
+            7868.3121900244805
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 764,
+          "stdev_difference": 1295.4134475139588,
+          "interval": [
+            -6716.073026340453,
+            8244.073026340453
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 582.3333333333334,
+          "stdev_difference": 1070.1296528731148,
+          "interval": [
+            -5597.063098207603,
+            6761.729764874269
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 676.6666666666666,
+          "stdev_difference": 1134.2214657346833,
+          "interval": [
+            -5872.764018959047,
+            7226.0973522923805
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    },
+    {
+      "scenario": "real-h264-1080p30",
+      "mode": "diagnostic",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "INCONCLUSIVE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.20085057271359208,
+        "stdev_difference": 0.19292313522234328,
+        "interval": [
+          -1.0463250011550058,
+          1.44802614658219
+        ],
+        "quantization_bound": 0.13333333333333333,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -618.0,
+          "stdev_difference": 1120.0040178499362,
+          "interval": [
+            -7085.346211991232,
+            5849.346211991232
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -626.6666666666666,
+          "stdev_difference": 1113.6199231934265,
+          "interval": [
+            -7057.154290973219,
+            5803.820957639885
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -624.5416666666666,
+          "stdev_difference": 1038.9296669479525,
+          "interval": [
+            -6623.804895481553,
+            5374.721562148219
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -633,
+          "stdev_difference": 1032.3269830823954,
+          "interval": [
+            -6594.1426157433525,
+            5328.1426157433525
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    },
+    {
+      "scenario": "real-h264-1080p30",
+      "mode": "quiet",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "INCONCLUSIVE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.19259722915709668,
+        "stdev_difference": 0.15353888985003145,
+        "interval": [
+          -0.8271932980361562,
+          1.2123877563503496
+        ],
+        "quantization_bound": 0.13333333333333333,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -101.33333333333333,
+          "stdev_difference": 121.1719680179097,
+          "interval": [
+            -801.9200168671023,
+            599.2533502004355
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -102.66666666666667,
+          "stdev_difference": 115.53931509807964,
+          "interval": [
+            -770.7332134052795,
+            565.3998800719462
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -55.083333333333336,
+          "stdev_difference": 172.89168996320595,
+          "interval": [
+            -1054.2739707423962,
+            944.1073040757294
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -57,
+          "stdev_difference": 166.520269036535,
+          "interval": [
+            -1019.405221537724,
+            905.405221537724
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    },
+    {
+      "scenario": "real-h264-1080p60",
+      "mode": "diagnostic",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "INCONCLUSIVE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.4493626672946623,
+        "stdev_difference": 0.06312022412061108,
+        "interval": [
+          -0.04839544991211425,
+          0.9471207845014389
+        ],
+        "quantization_bound": 0.13333333333333333,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -50.166666666666664,
+          "stdev_difference": 920.1175309890217,
+          "interval": [
+            -5363.467708692722,
+            5263.134375359388
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -468,
+          "stdev_difference": 1298.6639288129936,
+          "interval": [
+            -7966.839688870389,
+            7030.839688870389
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -130.10416666666666,
+          "stdev_difference": 926.4585656996935,
+          "interval": [
+            -5480.015189664194,
+            5219.80685633086
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -548.3333333333334,
+          "stdev_difference": 1309.7413230609063,
+          "interval": [
+            -8111.128387713242,
+            7014.461721046576
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    },
+    {
+      "scenario": "real-h264-1080p60",
+      "mode": "quiet",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "INCONCLUSIVE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.6155264978964347,
+        "stdev_difference": 0.22527055542790037,
+        "interval": [
+          -0.8184069936048467,
+          2.049459989397716
+        ],
+        "quantization_bound": 0.13333333333333333,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 145.33333333333334,
+          "stdev_difference": 826.1722479806093,
+          "interval": [
+            -4625.574364352698,
+            4916.241031019364
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 133.33333333333334,
+          "stdev_difference": 830.2899092084242,
+          "interval": [
+            -4661.347692535804,
+            4928.01435920247
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 104.64583333333333,
+          "stdev_difference": 586.7525375868291,
+          "interval": [
+            -3283.9715219011846,
+            3493.2631885678516
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 92.66666666666667,
+          "stdev_difference": 591.0958749080671,
+          "interval": [
+            -3321.026958283833,
+            3506.3602916171662
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    },
+    {
+      "scenario": "synthetic-h264-1080p60",
+      "mode": "diagnostic",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "INCONCLUSIVE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.5124864074988172,
+        "stdev_difference": 0.08542815362511544,
+        "interval": [
+          -0.047399934086180484,
+          1.072372749083815
+        ],
+        "quantization_bound": 0.06666666666666667,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 136.5161290322576,
+          "stdev_difference": 734.498570348444,
+          "interval": [
+            -4105.113344068437,
+            4378.145602132952
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 73.33333333333333,
+          "stdev_difference": 811.7766523701783,
+          "interval": [
+            -4614.461354344425,
+            4761.128021011091
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 88.65591397849978,
+          "stdev_difference": 755.4108200910564,
+          "interval": [
+            -4273.7104893047745,
+            4451.022317261773
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 25.666666666666668,
+          "stdev_difference": 832.5613090537737,
+          "interval": [
+            -4782.128292323968,
+            4833.461625657302
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    },
+    {
+      "scenario": "synthetic-h264-1080p60",
+      "mode": "quiet",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "INCONCLUSIVE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.5075715441076983,
+        "stdev_difference": 0.2112077519164774,
+        "interval": [
+          -0.7785036467981076,
+          1.7936467350135041
+        ],
+        "quantization_bound": 0.06666666666666667,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 438.5376344085962,
+          "stdev_difference": 559.517442352698,
+          "interval": [
+            -2792.837825177615,
+            3669.9130939948072
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 432,
+          "stdev_difference": 540.9768941461364,
+          "interval": [
+            -2692.331554606395,
+            3556.331554606395
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 251.78494623656056,
+          "stdev_difference": 410.6224942852505,
+          "interval": [
+            -2119.9451298724894,
+            2623.5150223456108
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 244.66666666666666,
+          "stdev_difference": 390.78681315179165,
+          "interval": [
+            -2012.5420510227625,
+            2501.8753843560958
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    },
+    {
+      "scenario": "synthetic-hevc-4k60",
+      "mode": "diagnostic",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "WORSE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.49872394500696277,
+        "stdev_difference": 0.06450971879862405,
+        "interval": [
+          0.05961024320296954,
+          0.9378376468109559
+        ],
+        "quantization_bound": 0.06666666666666667,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 220.688172043015,
+          "stdev_difference": 1239.1974196566885,
+          "interval": [
+            -6934.821466135772,
+            7376.197810221802
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 146.66666666666666,
+          "stdev_difference": 1302.0250893640005,
+          "interval": [
+            -7371.5786916928555,
+            7664.912025026189
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 325.19354838709114,
+          "stdev_difference": 1158.111137977886,
+          "interval": [
+            -6362.164224243273,
+            7012.551321017455
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": 252,
+          "stdev_difference": 1209.100492101463,
+          "interval": [
+            -6729.7449459208865,
+            7233.7449459208865
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    },
+    {
+      "scenario": "synthetic-hevc-4k60",
+      "mode": "quiet",
+      "before_snapshot": "original",
+      "current_snapshot": "current-ready-fix-v2",
+      "cpu": {
+        "status": "INCONCLUSIVE",
+        "n": 3,
+        "unit": "percentage_points",
+        "mean_difference": 0.8345611343970875,
+        "stdev_difference": 0.2638384691683039,
+        "interval": [
+          -0.7553776442385697,
+          2.4244999130327445
+        ],
+        "quantization_bound": 0.06666666666666667,
+        "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+      },
+      "memory_kib_differences": {
+        "rss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -89.54838709677763,
+          "stdev_difference": 217.08921043239627,
+          "interval": [
+            -1343.9135279098505,
+            1164.8167537162954
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "rss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -90.66666666666667,
+          "stdev_difference": 70.23769168568492,
+          "interval": [
+            -497.184168686548,
+            315.8508353532146
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_mean": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -179.87096774193438,
+          "stdev_difference": 282.45633589237207,
+          "interval": [
+            -1811.6333833596982,
+            1451.8914478758293
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        },
+        "pss_sum_kib_sampled_max": {
+          "status": "INCONCLUSIVE",
+          "n": 3,
+          "unit": "KiB",
+          "mean_difference": -182.33333333333334,
+          "stdev_difference": 122.5003401355822,
+          "interval": [
+            -890.5893768643244,
+            525.9227101976577
+          ],
+          "quantization_bound": 1,
+          "parity": "exact equality cannot be established by finite noisy samples; no loss margin authorized"
+        }
+      },
+      "quality_and_host_equivalence": "MANUAL REVIEW REQUIRED",
+      "memory_rule": "positive systematic growth requires owner decision; uncertainty is not approval"
+    }
+  ]
+}
