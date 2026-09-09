@@ -1,5 +1,9 @@
 # Hardware AV1 Main/Profile 0 (2026-08-24)
 
+## AV1 global-motion arithmetic fix (2026-09-09)
+
+Local cros-codecs `Parser::setup_shear` now preserves checked i64 products through AV1 Round2Signed and Clip3, then checks conversion to i32. This fixes both the valid-coefficient i32 multiplication panic and a premature i64-to-i32 truncation that corrupted warp validity; the gamma lower Clip3 bound is also corrected to -32768. Exact owner-supplied YouTube format 399 now passes the prior failure point on VA-API/DMA-BUF, with renderer submission and no panic/fatal/disconnected marker. The change is private to cros AV1 parser helpers and does not widen player/renderer/public APIs. Tests, hardware evidence and pre-existing standalone-cros Clippy limitation: `mem:investigations/av1-global-motion-overflow-2026-09-09`.
+
 ## Production scope
 
 - Native VA-API playback supports only AV1 Main / VA Profile 0 with YUV420: 8-bit -> NV12 DMA-BUF and 10-bit -> P010 DMA-BUF. AV1 High, Professional, 12-bit, YUV422, YUV444, mismatched surface/bit depth, software-host contracts and codec-specific packetization metadata remain typed rejects.

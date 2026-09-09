@@ -2901,19 +2901,36 @@ impl Parser {
 
         let (div_shift, div_factor) = helpers::resolve_divisor(warp_params[2])?;
 
-        let v = i64::from(warp_params[4] << WARPEDMODEL_PREC_BITS);
-        let v = (v * i64::from(div_factor)) as i32;
-        let gamma0 = helpers::clip3(-32678, 32767, helpers::round2signed(v, div_shift)?);
-
-        let w = warp_params[3] * warp_params[4];
-
-        let delta0 = helpers::clip3(
+        // AV1 сначала умножает параметры global motion, а лишь затем округляет
+        // и ограничивает их. Допустимый поток может переполнить i32 на этом
+        // промежуточном шаге, поэтому сужение разрешено только после Clip3.
+        let v = (i64::from(warp_params[4]) << WARPEDMODEL_PREC_BITS)
+            .checked_mul(i64::from(div_factor))
+            .ok_or_else(|| "AV1 gamma intermediate product overflowed i64".to_owned())?;
+        let gamma0 = i32::try_from(helpers::clip3_i64(
             -32768,
             32767,
-            warp_params[5]
-                - helpers::round2signed(w * div_factor, div_shift)?
-                - (1 << WARPEDMODEL_PREC_BITS),
-        );
+            helpers::round2signed_i64(v, div_shift)?,
+        ))
+        .map_err(|error| format!("AV1 gamma after Clip3 does not fit i32: {error}"))?;
+
+        let w = i64::from(warp_params[3])
+            .checked_mul(i64::from(warp_params[4]))
+            .ok_or_else(|| "AV1 delta intermediate product overflowed i64".to_owned())?;
+        let delta_product = w
+            .checked_mul(i64::from(div_factor))
+            .ok_or_else(|| "AV1 delta correction product overflowed i64".to_owned())?;
+        let delta_correction = helpers::round2signed_i64(delta_product, div_shift)?;
+        let delta_input = i64::from(warp_params[5])
+            .checked_sub(delta_correction)
+            .and_then(|value| value.checked_sub(1_i64 << WARPEDMODEL_PREC_BITS))
+            .ok_or_else(|| "AV1 delta intermediate value overflowed i64".to_owned())?;
+        let delta0 = i32::try_from(helpers::clip3_i64(
+            -32768,
+            32767,
+            delta_input,
+        ))
+        .map_err(|error| format!("AV1 delta after Clip3 does not fit i32: {error}"))?;
 
         let alpha =
             helpers::round2signed(alpha0, WARP_PARAM_REDUCE_BITS)? << WARP_PARAM_REDUCE_BITS;
@@ -4050,7 +4067,9 @@ impl Clone for Parser {
 #[cfg(test)]
 mod tests {
     use crate::bitstream_utils::IvfIterator;
-    use crate::codec::av1::parser::{ObuAction, Parser, StreamFormat};
+    use crate::codec::av1::parser::{
+        ObuAction, Parser, StreamFormat, WARPEDMODEL_PREC_BITS,
+    };
 
     use super::ObuType;
 
@@ -4212,5 +4231,23 @@ mod tests {
                 consumed += data_len;
             }
         }
+    }
+
+    #[test]
+    fn setup_shear_keeps_wide_global_motion_products() {
+        // Это допустимый RotZoom transform: промежуточное w * div_factor равно
+        // -4_294_967_296, но после AV1 Round2Signed параметр остаётся валидным.
+        let warp_params = [0, 0, 1 << WARPEDMODEL_PREC_BITS, 512, -512, 1 << WARPEDMODEL_PREC_BITS];
+
+        assert!(Parser::setup_shear(&warp_params).unwrap());
+    }
+
+    #[test]
+    fn setup_shear_rejects_invalid_transform_after_wide_rounding() {
+        // Раннее сужение v до i32 раньше превращало этот недопустимый transform
+        // в валидный. Проверяем итоговое parser-level решение, а не helper отдельно.
+        let warp_params = [0, 0, 1 << WARPEDMODEL_PREC_BITS, 0, 8192, 73728];
+
+        assert!(!Parser::setup_shear(&warp_params).unwrap());
     }
 }

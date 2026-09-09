@@ -163,6 +163,44 @@ pub fn round2signed(x: i32, n: u32) -> Result<i32, String> {
     }
 }
 
+/// Реализует Round2Signed для широких промежуточных значений AV1.
+///
+/// Параметры global motion умножаются до применения Round2Signed. Их
+/// промежуточный результат может не помещаться в i32, хотя окончательный
+/// ограниченный параметр кадра остаётся допустимым по спецификации.
+pub fn round2signed_i64(x: i64, n: u32) -> Result<i64, String> {
+    let divisor = 1_i64
+        .checked_shl(n)
+        .ok_or_else(|| format!("Round2Signed shift {n} exceeds i64 precision"))?;
+    let rounding_offset = divisor / 2;
+
+    if x >= 0 {
+        x.checked_add(rounding_offset)
+            .ok_or_else(|| "Round2Signed positive input overflowed i64".to_owned())
+            .map(|value| value / divisor)
+    } else {
+        let magnitude = x
+            .checked_neg()
+            .ok_or_else(|| "Round2Signed cannot negate i64::MIN".to_owned())?;
+        let rounded = magnitude
+            .checked_add(rounding_offset)
+            .ok_or_else(|| "Round2Signed negative magnitude overflowed i64".to_owned())?
+            / divisor;
+        Ok(-rounded)
+    }
+}
+
+/// Ограничивает широкий промежуточный результат до границ, заданных AV1.
+pub fn clip3_i64(x: i64, y: i64, z: i64) -> i64 {
+    if z < x {
+        x
+    } else if z > y {
+        y
+    } else {
+        z
+    }
+}
+
 /// Implements 7.11.3.7. Resolve divisor process
 pub fn resolve_divisor(d: i32) -> Result<(u32, i32), String> {
     let abs_d = u32::try_from(d.abs()).unwrap(); // abs cannot return a negative

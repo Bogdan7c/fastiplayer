@@ -168,7 +168,7 @@ GitHub API подтверждает: `v0.1.0-alpha.1` опубликован 202
 
 ## Hardware AV1 Main/Profile 0 (2026-08-24)
 
-- Native VA-API AV1 is production-ready for Main/Profile 0 YUV420 only: 8-bit NV12 and 10-bit P010 DMA-BUF. The private adapter owns multi-OBU temporal-unit consumption/retry; public neutral APIs were not widened.
+- Native VA-API AV1 supports Main/Profile 0 YUV420 only: 8-bit NV12 and 10-bit P010 DMA-BUF. The private adapter owns multi-OBU temporal-unit consumption/retry; public neutral APIs were not widened. On 2026-09-09 the local cros AV1 global-motion parser was repaired to retain checked i64 intermediate arithmetic through AV1 rounding and Clip3; the owner-supplied AV1 format 399 now crosses the prior failure point on VA-API and reaches renderer submission with no fatal markers. See `mem:investigations/av1-global-motion-overflow-2026-09-09`.
 - Radeon 780M/Mesa real hardware-only and full playback matrices passed through configured AV1 adapter, exact DMA-BUF format and renderer submit. Exact boundaries, rejects, tests and commands: `mem:video-vaapi/av1-hardware-2026-08-24`.
 
 ## AUD-020 abortable superseded manifest fetch (2026-08-24)

@@ -23,12 +23,12 @@ package = "cros-codecs"
 version = "0.0.6"
 upstream_repository = "https://github.com/chromeos/cros-codecs"
 upstream_revision = "crates.io:sha256:80f7441b4f31c17b6b6b7f57f6c202944aad11d0ab23739a9ff88d8d34dec621"
-reason = "H.265 RPU/unspecified NAL, dynamic WPP offsets, seek/flush POC semantics, diagnostics и fallible decoded-surface readiness."
-owned_diff_areas = ["src/codec/h265", "src/decoder", "src/backend/vaapi.rs"]
+reason = "H.265 RPU/unspecified NAL, dynamic WPP offsets, AV1 global-motion wide arithmetic, seek/flush POC semantics, diagnostics и fallible decoded-surface readiness."
+owned_diff_areas = ["src/codec/av1/helpers.rs", "src/codec/av1/parser.rs", "src/codec/h265", "src/decoder", "src/backend/vaapi.rs"]
 dependent_crates = ["video-vaapi"]
 focused_automated_tests = ["cargo test --manifest-path crates/cros-codecs-patch/Cargo.toml --locked", "cargo test -p video-vaapi --locked"]
-manual_media_matrix = ["H.265 Dolby Vision RPU", "H.265 4K WPP", "H.265 CRA/open-GOP seek", "H.264 seek", "VP9 SDR/HDR VA-API"]
-removal_gate = "Удалять только когда upstream содержит все перечисленные parser/seek/readiness контракты и проходит video-vaapi focused suite плюс H.264/H.265/VP9 hardware matrix."
+manual_media_matrix = ["AV1 Main с global motion через VA-API/DMA-BUF", "H.265 Dolby Vision RPU", "H.265 4K WPP", "H.265 CRA/open-GOP seek", "H.264 seek", "VP9 SDR/HDR VA-API"]
+removal_gate = "Удалять только когда upstream содержит все перечисленные parser/seek/readiness контракты, включая AV1 global-motion wide arithmetic, и проходит video-vaapi focused suite плюс AV1/H.264/H.265/VP9 hardware matrix."
 
 # Запись связывает MP4 fork с точным опубликованным архивом Symphonia 0.6.0.
 [[patch]]
