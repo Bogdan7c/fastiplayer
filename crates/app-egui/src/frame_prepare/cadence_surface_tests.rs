@@ -80,7 +80,6 @@ fn acquired_surface_preserves_video_ownership_and_recovers_after_drop_and_error(
         acquired.render(Some(&video)),
         RenderFrameOutcome::Failed(_)
     ));
-    drop(video);
     drop(prepared);
     assert!(releases.0.lock().expect("releases").is_empty());
 
@@ -99,7 +98,6 @@ fn acquired_surface_preserves_video_ownership_and_recovers_after_drop_and_error(
     ));
     // Shell принимает только borrowed video input: submission accounting принадлежит app.
     prepared.mark_submitted_to_renderer();
-    drop(video);
     renderer
         .device()
         .poll(wgpu::PollType::Wait {
