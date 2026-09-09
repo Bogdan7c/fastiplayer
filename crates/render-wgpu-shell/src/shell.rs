@@ -16,6 +16,9 @@
 /// 2. Рендерим decoded video frame или чёрный фон
 /// 3. Рендерим egui overlay поверх видео
 /// 4. Present на экран
+mod frame_submission;
+pub use frame_submission::AcquiredRenderFrame;
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,19 +50,19 @@ fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-/// Возвращает dropped outcome и логирует timing даже для кадров без успешного present.
+/// Возвращает точную drop-причину и логирует timing кадров без успешного present.
 fn dropped_frame_after_surface_acquire(
     reason: RenderFrameDropReason,
     renderer_started_at: Instant,
     surface_acquire_started_at: Instant,
-) -> RenderFrameOutcome {
+) -> RenderFrameDropReason {
     tracing::debug!(
         reason = ?reason,
         renderer_elapsed_ms = duration_ms(renderer_started_at.elapsed()),
         surface_acquire_ms = duration_ms(surface_acquire_started_at.elapsed()),
         "render frame dropped before present"
     );
-    RenderFrameOutcome::Dropped(reason)
+    reason
 }
 
 /// Выбирает формат swapchain для SDR-видео.
@@ -446,279 +449,6 @@ impl Renderer {
     /// Передаёт HDR-to-SDR settings во внутренний P010 renderer.
     pub fn set_hdr_to_sdr_settings(&mut self, settings: HdrToSdrSettings) {
         self.video_renderer.set_hdr_to_sdr_settings(settings);
-    }
-
-    /// Рендерит один полный кадр: видео + egui overlay + контур desktop-окна.
-    ///
-    /// Последовательность:
-    /// 1. Обновляем egui textures/buffers
-    /// 2. Получаем surface texture из swapchain
-    /// 3. Рендерим video frame через backend facade или очищаем target
-    /// 4. Рендерим egui поверх видео
-    /// 5. Последним pass-ом применяем прозрачный контур окна
-    /// 6. Submit и present
-    pub fn render_frame(&mut self, input: RenderFrameInput<'_>) -> RenderFrameOutcome {
-        let renderer_started_at = Instant::now();
-        let RenderFrameInput {
-            window,
-            video_frame,
-            egui_paint_jobs,
-            egui_textures_delta,
-            screen,
-            video_viewport,
-            video_exclusion_rects,
-            window_corner_mask,
-        } = input;
-        // Window::inner_size может измениться до доставки Resized, особенно в XWayland.
-        // Surface должна соответствовать размеру подготовленного UI до acquire:
-        // иначе egui scissor выходит за старый attachment при fullscreen переходе.
-        if [
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
-        ] != screen.size_in_pixels
-        {
-            self.gpu
-                .resize(screen.size_in_pixels[0], screen.size_in_pixels[1]);
-        }
-        let video_frame: Option<&WgpuRenderableFrame<'_>> = video_frame;
-        let clamped_video_viewport = clamp_video_viewport_to_screen(video_viewport, &screen);
-        let clamped_video_exclusion_rects =
-            clamp_video_exclusion_rects_to_screen(video_exclusion_rects, &screen);
-        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: screen.size_in_pixels,
-            pixels_per_point: screen.pixels_per_point,
-        };
-
-        // Загружаем новые/изменённые egui текстуры.
-        // Retired-текстуры остаются живы до submit-а текущих paint jobs.
-        let stage_started_at = Instant::now();
-        self.egui_compositor.upload_changed_textures(
-            &self.gpu.device,
-            &self.gpu.queue,
-            &egui_textures_delta,
-        );
-        let egui_texture_update_elapsed = stage_started_at.elapsed();
-
-        // Создаём command encoder для этого кадра
-        let stage_started_at = Instant::now();
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame encoder"),
-            });
-        let encoder_creation_elapsed = stage_started_at.elapsed();
-
-        // Обновляем egui буферы (vertex/index) перед рендерингом
-        let stage_started_at = Instant::now();
-        let egui_callback_command_buffers = self.egui_compositor.update_buffers(
-            &self.gpu.device,
-            &self.gpu.queue,
-            &mut encoder,
-            &egui_paint_jobs,
-            &screen_descriptor,
-        );
-        let egui_buffer_update_elapsed = stage_started_at.elapsed();
-
-        // Получаем surface texture для текущего кадра
-        // Отдельный opt-in target позволяет связать ожидание поверхности с
-        // выбором lease в app, не включая общий высокочастотный GPU debug log.
-        tracing::trace!(target: "fastiplayer::frame_cadence", "surface acquire started");
-        let stage_started_at = Instant::now();
-        let surface_acquire_started_at = stage_started_at;
-        let surface_texture_result = match self.gpu.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                // Surface был уничтожен и воссоздан (например, при смене монитора)
-                self.gpu
-                    .surface
-                    .configure(&self.gpu.device, &self.gpu.surface_config);
-                match self.gpu.surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(frame)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
-                    other => {
-                        tracing::error!(
-                            "Не удалось получить surface texture после reconfigure: {:?}",
-                            other
-                        );
-                        Err(dropped_frame_after_surface_acquire(
-                            RenderFrameDropReason::SurfaceOutdatedRecoveryFailed,
-                            renderer_started_at,
-                            surface_acquire_started_at,
-                        ))
-                    }
-                }
-            }
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                // Таймаут — пропускаем кадр, не блокируем
-                Err(dropped_frame_after_surface_acquire(
-                    RenderFrameDropReason::SurfaceTimeout,
-                    renderer_started_at,
-                    surface_acquire_started_at,
-                ))
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                // Окно скрыто другим окном — пропускаем кадр
-                tracing::debug!("Surface occluded — skipping frame");
-                Err(dropped_frame_after_surface_acquire(
-                    RenderFrameDropReason::SurfaceOccluded,
-                    renderer_started_at,
-                    surface_acquire_started_at,
-                ))
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                // Surface потерян: сначала пробуем штатный reconfigure текущей surface.
-                // Если драйвер не восстановит surface, следующий redraw снова попадёт
-                // сюда, и внешний lifecycle сможет пересоздать runtime через resumed/suspend.
-                tracing::warn!("Surface lost — пробуем reconfigure");
-                self.gpu
-                    .surface
-                    .configure(&self.gpu.device, &self.gpu.surface_config);
-                Err(dropped_frame_after_surface_acquire(
-                    RenderFrameDropReason::SurfaceLost,
-                    renderer_started_at,
-                    surface_acquire_started_at,
-                ))
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                // Validation error при получении surface texture — пропускаем кадр
-                tracing::warn!("Surface validation error — skipping frame");
-                Err(dropped_frame_after_surface_acquire(
-                    RenderFrameDropReason::SurfaceValidation,
-                    renderer_started_at,
-                    surface_acquire_started_at,
-                ))
-            }
-        };
-        // Это wall wait, а не CPU work. Завершающее событие есть и при drop:
-        // анализ не должен принимать неудачное acquisition за успешный present.
-        tracing::trace!(
-            target: "fastiplayer::frame_cadence",
-            acquired = surface_texture_result.is_ok(),
-            "surface acquire finished"
-        );
-        let surface_texture = match surface_texture_result {
-            Ok(surface_texture) => surface_texture,
-            Err(dropped_frame) => {
-                // Текущий encoder не будет submitted, поэтому его paint jobs больше
-                // не удерживают retired-текстуры. Предыдущие submit-ы уже переданы wgpu.
-                self.egui_compositor
-                    .free_retired_textures(&egui_textures_delta);
-                return dropped_frame;
-            }
-        };
-        let surface_acquire_elapsed = stage_started_at.elapsed();
-
-        let stage_started_at = Instant::now();
-        let surface_view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let surface_view_creation_elapsed = stage_started_at.elapsed();
-
-        self.video_renderer.resize(
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
-        );
-
-        let stage_started_at = Instant::now();
-        match self.video_renderer.render_or_clear(WgpuVideoRenderInput {
-            frame: video_frame,
-            video_viewport: clamped_video_viewport,
-            video_exclusion_rects: &clamped_video_exclusion_rects,
-            target: &surface_view,
-            encoder: &mut encoder,
-            device: &self.gpu.device,
-            queue: &self.gpu.queue,
-        }) {
-            Ok(_video_rendered) => {}
-            Err(error) => {
-                tracing::error!(error = %error, "Video render failed");
-                // Encoder с egui paint jobs отбрасывается вместе с failed frame.
-                self.egui_compositor
-                    .free_retired_textures(&egui_textures_delta);
-                return RenderFrameOutcome::Failed(RenderFrameFailure::new(error.to_string()));
-            }
-        }
-        let video_render_elapsed = stage_started_at.elapsed();
-
-        // Рендерим egui поверх видео.
-        let stage_started_at = Instant::now();
-        self.egui_compositor.render_overlay(
-            &mut encoder,
-            &surface_view,
-            &egui_paint_jobs,
-            &screen_descriptor,
-        );
-        let egui_render_elapsed = stage_started_at.elapsed();
-
-        // Маска идёт строго последней: она одинаково обрезает video, egui и hover surfaces.
-        let stage_started_at = Instant::now();
-        if let Some(mask_renderer) = &self.window_corner_mask_renderer {
-            mask_renderer.render(
-                &self.gpu.queue,
-                &mut encoder,
-                &surface_view,
-                [
-                    self.gpu.surface_config.width,
-                    self.gpu.surface_config.height,
-                ],
-                screen.pixels_per_point,
-                window_corner_mask,
-            );
-        }
-        let window_corner_mask_elapsed = stage_started_at.elapsed();
-
-        // Отправляем команды на GPU
-        let stage_started_at = Instant::now();
-        self.gpu.queue.submit(
-            egui_callback_command_buffers
-                .into_iter()
-                .chain(std::iter::once(encoder.finish())),
-        );
-        // После submit-а wgpu самостоятельно удерживает ресурсы до завершения GPU work.
-        // Теперь retired-текстуры можно безопасно уничтожить, не повреждая текущий кадр.
-        self.egui_compositor
-            .free_retired_textures(&egui_textures_delta);
-        let queue_submit_elapsed = stage_started_at.elapsed();
-
-        // Продвигаем wgpu callbacks для submitted work.
-        // Zero-copy imports теперь живут в bounded persistent pool, поэтому poll
-        // больше не является основным механизмом выживания resource cleanup-а.
-        let stage_started_at = Instant::now();
-        if let Err(error) = self.gpu.device.poll(wgpu::PollType::Poll) {
-            tracing::warn!(error = %error, "wgpu device poll завершился ошибкой во время GPU callback polling");
-        }
-        let device_poll_elapsed = stage_started_at.elapsed();
-
-        // Сообщаем winit, что сейчас будет present: это помогает backend/compositor timing.
-        let stage_started_at = Instant::now();
-        window.pre_present_notify();
-        let pre_present_notify_elapsed = stage_started_at.elapsed();
-
-        // Показываем кадр на экране.
-        let stage_started_at = Instant::now();
-        surface_texture.present();
-        let surface_present_elapsed = stage_started_at.elapsed();
-
-        let stages = RenderFrameStageTimings {
-            egui_texture_update: egui_texture_update_elapsed,
-            encoder_creation: encoder_creation_elapsed,
-            egui_buffer_update: egui_buffer_update_elapsed,
-            surface_acquire: surface_acquire_elapsed,
-            surface_view_creation: surface_view_creation_elapsed,
-            video_render: video_render_elapsed,
-            egui_render: egui_render_elapsed,
-            window_corner_mask: window_corner_mask_elapsed,
-            queue_submit: queue_submit_elapsed,
-            device_poll: device_poll_elapsed,
-            pre_present_notify: pre_present_notify_elapsed,
-            surface_present: surface_present_elapsed,
-        };
-        RenderFrameOutcome::Presented(RenderFrameTiming::new(
-            stages,
-            renderer_started_at.elapsed(),
-        ))
     }
 }
 

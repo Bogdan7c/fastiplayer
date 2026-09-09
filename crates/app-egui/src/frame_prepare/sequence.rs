@@ -7,6 +7,7 @@ pub(super) enum FrameSequenceStage {
     WorkerEventRecord,
     DesktopPublish,
     EguiOutput,
+    SurfaceAcquire,
     MaterializerLookup,
     RendererSubmit,
 }
@@ -16,11 +17,12 @@ pub(super) trait FrameSequenceObserver {
     fn reached(&mut self, stage: FrameSequenceStage);
 }
 
-const EXPECTED_FRAME_SEQUENCE: [FrameSequenceStage; 6] = [
+const EXPECTED_FRAME_SEQUENCE: [FrameSequenceStage; 7] = [
     FrameSequenceStage::WorkerEventDrain,
     FrameSequenceStage::WorkerEventRecord,
     FrameSequenceStage::DesktopPublish,
     FrameSequenceStage::EguiOutput,
+    FrameSequenceStage::SurfaceAcquire,
     FrameSequenceStage::MaterializerLookup,
     FrameSequenceStage::RendererSubmit,
 ];
@@ -72,6 +74,7 @@ mod tests {
                 FrameSequenceStage::WorkerEventRecord,
                 FrameSequenceStage::DesktopPublish,
                 FrameSequenceStage::EguiOutput,
+                FrameSequenceStage::SurfaceAcquire,
                 FrameSequenceStage::MaterializerLookup,
                 FrameSequenceStage::RendererSubmit,
             ]

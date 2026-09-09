@@ -1,6 +1,10 @@
 # Frame cadence diagnosis — session 01
 
-Task #13, tracking #10, branch `test/13-frame-quality`, PR https://github.com/Bogdan7c/fastiplayer/pull/14. Publication was explicitly approved; merge is not authorized. Exact head, check status, source archives and private artifact paths belong in `user/cpu-optimization-plan/results/01.md`.
+Task #13, tracking #10, branch `test/13-frame-quality`, PR https://github.com/Bogdan7c/fastiplayer/pull/14. PR #14 was merged by owner instruction on 2026-09-09 at 7dc707ce5bcef433791024ba260375fe80371aae. Session 02 issue #15 now has owner approval for the acquire-before-video-input architecture and its Git workflow; a new merge is not authorized. Exact head, check status, source archives and private artifact paths belong in `user/cpu-optimization-plan/results/01.md`.
+
+## Current correction
+
+Issue #15 moves app preparation after acquisition; current API/order and tests are in `mem:render-video/surface-acquire-before-video-input-2026-09-09`. The sections below record the prerequisite diagnostic version and its before-fix evidence; they must not be read as the current render order.
 
 ## Diagnostic owners
 
@@ -12,7 +16,7 @@ No scheduler/release/API/capacity changes. Correlate Prepared → acquire → ac
 
 Historical observations include 1397 distinct PTS/1800 handoffs: exactly 403 repeats plus 403 double-frame PTS steps across the window. Old logs have no acquire/Busy events, so do not attribute all those repeats to one path. Fresh detailed hardware traces separated 42 Ready previous-frame repeats (new selection after preparation, before acquire return) from four texture-view Busy fallbacks. Decoder drain was ahead of selection; generations and PTS/wall progression were stable in recorded windows.
 
-Production-order causal repro now exists: three independent H.264 VA-API pairs on the actual AppShell/worker/swapchain. Publication BEFORE next preparation: 3/3 new PTS handoff PASS. Publication DURING acquisition after old frame preparation: 3/3 actual repeated PTS handoff and expected CADENCE_FRESHNESS_DEFECT. All targeted lookups Ready, generations equal, acquisition successful, ordinary process-owner shutdown completed. This proves the early-prepared input cause for the reproduced Ready path; it is not attribution of all historical 403 repeats or the Busy cause. Proposed next correction: take worker-selected input after successful acquisition, with API/ownership design reviewed separately. Session 02 is not implemented; dependency workflow still requires prerequisite merge or an explicitly approved stack. No CPU parity, RAM parity or quality-fixed claim.
+Production-order causal repro now exists: three independent H.264 VA-API pairs on the actual AppShell/worker/swapchain. Publication BEFORE next preparation: 3/3 new PTS handoff PASS. Publication DURING acquisition after old frame preparation: 3/3 actual repeated PTS handoff and expected CADENCE_FRESHNESS_DEFECT. All targeted lookups Ready, generations equal, acquisition successful, ordinary process-owner shutdown completed. This proves the early-prepared input cause for the reproduced Ready path; it is not attribution of all historical 403 repeats or the Busy cause. Proposed next correction: take worker-selected input after successful acquisition, with API/ownership design reviewed separately. Session 02 implementation is tracked separately in issue #15; prerequisite PR #14 is merged. Do not infer completion from the approved design. No CPU parity, RAM parity or quality-fixed claim.
 
 ## Test locations and commands
 

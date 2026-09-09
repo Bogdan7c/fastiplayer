@@ -415,7 +415,7 @@ fn winit_resize_direction(direction: WindowChromeResizeDirection) -> ResizeDirec
     }
 }
 
-/// Готовит video lease и texture views без входа в swapchain acquisition.
+/// Готовит video lease и texture views после успешного swapchain acquisition.
 fn prepare_video_frame(
     telemetry: &Telemetry,
     app_state: &mut AppState,
@@ -489,7 +489,7 @@ fn prepare_video_frame(
     timings.texture_view_lookup = materialization.timings.texture_view_lookup;
     timings.resource_lookup_report = materialization.timings.resource_lookup_report;
 
-    // Эта развилка остаётся до renderer/surface critical path: Busy не ждёт backend lock,
+    // Surface уже получена, но Busy по-прежнему не ждёт backend lock,
     // а Missing/Error не превращаются в silent fallback.
     match materialization.outcome {
         SharedVideoFrameMaterializationOutcome::Ready { materialized_frame } => {
@@ -1000,34 +1000,22 @@ pub(crate) fn render_frame(
     }
 
     let stage_started_at = Instant::now();
-    let prepared_video_frame =
-        prepare_video_frame(telemetry, app_state, frame_context.player_snapshot());
-    frame_sequence.reached(FrameSequenceStage::MaterializerLookup);
-    if let Err(fallback_failure) = app_state.apply_pending_dma_buf_runtime_fallback(
-        renderer.instance(),
-        renderer.adapter(),
-        renderer.device(),
-        renderer.queue(),
-    ) {
-        warn!(error = %fallback_failure.error, "Runtime DMA-BUF layout recovery rejected");
-        report_video_render_boundary_error(app_state, fallback_failure.player_error);
-    }
-    let mut video_prepare_timings = prepared_video_frame.timings;
-    video_prepare_timings.total = stage_started_at.elapsed();
-    let video_acquisition_state = prepared_video_frame.acquisition_state;
-    let texture_view_lookup_state = prepared_video_frame.texture_view_lookup_state;
-
-    let stage_started_at = Instant::now();
-    frame_sequence.reached(FrameSequenceStage::RendererSubmit);
-    let renderer_timing = submit_render_frame(
+    let submitted_frame = submit_render_frame(
         telemetry,
         window,
         renderer,
         app_state,
         prepared_ui_frame,
-        prepared_video_frame,
+        frame_context.player_snapshot(),
+        &mut frame_sequence,
     );
-    let renderer_submit_elapsed = stage_started_at.elapsed();
+    let renderer_timing = submitted_frame.renderer_timing;
+    let video_prepare_timings = submitted_frame.video_timings;
+    let video_acquisition_state = submitted_frame.acquisition_state;
+    let texture_view_lookup_state = submitted_frame.texture_lookup_state;
+    let renderer_submit_elapsed = stage_started_at
+        .elapsed()
+        .saturating_sub(video_prepare_timings.total);
 
     let frame_duration = frame_start.elapsed();
     let frame_time_ms = frame_duration.as_secs_f64() * 1000.0;

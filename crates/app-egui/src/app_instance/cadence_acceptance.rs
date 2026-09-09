@@ -76,7 +76,7 @@ impl ApplicationHandler<AppWakeEvent> for AcceptanceApp {
 }
 
 #[test]
-#[ignore = "manual X11/VA-API acceptance; run alone with CADENCE_MEDIA and CADENCE_CONFIG; known freshness defect"]
+#[ignore = "manual X11/VA-API acceptance; run alone with CADENCE_MEDIA and CADENCE_CONFIG"]
 fn published_during_acquisition_reaches_same_surface_handoff() {
     run_acceptance(PublicationWindow::DuringAcquisition);
 }

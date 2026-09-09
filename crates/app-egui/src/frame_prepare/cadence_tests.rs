@@ -31,6 +31,10 @@ use crate::frame_prepare::PreparedVideoFrame;
 mod cadence_gpu;
 use cadence_gpu::CadenceGpu;
 
+#[cfg(target_os = "linux")]
+#[path = "cadence_surface_tests.rs"]
+mod cadence_surface_tests;
+
 /// Два независимых ресурса исключают aliasing allocation как объяснение повтора.
 struct TwoFrames;
 

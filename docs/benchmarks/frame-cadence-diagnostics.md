@@ -25,7 +25,7 @@ Within the single render thread, correlate events in order:
 | Event | Owner | Meaning |
 | --- | --- | --- |
 | `latest video frame published` | `player-core::LatestPresentFrameHandoff` | New nonempty lease is available after unlocking the handoff slot and dropping its previous owner; PTS and render/decode generations identify this publication |
-| `video frame prepared for surface` | `app-egui::frame_prepare::submit` | Exact prepared PTS/generations, acquisition reason, texture lookup outcome and whether a video input exists, before entering the renderer |
+| `video frame prepared for surface` | `app-egui::frame_prepare::submit` | Exact prepared PTS/generations, acquisition reason, texture lookup outcome and whether a video input exists, after successful surface acquisition, before draw |
 | `surface acquire started` | `render-wgpu-shell::Renderer` | Immediately before attempting surface acquisition |
 | `surface acquire finished` | `render-wgpu-shell::Renderer` | Acquisition/recovery returned; `acquired=false` is a dropped attempt |
 | `current video frame submitted to surface` | `app-egui::frame_prepare::submit` | Existing handoff event behind the `Presented` gate |
@@ -33,8 +33,9 @@ Within the single render thread, correlate events in order:
 
 Optional identity values on the prepared event are `None` when there is no frame.
 Frame identity uses PTS and render/decode generations, never allocation identity.
-Surface events also cover UI-only frames; correlate with the preceding prepared
-event rather than treating every acquisition as a video frame. A renderer failure
+Surface events also cover UI-only frames; correlate acquisition with the following
+prepared event rather than treating every acquisition as a video frame. Failed
+acquisition reports `surface_not_acquired` and does not request a video lease. A renderer failure
 may have a successful acquisition without a handoff. Outdated-surface recovery is
 included within one acquisition interval. Trace timestamps bracket the calls and
 include tracing overhead; they are not GPU timestamps or physical scanout evidence.
@@ -98,9 +99,8 @@ cargo test -p app-egui --locked -- --ignored --exact \
   app_instance::cadence_acceptance::published_during_acquisition_reaches_same_surface_handoff --nocapture
 ```
 
-The first is the passing control. The second currently **fails intentionally at
-the freshness assertion** (`CADENCE_FRESHNESS_DEFECT`); fixing playback belongs to
-the next change. Normal contributor checks skip these explicit manual tests; a
+The first is the passing control. The second failed at `CADENCE_FRESHNESS_DEFECT` before the correction in #15
+and must pass after it. Normal contributor checks skip these explicit manual tests; a
 green ordinary suite does not mean the freshness regression passes. Missing media,
 display/backend failure, Busy, dropped acquisition and barrier timeouts must not
 be classified as successful reproductions.
@@ -109,7 +109,8 @@ After 30 real handoffs the test subscriber parks the worker just after a new lea
 is published, outside the handoff lock. Once that frame has been presented, the
 control releases the worker and waits for the next publication before the next
 preparation. The regression instead releases it at the next acquisition-start
-event, after the same frame has already been prepared. It waits for a newer
+event, after that pinned frame was presented. Before #15 the next input was
+already prepared at this point; after #15 preparation follows acquisition. It waits for a newer
 publication before allowing the normal surface call to proceed. Both then check
 the actual Presented-gated handoff and matching generations. The required new PTS
 must reach that handoff; an older PTS fails. Only the relative ordering is fixed,
@@ -121,7 +122,19 @@ through Ready on VA-API H.264. This establishes the early-preparation cause for
 the reproduced Ready path. It does not attribute every repeat in the historical
 1397/1800 run, diagnose Busy contention, prove physical scanout or qualify CPU/RAM
 parity. The production integration checks real surface handoff; pixel readback
-remains in the separate offscreen test. The proposed correction is to obtain the
-worker-selected video input after successful acquisition, preserving typed failure,
-fallback, generation, lease and GPU-completion responsibilities. Its API design
-must be reviewed separately; this diagnostic change does not implement it.
+remains in the separate offscreen test. The correction in #15 obtains the worker-selected input after successful
+acquisition. `Renderer::acquire_frame` returns an `AcquiredRenderFrame` holding
+an exclusive renderer borrow; app prepares its lease, then consumes the guard
+with `render`. Surface recovery and UI cleanup stay in shell; app owns fallback
+and submission accounting, worker owns clock/PTS eligibility. Video preparation
+is excluded from shell timing to avoid counting it twice.
+
+The additional ignored test
+`frame_prepare::shared_frame_materialization::cadence_tests::cadence_surface_tests::acquired_surface_preserves_video_ownership_and_recovers_after_drop_and_error`
+uses a real X11/Vulkan shell with a fake two-frame provider. It verifies clear-only
+presentation, acquired-frame abandonment, typed video failure, recovery through
+existing resize/reconfigure, subsequent video presentation and exactly-once shared
+lease release after GPU completion. Run it alone using the same `cargo test`
+`--ignored --exact` pattern. WGPU 29 Vulkan discard is a no-op, so abandonment or
+fatal video failure still needs the existing surface lifecycle recovery; the guard
+does not introduce implicit reconfiguration or change the normal error policy.

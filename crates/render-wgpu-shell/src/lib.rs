@@ -20,7 +20,7 @@ pub use frame::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
     RenderFrameSlowestStage, RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
 };
-pub use shell::{GpuContext, GpuDeviceLost, Renderer, RendererGpuDrainError};
+pub use shell::{AcquiredRenderFrame, GpuContext, GpuDeviceLost, Renderer, RendererGpuDrainError};
 pub use surface_alpha::SurfaceAlphaPreference;
 pub use surface_settings::{ShellPresentMode, SurfacePresentSettings};
 pub use window_corner_mask::WindowCornerMask;

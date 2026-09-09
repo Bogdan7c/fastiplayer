@@ -159,6 +159,16 @@ impl CadenceGate {
             .required
             .expect("new frame published inside acquisition interval");
         let rendered = state.rendered.expect("actual Presented-gated handoff");
+        assert_eq!(
+            state.prepared_lookup.as_deref(),
+            Some("ready"),
+            "target handoff must use Ready input"
+        );
+        assert_eq!(
+            state.prepared,
+            Some(rendered),
+            "handoff must identify the actual prepared input"
+        );
         assert!(required.pts > pinned.pts);
         assert_eq!(required.render_generation, rendered.render_generation);
         assert_eq!(required.decoded_generation, rendered.decoded_generation);

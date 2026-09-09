@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use render_core::RenderViewport;
-use render_wgpu_video::WgpuRenderableFrame;
 use winit::window::Window;
 
 use crate::WindowCornerMask;
@@ -19,7 +18,7 @@ pub enum RenderFrameOutcome {
     Failed(RenderFrameFailure),
 }
 
-/// Timing внутренних стадий одного `Renderer::render_frame`.
+/// Timing shell стадий одного acquire → render transaction.
 ///
 /// Эти значения остаются на shell boundary: app/player layer видит только
 /// длительности стадий, но не получает доступ к wgpu surface/device/queue.
@@ -149,14 +148,11 @@ pub struct RenderScreenDescriptor {
 
 /// Входные данные одного полного кадра shell renderer-а.
 ///
-/// App layer отвечает за egui tessellation и сбор video frame lease, а shell layer
-/// получает уже готовый пакет данных для записи swapchain кадра.
+/// App передаёт UI до acquisition; video input выбирается отдельно после успешного
+/// `Renderer::acquire_frame` и передаётся в `AcquiredRenderFrame::render`.
 pub struct RenderFrameInput<'frame> {
     /// Окно, для которого выполняется present notification.
     pub window: &'frame Window,
-
-    /// Video frame boundary; `None` означает, что target нужно очистить в чёрный.
-    pub video_frame: Option<&'frame WgpuRenderableFrame<'frame>>,
 
     /// Уже tessellated egui primitives.
     pub egui_paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
