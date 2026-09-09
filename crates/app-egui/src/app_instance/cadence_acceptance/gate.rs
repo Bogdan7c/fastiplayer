@@ -28,6 +28,7 @@ struct Fields {
     render_generation: Option<u64>,
     decoded_generation: Option<u64>,
     texture_lookup: Option<String>,
+    handoff_lookup: Option<String>,
     acquired: bool,
 }
 
@@ -58,8 +59,10 @@ impl Visit for Fields {
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "texture_lookup" {
-            self.texture_lookup = Some(value.to_owned());
+        match field.name() {
+            "texture_lookup" => self.texture_lookup = Some(value.to_owned()),
+            "handoff_lookup" => self.handoff_lookup = Some(value.to_owned()),
+            _ => {}
         }
     }
 
@@ -84,6 +87,8 @@ struct GateState {
     handoffs: usize,
     prepared: Option<Identity>,
     prepared_lookup: Option<String>,
+    slot_lookup: Option<String>,
+    slot_identity: Option<Identity>,
     pinned: Option<Identity>,
     pinned_presented: bool,
     worker_released: bool,
@@ -160,6 +165,16 @@ impl CadenceGate {
             .expect("new frame published inside acquisition interval");
         let rendered = state.rendered.expect("actual Presented-gated handoff");
         assert_eq!(
+            state.slot_lookup.as_deref(),
+            Some("acquired"),
+            "Ready texture must not hide Busy-slot reuse in this causal check"
+        );
+        assert_eq!(
+            state.slot_identity,
+            Some(rendered),
+            "actual acquired lease must reach the surface handoff"
+        );
+        assert_eq!(
             state.prepared_lookup.as_deref(),
             Some("ready"),
             "target handoff must use Ready input"
@@ -187,6 +202,10 @@ impl CadenceGate {
             return;
         }
         match fields.message.as_str() {
+            "latest present frame acquisition completed" => {
+                state.slot_identity = fields.identity();
+                state.slot_lookup = fields.handoff_lookup;
+            }
             "video frame prepared for surface" => {
                 state.prepared = fields.identity();
                 state.prepared_lookup = fields.texture_lookup;

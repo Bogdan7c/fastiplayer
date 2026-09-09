@@ -17,6 +17,8 @@ use crate::decoder_boundary::PresentFrameResourceProvider;
 use crate::decoder_boundary::PresentFrameResourceProviderLookup;
 use crate::session::{LeasedPresentFrame, PlayerSession, PresentFrameIdentity};
 
+mod cadence_diagnostics;
+
 /// Ёмкость release ack stream; защищает worker от бесконечного роста drop-ack очереди.
 const RENDER_RELEASE_CHANNEL_CAPACITY: usize = 512;
 
@@ -371,6 +373,7 @@ impl RenderLeaseBridgeClient {
         let acquire_started_at = Instant::now();
         let acquire_result = self.latest_present_frame_handoff.try_clone_latest();
         self.report_render_acquire_sample(acquire_started_at.elapsed());
+        cadence_diagnostics::trace_latest_frame_acquisition(&acquire_result);
 
         match acquire_result {
             LatestPresentFrameAcquire::Acquired(frame) => Some(frame),

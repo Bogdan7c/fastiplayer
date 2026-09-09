@@ -2,8 +2,9 @@
 
 Related investigation: [#13](https://github.com/Bogdan7c/fastiplayer/issues/13).
 Repeated surface handoffs can come from a previously selected frame, a busy
-resource lookup, or a lower video frame rate than the display refresh rate.
-These events distinguish the first two without changing playback scheduling.
+handoff slot, a busy texture lookup, or a lower video frame rate than the display
+refresh rate. These events distinguish the two contention boundaries without
+changing playback scheduling.
 
 Enable the narrow trace targets for a **bounded diagnostic attempt**:
 
@@ -25,6 +26,7 @@ Within the single render thread, correlate events in order:
 | Event | Owner | Meaning |
 | --- | --- | --- |
 | `latest video frame published` | `player-core::LatestPresentFrameHandoff` | New nonempty lease is available after unlocking the handoff slot and dropping its previous owner; PTS and render/decode generations identify this publication |
+| `latest present frame acquisition completed` | `player-core::RenderLeaseBridgeClient` | Actual nonblocking slot result: `handoff_lookup=acquired/empty/busy`, with the acquired identity when present; emitted after the slot guard is released |
 | `video frame prepared for surface` | `app-egui::frame_prepare::submit` | Exact prepared PTS/generations, acquisition reason, texture lookup outcome and whether a video input exists, after successful surface acquisition, before draw |
 | `surface acquire started` | `render-wgpu-shell::Renderer` | Immediately before attempting surface acquisition |
 | `surface acquire finished` | `render-wgpu-shell::Renderer` | Acquisition/recovery returned; `acquired=false` is a dropped attempt |
@@ -33,6 +35,12 @@ Within the single render thread, correlate events in order:
 
 Optional identity values on the prepared event are `None` when there is no frame.
 Frame identity uses PTS and render/decode generations, never allocation identity.
+`texture_lookup=ready` does not establish that reading the handoff slot succeeded:
+the existing Busy-slot fallback can reuse a cached frame with a Ready texture.
+Correlate the acquisition-completed marker with the following prepared/handoff
+events. Its identity describes the acquired lease even when later materialization
+falls back to another cached frame. This marker adds no lease or retained history,
+does not wait for a Busy slot, and leaves the existing Option mapping unchanged.
 Surface events also cover UI-only frames; correlate acquisition with the following
 prepared event rather than treating every acquisition as a video frame. Failed
 acquisition reports `surface_not_acquired` and does not request a video lease. A renderer failure
@@ -112,7 +120,10 @@ preparation. The regression instead releases it at the next acquisition-start
 event, after that pinned frame was presented. Before #15 the next input was
 already prepared at this point; after #15 preparation follows acquisition. It waits for a newer
 publication before allowing the normal surface call to proceed. Both then check
-the actual Presented-gated handoff and matching generations. The required new PTS
+the actual Presented-gated handoff and matching generations. They also require
+`handoff_lookup=acquired` with the same identity reaching the Ready texture and
+surface handoff, so Busy-slot reuse cannot masquerade as a successful Ready check.
+The required new PTS
 must reach that handoff; an older PTS fails. Only the relative ordering is fixed,
 not wall-clock times or startup PTS. Barriers time out after 3s; the application
 deadline is 25s and all process owners use the ordinary shutdown path.

@@ -4,7 +4,7 @@ Task #13, tracking #10, branch `test/13-frame-quality`, PR https://github.com/Bo
 
 ## Current correction
 
-Issue #15 moves app preparation after acquisition; current API/order and tests are in `mem:render-video/surface-acquire-before-video-input-2026-09-09`. The sections below record the prerequisite diagnostic version and its before-fix evidence; they must not be read as the current render order.
+Issue #15 moves app preparation after acquisition; current API/order and tests are in `mem:render-video/surface-acquire-before-video-input-2026-09-09`. The sections below record the prerequisite diagnostic version and its before-fix evidence; they must not be read as the current render order. Separate follow-up `mem:testing/frame-cadence-slot-diagnostics-2026-09-09` adds actual acquired/empty/busy slot outcomes: Ready texture alone never proved that the handoff slot was not Busy.
 
 ## Diagnostic owners
 
