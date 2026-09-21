@@ -91,36 +91,6 @@ exact Rust 1.96.0 + `rustfmt`, а `Strict Clippy` — exact Rust 1.96.0 +
 VP9 fields; Ubuntu 26.04 job утверждает API 1.23 и наличие обоих fields. После
 проверки header каждый job запускает полный standalone locked crate test/build.
 
-## Будущие required checks для main
-
-Сейчас репозиторий намеренно остаётся приватным без GitHub Pro. На этом тарифе
-GitHub не предоставляет rulesets/branch protection для данного репозитория,
-поэтому принудительная блокировка merge отключена решением владельца. CI при
-этом продолжает запускаться и показывать failures, но не является техническим
-запретом на merge.
-
-Когда репозиторий станет публичным, после первого успешного запуска
-`.github/workflows/ci.yml` нужно настроить ruleset или branch protection для
-`main`. Обязательными должны стать следующие точные status check names:
-
-- `Format and guardrails`
-- `Strict Clippy`
-- `Documentation`
-- `Workspace tests (all features)`
-- `app-egui (no default features)`
-- `MSRV (Rust 1.92.0)`
-- `Dependency policy`
-- `Dependency patch (cros-libva)`
-- `Dependency patch (cros-libva, VA-API 1.23)`
-- `Dependency patch (cros-codecs)`
-- `Dependency patch (symphonia-format-caf)`
-- `Dependency patch (symphonia-format-isomp4)`
-- `Dependency patch (symphonia-codec-aac)`
-- `Dependency patch (symphonia-format-mkv)`
-- `Dependency patch (wayland-scanner)`
-- `Dependency patch integration`
-- `Coverage baseline policy`
-- `Vertical seek acceptance (FFmpeg + WGPU)`
 
 Operational checklist:
 
