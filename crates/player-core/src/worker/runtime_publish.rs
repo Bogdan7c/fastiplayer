@@ -25,14 +25,11 @@ impl LatestSnapshotPublisher {
     }
 
     /// Публикует latest snapshot, удаляя устаревший pending snapshot.
-    fn publish(&self, snapshot: PlayerSnapshot) {
+    pub(super) fn publish(&self, snapshot: PlayerSnapshot) {
         // Ни I/O, ни построение snapshot не выполняются под lock. Он закрывает
         // только короткую замену канального slot-а, чтобы Installed ack оставался
         // доказательством доступности snapshot даже при следующем publish.
-        let _publication = self
-            .publication_lock
-            .lock()
-            .expect("snapshot publication lock");
+        let _publication = acquire_snapshot_publication_barrier(&self.publication_lock);
         drain_receiver_without_blocking(&self.snapshot_rx_for_drain_latest);
         if let Err(error) = self.snapshot_tx.try_send(snapshot) {
             match error {
@@ -41,6 +38,22 @@ impl LatestSnapshotPublisher {
             }
         }
     }
+}
+
+/// Захватывает барьер публикации snapshot-а между worker-ом и handle-ом.
+///
+/// Mutex охраняет `()`, а не данные: он только упорядочивает drain + send на
+/// стороне worker-а и drain на стороне handle-а. Poison означает, что другой
+/// поток упал, удерживая барьер, но защищаемого состояния, которому можно
+/// перестать доверять, нет: канал остаётся консистентным после каждой своей
+/// операции. Поэтому poison снимается, а не превращается во вторую панику
+/// (например, в UI-потоке, читающем snapshot).
+pub(super) fn acquire_snapshot_publication_barrier(
+    publication_lock: &Mutex<()>,
+) -> std::sync::MutexGuard<'_, ()> {
+    publication_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl PlayerWorkerRuntime {

@@ -13,40 +13,8 @@ use playlist_core::{
 use super::super::PlaylistController;
 use super::intents::{BarrierRaceIntent, DeferredControllerIntent, DesiredQueueModes};
 use super::token::GuardedInstallToken;
-use crate::media_open::{MediaOpenClientKey, MediaOpenRequestId};
+use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::identity::PendingTargetOrigin;
-
-/// Controller выбирает command semantics; coordinator остаётся policy-neutral executor-ом.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControllerMediaOpenDisposition {
-    Start,
-    Coalesce,
-    Supersede {
-        expected_request_id: MediaOpenRequestId,
-    },
-}
-
-/// Opaque controller command не содержит queue target/priority для coordinator-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControllerMediaOpenCommand {
-    Start {
-        client_key: MediaOpenClientKey,
-    },
-    Coalesce {
-        client_key: MediaOpenClientKey,
-    },
-    Supersede {
-        expected_request_id: MediaOpenRequestId,
-        client_key: MediaOpenClientKey,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControllerMediaOpenCommandError {
-    WorkerUnavailable,
-    InstallCommitLinearizing,
-    FatalInvariant,
-}
 
 /// Admission результата coordinator-а не превращает ожидаемый busy/supersede race в fatal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,11 +98,7 @@ pub(crate) struct AuthorizationDispatchStart {
     pub(super) request_id: MediaOpenRequestId,
 }
 
-impl AuthorizationDispatchStart {
-    pub(crate) const fn request_id(self) -> MediaOpenRequestId {
-        self.request_id
-    }
-}
+impl AuthorizationDispatchStart {}
 
 pub(in crate::playlist_runtime::controller) enum InstallState {
     AwaitingReady(AwaitingReady),
@@ -211,12 +175,5 @@ impl PlaylistController {
     /// Возвращает exact coordinator request текущего install guard-а без раскрытия token-а.
     pub(crate) fn install_request_id(&self) -> Option<MediaOpenRequestId> {
         self.install_state.as_ref().map(InstallState::request_id)
-    }
-
-    /// D52 update остаётся разрешённым: controller только подтверждает exact request correlation.
-    pub(crate) fn accepts_playback_intent_update(&self, request_id: MediaOpenRequestId) -> bool {
-        self.install_state
-            .as_ref()
-            .is_some_and(|state| state.request_id() == request_id)
     }
 }

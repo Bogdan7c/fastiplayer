@@ -16,3 +16,6 @@ syn = { workspace = true, features = ["full", "extra-traits"] }
 
 [dev-dependencies]
 trybuild = "1.0"
+
+[lints]
+workspace = true

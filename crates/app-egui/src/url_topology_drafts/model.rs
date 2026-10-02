@@ -20,6 +20,7 @@ pub(crate) struct YtDlpTopologyDraftPreview {
 
 impl YtDlpTopologyDraftPreview {
     /// Итерирует top-level drafts в authoritative source order.
+    #[cfg(test)]
     pub(crate) fn entries(
         &self,
     ) -> impl ExactSizeIterator<Item = &PlaylistImportEntryDraft> + DoubleEndedIterator + '_ {
@@ -27,13 +28,13 @@ impl YtDlpTopologyDraftPreview {
     }
 
     /// Возвращает retained Item demand без allocation.
+    #[cfg(test)]
     pub(crate) fn retained_item_count(&self) -> usize {
         self.entries
             .iter()
             .map(PlaylistImportEntryDraft::retained_item_count)
             .sum()
     }
-
     /// Итерирует safe issues в DFS source order.
     pub(crate) fn issues(
         &self,
@@ -78,6 +79,7 @@ pub(crate) struct YtDlpTopologyDraftIssue {
     pub(super) path: Box<[u32]>,
 }
 
+#[cfg(test)]
 impl YtDlpTopologyDraftIssue {
     /// Возвращает safe category для preview/UI adapter-а.
     pub(crate) const fn kind(&self) -> YtDlpTopologyDraftIssueKind {
@@ -89,6 +91,8 @@ impl YtDlpTopologyDraftIssue {
         &self.path
     }
 }
+
+impl YtDlpTopologyDraftIssue {}
 
 /// Root-level mapping failure, при котором preview нельзя считать построенным.
 #[derive(Debug, Error)]

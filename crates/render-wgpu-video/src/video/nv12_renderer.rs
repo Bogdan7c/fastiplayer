@@ -21,8 +21,10 @@ pub(crate) struct Nv12VideoRenderer {
 /// Возвращает non-zero binding size для uniform buffer-а.
 fn color_pipeline_uniform_binding_size() -> NonZeroU64 {
     // Инвариант защищён layout test-ом `color_pipeline_uniforms_match_wgsl_uniform_layout`.
-    NonZeroU64::new(COLOR_PIPELINE_UNIFORM_SIZE)
-        .expect("размер color pipeline uniform buffer должен быть non-zero")
+    const {
+        NonZeroU64::new(COLOR_PIPELINE_UNIFORM_SIZE)
+            .expect("размер color pipeline uniform buffer должен быть non-zero")
+    }
 }
 
 impl Nv12VideoRenderer {

@@ -15,7 +15,6 @@ pub(crate) enum UrlAppendValidationError {
     NotUrl,
     Unsupported { safe_error: String },
     LocatorMapping,
-    MetadataMapping,
     RuntimeShuttingDown,
     LoadDecisionPending,
     ConfirmationIdentityExhausted,
@@ -40,7 +39,7 @@ pub(crate) enum PlaylistConfirmationApplyOutcome {
     QueueReplacementConfirmed(AdmittedQueueReplacementIntent),
     Import(super::import_transaction::PlaylistImportContinueOutcome),
     ExportWriterStarted,
-    UrlAppended { item_count: usize },
+    UrlAppended,
     UrlNoCapacity,
     DeferredUntilStartupInstallResolution,
     Cancelled,
@@ -229,8 +228,8 @@ impl PlaylistRuntime {
     ) -> PlaylistConfirmationApplyOutcome {
         match self.commit_url_append(continuation.into_draft()) {
             Ok(outcome) => match outcome {
-                UrlAppendActionOutcome::Appended { item_count } => {
-                    PlaylistConfirmationApplyOutcome::UrlAppended { item_count }
+                UrlAppendActionOutcome::Appended { .. } => {
+                    PlaylistConfirmationApplyOutcome::UrlAppended
                 }
                 UrlAppendActionOutcome::NoCapacity => {
                     PlaylistConfirmationApplyOutcome::UrlNoCapacity
@@ -365,7 +364,7 @@ mod tests {
                 intent_id: current.intent_id(),
                 decision: QueueReplacementConfirmationDecision::Confirm,
             }),
-            PlaylistConfirmationApplyOutcome::UrlAppended { item_count: 1 }
+            PlaylistConfirmationApplyOutcome::UrlAppended
         ));
         assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);
         assert!(runtime.pending_playlist_confirmation().is_none());

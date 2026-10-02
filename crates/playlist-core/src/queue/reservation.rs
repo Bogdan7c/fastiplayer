@@ -166,6 +166,10 @@ impl PlaylistQueue {
         };
         let prepared_mutation = Box::new(prepared_mutation);
         let allocation_address = (&*prepared_mutation as *const PreparedMutation) as usize;
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: Box allocation address is always non-zero"
+        )]
         let key = ReservationKey(
             NonZeroUsize::new(allocation_address)
                 .expect("Box allocation address is always non-zero"),
@@ -199,6 +203,10 @@ impl PlaylistQueue {
                 traversal_current,
                 traversal_revision_after_commit,
             } => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "инвариант: reserved committed target must have a top-level owner"
+                )]
                 let target_identity = self
                     .shuffle_visit_identity(traversal_current.item_id())
                     .expect("reserved committed target must have a top-level owner");
@@ -231,6 +239,10 @@ impl PlaylistQueue {
                 self.traversal_current = Some(traversal_current);
                 if shuffle_was_enabled {
                     let canonical_entry_ids: Vec<_> = self.iter_top_level_entry_ids().collect();
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "инвариант: reserved replacement current must have a top-level owner"
+                    )]
                     let current = self
                         .shuffle_visit_identity(traversal_current.item_id())
                         .expect("reserved replacement current must have a top-level owner");

@@ -706,6 +706,10 @@ impl StartupReadinessTracker {
             return;
         }
 
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: готовность проверена для существующего startup attempt-а"
+        )]
         let completed_attempt = self
             .active_attempt
             .take()

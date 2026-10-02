@@ -23,6 +23,11 @@ impl PendingReadinessAcks {
         if nearest_candidates.is_empty() {
             return;
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "job.rs передаёт непустой ack только при первом insert направления в \
+                      readiness_batch_assigned, то есть максимум по одному на Before и After"
+        )]
         let vacant_slot = self
             .entries
             .iter_mut()

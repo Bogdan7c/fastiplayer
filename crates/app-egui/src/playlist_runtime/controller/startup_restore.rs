@@ -1,6 +1,5 @@
 //! D04/D22 restored-current preparation и bounded fallback policy.
 
-use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use player_core::{MediaInstallRequestId, PlaybackIntent, PlaybackIntentRevision};
@@ -221,10 +220,7 @@ impl PlaylistController {
         PlannedPlaylistInstall {
             item_id,
             playback_intent: PlaybackIntent::StartPaused,
-            intent_revision: PlaybackIntentRevision::from_non_zero(
-                NonZeroU64::new(self.stable_intent_revision)
-                    .expect("controller stable intent revision remains non-zero"),
-            ),
+            intent_revision: PlaybackIntentRevision::from_non_zero(self.stable_intent_revision),
             pending_origin: PendingTargetOrigin::RestoredCurrent,
             expected_queue_revision: self.queue.revision_snapshot(),
             mutation,

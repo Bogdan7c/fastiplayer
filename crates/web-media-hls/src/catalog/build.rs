@@ -409,6 +409,10 @@ fn selected_child_ids(
         .collect()
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "children собраны из этих же variant-индексов, поэтому каждый variant имеет своего child"
+)]
 fn child_for_variant<'a>(children: &'a [UniqueChild<'a>], index: usize) -> &'a UniqueChild<'a> {
     children
         .iter()
@@ -421,6 +425,11 @@ fn child_for_variant<'a>(children: &'a [UniqueChild<'a>], index: usize) -> &'a U
         .expect("variant child was collected")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "children собраны из этих же alternate-audio индексов, поэтому каждый audio rendition имеет \
+              своего child"
+)]
 fn child_for_audio<'a>(children: &'a [UniqueChild<'a>], index: usize) -> &'a UniqueChild<'a> {
     children
         .iter()

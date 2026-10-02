@@ -36,8 +36,7 @@ impl PrefetchWorker {
         config: PrefetchConfig,
         seekability: Seekability,
     ) -> Self {
-        let current_chunk_len = usize::try_from(config.initial_chunk_bytes())
-            .expect("prefetch initial_chunk_bytes должен помещаться в usize");
+        let current_chunk_len = config.initial_chunk_len();
 
         Self {
             inner,
@@ -51,8 +50,7 @@ impl PrefetchWorker {
 
     /// Основной цикл prefetch-а: lock нужен только для RAM-state, сеть читается без mutex-а.
     pub fn run(mut self) {
-        let max_chunk_len = usize::try_from(self.config.chunk_bytes())
-            .expect("prefetch chunk_bytes должен помещаться в usize для allocation");
+        let max_chunk_len = self.config.chunk_len();
         let mut chunk_buffer = vec![0; max_chunk_len];
 
         loop {
@@ -108,8 +106,7 @@ impl PrefetchWorker {
 
     /// Выбирает следующий fetch offset или ждёт, пока foreground освободит место/попросит seek.
     fn next_fetch_offset(&mut self) -> FetchDecision {
-        let initial_chunk_len = usize::try_from(self.config.initial_chunk_bytes())
-            .expect("prefetch initial_chunk_bytes должен помещаться в usize");
+        let initial_chunk_len = self.config.initial_chunk_len();
         let mut state = self.shared.lock_state();
 
         loop {
@@ -245,9 +242,21 @@ impl PrefetchWorker {
                 self.shared.notify_all();
             }
             Ok(bytes_read) => {
-                state
+                if let Err(error) = state
                     .buffer
-                    .append_chunk(chunk_buffer[..bytes_read].to_vec());
+                    .append_chunk(chunk_buffer[..bytes_read].to_vec())
+                {
+                    // Байты за пределами u64 offset-ов нельзя адресовать ни read-ом,
+                    // ни seek-ом, поэтому конец адресного пространства — это EOF
+                    // источника, а не повод ронять worker.
+                    tracing::warn!(
+                        %error,
+                        "media prefetch источник отдал данные за пределами u64 offset-ов; считаем это EOF"
+                    );
+                    state.buffer.mark_eof_at_fetch_offset();
+                    self.shared.notify_all();
+                    return;
+                }
                 state.diagnostics.bytes_prefetched = state
                     .diagnostics
                     .bytes_prefetched

@@ -22,3 +22,6 @@ wgpu-types = "29"
 [dev-dependencies]
 naga = { version = "29", features = ["wgsl-in"] }
 video-present-core = { workspace = true }
+
+[lints]
+workspace = true

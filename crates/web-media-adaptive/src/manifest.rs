@@ -249,8 +249,8 @@ impl AdaptiveManifestFetcher {
                     .context
                     .retry
                     .retry_delay_after(pending.attempt, error.http_retry_after());
-                pending.attempt =
-                    NonZeroU8::new(pending.attempt.get() + 1).expect("bounded attempt");
+                // Число попыток ограничено retry policy задолго до u8::MAX.
+                pending.attempt = pending.attempt.saturating_add(1);
                 pending.retry_not_before = now + delay;
                 pending.job_id = self.next_job_id;
                 self.next_job_id = self.next_job_id.wrapping_add(1).max(1);

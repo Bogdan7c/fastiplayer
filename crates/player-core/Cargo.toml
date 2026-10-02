@@ -28,3 +28,6 @@ video-present-core = { workspace = true }
 [dev-dependencies]
 render-core = { workspace = true }
 video-frame-contract.workspace = true
+
+[lints]
+workspace = true

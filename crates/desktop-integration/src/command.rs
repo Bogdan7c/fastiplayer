@@ -20,6 +20,13 @@ impl DesktopCommandRequestId {
     pub const fn get(self) -> u64 {
         self.0.get()
     }
+    /// Возвращает значение с сохранённой гарантией ненулевости.
+    ///
+    /// Позволяет конвертировать id между слоями без повторной проверки на ноль.
+    #[must_use]
+    pub const fn non_zero(self) -> NonZeroU64 {
+        self.0
+    }
 }
 
 /// Нейтральный request id timeline seek; `player-core` использует тот же смысл без D-Bus типов.
@@ -37,6 +44,13 @@ impl TimelineSeekRequestId {
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0.get()
+    }
+    /// Возвращает значение с сохранённой гарантией ненулевости.
+    ///
+    /// Позволяет конвертировать id между слоями без повторной проверки на ноль.
+    #[must_use]
+    pub const fn non_zero(self) -> NonZeroU64 {
+        self.0
     }
 }
 
@@ -153,6 +167,9 @@ impl EffectiveVolume {
         }
         Ok(Self(checked))
     }
+
+    /// Полная громкость (1.0) — валидное значение без runtime-проверки.
+    pub const FULL: Self = Self(1.0);
 
     /// Создаёт значение из уже валидированного app config/player representation.
     pub fn from_player(value: f32) -> Result<Self, EffectiveVolumeError> {

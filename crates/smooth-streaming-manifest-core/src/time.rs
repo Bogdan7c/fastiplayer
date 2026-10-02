@@ -29,6 +29,12 @@ impl SmoothTimescale {
     pub const fn get(self) -> u64 {
         self.0.get()
     }
+
+    /// Возвращает timescale с сохранённой гарантией ненулевости.
+    #[must_use]
+    pub const fn non_zero(self) -> NonZeroU64 {
+        self.0
+    }
 }
 
 /// Exact timestamp как rational `ticks / timescale`.
@@ -55,12 +61,9 @@ impl SmoothTime {
     }
 
     fn exact_cross_products(self, other: Self) -> (u128, u128) {
-        let left = u128::from(self.ticks)
-            .checked_mul(u128::from(other.timescale.get()))
-            .expect("произведение двух u64 всегда помещается в u128");
-        let right = u128::from(other.ticks)
-            .checked_mul(u128::from(self.timescale.get()))
-            .expect("произведение двух u64 всегда помещается в u128");
+        // (2^64 - 1)^2 < 2^128, поэтому произведение двух u64 в u128 не переполняется.
+        let left = u128::from(self.ticks) * u128::from(other.timescale.get());
+        let right = u128::from(other.ticks) * u128::from(self.timescale.get());
         (left, right)
     }
 }

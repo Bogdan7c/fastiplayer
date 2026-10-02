@@ -112,16 +112,24 @@ pub(crate) fn open_local_demuxer_from_source(
 }
 
 /// Named local sniff policy удерживает I/O/replay независимо от container factory.
+#[expect(
+    clippy::expect_used,
+    reason = "DemuxSniffBudget::new отклоняет только нулевую длительность, а здесь константа 2 с"
+)]
 fn local_demux_sniff_budget() -> DemuxSniffBudget {
     DemuxSniffBudget::new(
-        NonZeroUsize::new(256 * 1024).expect("local sniff byte limit is non-zero"),
-        NonZeroUsize::new(8).expect("local sniff segment limit is non-zero"),
+        const { NonZeroUsize::new(256 * 1024).expect("local sniff byte limit is non-zero") },
+        const { NonZeroUsize::new(8).expect("local sniff segment limit is non-zero") },
         Duration::from_secs(2),
     )
     .expect("local sniff duration is non-zero")
 }
 
 /// Конвертирует validated TOML config приложения в options Symphonia demux adapter-а.
+#[expect(
+    clippy::expect_used,
+    reason = "инвариант: validated AppConfig must provide positive demux corrupted packet limit"
+)]
 pub(crate) fn demuxer_options_from_config(
     config: &PlayerDemuxConfig,
 ) -> symphonia_demux::DemuxerOptions {

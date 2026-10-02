@@ -428,9 +428,7 @@ impl MprisPlayerInterface {
             let _outcome = DesktopTimelineSeekOutcome::InvalidRange { request_id };
             return Ok(());
         }
-        let command_request_id = DesktopCommandRequestId::new(
-            NonZeroU64::new(request_id.get()).expect("seek request IDs are non-zero"),
-        );
+        let command_request_id = DesktopCommandRequestId::new(request_id.non_zero());
         self.command_sink
             .send_desktop_command(DesktopCommand {
                 request_id: command_request_id,

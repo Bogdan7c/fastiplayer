@@ -1,10 +1,6 @@
 //! Target-first local replacement и process-lifetime sibling discovery orchestration.
 
 mod action_api;
-#[allow(
-    dead_code,
-    reason = "Session 16 action API is rendered by Session 19 UI"
-)]
 mod action_jobs;
 mod initial_playback;
 mod installed_target;
@@ -105,6 +101,10 @@ impl PlaylistRuntime {
     }
 
     /// Ready -> fallible reservation -> dispatch -> authoritative resolution.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: controller проверен через ok_or в начале и не снимается до конца метода"
+    )]
     pub(crate) fn authorize_ready_target_install(
         &mut self,
         request_id: MediaOpenRequestId,
@@ -175,16 +175,8 @@ impl PlaylistRuntime {
         visible | self.drain_metadata_sort()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn playlist_discovery_status(&self) -> &PlaylistDiscoveryStatus {
         self.discovery.status()
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn playlist_discovery_insertion_hint(
-        &self,
-    ) -> Option<&PlaylistDiscoveryInsertionHint> {
-        self.discovery.last_insertion_hint()
     }
 }
 
@@ -258,15 +250,7 @@ struct ActiveDiscoveryScope {
     job: DiscoveryJobHandle,
     committed_ids_by_key: BTreeMap<ManifestCandidateKey, PlaylistItemId>,
     pending_readiness_acks: Vec<AdmissionBatchId>,
-    #[allow(
-        dead_code,
-        reason = "read by Session 15A action boundary before UI wiring"
-    )]
     manifest: Arc<DirectoryManifest>,
-    #[allow(
-        dead_code,
-        reason = "read by Session 15A action boundary before UI wiring"
-    )]
     target_key: ManifestCandidateKey,
     admission_revisions: [u64; 2],
     readiness_revisions: [u64; 2],
@@ -296,7 +280,16 @@ impl PlaylistDiscoveryCoordinator {
         let discovery_wake: Arc<dyn DiscoveryWakePort> = Arc::new(AppDiscoveryWake {
             wake_port: wake_port.clone(),
         });
-        let executor = DiscoveryExecutor::start(discovery_wake).ok();
+        // Без executor-а discovery деградирует в TargetOnlyWarning::ExecutorUnavailable
+        // (см. submit path), но причину отказа сохраняем в логе, а не теряем.
+        let executor = DiscoveryExecutor::start(discovery_wake)
+            .inspect_err(|error| {
+                tracing::error!(
+                    ?error,
+                    "Discovery executor не запустился; sibling discovery будет недоступен"
+                );
+            })
+            .ok();
         let cpu_executor = metadata_sort::start_cpu_executor();
         let manifest_worker = ManifestWorker::start(wake_port.clone());
         Self {
@@ -329,10 +322,6 @@ impl PlaylistDiscoveryCoordinator {
 
     pub(super) fn status(&self) -> &PlaylistDiscoveryStatus {
         &self.status
-    }
-
-    pub(super) fn last_insertion_hint(&self) -> Option<&PlaylistDiscoveryInsertionHint> {
-        self.last_insertion_hint.as_ref()
     }
 
     /// Неблокирующе закрывает discovery admission перед общим committed-state flush.
@@ -375,9 +364,7 @@ impl PlaylistDiscoveryCoordinator {
                 self.initial_playback.arm_ready_without_scope(guard);
             }
             self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {
-                scope_id: SiblingDiscoveryScopeId::from_non_zero(
-                    NonZeroU64::new(u64::MAX).expect("maximum u64 is non-zero"),
-                ),
+                scope_id: SiblingDiscoveryScopeId::from_non_zero(NonZeroU64::MAX),
                 warning: PlaylistDiscoveryWarning::ExecutorUnavailable,
             };
             return;
@@ -494,7 +481,11 @@ impl PlaylistDiscoveryCoordinator {
                         .collect::<Result<Vec<_>, _>>()
                     {
                         Ok(drafts) => drafts,
-                        Err(_) => {
+                        Err(error) => {
+                            tracing::warn!(
+                                ?error,
+                                "Discovery record не преобразован в playlist draft"
+                            );
                             let _cancelled_now = active
                                 .job
                                 .cancel(DiscoveryCancellationCause::StructuralInvalidation);
@@ -535,7 +526,8 @@ impl PlaylistDiscoveryCoordinator {
                                 }
                             }
                         }
-                        Err(_) => {
+                        Err(error) => {
+                            tracing::warn!(?error, "Discovery batch отклонён controller-ом");
                             let _cancelled_now = active
                                 .job
                                 .cancel(DiscoveryCancellationCause::StructuralInvalidation);
@@ -660,7 +652,8 @@ impl PlaylistDiscoveryCoordinator {
         };
         let job = match executor.submit(request) {
             Ok(job) => job,
-            Err(_) => {
+            Err(error) => {
+                tracing::warn!(?error, "Discovery submit отклонён executor-ом");
                 self.initial_playback
                     .mark_scope_ready(manifest_job.scope_id);
                 self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {

@@ -282,6 +282,10 @@ impl PlaylistQueue {
     }
 
     /// Exact Installed коммитит current и opaque shuffle delta в одном owner turn.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: automatic shuffle token requires enabled traversal"
+    )]
     pub fn commit_automatic_traversal(
         &mut self,
         token: PreparedAutomaticTraversalToken,
@@ -378,6 +382,10 @@ impl PlaylistQueue {
         current_item_id: PlaylistItemId,
         repeat_mode: RepeatMode,
     ) -> Vec<PlaylistItemId> {
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: validated current remains committed"
+        )]
         let current_index = self
             .iter_playable_ids()
             .position(|item_id| item_id == current_item_id)

@@ -180,6 +180,7 @@ impl fmt::Debug for PlayerWorkerConfig {
 impl PlayerWorkerConfig {
     /// Создаёт worker config из runtime tick config приложения.
     #[must_use]
+    #[expect(clippy::expect_used, reason = "default config проверен тестом")]
     pub fn new(tick_config: PlayerTickConfig) -> Self {
         Self {
             coarse_wakeup_interval: DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL,
@@ -264,6 +265,7 @@ impl PlayerWorkerConfig {
 
     /// Возвращает validated frame-server policy тем же маппингом, что startup worker config.
     #[must_use]
+    #[expect(clippy::expect_used, reason = "диапазоны Hz совпадают, см. тест")]
     pub fn frame_server_config_from_app_config(
         config: &fastiplayer_config::AppConfig,
     ) -> ValidatedFrameServerConfig {

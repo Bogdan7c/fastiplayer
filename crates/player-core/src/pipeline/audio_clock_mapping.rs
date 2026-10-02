@@ -105,6 +105,10 @@ impl AudioClockMediaMapping {
 
     /// Возвращает rate последнего открытого segment-а для lifecycle reset/install.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "mapping создаётся с anchor segment и никогда не удаляет последний открытый segment"
+    )]
     pub(super) fn open_playback_rate(&self) -> PlaybackRate {
         self.segments
             .last()
@@ -132,6 +136,10 @@ impl AudioClockMediaMapping {
     /// Уже достигнутый deadline возвращает zero; строго будущий deadline всегда
     /// возвращает хотя бы одну наносекунду.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "mapping создаётся с anchor segment и никогда не становится пустым"
+    )]
     pub(super) fn output_delay_until_media_deadline(
         &self,
         current_output_clock: Duration,
@@ -382,6 +390,10 @@ fn append_segment_merging_adjacent(
 
 /// Продвигает media position от последнего построенного segment-а до output boundary.
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "пересборка mapping всегда сохраняет текущий anchor segment"
+)]
 fn media_position_from_last_segment(
     segments: &[AudioClockMappingSegment],
     output_clock_position: Duration,

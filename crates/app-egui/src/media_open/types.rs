@@ -161,20 +161,6 @@ impl ActiveMediaSource {
         }
     }
 
-    /// Повторно применяет identity к freshly reopened prepared media.
-    #[must_use]
-    pub(crate) fn apply_to_prepared_media(
-        &self,
-        prepared_media: player_core::PreparedMedia,
-    ) -> player_core::PreparedMedia {
-        match self.playback_window() {
-            Some(window) => prepared_media
-                .with_playback_window(window)
-                .expect("active static source cannot contain a dynamic live timeline"),
-            None => prepared_media,
-        }
-    }
-
     /// Создаёт source request wrapper для suspend reopen через общий coordinator.
     #[must_use]
     pub(crate) fn wrap_reopen_request(
@@ -340,6 +326,10 @@ impl PreparedMediaOpen {
 
     /// Применяет window одновременно к player payload и reconstructible descriptor.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: prepared static descriptor cannot contain a dynamic live timeline"
+    )]
     pub(super) fn with_playback_window(
         self,
         semantic_identity: player_core::MediaPlaybackWindow,
@@ -538,7 +528,6 @@ pub(crate) enum MediaPreparationFailureKind {
     /// Fresh component catalog отсутствует либо не прошёл typed rematch/install.
     ComponentCatalogUnavailable,
     Cancelled,
-    StaleResult,
     WorkerPanicked,
 }
 
@@ -568,23 +557,26 @@ pub(crate) enum MediaOpenTerminalOutcome {
     },
     Cancelled {
         request_id: MediaOpenRequestId,
+        /// Причину проверяют только тесты; production различает исходы по варианту.
+        #[cfg(test)]
         cause: MediaInstallCancellationCause,
     },
     PreparationFailed {
         request_id: MediaOpenRequestId,
-        safe_label: SafeMediaLabel,
+        /// Вид отказа проверяют только тесты; UI различает исходы по варианту.
+        #[cfg(test)]
         kind: MediaPreparationFailureKind,
     },
     PlayerRejected {
         request_id: MediaOpenRequestId,
-        rejection: PlayerDispatchRejection,
     },
     PlayerFailed {
         request_id: MediaOpenRequestId,
-        completion: MediaInstallCompletion,
     },
     FatalInvariant {
         request_id: MediaOpenRequestId,
+        /// В production нарушение пишется в лог (`publish_fatal`); тесты проверяют его здесь.
+        #[cfg(test)]
         violation: MediaOpenInvariantViolation,
     },
 }
@@ -592,7 +584,6 @@ pub(crate) enum MediaOpenTerminalOutcome {
 /// Snapshot current request-а для caller event-loop drain.
 #[derive(Debug, Clone)]
 pub(crate) struct MediaOpenSnapshot {
-    pub(crate) client_key: MediaOpenClientKey,
     pub(crate) request_id: MediaOpenRequestId,
     pub(crate) phase: MediaOpenPhase,
     pub(crate) descriptor: Option<PreparedMediaDescriptor>,

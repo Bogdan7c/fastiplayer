@@ -23,6 +23,10 @@ pub enum RemovalCurrentOutcome {
 
 impl PlaylistQueue {
     /// Удаляет exact top-level identity, не выбирая successor автоматически.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: preflighted traversal revision"
+    )]
     pub fn remove(&mut self, entry_id: PlaylistEntryId) -> RemoveItemOutcome {
         if self.active_reservation.is_some() {
             return RemoveItemOutcome::InstallCommitLinearizing;
@@ -91,6 +95,10 @@ impl PlaylistQueue {
             TraversalCurrentEffect::Preserved
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: clears_current requires a removed current part"
+        )]
         let current_outcome = if clears_current {
             RemovalCurrentOutcome::Detached {
                 removed_item_id: removed_current_item_id

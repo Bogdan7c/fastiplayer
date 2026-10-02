@@ -22,7 +22,6 @@ pub(crate) struct DesiredQueueModes {
 pub(crate) enum DeferredControllerIntent {
     Transport(DeferredTransportIntent),
     Suspend,
-    Shutdown,
 }
 
 /// Latest-only post-commit transport intent; это не fast cursor Session 11C.
@@ -61,7 +60,6 @@ impl DeferredControllerIntent {
         match self {
             Self::Transport(_) => 0,
             Self::Suspend => 1,
-            Self::Shutdown => 2,
         }
     }
 
@@ -69,7 +67,6 @@ impl DeferredControllerIntent {
         match self {
             Self::Transport(intent) => intent.cancellation_cause(),
             Self::Suspend => player_core::MediaInstallCancellationCause::LifecycleSuspended,
-            Self::Shutdown => player_core::MediaInstallCancellationCause::LifecycleShutdown,
         }
     }
 }
@@ -104,7 +101,6 @@ pub(crate) enum LifecycleIntentOutcome {
         request_id: MediaOpenRequestId,
     },
     NoPendingInstall,
-    Fatal(PlaylistControllerInvariantViolation),
 }
 
 /// Результат terminal drain уже соблюдает commit/abort -> modes -> intent ordering.

@@ -314,6 +314,11 @@ fn preflight_durable_locator(
     if let Some(url_locator) = locator.expose_url_for_reopen() {
         return policy_url(url_locator, policy);
     }
+    #[expect(
+        clippy::expect_used,
+        reason = "DurableReopenLocator — закрытый enum из local/url/service; local и url вернулись выше, \
+                  остаётся service"
+    )]
     let service_locator = locator
         .expose_service_payload_for_reopen()
         .expect("DurableReopenLocator является closed non-empty enum");
@@ -371,7 +376,7 @@ fn preflight_local_locator(
     if !native_path.is_absolute() {
         return Err(PlaylistExportIneligible::RelativeLocalPath);
     }
-    native_path
+    let native_utf8_path = native_path
         .to_str()
         .ok_or(PlaylistExportIneligible::NonUtf8LocalPath)?;
     let file_url = Url::from_file_path(native_path)
@@ -382,14 +387,8 @@ fn preflight_local_locator(
             .unwrap_or_else(|| file_url.as_str().to_owned()),
         PlaylistExportFormat::Xspf => reversible_xspf_relative(&file_url, target)
             .unwrap_or_else(|| file_url.as_str().to_owned()),
-        PlaylistExportFormat::Cue => {
-            reversible_m3u8_relative(native_path, target).unwrap_or_else(|| {
-                native_path
-                    .to_str()
-                    .expect("strict UTF-8 preflight completed above")
-                    .to_owned()
-            })
-        }
+        PlaylistExportFormat::Cue => reversible_m3u8_relative(native_path, target)
+            .unwrap_or_else(|| native_utf8_path.to_owned()),
     };
     Ok(PreparedExportLocator {
         serialized,

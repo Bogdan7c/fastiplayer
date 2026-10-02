@@ -1,5 +1,14 @@
 //! Deterministic regression ровно одного fresh manifest-resource restart-а.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 mod preview_cancellation {
     include!("transient_manifest_retry/preview_cancellation.rs");
 }

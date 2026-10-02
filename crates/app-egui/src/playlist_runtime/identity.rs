@@ -145,7 +145,6 @@ pub(crate) enum PendingTargetOrigin {
     },
     ExplicitOpen,
     RestoredCurrent,
-    ControlledResume,
     /// Automatic clean Ended/error traversal всегда стартует Playing.
     AutomaticAdvance,
 }
@@ -185,6 +184,7 @@ impl PendingTarget {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn request_id(self) -> MediaOpenRequestId {
         self.request_id
     }
@@ -192,21 +192,12 @@ impl PendingTarget {
     pub(crate) const fn item_id(self) -> Option<PlaylistItemId> {
         self.item_id
     }
-
-    pub(crate) const fn origin(self) -> PendingTargetOrigin {
-        self.origin
-    }
-
-    pub(crate) const fn intent_revision(self) -> PlaybackIntentRevision {
-        self.intent_revision
-    }
 }
 
 /// Этап runtime-ошибки строки остаётся app-owned и не попадает в persistence DTO.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaylistItemErrorPhase {
     Preparation,
-    Install,
     Playback,
     SourceUnavailable,
 }
@@ -215,8 +206,6 @@ pub(crate) enum PlaylistItemErrorPhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaylistItemErrorCategory {
     Unavailable,
-    Unsupported,
-    Rejected,
     Runtime,
 }
 
@@ -269,24 +258,8 @@ impl PlaylistItemRuntimeError {
         self.phase
     }
 
-    pub(crate) const fn category(&self) -> PlaylistItemErrorCategory {
-        self.category
-    }
-
     pub(crate) fn safe_summary(&self) -> &str {
         &self.safe_summary
-    }
-
-    pub(crate) const fn request_id(&self) -> Option<MediaOpenRequestId> {
-        self.request_id
-    }
-
-    pub(crate) const fn media_instance_id(&self) -> Option<MediaInstanceId> {
-        self.media_instance_id
-    }
-
-    pub(crate) const fn occurrence_count(&self) -> u32 {
-        self.occurrence_count
     }
 }
 

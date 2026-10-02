@@ -201,11 +201,10 @@ impl<'proof> ProviderLaneProof<'proof> {
             .into_iter()
             .enumerate()
             .map(|(request_index, request)| {
-                if received_results
-                    .peek()
-                    .is_some_and(|(received_index, _outcome)| *received_index == request_index)
+                if let Some((_received_index, outcome)) = received_results
+                    .next_if(|(received_index, _outcome)| *received_index == request_index)
                 {
-                    return received_results.next().expect("peeked DASH proof result").1;
+                    return outcome;
                 }
                 // Panic/spawn failure изолируется одной lane и не превращает catalog
                 // discovery в hang или silently missing result.

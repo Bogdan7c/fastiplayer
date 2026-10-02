@@ -16,6 +16,7 @@ const HOST_YUV420_16BIT_SHADER_SOURCE: &str =
     include_str!("../../shaders/host_yuv420_16bit_to_sdr.wgsl");
 const HOST_YUV420_HIGH_BIT_UNIFORM_SIZE: u64 =
     std::mem::size_of::<HostYuv420HighBitUniforms>() as u64;
+const _: () = assert!(HOST_YUV420_HIGH_BIT_UNIFORM_SIZE > 0);
 const HOST_YUV420_SHADER_MODE_SDR_BT709: u32 = 0;
 const HOST_YUV420_SHADER_MODE_HDR_BT2446C: u32 = 1;
 const HOST_YUV420_TRANSFER_MODE_SDR_BT709: u32 = 0;
@@ -412,9 +413,8 @@ fn uniform_bind_group_layout_entry(binding: u32, size: u64) -> wgpu::BindGroupLa
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
-            min_binding_size: Some(
-                wgpu::BufferSize::new(size).expect("uniform buffer size must be non-zero"),
-            ),
+            // Оба размера — ненулевые константы (const-утверждения у их определений).
+            min_binding_size: wgpu::BufferSize::new(size),
         },
         count: None,
     }

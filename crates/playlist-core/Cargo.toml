@@ -19,3 +19,6 @@ media-core.workspace = true
 # Production shuffle получает системную entropy через rand::rng(), а focused
 # tests внедряют seeded RNG через отдельные `*_with_rng` boundary methods.
 rand.workspace = true
+
+[lints]
+workspace = true

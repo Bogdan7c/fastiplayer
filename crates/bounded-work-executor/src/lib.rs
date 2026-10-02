@@ -144,11 +144,20 @@ trait ErasedTask: Send {
     fn cancel_before_start(self: Box<Self>);
 }
 
+/// Задача, принятая в очередь: что выполнить и куда сообщить результат.
+///
+/// `run`/`cancel_before_start` потребляют `Box<Self>`, поэтому operation и
+/// completion забираются по значению ровно один раз — без `Option::take()`.
 struct TypedTask<F, T> {
-    operation: Option<F>,
-    terminal: SyncSender<Result<T, TaskFailure>>,
+    operation: F,
     task_cancelled: Arc<AtomicBool>,
-    terminal_notifier: Option<Box<dyn FnOnce() + Send + 'static>>,
+    completion: TaskCompletion<T>,
+}
+
+/// Канал terminal result-а и notifier владельца; потребляется одним `complete`.
+struct TaskCompletion<T> {
+    terminal: SyncSender<Result<T, TaskFailure>>,
+    terminal_notifier: Box<dyn FnOnce() + Send + 'static>,
 }
 
 impl<F, T> ErasedTask for TypedTask<F, T>
@@ -156,39 +165,38 @@ where
     F: FnOnce(CancellationToken) -> T + Send + 'static,
     T: Send + 'static,
 {
-    fn run(mut self: Box<Self>, executor_stopping: Arc<AtomicBool>) {
-        if self.task_cancelled.load(Ordering::Acquire) || executor_stopping.load(Ordering::Acquire)
-        {
-            self.complete(Err(TaskFailure::CancelledBeforeStart));
+    fn run(self: Box<Self>, executor_stopping: Arc<AtomicBool>) {
+        let TypedTask {
+            operation,
+            task_cancelled,
+            completion,
+        } = *self;
+        if task_cancelled.load(Ordering::Acquire) || executor_stopping.load(Ordering::Acquire) {
+            completion.complete(Err(TaskFailure::CancelledBeforeStart));
             return;
         }
         let token = CancellationToken {
-            task_cancelled: Arc::clone(&self.task_cancelled),
+            task_cancelled,
             executor_stopping,
         };
-        let operation = self
-            .operation
-            .take()
-            .expect("executor invokes each queued task exactly once");
         let terminal = match catch_unwind(AssertUnwindSafe(|| operation(token))) {
             Ok(value) => Ok(value),
             Err(_) => Err(TaskFailure::Panicked),
         };
-        self.complete(terminal);
+        completion.complete(terminal);
     }
 
-    fn cancel_before_start(mut self: Box<Self>) {
-        self.complete(Err(TaskFailure::CancelledBeforeStart));
+    fn cancel_before_start(self: Box<Self>) {
+        self.completion
+            .complete(Err(TaskFailure::CancelledBeforeStart));
     }
 }
 
-impl<F, T> TypedTask<F, T> {
+impl<T> TaskCompletion<T> {
     /// Сначала публикует terminal slot, затем exactly-once будит внешний owner.
-    fn complete(&mut self, terminal: Result<T, TaskFailure>) {
+    fn complete(self, terminal: Result<T, TaskFailure>) {
         let _result_owner_dropped = self.terminal.send(terminal);
-        if let Some(notifier) = self.terminal_notifier.take() {
-            let _notifier_panicked = catch_unwind(AssertUnwindSafe(notifier));
-        }
+        let _notifier_panicked = catch_unwind(AssertUnwindSafe(self.terminal_notifier));
     }
 }
 
@@ -268,10 +276,12 @@ impl BoundedExecutor {
         let (terminal, receiver) = sync_channel(1);
         let task_cancelled = Arc::new(AtomicBool::new(false));
         let task: Box<dyn ErasedTask> = Box::new(TypedTask {
-            operation: Some(operation),
-            terminal,
+            operation,
             task_cancelled: Arc::clone(&task_cancelled),
-            terminal_notifier: Some(Box::new(terminal_notifier)),
+            completion: TaskCompletion {
+                terminal,
+                terminal_notifier: Box::new(terminal_notifier),
+            },
         });
         let sender_guard = self
             .sender

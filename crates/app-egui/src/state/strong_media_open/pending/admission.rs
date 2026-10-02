@@ -60,7 +60,7 @@ impl AppState {
             driver,
         );
         let initial_revision = PlaybackIntentRevision::from_non_zero(
-            NonZeroU64::new(1).expect("revision is non-zero"),
+            const { NonZeroU64::new(1).expect("revision is non-zero") },
         );
         let player_request_id = match playlist_runtime.stage_media_open_at_player(
             request_id,
@@ -370,7 +370,7 @@ impl AppState {
             driver,
         );
         let initial_revision = PlaybackIntentRevision::from_non_zero(
-            NonZeroU64::new(1).expect("revision is non-zero"),
+            const { NonZeroU64::new(1).expect("revision is non-zero") },
         );
         self.pending_strong_media_open = Some(PendingStrongMediaOpen {
             request_id,

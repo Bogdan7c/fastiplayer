@@ -262,9 +262,6 @@ impl SecretText {
 
 /// Заимствованный progressive FTP subset с primary target без HTTP auth surface.
 pub(super) struct YtDlpProgressiveFtpRequestMaterial<'a> {
-    /// Проверенный S19 material owner, который не раскрывается за пределы adapter-а.
-    #[allow(dead_code)]
-    material: &'a YtDlpRequestMaterialV1,
     /// Primary FTP target, наличие и scheme которого доказал constructor.
     target: &'a SecretText,
 }
@@ -408,7 +405,7 @@ impl YtDlpRequestMaterial {
         if FtpRequestTarget::parse_exact(target.expose_secret_for_transport()).is_err() {
             return Err(YtDlpRequestMaterialViolation::NonFtpProgressiveMaterial);
         }
-        Ok(YtDlpProgressiveFtpRequestMaterial { material, target })
+        Ok(YtDlpProgressiveFtpRequestMaterial { target })
     }
 
     /// Доказывает exact pinned native-HLS request-material subset.

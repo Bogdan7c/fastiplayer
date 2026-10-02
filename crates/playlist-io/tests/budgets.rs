@@ -1,3 +1,12 @@
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 use playlist_io::{
     M3uDeclaredFormat, M3uDocument, M3uDocumentSource, M3uImportIssueKind, M3uParseErrorKind,
     M3uParseRequest, M3uParserLimits, M3uParserLimitsError, parse_m3u_document,

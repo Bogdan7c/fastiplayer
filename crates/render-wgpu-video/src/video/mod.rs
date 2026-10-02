@@ -524,6 +524,7 @@ pub(super) fn texture_view_lookup_after_import_failure(
 }
 
 /// Копирует renderer-neutral metadata из decoded frame без backend-specific handles.
+#[expect(clippy::expect_used, reason = "кадр прошёл frame-contract validation")]
 fn renderable_metadata_from_decoded(
     frame: &DecodedFrame,
     format: VideoFramePixelLayout,

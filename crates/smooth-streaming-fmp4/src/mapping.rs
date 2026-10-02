@@ -265,11 +265,9 @@ pub fn map_smooth_track<'manifest>(
         .iter()
         .find(|quality| quality.index() == request.selection.quality_index)
         .ok_or(SmoothTrackMappingError::QualityNotFound)?;
-    let timescale_value = u32::try_from(stream.timescale().get())
-        .map_err(|_| SmoothTrackMappingError::TimescaleOutOfRange)?;
     let timescale = FragmentTimescale::new(
-        NonZeroU32::new(timescale_value)
-            .expect("validated Smooth timescale остаётся ненулевым после narrowing"),
+        NonZeroU32::try_from(stream.timescale().non_zero())
+            .map_err(|_| SmoothTrackMappingError::TimescaleOutOfRange)?,
     );
     let mapped_quality = map_quality(stream.kind(), quality)?;
     let identity = SmoothTrackIdentity {

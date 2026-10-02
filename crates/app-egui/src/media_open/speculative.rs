@@ -92,6 +92,10 @@ impl SpeculativeMediaPreparation {
                 return SpeculativeMediaPreparationPoll::InvariantLost;
             }
         };
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: result принадлежит существующему speculative request"
+        )]
         let current = self
             .current
             .take()

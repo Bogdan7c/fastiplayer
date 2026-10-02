@@ -28,23 +28,20 @@ impl RendererGeneration {
     pub(crate) fn new_unique() -> Self {
         // Relaxed достаточно: allocator задаёт identity, а не публикует renderer resources.
         let raw = NEXT_RENDERER_GENERATION.fetch_add(1, Ordering::Relaxed);
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: renderer generation identity space exhausted"
+        )]
         let generation =
             NonZeroU64::new(raw).expect("renderer generation identity space exhausted");
         Self(generation)
     }
 
     /// Создаёт generation из explicit non-zero значения owner-а.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn from_non_zero(generation: NonZeroU64) -> Self {
-        // NonZeroU64 не допускает ambiguous default/stale generation zero.
         Self(generation)
-    }
-
-    /// Возвращает числовое значение для diagnostics и deterministic tests.
-    #[must_use]
-    pub(crate) const fn get(self) -> u64 {
-        // Renderer generation не содержит pointer или platform handle.
-        self.0.get()
     }
 }
 
@@ -167,9 +164,6 @@ pub(crate) enum StagedVideoPipelineCandidateMatchError {
 
     /// Duplicate configured status нарушил ordered protocol.
     AlreadyStreamConfigured,
-
-    /// Matching Installed barrier уже принят, поэтому pre-barrier cancel запрещён.
-    PostInstalledCommitRequired,
 }
 
 /// Fatal protocol invariant после принятого player `Installed` barrier-а.
@@ -183,6 +177,7 @@ pub(crate) struct PostInstalledVideoPipelineInvariantViolation {
     pub(super) match_error: StagedVideoPipelineCandidateMatchError,
 }
 
+#[cfg(test)]
 impl PostInstalledVideoPipelineInvariantViolation {
     /// Возвращает typed причину для fatal diagnostics owner-а.
     #[must_use]
@@ -190,6 +185,8 @@ impl PostInstalledVideoPipelineInvariantViolation {
         self.match_error
     }
 }
+
+impl PostInstalledVideoPipelineInvariantViolation {}
 
 /// Ошибка применения player status после обязательного terminal cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,14 +199,4 @@ pub(crate) enum StagedVideoPipelineCandidateStatusError {
         /// Исходная matching-причина остаётся доступна diagnostics owner-у.
         match_error: StagedVideoPipelineCandidateMatchError,
     },
-}
-
-/// Результат pre-barrier cancel dispatch после обязательного app-half release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StagedVideoPipelineCandidateCancelError {
-    /// Request не совпал с admitted candidate и ничего не изменилось.
-    Match(StagedVideoPipelineCandidateMatchError),
-
-    /// Port disconnect стал terminal cause; app half всё равно освобождён.
-    PortDisconnected,
 }

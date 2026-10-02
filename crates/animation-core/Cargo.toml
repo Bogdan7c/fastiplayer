@@ -7,3 +7,6 @@ license.workspace = true
 
 # Нейтральная математика анимаций: без egui, WGPU и других крейтов проекта.
 [dependencies]
+
+[lints]
+workspace = true

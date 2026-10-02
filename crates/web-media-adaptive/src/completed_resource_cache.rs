@@ -148,6 +148,11 @@ impl CompletedResourceCache {
     ///
     /// Committed LRU entries выселяются до reservation. Другие pending owners не
     /// выселяются: при их недостаточном остатке новый admission обязан отказаться.
+    #[expect(
+        clippy::expect_used,
+        reason = "committed_charge_bytes — сумма charge_bytes всех entries, поэтому вычитание выселенной \
+                  entry не уходит ниже нуля"
+    )]
     pub(crate) fn reserve_pending(
         &mut self,
         additional_charge_bytes: usize,
@@ -181,6 +186,11 @@ impl CompletedResourceCache {
     }
 
     /// Освобождает ровно тот charge, которым владел отменённый либо dropped admission.
+    #[expect(
+        clippy::expect_used,
+        reason = "каждая reservation освобождается ровно один раз своим владельцем; underflow означал бы \
+                  двойное освобождение и порчу учёта"
+    )]
     pub(crate) fn release_pending(&mut self, reservation_charge_bytes: usize) {
         self.pending_charge_bytes = self
             .pending_charge_bytes
@@ -194,10 +204,7 @@ impl CompletedResourceCache {
         key: &CompletedResourceCacheKey,
     ) -> Option<CompletedResourceReplay> {
         let entry_index = self.entries.iter().position(|entry| &entry.key == key)?;
-        let entry = self
-            .entries
-            .remove(entry_index)
-            .expect("найденный LRU entry обязан существовать");
+        let entry = self.entries.remove(entry_index)?;
         let replay = CompletedResourceReplay {
             final_target: entry.final_target.clone(),
             chunks: entry.chunks.clone(),
@@ -208,6 +215,11 @@ impl CompletedResourceCache {
     }
 
     /// Атомарно переводит полностью завершённый pending admission в committed LRU entry.
+    #[expect(
+        clippy::expect_used,
+        reason = "commit потребляет собственную pending reservation, а committed charge включает \
+                  заменяемую entry; сумма ограничена budget_bytes"
+    )]
     pub(crate) fn commit_pending(
         &mut self,
         reservation_charge_bytes: usize,
@@ -221,11 +233,12 @@ impl CompletedResourceCache {
             .checked_sub(reservation_charge_bytes)
             .expect("completed admission обязан владеть pending reservation");
 
-        if let Some(existing_index) = self.entries.iter().position(|entry| entry.key == key) {
-            let existing = self
-                .entries
-                .remove(existing_index)
-                .expect("найденный replacement entry обязан существовать");
+        let replaced_entry = self
+            .entries
+            .iter()
+            .position(|entry| entry.key == key)
+            .and_then(|existing_index| self.entries.remove(existing_index));
+        if let Some(existing) = replaced_entry {
             self.committed_charge_bytes = self
                 .committed_charge_bytes
                 .checked_sub(existing.charge_bytes)

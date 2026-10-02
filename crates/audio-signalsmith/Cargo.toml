@@ -9,3 +9,6 @@ license.workspace = true
 anyhow = { workspace = true }
 audio-core = { workspace = true }
 signalsmith-stretch = "0.1.3"
+
+[lints]
+workspace = true

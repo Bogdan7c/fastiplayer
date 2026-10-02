@@ -11,25 +11,13 @@ use std::sync::atomic::AtomicBool;
 use crate::app_wake::{AppWakePort, OwnerMailboxReceiver, owner_mailbox};
 use crate::media_open::MediaOpenCoordinator;
 
-#[allow(
-    dead_code,
-    reason = "Session 16 action API is rendered by Session 19 UI"
-)]
 mod actions;
 mod compound_view;
-#[allow(
-    dead_code,
-    reason = "Session 11A publishes controller foundation before Session 11B/12 UI callsites"
-)]
 mod controller;
 mod desktop_transport;
 pub(crate) mod discovery;
 mod export_io;
 mod external_projection;
-#[allow(
-    dead_code,
-    reason = "Session 11A identities become production callsite inputs in subsequent sessions"
-)]
 mod identity;
 mod import_io;
 mod import_transaction;
@@ -40,15 +28,7 @@ mod media_reset;
 mod persistence;
 mod persistence_runtime;
 mod prepared_next;
-#[allow(
-    dead_code,
-    reason = "Session 12A publishes runtime Undo boundary before Session 20 UI wiring"
-)]
 mod removal_undo;
-#[allow(
-    dead_code,
-    reason = "Session 16 generalized model is rendered by Session 19 UI"
-)]
 mod replacement_confirmation;
 mod resume_persistence;
 pub(crate) use resume_persistence::InstalledCheckpointPosition;
@@ -67,15 +47,15 @@ mod transport_ui;
 mod ui_interaction;
 mod url_import;
 pub(crate) use import_transaction::{
-    PlaylistImportContinueOutcome, PlaylistImportIntent, PlaylistImportIssueKind,
-    PlaylistImportPreview, PlaylistImportPreviewId, PlaylistImportRejectedCount,
+    PlaylistImportIntent, PlaylistImportIssueKind, PlaylistImportPreview, PlaylistImportPreviewId,
+    PlaylistImportRejectedCount,
 };
 #[cfg(test)]
 pub(crate) use import_transaction::{
     PlaylistImportPreviewUiAcceptedFixture, PlaylistImportPreviewUiCapacityFixture,
     PlaylistImportPreviewUiFixture,
 };
-pub(crate) use settings::{FutureDiscoveryPolicy, PlaylistSettingsStageError};
+pub(crate) use settings::PlaylistSettingsStageError;
 use shell_boundary::PlaylistRuntimeLifecycle;
 pub(crate) use shell_boundary::{
     PlaylistAppStateAttachment, PlaylistBindingGeneration, PlaylistLifecycleGeneration,
@@ -97,10 +77,6 @@ pub(crate) use ui_interaction::{
     PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistManualAddEventId,
     PlaylistManualAddWarning, PlaylistManualAddWarningKind, PlaylistSafeFeedbackGeneration,
 };
-#[allow(
-    dead_code,
-    reason = "Session 14 bootstrap/save-worker integration consumes this startup boundary"
-)]
 mod startup;
 mod startup_import;
 pub(crate) use startup_import::StartupPlaylistImportTerminal;
@@ -113,10 +89,6 @@ pub(crate) use startup::{
     StartupDraftError, StartupOwnerError,
 };
 pub(crate) use startup_retained::RetainedStartupApplyOutcome;
-#[allow(
-    dead_code,
-    reason = "Session 11A read-only snapshot is attached by later playlist UI integration"
-)]
 mod view;
 mod view_model;
 mod web_media_catalog;
@@ -165,10 +137,8 @@ pub(crate) use removal_undo::{RemovalUndoOutcome, RemovalUndoStatus, RuntimeRemo
 )]
 pub(crate) use replacement_confirmation::{
     AdmittedLocalFileOpen, AdmittedQueueReplacementIntent, InAppQueueReplacementAdmission,
-    InAppQueueReplacementIntent, PendingPlaylistConfirmation, PendingQueueReplacementConfirmation,
-    PendingSensitiveUrlPersistenceDecision, PlaylistConfirmationAction,
-    PlaylistConfirmationReasons, QueueReplacementConfirmationAction,
-    QueueReplacementConfirmationDecision, QueueReplacementConfirmationOutcome,
+    InAppQueueReplacementIntent, PendingPlaylistConfirmation, PlaylistConfirmationAction,
+    PlaylistConfirmationReasons, QueueReplacementConfirmationDecision,
     TrustedStartupQueueReplacementIntent, safe_local_open_label,
 };
 pub(crate) use row_interactions::{
@@ -209,7 +179,6 @@ impl ManualAddQueueGeneration {
 
 /// Read-only load gate, который Session 11A свяжет с allocator/state startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // `Ready` становится достижимым после state-load wiring Session 14.
 pub(crate) enum PlaylistLoadGateState {
     /// Trusted state/load decision ещё не получен.
     PendingLoadDecision,
@@ -219,10 +188,6 @@ pub(crate) enum PlaylistLoadGateState {
 
 /// Неблокирующий drain сообщает только policy transition, не filesystem details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "Session 14 shell drain wiring is landing in parallel"
-)]
 pub(crate) enum PlaylistStartupDrainOutcome {
     NoCompletion,
     ApplyingQuarantine,
@@ -232,10 +197,6 @@ pub(crate) enum PlaylistStartupDrainOutcome {
 
 /// Startup apply failures не превращаются в частично доступный controller.
 #[derive(Debug, thiserror::Error)]
-#[allow(
-    dead_code,
-    reason = "Session 14 shell drain wiring is landing in parallel"
-)]
 pub(crate) enum PlaylistStartupApplyError {
     #[error("playlist startup owner failed: {0:?}")]
     Owner(StartupOwnerError),
@@ -319,14 +280,9 @@ pub(crate) struct PlaylistRuntime {
     persistence: persistence::PlaylistPersistenceOwner,
     resume_persistence: resume_persistence::PlaylistResumePersistenceOwner,
     admission_open: Arc<AtomicBool>,
-    #[allow(dead_code)] // Поле удерживает worker-side ports process lifetime.
     owner_ports: PlaylistOwnerPorts,
     owner_receiver: OwnerMailboxReceiver<PlaylistOwnerProgress, PlaylistOwnerCompletion>,
     /// Canonical queue, identities и D08 guard живут независимо от renderer recreation.
-    #[allow(
-        dead_code,
-        reason = "Session 11A foundation is attached by later UI orchestration"
-    )]
     controller: PlaylistControllerSlot,
     /// Ровно один process-lifetime last-action removal Undo slot.
     removal_undo: Option<removal_undo::RemovalUndoState>,
@@ -491,12 +447,6 @@ impl PlaylistRuntime {
         Ok(changed)
     }
 
-    #[allow(dead_code)] // Session 14 подключит следующий explicit-open discovery job к snapshot boundary.
-    pub(crate) fn future_playlist_discovery_policy(&self) -> FutureDiscoveryPolicy {
-        self.settings.future_discovery_policy()
-    }
-
-    #[allow(dead_code)] // Подключается transport callsite-ами вместе с playlist UI в следующей wiring session.
     pub(crate) fn previous_restart_threshold(&self) -> controller::PreviousRestartThreshold {
         self.settings.previous_restart_threshold()
     }
@@ -520,10 +470,6 @@ impl PlaylistRuntime {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "Session 10C publishes intent API before callsite migration in Session 10D"
-)]
 impl PlaylistRuntime {
     /// Запускает source preparation по explicit caller command без queue policy внутри runtime.
     pub(crate) fn start_media_open(
@@ -536,21 +482,6 @@ impl PlaylistRuntime {
         self.prepared_next
             .cancel(player_core::MediaInstallCancellationCause::Superseded);
         self.media_open.start(client_key, source_request, mode)
-    }
-
-    /// Supersede-ит только exact pre-player request по решению caller-а.
-    pub(crate) fn supersede_media_open_before_player_staging(
-        &mut self,
-        expected_request_id: crate::media_open::MediaOpenRequestId,
-        client_key: crate::media_open::MediaOpenClientKey,
-        source_request: crate::media_open::MediaOpenSourceRequest,
-    ) -> Result<crate::media_open::MediaOpenStartOutcome, crate::media_open::MediaOpenStartError>
-    {
-        self.media_open.supersede_prepared_or_preparing(
-            expected_request_id,
-            client_key,
-            source_request,
-        )
     }
 
     /// Передаёт prepared media exact player request-у после app-owned resource staging.

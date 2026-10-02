@@ -252,6 +252,10 @@ impl ImportDraftMaterializer {
 }
 
 /// XSPF metadata остаётся hint-ом и не получает playback/open authority.
+#[expect(
+    clippy::expect_used,
+    reason = "инвариант: один XSPF creator не превышает bounded artists limit"
+)]
 fn xspf_track_metadata(track: &XspfTrack) -> CachedPlaylistMetadata {
     let fallback = track.title().unwrap_or("Элемент XSPF").to_owned();
     let metadata = CachedPlaylistMetadata::new(fallback, PlaylistMediaKind::Unknown)

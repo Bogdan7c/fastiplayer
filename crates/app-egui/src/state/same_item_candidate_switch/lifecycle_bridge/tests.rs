@@ -93,9 +93,6 @@ impl SameItemSwitchLifecyclePollPort for FakeSameItemSwitchContext {
                 SameItemSwitchLifecyclePoll::Failed(StrongMediaOpenError::Terminal(
                     crate::media_open::MediaOpenTerminalOutcome::PreparationFailed {
                         request_id,
-                        safe_label: crate::media_open::SafeMediaLabel::from_service_safe_label(
-                            "fixture.invalid",
-                        ),
                         kind: crate::media_open::MediaPreparationFailureKind::ExtractorOpen,
                     },
                 ))

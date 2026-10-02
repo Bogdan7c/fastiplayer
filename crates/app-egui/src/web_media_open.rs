@@ -539,8 +539,10 @@ fn compose_candidate_components(
 fn progressive_composite_lead_policy() -> Result<CompositeComponentLeadPolicy> {
     CompositeComponentLeadPolicy::single_pending_packet(
         COMPOSITE_MAX_TIMESTAMP_LEAD,
-        NonZeroUsize::new(COMPOSITE_MAX_PENDING_PACKET_BYTES)
-            .expect("composite pending packet limit ненулевой"),
+        const {
+            NonZeroUsize::new(COMPOSITE_MAX_PENDING_PACKET_BYTES)
+                .expect("composite pending packet limit ненулевой")
+        },
     )
     .context("Progressive composite A/V safety bounds invalid")
 }

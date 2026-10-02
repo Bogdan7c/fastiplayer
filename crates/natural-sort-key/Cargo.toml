@@ -9,3 +9,6 @@ license.workspace = true
 name = "natural_sort_key"
 path = "src/lib.rs"
 
+
+[lints]
+workspace = true

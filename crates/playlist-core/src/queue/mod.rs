@@ -439,6 +439,10 @@ impl PlaylistQueue {
             .checked_next()
             .ok_or(TraversalCurrentMutationError::TraversalRevisionExhausted)?;
 
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: validated traversal target must have a top-level owner"
+        )]
         let target_identity = self
             .shuffle_visit_identity(item_id)
             .expect("validated traversal target must have a top-level owner");

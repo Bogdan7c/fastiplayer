@@ -520,6 +520,11 @@ fn preview_worker_result_is_compatible(
 }
 
 /// Выбирает ровно один terminal outcome после возврата blocking inner seek-а.
+#[expect(
+    clippy::expect_used,
+    reason = "worker_result равен None только для неактуального runtime, а эта ветка выше возвращает Stale \
+              до разбора результата"
+)]
 fn receipted_seek_outcome(
     shared: &ProgressiveSharedState,
     cancellation: &CancellationToken,

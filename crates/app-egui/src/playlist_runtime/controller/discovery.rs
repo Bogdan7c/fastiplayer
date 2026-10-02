@@ -5,10 +5,7 @@ use playlist_core::{
     StableInsertionAnchor,
 };
 
-use super::{
-    ManualNavigationInvalidation, PlaylistController, PlaylistDirtySignal,
-    PlaylistStructuralRevision,
-};
+use super::{PlaylistController, PlaylistStructuralRevision};
 
 /// Controller-owned continuation revision одного progressive discovery stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,8 +33,6 @@ pub(crate) struct DiscoveryBatchCommitOutcome {
     pub item_ids: Vec<PlaylistItemId>,
     pub anchor: StableInsertionAnchor,
     pub continuation: DiscoveryContinuation,
-    pub dirty: PlaylistDirtySignal,
-    pub manual_navigation_invalidation: Option<ManualNavigationInvalidation>,
 }
 
 /// Rejection leaves drafts ID-less and does not advance dirty/high-watermark state.
@@ -48,7 +43,13 @@ pub(crate) enum DiscoveryBatchCommitError {
     DirtyRevisionExhausted,
     StructuralRevisionExhausted,
     ContinuationRevisionExhausted,
-    Domain(DiscoveryBatchInsertError),
+    Domain(
+        #[expect(
+            dead_code,
+            reason = "читается через Debug в warn-логе discovery runtime"
+        )]
+        DiscoveryBatchInsertError,
+    ),
 }
 
 impl PlaylistController {
@@ -103,11 +104,11 @@ impl PlaylistController {
             .insert_discovery_batch(expected.queue_revision, anchor, drafts)
             .map_err(DiscoveryBatchCommitError::Domain)?;
         let item_ids = committed.item_ids.into_vec();
-        let manual_navigation_invalidation =
+        let _manual_navigation_invalidation =
             self.invalidate_manual_navigation_after_structural_mutation();
         self.structural_revision = next_structural;
         self.discovery_continuation_revision = next_continuation_revision;
-        let dirty = self.commit_dirty(next_dirty);
+        let _dirty = self.commit_dirty(next_dirty);
         self.publish_view(true);
         Ok(DiscoveryBatchCommitOutcome {
             item_ids,
@@ -117,8 +118,6 @@ impl PlaylistController {
                 queue_revision: self.queue.revision_snapshot(),
                 structural_revision: next_structural,
             },
-            dirty,
-            manual_navigation_invalidation,
         })
     }
 }

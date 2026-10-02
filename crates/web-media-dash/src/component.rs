@@ -3,7 +3,6 @@
 mod timestamp;
 
 use std::collections::VecDeque;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -675,8 +674,7 @@ fn open_period(
             }
             let mut range_config = AdaptiveRangeSourceConfig::new(
                 policy.maximum_range_read_bytes,
-                NonZeroUsize::new(policy.demux_sniff_budget.max_bytes())
-                    .expect("DASH demux sniff bytes are non-zero"),
+                policy.demux_sniff_budget.max_bytes_non_zero(),
                 policy.maximum_cached_range_pages,
                 *query_application,
             )

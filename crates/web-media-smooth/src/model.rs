@@ -78,7 +78,6 @@ pub struct SmoothPreparedCatalog {
     pub(crate) provider_default_selection: ComponentVariantSelection,
     pub(crate) source_generation: SourceGeneration,
     pub(crate) aligned_span: SmoothAlignedSpan,
-    #[allow(dead_code)]
     pub(crate) runtime_seed: SmoothRuntimeSeed,
 }
 
@@ -121,7 +120,6 @@ impl fmt::Debug for SmoothPreparedCatalog {
 }
 
 /// Seed будущего fragment runtime; наружу не выдаётся во избежание boundary leak.
-#[allow(dead_code)]
 pub(crate) struct SmoothRuntimeSeed {
     pub(crate) http: AdaptiveHttpContext,
     pub(crate) effective_manifest_target: HttpRequestTarget,
@@ -132,7 +130,6 @@ pub(crate) struct SmoothRuntimeSeed {
 }
 
 /// Runtime row хранит shared init и selector, но не self-borrowing mapped track.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct SmoothRuntimeRow {
     pub(crate) exact_identity: ComponentVariantExactIdentity,

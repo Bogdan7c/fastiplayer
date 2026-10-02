@@ -71,6 +71,10 @@ fn active_matches_parent(
     active: &WebMediaSelectionTarget,
     parent: &ExactSelectionIdentity,
 ) -> bool {
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: switchable target always owns a parent selection"
+    )]
     let selection = match active {
         #[cfg(test)]
         WebMediaSelectionTarget::Fixture(_) => return true,

@@ -190,9 +190,6 @@ impl PlaylistRuntime {
                     self.resolve_media_open_for_suspend(snapshot.request_id)?;
                 }
             }
-            super::controller::LifecycleIntentOutcome::Fatal(_) => {
-                return Err(ResumeCheckpointError::ControllerInvariant);
-            }
         }
         Ok(())
     }

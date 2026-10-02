@@ -76,7 +76,7 @@ impl DashRepresentationLaneCatalog {
             ComponentVariantSelection::VideoAndAudio { video, audio, .. } => {
                 let video = self.find_component_lane(video.exact_identity())?;
                 let audio = self.find_component_lane(audio.exact_identity())?;
-                if video.kind != DashMediaKind::Video || audio.kind != DashMediaKind::Audio {
+                if video.kind() != DashMediaKind::Video || audio.kind() != DashMediaKind::Audio {
                     return Err(DashRepresentationLaneSelectionError::Layout);
                 }
                 Ok(DashLogicalRepresentationSelection::Separate {
@@ -93,10 +93,7 @@ impl DashRepresentationLaneCatalog {
             ComponentVariantSelection::Coupled { presentation, .. } => self
                 .runtime_rows
                 .iter()
-                .find(|row| {
-                    row.coupled_exact.as_ref() == Some(presentation.exact_identity())
-                        && row.kind == DashMediaKind::Muxed
-                })
+                .find(|row| row.coupled_exact() == Some(presentation.exact_identity()))
                 .map(|row| DashLogicalRepresentationSelection::Single(row.lane.clone()))
                 .ok_or(DashRepresentationLaneSelectionError::Absent),
         }
@@ -108,7 +105,7 @@ impl DashRepresentationLaneCatalog {
         expected: DashMediaKind,
     ) -> Result<DashLogicalRepresentationSelection, DashRepresentationLaneSelectionError> {
         let row = self.find_component_lane(identity)?;
-        if row.kind != expected {
+        if row.kind() != expected {
             return Err(DashRepresentationLaneSelectionError::Layout);
         }
         Ok(DashLogicalRepresentationSelection::Single(row.lane.clone()))
@@ -120,7 +117,7 @@ impl DashRepresentationLaneCatalog {
     ) -> Result<&PublishedLane, DashRepresentationLaneSelectionError> {
         self.runtime_rows
             .iter()
-            .find(|row| row.component_exact.as_ref() == Some(identity))
+            .find(|row| row.component_exact() == Some(identity))
             .ok_or(DashRepresentationLaneSelectionError::Absent)
     }
 }

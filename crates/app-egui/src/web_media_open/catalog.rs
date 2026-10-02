@@ -204,6 +204,10 @@ fn complete_parent_choices(
     Ok(choices)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "инвариант: audio-only candidate has audio rank"
+)]
 fn parent_choices(
     snapshot: &YtDlpCandidateSnapshot,
     planning: &PlanningCandidateSnapshot,
@@ -340,6 +344,7 @@ fn compose_catalog_inventory_av(
     }
 }
 
+#[expect(clippy::expect_used, reason = "инвариант: literal none codec identity")]
 fn layout_facets(
     layout: &StreamLayout,
 ) -> (WebMediaMode, Option<web_media_core::VideoTrackDescriptor>) {

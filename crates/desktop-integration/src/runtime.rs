@@ -109,7 +109,12 @@ impl DesktopIntegration {
 
 impl Drop for DesktopIntegration {
     fn drop(&mut self) {
-        let _ = self.shutdown();
+        // Drop не может вернуть ошибку, но и терять её нельзя: timeout, паника
+        // backend-потока или разрыв канала фиксируются в логе. Повторный
+        // shutdown после явного вызова возвращает Ok (AlreadyCompleted).
+        if let Err(error) = self.shutdown() {
+            tracing::warn!(?error, "Desktop integration не завершилась чисто при drop");
+        }
     }
 }
 

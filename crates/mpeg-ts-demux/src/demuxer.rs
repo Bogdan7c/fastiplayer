@@ -28,7 +28,7 @@ use index::{IndexContinuationState, SeekAnchor};
 
 /// Возвращает общую MPEG clock time base для PTS/DTS/PCR base.
 fn mpeg_clock() -> TimeBase {
-    TimeBase::new(1, 90_000).expect("MPEG clock denominator is non-zero")
+    const { TimeBase::new(1, 90_000).expect("MPEG clock denominator is non-zero") }
 }
 
 /// Независимые unwrap states одного elementary PID.
@@ -620,11 +620,12 @@ impl MpegTsDemuxer {
     ) -> Result<(), MpegTsDemuxError> {
         let pids: Vec<u16> = self.pes_by_pid.keys().copied().collect();
         for pid in pids {
-            let completed = self
-                .pes_by_pid
-                .get_mut(&pid)
-                .expect("PID collected from map")
-                .finish()?;
+            // PID взят из ключей этой же map и не удалялся; отсутствие означает
+            // лишь, что завершать нечего.
+            let Some(pending_pes) = self.pes_by_pid.get_mut(&pid) else {
+                continue;
+            };
+            let completed = pending_pes.finish()?;
             if let Some(pes) = completed {
                 self.process_pes(pes, publish_lifecycle)?;
             }

@@ -22,7 +22,9 @@ impl TransportProviderId {
             return Err(TransportProviderIdError::TooLong);
         }
         let mut characters = value.chars();
-        let first = characters.next().expect("non-empty provider identity");
+        let Some(first) = characters.next() else {
+            return Err(TransportProviderIdError::Empty);
+        };
         if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
             return Err(TransportProviderIdError::InvalidGrammar);
         }

@@ -629,7 +629,6 @@ impl PlaylistRuntime {
                         "Дождитесь загрузки плейлиста".into()
                     }
                     super::UrlAppendValidationError::LocatorMapping
-                    | super::UrlAppendValidationError::MetadataMapping
                     | super::UrlAppendValidationError::ConfirmationIdentityExhausted
                     | super::UrlAppendValidationError::TopologyGenerationExhausted
                     | super::UrlAppendValidationError::TopologyWorkerUnavailable
@@ -650,7 +649,7 @@ impl PlaylistRuntime {
         outcome: &super::PlaylistConfirmationApplyOutcome,
     ) {
         match outcome {
-            super::PlaylistConfirmationApplyOutcome::UrlAppended { .. }
+            super::PlaylistConfirmationApplyOutcome::UrlAppended
             | super::PlaylistConfirmationApplyOutcome::DeferredUntilStartupInstallResolution => {
                 self.ui_interaction.url_draft_mut().finish_success();
             }
@@ -662,9 +661,14 @@ impl PlaylistRuntime {
                 .ui_interaction
                 .url_draft_mut()
                 .set_safe_error(PlaylistUrlDraftError::new("Не удалось добавить URL")),
+            // Отказ импорта после подтверждения: то же сообщение, что у прямого Continue.
+            super::PlaylistConfirmationApplyOutcome::Import(outcome) => {
+                if let Some(feedback) = outcome.failure_feedback() {
+                    self.ui_interaction.set_safe_feedback(feedback);
+                }
+            }
             super::PlaylistConfirmationApplyOutcome::Cancelled
             | super::PlaylistConfirmationApplyOutcome::Stale
-            | super::PlaylistConfirmationApplyOutcome::Import(_)
             | super::PlaylistConfirmationApplyOutcome::ExportWriterStarted
             | super::PlaylistConfirmationApplyOutcome::QueueReplacementConfirmed(_) => {}
         }
@@ -681,7 +685,8 @@ impl PlaylistRuntime {
         match manual_add_paths_from_dialog_completion(completion) {
             Ok(None) => {}
             Ok(Some(paths)) => {
-                if self.start_manual_file_add(paths).is_err() {
+                if let Err(error) = self.start_manual_file_add(paths) {
+                    tracing::warn!(?error, "Manual Add не стартовал");
                     self.ui_interaction
                         .set_safe_feedback("Не удалось начать добавление файлов");
                 }

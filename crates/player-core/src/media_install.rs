@@ -68,6 +68,11 @@ static NEXT_MEDIA_INSTALL_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_MEDIA_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Выдаёт следующий ненулевой ID и завершает процесс только при физически недостижимом exhaustion.
+#[expect(
+    clippy::panic,
+    reason = "u64-счётчик process identity растёт на 1 за install и начинается с 1; исчерпание за время \
+              жизни процесса физически недостижимо, а переиспользование id сломало бы correlation"
+)]
 fn allocate_process_identity(counter: &AtomicU64, identity_name: &str) -> NonZeroU64 {
     let raw_identity = counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {

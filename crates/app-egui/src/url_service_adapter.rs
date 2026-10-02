@@ -62,7 +62,6 @@ impl StartupUrlLocator {
     }
 
     /// Переносит уже нормализованную service identity в service-neutral playlist domain.
-    #[allow(dead_code)] // Session 10C/14 подключит mapping к media-open/persistence lifecycle.
     pub(crate) fn to_playlist_locator(
         &self,
     ) -> Result<playlist_core::SecretUrlLocator, playlist_core::PlaylistLocatorBuildError> {
@@ -126,7 +125,6 @@ trait StartupUrlServiceAdapter: Send {
         audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     ) -> Result<crate::media_open::MediaOpenSourceRequest, String>;
 
-    #[allow(dead_code)] // Используется только intent-named domain mapping-ом выше.
     fn expose_secret_for_persistence(&self) -> &str;
 
     fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
@@ -547,7 +545,6 @@ pub(crate) fn classify_startup_url(argument: &str) -> StartupUrlClassification {
 }
 
 /// Повторно открывает persisted domain locator через тот же service registry, без app parser-а.
-#[allow(dead_code)] // Session 10C/14 вызовет boundary после state-load/controller wiring.
 pub(crate) fn classify_playlist_url(
     locator: &playlist_core::SecretUrlLocator,
 ) -> StartupUrlClassification {

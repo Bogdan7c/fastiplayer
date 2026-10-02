@@ -95,6 +95,10 @@ impl XspfParserLimits {
 impl Default for XspfParserLimits {
     fn default() -> Self {
         // Каждый XML budget называется на месте сборки и не скрыт в reader-е.
+        #[expect(
+            clippy::expect_used,
+            reason = "builder получает все обязательные бюджеты прямо здесь; тесты crate-а строят Default"
+        )]
         let xml_budgets = XmlBudgetsBuilder::new()
             .maximum_document_bytes(DEFAULT_MAX_XSPF_DOCUMENT_BYTES)
             .maximum_depth(DEFAULT_MAX_XSPF_DEPTH)

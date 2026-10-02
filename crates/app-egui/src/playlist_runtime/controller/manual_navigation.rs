@@ -17,9 +17,7 @@ use super::PlaylistController;
 use super::install::{
     ControllerInstallPhase, DeferredTransportIntent, PlaylistControllerInvariantViolation,
 };
-use super::transport::{
-    ManualNavigationWaitId, PlannedPlaylistInstall, SiblingDiscoveryScopeId, TransportGuardOutcome,
-};
+use super::transport::TransportGuardOutcome;
 
 /// Состояние origin, которое Session 12 сможет обновить после exact clean `Ended`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,24 +47,6 @@ pub(crate) enum ManualNavigationFailureOutcome {
     StaleRequest { request_id: MediaOpenRequestId },
     TargetNotCommitted { item_id: PlaylistItemId },
     NotManualNavigation,
-}
-
-/// Retry различает отсутствие D55 target-а и уже выполняющийся install.
-pub(crate) enum ManualNavigationRetryOutcome {
-    StartInstall { install: PlannedPlaylistInstall },
-    InstallAlreadyInProgress { request_id: MediaOpenRequestId },
-    NoFailedTarget,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PreConcreteProbeRejectionOutcome {
-    ContinueWaiting {
-        wait_id: ManualNavigationWaitId,
-        scope_id: SiblingDiscoveryScopeId,
-    },
-    StaleWait {
-        wait_id: ManualNavigationWaitId,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,18 +203,6 @@ impl ManualNavigationCursor {
             })
     }
 
-    /// Первая реальная transport-команда привязывает unbound failed-anchor к origin.
-    pub(super) fn bind_origin_if_unset(&mut self, origin: TransportActionOrigin) {
-        let context = self
-            .preview
-            .as_mut()
-            .map(|cursor| &mut cursor.context)
-            .or(self.prepared_context.as_mut());
-        if let Some(context) = context {
-            context.origin.get_or_insert(origin);
-        }
-    }
-
     /// UI читает только accessibility-факт D56, не outcome policy/correlation поля.
     pub(super) fn awaiting_failure_origin_ended(&self) -> bool {
         self.is_awaiting_user_after_failure()
@@ -288,6 +256,10 @@ impl ManualNavigationCursor {
     }
 
     pub(super) fn restore_after_abort(&mut self, preview: ManualNavigationPreview) {
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: manual token always has matching cursor context"
+        )]
         let context = self
             .prepared_context
             .take()
@@ -393,24 +365,6 @@ impl ManualNavigationCursor {
 }
 
 impl PlaylistController {
-    /// Probe rejection до concrete row остаётся D50 search, а не становится D55 failure.
-    pub(crate) fn report_pre_concrete_probe_rejection(
-        &self,
-        wait_id: ManualNavigationWaitId,
-        scope_id: SiblingDiscoveryScopeId,
-    ) -> PreConcreteProbeRejectionOutcome {
-        match self.pending_manual_traversal {
-            Some(wait)
-                if wait.wait_id == wait_id
-                    && wait.scope_id == scope_id
-                    && self.active_media == Some(wait.active_media) =>
-            {
-                PreConcreteProbeRejectionOutcome::ContinueWaiting { wait_id, scope_id }
-            }
-            _ => PreConcreteProbeRejectionOutcome::StaleWait { wait_id },
-        }
-    }
-
     /// Concrete target failure сохраняет D55 preview и не запускает automatic continuation.
     pub(crate) fn report_manual_navigation_target_failure(
         &mut self,
@@ -432,6 +386,10 @@ impl PlaylistController {
         if !self.manual_navigation_cursor.mark_prepared_target_failed() {
             return ManualNavigationFailureOutcome::NotManualNavigation;
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: failed manual preview retains concrete target"
+        )]
         let item_id = self
             .manual_navigation_cursor
             .latest_target_item_id()
@@ -469,34 +427,6 @@ impl PlaylistController {
         }
         self.publish_view(false);
         ManualNavigationFailureOutcome::AwaitingUserAfterFailure { item_id }
-    }
-
-    /// Retry повторяет exact failed target без cursor step или automatic reevaluation.
-    pub(crate) fn retry_failed_manual_navigation(&mut self) -> ManualNavigationRetryOutcome {
-        if let Some(state) = self.install_state.as_ref() {
-            return ManualNavigationRetryOutcome::InstallAlreadyInProgress {
-                request_id: state.request_id(),
-            };
-        }
-        if !self
-            .manual_navigation_cursor
-            .is_awaiting_user_after_failure()
-        {
-            return ManualNavigationRetryOutcome::NoFailedTarget;
-        }
-        let item_id = self
-            .manual_navigation_cursor
-            .latest_target_item_id()
-            .expect("failed preview retains target");
-        self.manual_navigation_cursor
-            .bind_origin_if_unset(TransportActionOrigin::Ui);
-        let origin = self
-            .manual_navigation_cursor
-            .origin()
-            .expect("failed preview retains transport origin");
-        ManualNavigationRetryOutcome::StartInstall {
-            install: self.planned_manual_install(item_id, origin),
-        }
     }
 
     /// Session 12 передаст сюда только exact matching clean `Ended` edge.

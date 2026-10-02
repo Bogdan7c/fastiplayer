@@ -129,11 +129,13 @@ fn parse_box_at<'a>(
     bytes: &'a [u8],
     cursor: usize,
 ) -> Result<(IsoBox<'a>, usize), FlvDemuxError> {
-    let header = bytes
-        .get(cursor..cursor.saturating_add(BOX_HEADER_BYTES))
+    // Header читается массивом фиксированной длины: длина проверена типом.
+    let [s0, s1, s2, s3, t0, t1, t2, t3] = *bytes
+        .get(cursor..)
+        .and_then(<[u8]>::first_chunk::<BOX_HEADER_BYTES>)
         .ok_or_else(|| malformed(sequence, "ISO box header обрезан"))?;
-    let size32 = u32::from_be_bytes(header[..4].try_into().expect("exact slice"));
-    let box_type = header[4..8].try_into().expect("exact slice");
+    let size32 = u32::from_be_bytes([s0, s1, s2, s3]);
+    let box_type = [t0, t1, t2, t3];
     let (box_size, header_size) = match size32 {
         0 => {
             return Err(malformed(
@@ -142,16 +144,21 @@ fn parse_box_at<'a>(
             ));
         }
         1 => {
-            let large = bytes
-                .get(cursor + BOX_HEADER_BYTES..cursor + LARGE_BOX_HEADER_BYTES)
+            let large_size_offset = cursor
+                .checked_add(BOX_HEADER_BYTES)
                 .ok_or_else(|| malformed(sequence, "large-size box header обрезан"))?;
-            let size64 = u64::from_be_bytes(large.try_into().expect("exact slice"));
+            let large = bytes
+                .get(large_size_offset..)
+                .and_then(<[u8]>::first_chunk::<{ LARGE_BOX_HEADER_BYTES - BOX_HEADER_BYTES }>)
+                .ok_or_else(|| malformed(sequence, "large-size box header обрезан"))?;
+            let size64 = u64::from_be_bytes(*large);
             let converted = usize::try_from(size64)
                 .map_err(|_| malformed(sequence, "64-bit box size не помещается в usize"))?;
             (converted, LARGE_BOX_HEADER_BYTES)
         }
         value => (
-            usize::try_from(value).expect("u32 fits usize"),
+            usize::try_from(value)
+                .map_err(|_| malformed(sequence, "32-bit box size не помещается в usize"))?,
             BOX_HEADER_BYTES,
         ),
     };
@@ -486,9 +493,11 @@ impl<'a> PayloadCursor<'a> {
     }
 
     fn read_u32(&mut self) -> Result<u32, FlvDemuxError> {
-        Ok(u32::from_be_bytes(
-            self.read(4)?.try_into().expect("exact slice"),
-        ))
+        // read(4) возвращает ровно 4 байта; first_chunk лишь переводит длину в тип.
+        let bytes = self.read(4)?.first_chunk::<4>().copied();
+        bytes
+            .map(u32::from_be_bytes)
+            .ok_or_else(|| malformed(self.sequence, "u32 field обрезан"))
     }
 
     fn read_bounded_count(
@@ -496,7 +505,8 @@ impl<'a> PayloadCursor<'a> {
         maximum: usize,
         field: &'static str,
     ) -> Result<usize, FlvDemuxError> {
-        let count = usize::try_from(self.read_u32()?).expect("u32 fits usize");
+        // Значение, не помещающееся в usize, заведомо больше любого bounded maximum.
+        let count = usize::try_from(self.read_u32()?).unwrap_or(usize::MAX);
         if count > maximum {
             return Err(malformed(
                 self.sequence,

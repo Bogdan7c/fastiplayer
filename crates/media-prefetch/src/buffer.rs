@@ -1,5 +1,31 @@
 use std::collections::VecDeque;
 
+use thiserror::Error;
+
+// Rust не поддерживает платформы с usize шире 64 бит; утверждение делает это
+// допущение явным и превращает конвертацию usize -> u64 в заведомо точную.
+const _: () = assert!(usize::BITS <= u64::BITS, "usize must fit into u64");
+
+/// Точно переводит длину в памяти (`usize`) в absolute byte count (`u64`).
+#[must_use]
+pub(crate) const fn usize_to_u64(value: usize) -> u64 {
+    // Без потерь: см. compile-time утверждение `usize::BITS <= u64::BITS` выше.
+    value as u64
+}
+
+/// Ошибка добавления chunk-а в prefetch-буфер.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum PrefetchAppendError {
+    /// Конец chunk-а вышел бы за пределы u64 absolute offset-ов.
+    #[error("chunk из {chunk_len} bytes после offset {buffered_end} выходит за пределы u64")]
+    AddressSpaceExhausted {
+        /// Absolute offset конца уже буферизованных данных.
+        buffered_end: u64,
+        /// Длина отклонённого chunk-а.
+        chunk_len: u64,
+    },
+}
+
 /// Однопоточное состояние скользящего RAM-окна prefetch-буфера.
 #[derive(Debug, Clone)]
 pub struct PrefetchBufferState {
@@ -76,7 +102,11 @@ impl PrefetchBufferState {
     }
 
     /// Добавляет непустой contiguous chunk в хвост buffered range.
-    pub fn append_chunk(&mut self, chunk_bytes: Vec<u8>) {
+    ///
+    /// Устанавливает инвариант буфера: `base_offset + total_len` всегда
+    /// представим в u64. Chunk, нарушающий его, отклоняется без изменения
+    /// состояния.
+    pub fn append_chunk(&mut self, chunk_bytes: Vec<u8>) -> Result<(), PrefetchAppendError> {
         assert!(
             !chunk_bytes.is_empty(),
             "пустой chunk запрещён: EOF фиксируется через mark_eof_at_fetch_offset"
@@ -86,14 +116,20 @@ impl PrefetchBufferState {
             "нельзя добавлять chunk после EOF: это ломает absolute eof_offset"
         );
 
-        let chunk_len = Self::usize_to_u64(chunk_bytes.len());
-        Self::checked_offset_add(self.buffered_end(), chunk_len, "append_chunk overflow");
+        let chunk_len = usize_to_u64(chunk_bytes.len());
+        let buffered_end = self.buffered_end();
+        let new_buffered_end = buffered_end.checked_add(chunk_len).ok_or(
+            PrefetchAppendError::AddressSpaceExhausted {
+                buffered_end,
+                chunk_len,
+            },
+        )?;
 
-        self.total_len = self
-            .total_len
-            .checked_add(chunk_len)
-            .expect("total_len overflow при append_chunk");
+        // new_buffered_end >= base_offset, поэтому вычитание точно и total_len
+        // остаётся равным сумме длин chunk-ов.
+        self.total_len = new_buffered_end - self.base_offset;
         self.chunks.push_back(chunk_bytes);
+        Ok(())
     }
 
     /// Помечает EOF на текущем fetch offset, не добавляя фиктивный пустой chunk.
@@ -124,7 +160,7 @@ impl PrefetchBufferState {
 
         self.read_cursor = Self::checked_offset_add(
             self.read_cursor,
-            Self::usize_to_u64(copied_bytes),
+            usize_to_u64(copied_bytes),
             "read_cursor overflow после copy_to",
         );
         self.evict_before_lookback();
@@ -178,11 +214,10 @@ impl PrefetchBufferState {
 
     /// Вычисляет, сколько bytes можно безопасно скопировать в output за текущий вызов.
     fn copy_len_for(&self, output: &[u8]) -> usize {
-        let available_bytes = self.available_from_cursor();
-        let output_len = Self::usize_to_u64(output.len());
-        let requested_bytes = available_bytes.min(output_len);
-
-        usize::try_from(requested_bytes).expect("usize меньше u64 на этой платформе")
+        // Если доступный объём не помещается в usize, он заведомо больше output.
+        usize::try_from(self.available_from_cursor()).map_or(output.len(), |available_bytes| {
+            available_bytes.min(output.len())
+        })
     }
 
     /// Копирует уже рассчитанное количество bytes из chunk queue без изменения cursor-а.
@@ -191,13 +226,18 @@ impl PrefetchBufferState {
         let mut copied_bytes = 0;
 
         for chunk_bytes in &self.chunks {
-            let chunk_len = Self::usize_to_u64(chunk_bytes.len());
+            let chunk_len = usize_to_u64(chunk_bytes.len());
 
             if bytes_left_before_cursor >= chunk_len {
                 bytes_left_before_cursor -= chunk_len;
                 continue;
             }
 
+            #[expect(
+                clippy::expect_used,
+                reason = "bytes_left_before_cursor < chunk_len, а chunk_len — длина Vec, то есть \
+                          помещается в usize"
+            )]
             let chunk_start_index = usize::try_from(bytes_left_before_cursor)
                 .expect("chunk offset должен помещаться в usize");
             let readable_chunk_bytes = &chunk_bytes[chunk_start_index..];
@@ -223,7 +263,7 @@ impl PrefetchBufferState {
         let keep_from_offset = self.read_cursor.saturating_sub(self.lookback_bytes);
 
         while let Some(front_chunk) = self.chunks.front() {
-            let front_len = Self::usize_to_u64(front_chunk.len());
+            let front_len = usize_to_u64(front_chunk.len());
             let front_end =
                 Self::checked_offset_add(self.base_offset, front_len, "front chunk end overflow");
 
@@ -233,21 +273,19 @@ impl PrefetchBufferState {
 
             self.chunks.pop_front();
             self.base_offset = front_end;
-            self.total_len = self
-                .total_len
-                .checked_sub(front_len)
-                .expect("total_len underflow при eviction");
+            // front chunk входит в total_len по построению append_chunk.
+            self.total_len -= front_len;
         }
     }
 
-    /// Складывает absolute offset и длину, явно падая на невозможном для буфера overflow.
+    /// Складывает absolute offset и длину внутри уже буферизованного диапазона.
+    #[expect(
+        clippy::expect_used,
+        reason = "все вызовы складывают offset-ы, не превышающие base_offset + total_len, а \
+                  append_chunk гарантирует, что эта сумма представима в u64"
+    )]
     fn checked_offset_add(offset: u64, len: u64, context: &'static str) -> u64 {
         offset.checked_add(len).expect(context)
-    }
-
-    /// Преобразует размер allocation из `usize` в absolute byte count.
-    fn usize_to_u64(value: usize) -> u64 {
-        u64::try_from(value).expect("usize должен помещаться в u64")
     }
 }
 
@@ -262,9 +300,9 @@ mod tests {
     #[test]
     fn append_and_copy_reads_original_bytes_across_chunk_boundaries() {
         let mut buffer = buffer_with_small_window();
-        buffer.append_chunk(vec![1, 2, 3]);
-        buffer.append_chunk(vec![4, 5]);
-        buffer.append_chunk(vec![6, 7, 8]);
+        buffer.append_chunk(vec![1, 2, 3]).unwrap();
+        buffer.append_chunk(vec![4, 5]).unwrap();
+        buffer.append_chunk(vec![6, 7, 8]).unwrap();
 
         let mut output = [0; 8];
         let copied = buffer.copy_to(&mut output);
@@ -277,7 +315,7 @@ mod tests {
     #[test]
     fn available_from_cursor_tracks_bytes_before_and_after_copy() {
         let mut buffer = buffer_with_small_window();
-        buffer.append_chunk(vec![10, 11, 12, 13]);
+        buffer.append_chunk(vec![10, 11, 12, 13]).unwrap();
 
         assert_eq!(buffer.available_from_cursor(), 4);
 
@@ -295,7 +333,7 @@ mod tests {
 
         assert!(buffer.needs_fetch());
 
-        buffer.append_chunk(vec![1, 2, 3, 4, 5, 6]);
+        buffer.append_chunk(vec![1, 2, 3, 4, 5, 6]).unwrap();
         assert!(!buffer.needs_fetch());
 
         let mut output = [0; 1];
@@ -308,15 +346,15 @@ mod tests {
     fn append_chunk_rejects_empty_data() {
         let mut buffer = buffer_with_small_window();
 
-        buffer.append_chunk(Vec::new());
+        buffer.append_chunk(Vec::new()).unwrap();
     }
 
     #[test]
     fn eviction_drops_head_chunks_outside_lookback_and_preserves_backward_window() {
         let mut buffer = PrefetchBufferState::new(0, 12, 3);
-        buffer.append_chunk(vec![0, 1, 2, 3]);
-        buffer.append_chunk(vec![4, 5, 6, 7]);
-        buffer.append_chunk(vec![8, 9, 10, 11]);
+        buffer.append_chunk(vec![0, 1, 2, 3]).unwrap();
+        buffer.append_chunk(vec![4, 5, 6, 7]).unwrap();
+        buffer.append_chunk(vec![8, 9, 10, 11]).unwrap();
 
         let mut output = [0; 9];
         assert_eq!(buffer.copy_to(&mut output), 9);
@@ -334,7 +372,7 @@ mod tests {
     #[test]
     fn eof_is_reached_after_copying_to_marked_fetch_offset() {
         let mut buffer = buffer_with_small_window();
-        buffer.append_chunk(vec![1, 2, 3]);
+        buffer.append_chunk(vec![1, 2, 3]).unwrap();
         buffer.mark_eof_at_fetch_offset();
 
         assert!(!buffer.needs_fetch());
@@ -350,8 +388,8 @@ mod tests {
     #[test]
     fn contains_and_set_cursor_within_support_backward_reads_inside_window() {
         let mut buffer = PrefetchBufferState::new(100, 8, 4);
-        buffer.append_chunk(vec![1, 2, 3, 4]);
-        buffer.append_chunk(vec![5, 6, 7, 8]);
+        buffer.append_chunk(vec![1, 2, 3, 4]).unwrap();
+        buffer.append_chunk(vec![5, 6, 7, 8]).unwrap();
 
         let mut skipped_output = [0; 6];
         assert_eq!(buffer.copy_to(&mut skipped_output), 6);
@@ -370,7 +408,7 @@ mod tests {
     #[test]
     fn set_cursor_within_accepts_buffered_end_and_copy_returns_zero() {
         let mut buffer = buffer_with_small_window();
-        buffer.append_chunk(vec![1, 2, 3]);
+        buffer.append_chunk(vec![1, 2, 3]).unwrap();
 
         buffer.set_cursor_within(buffer.buffered_end());
 
@@ -382,7 +420,7 @@ mod tests {
     #[test]
     fn reset_to_clears_buffer_and_moves_offsets() {
         let mut buffer = buffer_with_small_window();
-        buffer.append_chunk(vec![1, 2, 3, 4]);
+        buffer.append_chunk(vec![1, 2, 3, 4]).unwrap();
         buffer.mark_eof_at_fetch_offset();
 
         buffer.reset_to(42);
@@ -398,12 +436,12 @@ mod tests {
     #[test]
     fn staged_forward_cursor_reads_bytes_after_active_chunk_arrives() {
         let mut buffer = PrefetchBufferState::new(0, 32, 16);
-        buffer.append_chunk((0_u8..8).collect());
+        buffer.append_chunk((0_u8..8).collect()).unwrap();
 
         buffer.stage_cursor_ahead(12);
         assert_eq!(buffer.available_from_cursor(), 0);
 
-        buffer.append_chunk((8_u8..24).collect());
+        buffer.append_chunk((8_u8..24).collect()).unwrap();
         let mut output = [0_u8; 4];
         assert_eq!(buffer.copy_to(&mut output), output.len());
         assert_eq!(output, [12, 13, 14, 15]);
@@ -412,11 +450,33 @@ mod tests {
     #[test]
     fn staged_cursor_beyond_short_read_observes_upstream_eof() {
         let mut buffer = PrefetchBufferState::new(0, 32, 16);
-        buffer.append_chunk((0_u8..8).collect());
+        buffer.append_chunk((0_u8..8).collect()).unwrap();
         buffer.stage_cursor_ahead(12);
 
         buffer.mark_eof_at_fetch_offset();
 
         assert!(buffer.is_eof_at_cursor());
+    }
+
+    #[test]
+    fn append_beyond_u64_offsets_is_rejected_without_changing_buffer() {
+        let start_offset = u64::MAX - 2;
+        let mut buffer = PrefetchBufferState::new(start_offset, 6, 2);
+        buffer.append_chunk(vec![1, 2]).unwrap();
+
+        let rejected = buffer.append_chunk(vec![3, 4]);
+
+        assert_eq!(
+            rejected,
+            Err(PrefetchAppendError::AddressSpaceExhausted {
+                buffered_end: u64::MAX,
+                chunk_len: 2,
+            })
+        );
+        assert_eq!(buffer.buffered_end(), u64::MAX);
+        assert_eq!(buffer.available_from_cursor(), 2);
+        let mut output = [0_u8; 4];
+        assert_eq!(buffer.copy_to(&mut output), 2);
+        assert_eq!(&output[..2], &[1, 2]);
     }
 }

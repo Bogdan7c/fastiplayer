@@ -3,20 +3,8 @@
 //! Модуль знает source preparation и neutral player install protocol, но намеренно
 //! не знает playlist Item ID, navigation, repeat/shuffle, confirmation или priority policy.
 
-#[allow(
-    dead_code,
-    reason = "Session 10C precedes production callsite migration in 10D"
-)]
 mod coordinator;
-#[allow(
-    dead_code,
-    reason = "Session 10C precedes production callsite migration in 10D"
-)]
 mod executor;
-#[allow(
-    dead_code,
-    reason = "Session 10C precedes production callsite migration in 10D"
-)]
 pub(crate) mod local;
 mod native_dash;
 pub(crate) mod native_fallback;
@@ -24,22 +12,10 @@ mod native_hds;
 mod native_hds_preparation;
 mod native_hls;
 mod native_smooth;
-#[allow(
-    dead_code,
-    reason = "Session 10C precedes production callsite migration in 10D"
-)]
 mod player_port;
 mod preload_budget;
-#[allow(
-    dead_code,
-    reason = "Session 10C precedes production callsite migration in 10D"
-)]
 mod preparation;
 mod speculative;
-#[allow(
-    dead_code,
-    reason = "Session 10C precedes production callsite migration in 10D"
-)]
 mod types;
 mod web;
 

@@ -4,7 +4,9 @@ Product names and result labels were normalized to Fastiplayer after the rename.
 
 **Measured on 2026-09-05.** All 18 final warm-ups and 30 scored attempts completed on AC power: three warm-ups and five 60-second measurements for each player/scenario. No final scored attempt was excluded. Hardware H.264/HEVC and software AV1 remain separate workloads.
 
-The [machine-readable evidence](thinkpad-t480s.json) contains every final raw sample, render identity, VLC counter query, validation result and cohort statistic. The [preparation archive](thinkpad-t480s-preparation.json) retains 100 earlier attempts with their original provenance, including failed and excluded attempts. The native Wayland screenshot validation is also retained separately in the final JSON. None of those preparation/capture measurements enters the scored statistics.
+The [machine-readable evidence](https://github.com/Bogdan7c/fastiplayer/blob/6c2b670f4d7757b2522d22f6fadfc7212e61332a/docs/benchmarks/thinkpad-t480s.json) contains every final raw sample, render identity, VLC counter query, validation result and cohort statistic. The [preparation archive](https://github.com/Bogdan7c/fastiplayer/blob/6c2b670f4d7757b2522d22f6fadfc7212e61332a/docs/benchmarks/thinkpad-t480s-preparation.json) retains 100 earlier attempts with their original provenance, including failed and excluded attempts. The native Wayland screenshot validation is also retained separately in the final JSON. None of those preparation/capture measurements enters the scored statistics.
+
+Both JSON files (about 13 MB together) were removed from the current tree to keep clones small. They stay unchanged in Git history at commit `6c2b670f4d77`; the links above point there. Restore them locally with `git checkout 6c2b670f4d77 -- docs/benchmarks/thinkpad-t480s.json docs/benchmarks/thinkpad-t480s-preparation.json`.
 
 ## Results
 
@@ -42,7 +44,7 @@ Separately, VLC's own `frames_lost` deltas were **936, 938, 953, 940 and 942**, 
 
 The requested S07 revision was `a1a472bd9dbe7cbfcfea8e1693796552c0b0aeeb`. It was checked out and built, but its CI was not green: coverage run 33922998737 failed first on invalid coverage counters and then on a real HTTP/Ogg Range-request race. Subsequent runtime qualification exposed a media-install snapshot race and an XWayland fullscreen resize race. With the owner's authorization, these causes were fixed before benchmark collection. The original failures remain preparation history, not scored results.
 
-The [preparation archive](thinkpad-t480s-preparation.json) retains the original failed/excluded attempts and later qualification runs with their separate provenance. None is eligible for the scored statistics.
+The [preparation archive](https://github.com/Bogdan7c/fastiplayer/blob/6c2b670f4d7757b2522d22f6fadfc7212e61332a/docs/benchmarks/thinkpad-t480s-preparation.json) retains the original failed/excluded attempts and later qualification runs with their separate provenance. None is eligible for the scored statistics.
 
 The owner subsequently approved moving the expensive full coverage measurement to a manual workflow while retaining all automatic functional/quality checks and a fast baseline-policy guard. The last full coverage run, 33931378033 at `1cc181e1ea0fd502b6636fba8a9d2ee1367d0687`, passed all three test executions but failed its stable-coordinate ratchet. Its exact report is preserved in the preparation archive. A green automatic CI after this policy change is not a claim of a new successful coverage measurement.
 
@@ -142,7 +144,8 @@ python3 docs/benchmarks/tools/t480s/run_cohorts.py \
 python3 docs/benchmarks/tools/t480s/run_cohorts.py \
   --phase measurement --directory ./benchmark-output \
   --fixtures ./benchmark-fixtures --binary ./target/release/fastiplayer
-# Recalculate the published statistics from validated raw attempts:
+# Recalculate the published statistics from validated raw attempts
+# (restore the JSON from commit 6c2b670f4d77 first, see above):
 python3 docs/benchmarks/tools/t480s/aggregate.py \
   docs/benchmarks/thinkpad-t480s.json
 ```

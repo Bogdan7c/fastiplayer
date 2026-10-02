@@ -14,3 +14,6 @@ player-core.workspace = true
 render-core.workspace = true
 fastiplayer-config.workspace = true
 settings-core.workspace = true
+
+[lints]
+workspace = true

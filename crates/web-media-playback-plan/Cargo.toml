@@ -14,3 +14,6 @@ web-media-core.workspace = true
 
 [dev-dependencies]
 video-frame-contract.workspace = true
+
+[lints]
+workspace = true

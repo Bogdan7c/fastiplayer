@@ -137,5 +137,6 @@ fn presentation_from_live_intent(live_intent: YtDlpLiveIntent) -> Result<WebMedi
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests;

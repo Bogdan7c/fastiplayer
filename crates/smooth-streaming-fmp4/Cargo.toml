@@ -12,3 +12,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 bounded-xml-reader.workspace = true
+
+[lints]
+workspace = true

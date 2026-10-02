@@ -12,3 +12,6 @@ web-media-transport-api.workspace = true
 [dev-dependencies]
 fastiplayer-config.workspace = true
 web-media-core.workspace = true
+
+[lints]
+workspace = true

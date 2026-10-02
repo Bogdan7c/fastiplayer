@@ -3,11 +3,6 @@
 //! Session 00C создаёт bounded resource boundary, а Session 00C1 использует его
 //! после player `Installed` только для exact infallible pointer commit-а.
 
-#![allow(
-    dead_code,
-    reason = "Session 00C1 validates the boundary before later coordinator call-site migration"
-)]
-
 use std::sync::{Arc, Mutex};
 
 use player_core::{
@@ -27,9 +22,8 @@ mod resource_driver;
 
 pub(crate) use protocol::{
     PostInstalledVideoPipelineInvariantViolation, RendererGeneration,
-    StagedVideoPipelineCandidateCancelError, StagedVideoPipelineCandidateDiagnostics,
-    StagedVideoPipelineCandidateMatchError, StagedVideoPipelineCandidateStatusError,
-    StagedVideoPipelineCandidateTerminalOutcome,
+    StagedVideoPipelineCandidateDiagnostics, StagedVideoPipelineCandidateMatchError,
+    StagedVideoPipelineCandidateStatusError, StagedVideoPipelineCandidateTerminalOutcome,
 };
 use protocol::{StagedVideoPipelineCandidate, StagedVideoPipelineCandidateState};
 
@@ -65,6 +59,7 @@ impl<Materializer, SubmissionBinding>
     }
 
     /// Неблокирующе забирает app-half terminal outcome exactly once.
+    #[cfg(test)]
     pub(crate) fn drain_terminal_outcome(
         &self,
     ) -> Option<StagedVideoPipelineCandidateTerminalOutcome> {
@@ -329,6 +324,10 @@ impl<Materializer, SubmissionBinding>
     }
 
     /// Применяет matching player status и terminal-cancel-ит stale/mismatched pair.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: candidate was validated above"
+    )]
     pub(crate) fn record_player_status<Port>(
         &mut self,
         status: DetachedVideoBackendCandidateStatus<MediaInstallRequestId>,
@@ -424,6 +423,10 @@ impl<Materializer, SubmissionBinding>
             }
             DetachedVideoBackendCandidateStatus::ConfigurationFailed { request_id, error } => {
                 // Player уже освободил failed decoder half; app освобождает matching half.
+                #[expect(
+                    clippy::expect_used,
+                    reason = "инвариант: candidate was validated above"
+                )]
                 let _candidate = self
                     .candidate
                     .take()
@@ -439,6 +442,10 @@ impl<Materializer, SubmissionBinding>
             }
             DetachedVideoBackendCandidateStatus::Cancelled { request_id, cause } => {
                 // Player уже освободил decoder half; app half освобождается через take/drop.
+                #[expect(
+                    clippy::expect_used,
+                    reason = "инвариант: candidate was validated above"
+                )]
                 let _candidate = self
                     .candidate
                     .take()
@@ -455,53 +462,11 @@ impl<Materializer, SubmissionBinding>
         }
     }
 
-    /// Terminal-cancel-ит exact candidate до barrier и освобождает обе split halves.
-    pub(crate) fn cancel_pre_barrier<Port>(
-        &mut self,
-        request_id: MediaInstallRequestId,
-        cause: DetachedVideoBackendCandidateCancellationCause,
-        port: &mut Port,
-    ) -> Result<(), StagedVideoPipelineCandidateCancelError>
-    where
-        Port: DetachedVideoBackendResourcePort<RequestId = MediaInstallRequestId>,
-    {
-        // Cancel без candidate не создаёт synthetic terminal outcome.
-        let Some(candidate) = self.candidate.as_ref() else {
-            return Err(StagedVideoPipelineCandidateCancelError::Match(
-                StagedVideoPipelineCandidateMatchError::NoCandidate,
-            ));
-        };
-        // Stale request не может отменить новый admitted candidate.
-        if candidate.request_id != request_id {
-            return Err(StagedVideoPipelineCandidateCancelError::Match(
-                StagedVideoPipelineCandidateMatchError::RequestMismatch,
-            ));
-        }
-        // После matching Installed lifecycle уже не может отменить candidate.
-        if candidate.state == StagedVideoPipelineCandidateState::PostInstalledCommitRequired {
-            return Err(StagedVideoPipelineCandidateCancelError::Match(
-                StagedVideoPipelineCandidateMatchError::PostInstalledCommitRequired,
-            ));
-        }
-
-        // Player direction получает cancellation до app-half drop.
-        let cancel_result = port.cancel_candidate(request_id, cause);
-        // Disconnect становится отдельной terminal cause, не игнорируя ошибку silently.
-        let terminal_cause = if cancel_result.is_ok() {
-            cause
-        } else {
-            DetachedVideoBackendCandidateCancellationCause::Disconnected
-        };
-        // App half всегда освобождается ровно один раз через owned candidate drop.
-        self.finish_cancelled(terminal_cause);
-
-        // Caller видит disconnect, хотя local cleanup уже завершён.
-        cancel_result.map_err(|DetachedVideoBackendPortError| {
-            StagedVideoPipelineCandidateCancelError::PortDisconnected
-        })
-    }
-
     /// Валидирует matching Installed и отдаёт token только для pointer-only commit-а.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: candidate was validated above"
+    )]
     pub(crate) fn prepare_post_installed_commit(
         &mut self,
         request_id: MediaInstallRequestId,
@@ -542,6 +507,10 @@ impl<Materializer, SubmissionBinding>
             .state = StagedVideoPipelineCandidateState::PostInstalledCommitRequired;
 
         // Candidate извлекается только после всех fallible/matching проверок.
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: candidate was validated above"
+        )]
         let candidate = self
             .candidate
             .take()
@@ -554,6 +523,7 @@ impl<Materializer, SubmissionBinding>
     }
 
     /// Забирает один lossless terminal outcome exactly once.
+    #[cfg(test)]
     pub(crate) fn drain_terminal_outcome(
         &mut self,
     ) -> Option<StagedVideoPipelineCandidateTerminalOutcome> {
@@ -561,15 +531,9 @@ impl<Materializer, SubmissionBinding>
         self.terminal_outcome.take()
     }
 
-    /// Возвращает snapshot bounded accounting counters.
-    #[must_use]
-    pub(crate) const fn diagnostics(&self) -> StagedVideoPipelineCandidateDiagnostics {
-        // Snapshot не раскрывает materializer/backend owners.
-        self.diagnostics
-    }
-
     /// Возвращает текущий candidate descriptor для matching diagnostics/tests.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn candidate_descriptor(&self) -> Option<CandidateVideoPipelineDescriptor> {
         // Copy descriptor не позволяет мутировать candidate state.
         self.candidate
@@ -587,12 +551,20 @@ impl<Materializer, SubmissionBinding>
     /// Завершает local cleanup и lossless cancellation publication.
     fn finish_cancelled(&mut self, cause: DetachedVideoBackendCandidateCancellationCause) {
         // Exact request ID читается до owned candidate drop.
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: finish_cancelled requires an admitted candidate"
+        )]
         let request_id = self
             .candidate
             .as_ref()
             .expect("finish_cancelled requires an admitted candidate")
             .request_id;
         // `take` освобождает materializer и submission binding ровно один раз.
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: finish_cancelled requires an admitted candidate"
+        )]
         let _candidate = self
             .candidate
             .take()
@@ -657,6 +629,7 @@ impl<Materializer, SubmissionBinding> ActiveVideoPipelinePointers<Materializer, 
 
     /// Возвращает active backend class без доступа к storage fields.
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn backend_kind(&self) -> VideoBackendKind {
         // Named accessor сохраняет boundary intent.
         self.backend_kind
@@ -664,6 +637,7 @@ impl<Materializer, SubmissionBinding> ActiveVideoPipelinePointers<Materializer, 
 
     /// Возвращает materializer reference только для owner-level adapter/tests.
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn materializer(&self) -> &Materializer {
         // Borrow не меняет active ownership.
         &self.materializer
@@ -671,11 +645,11 @@ impl<Materializer, SubmissionBinding> ActiveVideoPipelinePointers<Materializer, 
 
     /// Возвращает submission binding reference без release/rebind side effects.
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn submission_binding(&self) -> &SubmissionBinding {
         // Borrow не запускает queue wait или callback drain.
         &self.submission_binding
     }
-
     /// Возвращает ownership aggregate app owner-у после infallible pointer commit-а.
     pub(crate) fn into_parts(self) -> (VideoBackendKind, Materializer, SubmissionBinding) {
         (
@@ -705,6 +679,10 @@ impl<Materializer, SubmissionBinding>
         active: &mut ActiveVideoPipelinePointers<Materializer, SubmissionBinding>,
     ) {
         // Candidate уже прошёл request/generation/configuration validation.
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: prepared post-Installed commit owns candidate pointers"
+        )]
         let candidate = self
             .candidate
             .take()

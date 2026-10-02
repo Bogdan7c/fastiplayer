@@ -348,11 +348,11 @@ fn discovery_policy(limits: AdaptiveTransportLimits) -> Result<SmoothCatalogDisc
     Ok(SmoothCatalogDiscoveryPolicy::new(
         fragment_source_policy(limits)?,
         DemuxSniffBudget::new(
-            NonZeroUsize::new(64 * 1_024).expect("Smooth discovery sniff bytes"),
-            NonZeroUsize::new(8).expect("Smooth discovery sniff segments"),
+            const { NonZeroUsize::new(64 * 1_024).expect("Smooth discovery sniff bytes") },
+            const { NonZeroUsize::new(8).expect("Smooth discovery sniff segments") },
             Duration::from_secs(2),
         )?,
-        NonZeroUsize::new(4_096).expect("Smooth discovery event limit"),
+        const { NonZeroUsize::new(4_096).expect("Smooth discovery event limit") },
     ))
 }
 
@@ -361,7 +361,7 @@ fn preparation_policy(limits: AdaptiveTransportLimits) -> Result<SmoothPreparati
     Ok(SmoothPreparationPolicy::new(
         limits,
         AdaptiveRetryPolicy::new(
-            NonZeroU8::new(3).expect("Smooth retry attempts"),
+            const { NonZeroU8::new(3).expect("Smooth retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
             crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
@@ -375,7 +375,7 @@ fn preparation_policy(limits: AdaptiveTransportLimits) -> Result<SmoothPreparati
             .build()
             .map_err(|error| anyhow::anyhow!("Smooth initialization limits invalid: {error:?}"))?,
         AggregateInitializationByteLimit::new(
-            NonZeroUsize::new(256 * 1_024).expect("Smooth aggregate initialization bytes"),
+            const { NonZeroUsize::new(256 * 1_024).expect("Smooth aggregate initialization bytes") },
         ),
         ComponentVariantCatalogLimit::new(64).context("Smooth catalog limit invalid")?,
         web_media_core::ComponentVariantEdgeLimit::new(4_096)
@@ -447,24 +447,24 @@ fn fragment_source_policy(limits: AdaptiveTransportLimits) -> Result<SmoothFragm
 fn demux_policy() -> Result<SmoothVodDemuxPolicy> {
     Ok(SmoothVodDemuxPolicy::new(
         DemuxSniffBudget::new(
-            NonZeroUsize::new(256 * 1_024).expect("Smooth sniff bytes"),
-            NonZeroUsize::new(2).expect("Smooth sniff segments"),
+            const { NonZeroUsize::new(256 * 1_024).expect("Smooth sniff bytes") },
+            const { NonZeroUsize::new(2).expect("Smooth sniff segments") },
             Duration::from_secs(2),
         )
         .context("Smooth demux sniff budget invalid")?,
         CompositeComponentLeadPolicy::single_pending_packet(
             Duration::from_secs(3),
-            NonZeroUsize::new(4 * 1_024 * 1_024).expect("Smooth composite packet bytes"),
+            const { NonZeroUsize::new(4 * 1_024 * 1_024).expect("Smooth composite packet bytes") },
         )
         .context("Smooth composite lead policy invalid")?,
         ProgressiveDemuxBufferLimits::new(
-            NonZeroUsize::new(256).expect("Smooth event queue"),
-            NonZeroUsize::new(16 * 1_024 * 1_024).expect("Smooth encoded queue"),
+            const { NonZeroUsize::new(256).expect("Smooth event queue") },
+            const { NonZeroUsize::new(16 * 1_024 * 1_024).expect("Smooth encoded queue") },
         ),
         DemuxRetryHint::new(Duration::from_millis(10))
             .context("Smooth demux retry hint invalid")?,
         ProgressiveAsyncSeekLimits::new(
-            NonZeroUsize::new(16).expect("Smooth outstanding seek receipts"),
+            const { NonZeroUsize::new(16).expect("Smooth outstanding seek receipts") },
         ),
     ))
 }

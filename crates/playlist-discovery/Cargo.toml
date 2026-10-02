@@ -11,3 +11,6 @@ natural-sort-key = { workspace = true }
 source-core = { workspace = true }
 symphonia-demux = { workspace = true }
 thiserror = { workspace = true }
+
+[lints]
+workspace = true

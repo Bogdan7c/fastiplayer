@@ -271,6 +271,10 @@ impl PreparationExecutor {
     }
 
     /// Выполняет terminal bounded join; timeout сохраняет handle у executor-а.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: still-running worker сохраняет exact join handle"
+    )]
     pub(super) fn shutdown_until(&self, deadline: ShutdownDeadline) -> ProcessOwnerShutdownOutcome {
         if self.terminal_shutdown_completed.load(Ordering::Acquire) {
             return ProcessOwnerShutdownOutcome::AlreadyCompleted;

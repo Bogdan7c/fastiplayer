@@ -9,3 +9,6 @@ license.workspace = true
 bounded-xml-reader.workspace = true
 thiserror.workspace = true
 time.workspace = true
+
+[lints]
+workspace = true

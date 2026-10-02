@@ -43,6 +43,10 @@ impl MediaOpenCoordinator {
                 actual: current.phase,
             });
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: Prepared phase must own prepared media"
+        )]
         let prepared_open = current
             .prepared_open
             .take()
@@ -73,10 +77,7 @@ impl MediaOpenCoordinator {
             }
             Err(rejection) => {
                 current.phase = MediaOpenPhase::Failed;
-                current.terminal = Some(MediaOpenTerminalOutcome::PlayerRejected {
-                    request_id,
-                    rejection,
-                });
+                current.terminal = Some(MediaOpenTerminalOutcome::PlayerRejected { request_id });
                 Err(MediaOpenCommandError::PlayerDispatch(rejection))
             }
         }
@@ -101,6 +102,10 @@ impl MediaOpenCoordinator {
                 actual: current.phase,
             });
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: same-lineage staged request has player request id"
+        )]
         let player_request_id = current
             .player_request_id
             .expect("same-lineage staged request has player request id");
@@ -129,6 +134,10 @@ impl MediaOpenCoordinator {
                 actual: current.phase,
             });
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: Ready request must have player request id"
+        )]
         let player_request_id = current
             .player_request_id
             .expect("Ready request must have player request id");
@@ -155,15 +164,18 @@ impl MediaOpenCoordinator {
         if current.phase != MediaOpenPhase::PlayerStaging {
             return false;
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: PlayerStaging must own install receipt"
+        )]
         let receipt = current
             .install_receipt
             .as_ref()
             .expect("PlayerStaging must own install receipt");
-        if let Some(completion) = receipt.take_completion() {
+        if receipt.take_completion().is_some() {
             current.phase = MediaOpenPhase::Failed;
             current.terminal = Some(MediaOpenTerminalOutcome::PlayerFailed {
                 request_id: current.request_id,
-                completion,
             });
             return true;
         }

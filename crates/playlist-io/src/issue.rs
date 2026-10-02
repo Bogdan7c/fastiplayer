@@ -6,6 +6,10 @@ pub struct M3uLineNumber(NonZeroUsize);
 
 impl M3uLineNumber {
     /// Строит line number из parser-owned one-based counter.
+    #[expect(
+        clippy::expect_used,
+        reason = "вызывается parser-ом только с one-based счётчиком строк, начинающимся с 1"
+    )]
     pub(crate) fn from_one_based(line_number: usize) -> Self {
         Self(NonZeroUsize::new(line_number).expect("line counter is always one-based"))
     }

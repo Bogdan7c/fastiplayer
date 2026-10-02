@@ -542,6 +542,7 @@ impl PlaylistCompoundGroup {
             .zip(part_item_ids.iter().copied())
             .enumerate()
             .map(|(part_index, (part_draft, item_id))| {
+                #[expect(clippy::expect_used, reason = "инвариант: queue capacity guarantees a representable compound part ordinal")]
                 let ordinal = PlaylistCompoundPartOrdinal::from_zero_based(part_index)
                     .expect("queue capacity guarantees a representable compound part ordinal");
                 PlaylistCompoundPart {

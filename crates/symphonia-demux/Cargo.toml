@@ -19,3 +19,6 @@ symphonia-format-isomp4.workspace = true
 
 [dev-dependencies]
 audio = { workspace = true }
+
+[lints]
+workspace = true

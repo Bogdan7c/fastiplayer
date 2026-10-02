@@ -334,6 +334,10 @@ fn visible_refresh_work_plan(locators: Vec<VisibleRefreshLocator>) -> WorkPlan {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "число элементов запроса проверено против лимита, меньшего u32::MAX, до построения work plan"
+)]
 fn checked_batch_key(index: usize) -> u32 {
     u32::try_from(index).expect("request item limit was validated before work-plan creation")
 }

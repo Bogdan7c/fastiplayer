@@ -1,3 +1,12 @@
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 use bounded_xml_reader::{XmlBudgets, XmlReadError};
 use smooth_streaming_manifest_core::{
     SMOOTH_STREAMING_DEFAULT_TIMESCALE_TICKS_PER_SECOND, SmoothCodecConfigurationError,

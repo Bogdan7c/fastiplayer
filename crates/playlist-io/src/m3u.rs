@@ -182,6 +182,11 @@ fn parse_generic_m3u(
             }
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "число элементов ограничено item cap много меньше u32::MAX, а порядковый номер \
+                      начинается с 1"
+        )]
         let source_ordinal = NonZeroU32::new(
             u32::try_from(entries.len() + 1).expect("item cap is lower than u32::MAX"),
         )

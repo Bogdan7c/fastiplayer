@@ -35,6 +35,10 @@ pub(crate) fn validate_hls(
     source: &M3uDocumentSource,
     limits: M3uParserLimits,
 ) -> Result<HlsManifestTopology, M3uParseError> {
+    #[expect(
+        clippy::expect_used,
+        reason = "M3uParserLimits хранит только ненулевые лимиты, а бюджет атрибутов — ненулевой литерал"
+    )]
     let shared_limits = HlsParserLimits::new(
         limits.max_document_bytes(),
         limits.max_line_bytes(),

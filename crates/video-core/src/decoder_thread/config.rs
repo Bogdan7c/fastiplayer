@@ -89,8 +89,7 @@ impl SoftwareDecodeThreadBudget {
                     .saturating_sub(reserved_for_render_and_worker)
                     .max(2)
                     .min(host_parallelism);
-                NonZeroUsize::new(auto_threads)
-                    .unwrap_or_else(|| NonZeroUsize::new(1).expect("1 is non-zero"))
+                NonZeroUsize::new(auto_threads).unwrap_or(NonZeroUsize::MIN)
             }
             Self::Fixed(thread_count) => thread_count,
         }

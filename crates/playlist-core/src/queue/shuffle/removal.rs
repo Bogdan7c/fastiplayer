@@ -94,6 +94,10 @@ impl PlaylistQueue {
     }
 
     /// Общий preflight/commit публикует removal ровно одной revision.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: preflighted traversal revision"
+    )]
     fn commit_bulk_remove(
         &mut self,
         committed_entries_to_remove: &HashSet<PlaylistEntryId>,

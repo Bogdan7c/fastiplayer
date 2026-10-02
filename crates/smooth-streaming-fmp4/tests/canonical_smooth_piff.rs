@@ -1,5 +1,14 @@
 //! End-to-end proofs на единственном каноническом Smooth/PIFF corpus.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 use bounded_xml_reader::XmlBudgets;
 use smooth_streaming_fmp4::{
     SmoothAudioPresentationWindowAdjustment, SmoothFragmentIndex, SmoothFragmentPlanRequest,

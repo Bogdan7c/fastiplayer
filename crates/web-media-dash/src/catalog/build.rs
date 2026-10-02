@@ -250,10 +250,8 @@ pub(super) fn build(
                     descriptor,
                 ));
                 published.push(PublishedLane {
-                    kind: DashMediaKind::Video,
                     lane: logical.lane,
-                    component_exact: Some(exact),
-                    coupled_exact: None,
+                    exact: PublishedLaneExact::Video(exact),
                 });
             }
             DashMediaKind::Audio => {
@@ -276,10 +274,8 @@ pub(super) fn build(
                     descriptor,
                 ));
                 published.push(PublishedLane {
-                    kind: DashMediaKind::Audio,
                     lane: logical.lane,
-                    component_exact: Some(exact),
-                    coupled_exact: None,
+                    exact: PublishedLaneExact::Audio(exact),
                 });
             }
             DashMediaKind::Muxed => {
@@ -299,26 +295,32 @@ pub(super) fn build(
                     audio,
                 ));
                 published.push(PublishedLane {
-                    kind: DashMediaKind::Muxed,
                     lane: logical.lane,
-                    component_exact: None,
-                    coupled_exact: Some(exact),
+                    exact: PublishedLaneExact::Muxed(exact),
                 });
             }
         }
     }
 
+    // Строки отдельных компонентов вместе с их exact identity: вариант enum-а
+    // уже доказывает kind, поэтому identity не нужно извлекать через Option.
     let video_rows = published
         .iter()
-        .filter(|row| row.kind == DashMediaKind::Video)
+        .filter_map(|row| match &row.exact {
+            PublishedLaneExact::Video(exact) => Some((row, exact)),
+            PublishedLaneExact::Audio(_) | PublishedLaneExact::Muxed(_) => None,
+        })
         .collect::<Vec<_>>();
     let audio_rows = published
         .iter()
-        .filter(|row| row.kind == DashMediaKind::Audio)
+        .filter_map(|row| match &row.exact {
+            PublishedLaneExact::Audio(exact) => Some((row, exact)),
+            PublishedLaneExact::Video(_) | PublishedLaneExact::Muxed(_) => None,
+        })
         .collect::<Vec<_>>();
     let mut edges = Vec::new();
-    for video_row in &video_rows {
-        for audio_row in &audio_rows {
+    for (video_row, video_exact) in &video_rows {
+        for (audio_row, audio_exact) in &audio_rows {
             if prove_manifest_lane_alignment(
                 request.presentation,
                 request.manifest_base,
@@ -330,37 +332,19 @@ pub(super) fn build(
             .is_ok()
             {
                 edges.push(ComponentVariantCompatibilityEdge::new(
-                    video_row
-                        .component_exact
-                        .as_ref()
-                        .expect("video row invariant")
-                        .clone(),
-                    audio_row
-                        .component_exact
-                        .as_ref()
-                        .expect("audio row invariant")
-                        .clone(),
+                    (*video_exact).clone(),
+                    (*audio_exact).clone(),
                 ));
             }
         }
     }
     let video_only = video_rows
         .iter()
-        .map(|row| {
-            row.component_exact
-                .as_ref()
-                .expect("video invariant")
-                .clone()
-        })
+        .map(|(_, exact)| (*exact).clone())
         .collect();
     let audio_only = audio_rows
         .iter()
-        .map(|row| {
-            row.component_exact
-                .as_ref()
-                .expect("audio invariant")
-                .clone()
-        })
+        .map(|(_, exact)| (*exact).clone())
         .collect();
     let catalog = ComponentVariantCatalog::new(
         request.catalog_identity,

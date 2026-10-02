@@ -167,8 +167,11 @@ fn read_bounded_resource_stream(
         }
         check_sniff_progress(cancellation, budget, started_at)?;
         let remaining_bytes = budget.max_bytes() - sniffed_bytes.len();
-        let maximum_chunk_bytes = NonZeroUsize::new(remaining_bytes)
-            .expect("loop condition guarantees a non-zero sniff remainder");
+        // Нулевой остаток означает исчерпанный sniff budget — тот же выход, что и
+        // у условия цикла выше.
+        let Some(maximum_chunk_bytes) = NonZeroUsize::new(remaining_bytes) else {
+            break;
+        };
         let outcome = source
             .next_event(maximum_chunk_bytes, cancellation)
             .map_err(resource_error_to_probe)?;

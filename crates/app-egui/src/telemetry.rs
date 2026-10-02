@@ -191,7 +191,13 @@ impl Telemetry {
     /// за этот период. Это даёт более стабильное значение, чем
     /// мгновенный 1/delta_time.
     pub fn update_fps(&self, delta_time_ms: f64) {
-        let mut tracker = self.fps_tracker.lock().expect("fps tracker mutex poisoned");
+        // FPS tracker — чисто диагностическое состояние. Если другой поток упал
+        // под этим lock-ом, худший исход — одно неточное FPS значение, поэтому
+        // poison снимается вместо каскадной паники UI-потока.
+        let mut tracker = self
+            .fps_tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         tracker.frame_count += 1;
 

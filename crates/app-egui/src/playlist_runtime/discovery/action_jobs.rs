@@ -44,7 +44,10 @@ pub(crate) enum ManualAddStartError {
     RuntimeShuttingDown,
     LoadDecisionPending,
     ExecutorUnavailable,
-    Submit(DiscoverySubmitError),
+    Submit(
+        #[expect(dead_code, reason = "читается через Debug в warn-логе Manual Add")]
+        DiscoverySubmitError,
+    ),
 }
 
 /// Почему terminal Manual Add не создал либо создал одну mutation.
@@ -150,10 +153,6 @@ pub(super) struct DiscoveryActionJobs {
 }
 
 impl DiscoveryActionJobs {
-    pub(super) const fn manual_progress(&self) -> Option<DiscoveryProgress> {
-        self.manual_progress
-    }
-
     pub(super) fn new() -> Self {
         Self {
             next_request_revision: 1,
@@ -193,22 +192,6 @@ impl DiscoveryActionJobs {
             batch_ids: Vec::new(),
         });
         Ok(job_id)
-    }
-
-    pub(super) fn cancel_manual_add(&mut self, job_id: ManualAddJobId) -> bool {
-        self.manual_jobs
-            .iter()
-            .find(|job| job.handle.id() == job_id.0)
-            .is_some_and(|job| job.handle.cancel(DiscoveryCancellationCause::UserCancelled))
-    }
-
-    /// UI cancel относится ко всем ещё не committed Manual Add batches.
-    pub(super) fn cancel_all_manual_adds(&mut self) -> bool {
-        let mut changed = false;
-        for job in &mut self.manual_jobs {
-            changed |= job.handle.cancel(DiscoveryCancellationCause::UserCancelled);
-        }
-        changed
     }
 
     pub(super) fn request_visible_refresh(
@@ -357,6 +340,10 @@ impl DiscoveryActionJobs {
             &mut active.batch_ids,
             BatchApplySemantics::MetadataRefreshChunk,
         );
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: terminal visible job remains owned until atomic consume"
+        )]
         let mut active = self
             .visible_active
             .take()

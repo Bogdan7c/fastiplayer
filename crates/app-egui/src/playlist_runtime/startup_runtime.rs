@@ -14,10 +14,6 @@ use super::{
     StartupDraftAdmissionError, StartupOwnerError, controller, startup,
 };
 
-#[allow(
-    dead_code,
-    reason = "Session 14 bootstrap/save-worker integration consumes these startup entrypoints"
-)]
 impl PlaylistRuntime {
     /// Structural user actions call this intent boundary; mode-only actions do not.
     pub(crate) fn supersede_startup_media_apply(&mut self) {
@@ -136,7 +132,6 @@ impl PlaylistRuntime {
     }
 
     /// Structural pre-gate Clear supersede-ит только restored items/traversal.
-    #[allow(dead_code, reason = "Session 14A/UI wires the explicit Clear caller")]
     pub(crate) fn record_startup_clear(&mut self) -> Result<(), StartupDraftAdmissionError> {
         self.startup
             .draft_mut()
@@ -148,7 +143,6 @@ impl PlaylistRuntime {
     }
 
     /// Open/Play/replacement ждут gate без provisional Item ID/player staging.
-    #[allow(dead_code, reason = "Session 17 wires startup Open/Play precedence")]
     pub(crate) fn record_startup_media_replacement(
         &mut self,
     ) -> Result<(), StartupDraftAdmissionError> {

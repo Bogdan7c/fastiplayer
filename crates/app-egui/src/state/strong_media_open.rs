@@ -183,6 +183,10 @@ impl PreparedSingleMediaOpen {
 
     /// Повторно применяет preserved window к freshly reopened settings candidate.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: active static source cannot contain a dynamic live timeline"
+    )]
     pub(crate) fn with_playback_window(
         mut self,
         playback_window: Option<player_core::MediaPlaybackWindow>,
@@ -428,7 +432,7 @@ impl AppState {
             driver,
         );
         let initial_revision = PlaybackIntentRevision::from_non_zero(
-            NonZeroU64::new(1).expect("revision is non-zero"),
+            const { NonZeroU64::new(1).expect("revision is non-zero") },
         );
         let player_request_id = match playlist_runtime.stage_media_open_at_player(
             request_id,
@@ -576,7 +580,7 @@ impl AppState {
                         ));
                     };
                     let exact_revision = PlaybackIntentRevision::from_non_zero(
-                        NonZeroU64::new(2).expect("post-Installed revision is non-zero"),
+                        const { NonZeroU64::new(2).expect("post-Installed revision is non-zero") },
                     );
                     let intent_receipt = match self.player_worker.update_playback_intent(
                         player_core::PlaybackIntentUpdate {

@@ -221,6 +221,10 @@ fn reject_duplicate(seen: &mut bool) -> Result<(), SmoothManifestError> {
     Ok(())
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fmt::Write для String никогда не возвращает Err"
+)]
 fn append_u64(output: &mut String, value: u64) {
     use std::fmt::Write as _;
     write!(output, "{value}").expect("String formatting infallible");

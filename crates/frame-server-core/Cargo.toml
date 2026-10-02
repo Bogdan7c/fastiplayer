@@ -17,3 +17,6 @@ video-present-core.workspace = true
 codec-core.workspace = true
 video-core.workspace = true
 video-frame-contract.workspace = true
+
+[lints]
+workspace = true

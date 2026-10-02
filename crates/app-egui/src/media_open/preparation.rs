@@ -74,6 +74,10 @@ pub(super) fn prepare_source(
                 let duration = opened.duration();
                 let metadata = opened.media_metadata().unwrap_or_default().tags;
                 let (demuxer, endpoint_recovery) = opened.into_runtime_parts();
+                #[expect(
+                    clippy::expect_used,
+                    reason = "инвариант: direct VOD has no conflicting timeline attachments"
+                )]
                 let prepared_media = compose_prepared_web_media(
                     safe_label.as_str(),
                     demuxer,
@@ -166,6 +170,7 @@ pub(super) fn prepare_source(
                             runtime_attachments.presentation,
                             prepared.source_state,
                         );
+                        #[expect(clippy::expect_used, reason = "инвариант: native HLS lifecycle produced compatible timeline attachments")]
                         let prepared_media = compose_prepared_web_media(
                             safe_label.as_str(),
                             prepared.demuxer,

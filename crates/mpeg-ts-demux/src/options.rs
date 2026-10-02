@@ -48,6 +48,11 @@ impl MpegTsDemuxOptions {
     /// Фиксированный default остаётся безопасным для обычного local/stream input, а владелец
     /// bounded resource-а может разрешить parser-у дочитать topology evidence до его конца.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "div_ceil ненулевого byte budget на положительный размер пакета даёт не меньше одного \
+                  пакета"
+    )]
     pub fn with_initial_probe_byte_budget(mut self, byte_budget: NonZeroUsize) -> Self {
         let packet_budget = byte_budget.get().div_ceil(MPEG_TS_PACKET_BYTES);
         self.initial_probe_packets = MpegTsLimit(
@@ -62,21 +67,25 @@ impl Default for MpegTsDemuxOptions {
     fn default() -> Self {
         Self {
             // 4096 TS packets ~= 752 KiB: достаточно для обычного PAT/PMT cadence.
-            initial_probe_packets: MpegTsLimit(NonZeroUsize::new(4_096).expect("non-zero")),
+            initial_probe_packets: MpegTsLimit(
+                const { NonZeroUsize::new(4_096).expect("non-zero") },
+            ),
             // Resync ограничен шестнадцатью transport packets.
             resync_bytes: MpegTsLimit(
-                NonZeroUsize::new(MPEG_TS_PACKET_BYTES * 16).expect("non-zero"),
+                const { NonZeroUsize::new(MPEG_TS_PACKET_BYTES * 16).expect("non-zero") },
             ),
             // PES больше 16 MiB считается повреждённым, а не бесконечно буферизуется.
-            pes_bytes: MpegTsLimit(NonZeroUsize::new(16 * 1024 * 1024).expect("non-zero")),
+            pes_bytes: MpegTsLimit(
+                const { NonZeroUsize::new(16 * 1024 * 1024).expect("non-zero") },
+            ),
             // AU ограничен отдельно: PES boundary не является границей кадра.
             video_access_unit_bytes: MpegTsLimit(
-                NonZeroUsize::new(32 * 1024 * 1024).expect("non-zero"),
+                const { NonZeroUsize::new(32 * 1024 * 1024).expect("non-zero") },
             ),
             // Sparse index не может удерживать больше 8192 anchors.
-            index_entries: MpegTsLimit(NonZeroUsize::new(8_192).expect("non-zero")),
+            index_entries: MpegTsLimit(const { NonZeroUsize::new(8_192).expect("non-zero") }),
             // Один seek не сканирует больше 32768 transport packets.
-            seek_scan_packets: MpegTsLimit(NonZeroUsize::new(32_768).expect("non-zero")),
+            seek_scan_packets: MpegTsLimit(const { NonZeroUsize::new(32_768).expect("non-zero") }),
         }
     }
 }

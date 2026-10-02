@@ -58,6 +58,10 @@ impl PlaylistPlaybackSpan {
     /// Возвращает checked duration закрытого span либо `None` для EOF-bound span.
     pub fn duration(self) -> Option<MediaDuration> {
         self.end_exclusive.map(|end| {
+            #[expect(
+                clippy::expect_used,
+                reason = "инвариант: PlaylistPlaybackSpan invariant requires end > start"
+            )]
             let duration = end
                 .as_duration()
                 .checked_sub(self.start.as_duration())

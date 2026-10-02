@@ -1,5 +1,14 @@
 //! Hermetic S41 gate для cross-provider runtime coverage и общего install path.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 // Упорядоченные коллекции делают diagnostics воспроизводимыми между платформами.
 use std::collections::{BTreeMap, BTreeSet};
 // Checked-in evidence читается только из текущего workspace без network I/O.

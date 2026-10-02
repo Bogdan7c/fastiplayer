@@ -35,12 +35,18 @@ pub(crate) struct DashOrderedSegmentSource {
     maximum_fragment_bytes: NonZeroUsize,
     /// Monotonic ordered segment sequence.
     next_sequence: u64,
-    /// Optional atomic live transport owner.
-    live_transport: Option<Arc<dyn DashLiveTransportProvider>>,
+    /// Live identity есть только у live source и задаётся целиком.
+    live: Option<DashLiveSourceIdentity>,
+}
+
+/// Всё, что нужно live source-у для endpoint remap; поля не бывают частично заданы.
+struct DashLiveSourceIdentity {
+    /// Atomic live transport owner.
+    transport: Arc<dyn DashLiveTransportProvider>,
     /// Selected component identity для endpoint resource remap.
-    live_media_kind: Option<DashMediaKind>,
+    media_kind: DashMediaKind,
     /// Global Period identity для endpoint resource remap.
-    live_period_timeline_start: Option<Duration>,
+    period_timeline_start: Duration,
 }
 
 /// Узкий live transport boundary без MPD/player/app vocabulary.
@@ -96,9 +102,7 @@ impl DashOrderedSegmentSource {
             query_application,
             maximum_fragment_bytes,
             next_sequence: 0,
-            live_transport: None,
-            live_media_kind: None,
-            live_period_timeline_start: None,
+            live: None,
         })
     }
 
@@ -123,9 +127,11 @@ impl DashOrderedSegmentSource {
             maximum_fragment_bytes,
             first_media_index,
         )?;
-        source.live_transport = Some(live_transport);
-        source.live_media_kind = Some(media_kind);
-        source.live_period_timeline_start = Some(period_timeline_start);
+        source.live = Some(DashLiveSourceIdentity {
+            transport: live_transport,
+            media_kind,
+            period_timeline_start,
+        });
         Ok(source)
     }
 
@@ -138,8 +144,8 @@ impl DashOrderedSegmentSource {
             DashSerializedFragmentKind::Initialization => AdaptiveResourcePurpose::Initialization,
             DashSerializedFragmentKind::Media => AdaptiveResourcePurpose::MediaSegment,
         };
-        let (http, generation) = match &self.live_transport {
-            Some(provider) => provider.current_transport()?,
+        let (http, generation) = match &self.live {
+            Some(live) => live.transport.current_transport()?,
             None => (self.http.clone(), self.generation),
         };
         let request = Self::resource_request(
@@ -152,20 +158,17 @@ impl DashOrderedSegmentSource {
         match http.fetch_resource_blocking(request) {
             Ok(resource) => Ok(resource.into_bytes()),
             Err(error)
-                if self.live_transport.is_some()
+                if self.live.is_some()
                     && matches!(error.http_status_code(), Some(401 | 403 | 404 | 410)) =>
             {
-                let provider = self.live_transport.as_ref().expect("checked live provider");
-                let media_kind = self
-                    .live_media_kind
-                    .expect("live source always has component identity");
-                let period_timeline_start = self
-                    .live_period_timeline_start
-                    .expect("live source always has Period identity");
+                let Some(live) = &self.live else {
+                    return Err(error);
+                };
+                let provider = &live.transport;
                 let fresh_resource = provider.recover_expired_resource(
                     generation,
-                    media_kind,
-                    period_timeline_start,
+                    live.media_kind,
+                    live.period_timeline_start,
                     resource,
                 )?;
                 let (fresh_http, fresh_generation) = provider.current_transport()?;

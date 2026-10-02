@@ -8,3 +8,6 @@ license.workspace = true
 [lib]
 name = "bounded_work_executor"
 path = "src/lib.rs"
+
+[lints]
+workspace = true

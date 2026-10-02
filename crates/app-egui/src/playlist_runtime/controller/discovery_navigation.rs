@@ -44,12 +44,7 @@ pub(crate) enum DiscoveryManualWaitAvailability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ManualNavigationWaitId(pub(super) NonZeroU64);
 
-impl ManualNavigationWaitId {
-    /// Число используется только для process-local correlation и read-only diagnostics.
-    pub(crate) const fn get(self) -> u64 {
-        self.0.get()
-    }
-}
+impl ManualNavigationWaitId {}
 
 /// Runtime-only one-slot wait; queue/traversal остаются неизменными.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,13 +89,13 @@ impl PlaylistController {
         exhausted: bool,
     ) -> ControllerManualNavigationOutcome {
         let Some(wait) = self.pending_manual_traversal else {
-            return ControllerManualNavigationOutcome::StaleWait { wait_id };
+            return ControllerManualNavigationOutcome::StaleWait;
         };
         if wait.wait_id != wait_id
             || wait.scope_id != scope_id
             || self.active_media != Some(wait.active_media)
         {
-            return ControllerManualNavigationOutcome::StaleWait { wait_id };
+            return ControllerManualNavigationOutcome::StaleWait;
         }
         if exhausted {
             self.pending_manual_traversal = None;
@@ -127,9 +122,10 @@ impl PlaylistController {
                 }
             }
             ManualNavigationOutcome::NoItem(_) => ControllerManualNavigationOutcome::Waiting {
+                #[cfg(test)]
                 wait_id,
+                #[cfg(test)]
                 direction: wait.direction,
-                scope_id,
             },
         }
     }
@@ -160,14 +156,14 @@ impl PlaylistController {
         exact_item_id: PlaylistItemId,
     ) -> ControllerManualNavigationOutcome {
         let Some(wait) = self.pending_manual_traversal else {
-            return ControllerManualNavigationOutcome::StaleWait { wait_id };
+            return ControllerManualNavigationOutcome::StaleWait;
         };
         if wait.wait_id != wait_id
             || wait.scope_id != scope_id
             || self.active_media != Some(wait.active_media)
             || self.queue.shuffle_enabled()
         {
-            return ControllerManualNavigationOutcome::StaleWait { wait_id };
+            return ControllerManualNavigationOutcome::StaleWait;
         }
         let domain_target = self.queue.begin_manual_navigation(match wait.direction {
             ManualNavigationDirection::Next => ManualNavigationIntent::next(self.repeat_mode),
@@ -179,7 +175,7 @@ impl PlaylistController {
             domain_target,
             ManualNavigationOutcome::OpenItem { item_id, .. } if item_id == exact_item_id
         ) {
-            return ControllerManualNavigationOutcome::StaleWait { wait_id };
+            return ControllerManualNavigationOutcome::StaleWait;
         }
         self.resume_manual_navigation_wait(wait_id, scope_id, false)
     }
@@ -206,6 +202,10 @@ impl PlaylistController {
     }
 
     /// D41 one-shot resume: exact key для canonical order, domain re-query для shuffle.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: deferred automatic latch always has a committed item"
+    )]
     pub(crate) fn resume_deferred_automatic_advance(
         &mut self,
         scope_id: SiblingDiscoveryScopeId,

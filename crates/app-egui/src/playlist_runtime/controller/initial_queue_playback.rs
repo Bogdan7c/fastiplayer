@@ -80,7 +80,7 @@ impl PlaylistController {
 
         Ok(InitialQueuePlaybackGuard {
             expected_active_media,
-            expected_stable_intent_revision: self.stable_intent_revision,
+            expected_stable_intent_revision: self.stable_intent_revision.get(),
             target_item_id,
             desired_intent,
         })
@@ -92,7 +92,7 @@ impl PlaylistController {
         guard: InitialQueuePlaybackGuard,
     ) -> Result<ControllerInitialQueuePlaybackAction, InitialQueuePlaybackPlanError> {
         if self.active_media != Some(guard.expected_active_media)
-            || self.stable_intent_revision != guard.expected_stable_intent_revision
+            || self.stable_intent_revision.get() != guard.expected_stable_intent_revision
             || self.stable_playback_intent != StablePlaybackIntent::Paused
             || self.install_state.is_some()
             || self.queue.item(guard.target_item_id).is_none()

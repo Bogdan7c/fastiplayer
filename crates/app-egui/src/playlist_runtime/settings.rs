@@ -171,10 +171,6 @@ impl PlaylistSettingsOwner {
     }
 
     /// Инициализирует только новую runtime queue до будущего persisted-state restore.
-    #[allow(
-        dead_code,
-        reason = "Session 14 startup integration consumes this policy"
-    )]
     pub(super) fn initialize_new_queue_policy(&self, controller: &mut PlaylistController) {
         controller.set_error_behavior(controller_error_behavior(self.committed.error_behavior));
         controller.repeat_mode = match self.committed.playback_behavior {
@@ -185,10 +181,6 @@ impl PlaylistSettingsOwner {
     }
 
     /// Persisted repeat/shuffle не заменяются config defaults; error policy runtime-only.
-    #[allow(
-        dead_code,
-        reason = "Session 14 startup integration consumes this policy"
-    )]
     pub(super) fn initialize_restored_queue_policy(&self, controller: &mut PlaylistController) {
         controller.set_error_behavior(controller_error_behavior(self.committed.error_behavior));
     }
@@ -335,6 +327,10 @@ impl PlaylistSettingsOwner {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: validated playlist threshold must fit controller contract"
+    )]
     pub(super) fn previous_restart_threshold(&self) -> super::controller::PreviousRestartThreshold {
         super::controller::PreviousRestartThreshold::from_milliseconds(
             self.committed.previous_restart_threshold_ms,

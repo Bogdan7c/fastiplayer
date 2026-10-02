@@ -170,6 +170,10 @@ impl SecretRequestContext {
     /// совпадает ни с одним real HTTP target; `is_empty()` == true.
     #[must_use]
     pub fn empty() -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "статический литерал https://invalid.invalid/ — корректный абсолютный HTTPS URL"
+        )]
         let placeholder = HttpRequestTarget::parse_exact("https://invalid.invalid/")
             .expect("static placeholder HTTP target");
         let path = HttpPathScope::from_target_path(&placeholder);
@@ -178,6 +182,10 @@ impl SecretRequestContext {
 
     /// Начинает named builder, чтобы секретные поля не передавались позиционно.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "пустой набор заголовков всегда проходит validation"
+    )]
     pub fn builder(scope: SecretRequestScope) -> SecretRequestContextBuilder {
         SecretRequestContextBuilder {
             scope,

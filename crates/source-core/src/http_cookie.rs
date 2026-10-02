@@ -65,6 +65,11 @@ fn seeded_cookie_jar(
     initial_target: &HttpRequestTarget,
     cookie_seeds: &[HttpCookieSeed],
 ) -> Result<Jar, ScopedHttpCookieJarError> {
+    #[expect(
+        clippy::expect_used,
+        reason = "HttpRequestTarget создаётся только после разбора как абсолютный HTTP(S) URL, повторный \
+                  parse того же текста не может провалиться"
+    )]
     let initial_url = Url::parse(initial_target.expose_secret_for_request())
         .expect("HttpRequestTarget уже доказал абсолютный HTTP(S) URL");
     let jar = Jar::default();
@@ -182,6 +187,11 @@ fn is_http_token(value: &str) -> bool {
 }
 
 /// Объединяет exact initial header с RFC-managed updates по cookie name.
+#[expect(
+    clippy::expect_used,
+    reason = "каждая пара уже является валидным HeaderValue, а соединитель «; » состоит из допустимых \
+              видимых ASCII"
+)]
 fn merge_cookie_headers(
     initial: Option<&HeaderValue>,
     updated: Option<&HeaderValue>,

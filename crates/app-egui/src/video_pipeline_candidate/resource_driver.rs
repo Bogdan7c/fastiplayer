@@ -59,6 +59,7 @@ impl CandidateVideoPipelineDescriptor {
 
     /// Возвращает matching renderer materializer class.
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn materializer_kind(self) -> CandidateVideoMaterializerKind {
         // Copy enum не раскрывает WGPU handles.
         self.materializer_kind
@@ -73,22 +74,6 @@ pub(crate) enum CandidateVideoPipelinePreparationStage {
 
     /// Concrete decoder factory не смогла запустить detached backend.
     BackendStartup,
-
-    /// Renderer submission provider/binding preparation завершилась ошибкой.
-    ProviderBinding,
-
-    /// Matching renderer materializer не удалось создать.
-    MaterializerCreation,
-}
-
-/// Availability-класс backend resource failure без destructive fallback policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CandidateVideoBackendAvailability {
-    /// Backend отсутствует или временно недоступен в runtime.
-    Unavailable,
-
-    /// Driver разрешает active decoder, но отвергает второй candidate decoder.
-    ResourceExhausted,
 }
 
 /// Typed preparation failure до передачи decoder half-а player owner-у.
@@ -97,28 +82,11 @@ pub(crate) struct CandidateVideoPipelinePreparationError {
     /// Exact stage не позволяет смешать startup/provider/materializer failures.
     stage: CandidateVideoPipelinePreparationStage,
 
-    /// Availability уточняется только для BackendResource stage.
-    availability: Option<CandidateVideoBackendAvailability>,
-
     /// Диагностическое сообщение не используется для branching.
     message: String,
 }
 
 impl CandidateVideoPipelinePreparationError {
-    /// Создаёт unavailable/resource-exhausted failure без fallback semantics.
-    #[must_use]
-    pub(crate) fn backend_resource(
-        availability: CandidateVideoBackendAvailability,
-        message: impl Into<String>,
-    ) -> Self {
-        // Typed availability сохраняется отдельно от human-readable diagnostics.
-        Self {
-            stage: CandidateVideoPipelinePreparationStage::BackendResource,
-            availability: Some(availability),
-            message: message.into(),
-        }
-    }
-
     /// Создаёт failure конкретного fallible preparation stage-а.
     #[must_use]
     pub(crate) fn at_stage(
@@ -133,37 +101,16 @@ impl CandidateVideoPipelinePreparationError {
         // Обычный stage не притворяется resource availability failure.
         Self {
             stage,
-            availability: None,
             message: message.into(),
         }
-    }
-
-    /// Возвращает exact preparation stage для policy/diagnostics.
-    #[must_use]
-    pub(crate) const fn stage(&self) -> CandidateVideoPipelinePreparationStage {
-        // Stage является главным typed discriminator-ом.
-        self.stage
     }
 
     /// Переводит app-owned failure в neutral reply для player resource request-а.
     #[must_use]
     pub(super) fn to_resource_error(&self, backend_id: &str) -> DetachedVideoBackendResourceError {
-        // Resource availability остаётся distinct от factory startup failure.
-        match self.availability {
-            Some(CandidateVideoBackendAvailability::Unavailable) => {
-                DetachedVideoBackendResourceError::Unavailable {
-                    reason: self.message.clone(),
-                }
-            }
-            Some(CandidateVideoBackendAvailability::ResourceExhausted) => {
-                DetachedVideoBackendResourceError::ResourceExhausted {
-                    reason: self.message.clone(),
-                }
-            }
-            None => DetachedVideoBackendResourceError::StartupFailed {
-                backend_id: backend_id.to_owned(),
-                message: format!("{:?}: {}", self.stage, self.message),
-            },
+        DetachedVideoBackendResourceError::StartupFailed {
+            backend_id: backend_id.to_owned(),
+            message: format!("{:?}: {}", self.stage, self.message),
         }
     }
 }

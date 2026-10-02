@@ -295,13 +295,13 @@ impl fmt::Display for AudioChannelLayout {
             }
             AudioChannelLayoutRepresentation::Positioned(_) => {
                 write!(formatter, "positioned[")?;
-                for lane_index in 0..self.channel_count() as usize {
+                // position_at возвращает None сразу после последнего lane-а,
+                // поэтому обход по Some-позициям покрывает ровно все каналы маски.
+                let positions = (0..).map_while(|lane_index| self.position_at(lane_index));
+                for (lane_index, position) in positions.enumerate() {
                     if lane_index > 0 {
                         write!(formatter, ",")?;
                     }
-                    let position = self
-                        .position_at(lane_index)
-                        .expect("validated positional layout contains every canonical lane");
                     write!(formatter, "{position}")?;
                 }
                 write!(formatter, "]")

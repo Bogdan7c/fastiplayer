@@ -39,6 +39,10 @@ impl SmoothChunkRun {
         self.fragment_count
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "normalization проверила эту же арифметику run-а на переполнение до создания timeline"
+    )]
     fn end_ticks(self) -> u64 {
         self.duration_ticks
             .checked_mul(
@@ -104,6 +108,11 @@ impl SmoothChunkTimeline {
         &self.runs
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "валидированный timeline непуст и начинается с fragment 0, поэтому для index в диапазоне \
+                  run всегда найдётся"
+    )]
     pub fn fragment_at(&self, index: usize) -> Result<SmoothChunkFragment, SmoothManifestError> {
         if index >= self.fragment_count {
             return Err(invalid_timeline(
@@ -151,6 +160,10 @@ impl SmoothChunkTimeline {
     }
 
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "валидированный timeline всегда содержит хотя бы один run"
+    )]
     pub fn last_end(&self) -> SmoothTime {
         SmoothTime::new(
             self.runs
@@ -173,6 +186,10 @@ pub struct SmoothChunkFragmentIter<'timeline> {
 impl Iterator for SmoothChunkFragmentIter<'_> {
     type Item = SmoothChunkFragment;
 
+    #[expect(
+        clippy::expect_used,
+        reason = "итератор идёт по валидированным run-ам, чья арифметика проверена при normalization"
+    )]
     fn next(&mut self) -> Option<Self::Item> {
         if self.next_index >= self.timeline.fragment_count {
             return None;
@@ -422,6 +439,10 @@ fn validate_contiguous_start(
     if start_ticks > expected_start {
         return Err(invalid_timeline(SmoothTimelineError::Discontinuity));
     }
+    #[expect(
+        clippy::expect_used,
+        reason = "previous end существует только после первого добавленного run"
+    )]
     let previous_start = runs
         .last()
         .expect("previous end существует только после первого run")

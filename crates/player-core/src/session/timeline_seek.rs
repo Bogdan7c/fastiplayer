@@ -141,19 +141,12 @@ impl PlayerSession {
     }
 
     pub(crate) fn reconcile_exact_timeline_seek_identity(&mut self) {
-        let is_stale = self
-            .pending_exact_timeline_seek
-            .as_ref()
-            .is_some_and(|pending| {
-                self.snapshot.media_instance_id != Some(pending.request.media_instance_id)
-            });
-        if !is_stale {
+        let current_media_instance_id = self.snapshot.media_instance_id;
+        let Some(pending) = self.pending_exact_timeline_seek.take_if(|pending| {
+            current_media_instance_id != Some(pending.request.media_instance_id)
+        }) else {
             return;
-        }
-        let pending = self
-            .pending_exact_timeline_seek
-            .take()
-            .expect("stale pending seek was just observed");
+        };
         let _ = pending
             .outcome_tx
             .send(ExactTimelineSeekOutcome::StaleInstance {

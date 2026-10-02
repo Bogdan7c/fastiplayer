@@ -295,6 +295,10 @@ impl ParserState {
         };
         let mut finished_tracks = Vec::with_capacity(self.tracks.len());
         for (track_index, track) in self.tracks.iter().enumerate() {
+            #[expect(
+                clippy::expect_used,
+                reason = "finish вызывается только после preflight, который отклоняет трек без INDEX 01"
+            )]
             let start = track
                 .index01()
                 .expect("finish preflight proves INDEX 01")

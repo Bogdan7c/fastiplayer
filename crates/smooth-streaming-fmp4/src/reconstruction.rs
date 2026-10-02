@@ -319,6 +319,11 @@ fn audio_underrun_is_subsample(
 }
 
 /// Сравнивает два interval-а без float, rescale или tolerance.
+#[expect(
+    clippy::expect_used,
+    reason = "Overhang/Underrun строятся только в ветках строгого неравенства, поэтому разность всегда \
+              ненулевая"
+)]
 fn classify_timing(
     manifest_window: SmoothManifestWindow,
     coded_coverage: FragmentCodedCoverage,

@@ -20,3 +20,6 @@ playlist-core.workspace = true
 media-core.workspace = true
 # WHATWG parser даёт единый syntax/base/file-URI boundary без самописного percent decoding.
 url.workspace = true
+
+[lints]
+workspace = true

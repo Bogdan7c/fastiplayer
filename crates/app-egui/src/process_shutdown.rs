@@ -94,6 +94,10 @@ pub(crate) fn join_finished_thread(join_handle: &mut Option<JoinHandle<()>>) -> 
         return FinishedThreadJoin::StillRunning;
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: проверенный JoinHandle должен оставаться в owner slot"
+    )]
     let handle = join_handle
         .take()
         .expect("проверенный JoinHandle должен оставаться в owner slot");

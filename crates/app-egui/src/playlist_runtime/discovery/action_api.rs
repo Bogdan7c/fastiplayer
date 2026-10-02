@@ -17,7 +17,6 @@ use crate::url_service_adapter::{
 
 impl PlaylistRuntime {
     /// Запускает app-owned Manual Add без Item ID reservation до terminal commit.
-    #[allow(dead_code, reason = "Session 19 invokes the typed action")]
     pub(crate) fn start_manual_file_add(
         &mut self,
         paths: Vec<PathBuf>,
@@ -36,17 +35,7 @@ impl PlaylistRuntime {
             .start_manual_add(paths, self.manual_add_queue_generation.value())
     }
 
-    /// Explicit Cancel отбрасывает весь uncommitted Manual Add batch.
-    #[allow(dead_code, reason = "Session 19 invokes the typed action")]
-    pub(crate) fn cancel_manual_file_add(&mut self, job_id: ManualAddJobId) -> bool {
-        self.discovery.cancel_manual_add(job_id)
-    }
-
     /// D31 принимает local refresh и service-owned YtDlp enrichment видимых rows.
-    #[allow(
-        dead_code,
-        reason = "Session 18/19 visible-row hint invokes this action"
-    )]
     pub(crate) fn request_visible_metadata_refresh(
         &mut self,
         item_ids: &[PlaylistItemId],
@@ -107,10 +96,6 @@ impl PlaylistRuntime {
     }
 
     /// Возвращает bounded process-lifetime read model для будущего UI.
-    #[allow(
-        dead_code,
-        reason = "Session 19 renders the process-lifetime read model"
-    )]
     pub(crate) fn playlist_discovery_jobs_read_model(&self) -> PlaylistDiscoveryJobsReadModel {
         self.discovery.jobs_read_model()
     }
@@ -140,10 +125,6 @@ impl PlaylistDiscoveryCoordinator {
 
     pub(in crate::playlist_runtime) fn cancel_sibling_for_add(&mut self) {
         self.cancel_active(DiscoveryCancellationCause::Superseded);
-    }
-
-    fn cancel_manual_add(&mut self, job_id: ManualAddJobId) -> bool {
-        self.action_jobs.cancel_manual_add(job_id)
     }
 
     fn request_visible_refresh(

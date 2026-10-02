@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use player_core::{
     ExactMediaTransportAction, ExactMediaTransportOutcome, ExactMediaTransportRequest,
-    PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackState,
+    PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate,
 };
 use playlist_core::{
     ManualNavigationDirection, ManualNavigationIntent, ManualNavigationNoItem,
@@ -24,9 +24,7 @@ use super::install::{
     DeferredControllerIntent, DeferredTransportIntent, LifecycleIntentOutcome,
     PlaylistInstallMutation,
 };
-use super::manual_navigation::{
-    CursorStepOutcome, ManualNavigationCancelOutcome, ManualNavigationInvalidation,
-};
+use super::manual_navigation::{CursorStepOutcome, ManualNavigationInvalidation};
 use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::identity::{
     PendingTargetOrigin, PlaylistItemErrorPhase, TransportActionOrigin,
@@ -93,14 +91,12 @@ pub(crate) struct PlannedPlaylistInstall {
 
 /// Play item не смешивает exact restart, coalesce и новый install.
 pub(crate) enum ControllerPlayItemOutcome {
-    ItemNotCommitted {
-        item_id: PlaylistItemId,
-    },
+    ItemNotCommitted,
     RestartActive {
         request: ExactMediaTransportRequest,
-        intent_dispatch: ControllerStableIntentDispatch,
     },
     CoalescePending {
+        #[cfg(test)]
         request_id: MediaOpenRequestId,
         intent_dispatch: ControllerStableIntentDispatch,
     },
@@ -109,7 +105,6 @@ pub(crate) enum ControllerPlayItemOutcome {
         intent_dispatch: ControllerStableIntentDispatch,
     },
     Guarded {
-        guard: TransportGuardOutcome,
         intent_dispatch: ControllerStableIntentDispatch,
     },
     IntentRevisionExhausted,
@@ -132,18 +127,19 @@ pub(crate) enum ControllerManualNavigationOutcome {
         request_id: MediaOpenRequestId,
         cause: player_core::MediaInstallCancellationCause,
         next: Option<PlannedPlaylistInstall>,
+        #[cfg(test)]
         no_item: Option<ManualNavigationNoItem>,
     },
     PreviewInvalidated(ManualNavigationInvalidation),
+    // wait_id нужен только тестам, чтобы продолжить/проверить ожидание через живой resume API.
     Waiting {
+        #[cfg(test)]
         wait_id: ManualNavigationWaitId,
+        #[cfg(test)]
         direction: ManualNavigationDirection,
-        scope_id: SiblingDiscoveryScopeId,
     },
     NoItem(ManualNavigationNoItem),
-    StaleWait {
-        wait_id: ManualNavigationWaitId,
-    },
+    StaleWait,
     Guarded(TransportGuardOutcome),
     IntentRevisionExhausted,
 }
@@ -182,22 +178,6 @@ pub(crate) enum TransportGuardOutcome {
         request_id: MediaOpenRequestId,
     },
     Fatal(super::install::PlaylistControllerInvariantViolation),
-}
-
-/// Контекст повторной оценки ровно одного transport-intent после terminal drain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DeferredTransportExecutionContext {
-    pub current_position: Duration,
-    pub previous_restart_threshold: PreviousRestartThreshold,
-    pub wait_availability: DiscoveryManualWaitAvailability,
-}
-
-/// Результат terminal transport executor-а не смешивает разные player/domain boundaries.
-pub(crate) enum DeferredTransportExecutionOutcome {
-    PlayItem(ControllerPlayItemOutcome),
-    Navigation(ControllerManualNavigationOutcome),
-    NeutralStop(Option<Result<ExactMediaTransportRequest, TransportGuardOutcome>>),
-    CancelManualNavigation(ManualNavigationCancelOutcome),
 }
 
 impl PlaylistController {
@@ -271,11 +251,6 @@ impl PlaylistController {
         self.transport_disposition
     }
 
-    /// Snapshot transient/Ended observation намеренно не переписывает explicit intent.
-    pub(crate) fn observe_player_snapshot_state(&mut self, _state: PlaybackState) -> bool {
-        false
-    }
-
     /// Explicit Play/Pause повышает revision ровно один раз и строит exact D52 dispatch.
     pub(crate) fn record_stable_transport_intent(
         &mut self,
@@ -288,7 +263,7 @@ impl PlaylistController {
         if intent == StablePlaybackIntent::Playing {
             self.transport_disposition = AppTransportDisposition::Active;
         }
-        let revision = PlaybackIntentRevision::from_non_zero(NonZeroU64::new(next_revision)?);
+        let revision = PlaybackIntentRevision::from_non_zero(next_revision);
         let install_intent = intent.as_install_intent();
         let pending_update = self
             .install_state
@@ -325,7 +300,7 @@ impl PlaylistController {
         origin: TransportActionOrigin,
     ) -> ControllerPlayItemOutcome {
         if self.queue.item(item_id).is_none() {
-            return ControllerPlayItemOutcome::ItemNotCommitted { item_id };
+            return ControllerPlayItemOutcome::ItemNotCommitted;
         }
         self.cancel_automatic_continuation_for_manual_intent();
         self.pending_manual_traversal = None;
@@ -342,38 +317,32 @@ impl PlaylistController {
             return ControllerPlayItemOutcome::IntentRevisionExhausted;
         };
 
-        if self
+        if let Some(_pending) = self
             .pending_target
-            .is_some_and(|pending| pending.item_id() == Some(item_id))
+            .filter(|pending| pending.item_id() == Some(item_id))
         {
             return ControllerPlayItemOutcome::CoalescePending {
-                request_id: self
-                    .pending_target
-                    .expect("checked pending target")
-                    .request_id(),
+                #[cfg(test)]
+                request_id: _pending.request_id(),
                 intent_dispatch,
             };
         }
         if self.install_state.is_some() {
-            let guarded =
+            let guard =
                 self.request_transport_guard(DeferredTransportIntent::PlayItem { item_id, origin });
-            return ControllerPlayItemOutcome::Guarded {
-                guard: guarded,
-                intent_dispatch,
-            };
+            tracing::debug!(?guard, "Play item удержан transport guard-ом");
+            return ControllerPlayItemOutcome::Guarded { intent_dispatch };
         }
 
-        let active_matches = self
-            .active_media
-            .is_some_and(|active| active.item_id() == Some(item_id));
         let runtime_failed = self
             .runtime_errors
             .get(&item_id)
             .is_some_and(|error| error.phase() == PlaylistItemErrorPhase::Playback);
-        if active_matches && !runtime_failed {
-            let active = self.active_media.expect("checked active identity");
-            let mut restart_dispatch = intent_dispatch;
-            restart_dispatch.exact_current = None;
+        if let Some(active) = self
+            .active_media
+            .filter(|active| active.item_id() == Some(item_id))
+            && !runtime_failed
+        {
             return ControllerPlayItemOutcome::RestartActive {
                 request: ExactMediaTransportRequest {
                     media_instance_id: active.media_instance_id(),
@@ -381,7 +350,6 @@ impl PlaylistController {
                         intent: PlaybackIntent::StartPlaying,
                     },
                 },
-                intent_dispatch: restart_dispatch,
             };
         }
 
@@ -413,9 +381,10 @@ impl PlaylistController {
         if let Some(wait) = self.pending_manual_traversal {
             if wait.direction == direction {
                 return ControllerManualNavigationOutcome::Waiting {
+                    #[cfg(test)]
                     wait_id: wait.wait_id,
+                    #[cfg(test)]
                     direction: wait.direction,
-                    scope_id: wait.scope_id,
                 };
             }
             // Противоположное нажатие supersede-ит logical wait, но не bulk discovery scope.
@@ -527,6 +496,10 @@ impl PlaylistController {
             requested_origin,
         ) {
             CursorStepOutcome::OpenItem { item_id } => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "инвариант: manual cursor binds the requested transport origin before opening"
+                )]
                 let origin = self
                     .manual_navigation_cursor
                     .origin()
@@ -545,6 +518,7 @@ impl PlaylistController {
                             request_id,
                             cause: player_core::MediaInstallCancellationCause::Superseded,
                             next: Some(install),
+                            #[cfg(test)]
                             no_item: None,
                         }
                     }
@@ -569,6 +543,7 @@ impl PlaylistController {
                         request_id,
                         cause: player_core::MediaInstallCancellationCause::Superseded,
                         next: None,
+                        #[cfg(test)]
                         no_item: Some(reason),
                     };
                 }
@@ -630,9 +605,10 @@ impl PlaylistController {
             scope_id,
         });
         ControllerManualNavigationOutcome::Waiting {
+            #[cfg(test)]
             wait_id,
+            #[cfg(test)]
             direction,
-            scope_id,
         }
     }
 
@@ -644,10 +620,7 @@ impl PlaylistController {
         PlannedPlaylistInstall {
             item_id,
             playback_intent: self.intent_for_navigation(origin),
-            intent_revision: PlaybackIntentRevision::from_non_zero(
-                NonZeroU64::new(self.stable_intent_revision)
-                    .expect("controller stable revision is always non-zero"),
-            ),
+            intent_revision: PlaybackIntentRevision::from_non_zero(self.stable_intent_revision),
             pending_origin: PendingTargetOrigin::ManualNavigation { origin },
             expected_queue_revision: self.queue.revision_snapshot(),
             mutation: PlaylistInstallMutation::ManualNavigation,
@@ -708,36 +681,6 @@ impl PlaylistController {
         false
     }
 
-    /// Terminal drain вызывает этот boundary только после commit/abort и применения modes.
-    pub(crate) fn execute_deferred_transport_intent(
-        &mut self,
-        intent: DeferredTransportIntent,
-        context: DeferredTransportExecutionContext,
-    ) -> DeferredTransportExecutionOutcome {
-        match intent {
-            DeferredTransportIntent::PlayItem { item_id, origin } => {
-                DeferredTransportExecutionOutcome::PlayItem(self.play_item(item_id, origin))
-            }
-            DeferredTransportIntent::Navigate { direction, origin } => {
-                DeferredTransportExecutionOutcome::Navigation(self.manual_navigation(
-                    direction,
-                    origin,
-                    context.current_position,
-                    context.previous_restart_threshold,
-                    context.wait_availability,
-                ))
-            }
-            DeferredTransportIntent::Stop { origin } => {
-                DeferredTransportExecutionOutcome::NeutralStop(self.neutral_stop(origin))
-            }
-            DeferredTransportIntent::CancelManualNavigation => {
-                DeferredTransportExecutionOutcome::CancelManualNavigation(
-                    self.cancel_manual_navigation(),
-                )
-            }
-        }
-    }
-
     pub(super) fn request_transport_guard(
         &mut self,
         intent: DeferredTransportIntent,
@@ -780,7 +723,6 @@ impl PlaylistController {
                 cancellation_cause: None,
                 mode_dirty: None,
             },
-            LifecycleIntentOutcome::Fatal(violation) => TransportGuardOutcome::Fatal(violation),
             LifecycleIntentOutcome::Immediate { .. }
             | LifecycleIntentOutcome::CancelPendingRequest { .. } => {
                 unreachable!("transport guard must return the same typed transport intent")

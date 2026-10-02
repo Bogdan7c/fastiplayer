@@ -597,12 +597,14 @@ impl FfmpegPacketCompletionCounter {
     /// Фиксирует exactly-once completion без блокировки decoder owner thread-а.
     fn record_completion(&self) {
         // Closure всегда возвращает Some, поэтому CAS повторяется до успешного
-        // saturating increment и не может завершиться веткой Err.
-        self.pending_count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current_count| {
-                Some(current_count.saturating_add(1))
-            })
-            .expect("packet completion increment closure always returns Some");
+        // saturating increment. fetch_update возвращает прежнее значение в обоих
+        // вариантах Result, а Err означает лишь «closure вернула None» — здесь
+        // это недостижимо, и ошибки, которую можно было бы потерять, нет.
+        let (Ok(_previous_count) | Err(_previous_count)) = self.pending_count.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current_count| Some(current_count.saturating_add(1)),
+        );
     }
 
     /// Атомарно передаёт player-у все накопленные completions ровно один раз.

@@ -693,6 +693,10 @@ impl PlayerSession {
 
 impl Default for PlayerSession {
     /// Создаёт пустую session с default snapshot.
+    #[expect(
+        clippy::expect_used,
+        reason = "default frame-server config — константа; frame-server-core тест проверяет её валидность"
+    )]
     fn default() -> Self {
         Self {
             snapshot: PlayerSnapshot::default(),

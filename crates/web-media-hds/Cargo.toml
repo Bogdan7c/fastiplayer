@@ -21,3 +21,6 @@ web-media-transport-api.workspace = true
 # Concrete F4F factory и app-equivalent network config нужны только hermetic runtime evidence.
 flv-demux.workspace = true
 fastiplayer-config.workspace = true
+
+[lints]
+workspace = true

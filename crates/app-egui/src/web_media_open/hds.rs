@@ -320,55 +320,59 @@ fn hds_policy(
     Ok(HdsVodOpenPolicy {
         xml_budgets: hds_xml_budgets()?,
         manifest_limits: F4mManifestLimits::new(
-            NonZeroUsize::new(64).expect("HDS media rows"),
-            NonZeroUsize::new(32).expect("HDS bootstrap rows"),
-            NonZeroUsize::new(2 * 1024 * 1024).expect("HDS bootstrap bytes"),
-            NonZeroUsize::new(4096).expect("HDS manifest string bytes"),
+            const { NonZeroUsize::new(64).expect("HDS media rows") },
+            const { NonZeroUsize::new(32).expect("HDS bootstrap rows") },
+            const { NonZeroUsize::new(2 * 1024 * 1024).expect("HDS bootstrap bytes") },
+            const { NonZeroUsize::new(4096).expect("HDS manifest string bytes") },
         ),
         bootstrap_limits: HdsBootstrapLimits {
-            maximum_bytes: NonZeroUsize::new(2 * 1024 * 1024).expect("HDS abst bytes"),
-            maximum_boxes: NonZeroUsize::new(128).expect("HDS bootstrap boxes"),
-            maximum_fragments: NonZeroUsize::new(16_384).expect("HDS timeline fragments"),
-            maximum_string_bytes: NonZeroUsize::new(4096).expect("HDS bootstrap strings"),
+            maximum_bytes: const { NonZeroUsize::new(2 * 1024 * 1024).expect("HDS abst bytes") },
+            maximum_boxes: const { NonZeroUsize::new(128).expect("HDS bootstrap boxes") },
+            maximum_fragments: const { NonZeroUsize::new(16_384).expect("HDS timeline fragments") },
+            maximum_string_bytes: const { NonZeroUsize::new(4096).expect("HDS bootstrap strings") },
         },
         adaptive_limits,
         adaptive_retry: AdaptiveRetryPolicy::new(
-            NonZeroU8::new(3).expect("HDS retry attempts"),
+            const { NonZeroU8::new(3).expect("HDS retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
             crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("HDS adaptive retry policy invalid")?,
         demux_sniff_budget: DemuxSniffBudget::new(
-            NonZeroUsize::new(256 * 1024).expect("HDS sniff bytes"),
+            const { NonZeroUsize::new(256 * 1024).expect("HDS sniff bytes") },
             // F4F envelope определяется по первому media fragment; если A/V config лежит
             // дальше, transactional demuxer запросит следующий fragment ровно по нужде.
-            NonZeroUsize::new(1).expect("HDS sniff segments"),
+            const { NonZeroUsize::new(1).expect("HDS sniff segments") },
             source_read_timeout,
         )
         .context("HDS demux sniff budget invalid")?,
         demux_buffer_limits: ProgressiveDemuxBufferLimits::new(
-            NonZeroUsize::new(256).expect("HDS demux event queue"),
-            NonZeroUsize::new(16 * 1024 * 1024).expect("HDS demux encoded queue"),
+            const { NonZeroUsize::new(256).expect("HDS demux event queue") },
+            const { NonZeroUsize::new(16 * 1024 * 1024).expect("HDS demux encoded queue") },
         ),
         demux_retry_hint: DemuxRetryHint::new(Duration::from_millis(10))
             .context("HDS demux retry hint invalid")?,
         async_seek_limits: ProgressiveAsyncSeekLimits::new(
-            NonZeroUsize::new(16).expect("HDS outstanding seek receipts"),
+            const { NonZeroUsize::new(16).expect("HDS outstanding seek receipts") },
         ),
         maximum_hierarchy_depth: 8,
         maximum_manifest_documents: 32,
         maximum_renditions: 64,
         // Шесть probe-ов покрывают типичный полный F4M ladder одним bounded network wave-ом.
-        maximum_parallel_rendition_probes: NonZeroUsize::new(6)
-            .expect("HDS parallel rendition probes"),
+        maximum_parallel_rendition_probes: const {
+            NonZeroUsize::new(6).expect("HDS parallel rendition probes")
+        },
         // Два готовых successor-а разрывают зависимость HTTP chain от заполненности
         // demux packet queue и покрывают jitter вокруг одной fragment duration.
-        maximum_buffered_fragments: NonZeroUsize::new(2).expect("HDS buffered successor fragments"),
+        maximum_buffered_fragments: const {
+            NonZeroUsize::new(2).expect("HDS buffered successor fragments")
+        },
         // Два connection-а перекрывают per-request CDN latency; ordered source
         // всё равно публикует fragments только в manifest sequence.
-        maximum_concurrent_fragment_fetches: NonZeroUsize::new(2)
-            .expect("HDS concurrent fragment fetches"),
+        maximum_concurrent_fragment_fetches: const {
+            NonZeroUsize::new(2).expect("HDS concurrent fragment fetches")
+        },
     })
 }
 

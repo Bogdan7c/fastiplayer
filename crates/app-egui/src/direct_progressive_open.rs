@@ -95,6 +95,10 @@ impl DirectProgressiveOpenResult {
 pub(crate) fn classify_direct_media_url(
     argument: &str,
 ) -> Result<service_direct_media::DirectMediaUrl, service_direct_media::DirectMediaOpenError> {
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: production web demux registrations должны собираться из static identities"
+    )]
     let composition =
         crate::web_media_demux_registry::WebDemuxComposition::new(DemuxerOptions::default())
             .expect("production web demux registrations должны собираться из static identities");

@@ -259,12 +259,12 @@ fn prepare_hls_vod_with_seek_boundary(
     let main_active_read_control = selected.main.active_read_control;
     let audio_component = selected.audio;
     let main_track_layout = selected.main_track_layout;
-    let main_seek_index = SharedHlsSeekIndex::new(policy.maximum_seek_index_entries.get());
-    let audio_seek_index = audio_component
-        .as_ref()
-        .map(|_| SharedHlsSeekIndex::new(policy.maximum_seek_index_entries.get()));
+    let new_seek_index = || SharedHlsSeekIndex::new(policy.maximum_seek_index_entries.get());
+    let main_seek_index = new_seek_index();
+    // Alternate audio и его seek index создаются одной парой и не расходятся.
+    let audio_with_seek_index = audio_component.map(|audio| (audio, new_seek_index()));
     let preview_main_index = main_seek_index.clone();
-    let preview_audio_index = audio_seek_index.clone();
+    let preview_audio_index = audio_with_seek_index.as_ref().map(|(_, idx)| idx.clone());
     let seek_controller = ProgressiveSeekController::manifest_reanchored(move |request| {
         let main_result = preview_main_index.lock().preview_and_pin(request)?;
         if let Some(audio_index) = &preview_audio_index {
@@ -283,22 +283,21 @@ fn prepare_hls_vod_with_seek_boundary(
         main_seek_index,
         main_active_read_control,
     );
-    let audio_deferred = audio_component.map(|audio_component| {
-        let audio_index = audio_seek_index
-            .expect("audio seek index создаётся ровно вместе с alternate component");
-        HlsDeferredInitialComponent {
-            factory: HlsComponentFactory::new(
-                audio_component.plan,
-                audio_http,
-                generation,
-                policy,
-                registry,
-                audio_index,
-                audio_component.active_read_control,
-            ),
-            initial_open: audio_component.initial_open,
-        }
-    });
+    let audio_deferred =
+        audio_with_seek_index.map(
+            |(audio_component, audio_index)| HlsDeferredInitialComponent {
+                factory: HlsComponentFactory::new(
+                    audio_component.plan,
+                    audio_http,
+                    generation,
+                    policy,
+                    registry,
+                    audio_index,
+                    audio_component.active_read_control,
+                ),
+                initial_open: audio_component.initial_open,
+            },
+        );
     let (initial_position_proof, proof_publisher) =
         HlsInitialPositionProofPublisher::for_start(effective_start, generation);
     let open_inner = move || {

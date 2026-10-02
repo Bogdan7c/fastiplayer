@@ -49,16 +49,20 @@ pub struct FlvDemuxOptions {
 impl Default for FlvDemuxOptions {
     fn default() -> Self {
         Self {
-            tag_bytes: FlvLimit(NonZeroUsize::new(32 * 1024 * 1024).expect("non-zero")),
-            initial_tags: FlvLimit(NonZeroUsize::new(4_096).expect("non-zero")),
-            recovery_bytes: FlvLimit(NonZeroUsize::new(256 * 1024).expect("non-zero")),
-            metadata_depth: FlvLimit(NonZeroUsize::new(16).expect("non-zero")),
-            metadata_entries: FlvLimit(NonZeroUsize::new(4_096).expect("non-zero")),
-            metadata_string_bytes: FlvLimit(NonZeroUsize::new(64 * 1024).expect("non-zero")),
-            index_entries: FlvLimit(NonZeroUsize::new(8_192).expect("non-zero")),
-            seek_scan_tags: FlvLimit(NonZeroUsize::new(32_768).expect("non-zero")),
-            fragment_bytes: FlvLimit(NonZeroUsize::new(64 * 1024 * 1024).expect("non-zero")),
-            fragment_boxes: FlvLimit(NonZeroUsize::new(1_024).expect("non-zero")),
+            tag_bytes: FlvLimit(const { NonZeroUsize::new(32 * 1024 * 1024).expect("non-zero") }),
+            initial_tags: FlvLimit(const { NonZeroUsize::new(4_096).expect("non-zero") }),
+            recovery_bytes: FlvLimit(const { NonZeroUsize::new(256 * 1024).expect("non-zero") }),
+            metadata_depth: FlvLimit(const { NonZeroUsize::new(16).expect("non-zero") }),
+            metadata_entries: FlvLimit(const { NonZeroUsize::new(4_096).expect("non-zero") }),
+            metadata_string_bytes: FlvLimit(
+                const { NonZeroUsize::new(64 * 1024).expect("non-zero") },
+            ),
+            index_entries: FlvLimit(const { NonZeroUsize::new(8_192).expect("non-zero") }),
+            seek_scan_tags: FlvLimit(const { NonZeroUsize::new(32_768).expect("non-zero") }),
+            fragment_bytes: FlvLimit(
+                const { NonZeroUsize::new(64 * 1024 * 1024).expect("non-zero") },
+            ),
+            fragment_boxes: FlvLimit(const { NonZeroUsize::new(1_024).expect("non-zero") }),
         }
     }
 }

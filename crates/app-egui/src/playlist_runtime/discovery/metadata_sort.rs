@@ -39,20 +39,19 @@ pub(super) fn start_cpu_executor() -> Option<BoundedExecutor> {
         SORT_CPU_QUEUE_CAPACITY,
         "playlist-sort-cpu",
     ))
+    // Отсутствие CPU executor-а обрабатывается вызывающим кодом как недоступная
+    // сортировка; причину отказа (например, spawn потока) сохраняем в логе.
+    .inspect_err(|error| {
+        tracing::error!(
+            ?error,
+            "CPU executor сортировки плейлиста не запустился; metadata sort недоступен"
+        );
+    })
     .ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MetadataSortJobId(u64);
-
-/// Typed first-writer-wins результат user cancel intent-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MetadataSortCancelOutcome {
-    Requested,
-    AlreadyRequested,
-    AlreadyInvalidated,
-    StaleJob,
-}
 
 #[derive(Debug)]
 pub(crate) enum MetadataSortStartError {
@@ -263,34 +262,6 @@ impl MetadataSortOwner {
         self.progress = None;
         self.active = Some(active);
         Ok(job_id)
-    }
-
-    pub(super) fn cancel(&mut self, job_id: MetadataSortJobId) -> MetadataSortCancelOutcome {
-        let Some(active) = self
-            .active
-            .as_mut()
-            .filter(|active| active.job_id == job_id)
-        else {
-            return MetadataSortCancelOutcome::StaleJob;
-        };
-        if let Some(existing) = active.cancel_outcome {
-            return match existing {
-                MetadataSortTerminalOutcome::Invalidated => {
-                    MetadataSortCancelOutcome::AlreadyInvalidated
-                }
-                _ => MetadataSortCancelOutcome::AlreadyRequested,
-            };
-        }
-        active.cancel_outcome = Some(MetadataSortTerminalOutcome::Cancelled);
-        match &active.phase {
-            ActivePhase::Probe(probe) => {
-                let _requested = probe
-                    .handle
-                    .cancel(DiscoveryCancellationCause::UserCancelled);
-            }
-            ActivePhase::Cpu(cpu) => cpu.handle.cancel(),
-        }
-        MetadataSortCancelOutcome::Requested
     }
 
     pub(super) fn cancel_for_queue_replacement(&mut self) {

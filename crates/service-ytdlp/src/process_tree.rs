@@ -144,7 +144,8 @@ impl OwnedProcess {
         }
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     fn root_process_id(&self) -> u32 {
         self.child
             .as_ref()
@@ -459,12 +460,13 @@ pub(crate) fn spawn_owned_process_with_launcher(
         if is_cancelled() {
             return Err(OwnedProcessSpawnError::Cancellation);
         }
-        if attempt_index > 0 && operation_started_at.elapsed() >= timeout {
-            return Err(OwnedProcessSpawnError::Process(
-                last_text_file_busy
-                    .take()
-                    .expect("retry attempt always follows ETXTBSY"),
-            ));
+        // Повторная попытка возможна только после ETXTBSY, поэтому ошибка для
+        // отчёта о timeout-е здесь всегда сохранена.
+        if attempt_index > 0
+            && operation_started_at.elapsed() >= timeout
+            && let Some(text_file_busy) = last_text_file_busy.take()
+        {
+            return Err(OwnedProcessSpawnError::Process(text_file_busy));
         }
 
         match process_launcher.spawn(command, invocation) {
@@ -640,5 +642,6 @@ fn terminate_single_process(child: &mut Child) -> io::Result<ExitStatus> {
     child.wait()
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests;

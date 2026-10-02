@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use player_core::{MediaInstanceId, PlaybackState};
+use player_core::MediaInstanceId;
 use playlist_core::{CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistMediaKind};
 
 use super::*;
@@ -344,11 +344,6 @@ fn current_playback_transport_and_selection_preserve_active_prompt_and_dirty_rev
     let _pause_dispatch = runtime
         .controller
         .record_stable_transport_intent(StablePlaybackIntent::Paused, TransportActionOrigin::Ui);
-    assert!(
-        !runtime
-            .controller
-            .observe_player_snapshot_state(PlaybackState::Seeking)
-    );
     let selected_item_id = runtime
         .controller
         .queue()

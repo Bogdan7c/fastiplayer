@@ -362,6 +362,10 @@ impl AppState {
             &capabilities,
             self.audio_decode_capability_snapshot(),
         );
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: same-item web source был проверен до lifecycle start"
+        )]
         let physical_request = match active_source
             .web_intent()
             .expect("same-item web source был проверен до lifecycle start")

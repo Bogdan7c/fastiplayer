@@ -68,14 +68,8 @@ impl PlaylistImportIssue {
 }
 
 /// Exact/at-least vocabulary не выдумывает недоказанный rejected tail.
-#[allow(
-    dead_code,
-    reason = "S08 tests and future parser receipts preserve exact-count vocabulary"
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlaylistImportRejectedCount {
-    /// Parser/capacity owner доказал точное число.
-    Exact(usize),
     /// Budget доказал только нижнюю границу.
     AtLeast(usize),
 }
@@ -323,6 +317,25 @@ pub(crate) enum PlaylistImportContinueOutcome {
     CommitRejected(ControllerImportCommitError),
     /// Confirmation identity исчерпана без оживления старого slot-а.
     ConfirmationIdentityExhausted,
+}
+
+impl PlaylistImportContinueOutcome {
+    /// Сообщение пользователю, если импорт не применён; `None` для успеха и ожидания.
+    ///
+    /// Единое соответствие для прямого Continue и для Continue после
+    /// подтверждения, чтобы отказ импорта не терялся ни на одном из путей.
+    pub(crate) const fn failure_feedback(&self) -> Option<&'static str> {
+        match self {
+            Self::AwaitingConfirmation | Self::Committed(_) => None,
+            Self::Stale => Some("Предпросмотр импорта устарел; выберите файл ещё раз"),
+            Self::RuntimeClosed => Some("Импорт уже недоступен: приложение завершает работу"),
+            Self::MaterializationRejected(_) => {
+                Some("Импорт содержит неподдерживаемый источник медиа")
+            }
+            Self::CommitRejected(_) => Some("Не удалось применить импорт без изменения плейлиста"),
+            Self::ConfirmationIdentityExhausted => Some("Не удалось открыть подтверждение импорта"),
+        }
+    }
 }
 
 /// Ошибка staging до publication нового preview.

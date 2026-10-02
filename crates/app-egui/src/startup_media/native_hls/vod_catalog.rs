@@ -271,6 +271,10 @@ impl PreparedNativeHlsRuntime {
                     initial_position,
                 } = prepared;
                 let demuxer = endpoint_recovery.wrap_demuxer(demuxer);
+                #[expect(
+                    clippy::expect_used,
+                    reason = "инвариант: native HLS VOD всегда публикует receipted seek port"
+                )]
                 let seek_port = endpoint_recovery
                     .wrap_seek_port(Some(seek_port))
                     .expect("native HLS VOD всегда публикует receipted seek port");

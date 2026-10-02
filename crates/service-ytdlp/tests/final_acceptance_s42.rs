@@ -3,6 +3,15 @@
 //! S00 остаётся immutable compatibility inventory, S41 остаётся runtime coverage
 //! handoff, а этот test target не выдаёт scoped traceability за full/manual acceptance.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 // Общий helper facade владеет JSON shape, evidence source и filesystem assertions.
 #[path = "final_acceptance_s42/support.rs"]
 mod support;

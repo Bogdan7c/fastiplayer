@@ -65,7 +65,6 @@ impl PlaylistRuntimeBinding {
 
 /// Почему callback нельзя применять к текущему runtime binding-у.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Session 11A начнёт применять этот typed rejection на callbacks.
 pub(crate) enum PlaylistBindingRejection {
     /// Runtime сейчас suspended и renderer/player binding отсутствует.
     Suspended,
@@ -121,7 +120,6 @@ pub(crate) struct PlaylistOwnerCompletion;
 
 /// Cloneable worker-side ports, принадлежащие process runtime-у.
 #[derive(Clone)]
-#[allow(dead_code)] // Ports удерживают process boundary независимо от renderer lifecycle.
 pub(crate) struct PlaylistOwnerPorts {
     pub(super) publisher: OwnerMailboxPublisher<PlaylistOwnerProgress, PlaylistOwnerCompletion>,
     pub(super) admission_open: Arc<AtomicBool>,
@@ -144,6 +142,10 @@ impl PlaylistOwnerPorts {
 
 impl PlaylistRuntime {
     /// Создаёт новый exact binding после успешного AppState recreation.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: playlist lifecycle generation overflow during bind; playlist binding generation overflow during bind"
+    )]
     pub(crate) fn bind_resumed_app_state(&mut self) -> Option<PlaylistRuntimeBinding> {
         if matches!(
             self.lifecycle,
@@ -171,6 +173,10 @@ impl PlaylistRuntime {
     }
 
     /// Снимает только AppState binding; process owner, ports и load gate сохраняются.
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: playlist lifecycle generation overflow during suspend"
+    )]
     pub(crate) fn suspend_app_state_binding(&mut self) {
         if matches!(self.lifecycle, PlaylistRuntimeLifecycle::Bound(_)) {
             self.lifecycle_generation.0 = self
@@ -225,10 +231,6 @@ impl PlaylistRuntime {
     }
 
     /// Cheap-clone read-only snapshot для renderer-bound AppState/playlist UI port-а.
-    #[allow(
-        dead_code,
-        reason = "read-only AppState attachment lands with playlist UI"
-    )]
     pub(crate) fn playlist_view_snapshot(&self) -> Arc<PlaylistViewSnapshot> {
         static EMPTY_VIEW: LazyLock<Arc<PlaylistViewSnapshot>> =
             LazyLock::new(|| Arc::new(PlaylistViewSnapshot::initial(&PlaylistQueue::new())));
@@ -251,10 +253,6 @@ impl PlaylistRuntime {
     }
 
     /// Controller остаётся process owner-ом; mutable facade нужен orchestration layer-у.
-    #[allow(
-        dead_code,
-        reason = "controller facade is consumed by Session 11B orchestration"
-    )]
     pub(crate) fn playlist_controller(&self) -> Option<&PlaylistController> {
         self.controller.as_ref()
     }

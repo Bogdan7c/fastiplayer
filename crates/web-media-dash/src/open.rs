@@ -47,6 +47,10 @@ pub struct DashVodOpenResult {
 impl DashVodOpenResult {
     /// Возвращает cloneable seek control до type erasure runtime-а.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "DASH VOD runtime всегда конструирует demuxer с receipt-based seek capability"
+    )]
     pub fn async_seek_handle(&self) -> ProgressiveAsyncSeekHandle {
         self.demuxer
             .async_seek_handle()

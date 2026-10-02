@@ -6,6 +6,10 @@ use render_core::{
 /// Размер GPU uniform buffer-а, который должен совпадать с WGSL struct layout.
 pub(crate) const COLOR_PIPELINE_UNIFORM_SIZE: u64 =
     std::mem::size_of::<ColorPipelineUniforms>() as u64;
+const _: () = assert!(
+    COLOR_PIPELINE_UNIFORM_SIZE > 0,
+    "uniform binding must be sized"
+);
 
 /// Старый shader использовал 16/256, а не 16/255; сохраняем это для visual parity.
 const PRESERVE_CURRENT_LIMITED_LUMA_OFFSET: f32 = 0.0625;

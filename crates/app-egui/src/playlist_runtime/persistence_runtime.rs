@@ -39,16 +39,11 @@ impl PlaylistRuntime {
         ) || self.persistence.has_background_work()
     }
 
-    #[allow(dead_code, reason = "read-only model is the Session 14 UI boundary")]
     pub(crate) const fn playlist_persistence_view(&self) -> PlaylistPersistenceView {
         self.persistence.view()
     }
 
     /// Manual Retry делегируется D69 scheduler-у; app не дублирует backoff policy.
-    #[allow(
-        dead_code,
-        reason = "manual Retry UI intent is wired in a later UI session"
-    )]
     pub(crate) fn retry_playlist_state_save(&self) -> Result<(), SaveControlError> {
         self.persistence.retry_now()
     }

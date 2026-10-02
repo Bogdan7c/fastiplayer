@@ -356,10 +356,43 @@ struct ProvenLane {
 }
 
 struct PublishedLane {
-    kind: DashMediaKind,
     lane: DashLogicalRepresentationLane,
-    component_exact: Option<ComponentVariantExactIdentity>,
-    coupled_exact: Option<CoupledVariantExactIdentity>,
+    exact: PublishedLaneExact,
+}
+
+/// Exact identity опубликованной lane. Вариант одновременно задаёт media kind,
+/// поэтому video/audio lane без component identity (или muxed без coupled)
+/// невыразима.
+enum PublishedLaneExact {
+    Video(ComponentVariantExactIdentity),
+    Audio(ComponentVariantExactIdentity),
+    Muxed(CoupledVariantExactIdentity),
+}
+
+impl PublishedLane {
+    const fn kind(&self) -> DashMediaKind {
+        match self.exact {
+            PublishedLaneExact::Video(_) => DashMediaKind::Video,
+            PublishedLaneExact::Audio(_) => DashMediaKind::Audio,
+            PublishedLaneExact::Muxed(_) => DashMediaKind::Muxed,
+        }
+    }
+
+    /// Component identity video/audio lane-а; у muxed lane её нет.
+    const fn component_exact(&self) -> Option<&ComponentVariantExactIdentity> {
+        match &self.exact {
+            PublishedLaneExact::Video(exact) | PublishedLaneExact::Audio(exact) => Some(exact),
+            PublishedLaneExact::Muxed(_) => None,
+        }
+    }
+
+    /// Coupled identity muxed lane-а; у отдельных компонентов её нет.
+    const fn coupled_exact(&self) -> Option<&CoupledVariantExactIdentity> {
+        match &self.exact {
+            PublishedLaneExact::Muxed(exact) => Some(exact),
+            PublishedLaneExact::Video(_) | PublishedLaneExact::Audio(_) => None,
+        }
+    }
 }
 
 /// Строит lane catalog атомарно; malformed sibling не уничтожает structurally safe соседей.
@@ -672,6 +705,10 @@ pub(crate) fn dynamic_range(color: DashColorMetadata) -> DynamicRange {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fmt::Write для String никогда не возвращает Err"
+)]
 fn semantic_key(contract: &LaneContract) -> Option<String> {
     let mut canonical = String::from("fastiplayer-dash-lane-v1|");
     use std::fmt::Write as _;

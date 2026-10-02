@@ -260,6 +260,10 @@ impl PlaylistQueue {
         }
 
         let capacity_rejected_entries = drafts.len().saturating_sub(accepted_entries);
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: in-memory drafts cannot contain more than usize::MAX retained parts"
+        )]
         let capacity_rejected_items = drafts[accepted_entries..]
             .iter()
             .try_fold(0usize, |count, draft| {

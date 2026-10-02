@@ -143,6 +143,10 @@ impl PlaylistQueue {
         let target_index = match self.move_target_index(source_index, intent) {
             Ok(target_index) => target_index,
             Err(StructuralEntryLookupError::NotFound) => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "инвариант: only anchored intent can fail anchor lookup"
+                )]
                 let anchor_entry_id = intent
                     .anchor()
                     .expect("only anchored intent can fail anchor lookup");
@@ -294,6 +298,10 @@ impl PlaylistQueue {
             .cloned()
             .collect::<Vec<_>>();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: validated unselected anchor must remain committed"
+        )]
         let insertion_index = match intent {
             MoveItemIntent::ToFront => 0,
             MoveItemIntent::ToBack => retained_entries.len(),

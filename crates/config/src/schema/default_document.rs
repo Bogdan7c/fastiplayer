@@ -373,6 +373,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
 }
 
+#[expect(
+    clippy::panic,
+    reason = "needle и comment — статические строки разработчика; schema tests ловят устаревший target до \
+              релиза, так что паника здесь — ошибка программиста, а не runtime-ввод"
+)]
 fn insert_default_config_comment(toml_text: &mut String, needle: &str, comment: &str) {
     if toml_text.contains(comment) {
         return;

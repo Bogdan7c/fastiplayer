@@ -439,7 +439,6 @@ impl CompoundRuntimeViewState {
                             selected,
                         },
                         presentation: PlaylistVisibleRow::from_cached_metadata(
-                            entry_id,
                             item_id,
                             item.cached_metadata(),
                             PlaylistVisibleRowState {
@@ -469,6 +468,10 @@ impl CompoundRuntimeViewState {
                         .parts()
                         .map(|part| part.item().item_id())
                         .find(|part_item_id| Some(*part_item_id) == current_item_id);
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "инвариант: validated compound group always retains a part"
+                    )]
                     let first_part_item_id = group
                         .parts()
                         .next()
@@ -488,7 +491,6 @@ impl CompoundRuntimeViewState {
                             selected,
                         },
                         presentation: PlaylistVisibleRow::from_cached_metadata(
-                            entry_id,
                             header_play_item_id,
                             group.cached_summary(),
                             PlaylistVisibleRowState {
@@ -528,7 +530,6 @@ impl CompoundRuntimeViewState {
                                     active,
                                 },
                                 presentation: PlaylistVisibleRow::from_cached_metadata(
-                                    entry_id,
                                     part_item_id,
                                     part.item().cached_metadata(),
                                     PlaylistVisibleRowState {
@@ -583,6 +584,10 @@ pub(super) fn resolve_header_play_target(
         return CompoundHeaderPlayTarget::EntryNotFound;
     };
     let current_item_id = queue.traversal_current().map(|current| current.item_id());
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: validated compound group always retains a part"
+    )]
     let target_item_id = group
         .parts()
         .map(|part| part.item().item_id())

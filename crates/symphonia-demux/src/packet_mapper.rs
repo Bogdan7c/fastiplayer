@@ -57,6 +57,10 @@ pub(crate) fn convert_packet_with_source_offset(
             track_id: packet_track_id,
         })?;
     let Some(track_kind) = track_entry.supported_kind() else {
+        #[expect(
+            clippy::expect_used,
+            reason = "TrackEntry без supported_kind всегда создаётся с причиной unsupported_kind"
+        )]
         let unsupported_kind = track_entry
             .unsupported_kind()
             .expect("unsupported TrackEntry kind должен иметь причину");

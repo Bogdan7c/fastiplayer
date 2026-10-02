@@ -1,5 +1,14 @@
 //! End-to-end S32B evidence: prepare -> deferred worker -> concrete demux events.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 #[path = "discontinuity/mod.rs"]
 mod discontinuity;
 mod support;

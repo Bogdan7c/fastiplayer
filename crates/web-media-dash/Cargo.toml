@@ -21,3 +21,6 @@ web-media-transport-api.workspace = true
 [dev-dependencies]
 fastiplayer-config.workspace = true
 symphonia-demux.workspace = true
+
+[lints]
+workspace = true

@@ -230,7 +230,7 @@ impl PlaylistRuntime {
                     automatic_continuation = Some(install);
                 }
                 AutomaticTargetFailureOutcome::Stopped { .. } => {}
-                AutomaticTargetFailureOutcome::StaleRequest { .. } => {
+                AutomaticTargetFailureOutcome::StaleRequest => {
                     let outcome = controller.report_manual_navigation_target_failure(request_id);
                     if matches!(outcome, ManualNavigationFailureOutcome::NotManualNavigation) {
                         controller.report_unstaged_manual_navigation_target_failure(item_id);

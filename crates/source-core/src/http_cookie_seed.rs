@@ -48,6 +48,11 @@ impl HttpCookieSeed {
     }
 
     /// Раскрывает Set-Cookie только jar-у внутри `source-core`.
+    #[expect(
+        clippy::expect_used,
+        reason = "конструктор HttpCookieSeed принимает только ASCII-совместимый HeaderValue, поэтому \
+                  to_str не может провалиться"
+    )]
     pub(crate) fn expose_set_cookie_for_jar(&self) -> &str {
         self.serialized_set_cookie
             .to_str()

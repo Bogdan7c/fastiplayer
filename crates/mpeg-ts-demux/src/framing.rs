@@ -386,8 +386,10 @@ impl TransportPacketReader {
                     count
                 }
                 TransportInput::OrderedResourceStream(source) => {
-                    let maximum_chunk_bytes = NonZeroUsize::new(ORDERED_RESOURCE_PULL_BYTES)
-                        .expect("ordered resource pull bound is non-zero");
+                    let maximum_chunk_bytes = const {
+                        NonZeroUsize::new(ORDERED_RESOURCE_PULL_BYTES)
+                            .expect("ordered resource pull bound is non-zero")
+                    };
                     let outcome = source
                         .next_event(maximum_chunk_bytes, &self.cancellation)
                         .map_err(|error| {

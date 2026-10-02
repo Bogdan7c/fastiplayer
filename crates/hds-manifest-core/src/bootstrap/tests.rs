@@ -37,6 +37,33 @@ fn rejects_truncated_bootstrap() {
     assert!(parse_bootstrap(&[0, 0, 0], "video", limits).is_err());
 }
 
+/// Box с 64-bit size (`size32 == 1`), у которого обрезано поле large size,
+/// отклоняется как Malformed, а не паникует на чтении фиксированного поля.
+#[test]
+fn rejects_box_with_truncated_large_size_field() {
+    let truncated_large_size = [0, 0, 0, 1, b'a', b'b', b's', b't', 0, 0, 0];
+
+    assert_eq!(
+        parse_bootstrap(&truncated_large_size, "video", limits()),
+        Err(HdsBootstrapError::Malformed)
+    );
+}
+
+/// Любой строгий префикс валидного bootstrap-а — ошибка, но никогда не паника:
+/// все fixed-width поля читаются через проверенные по длине массивы.
+#[test]
+fn every_truncated_prefix_of_valid_bootstrap_is_rejected_without_panic() {
+    let valid = abst_box();
+    assert!(parse_bootstrap(&valid, "video", limits()).is_ok());
+
+    for prefix_length in 0..valid.len() {
+        assert!(
+            parse_bootstrap(&valid[..prefix_length], "video", limits()).is_err(),
+            "prefix of {prefix_length} bytes must be rejected"
+        );
+    }
+}
+
 /// Первый advertised fragment задаётся `afrt`, а не неявной единицей.
 #[test]
 fn maps_non_one_first_fragment_from_afrt_to_asrt() {

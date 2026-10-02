@@ -172,8 +172,7 @@ pub(crate) struct P010VideoRenderer {
 /// Возвращает non-zero binding size для P010 uniform buffer-а.
 fn p010_uniform_binding_size() -> NonZeroU64 {
     // Инвариант защищён layout test-ом `hdr_color_pipeline_uniforms_match_wgsl_uniform_layout`.
-    NonZeroU64::new(HDR_COLOR_PIPELINE_UNIFORM_SIZE)
-        .expect("размер HDR color pipeline uniform buffer должен быть non-zero")
+    const { NonZeroU64::new(HDR_COLOR_PIPELINE_UNIFORM_SIZE).expect("non-zero HDR uniform") }
 }
 
 impl P010VideoRenderer {

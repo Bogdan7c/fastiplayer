@@ -88,7 +88,15 @@ fn render_preview(ui: &mut egui::Ui, preview: &PlaylistImportPreview) -> ImportP
             continue_response = Some(response);
         });
     });
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: preview всегда рисует Cancel"
+    )]
     let cancel_response = cancel_response.expect("preview всегда рисует Cancel");
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: preview всегда рисует Continue"
+    )]
     let continue_response = continue_response.expect("preview всегда рисует Continue");
     #[cfg(not(test))]
     let _ = (&cancel_response, &continue_response);
@@ -149,9 +157,6 @@ fn render_issue_summary(ui: &mut egui::Ui, preview: &PlaylistImportPreview) {
     }
     if let Some(source_truncation) = preview.source_truncation() {
         let text = match source_truncation.rejected_entries() {
-            PlaylistImportRejectedCount::Exact(count) => {
-                format!("Источник не отдал {count} записей из-за ограничений.")
-            }
             PlaylistImportRejectedCount::AtLeast(count) => {
                 format!("Источник не отдал как минимум {count} запись из-за ограничений.")
             }

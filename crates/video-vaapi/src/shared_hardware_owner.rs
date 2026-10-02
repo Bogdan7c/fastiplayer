@@ -313,7 +313,7 @@ struct VaapiSharedHardwareOwnerSnapshot {
 
 /// Нормализует `usize` budget в positive non-zero значение.
 fn non_zero_or_one(value: usize) -> NonZeroUsize {
-    NonZeroUsize::new(value).unwrap_or_else(|| NonZeroUsize::new(1).expect("1 is non-zero"))
+    NonZeroUsize::new(value).unwrap_or(NonZeroUsize::MIN)
 }
 
 #[cfg(test)]

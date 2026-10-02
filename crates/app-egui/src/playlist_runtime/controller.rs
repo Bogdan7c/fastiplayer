@@ -37,8 +37,7 @@ use super::identity::{
 use super::selection::{PlaylistSelectionState, UpdateSelection, UpdateSelectionOutcome};
 use super::view::{
     PlaylistDirtyRevision, PlaylistDirtySignal, PlaylistStructuralActionAvailability,
-    PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistViewState,
-    PlaylistWorkerAvailability, rebuild_snapshot,
+    PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistViewState, rebuild_snapshot,
 };
 
 #[allow(unused_imports)]
@@ -59,12 +58,11 @@ pub(crate) use initial_queue_playback::{
 };
 #[allow(unused_imports)]
 pub(crate) use install::{
-    AuthorizationDispatchStart, BarrierRaceIntent, ControllerInstallPhase,
-    ControllerMediaOpenCommand, ControllerMediaOpenCommandError, ControllerMediaOpenDisposition,
-    ControllerTerminalDrain, ControllerTerminalResolution, DeferredControllerIntent,
-    DesiredQueueModes, InstallReadyOutcome, InstalledPlaybackIntentCompletion,
-    LifecycleIntentOutcome, PlaylistControllerInvariantViolation, PlaylistInstallAdmissionError,
-    PlaylistInstallMutation, PlaylistInstallRequest,
+    AuthorizationDispatchStart, BarrierRaceIntent, ControllerInstallPhase, ControllerTerminalDrain,
+    ControllerTerminalResolution, DeferredControllerIntent, DesiredQueueModes, InstallReadyOutcome,
+    InstalledPlaybackIntentCompletion, LifecycleIntentOutcome,
+    PlaylistControllerInvariantViolation, PlaylistInstallAdmissionError, PlaylistInstallMutation,
+    PlaylistInstallRequest,
 };
 pub(crate) use local_file_selection::{
     LocalFileQueueReplacementReason, LocalFileSelectionDisposition,
@@ -72,8 +70,7 @@ pub(crate) use local_file_selection::{
 #[allow(unused_imports)]
 pub(crate) use manual_navigation::{
     ManualNavigationCancelOutcome, ManualNavigationFailureOutcome, ManualNavigationInvalidation,
-    ManualNavigationOriginState, ManualNavigationRetryOutcome, ManualNavigationTerminalAction,
-    PreConcreteProbeRejectionOutcome,
+    ManualNavigationOriginState, ManualNavigationTerminalAction,
 };
 #[allow(unused_imports)]
 pub(crate) use metadata::ControllerMetadataPatchError;
@@ -92,7 +89,6 @@ pub(crate) use startup_restore::{
 pub(crate) use transport::{
     AppTransportDisposition, ControllerManualNavigationAvailability,
     ControllerManualNavigationOutcome, ControllerPlayItemOutcome, ControllerStableIntentDispatch,
-    DeferredTransportExecutionContext, DeferredTransportExecutionOutcome,
     DiscoveryManualWaitAvailability, ManualNavigationWaitId, PlannedPlaylistInstall,
     PreviousRestartThreshold, SiblingDiscoveryScopeId, StablePlaybackIntent, TransportGuardOutcome,
 };
@@ -131,7 +127,6 @@ pub(crate) struct ControllerCappedAppendOutcome {
 pub(crate) enum RuntimeErrorCorrelationOutcome {
     Recorded,
     ItemNotCommitted,
-    StaleRequest,
     StaleMediaInstance,
 }
 
@@ -146,7 +141,13 @@ pub(super) enum StartupInitializationMutation {
 /// Startup controller build не скрывает fallible queue mode initialization.
 #[derive(Debug)]
 pub(crate) enum StartupControllerBuildError {
-    Shuffle(ShuffleToggleError),
+    Shuffle(
+        #[expect(
+            dead_code,
+            reason = "читается через Debug в Display PlaylistStartupApplyError"
+        )]
+        ShuffleToggleError,
+    ),
     DirtyRevisionExhausted,
     StructuralRevisionExhausted,
 }
@@ -168,7 +169,7 @@ pub(crate) struct PlaylistController {
     install_state: Option<install::InstallState>,
     pub(super) protected_modes_generation: u64,
     pub(super) stable_playback_intent: transport::StablePlaybackIntent,
-    pub(super) stable_intent_revision: u64,
+    pub(super) stable_intent_revision: std::num::NonZeroU64,
     pub(super) transport_disposition: transport::AppTransportDisposition,
     pending_manual_traversal: Option<transport::PendingManualTraversal>,
     manual_navigation_cursor: manual_navigation::ManualNavigationCursor,
@@ -178,7 +179,6 @@ pub(crate) struct PlaylistController {
     error_behavior: automatic_lifecycle::PlaylistErrorBehavior,
     pub(super) next_manual_wait_identity: u64,
     discovery_continuation_revision: DiscoveryContinuationRevision,
-    pub(super) worker_availability: PlaylistWorkerAvailability,
     pub(super) fatal_invariant: Option<PlaylistControllerInvariantViolation>,
     #[cfg(test)]
     reject_metadata_dirty_preflight_for_test: bool,
@@ -219,7 +219,7 @@ impl PlaylistController {
             install_state: None,
             protected_modes_generation: 0,
             stable_playback_intent: transport::StablePlaybackIntent::Paused,
-            stable_intent_revision: 1,
+            stable_intent_revision: std::num::NonZeroU64::MIN,
             transport_disposition: transport::AppTransportDisposition::Active,
             pending_manual_traversal: None,
             manual_navigation_cursor: manual_navigation::ManualNavigationCursor::default(),
@@ -229,7 +229,6 @@ impl PlaylistController {
             error_behavior: automatic_lifecycle::PlaylistErrorBehavior::Stop,
             next_manual_wait_identity: 1,
             discovery_continuation_revision: DiscoveryContinuationRevision::INITIAL,
-            worker_availability: PlaylistWorkerAvailability::Available,
             fatal_invariant: None,
             #[cfg(test)]
             reject_metadata_dirty_preflight_for_test: false,
@@ -363,10 +362,12 @@ impl PlaylistController {
         self.dirty_revision
     }
 
+    #[cfg(test)]
     pub(crate) const fn latest_dirty_signal(&self) -> Option<PlaylistDirtySignal> {
         self.latest_dirty_signal
     }
 
+    #[cfg(test)]
     pub(crate) const fn fatal_invariant(&self) -> Option<PlaylistControllerInvariantViolation> {
         self.fatal_invariant
     }
@@ -488,35 +489,6 @@ impl PlaylistController {
         })
     }
 
-    /// Retry start не очищает старый badge: D49 ждёт exact same-item Installed.
-    pub(crate) fn record_request_error(
-        &mut self,
-        item_id: PlaylistItemId,
-        request_id: crate::media_open::MediaOpenRequestId,
-        phase: PlaylistItemErrorPhase,
-        category: PlaylistItemErrorCategory,
-        safe_summary: Arc<str>,
-    ) -> RuntimeErrorCorrelationOutcome {
-        if self.queue.item(item_id).is_none() {
-            return RuntimeErrorCorrelationOutcome::ItemNotCommitted;
-        }
-        let request_matches = self.pending_target.is_some_and(|pending| {
-            pending.request_id() == request_id && pending.item_id() == Some(item_id)
-        });
-        if !request_matches {
-            return RuntimeErrorCorrelationOutcome::StaleRequest;
-        }
-        self.upsert_runtime_error(
-            item_id,
-            phase,
-            category,
-            safe_summary,
-            Some(request_id),
-            None,
-        );
-        RuntimeErrorCorrelationOutcome::Recorded
-    }
-
     /// Runtime playback error принимается только от exact active instance/item.
     pub(crate) fn record_playback_error(
         &mut self,
@@ -559,13 +531,6 @@ impl PlaylistController {
             None,
         );
         RuntimeErrorCorrelationOutcome::Recorded
-    }
-
-    pub(crate) fn set_worker_availability(&mut self, availability: PlaylistWorkerAvailability) {
-        if self.worker_availability != availability {
-            self.worker_availability = availability;
-            self.publish_view(false);
-        }
     }
 
     /// D56 accessibility hint не раскрывает UI внутренний cursor/hold.
@@ -684,13 +649,13 @@ impl PlaylistController {
         let state = PlaylistViewState {
             queue: &self.queue,
             structural_revision: self.structural_revision,
+            #[cfg(test)]
             errors: &self.runtime_errors,
             selection: self.selection.snapshot(),
             active_media: self.active_media,
+            #[cfg(test)]
             pending_target: self.pending_target,
-            repeat_mode: self.repeat_mode,
             structural_action_availability: self.structural_action_availability(),
-            worker_availability: self.worker_availability,
             navigation_failure_target: self.manual_navigation_cursor.awaiting_failure_target(),
             active_tombstone: self.detached_active_tombstone.is_some(),
         };

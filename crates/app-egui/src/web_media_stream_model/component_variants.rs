@@ -3,11 +3,6 @@
 //! Exact identities остаются внутри модели. Sidebar получает только enum/numeric
 //! projection и bounded language tag, а controlled reopen — semantic-only request.
 
-#![allow(
-    dead_code,
-    reason = "S36C2 публикует production boundary до намеренно отдельного C3 runtime wiring"
-)]
-
 use std::fmt;
 use std::sync::Arc;
 
@@ -298,11 +293,6 @@ impl fmt::Display for ComponentVariantActionError {
 impl std::error::Error for ComponentVariantActionError {}
 
 impl WebMediaStreamConfiguration {
-    /// Возвращает neutral selection активного parent-а для same-item reopen.
-    pub(crate) fn active_parent_selection(&self) -> WebMediaSelection {
-        WebMediaSelection::candidate(self.active_parent.clone())
-    }
-
     /// Устанавливает independent component catalog только для exact active parent-а.
     pub(crate) fn with_component_variants(
         mut self,

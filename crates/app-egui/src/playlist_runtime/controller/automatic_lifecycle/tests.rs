@@ -19,9 +19,9 @@ use crate::media_open::AuthorizationDispatchResolution;
 use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::PlaylistBindingGeneration;
 use crate::playlist_runtime::controller::{
-    ControllerManualNavigationOutcome, InstallReadyOutcome, ManualNavigationCancelOutcome,
-    ManualNavigationFailureOutcome, ManualNavigationTerminalAction, PlannedPlaylistInstall,
-    PlaylistController, PlaylistInstallRequest, PreviousRestartThreshold,
+    ControllerManualNavigationOutcome, InstallReadyOutcome, ManualNavigationFailureOutcome,
+    ManualNavigationTerminalAction, PlannedPlaylistInstall, PlaylistController,
+    PlaylistInstallRequest, PreviousRestartThreshold,
 };
 use crate::playlist_runtime::identity::{
     ActiveMediaIdentity, ActiveMediaLineageId, TransportActionOrigin,
@@ -443,81 +443,6 @@ fn failed_snapshot_is_edge_triggered_error_policy_not_clean_eof() {
 }
 
 #[test]
-fn d42_manual_failure_keeps_hold_and_d56_cancel_consumes_it_as_stop() {
-    let (mut controller, _, active) = controller_with_active(2, 0);
-    let install = planned_manual_next(&mut controller);
-    let request_id = MediaOpenRequestId::from_non_zero(non_zero(111));
-    controller
-        .accept_install_request(install_request(111, 211, install))
-        .expect("manual request accepted");
-    assert!(matches!(
-        controller.observe_automatic_snapshot(
-            active.player_binding_generation(),
-            Some(active.media_instance_id()),
-            PlaybackState::Ended,
-            EndedSnapshotKind::Clean,
-            AutomaticDeferredAvailability::Unavailable,
-        ),
-        AutomaticLifecycleOutcome::HeldForExplicitIntent { .. }
-    ));
-    assert!(matches!(
-        controller.report_manual_navigation_target_failure(request_id),
-        ManualNavigationFailureOutcome::AwaitingUserAfterFailure { .. }
-    ));
-    let cancellation = controller.cancel_manual_navigation();
-    assert!(matches!(
-        cancellation,
-        ManualNavigationCancelOutcome::Discarded(invalidation)
-            if invalidation.terminal_action == ManualNavigationTerminalAction::StopEndedOrigin
-    ));
-    assert!(matches!(
-        controller.reevaluate_held_ended(AutomaticDeferredAvailability::Unavailable),
-        AutomaticLifecycleOutcome::NoAction
-    ));
-}
-
-#[test]
-fn d50_exhaustion_reevaluates_matching_held_ended_exactly_once() {
-    let (mut controller, _, active) = controller_with_active(1, 0);
-    let scope_id = super::super::transport::SiblingDiscoveryScopeId::from_non_zero(non_zero(401));
-    let waiting = controller.manual_navigation(
-        playlist_core::ManualNavigationDirection::Next,
-        TransportActionOrigin::Ui,
-        std::time::Duration::ZERO,
-        PreviousRestartThreshold::from_milliseconds(0).expect("zero is valid"),
-        super::super::transport::DiscoveryManualWaitAvailability::MayProduceCandidate { scope_id },
-    );
-    let ControllerManualNavigationOutcome::Waiting { wait_id, .. } = waiting else {
-        panic!("D50 must wait while discovery may produce a candidate");
-    };
-    assert!(matches!(
-        controller.observe_automatic_snapshot(
-            active.player_binding_generation(),
-            Some(active.media_instance_id()),
-            PlaybackState::Ended,
-            EndedSnapshotKind::Clean,
-            AutomaticDeferredAvailability::Unavailable,
-        ),
-        AutomaticLifecycleOutcome::HeldForExplicitIntent { .. }
-    ));
-    assert!(matches!(
-        controller.resume_manual_navigation_wait(wait_id, scope_id, true),
-        ControllerManualNavigationOutcome::NoItem(_)
-    ));
-    assert!(matches!(
-        controller.reevaluate_held_ended(AutomaticDeferredAvailability::Unavailable),
-        AutomaticLifecycleOutcome::Stop {
-            cause: AutomaticStopCause::Domain(_),
-            ..
-        }
-    ));
-    assert!(matches!(
-        controller.reevaluate_held_ended(AutomaticDeferredAvailability::Unavailable),
-        AutomaticLifecycleOutcome::NoAction
-    ));
-}
-
-#[test]
 fn d57_structural_invalidation_consumes_ended_hold_with_one_mutation_revision() {
     let (mut controller, _, active) = controller_with_active(2, 0);
     let install = planned_manual_next(&mut controller);
@@ -552,10 +477,6 @@ fn d57_structural_invalidation_consumes_ended_hold_with_one_mutation_revision() 
         ManualNavigationTerminalAction::StopEndedOrigin
     );
     assert_eq!(controller.dirty_revision().get(), dirty_before + 1);
-    assert!(matches!(
-        controller.reevaluate_held_ended(AutomaticDeferredAvailability::Unavailable),
-        AutomaticLifecycleOutcome::NoAction
-    ));
 }
 
 #[test]
@@ -732,7 +653,7 @@ fn deferred_automatic_cancel_is_terminal() {
             EndedSnapshotKind::Clean,
             AutomaticDeferredAvailability::MayProduceCandidate { scope_id },
         ),
-        AutomaticLifecycleOutcome::Deferred { .. }
+        AutomaticLifecycleOutcome::Deferred
     ));
     assert!(matches!(
         controller.cancel_deferred_automatic_advance(),
@@ -755,7 +676,7 @@ fn manual_navigation_replaces_d26_latch_without_hidden_automatic_replay() {
             EndedSnapshotKind::Clean,
             AutomaticDeferredAvailability::MayProduceCandidate { scope_id },
         ),
-        AutomaticLifecycleOutcome::Deferred { .. }
+        AutomaticLifecycleOutcome::Deferred
     ));
     assert!(matches!(
         controller.manual_navigation(

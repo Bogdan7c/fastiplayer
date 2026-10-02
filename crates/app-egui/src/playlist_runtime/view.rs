@@ -1,17 +1,22 @@
 //! Revision-stable read-only view без per-frame полного clone/scan очереди.
 
 use std::collections::HashMap;
+#[cfg(test)]
 use std::ops::Range;
 use std::sync::Arc;
 
 use media_core::MediaDuration;
 use playlist_core::{
     CachedPlaylistMetadata, PlaylistEntry, PlaylistEntryId, PlaylistItemId, PlaylistMediaKind,
-    PlaylistQueue, RepeatMode, TraversalCurrentItemId,
+    PlaylistQueue,
 };
 
-use super::identity::{ActiveMediaIdentity, PendingTarget, PlaylistItemRuntimeError};
+#[cfg(test)]
+use super::identity::PendingTarget;
+use super::identity::{ActiveMediaIdentity, PlaylistItemRuntimeError};
 use super::selection::PlaylistSelectionSnapshot;
+#[cfg(test)]
+use playlist_core::TraversalCurrentItemId;
 
 /// Controller-owned structural revision для shared row storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -76,13 +81,6 @@ impl PlaylistDirtySignal {
     }
 }
 
-/// Worker availability показывается отдельно от committed queue state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlaylistWorkerAvailability {
-    Available,
-    Unavailable,
-}
-
 /// Доступность структурных действий без утечки конкретной install-фазы в UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaylistStructuralActionAvailability {
@@ -99,28 +97,29 @@ impl PlaylistStructuralActionAvailability {
     pub(crate) const fn allows_interaction(self) -> bool {
         matches!(self, Self::Available)
     }
-
-    /// Inline-объяснение нужно только для устойчивой недоступности.
-    pub(crate) const fn requires_status_notice(self) -> bool {
-        matches!(self, Self::Unavailable)
-    }
 }
 
 /// Shared immutable строка; locator label создаётся только при structural rebuild-е.
 #[derive(Debug, Clone)]
 struct PlaylistViewRow {
     entry_id: PlaylistEntryId,
+    // Содержимое строки читают только test-наблюдатели (`visible_rows`, `item_id_at`);
+    // production UI строит строки через compound presentation.
+    #[cfg(test)]
     item_id: PlaylistItemId,
+    #[cfg(test)]
     fallback_display_name: Arc<str>,
+    #[cfg(test)]
     display_title: Arc<str>,
+    #[cfg(test)]
     duration: Option<MediaDuration>,
+    #[cfg(test)]
     media_kind: PlaylistMediaKind,
 }
 
 /// Только запрошенные видимые строки получают лёгкие clones `Arc`.
 #[derive(Debug, Clone)]
 pub(crate) struct PlaylistVisibleRow {
-    entry_id: PlaylistEntryId,
     item_id: PlaylistItemId,
     fallback_display_name: Arc<str>,
     display_title: Arc<str>,
@@ -147,7 +146,6 @@ pub(super) struct PlaylistVisibleRowState {
 impl PlaylistVisibleRow {
     /// Строит renderer-neutral presentation из owner-provided metadata и runtime state.
     pub(super) fn from_cached_metadata(
-        entry_id: PlaylistEntryId,
         item_id: PlaylistItemId,
         metadata: &CachedPlaylistMetadata,
         state: PlaylistVisibleRowState,
@@ -160,7 +158,6 @@ impl PlaylistVisibleRow {
             .filter(|title| !title.trim().is_empty())
             .map_or_else(|| fallback_display_name.clone(), Arc::from);
         Self {
-            entry_id,
             item_id,
             fallback_display_name,
             display_title,
@@ -189,11 +186,6 @@ pub(crate) struct PlaylistVisibleRowTestFixture {
 }
 
 impl PlaylistVisibleRow {
-    /// Возвращает top-level structural identity строки.
-    pub(crate) const fn entry_id(&self) -> PlaylistEntryId {
-        self.entry_id
-    }
-
     pub(crate) const fn item_id(&self) -> PlaylistItemId {
         self.item_id
     }
@@ -242,7 +234,6 @@ impl PlaylistVisibleRow {
             )
         });
         Self {
-            entry_id: PlaylistEntryId::Single(fixture.item_id),
             item_id: fixture.item_id,
             fallback_display_name: Arc::from(fixture.fallback_display_name),
             display_title: Arc::from(fixture.display_title),
@@ -264,15 +255,16 @@ pub(crate) struct PlaylistViewSnapshot {
     rows: Arc<[PlaylistViewRow]>,
     row_indices: Arc<HashMap<PlaylistItemId, usize>>,
     entry_indices: Arc<HashMap<PlaylistEntryId, usize>>,
+    // errors/traversal_current/pending_target читают только test-наблюдатели.
+    #[cfg(test)]
     errors: Arc<HashMap<PlaylistItemId, PlaylistItemRuntimeError>>,
     selection: PlaylistSelectionSnapshot,
+    #[cfg(test)]
     traversal_current: Option<TraversalCurrentItemId>,
     active_media: Option<ActiveMediaIdentity>,
+    #[cfg(test)]
     pending_target: Option<PendingTarget>,
-    repeat_mode: RepeatMode,
-    shuffle_enabled: bool,
     structural_action_availability: PlaylistStructuralActionAvailability,
-    worker_availability: PlaylistWorkerAvailability,
     navigation_failure_target: Option<PlaylistItemId>,
     active_tombstone: bool,
 }
@@ -286,15 +278,15 @@ impl PlaylistViewSnapshot {
             rows: built_rows.rows,
             row_indices: built_rows.row_indices,
             entry_indices: built_rows.entry_indices,
+            #[cfg(test)]
             errors: Arc::new(HashMap::new()),
             selection: PlaylistSelectionSnapshot::empty(),
+            #[cfg(test)]
             traversal_current: queue.traversal_current(),
             active_media: None,
+            #[cfg(test)]
             pending_target: None,
-            repeat_mode: RepeatMode::StopAtEnd,
-            shuffle_enabled: queue.shuffle_enabled(),
             structural_action_availability: PlaylistStructuralActionAvailability::Available,
-            worker_availability: PlaylistWorkerAvailability::Available,
             navigation_failure_target: None,
             active_tombstone: false,
         }
@@ -327,6 +319,7 @@ impl PlaylistViewSnapshot {
     }
 
     /// Один direct row access обновляет top-visible anchor без поиска по queue.
+    #[cfg(test)]
     pub(crate) fn item_id_at(&self, row_index: usize) -> Option<PlaylistItemId> {
         self.rows.get(row_index).map(|row| row.item_id)
     }
@@ -337,6 +330,7 @@ impl PlaylistViewSnapshot {
     }
 
     /// Сложность строго пропорциональна bounded visible range, а не всей queue.
+    #[cfg(test)]
     pub(crate) fn visible_rows(&self, requested: Range<usize>) -> Vec<PlaylistVisibleRow> {
         let start = requested.start.min(self.rows.len());
         let end = requested.end.min(self.rows.len()).max(start);
@@ -345,7 +339,6 @@ impl PlaylistViewSnapshot {
         self.rows[start..end]
             .iter()
             .map(|row| PlaylistVisibleRow {
-                entry_id: row.entry_id,
                 item_id: row.item_id,
                 fallback_display_name: row.fallback_display_name.clone(),
                 display_title: row.display_title.clone(),
@@ -361,6 +354,7 @@ impl PlaylistViewSnapshot {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn selected_entry_id(&self) -> Option<PlaylistEntryId> {
         self.selection
             .interaction_cursor()
@@ -372,6 +366,7 @@ impl PlaylistViewSnapshot {
         &self.selection
     }
 
+    #[cfg(test)]
     pub(crate) const fn traversal_current(&self) -> Option<TraversalCurrentItemId> {
         self.traversal_current
     }
@@ -380,6 +375,7 @@ impl PlaylistViewSnapshot {
         self.active_media
     }
 
+    #[cfg(test)]
     pub(crate) const fn pending_target(&self) -> Option<PendingTarget> {
         self.pending_target
     }
@@ -388,10 +384,6 @@ impl PlaylistViewSnapshot {
         &self,
     ) -> PlaylistStructuralActionAvailability {
         self.structural_action_availability
-    }
-
-    pub(crate) const fn worker_availability(&self) -> PlaylistWorkerAvailability {
-        self.worker_availability
     }
 
     pub(crate) const fn navigation_failure_target(&self) -> Option<PlaylistItemId> {
@@ -454,13 +446,13 @@ impl PlaylistViewSnapshot {
 pub(super) struct PlaylistViewState<'a> {
     pub queue: &'a PlaylistQueue,
     pub structural_revision: PlaylistStructuralRevision,
+    #[cfg(test)]
     pub errors: &'a HashMap<PlaylistItemId, PlaylistItemRuntimeError>,
     pub selection: PlaylistSelectionSnapshot,
     pub active_media: Option<ActiveMediaIdentity>,
+    #[cfg(test)]
     pub pending_target: Option<PendingTarget>,
-    pub repeat_mode: RepeatMode,
     pub structural_action_availability: PlaylistStructuralActionAvailability,
-    pub worker_availability: PlaylistWorkerAvailability,
     pub navigation_failure_target: Option<PlaylistItemId>,
     pub active_tombstone: bool,
 }
@@ -485,15 +477,15 @@ pub(super) fn rebuild_snapshot(
             || previous.entry_indices.clone(),
             |built| built.entry_indices,
         ),
+        #[cfg(test)]
         errors: Arc::new(state.errors.clone()),
         selection: state.selection,
+        #[cfg(test)]
         traversal_current: state.queue.traversal_current(),
         active_media: state.active_media,
+        #[cfg(test)]
         pending_target: state.pending_target,
-        repeat_mode: state.repeat_mode,
-        shuffle_enabled: state.queue.shuffle_enabled(),
         structural_action_availability: state.structural_action_availability,
-        worker_availability: state.worker_availability,
         navigation_failure_target: state.navigation_failure_target,
         active_tombstone: state.active_tombstone,
     }
@@ -511,6 +503,7 @@ fn build_rows(queue: &PlaylistQueue) -> BuiltPlaylistRows {
     let mut row_indices = HashMap::with_capacity(queue.retained_item_count());
     let mut entry_indices = HashMap::with_capacity(queue.top_level_entry_count());
     for (row_index, entry) in queue.iter_top_level_entries().enumerate() {
+        #[cfg(test)]
         let (representative_item, metadata) = match entry {
             PlaylistEntry::Single(item) => (item, item.cached_metadata()),
             PlaylistEntry::Compound(group) => {
@@ -521,17 +514,24 @@ fn build_rows(queue: &PlaylistQueue) -> BuiltPlaylistRows {
                 (first_part.item(), group.cached_summary())
             }
         };
+        #[cfg(test)]
         let fallback_display_name: Arc<str> = Arc::from(metadata.fallback_display_name());
+        #[cfg(test)]
         let display_title = metadata
             .title()
             .filter(|title| !title.trim().is_empty())
             .map_or_else(|| fallback_display_name.clone(), Arc::from);
         rows.push(PlaylistViewRow {
             entry_id: entry.entry_id(),
+            #[cfg(test)]
             item_id: representative_item.item_id(),
+            #[cfg(test)]
             fallback_display_name,
+            #[cfg(test)]
             display_title,
+            #[cfg(test)]
             duration: metadata.duration(),
+            #[cfg(test)]
             media_kind: metadata.media_kind(),
         });
         match entry {

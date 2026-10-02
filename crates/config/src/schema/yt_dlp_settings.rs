@@ -244,6 +244,11 @@ fn descriptor(
 }
 
 /// Преобразует validated `u64` в settings integer без скрытого narrowing.
+#[expect(
+    clippy::panic,
+    reason = "вызывается только для validated yt-dlp лимитов и timeout-ов, чьи максимумы много меньше \
+              i64::MAX"
+)]
 fn integer_value(number: u64, field_name: &'static str) -> SettingValue {
     SettingValue::Integer(
         i64::try_from(number)

@@ -1,0 +1,6 @@
+# Тестам разрешено паниковать: assert-стиль через unwrap/expect/panic — это
+# нормальный способ уронить тест. Production-правила задаёт
+# [workspace.lints.clippy] в корневом Cargo.toml и docs/panic-invariant-policy.md.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

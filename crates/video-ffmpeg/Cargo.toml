@@ -46,3 +46,6 @@ pkg-config = "0.3"
 # реальное использование закреплено verify_pkg_config_inputs().
 [package.metadata.cargo-machete]
 ignored = ["pkg-config"]
+
+[lints]
+workspace = true

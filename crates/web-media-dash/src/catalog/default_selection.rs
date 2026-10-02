@@ -11,41 +11,33 @@ pub(super) fn provider_default_selection(
     match provider_default {
         DashPresentationSelection::Single { main } => {
             let row = unique_default_row(rows, presentation, main)?;
-            let request = match row.kind {
-                DashMediaKind::Video => ComponentVariantSelectionRequest::VideoOnly {
-                    video: row
-                        .component_exact
-                        .clone()
-                        .expect("video default invariant"),
+            let request = match &row.exact {
+                PublishedLaneExact::Video(video) => ComponentVariantSelectionRequest::VideoOnly {
+                    video: video.clone(),
                 },
-                DashMediaKind::Audio => ComponentVariantSelectionRequest::AudioOnly {
-                    audio: row
-                        .component_exact
-                        .clone()
-                        .expect("audio default invariant"),
+                PublishedLaneExact::Audio(audio) => ComponentVariantSelectionRequest::AudioOnly {
+                    audio: audio.clone(),
                 },
-                DashMediaKind::Muxed => ComponentVariantSelectionRequest::Coupled {
-                    presentation: row.coupled_exact.clone().expect("muxed default invariant"),
-                },
+                PublishedLaneExact::Muxed(presentation) => {
+                    ComponentVariantSelectionRequest::Coupled {
+                        presentation: presentation.clone(),
+                    }
+                }
             };
             catalog.select_exact(request).map_err(Into::into)
         }
         DashPresentationSelection::Separate { video, audio } => {
             let video = unique_default_row(rows, presentation, video)?;
             let audio = unique_default_row(rows, presentation, audio)?;
-            if video.kind != DashMediaKind::Video || audio.kind != DashMediaKind::Audio {
+            let (PublishedLaneExact::Video(video), PublishedLaneExact::Audio(audio)) =
+                (&video.exact, &audio.exact)
+            else {
                 return Err(DashRepresentationLaneCatalogBuildError::ProviderDefaultMissing);
-            }
+            };
             catalog
                 .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
-                    video: video
-                        .component_exact
-                        .clone()
-                        .expect("video default invariant"),
-                    audio: audio
-                        .component_exact
-                        .clone()
-                        .expect("audio default invariant"),
+                    video: video.clone(),
+                    audio: audio.clone(),
                 })
                 .map_err(|error| match error {
                     ComponentVariantError::IncompatibleComponentPair => {

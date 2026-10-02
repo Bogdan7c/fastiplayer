@@ -272,6 +272,11 @@ impl PendingCompletedResourceAdmission {
         if self.body_bytes == 0 {
             return;
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "commit потребляет self, а key забирается только здесь, поэтому активный admission \
+                      всегда ещё владеет ключом"
+        )]
         let key = self
             .key
             .take()

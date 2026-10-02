@@ -6,8 +6,9 @@ pub struct HlsLineNumber(NonZeroU64);
 
 impl HlsLineNumber {
     pub(crate) fn from_index(index: usize) -> Self {
-        let one_based = u64::try_from(index.saturating_add(1)).unwrap_or(u64::MAX);
-        Self(NonZeroU64::new(one_based).expect("saturating_add keeps line non-zero"))
+        // 1 + index с насыщением: результат ненулевой по построению типа.
+        let zero_based = u64::try_from(index).unwrap_or(u64::MAX);
+        Self(NonZeroU64::MIN.saturating_add(zero_based))
     }
 
     /// Возвращает номер строки с единицы.

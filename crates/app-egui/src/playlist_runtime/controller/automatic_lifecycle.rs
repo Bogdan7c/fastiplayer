@@ -3,7 +3,6 @@
 #[cfg(test)]
 mod tests;
 
-use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use player_core::{
@@ -64,39 +63,42 @@ pub(crate) enum AutomaticStopCause {
 pub(crate) enum AutomaticLifecycleOutcome {
     NoAction,
     StaleObservation,
-    HeldForExplicitIntent {
-        active: ActiveMediaIdentity,
-    },
+    HeldForExplicitIntent,
     ReplayCurrent {
         request: ExactMediaTransportRequest,
     },
     OpenItem {
         install: PlannedPlaylistInstall,
     },
-    Deferred {
-        item_id: PlaylistItemId,
-        scope_id: super::transport::SiblingDiscoveryScopeId,
-    },
+    Deferred,
+    /// Данные остановки читают только тесты; production пишет причину в лог.
     Stop {
+        #[cfg(test)]
         item_id: Option<PlaylistItemId>,
+        #[cfg(test)]
         media_instance_id: MediaInstanceId,
+        #[cfg(test)]
         cause: AutomaticStopCause,
     },
 }
 
 pub(crate) enum AutomaticTargetFailureOutcome {
-    StaleRequest { request_id: MediaOpenRequestId },
-    Stopped { cause: AutomaticStopCause },
-    OpenItem { install: PlannedPlaylistInstall },
+    StaleRequest,
+    Stopped {
+        #[cfg(test)]
+        cause: AutomaticStopCause,
+    },
+    OpenItem {
+        install: PlannedPlaylistInstall,
+    },
 }
 
 /// Ошибка exact plan-а до request сохраняет его manual/automatic происхождение.
 pub(crate) enum UnstagedPlannedTargetFailureOutcome {
     RuntimeUnavailable,
-    Manual {
-        outcome: super::manual_navigation::ManualNavigationFailureOutcome,
-    },
+    Manual,
     Stopped {
+        #[cfg(test)]
         cause: AutomaticStopCause,
     },
     OpenItem {
@@ -263,10 +265,6 @@ impl PlaylistController {
         true
     }
 
-    pub(crate) const fn error_behavior(&self) -> PlaylistErrorBehavior {
-        self.error_behavior
-    }
-
     pub(crate) fn set_error_behavior(&mut self, behavior: PlaylistErrorBehavior) -> bool {
         if self.error_behavior == behavior {
             return false;
@@ -322,7 +320,7 @@ impl PlaylistController {
                 active,
                 disposition: EndedDisposition::Held,
             });
-            return AutomaticLifecycleOutcome::HeldForExplicitIntent { active };
+            return AutomaticLifecycleOutcome::HeldForExplicitIntent;
         }
 
         self.automatic_lifecycle.observed_ended = Some(ObservedEndedEdge {
@@ -345,32 +343,6 @@ impl PlaylistController {
                 self.evaluate_runtime_error(active)
             }
         }
-    }
-
-    /// Pre-concrete cancel/exhaustion может ровно один раз освободить D42 hold.
-    pub(crate) fn reevaluate_held_ended(
-        &mut self,
-        deferred_availability: AutomaticDeferredAvailability,
-    ) -> AutomaticLifecycleOutcome {
-        let Some(edge) = self.automatic_lifecycle.observed_ended else {
-            return AutomaticLifecycleOutcome::NoAction;
-        };
-        if edge.disposition != EndedDisposition::Held || self.active_media != Some(edge.active) {
-            return AutomaticLifecycleOutcome::NoAction;
-        }
-        if self.install_state.is_some()
-            || self.pending_manual_traversal.is_some()
-            || self.manual_navigation_cursor.has_state()
-        {
-            return AutomaticLifecycleOutcome::HeldForExplicitIntent {
-                active: edge.active,
-            };
-        }
-        self.automatic_lifecycle.observed_ended = Some(ObservedEndedEdge {
-            active: edge.active,
-            disposition: EndedDisposition::Handled,
-        });
-        self.evaluate_clean_ended(edge.active, deferred_availability)
     }
 
     /// D56/D57 consume matching held edge без automatic reevaluation.
@@ -448,7 +420,7 @@ impl PlaylistController {
             .take_awaiting_automatic_failure(request_id)
             .or_else(|| self.take_released_automatic_plan(request_id));
         let Some((item_id, plan)) = request else {
-            return AutomaticTargetFailureOutcome::StaleRequest { request_id };
+            return AutomaticTargetFailureOutcome::StaleRequest;
         };
         self.finish_automatic_target_failure(item_id, plan, safe_summary, Some(request_id))
     }
@@ -463,20 +435,24 @@ impl PlaylistController {
         match install.mutation {
             PlaylistInstallMutation::AutomaticTraversal(plan) => {
                 match self.finish_automatic_target_failure(item_id, *plan, safe_summary, None) {
-                    AutomaticTargetFailureOutcome::Stopped { cause } => {
-                        UnstagedPlannedTargetFailureOutcome::Stopped { cause }
-                    }
+                    AutomaticTargetFailureOutcome::Stopped {
+                        #[cfg(test)]
+                        cause,
+                    } => UnstagedPlannedTargetFailureOutcome::Stopped {
+                        #[cfg(test)]
+                        cause,
+                    },
                     AutomaticTargetFailureOutcome::OpenItem { install } => {
                         UnstagedPlannedTargetFailureOutcome::OpenItem { install }
                     }
-                    AutomaticTargetFailureOutcome::StaleRequest { .. } => {
+                    AutomaticTargetFailureOutcome::StaleRequest => {
                         unreachable!("unstaged automatic plan не ищется по request ID")
                     }
                 }
             }
             PlaylistInstallMutation::Reserved(_) | PlaylistInstallMutation::ManualNavigation => {
-                let outcome = self.report_unstaged_manual_navigation_target_failure(item_id);
-                UnstagedPlannedTargetFailureOutcome::Manual { outcome }
+                self.report_unstaged_manual_navigation_target_failure(item_id);
+                UnstagedPlannedTargetFailureOutcome::Manual
             }
         }
     }
@@ -499,7 +475,12 @@ impl PlaylistController {
         );
         if self.error_behavior == PlaylistErrorBehavior::Stop {
             self.mark_current_edge_handled();
+            tracing::debug!(
+                cause = ?AutomaticStopCause::ErrorPolicy,
+                "automatic playlist lifecycle остановлен после ошибки target-а"
+            );
             return AutomaticTargetFailureOutcome::Stopped {
+                #[cfg(test)]
                 cause: AutomaticStopCause::ErrorPolicy,
             };
         }
@@ -511,7 +492,12 @@ impl PlaylistController {
             }
             AutomaticTraversalAdvance::AllFailed { attempted_count } => {
                 self.mark_current_edge_handled();
+                tracing::debug!(
+                    cause = ?AutomaticStopCause::AllCandidatesFailed { attempted_count },
+                    "automatic playlist lifecycle остановлен после ошибки target-а"
+                );
                 AutomaticTargetFailureOutcome::Stopped {
+                    #[cfg(test)]
                     cause: AutomaticStopCause::AllCandidatesFailed { attempted_count },
                 }
             }
@@ -568,7 +554,7 @@ impl PlaylistController {
                     });
                     self.automatic_lifecycle.deferred_advance =
                         Some(DeferredAdvanceLatch { active, scope_id });
-                    return AutomaticLifecycleOutcome::Deferred { item_id, scope_id };
+                    return AutomaticLifecycleOutcome::Deferred;
                 }
                 self.stop_for_active(active, AutomaticStopCause::Domain(reason))
             }
@@ -646,10 +632,7 @@ impl PlaylistController {
         PlannedPlaylistInstall {
             item_id,
             playback_intent: PlaybackIntent::StartPlaying,
-            intent_revision: PlaybackIntentRevision::from_non_zero(
-                NonZeroU64::new(self.stable_intent_revision)
-                    .expect("controller stable intent revision remains non-zero"),
-            ),
+            intent_revision: PlaybackIntentRevision::from_non_zero(self.stable_intent_revision),
             pending_origin: PendingTargetOrigin::AutomaticAdvance,
             expected_queue_revision: self.queue.revision_snapshot(),
             mutation: PlaylistInstallMutation::AutomaticTraversal(plan),
@@ -692,16 +675,21 @@ impl PlaylistController {
 
     pub(super) fn stop_for_active(
         &self,
+        #[cfg_attr(
+            not(test),
+            expect(unused_variables, reason = "identity читают только тесты")
+        )]
         active: ActiveMediaIdentity,
         cause: AutomaticStopCause,
     ) -> AutomaticLifecycleOutcome {
+        // Outcome несёт только факт остановки; причина остаётся в логе для диагностики.
+        tracing::debug!(?cause, "automatic playlist lifecycle остановлен");
         AutomaticLifecycleOutcome::Stop {
-            item_id: active.item_id().or_else(|| {
-                self.queue
-                    .traversal_current()
-                    .map(|current| current.item_id())
-            }),
+            #[cfg(test)]
+            item_id: active.item_id(),
+            #[cfg(test)]
             media_instance_id: active.media_instance_id(),
+            #[cfg(test)]
             cause,
         }
     }

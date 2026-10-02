@@ -20,6 +20,10 @@ pub(super) fn serialize(plan: &PreparedPlaylistExport) -> String {
 }
 
 /// M3U8 decimal seconds сохраняют nanosecond precision `MediaDuration`.
+#[expect(
+    clippy::expect_used,
+    reason = "fmt::Write для String никогда не возвращает Err"
+)]
 fn push_duration(output: &mut String, duration: Option<media_core::MediaDuration>) {
     let Some(duration) = duration else {
         output.push_str("-1");

@@ -382,6 +382,11 @@ impl Ord for SchedulerWork {
 
 impl Default for FrameScheduler {
     fn default() -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "default config — константа разработчика; тест default-конфигурации валидирует её, \
+                      внешнего ввода здесь нет"
+        )]
         let config = FrameServerConfig::default()
             .validate()
             .expect("default frame-server config must be valid");

@@ -5,7 +5,7 @@
 //! публикуется под mutex, и только затем producer поднимает atomic wake edge.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use winit::event_loop::EventLoopProxy;
 
@@ -233,6 +233,20 @@ struct OwnerMailboxState<Progress, Completion> {
     producer_disconnect_pending: bool,
 }
 
+/// Захватывает состояние owner mailbox-а, снимая poison.
+///
+/// Инвариант, делающий это безопасным: каждая критическая секция mailbox-а
+/// выполняет только одиночные присваивания полей (`replace`/`take`/флаг) или
+/// записывает уже посчитанный счётчик. Паника внутри секции (например, в `Drop`
+/// заменяемого payload-а) не может оставить состояние наполовину обновлённым.
+/// Поэтому poison не означает потерю доверия к данным, и падение одного
+/// producer-а не должно каскадом ронять UI drain и остальных producer-ов.
+fn lock_owner_mailbox_state<Progress, Completion>(
+    state: &Mutex<OwnerMailboxState<Progress, Completion>>,
+) -> MutexGuard<'_, OwnerMailboxState<Progress, Completion>> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Producer port, безопасный для передачи background worker-у.
 pub(crate) struct OwnerMailboxPublisher<Progress, Completion> {
     state: Arc<Mutex<OwnerMailboxState<Progress, Completion>>>,
@@ -240,12 +254,15 @@ pub(crate) struct OwnerMailboxPublisher<Progress, Completion> {
 }
 
 impl<Progress, Completion> Clone for OwnerMailboxPublisher<Progress, Completion> {
+    #[expect(
+        clippy::expect_used,
+        reason = "каждый publisher держит Arc на state; Arc аварийно завершает процесс \
+                  раньше, чем число владельцев превысит isize::MAX, поэтому \
+                  usize-счётчик publisher-ов переполниться не может"
+    )]
     fn clone(&self) -> Self {
         {
-            let mut state = self
-                .state
-                .lock()
-                .expect("owner wake mailbox mutex poisoned during publisher clone");
+            let mut state = lock_owner_mailbox_state(&self.state);
             state.active_publishers = state
                 .active_publishers
                 .checked_add(1)
@@ -259,12 +276,14 @@ impl<Progress, Completion> Clone for OwnerMailboxPublisher<Progress, Completion>
 }
 
 impl<Progress, Completion> Drop for OwnerMailboxPublisher<Progress, Completion> {
+    #[expect(
+        clippy::expect_used,
+        reason = "каждый Drop парный ровно одному увеличению счётчика: начальной \
+                  единице из owner_mailbox() или Clone; уйти ниже нуля нельзя"
+    )]
     fn drop(&mut self) {
         let must_report_disconnect = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("owner wake mailbox mutex poisoned during publisher drop");
+            let mut state = lock_owner_mailbox_state(&self.state);
             state.active_publishers = state
                 .active_publishers
                 .checked_sub(1)
@@ -286,10 +305,7 @@ impl<Progress, Completion> OwnerMailboxPublisher<Progress, Completion> {
     /// Coalesce-ит progress в latest slot и после unlock поднимает wake edge.
     pub(crate) fn publish_progress(&self, progress: Progress) -> ProgressPublishOutcome {
         let replaced_pending_progress = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("owner wake mailbox mutex poisoned during progress publish");
+            let mut state = lock_owner_mailbox_state(&self.state);
             state.latest_progress.replace(progress).is_some()
         };
 
@@ -305,10 +321,7 @@ impl<Progress, Completion> OwnerMailboxPublisher<Progress, Completion> {
         completion: Completion,
     ) -> Result<WakeDelivery, CompletionPublishError> {
         {
-            let mut state = self
-                .state
-                .lock()
-                .expect("owner wake mailbox mutex poisoned during completion publish");
+            let mut state = lock_owner_mailbox_state(&self.state);
             if state.completion_was_published {
                 return Err(CompletionPublishError::AlreadyPublished);
             }
@@ -355,10 +368,7 @@ impl<Progress, Completion> OwnerMailboxReceiver<Progress, Completion> {
     ) -> OwnerMailboxDrain<Progress, Completion> {
         let publish_epoch_before_drain = self.wake_port.publish_epoch();
         let drain = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("owner wake mailbox mutex poisoned during UI drain");
+            let mut state = lock_owner_mailbox_state(&self.state);
             OwnerMailboxDrain {
                 latest_progress: state.latest_progress.take(),
                 completion: state.completion.take(),
@@ -375,10 +385,7 @@ impl<Progress, Completion> OwnerMailboxReceiver<Progress, Completion> {
         after_clear();
 
         let payload_arrived_during_drain = {
-            let state = self
-                .state
-                .lock()
-                .expect("owner wake mailbox mutex poisoned during drain recheck");
+            let state = lock_owner_mailbox_state(&self.state);
             state.latest_progress.is_some()
                 || state.completion.is_some()
                 || state.producer_disconnect_pending
@@ -497,6 +504,56 @@ mod tests {
 
         assert_eq!(emitter.emits.load(Ordering::Relaxed), 1);
         assert_eq!(receiver.drain().latest_progress, Some(999));
+    }
+
+    /// Progress, чей `Drop` паникует: заменяется под mailbox lock-ом и
+    /// естественным образом отравляет mutex.
+    #[derive(Debug, PartialEq)]
+    struct PanicOnReplacedDrop {
+        label: &'static str,
+        panic_on_drop: bool,
+    }
+
+    impl Drop for PanicOnReplacedDrop {
+        fn drop(&mut self) {
+            if self.panic_on_drop && !std::thread::panicking() {
+                panic!("simulated payload drop failure");
+            }
+        }
+    }
+
+    #[test]
+    fn poisoned_mailbox_still_delivers_completion_to_ui_drain() {
+        let emitter = Arc::new(RecordingEmitter {
+            emits: AtomicUsize::new(0),
+            fail: AtomicBool::new(false),
+        });
+        let (publisher, receiver) =
+            owner_mailbox::<PanicOnReplacedDrop, &'static str>(test_port(emitter));
+        publisher.publish_progress(PanicOnReplacedDrop {
+            label: "first",
+            panic_on_drop: true,
+        });
+
+        // Замена первого progress-а вызывает его Drop под lock-ом -> poison.
+        let poisoning_publish = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            publisher.publish_progress(PanicOnReplacedDrop {
+                label: "second",
+                panic_on_drop: false,
+            });
+        }));
+        assert!(poisoning_publish.is_err());
+        assert!(publisher.state.is_poisoned());
+
+        // Mailbox продолжает работать: новый completion и последний progress
+        // доходят до UI, а не роняют его вторичной паникой.
+        assert!(publisher.publish_completion("done").is_ok());
+        let drain = receiver.drain();
+        assert_eq!(
+            drain.latest_progress.map(|progress| progress.label),
+            Some("second")
+        );
+        assert_eq!(drain.completion, Some("done"));
     }
 
     #[test]

@@ -47,6 +47,12 @@ impl DemuxSniffBudget {
         self.max_bytes.get()
     }
 
+    /// Тот же максимум с сохранённой гарантией ненулевости.
+    #[must_use]
+    pub const fn max_bytes_non_zero(self) -> NonZeroUsize {
+        self.max_bytes
+    }
+
     /// Максимум segment-ов для защиты от бесконечной серии пустых chunks.
     #[must_use]
     pub const fn max_segments(self) -> usize {

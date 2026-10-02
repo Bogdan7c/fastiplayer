@@ -1,5 +1,14 @@
 //! Hermetic runtime evidence для already-fetched native HLS top manifest-а.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 #[allow(dead_code)] // Shared fixture экспортирует больше builders, чем нужно этому focused binary.
 mod support;
 

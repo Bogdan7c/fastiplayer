@@ -103,9 +103,10 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
         });
         let staging_size =
             wgpu::BufferSize::new(staging_len).context("host-planar staging length is zero")?;
-        let staging_alignment =
-            wgpu::BufferSize::new(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
-                .expect("copy alignment is non-zero");
+        let staging_alignment = const {
+            wgpu::BufferSize::new(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64)
+                .expect("copy alignment is non-zero")
+        };
         let staging_slice = staging_belt.allocate(staging_size, staging_alignment);
         {
             let mut mapped = staging_slice.get_mapped_range_mut();
@@ -119,17 +120,13 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
             );
         }
 
-        if self.pending_upload_encoder.is_none() {
-            self.pending_upload_encoder = Some(self.device.create_command_encoder(
-                &wgpu::CommandEncoderDescriptor {
-                    label: Some("host-planar-frame-upload"),
-                },
-            ));
-        }
-        let encoder = self
-            .pending_upload_encoder
-            .as_mut()
-            .expect("pending upload encoder installed above");
+        // Один encoder копит все upload-ы кадра до общего submit.
+        let device = &self.device;
+        let encoder = self.pending_upload_encoder.get_or_insert_with(|| {
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("host-planar-frame-upload"),
+            })
+        });
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
                 buffer: staging_slice.buffer(),

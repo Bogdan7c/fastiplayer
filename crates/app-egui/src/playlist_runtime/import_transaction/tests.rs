@@ -516,3 +516,45 @@ fn structural_stale_failure_preserves_import_ids_and_queue() {
         group_watermark
     );
 }
+
+/// Регрессия: исход импорта после подтверждения раньше отбрасывался
+/// (`Import(_) => {}`), и пользователь не узнавал, что импорт не применён.
+/// Живой путь UI (`apply_playlist_confirmation_action`) передаёт исход в
+/// `finish_url_draft_after_confirmation`, который обязан показать то же
+/// сообщение, что и прямой Continue.
+#[test]
+fn confirmed_import_failure_reaches_user_feedback_like_direct_continue() {
+    let mut runtime = runtime();
+    assert!(runtime.ui_interaction.safe_feedback().is_none());
+
+    runtime.finish_url_draft_after_confirmation(
+        &crate::playlist_runtime::actions::PlaylistConfirmationApplyOutcome::Import(
+            PlaylistImportContinueOutcome::Stale,
+        ),
+    );
+
+    let feedback = runtime
+        .ui_interaction
+        .safe_feedback()
+        .expect("отказ импорта после подтверждения виден пользователю");
+    assert_eq!(
+        Some(feedback.message.as_ref()),
+        PlaylistImportContinueOutcome::Stale.failure_feedback()
+    );
+}
+
+/// Успешный или ожидающий исход не порождает ложного сообщения об ошибке.
+#[test]
+fn import_success_and_awaiting_have_no_failure_feedback() {
+    assert_eq!(
+        PlaylistImportContinueOutcome::AwaitingConfirmation.failure_feedback(),
+        None
+    );
+    let mut runtime = runtime();
+    runtime.finish_url_draft_after_confirmation(
+        &crate::playlist_runtime::actions::PlaylistConfirmationApplyOutcome::Import(
+            PlaylistImportContinueOutcome::AwaitingConfirmation,
+        ),
+    );
+    assert!(runtime.ui_interaction.safe_feedback().is_none());
+}

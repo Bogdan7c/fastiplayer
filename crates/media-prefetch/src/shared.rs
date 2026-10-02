@@ -28,8 +28,7 @@ impl ActivePrefetchFetch {
     /// Создаёт active fetch из exact worker request-а без риска arithmetic overflow.
     #[must_use]
     pub(crate) fn new(start_offset: u64, requested_len: usize) -> Self {
-        let requested_len = u64::try_from(requested_len)
-            .expect("prefetch requested length должен помещаться в u64");
+        let requested_len = crate::buffer::usize_to_u64(requested_len);
         Self {
             cancellation: CancellationToken::new(),
             start_offset,

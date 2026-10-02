@@ -213,6 +213,10 @@ impl InstalledVodEndpointRecoveryClaimAdmission {
         let Some(signal) = self.attachment.claim_pending_signal() else {
             return VodEndpointExpiryAdmissionOutcome::NoSignal;
         };
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: identity fence допускает admission только с exact active identity"
+        )]
         let expected_active = expected_active
             .expect("identity fence допускает admission только с exact active identity");
         let restore_position = player_snapshot

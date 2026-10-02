@@ -385,6 +385,10 @@ impl AppState {
         let Some(active_request_id) = self.playlist_transport.active_request_id else {
             return;
         };
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: active playlist request always retains its exact item ID"
+        )]
         let active_item_id = self
             .playlist_transport
             .active_item_id
@@ -675,7 +679,5 @@ impl AppState {
 fn desktop_seek_request_id(
     request_id: player_core::TimelineSeekRequestId,
 ) -> desktop_integration::TimelineSeekRequestId {
-    std::num::NonZeroU64::new(request_id.get())
-        .map(desktop_integration::TimelineSeekRequestId::new)
-        .expect("player timeline request IDs are non-zero")
+    desktop_integration::TimelineSeekRequestId::new(request_id.non_zero())
 }

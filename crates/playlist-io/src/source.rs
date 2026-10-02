@@ -79,6 +79,10 @@ impl PlaylistDocumentSource {
         match self {
             Self::Local { path } => DurableReopenLocator::local(LocalLocator::Native(path.clone())),
             Self::Network { exact_uri, .. } => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "network source создаётся только из провалидированного непустого URI"
+                )]
                 let secret_url = SecretUrlLocator::from_reopenable_url(exact_uri.clone())
                     .expect("validated non-empty network source");
                 DurableReopenLocator::url(secret_url)

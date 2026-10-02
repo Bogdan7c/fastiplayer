@@ -11,7 +11,7 @@ use std::thread::{self, JoinHandle};
 use playlist_core::{MAX_PLAYLIST_ITEMS, PlaylistItemDraft, RepeatMode};
 use playlist_state::{
     InspectedFileIdentity, InspectionOutcome, PlaylistStateStore, ProtectedStateCause,
-    QuarantineFileName, QuarantineOutcome, SaveBlockReason, SaveWorkerAccess,
+    QuarantineFileName, QuarantineOutcome, SaveBlockReason,
 };
 
 use crate::app_wake::{AppWakePort, OwnerMailboxReceiver, owner_mailbox};
@@ -35,9 +35,12 @@ impl StartupDecisionGeneration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PlaylistQueueGeneration(u64);
 
+#[cfg(test)]
 impl PlaylistQueueGeneration {
     pub(super) const INITIAL: Self = Self(1);
 }
+
+impl PlaylistQueueGeneration {}
 
 /// Generation применения restored items/traversal, отдельная от allocator decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,10 +60,6 @@ impl RestoreApplyGeneration {
 
 /// Последний structural intent до allocator gate; FIFO команд не создаётся.
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "Clear and media-replacement variants are wired by later UI/startup sessions"
-)]
 pub(crate) enum StartupQueuePlan {
     /// Если state valid, можно применить его items/current/shuffle traversal.
     RestoreCandidate,
@@ -123,7 +122,6 @@ impl StartupMutationDraft {
     }
 
     /// Clear заменяет любой более ранний prepared Add без накопления command history.
-    #[allow(dead_code, reason = "Session 14A wires explicit Clear before the gate")]
     pub(crate) fn record_clear(&mut self) -> Result<(), StartupDraftError> {
         self.supersede_restore_items()?;
         self.queue_plan = StartupQueuePlan::Empty;
@@ -131,7 +129,6 @@ impl StartupMutationDraft {
     }
 
     /// Open/Play/replacement освобождают старые ID-less drafts и ждут media commit.
-    #[allow(dead_code, reason = "Session 17 wires startup media precedence")]
     pub(crate) fn record_media_replacement(&mut self) -> Result<(), StartupDraftError> {
         self.supersede_restore_items()?;
         self.queue_plan = StartupQueuePlan::AwaitingMediaReplacement;
@@ -210,15 +207,7 @@ pub(crate) enum PlaylistLineagePersistence {
     },
 }
 
-impl PlaylistLineagePersistence {
-    #[allow(dead_code, reason = "Session 14.3 passes this decision to SaveWorker")]
-    pub(crate) const fn save_worker_access(self) -> SaveWorkerAccess {
-        match self {
-            Self::Persistent => SaveWorkerAccess::Writable,
-            Self::NonPersistent { save_block, .. } => SaveWorkerAccess::SaveBlocked(save_block),
-        }
-    }
-}
+impl PlaylistLineagePersistence {}
 
 /// Read-only UI warning содержит только typed privacy-safe категории.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,6 +413,10 @@ impl PlaylistStartupOwner {
         let job = self.job.as_mut()?;
         let completion = job.receiver.drain().completion;
         if completion.is_some() {
+            #[expect(
+                clippy::expect_used,
+                reason = "инвариант: startup job exists while draining"
+            )]
             let mut completed_job = self.job.take().expect("startup job exists while draining");
             if let Some(join_handle) = completed_job.join_handle.take() {
                 match join_handle.join() {

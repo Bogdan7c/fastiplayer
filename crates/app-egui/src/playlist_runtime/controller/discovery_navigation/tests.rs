@@ -163,7 +163,7 @@ fn stale_exact_frontier_and_scan_cancel_never_start_or_resurrect_transition() {
     };
     assert!(matches!(
         controller.resume_manual_navigation_exact(wait_id, scope_id, current_item_id),
-        ControllerManualNavigationOutcome::StaleWait { .. }
+        ControllerManualNavigationOutcome::StaleWait
     ));
     assert!(matches!(
         controller.discovery_navigation_interest(),
@@ -192,7 +192,7 @@ fn non_shuffle_deferred_ended_accepts_only_matching_exact_ready_once() {
             EndedSnapshotKind::Clean,
             AutomaticDeferredAvailability::MayProduceCandidate { scope_id },
         ),
-        AutomaticLifecycleOutcome::Deferred { .. }
+        AutomaticLifecycleOutcome::Deferred
     ));
     let appended = match controller
         .queue
@@ -252,7 +252,7 @@ fn shuffle_admission_requeries_committed_upcoming_and_keeps_latch_without_target
             EndedSnapshotKind::Clean,
             AutomaticDeferredAvailability::MayProduceCandidate { scope_id },
         ),
-        AutomaticLifecycleOutcome::Deferred { .. }
+        AutomaticLifecycleOutcome::Deferred
     ));
     assert!(matches!(
         controller.resume_deferred_automatic_advance(

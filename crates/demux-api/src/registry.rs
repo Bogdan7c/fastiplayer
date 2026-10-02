@@ -561,6 +561,11 @@ impl DemuxRegistry {
         let mut strongest_matches = matches
             .into_iter()
             .filter(|selected| selected.matched.confidence == strongest_confidence);
+        #[expect(
+            clippy::expect_used,
+            reason = "strongest_confidence вычислен как максимум этого же непустого набора matches, \
+                      поэтому хотя бы один элемент с ним совпадает"
+        )]
         let winner = strongest_matches
             .next()
             .expect("non-empty strongest matches");

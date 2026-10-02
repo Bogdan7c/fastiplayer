@@ -25,20 +25,11 @@ const FAILED_PLAYBACK_WITHOUT_DETAILS: &str =
     "Воспроизведение завершилось с ошибкой без дополнительных сведений";
 
 /// Event-driven action slot: readiness выбирает intent, а не коммитит queue/media.
-#[allow(
-    dead_code,
-    reason = "typed action is consumed by the later UI/MPRIS adapter"
-)]
 pub(crate) enum PlaylistDiscoveryNavigationAction {
     Manual(ControllerManualNavigationOutcome),
     Automatic(AutomaticLifecycleOutcome),
-    ScopeCancelled {
-        scope_id: super::super::controller::SiblingDiscoveryScopeId,
-        cause: DiscoveryCancellationCause,
-    },
-    ScopeFatal {
-        scope_id: super::super::controller::SiblingDiscoveryScopeId,
-    },
+    ScopeCancelled,
+    ScopeFatal,
 }
 
 /// Read-only модель подходит и global status, и будущему sidebar без UI ownership.
@@ -69,10 +60,6 @@ pub(crate) enum PlaylistDiscoveryNavigationStatus {
     },
 }
 
-#[allow(
-    dead_code,
-    reason = "Session 15A installs action boundaries before playlist UI wiring"
-)]
 impl PlaylistRuntime {
     /// UI/MPRIS command сериализуется на app owner-е до последующих frontier events.
     pub(crate) fn request_playlist_navigation(
@@ -157,7 +144,6 @@ fn automatic_snapshot_kind(player_snapshot: &PlayerSnapshot) -> EndedSnapshotKin
 }
 
 impl PlaylistDiscoveryCoordinator {
-    #[allow(dead_code, reason = "called by the Session 15A app action boundary")]
     pub(crate) fn manual_wait_availability(&self) -> DiscoveryManualWaitAvailability {
         match self.active_scope.as_ref() {
             Some(active) => DiscoveryManualWaitAvailability::MayProduceCandidate {
@@ -167,7 +153,6 @@ impl PlaylistDiscoveryCoordinator {
         }
     }
 
-    #[allow(dead_code, reason = "called by the Session 15A snapshot boundary")]
     pub(super) fn automatic_deferred_availability(&self) -> AutomaticDeferredAvailability {
         match self.active_scope.as_ref() {
             Some(active) => AutomaticDeferredAvailability::MayProduceCandidate {
@@ -177,7 +162,6 @@ impl PlaylistDiscoveryCoordinator {
         }
     }
 
-    #[allow(dead_code, reason = "called by the Session 15A app action boundary")]
     pub(crate) fn synchronize_navigation_interest(&mut self, controller: &PlaylistController) {
         let Some(active) = self.active_scope.as_ref() else {
             self.navigation_status = PlaylistDiscoveryNavigationStatus::Idle;
@@ -296,19 +280,14 @@ impl PlaylistDiscoveryCoordinator {
                 };
             }
             DiscoveryFinalOutcome::Cancelled(cause) => {
-                self.navigation_action = Some(PlaylistDiscoveryNavigationAction::ScopeCancelled {
-                    scope_id: active.scope_id,
-                    cause,
-                });
+                self.navigation_action = Some(PlaylistDiscoveryNavigationAction::ScopeCancelled);
                 self.navigation_status = PlaylistDiscoveryNavigationStatus::Cancelled {
                     scope_id: active.scope_id,
                     cause,
                 };
             }
             DiscoveryFinalOutcome::ExecutorDisconnected => {
-                self.navigation_action = Some(PlaylistDiscoveryNavigationAction::ScopeFatal {
-                    scope_id: active.scope_id,
-                });
+                self.navigation_action = Some(PlaylistDiscoveryNavigationAction::ScopeFatal);
                 self.navigation_status = PlaylistDiscoveryNavigationStatus::Fatal {
                     scope_id: active.scope_id,
                 };
@@ -429,7 +408,7 @@ impl PlaylistDiscoveryCoordinator {
         if !matches!(
             result,
             ControllerManualNavigationOutcome::Waiting { .. }
-                | ControllerManualNavigationOutcome::StaleWait { .. }
+                | ControllerManualNavigationOutcome::StaleWait
         ) {
             self.navigation_action = Some(PlaylistDiscoveryNavigationAction::Manual(result));
         }
@@ -528,7 +507,6 @@ fn accept_monotonic_revision(last_accepted: &mut u64, candidate: u64) -> bool {
     true
 }
 
-#[allow(dead_code, reason = "called by the Session 15A app action boundary")]
 fn directional_priority_hint(
     active: &ActiveDiscoveryScope,
     direction: ManualNavigationDirection,

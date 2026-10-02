@@ -223,18 +223,6 @@ impl AppState {
         self.start_suspended_media_resume_with_retry(playlist_runtime, false)
     }
 
-    /// Explicit Retry повторяет terminal/recoverable checkpoint без hidden queue navigation.
-    #[allow(
-        dead_code,
-        reason = "typed Retry boundary предшествует отдельному playlist lifecycle UI action"
-    )]
-    pub(crate) fn retry_suspended_media_resume(
-        &mut self,
-        playlist_runtime: &mut PlaylistRuntime,
-    ) -> bool {
-        self.start_suspended_media_resume_with_retry(playlist_runtime, true)
-    }
-
     fn start_suspended_media_resume_with_retry(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
@@ -421,7 +409,7 @@ impl AppState {
                     driver,
                 );
                 let revision = PlaybackIntentRevision::from_non_zero(
-                    NonZeroU64::new(1).expect("resume initial revision is non-zero"),
+                    const { NonZeroU64::new(1).expect("resume initial revision is non-zero") },
                 );
                 if playlist_runtime
                     .stage_media_open_at_player(
@@ -597,7 +585,7 @@ impl AppState {
             }
         };
         let revision = PlaybackIntentRevision::from_non_zero(
-            NonZeroU64::new(2).expect("resume post-seek revision is non-zero"),
+            const { NonZeroU64::new(2).expect("resume post-seek revision is non-zero") },
         );
         let intent = match attempt.intent {
             ResumePlaybackIntent::Playing => PlaybackIntent::StartPlaying,

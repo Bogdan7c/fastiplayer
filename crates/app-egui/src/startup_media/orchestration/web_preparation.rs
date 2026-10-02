@@ -74,6 +74,10 @@ pub(super) fn compose_direct_startup_media(
         None,
         Some(endpoint_recovery),
     );
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: direct VOD has no conflicting timeline attachments"
+    )]
     let prepared_media = compose_prepared_web_media(
         &source_label,
         demuxer,

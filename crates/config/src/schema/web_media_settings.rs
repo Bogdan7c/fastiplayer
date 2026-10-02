@@ -407,6 +407,11 @@ fn preferred_height_value(value: SettingValue) -> SettingsResult<Option<Preferre
 }
 
 /// Преобразует validated `u64` в settings integer без скрытого narrowing.
+#[expect(
+    clippy::panic,
+    reason = "вызывается только для полей, ограниченных validation::MAX_WEB_MEDIA_* константами, которые \
+              много меньше i64::MAX"
+)]
 fn integer_value(number: u64, field_name: &'static str) -> SettingValue {
     SettingValue::Integer(
         i64::try_from(number)

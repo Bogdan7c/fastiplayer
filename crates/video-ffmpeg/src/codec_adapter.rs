@@ -481,13 +481,16 @@ fn validate_requirement_format_fields(
     let layout_chroma = chroma_from_layout(pixel_layout)
         .ok_or(FfmpegCodecAdapterError::UnsupportedPixelLayout { pixel_layout })?;
 
-    if let (Some(bit_depth), Some(chroma)) = (requirement.bit_depth, requirement.chroma) {
-        let expected_layout = software_layout_from_codec_fields(bit_depth, chroma)
-            .ok_or(FfmpegCodecAdapterError::UnsupportedBitDepthChroma { bit_depth, chroma })?;
-
-        if expected_layout == pixel_layout {
-            return Ok(());
-        }
+    // Полная пара bit depth + chroma однозначно задаёт ожидаемый layout.
+    let expected_layout = match (requirement.bit_depth, requirement.chroma) {
+        (Some(bit_depth), Some(chroma)) => Some(
+            software_layout_from_codec_fields(bit_depth, chroma)
+                .ok_or(FfmpegCodecAdapterError::UnsupportedBitDepthChroma { bit_depth, chroma })?,
+        ),
+        _ => None,
+    };
+    if expected_layout == Some(pixel_layout) {
+        return Ok(());
     }
 
     if let Some(expected_bit_depth) = requirement.bit_depth
@@ -510,10 +513,7 @@ fn validate_requirement_format_fields(
         });
     }
 
-    if let (Some(bit_depth), Some(chroma)) = (requirement.bit_depth, requirement.chroma) {
-        let expected_pixel_layout = software_layout_from_codec_fields(bit_depth, chroma)
-            .expect("unsupported bit-depth/chroma pair was handled before field mismatch checks");
-
+    if let Some(expected_pixel_layout) = expected_layout {
         return Err(FfmpegCodecAdapterError::PixelLayoutMismatch {
             expected_pixel_layout,
             actual_pixel_layout: pixel_layout,

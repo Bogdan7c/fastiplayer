@@ -275,16 +275,15 @@ impl SettingsRuntime {
         // Hot path: вызывается каждый кадр playback. Model зависит только от
         // внутреннего state runtime-а, поэтому memoization безопасна: все
         // мутирующие методы вызывают invalidate_ui_model().
-        if self.ui_model_cache.is_none() {
-            let model = self.build_ui_model();
-            self.ui_model_cache = Some(model);
-        }
         // get_or_insert_with здесь не подходит: build_ui_model берёт &self,
         // а замыкание держало бы &mut self.ui_model_cache (borrow conflict, E0502).
-        // Поэтому invariant выражен через is_none()-заполнение выше + expect.
-        self.ui_model_cache
-            .as_ref()
-            .expect("ui_model_cache заполнен выше")
+        // Поэтому кэш временно забирается, при необходимости пересобирается и
+        // кладётся обратно: Option::insert сразу отдаёт ссылку на значение.
+        let model = match self.ui_model_cache.take() {
+            Some(cached_model) => cached_model,
+            None => self.build_ui_model(),
+        };
+        self.ui_model_cache.insert(model)
     }
 
     /// Сбрасывает memoized visual model; обязан вызываться после любой мутации.

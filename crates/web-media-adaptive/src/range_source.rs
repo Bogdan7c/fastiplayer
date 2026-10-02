@@ -166,6 +166,10 @@ impl AdaptiveRangeByteSource {
         generation: SourceGeneration,
         config: AdaptiveRangeSourceConfig,
     ) -> Result<Self, AdaptiveRangeSourceOpenError> {
+        #[expect(
+            clippy::expect_used,
+            reason = "диапазон из одного байта с offset 0 не может переполнить u64"
+        )]
         let probe = context.fetch_resource_blocking(AdaptiveResourceFetchRequest::range(
             generation,
             target.clone(),

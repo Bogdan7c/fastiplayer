@@ -128,10 +128,10 @@ impl Default for DemuxerOptions {
     /// Возвращает fail-safe политику по умолчанию.
     fn default() -> Self {
         Self {
-            max_consecutive_corrupted_packets: NonZeroUsize::new(
-                DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS,
-            )
-            .expect("default corrupted packet limit must be non-zero"),
+            max_consecutive_corrupted_packets: const {
+                NonZeroUsize::new(DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS)
+                    .expect("default corrupted packet limit must be non-zero")
+            },
             decode_point_before_preroll: DEFAULT_DECODE_POINT_BEFORE_PREROLL,
             decode_point_before_max_accepted_preroll:
                 DEFAULT_DECODE_POINT_BEFORE_MAX_ACCEPTED_PREROLL,

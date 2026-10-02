@@ -11,8 +11,7 @@ pub(crate) use intents::{
     DeferredControllerIntent, DeferredTransportIntent, DesiredQueueModes, LifecycleIntentOutcome,
 };
 pub(crate) use state::{
-    AuthorizationDispatchStart, ControllerInstallPhase, ControllerMediaOpenCommand,
-    ControllerMediaOpenCommandError, ControllerMediaOpenDisposition, InstallReadyOutcome,
+    AuthorizationDispatchStart, ControllerInstallPhase, InstallReadyOutcome,
     InstalledPlaybackIntentCompletion, PlaylistControllerInvariantViolation,
     PlaylistInstallAdmissionError, PlaylistInstallMutation, PlaylistInstallRequest,
 };
@@ -23,43 +22,12 @@ use player_core::{MediaInstallRequestId, MediaInstanceId};
 use playlist_core::{AutomaticTraversalPlan, RepeatMode, ShuffleToggleError};
 
 use super::PlaylistController;
-use crate::media_open::{AuthorizationDispatchResolution, MediaOpenClientKey, MediaOpenRequestId};
+use crate::media_open::{AuthorizationDispatchResolution, MediaOpenRequestId};
 use crate::playlist_runtime::PlaylistBindingGeneration;
 use crate::playlist_runtime::identity::{ActiveMediaIdentity, PendingTarget, PendingTargetOrigin};
-use crate::playlist_runtime::view::{PlaylistDirtySignal, PlaylistWorkerAvailability};
+use crate::playlist_runtime::view::PlaylistDirtySignal;
 
 impl PlaylistController {
-    /// Возвращает policy command до передачи source payload coordinator-у.
-    pub(crate) fn media_open_command(
-        &self,
-        client_key: MediaOpenClientKey,
-        disposition: ControllerMediaOpenDisposition,
-    ) -> Result<ControllerMediaOpenCommand, ControllerMediaOpenCommandError> {
-        if self.fatal_invariant.is_some() {
-            return Err(ControllerMediaOpenCommandError::FatalInvariant);
-        }
-        if self.worker_availability == PlaylistWorkerAvailability::Unavailable {
-            return Err(ControllerMediaOpenCommandError::WorkerUnavailable);
-        }
-        if self.install_linearizing() {
-            return Err(ControllerMediaOpenCommandError::InstallCommitLinearizing);
-        }
-        Ok(match disposition {
-            ControllerMediaOpenDisposition::Start => {
-                ControllerMediaOpenCommand::Start { client_key }
-            }
-            ControllerMediaOpenDisposition::Coalesce => {
-                ControllerMediaOpenCommand::Coalesce { client_key }
-            }
-            ControllerMediaOpenDisposition::Supersede {
-                expected_request_id,
-            } => ControllerMediaOpenCommand::Supersede {
-                expected_request_id,
-                client_key,
-            },
-        })
-    }
-
     /// Регистрирует exact coordinator/player request после admission/staging acceptance.
     pub(crate) fn accept_install_request(
         &mut self,
@@ -124,24 +92,6 @@ impl PlaylistController {
         }
         self.replace_awaiting_ready(replacement);
         Ok(())
-    }
-
-    /// Coordinator coalesce обязан вернуть тот же exact request, иначе state рассинхронизирован.
-    pub(crate) fn confirm_coalesced_install_request(
-        &self,
-        request_id: MediaOpenRequestId,
-    ) -> Result<(), PlaylistInstallAdmissionError> {
-        match &self.install_state {
-            Some(InstallState::AwaitingReady(awaiting))
-                if awaiting.request.request_id == request_id =>
-            {
-                Ok(())
-            }
-            Some(state) if state.holds_reservation() => {
-                Err(PlaylistInstallAdmissionError::InstallCommitLinearizing)
-            }
-            _ => Err(PlaylistInstallAdmissionError::StaleSupersede),
-        }
     }
 
     fn replace_awaiting_ready(&mut self, request: PlaylistInstallRequest) {
@@ -466,24 +416,8 @@ impl PlaylistController {
         }
     }
 
-    /// Delayed resolution никогда не превращается в timeout-abort.
-    pub(crate) fn report_missing_authorization_resolution(
-        &mut self,
-        request_id: MediaOpenRequestId,
-    ) -> PlaylistControllerInvariantViolation {
-        let violation = if self.install_state.as_ref().is_some_and(|state| {
-            state.request_id() == request_id
-                && state.phase() == ControllerInstallPhase::AuthorizationDispatchPending
-        }) {
-            PlaylistControllerInvariantViolation::MissingAuthorizationResolution
-        } else {
-            PlaylistControllerInvariantViolation::UnexpectedInstallPhase
-        };
-        self.set_fatal(violation);
-        violation
-    }
-
     /// Exact Installed one-shot коммитит token, затем modes, затем возвращает deferred intent.
+    #[cfg(test)]
     pub(crate) fn on_installed(
         &mut self,
         request_id: MediaOpenRequestId,
@@ -583,7 +517,7 @@ impl PlaylistController {
         );
         self.active_media = Some(active_media);
         if let InstalledPlaybackIntentCompletion::Authoritative(intent) = playback_intent
-            && self.stable_intent_revision == intent_revision.get()
+            && self.stable_intent_revision.get() == intent_revision.get()
         {
             self.stable_playback_intent = intent;
             if intent == super::StablePlaybackIntent::Playing {
@@ -647,23 +581,6 @@ impl PlaylistController {
         self.pending_target = None;
         self.publish_view(false);
         Ok(active_media)
-    }
-
-    /// Любой non-Installed terminal после enqueue barrier-а является fatal invariant.
-    pub(crate) fn report_terminal_without_installed(
-        &mut self,
-        request_id: MediaOpenRequestId,
-    ) -> PlaylistControllerInvariantViolation {
-        let violation = if self.install_state.as_ref().is_some_and(|state| {
-            state.request_id() == request_id
-                && state.phase() == ControllerInstallPhase::AuthorizationInFlight
-        }) {
-            PlaylistControllerInvariantViolation::MissingInstalledTerminal
-        } else {
-            PlaylistControllerInvariantViolation::UnexpectedInstallPhase
-        };
-        self.set_fatal(violation);
-        violation
     }
 
     /// До dispatch token abort-ится; после dispatch intent ждёт authoritative winner.

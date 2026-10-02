@@ -16,3 +16,6 @@ video-core.workspace = true
 [dev-dependencies]
 codec-core.workspace = true
 video-frame-contract.workspace = true
+
+[lints]
+workspace = true

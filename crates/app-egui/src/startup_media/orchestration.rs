@@ -722,6 +722,10 @@ impl StartupMediaController {
         true
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: CLI URL preparation keeps its ID-less replacement draft"
+    )]
     fn prepared_url_input(
         &mut self,
         prepared_media: player_core::PreparedMedia,

@@ -39,6 +39,10 @@ pub const FFMPEG_SOFTWARE_BACKEND_ID: &str = "ffmpeg-sw";
 
 /// Возвращает typed backend id без раскрытия storage формата `codec-core`.
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "FFMPEG_SOFTWARE_BACKEND_ID — статическая строка из строчных букв и дефиса; тесты capability_provider вызывают эту функцию и упали бы при невалидном id"
+)]
 pub fn ffmpeg_software_backend_id() -> codec_core::DecodeBackendId {
     codec_core::DecodeBackendId::new(FFMPEG_SOFTWARE_BACKEND_ID)
         .expect("ffmpeg-sw is a valid lowercase backend id")

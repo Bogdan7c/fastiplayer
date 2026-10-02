@@ -285,10 +285,9 @@ impl PlayerWorker {
     #[must_use]
     pub fn latest_snapshot(&mut self, frame_counters: FrameCounters) -> PlayerSnapshot {
         {
-            let _publication = self
-                .snapshot_publication_lock
-                .lock()
-                .expect("snapshot publication lock");
+            let _publication = super::runtime_publish::acquire_snapshot_publication_barrier(
+                &self.snapshot_publication_lock,
+            );
             for snapshot in self.snapshot_rx.try_iter() {
                 self.cached_snapshot = snapshot;
             }

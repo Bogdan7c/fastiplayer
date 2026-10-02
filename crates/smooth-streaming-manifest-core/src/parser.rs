@@ -485,6 +485,10 @@ fn parse_stream_metadata(
 }
 
 /// Named function делает protocol default видимым и type-checked.
+#[expect(
+    clippy::expect_used,
+    reason = "MS-SSTR default timescale — ненулевая константа протокола"
+)]
 fn default_root_timescale() -> SmoothTimescale {
     SmoothTimescale::new(SMOOTH_STREAMING_DEFAULT_TIMESCALE_TICKS_PER_SECOND)
         .expect("MS-SSTR default timescale ненулевой")

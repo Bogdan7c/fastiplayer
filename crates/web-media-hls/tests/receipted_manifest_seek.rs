@@ -1,5 +1,14 @@
 //! Runtime-регрессия: поздний receipted seek стартует у manifest target, а не сканирует VOD с начала.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 #[allow(dead_code)]
 mod support;
 mod receipted_manifest_seek {

@@ -19,3 +19,6 @@ path = "src/lib.rs"
 [dev-dependencies]
 # Временные каталоги нужны только focused filesystem tests.
 tempfile = "3"
+
+[lints]
+workspace = true

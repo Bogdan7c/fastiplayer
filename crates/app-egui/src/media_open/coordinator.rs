@@ -1,5 +1,7 @@
 //! Bounded process-lifetime mechanism подготовки и strong player install.
 mod player_staging;
+#[cfg(test)]
+mod test_fakes;
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -66,7 +68,6 @@ struct CurrentRequest {
     pending_control: Option<PendingControl>,
     authorization_resolution: Option<AuthorizationDispatchResolution>,
     terminal: Option<MediaOpenTerminalOutcome>,
-    safe_label: SafeMediaLabel,
     same_lineage_position: SameLineagePositionPreparationPhase,
 }
 
@@ -123,7 +124,7 @@ impl MediaOpenCoordinator {
         &mut self,
         client_key: MediaOpenClientKey,
         prepared_open: PreparedMediaOpen,
-        safe_label: SafeMediaLabel,
+        _safe_label: SafeMediaLabel,
     ) -> Result<MediaOpenStartOutcome, MediaOpenStartError> {
         if self.shutting_down {
             return Err(MediaOpenStartError::ShuttingDown);
@@ -146,7 +147,6 @@ impl MediaOpenCoordinator {
             pending_control: None,
             authorization_resolution: None,
             terminal: None,
-            safe_label,
             same_lineage_position: SameLineagePositionPreparationPhase::NotRequired,
         });
         Ok(MediaOpenStartOutcome::Accepted { request_id })
@@ -156,7 +156,7 @@ impl MediaOpenCoordinator {
         &mut self,
         client_key: MediaOpenClientKey,
         mode: MediaOpenStartMode,
-        safe_label: SafeMediaLabel,
+        _safe_label: SafeMediaLabel,
         task: impl FnOnce(&PreparationCancellation) -> PreparationResult + Send + 'static,
     ) -> Result<MediaOpenStartOutcome, MediaOpenStartError> {
         if self.shutting_down {
@@ -195,35 +195,9 @@ impl MediaOpenCoordinator {
             pending_control: None,
             authorization_resolution: None,
             terminal: None,
-            safe_label,
             same_lineage_position: SameLineagePositionPreparationPhase::NotRequired,
         });
         Ok(MediaOpenStartOutcome::Accepted { request_id })
-    }
-
-    /// Caller-commanded supersede заменяет только pre-player preparation.
-    pub(crate) fn supersede_prepared_or_preparing(
-        &mut self,
-        expected_request_id: MediaOpenRequestId,
-        client_key: MediaOpenClientKey,
-        source_request: MediaOpenSourceRequest,
-    ) -> Result<MediaOpenStartOutcome, MediaOpenStartError> {
-        let Some(current) = self.current.as_ref() else {
-            return self.start(client_key, source_request, MediaOpenStartMode::RequireIdle);
-        };
-        if current.request_id != expected_request_id
-            || !matches!(
-                current.phase,
-                MediaOpenPhase::Accepted | MediaOpenPhase::Preparing | MediaOpenPhase::Prepared
-            )
-        {
-            return Err(MediaOpenStartError::Busy);
-        }
-        current
-            .cancellation
-            .cancel(MediaInstallCancellationCause::Superseded);
-        self.current = None;
-        self.start(client_key, source_request, MediaOpenStartMode::RequireIdle)
     }
 
     /// Explicit matching authorization dispatch без промежуточного buffer-а.
@@ -243,6 +217,7 @@ impl MediaOpenCoordinator {
                 actual: current.phase,
             });
         }
+        #[expect(clippy::expect_used, reason = "Ready-запрос всегда несёт player id")]
         let player_request_id = current
             .player_request_id
             .expect("Ready request must have player request id");
@@ -339,7 +314,11 @@ impl MediaOpenCoordinator {
             current.phase = MediaOpenPhase::Failed;
             current.authorization_resolution =
                 Some(AuthorizationDispatchResolution::CancelWonBeforePlayerEnqueue { cause });
-            current.terminal = Some(MediaOpenTerminalOutcome::Cancelled { request_id, cause });
+            current.terminal = Some(MediaOpenTerminalOutcome::Cancelled {
+                request_id,
+                #[cfg(test)]
+                cause,
+            });
             return Ok(CancellationDispatchOutcome::CancelledBeforePlayerStaging);
         };
 
@@ -407,6 +386,7 @@ impl MediaOpenCoordinator {
     }
 
     /// Ждёт один request-owned progress edge без polling spin и без auto-authorization.
+    #[expect(clippy::expect_used, reason = "фаза staging/dispatch владеет receipt")]
     pub(crate) fn wait_for_progress(
         &mut self,
         request_id: MediaOpenRequestId,
@@ -462,7 +442,6 @@ impl MediaOpenCoordinator {
 
     pub(crate) fn snapshot(&self) -> Option<MediaOpenSnapshot> {
         self.current.as_ref().map(|current| MediaOpenSnapshot {
-            client_key: current.client_key,
             request_id: current.request_id,
             phase: current.phase,
             descriptor: current.descriptor.clone().or_else(|| {
@@ -541,25 +520,26 @@ impl MediaOpenCoordinator {
                         return true;
                     }
                 };
-                if let Some(cause) = cancellation_cause {
+                if let Some(_cause) = cancellation_cause {
                     current.terminal = Some(MediaOpenTerminalOutcome::Cancelled {
                         request_id: current.request_id,
-                        cause,
+                        #[cfg(test)]
+                        cause: _cause,
                     });
                 } else {
                     current.terminal = Some(MediaOpenTerminalOutcome::PreparationFailed {
                         request_id: current.request_id,
-                        safe_label: current.safe_label.clone(),
+                        #[cfg(test)]
                         kind: MediaPreparationFailureKind::Cancelled,
                     });
                 }
                 current.phase = MediaOpenPhase::Failed;
             }
-            Err(kind) => {
+            Err(_kind) => {
                 current.terminal = Some(MediaOpenTerminalOutcome::PreparationFailed {
                     request_id: current.request_id,
-                    safe_label: current.safe_label.clone(),
-                    kind,
+                    #[cfg(test)]
+                    kind: _kind,
                 });
                 current.phase = MediaOpenPhase::Failed;
             }
@@ -567,6 +547,7 @@ impl MediaOpenCoordinator {
         true
     }
 
+    #[expect(clippy::expect_used, reason = "staged-запрос хранит descriptor")]
     fn drain_control(&mut self) -> bool {
         let Some(current) = self.current.as_mut() else {
             return false;
@@ -586,6 +567,7 @@ impl MediaOpenCoordinator {
                 return true;
             }
         };
+        #[expect(clippy::expect_used, reason = "control есть, пока идёт poll")]
         let control = current
             .pending_control
             .take()
@@ -617,6 +599,7 @@ impl MediaOpenCoordinator {
                 current.phase = MediaOpenPhase::Failed;
                 current.terminal = Some(MediaOpenTerminalOutcome::Cancelled {
                     request_id: current.request_id,
+                    #[cfg(test)]
                     cause,
                 });
             }
@@ -664,9 +647,7 @@ impl MediaOpenCoordinator {
                     .install_receipt
                     .as_ref()
                     .and_then(|receipt| receipt.take_completion());
-                let Some(completion @ MediaInstallCompletion::Failed { request_id, .. }) =
-                    completion
-                else {
+                let Some(MediaInstallCompletion::Failed { request_id, .. }) = completion else {
                     self.publish_fatal(
                         MediaOpenInvariantViolation::MissingTerminalAfterPlayerControl,
                     );
@@ -679,7 +660,6 @@ impl MediaOpenCoordinator {
                 current.phase = MediaOpenPhase::Failed;
                 current.terminal = Some(MediaOpenTerminalOutcome::PlayerFailed {
                     request_id: current.request_id,
-                    completion,
                 });
             }
             _ => {
@@ -691,10 +671,17 @@ impl MediaOpenCoordinator {
     }
 
     fn publish_fatal(&mut self, violation: MediaOpenInvariantViolation) {
+        // Terminal outcome несёт только request id; конкретное нарушение
+        // инварианта сохраняется в логе, а не теряется.
+        tracing::error!(
+            ?violation,
+            "media-open coordinator перешёл в fatal invariant"
+        );
         if let Some(current) = self.current.as_mut() {
             current.phase = MediaOpenPhase::Failed;
             current.terminal = Some(MediaOpenTerminalOutcome::FatalInvariant {
                 request_id: current.request_id,
+                #[cfg(test)]
                 violation,
             });
         }
@@ -744,52 +731,9 @@ impl MediaOpenCoordinator {
 
     fn allocate_request_id(&self) -> MediaOpenRequestId {
         let raw = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        #[expect(clippy::expect_used, reason = "u64 id не исчерпать за время жизни")]
         let non_zero = NonZeroU64::new(raw).expect("media-open request identity overflow");
         MediaOpenRequestId::from_non_zero(non_zero)
-    }
-}
-
-#[cfg(test)]
-impl MediaOpenCoordinator {
-    pub(super) fn start_fake(
-        &mut self,
-        client_key: MediaOpenClientKey,
-        safe_label: SafeMediaLabel,
-        task: impl FnOnce() -> PreparationResult + Send + 'static,
-    ) -> Result<MediaOpenStartOutcome, MediaOpenStartError> {
-        self.start_with_task(
-            client_key,
-            MediaOpenStartMode::RequireIdle,
-            safe_label,
-            move |_cancellation| task(),
-        )
-    }
-
-    fn attach_fake_player(&mut self, player_port: Arc<dyn MediaOpenPlayerPort>) {
-        self.player_port = Some(player_port);
-    }
-
-    fn supersede_fake(
-        &mut self,
-        expected_request_id: MediaOpenRequestId,
-        client_key: MediaOpenClientKey,
-        safe_label: SafeMediaLabel,
-        task: impl FnOnce() -> PreparationResult + Send + 'static,
-    ) -> Result<MediaOpenStartOutcome, MediaOpenStartError> {
-        let current = self.current.as_ref().ok_or(MediaOpenStartError::Busy)?;
-        if current.request_id != expected_request_id
-            || !matches!(
-                current.phase,
-                MediaOpenPhase::Accepted | MediaOpenPhase::Preparing | MediaOpenPhase::Prepared
-            )
-        {
-            return Err(MediaOpenStartError::Busy);
-        }
-        current
-            .cancellation
-            .cancel(MediaInstallCancellationCause::Superseded);
-        self.current = None;
-        self.start_fake(client_key, safe_label, task)
     }
 }
 

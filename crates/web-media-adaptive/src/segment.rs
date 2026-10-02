@@ -421,7 +421,8 @@ impl AdaptiveOrderedSegmentSource {
                     .context
                     .retry
                     .retry_delay_after(active.attempt, error.http_retry_after());
-                active.attempt = NonZeroU8::new(active.attempt.get() + 1).expect("bounded attempt");
+                // Число попыток ограничено retry policy задолго до u8::MAX.
+                active.attempt = active.attempt.saturating_add(1);
                 active.retry_not_before = now + delay;
                 active.job_id = self.next_job_id;
                 self.next_job_id = self.next_job_id.wrapping_add(1).max(1);

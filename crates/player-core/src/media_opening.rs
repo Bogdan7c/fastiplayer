@@ -438,16 +438,13 @@ impl PreparedMedia {
         if matches!(event, DemuxReadEvent::TemporarilyUnavailable(_)) {
             return Ok(event);
         }
-        if self.prefetch_state.is_none() {
-            self.prefetch_state = Some(Box::new(PreparedMediaPrefetchState {
-                initial_media_metadata: self.demuxer.media_metadata(),
+        let demuxer = &self.demuxer;
+        let prefetch_state = self.prefetch_state.get_or_insert_with(|| {
+            Box::new(PreparedMediaPrefetchState {
+                initial_media_metadata: demuxer.media_metadata(),
                 events: VecDeque::new(),
-            }));
-        }
-        let prefetch_state = self
-            .prefetch_state
-            .as_mut()
-            .expect("prefetch state initialized before demux read");
+            })
+        });
         prefetch_state.events.push_back(event.clone());
         Ok(event)
     }

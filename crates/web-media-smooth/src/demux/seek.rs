@@ -98,6 +98,10 @@ fn duration_to_ticks_floor(
 }
 
 /// Floor-конверсия validated manifest ticks в runtime Duration.
+#[expect(
+    clippy::expect_used,
+    reason = "остаток меньше timescale, поэтому дробная часть меньше 10^9 наносекунд и помещается в u32"
+)]
 pub(super) fn smooth_ticks_to_duration(ticks: u64, timescale_ticks_per_second: u64) -> Duration {
     let timescale = timescale_ticks_per_second;
     let seconds = ticks / timescale;

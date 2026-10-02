@@ -3,8 +3,6 @@
 //! Модуль намеренно не знает о `PlaylistQueue`, allocator-е и commit transaction.
 //! S17 подключит этот чистый boundary к process-lifetime Add URL orchestration.
 
-#![allow(dead_code)] // S16 строит boundary заранее; production consumer появляется в S17.
-
 use playlist_core::{DurableReopenLocator, SecretUrlLocator};
 use service_ytdlp::{YtDlpMediaLocator, YtDlpTopology};
 

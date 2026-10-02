@@ -38,8 +38,8 @@ pub(crate) fn adaptive_transport_limits(
             anyhow!("network.memory_cache_mb нельзя выразить как adaptive resource byte budget")
         })?;
     Ok(AdaptiveTransportLimits::new(
-        NonZeroUsize::new(2 * 1_024 * 1_024).expect("adaptive manifest budget"),
+        const { NonZeroUsize::new(2 * 1_024 * 1_024).expect("adaptive manifest budget") },
         maximum_resource_bytes,
-        NonZeroUsize::new(8_192).expect("adaptive descriptor budget"),
+        const { NonZeroUsize::new(8_192).expect("adaptive descriptor budget") },
     ))
 }

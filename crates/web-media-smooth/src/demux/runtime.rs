@@ -72,6 +72,10 @@ impl SmoothVodOpenResult {
 
     /// Возвращает cloneable generation-fenced seek control до type erasure.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Smooth VOD runtime всегда конструирует demuxer с receipt-based seek capability"
+    )]
     pub fn async_seek_handle(&self) -> ProgressiveAsyncSeekHandle {
         self.demuxer
             .async_seek_handle()

@@ -10,6 +10,10 @@ use super::{
 };
 
 /// Сериализует checked plan в deterministic namespace-aware XSPF v1.
+#[expect(
+    clippy::expect_used,
+    reason = "fmt::Write для String никогда не возвращает Err"
+)]
 pub(super) fn serialize(plan: &PreparedPlaylistExport) -> String {
     let mut output = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     writeln!(
@@ -53,6 +57,10 @@ pub(super) fn serialize(plan: &PreparedPlaylistExport) -> String {
 }
 
 /// Публикует один known extension container до required trackList.
+#[expect(
+    clippy::expect_used,
+    reason = "fmt::Write для String никогда не возвращает Err"
+)]
 fn push_group_extension(output: &mut String, plan: &PreparedPlaylistExport) {
     if plan.groups.is_empty() {
         return;

@@ -15,3 +15,6 @@ winit.workspace = true
 wgpu.workspace = true
 render-wgpu-video = { workspace = true }
 render-core.workspace = true
+
+[lints]
+workspace = true

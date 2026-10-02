@@ -1,5 +1,14 @@
 //! Production-path regression для bounded HLS VOD seek index compaction.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 // Общий integration harness содержит fixtures для других HLS сценариев; этот target
 // намеренно использует только TS subset и не должен дублировать сетевой/transport код.
 #[allow(dead_code)]

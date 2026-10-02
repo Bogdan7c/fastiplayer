@@ -99,7 +99,9 @@ impl PsiSectionAssembler {
             if self.bytes.is_empty() && unread[0] == 0xff {
                 break;
             }
-            if self.expected_length.is_none() {
+            let expected = if let Some(expected) = self.expected_length {
+                expected
+            } else {
                 let header_needed = 3_usize.saturating_sub(self.bytes.len());
                 let copied = header_needed.min(unread.len());
                 self.bytes.extend_from_slice(&unread[..copied]);
@@ -112,9 +114,10 @@ impl PsiSectionAssembler {
                 if !(4..=1_021).contains(&section_length) {
                     return Err(malformed("PSI section_length вне MPEG-TS bounds"));
                 }
-                self.expected_length = Some(3 + section_length);
-            }
-            let expected = self.expected_length.expect("set above");
+                let expected = 3 + section_length;
+                self.expected_length = Some(expected);
+                expected
+            };
             let needed = expected.saturating_sub(self.bytes.len());
             let copied = needed.min(unread.len());
             self.bytes.extend_from_slice(&unread[..copied]);

@@ -6,7 +6,6 @@ use crate::playlist_runtime::controller::ControllerCanonicalSortError;
 
 impl PlaylistRuntime {
     /// Запускает one-shot Sort; UI wiring остаётся следующей session.
-    #[allow(dead_code, reason = "Session 19 вызывает typed Sort action")]
     pub(crate) fn start_metadata_sort(
         &mut self,
         intent: SortCanonicalQueue,
@@ -28,19 +27,14 @@ impl PlaylistRuntime {
         )
     }
 
-    #[allow(dead_code, reason = "Session 19 вызывает typed Sort action")]
-    pub(crate) fn cancel_metadata_sort(
-        &mut self,
-        job_id: MetadataSortJobId,
-    ) -> MetadataSortCancelOutcome {
-        self.discovery.metadata_sort.cancel(job_id)
-    }
-
-    #[allow(dead_code, reason = "Session 19 отображает read model")]
     pub(crate) fn metadata_sort_read_model(&self) -> MetadataSortReadModel {
         self.discovery.metadata_sort.read_model()
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "инвариант: controller presence was checked before terminal apply"
+    )]
     pub(in crate::playlist_runtime) fn drain_metadata_sort(&mut self) -> bool {
         let Some(controller) = self.controller.as_ref() else {
             return false;
@@ -53,6 +47,10 @@ impl PlaylistRuntime {
         let Some(terminal) = terminal else {
             return false;
         };
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: controller presence was checked before terminal apply"
+        )]
         let dirty_before = self
             .controller
             .as_ref()
@@ -82,6 +80,10 @@ impl PlaylistRuntime {
                         if commit.changed_persistent_state() {
                             self.invalidate_removal_undo_for_persistent_mutation();
                         }
+                        #[expect(
+                            clippy::expect_used,
+                            reason = "инвариант: controller presence was checked before terminal apply"
+                        )]
                         let outcome = self
                             .controller
                             .as_mut()
@@ -144,6 +146,10 @@ impl PlaylistRuntime {
         diagnostics: Arc<[DiscoveryDiagnostic]>,
         omitted_diagnostics: usize,
     ) -> MetadataSortCompletion {
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: salvage requires an installed controller"
+        )]
         let metadata_preflight = self
             .controller
             .as_ref()
@@ -154,6 +160,10 @@ impl PlaylistRuntime {
                 if commit.changed_persistent_state() {
                     self.invalidate_removal_undo_for_persistent_mutation();
                 }
+                #[expect(
+                    clippy::expect_used,
+                    reason = "инвариант: salvage requires an installed controller"
+                )]
                 let outcome = self
                     .controller
                     .as_mut()

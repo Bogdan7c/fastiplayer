@@ -1,5 +1,14 @@
 //! Focused traceability S40 для serializable special-provider expansion gate.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 // Используем JSON value, чтобы test проверял canonical checked-in S00 schema без production DTO.
 use serde_json::Value;
 // Читаем только локальные hermetic evidence files без network или extractor process.

@@ -455,6 +455,11 @@ impl ScrubStateMachine {
     }
 
     fn next_scrub_generation(&mut self) -> ScrubGeneration {
+        #[expect(
+            clippy::expect_used,
+            reason = "u64 generation растёт на 1 за scrub-шаг; даже при шаге в наносекунду переполнение \
+                      наступит через ~584 года, а молчаливый wrap сломал бы latest-only гарантию"
+        )]
         let next_value = self
             .current_scrub_generation
             .get()
@@ -477,6 +482,11 @@ impl ScrubStateMachine {
 
 impl Default for ScrubStateMachine {
     fn default() -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "default config — константа разработчика; тест default-конфигурации валидирует её, \
+                      внешнего ввода здесь нет"
+        )]
         let config = FrameServerConfig::default()
             .validate()
             .expect("default frame-server config must be valid");

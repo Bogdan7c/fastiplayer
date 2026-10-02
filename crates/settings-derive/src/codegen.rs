@@ -486,6 +486,10 @@ fn expand_accessor_impl(input: AccessorExpansion<'_>) -> TokenStream2 {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "codegen/validation.rs отклоняет select-опции без value_path через syn::Error до codegen"
+)]
 fn accessor_get_body(field_ident: &Ident, access_kind: &AccessKind) -> TokenStream2 {
     match access_kind {
         AccessKind::Bool => quote! {
@@ -569,6 +573,10 @@ fn accessor_get_body(field_ident: &Ident, access_kind: &AccessKind) -> TokenStre
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "codegen/validation.rs отклоняет select-опции без value_path через syn::Error до codegen"
+)]
 fn accessor_set_body(
     field_ident: &Ident,
     field_type: &Type,

@@ -513,6 +513,7 @@ impl AppState {
     ///
     /// Обычные click/disabled-drag actions остаются exact `Seek`. Live drag
     /// идёт через Begin/Preview/End scrub route и не отправляет ordinary seek.
+    #[expect(clippy::expect_used, reason = "diagnostics только что созданы")]
     pub(super) fn send_timeline_action(&mut self, action: TimelineAction) {
         self.clear_timeline_inline_status_for_action();
         match action {
@@ -567,6 +568,7 @@ impl AppState {
             }
             TimelineAction::EndLiveScrubAtLatestTarget(position)
             | TimelineAction::EndLiveScrubAtVisiblePreview(position) => {
+                #[expect(clippy::expect_used, reason = "release несёт scrub commit policy")]
                 let commit_policy = live_scrub_release_policy_from_action(action)
                     .expect("release action всегда содержит typed scrub commit policy");
                 if let Some(target) = self

@@ -25,12 +25,20 @@ pub(crate) fn preferred_height_policy(
 ) -> PreferredHeightPolicy {
     match preferred_height {
         None => {
+            #[expect(
+                clippy::expect_used,
+                reason = "инвариант: automatic startup height входит в neutral bounds"
+            )]
             let startup_height =
                 WebPreferredVideoHeight::new(AUTOMATIC_STARTUP_VIDEO_HEIGHT_PIXELS)
                     .expect("automatic startup height входит в neutral bounds");
             PreferredHeightPolicy::Prefer(startup_height)
         }
         Some(preferred_height) => {
+            #[expect(
+                clippy::expect_used,
+                reason = "инвариант: compile-time synchronized bounds гарантируют infallible mapping"
+            )]
             let neutral_height = WebPreferredVideoHeight::new(preferred_height.pixels())
                 .expect("compile-time synchronized bounds гарантируют infallible mapping");
             PreferredHeightPolicy::Prefer(neutral_height)

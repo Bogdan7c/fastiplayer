@@ -17,9 +17,8 @@ use video_core::{DecodeThreadError, VideoStreamConfigResult, VideoStreamDecodeCo
 use video_frame_contract::VideoFrameContract;
 
 use super::resource_driver::{
-    CandidateVideoBackendAvailability, CandidateVideoMaterializerKind,
-    CandidateVideoPipelinePreparationError, CandidateVideoPipelinePreparationStage,
-    PreparedCandidateVideoPipelineResources,
+    CandidateVideoMaterializerKind, CandidateVideoPipelinePreparationError,
+    CandidateVideoPipelinePreparationStage, PreparedCandidateVideoPipelineResources,
 };
 use super::*;
 

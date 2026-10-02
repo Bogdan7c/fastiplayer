@@ -222,6 +222,10 @@ impl ShuffleManualPreview {
         queue: &PlaylistQueue,
         target_item_id: PlaylistItemId,
     ) {
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: source-order target obtained from queue must retain its top-level entry"
+        )]
         let target_entry_id = queue
             .structural_entry_id_for_item(target_item_id)
             .expect("source-order target obtained from queue must retain its top-level entry");
@@ -243,6 +247,10 @@ impl ShuffleManualPreview {
         traversal.history_cursor = self.base_history_cursor;
         traversal.upcoming = self.working_upcoming;
         if self.upcoming_steps.is_empty() {
+            #[expect(
+                clippy::expect_used,
+                reason = "инвариант: history-target preview must have a cursor"
+            )]
             let cursor = self
                 .logical_history_cursor
                 .expect("history-target preview must have a cursor");
@@ -377,6 +385,10 @@ impl ShuffleTraversal {
                         current_item_id,
                     });
                 }
+                #[expect(
+                    clippy::expect_used,
+                    reason = "инвариант: validated current must resolve to one committed top-level entry"
+                )]
                 let current_entry_id = current_entry_id
                     .expect("validated current must resolve to one committed top-level entry");
                 if unique_upcoming.contains(&current_entry_id) {
@@ -615,13 +627,17 @@ impl PlaylistQueue {
             .traversal_revision
             .checked_next()
             .ok_or(TraversalCurrentMutationError::TraversalRevisionExhausted)?;
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: validated manual Play target must have a top-level owner"
+        )]
         let target_identity = self
             .shuffle_visit_identity(item_id)
             .expect("validated manual Play target must have a top-level owner");
-        self.shuffle_traversal
-            .as_mut()
-            .expect("checked enabled shuffle")
-            .commit_direct_transition(target_identity);
+        // Shuffle проверен включённым в начале метода (ранний return выше).
+        if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
+            shuffle_traversal.commit_direct_transition(target_identity);
+        }
         self.traversal_revision = next_revision;
         Ok(TraversalCurrentMutationOutcome::Set(validated))
     }

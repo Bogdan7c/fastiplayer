@@ -8,10 +8,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use player_core::{ExactMediaTransportAction, ExactMediaTransportRequest};
+#[cfg(test)]
+use playlist_core::RemoveItemOutcome;
 use playlist_core::{
     AutomaticEndedIntent, AutomaticTraversalPlan, AutomaticTraversalStart, BulkRemoveError,
     BulkRemoveOutcome, PlaylistEntry, PlaylistEntryId, PlaylistItemId, PlaylistRemovalSnapshot,
-    RemovalCurrentOutcome, RemovalSnapshotRestoreError, RemoveItemOutcome, RepeatMode,
+    RemovalCurrentOutcome, RemovalSnapshotRestoreError, RepeatMode,
 };
 
 use super::{
@@ -28,8 +30,22 @@ mod tests;
 /// Все v1 destructive actions имеют одну business semantics Undo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ControllerRemovalKind {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "создаётся только test-входами remove_item/remove_other_items"
+        )
+    )]
     Remove,
     Clear,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "создаётся только test-входами remove_item/remove_other_items"
+        )
+    )]
     RemoveOthers,
     RemoveSelected,
     RemoveUnselected,
@@ -54,10 +70,6 @@ impl std::fmt::Debug for DetachedActiveTombstone {
 }
 
 impl DetachedActiveTombstone {
-    pub(super) const fn removed_item_id(&self) -> PlaylistItemId {
-        self.removed_item_id
-    }
-
     pub(super) const fn active_lineage_id(&self) -> ActiveMediaLineageId {
         self.active_lineage_id
     }
@@ -73,6 +85,13 @@ pub(crate) struct ControllerDestructiveRemoval {
     pub(crate) kind: ControllerRemovalKind,
     pub(crate) snapshot: PlaylistRemovalSnapshot,
     pub(crate) selection_before: PlaylistSelectionSnapshot,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "создаётся только test-входами remove_item/remove_other_items"
+        )
+    )]
     pub(crate) selection_after: PlaylistSelectionSnapshot,
     pub(crate) current_outcome: RemovalCurrentOutcome,
     pub(crate) dirty: PlaylistDirtySignal,
@@ -93,20 +112,21 @@ pub(crate) enum ControllerDestructiveRemovalOutcome {
     NotFound {
         item_id: PlaylistItemId,
     },
-    DuplicateItemId {
-        item_id: PlaylistItemId,
-    },
     DuplicateEntryId {
         entry_id: PlaylistEntryId,
     },
     EntryNotFound {
         entry_id: PlaylistEntryId,
     },
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "создаётся только test-входами remove_item/remove_other_items"
+        )
+    )]
     InvalidRetainedItem {
         item_id: PlaylistItemId,
-    },
-    PartialCompoundSelection {
-        compound_entry_id: playlist_core::PlaylistEntryId,
     },
     CompoundPartTarget {
         part_item_id: PlaylistItemId,
@@ -125,9 +145,23 @@ pub(crate) enum ControllerDestructiveRemovalOutcome {
 /// Внутренний mutation error остаётся маленьким и не несёт success snapshot variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RemovalMutationError {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "создаётся только test-входами remove_item/remove_other_items"
+        )
+    )]
     NotFound {
         item_id: PlaylistItemId,
     },
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "создаётся только test-входами remove_item/remove_other_items"
+        )
+    )]
     CompoundPartTarget {
         part_item_id: PlaylistItemId,
         compound_entry_id: playlist_core::PlaylistEntryId,
@@ -144,6 +178,13 @@ enum SelectionAfterRemoval {
     PreserveSurvivors,
     /// Снять selection и interaction cursor.
     Clear,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "создаётся только test-входами remove_item/remove_other_items"
+        )
+    )]
     /// Оставить единственный retained stable ID.
     SelectSingle(PlaylistEntryId),
     /// Перенести selection/focus на ближайшую surviving строку.
@@ -207,6 +248,7 @@ pub(crate) enum ControllerActiveMediaRebindOutcome {
 }
 
 impl PlaylistController {
+    #[cfg(test)]
     /// Remove/Delete применяет D47 и при необходимости создаёт active tombstone.
     pub(crate) fn remove_item(
         &mut self,
@@ -254,6 +296,7 @@ impl PlaylistController {
         )
     }
 
+    #[cfg(test)]
     /// Remove Others сохраняет retained stable ID и делает один bulk commit.
     pub(crate) fn remove_other_items(
         &mut self,

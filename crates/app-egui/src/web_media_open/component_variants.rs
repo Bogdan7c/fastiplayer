@@ -85,10 +85,6 @@ impl YtDlpCandidateOpenIntent {
     }
 
     /// Открывает exact parent с component intent, не меняя установленную quality preference.
-    #[allow(
-        dead_code,
-        reason = "C3A проводит typed intent; enabled component action подключит C3B"
-    )]
     #[must_use]
     pub(crate) fn exact_with_component_semantic_selection(
         selection: Box<YtDlpCandidateSelection>,
@@ -127,10 +123,6 @@ impl YtDlpCandidateOpenIntent {
 
 /// Свежий provider-owned результат component catalog preparation.
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "Текущие providers честно Unavailable; Installed — production seam следующего provider-а"
-)]
 pub(crate) enum PreparedComponentVariantCatalog {
     /// Текущий concrete provider не умеет independent component selection.
     Unavailable,

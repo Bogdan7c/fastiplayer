@@ -22,6 +22,7 @@ pub(crate) struct PlaylistConfirmationReasons {
     sensitive_playlist_export_locator_count: Option<usize>,
 }
 
+#[cfg(test)]
 /// Stable presentation order composed reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaylistConfirmationReason {
@@ -46,6 +47,7 @@ impl PlaylistConfirmationReasons {
         self.sensitive_playlist_export_locator_count
     }
 
+    #[cfg(test)]
     const fn replacement_only(self) -> bool {
         self.queue_replacement
             && !self.sensitive_url_persistence
@@ -64,6 +66,7 @@ impl PlaylistConfirmationReasons {
         }
     }
 
+    #[cfg(test)]
     /// Итерирует reasons в product-defined порядке: sensitive, затем replacement.
     pub(crate) fn ordered(self) -> impl Iterator<Item = PlaylistConfirmationReason> {
         [
@@ -91,6 +94,7 @@ pub(crate) struct PendingPlaylistConfirmation {
     reasons: PlaylistConfirmationReasons,
 }
 
+#[cfg(test)]
 /// D15 name для того же generalized entity; отдельного race-prone slot-а нет.
 pub(crate) type PendingSensitiveUrlPersistenceDecision = PendingPlaylistConfirmation;
 
@@ -108,6 +112,7 @@ impl PendingPlaylistConfirmation {
     }
 }
 
+#[cfg(test)]
 /// Единственная безопасная модель, которую разрешено передавать renderer-bound UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PendingQueueReplacementConfirmation {
@@ -115,12 +120,15 @@ pub(crate) struct PendingQueueReplacementConfirmation {
     safe_label: SafeMediaLabel,
 }
 
+#[cfg(test)]
 impl PendingQueueReplacementConfirmation {
+    #[cfg(test)]
     /// Возвращает opaque correlation identity для typed UI response.
     pub(crate) const fn intent_id(&self) -> QueueReplacementIntentId {
         self.intent_id
     }
 
+    #[cfg(test)]
     /// Возвращает только bounded/redacted label без исходного locator-а.
     pub(crate) fn safe_label(&self) -> &str {
         self.safe_label.as_str()
@@ -134,6 +142,7 @@ pub(crate) enum QueueReplacementConfirmationDecision {
     Cancel,
 }
 
+#[cfg(test)]
 /// Correlated UI action для единственного process-lifetime slot-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QueueReplacementConfirmationAction {
@@ -273,6 +282,7 @@ pub(crate) enum InAppQueueReplacementAdmission {
     AwaitingConfirmation,
 }
 
+#[cfg(test)]
 /// Результат correlated Confirm/Cancel response.
 #[derive(Debug)]
 pub(crate) enum QueueReplacementConfirmationOutcome {
@@ -406,6 +416,7 @@ impl QueueReplacementConfirmationState {
         Ok(())
     }
 
+    #[cfg(test)]
     fn replacement_only_model(&self) -> Option<PendingQueueReplacementConfirmation> {
         let pending = self.pending.as_ref()?;
         if !matches!(
@@ -509,6 +520,7 @@ impl QueueReplacementConfirmationState {
         Ok(())
     }
 
+    #[cfg(test)]
     fn respond(
         &mut self,
         action: QueueReplacementConfirmationAction,
@@ -550,16 +562,13 @@ impl QueueReplacementConfirmationState {
         &mut self,
         action: PlaylistConfirmationAction,
     ) -> PlaylistConfirmationResolution {
-        let Some(pending) = self.pending.as_ref() else {
+        // Слот потребляется только ответом на тот же intent; иначе ответ устарел.
+        let Some(pending) = self
+            .pending
+            .take_if(|pending| pending.model.intent_id == action.intent_id)
+        else {
             return PlaylistConfirmationResolution::Stale;
         };
-        if pending.model.intent_id != action.intent_id {
-            return PlaylistConfirmationResolution::Stale;
-        }
-        let pending = self
-            .pending
-            .take()
-            .expect("matching generalized confirmation remains present until consume");
         match action.decision {
             QueueReplacementConfirmationDecision::Confirm => {
                 PlaylistConfirmationResolution::Confirmed(pending.target)
@@ -648,6 +657,7 @@ impl PlaylistRuntime {
         Ok(intent.target.admit())
     }
 
+    #[cfg(test)]
     /// Возвращает immutable safe model; AppState не становится authoritative owner-ом.
     pub(crate) fn pending_queue_replacement_confirmation(
         &self,
@@ -660,6 +670,7 @@ impl PlaylistRuntime {
         self.replacement_confirmation.model()
     }
 
+    #[cfg(test)]
     /// Compatibility-free typed D15 view остаётся тем же generalized entity.
     pub(crate) fn pending_sensitive_url_persistence_decision(
         &self,
@@ -668,6 +679,7 @@ impl PlaylistRuntime {
             .filter(|model| model.reasons().sensitive_url_persistence())
     }
 
+    #[cfg(test)]
     /// Exact response сначала атомарно consumes slot и только затем возвращает original intent.
     pub(crate) fn respond_to_queue_replacement_confirmation(
         &mut self,

@@ -21,3 +21,6 @@ path = "src/lib.rs"
 quick-xml.workspace = true
 # thiserror формирует typed diagnostics без утечки parser-specific ошибок наружу.
 thiserror.workspace = true
+
+[lints]
+workspace = true

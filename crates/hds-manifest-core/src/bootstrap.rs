@@ -188,26 +188,25 @@ fn collect_boxes<'a>(
 
 /// Читает ISO box header с 32/64-bit size support.
 fn read_box<'a>(input: &'a [u8], offset: usize) -> Result<(usize, BoxView<'a>), HdsBootstrapError> {
-    let header_end = offset.checked_add(8).ok_or(HdsBootstrapError::Malformed)?;
-    let header = input
-        .get(offset..header_end)
-        .ok_or(HdsBootstrapError::Malformed)?;
-    let size32 = u32::from_be_bytes(header[0..4].try_into().expect("8-byte box header"));
-    let kind = header[4..8].try_into().expect("4-byte box kind");
+    // Header читается как массив фиксированной длины: короткий input
+    // становится Malformed, а не паникой на последующем срезе.
+    let [s0, s1, s2, s3, k0, k1, k2, k3] = *read_fixed::<8>(input, offset)?;
+    let size32 = u32::from_be_bytes([s0, s1, s2, s3]);
+    let kind = [k0, k1, k2, k3];
     let (header_bytes, box_size) = match size32 {
         0 => (8usize, input.len().saturating_sub(offset)),
         1 => {
-            let large_end = offset.checked_add(16).ok_or(HdsBootstrapError::Malformed)?;
-            let large = input
-                .get(offset + 8..large_end)
-                .ok_or(HdsBootstrapError::Malformed)?;
-            let large = u64::from_be_bytes(large.try_into().expect("8-byte large size"));
+            let large_offset = offset.checked_add(8).ok_or(HdsBootstrapError::Malformed)?;
+            let large = u64::from_be_bytes(*read_fixed::<8>(input, large_offset)?);
             (
                 16usize,
                 usize::try_from(large).map_err(|_| HdsBootstrapError::LimitExceeded)?,
             )
         }
-        value => (8usize, usize::try_from(value).expect("u32 fits usize")),
+        value => (
+            8usize,
+            usize::try_from(value).map_err(|_| HdsBootstrapError::LimitExceeded)?,
+        ),
     };
     if box_size < header_bytes {
         return Err(HdsBootstrapError::Malformed);
@@ -222,6 +221,16 @@ fn read_box<'a>(input: &'a [u8], offset: usize) -> Result<(usize, BoxView<'a>), 
         .get(payload_start..end)
         .ok_or(HdsBootstrapError::Malformed)?;
     Ok((end, BoxView { kind, payload }))
+}
+
+/// Возвращает `N` байт начиная с `offset` как массив или `Malformed`, если
+/// input короче. Массив делает длину частью типа, поэтому дальнейший разбор
+/// не нуждается в fallible `try_into()`.
+fn read_fixed<const N: usize>(input: &[u8], offset: usize) -> Result<&[u8; N], HdsBootstrapError> {
+    input
+        .get(offset..)
+        .and_then(<[u8]>::first_chunk::<N>)
+        .ok_or(HdsBootstrapError::Malformed)
 }
 
 /// Читает abst fixed header и embedded asrt/afrt boxes.
@@ -454,14 +463,11 @@ fn select_segment_runs(
             table.qualities.is_empty() || table.qualities.iter().any(|name| name == quality)
         })
         .collect::<Vec<_>>();
-    if applicable.len() != 1 {
+    // Ровно одна применимая таблица; иначе профиль не поддерживается.
+    let Ok([only_applicable]) = <[ParsedSegmentTable; 1]>::try_from(applicable) else {
         return Err(HdsBootstrapError::Unsupported);
-    }
-    Ok(applicable
-        .into_iter()
-        .next()
-        .expect("one applicable asrt")
-        .runs)
+    };
+    Ok(only_applicable.runs)
 }
 
 /// Selects the only applicable fragment table or exact quality-scoped table.
@@ -469,16 +475,17 @@ fn select_fragment_table(
     tables: Vec<ParsedFragmentTable>,
     quality: &str,
 ) -> Result<ParsedFragmentTable, HdsBootstrapError> {
-    let mut applicable = tables
+    let applicable = tables
         .into_iter()
         .filter(|table| {
             table.qualities.is_empty() || table.qualities.iter().any(|name| name == quality)
         })
         .collect::<Vec<_>>();
-    if applicable.len() != 1 {
+    // Ровно одна применимая таблица; иначе профиль не поддерживается.
+    let Ok([only_applicable]) = <[ParsedFragmentTable; 1]>::try_from(applicable) else {
         return Err(HdsBootstrapError::Unsupported);
-    }
-    Ok(applicable.pop().expect("one applicable afrt"))
+    };
+    Ok(only_applicable)
 }
 
 /// Разворачивает compact afrt runs и назначает segment number через asrt.
@@ -662,14 +669,12 @@ impl<'a> Cursor<'a> {
 
     /// Reads u32.
     fn take_u32(&mut self) -> Result<u32, HdsBootstrapError> {
-        let bytes = self.take_bytes(4)?;
-        Ok(u32::from_be_bytes(bytes.try_into().expect("four bytes")))
+        Ok(u32::from_be_bytes(self.take_array::<4>()?))
     }
 
     /// Reads u64.
     fn take_u64(&mut self) -> Result<u64, HdsBootstrapError> {
-        let bytes = self.take_bytes(8)?;
-        Ok(u64::from_be_bytes(bytes.try_into().expect("eight bytes")))
+        Ok(u64::from_be_bytes(self.take_array::<8>()?))
     }
 
     /// Reads a null-terminated UTF-8 string.
@@ -706,18 +711,11 @@ impl<'a> Cursor<'a> {
         self.offset == self.input.len()
     }
 
-    /// Reads an exact byte slice.
-    fn take_bytes(&mut self, length: usize) -> Result<&'a [u8], HdsBootstrapError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(HdsBootstrapError::Malformed)?;
-        let bytes = self
-            .input
-            .get(self.offset..end)
-            .ok_or(HdsBootstrapError::Malformed)?;
-        self.offset = end;
-        Ok(bytes)
+    /// Reads exactly `N` bytes as an array; length is enforced by the type.
+    fn take_array<const N: usize>(&mut self) -> Result<[u8; N], HdsBootstrapError> {
+        let bytes = read_fixed::<N>(self.input, self.offset)?;
+        self.offset += N;
+        Ok(*bytes)
     }
 }
 

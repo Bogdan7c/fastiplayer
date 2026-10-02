@@ -233,9 +233,10 @@ impl AmfReader<'_> {
     fn peek_u16(&self) -> Result<u16, FlvDemuxError> {
         let bytes = self
             .bytes
-            .get(self.cursor..self.cursor + 2)
+            .get(self.cursor..)
+            .and_then(<[u8]>::first_chunk::<2>)
             .ok_or_else(|| malformed("AMF object key обрезан"))?;
-        Ok(u16::from_be_bytes(bytes.try_into().expect("exact slice")))
+        Ok(u16::from_be_bytes(*bytes))
     }
 
     fn read_u8(&mut self) -> Result<u8, FlvDemuxError> {
@@ -243,21 +244,27 @@ impl AmfReader<'_> {
     }
 
     fn read_u16(&mut self) -> Result<u16, FlvDemuxError> {
-        Ok(u16::from_be_bytes(
-            self.take(2)?.try_into().expect("exact slice"),
-        ))
+        Ok(u16::from_be_bytes(self.take_array::<2>()?))
     }
 
     fn read_u32(&mut self) -> Result<u32, FlvDemuxError> {
-        Ok(u32::from_be_bytes(
-            self.take(4)?.try_into().expect("exact slice"),
-        ))
+        Ok(u32::from_be_bytes(self.take_array::<4>()?))
     }
 
     fn read_u64(&mut self) -> Result<u64, FlvDemuxError> {
-        Ok(u64::from_be_bytes(
-            self.take(8)?.try_into().expect("exact slice"),
-        ))
+        Ok(u64::from_be_bytes(self.take_array::<8>()?))
+    }
+
+    /// Читает ровно `N` байт как массив; длина гарантирована типом.
+    fn take_array<const N: usize>(&mut self) -> Result<[u8; N], FlvDemuxError> {
+        let array = *self
+            .bytes
+            .get(self.cursor..)
+            .and_then(<[u8]>::first_chunk::<N>)
+            .ok_or_else(|| malformed("AMF payload обрезан"))?;
+        // cursor + N <= bytes.len(), иначе first_chunk вернул бы None.
+        self.cursor += N;
+        Ok(array)
     }
 
     fn take(&mut self, length: usize) -> Result<&[u8], FlvDemuxError> {

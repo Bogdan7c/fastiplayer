@@ -59,9 +59,6 @@ pub(crate) enum RuntimeRemovalOutcome {
     NotFound {
         item_id: PlaylistItemId,
     },
-    DuplicateItemId {
-        item_id: PlaylistItemId,
-    },
     DuplicateEntryId {
         entry_id: PlaylistEntryId,
     },
@@ -70,9 +67,6 @@ pub(crate) enum RuntimeRemovalOutcome {
     },
     InvalidRetainedItem {
         item_id: PlaylistItemId,
-    },
-    PartialCompoundSelection {
-        compound_entry_id: playlist_core::PlaylistEntryId,
     },
     CompoundPartTarget {
         part_item_id: PlaylistItemId,
@@ -162,6 +156,7 @@ impl RemovalUndoState {
 }
 
 impl PlaylistRuntime {
+    #[cfg(test)]
     /// Remove/Delete заменяет slot только после успешного domain commit-а.
     pub(crate) fn remove_playlist_item(
         &mut self,
@@ -213,6 +208,7 @@ impl PlaylistRuntime {
         runtime_outcome
     }
 
+    #[cfg(test)]
     /// Remove Others сохраняет retained row и один shared snapshot.
     pub(crate) fn remove_other_playlist_items(
         &mut self,
@@ -304,9 +300,6 @@ impl PlaylistRuntime {
             ControllerDestructiveRemovalOutcome::NotFound { item_id } => {
                 RuntimeRemovalOutcome::NotFound { item_id }
             }
-            ControllerDestructiveRemovalOutcome::DuplicateItemId { item_id } => {
-                RuntimeRemovalOutcome::DuplicateItemId { item_id }
-            }
             ControllerDestructiveRemovalOutcome::DuplicateEntryId { entry_id } => {
                 RuntimeRemovalOutcome::DuplicateEntryId { entry_id }
             }
@@ -315,9 +308,6 @@ impl PlaylistRuntime {
             }
             ControllerDestructiveRemovalOutcome::InvalidRetainedItem { item_id } => {
                 RuntimeRemovalOutcome::InvalidRetainedItem { item_id }
-            }
-            ControllerDestructiveRemovalOutcome::PartialCompoundSelection { compound_entry_id } => {
-                RuntimeRemovalOutcome::PartialCompoundSelection { compound_entry_id }
             }
             ControllerDestructiveRemovalOutcome::CompoundPartTarget {
                 part_item_id,

@@ -392,6 +392,10 @@ impl AppState {
                 StrongMediaOpenError::MissingTerminal,
             );
         };
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: checked increment remains non-zero"
+        )]
         let exact_revision = PlaybackIntentRevision::from_non_zero(
             NonZeroU64::new(next_revision).expect("checked increment remains non-zero"),
         );

@@ -15,3 +15,6 @@ bytes.workspace = true
 codec-core.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

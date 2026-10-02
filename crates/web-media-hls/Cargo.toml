@@ -28,3 +28,6 @@ mpeg-ts-demux.workspace = true
 fastiplayer-config.workspace = true
 symphonia-demux.workspace = true
 symphonia-format-isomp4.workspace = true
+
+[lints]
+workspace = true

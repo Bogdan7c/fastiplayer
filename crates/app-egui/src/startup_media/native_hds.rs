@@ -250,7 +250,7 @@ fn native_adaptive_http_context(
         source_config,
         adaptive_limits,
         AdaptiveRetryPolicy::new(
-            NonZeroU8::new(3).expect("native HDS retry attempts"),
+            const { NonZeroU8::new(3).expect("native HDS retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
             crate::web_media_adaptive_config::maximum_adaptive_retry_after(),

@@ -60,7 +60,7 @@ pub(crate) fn apply_playlist_row_play(
             app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, intent_dispatch);
             true
         }
-        ControllerPlayItemOutcome::ItemNotCommitted { .. }
+        ControllerPlayItemOutcome::ItemNotCommitted
         | ControllerPlayItemOutcome::IntentRevisionExhausted => false,
     }
 }
@@ -184,8 +184,8 @@ pub(crate) fn apply_discovery_navigation_action(
         PlaylistDiscoveryNavigationAction::Automatic(outcome) => {
             apply_automatic_lifecycle_outcome(app_state, playlist_runtime, renderer, outcome);
         }
-        PlaylistDiscoveryNavigationAction::ScopeCancelled { .. } => {}
-        PlaylistDiscoveryNavigationAction::ScopeFatal { .. } => {
+        PlaylistDiscoveryNavigationAction::ScopeCancelled => {}
+        PlaylistDiscoveryNavigationAction::ScopeFatal => {
             warn!("Playlist discovery navigation scope завершился fatal outcome");
         }
     }
@@ -228,8 +228,8 @@ fn apply_automatic_lifecycle_outcome(
         }
         AutomaticLifecycleOutcome::NoAction
         | AutomaticLifecycleOutcome::StaleObservation
-        | AutomaticLifecycleOutcome::HeldForExplicitIntent { .. }
-        | AutomaticLifecycleOutcome::Deferred { .. }
+        | AutomaticLifecycleOutcome::HeldForExplicitIntent
+        | AutomaticLifecycleOutcome::Deferred
         | AutomaticLifecycleOutcome::Stop { .. } => {}
     }
 }
@@ -530,10 +530,7 @@ fn resolve_relative_desktop_seek(
 }
 
 fn player_seek_request_id(request_id: DesktopTimelineSeekRequestId) -> TimelineSeekRequestId {
-    TimelineSeekRequestId::new(
-        std::num::NonZeroU64::new(request_id.get())
-            .expect("desktop timeline request IDs are non-zero"),
-    )
+    TimelineSeekRequestId::new(request_id.non_zero())
 }
 
 pub(crate) fn apply_manual_navigation_outcome(
@@ -565,11 +562,19 @@ pub(crate) fn apply_manual_navigation_outcome(
             next,
             ..
         } => app_state.replace_aborted_playlist_install(playlist_runtime, request_id, cause, next),
-        ControllerManualNavigationOutcome::PreviewInvalidated(_)
-        | ControllerManualNavigationOutcome::Waiting { .. }
-        | ControllerManualNavigationOutcome::NoItem(_)
-        | ControllerManualNavigationOutcome::StaleWait { .. }
-        | ControllerManualNavigationOutcome::Guarded(_)
+        // Исходы без немедленного действия UI фиксируются в debug-логе, чтобы
+        // «нажал Next — ничего не произошло» было видно при диагностике.
+        ControllerManualNavigationOutcome::PreviewInvalidated(invalidation) => {
+            tracing::debug!(?invalidation, "manual navigation preview инвалидирован");
+        }
+        ControllerManualNavigationOutcome::NoItem(no_item) => {
+            tracing::debug!(?no_item, "manual navigation не нашла target");
+        }
+        ControllerManualNavigationOutcome::Guarded(guard) => {
+            tracing::debug!(?guard, "manual navigation удержана transport guard-ом");
+        }
+        ControllerManualNavigationOutcome::Waiting { .. }
+        | ControllerManualNavigationOutcome::StaleWait
         | ControllerManualNavigationOutcome::IntentRevisionExhausted => {}
     }
 }

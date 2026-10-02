@@ -376,10 +376,12 @@ impl PlayerSession {
             ));
         }
 
-        let installed = self
-            .installed_staged_position
-            .take()
-            .expect("validated installed prepared position remains owner-held");
+        // Выше проверялась ссылка на этот же slot; take забирает владение им.
+        let Some(installed) = self.installed_staged_position.take() else {
+            return Err(Self::prepared_position_restore_failure(
+                "installed prepared position disappeared during adoption",
+            ));
+        };
         match installed.outcome {
             InstalledStagedPositionOutcome::Completed { .. } => {
                 Ok(InstalledPositionRestoreStart::CompletedWithoutSeek)
@@ -550,23 +552,16 @@ impl PlayerSession {
 
     /// Не позволяет прежнему instance дождаться commit-а уже нового media.
     pub(crate) fn reconcile_installed_position_restore_identity(&mut self) {
-        let is_stale = self
-            .pending_installed_position_restore
-            .as_ref()
-            .is_some_and(|pending| {
-                self.snapshot.media_instance_id != Some(pending.media_instance_id)
-                    || self
-                        .playback_intent_control
-                        .match_installed_target(pending.request_id, pending.media_instance_id)
-                        != InstalledMediaTargetMatch::Matching
-            });
-        if !is_stale {
+        let current_media_instance_id = self.snapshot.media_instance_id;
+        let playback_intent_control = &self.playback_intent_control;
+        let Some(pending) = self.pending_installed_position_restore.take_if(|pending| {
+            current_media_instance_id != Some(pending.media_instance_id)
+                || playback_intent_control
+                    .match_installed_target(pending.request_id, pending.media_instance_id)
+                    != InstalledMediaTargetMatch::Matching
+        }) else {
             return;
-        }
-        let pending = self
-            .pending_installed_position_restore
-            .take()
-            .expect("stale pending installed restore was just observed");
+        };
         Self::publish_installed_restore_outcome(
             pending.outcome_tx,
             InstalledMediaStateRestoreOutcome::StaleInstance,

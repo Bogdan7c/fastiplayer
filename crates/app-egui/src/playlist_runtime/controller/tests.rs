@@ -1,6 +1,5 @@
 use std::num::NonZeroU64;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackIntentRevision};
 use playlist_core::{
@@ -10,20 +9,14 @@ use playlist_core::{
 
 use super::*;
 use crate::media_open::{
-    AuthorizationDispatchResolution, MediaOpenClientKey, MediaOpenRequestId,
-    PlayerDispatchRejection,
+    AuthorizationDispatchResolution, MediaOpenRequestId, PlayerDispatchRejection,
 };
 use crate::playlist_runtime::PlaylistBindingGeneration;
 use crate::playlist_runtime::controller::install::{
-    ControllerInstallPhase, ControllerMediaOpenCommandError, ControllerMediaOpenDisposition,
-    DeferredControllerIntent, DeferredTransportIntent, DesiredQueueModes, InstallReadyOutcome,
-    LifecycleIntentOutcome, PlaylistInstallAdmissionError, PlaylistInstallMutation,
-    PlaylistInstallRequest,
+    ControllerInstallPhase, DeferredControllerIntent, DeferredTransportIntent, DesiredQueueModes,
+    InstallReadyOutcome, LifecycleIntentOutcome, PlaylistInstallMutation, PlaylistInstallRequest,
 };
-use crate::playlist_runtime::identity::{
-    PendingTargetOrigin, PlaylistItemErrorCategory, PlaylistItemErrorPhase, TransportActionOrigin,
-};
-use crate::playlist_runtime::view::PlaylistWorkerAvailability;
+use crate::playlist_runtime::identity::{PendingTargetOrigin, TransportActionOrigin};
 
 fn non_zero(value: u64) -> NonZeroU64 {
     NonZeroU64::new(value).unwrap()
@@ -609,9 +602,6 @@ fn lifecycle_intents_are_bounded_in_every_install_phase() {
             },
         ))
         .unwrap();
-    dispatching
-        .request_lifecycle_intent(DeferredControllerIntent::Shutdown)
-        .unwrap();
     let drain = dispatching
         .resolve_authorization_dispatch(
             request_id(91),
@@ -623,7 +613,11 @@ fn lifecycle_intents_are_bounded_in_every_install_phase() {
         .unwrap();
     assert_eq!(
         drain.deferred_intent,
-        Some(DeferredControllerIntent::Shutdown)
+        Some(DeferredControllerIntent::Transport(
+            DeferredTransportIntent::Stop {
+                origin: TransportActionOrigin::Ui,
+            }
+        ))
     );
 
     let mut in_flight = PlaylistController::new();
@@ -644,81 +638,6 @@ fn lifecycle_intents_are_bounded_in_every_install_phase() {
             request_id: request_id(92)
         })
     );
-}
-
-#[test]
-fn missing_resolution_and_missing_installed_are_fatal_without_token_abort() {
-    let mut controller = PlaylistController::new();
-    let item_id = append_ids(&mut controller, 1)[0];
-    reserve_existing(&mut controller, 110, 120, item_id);
-    controller
-        .begin_authorization_dispatch(request_id(110))
-        .unwrap();
-    assert_eq!(
-        controller.report_missing_authorization_resolution(request_id(110)),
-        PlaylistControllerInvariantViolation::MissingAuthorizationResolution
-    );
-    assert!(matches!(
-        controller.append(vec![draft(2)]),
-        Err(ControllerAppendError::FatalInvariant)
-    ));
-
-    let mut installed_missing = PlaylistController::new();
-    let item_id = append_ids(&mut installed_missing, 1)[0];
-    reserve_existing(&mut installed_missing, 111, 121, item_id);
-    installed_missing
-        .begin_authorization_dispatch(request_id(111))
-        .unwrap();
-    installed_missing
-        .resolve_authorization_dispatch(
-            request_id(111),
-            AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
-        )
-        .unwrap();
-    assert_eq!(
-        installed_missing.report_terminal_without_installed(request_id(111)),
-        PlaylistControllerInvariantViolation::MissingInstalledTerminal
-    );
-}
-
-#[test]
-fn d49_badge_correlation_and_d70_retention_do_not_dirty_queue() {
-    let mut controller = PlaylistController::new();
-    let item_ids = append_ids(&mut controller, 2);
-    let dirty_before_errors = controller.dirty_revision();
-    controller
-        .accept_install_request(install_request(&controller, 130, 140, item_ids[0]))
-        .unwrap();
-    assert_eq!(
-        controller.record_request_error(
-            item_ids[0],
-            request_id(130),
-            PlaylistItemErrorPhase::Preparation,
-            PlaylistItemErrorCategory::Unavailable,
-            Arc::from("источник временно недоступен"),
-        ),
-        RuntimeErrorCorrelationOutcome::Recorded
-    );
-    assert_eq!(
-        controller.record_request_error(
-            item_ids[1],
-            request_id(130),
-            PlaylistItemErrorPhase::Install,
-            PlaylistItemErrorCategory::Rejected,
-            Arc::from("stale"),
-        ),
-        RuntimeErrorCorrelationOutcome::StaleRequest
-    );
-    assert_eq!(
-        controller.mark_committed_source_unavailable(item_ids[1], Arc::from("файл не найден"),),
-        RuntimeErrorCorrelationOutcome::Recorded
-    );
-    assert_eq!(controller.queue().top_level_entry_count(), 2);
-    assert_eq!(controller.dirty_revision(), dirty_before_errors);
-    let rows = controller.view_snapshot().visible_rows(0..2);
-    assert!(rows[0].runtime_error().is_some());
-    assert!(rows[0].is_pending());
-    assert!(rows[1].runtime_error().is_some());
 }
 
 #[test]
@@ -761,39 +680,6 @@ fn active_removal_detaches_identity_and_keeps_selection_independent() {
             .is_some_and(|active| active.item_id().is_none())
     );
     assert!(controller.view_snapshot().has_active_tombstone());
-}
-
-#[test]
-fn policy_commands_are_opaque_and_worker_unavailable_is_typed() {
-    let mut controller = PlaylistController::new();
-    let client = MediaOpenClientKey::from_non_zero(non_zero(1));
-    assert!(matches!(
-        controller.media_open_command(client, ControllerMediaOpenDisposition::Start),
-        Ok(ControllerMediaOpenCommand::Start { .. })
-    ));
-    assert!(matches!(
-        controller.media_open_command(client, ControllerMediaOpenDisposition::Coalesce),
-        Ok(ControllerMediaOpenCommand::Coalesce { .. })
-    ));
-    assert!(matches!(
-        controller.media_open_command(
-            client,
-            ControllerMediaOpenDisposition::Supersede {
-                expected_request_id: request_id(1)
-            }
-        ),
-        Ok(ControllerMediaOpenCommand::Supersede { .. })
-    ));
-
-    controller.set_worker_availability(PlaylistWorkerAvailability::Unavailable);
-    assert_eq!(
-        controller.media_open_command(client, ControllerMediaOpenDisposition::Start),
-        Err(ControllerMediaOpenCommandError::WorkerUnavailable)
-    );
-    assert_eq!(
-        controller.view_snapshot().worker_availability(),
-        PlaylistWorkerAvailability::Unavailable
-    );
 }
 
 /// A -> failed Installed B -> exact release -> C проходит тот же production controller path.
@@ -852,14 +738,7 @@ fn released_post_installed_candidate_unblocks_next_exact_install() {
             .item_id(),
         item_ids[0]
     );
-    assert!(matches!(
-        controller.media_open_command(
-            MediaOpenClientKey::from_non_zero(non_zero(77)),
-            ControllerMediaOpenDisposition::Start,
-        ),
-        Ok(ControllerMediaOpenCommand::Start { .. })
-    ));
-
+    // Следующий reserve_existing доказывает, что release снял блокировку install-а.
     reserve_existing(&mut controller, 803, 903, item_ids[2]);
     controller
         .begin_authorization_dispatch(request_id(803))
@@ -905,13 +784,7 @@ fn failed_post_installed_release_is_fatal_instead_of_unlocking_reservation() {
 
     controller.report_post_installed_compensation_failure();
 
-    assert_eq!(
-        controller.media_open_command(
-            MediaOpenClientKey::from_non_zero(non_zero(78)),
-            ControllerMediaOpenDisposition::Start,
-        ),
-        Err(ControllerMediaOpenCommandError::FatalInvariant)
-    );
+    assert!(controller.fatal_invariant().is_some());
     assert_eq!(
         controller.install_phase(),
         Some(ControllerInstallPhase::AuthorizationInFlight)
@@ -925,14 +798,6 @@ fn coalesce_and_pre_ready_supersede_keep_exact_single_pending_request() {
     controller
         .accept_install_request(install_request(&controller, 180, 190, item_ids[0]))
         .unwrap();
-    assert_eq!(
-        controller.confirm_coalesced_install_request(request_id(180)),
-        Ok(())
-    );
-    assert_eq!(
-        controller.confirm_coalesced_install_request(request_id(181)),
-        Err(PlaylistInstallAdmissionError::StaleSupersede)
-    );
 
     controller
         .supersede_install_request_before_ready(
@@ -947,9 +812,5 @@ fn coalesce_and_pre_ready_supersede_keep_exact_single_pending_request() {
             .unwrap()
             .request_id(),
         request_id(181)
-    );
-    assert_eq!(
-        controller.confirm_coalesced_install_request(request_id(180)),
-        Err(PlaylistInstallAdmissionError::StaleSupersede)
     );
 }

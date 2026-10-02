@@ -13,3 +13,6 @@ crossbeam-channel.workspace = true
 media-core = { workspace = true }
 tracing.workspace = true
 video-frame-contract.workspace = true
+
+[lints]
+workspace = true

@@ -509,16 +509,12 @@ fn drain_pipe_readers(
         )
         .map_err(map_pipe_drain_error);
 
-    match (stdout_result, stderr_result) {
-        (Ok(_), Ok(_)) if output_budget_signal.load().is_some() => {
-            let stream = output_budget_signal
-                .load()
-                .expect("guarded output budget signal");
-            Err(stream.into_error(output_budgets))
-        }
-        (Ok(stdout), Ok(stderr_bytes)) => Ok((stdout, stderr_bytes)),
-        (Err(primary), Ok(_)) | (Ok(_), Err(primary)) => Err(primary),
-        (Err(primary), Err(cleanup)) => Err(combine_process_failures(
+    // Budget signal читается один раз после завершения обоих drain-ов.
+    match (stdout_result, stderr_result, output_budget_signal.load()) {
+        (Ok(_), Ok(_), Some(stream)) => Err(stream.into_error(output_budgets)),
+        (Ok(stdout), Ok(stderr_bytes), None) => Ok((stdout, stderr_bytes)),
+        (Err(primary), Ok(_), _) | (Ok(_), Err(primary), _) => Err(primary),
+        (Err(primary), Err(cleanup), _) => Err(combine_process_failures(
             primary,
             anyhow::Error::new(cleanup),
         )),

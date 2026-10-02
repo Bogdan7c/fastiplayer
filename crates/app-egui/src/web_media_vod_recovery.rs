@@ -182,6 +182,10 @@ struct VodEndpointRecoveryDemuxer {
 impl VodEndpointRecoveryDemuxer {
     /// Возвращает neutral readiness hint без отдельной polling policy.
     fn temporarily_unavailable() -> DemuxReadEvent {
+        #[expect(
+            clippy::expect_used,
+            reason = "инвариант: minimum demux retry hint обязан быть валиден"
+        )]
         let retry_hint = DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER)
             .expect("minimum demux retry hint обязан быть валиден");
         DemuxReadEvent::TemporarilyUnavailable(retry_hint)

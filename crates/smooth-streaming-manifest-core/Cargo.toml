@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 bounded-xml-reader.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

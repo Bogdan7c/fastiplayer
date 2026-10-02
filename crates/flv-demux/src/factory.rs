@@ -56,6 +56,11 @@ impl FlvDemuxFactory {
         })
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "factory создаёт descriptor ровно с двумя registration (FLV и F4F) и вызывает этот метод \
+                  только с этими литералами"
+    )]
     fn registration(&self, container: &str) -> &DemuxContainerRegistration {
         self.descriptor
             .containers

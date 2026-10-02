@@ -222,17 +222,18 @@ impl FfmpegDecoderWorker {
             .active_decoder
             .as_ref()
             .map(|decoder| decoder.decode_loop.end_of_stream_drain_state());
-        if matches!(
-            current_state,
-            Some(VideoDecoderEndOfStreamDrainState::Draining {
+        // Повторный запрос той же generation не меняет уже начатый drain.
+        if let Some(
+            unchanged_state @ (VideoDecoderEndOfStreamDrainState::Draining {
                 generation: active_generation,
-            } | VideoDecoderEndOfStreamDrainState::Drained {
+            }
+            | VideoDecoderEndOfStreamDrainState::Drained {
                 generation: active_generation,
-            }) if active_generation == generation
-        ) {
-            return VideoDecoderEndOfStreamDrainResult::Unchanged(
-                current_state.expect("matched state is present"),
-            );
+            }),
+        ) = current_state
+            && active_generation == generation
+        {
+            return VideoDecoderEndOfStreamDrainResult::Unchanged(unchanged_state);
         }
 
         self.drive_end_of_stream_drain(generation)

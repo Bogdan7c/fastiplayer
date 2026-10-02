@@ -154,6 +154,10 @@ fn network_resolution(
 
     let fallback_display_name = parsed_uri.host_str().unwrap_or("network media").to_owned();
     let reopenable_uri = exact_input_uri.unwrap_or_else(|| parsed_uri.into());
+    #[expect(
+        clippy::expect_used,
+        reason = "успешно разобранный абсолютный URI всегда непуст"
+    )]
     let secret_locator = SecretUrlLocator::from_reopenable_url(reopenable_uri)
         .expect("parsed absolute URI is non-empty");
     Ok(ResolvedGenericLocator {

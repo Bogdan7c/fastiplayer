@@ -6,7 +6,7 @@ use render_wgpu_shell::Renderer;
 use winit::window::Window;
 
 use crate::playlist_runtime::{
-    ControllerMoveItemsOutcome, PlaylistImportContinueOutcome, PlaylistRuntime, RemovalUndoOutcome,
+    ControllerMoveItemsOutcome, PlaylistRuntime, RemovalUndoOutcome,
     RuntimeCompoundHeaderPlayOutcome, RuntimeCompoundPartPlayOutcome, RuntimeMoveItemsOutcome,
     RuntimeRemovalOutcome, RuntimeToggleCompoundDisclosureOutcome, RuntimeUpdateSelectionOutcome,
     ToggleCompoundDisclosureOutcome, UpdateSelectionOutcome,
@@ -161,30 +161,8 @@ pub(crate) fn apply_playlist_actions(
             }
             PlaylistAction::ContinueImport(preview_id) => {
                 let outcome = runtime.continue_playlist_import(preview_id);
-                if !matches!(
-                    outcome,
-                    PlaylistImportContinueOutcome::AwaitingConfirmation
-                        | PlaylistImportContinueOutcome::Committed(_)
-                ) {
-                    runtime.set_playlist_safe_feedback(match outcome {
-                        PlaylistImportContinueOutcome::Stale => {
-                            "Предпросмотр импорта устарел; выберите файл ещё раз"
-                        }
-                        PlaylistImportContinueOutcome::RuntimeClosed => {
-                            "Импорт уже недоступен: приложение завершает работу"
-                        }
-                        PlaylistImportContinueOutcome::MaterializationRejected(_) => {
-                            "Импорт содержит неподдерживаемый источник медиа"
-                        }
-                        PlaylistImportContinueOutcome::CommitRejected(_) => {
-                            "Не удалось применить импорт без изменения плейлиста"
-                        }
-                        PlaylistImportContinueOutcome::ConfirmationIdentityExhausted => {
-                            "Не удалось открыть подтверждение импорта"
-                        }
-                        PlaylistImportContinueOutcome::AwaitingConfirmation
-                        | PlaylistImportContinueOutcome::Committed(_) => unreachable!(),
-                    });
+                if let Some(feedback) = outcome.failure_feedback() {
+                    runtime.set_playlist_safe_feedback(feedback);
                 }
                 changed = true;
             }

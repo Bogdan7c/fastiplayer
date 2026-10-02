@@ -453,18 +453,6 @@ impl StartupMediaController {
             || self.orchestration.has_pending_work()
     }
 
-    /// Read-only phase не даёт shell-у доступа к prepared media ownership.
-    #[allow(dead_code, reason = "Session 18 renders the startup phase read model")]
-    pub(crate) const fn phase(&self) -> StartupMediaPhase {
-        self.orchestration.phase
-    }
-
-    /// Informational D15 warning не является gate и переживает renderer suspend.
-    #[allow(dead_code, reason = "Session 18 renders the process-global warning")]
-    pub(crate) const fn has_sensitive_cli_persistence_warning(&self) -> bool {
-        self.orchestration.sensitive_cli_persistence_warning
-    }
-
     /// Запускает отложенное стартовое media после того, как `AppState` уже создан.
     pub(crate) fn start_pending_initial_media(
         &mut self,

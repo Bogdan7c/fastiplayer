@@ -426,6 +426,11 @@ impl PlaybackIntentControl {
     }
 
     /// Под тем же lock переводит request staged→installed и возвращает highest intent.
+    #[expect(
+        clippy::panic,
+        reason = "commit вызывается только для request-а, который этот же owner ранее поставил в staged; \
+                  потеря staged intent означала бы порчу lifecycle"
+    )]
     pub(crate) fn commit_staged_request(
         &self,
         request_id: MediaInstallRequestId,
@@ -481,17 +486,12 @@ impl PlaybackIntentControl {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        if state
+        if let Some(staged) = state
             .staged
-            .is_some_and(|staged| staged.request_id == update.request_id)
+            .as_mut()
+            .filter(|staged| staged.request_id == update.request_id)
         {
-            let outcome = {
-                let staged = state
-                    .staged
-                    .as_mut()
-                    .expect("matching staged request уже проверен");
-                compare_and_update_accepted(&mut staged.accepted, update)
-            };
+            let outcome = compare_and_update_accepted(&mut staged.accepted, update);
             let should_apply_current = outcome == PlaybackIntentUpdateOutcome::AppliedToStaged;
             if should_apply_current && let Some(installed) = state.installed.as_ref() {
                 state.pending_current_for_staged = Some(PendingCurrentPlaybackIntentApply {

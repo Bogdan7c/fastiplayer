@@ -317,7 +317,7 @@ fn project_component<'candidate>(
         source_config,
         limits,
         AdaptiveRetryPolicy::new(
-            NonZeroU8::new(3).expect("non-zero DASH retry attempts"),
+            const { NonZeroU8::new(3).expect("non-zero DASH retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
             crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
@@ -718,31 +718,35 @@ pub(crate) fn dash_policy(limits: AdaptiveTransportLimits) -> Result<DashVodOpen
     Ok(DashVodOpenPolicy {
         maximum_manifest_bytes: limits.maximum_manifest_bytes,
         maximum_fragment_bytes: limits.maximum_segment_bytes,
-        maximum_range_read_bytes: NonZeroUsize::new(DASH_RANGE_READ_AHEAD_BYTES)
-            .expect("DASH Range read-ahead bytes"),
-        maximum_cached_range_pages: NonZeroUsize::new(MAXIMUM_CACHED_DASH_RANGE_PAGES)
-            .expect("DASH cached Range pages"),
+        maximum_range_read_bytes: const {
+            NonZeroUsize::new(DASH_RANGE_READ_AHEAD_BYTES).expect("DASH Range read-ahead bytes")
+        },
+        maximum_cached_range_pages: const {
+            NonZeroUsize::new(MAXIMUM_CACHED_DASH_RANGE_PAGES).expect("DASH cached Range pages")
+        },
         maximum_planned_segments: limits.maximum_snapshot_segments,
-        maximum_parallel_catalog_probes: NonZeroUsize::new(MAXIMUM_PARALLEL_DASH_CATALOG_PROBES)
-            .expect("DASH parallel catalog probes"),
+        maximum_parallel_catalog_probes: const {
+            NonZeroUsize::new(MAXIMUM_PARALLEL_DASH_CATALOG_PROBES)
+                .expect("DASH parallel catalog probes")
+        },
         demux_sniff_budget: DemuxSniffBudget::new(
-            NonZeroUsize::new(64 * 1_024).expect("DASH sniff bytes"),
-            NonZeroUsize::new(8).expect("DASH sniff segments"),
+            const { NonZeroUsize::new(64 * 1_024).expect("DASH sniff bytes") },
+            const { NonZeroUsize::new(8).expect("DASH sniff segments") },
             Duration::from_secs(2),
         )?,
         progressive_limits: ProgressiveDemuxBufferLimits::new(
-            NonZeroUsize::new(256).expect("DASH event queue"),
-            NonZeroUsize::new(16 * 1_024 * 1_024).expect("DASH encoded queue"),
+            const { NonZeroUsize::new(256).expect("DASH event queue") },
+            const { NonZeroUsize::new(16 * 1_024 * 1_024).expect("DASH encoded queue") },
         ),
         asynchronous_seek_limits: ProgressiveAsyncSeekLimits::new(
-            NonZeroUsize::new(16).expect("DASH outstanding seek receipts"),
+            const { NonZeroUsize::new(16).expect("DASH outstanding seek receipts") },
         ),
         retry_hint: DemuxRetryHint::new(Duration::from_millis(10))?,
         composite_lead_policy: CompositeComponentLeadPolicy::single_pending_packet(
             Duration::from_secs(3),
-            NonZeroUsize::new(4 * 1_024 * 1_024).expect("DASH composite packet"),
+            const { NonZeroUsize::new(4 * 1_024 * 1_024).expect("DASH composite packet") },
         )?,
-        maximum_seek_scan_events: NonZeroUsize::new(65_536).expect("DASH seek scan events"),
+        maximum_seek_scan_events: const { NonZeroUsize::new(65_536).expect("DASH seek scan events") },
         maximum_seek_scan_bytes: limits.maximum_segment_bytes,
     })
 }

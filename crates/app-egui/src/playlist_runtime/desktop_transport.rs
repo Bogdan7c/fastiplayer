@@ -75,7 +75,7 @@ impl DesktopTransportOwner {
 
     pub(super) fn new(wake_port: AppWakePort) -> Self {
         let (command_tx, command_rx) = sync_channel(DESKTOP_COMMAND_CAPACITY);
-        let effective_volume = EffectiveVolume::from_player(1.0).expect("constant volume is valid");
+        let effective_volume = EffectiveVolume::FULL;
         let last_snapshot = DesktopSnapshotView::neutral(effective_volume);
         Self {
             integration: None,
@@ -122,8 +122,8 @@ impl DesktopTransportOwner {
 
     /// AppShell вызывает этот boundary только после successful process lease.
     pub(super) fn start(&mut self, initial_volume: f32) {
-        self.effective_volume = EffectiveVolume::from_player(initial_volume)
-            .unwrap_or_else(|_| EffectiveVolume::from_player(1.0).expect("constant volume"));
+        self.effective_volume =
+            EffectiveVolume::from_player(initial_volume).unwrap_or(EffectiveVolume::FULL);
         self.last_snapshot.volume = self.effective_volume;
         match DesktopIntegration::spawn(self.command_sink.clone(), self.last_snapshot.clone()) {
             Ok(integration) => self.integration = Some(integration),
@@ -409,7 +409,7 @@ impl PlaylistRuntime {
         self.desktop_transport
             .as_ref()
             .map(DesktopTransportOwner::effective_volume)
-            .unwrap_or_else(|| EffectiveVolume::from_player(1.0).expect("constant volume"))
+            .unwrap_or(EffectiveVolume::FULL)
     }
 
     pub(crate) fn set_desktop_effective_volume(&mut self, volume: EffectiveVolume) -> bool {

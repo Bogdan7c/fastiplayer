@@ -169,6 +169,7 @@ pub(super) struct PlaylistPersistenceOwner {
 
 impl PlaylistPersistenceOwner {
     pub(super) fn new(debounce_ms: u64) -> Self {
+        #[expect(clippy::expect_used, reason = "debounce валидирован в PlaylistConfig")]
         let configured = SaveDebounce::new(std::time::Duration::from_millis(debounce_ms))
             .expect("validated PlaylistConfig must contain a valid state save debounce");
         Self {
@@ -369,10 +370,6 @@ impl PlaylistPersistenceOwner {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "manual Retry UI intent is exposed by PlaylistRuntime"
-    )]
     pub(super) fn retry_now(&self) -> Result<(), SaveControlError> {
         self.save_runtime
             .borrow()
@@ -382,7 +379,6 @@ impl PlaylistPersistenceOwner {
             .retry_now()
     }
 
-    #[allow(dead_code, reason = "read-only model is exposed by PlaylistRuntime")]
     pub(super) const fn view(&self) -> PlaylistPersistenceView {
         self.view
     }

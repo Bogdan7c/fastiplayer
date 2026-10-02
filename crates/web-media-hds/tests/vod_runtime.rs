@@ -1,5 +1,14 @@
 //! Hermetic S38 acceptance evidence: local F4M/bootstrap/F4F проходят production runtime.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 use std::collections::HashMap;
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::sync::Arc;

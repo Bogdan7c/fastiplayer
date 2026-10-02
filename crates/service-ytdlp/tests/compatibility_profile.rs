@@ -3,6 +3,15 @@
 //! Тест намеренно работает только с data artifacts и не вызывает production
 //! process, transport, demux, decoder либо player code.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -95,7 +95,7 @@ impl PlayerSession {
             .iter()
             .find(|track| track.id == video_track_id && track.kind == TrackKind::Video)
             .and_then(|track| track.time_base)
-            .unwrap_or_else(|| TimeBase::new(1, 1_000).expect("valid millisecond timebase"));
+            .unwrap_or(const { TimeBase::new(1, 1_000).expect("valid millisecond timebase") });
         let units = time_base.duration_to_track_units_saturating(MediaDuration::from_duration(
             target_position.as_duration(),
         ));

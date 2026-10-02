@@ -42,11 +42,12 @@ pub(crate) struct FlvTagHeader {
 
 /// Разбирает fixed header и не принимает reserved flags/unsupported version.
 pub(crate) fn parse_flv_header(bytes: &[u8]) -> Result<FlvHeader, FlvDemuxError> {
-    let header = bytes
-        .get(..FLV_HEADER_BYTES)
-        .ok_or_else(|| FlvDemuxError::InvalidHeader {
-            reason: format!("нужно {FLV_HEADER_BYTES} bytes, доступно {}", bytes.len()),
-        })?;
+    let header: &[u8; FLV_HEADER_BYTES] =
+        bytes
+            .first_chunk()
+            .ok_or_else(|| FlvDemuxError::InvalidHeader {
+                reason: format!("нужно {FLV_HEADER_BYTES} bytes, доступно {}", bytes.len()),
+            })?;
     if &header[..3] != FLV_SIGNATURE {
         return Err(FlvDemuxError::InvalidHeader {
             reason: "signature не равна FLV".to_owned(),
@@ -63,7 +64,8 @@ pub(crate) fn parse_flv_header(bytes: &[u8]) -> Result<FlvHeader, FlvDemuxError>
             reason: format!("reserved flags выставлены: 0x{flags:02x}"),
         });
     }
-    let data_offset = u32::from_be_bytes(header[5..9].try_into().expect("exact slice"));
+    let [.., o0, o1, o2, o3] = *header;
+    let data_offset = u32::from_be_bytes([o0, o1, o2, o3]);
     let data_offset = usize::try_from(data_offset).map_err(|_| FlvDemuxError::InvalidHeader {
         reason: "data offset не помещается в usize".to_owned(),
     })?;
@@ -162,10 +164,10 @@ pub(crate) fn validate_previous_tag_size(
     expected_tag_size: usize,
     offset: u64,
 ) -> Result<(), FlvDemuxError> {
-    let value = bytes
-        .get(..PREVIOUS_TAG_SIZE_BYTES)
+    let value: &[u8; PREVIOUS_TAG_SIZE_BYTES] = bytes
+        .first_chunk()
         .ok_or_else(|| malformed(offset, "PreviousTagSize обрезан"))?;
-    let actual = u32::from_be_bytes(value.try_into().expect("exact slice"));
+    let actual = u32::from_be_bytes(*value);
     if usize::try_from(actual).ok() != Some(expected_tag_size) {
         return Err(malformed(
             offset,

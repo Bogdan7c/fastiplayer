@@ -228,17 +228,15 @@ fn derive_aac_lc_audio_specific_config(
     sampling_rate: u32,
     channels: u16,
 ) -> Result<Box<[u8]>, SmoothManifestError> {
-    let frequency_index = (0u32..=12)
-        .find(|index| aac_sampling_rate(*index) == Some(sampling_rate))
+    let frequency_index = (0u16..=12)
+        .find(|index| aac_sampling_rate(u32::from(*index)) == Some(sampling_rate))
         .ok_or_else(|| codec_error(SmoothCodecConfigurationError::InvalidAacAudioSpecificConfig))?;
     if channels == 0 || channels > 15 {
         return Err(codec_error(
             SmoothCodecConfigurationError::AacChannelCountMismatch,
         ));
     }
-    let packed = (2u16 << 11)
-        | (u16::try_from(frequency_index).expect("AAC frequency index <= 12") << 7)
-        | (channels << 3);
+    let packed = (2u16 << 11) | (frequency_index << 7) | (channels << 3);
     Ok(packed.to_be_bytes().into())
 }
 

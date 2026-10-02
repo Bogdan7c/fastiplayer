@@ -1,5 +1,13 @@
 //! Отдельная real-runtime проверка AUD-005: потеря packet completion ACK.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
 #![cfg(feature = "ffmpeg")]
 
 use std::path::Path;

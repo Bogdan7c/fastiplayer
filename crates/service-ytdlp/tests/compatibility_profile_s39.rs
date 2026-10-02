@@ -1,5 +1,14 @@
 //! Focused traceability S39 для exact RTMP variant gate.
 
+// Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
+// здесь работают как assertions. Production-политика паник сюда не относится.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration test crate: panics are test assertions"
+)]
+
 // Читаем checked-in JSON profile без production parser-а или network side effects.
 use serde_json::Value;
 // Читаем immutable fixture manifest только внутри hermetic integration test-а.

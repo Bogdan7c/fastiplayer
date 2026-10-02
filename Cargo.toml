@@ -140,6 +140,18 @@ edition = "2024"
 rust-version = "1.92"
 license = "MIT"
 
+# Машинная проверка docs/panic-invariant-policy.md для first-party crate-ов.
+# Production-код не должен паниковать на внешнем вводе, ошибках ОС или
+# отравленных lock-ах. Допустимая паника оформляется локально через
+# `#[expect(clippy::..., reason = "...")]` с доказательством инварианта, а
+# ненулевые константы вычисляются в `const { ... }`, где ошибка становится
+# ошибкой компиляции. Тестовый код освобождён через clippy.toml.
+# Уровень "warn" + `-D warnings` в CI фактически запрещает новые нарушения.
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
 [workspace.dependencies]
 wgpu = { version = "29", features = ["vulkan"] }
 winit = "0.30"

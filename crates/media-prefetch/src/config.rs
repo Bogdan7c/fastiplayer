@@ -47,6 +47,12 @@ impl PrefetchConfig {
             });
         }
 
+        // Chunk аллоцируется как Vec<u8>, поэтому его размер обязан помещаться в
+        // usize. Проверки initial <= chunk достаточно, чтобы покрыть оба размера.
+        if usize::try_from(chunk_bytes).is_err() {
+            return Err(PrefetchConfigError::ChunkExceedsAddressSpace { chunk_bytes });
+        }
+
         if window_bytes < chunk_bytes {
             return Err(PrefetchConfigError::WindowSmallerThanChunk {
                 chunk_bytes,
@@ -71,6 +77,26 @@ impl PrefetchConfig {
     #[must_use]
     pub const fn chunk_bytes(self) -> u64 {
         self.chunk_bytes
+    }
+
+    /// Возвращает размер первого чтения как длину буфера в памяти.
+    #[expect(
+        clippy::expect_used,
+        reason = "new() отклоняет chunk_bytes, не помещающийся в usize, initial_chunk_bytes <= \
+                  chunk_bytes, а Default использует малые константы"
+    )]
+    pub(crate) fn initial_chunk_len(self) -> usize {
+        usize::try_from(self.initial_chunk_bytes).expect("validated initial chunk fits usize")
+    }
+
+    /// Возвращает максимальный размер чтения как длину буфера в памяти.
+    #[expect(
+        clippy::expect_used,
+        reason = "new() отклоняет chunk_bytes, не помещающийся в usize, а Default использует \
+                  малые константы"
+    )]
+    pub(crate) fn chunk_len(self) -> usize {
+        usize::try_from(self.chunk_bytes).expect("validated chunk fits usize")
     }
 
     /// Возвращает целевой размер RAM-окна в bytes.
@@ -110,6 +136,13 @@ pub enum PrefetchConfigError {
         initial_chunk_bytes: u64,
 
         /// Запрошенный максимальный размер chunk-а.
+        chunk_bytes: u64,
+    },
+
+    /// Chunk аллоцируется в памяти целиком, поэтому должен помещаться в `usize`.
+    #[error("размер prefetch chunk ({chunk_bytes} bytes) не помещается в адресное пространство")]
+    ChunkExceedsAddressSpace {
+        /// Запрошенный размер chunk-а.
         chunk_bytes: u64,
     },
 

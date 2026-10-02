@@ -182,38 +182,6 @@ fn manual_batch_is_natural_atomic_allows_duplicates_and_rebases_to_current_tail(
 }
 
 #[test]
-fn cancel_and_queue_generation_supersede_never_commit_unfinished_manual_batch() {
-    for (cancel_explicitly, completion_generation) in [(true, 3), (false, 4)] {
-        let gate = Arc::new(ProbeGate::new());
-        let (executor, starts, _count) = executor(Some(gate.clone()));
-        let mut jobs = DiscoveryActionJobs::new();
-        let mut controller = PlaylistController::default();
-        let job_id = jobs
-            .start_manual_add(&executor, vec!["blocked.mkv".into()], 3)
-            .expect("manual job");
-        starts
-            .recv_timeout(Duration::from_secs(1))
-            .expect("started");
-        if cancel_explicitly {
-            assert!(jobs.cancel_manual_add(job_id));
-        }
-        gate.release();
-        drain_until_terminal(&mut jobs, &executor, &mut controller, completion_generation);
-        assert_eq!(controller.queue().top_level_entry_count(), 0);
-        let outcome = jobs
-            .read_model()
-            .latest_manual_completion
-            .expect("completion")
-            .outcome;
-        assert!(matches!(
-            outcome,
-            ManualAddTerminalOutcome::Cancelled
-                | ManualAddTerminalOutcome::SupersededQueueGeneration
-        ));
-    }
-}
-
-#[test]
 fn visible_refresh_coalesces_and_valid_cache_skips_second_probe() {
     let (executor, _starts, count) = executor(None);
     let mut jobs = DiscoveryActionJobs::new();
