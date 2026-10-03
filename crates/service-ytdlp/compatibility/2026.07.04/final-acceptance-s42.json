@@ -483,9 +483,9 @@
       "kind": "ExecutableTest",
       "role": "quality",
       "polarity": "Positive",
-      "package": "app-egui",
+      "package": "media-source-open",
       "target": "lib",
-      "path": "crates/app-egui/src/web_media_open/component_variants_tests.rs",
+      "path": "crates/media-source-open/src/web_media_open/component_variants_tests.rs",
       "symbol": "semantic_installed_rematches_fresh_exact_generation_not_provider_default"
     },
     "quality-preferred-height": {

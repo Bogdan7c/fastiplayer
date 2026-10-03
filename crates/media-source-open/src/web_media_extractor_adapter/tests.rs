@@ -217,8 +217,13 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
         "YtDlpTopology",
         "YtDlpTransportRequestContext",
     ];
-    // В media-source-open provider DTO разрешены только самому адаптеру.
-    const ALLOWED_PRODUCTION_SOURCES: &[&str] = &["web_media_extractor_adapter.rs"];
+    // В media-source-open provider DTO разрешены только самому адаптеру и
+    // переехавшим из app-egui exact/composed open intent-ам (там эта запись была
+    // в allowlist до переезда).
+    const ALLOWED_PRODUCTION_SOURCES: &[&str] = &[
+        "web_media_extractor_adapter.rs",
+        "web_media_open/component_variants.rs",
+    ];
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut rust_sources = Vec::new();
     collect_rust_sources(&source_root, &mut rust_sources);

@@ -27,6 +27,6 @@
 - Размер модулей: hard limit 800 строк, legacy-снимок `scripts/module-size-baseline.json` (точный ratchet, обновлять при любом изменении legacy-файла). Границы crate-ов: `scripts/check-refactor-guardrails.py`.
 
 ## Открытые направления
-- Вынос web-media orchestration (~15k строк) из app-egui в crate `media-source-open` — план и сессии-промпты в `user/web-media-extraction/` (приватно). Session-01 (листья) и session-02 (общие доменные типы: compose PreparedMedia, stream model, catalog) сделаны 2026-10-03; coverage baseline переснимается один раз после сессии 4 (до этого 2 теста `test_coverage_metrics` красные ожидаемо) — `mem:media-source-open/core`.
+- Вынос web-media orchestration (~15k строк) из app-egui в crate `media-source-open` — план и сессии-промпты в `user/web-media-extraction/` (приватно). Session-01 (листья) и session-02 (общие доменные типы: compose PreparedMedia, stream model, catalog) сделаны 2026-10-03, session-03 (разрыв цикла opener-ы ↔ web_media_open: intent/component_variants/capability probe в crate) — тоже 2026-10-03; следующая — session-04 (HLS/DASH opener-ы + refresh); coverage baseline переснимается один раз после сессии 5 (до этого 2 теста `test_coverage_metrics` красные ожидаемо) — `mem:media-source-open/core`.
 - Git: работать в `main`, отдельные ветки не создавать без указания владельца.
 - Transport-команды во время playlist install (guard/terminal slot, исполнитель Runtime+AppState): `mem:app-egui/transport-guard-execution-2026-10-03`.

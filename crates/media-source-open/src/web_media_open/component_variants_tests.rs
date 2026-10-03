@@ -29,7 +29,7 @@ use super::component_variants::{
 ///
 /// Component variants ещё не установлены: их ставит проверяемый
 /// `finalize_component_variant_configuration`.
-fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStreamConfiguration {
+pub(super) fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStreamConfiguration {
     let active_candidate = WebMediaCandidatePresentation {
         layout: web_media_core::StreamLayoutKind::Muxed,
         width: Some(1920),
@@ -54,7 +54,7 @@ fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStreamConfigurat
 }
 
 /// Строит parent identity с отдельно управляемой semantic частью для fresh-generation fixtures.
-fn parent(
+pub(super) fn parent(
     source_value: u64,
     extraction_generation: u64,
     exact_key: &str,
@@ -73,7 +73,7 @@ fn parent(
 }
 
 /// Строит две video rows одного catalog generation.
-fn video_catalog(
+pub(super) fn video_catalog(
     parent: ExactSelectionIdentity,
     catalog_generation: u64,
     first_semantic_key: &str,
@@ -127,7 +127,7 @@ fn video_variant(
 }
 
 /// Выбирает exact video row через единственную core canonicalization boundary.
-fn video_selection(
+pub(super) fn video_selection(
     catalog: &ComponentVariantCatalog,
     variant_index: usize,
 ) -> ComponentVariantSelection {

@@ -69,7 +69,7 @@ pub(crate) struct PreparedDashCandidate {
     /// Dynamic S31L port; static VOD сохраняет `None`.
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
     pub(crate) component_variants:
-        crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
+        media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog,
 }
 
 /// Production local wall clock; direct UTCTiming offset применяется provider-ом.
@@ -178,9 +178,9 @@ pub(crate) fn prepare_dash_candidate(
     endpoint_refresh: Option<Arc<dyn DashEndpointRefreshPort>>,
     timeline_port_generation: DynamicMediaTimelinePortGeneration,
     component_selection_intent:
-        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
+        media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
-    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+    capability_probe: &media_source_open::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
     endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<PreparedDashCandidate> {
     let generation =
@@ -226,11 +226,11 @@ pub(crate) fn prepare_dash_candidate(
             endpoint_refresh,
         };
         let (opened, component_variants) = match component_selection_intent {
-            crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
+            media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
                 prepare_dash_live(request).context("DASH live preflight завершился ошибкой")?,
-                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
+                media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
             ),
-            crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+            media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
                 let discovered = discover_dash_live_catalog(DashLiveCatalogDiscoveryRequest {
                     open: request,
                     catalog_identity,
@@ -242,7 +242,7 @@ pub(crate) fn prepare_dash_candidate(
                 let selected = catalog.rematch_semantic(semantic.clone())?;
                 (
                     prepare_discovered_dash_live_semantic(discovered, semantic)?,
-                    crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+                    media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
                         catalog,
                         provider_selection: selected,
                     },
@@ -271,11 +271,11 @@ pub(crate) fn prepare_dash_candidate(
         policy: dash_policy(limits)?,
     };
     let (opened, component_variants) = match component_selection_intent {
-        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
+        media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
             prepare_dash_vod(request).context("DASH VOD preflight завершился ошибкой")?,
-            crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
+            media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
         ),
-        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+        media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
             let discovered = discover_dash_vod_catalog(DashVodCatalogDiscoveryRequest {
                 open: request,
                 catalog_identity,
@@ -287,7 +287,7 @@ pub(crate) fn prepare_dash_candidate(
             let selected = catalog.rematch_semantic(semantic.clone())?;
             (
                 prepare_discovered_dash_vod_semantic(discovered, semantic)?,
-                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+                media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
                     catalog,
                     provider_selection: selected,
                 },

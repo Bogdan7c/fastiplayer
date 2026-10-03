@@ -40,6 +40,14 @@ web-media-http.workspace = true
 web-media-ftp.workspace = true
 web-media-playback-plan.workspace = true
 web-media-transport-api.workspace = true
+# Capability probe каталогов (`web_media_open::catalog_capabilities`): снимок
+# видео-возможностей, лёгкие аудио-типы без cpal/opus и порты проверки
+# DASH/Smooth/HDS-каталогов.
+capability-core.workspace = true
+audio-core.workspace = true
+web-media-dash.workspace = true
+web-media-smooth.workspace = true
+web-media-hds.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

@@ -24,7 +24,7 @@ use super::YtDlpCandidateOpenIntent;
 
 /// Намерение выбора independent components при exact reopen.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum YtDlpComponentSelectionOpenIntent {
+pub enum YtDlpComponentSelectionOpenIntent {
     /// Fresh provider выбирает собственную exact конфигурацию, если catalog доступен.
     ProviderDefault,
     /// Fresh catalog обязан повторно сопоставить только стабильные semantic identities.
@@ -33,26 +33,63 @@ pub(crate) enum YtDlpComponentSelectionOpenIntent {
 
 /// Один heap-owned exact reopen intent не раздувает каждый source request enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct YtDlpExactCandidateOpenIntent {
+pub struct YtDlpExactCandidateOpenIntent {
     /// Предыдущий exact parent selection для semantic rematch в fresh snapshot-е.
-    pub(super) selection: Box<YtDlpCandidateSelection>,
+    selection: Box<YtDlpCandidateSelection>,
     /// Исходная global/item policy не должна теряться при suspend/reopen.
-    pub(super) preference: WebMediaSelectionPreference,
+    preference: WebMediaSelectionPreference,
     /// Независимое component intent не смешивается с parent candidate selection.
-    pub(super) component_selection: YtDlpComponentSelectionOpenIntent,
+    component_selection: YtDlpComponentSelectionOpenIntent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct YtDlpComposedCandidateOpenIntent {
-    pub(super) selection: Box<service_ytdlp::YtDlpComposedSelection>,
-    pub(super) parent_preference: Box<YtDlpCandidateSelection>,
-    pub(super) preference: WebMediaSelectionPreference,
+pub struct YtDlpComposedCandidateOpenIntent {
+    selection: Box<service_ytdlp::YtDlpComposedSelection>,
+    parent_preference: Box<YtDlpCandidateSelection>,
+    preference: WebMediaSelectionPreference,
+}
+
+// Поля exact/composed intent закрыты: создать намерение можно только
+// именованными конструкторами `YtDlpCandidateOpenIntent::*` ниже, а внешний
+// код (fresh extraction в `app-egui`) только читает его через getter-ы.
+impl YtDlpExactCandidateOpenIntent {
+    /// Предыдущий exact parent selection, который fresh snapshot обязан semantic-rematch-ить.
+    #[must_use]
+    pub fn selection(&self) -> &YtDlpCandidateSelection {
+        &self.selection
+    }
+
+    /// Global/item quality policy, сохранённая через suspend/reopen.
+    #[must_use]
+    pub fn preference(&self) -> WebMediaSelectionPreference {
+        self.preference
+    }
+}
+
+impl YtDlpComposedCandidateOpenIntent {
+    /// Предыдущая service-owned video-only + audio-only composition.
+    #[must_use]
+    pub fn selection(&self) -> &service_ytdlp::YtDlpComposedSelection {
+        &self.selection
+    }
+
+    /// Video parent selection, с которым composition обязана быть согласована.
+    #[must_use]
+    pub fn parent_preference(&self) -> &YtDlpCandidateSelection {
+        &self.parent_preference
+    }
+
+    /// Global/item quality policy, сохранённая через suspend/reopen.
+    #[must_use]
+    pub fn preference(&self) -> WebMediaSelectionPreference {
+        self.preference
+    }
 }
 
 impl YtDlpCandidateOpenIntent {
     /// Открывает exact parent, но сбрасывает independent components к fresh provider default.
     #[must_use]
-    pub(crate) fn exact_parent_provider_default(
+    pub fn exact_parent_provider_default(
         selection: Box<YtDlpCandidateSelection>,
         preference: WebMediaSelectionPreference,
     ) -> Self {
@@ -65,7 +102,7 @@ impl YtDlpCandidateOpenIntent {
 
     /// Перестраивает тот же exact parent и сохраняет semantic component selection.
     #[must_use]
-    pub(crate) fn exact_preserving_installed_stream_configuration(
+    pub fn exact_preserving_installed_stream_configuration(
         selection: Box<YtDlpCandidateSelection>,
         stream_configuration: &WebMediaStreamConfiguration,
     ) -> Self {
@@ -86,7 +123,7 @@ impl YtDlpCandidateOpenIntent {
 
     /// Открывает exact parent с component intent, не меняя установленную quality preference.
     #[must_use]
-    pub(crate) fn exact_with_component_semantic_selection(
+    pub fn exact_with_component_semantic_selection(
         selection: Box<YtDlpCandidateSelection>,
         stream_configuration: &WebMediaStreamConfiguration,
         semantic_selection: ComponentVariantSemanticSelectionRequest,
@@ -99,7 +136,7 @@ impl YtDlpCandidateOpenIntent {
     }
 
     #[must_use]
-    pub(crate) fn composed(
+    pub fn composed(
         selection: Box<service_ytdlp::YtDlpComposedSelection>,
         parent_preference: Box<YtDlpCandidateSelection>,
         preference: WebMediaSelectionPreference,
@@ -112,7 +149,7 @@ impl YtDlpCandidateOpenIntent {
     }
 
     /// Возвращает component intent до consuming parent snapshot resolution.
-    pub(super) fn component_selection_intent(&self) -> YtDlpComponentSelectionOpenIntent {
+    pub fn component_selection_intent(&self) -> YtDlpComponentSelectionOpenIntent {
         match self {
             Self::BestPlayable => YtDlpComponentSelectionOpenIntent::ProviderDefault,
             Self::Exact(exact) => exact.component_selection.clone(),
@@ -123,7 +160,7 @@ impl YtDlpCandidateOpenIntent {
 
 /// Свежий provider-owned результат component catalog preparation.
 #[derive(Debug, Clone)]
-pub(crate) enum PreparedComponentVariantCatalog {
+pub enum PreparedComponentVariantCatalog {
     /// Текущий concrete provider не умеет independent component selection.
     Unavailable,
     /// Provider вернул свежий catalog и свой exact default selection того же generation.
@@ -135,7 +172,7 @@ pub(crate) enum PreparedComponentVariantCatalog {
 
 /// Typed ошибка чистой pre-barrier финализации component configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ComponentVariantFinalizationError {
+pub enum ComponentVariantFinalizationError {
     /// Semantic reopen потребовал catalog у provider-а, который его не предоставил.
     ComponentCatalogUnavailable,
     /// Fresh catalog не содержит запрошенную semantic конфигурацию.
@@ -176,7 +213,7 @@ impl std::error::Error for ComponentVariantFinalizationError {
 ///
 /// Функция consume-ит незавершённую конфигурацию, поэтому любая ошибка не может
 /// оставить вызывающему коду частично установленный catalog.
-pub(super) fn finalize_component_variant_configuration(
+pub fn finalize_component_variant_configuration(
     stream_configuration: WebMediaStreamConfiguration,
     intent: YtDlpComponentSelectionOpenIntent,
     prepared_catalog: PreparedComponentVariantCatalog,

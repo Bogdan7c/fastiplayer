@@ -128,7 +128,7 @@ pub(crate) fn discover_native_hls_catalog(
     audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
 ) -> Result<HlsCatalogDiscoveryOutcome> {
     let mut capability_probe =
-        crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe::new(
+        media_source_open::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe::new(
             system_capabilities.clone(),
             audio_capabilities,
         );

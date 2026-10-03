@@ -69,7 +69,7 @@ pub(crate) struct PreparedHlsCandidate {
         Arc<[media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
     pub(crate) component_variants:
-        crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
+        media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog,
 }
 
 struct HlsPreparedDemuxSeekPort {
@@ -161,9 +161,9 @@ pub(crate) fn prepare_hls_candidate(
     endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>>,
     timeline_port_generation: DynamicMediaTimelinePortGeneration,
     component_selection_intent:
-        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
+        media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
-    capability_probe: &mut crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+    capability_probe: &mut media_source_open::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
     endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<PreparedHlsCandidate> {
     let generation =
@@ -205,12 +205,12 @@ pub(crate) fn prepare_hls_candidate(
             initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
         };
         let (opened, component_variants) = match component_selection_intent {
-            crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
+            media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
                 prepare_hls_live_receipted(request, hls_async_seek_limits())
                     .context("HLS live preflight завершился ошибкой")?,
-                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
+                media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
             ),
-            crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+            media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
                 let discovered = discover_hls_catalog(
                     HlsCatalogDiscoveryRequest {
                         open: &request.common,
@@ -230,7 +230,7 @@ pub(crate) fn prepare_hls_candidate(
                 (
                     prepare_hls_catalog_live_receipted(request, reopen, hls_async_seek_limits())
                         .context("HLS live catalog reopen завершился ошибкой")?,
-                    crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+                    media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
                         catalog,
                         provider_selection: selected,
                     },
@@ -283,12 +283,12 @@ pub(crate) fn prepare_hls_candidate(
         policy,
     };
     let (opened, component_variants) = match component_selection_intent {
-        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
+        media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
             prepare_hls_vod_receipted(request, hls_async_seek_limits())
                 .context("HLS VOD preflight завершился ошибкой")?,
-            crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
+            media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
         ),
-        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+        media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
             let discovered = discover_hls_catalog(
                 HlsCatalogDiscoveryRequest {
                     open: &request,
@@ -308,7 +308,7 @@ pub(crate) fn prepare_hls_candidate(
             (
                 prepare_hls_catalog_vod_receipted(request, reopen, hls_async_seek_limits())
                     .context("HLS VOD catalog reopen завершился ошибкой")?,
-                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+                media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
                     catalog,
                     provider_selection: selected,
                 },
@@ -544,7 +544,7 @@ fn selection_and_containers(
 fn prove_deferred_hls_codec_evidence(
     candidate: &YtDlpNormalizedCandidate,
     demuxer: &mut dyn Demuxer,
-    capability_probe: &mut crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+    capability_probe: &mut media_source_open::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
 ) -> Result<()> {
     let StreamLayout::HlsMuxedCodecDeferred(_) = candidate.descriptor().layout() else {
         return Ok(());

@@ -60,7 +60,6 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
         "web_media_hls_refresh.rs",
         "web_media_open.rs",
         "web_media_open/catalog.rs",
-        "web_media_open/component_variants.rs",
         "web_media_open/content_probe_fallback.rs",
         "web_media_open/hds.rs",
         "web_media_open/preparation.rs",

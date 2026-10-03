@@ -75,7 +75,7 @@ pub(super) fn resolve_candidate_snapshot(
             ))
         }
         YtDlpCandidateOpenIntent::Exact(exact) => {
-            let previous = exact.selection;
+            let previous = exact.selection();
             let source = previous.exact_identity().source();
             let generation_value = previous
                 .exact_identity()
@@ -92,7 +92,7 @@ pub(super) fn resolve_candidate_snapshot(
                 is_cancelled,
             )?;
             let matched = snapshot
-                .rematch_exact(&previous)
+                .rematch_exact(previous)
                 .context("Fresh YtDlp snapshot не содержит semantic match exact selection")?;
             let exact = ExactSelectionIdentity::new(
                 matched.candidate().descriptor().identity().clone(),
@@ -105,14 +105,14 @@ pub(super) fn resolve_candidate_snapshot(
             ))
         }
         YtDlpCandidateOpenIntent::Composed(composed) => {
-            if composed.parent_preference.as_ref() != composed.selection.video_parent_selection() {
+            if composed.parent_preference() != composed.selection().video_parent_selection() {
                 return Err(anyhow!(
                     "Composed YtDlp intent содержит несогласованный video parent selection"
                 ));
             }
-            let source = composed.selection.descriptor().identity().source();
+            let source = composed.selection().descriptor().identity().source();
             let generation_value = composed
-                .selection
+                .selection()
                 .descriptor()
                 .identity()
                 .generation()
@@ -128,7 +128,7 @@ pub(super) fn resolve_candidate_snapshot(
                 is_cancelled,
             )?;
             let (_, selection, candidate) = snapshot
-                .rematch_composed(&composed.selection)
+                .rematch_composed(composed.selection())
                 .context("Fresh YtDlp snapshot не содержит composed semantic match")?;
             let parent_preference = Box::new(selection.video_parent_selection().clone());
             Ok((

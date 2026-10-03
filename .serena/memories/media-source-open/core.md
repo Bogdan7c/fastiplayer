@@ -18,8 +18,13 @@ Library crate `crates/media-source-open` (lib `media_source_open`): открыт
 - Fixtures за `cfg(any(test, feature = "test-fixtures"))`: `WebMediaStreamGeneration::for_test`, `WebMediaStreamConfiguration::fixture(parent, candidates, active, preference)` (generation выводится из parent), `selection_for_switch`, `has_video`, `WebMediaSelectionTarget::Fixture`, `WebMediaFacetAction::resolution_for_test`. Нюанс: под `cfg(any(test, feature))` clippy НЕ считает код тестовым → `panic!` в Fixture-ветке требует безусловный `#[expect(clippy::panic, reason)]`. `--all-targets` унифицирует feature в обычную сборку app-egui — production-код app не должен исчерпывающе match-ить `WebMediaSelectionTarget`.
 - Evidence: `runtime-coverage-s41.json` пути `compose_prepared_web_media` и `preference_distinguishes_global_default_and_item_override` переведены на media-source-open (решение владельца — править JSON напрямую). Guardrail `PROGRESSIVE_WEB_TRANSIENT_SECRET_SCAN_PATHS` дополнен путями crate-а.
 
-## Находка для session-03
-- `web_media_hls_open`/`web_media_dash_open` ещё зависят от `web_media_open::component_variants` (yt-dlp open intents, держится за `YtDlpCandidateOpenIntent` в app) и `web_media_open::catalog_capabilities` (`AppCatalogCapabilityProbe`; требует crate-ы `audio`, `web-media-dash/smooth/hds`). Session-04 переносит их позже, чем session-03 переносит opener-ы — решать порядок/порт осознанно.
+## Цикл opener-ы ↔ web_media_open разорван (session-03, 2026-10-03)
+- В crate модуль `web_media_open` (то же имя, остаток дерева приедет в session-05): `YtDlpCandidateOpenIntent` (enum в корне), `component_variants` (exact/composed intents, `YtDlpComponentSelectionOpenIntent`, `PreparedComponentVariantCatalog`, `finalize_component_variant_configuration`, `ComponentVariantFinalizationError`), `catalog_capabilities::AppCatalogCapabilityProbe`.
+- Решения владельца: enum переехал вместе с `component_variants`; поля `YtDlpExact/ComposedCandidateOpenIntent` закрыты, наружу только getter-ы `selection()/preference()/parent_preference()` (создание — только именованными конструкторами); аудио-типы из лёгкого `audio-core` (не `audio` с cpal/opus). Новые прямые deps: `audio-core`, `capability-core`, `web-media-dash/smooth/hds` (транзитивно уже были, render-core тоже транзитивно через player-core/capability-core — guardrail проверяет только прямые).
+- app-egui: `crate::web_media_open::{YtDlpCandidateOpenIntent, component_variants, catalog_capabilities}` — re-export; `web_media_hls_open`/`web_media_dash_open` уже ссылаются напрямую на `media_source_open::web_media_open::*` (от app-дерева `web_media_open` не зависят; остались только `crate::media_open::compose_prepared_web_media*` в `native_vod.rs` и refresh → opener-ы).
+- Тесты: `web_media_open/component_variants_tests.rs` (evidence `final-acceptance-s42.json` quality-exact-positive → package media-source-open), новые `web_media_open/open_intent_tests.rs` (5 тестов конструкторов/getter-ов на настоящем snapshot через подставной yt-dlp скрипт, `cfg(unix)`). Тесты probe остались в app `web_media_open/content_probe.rs`.
+- Сторож provider DTO: `web_media_open/component_variants.rs` переехал из allowlist app-egui в allowlist crate-а.
+- Порядок дальше: 04 — opener-ы + refresh, 05 — остаток `web_media_open` + пересъёмка coverage, 06 — проектирование портов, 07 — startup native jobs.
 
 ## Границы и проверки
 - Запрещённые зависимости (`MEDIA_SOURCE_OPEN_FORBIDDEN_DEPENDENCIES` в `scripts/check-refactor-guardrails.py`, тест `test_media_source_open_stays_below_ui_and_render`): app-egui, egui*, winit, wgpu, render-*, ui-artwork-egui.
@@ -29,7 +34,7 @@ Library crate `crates/media-source-open` (lib `media_source_open`): открыт
 - `flv-demux` больше не зависимость app-egui (был нужен только demux_registry).
 
 ## Осталось в app-egui (переедут позже)
-- `web_media_hls_refresh`/`web_media_dash_refresh` — зависят от `web_media_hls_open`/`web_media_dash_open` (сессия 3).
+- `web_media_hls_refresh`/`web_media_dash_refresh` — зависят от `web_media_hls_open`/`web_media_dash_open` (сессия 4).
 
 ## Coverage baseline — известное красное состояние
-- Решение владельца 2026-10-03: пересъёмка `coverage/baseline.json` один раз после сессии 4. До этого `scripts/tests/test_coverage_metrics.py` (`test_checked_in_baseline_matches_exact_policy_inventory`, `test_validate_baseline_cli_rejects_expired_exception`) красные ожидаемо.
+- Решение владельца 2026-10-03: пересъёмка `coverage/baseline.json` один раз после сессии 5 (остаток `web_media_open`; до перенумерации — «после сессии 4»). До этого `scripts/tests/test_coverage_metrics.py` (`test_checked_in_baseline_matches_exact_policy_inventory`, `test_validate_baseline_cli_rejects_expired_exception`) красные ожидаемо.

@@ -3,6 +3,9 @@
 //! composition демуксеров, проекция каталога extractor-а, качество и adaptive
 //! настройки), а также общие доменные типы web-media: composition
 //! `PreparedMedia`, stream model с component variants и declared catalog.
+//! Из YtDlp orchestration здесь пока только намерение выбора candidate-а,
+//! финализация component variants и capability probe каталогов
+//! (`web_media_open`).
 //!
 //! Crate вынесен из `app-egui` как рефакторинг границы: поведение, тексты ошибок,
 //! redaction секретов и generation/identity fences не менялись. Он не зависит от
@@ -22,6 +25,7 @@ pub mod web_media_catalog;
 pub mod web_media_demux_registry;
 pub mod web_media_extractor_adapter;
 pub mod web_media_hls_subtitles;
+pub mod web_media_open;
 pub mod web_media_quality;
 pub mod web_media_stream_model;
 pub mod web_media_vod_recovery;

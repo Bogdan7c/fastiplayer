@@ -2723,6 +2723,8 @@ name = "media-source-open"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
+ "audio-core",
+ "capability-core",
  "codec-core",
  "demux-api",
  "fastiplayer-config",
@@ -2740,10 +2742,13 @@ dependencies = [
  "tracing",
  "web-media-adaptive",
  "web-media-core",
+ "web-media-dash",
  "web-media-ftp",
+ "web-media-hds",
  "web-media-hls",
  "web-media-http",
  "web-media-playback-plan",
+ "web-media-smooth",
  "web-media-transport-api",
 ]
 

@@ -1,6 +1,6 @@
 //! Immutable app composition of provider content proofs with decoder capabilities.
 
-use audio::{
+use audio_core::{
     AudioDecodeCapability, AudioDecodeCapabilitySnapshot, AudioDecodeCodecFamily,
     AudioDecodeCodecFamilyQuery,
 };
@@ -11,21 +11,26 @@ use web_media_core::{
     RawCodecIdentity, SampleRate, VideoHeight, VideoTrackDescriptor, VideoWidth,
 };
 
+/// Снимок возможностей видео- и аудиодекодеров, которым протокольные каталоги
+/// (HLS/DASH/Smooth/HDS) проверяют, что вариант реально проигрывается.
+///
+/// Аудио-типы берутся из лёгкого `audio-core`, а не из `audio`, чтобы crate
+/// открытия источников не тянул аудио-backend (cpal/opus).
 #[derive(Clone)]
-pub(crate) struct AppCatalogCapabilityProbe {
+pub struct AppCatalogCapabilityProbe {
     video: capability_core::SystemCapabilities,
     audio: AudioDecodeCapabilitySnapshot,
 }
 
 impl AppCatalogCapabilityProbe {
-    pub(crate) fn new(
+    pub fn new(
         video: capability_core::SystemCapabilities,
         audio: AudioDecodeCapabilitySnapshot,
     ) -> Self {
         Self { video, audio }
     }
 
-    pub(super) fn video_descriptor(&self, track: &TrackInfo) -> Option<VideoTrackDescriptor> {
+    pub fn video_descriptor(&self, track: &TrackInfo) -> Option<VideoTrackDescriptor> {
         let codec = VideoCodec::from_container_codec_id(&track.codec_id)?;
         let mut source = VideoMetadataSource::container(codec);
         if let Some(video) = &track.video {
@@ -64,7 +69,7 @@ impl AppCatalogCapabilityProbe {
         ))
     }
 
-    pub(super) fn audio_descriptor(&self, track: &TrackInfo) -> Option<AudioTrackDescriptor> {
+    pub fn audio_descriptor(&self, track: &TrackInfo) -> Option<AudioTrackDescriptor> {
         let normalized =
             NormalizedCodec::parse(RawCodecIdentity::new(track.codec_id.clone()).ok()?);
         let family = audio_family(normalized.kind())?;

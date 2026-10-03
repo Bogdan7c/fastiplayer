@@ -5,10 +5,12 @@
 //! только соединяет concrete runtime registries до существующего commit barrier.
 
 pub(crate) mod catalog;
-pub(crate) mod catalog_capabilities;
-pub(crate) mod component_variants;
-#[cfg(test)]
-mod component_variants_tests;
+// Намерение выбора candidate-а, финализация component variants и capability
+// probe живут в `media-source-open`: их делят это дерево и протокольные
+// opener-ы HLS/DASH. Прежние пути `crate::web_media_open::*` сохранены re-export-ом.
+pub(crate) use media_source_open::web_media_open::{
+    YtDlpCandidateOpenIntent, catalog_capabilities, component_variants,
+};
 mod content_probe;
 mod content_probe_fallback;
 #[cfg(test)]
@@ -53,7 +55,6 @@ use web_media_transport_api::MediaComponentRole;
 
 pub(crate) use component_variants::{
     ComponentVariantFinalizationError, YtDlpComponentSelectionOpenIntent,
-    YtDlpExactCandidateOpenIntent,
 };
 use component_variants::{
     PreparedComponentVariantCatalog, finalize_component_variant_configuration,
@@ -74,17 +75,6 @@ static NEXT_YT_DLP_SOURCE_IDENTITY: AtomicU64 = AtomicU64::new(1);
 static NEXT_DYNAMIC_TIMELINE_PORT_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// Process-local allocator независимой generation component catalog-а.
 static NEXT_COMPONENT_VARIANT_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
-
-/// Намерение selection: новый лучший playable candidate либо semantic rematch старого exact выбора.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum YtDlpCandidateOpenIntent {
-    /// Первичное открытие либо явная runtime override/reselection.
-    BestPlayable,
-    /// Restore/rebuild обязан сохранить semantic candidate identity.
-    Exact(Box<YtDlpExactCandidateOpenIntent>),
-    /// Service-owned video-only + audio-only composition из одного fresh snapshot-а.
-    Composed(Box<component_variants::YtDlpComposedCandidateOpenIntent>),
-}
 
 /// Проверяет, что product reason соответствует media-open lifecycle, а не только selection shape.
 fn validate_extractor_reason(
@@ -226,8 +216,8 @@ pub(crate) fn prepare_yt_dlp_web_media(
                 web_media_config,
             )
         }
-        YtDlpCandidateOpenIntent::Exact(exact) => exact.preference,
-        YtDlpCandidateOpenIntent::Composed(composed) => composed.preference,
+        YtDlpCandidateOpenIntent::Exact(exact) => exact.preference(),
+        YtDlpCandidateOpenIntent::Composed(composed) => composed.preference(),
     };
     let (candidate_snapshot, resolved_intent) = preparation::resolve_candidate_snapshot(
         extractor_adapter,
