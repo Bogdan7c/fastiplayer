@@ -12,7 +12,7 @@
       "symbol": "fn open_candidate"
     },
     "prepared_media": {
-      "path": "crates/app-egui/src/media_open/web.rs",
+      "path": "crates/media-source-open/src/prepared_web_media.rs",
       "symbol": "compose_prepared_web_media"
     },
     "strong_install": {
@@ -181,7 +181,7 @@
   "cross_cutting_evidence": [
     {
       "requirement": "BestPlayable/Exact/global preferred height/runtime override",
-      "path": "crates/app-egui/src/web_media_stream_model/tests.rs",
+      "path": "crates/media-source-open/src/web_media_stream_model/tests.rs",
       "symbol": "preference_distinguishes_global_default_and_item_override"
     },
     {

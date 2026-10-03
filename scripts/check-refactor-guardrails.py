@@ -850,6 +850,11 @@ PROGRESSIVE_WEB_TRANSIENT_SECRET_SCAN_PATHS = (
     Path("crates/app-egui/src/ui/url_sidebar.rs"),
     Path("crates/app-egui/src/web_media_stream_model.rs"),
     Path("crates/app-egui/src/web_media_stream_model"),
+    # Доменная часть stream model и catalog вынесена в media-source-open (session-02).
+    Path("crates/media-source-open/src/web_media_stream_model.rs"),
+    Path("crates/media-source-open/src/web_media_stream_model"),
+    Path("crates/media-source-open/src/web_media_catalog.rs"),
+    Path("crates/media-source-open/src/web_media_catalog"),
 )
 
 PROGRESSIVE_WEB_TRANSIENT_SECRET_PATTERNS = (

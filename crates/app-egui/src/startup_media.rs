@@ -14,10 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use capability_core::SystemCapabilities;
-use codec_core::VideoCodec as RuntimeVideoCodec;
-use fastiplayer_config::{
-    AppConfig, NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec,
-};
+use fastiplayer_config::{AppConfig, NetworkConfig, PlayerDemuxConfig};
 use tracing::{debug, info, warn};
 
 #[cfg(test)]
@@ -714,17 +711,6 @@ pub(crate) fn resolve_direct_media_startup_media(
         cancellation,
     )
     .context("Не удалось открыть direct media URL")
-}
-
-/// Сопоставляет user-facing codec policy с нейтральным capability vocabulary.
-pub(crate) const fn runtime_video_codec(codec: ConfigVideoCodec) -> RuntimeVideoCodec {
-    match codec {
-        ConfigVideoCodec::Vp9 => RuntimeVideoCodec::Vp9,
-        ConfigVideoCodec::Av1 => RuntimeVideoCodec::Av1,
-        ConfigVideoCodec::H264 => RuntimeVideoCodec::H264,
-        ConfigVideoCodec::H265 => RuntimeVideoCodec::H265,
-        ConfigVideoCodec::Vp8 => RuntimeVideoCodec::Vp8,
-    }
 }
 
 /// Распознаёт только утверждённые local playlist extensions без lossy path conversion.

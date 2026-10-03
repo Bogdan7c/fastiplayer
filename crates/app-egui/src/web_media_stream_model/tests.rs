@@ -1,6 +1,13 @@
+//! UI-тесты URL sidebar: модель секции, контроллер и exact-lineage переходы.
+//! Доменные тесты stream model живут в `media-source-open`.
+
+use web_media_core::{
+    CodecFamily, ContainerFamily, ExactSelectionIdentity, StreamLayoutKind, WebMediaSelection,
+};
+
 use super::*;
 
-pub(super) fn candidate(height: Option<u32>, audio_only: bool) -> WebMediaCandidatePresentation {
+fn candidate(height: Option<u32>, audio_only: bool) -> WebMediaCandidatePresentation {
     WebMediaCandidatePresentation {
         layout: if audio_only {
             StreamLayoutKind::AudioOnly
@@ -22,64 +29,44 @@ pub(super) fn candidate(height: Option<u32>, audio_only: bool) -> WebMediaCandid
     }
 }
 
+/// Synthetic installed parent и его generation fence из одной пары чисел.
+///
+/// Generation выводится из parent-а тем же production путём
+/// (`WebMediaStreamGeneration::from_selection`), что и у реального источника.
+fn installed_parent(
+    source: u64,
+    extraction: u64,
+) -> (WebMediaStreamGeneration, ExactSelectionIdentity) {
+    let parent = exact_parent(source, extraction);
+    let generation =
+        WebMediaStreamGeneration::from_selection(&WebMediaSelection::candidate(parent.clone()));
+    (generation, parent)
+}
+
 fn configuration(
-    generation: WebMediaStreamGeneration,
+    active_parent: ExactSelectionIdentity,
     candidates: Vec<WebMediaCandidatePresentation>,
     active_candidate: WebMediaCandidatePresentation,
 ) -> WebMediaStreamConfiguration {
-    let active_parent = exact_parent(generation);
-    let candidate_selections =
-        vec![WebMediaSelection::candidate(active_parent.clone()); candidates.len()];
-    WebMediaStreamConfiguration {
-        generation,
+    WebMediaStreamConfiguration::fixture(
         active_parent,
-        candidates: candidates.into(),
-        candidate_selections: candidate_selections.into(),
+        candidates,
         active_candidate,
-        preference: WebMediaSelectionPreference::GlobalBestPlayable,
-        component_variants: WebMediaComponentVariantConfiguration::Unavailable,
-        hls_subtitle_renditions: Arc::from([]),
-    }
+        WebMediaSelectionPreference::GlobalBestPlayable,
+    )
 }
 
-fn exact_parent(generation: WebMediaStreamGeneration) -> ExactSelectionIdentity {
-    let source = web_media_core::SourceIdentity::new(generation.source);
+fn exact_parent(source: u64, extraction: u64) -> ExactSelectionIdentity {
+    let source = web_media_core::SourceIdentity::new(source);
     let exact = web_media_core::CandidateIdentity::new(
         source,
-        web_media_core::ExtractionGeneration::new(generation.extraction),
+        web_media_core::ExtractionGeneration::new(extraction),
         web_media_core::CandidateFormatIdentity::new("active-parent")
             .expect("fixture exact identity валидна"),
     );
     let semantic = web_media_core::SemanticIdentity::new(source, "semantic-parent")
         .expect("fixture semantic identity валидна");
     ExactSelectionIdentity::new(exact, semantic).expect("fixture source lineage совпадает")
-}
-
-#[test]
-fn installed_hls_subtitles_survive_configuration_clone_without_locator() {
-    let generation = WebMediaStreamGeneration {
-        source: 1,
-        extraction: 1,
-    };
-    let active_candidate = candidate(Some(720), false);
-    let rendition =
-        media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition::fixture(
-            "subs",
-            "English",
-            Some("en"),
-            Some("public.accessibility.transcribes-spoken-dialog"),
-            false,
-        );
-    let configured = configuration(generation, vec![active_candidate.clone()], active_candidate)
-        .with_hls_subtitle_renditions(Arc::from([rendition]));
-    let rebuilt = configured.clone();
-    let [retained] = rebuilt.hls_subtitle_renditions() else {
-        panic!("exact installed rendition должен сохраниться");
-    };
-    assert_eq!(retained.group_id(), "subs");
-    assert_eq!(retained.name(), "English");
-    assert_eq!(retained.language(), Some("en"));
-    assert!(!format!("{retained:?}").contains("://"));
 }
 
 fn binding(scope: UrlSidebarItemScope) -> UrlSidebarItemBinding {
@@ -139,27 +126,18 @@ fn one_and_many_candidate_inventory_preserve_active_projection() {
 fn stale_generation_hides_pending_candidate_and_safe_error() {
     let controller = UrlSidebarController {
         pending_selection: Some(UrlSidebarPendingSelection::Candidate {
-            parent_generation: WebMediaStreamGeneration {
-                source: 4,
-                extraction: 8,
-            },
+            parent_generation: WebMediaStreamGeneration::for_test(4, 8),
             candidate: candidate(Some(720), false),
         }),
         safe_error: Some(SafeErrorState {
-            generation: WebMediaStreamGeneration {
-                source: 4,
-                extraction: 8,
-            },
+            generation: WebMediaStreamGeneration::for_test(4, 8),
             error: UrlSidebarSafeError::SourceUnavailable,
         }),
         item_override: None,
     };
-    let active_generation = WebMediaStreamGeneration {
-        source: 4,
-        extraction: 9,
-    };
+    let parent = exact_parent(4, 9);
     let active = candidate(Some(1080), false);
-    let configuration = configuration(active_generation, vec![active.clone()], active);
+    let configuration = configuration(parent, vec![active.clone()], active);
     let model = controller.model_from_source(
         UrlSidebarSourceProjection::WebMedia {
             ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
@@ -182,39 +160,11 @@ fn stale_generation_hides_pending_candidate_and_safe_error() {
 }
 
 #[test]
-fn stale_generation_cannot_resolve_neutral_switch_selection() {
-    let current_generation = WebMediaStreamGeneration::for_test(31, 7);
-    let stale_generation = WebMediaStreamGeneration::for_test(31, 6);
-    let active_candidate = candidate(Some(720), false);
-    let configuration = configuration(
-        current_generation,
-        vec![active_candidate.clone()],
-        active_candidate,
-    );
-
-    assert!(
-        configuration
-            .selection_for_switch(stale_generation, 0)
-            .is_none(),
-        "stale generation не должна получить exact neutral selection"
-    );
-    assert!(
-        configuration
-            .selection_for_switch(current_generation, 0)
-            .is_some(),
-        "matching generation должна получить bounded selection"
-    );
-}
-
-#[test]
 fn current_generation_exposes_pending_candidate_and_bounded_failure() {
-    let generation = WebMediaStreamGeneration {
-        source: 8,
-        extraction: 2,
-    };
+    let (generation, parent) = installed_parent(8, 2);
     let active = candidate(Some(1080), false);
     let pending = candidate(Some(720), false);
-    let configuration = configuration(generation, vec![pending.clone(), active.clone()], active);
+    let configuration = configuration(parent, vec![pending.clone(), active.clone()], active);
     let controller = UrlSidebarController {
         pending_selection: Some(UrlSidebarPendingSelection::Candidate {
             parent_generation: generation,
@@ -252,10 +202,7 @@ fn current_generation_exposes_pending_candidate_and_bounded_failure() {
 
 #[test]
 fn candidate_switch_selector_is_single_flight_and_pre_barrier_failure_restores_it() {
-    let generation = WebMediaStreamGeneration {
-        source: 21,
-        extraction: 4,
-    };
+    let generation = WebMediaStreamGeneration::for_test(21, 4);
     let pending = candidate(Some(720), false);
     let pending_selection = UrlSidebarPendingSelection::Candidate {
         parent_generation: generation,
@@ -293,16 +240,10 @@ fn candidate_switch_selector_is_single_flight_and_pre_barrier_failure_restores_i
 
 #[test]
 fn detached_installed_switch_publishes_runtime_override_for_fresh_generation() {
-    let previous_generation = WebMediaStreamGeneration {
-        source: 22,
-        extraction: 7,
-    };
-    let installed_generation = WebMediaStreamGeneration {
-        source: 22,
-        extraction: 8,
-    };
+    let previous_generation = WebMediaStreamGeneration::for_test(22, 7);
+    let (installed_generation, parent) = installed_parent(22, 8);
     let active = candidate(Some(1440), false);
-    let configuration = configuration(installed_generation, vec![active.clone()], active);
+    let configuration = configuration(parent, vec![active.clone()], active);
     let mut controller = UrlSidebarController::default();
     let pending_selection = UrlSidebarPendingSelection::Candidate {
         parent_generation: previous_generation,
@@ -338,17 +279,14 @@ fn detached_installed_switch_publishes_runtime_override_for_fresh_generation() {
 
 #[test]
 fn component_completion_keeps_existing_item_override_unchanged() {
-    let installed_generation = WebMediaStreamGeneration {
-        source: 23,
-        extraction: 9,
-    };
+    let (installed_generation, parent) = installed_parent(23, 9);
     let active = candidate(Some(1440), false);
-    let configuration = configuration(installed_generation, vec![active.clone()], active);
+    let configuration = configuration(parent, vec![active.clone()], active);
     let mut controller = UrlSidebarController {
         pending_selection: None,
         safe_error: None,
         item_override: Some(ItemOverrideState {
-            source_lineage: installed_generation.source,
+            installed_generation,
             item_id: None,
             preferred_height: Some(1440),
         }),
@@ -382,17 +320,14 @@ fn component_completion_keeps_existing_item_override_unchanged() {
 fn item_override_requires_exact_item_and_source_lineage() {
     let item_id = playlist_core::PlaylistItemId::from_persistence_value(17)
         .expect("non-zero fixture Item ID");
-    let generation = WebMediaStreamGeneration {
-        source: 21,
-        extraction: 4,
-    };
+    let (generation, parent) = installed_parent(21, 4);
     let active = candidate(Some(1080), false);
-    let configuration = configuration(generation, vec![active.clone()], active);
+    let configuration = configuration(parent, vec![active.clone()], active);
     let controller = UrlSidebarController {
         pending_selection: None,
         safe_error: None,
         item_override: Some(ItemOverrideState {
-            source_lineage: generation.source,
+            installed_generation: generation,
             item_id: Some(item_id),
             preferred_height: Some(720),
         }),
@@ -436,18 +371,6 @@ fn item_override_requires_exact_item_and_source_lineage() {
 }
 
 #[test]
-fn preference_distinguishes_global_default_and_item_override() {
-    assert_ne!(
-        WebMediaSelectionPreference::GlobalBestPlayable,
-        WebMediaSelectionPreference::ItemOverride(None)
-    );
-    assert_ne!(
-        WebMediaSelectionPreference::GlobalPreferredHeight(2160),
-        WebMediaSelectionPreference::ItemOverride(Some(2160))
-    );
-}
-
-#[test]
 fn safe_error_model_contains_no_arbitrary_error_text() {
     let debug = format!("{:?}", UrlSidebarSafeError::SourceUnavailable);
     assert_eq!(debug, "SourceUnavailable");
@@ -457,12 +380,9 @@ fn safe_error_model_contains_no_arbitrary_error_text() {
 
 #[test]
 fn group_part_scope_is_first_class_and_not_a_fake_single_item() {
-    let generation = WebMediaStreamGeneration {
-        source: 11,
-        extraction: 3,
-    };
+    let parent = exact_parent(11, 3);
     let active = candidate(Some(720), false);
-    let configuration = configuration(generation, vec![active.clone()], active);
+    let configuration = configuration(parent, vec![active.clone()], active);
     let model = UrlSidebarController::default().model_from_source(
         UrlSidebarSourceProjection::WebMedia {
             ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,
@@ -487,12 +407,9 @@ fn secret_safe_model_never_contains_locator_path_query_or_userinfo() {
         "https://user:password@example.test/private/watch?token=secret#fragment",
     )
     .expect("valid YtDlp fixture");
-    let generation = WebMediaStreamGeneration {
-        source: 5,
-        extraction: 1,
-    };
+    let parent = exact_parent(5, 1);
     let active = candidate(Some(1080), false);
-    let configuration = configuration(generation, vec![active.clone()], active);
+    let configuration = configuration(parent, vec![active.clone()], active);
     let model = UrlSidebarController::default().model_from_source(
         UrlSidebarSourceProjection::WebMedia {
             ingress: web_media_core::WebMediaIngressKind::ExtractorBacked,

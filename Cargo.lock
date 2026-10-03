@@ -2723,6 +2723,7 @@ name = "media-source-open"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
+ "codec-core",
  "demux-api",
  "fastiplayer-config",
  "flv-demux",

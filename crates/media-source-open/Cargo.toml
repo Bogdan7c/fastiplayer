@@ -11,7 +11,8 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# Тестовые конструкторы (например, `InstalledHlsSubtitleRendition::fixture`) для
+# Тестовые конструкторы (например, `InstalledHlsSubtitleRendition::fixture`,
+# `WebMediaStreamConfiguration::fixture`, `WebMediaSelectionTarget::Fixture`) для
 # тестов зависимых crate-ов. Включается только из `[dev-dependencies]`, поэтому в
 # рабочую сборку приложения не попадает.
 test-fixtures = []
@@ -19,6 +20,7 @@ test-fixtures = []
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
+codec-core.workspace = true
 tracing.workspace = true
 fastiplayer-config.workspace = true
 source-core.workspace = true

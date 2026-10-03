@@ -12,17 +12,46 @@ use web_media_core::{
 };
 
 use crate::web_media_stream_model::{
+    WebMediaCandidatePresentation, WebMediaContainerSummary, WebMediaSelectionPreference,
+    WebMediaStreamConfiguration,
     component_variants::{
         ComponentVariantInstallationError, WebMediaComponentVariantProjection,
         WebMediaInstalledComponentVariantPresentation,
     },
-    component_variants_tests::configuration_for,
 };
 
 use super::component_variants::{
     ComponentVariantFinalizationError, PreparedComponentVariantCatalog,
     YtDlpComponentSelectionOpenIntent, finalize_component_variant_configuration,
 };
+
+/// Installed конфигурация одного muxed 1080p candidate-а под заданным parent-ом.
+///
+/// Component variants ещё не установлены: их ставит проверяемый
+/// `finalize_component_variant_configuration`.
+fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStreamConfiguration {
+    let active_candidate = WebMediaCandidatePresentation {
+        layout: web_media_core::StreamLayoutKind::Muxed,
+        width: Some(1920),
+        height: Some(1080),
+        frame_rate: Some((30, 1)),
+        video_bitrate: Some(4_000_000),
+        audio_bitrate: Some(128_000),
+        video_codec: Some(web_media_core::CodecFamily::Vp9),
+        audio_codec: Some(web_media_core::CodecFamily::Opus),
+        dynamic_range: Some(DynamicRange::Sdr),
+        containers: WebMediaContainerSummary {
+            video: Some(web_media_core::ContainerFamily::WebM),
+            audio: Some(web_media_core::ContainerFamily::WebM),
+        },
+    };
+    WebMediaStreamConfiguration::fixture(
+        parent,
+        vec![active_candidate.clone()],
+        active_candidate,
+        WebMediaSelectionPreference::GlobalPreferredHeight(1080),
+    )
+}
 
 /// Строит parent identity с отдельно управляемой semantic частью для fresh-generation fixtures.
 fn parent(

@@ -15,16 +15,16 @@ use super::{
 
 /// Safe coupled axis с explicit active row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaCoupledComponentVariantAxis {
-    pub(crate) active_index: usize,
-    pub(crate) variants: Arc<[WebMediaCoupledComponentVariantPresentation]>,
+pub struct WebMediaCoupledComponentVariantAxis {
+    pub active_index: usize,
+    pub variants: Arc<[WebMediaCoupledComponentVariantPresentation]>,
 }
 
 /// Только безопасные video/audio metadata одной неделимой rendition.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaCoupledComponentVariantPresentation {
-    pub(crate) video: WebMediaVideoComponentVariantPresentation,
-    pub(crate) audio: WebMediaAudioComponentVariantPresentation,
+pub struct WebMediaCoupledComponentVariantPresentation {
+    pub video: WebMediaVideoComponentVariantPresentation,
+    pub audio: WebMediaAudioComponentVariantPresentation,
 }
 
 /// Строит coupled projection без копирования exact/semantic identities в UI model.

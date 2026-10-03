@@ -462,7 +462,7 @@ fn selection_policy(
     let codecs = preferred_video_codec_order
         .iter()
         .copied()
-        .map(crate::startup_media::runtime_video_codec)
+        .map(media_source_open::video_codec_mapping::runtime_video_codec)
         .collect();
     let containers = vec![
         ContainerFamily::WebM,

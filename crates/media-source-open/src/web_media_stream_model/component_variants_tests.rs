@@ -255,7 +255,7 @@ fn selection(
         .expect("fixture selection валиден")
 }
 
-pub(crate) fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStreamConfiguration {
+fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStreamConfiguration {
     let generation = WebMediaStreamGeneration {
         source: parent.exact().source().value(),
         extraction: parent.exact().generation().value(),

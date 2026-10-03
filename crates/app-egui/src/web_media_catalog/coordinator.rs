@@ -8,8 +8,9 @@ use web_media_core::ExactSelectionIdentity;
 use crate::playlist_runtime::PlaylistRuntimeBinding;
 use crate::web_media_stream_model::WebMediaStreamGeneration;
 
-use super::attachment::WebMediaCatalogAttachment;
-use super::model::{WebMediaCatalog, WebMediaCatalogSafeError, WebMediaCatalogState};
+use super::{
+    WebMediaCatalog, WebMediaCatalogAttachment, WebMediaCatalogSafeError, WebMediaCatalogState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WebMediaCatalogScope {
@@ -72,11 +73,10 @@ impl WebMediaCatalogCoordinator {
 
         self.next_generation = self.next_generation.saturating_add(1);
         self.active_correlation = Some(correlation.clone());
-        self.visible = WebMediaCatalog::new(
+        self.visible = WebMediaCatalog::from_attachment(
             self.next_generation,
             correlation.parent_generation,
-            attachment.choices(),
-            attachment.active(),
+            &attachment,
         )
         .map(Arc::new)
         .map(WebMediaCatalogState::Ready)

@@ -31,6 +31,11 @@ pub(crate) use native_hds::{NativeHdsOpenIntent, NativeHdsSourceState, NativeHds
 pub(crate) use native_hls::{NativeHlsOpenIntent, NativeHlsSourceState, NativeHlsUrl};
 pub(crate) use native_smooth::{NativeSmoothOpenIntent, NativeSmoothSourceState, NativeSmoothUrl};
 // Все app ingress-ы собирают provider-neutral `PreparedMedia` через один boundary.
+#[cfg(test)]
+pub(crate) use media_source_open::prepared_web_media::PreparedWebMediaCompositionError;
+pub(crate) use media_source_open::prepared_web_media::{
+    PreparedWebMediaAttachments, PreparedWebMediaSeekAttachment, compose_prepared_web_media,
+};
 pub(crate) use preload_budget::QueuePreloadResourceBudget;
 pub(crate) use preparation::{
     merge_yt_dlp_playlist_metadata, prepare_source_synchronously, service_duration_for_timeline,
@@ -50,12 +55,9 @@ pub(crate) use types::{
     PreparedMediaOpen, PreparedPlaylistCacheUpdate, SafeMediaLabel,
     SameLineagePositionPreparationPhase,
 };
-#[cfg(test)]
-pub(crate) use web::PreparedWebMediaCompositionError;
 pub(crate) use web::{
-    DirectResourceSettingsAction, PreparedWebMediaAttachments, PreparedWebMediaEnvelope,
-    PreparedWebMediaSeekAttachment, WebMediaOpenRequest, WebMediaOpenSettings,
-    WebMediaSelectionSwitchIntent, WebMediaSelectionSwitchResolution,
+    DirectResourceSettingsAction, PreparedWebMediaEnvelope, WebMediaOpenRequest,
+    WebMediaOpenSettings, WebMediaSelectionSwitchIntent, WebMediaSelectionSwitchResolution,
     WebMediaSettingsReconfigureDecision, WebMediaSettingsReconfigurePolicy,
-    WebMediaSettingsSelectionPolicy, WebMediaSourceIntent, compose_prepared_web_media,
+    WebMediaSettingsSelectionPolicy, WebMediaSourceIntent,
 };

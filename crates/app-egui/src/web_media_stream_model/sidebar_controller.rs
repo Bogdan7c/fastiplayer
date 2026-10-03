@@ -1,6 +1,9 @@
 //! Exact-lineage переходы ephemeral состояния URL sidebar.
 
-use super::*;
+use super::{
+    UrlSidebarPendingSelection, UrlSidebarSafeError, UrlSidebarTransitionError,
+    WebMediaStreamGeneration,
+};
 
 /// Ephemeral pending/error state; active state читается только из Installed source.
 #[derive(Debug, Default)]
@@ -18,7 +21,9 @@ pub(super) struct SafeErrorState {
 
 #[derive(Debug)]
 pub(super) struct ItemOverrideState {
-    pub(super) source_lineage: u64,
+    /// Generation, на которой override был установлен; сравнивается только по
+    /// source lineage (`has_same_source_lineage`), а не по extraction.
+    pub(super) installed_generation: WebMediaStreamGeneration,
     pub(super) item_id: Option<playlist_core::PlaylistItemId>,
     pub(super) preferred_height: Option<u32>,
 }
@@ -112,7 +117,7 @@ impl UrlSidebarController {
         self.pending_selection = None;
         self.safe_error = None;
         self.item_override = Some(ItemOverrideState {
-            source_lineage: installed_generation.source,
+            installed_generation,
             item_id,
             preferred_height,
         });

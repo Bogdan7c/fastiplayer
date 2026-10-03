@@ -10,7 +10,7 @@ static NEXT_ATTACHMENT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Runtime-only attachment Installed source-а. Equality сравнивает только opaque instance.
 #[derive(Clone)]
-pub(crate) struct WebMediaCatalogAttachment {
+pub struct WebMediaCatalogAttachment {
     id: u64,
     parent: Option<ExactSelectionIdentity>,
     choices: Arc<[WebMediaCatalogChoice]>,
@@ -18,7 +18,7 @@ pub(crate) struct WebMediaCatalogAttachment {
 }
 
 impl WebMediaCatalogAttachment {
-    pub(crate) fn new(
+    pub fn new(
         parent: ExactSelectionIdentity,
         choices: Vec<WebMediaCatalogChoice>,
         active: WebMediaSelectionTarget,
@@ -38,7 +38,7 @@ impl WebMediaCatalogAttachment {
     }
 
     /// Создаёт честный single-row catalog для direct/native ingress-а.
-    pub(crate) fn installed_only() -> Self {
+    pub fn installed_only() -> Self {
         let active = WebMediaSelectionTarget::InstalledOnly;
         Self {
             id: NEXT_ATTACHMENT_ID.fetch_add(1, Ordering::Relaxed),
@@ -54,7 +54,7 @@ impl WebMediaCatalogAttachment {
         }
     }
 
-    pub(crate) const fn parent(&self) -> Option<&ExactSelectionIdentity> {
+    pub const fn parent(&self) -> Option<&ExactSelectionIdentity> {
         self.parent.as_ref()
     }
 
@@ -76,7 +76,7 @@ fn active_matches_parent(
         reason = "инвариант: switchable target always owns a parent selection"
     )]
     let selection = match active {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-fixtures"))]
         WebMediaSelectionTarget::Fixture(_) => return true,
         WebMediaSelectionTarget::InstalledOnly => return false,
         WebMediaSelectionTarget::Candidate { .. }

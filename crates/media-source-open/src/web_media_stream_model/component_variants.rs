@@ -19,7 +19,7 @@ use super::{WebMediaStreamConfiguration, WebMediaStreamGeneration, known_codec};
 mod coupled;
 
 use coupled::coupled_axis;
-pub(crate) use coupled::{
+pub use coupled::{
     WebMediaCoupledComponentVariantAxis, WebMediaCoupledComponentVariantPresentation,
 };
 
@@ -62,7 +62,7 @@ impl fmt::Debug for InstalledWebMediaComponentVariants {
 
 /// Safe projection всей component configuration для URL sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum WebMediaComponentVariantProjection {
+pub enum WebMediaComponentVariantProjection {
     /// Раздельный выбор для active candidate-а отсутствует.
     Unavailable,
     /// Установленный catalog имеет одну из трёх однозначных layout shapes.
@@ -71,7 +71,7 @@ pub(crate) enum WebMediaComponentVariantProjection {
 
 /// Safe shape installed catalog-а без ambiguous `Option` axes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum WebMediaInstalledComponentVariantPresentation {
+pub enum WebMediaInstalledComponentVariantPresentation {
     /// Независимые additive video и audio rows, без Cartesian product.
     VideoAndAudio {
         catalog_generation: ComponentVariantCatalogGeneration,
@@ -97,7 +97,7 @@ pub(crate) enum WebMediaInstalledComponentVariantPresentation {
 
 /// Safe axis kind не смешивает independent component и связанную A/V rendition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum WebMediaComponentVariantAxisKind {
+pub enum WebMediaComponentVariantAxisKind {
     /// Независимая video axis.
     Video,
     /// Независимая audio axis.
@@ -108,78 +108,78 @@ pub(crate) enum WebMediaComponentVariantAxisKind {
 
 /// Safe video axis с explicit active row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaVideoComponentVariantAxis {
-    pub(crate) active_index: usize,
-    pub(crate) variants: Arc<[WebMediaVideoComponentVariantPresentation]>,
+pub struct WebMediaVideoComponentVariantAxis {
+    pub active_index: usize,
+    pub variants: Arc<[WebMediaVideoComponentVariantPresentation]>,
 }
 
 /// Safe audio axis с explicit active row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaAudioComponentVariantAxis {
-    pub(crate) active_index: usize,
-    pub(crate) variants: Arc<[WebMediaAudioComponentVariantPresentation]>,
+pub struct WebMediaAudioComponentVariantAxis {
+    pub active_index: usize,
+    pub variants: Arc<[WebMediaAudioComponentVariantPresentation]>,
 }
 
 /// Только безопасные numeric/enum metadata video row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaVideoComponentVariantPresentation {
-    pub(crate) width: Option<u32>,
-    pub(crate) height: Option<u32>,
-    pub(crate) frame_rate: Option<(u32, u32)>,
-    pub(crate) bitrate: Option<u64>,
-    pub(crate) codec: Option<CodecFamily>,
-    pub(crate) dynamic_range: DynamicRange,
+pub struct WebMediaVideoComponentVariantPresentation {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub frame_rate: Option<(u32, u32)>,
+    pub bitrate: Option<u64>,
+    pub codec: Option<CodecFamily>,
+    pub dynamic_range: DynamicRange,
 }
 
 /// Только безопасные numeric/enum metadata и bounded language tag audio row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaAudioComponentVariantPresentation {
+pub struct WebMediaAudioComponentVariantPresentation {
     /// Display-only language label; raw provider metadata остаётся только в catalog owner-е.
-    pub(crate) language_label: Option<Arc<str>>,
-    pub(crate) bitrate: Option<u64>,
-    pub(crate) sample_rate_hz: Option<u32>,
-    pub(crate) channels: Option<u16>,
-    pub(crate) codec: Option<CodecFamily>,
+    pub language_label: Option<Arc<str>>,
+    pub bitrate: Option<u64>,
+    pub sample_rate_hz: Option<u32>,
+    pub channels: Option<u16>,
+    pub codec: Option<CodecFamily>,
 }
 
 /// Model-local intent с двумя независимыми generation fences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ComponentVariantSelectionAction {
-    pub(crate) parent_generation: WebMediaStreamGeneration,
-    pub(crate) catalog_generation: ComponentVariantCatalogGeneration,
-    pub(crate) axis: WebMediaComponentVariantAxisKind,
-    pub(crate) variant_index: usize,
+pub struct ComponentVariantSelectionAction {
+    pub parent_generation: WebMediaStreamGeneration,
+    pub catalog_generation: ComponentVariantCatalogGeneration,
+    pub axis: WebMediaComponentVariantAxisKind,
+    pub variant_index: usize,
 }
 
 impl ComponentVariantSelectionAction {
     /// Возвращает generation родительской installed stream configuration.
     #[must_use]
-    pub(crate) const fn parent_generation(self) -> WebMediaStreamGeneration {
+    pub const fn parent_generation(self) -> WebMediaStreamGeneration {
         self.parent_generation
     }
 
     /// Возвращает generation безопасного component catalog-а.
     #[must_use]
-    pub(crate) const fn catalog_generation(self) -> ComponentVariantCatalogGeneration {
+    pub const fn catalog_generation(self) -> ComponentVariantCatalogGeneration {
         self.catalog_generation
     }
 
     /// Возвращает выбранную independent либо coupled axis.
     #[must_use]
-    pub(crate) const fn axis(self) -> WebMediaComponentVariantAxisKind {
+    pub const fn axis(self) -> WebMediaComponentVariantAxisKind {
         self.axis
     }
 
     /// Возвращает safe row index внутри выбранной axis.
     #[must_use]
-    pub(crate) const fn variant_index(self) -> usize {
+    pub const fn variant_index(self) -> usize {
         self.variant_index
     }
 }
 
 /// Результат model-local resolution; transport/open lifecycle здесь не запускается.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ComponentVariantActionResolution {
+pub enum ComponentVariantActionResolution {
     /// Пользователь указал уже активную row.
     NoChange,
     /// Будущий C3 может передать только refresh-stable selection в strong reopen.
@@ -188,7 +188,7 @@ pub(crate) enum ComponentVariantActionResolution {
 
 /// Provider-neutral семантика component selection при controlled reopen.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum WebMediaComponentSelectionReopenIntent {
+pub enum WebMediaComponentSelectionReopenIntent {
     /// Provider заново выбирает canonical components активного parent-а.
     ProviderDefault,
     /// Fresh component catalog обязан rematch-ить refresh-stable выбор.
@@ -197,7 +197,7 @@ pub(crate) enum WebMediaComponentSelectionReopenIntent {
 
 /// Typed ошибки app-owned installation boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ComponentVariantInstallationError {
+pub enum ComponentVariantInstallationError {
     /// Catalog относится не к exact active candidate-у установленной конфигурации.
     ActiveParentMismatch,
     /// Selection не удалось канонизировать через exact rows catalog-а.
@@ -238,7 +238,7 @@ impl std::error::Error for ComponentVariantInstallationError {
 
 /// Typed ошибки model-local action resolver-а в обязательном порядке validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ComponentVariantActionError {
+pub enum ComponentVariantActionError {
     Unavailable,
     StaleParentGeneration {
         expected: WebMediaStreamGeneration,
@@ -294,7 +294,7 @@ impl std::error::Error for ComponentVariantActionError {}
 
 impl WebMediaStreamConfiguration {
     /// Устанавливает independent component catalog только для exact active parent-а.
-    pub(crate) fn with_component_variants(
+    pub fn with_component_variants(
         mut self,
         catalog: Arc<ComponentVariantCatalog>,
         selection: ComponentVariantSelection,
@@ -308,7 +308,7 @@ impl WebMediaStreamConfiguration {
     }
 
     /// Возвращает N01 selection поверх canonical installed component choice.
-    pub(crate) fn neutral_selection(&self) -> Result<WebMediaSelection, WebMediaSelectionError> {
+    pub fn neutral_selection(&self) -> Result<WebMediaSelection, WebMediaSelectionError> {
         match &self.component_variants {
             WebMediaComponentVariantConfiguration::Unavailable => {
                 Ok(WebMediaSelection::candidate(self.active_parent.clone()))
@@ -324,7 +324,7 @@ impl WebMediaStreamConfiguration {
 
     /// Преобразует UI semantic component action в полный root-scoped reopen intent.
     /// Ошибка означает stale/чужой catalog и не должна запускать provider I/O.
-    pub(crate) fn semantic_selection_request_for_component(
+    pub fn semantic_selection_request_for_component(
         &self,
         request: ComponentVariantSemanticSelectionRequest,
     ) -> Option<WebMediaSemanticSelectionRequest> {
@@ -340,20 +340,18 @@ impl WebMediaStreamConfiguration {
 
     /// Строит reopen intent без публикации catalog-а либо exact component identities.
     #[must_use]
-    pub(crate) fn component_selection_reopen_intent(
-        &self,
-    ) -> WebMediaComponentSelectionReopenIntent {
+    pub fn component_selection_reopen_intent(&self) -> WebMediaComponentSelectionReopenIntent {
         self.component_variants.reopen_intent()
     }
 
     /// Возвращает только safe shape-typed projection без exact identities.
     #[must_use]
-    pub(crate) fn component_variant_projection(&self) -> WebMediaComponentVariantProjection {
+    pub fn component_variant_projection(&self) -> WebMediaComponentVariantProjection {
         self.component_variants.projection()
     }
 
     /// Валидирует model-local component action до запуска controlled strong reopen.
-    pub(crate) fn resolve_component_variant_action(
+    pub fn resolve_component_variant_action(
         &self,
         action: ComponentVariantSelectionAction,
     ) -> Result<ComponentVariantActionResolution, ComponentVariantActionError> {

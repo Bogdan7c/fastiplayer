@@ -5,11 +5,9 @@
 //! child endpoints, headers, cookies, keys, manifest bodies или runtime handles.
 
 use std::fmt;
-use std::sync::Arc;
 use std::time::Duration;
 
-use media_core::{Demuxer, DynamicMediaTimelinePort, MediaTagMetadata, TrackInfo};
-use player_core::{PreparedDemuxSeekPort, PreparedMedia};
+use media_core::{MediaTagMetadata, TrackInfo};
 use web_media_core::{
     ExtractorInvocationReason, WebMediaIngressKind, WebMediaPresentationKind,
     WebMediaRecoveryStrategy, WebMediaSelection,
@@ -676,64 +674,6 @@ impl PreparedWebMediaEnvelope {
         &self,
     ) -> Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment> {
         self.vod_endpoint_recovery.clone()
-    }
-}
-
-/// Named seek attachment сохраняет обычную и authoritative landing semantics.
-pub(crate) enum PreparedWebMediaSeekAttachment {
-    WorkerReceipted(Arc<dyn PreparedDemuxSeekPort>),
-    AuthoritativePostTarget(Arc<dyn PreparedDemuxSeekPort>),
-}
-
-/// Runtime-only attachments, которые устанавливаются до strong barrier-а.
-#[derive(Default)]
-pub(crate) struct PreparedWebMediaAttachments {
-    pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
-    pub(crate) demux_seek: Option<PreparedWebMediaSeekAttachment>,
-    pub(crate) playback_window: Option<player_core::MediaPlaybackWindow>,
-    pub(crate) initial_position: Option<player_core::PreparedInitialPosition>,
-}
-
-/// Composition сохраняет различимые ошибки timeline mode и initial position.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum PreparedWebMediaCompositionError {
-    #[error(transparent)]
-    TimelineMode(#[from] player_core::PreparedMediaTimelineModeError),
-    #[error(transparent)]
-    InitialPosition(#[from] player_core::PreparedInitialPositionError),
-}
-
-/// Собирает один player-facing `PreparedMedia` для любого web adapter-а.
-pub(crate) fn compose_prepared_web_media(
-    safe_label: &str,
-    demuxer: Box<dyn Demuxer + Send>,
-    attachments: PreparedWebMediaAttachments,
-) -> Result<PreparedMedia, PreparedWebMediaCompositionError> {
-    let mut prepared_media = PreparedMedia::from_external_label(safe_label, demuxer);
-    if let Some(seek_attachment) = attachments.demux_seek {
-        prepared_media = match seek_attachment {
-            PreparedWebMediaSeekAttachment::WorkerReceipted(port) => {
-                prepared_media.with_worker_receipted_demux_seek(port)
-            }
-            PreparedWebMediaSeekAttachment::AuthoritativePostTarget(port) => prepared_media
-                .with_worker_receipted_demux_seek_policy(
-                    port,
-                    player_core::PreparedDemuxSeekLandingPolicy::AuthoritativePostTarget,
-                ),
-        };
-    }
-    if let Some(playback_window) = attachments.playback_window {
-        prepared_media = prepared_media.with_playback_window(playback_window)?;
-    }
-    prepared_media = match attachments.timeline_port {
-        Some(timeline_port) => prepared_media.with_dynamic_timeline(timeline_port),
-        None => Ok(prepared_media),
-    }?;
-    match attachments.initial_position {
-        Some(initial_position) => {
-            Ok(prepared_media.with_prepared_initial_position(initial_position)?)
-        }
-        None => Ok(prepared_media),
     }
 }
 

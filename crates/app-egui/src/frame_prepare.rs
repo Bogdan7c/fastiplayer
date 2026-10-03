@@ -29,7 +29,6 @@ use crate::settings_runtime::{
     CommittedConfigSnapshot, SettingsRouteTargetPolicy, SettingsRuntime,
     SettingsRuntimeReconfigureHost,
 };
-use crate::startup_media::runtime_video_codec;
 use crate::state::{
     ActiveMediaSource, AppState, BackendSwapVideoPhase, MainVisualOverrideAcquisition,
     RenderablePresentFrame, VideoPipelineRebuildError, VideoPipelineRebuildRequest,
@@ -37,6 +36,7 @@ use crate::state::{
 use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::{Telemetry, VideoFrameTelemetryEvent};
 use crate::ui::window_chrome::{WindowChromeAction, WindowChromeResizeDirection};
+use media_source_open::video_codec_mapping::runtime_video_codec;
 
 #[path = "frame_prepare/geometry.rs"]
 mod geometry;

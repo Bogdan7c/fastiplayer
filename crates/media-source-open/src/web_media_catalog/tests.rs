@@ -319,6 +319,70 @@ fn installed_only_catalog_keeps_one_visible_inert_option() {
     );
 }
 
+/// `from_attachment` — единственный вход, через который app-coordinator строит
+/// catalog: результат обязан совпасть с прямой сборкой из choices/active того же
+/// attachment-а, сохранить переданные generation fences и не менять attachment.
+#[test]
+fn catalog_from_attachment_matches_direct_construction_and_keeps_attachment() {
+    let fixture_choice = |target| WebMediaCatalogChoice {
+        mode: WebMediaMode::VideoOnly,
+        video: None,
+        rank: web_media_playback_plan::OpaqueAlternativeRank::parent(0),
+        target: WebMediaSelectionTarget::Fixture(target),
+    };
+    let parent = neutral_exact_selection("attachment-parent", "stable-parent");
+    let parent_generation =
+        crate::web_media_stream_model::WebMediaStreamGeneration::for_test(77, 9);
+    let attachment = WebMediaCatalogAttachment::new(
+        parent.clone(),
+        vec![fixture_choice(1), fixture_choice(2)],
+        WebMediaSelectionTarget::Fixture(2),
+    )
+    .expect("fixture attachment согласован");
+    let attachment_before = attachment.clone();
+
+    let from_attachment =
+        WebMediaCatalog::from_attachment(12, Some(parent_generation), &attachment)
+            .expect("согласованный attachment строит catalog");
+    let direct = WebMediaCatalog::new(
+        12,
+        Some(parent_generation),
+        attachment.choices(),
+        attachment.active(),
+    )
+    .expect("прямая сборка из тех же choices/active");
+
+    assert_eq!(from_attachment, direct);
+    assert_eq!(from_attachment.generation(), 12);
+    assert_eq!(from_attachment.parent_generation(), Some(parent_generation));
+    assert_eq!(
+        from_attachment.active_choice().target,
+        WebMediaSelectionTarget::Fixture(2)
+    );
+    // Attachment не потребляется и не меняется: тот же opaque instance и parent.
+    assert_eq!(attachment, attachment_before);
+    assert_eq!(attachment.parent(), Some(&parent));
+    assert_eq!(attachment.active(), &WebMediaSelectionTarget::Fixture(2));
+}
+
+/// Installed-only attachment не имеет parent-а: catalog без parent generation
+/// с единственным inert target-ом, а не отказ.
+#[test]
+fn installed_only_attachment_builds_catalog_without_parent_generation() {
+    let attachment = WebMediaCatalogAttachment::installed_only();
+
+    let catalog = WebMediaCatalog::from_attachment(3, None, &attachment)
+        .expect("installed-only attachment строит catalog");
+
+    assert_eq!(catalog.generation(), 3);
+    assert_eq!(catalog.parent_generation(), None);
+    assert_eq!(
+        catalog.active_choice().target,
+        WebMediaSelectionTarget::InstalledOnly
+    );
+    assert_eq!(attachment.parent(), None);
+}
+
 #[test]
 fn stale_catalog_generation_rejects_otherwise_valid_facet_action() {
     let active = WebMediaCatalogChoice {

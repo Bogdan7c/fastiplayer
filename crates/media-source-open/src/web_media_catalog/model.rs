@@ -8,8 +8,10 @@ use web_media_core::{
 
 use crate::web_media_stream_model::WebMediaStreamGeneration;
 
+use super::attachment::WebMediaCatalogAttachment;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum WebMediaMode {
+pub enum WebMediaMode {
     /// Track topology будет подтверждена после content probe.
     Automatic,
     VideoAndAudio,
@@ -18,7 +20,7 @@ pub(crate) enum WebMediaMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum WebMediaFacet {
+pub enum WebMediaFacet {
     Mode,
     Codec,
     Resolution,
@@ -28,7 +30,7 @@ pub(crate) enum WebMediaFacet {
 
 /// Направление ровно одной автоматической quality-ступени.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WebMediaAutomaticQualityDirection {
+pub enum WebMediaAutomaticQualityDirection {
     /// Следующая доступная высота ниже active rendition.
     Lower,
     /// Следующая доступная высота выше active rendition.
@@ -37,15 +39,15 @@ pub(crate) enum WebMediaAutomaticQualityDirection {
 
 /// Exact target, выбранный catalog-ом для одной автоматической quality-ступени.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaAutomaticQualityTarget {
+pub struct WebMediaAutomaticQualityTarget {
     /// Высота выбранной ступени для hysteresis/cooldown контроллера.
-    pub(crate) height: u32,
+    pub height: u32,
     /// Catalog-owned exact selection; контроллер не конструирует identity самостоятельно.
-    pub(crate) target: WebMediaSelectionTarget,
+    pub target: WebMediaSelectionTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum WebMediaFacetOption {
+pub enum WebMediaFacetOption {
     Mode(WebMediaMode),
     Codec(CodecFamily),
     Resolution { width: u32, height: u32 },
@@ -55,16 +57,17 @@ pub(crate) enum WebMediaFacetOption {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WebMediaFacetAction {
-    pub(crate) generation: u64,
-    pub(crate) facet: WebMediaFacet,
-    pub(crate) option_index: usize,
+pub struct WebMediaFacetAction {
+    pub generation: u64,
+    pub facet: WebMediaFacet,
+    pub option_index: usize,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 impl WebMediaFacetAction {
     /// Создаёт readable Resolution action для cross-module functional fixtures.
-    pub(crate) const fn resolution_for_test(generation: u64, option_index: usize) -> Self {
+    /// Вне crate доступен лишь с feature `test-fixtures` (dev-dependencies app-egui).
+    pub const fn resolution_for_test(generation: u64, option_index: usize) -> Self {
         Self {
             generation,
             facet: WebMediaFacet::Resolution,
@@ -74,21 +77,21 @@ impl WebMediaFacetAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaPickerSelector {
-    pub(crate) facet: WebMediaFacet,
-    pub(crate) options: Arc<[WebMediaFacetOption]>,
-    pub(crate) selected_index: Option<usize>,
+pub struct WebMediaPickerSelector {
+    pub facet: WebMediaFacet,
+    pub options: Arc<[WebMediaFacetOption]>,
+    pub selected_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaPickerProjection {
-    pub(crate) generation: u64,
-    pub(crate) selectors: Arc<[WebMediaPickerSelector]>,
+pub struct WebMediaPickerProjection {
+    pub generation: u64,
+    pub selectors: Arc<[WebMediaPickerSelector]>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) enum WebMediaSelectionTarget {
-    #[cfg(test)]
+pub enum WebMediaSelectionTarget {
+    #[cfg(any(test, feature = "test-fixtures"))]
     Fixture(u64),
     /// Установленный direct/native ingress не обещает переключаемый semantic target.
     InstalledOnly,
@@ -104,7 +107,7 @@ pub(crate) enum WebMediaSelectionTarget {
 impl fmt::Debug for WebMediaSelectionTarget {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let kind = match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-fixtures"))]
             Self::Fixture(_) => "fixture",
             Self::InstalledOnly => "installed-only",
             Self::Candidate { .. } => "candidate",
@@ -120,9 +123,13 @@ impl fmt::Debug for WebMediaSelectionTarget {
 
 impl WebMediaSelectionTarget {
     /// Строит refresh-stable preference только для реально переключаемого target-а.
-    pub(crate) fn remembered(&self) -> Option<WebMediaRememberedPreference> {
+    pub fn remembered(&self) -> Option<WebMediaRememberedPreference> {
         match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-fixtures"))]
+            #[expect(
+                clippy::panic,
+                reason = "fixture target существует только в тестах и test-fixtures сборках"
+            )]
             Self::Fixture(_) => panic!("fixture target is not a remembered production intent"),
             Self::InstalledOnly => None,
             Self::Candidate { selection } => Some(WebMediaRememberedPreference::Candidate(
@@ -139,7 +146,7 @@ impl WebMediaSelectionTarget {
     /// Возвращает exact parent, которому должен принадлежать catalog attachment.
     pub(super) fn parent_selection(&self) -> Option<&WebMediaSelection> {
         match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-fixtures"))]
             Self::Fixture(_) => None,
             Self::InstalledOnly => None,
             Self::Candidate { selection } => Some(selection),
@@ -151,7 +158,7 @@ impl WebMediaSelectionTarget {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) enum WebMediaRememberedPreference {
+pub enum WebMediaRememberedPreference {
     Candidate(WebMediaSemanticSelectionRequest),
     SeparateComponents(WebMediaSemanticSelectionRequest),
 }
@@ -163,11 +170,11 @@ impl fmt::Debug for WebMediaRememberedPreference {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaCatalogChoice {
-    pub(crate) mode: WebMediaMode,
-    pub(crate) video: Option<VideoTrackDescriptor>,
-    pub(crate) rank: web_media_playback_plan::OpaqueAlternativeRank,
-    pub(crate) target: WebMediaSelectionTarget,
+pub struct WebMediaCatalogChoice {
+    pub mode: WebMediaMode,
+    pub video: Option<VideoTrackDescriptor>,
+    pub rank: web_media_playback_plan::OpaqueAlternativeRank,
+    pub target: WebMediaSelectionTarget,
 }
 
 impl fmt::Debug for WebMediaCatalogChoice {
@@ -182,13 +189,13 @@ impl fmt::Debug for WebMediaCatalogChoice {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WebMediaCatalogSafeError {
+pub enum WebMediaCatalogSafeError {
     AttachmentMismatch,
     InvalidCatalog,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum WebMediaCatalogState {
+pub enum WebMediaCatalogState {
     Inactive,
     Ready(Arc<WebMediaCatalog>),
     Failed {
@@ -198,7 +205,7 @@ pub(crate) enum WebMediaCatalogState {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct WebMediaCatalog {
+pub struct WebMediaCatalog {
     generation: u64,
     parent_generation: Option<WebMediaStreamGeneration>,
     choices: Arc<[WebMediaCatalogChoice]>,
@@ -233,23 +240,41 @@ impl WebMediaCatalog {
         })
     }
 
-    pub(crate) const fn parent_generation(&self) -> Option<WebMediaStreamGeneration> {
+    /// Строит catalog из runtime attachment-а Installed source-а.
+    ///
+    /// Attachment отдаёт choices/active только своему catalog owner-у, поэтому
+    /// внешние координаторы не видят внутреннее устройство attachment-а.
+    /// `None` означает, что active target отсутствует среди choices.
+    pub fn from_attachment(
+        generation: u64,
+        parent_generation: Option<WebMediaStreamGeneration>,
+        attachment: &WebMediaCatalogAttachment,
+    ) -> Option<Self> {
+        Self::new(
+            generation,
+            parent_generation,
+            attachment.choices(),
+            attachment.active(),
+        )
+    }
+
+    pub const fn parent_generation(&self) -> Option<WebMediaStreamGeneration> {
         self.parent_generation
     }
 
-    pub(crate) const fn generation(&self) -> u64 {
+    pub const fn generation(&self) -> u64 {
         self.generation
     }
 
-    pub(crate) fn contains_target(&self, target: &WebMediaSelectionTarget) -> bool {
+    pub fn contains_target(&self, target: &WebMediaSelectionTarget) -> bool {
         self.choices.iter().any(|choice| &choice.target == target)
     }
 
-    pub(crate) fn active_choice(&self) -> &WebMediaCatalogChoice {
+    pub fn active_choice(&self) -> &WebMediaCatalogChoice {
         &self.choices[self.active_index]
     }
 
-    pub(crate) fn rematch_preference(
+    pub fn rematch_preference(
         &self,
         preference: &WebMediaRememberedPreference,
     ) -> Option<&WebMediaSelectionTarget> {
@@ -258,7 +283,7 @@ impl WebMediaCatalog {
         })
     }
 
-    pub(crate) fn picker_projection(&self) -> WebMediaPickerProjection {
+    pub fn picker_projection(&self) -> WebMediaPickerProjection {
         let active = self.active_choice();
         if matches!(active.target, WebMediaSelectionTarget::InstalledOnly) {
             return WebMediaPickerProjection {
@@ -295,7 +320,7 @@ impl WebMediaCatalog {
         }
     }
 
-    pub(crate) fn resolve_facet_action(
+    pub fn resolve_facet_action(
         &self,
         action: WebMediaFacetAction,
     ) -> Option<&WebMediaSelectionTarget> {
@@ -329,7 +354,7 @@ impl WebMediaCatalog {
     ///
     /// Метод намеренно использует тот же dependent-facet resolver, что ручной picker: automatic
     /// controller не получает прямой доступ к внутреннему `choices` и не создаёт fake комбинации.
-    pub(crate) fn automatic_quality_target(
+    pub fn automatic_quality_target(
         &self,
         direction: WebMediaAutomaticQualityDirection,
     ) -> Option<WebMediaAutomaticQualityTarget> {
@@ -388,7 +413,7 @@ fn preference_matches(
             },
             WebMediaRememberedPreference::SeparateComponents(previous),
         ) => fresh.semantic_rematch_request() == *previous,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-fixtures"))]
         (WebMediaSelectionTarget::Fixture(fresh), _) => {
             let _ = fresh;
             false
