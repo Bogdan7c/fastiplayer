@@ -1,3 +1,10 @@
+## Stream probe failure observer (2026-10-04)
+
+- Корень: Symphonia 0.6 `Probe::next` сканирует `while let Ok(byte) = mss.read_byte()` — любая ошибка чтения выглядит как EOF, наружу выходит `UnsupportedFormat("no suitable format reader found")`, настоящая причина (сбой сети/producer-а) терялась.
+- Для `ByteSource` и `OrderedSegments` путей это уже закрывали observer-ы (`ByteSourceFailureObserver`, `OrderedSegmentFailureObserver`); потоковый `SymphoniaDemuxer::from_stream_with_options` их не имел. Добавлен приватный `stream_probe_failure.rs`: `StreamProbeFailureReader::new_observed(reader)` запоминает первую не-`Interrupted` ошибку read на фазе probe; после неудачного probe `take_demux_error()` отдаёт `DemuxError::Io` с исходной ошибкой, после успешного — `finish_probe_success()` и runtime-ошибки проходят без изменений. Чистый поток с неизвестными байтами по-прежнему `UnsupportedFormat`. В ordered-пути внешний `OrderedSegmentFailureObserver` сохраняет приоритет.
+- Не покрыто (тот же класс, отдельная задача): `from_file_with_options` (ошибки диска) и reprobe внутри `SymphoniaDemuxer` (`probe_format_reader` при rebuild reader-а).
+- Тесты: `stream_probe_failure/tests.rs` (absent/ошибка/первая-ошибка/после-успеха), функциональные `streaming_source::tests::{producer_failure_prevents_demux_publication, clean_stream_with_unknown_bytes_stays_unsupported_format}`.
+
 ## Exact ISO-BMFF packet source offsets (2026-08-05)
 
 - Для входов, уже доказанных factory как `iso-bmff`, private concrete adapter вокруг локального patch-а публикует в нейтральный `media_core::Packet.byte_offset` точный `PacketSampleSpan.pos`: начало первого sample пакета в логическом input. Для `OrderedSegments` это кумулятивная позиция в виртуальной конкатенации init + media; позиция buffered reader, PTS/DTS и container timestamp для provenance не угадываются.

@@ -11,6 +11,7 @@ mod ordered_segments;
 mod packet_mapper;
 mod presentation_window_ordered;
 mod seek_mapper;
+mod stream_probe_failure;
 pub mod streaming_source;
 mod symphonia_api;
 pub mod symphonia_demuxer;

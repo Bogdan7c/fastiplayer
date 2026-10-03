@@ -24,6 +24,7 @@ use crate::matroska_metadata::{MatroskaCueIndex, MatroskaVideoTrack};
 use crate::options::DemuxerOptions;
 use crate::packet_mapper::{PacketConvertError, convert_packet_with_source_offset};
 use crate::seek_mapper::{preferred_seek_track_id, symphonia_seek_mode};
+use crate::stream_probe_failure::StreamProbeFailureReader;
 use crate::symphonia_api::{
     self, FormatReaderBox, Hint, MediaSourceStream, ReadOnlySource, SymphoniaError,
 };
@@ -151,6 +152,9 @@ impl SymphoniaDemuxer {
     where
         R: Read + Send + Sync + 'static,
     {
+        // Symphonia probe принимает любую ошибку чтения за конец данных; наблюдатель
+        // сохраняет настоящую причину сбоя потока для владельца открытия.
+        let (reader, probe_failure_observer) = StreamProbeFailureReader::new_observed(reader);
         let (media_source_stream, video_tracks_by_track) =
             if matroska_extension_may_have_video_metadata(extension_hint) {
                 let mut reader = reader;
@@ -176,7 +180,9 @@ impl SymphoniaDemuxer {
             };
 
         let hint = symphonia_api::hint_from_extension(extension_hint);
-        let format = symphonia_api::probe_format_reader(&hint, media_source_stream)?;
+        let format = symphonia_api::probe_format_reader(&hint, media_source_stream)
+            .map_err(|error| probe_failure_observer.take_demux_error().unwrap_or(error))?;
+        probe_failure_observer.finish_probe_success();
 
         Self::from_format_reader_with_probe_context(
             format,

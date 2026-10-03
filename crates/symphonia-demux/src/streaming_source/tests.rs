@@ -57,8 +57,39 @@ fn producer_failure_prevents_demux_publication() {
         .fail("fixture upstream aborted")
         .expect("активный reader должен принять producer failure");
 
+    let Err(error) = SymphoniaDemuxer::from_stream(reader, "wav", "failed-stream.wav") else {
+        panic!("demuxer нельзя публиковать после upstream producer failure");
+    };
+    // Отказ несёт настоящую причину — сбой producer-а, а не «формат не найден»:
+    // Symphonia probe сама превращает любую ошибку чтения в unsupported format.
     assert!(
-        SymphoniaDemuxer::from_stream(reader, "wav", "failed-stream.wav").is_err(),
-        "demuxer нельзя публиковать после upstream producer failure"
+        matches!(&error, crate::DemuxError::Io(_)),
+        "сбой источника должен остаться I/O-ошибкой: {error:?}"
+    );
+    assert!(
+        error.to_string().contains("fixture upstream aborted"),
+        "{error}"
+    );
+}
+
+/// Обратная сторона: поток без ошибок, но с нераспознаваемыми байтами по-прежнему
+/// отклоняется как неподдерживаемый формат (наблюдатель не выдумывает I/O-причину).
+#[test]
+fn clean_stream_with_unknown_bytes_stays_unsupported_format() {
+    let (writer, reader) = StreamingByteReader::channel();
+    writer
+        .send_chunk(Bytes::from_static(b"definitely not a media container"))
+        .expect("bounded stream должен принять маленький chunk");
+    writer
+        .finish()
+        .expect("producer должен явно завершить stream");
+
+    let Err(error) = SymphoniaDemuxer::from_stream(reader, "wav", "unknown-stream.wav") else {
+        panic!("нераспознаваемые байты не должны открываться как media");
+    };
+
+    assert!(
+        matches!(error, crate::DemuxError::UnsupportedFormat(_)),
+        "{error:?}"
     );
 }
