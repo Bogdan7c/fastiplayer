@@ -59,10 +59,10 @@ pub(crate) use initial_queue_playback::{
 #[allow(unused_imports)]
 pub(crate) use install::{
     AuthorizationDispatchStart, BarrierRaceIntent, ControllerInstallPhase, ControllerTerminalDrain,
-    ControllerTerminalResolution, DeferredControllerIntent, DesiredQueueModes, InstallReadyOutcome,
-    InstalledPlaybackIntentCompletion, LifecycleIntentOutcome,
-    PlaylistControllerInvariantViolation, PlaylistInstallAdmissionError, PlaylistInstallMutation,
-    PlaylistInstallRequest,
+    ControllerTerminalResolution, DeferredControllerIntent, DeferredTransportIntent,
+    DesiredQueueModes, InstallReadyOutcome, InstalledPlaybackIntentCompletion,
+    LifecycleIntentOutcome, PlaylistControllerInvariantViolation, PlaylistInstallAdmissionError,
+    PlaylistInstallMutation, PlaylistInstallRequest,
 };
 pub(crate) use local_file_selection::{
     LocalFileQueueReplacementReason, LocalFileSelectionDisposition,
@@ -89,6 +89,7 @@ pub(crate) use startup_restore::{
 pub(crate) use transport::{
     AppTransportDisposition, ControllerManualNavigationAvailability,
     ControllerManualNavigationOutcome, ControllerPlayItemOutcome, ControllerStableIntentDispatch,
+    DeferredTransportExecutionContext, DeferredTransportExecutionOutcome,
     DiscoveryManualWaitAvailability, ManualNavigationWaitId, PlannedPlaylistInstall,
     PreviousRestartThreshold, SiblingDiscoveryScopeId, StablePlaybackIntent, TransportGuardOutcome,
 };
@@ -172,6 +173,8 @@ pub(crate) struct PlaylistController {
     pub(super) stable_intent_revision: std::num::NonZeroU64,
     pub(super) transport_disposition: transport::AppTransportDisposition,
     pending_manual_traversal: Option<transport::PendingManualTraversal>,
+    /// Transport-команда из terminal drain, которую app ещё не исполнил (latest-only).
+    terminal_transport_intent: Option<install::DeferredTransportIntent>,
     manual_navigation_cursor: manual_navigation::ManualNavigationCursor,
     automatic_lifecycle: automatic_lifecycle::AutomaticLifecycle,
     pub(super) detached_active_tombstone: Option<DetachedActiveTombstone>,
@@ -222,6 +225,7 @@ impl PlaylistController {
             stable_intent_revision: std::num::NonZeroU64::MIN,
             transport_disposition: transport::AppTransportDisposition::Active,
             pending_manual_traversal: None,
+            terminal_transport_intent: None,
             manual_navigation_cursor: manual_navigation::ManualNavigationCursor::default(),
             automatic_lifecycle: automatic_lifecycle::AutomaticLifecycle::default(),
             detached_active_tombstone: None,

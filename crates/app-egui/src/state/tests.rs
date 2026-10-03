@@ -690,7 +690,8 @@ fn render_frame_routes_player_snapshot_into_playlist_automatic_lifecycle() {
     let render_frame_section = source_section_between(
         frame_prepare_source,
         "pub(crate) fn render_frame(",
-        "app_state.poll_playlist_transport(playlist_runtime, renderer);",
+        // Poll идёт через transport adapter: он же исполняет команду, отложенную до terminal.
+        "crate::transport_runtime::poll_playlist_transport(app_state, playlist_runtime, renderer);",
     );
 
     let explicit_transport_position = render_frame_section

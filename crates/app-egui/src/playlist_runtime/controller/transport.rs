@@ -1,5 +1,6 @@
 //! Stable manual transport policy поверх canonical queue и exact player boundaries.
 
+mod deferred;
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +31,7 @@ use crate::playlist_runtime::identity::{
     PendingTargetOrigin, PlaylistItemErrorPhase, TransportActionOrigin,
 };
 use crate::playlist_runtime::view::PlaylistDirtySignal;
+pub(crate) use deferred::{DeferredTransportExecutionContext, DeferredTransportExecutionOutcome};
 
 /// Последнее явное устойчивое Play/Pause намерение; transient player states его не заменяют.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,8 +106,10 @@ pub(crate) enum ControllerPlayItemOutcome {
         install: PlannedPlaylistInstall,
         intent_dispatch: ControllerStableIntentDispatch,
     },
+    /// Pending install занят; `guard` говорит app, что делать с командой дальше.
     Guarded {
         intent_dispatch: ControllerStableIntentDispatch,
+        guard: TransportGuardOutcome,
     },
     IntentRevisionExhausted,
 }
@@ -302,6 +306,7 @@ impl PlaylistController {
         if self.queue.item(item_id).is_none() {
             return ControllerPlayItemOutcome::ItemNotCommitted;
         }
+        self.supersede_terminal_transport_intent();
         self.cancel_automatic_continuation_for_manual_intent();
         self.pending_manual_traversal = None;
         if self.install_state.is_none() {
@@ -330,8 +335,10 @@ impl PlaylistController {
         if self.install_state.is_some() {
             let guard =
                 self.request_transport_guard(DeferredTransportIntent::PlayItem { item_id, origin });
-            tracing::debug!(?guard, "Play item удержан transport guard-ом");
-            return ControllerPlayItemOutcome::Guarded { intent_dispatch };
+            return ControllerPlayItemOutcome::Guarded {
+                intent_dispatch,
+                guard,
+            };
         }
 
         let runtime_failed = self
@@ -377,6 +384,7 @@ impl PlaylistController {
         restart_threshold: PreviousRestartThreshold,
         wait_availability: DiscoveryManualWaitAvailability,
     ) -> ControllerManualNavigationOutcome {
+        self.supersede_terminal_transport_intent();
         self.cancel_automatic_continuation_for_manual_intent();
         if let Some(wait) = self.pending_manual_traversal {
             if wait.direction == direction {
@@ -642,6 +650,7 @@ impl PlaylistController {
         &mut self,
         origin: TransportActionOrigin,
     ) -> Option<Result<ExactMediaTransportRequest, TransportGuardOutcome>> {
+        self.supersede_terminal_transport_intent();
         self.pending_manual_traversal = None;
         self.stable_playback_intent = StablePlaybackIntent::Paused;
         if self.install_state.is_some() {

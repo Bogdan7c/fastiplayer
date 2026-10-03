@@ -214,6 +214,9 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 - The switch must not create a D08 reservation and must not call `register_external_strong_install`, because that would create a new lineage. Full contract: `mem:app-egui/same-item-candidate-switch-s25-2026-07-22`.
 
 
+## Transport guard execution (2026-10-03)
+- `playlist-core` не менялся. Исполнение команд, остановленных app-level D08/D39 guard-ом во время install (Play row/Next/Stop), теперь реально подключено в `app-egui`: `mem:app-egui/transport-guard-execution-2026-10-03`.
+
 ## Runtime-only failed anchor до первого Installed (2026-08-14)
 
 - `PlaylistQueue::begin_failed_manual_navigation(item_id)` строит opaque `ManualNavigationPreview` в `AwaitingUserAfterFailure` для concrete pre-barrier failure, даже когда persisted `traversal_current=None`. Boundary валидирует committed Item ID и возвращает typed `TargetNotCommitted`; queue/current/revisions/reservation и factual shuffle history не мутируются.

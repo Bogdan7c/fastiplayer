@@ -60,13 +60,16 @@ impl PlaylistController {
                 self.pending_target = None;
                 self.clear_released_active_media_projection();
                 let dirty = self.apply_desired_modes(desired_modes)?;
-                Some(ControllerTerminalDrain {
+                let drain = ControllerTerminalDrain {
                     request_id,
                     active_media: None,
                     dirty,
                     deferred_intent: post_commit_intent,
                     resolution: ControllerTerminalResolution::ReleasedAfterPostInstalledFailure,
-                })
+                };
+                // Released lineage: команда пользователя не теряется вместе с install-ом.
+                self.retain_terminal_transport_intent(&drain);
+                Some(drain)
             }
             None => {
                 self.clear_released_active_media_projection();

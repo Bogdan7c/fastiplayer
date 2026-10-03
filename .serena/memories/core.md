@@ -28,4 +28,4 @@
 ## Открытые направления
 - Вынос web-media orchestration (~15k строк) из app-egui в отдельный crate — план и сессии-промпты в `user/web-media-extraction/` (приватно), ждёт решения владельца.
 - Git: работать в `main`, отдельные ветки не создавать без указания владельца.
-- Подозрение на потерю guard-исходов (`TransportGuardOutcome::ExecuteNow/CancelPendingThenExecute`) в ручной навигации/Play item: сейчас только debug-лог; см. `mem:code-health/project-health-cleanup-2026-10-02`.
+- Transport-команды во время playlist install (guard/terminal slot, исполнитель Runtime+AppState): `mem:app-egui/transport-guard-execution-2026-10-03`.

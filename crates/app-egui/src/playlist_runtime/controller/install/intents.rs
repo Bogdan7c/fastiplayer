@@ -42,7 +42,7 @@ pub(crate) enum DeferredTransportIntent {
 }
 
 impl DeferredTransportIntent {
-    const fn cancellation_cause(self) -> player_core::MediaInstallCancellationCause {
+    pub(crate) const fn cancellation_cause(self) -> player_core::MediaInstallCancellationCause {
         match self {
             Self::Stop { .. } => player_core::MediaInstallCancellationCause::TransportStop,
             Self::PlayItem { .. } | Self::Navigate { .. } => {

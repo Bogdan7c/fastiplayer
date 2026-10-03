@@ -393,7 +393,7 @@ impl PlaylistController {
                 let dirty = self.apply_desired_modes(desired_modes)?;
                 let deferred_intent = race_intent.map(BarrierRaceIntent::intent);
                 self.publish_view(false);
-                Ok(Some(ControllerTerminalDrain {
+                let drain = ControllerTerminalDrain {
                     request_id,
                     active_media: self.active_media,
                     dirty,
@@ -411,7 +411,10 @@ impl PlaylistController {
                             unreachable!("pre-barrier branch excludes enqueue winner")
                         }
                     },
-                }))
+                };
+                // Cancel-win/rejection: отложенная команда исполняется относительно старого active.
+                self.retain_terminal_transport_intent(&drain);
+                Ok(Some(drain))
             }
         }
     }
@@ -543,13 +546,16 @@ impl PlaylistController {
             dirty = Some(mode_dirty);
         }
         self.publish_view(structural_changed);
-        Ok(ControllerTerminalDrain {
+        let drain = ControllerTerminalDrain {
             request_id,
             active_media: Some(active_media),
             dirty,
             deferred_intent: post_commit_intent,
             resolution: ControllerTerminalResolution::Installed,
-        })
+        };
+        // Enqueue-win: отложенная команда исполняется относительно нового active.
+        self.retain_terminal_transport_intent(&drain);
+        Ok(drain)
     }
 
     /// Регистрирует successful strong install, который не владел playlist reservation.

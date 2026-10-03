@@ -439,6 +439,7 @@ impl PlaylistController {
 
     /// Explicit Cancel использует отдельную cause и не arm-ит future stop для active origin.
     pub(crate) fn cancel_manual_navigation(&mut self) -> ManualNavigationCancelOutcome {
+        self.supersede_terminal_transport_intent();
         let outcome = self.cancel_manual_navigation_inner();
         let terminal_action = match &outcome {
             ManualNavigationCancelOutcome::Discarded(invalidation) => {

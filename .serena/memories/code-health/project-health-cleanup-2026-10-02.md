@@ -11,8 +11,8 @@
 - Ошибки больше не теряются молча: fatal media-open violation, discovery batch/submit/draft, Manual Add start, stop cause, guard-исходы ручной навигации/Play item — в лог.
 - Исправлен баг: отказ импорта после подтверждения терялся; общее соответствие `PlaylistImportContinueOutcome::failure_feedback()`, тест `confirmed_import_failure_reaches_user_feedback_like_direct_continue`.
 
-## Подозрение (не исправлено; промпт: user/web-media-extraction/session-00-guard-outcome-bug.md)
-- `ControllerManualNavigationOutcome::Guarded(TransportGuardOutcome)` и guard Play item: потребитель только логирует; `ExecuteNow`/`CancelPendingThenExecute` содержат intent, который никто не исполняет; `ControllerTerminalDrain.deferred_intent` в production не читается (так было и на 6c2b670f) — проверить, достижимо ли (возможна потеря нажатия Next/Play во время install).
+## Потеря guard-исходов — подтверждено и исправлено 2026-10-03 (session-00)
+- Баг существовал с Session 11B: Play row/Next/MPRIS Stop во время install терялись; в `AwaitingReady` старый request к тому же доигрывал как «внешний» (без item binding). Исполнитель и его тесты восстановлены как production-код; детали — `mem:app-egui/transport-guard-execution-2026-10-03`.
 
 ## Раскладка тестов (монолиты разрезаны тематически, логика тестов не менялась)
 - Общие фейки/помощники остаются в `tests.rs`, темы — в `tests/<тема>.rs` с `use super::*;` (пути к модулю под тестом — `super::super::`, `include_str!` — на уровень глубже).

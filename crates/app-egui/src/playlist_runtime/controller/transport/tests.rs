@@ -448,3 +448,5 @@ fn stable_toggle_uses_owner_intent_instead_of_transient_player_state() {
         StablePlaybackIntent::Paused
     );
 }
+
+mod deferred_execution;

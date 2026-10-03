@@ -25,6 +25,11 @@ use crate::playlist_runtime::{
 use crate::state::AppState;
 use crate::ui::player_controls::TransportControlAction;
 
+mod guarded;
+
+pub(crate) use guarded::poll_playlist_transport;
+use guarded::{apply_guarded_transport, apply_neutral_stop_request};
+
 /// Row Play использует тот же strong install/exact transport adapter, что и main controls.
 pub(crate) fn apply_playlist_row_play(
     app_state: &mut AppState,
@@ -55,9 +60,18 @@ pub(crate) fn apply_playlist_row_play(
             true
         }
         ControllerPlayItemOutcome::Guarded {
-            intent_dispatch, ..
+            intent_dispatch,
+            guard,
         } => {
             app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, intent_dispatch);
+            let current_position = app_state.last_known_player_position();
+            apply_guarded_transport(
+                app_state,
+                playlist_runtime,
+                renderer,
+                guard,
+                current_position,
+            );
             true
         }
         ControllerPlayItemOutcome::ItemNotCommitted
@@ -338,13 +352,16 @@ pub(crate) fn apply_desktop_commands(
                     app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, dispatch);
                 }
             }
-            DesktopTransportAction::Stop => match playlist_runtime.request_desktop_stop() {
-                Some(Ok(request)) => app_state.dispatch_exact_playlist_transport(request),
-                Some(Err(outcome)) => {
-                    tracing::debug!(?outcome, "MPRIS Stop сохранён controller guard-ом")
-                }
-                None => {}
-            },
+            DesktopTransportAction::Stop => {
+                let stop = playlist_runtime.request_desktop_stop();
+                apply_neutral_stop_request(
+                    app_state,
+                    playlist_runtime,
+                    renderer,
+                    stop,
+                    player_snapshot.current_position,
+                );
+            }
             DesktopTransportAction::SetLoopStatus(status) => {
                 let repeat_mode = match status {
                     DesktopLoopStatus::None => playlist_core::RepeatMode::StopAtEnd,
@@ -571,7 +588,14 @@ pub(crate) fn apply_manual_navigation_outcome(
             tracing::debug!(?no_item, "manual navigation не нашла target");
         }
         ControllerManualNavigationOutcome::Guarded(guard) => {
-            tracing::debug!(?guard, "manual navigation удержана transport guard-ом");
+            let current_position = app_state.last_known_player_position();
+            apply_guarded_transport(
+                app_state,
+                playlist_runtime,
+                renderer,
+                guard,
+                current_position,
+            );
         }
         ControllerManualNavigationOutcome::Waiting { .. }
         | ControllerManualNavigationOutcome::StaleWait

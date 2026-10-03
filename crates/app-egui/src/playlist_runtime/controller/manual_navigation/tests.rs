@@ -461,3 +461,5 @@ fn fifty_thousand_rows_keep_fast_cursor_view_delta_bounded() {
         items[0]
     );
 }
+
+mod deferred_cursor;

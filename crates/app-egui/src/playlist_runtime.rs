@@ -39,10 +39,14 @@ mod shell_boundary;
 mod shutdown_report;
 mod suspend_resume;
 pub(crate) use suspend_resume::SuspendedTimelineResumePosition;
+mod guarded_transport;
+pub(crate) use guarded_transport::{GuardedTransportFollowUp, ReleasedPendingRequest};
 mod transport_execution;
 pub(crate) use transport_execution::{PlaylistMediaOpenIntent, RelativeBeyondEndNavigationOutcome};
 #[cfg(test)]
 mod transport_execution_audit_regressions;
+#[cfg(test)]
+mod transport_guard_regressions;
 mod transport_ui;
 mod ui_interaction;
 mod url_import;
@@ -114,8 +118,10 @@ pub(crate) use controller::SiblingDiscoveryScopeId;
 pub(crate) use controller::{
     AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,
     ControllerManualNavigationOutcome, ControllerMoveItemsOutcome, ControllerPlayItemOutcome,
-    ControllerStableIntentDispatch, LocalFileSelectionDisposition, PlannedPlaylistInstall,
-    QueuePreloadTarget, StablePlaybackIntent, UnstagedPlannedTargetFailureOutcome,
+    ControllerStableIntentDispatch, DeferredTransportExecutionOutcome,
+    LocalFileSelectionDisposition, ManualNavigationCancelOutcome, PlannedPlaylistInstall,
+    QueuePreloadTarget, StablePlaybackIntent, TransportGuardOutcome,
+    UnstagedPlannedTargetFailureOutcome,
 };
 pub(crate) use controller::{StartupPosition, StartupRestoreFailureOutcome, StartupRestoreTarget};
 pub(crate) use discovery::PlaylistDiscoveryNavigationAction;

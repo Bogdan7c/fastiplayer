@@ -986,7 +986,7 @@ pub(crate) fn render_frame(
         renderer,
     );
     web_media_runtime::advance_after_actions(app_state, playlist_runtime, renderer);
-    app_state.poll_playlist_transport(playlist_runtime, renderer);
+    crate::transport_runtime::poll_playlist_transport(app_state, playlist_runtime, renderer);
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
         Ok(tick) => tick,

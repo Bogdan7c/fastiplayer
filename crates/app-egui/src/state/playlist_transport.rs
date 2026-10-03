@@ -3,6 +3,7 @@
 //! Traversal/plan остаются в `PlaylistRuntime`; здесь живут только app candidate resources,
 //! coordinator request correlation и player receipts, нужные renderer owner-у.
 
+mod guarded_transport;
 mod lifecycle_settlement;
 
 pub(crate) use lifecycle_settlement::LifecycleTimelineSeekSettlement;
@@ -60,6 +61,10 @@ pub(super) struct PlaylistTransportRuntimeState {
     active_request_id: Option<MediaOpenRequestId>,
     active_item_id: Option<playlist_core::PlaylistItemId>,
     queued_install: Option<QueuedPlaylistInstall>,
+    /// Request другого owner-а (startup), за которым ждёт `queued_install`.
+    queued_behind_foreign_request: Option<MediaOpenRequestId>,
+    /// Request, отменённый по решению transport guard-а: его terminal — не ошибка target-а.
+    released_by_guard_request: Option<MediaOpenRequestId>,
     exact_receipts: Vec<PendingExactTransportReceipt>,
     pub(super) timeline_seek_receipts: Vec<ExactTimelineSeekReceipt>,
     intent_receipts: Vec<player_core::PlaybackIntentUpdateReceipt>,
@@ -142,6 +147,10 @@ impl AppState {
             self.mark_pending_worker_redraw();
             return;
         }
+        // Guard снял startup request ради этой команды: стартуем после его terminal.
+        let Some(install) = self.queue_install_behind_foreign_request(install) else {
+            return;
+        };
         let mut next_install = install;
         let mut next_supersedes = supersedes;
         loop {
@@ -383,6 +392,9 @@ impl AppState {
         }
         self.poll_playlist_intent_receipts();
         let Some(active_request_id) = self.playlist_transport.active_request_id else {
+            if let Some(install) = self.take_install_released_by_foreign_request() {
+                self.begin_planned_playlist_install(playlist_runtime, renderer, install, None);
+            }
             return;
         };
         #[expect(
@@ -421,6 +433,9 @@ impl AppState {
                         queued.install,
                         queued.supersedes,
                     );
+                } else if self.take_guard_released_terminal(failed_request_id) {
+                    // Пользователь сам заменил/остановил этот install — D55/skip не нужен.
+                    debug!(error = %error, "Playlist request завершён отменой по transport guard");
                 } else {
                     let automatic_continuation = error
                         .allows_navigation_failure_recovery()
