@@ -71,6 +71,5 @@ mod tests {
                 .retain_if_required(AdmissionBatchId::from_counter(counter).unwrap(), Vec::new());
         }
         assert!(pending_acks.entries.iter().all(Option::is_none));
-        assert_eq!(MAX_PENDING_READINESS_ACKS, 2);
     }
 }

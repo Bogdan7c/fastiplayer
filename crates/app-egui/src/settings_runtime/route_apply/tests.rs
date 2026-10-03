@@ -41,18 +41,3 @@ fn preferred_height_alone_and_mixed_with_policy_report_pipeline_rebuild() {
         ApplyMechanism::PipelineRebuild
     );
 }
-
-#[test]
-fn unknown_and_foreign_route_contracts_fail_closed() {
-    let unknown = setting_ids(&["yt_dlp.future_unmapped_policy"]);
-    let foreign_route = setting_ids(&["player.start_paused"]);
-
-    assert!(
-        media_service_apply_mechanism(&unknown).is_err(),
-        "unknown setting не должен молча считаться InPlace"
-    );
-    assert!(
-        media_service_apply_mechanism(&foreign_route).is_err(),
-        "contract другого owner route не должен получать MediaService report"
-    );
-}

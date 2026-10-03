@@ -7,13 +7,6 @@ use static_assertions::assert_not_impl_any;
 assert_not_impl_any!(CodecContext: Send, Sync);
 
 #[test]
-fn codec_context_request_preserves_codec_name_for_diagnostics() {
-    let request = FfmpegCodecContextRequest::new("h264");
-
-    assert_eq!(request.codec_name(), "h264");
-}
-
-#[test]
 fn codec_context_reports_feature_disabled_without_ffmpeg() {
     if cfg!(feature = "ffmpeg") {
         return;

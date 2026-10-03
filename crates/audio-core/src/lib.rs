@@ -820,21 +820,4 @@ mod tests {
         assert_eq!(packet.timing().dts_units(), Some(1_200));
         assert_eq!(packet.timing().duration_units(), Some(23));
     }
-
-    #[test]
-    fn decoder_error_carries_unsupported_codec_info() {
-        let error: anyhow::Error = AudioDecoderError::UnsupportedCodec {
-            codec_id: "A_NOT_A_REAL_CODEC".to_string(),
-        }
-        .into();
-
-        assert_eq!(
-            error
-                .downcast_ref::<AudioDecoderError>()
-                .expect("unsupported codec should stay typed"),
-            &AudioDecoderError::UnsupportedCodec {
-                codec_id: "A_NOT_A_REAL_CODEC".to_string(),
-            }
-        );
-    }
 }

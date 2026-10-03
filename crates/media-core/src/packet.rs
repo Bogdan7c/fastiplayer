@@ -389,21 +389,6 @@ mod tests {
     }
 
     #[test]
-    fn packet_can_keep_container_duration() {
-        let packet = Packet::new_unbounded(
-            TrackId::new(7),
-            TrackKind::Audio,
-            Duration::from_millis(42),
-            None,
-            false,
-            Bytes::from_static(b"audio"),
-        )
-        .with_duration(Duration::from_millis(20));
-
-        assert_eq!(packet.duration, Some(Duration::from_millis(20)));
-    }
-
-    #[test]
     fn packet_can_keep_raw_track_duration_next_to_media_duration() {
         let time_base = TimeBase::new(1, 48_000).expect("valid time base");
         let track_duration = TrackDuration::new(TrackId::new(7), 960, time_base);

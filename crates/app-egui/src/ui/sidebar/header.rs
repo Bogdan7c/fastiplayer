@@ -300,9 +300,137 @@ mod tests {
             .unwrap_or_else(|| panic!("text shape `{text}` must be painted"))
     }
 
+    /// Ширина headless-экрана, общая для замера и для клика.
+    const HEADER_TEST_WIDTH_POINTS: f32 = 420.0;
+
+    /// Headless-ввод с фиксированным экраном, чтобы layout header-а был одинаковым между кадрами.
+    fn header_input(events: Vec<egui::Event>) -> RawInput {
+        RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(HEADER_TEST_WIDTH_POINTS, 180.0),
+            )),
+            focused: true,
+            events,
+            ..RawInput::default()
+        }
+    }
+
+    /// Замеряет, где header рисует крестик, тем же layout-ом, что и `show`.
+    fn measured_close_center(context: &egui::Context, section: SidebarSection) -> egui::Pos2 {
+        let mut close_center = None;
+        let _ = context.run_ui(header_input(Vec::new()), |ui| {
+            ui.set_width(HEADER_TEST_WIDTH_POINTS);
+            let header_rect = allocate_sidebar_header_rect(ui);
+            let chrome = render_header_chrome(
+                ui,
+                header_rect,
+                sidebar_section_title(section),
+                sidebar_close_tooltip(section),
+                None,
+            );
+            close_center = Some(chrome.close_rect.center());
+        });
+        close_center.expect("headless header should expose close rect")
+    }
+
+    /// Результат одного кадра настоящего `show`: что header попросил у владельцев.
+    struct HeaderFrameOutput {
+        settings_actions: Vec<SettingsUiAction>,
+        close_requested: bool,
+    }
+
+    /// Рисует настоящий `show` для секции с минимальным контекстом и заданным вводом.
+    fn show_header_frame(
+        context: &egui::Context,
+        section: SidebarSection,
+        events: Vec<egui::Event>,
+    ) -> HeaderFrameOutput {
+        let skin = MinimalSkin;
+        let settings_model = crate::settings_ui::SettingsUiModel::new(true, Vec::new(), false);
+        let snapshot = player_core::PlayerSnapshot::default();
+        let url_model = crate::web_media_stream_model::UrlSidebarModel::Inactive;
+        let playlist_interaction = crate::playlist_runtime::PlaylistInteractionModel::default();
+        let playlist_undo = crate::playlist_runtime::PlaylistUndoUiSnapshot {
+            undo: None,
+            next_wake_deadline: None,
+        };
+        let mut playlist_state = playlist::PlaylistUiState::default();
+        let mut playlist_output = playlist::PlaylistUiOutput::default();
+        let mut url_action = None;
+        let mut settings_actions = Vec::new();
+        let mut close_requested = false;
+
+        let _ = context.run_ui(header_input(events), |ui| {
+            ui.set_width(HEADER_TEST_WIDTH_POINTS);
+            let mut render_context = SidebarRenderContext {
+                model: &settings_model,
+                snapshot: &snapshot,
+                url_model: &url_model,
+                playlist_model: None,
+                playlist_row_style: skin.playlist_row_style(),
+                playlist_toolbar_style: skin.playlist_toolbar_style(),
+                playlist_header_undo_style: skin.playlist_header_undo_style(),
+                playlist_interaction: &playlist_interaction,
+                playlist_undo: &playlist_undo,
+                ui_motion: crate::ui::animation::UiMotion::Reduced,
+                window_chrome_edge_alignment: WindowChromeEdgeAlignment::from_controls_style(
+                    skin.controls_style(),
+                ),
+                playlist_state: &mut playlist_state,
+                playlist_output: &mut playlist_output,
+                url_action: &mut url_action,
+                settings_actions: &mut settings_actions,
+                close_requested: &mut close_requested,
+            };
+            show(ui, section, &mut render_context);
+        });
+
+        HeaderFrameOutput {
+            settings_actions,
+            close_requested,
+        }
+    }
+
+    /// Нажимает и отпускает основную кнопку мыши над точкой, кадр за кадром.
+    fn click_header_at(
+        context: &egui::Context,
+        section: SidebarSection,
+        position: egui::Pos2,
+    ) -> HeaderFrameOutput {
+        let pointer_button = |pressed| egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = show_header_frame(context, section, vec![egui::Event::PointerMoved(position)]);
+        let _ = show_header_frame(context, section, vec![pointer_button(true)]);
+        show_header_frame(context, section, vec![pointer_button(false)])
+    }
+
+    /// Крестик Settings — это явный Cancel/rollback черновика, а не просто скрытие панели.
     #[test]
-    fn settings_sidebar_close_maps_to_cancel() {
-        assert_eq!(settings_sidebar_close_action(), SettingsUiAction::Cancel);
+    fn settings_close_click_emits_cancel_and_hides_sidebar() {
+        let context = egui::Context::default();
+        let close_center = measured_close_center(&context, SidebarSection::Settings);
+
+        let output = click_header_at(&context, SidebarSection::Settings, close_center);
+
+        assert_eq!(output.settings_actions, vec![SettingsUiAction::Cancel]);
+        assert!(output.close_requested);
+    }
+
+    /// Крестик остальных секций только скрывает host и не трогает Settings-черновик.
+    #[test]
+    fn non_settings_close_click_only_hides_sidebar() {
+        let context = egui::Context::default();
+        let close_center = measured_close_center(&context, SidebarSection::Info);
+
+        let output = click_header_at(&context, SidebarSection::Info, close_center);
+
+        assert!(output.settings_actions.is_empty());
+        assert!(output.close_requested);
     }
 
     /// Все секции проходят через один 32-point header и одинаковый vertical flow.

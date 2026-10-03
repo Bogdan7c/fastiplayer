@@ -222,9 +222,30 @@ fn h265_hvcc_parser_rejects_bad_version_lengths_and_truncated_arrays() {
     );
     truncated_array.truncate(24);
 
-    assert!(parse_hevc_decoder_configuration_record(&bad_version).is_err());
-    assert!(parse_hevc_decoder_configuration_record(&unsupported_length_size).is_err());
-    assert!(parse_hevc_decoder_configuration_record(&truncated_array).is_err());
+    // Каждый битый record отклоняется СВОЕЙ причиной: так тест заметит,
+    // если какая-то проверка пропадёт и record упадёт уже на другой.
+    assert_eq!(
+        parse_hevc_decoder_configuration_record(&bad_version).err(),
+        Some(super::HevcDecoderConfigurationRecordError::UnsupportedVersion { version: 2 })
+    );
+    assert_eq!(
+        parse_hevc_decoder_configuration_record(&unsupported_length_size).err(),
+        Some(
+            super::HevcDecoderConfigurationRecordError::UnsupportedNalLengthSize {
+                nal_length_size: 3
+            }
+        )
+    );
+    assert!(matches!(
+        parse_hevc_decoder_configuration_record(&truncated_array),
+        Err(
+            super::HevcDecoderConfigurationRecordError::TruncatedNalCount {
+                array_index: 0,
+                kind: super::H265ParameterSetKind::Sequence,
+                ..
+            }
+        )
+    ));
 }
 
 #[test]

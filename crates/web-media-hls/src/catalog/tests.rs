@@ -480,7 +480,9 @@ fn semantic_selection_survives_uri_query_and_source_order_changes() {
          #EXT-X-STREAM-INF:BANDWIDTH=2,CODECS=\"mp4a.40.2,avc1.640028\",RESOLUTION=1920x1080\nrotated-b.m3u8?new=2\n\
          #EXT-X-STREAM-INF:BANDWIDTH=1,CODECS=\"mp4a.40.2,avc1.640028\",RESOLUTION=1280x720\nrotated-a.m3u8?new=2\n",
     );
-    let intent = muxed_intent(1280, 720);
+    // Запрашиваем 1080p: этот ряд не первый в каталоге, поэтому выбор
+    // «первого попавшегося» ряда вместо совпавшего тест заметит.
+    let intent = muxed_intent(1920, 1080);
     let mut first_proofs = ProofQueue::new([muxed_proof(), muxed_proof()]);
     let first_snapshot = build_hls_catalog(
         HlsCatalogBuildRequest {
@@ -509,9 +511,18 @@ fn semantic_selection_survives_uri_query_and_source_order_changes() {
         &mut second_proofs,
     )
     .expect("second snapshot");
-    second_snapshot
+    let rematched = second_snapshot
         .rematch_semantic(semantic)
         .expect("semantic row ignores URI, query and source order");
+    // Проверяем, КАКОЙ ряд выбран, а не только факт успеха: во втором master
+    // ряд 1080p стоит первым и имеет новый URI с другим query.
+    let reopen = second_snapshot
+        .reopen_exact(&rematched)
+        .expect("rematched selection is exact inside the second snapshot");
+    let resolved = reopen
+        .resolve_master(&second, HlsCatalogMatchMode::Exact)
+        .expect("second parser rows match the rematched selection exactly");
+    assert_eq!(resolved.main_reference, second.variants[0].uri);
 }
 
 #[test]

@@ -1270,22 +1270,6 @@ mod tests {
         assert!(render_input_frame.is_none());
     }
 
-    /// Проверяет, что renderer input заимствует lease/views у prepared stage.
-    #[test]
-    fn prepared_video_frame_render_input_is_borrowed_from_prepared_stage() {
-        fn render_input_with_prepared_lifetime<'prepared>(
-            prepared_video_frame: &'prepared PreparedVideoFrame,
-        ) -> Result<Option<WgpuRenderableFrame<'prepared>>, PlayerRenderError> {
-            prepared_video_frame.render_input_video_frame()
-        }
-
-        let prepared_video_frame = PreparedVideoFrame::empty("no_frame_yet");
-        let render_input_frame = render_input_with_prepared_lifetime(&prepared_video_frame)
-            .expect("empty prepared frame must not fail lifetime check");
-
-        assert!(render_input_frame.is_none());
-    }
-
     /// Проверяет, что cache чистится на lifecycle break, но не на transient timeout.
     #[test]
     fn surface_drop_reason_invalidates_cached_present_frame_only_on_lifecycle_break() {

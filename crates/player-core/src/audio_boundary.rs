@@ -62,131 +62,32 @@ pub(crate) fn missing_audio_tempo_processor_factory() -> Arc<dyn AudioTempoProce
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use anyhow::Result;
-    use audio_core::AudioTempoOutputSegmentSpans;
-
     use crate::{
-        AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount,
-        AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
-        AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorFactory,
-        AudioTempoProcessorHandle, AudioTempoRatio, AudioTempoReportFrameCounts,
-        AudioTempoSampleRateHz, AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput,
+        AudioTempoChannelCount, AudioTempoPcmFormat, AudioTempoProcessorConfig, AudioTempoRatio,
+        AudioTempoSampleRateHz, AudioTempoSegment, AudioTempoSegmentId,
     };
 
-    struct CompileOnlyTempoProcessor {
-        config: AudioTempoProcessorConfig,
-    }
-
-    impl CompileOnlyTempoProcessor {
-        fn zero_report(&self) -> Result<AudioTempoProcessReport> {
-            AudioTempoProcessReport::from_frame_counts(
-                self.config.pcm_format(),
-                self.config.initial_segment(),
-                AudioTempoReportFrameCounts::ZERO,
-                AudioTempoOutputProgressMapping::new(
-                    AudioTempoOutputSegmentSpans::Empty,
-                    AudioTempoOutputSegmentSpans::Empty,
-                ),
-            )
-        }
-    }
-
-    impl AudioTempoProcessor for CompileOnlyTempoProcessor {
-        fn pcm_format(&self) -> AudioTempoPcmFormat {
-            self.config.pcm_format()
-        }
-
-        fn prime_decoded_history(
-            &mut self,
-            _decoded_history: AudioTempoDecodedMedia<'_>,
-        ) -> Result<AudioTempoProcessReport> {
-            self.zero_report()
-        }
-
-        fn set_segment(&mut self, segment: AudioTempoSegment) -> Result<AudioTempoProcessReport> {
-            self.config = AudioTempoProcessorConfig::new(self.config.pcm_format(), segment);
-            self.zero_report()
-        }
-
-        fn process_decoded_media_into<'output>(
-            &mut self,
-            _decoded_media: AudioTempoDecodedMedia<'_>,
-            output_buffer: &'output mut Vec<f32>,
-        ) -> Result<AudioTempoStretchedOutput<'output>> {
-            output_buffer.clear();
-            AudioTempoStretchedOutput::new(
-                output_buffer.as_slice(),
-                self.zero_report()?,
-                self.config.pcm_format(),
-            )
-        }
-
-        fn finish_stream_into<'output>(
-            &mut self,
-            output_buffer: &'output mut Vec<f32>,
-        ) -> Result<AudioTempoStretchedOutput<'output>> {
-            output_buffer.clear();
-            AudioTempoStretchedOutput::new(
-                output_buffer.as_slice(),
-                self.zero_report()?,
-                self.config.pcm_format(),
-            )
-        }
-
-        fn reset(&mut self) -> Result<AudioTempoProcessReport> {
-            self.zero_report()
-        }
-    }
-
-    struct CompileOnlyTempoFactory;
-
-    impl AudioTempoProcessorFactory for CompileOnlyTempoFactory {
-        fn create_processor(
-            &self,
-            config: AudioTempoProcessorConfig,
-        ) -> Result<AudioTempoProcessorHandle> {
-            Ok(Box::new(CompileOnlyTempoProcessor { config }))
-        }
-    }
-
-    fn compile_only_config() -> AudioTempoProcessorConfig {
+    /// Без установленного tempo backend-а фабрика по умолчанию обязана явно отказать
+    /// (fail closed), а не вернуть «пустой» processor; текст ошибки называет причину и ratio.
+    #[test]
+    fn missing_tempo_factory_refuses_with_explicit_reason() {
         let pcm_format = AudioTempoPcmFormat::new(
             AudioTempoSampleRateHz::new(48_000).expect("sample rate should be valid"),
             AudioTempoChannelCount::new(2).expect("channel count should be valid"),
         );
-
-        AudioTempoProcessorConfig::new(
+        let ratio = AudioTempoRatio::new(2.0).expect("ratio should be valid");
+        let config = AudioTempoProcessorConfig::new(
             pcm_format,
-            AudioTempoSegment::new(AudioTempoSegmentId::new(1), AudioTempoRatio::NORMAL),
-        )
-    }
-
-    #[test]
-    fn audio_tempo_boundary_is_visible_as_neutral_trait_objects() {
-        let config = compile_only_config();
-        let mut processor: AudioTempoProcessorHandle =
-            Box::new(CompileOnlyTempoProcessor { config });
-        let factory: Arc<dyn AudioTempoProcessorFactory> = Arc::new(CompileOnlyTempoFactory);
-
-        let reset_report = processor
-            .reset()
-            .expect("compile-only processor reset should succeed");
-        let updated_report = processor
-            .set_segment(AudioTempoSegment::new(
-                AudioTempoSegmentId::new(2),
-                AudioTempoRatio::new(2.0).expect("ratio should be valid"),
-            ))
-            .expect("compile-only processor segment update should succeed");
-        let _created_processor = factory
-            .create_processor(config)
-            .expect("compile-only factory should create neutral trait object");
-
-        assert_eq!(
-            reset_report.produced_stretched_output().frame_count(),
-            AudioTempoFrameCount::ZERO
+            AudioTempoSegment::new(AudioTempoSegmentId::new(1), ratio),
         );
-        assert_eq!(updated_report.segment_id(), AudioTempoSegmentId::new(2));
+
+        let Err(error) = super::missing_audio_tempo_processor_factory().create_processor(config)
+        else {
+            panic!("missing tempo factory must not create a processor");
+        };
+
+        let error_text = error.to_string();
+        assert!(error_text.contains("not installed"), "{error_text}");
+        assert!(error_text.contains(&ratio.to_string()), "{error_text}");
     }
 }

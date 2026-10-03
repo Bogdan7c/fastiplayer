@@ -120,14 +120,13 @@ impl Drop for DesktopIntegration {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
     use std::thread;
     use std::time::Duration;
 
     use crossbeam_channel::unbounded;
 
     use super::*;
-    use crate::{DesktopCommand, DesktopCommandRequestId, EffectiveVolume};
+    use crate::{DesktopCommand, EffectiveVolume};
 
     struct AcceptingCommandSink;
     impl DesktopCommandSink for AcceptingCommandSink {
@@ -159,7 +158,6 @@ mod tests {
                 .is_none()
         );
         assert_eq!(handle.latest_snapshot().expect("lock").revision.get(), 3);
-        let _ = DesktopCommandRequestId::new(NonZeroU64::MIN);
     }
 
     #[test]

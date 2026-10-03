@@ -445,16 +445,6 @@ mod tests {
     }
 
     #[test]
-    fn add_files_and_import_have_unmistakably_different_geometry() {
-        let add_files = format!("{:?}", glyph_output(PlaylistToolbarGlyph::AddFiles).shapes);
-        let import = format!("{:?}", glyph_output(PlaylistToolbarGlyph::Import).shapes);
-
-        assert_ne!(add_files, import);
-        assert_eq!(glyph_output(PlaylistToolbarGlyph::AddFiles).shapes.len(), 8);
-        assert_eq!(glyph_output(PlaylistToolbarGlyph::Import).shapes.len(), 3);
-    }
-
-    #[test]
     fn import_and_export_are_a_paired_but_directionally_distinct_glyph() {
         let import = glyph_output(PlaylistToolbarGlyph::Import);
         let export = glyph_output(PlaylistToolbarGlyph::Export);

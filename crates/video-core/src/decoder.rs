@@ -208,7 +208,6 @@ pub trait VideoDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec_core::{ColorMetadataOrigin, ColorRange, MatrixCoefficients};
     use video_frame_contract::DmaBufImageLayout;
 
     /// Создаёт test frame без реальных GPU resources и без legacy `ColorSpace`.
@@ -226,15 +225,6 @@ mod tests {
             resource_handle: FrameResourceHandle(1),
             diagnostics: VideoFrameDiagnostics::default(),
         }
-    }
-
-    #[test]
-    fn decoded_frame_test_helper_uses_explicit_color_metadata() {
-        let frame = decoded_test_frame();
-
-        assert_eq!(frame.color.range, ColorRange::Limited);
-        assert_eq!(frame.color.matrix, MatrixCoefficients::Bt709);
-        assert_eq!(frame.color.origin, ColorMetadataOrigin::FallbackDefault);
     }
 
     #[test]

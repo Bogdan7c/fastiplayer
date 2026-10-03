@@ -49,30 +49,6 @@ fn accepted_protocol(
 }
 
 #[test]
-fn fallible_stage_inventory_and_future_atomic_commit_point_are_explicit() {
-    assert_eq!(
-        MediaInstallFailureStage::ALL,
-        [
-            MediaInstallFailureStage::LegacyResetSeekFloor,
-            MediaInstallFailureStage::LegacyResetDecoderFlush,
-            MediaInstallFailureStage::LegacyResetDecoderStream,
-            MediaInstallFailureStage::OpenTransition,
-            MediaInstallFailureStage::AudioTrackPlanning,
-            MediaInstallFailureStage::VideoStreamConfiguration,
-            MediaInstallFailureStage::VideoPreflightTimeout,
-            MediaInstallFailureStage::PlaybackWindowPreparation,
-            MediaInstallFailureStage::PositionPreparation,
-            MediaInstallFailureStage::CandidateVideoResourceAcquisition,
-            MediaInstallFailureStage::CandidateVideoBackendMatching,
-            MediaInstallFailureStage::CandidateVideoBackendConfiguration,
-            MediaInstallFailureStage::CandidateVideoStatusPublication,
-            MediaInstallFailureStage::LegacyMediaOpenedTransition,
-        ]
-    );
-    let _future_commit_point = MediaInstallCommitPoint::ReplaceActiveOwnershipAndPublishInstalled;
-}
-
-#[test]
 fn accepted_authorization_requires_exact_installed_terminal_as_fatal_invariant() {
     let request_id = test_request_id(80);
     let (missing_receipt, _missing_port) = MediaInstallReceipt::new(request_id);

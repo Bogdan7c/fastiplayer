@@ -447,33 +447,110 @@ fn focused_row_keyboard_navigation_select_all_and_empty_area_click_emit_typed_in
     );
 }
 
-#[test]
-fn row_content_labels_explicitly_disable_text_selection() {
-    let renderer_source = include_str!("renderer.rs");
-    let row_content_module_source = include_str!("row_content.rs");
-    let row_content_start = row_content_module_source
-        .find("fn render_row_content")
-        .expect("row content symbol");
-    let tooltip_start = row_content_module_source
-        .find("fn show_safe_tooltip")
-        .expect("tooltip symbol");
-    let row_content_source = &row_content_module_source[row_content_start..tooltip_start];
+/// Рисует строки плейлиста настоящим renderer-ом и отдаёт полный output кадра.
+fn render_rows_output(
+    context: &egui::Context,
+    model: &PlaylistViewModel,
+    events: Vec<Event>,
+) -> egui::FullOutput {
+    let mut state = PlaylistUiState::default();
+    let mut output = PlaylistUiOutput::default();
+    context.run_ui(playlist_raw_input(events, 1.0), |ui| {
+        ui.set_width(420.0);
+        ui.set_height(120.0);
+        show_rows(
+            ui,
+            model,
+            row_style(),
+            UiMotion::Reduced,
+            &mut state,
+            &mut output,
+        );
+    })
+}
 
-    // Index, title, duration и error остаются четырьмя невыделяемыми text labels.
-    assert_eq!(row_content_source.matches("Label::new").count(), 4);
-    // Каждый оставшийся row label явно запрещает системное выделение текста.
-    assert_eq!(row_content_source.matches(".selectable(false)").count(), 4);
-    // У активной строки больше нет отдельного декоративного Play-маркера.
-    assert!(!row_content_source.contains("RichText::new(\"▶\")"));
-    // Renderer не должен возвращать удалённый векторный глиф через overlay.
-    assert!(!renderer_source.contains("active_track_glyph"));
-    // Обычный заголовок больше не получает forced strong foreground.
-    assert!(!row_content_source.contains("row.display_title()).strong()"));
-    // Контрастный foreground применяется только к authoritative active row.
-    assert!(row_content_source.contains("if row.is_active()"));
-    assert!(row_content_source.contains("title_text.color(row_style.active_title_color)"));
-    // Playback marker проходит через neutral artwork facade, а не text widget.
-    assert!(renderer_source.contains("artwork.playlist_row_marker"));
+/// Цвет, которым нарисован текст с точным содержимым, если такой текст есть в кадре.
+fn painted_text_color(output: &egui::FullOutput, text: &str) -> Option<egui::Color32> {
+    output
+        .shapes
+        .iter()
+        .find_map(|clipped_shape| match &clipped_shape.shape {
+            egui::epaint::Shape::Text(text_shape)
+                if text_shape.galley.job.text.as_str() == text =>
+            {
+                text_shape
+                    .galley
+                    .job
+                    .sections
+                    .first()
+                    .map(|section| section.format.color)
+            }
+            _ => None,
+        })
+}
+
+/// Текст строки нельзя выделять как документ: наведение на любую точку строки
+/// не превращает курсор в текстовый (I-beam), иначе drag выделял бы текст вместо строки.
+#[test]
+fn row_text_is_not_selectable_anywhere_in_the_row() {
+    let queue = queue(2);
+    let model = model_with_active(&queue, 1, Some(0));
+    let context = egui::Context::default();
+    let row_center_y = ROW_HEIGHT / 2.0;
+
+    for pointer_x in (4..420).step_by(8) {
+        let position = pos2(pointer_x as f32, row_center_y);
+        let output = render_rows_output(&context, &model, vec![Event::PointerMoved(position)]);
+
+        assert_ne!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::Text,
+            "row text at x={pointer_x} must not be selectable"
+        );
+    }
+
+    // Drag по заголовку — типичный жест выделения текста — не создаёт text selection.
+    let drag_start = pos2(INDEX_WIDTH + MEDIA_KIND_WIDTH + 24.0, row_center_y);
+    let drag_end = pos2(drag_start.x + 120.0, row_center_y);
+    let pointer_button = |position, pressed| Event::PointerButton {
+        pos: position,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    for events in [
+        vec![Event::PointerMoved(drag_start)],
+        vec![pointer_button(drag_start, true)],
+        vec![Event::PointerMoved(drag_end)],
+        vec![pointer_button(drag_end, false)],
+    ] {
+        let _ = render_rows_output(&context, &model, events);
+    }
+    let has_text_selection =
+        context.with_plugin::<egui::text_selection::LabelSelectionState, _>(|selection| {
+            selection.has_selection()
+        });
+    assert_ne!(has_text_selection, Some(true));
+}
+
+/// Контрастный цвет заголовка получает только подтверждённая активная строка,
+/// и активная строка не рисует отдельный текстовый маркер «▶».
+#[test]
+fn only_active_row_title_uses_active_color_without_text_marker() {
+    let queue = queue(2);
+    let model = model_with_active(&queue, 1, Some(0));
+    let context = egui::Context::default();
+
+    let output = render_rows_output(&context, &model, Vec::new());
+
+    assert_eq!(
+        painted_text_color(&output, "Эпизод 0"),
+        Some(row_style().active_title_color)
+    );
+    let inactive_title_color =
+        painted_text_color(&output, "Эпизод 1").expect("inactive title is painted");
+    assert_ne!(inactive_title_color, row_style().active_title_color);
+    assert_eq!(painted_text_color(&output, "▶"), None);
 }
 
 #[test]

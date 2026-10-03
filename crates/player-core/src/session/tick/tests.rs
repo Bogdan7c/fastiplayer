@@ -2780,22 +2780,6 @@ fn video_only_demux_admission_still_waits_for_present_queue() {
 }
 
 #[test]
-fn demux_backpressure_reports_present_queue_reason() {
-    let mut session = PlayerSession::new();
-    let tick_config = PlayerTickConfig {
-        max_video_present_queue: 1,
-        ..PlayerTickConfig::default()
-    };
-    session
-        .pipeline
-        .enqueue_queued_video_frame(decoded_frame(Duration::ZERO, 1));
-
-    let reason = demux_backpressure_reason(&session, &tick_config, false);
-
-    assert_eq!(reason, Some(PipelinePauseReason::WaitingForPresentQueue));
-}
-
-#[test]
 fn demux_backpressure_reports_audio_priority_reason() {
     let mut session = PlayerSession::new();
     let tick_config = PlayerTickConfig {

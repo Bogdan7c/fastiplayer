@@ -385,11 +385,12 @@ fn coupled_projection_renders_one_atomic_av_axis_with_safe_metadata() {
     assert!(labels.iter().all(|label| label != AUDIO_HEADING));
 }
 
+/// Архитектурный guard: component renderer не создаёт свою панель и не выдаёт
+/// `UrlSidebarAction` в обход единого маршрута. Блокировка кнопок при active/pending
+/// проверяется поведенчески кликом в соседних тестах, а не текстом исходника.
 #[test]
 fn component_renderer_has_no_panel_or_url_sidebar_action_route() {
     let source = include_str!("component_variants.rs");
     assert!(!source.contains("Panel::"));
     assert!(!source.contains("UrlSidebarAction"));
-    assert!(source.contains("UrlSidebarPendingSelection"));
-    assert!(source.contains("!active && !switch_in_progress"));
 }

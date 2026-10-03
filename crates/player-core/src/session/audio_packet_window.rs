@@ -661,9 +661,8 @@ mod tests {
             retained_range(first),
             DecodedPcmFrameRange::ordered_or_empty(0, 190_464)
         );
+        // Итог: из первого фрагмента (192_512 кадров) отрезано 2_048, второй сохранён целиком.
         assert_eq!(retained_range(second), DecodedPcmFrameRange::full(191_488));
-        assert_eq!(192_512 - 190_464, 2_048);
-        assert_eq!(191_488 - 191_488, 0);
     }
 
     #[test]

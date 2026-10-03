@@ -45,43 +45,22 @@ impl FrameSequenceObserver for FrameSequenceContract {
 mod tests {
     use super::*;
 
-    #[derive(Default)]
-    struct RecordingFrameSequence {
-        stages: Vec<FrameSequenceStage>,
-        contract: FrameSequenceContract,
-    }
-
-    impl FrameSequenceObserver for RecordingFrameSequence {
-        fn reached(&mut self, stage: FrameSequenceStage) {
-            self.contract.reached(stage);
-            self.stages.push(stage);
-        }
-    }
-
+    /// Production-контракт принимает ожидаемый порядок стадий кадра целиком.
     #[test]
-    fn recording_fake_preserves_runtime_sensitive_order() {
-        let mut sequence = RecordingFrameSequence::default();
+    fn contract_accepts_full_expected_frame_sequence() {
+        let mut contract = FrameSequenceContract::default();
         for stage in EXPECTED_FRAME_SEQUENCE {
-            sequence.reached(stage);
+            contract.reached(stage);
         }
 
-        assert_eq!(
-            sequence.stages,
-            vec![
-                FrameSequenceStage::WorkerEventDrain,
-                FrameSequenceStage::WorkerEventRecord,
-                FrameSequenceStage::DesktopPublish,
-                FrameSequenceStage::EguiOutput,
-                FrameSequenceStage::MaterializerLookup,
-                FrameSequenceStage::RendererSubmit,
-            ]
-        );
+        assert_eq!(contract.next_stage_index, EXPECTED_FRAME_SEQUENCE.len());
     }
 
+    /// Перестановка стадий (publish до drain-а worker events) ловится контрактом.
     #[test]
     #[should_panic]
-    fn recording_fake_rejects_reordered_runtime_stage() {
-        let mut sequence = RecordingFrameSequence::default();
-        sequence.reached(FrameSequenceStage::DesktopPublish);
+    fn contract_rejects_reordered_runtime_stage() {
+        let mut contract = FrameSequenceContract::default();
+        contract.reached(FrameSequenceStage::DesktopPublish);
     }
 }

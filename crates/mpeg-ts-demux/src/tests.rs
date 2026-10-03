@@ -1208,8 +1208,10 @@ fn m2ts_192_signature_is_explicitly_rejected() {
     ));
 }
 
+/// Разбор PAT отдаёт версию таблицы и PID её PMT.
+/// CRC здесь не проверяется: его проверяет сборщик секций (`psi_section_assembly`).
 #[test]
-fn psi_crc_and_version_are_validated() {
+fn pat_parser_reads_version_and_program_map_pid() {
     let bytes = TsFixtureBuilder::new().pat(&[(1, PMT_PID)], 7).finish();
     let packet = &bytes[..188];
     let adaptation_length = usize::from(packet[4]);
@@ -1603,21 +1605,6 @@ fn non_seekable_rejection_does_not_consume_next_packet() {
             .iter()
             .any(|event| matches!(event, DemuxReadEvent::Packet(_)))
     );
-}
-
-#[test]
-fn pat_and_pmt_helpers_reject_corrupted_crc() {
-    let bytes = TsFixtureBuilder::new()
-        .pat(&[(1, PMT_PID)], 0)
-        .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID)], 0)
-        .finish();
-    let mut corrupted = bytes.clone();
-    corrupted[187] ^= 1;
-    let result = open(
-        DemuxInput::byte_stream(Box::new(Cursor::new(corrupted))),
-        DemuxHints::none(),
-    );
-    assert!(result.is_err());
 }
 
 #[test]

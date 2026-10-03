@@ -76,43 +76,21 @@ fn committed_snapshot_maps_sidebar_slide_duration_to_seconds() {
     assert_eq!(snapshot.sidebar_slide_duration_seconds(), 0.0);
 }
 
-/// Snapshot отдаёт persisted ширину sidebar без доступа AppState к mutable config.
+/// Snapshot переносит геометрию окна и sidebar из committed config в egui points:
+/// каждое поле берётся из своего config-поля (а не из соседнего или дефолта).
 #[test]
-fn committed_snapshot_exposes_sidebar_width_points() {
+fn committed_snapshot_maps_window_and_sidebar_geometry_to_points() {
     let mut config = custom_config_for_test();
+    // Разные значения у всех трёх полей: перепутанное поле сразу даст несовпадение.
     config.ui.sidebar.width_points = 515;
+    config.ui.window.titlebar_height_px = 64;
+    config.ui.window.corner_radius_px = 24;
 
     let snapshot = CommittedConfigSnapshot::from_config(&config);
 
     assert_eq!(snapshot.sidebar_width_points(), 515);
-}
-
-/// Snapshot отдаёт высоту titlebar в egui points из committed config.
-#[test]
-fn committed_snapshot_maps_titlebar_height_to_points() {
-    let mut config = custom_config_for_test();
-    let default_snapshot = CommittedConfigSnapshot::from_config(&config);
-    assert_eq!(default_snapshot.titlebar_height_points(), 40.0);
-
-    config.ui.window.titlebar_height_px = 64;
-    let custom_snapshot = CommittedConfigSnapshot::from_config(&config);
-    assert_eq!(custom_snapshot.titlebar_height_points(), 64.0);
-}
-
-/// Snapshot активирует только committed радиус, переданный после успешного Apply/OK.
-#[test]
-fn committed_snapshot_maps_window_corner_radius_to_points() {
-    let mut config = custom_config_for_test();
-    assert_eq!(
-        CommittedConfigSnapshot::from_config(&config).window_corner_radius_points(),
-        12.0
-    );
-
-    config.ui.window.corner_radius_px = 24;
-    assert_eq!(
-        CommittedConfigSnapshot::from_config(&config).window_corner_radius_points(),
-        24.0
-    );
+    assert_eq!(snapshot.titlebar_height_points(), 64.0);
+    assert_eq!(snapshot.window_corner_radius_points(), 24.0);
 }
 
 /// Draft и Cancel не меняют активный контур, а успешный Apply синхронизирует snapshot.

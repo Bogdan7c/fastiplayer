@@ -878,38 +878,6 @@ mod tests {
     }
 
     #[test]
-    fn every_window_control_and_hover_state_paints() {
-        let style = WindowControlStyle {
-            fill: Color32::BLACK,
-            stroke: Stroke::new(1.0, Color32::WHITE),
-            hover_fill: Color32::GRAY,
-        };
-        for glyph in [
-            WindowControlGlyph::Minimize,
-            WindowControlGlyph::Maximize,
-            WindowControlGlyph::Restore,
-            WindowControlGlyph::Close,
-        ] {
-            assert!(
-                painted_shape_count(|p| p.window_control(
-                    rect(),
-                    glyph,
-                    ButtonVisualState::Idle,
-                    style
-                )) > 0
-            );
-            assert!(
-                painted_shape_count(|p| p.window_control(
-                    rect(),
-                    glyph,
-                    ButtonVisualState::Hovered,
-                    style
-                )) > 1
-            );
-        }
-    }
-
-    #[test]
     fn playlist_separator_spans_row_and_is_one_physical_pixel_on_hidpi() {
         let row_rect = Rect::from_min_max(pos2(7.0, 11.0), pos2(307.0, 45.0));
         let context = Context::default();

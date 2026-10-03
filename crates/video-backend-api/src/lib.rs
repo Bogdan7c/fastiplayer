@@ -524,27 +524,6 @@ mod tests {
         }
     }
 
-    /// Fake factory для success path neutral backend startup-а.
-    struct SuccessfulVideoBackendFactory;
-
-    impl VideoBackendFactory for SuccessfulVideoBackendFactory {
-        fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
-            Ok(StartedVideoBackend::from_decoder_thread(
-                "startup_fake",
-                StartupFakeDecoderThread,
-            ))
-        }
-    }
-
-    /// Fake factory для typed error propagation без swallowing-а.
-    struct FailingVideoBackendFactory;
-
-    impl VideoBackendFactory for FailingVideoBackendFactory {
-        fn start_video_backend(&self) -> anyhow::Result<StartedVideoBackend> {
-            Err(anyhow::anyhow!("fake backend startup failed"))
-        }
-    }
-
     /// Проверяет lock wait accessor для всех renderer-neutral lookup variants.
     #[test]
     fn resource_pool_lock_wait_returns_wait_for_all_lookup_variants() {
@@ -765,29 +744,5 @@ mod tests {
             lifetime_guard._decoder_thread.backend_name(),
             "startup fake decoder"
         );
-    }
-
-    /// Проверяет success path factory без concrete backend dependency.
-    #[test]
-    fn fake_video_backend_factory_success_path_returns_backend() {
-        let factory = SuccessfulVideoBackendFactory;
-        let decoder_thread = factory
-            .start_video_backend()
-            .expect("fake backend startup must succeed")
-            .into_decoder_thread();
-
-        assert_eq!(decoder_thread.backend_name(), "startup fake decoder");
-    }
-
-    /// Проверяет, что factory error path возвращает ошибку caller-у.
-    #[test]
-    fn fake_video_backend_factory_error_path_returns_error() {
-        let factory = FailingVideoBackendFactory;
-        let error = match factory.start_video_backend() {
-            Ok(_) => panic!("fake backend startup must fail"),
-            Err(error) => error,
-        };
-
-        assert_eq!(error.to_string(), "fake backend startup failed");
     }
 }

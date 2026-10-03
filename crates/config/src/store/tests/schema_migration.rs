@@ -338,7 +338,6 @@ fn legacy_v5_without_playlist_uses_defaults_without_startup_rewrite() {
         fs::read_to_string(&config_path).expect("legacy file remains readable"),
         legacy_text
     );
-    assert_eq!(CURRENT_SCHEMA_VERSION, 10);
 }
 
 #[test]

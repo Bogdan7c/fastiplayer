@@ -341,13 +341,16 @@ mod tests {
         }
     }
 
+    /// Обе кнопки решения не меньше стандартной интерактивной высоты egui:
+    /// замена на «маленькие» кнопки сделала бы их слишком мелкой мишенью для клика.
     #[test]
-    fn both_preview_buttons_keep_accessibility_sized_hit_areas() {
+    fn both_preview_buttons_keep_standard_interact_height() {
         let context = Context::default();
         let preview = preview_with_issues(PlaylistImportIntent::AppendToQueue);
         let result = frame(&context, &preview, raw_input(Vec::new()));
+        let minimum_height = context.global_style().spacing.interact_size.y;
 
-        assert!(result.cancel_rect.width() > 0.0);
-        assert!(result.continue_rect.width() > result.cancel_rect.width());
+        assert!(result.cancel_rect.height() >= minimum_height);
+        assert!(result.continue_rect.height() >= minimum_height);
     }
 }

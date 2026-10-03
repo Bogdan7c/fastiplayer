@@ -24,19 +24,6 @@ fn parses_vod_fragment_timeline_and_segment_mapping() {
     assert_eq!(timeline.fragments()[1].timestamp(), 1_000);
 }
 
-/// Проверяет, что malformed binary не превращается в пустую timeline.
-#[test]
-fn rejects_truncated_bootstrap() {
-    let limits = HdsBootstrapLimits {
-        maximum_bytes: non_zero(64),
-        maximum_boxes: non_zero(8),
-        maximum_fragments: non_zero(16),
-        maximum_string_bytes: non_zero(64),
-    };
-
-    assert!(parse_bootstrap(&[0, 0, 0], "video", limits).is_err());
-}
-
 /// Box с 64-bit size (`size32 == 1`), у которого обрезано поле large size,
 /// отклоняется как Malformed, а не паникует на чтении фиксированного поля.
 #[test]

@@ -321,6 +321,10 @@ fn audio_buffer_clear_generation_boundary_records_ack_generation() {
     assert_eq!(pipeline.audio_buffer_clear_generation(), 0);
 
     pipeline.mark_audio_buffer_clear_ack(7);
-
     assert_eq!(pipeline.audio_buffer_clear_generation(), 7);
+
+    // Второе подтверждение заменяет первое: хранится именно последнее поколение,
+    // а не их сумма — иначе seek-gate сверял бы несуществующую generation.
+    pipeline.mark_audio_buffer_clear_ack(9);
+    assert_eq!(pipeline.audio_buffer_clear_generation(), 9);
 }

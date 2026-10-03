@@ -290,6 +290,13 @@ fn live_timeline_and_static_window_conflict_fails_before_strong_install_barrier(
             ..PreparedWebMediaAttachments::default()
         },
     );
-    // Никакой mixed provider state не достигает Ready/authorize phase.
-    assert!(result.is_err());
+    // Никакой mixed provider state не достигает Ready/authorize phase, и отказ
+    // назван именно конфликтом live timeline и static window, а не любой ошибкой.
+    assert!(matches!(
+        result,
+        Err(media_source_open::prepared_web_media::PreparedWebMediaCompositionError::TimelineMode(
+            player_core::PreparedMediaTimelineModeError::PlaybackWindowConflictsWithLiveTimeline
+                | player_core::PreparedMediaTimelineModeError::LiveTimelineConflictsWithPlaybackWindow
+        ))
+    ));
 }

@@ -313,12 +313,6 @@ mod tests {
         progress
     }
 
-    /// Проверяет stop gate S38: custom-painted play/pause с `Sense::click()` фокусируем.
-    #[test]
-    fn egui_click_sense_keeps_custom_playback_button_focusable() {
-        assert!(Sense::click().is_focusable());
-    }
-
     /// Проверяет wheel path: один discrete wheel/touchpad шаг даёт один semantic UI intent.
     #[test]
     fn wheel_over_playback_button_emits_one_rate_step() {

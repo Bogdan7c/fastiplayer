@@ -250,18 +250,10 @@ mod tests {
     }
 
     #[test]
-    fn final_visible_height_matches_requested_heading_height_and_stroke() {
+    fn final_visible_height_matches_requested_heading_height() {
         let bounds = painted_bounds(hit_rect(), state(), style());
 
         assert!((bounds.height() - style().glyph_height).abs() < 0.05);
-        assert_eq!(style().glyph_stroke_width, 2.0);
-    }
-
-    #[test]
-    fn glyph_bounds_stay_inside_hit_area() {
-        let bounds = painted_bounds(hit_rect(), state(), style());
-
-        assert!(hit_rect().contains_rect(bounds));
     }
 
     #[test]
@@ -314,7 +306,8 @@ mod tests {
 
     #[test]
     fn fractional_hidpi_coordinates_keep_bounds_stable() {
-        for pixels_per_point in [1.25, 1.5, 2.0, 2.5] {
+        // 1.0 включён: границы глифа проверяются и на обычном (не HiDPI) экране.
+        for pixels_per_point in [1.0, 1.25, 1.5, 2.0, 2.5] {
             let context = Context::default();
             context.set_pixels_per_point(pixels_per_point);
             let output = context.run_ui(RawInput::default(), |ui| {

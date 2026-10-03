@@ -194,17 +194,38 @@ fn restart_from_ended_uses_existing_replay_boundary_and_keeps_exact_instance() {
 
 #[test]
 fn exact_play_pause_intent_never_falls_through_to_newer_instance() {
-    let instance_id = media_instance_id(7);
-    let mut session = session_with_exact_media(instance_id);
+    let stale_instance_id = media_instance_id(6);
+    let newer_instance_id = media_instance_id(7);
+    let mut session = session_with_exact_media(newer_instance_id);
+    let state_before = session.playback_state();
+
+    // Play/Pause, адресованный старому instance, не должен «провалиться»
+    // на более новый: команда отклоняется, состояние нового media не меняется.
     assert_eq!(
         session.apply_exact_media_transport(request(
-            instance_id,
+            stale_instance_id,
+            ExactMediaTransportAction::SetPlaybackIntent {
+                intent: PlaybackIntent::StartPlaying,
+            },
+        )),
+        ExactMediaTransportOutcome::StaleInstance {
+            requested_media_instance_id: stale_instance_id,
+            current_media_instance_id: Some(newer_instance_id),
+        }
+    );
+    assert_eq!(session.playback_state(), state_before);
+    assert_ne!(session.playback_state(), PlaybackState::Playing);
+
+    // Та же команда для актуального instance применяется.
+    assert_eq!(
+        session.apply_exact_media_transport(request(
+            newer_instance_id,
             ExactMediaTransportAction::SetPlaybackIntent {
                 intent: PlaybackIntent::StartPlaying,
             },
         )),
         ExactMediaTransportOutcome::Applied {
-            media_instance_id: instance_id,
+            media_instance_id: newer_instance_id,
         }
     );
     assert_eq!(session.playback_state(), PlaybackState::Playing);

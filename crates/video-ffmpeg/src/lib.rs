@@ -56,6 +56,8 @@ mod tests {
     fn backend_id_matches_planned_public_diagnostic_name() {
         let backend_id = ffmpeg_software_backend_id();
 
-        assert_eq!(backend_id.as_str(), FFMPEG_SOFTWARE_BACKEND_ID);
+        // Сравниваем с литералом, а не с самой константой: имя backend-а — публичная
+        // диагностика (логи, capability report), и его смену тест должен заметить.
+        assert_eq!(backend_id.as_str(), "ffmpeg-sw");
     }
 }

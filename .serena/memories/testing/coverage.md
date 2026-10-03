@@ -19,3 +19,13 @@
 - Посмотреть покрытие для себя: `cargo llvm-cov --workspace --all-features --html` (не gate).
 - Идея на будущее (не решено): mutation testing изменённого кода `cargo mutants --in-diff` в режиме отчёта.
 - Не восстанавливать coverage-gate и не писать тесты «ради покрытия» без нового решения владельца.
+
+## Аудит бесполезных тестов (2026-10-03, после удаления gate)
+- Скрининг ~5000 тестов (66 crate-ов; vendored `*-patch` не трогали) + проверка мутациями. Мусора меньше, чем ожидалось: все 12 coverage-тестов от 2026-10-03 (flv, PSI, prefetch, hls limits, redaction, EBML hints, demux ceilings, custom_thresholds, provider id, ValidatedVodMediaPlaylist, Display раскладки каналов) проверяют результат — оставлены.
+- Решения владельца: grep-тесты исходников переписывать на поведение, где возможно (UI — headless egui + accesskit), архитектурные guard-ы (запрещённые зависимости/типы) оставлять; пины констант удалять только если есть строгий дубль (дефолты config закрепляет golden `tests/fixtures/current_schema_v10.toml`); passthrough-тесты сворачивать, но per-boundary error-state тесты (правило 7 AGENTS) не сливать; тест с evidence-ссылкой (`preference_distinguishes_*`, runtime-coverage-s41.json) и test-only prod API `MediaInstallFailureStage::ALL`/`MediaInstallCommitPoint` не трогать.
+- Приёмы для UI-тестов app-egui: клик — `PointerMoved` → press → release по кадрам; список кнопок — `ctx.enable_accesskit()` + `Role::Button` labels; «клавиша съедена» — `ui.input(key_pressed)` после виджета в том же кадре; выделение текста — `ctx.with_plugin::<egui::text_selection::LabelSelectionState,_>(|s| s.has_selection())`. `Context::style()` в egui 0.34 deprecated → `global_style()`.
+- Находка (не исправлена, вне задачи): symphonia `probe` глотает io-ошибку producer-а → `UnsupportedFormat("no suitable format reader")`, причина сбоя сети теряется (`producer_failure_prevents_demux_publication` поэтому проверяет только факт отказа).
+
+## Как проверять тест мутацией (уроки)
+- Мутации делать во временной копии или с немедленным откатом; в worktree — ОТДЕЛЬНЫЙ `CARGO_TARGET_DIR`: общий target с основным деревом оставил в основном дереве устаревшие (мутированные) артефакты, тесты в `main` «падали» на чистом коде до `touch` исходников.
+- Serena `replace_symbol_body` для Rust заменяет функцию вместе с атрибутами (`#[test]` пропадает) — после него проверять число тестов (`git grep -c '#\[test\]'`).

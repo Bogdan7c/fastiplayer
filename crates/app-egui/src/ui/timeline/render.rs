@@ -177,13 +177,6 @@ mod tests {
             pointer_fraction(hit_rect, style, track_rect.right_center()),
             1.0
         );
-        assert!(track_rect.expand(style.track_outline_width).width() > track_rect.width());
-    }
-
-    #[test]
-    fn thumb_outline_remains_larger_than_thumb() {
-        let style = style();
-        assert!(style.thumb_radius + style.thumb_outline_width > style.thumb_radius);
     }
 
     #[test]

@@ -81,7 +81,8 @@ fn show_url_editor(
 
 #[cfg(test)]
 mod tests {
-    use super::SORT_KEYS;
+    use super::{PlaylistAction, PlaylistInteractionModel, PlaylistUiOutput, SORT_KEYS};
+    use crate::ui::skin::{MinimalSkin, PlayerSkin};
 
     #[test]
     fn sort_menu_exposes_every_required_key_exactly_once() {
@@ -102,44 +103,107 @@ mod tests {
         }
     }
 
-    #[test]
-    fn inline_url_enter_is_consumed_after_focus_loss() {
-        let source = include_str!("toolbar.rs");
-        let enter_branch = source
-            .split_once("let submit_by_enter")
-            .expect("Enter branch должен существовать")
-            .1
-            .split_once("let cancel_by_escape")
-            .expect("Enter branch должен быть bounded")
-            .0;
-
-        assert!(enter_branch.contains("input_mut"));
-        assert!(enter_branch.contains("consume_key"));
-        assert!(enter_branch.contains("egui::Key::Enter"));
-        assert!(!enter_branch.contains("key_pressed"));
+    /// Рисует toolbar в headless egui и отдаёт действия и полный output кадра.
+    /// `after_toolbar` вызывается в том же кадре после toolbar — так видно,
+    /// какие клавиши toolbar «съел», а какие дошли бы до глобальных hotkeys.
+    fn render_toolbar(
+        context: &egui::Context,
+        model: &PlaylistInteractionModel,
+        events: Vec<egui::Event>,
+        mut after_toolbar: impl FnMut(&mut egui::Ui),
+    ) -> (Vec<PlaylistAction>, egui::FullOutput) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(420.0, 240.0),
+            )),
+            focused: true,
+            events,
+            ..egui::RawInput::default()
+        };
+        let mut output = PlaylistUiOutput::default();
+        let full_output = context.run_ui(input, |ui| {
+            ui.set_width(420.0);
+            super::show(ui, model, MinimalSkin.playlist_toolbar_style(), &mut output);
+            after_toolbar(ui);
+        });
+        (output.take_actions(), full_output)
     }
 
-    #[test]
-    fn queue_mode_controls_are_not_duplicated_in_playlist_toolbar() {
-        let toolbar_source = include_str!("toolbar.rs")
-            .split_once("#[cfg(test)]")
-            .expect("toolbar tests must stay after production code")
-            .0;
-        let icon_bar_source = include_str!("toolbar/icon_bar.rs")
-            .split_once("#[cfg(test)]")
-            .expect("icon bar tests must stay after production code")
-            .0;
-        let production_source = format!("{toolbar_source}\n{icon_bar_source}");
+    /// Нажатие и отпускание одной клавиши без модификаторов.
+    fn key_press(key: egui::Key) -> Vec<egui::Event> {
+        [true, false]
+            .into_iter()
+            .map(|pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .collect()
+    }
 
-        assert!(!production_source.contains("SetRepeatMode"));
-        assert!(!production_source.contains("SetShuffle"));
-        assert!(!production_source.contains("Перемешать"));
-        assert!(!production_source.contains("Повтор:"));
-        assert!(!production_source.contains("SetStopAfterCurrent"));
-        assert!(!production_source.contains("После текущего"));
-        assert!(!production_source.contains("UndoRemoval"));
-        assert!(!production_source.contains("PlaylistUndoUiSnapshot"));
-        assert!(production_source.contains("PlaylistToolbarGlyph::Sort"));
-        assert!(toolbar_source.contains("icon_bar::show"));
+    /// Enter в URL-поле отправляет URL и поглощается: он не должен дойти
+    /// до глобальных hotkeys (например, play/pause) в том же кадре.
+    #[test]
+    fn inline_url_enter_submits_and_is_consumed_after_focus_loss() {
+        let context = egui::Context::default();
+        let mut model = PlaylistInteractionModel {
+            url_editor_open: true,
+            url_text: "https://media.invalid/clip.mp4".to_owned(),
+            url_request_focus: true,
+            ..PlaylistInteractionModel::default()
+        };
+        let (focus_actions, _) = render_toolbar(&context, &model, Vec::new(), |_| {});
+        assert!(focus_actions.contains(&PlaylistAction::UrlFocusRestored));
+        model.url_request_focus = false;
+
+        let mut enter_leaked_to_hotkeys = None;
+        let (enter_actions, _) =
+            render_toolbar(&context, &model, key_press(egui::Key::Enter), |ui| {
+                enter_leaked_to_hotkeys =
+                    Some(ui.input(|input| input.key_pressed(egui::Key::Enter)));
+            });
+
+        assert!(enter_actions.contains(&PlaylistAction::SubmitUrl));
+        assert_eq!(enter_leaked_to_hotkeys, Some(false));
+    }
+
+    /// Toolbar плейлиста содержит ровно свои кнопки; режимы очереди (повтор,
+    /// перемешивание, «после текущего») и Undo живут в других местах и сюда не дублируются.
+    #[test]
+    fn playlist_toolbar_exposes_only_its_own_controls() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let model = PlaylistInteractionModel {
+            item_count: 3,
+            ..PlaylistInteractionModel::default()
+        };
+
+        let (_, full_output) = render_toolbar(&context, &model, Vec::new(), |_| {});
+
+        let update = full_output
+            .platform_output
+            .accesskit_update
+            .expect("AccessKit tree update");
+        let mut button_labels: Vec<String> = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == egui::accesskit::Role::Button)
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        button_labels.sort();
+        let mut expected_labels = vec![
+            "Добавить файлы",
+            "Добавить URL",
+            "Сортировать плейлист",
+            "Перейти к текущему медиа",
+            "Импортировать плейлист",
+            "Экспортировать плейлист",
+            "Очистить очередь",
+        ];
+        expected_labels.sort_unstable();
+        assert_eq!(button_labels, expected_labels);
     }
 }

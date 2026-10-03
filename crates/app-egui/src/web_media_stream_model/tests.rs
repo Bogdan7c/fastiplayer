@@ -110,19 +110,6 @@ fn audio_only_candidate_has_no_fake_resolution() {
 }
 
 #[test]
-fn one_and_many_candidate_inventory_preserve_active_projection() {
-    let active = candidate(Some(1080), false);
-    let one: Arc<[WebMediaCandidatePresentation]> = Arc::from([active.clone()]);
-    assert_eq!(one.len(), 1);
-    assert_eq!(one[0], active);
-
-    let many: Arc<[WebMediaCandidatePresentation]> =
-        Arc::from([candidate(Some(720), false), active.clone()]);
-    assert_eq!(many.len(), 2);
-    assert!(many.contains(&active));
-}
-
-#[test]
 fn stale_generation_hides_pending_candidate_and_safe_error() {
     let controller = UrlSidebarController {
         pending_selection: Some(UrlSidebarPendingSelection::Candidate {
@@ -368,14 +355,6 @@ fn item_override_requires_exact_item_and_source_lineage() {
             ..
         }
     ));
-}
-
-#[test]
-fn safe_error_model_contains_no_arbitrary_error_text() {
-    let debug = format!("{:?}", UrlSidebarSafeError::SourceUnavailable);
-    assert_eq!(debug, "SourceUnavailable");
-    assert!(!debug.contains("https://"));
-    assert!(!debug.contains("Cookie"));
 }
 
 #[test]

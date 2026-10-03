@@ -4,16 +4,30 @@ use super::*;
 #[test]
 fn capability_report_updates_snapshot_and_event_queue() {
     let mut session = PlayerSession::new();
-
-    session.set_system_capabilities(capabilities_with_vp9_profile0());
-
-    assert!(session.snapshot().capability_summary.is_some());
+    let capabilities = capabilities_with_vp9_profile0();
+    let expected_summary = capabilities.detailed_report_text();
     assert!(
-        session
-            .take_events()
-            .iter()
-            .any(|event| matches!(event, PlayerEvent::CapabilityScanCompleted(_)))
+        !expected_summary.is_empty(),
+        "fixture report must not be empty"
     );
+
+    session.set_system_capabilities(capabilities);
+
+    // И snapshot, и событие для UI/log несут именно текст отчёта о возможностях,
+    // а не пустую строку или устаревший текст.
+    assert_eq!(
+        session.snapshot().capability_summary.as_deref(),
+        Some(expected_summary.as_str())
+    );
+    let published_summaries: Vec<String> = session
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            PlayerEvent::CapabilityScanCompleted(summary) => Some(summary.summary),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(published_summaries, vec![expected_summary]);
 }
 
 #[test]

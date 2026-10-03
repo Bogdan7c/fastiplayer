@@ -89,7 +89,30 @@ fn active_worker_uses_media_plan_as_wakeup_timeout() {
 
     runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
 
-    assert!(runtime.plan_next_worker_wakeup().is_some());
+    let planned_at = Instant::now();
+    let wakeup = runtime
+        .plan_next_worker_wakeup()
+        .expect("active worker must plan a playback wakeup");
+    let crate::worker_scheduler::WorkerWakeupDeadline::Playback { plan, deadline } =
+        wakeup.deadline();
+    // Worker обязан взять timeout именно из media plan-а сессии,
+    // а не подставить свой (например, нулевой busy-loop).
+    let media_plan = runtime.session.worker_wakeup_plan(
+        planned_at,
+        &runtime.config.tick_config,
+        runtime.config.decoder_readiness_poll_interval,
+        runtime.config.coarse_wakeup_interval,
+    );
+    assert_eq!(plan.delay, media_plan.delay);
+    assert_eq!(plan.reason, media_plan.reason);
+    let media_delay = media_plan
+        .delay
+        .expect("playing session plans a timed wakeup");
+    assert!(!media_delay.is_zero(), "fixture must exercise a real delay");
+    assert!(
+        deadline >= planned_at + media_delay,
+        "wakeup deadline must not come earlier than the media plan delay"
+    );
 }
 
 /// Уже просроченный plan исполняется сразу и не входит в blocking wait.
@@ -483,6 +506,12 @@ fn player_worker_reports_render_resource_previous_frame_reuse_without_command_qu
     render_resource_previous_frame_reuse_sample_rx
         .try_recv()
         .expect("render resource previous-frame reuse sample should be queued");
+    // Одно событие reuse — ровно один диагностический sample, без дублей.
+    assert!(
+        render_resource_previous_frame_reuse_sample_rx
+            .try_recv()
+            .is_err()
+    );
 }
 
 #[test]

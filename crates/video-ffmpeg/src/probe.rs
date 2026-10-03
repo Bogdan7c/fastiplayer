@@ -606,7 +606,7 @@ mod tests {
     fn compile_time_probe_reports_backend_id_without_runtime_calls() {
         let report = compile_time_probe();
 
-        assert_eq!(report.backend_id(), FFMPEG_SOFTWARE_BACKEND_ID);
+        assert_eq!(report.backend_id(), "ffmpeg-sw");
         assert_eq!(report.runtime_status(), &FfmpegRuntimeProbeStatus::NotRun);
     }
 

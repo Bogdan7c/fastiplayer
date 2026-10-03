@@ -6,16 +6,6 @@ use super::*;
 use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
 
 #[test]
-fn controller_exposes_startup_error_for_app_state_creation() {
-    let controller = StartupMediaController::new(None, Some("startup failure".to_string()));
-
-    assert_eq!(
-        controller.startup_error_message(),
-        Some("startup failure".to_string())
-    );
-}
-
-#[test]
 fn pending_message_reports_existing_yt_dlp_job() {
     let wake_port = AppWakePort::disconnected(AppWakeOwner::StartupMedia);
     let (_result_publisher, result_receiver) = owner_mailbox(wake_port.clone());

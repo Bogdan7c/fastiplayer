@@ -195,9 +195,27 @@ fn avcc_parser_rejects_malformed_lengths_and_empty_parameter_sets() {
     let mut truncated_sps_record = avcc(4, &sequence_parameter_set, &picture_parameter_set);
     truncated_sps_record.truncate(8);
 
-    assert!(parse_avc_decoder_configuration_record(&unsupported_length_size_record).is_err());
-    assert!(parse_avc_decoder_configuration_record(&empty_sps_record).is_err());
-    assert!(parse_avc_decoder_configuration_record(&truncated_sps_record).is_err());
+    // Каждый битый record отклоняется СВОЕЙ причиной: так тест заметит,
+    // если какая-то проверка пропадёт и record упадёт уже на другой.
+    assert_eq!(
+        parse_avc_decoder_configuration_record(&unsupported_length_size_record).err(),
+        Some(AvcDecoderConfigurationRecordError::UnsupportedNalLengthSize { nal_length_size: 3 })
+    );
+    assert_eq!(
+        parse_avc_decoder_configuration_record(&empty_sps_record).err(),
+        Some(AvcDecoderConfigurationRecordError::EmptyNalUnit {
+            kind: super::H264ParameterSetKind::Sequence,
+            index: 0,
+        })
+    );
+    assert!(matches!(
+        parse_avc_decoder_configuration_record(&truncated_sps_record),
+        Err(AvcDecoderConfigurationRecordError::TruncatedNalUnit {
+            kind: super::H264ParameterSetKind::Sequence,
+            index: 0,
+            ..
+        })
+    ));
 }
 
 #[test]

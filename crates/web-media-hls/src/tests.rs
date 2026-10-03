@@ -1,7 +1,8 @@
 use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 
 use hls_playlist_core::{
-    HlsParseRequest, HlsParserLimits, HlsPlaylist, MediaPlaylist, parse_hls_playlist,
+    HlsParseRequest, HlsParserLimits, HlsPlaylist, HlsProfileError, MediaPlaylist,
+    parse_hls_playlist,
 };
 use media_core::{TrackId, TrackInfo, TrackKind};
 use source_core::HttpRequestTarget;
@@ -551,8 +552,16 @@ fn validated_vod_media_playlist_accepts_only_complete_media_playlists() {
     assert!(std::ptr::eq(validated.media(), media));
 
     let master = parse_any("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nvideo.m3u8\n");
-    assert!(crate::ValidatedVodMediaPlaylist::new(&master, None).is_err());
+    // Проверяем конкретную причину отказа: иначе тест не отличит
+    // «master отклонён как master» от отказа по любой другой причине.
+    assert_eq!(
+        crate::ValidatedVodMediaPlaylist::new(&master, None).err(),
+        Some(HlsProfileError::MasterPlaylist)
+    );
 
     let live = parse_any("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment0.ts\n");
-    assert!(crate::ValidatedVodMediaPlaylist::new(&live, None).is_err());
+    assert_eq!(
+        crate::ValidatedVodMediaPlaylist::new(&live, None).err(),
+        Some(HlsProfileError::NonVod)
+    );
 }

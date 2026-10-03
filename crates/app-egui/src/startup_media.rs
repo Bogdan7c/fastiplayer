@@ -355,16 +355,6 @@ pub(crate) struct StartupMediaController {
 }
 
 impl StartupMediaController {
-    /// Создаёт controller из startup-состояния, которое было собрано до запуска окна.
-    #[cfg(test)]
-    pub(crate) fn new(initial_media: Option<InitialMedia>, startup_error: Option<String>) -> Self {
-        Self::with_wake_port(
-            initial_media,
-            startup_error,
-            AppWakePort::disconnected(AppWakeOwner::StartupMedia),
-        )
-    }
-
     /// Production constructor получает process-lifetime wake port от `AppShell`.
     pub(crate) fn with_wake_port(
         initial_media: Option<InitialMedia>,

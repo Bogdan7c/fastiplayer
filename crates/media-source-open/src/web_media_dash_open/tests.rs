@@ -264,5 +264,11 @@ fn invalid_fragment_mapping_stays_before_prepared_runtime_barrier() {
         }],
     );
 
-    assert!(mapped_component.is_err());
+    // Отказ должен быть именно из-за потерянной base для relative fragment-а,
+    // а не из-за любой другой ошибки маппинга.
+    let error = mapped_component.expect_err("relative fragment without base must be rejected");
+    assert!(
+        format!("{error:#}").contains("потерял validated base"),
+        "{error:#}"
+    );
 }

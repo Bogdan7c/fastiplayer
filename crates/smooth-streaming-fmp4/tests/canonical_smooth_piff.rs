@@ -887,13 +887,49 @@ fn mapped_track_identity_is_exact_and_debug_hides_codec_bytes() {
     let debug_text = format!("{track:?}");
     assert!(debug_text.starts_with("SmoothMappedTrack"), "{debug_text}");
     assert!(debug_text.contains("timescale: 10000000"), "{debug_text}");
-    // Первое значение CodecPrivateData из fixture-манифеста не должно утечь в Debug.
-    let manifest_text = std::str::from_utf8(MANIFEST).expect("fixture manifest is UTF-8");
-    let codec_private_data = manifest_text
-        .split("CodecPrivateData=\"")
-        .nth(1)
-        .and_then(|rest| rest.split('"').next())
-        .expect("fixture has CodecPrivateData");
-    assert!(!codec_private_data.is_empty());
-    assert!(!debug_text.contains(codec_private_data), "{debug_text}");
+    // Берём codec-private bytes именно выбранного видео-качества (а не первого
+    // CodecPrivateData в файле — оно принадлежит аудио) и проверяем все формы,
+    // в которых байты могли бы утечь через Debug: hex в любом регистре
+    // и десятичный список, как его печатает `{:?}` для `[u8]`.
+    let codec_bytes = video_codec_private_bytes(&manifest, &selection);
+    let parameter_set_bytes = &codec_bytes[4..12];
+    let leaked_forms = [
+        hex_text(parameter_set_bytes).to_uppercase(),
+        hex_text(parameter_set_bytes),
+        parameter_set_bytes
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+    ];
+    for leaked_form in leaked_forms {
+        assert!(
+            !debug_text.contains(&leaked_form),
+            "{leaked_form} leaked: {debug_text}"
+        );
+    }
+}
+
+/// Codec-private bytes выбранного видео-качества из разобранного манифеста.
+fn video_codec_private_bytes(
+    manifest: &SmoothManifest,
+    selection: &SmoothTrackSelection,
+) -> Vec<u8> {
+    let stream = &manifest.streams()[selection.stream_ordinal.get()];
+    let quality = stream
+        .qualities()
+        .iter()
+        .find(|quality| quality.index() == selection.quality_index)
+        .expect("selected quality exists");
+    let SmoothQualityLevel::Video(video) = quality else {
+        panic!("selected quality must be video");
+    };
+    let codec_bytes = video.codec_configuration().as_bytes().to_vec();
+    assert!(codec_bytes.len() > 12, "fixture codec data is long enough");
+    codec_bytes
+}
+
+/// Hex-представление байтов в нижнем регистре без разделителей.
+fn hex_text(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

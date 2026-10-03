@@ -4,9 +4,8 @@ use super::migrations::{REMOVED_FRAME_SERVER_HOVER_KEYS, REMOVED_HARDWARE_DECODE
 use super::*;
 use crate::{
     CURRENT_SCHEMA_VERSION, FrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
-    HdrToSdrOperatorConfig, LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3,
-    MAX_PREFERRED_VIDEO_HEIGHT, PausedCommitBehavior, PreferredVideoHeight, ToneMappingMode,
-    VideoBackendPreference, WebMediaHdrSelection, validation,
+    LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, MAX_PREFERRED_VIDEO_HEIGHT,
+    PreferredVideoHeight, VideoBackendPreference, WebMediaHdrSelection, validation,
 };
 
 mod field_validation;
