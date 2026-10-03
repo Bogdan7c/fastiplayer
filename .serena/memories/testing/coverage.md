@@ -50,6 +50,18 @@ All four inputs are required; command is read-only. Exit 0 = allowed, 1 = well-f
 
 Legacy `coverage_metrics.py check-baseline-update` was deleted; v1 report-only helpers remain for provenance validation only.
 
+## Решение владельца 2026-10-03: переход на patch coverage (вариант A) — В РАБОТЕ
+- Правило A: неизменённые файлы — exact no-stable-loss (как сейчас); изменённые файлы — неизменённые строки (карта `git diff`) не теряют stable-покрытие, новые/изменённые L/F/R stable-покрыты либо в allowlist; доли crate-ов/агрегатов — только информация. `check` перестаёт требовать пересъёмку baseline после каждого изменения.
+- База diff — только git-коммит (`source_revision` в baseline v3; замер baseline — на чистом дереве в `main`; коммит недоступен → exit 2). Allowlist — `coverage/patch-exceptions.json` по точному тексту строки (`path, line_text, reason, review_by`, ровно одно совпадение). `coverage/measurement-exceptions.json` удаляется при переходе.
+- Пока не реализовано: действует старая ratio-политика v2. План и промпты сессий 01 (модель `coverage_patch.py`) → 02 (gate v3, CI) → 03 (docs, пересъёмка v3): `user/coverage-patch-rule/` (приватно). Предыстория: `user/web-media-extraction/coverage-rule-proposal.md`.
+
+## Быстрый зонд `scripts/coverage.sh focus CRATE...` (2026-10-03, решение владельца)
+- Report-only, gate не заменяет: `scripts/coverage_focus.py` — один `cargo +<PRIMARY_RUST_TOOLCHAIN> llvm-cov --package X --all-features --json` в `target/coverage/focus/target` (свой CARGO_TARGET_DIR), оценка = stable crate-а из последнего `target/coverage/stable/cohort.json` ∪ покрытое зондом ∩ universe cohort-а; цель — `crate:X` counts из `coverage/baseline.json`; печатает дефицит, непокрытые строки по файлам (`--max-files N`), при дефиците функций — непокрытые определения. Exit 0/1/2. ~10–20 с на crate против ~20 мин полного замера.
+- Координаты через публичный `coverage_coordinates.crate_coordinate_sets(report, repo_root, crate)` (тот же `_line_coordinates`/`_function_coordinates`, что и `extract_run_state`; workspace-инварианты не проверяет).
+- Ограничения: 1 прогон (нет 3/3), merged export без per-object union (оценка нижняя), дрейф universe при изменении production-кода печатается как предупреждение.
+- Новые тесты для закрытия дефицита — только в исключённых cargo-llvm-cov файлах (`tests/`, `tests.rs`, `*_tests.rs`); inline `mod tests` в production-файле входит в universe. Объявление `#[path] mod` ставить в конец inline-модуля (не сдвигать координаты) или в конец `lib.rs`; legacy-oversized файлы (`scripts/module-size-baseline.json`) не раздувать — guardrail S42 ловит рост.
+- Тесты: `scripts/tests/test_coverage_focus.py` (cohort строится реальным `extract_run_state`→`intersect_runs`), focus-контракт в `scripts/tests/test_coverage_shell.py`. Док: `docs/code-coverage.md` раздел «Быстрый report-only зонд».
+
 ## Commands and tests
 
 - Full local/CI gate: `scripts/coverage.sh check`.

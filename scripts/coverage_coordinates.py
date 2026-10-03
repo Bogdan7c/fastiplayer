@@ -9,7 +9,7 @@ import math
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from coverage_coordinate_model import (
     INT64_MAX,
@@ -390,6 +390,61 @@ def _build_surfaces(
             for metric in METRICS
         },
         "domains": domains,
+    }
+
+
+class CrateCoordinateSets(NamedTuple):
+    """Universe и покрытые source-coordinates одного crate-а для одной метрики."""
+
+    universe: frozenset[str]
+    covered: frozenset[str]
+
+
+def crate_coordinate_sets(
+    llvm_report: Any, repo_root: Path, crate: str
+) -> dict[str, CrateCoordinateSets]:
+    """Публичный вход для report-only зонда `coverage_focus.py`.
+
+    Извлекает координаты строк, функций и regions только из файлов
+    `crates/<crate>/src/...` тем же алгоритмом, что и `extract_run_state`
+    (`_line_coordinates`/`_function_coordinates`), поэтому identity координат
+    совпадают с cohort/baseline. Workspace-инварианты (все policy crate-ы,
+    сверка totals, provenance) здесь намеренно не проверяются: отчёт зонда
+    строится по одному package и blocking-решений не принимает.
+    """
+
+    report = _require_object(llvm_report, "LLVM report")
+    data = _require_array(report.get("data"), "LLVM report.data")
+    if len(data) != 1:
+        raise ValueError("ожидался ровно один merged LLVM coverage datum")
+    datum = _require_object(data[0], "data[0]")
+    normalizer = SourcePathNormalizer(repo_root)
+    crate_prefix = f"crates/{crate}/"
+    line_universe: set[str] = set()
+    line_covered: set[str] = set()
+    crate_files: set[str] = set()
+    for file_index, file_document in enumerate(_require_array(datum.get("files"), "files")):
+        context = f"data[0].files[{file_index}]"
+        file_entry = _require_object(file_document, context)
+        # Файлы вне репозитория (std, зависимости) зонду не нужны.
+        relative_path = normalizer.optional_repository_path(
+            file_entry.get("filename"), f"{context}.filename"
+        )
+        if relative_path is None or not relative_path.startswith(crate_prefix):
+            continue
+        crate_files.add(relative_path)
+        file_lines, covered_file_lines = _line_coordinates(
+            file_entry.get("segments"), relative_path, context
+        )
+        line_universe.update(file_lines)
+        line_covered.update(covered_file_lines)
+    functions, covered_functions, regions, covered_regions = _function_coordinates(
+        datum.get("functions"), crate_files, normalizer
+    )
+    return {
+        "lines": CrateCoordinateSets(frozenset(line_universe), frozenset(line_covered)),
+        "functions": CrateCoordinateSets(frozenset(functions), frozenset(covered_functions)),
+        "regions": CrateCoordinateSets(frozenset(regions), frozenset(covered_regions)),
     }
 
 

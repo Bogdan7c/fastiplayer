@@ -38,6 +38,8 @@ readonly LEGACY_EXCEPTIONS_PATH="${REPO_ROOT}/coverage/exceptions.json"
 readonly CURRENT_SUMMARY_PATH="${ARTIFACT_DIRECTORY}/current-summary.json"
 # Stable check пишет атомарный отчёт рядом с cohort, который он проверил.
 readonly STABLE_CHECK_PATH="${STABLE_ARTIFACT_DIRECTORY}/check.json"
+# Report-only зонд пишет LLVM JSON и свой target dir отдельно от stable gate.
+readonly FOCUS_ARTIFACT_DIRECTORY="${ARTIFACT_DIRECTORY}/focus"
 # Default bootstrap output намеренно находится вне versioned coverage/.
 readonly DEFAULT_BOOTSTRAP_OUTPUT="${ARTIFACT_DIRECTORY}/stable-baseline-v2-proposal.json"
 
@@ -45,13 +47,16 @@ readonly DEFAULT_BOOTSTRAP_OUTPUT="${ARTIFACT_DIRECTORY}/stable-baseline-v2-prop
 print_help() {
     # Heredoc сохраняет справку читаемой и не выполняет подстановки.
     cat <<'EOF'
-Usage: scripts/coverage.sh COMMAND [OUTPUT]
+Usage: scripts/coverage.sh COMMAND [OUTPUT | CRATE...]
 
 Commands:
   check               Измерить три normal-concurrency run и применить blocking v2 gate.
   report              Измерить тот же cohort без baseline comparison.
   bootstrap [OUTPUT]  Явно создать v2 baseline proposal из текущего v1 и нового cohort.
   baseline            Устаревшее имя; завершится ошибкой с инструкцией migration.
+  focus CRATE...      Быстрый report-only зонд: один прогон тестов указанных crate-ов
+                      и оценка дефицита до доли из baseline относительно последнего
+                      cohort. Gate не заменяет и baseline не меняет.
 
 `check` никогда не меняет baseline. Legacy summary, LCOV и HTML являются только
 диагностикой; blocking status принадлежит stable-coordinate check.
@@ -248,6 +253,25 @@ resolve_safe_bootstrap_output() {
     printf '%s\n' "${resolved_output}"
 }
 
+# Функция запускает report-only зонд покрытия выбранных crate-ов.
+run_focus() {
+    # Зонд сравнивает с последним полным cohort; без него оценка невозможна.
+    local cohort_path="${STABLE_ARTIFACT_DIRECTORY}/cohort.json"
+    if [[ ! -f "${cohort_path}" ]]; then
+        printf 'Ошибка: нет %s; сначала нужен полный `scripts/coverage.sh report`.\n' \
+            "${cohort_path}" >&2
+        return 2
+    fi
+    # Exit status зонда (0/1/2) передаётся вызывающему коду без изменений.
+    python3 "${SCRIPT_DIRECTORY}/coverage_focus.py" \
+        --repo-root "${REPO_ROOT}" \
+        --toolchain "${PRIMARY_RUST_TOOLCHAIN}" \
+        --cohort "${cohort_path}" \
+        --baseline "${BASELINE_PATH}" \
+        --output-directory "${FOCUS_ARTIFACT_DIRECTORY}" \
+        "$@"
+}
+
 # Функция явно строит migration proposal, не заменяя versioned baseline.
 run_bootstrap() {
     # Safe canonical output проверяется до дорогого measurement и любых artifact writes.
@@ -308,6 +332,12 @@ main() {
             print_help >&2
             return 2
         fi
+    # Focus требует хотя бы один crate и не запускает полный suite.
+    elif [[ "$1" == "focus" ]]; then
+        if (($# < 2)); then
+            print_help >&2
+            return 2
+        fi
     # Bootstrap принимает не более одного явного proposal path.
     elif [[ "$1" == "bootstrap" ]]; then
         if (($# > 2)); then
@@ -324,6 +354,12 @@ main() {
     cd "${REPO_ROOT}"
     # Exact tools проверяются до clean/build во всех измерительных modes.
     require_coverage_tool || return 2
+    # Focus — отдельный report-only режим без clean/build всего workspace.
+    if [[ "$1" == "focus" ]]; then
+        shift
+        run_focus "$@"
+        return $?
+    fi
     # Check fail-fast валидирует v2 baseline и exceptions до дорогой suite.
     if [[ "$1" == "check" ]]; then
         validate_stable_check_inputs || return 2

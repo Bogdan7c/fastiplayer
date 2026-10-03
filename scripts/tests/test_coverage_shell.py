@@ -139,6 +139,11 @@ if script_name == "coverage_metrics.py":
     raise SystemExit(2)
 
 
+if script_name == "coverage_focus.py":
+    # Зонд report-only: fixture сообщает «дефицит остался» отдельным exit 1.
+    raise SystemExit(1 if scenario == "focus_deficit" else 0)
+
+
 raise SystemExit(2)
 '''
 
@@ -441,6 +446,63 @@ class CoverageShellTests(unittest.TestCase):
             "check",
             [command[0] for command in self.commands_for("coverage_metrics.py")],
         )
+
+    def write_existing_cohort(self) -> Path:
+        """Имитирует cohort последнего полного замера, нужный зонду для сравнения."""
+
+        cohort_path = self.repository_root / "target/coverage/stable/cohort.json"
+        self.write_json(cohort_path, {"schema_version": 2, "kind": "cohort"})
+        return cohort_path
+
+    def test_focus_without_crates_is_cli_error_without_any_measurement(self):
+        """Пустой список crate-ов не запускает ни зонд, ни полный runner."""
+
+        self.write_existing_cohort()
+        result = self.run_shell("focus")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.recorded_commands(), [])
+
+    def test_focus_without_previous_cohort_fails_before_probe(self):
+        """Без полного cohort-а оценивать не с чем: зонд не запускается."""
+
+        result = self.run_shell("focus", "flv-demux")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("scripts/coverage.sh report", result.stderr)
+        self.assertEqual(self.commands_for("coverage_focus.py"), [])
+        self.assertEqual(self.commands_for("coverage_runner.py"), [])
+
+    def test_focus_passes_pinned_toolchain_and_crates_without_full_suite(self):
+        """Зонд получает тот же toolchain, что и gate, и не трогает stable artifacts."""
+
+        cohort_path = self.write_existing_cohort()
+        result = self.run_shell("focus", "flv-demux", "media prefetch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        focus_commands = self.commands_for("coverage_focus.py")
+        self.assertEqual(len(focus_commands), 1)
+        arguments = focus_commands[0]
+        self.assertEqual(arguments[arguments.index("--toolchain") + 1], "1.96.0")
+        self.assertEqual(arguments[arguments.index("--cohort") + 1], str(cohort_path))
+        self.assertEqual(
+            arguments[arguments.index("--baseline") + 1],
+            str(self.coverage_directory / "baseline.json"),
+        )
+        self.assertEqual(
+            arguments[arguments.index("--output-directory") + 1],
+            str(self.repository_root / "target/coverage/focus"),
+        )
+        # Имена crate-ов передаются последними и без shell-разбиения пробелов.
+        self.assertEqual(arguments[-2:], ["flv-demux", "media prefetch"])
+        # Полный runner, stable check и legacy summary в focus-режиме не вызываются.
+        self.assertEqual(self.commands_for("coverage_runner.py"), [])
+        self.assertEqual(self.commands_for("coverage_stability.py"), [])
+        self.assertEqual(self.commands_for("coverage_metrics.py"), [])
+
+    def test_focus_preserves_deficit_exit_status(self):
+        """Exit 1 зонда («дефицит остался») не превращается в успех или в ошибку 2."""
+
+        self.write_existing_cohort()
+        result = self.run_shell("focus", "flv-demux", scenario="focus_deficit")
+        self.assertEqual(result.returncode, 1)
 
 
 if __name__ == "__main__":

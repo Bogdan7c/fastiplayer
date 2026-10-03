@@ -258,6 +258,44 @@ profile directory.
 Квалификация исправления S12 с тремя независимыми cohort и проверкой по файлам:
 [отчёт 2026-09-05](coverage-qualification-2026-09-05.md).
 
+## Быстрый report-only зонд отдельных crate-ов
+
+Полный `check`/`report` — это инструментированная сборка всего workspace и три
+полных прогона (~15–20 минут). Пока пишутся тесты, чтобы закрыть снижение
+покрытия конкретного crate-а, используйте зонд:
+
+```bash
+# Один прогон собственных тестов каждого crate-а (обычно секунды–минута на crate).
+scripts/coverage.sh focus flv-demux media-prefetch
+# Показать больше файлов с непокрытыми строками.
+scripts/coverage.sh focus --max-files 40 web-media-hls
+```
+
+Для каждого crate-а и метрики зонд печатает оценку `stable/total`, цель из
+`coverage/baseline.json`, дефицит («не хватает N»), непокрытые строки по файлам и,
+при дефиците функций, непокрытые определения функций/замыканий. Exit status:
+`0` — дефицита нет, `1` — дефицит остался, `2` — ошибка входных данных, сборки или
+тестов.
+
+Как считает: stable-координаты crate-а из последнего полного cohort-а
+(`target/coverage/stable/cohort.json`) объединяются с координатами, которые
+покрыли собственные тесты crate-а в прогоне `cargo llvm-cov --package <crate>`.
+Координаты извлекаются тем же кодом, что и в gate
+(`coverage_coordinates.crate_coordinate_sets`), поэтому identity совпадают.
+
+Ограничения — зонд **не** заменяет gate:
+- один прогон не доказывает стабильность 3/3;
+- используется обычный merged export без per-object union (см. выше), поэтому
+  оценка может быть только ниже фактической;
+- если production-код crate-а изменился после cohort-а, отчёт предупреждает о
+  дрейфе universe — нужен полный замер;
+- нужен хотя бы один полный `scripts/coverage.sh report`/`check` (cohort).
+
+Зонд пишет только в `target/coverage/focus/` (свой `CARGO_TARGET_DIR`), baseline
+только читает, measurement exceptions не трогает. Новые тесты для закрытия
+дефицита кладите в исключённые из отчёта файлы (`tests/`, `tests.rs`,
+`*_tests.rs`): inline-тест в production-файле меняет его coverage universe.
+
 ## Осознанное обновление v2 baseline
 
 PR job читает предыдущую пару JSON непосредственно из base-ветки и запускает
