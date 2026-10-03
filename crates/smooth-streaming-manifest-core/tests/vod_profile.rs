@@ -666,3 +666,30 @@ fn quality_row_with_attribute(index: u64, bitrate: u64, attribute: Option<(&str,
         None => format!("{opening}/>"),
     }
 }
+
+/// Строки манифеста (имя stream-а, язык) попадают в логи только как длина,
+/// а точное значение доступно через явный `as_str`.
+#[test]
+fn stream_name_and_language_debug_show_only_byte_length() {
+    let manifest = parse(DIFFERING_AV_TIMESCALES).expect("valid fixture");
+    let audio = manifest
+        .streams()
+        .iter()
+        .find(|stream| stream.kind() == SmoothStreamKind::Audio)
+        .expect("fixture has audio stream");
+    let name = audio.name().expect("fixture audio has Name");
+    let language = audio.language().expect("fixture audio has Language");
+    assert_eq!(name.as_str(), "audio-main");
+    assert_eq!(language.as_str(), "uk-UA");
+    assert_eq!(format!("{name:?}"), "SmoothStreamName { bytes: 10 }");
+    assert_eq!(format!("{language:?}"), "SmoothStreamLanguage { bytes: 5 }");
+}
+
+/// `Debug` ошибок манифеста не тащит в логи детали XML-документа.
+#[test]
+fn manifest_error_debug_names_the_class_without_document_details() {
+    let xml_error = parse(MALFORMED_XML).expect_err("malformed XML is rejected");
+    assert_eq!(format!("{xml_error:?}"), "Xml");
+    let drm_error = parse(DRM_PLAYREADY).expect_err("DRM manifest is rejected");
+    assert_eq!(format!("{drm_error:?}"), "DrmProtected");
+}

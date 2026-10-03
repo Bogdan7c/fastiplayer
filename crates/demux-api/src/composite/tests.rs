@@ -223,6 +223,46 @@ fn lead_policy_is_typed_and_bounded() {
     );
 }
 
+/// Safety ceilings policy: значение ровно на потолке принимается, на единицу
+/// выше — отклоняется typed ошибкой с точными requested/maximum.
+#[test]
+fn lead_policy_accepts_exact_ceilings_and_rejects_values_above_them() {
+    // Контракт потолков из `composite/policy.rs`: 10 минут lead, 64 packets, 64 MiB.
+    let max_lead = Duration::from_secs(10 * 60);
+    let max_packets = NonZeroUsize::new(64).expect("non-zero");
+    let max_bytes = NonZeroUsize::new(64 * 1024 * 1024).expect("non-zero");
+    let at_ceiling = CompositeComponentLeadPolicy::new(max_lead, max_packets, max_bytes)
+        .expect("exact ceilings are allowed");
+    assert_eq!(at_ceiling.max_timestamp_lead(), max_lead);
+    assert_eq!(at_ceiling.bootstrap_packet_limit(), 64);
+    assert_eq!(at_ceiling.bootstrap_byte_limit(), 64 * 1024 * 1024);
+
+    let above_lead = max_lead + Duration::from_nanos(1);
+    assert_eq!(
+        CompositeComponentLeadPolicy::new(above_lead, max_packets, max_bytes),
+        Err(CompositeComponentLeadPolicyError::TimestampLeadTooLarge {
+            requested: above_lead,
+            maximum: max_lead,
+        })
+    );
+    let above_packets = NonZeroUsize::new(65).expect("non-zero");
+    assert_eq!(
+        CompositeComponentLeadPolicy::new(max_lead, above_packets, max_bytes),
+        Err(CompositeComponentLeadPolicyError::PacketLimitTooLarge {
+            requested: 65,
+            maximum: 64,
+        })
+    );
+    let above_bytes = NonZeroUsize::new(64 * 1024 * 1024 + 1).expect("non-zero");
+    assert_eq!(
+        CompositeComponentLeadPolicy::new(max_lead, max_packets, above_bytes),
+        Err(CompositeComponentLeadPolicyError::ByteLimitTooLarge {
+            requested: 64 * 1024 * 1024 + 1,
+            maximum: 64 * 1024 * 1024,
+        })
+    );
+}
+
 /// Separate MP4/M4A-like H.264+AAC components не зависят от VP9/WebM knowledge.
 #[test]
 fn separate_h264_aac_components_interleave_with_collision_safe_ids() {

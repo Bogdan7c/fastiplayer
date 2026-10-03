@@ -15,3 +15,9 @@ mod worker;
 pub use config::{PrefetchConfig, PrefetchConfigError};
 pub use shared::PrefetchDiagnostics;
 pub use source::{PrefetchStartupError, PrefetchingByteSource};
+
+// Функциональные тесты wrapper-а через публичный API; файл под `tests/`,
+// поэтому в coverage universe production-кода не входит.
+#[cfg(test)]
+#[path = "tests/address_space_end.rs"]
+mod address_space_end_tests;

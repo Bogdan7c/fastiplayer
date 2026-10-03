@@ -396,4 +396,7 @@ mod tests {
             Err(AudioChannelLayoutError::InvalidDiscreteChannelCount { channel_count: 0 })
         );
     }
+
+    #[path = "display.rs"]
+    mod display;
 }

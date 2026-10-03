@@ -544,3 +544,39 @@ fn debug_and_errors_do_not_expose_request_secrets() {
         );
     }
 }
+
+/// Provider ID — bounded lowercase ASCII grammar: всё остальное отклоняется
+/// typed ошибкой ещё до регистрации provider-а.
+#[test]
+fn provider_id_grammar_is_bounded_and_typed() {
+    // Контракт лимита из `identity.rs`: не больше 64 байт.
+    let longest = "a".repeat(64);
+    for valid in ["http", "fake-http", "0range", longest.as_str()] {
+        let provider_id = TransportProviderId::new(valid).expect("valid provider id");
+        assert_eq!(provider_id.as_str(), valid);
+    }
+    let cases = [
+        (String::new(), TransportProviderIdError::Empty),
+        ("a".repeat(65), TransportProviderIdError::TooLong),
+        (
+            "-leading-dash".to_owned(),
+            TransportProviderIdError::InvalidGrammar,
+        ),
+        ("Upper".to_owned(), TransportProviderIdError::InvalidGrammar),
+        (
+            "under_score".to_owned(),
+            TransportProviderIdError::InvalidGrammar,
+        ),
+        (
+            "юникод".to_owned(),
+            TransportProviderIdError::InvalidGrammar,
+        ),
+    ];
+    for (raw, expected) in cases {
+        assert_eq!(
+            TransportProviderId::new(raw.clone()),
+            Err(expected),
+            "`{raw}`"
+        );
+    }
+}

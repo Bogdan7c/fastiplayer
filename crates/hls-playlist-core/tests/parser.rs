@@ -540,3 +540,46 @@ fn start_and_event_are_precise_vod_profile_rejections() {
         Err(HlsProfileError::EventPlaylist)
     );
 }
+
+/// URI вариантов часто несут токены доступа: `Debug` показывает только длину,
+/// а точное значение доступно лишь через явный `expose_for_resolution`.
+#[test]
+fn variant_reference_debug_hides_tokenized_uri_but_resolution_keeps_it_exact() {
+    let tokenized = "video.m3u8?token=very-secret-token";
+    let playlist = parse(&format!(
+        "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\n{tokenized}\n"
+    ))
+    .expect("valid master playlist");
+    let HlsPlaylist::Master(master) = playlist else {
+        panic!("expected master");
+    };
+    let reference = &master.variants[0].uri;
+    let debug_text = format!("{reference:?}");
+    assert!(!debug_text.contains("very-secret-token"), "{debug_text}");
+    assert!(
+        debug_text.contains(&tokenized.len().to_string()),
+        "{debug_text}"
+    );
+    assert_eq!(reference.expose_for_resolution(), tokenized);
+    // Debug всего master-а тоже не раскрывает токен.
+    assert!(!format!("{master:?}").contains("very-secret-token"));
+}
+
+/// Нулевой бюджет в любой позиции — typed ошибка конфигурации, а не «без лимита».
+#[test]
+fn parser_limits_reject_zero_budget_in_every_position() {
+    let valid = [1_024, 256, 16, 8, 8, 32];
+    assert!(
+        HlsParserLimits::new(valid[0], valid[1], valid[2], valid[3], valid[4], valid[5]).is_ok()
+    );
+    for zero_position in 0..valid.len() {
+        let mut budgets = valid;
+        budgets[zero_position] = 0;
+        let error = HlsParserLimits::new(
+            budgets[0], budgets[1], budgets[2], budgets[3], budgets[4], budgets[5],
+        )
+        .expect_err("zero budget must be rejected");
+        assert_eq!(error, hls_playlist_core::HlsParserLimitsError::ZeroBudget);
+        assert_eq!(error.to_string(), "HLS parser budget равен нулю");
+    }
+}

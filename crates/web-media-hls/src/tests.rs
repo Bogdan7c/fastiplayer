@@ -526,3 +526,33 @@ fn runtime_request_and_plan_debug_remain_secret_safe() {
         assert!(!diagnostic.contains(secret), "{secret} leaked");
     }
 }
+
+/// Разбирает документ целиком (master или media) для проверки VOD-профиля.
+fn parse_any(document: &str) -> HlsPlaylist {
+    parse_hls_playlist(HlsParseRequest {
+        document_bytes: document.as_bytes(),
+        reference_base: Some("https://media.invalid/root/index.m3u8"),
+        limits: HlsParserLimits::default(),
+    })
+    .expect("structurally valid fixture")
+}
+
+/// Граница VOD-профиля: принимается только завершённый media playlist,
+/// master и незавершённый (live) плейлист отклоняются typed ошибкой.
+#[test]
+fn validated_vod_media_playlist_accepts_only_complete_media_playlists() {
+    let vod =
+        parse_any("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment0.ts\n#EXT-X-ENDLIST\n");
+    let validated = crate::ValidatedVodMediaPlaylist::new(&vod, None).expect("VOD is accepted");
+    let HlsPlaylist::Media(media) = &vod else {
+        panic!("expected media playlist");
+    };
+    // Проверенная модель — та же самая разобранная модель, без копии.
+    assert!(std::ptr::eq(validated.media(), media));
+
+    let master = parse_any("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nvideo.m3u8\n");
+    assert!(crate::ValidatedVodMediaPlaylist::new(&master, None).is_err());
+
+    let live = parse_any("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment0.ts\n");
+    assert!(crate::ValidatedVodMediaPlaylist::new(&live, None).is_err());
+}

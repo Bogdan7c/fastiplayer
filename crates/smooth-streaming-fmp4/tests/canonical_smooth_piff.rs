@@ -867,3 +867,33 @@ fn stages_honor_cancellation_budgets_and_redaction() {
     assert!(!debug_error.contains("QualityLevels("));
     assert!(!debug_error.contains("0000000167"));
 }
+
+/// Identity смапленного трека — ровно выбранные stream/quality, а `Debug`
+/// не печатает codec private data и строки манифеста.
+#[test]
+fn mapped_track_identity_is_exact_and_debug_hides_codec_bytes() {
+    let manifest = parse_manifest(MANIFEST);
+    let not_cancelled = || false;
+    let selection = selection_for(&manifest, SmoothStreamKind::Video, 401_000);
+    let track = map_smooth_track(SmoothTrackMappingRequest::new(
+        &manifest,
+        selection_for(&manifest, SmoothStreamKind::Video, 401_000),
+        &not_cancelled,
+    ))
+    .expect("video mapping должен пройти");
+    assert_eq!(track.identity().stream_ordinal(), selection.stream_ordinal);
+    assert_eq!(track.identity().quality_index(), selection.quality_index);
+
+    let debug_text = format!("{track:?}");
+    assert!(debug_text.starts_with("SmoothMappedTrack"), "{debug_text}");
+    assert!(debug_text.contains("timescale: 10000000"), "{debug_text}");
+    // Первое значение CodecPrivateData из fixture-манифеста не должно утечь в Debug.
+    let manifest_text = std::str::from_utf8(MANIFEST).expect("fixture manifest is UTF-8");
+    let codec_private_data = manifest_text
+        .split("CodecPrivateData=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("fixture has CodecPrivateData");
+    assert!(!codec_private_data.is_empty());
+    assert!(!debug_text.contains(codec_private_data), "{debug_text}");
+}

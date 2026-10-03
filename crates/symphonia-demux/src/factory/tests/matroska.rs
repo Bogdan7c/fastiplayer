@@ -769,3 +769,42 @@ fn malformed_lacing_and_declared_payload_truncation_are_not_clean_eof() {
             .is_some_and(|error| matches!(error, DemuxError::Parse(_)))
     );
 }
+
+/// EBML header без видимого DocType: подтип WebM/Matroska выбирается только по
+/// typed подсказкам (расширение или контейнер), иначе — Matroska по умолчанию.
+#[test]
+fn ebml_without_visible_doctype_uses_typed_hints_for_webm_subtype() {
+    use demux_api::{
+        DemuxContainerId, DemuxProbeDecision, DemuxProbeRequest, DemuxSourceExtension,
+    };
+
+    let factory = SymphoniaDemuxFactory::new(crate::DemuxerOptions::default()).expect("factory");
+    // EBML magic + байты без строк "webm"/"matroska".
+    let sniffed = b"\x1a\x45\xdf\xa3\x01\x00\x00\x00\x00\x00\x00\x10".to_vec();
+    let extension = |value: &str| {
+        DemuxHints::none().with_extension(DemuxSourceExtension::new(value).expect("extension"))
+    };
+    let cases = [
+        ("no hints", DemuxHints::none(), "matroska"),
+        ("webm extension", extension("webm"), "webm"),
+        ("weba extension", extension("weba"), "webm"),
+        ("mka extension", extension("mka"), "matroska"),
+        (
+            "webm container",
+            DemuxHints::none().with_container(DemuxContainerId::new("webm").expect("container")),
+            "webm",
+        ),
+    ];
+    for (case, hints, expected) in cases {
+        let decision = factory.probe(DemuxProbeRequest {
+            hints: &hints,
+            sniffed_bytes: &sniffed,
+            input_capability: DemuxInputCapability::SeekableBytes,
+            cancellation: &CancellationToken::never_cancelled(),
+        });
+        let DemuxProbeDecision::Match(matched) = decision else {
+            panic!("{case}: EBML header must match a Symphonia container");
+        };
+        assert_eq!(matched.container.as_str(), expected, "{case}");
+    }
+}

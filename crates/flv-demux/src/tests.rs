@@ -548,6 +548,38 @@ fn legacy_wire_validation_rejects_invalid_packet_and_frame_types() {
     ));
 }
 
+/// Обрезанный onMetaData на любой границе после имени события — typed ошибка,
+/// а не паника и не частично принятые метаданные.
+#[test]
+fn truncated_on_metadata_is_rejected_at_every_cut_point() {
+    let payload = on_metadata_payload();
+    // Тип (1 байт) + длина (2 байта) + "onMetaData": дальше начинается тело события.
+    let event_name_end = 1 + 2 + "onMetaData".len();
+    for cut in event_name_end + 1..payload.len() {
+        let result =
+            crate::metadata::parse_on_metadata(&payload[..cut], FlvDemuxOptions::default());
+        assert!(
+            matches!(result, Err(FlvDemuxError::MalformedTag { .. })),
+            "cut {cut} must be MalformedTag, got ok={}",
+            result.is_ok()
+        );
+    }
+}
+
+/// Строка AMF с невалидным UTF-8 отклоняется, а не превращается в «заменённые» символы.
+#[test]
+fn non_utf8_metadata_string_is_rejected() {
+    let mut payload = on_metadata_payload();
+    let title_start = payload
+        .windows(b"Fixture".len())
+        .position(|window| window == b"Fixture")
+        .expect("fixture contains title value");
+    payload[title_start] = 0xff;
+    let error = crate::metadata::parse_on_metadata(&payload, FlvDemuxOptions::default())
+        .expect_err("invalid UTF-8 title must be rejected");
+    assert!(error.to_string().contains("UTF-8"), "{error}");
+}
+
 #[test]
 fn bounded_amf_metadata_retains_duration_title_and_keyframe_index() {
     let payload = on_metadata_payload();

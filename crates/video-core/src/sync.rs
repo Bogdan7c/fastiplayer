@@ -73,4 +73,7 @@ mod tests {
         let sync = AvSync::default();
         assert_eq!(sync.decide(ms(100.0), ms(100.0)), FrameAction::Present);
     }
+
+    #[path = "custom_thresholds.rs"]
+    mod custom_thresholds;
 }

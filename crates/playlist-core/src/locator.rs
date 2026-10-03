@@ -400,4 +400,7 @@ mod tests {
 
         assert_eq!(restored_bytes, original_bytes);
     }
+
+    #[path = "redaction.rs"]
+    mod redaction;
 }

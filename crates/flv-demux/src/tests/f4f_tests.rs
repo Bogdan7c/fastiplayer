@@ -357,3 +357,191 @@ impl OrderedSegmentSource for FixtureSegments {
         Ok(self.segments.pop_front())
     }
 }
+
+// --- Структурная валидация F4F box-ов -------------------------------------------
+// Каждая битая форма фрагмента должна завершаться typed ошибкой с понятной
+// причиной, а не паникой и не «чистым» EOF (ветки появились при чистке паник).
+
+/// Открывает один media fragment и возвращает текст ошибки открытия.
+fn f4f_open_error(bytes: Vec<u8>, options: FlvDemuxOptions) -> String {
+    let source = FixtureSegments::new(vec![f4f_media_from_bytes(
+        7,
+        OrderedSegmentDiscontinuity::Continuous,
+        bytes,
+    )]);
+    FlvDemuxer::open(
+        DemuxInput::ordered_segments(Box::new(source)),
+        true,
+        CancellationToken::new(),
+        options,
+    )
+    .err()
+    .expect("malformed F4F fragment must be rejected")
+    .to_string()
+}
+
+/// Собирает afra + moof + mdat с произвольным afra payload.
+fn fragment_with_afra(afra_payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&iso_box(b"afra", afra_payload));
+    bytes.extend_from_slice(&f4f_moof());
+    bytes.extend_from_slice(&iso_box(
+        b"mdat",
+        &flv_tag(9, 0, &legacy_avc_sequence(&avcc(30))),
+    ));
+    bytes
+}
+
+/// Корректный afra payload: version/flags, shape, TimeScale=1000, ноль local entries.
+fn valid_afra_payload() -> Vec<u8> {
+    let mut payload = vec![0, 0, 0, 0, 0];
+    payload.extend_from_slice(&1_000_u32.to_be_bytes());
+    payload.extend_from_slice(&0_u32.to_be_bytes());
+    payload
+}
+
+#[test]
+fn large_size_box_header_is_equivalent_to_compact_header() {
+    // mdat с 64-bit размером (size32 = 1) — легальная форма ISO BMFF.
+    let tags = flv_tag(9, 0, &legacy_avc_sequence(&avcc(30)));
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&f4f_afra());
+    bytes.extend_from_slice(&f4f_moof());
+    bytes.extend_from_slice(&1_u32.to_be_bytes());
+    bytes.extend_from_slice(b"mdat");
+    let large_size = u64::try_from(16 + tags.len()).expect("fixture size fits u64");
+    bytes.extend_from_slice(&large_size.to_be_bytes());
+    bytes.extend_from_slice(&tags);
+    let source = FixtureSegments::new(vec![f4f_media_from_bytes(
+        8,
+        OrderedSegmentDiscontinuity::Continuous,
+        bytes,
+    )]);
+    let demuxer = FlvDemuxer::open(
+        DemuxInput::ordered_segments(Box::new(source)),
+        true,
+        CancellationToken::new(),
+        FlvDemuxOptions::default(),
+    )
+    .expect("large-size mdat opens like a compact one");
+    assert_eq!(demuxer.tracks()[0].codec_id, "V_MPEG4/ISO/AVC");
+}
+
+#[test]
+fn truncated_large_size_box_header_is_malformed() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&f4f_afra());
+    bytes.extend_from_slice(&f4f_moof());
+    // size32 = 1 обещает 64-bit размер, но за типом есть только 3 байта.
+    bytes.extend_from_slice(&1_u32.to_be_bytes());
+    bytes.extend_from_slice(b"mdat");
+    bytes.extend_from_slice(&[0, 0, 0]);
+    let error = f4f_open_error(bytes, FlvDemuxOptions::default());
+    assert!(error.contains("large-size box header обрезан"), "{error}");
+}
+
+#[test]
+fn oversized_fragment_and_empty_mdat_are_rejected_before_flv_parsing() {
+    let fragment = fragment_with_afra(&valid_afra_payload());
+    let tight = FlvDemuxOptions {
+        fragment_bytes: crate::FlvLimit::new(fragment.len() - 1, "fragment_bytes")
+            .expect("non-zero limit"),
+        ..FlvDemuxOptions::default()
+    };
+    let error = f4f_open_error(fragment, tight);
+    assert!(
+        error.contains(&format!("{}", tight.fragment_bytes.get())),
+        "{error}"
+    );
+
+    let mut empty_mdat = Vec::new();
+    empty_mdat.extend_from_slice(&f4f_afra());
+    empty_mdat.extend_from_slice(&f4f_moof());
+    empty_mdat.extend_from_slice(&iso_box(b"mdat", &[]));
+    let error = f4f_open_error(empty_mdat, FlvDemuxOptions::default());
+    assert!(error.contains("пустой mdat"), "{error}");
+}
+
+#[test]
+fn malformed_afra_fields_are_rejected_with_exact_reason() {
+    let mut unsupported_version = valid_afra_payload();
+    unsupported_version[0] = 2;
+    let mut unknown_flags = valid_afra_payload();
+    unknown_flags[3] = 1;
+    let mut reserved_shape_bits = valid_afra_payload();
+    reserved_shape_bits[4] = 0x01;
+    let mut zero_timescale = valid_afra_payload();
+    zero_timescale[5..9].copy_from_slice(&0_u32.to_be_bytes());
+    let mut excessive_local_entries = valid_afra_payload();
+    excessive_local_entries[9..13].copy_from_slice(&u32::MAX.to_be_bytes());
+    let mut trailing_bytes = valid_afra_payload();
+    trailing_bytes.push(0);
+    let cases: [(&str, Vec<u8>, &str); 6] = [
+        (
+            "version",
+            unsupported_version,
+            "full-box version 2 не поддерживается",
+        ),
+        ("flags", unknown_flags, "неизвестные full-box flags"),
+        ("shape", reserved_shape_bits, "afra reserved bits"),
+        (
+            "timescale",
+            zero_timescale,
+            "afra TimeScale не может быть нулём",
+        ),
+        (
+            "local entries",
+            excessive_local_entries,
+            "afra local entries превышает",
+        ),
+        (
+            "trailing",
+            trailing_bytes,
+            "afra payload содержит trailing bytes",
+        ),
+    ];
+    for (case, payload, expected) in cases {
+        let error = f4f_open_error(fragment_with_afra(&payload), FlvDemuxOptions::default());
+        assert!(error.contains(expected), "{case}: {error}");
+    }
+}
+
+#[test]
+fn malformed_inline_abst_header_fields_are_rejected_with_exact_reason() {
+    // В f4f_abst(): [0..4] full-box, [4..8] bootstrap version, [8] flags, [9..13] TimeScale.
+    let valid = f4f_abst();
+    let abst_payload = &valid[8..];
+    let mut reserved_bits = abst_payload.to_vec();
+    reserved_bits[8] = 0x01;
+    let mut reserved_profile = abst_payload.to_vec();
+    reserved_profile[8] = 0b1000_0000;
+    let mut zero_timescale = abst_payload.to_vec();
+    zero_timescale[9..13].copy_from_slice(&0_u32.to_be_bytes());
+    let cases: [(&str, Vec<u8>, &str); 3] = [
+        ("reserved", reserved_bits, "abst reserved bits"),
+        ("profile", reserved_profile, "abst Profile зарезервирован"),
+        (
+            "timescale",
+            zero_timescale,
+            "abst TimeScale не может быть нулём",
+        ),
+    ];
+    for (case, payload, expected) in cases {
+        let segment = f4f_media_with_inline_bootstrap(
+            9,
+            OrderedSegmentDiscontinuity::Continuous,
+            flv_tag(9, 0, &legacy_avc_sequence(&avcc(30))),
+            iso_box(b"abst", &payload),
+        );
+        let error = FlvDemuxer::open(
+            DemuxInput::ordered_segments(Box::new(FixtureSegments::new(vec![segment]))),
+            true,
+            CancellationToken::new(),
+            FlvDemuxOptions::default(),
+        )
+        .err()
+        .expect("malformed inline abst must be rejected")
+        .to_string();
+        assert!(error.contains(expected), "{case}: {error}");
+    }
+}
