@@ -766,7 +766,9 @@ mod tests {
         );
         assert_eq!(
             capabilities.output_inputs_for(TransportFamily::Hls),
-            DemuxInputCapabilities::only(crate::web_media_hls_open::hls_transport_input()),
+            DemuxInputCapabilities::only(
+                media_source_open::web_media_hls_open::hls_transport_input()
+            ),
             "DASH registration не должна менять соседний HLS provider"
         );
         assert_eq!(

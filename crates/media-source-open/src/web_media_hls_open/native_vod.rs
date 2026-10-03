@@ -3,15 +3,15 @@
 use super::*;
 
 /// Узкий native-VOD результат без extractor catalog/subtitle lifecycle attachment-ов.
-pub(crate) struct PreparedNativeHlsVod {
-    pub(crate) demuxer: Box<dyn Demuxer + Send>,
-    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
-    pub(crate) initial_position: PreparedInitialPosition,
+pub struct PreparedNativeHlsVod {
+    pub demuxer: Box<dyn Demuxer + Send>,
+    pub seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    pub initial_position: PreparedInitialPosition,
 }
 
 /// Native open сохраняет typed HLS failure для строго ограниченного extractor fallback-а.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum PrepareNativeHlsVodError {
+pub enum PrepareNativeHlsVodError {
     #[error("native HLS VOD runtime open failed: {0}")]
     Open(#[source] web_media_hls::HlsVodOpenError),
     #[error("native HLS VOD runtime потерял receipted seek handle")]
@@ -27,7 +27,7 @@ pub(crate) enum PrepareNativeHlsVodError {
 impl PrepareNativeHlsVodError {}
 
 /// Открывает уже admitted native HLS VOD через те же policy/bootstrap constants, что YtDlp HLS.
-pub(crate) fn prepare_native_hls_vod(
+pub fn prepare_native_hls_vod(
     request: HlsVodOpenRequest,
     start: HlsVodStartIntent,
 ) -> std::result::Result<PreparedNativeHlsVod, PrepareNativeHlsVodError> {
@@ -42,7 +42,7 @@ pub(crate) fn prepare_native_hls_vod(
 }
 
 /// Открывает exact fresh-catalog selection с тем же native landing contract-ом.
-pub(crate) fn prepare_native_hls_catalog_vod(
+pub fn prepare_native_hls_catalog_vod(
     request: HlsVodOpenRequest,
     selection: web_media_hls::HlsCatalogReopenSelection,
     start: HlsVodStartIntent,
@@ -119,16 +119,16 @@ fn finalize_native_hls_vod(
 }
 
 /// Строит capability-filtered HLS catalog из уже переданного fetched root manifest-а.
-pub(crate) fn discover_native_hls_catalog(
+pub fn discover_native_hls_catalog(
     request: &HlsVodOpenRequest,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
     presentation: HlsCatalogPresentation,
     provider_default_variant_index: Option<usize>,
     system_capabilities: &capability_core::SystemCapabilities,
-    audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
+    audio_capabilities: audio_core::AudioDecodeCapabilitySnapshot,
 ) -> Result<HlsCatalogDiscoveryOutcome> {
     let mut capability_probe =
-        media_source_open::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe::new(
+        crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe::new(
             system_capabilities.clone(),
             audio_capabilities,
         );
@@ -148,30 +148,33 @@ pub(crate) fn discover_native_hls_catalog(
 }
 
 /// Переносит уже доказанный native HLS runtime через единственный player preparation boundary.
-#[cfg(test)]
-pub(crate) fn prepare_native_hls_player_media(
+///
+/// Тестовая фикстура: зовётся из интеграционных тестов `app-egui`, поэтому
+/// доступна под feature `test-fixtures` (в рабочую сборку не попадает).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn prepare_native_hls_player_media(
     safe_label: &str,
     prepared: PreparedNativeHlsVod,
 ) -> std::result::Result<player_core::PreparedMedia, player_core::PreparedInitialPositionError> {
-    let result = crate::media_open::compose_prepared_web_media(
+    let result = crate::prepared_web_media::compose_prepared_web_media(
         safe_label,
         prepared.demuxer,
-        crate::media_open::PreparedWebMediaAttachments {
+        crate::prepared_web_media::PreparedWebMediaAttachments {
             demux_seek: Some(
-                crate::media_open::PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
+                crate::prepared_web_media::PreparedWebMediaSeekAttachment::AuthoritativePostTarget(
                     prepared.seek_port,
                 ),
             ),
             initial_position: Some(prepared.initial_position),
-            ..crate::media_open::PreparedWebMediaAttachments::default()
+            ..crate::prepared_web_media::PreparedWebMediaAttachments::default()
         },
     );
     match result {
         Ok(prepared_media) => Ok(prepared_media),
-        Err(crate::media_open::PreparedWebMediaCompositionError::InitialPosition(error)) => {
-            Err(error)
-        }
-        Err(crate::media_open::PreparedWebMediaCompositionError::TimelineMode(_)) => {
+        Err(crate::prepared_web_media::PreparedWebMediaCompositionError::InitialPosition(
+            error,
+        )) => Err(error),
+        Err(crate::prepared_web_media::PreparedWebMediaCompositionError::TimelineMode(_)) => {
             unreachable!("native HLS compatibility fixture has no dynamic timeline")
         }
     }

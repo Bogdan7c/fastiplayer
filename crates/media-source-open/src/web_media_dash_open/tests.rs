@@ -72,8 +72,7 @@ fn adaptive_context(
     source: SourceIdentity,
 ) -> AdaptiveHttpContext {
     let target = HttpRequestTarget::parse_exact(target).expect("valid test target");
-    let generation =
-        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
+    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let exact = CandidateIdentity::new(
         source,
         ExtractionGeneration::new(generation.value()),
@@ -105,10 +104,8 @@ fn adaptive_context(
     AdaptiveHttpContext::new(
         request,
         &source_config,
-        media_source_open::web_media_adaptive_config::adaptive_transport_limits(
-            &NetworkConfig::default(),
-        )
-        .expect("adaptive limits"),
+        crate::web_media_adaptive_config::adaptive_transport_limits(&NetworkConfig::default())
+            .expect("adaptive limits"),
         AdaptiveRetryPolicy::new(
             NonZeroU8::new(1).expect("attempt count"),
             Duration::from_millis(1),

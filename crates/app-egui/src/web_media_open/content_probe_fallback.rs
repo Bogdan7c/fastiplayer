@@ -92,10 +92,10 @@ where
         );
         let hls_endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>> =
             (self.candidate_snapshot.live_intent() == service_ytdlp::YtDlpLiveIntent::Live
-                && crate::web_media_hls_open::candidate_is_hls(candidate))
+                && media_source_open::web_media_hls_open::candidate_is_hls(candidate))
             .then(|| {
                 Arc::new(
-                    crate::web_media_hls_refresh::AppHlsEndpointRefreshPort::new(
+                    media_source_open::web_media_hls_refresh::AppHlsEndpointRefreshPort::new(
                         self.locator.clone(),
                         self.yt_dlp_config.clone(),
                         self.extractor_adapter.clone(),
@@ -109,10 +109,10 @@ where
             });
         let dash_endpoint_refresh: Option<Arc<dyn DashEndpointRefreshPort>> =
             (self.candidate_snapshot.live_intent() == service_ytdlp::YtDlpLiveIntent::Live
-                && crate::web_media_dash_open::candidate_is_dash(candidate))
+                && media_source_open::web_media_dash_open::candidate_is_dash(candidate))
             .then(|| {
                 Arc::new(
-                    crate::web_media_dash_refresh::AppDashEndpointRefreshPort::new(
+                    media_source_open::web_media_dash_refresh::AppDashEndpointRefreshPort::new(
                         self.locator.clone(),
                         self.yt_dlp_config.clone(),
                         self.extractor_adapter.clone(),

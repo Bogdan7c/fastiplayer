@@ -23,7 +23,7 @@ pub(super) fn hls_async_seek_limits() -> ProgressiveAsyncSeekLimits {
 }
 
 /// Собирает единый VOD policy для native и yt-dlp HLS preparation paths.
-pub(crate) fn hls_policy(limits: AdaptiveTransportLimits) -> Result<HlsVodOpenPolicy> {
+pub fn hls_policy(limits: AdaptiveTransportLimits) -> Result<HlsVodOpenPolicy> {
     Ok(HlsVodOpenPolicy {
         seek_landing_policy: HlsVodSeekLandingPolicy::DecodeFromOrBeforeTarget,
         parser_limits: HlsParserLimits::default(),
@@ -61,6 +61,6 @@ pub(super) fn hls_catalog_policy() -> Result<HlsCatalogBuildPolicy> {
 }
 
 /// Planner HLS transport output не делает TS playable для progressive HTTP rows.
-pub(crate) fn hls_transport_input() -> DemuxInputCapability {
+pub fn hls_transport_input() -> DemuxInputCapability {
     DemuxInputCapability::OrderedSegments
 }

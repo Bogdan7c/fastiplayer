@@ -218,10 +218,15 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
         "YtDlpTransportRequestContext",
     ];
     // В media-source-open provider DTO разрешены только самому адаптеру и
-    // переехавшим из app-egui exact/composed open intent-ам (там эта запись была
-    // в allowlist до переезда).
+    // переехавшим из app-egui модулям, которые стояли в allowlist app-egui до
+    // переезда: exact/composed open intent-ы и протокольные HLS/DASH opener-ы
+    // с портами обновления endpoint-ов.
     const ALLOWED_PRODUCTION_SOURCES: &[&str] = &[
+        "web_media_dash_open.rs",
+        "web_media_dash_refresh.rs",
         "web_media_extractor_adapter.rs",
+        "web_media_hls_open.rs",
+        "web_media_hls_refresh.rs",
         "web_media_open/component_variants.rs",
     ];
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

@@ -48,6 +48,11 @@ audio-core.workspace = true
 web-media-dash.workspace = true
 web-media-smooth.workspace = true
 web-media-hds.workspace = true
+# Протокольные opener-ы HLS/DASH: лимиты парсера HLS playlist-ов, лимиты и
+# XML-бюджеты разбора DASH MPD.
+hls-playlist-core.workspace = true
+dash-mpd-core.workspace = true
+bounded-xml-reader.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

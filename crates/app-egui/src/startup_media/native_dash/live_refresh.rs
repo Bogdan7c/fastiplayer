@@ -79,9 +79,9 @@ impl DashEndpointRefreshPort for NativeDashEndpointRefreshPort {
             generation,
             manifest: DashManifestInput {
                 target: self.source.target().clone(),
-                xml_budgets: crate::web_media_dash_open::dash_xml_budgets()
+                xml_budgets: media_source_open::web_media_dash_open::dash_xml_budgets()
                     .map_err(|_| DashEndpointRefreshError::AttemptsExhausted)?,
-                mpd_limits: crate::web_media_dash_open::dash_mpd_limits(),
+                mpd_limits: media_source_open::web_media_dash_open::dash_mpd_limits(),
             },
         })
     }

@@ -242,9 +242,9 @@ impl WebOpenRuntime {
                 vod_endpoint_recovery,
             });
         }
-        if crate::web_media_hls_open::candidate_is_hls(candidate) {
+        if media_source_open::web_media_hls_open::candidate_is_hls(candidate) {
             ensure_not_cancelled(is_cancelled)?;
-            let prepared = crate::web_media_hls_open::prepare_hls_candidate(
+            let prepared = media_source_open::web_media_hls_open::prepare_hls_candidate(
                 candidate,
                 self.provider_id.clone(),
                 &self.source_config,
@@ -269,9 +269,9 @@ impl WebOpenRuntime {
                 vod_endpoint_recovery,
             });
         }
-        if crate::web_media_dash_open::candidate_is_dash(candidate) {
+        if media_source_open::web_media_dash_open::candidate_is_dash(candidate) {
             ensure_not_cancelled(is_cancelled)?;
-            let prepared = crate::web_media_dash_open::prepare_dash_candidate(
+            let prepared = media_source_open::web_media_dash_open::prepare_dash_candidate(
                 candidate,
                 self.provider_id.clone(),
                 &self.source_config,
@@ -426,7 +426,7 @@ pub(super) fn progressive_transport_capabilities() -> Result<TransportCapability
     )?;
     let hls = TransportCapabilityRegistration::new(
         TransportFamily::Hls,
-        DemuxInputCapabilities::only(crate::web_media_hls_open::hls_transport_input()),
+        DemuxInputCapabilities::only(media_source_open::web_media_hls_open::hls_transport_input()),
     )?;
     let dash = TransportCapabilityRegistration::new(
         TransportFamily::Dash,

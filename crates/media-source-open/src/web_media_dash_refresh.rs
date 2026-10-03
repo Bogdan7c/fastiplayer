@@ -13,7 +13,7 @@ use web_media_dash::{
 use web_media_transport_api::{SourceGeneration, TransportProviderId};
 
 /// Process-lifetime state одной active DASH lineage.
-pub(crate) struct AppDashEndpointRefreshPort {
+pub struct AppDashEndpointRefreshPort {
     locator: YtDlpMediaLocator,
     yt_dlp_config: YtDlpConfig,
     extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,
@@ -58,7 +58,7 @@ impl ExtractionGenerationAllocator {
 impl AppDashEndpointRefreshPort {
     /// Создаёт immutable semantic anchor и monotonic extraction allocator.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         locator: YtDlpMediaLocator,
         yt_dlp_config: YtDlpConfig,
         extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,

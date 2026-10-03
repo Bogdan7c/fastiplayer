@@ -5,7 +5,9 @@
 //! `PreparedMedia`, stream model с component variants и declared catalog.
 //! Из YtDlp orchestration здесь пока только намерение выбора candidate-а,
 //! финализация component variants и capability probe каталогов
-//! (`web_media_open`).
+//! (`web_media_open`). Протокольные opener-ы HLS/DASH (`web_media_hls_open`,
+//! `web_media_dash_open`) и порты обновления endpoint-ов
+//! (`web_media_hls_refresh`, `web_media_dash_refresh`) тоже живут здесь.
 //!
 //! Crate вынесен из `app-egui` как рефакторинг границы: поведение, тексты ошибок,
 //! redaction секретов и generation/identity fences не менялись. Он не зависит от
@@ -22,8 +24,12 @@ pub mod prepared_web_media;
 pub mod video_codec_mapping;
 pub mod web_media_adaptive_config;
 pub mod web_media_catalog;
+pub mod web_media_dash_open;
+pub mod web_media_dash_refresh;
 pub mod web_media_demux_registry;
 pub mod web_media_extractor_adapter;
+pub mod web_media_hls_open;
+pub mod web_media_hls_refresh;
 pub mod web_media_hls_subtitles;
 pub mod web_media_open;
 pub mod web_media_quality;

@@ -13,7 +13,7 @@ use web_media_hls::{
 use web_media_transport_api::{SourceGeneration, TransportProviderId};
 
 /// Process-lifetime state одной active HLS candidate lineage.
-pub(crate) struct AppHlsEndpointRefreshPort {
+pub struct AppHlsEndpointRefreshPort {
     locator: YtDlpMediaLocator,
     yt_dlp_config: YtDlpConfig,
     extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,
@@ -26,7 +26,7 @@ pub(crate) struct AppHlsEndpointRefreshPort {
 
 impl AppHlsEndpointRefreshPort {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         locator: YtDlpMediaLocator,
         yt_dlp_config: YtDlpConfig,
         extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,

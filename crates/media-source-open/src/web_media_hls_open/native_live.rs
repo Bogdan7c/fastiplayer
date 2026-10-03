@@ -3,23 +3,21 @@
 use super::*;
 
 /// Узкий native-live результат: timeline и seek остаются runtime-only attachments.
-pub(crate) struct PreparedNativeHlsLive {
-    pub(crate) demuxer: Box<dyn Demuxer + Send>,
-    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
-    pub(crate) timeline_port: DynamicMediaTimelinePort,
+pub struct PreparedNativeHlsLive {
+    pub demuxer: Box<dyn Demuxer + Send>,
+    pub seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    pub timeline_port: DynamicMediaTimelinePort,
 }
 
 /// Открывает admitted top media/master live через общий receipted runtime.
-pub(crate) fn prepare_native_hls_live(
-    request: HlsLiveOpenRequest,
-) -> Result<PreparedNativeHlsLive> {
+pub fn prepare_native_hls_live(request: HlsLiveOpenRequest) -> Result<PreparedNativeHlsLive> {
     let opened = prepare_hls_live_receipted(request, hls_async_seek_limits())
         .context("native HLS live runtime open failed")?;
     finalize_native_hls_live(opened)
 }
 
 /// Открывает semantic-rematch-нутый fresh catalog selection без extractor material.
-pub(crate) fn prepare_native_hls_catalog_live(
+pub fn prepare_native_hls_catalog_live(
     request: HlsLiveOpenRequest,
     selection: web_media_hls::HlsCatalogReopenSelection,
 ) -> Result<PreparedNativeHlsLive> {

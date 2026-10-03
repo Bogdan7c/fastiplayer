@@ -186,7 +186,7 @@ pub(crate) fn prepare_native_dash_attempt(
 
     // Root response читается ровно один раз; parser/catalog получают owned fetched handoff.
     let wall_clock: Arc<dyn DashWallClock> =
-        Arc::new(crate::web_media_dash_open::SystemDashWallClock);
+        Arc::new(media_source_open::web_media_dash_open::SystemDashWallClock);
     let fetch_started = Instant::now();
     let local_before_fetch = wall_clock.now_utc();
     let fetched_manifest =
@@ -213,10 +213,10 @@ pub(crate) fn prepare_native_dash_attempt(
         request.source.target().clone(),
         fetched_manifest,
         &admission_http,
-        crate::web_media_dash_open::dash_xml_budgets()?,
-        crate::web_media_dash_open::dash_mpd_limits(),
+        media_source_open::web_media_dash_open::dash_xml_budgets()?,
+        media_source_open::web_media_dash_open::dash_mpd_limits(),
     );
-    let policy = crate::web_media_dash_open::dash_policy(adaptive_limits)?;
+    let policy = media_source_open::web_media_dash_open::dash_policy(adaptive_limits)?;
     let presentation =
         match classify_fetched_dash_presentation(&admission_http, generation, &manifest, policy) {
             Ok(presentation) => presentation,
@@ -330,7 +330,8 @@ pub(crate) fn prepare_native_dash_attempt(
     };
     let opened = prepare_discovered_dash_vod(discovered, component_selection.clone())
         .context("native DASH exact discovered selection open failed")?;
-    let seek_port = crate::web_media_dash_open::prepared_dash_seek_port(opened.async_seek_handle());
+    let seek_port =
+        media_source_open::web_media_dash_open::prepared_dash_seek_port(opened.async_seek_handle());
     let source_state = NativeDashSourceState::new(
         neutral_selection,
         component_catalog,

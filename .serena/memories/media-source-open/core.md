@@ -33,8 +33,17 @@ Library crate `crates/media-source-open` (lib `media_source_open`): открыт
 - Зарегистрирован в: workspace members/deps, `scripts/ci-checks.sh` (cargo-machete inventory), `coverage/policy.json` → `informational_crates`, ARCHITECTURE.md (таблица владельцев).
 - `flv-demux` больше не зависимость app-egui (был нужен только demux_registry).
 
+## HLS/DASH opener-ы и refresh (session-04, 2026-10-03)
+- В crate (`git mv`, раскладка с `#[path]` у `web_media_hls_open` сохранена → имена 14 тестов прежние): `web_media_hls_open` (+ `native_vod`, `native_live`, `runtime_policy`, `tests.rs`), `web_media_dash_open` (+ `tests.rs`), `web_media_hls_refresh`, `web_media_dash_refresh`.
+- app-egui зовёт их напрямую `media_source_open::web_media_{hls,dash}_{open,refresh}::...` (re-export-ов в app нет; как session-01 для полностью переехавших модулей). Потребители: `web_media_open.rs`, `web_media_open/{runtime,content_probe_fallback}.rs`, `startup_media/native_hls/vod_catalog.rs`, `startup_media/native_dash{.rs,/live_runtime.rs,/live_refresh.rs}`, `hls_startup_integration_tests.rs`.
+- `pub` только то, что зовёт app: `candidate_is_{hls,dash}`, `prepare_{hls,dash}_candidate`, `hls_policy`, `hls_transport_input`, `dash_policy`, `dash_xml_budgets`, `dash_mpd_limits`, `prepared_dash_seek_port`, `SystemDashWallClock`, `prepare_native_hls_{vod,catalog_vod,live,catalog_live}`, `discover_native_hls_catalog`, `PreparedNativeHls{Vod,Live}`, `PrepareNativeHlsVodError`, `App{Hls,Dash}EndpointRefreshPort::new`. Поля `PreparedHlsCandidate`/`PreparedDashCandidate`/`PreparedNativeHls{Vod,Live}` стали `pub` (как были pub(crate)) — кандидат на intent-методы отдельной задачей, как `WebDemuxComposition`.
+- `prepare_native_hls_player_media` — фикстура под `cfg(any(test, feature = "test-fixtures"))` (зовут app-тесты `hls_startup_integration_tests`).
+- `native_vod` брал `audio::AudioDecodeCapabilitySnapshot` → теперь `audio_core::` (тот же тип, re-export). Новые deps crate-а: `hls-playlist-core`, `dash-mpd-core`, `bounded-xml-reader` (у app-egui остаются — нужны smooth/hds/native_dash).
+- Сторож provider DTO: 4 файла переехали из allowlist app-egui в allowlist crate-а. Size baseline не затронут (все файлы < 800). Удалён ставший лишним `#[cfg(test)]` re-export `PreparedWebMediaCompositionError` в `app-egui/media_open/mod.rs`.
+- App-вертикали остались в app: `media_open/web/tests/native_{hls,dash}*`, `hls_startup_integration_tests` (фильтры `native_hls native_dash native_cross_source hls_startup_integration_tests`).
+
 ## Осталось в app-egui (переедут позже)
-- `web_media_hls_refresh`/`web_media_dash_refresh` — зависят от `web_media_hls_open`/`web_media_dash_open` (сессия 4).
+- Остаток дерева `web_media_open` (yt-dlp/extractor orchestration) — сессия 5; startup native jobs — сессии 6–7.
 
 ## Coverage baseline — известное красное состояние
 - Решение владельца 2026-10-03: пересъёмка `coverage/baseline.json` один раз после сессии 5 (остаток `web_media_open`; до перенумерации — «после сессии 4»). До этого `scripts/tests/test_coverage_metrics.py` (`test_checked_in_baseline_matches_exact_policy_inventory`, `test_validate_baseline_cli_rejects_expired_exception`) красные ожидаемо.

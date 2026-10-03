@@ -31,8 +31,6 @@ pub(crate) use native_hds::{NativeHdsOpenIntent, NativeHdsSourceState, NativeHds
 pub(crate) use native_hls::{NativeHlsOpenIntent, NativeHlsSourceState, NativeHlsUrl};
 pub(crate) use native_smooth::{NativeSmoothOpenIntent, NativeSmoothSourceState, NativeSmoothUrl};
 // Все app ingress-ы собирают provider-neutral `PreparedMedia` через один boundary.
-#[cfg(test)]
-pub(crate) use media_source_open::prepared_web_media::PreparedWebMediaCompositionError;
 pub(crate) use media_source_open::prepared_web_media::{
     PreparedWebMediaAttachments, PreparedWebMediaSeekAttachment, compose_prepared_web_media,
 };

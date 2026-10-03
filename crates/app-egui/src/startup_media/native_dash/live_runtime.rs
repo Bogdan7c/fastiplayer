@@ -97,8 +97,8 @@ pub(super) fn prepare_native_dash_live(
         generation: preparation.generation,
         manifest: preparation.manifest,
         demux_registry: preparation.demux_registry,
-        policy: crate::web_media_dash_open::dash_policy(adaptive_limits)?,
-        wall_clock: Arc::new(crate::web_media_dash_open::SystemDashWallClock),
+        policy: media_source_open::web_media_dash_open::dash_policy(adaptive_limits)?,
+        wall_clock: Arc::new(media_source_open::web_media_dash_open::SystemDashWallClock),
         timeline_port_generation: crate::web_media_open::next_dynamic_timeline_port_generation()?,
         initial_source_epoch: media_core::DynamicMediaTimelineEpoch::new(0),
         endpoint_refresh,
@@ -131,7 +131,7 @@ pub(super) fn prepare_native_dash_live(
     };
     let opened = prepare_discovered_dash_live(discovered, component_selection.clone())?;
     let (demuxer, async_seek_handle, timeline_port) = opened.into_parts();
-    let seek_port = crate::web_media_dash_open::prepared_dash_seek_port(
+    let seek_port = media_source_open::web_media_dash_open::prepared_dash_seek_port(
         async_seek_handle
             .ok_or_else(|| anyhow!("DASH live runtime потерял seek receipt handle"))?,
     );

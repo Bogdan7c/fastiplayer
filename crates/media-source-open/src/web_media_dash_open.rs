@@ -61,19 +61,19 @@ const DASH_RANGE_READ_AHEAD_BYTES: usize = 1_024 * 1_024;
 const MAXIMUM_CACHED_DASH_RANGE_PAGES: usize = 2;
 
 /// Результат pre-barrier DASH preparation.
-pub(crate) struct PreparedDashCandidate {
+pub struct PreparedDashCandidate {
     /// Ready nonblocking demuxer.
-    pub(crate) demuxer: Box<dyn Demuxer + Send>,
+    pub demuxer: Box<dyn Demuxer + Send>,
     /// Provider-neutral seek port exact этого runtime-а.
-    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    pub seek_port: Arc<dyn PreparedDemuxSeekPort>,
     /// Dynamic S31L port; static VOD сохраняет `None`.
-    pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
-    pub(crate) component_variants:
-        media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog,
+    pub timeline_port: Option<DynamicMediaTimelinePort>,
+    pub component_variants:
+        crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
 }
 
 /// Production local wall clock; direct UTCTiming offset применяется provider-ом.
-pub(crate) struct SystemDashWallClock;
+pub struct SystemDashWallClock;
 
 impl DashWallClock for SystemDashWallClock {
     fn now_utc(&self) -> DashUtcTimestamp {
@@ -92,7 +92,7 @@ struct DashPreparedDemuxSeekPort {
 }
 
 /// Адаптирует existing DASH async seek handle к provider-neutral player boundary.
-pub(crate) fn prepared_dash_seek_port(
+pub fn prepared_dash_seek_port(
     handle: ProgressiveAsyncSeekHandle,
 ) -> Arc<dyn PreparedDemuxSeekPort> {
     Arc::new(DashPreparedDemuxSeekPort { handle })
@@ -148,7 +148,7 @@ struct ProjectedDashComponent<'candidate> {
 }
 
 /// Проверяет transport family без открытия provider-а.
-pub(crate) fn candidate_is_dash(candidate: &YtDlpNormalizedCandidate) -> bool {
+pub fn candidate_is_dash(candidate: &YtDlpNormalizedCandidate) -> bool {
     match candidate.descriptor().layout() {
         StreamLayout::Muxed(component) => component.transport().family() == TransportFamily::Dash,
         StreamLayout::VideoOnly(component) => {
@@ -167,7 +167,7 @@ pub(crate) fn candidate_is_dash(candidate: &YtDlpNormalizedCandidate) -> bool {
 
 /// Выполняет static либо strict dynamic DASH preparation до player/queue commit barrier-а.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_dash_candidate(
+pub fn prepare_dash_candidate(
     candidate: &YtDlpNormalizedCandidate,
     provider_id: TransportProviderId,
     source_config: &SourceRuntimeConfig,
@@ -178,19 +178,17 @@ pub(crate) fn prepare_dash_candidate(
     endpoint_refresh: Option<Arc<dyn DashEndpointRefreshPort>>,
     timeline_port_generation: DynamicMediaTimelinePortGeneration,
     component_selection_intent:
-        media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
-    capability_probe: &media_source_open::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
     endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<PreparedDashCandidate> {
-    let generation =
-        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
+    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let request_context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let service_components = candidate
         .dash_transport_components(&request_context)
         .context("Не удалось спроецировать yt-dlp DASH request material")?;
-    let limits =
-        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
+    let limits = crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
     let projected_components = service_components
         .into_iter()
         .map(|component| {
@@ -226,11 +224,11 @@ pub(crate) fn prepare_dash_candidate(
             endpoint_refresh,
         };
         let (opened, component_variants) = match component_selection_intent {
-            media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
+            crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
                 prepare_dash_live(request).context("DASH live preflight завершился ошибкой")?,
-                media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
+                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
             ),
-            media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+            crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
                 let discovered = discover_dash_live_catalog(DashLiveCatalogDiscoveryRequest {
                     open: request,
                     catalog_identity,
@@ -242,7 +240,7 @@ pub(crate) fn prepare_dash_candidate(
                 let selected = catalog.rematch_semantic(semantic.clone())?;
                 (
                     prepare_discovered_dash_live_semantic(discovered, semantic)?,
-                    media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+                    crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
                         catalog,
                         provider_selection: selected,
                     },
@@ -271,11 +269,11 @@ pub(crate) fn prepare_dash_candidate(
         policy: dash_policy(limits)?,
     };
     let (opened, component_variants) = match component_selection_intent {
-        media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
             prepare_dash_vod(request).context("DASH VOD preflight завершился ошибкой")?,
-            media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
+            crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
         ),
-        media_source_open::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
             let discovered = discover_dash_vod_catalog(DashVodCatalogDiscoveryRequest {
                 open: request,
                 catalog_identity,
@@ -287,7 +285,7 @@ pub(crate) fn prepare_dash_candidate(
             let selected = catalog.rematch_semantic(semantic.clone())?;
             (
                 prepare_discovered_dash_vod_semantic(discovered, semantic)?,
-                media_source_open::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
                     catalog,
                     provider_selection: selected,
                 },
@@ -322,7 +320,7 @@ fn project_component<'candidate>(
             const { NonZeroU8::new(3).expect("non-zero DASH retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("DASH retry policy invalid")?,
     )
@@ -345,8 +343,7 @@ pub(crate) fn project_dash_live_runtime_material(
     cancellation: CancellationToken,
 ) -> Result<(Box<AdaptiveHttpContext>, DashManifestInput)> {
     let request_context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
-    let limits =
-        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
+    let limits = crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
     let projected = candidate
         .dash_transport_components(&request_context)?
         .into_iter()
@@ -688,7 +685,7 @@ fn dash_media_kind(role: MediaComponentRole) -> Result<DashMediaKind> {
 }
 
 /// Обязательные S04X budgets задаются composition owner-ом.
-pub(crate) fn dash_xml_budgets() -> Result<XmlBudgets> {
+pub fn dash_xml_budgets() -> Result<XmlBudgets> {
     XmlBudgets::builder()
         .maximum_document_bytes(2 * 1_024 * 1_024)
         .maximum_depth(48)
@@ -705,7 +702,7 @@ pub(crate) fn dash_xml_budgets() -> Result<XmlBudgets> {
 }
 
 /// Bounded static MPD profile limits.
-pub(crate) const fn dash_mpd_limits() -> DashMpdLimits {
+pub const fn dash_mpd_limits() -> DashMpdLimits {
     DashMpdLimits {
         maximum_periods: 64,
         maximum_adaptation_sets_per_period: 64,
@@ -717,7 +714,7 @@ pub(crate) const fn dash_mpd_limits() -> DashMpdLimits {
 }
 
 /// Runtime queue/range/scan policy использует app-owned network budget.
-pub(crate) fn dash_policy(limits: AdaptiveTransportLimits) -> Result<DashVodOpenPolicy> {
+pub fn dash_policy(limits: AdaptiveTransportLimits) -> Result<DashVodOpenPolicy> {
     Ok(DashVodOpenPolicy {
         maximum_manifest_bytes: limits.maximum_manifest_bytes,
         maximum_fragment_bytes: limits.maximum_segment_bytes,

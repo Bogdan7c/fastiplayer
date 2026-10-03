@@ -41,7 +41,9 @@ use crate::playlist_runtime::{ResumePositionWarning, StartupPosition};
 use crate::state::strong_media_open::{
     PreparedPositionRestoreStrategy, prepared_position_restore_strategy,
 };
-use crate::web_media_hls_open::{prepare_native_hls_player_media, prepare_native_hls_vod};
+use media_source_open::web_media_hls_open::{
+    prepare_native_hls_player_media, prepare_native_hls_vod,
+};
 
 const TEST_GENERATION: SourceGeneration = SourceGeneration::new(71);
 const PMT_PID: u16 = 0x0100;
@@ -204,7 +206,7 @@ fn native_hls_request(server: &ControlledHlsServer, manifest_path: &str) -> HlsV
             alternate_audio: None,
         },
         demux_registry: Arc::new(registry),
-        policy: crate::web_media_hls_open::hls_policy(limits)
+        policy: media_source_open::web_media_hls_open::hls_policy(limits)
             .expect("production HLS policy from controlled limits"),
     }
 }
