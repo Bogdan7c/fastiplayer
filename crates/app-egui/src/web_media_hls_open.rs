@@ -65,7 +65,8 @@ pub(crate) use runtime_policy::{hls_policy, hls_transport_input};
 pub(crate) struct PreparedHlsCandidate {
     pub(crate) demuxer: Box<dyn Demuxer + Send>,
     pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
-    pub(crate) subtitles: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+    pub(crate) subtitles:
+        Arc<[media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
     pub(crate) component_variants:
         crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
@@ -165,7 +166,8 @@ pub(crate) fn prepare_hls_candidate(
     capability_probe: &mut crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
     endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<PreparedHlsCandidate> {
-    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
+    let generation =
+        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
     let projected = project_hls_runtime_material(
         candidate,
         provider_id,
@@ -181,9 +183,9 @@ pub(crate) fn prepare_hls_candidate(
         overrides,
     } = projected;
     let (selection, containers) = selection_and_containers(candidate.descriptor().layout())?;
-    let policy = hls_policy(crate::web_media_adaptive_config::adaptive_transport_limits(
-        network_config,
-    )?)?;
+    let policy = hls_policy(
+        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)?,
+    )?;
     if live_intent == service_ytdlp::YtDlpLiveIntent::Live {
         let endpoint_refresh = endpoint_refresh
             .ok_or_else(|| anyhow!("HLS live candidate потерял app endpoint refresh port"))?;
@@ -238,7 +240,7 @@ pub(crate) fn prepare_hls_candidate(
         let subtitles = opened
             .subtitle_renditions()
             .iter()
-            .map(crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition::from_prepared)
+            .map(media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition::from_prepared)
             .collect::<Vec<_>>()
             .into();
         let seek_handle = opened
@@ -316,7 +318,7 @@ pub(crate) fn prepare_hls_candidate(
     let subtitles = opened
         .subtitle_renditions()
         .iter()
-        .map(crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition::from_prepared)
+        .map(media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition::from_prepared)
         .collect::<Vec<_>>()
         .into();
     let seek_handle = opened
@@ -411,7 +413,7 @@ pub(crate) fn project_hls_runtime_material(
         .transpose()
         .context("yt-dlp hls_aes нарушил validated AES boundary")?;
     let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
+        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
     let http = AdaptiveHttpContext::new(
         transport_request,
         source_config,
@@ -420,7 +422,7 @@ pub(crate) fn project_hls_runtime_material(
             const { NonZeroU8::new(3).expect("non-zero retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("HLS retry policy invalid")?,
     )

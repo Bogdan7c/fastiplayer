@@ -175,7 +175,7 @@ fn unrelated_ytdlp_failure_keeps_generic_classification() {
 fn cancelled_web_request_stops_before_adapter_dispatch() {
     let cancellation = super::super::executor::PreparationCancellation::new();
     cancellation.cancel(player_core::MediaInstallCancellationCause::UserCancelled);
-    let locator = crate::direct_progressive_open::classify_direct_media_url(
+    let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://unreachable.example.test/cancelled-before-io.mp4",
     )
     .expect("direct fixture locator валиден");

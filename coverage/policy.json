@@ -64,6 +64,7 @@
     "audio-signalsmith",
     "audio-timestretch",
     "desktop-integration",
+    "media-source-open",
     "render-wgpu-shell",
     "render-wgpu-video",
     "service-ytdlp",

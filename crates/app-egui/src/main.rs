@@ -10,11 +10,9 @@
 mod app_instance;
 mod app_shell;
 mod app_wake;
-mod direct_progressive_open;
 mod dma_buf_runtime_fallback;
 mod frame_prepare;
 mod local_file_open;
-mod local_media;
 mod media_open;
 mod playlist_action_runtime;
 mod playlist_runtime;
@@ -36,20 +34,18 @@ mod url_topology_drafts;
 mod video_backend_constraint;
 mod video_pipeline_candidate;
 mod video_pipeline_selector;
-mod web_media_adaptive_config;
 mod web_media_catalog;
 mod web_media_dash_open;
 mod web_media_dash_refresh;
-mod web_media_demux_registry;
-mod web_media_extractor_adapter;
 mod web_media_hls_open;
 mod web_media_hls_refresh;
-mod web_media_hls_subtitles;
 mod web_media_open;
-mod web_media_quality;
 mod web_media_stream_model;
-mod web_media_vod_recovery;
 mod window_corner_policy;
+
+// Архитектурные сторожа provider DTO yt-dlp по исходникам app-egui.
+#[cfg(test)]
+mod extractor_provider_dto_guard_tests;
 
 use anyhow::{Context, Result};
 use tracing::info;

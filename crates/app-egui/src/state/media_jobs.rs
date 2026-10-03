@@ -118,7 +118,9 @@ impl AppState {
         &mut self,
         source: ActiveMediaSource,
         media_instance_id: player_core::MediaInstanceId,
-        attachment: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+        attachment: Option<
+            media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+        >,
     ) {
         self.record_installed_media_observables(source.clone());
         self.bind_resumed_vod_endpoint_recovery(media_instance_id, source, attachment);

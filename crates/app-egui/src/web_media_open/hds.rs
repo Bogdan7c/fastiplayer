@@ -91,9 +91,10 @@ pub(crate) struct PreparedNativeHdsCandidate {
 pub(crate) fn prepare_native_hds_candidate(
     request: NativeHdsCandidatePreparation<'_>,
 ) -> Result<PreparedNativeHdsCandidate> {
-    let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)
-            .context("Не удалось собрать native HDS adaptive transport limits")?;
+    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
+        request.network_config,
+    )
+    .context("Не удалось собрать native HDS adaptive transport limits")?;
     let policy = hds_policy(adaptive_limits, request.source_config.read_timeout())?;
     let discovered = discover_fetched_hds_renditions(HdsFetchedCatalogDiscoveryRequest {
         discovery: HdsCatalogDiscoveryRequest {
@@ -182,7 +183,8 @@ pub(super) fn prepare_hds_candidate(
     let StreamLayout::ContentProbed(_) = candidate.descriptor().layout() else {
         bail!("HDS candidate должен сохранять provider-owned content-probed F4F contract");
     };
-    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
+    let generation =
+        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
     let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let mut transport_request = candidate
         .hds_transport_request(&context)
@@ -191,7 +193,7 @@ pub(super) fn prepare_hds_candidate(
         transport_request = transport_request.with_endpoint_expiry_observer(observer);
     }
     let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
+        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)
             .context("Не удалось собрать HDS adaptive transport limits")?;
     let policy = hds_policy(adaptive_limits, source_config.read_timeout())?;
     let discovery_started_at = Instant::now();
@@ -336,7 +338,7 @@ fn hds_policy(
             const { NonZeroU8::new(3).expect("HDS retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("HDS adaptive retry policy invalid")?,
         demux_sniff_budget: DemuxSniffBudget::new(
@@ -464,8 +466,10 @@ mod tests {
         let source_config = SourceRuntimeConfig::from_network_config(&network_config)
             .expect("valid source runtime config");
         let adaptive_limits =
-            crate::web_media_adaptive_config::adaptive_transport_limits(&network_config)
-                .expect("valid adaptive limits");
+            media_source_open::web_media_adaptive_config::adaptive_transport_limits(
+                &network_config,
+            )
+            .expect("valid adaptive limits");
 
         let policy =
             hds_policy(adaptive_limits, source_config.read_timeout()).expect("valid HDS policy");
@@ -485,8 +489,10 @@ mod tests {
         let source_config = SourceRuntimeConfig::from_network_config(&network_config)
             .expect("valid source runtime config");
         let adaptive_limits =
-            crate::web_media_adaptive_config::adaptive_transport_limits(&network_config)
-                .expect("valid adaptive limits");
+            media_source_open::web_media_adaptive_config::adaptive_transport_limits(
+                &network_config,
+            )
+            .expect("valid adaptive limits");
 
         let policy =
             hds_policy(adaptive_limits, source_config.read_timeout()).expect("valid HDS policy");

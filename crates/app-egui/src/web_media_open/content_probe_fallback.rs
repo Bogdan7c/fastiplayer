@@ -126,7 +126,7 @@ where
             });
         let vod_endpoint_recovery = (self.candidate_snapshot.live_intent()
             != service_ytdlp::YtDlpLiveIntent::Live)
-            .then(crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new);
+            .then(media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment::new);
         let opened_candidate = self.runtime.open_candidate(
             candidate,
             WebCandidateOpenContext {

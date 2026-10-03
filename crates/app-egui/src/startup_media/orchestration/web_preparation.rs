@@ -56,7 +56,7 @@ pub(super) struct ComposedNativeHdsStartupMedia {
 /// Собирает direct startup result через тот же neutral web envelope, что обычный media-open.
 pub(super) fn compose_direct_startup_media(
     source_locator: service_direct_media::DirectMediaUrl,
-    opened_media: crate::direct_progressive_open::DirectProgressiveOpenResult,
+    opened_media: media_source_open::direct_progressive_open::DirectProgressiveOpenResult,
 ) -> PreparedStartupMedia {
     let source_label = opened_media.source_label().to_owned();
     let tracks = opened_media.tracks().to_vec();

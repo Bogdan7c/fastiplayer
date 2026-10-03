@@ -26,5 +26,5 @@ pub(crate) struct PreparedYtDlpStartupMedia {
 
     /// VOD-only transport gate должен пережить background startup preparation.
     pub(crate) vod_endpoint_recovery:
-        Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+        Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }

@@ -20,7 +20,7 @@ mod native_smooth_vertical;
 /// Absent optional attachments не должны превращаться в скрытые adapter defaults.
 #[test]
 fn direct_envelope_keeps_optional_attachments_absent() {
-    let locator = crate::direct_progressive_open::classify_direct_media_url(
+    let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://cdn.example.test/movie.mp4?token=descriptor-secret",
     )
     .expect("direct fixture locator валиден");
@@ -48,7 +48,7 @@ fn direct_envelope_keeps_optional_attachments_absent() {
 /// Controlled reopen переносит stable direct intent через neutral request variant.
 #[test]
 fn controlled_reopen_preserves_stable_direct_selection() {
-    let locator = crate::direct_progressive_open::classify_direct_media_url(
+    let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://cdn.example.test/movie.mp4?token=reopen-secret",
     )
     .expect("direct fixture locator валиден");
@@ -108,7 +108,7 @@ fn extractor_request_preserves_explicit_native_fallback_reason() {
 /// Debug active source показывает neutral facts, но никогда не раскрывает locator material.
 #[test]
 fn active_web_source_debug_redacts_raw_locator_and_temporary_material() {
-    let locator = crate::direct_progressive_open::classify_direct_media_url(
+    let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://user:password@cdn.example.test/movie.mp4?token=debug-secret",
     )
     .expect("direct fixture locator валиден");
@@ -125,7 +125,7 @@ fn active_web_source_debug_redacts_raw_locator_and_temporary_material() {
 #[test]
 fn direct_and_native_read_only_projections_are_neutral_and_secret_safe() {
     let direct = WebMediaSourceIntent::direct(
-        crate::direct_progressive_open::classify_direct_media_url(
+        media_source_open::direct_progressive_open::classify_direct_media_url(
             "https://user:password@cdn.example.test/movie.mp4?token=direct-secret",
         )
         .unwrap(),
@@ -189,7 +189,7 @@ fn direct_and_native_read_only_projections_are_neutral_and_secret_safe() {
 #[test]
 fn installed_only_action_and_unchanged_direct_settings_are_inert() {
     let source = WebMediaSourceIntent::direct(
-        crate::direct_progressive_open::classify_direct_media_url(
+        media_source_open::direct_progressive_open::classify_direct_media_url(
             "https://cdn.example.test/movie.mp4?token=direct-secret",
         )
         .expect("direct fixture locator валиден"),

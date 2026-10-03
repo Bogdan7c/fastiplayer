@@ -129,7 +129,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
         let prepared_result: Result<crate::state::PreparedSingleMediaOpen, String> =
             match active_source.into_physical_source() {
                 ActiveMediaSource::LocalFile(path) => {
-                    match crate::local_media::prepare_local_file(&path, &config.demux) {
+                    match media_source_open::local_media::prepare_local_file(&path, &config.demux) {
                         Ok(prepared_media) => {
                             let prepared_media = prepared_media
                                 .with_preferred_video_codecs(&preferred_runtime_codecs);

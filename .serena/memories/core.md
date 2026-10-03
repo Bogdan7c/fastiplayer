@@ -14,6 +14,7 @@
 - Рендер: `mem:render-video/core`, раскладка render-core `mem:render-core/module-layout-s22`; frame-server/scrub `mem:frame-server/core`.
 - Аудио: `mem:audio/core`.
 - Demux: `mem:demux-api/core`, `mem:symphonia-demux/core`, `mem:mpeg-ts-demux/core`, `mem:flv-demux/core`; кодеки `mem:codec-core/h264` (+ h265/av1).
+- Открытие источников без UI (local/direct/web-media leaves, вынесено из app-egui): `mem:media-source-open/core`.
 - Источники байтов: `mem:source-core/core`; сетевые протоколы (HLS/DASH/Smooth/HDS/HTTP/FTP/yt-dlp): `mem:media-services/core`; XML: `mem:xml/core`.
 - Очередь/плейлист: `mem:playlist/core`, `mem:playlist/state`, `mem:playlist/discovery`.
 - Приложение (composition root): разделение состояния `mem:app-egui/state-split`, event loop `mem:app-egui/app-shell-event-loop-decomposition-s42-2026-08-27`.
@@ -26,6 +27,6 @@
 - Размер модулей: hard limit 800 строк, legacy-снимок `scripts/module-size-baseline.json` (точный ratchet, обновлять при любом изменении legacy-файла). Границы crate-ов: `scripts/check-refactor-guardrails.py`.
 
 ## Открытые направления
-- Вынос web-media orchestration (~15k строк) из app-egui в отдельный crate — план и сессии-промпты в `user/web-media-extraction/` (приватно), ждёт решения владельца.
+- Вынос web-media orchestration (~15k строк) из app-egui в crate `media-source-open` — план и сессии-промпты в `user/web-media-extraction/` (приватно). Session-01 (листья) сделана 2026-10-03; coverage baseline переснимается один раз после сессии 4 (до этого 2 теста `test_coverage_metrics` красные ожидаемо) — `mem:media-source-open/core`.
 - Git: работать в `main`, отдельные ветки не создавать без указания владельца.
 - Transport-команды во время playlist install (guard/terminal slot, исполнитель Runtime+AppState): `mem:app-egui/transport-guard-execution-2026-10-03`.

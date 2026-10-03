@@ -41,7 +41,7 @@ const DIRECT_DESCRIPTOR_GENERATION: u64 = 1;
 static NEXT_DIRECT_SOURCE_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
 /// App-owned результат direct open до общей prepared-media composition boundary.
-pub(crate) struct DirectProgressiveOpenResult {
+pub struct DirectProgressiveOpenResult {
     /// Безопасный label без userinfo/path/query/fragment.
     source_label: String,
     /// Demuxer, готовый к передаче player owner-у.
@@ -57,31 +57,31 @@ pub(crate) struct DirectProgressiveOpenResult {
 impl DirectProgressiveOpenResult {
     /// Возвращает safe source label.
     #[must_use]
-    pub(crate) fn source_label(&self) -> &str {
+    pub fn source_label(&self) -> &str {
         &self.source_label
     }
 
     /// Возвращает track snapshot.
     #[must_use]
-    pub(crate) fn tracks(&self) -> &[TrackInfo] {
+    pub fn tracks(&self) -> &[TrackInfo] {
         &self.tracks
     }
 
     /// Возвращает duration snapshot.
     #[must_use]
-    pub(crate) const fn duration(&self) -> Option<Duration> {
+    pub const fn duration(&self) -> Option<Duration> {
         self.duration
     }
 
     /// Читает metadata до передачи demuxer-а player owner-у.
     #[must_use]
-    pub(crate) fn media_metadata(&self) -> Option<MediaMetadata> {
+    pub fn media_metadata(&self) -> Option<MediaMetadata> {
         self.demuxer.media_metadata()
     }
 
     /// Передаёт demuxer и Installed recovery attachment общему composition owner-у.
     #[must_use]
-    pub(crate) fn into_runtime_parts(
+    pub fn into_runtime_parts(
         self,
     ) -> (
         Box<dyn Demuxer + Send>,
@@ -92,7 +92,7 @@ impl DirectProgressiveOpenResult {
 }
 
 /// Классифицирует locator по capability rows production web demux registry.
-pub(crate) fn classify_direct_media_url(
+pub fn classify_direct_media_url(
     argument: &str,
 ) -> Result<service_direct_media::DirectMediaUrl, service_direct_media::DirectMediaOpenError> {
     #[expect(
@@ -106,7 +106,7 @@ pub(crate) fn classify_direct_media_url(
 }
 
 /// Открывает stable resource через общие transport/demux registries без extractor-а.
-pub(crate) fn open_direct_media(
+pub fn open_direct_media(
     locator: &service_direct_media::DirectMediaUrl,
     network_config: &NetworkConfig,
     demux_config: &PlayerDemuxConfig,

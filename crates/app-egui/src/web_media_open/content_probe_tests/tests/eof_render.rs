@@ -107,12 +107,12 @@ fn pending_eof_publication_reaches_real_wgpu_submit_readback_and_release() {
         .decode(MUXED_WEBM_BASE64)
         .expect("WebM fixture");
     let origin = RangeFixtureOrigin::spawn_with_response(FixtureOriginResponse::Ogg(webm));
-    let classified = crate::direct_progressive_open::classify_direct_media_url(
+    let classified = media_source_open::direct_progressive_open::classify_direct_media_url(
         &origin.media_url_with_extension("webm"),
     )
     .expect("direct URL");
     let config = fastiplayer_config::AppConfig::default();
-    let opened = crate::direct_progressive_open::open_direct_media(
+    let opened = media_source_open::direct_progressive_open::open_direct_media(
         &classified,
         &config.network,
         &config.player.demux,
@@ -131,7 +131,7 @@ fn pending_eof_publication_reaches_real_wgpu_submit_readback_and_release() {
     let frame = decode_first_frame(demuxer.as_mut(), decoder.as_ref());
     // Первый helper полностью drain-ит fixture; второй независимый decoder
     // даёт настоящий дополнительный ресурс, не повторяя EOS завершённого worker-а.
-    let reopened = crate::direct_progressive_open::open_direct_media(
+    let reopened = media_source_open::direct_progressive_open::open_direct_media(
         &classified,
         &config.network,
         &config.player.demux,

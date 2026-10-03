@@ -89,8 +89,9 @@ pub(super) fn prepare_native_dash_live(
             request.system_capabilities.clone(),
             request.audio_capabilities,
         );
-    let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)?;
+    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
+        request.network_config,
+    )?;
     let discovered = discover_native_dash_live_catalog(NativeDashLiveCatalogDiscoveryRequest {
         http: Box::new(preparation.http),
         generation: preparation.generation,
@@ -106,7 +107,7 @@ pub(super) fn prepare_native_dash_live(
         compatibility_edge_limit: ComponentVariantEdgeLimit::new(4_096)
             .map_err(anyhow::Error::new)?,
         capability_probe: &capability_probe,
-        preferred_height: crate::web_media_quality::preferred_height_policy(
+        preferred_height: media_source_open::web_media_quality::preferred_height_policy(
             request.web_media_config.preferred_video_height,
         ),
     })?;

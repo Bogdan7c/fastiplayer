@@ -37,9 +37,9 @@ dash-mpd-core.workspace = true
 hds-manifest-core.workspace = true
 bounded-xml-reader.workspace = true
 hls-playlist-core.workspace = true
-flv-demux.workspace = true
 mpeg-ts-demux.workspace = true
 media-prefetch.workspace = true
+media-source-open.workspace = true
 service-direct-media.workspace = true
 service-ytdlp.workspace = true
 web-media-core.workspace = true
@@ -92,6 +92,8 @@ render-wgpu-video.workspace = true
 
 [dev-dependencies]
 base64 = "0.22"
+# Тестовые конструкторы media-source-open нужны только тестам app-egui.
+media-source-open = { workspace = true, features = ["test-fixtures"] }
 codec-core.workspace = true
 flate2 = "1"
 tempfile = "3"

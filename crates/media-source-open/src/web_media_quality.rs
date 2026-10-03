@@ -20,7 +20,7 @@ pub(crate) const AUTOMATIC_STARTUP_VIDEO_HEIGHT_PIXELS: u32 = 720;
 /// Преобразует persisted global preference в neutral selection policy.
 ///
 /// `None` означает автоматический fast-start. Явная высота остаётся строгим user preference.
-pub(crate) fn preferred_height_policy(
+pub fn preferred_height_policy(
     preferred_height: Option<ConfigPreferredVideoHeight>,
 ) -> PreferredHeightPolicy {
     match preferred_height {

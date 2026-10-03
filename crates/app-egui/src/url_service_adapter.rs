@@ -610,7 +610,7 @@ fn classify_direct_media_startup_url(argument: &str) -> ServiceClassifierResult 
         return ServiceClassifierResult::NotUrl;
     }
 
-    match crate::direct_progressive_open::classify_direct_media_url(argument) {
+    match media_source_open::direct_progressive_open::classify_direct_media_url(argument) {
         Ok(locator) => {
             ServiceClassifierResult::Supported(StartupUrlLocator::new(DirectMediaStartupAdapter {
                 locator,

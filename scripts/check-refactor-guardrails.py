@@ -78,6 +78,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "flv-demux",
         "hls-playlist-core",
         "media-prefetch",
+        "media-source-open",
         "media-core",
         "natural-sort-key",
         "mpeg-ts-demux",
@@ -317,6 +318,24 @@ SERVICE_YTDLP_FORBIDDEN_DEPENDENCIES = frozenset(
         "symphonia-demux",
         "web-media-http",
         "web-media-ftp",
+    }
+)
+
+# Открытие источников (local/direct/web-media leaves), вынесенное из app-egui.
+# Crate остаётся без UI/окна/GPU: зависимость от egui/winit/wgpu/render-* или
+# обратно на app-egui вернула бы источник в composition root.
+MEDIA_SOURCE_OPEN_FORBIDDEN_DEPENDENCIES = frozenset(
+    {
+        "app-egui",
+        "egui",
+        "egui-wgpu",
+        "egui-winit",
+        "render-core",
+        "render-wgpu-shell",
+        "render-wgpu-video",
+        "ui-artwork-egui",
+        "wgpu",
+        "winit",
     }
 )
 
@@ -1457,6 +1476,14 @@ def find_dependency_violations(
             MEDIA_PREFETCH_CRATES,
             MEDIA_PREFETCH_ALLOWED_DEPENDENCIES,
             "media-prefetch зависит только от source-core плюс tracing/thiserror",
+        )
+    )
+    violations.extend(
+        find_forbidden_dependencies(
+            dependency_map,
+            frozenset({"media-source-open"}),
+            MEDIA_SOURCE_OPEN_FORBIDDEN_DEPENDENCIES,
+            "media-source-open не зависит от UI/окна/GPU/render crates и от app-egui",
         )
     )
     return sorted(violations, key=lambda violation: (violation.owner, violation.dependency))

@@ -1,0 +1,22 @@
+//! Открытие источников медиа без UI: локальные файлы, прямые HTTP/FTP ссылки и
+//! листовые части web-media orchestration (VOD-восстановление endpoint-а,
+//! composition демуксеров, проекция каталога extractor-а, качество и adaptive
+//! настройки).
+//!
+//! Crate вынесен из `app-egui` как рефакторинг границы: поведение, тексты ошибок,
+//! redaction секретов и generation/identity fences не менялись. Он не зависит от
+//! `egui`, `winit`, `wgpu`, `render-*` и `app-egui` (проверяет
+//! `scripts/check-refactor-guardrails.py`). `app-egui` остаётся composition
+//! root-ом и только вызывает эти модули.
+//!
+//! Модули объявлены в корне под теми же именами, что были в `app-egui`, чтобы
+//! пути тестов (`web_media_quality::tests::...`) не изменились при переезде.
+
+pub mod direct_progressive_open;
+pub mod local_media;
+pub mod web_media_adaptive_config;
+pub mod web_media_demux_registry;
+pub mod web_media_extractor_adapter;
+pub mod web_media_hls_subtitles;
+pub mod web_media_quality;
+pub mod web_media_vod_recovery;

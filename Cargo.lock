@@ -161,13 +161,13 @@ dependencies = [
  "fastiplayer-config",
  "fastiplayer-settings",
  "flate2",
- "flv-demux",
  "frame-server-core",
  "hds-manifest-core",
  "hls-playlist-core",
  "libc",
  "media-core",
  "media-prefetch",
+ "media-source-open",
  "mpeg-ts-demux",
  "natural-sort-key",
  "player-core",
@@ -2716,6 +2716,34 @@ dependencies = [
  "source-core",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "media-source-open"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "demux-api",
+ "fastiplayer-config",
+ "flv-demux",
+ "media-core",
+ "media-prefetch",
+ "mpeg-ts-demux",
+ "player-core",
+ "service-direct-media",
+ "service-ytdlp",
+ "source-core",
+ "symphonia-demux",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "web-media-adaptive",
+ "web-media-core",
+ "web-media-ftp",
+ "web-media-hls",
+ "web-media-http",
+ "web-media-playback-plan",
+ "web-media-transport-api",
 ]
 
 [[package]]

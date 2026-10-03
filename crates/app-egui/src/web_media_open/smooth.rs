@@ -219,11 +219,11 @@ pub(super) fn prepare_smooth_candidate(
     }
 
     let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
+        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)
             .context("Не удалось собрать Smooth adaptive transport limits")?;
     let request_context = YtDlpTransportRequestContext::new(
         provider_id,
-        crate::web_media_adaptive_config::initial_adaptive_source_generation(),
+        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation(),
         cancellation,
     );
     let mut transport = candidate
@@ -289,9 +289,10 @@ pub(super) fn prepare_smooth_candidate(
 pub(crate) fn prepare_native_smooth_candidate(
     request: NativeSmoothCandidatePreparation<'_>,
 ) -> Result<PreparedNativeSmoothCandidate> {
-    let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)
-            .context("Не удалось собрать native Smooth adaptive transport limits")?;
+    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
+        request.network_config,
+    )
+    .context("Не удалось собрать native Smooth adaptive transport limits")?;
     let preparation = SmoothPrepareRequest::new(
         request.transport,
         request.source_config,
@@ -364,7 +365,7 @@ fn preparation_policy(limits: AdaptiveTransportLimits) -> Result<SmoothPreparati
             const { NonZeroU8::new(3).expect("Smooth retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("Smooth retry policy invalid")?,
         smooth_xml_budgets()?,

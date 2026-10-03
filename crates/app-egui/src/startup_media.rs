@@ -75,8 +75,10 @@ pub(crate) enum InitialMedia {
 type YtDlpStartupResult = std::result::Result<PreparedYtDlpStartupMedia, String>;
 
 /// Результат фоновой подготовки generic direct media URL.
-type DirectMediaStartupResult =
-    std::result::Result<crate::direct_progressive_open::DirectProgressiveOpenResult, String>;
+type DirectMediaStartupResult = std::result::Result<
+    media_source_open::direct_progressive_open::DirectProgressiveOpenResult,
+    String,
+>;
 
 /// Фоновый job, который не блокирует создание окна и UI.
 struct YtDlpStartupJob {
@@ -704,8 +706,8 @@ pub(crate) fn resolve_direct_media_startup_media(
     network_config: &NetworkConfig,
     demux_config: &PlayerDemuxConfig,
     cancellation: source_core::CancellationToken,
-) -> Result<crate::direct_progressive_open::DirectProgressiveOpenResult> {
-    crate::direct_progressive_open::open_direct_media(
+) -> Result<media_source_open::direct_progressive_open::DirectProgressiveOpenResult> {
+    media_source_open::direct_progressive_open::open_direct_media(
         source_locator,
         network_config,
         demux_config,

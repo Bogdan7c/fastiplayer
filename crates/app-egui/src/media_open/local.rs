@@ -56,7 +56,7 @@ pub(crate) enum PrepareLocalOpenError {
     Source(#[source] source_core::SourceError),
     /// Container demuxer не смог открыть уже созданный source.
     #[error("не удалось открыть media container")]
-    Demux(#[source] crate::local_media::LocalDemuxOpenError),
+    Demux(#[source] media_source_open::local_media::LocalDemuxOpenError),
     /// Container не содержит audio/video tracks.
     #[error("media container не содержит audio/video tracks")]
     NoAudioVideoTracks,
@@ -110,7 +110,7 @@ fn prepare_local_open_with_hook(
     ensure_not_cancelled(&is_cancelled)?;
     let extension_hint = path.extension().and_then(|value| value.to_str());
     let safe_label = SafeMediaLabel::from_local_path(path);
-    let demuxer = crate::local_media::open_local_demuxer_from_source(
+    let demuxer = media_source_open::local_media::open_local_demuxer_from_source(
         local_source,
         extension_hint,
         demux_config,

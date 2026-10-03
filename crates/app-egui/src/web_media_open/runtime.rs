@@ -97,18 +97,19 @@ impl WebOpenRuntime {
         )
         .context("Player demux config нарушает validated runtime bounds")?;
         let demux_composition =
-            crate::web_media_demux_registry::WebDemuxComposition::new(demuxer_options)
+            media_source_open::web_media_demux_registry::WebDemuxComposition::new(demuxer_options)
                 .context("Не удалось собрать web demux registry")?;
         let hls_transport_limits =
-            crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
+            media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)
                 .context("Network config нельзя преобразовать в HLS transport limits")?;
         let hls_mpeg_ts_options = mpeg_ts_demux::MpegTsDemuxOptions::default()
             .with_initial_probe_byte_budget(hls_transport_limits.maximum_segment_bytes);
-        let hls_demux_composition = crate::web_media_demux_registry::WebDemuxComposition::new_hls(
-            demuxer_options,
-            hls_mpeg_ts_options,
-        )
-        .context("Не удалось собрать HLS demux registry")?;
+        let hls_demux_composition =
+            media_source_open::web_media_demux_registry::WebDemuxComposition::new_hls(
+                demuxer_options,
+                hls_mpeg_ts_options,
+            )
+            .context("Не удалось собрать HLS demux registry")?;
         let demux_capabilities = DemuxCapabilitySnapshot::new(
             demux_composition
                 .capabilities
@@ -166,9 +167,9 @@ impl WebOpenRuntime {
             cancellation,
             vod_endpoint_recovery,
         } = context;
-        let endpoint_expiry_observer = vod_endpoint_recovery
-            .as_ref()
-            .map(crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::observer);
+        let endpoint_expiry_observer = vod_endpoint_recovery.as_ref().map(
+            media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment::observer,
+        );
         if smooth::candidate_is_smooth(candidate) {
             ensure_not_cancelled(is_cancelled)?;
             let prepared = smooth::prepare_smooth_candidate(

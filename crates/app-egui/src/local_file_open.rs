@@ -13,12 +13,12 @@ use winit::window::Window;
 use crate::app_wake::{
     AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
 };
-use crate::local_media;
 use crate::media_open::{PreparedLocalOpenResult, prepare_local_open};
 use crate::process_shutdown::{
     FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_finished_thread,
     join_thread_until,
 };
+use media_source_open::local_media;
 
 /// Финальный результат одной фазы local picker/preparation pipeline.
 pub(crate) enum LocalFileOpenResult {

@@ -92,7 +92,7 @@ pub(crate) struct PreparedNativeDashMedia {
 pub(crate) enum PreparedNativeDashLifecycle {
     /// Static VOD arm-ит только endpoint recovery.
     Vod {
-        endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+        endpoint_recovery: media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
     },
     /// Dynamic live публикует только S31L timeline port.
     Live {
@@ -108,7 +108,7 @@ pub(crate) struct PreparedNativeDashWebAttachments {
     pub(crate) prepared: crate::media_open::PreparedWebMediaAttachments,
     /// VOD-only recovery arm; live всегда возвращает `None`.
     pub(crate) vod_endpoint_recovery:
-        Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+        Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 impl PreparedNativeDashLifecycle {
@@ -165,9 +165,11 @@ pub(crate) fn prepare_native_dash_attempt(
     }
 
     let snapshot_identity = fresh_snapshot_identity(request.source)?;
-    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
-    let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)?;
+    let generation =
+        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
+    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
+        request.network_config,
+    )?;
     // До authoritative `type` transport context используется только для единственного root fetch-а.
     let admission_transport_request = native_transport_request(
         &snapshot_identity.parent,
@@ -264,7 +266,8 @@ pub(crate) fn prepare_native_dash_attempt(
         return Ok(NativeDashAttempt::Prepared(prepared));
     }
 
-    let vod_endpoint_recovery = crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
+    let vod_endpoint_recovery =
+        media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
     let vod_transport_request = native_transport_request(
         &snapshot_identity.parent,
         request.source,
@@ -293,7 +296,7 @@ pub(crate) fn prepare_native_dash_attempt(
         catalog_limit: ComponentVariantCatalogLimit::new(256)?,
         compatibility_edge_limit: ComponentVariantEdgeLimit::new(4_096)?,
         capability_probe: &capability_probe,
-        preferred_height: crate::web_media_quality::preferred_height_policy(
+        preferred_height: media_source_open::web_media_quality::preferred_height_policy(
             request.web_media_config.preferred_video_height,
         ),
     }) {
@@ -471,7 +474,7 @@ pub(super) fn native_adaptive_http_context(
             const { NonZeroU8::new(3).expect("native DASH retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )?,
     )
     .map_err(anyhow::Error::new)
@@ -492,7 +495,8 @@ pub(super) fn native_dash_demux_registry(
         demux_config.max_consecutive_corrupted_packets,
     )
     .context("native DASH demux corruption limit must be non-zero")?;
-    let composition = crate::web_media_demux_registry::WebDemuxComposition::new(options)?;
+    let composition =
+        media_source_open::web_media_demux_registry::WebDemuxComposition::new(options)?;
     Ok(Arc::new(composition.registry))
 }
 

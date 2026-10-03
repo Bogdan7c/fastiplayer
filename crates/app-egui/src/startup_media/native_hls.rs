@@ -166,7 +166,7 @@ pub(crate) struct PreparedNativeHlsMedia {
 pub(crate) enum PreparedNativeHlsLifecycle {
     Vod {
         initial_position: PreparedInitialPosition,
-        endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+        endpoint_recovery: media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
     },
     Live {
         timeline_port: DynamicMediaTimelinePort,
@@ -227,7 +227,7 @@ pub(crate) struct PreparedNativeHlsWebAttachments {
     pub(crate) presentation: web_media_core::WebMediaPresentationKind,
     pub(crate) prepared: crate::media_open::PreparedWebMediaAttachments,
     pub(crate) vod_endpoint_recovery:
-        Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+        Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 impl PreparedNativeHlsMedia {
@@ -339,7 +339,7 @@ fn native_adaptive_http_context(
             const { NonZeroU8::new(3).expect("native HLS retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )?,
     )
     .map_err(anyhow::Error::new)
@@ -362,8 +362,10 @@ fn native_hls_demux_registry(
     .context("native HLS demux corruption limit must be non-zero")?;
     let mpeg_ts_options = mpeg_ts_demux::MpegTsDemuxOptions::default()
         .with_initial_probe_byte_budget(maximum_segment_bytes);
-    let composition =
-        crate::web_media_demux_registry::WebDemuxComposition::new_hls(options, mpeg_ts_options)?;
+    let composition = media_source_open::web_media_demux_registry::WebDemuxComposition::new_hls(
+        options,
+        mpeg_ts_options,
+    )?;
     Ok(Arc::new(composition.registry))
 }
 
@@ -613,7 +615,7 @@ mod tests {
 
         assert_eq!(intent.selected_url.expose_secret_for_request(), exact);
         let request = intent.request(
-            crate::web_media_adaptive_config::initial_adaptive_source_generation(),
+            media_source_open::web_media_adaptive_config::initial_adaptive_source_generation(),
             std::num::NonZeroUsize::new(64 * 1024).expect("non-zero manifest bound"),
         );
         let debug = format!("{request:?}");

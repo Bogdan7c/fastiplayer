@@ -36,6 +36,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/source-core
     crates/media-prefetch
     crates/service-direct-media
+    crates/media-source-open
     crates/settings-core
     crates/settings-derive
     crates/fastiplayer-settings

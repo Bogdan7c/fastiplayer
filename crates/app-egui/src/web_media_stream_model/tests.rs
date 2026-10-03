@@ -62,13 +62,14 @@ fn installed_hls_subtitles_survive_configuration_clone_without_locator() {
         extraction: 1,
     };
     let active_candidate = candidate(Some(720), false);
-    let rendition = crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition::fixture(
-        "subs",
-        "English",
-        Some("en"),
-        Some("public.accessibility.transcribes-spoken-dialog"),
-        false,
-    );
+    let rendition =
+        media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition::fixture(
+            "subs",
+            "English",
+            Some("en"),
+            Some("public.accessibility.transcribes-spoken-dialog"),
+            false,
+        );
     let configured = configuration(generation, vec![active_candidate.clone()], active_candidate)
         .with_hls_subtitle_renditions(Arc::from([rendition]));
     let rebuilt = configured.clone();
@@ -98,7 +99,7 @@ fn inactive_local_source_has_no_web_configuration() {
 
 #[test]
 fn direct_media_state_does_not_invent_format_choices() {
-    let locator = crate::direct_progressive_open::classify_direct_media_url(
+    let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://user:password@example.test/video.mp4?token=secret",
     )
     .expect("valid direct-media fixture");

@@ -403,8 +403,9 @@ fn n14a_consumer_http_webm_reaches_submitted_readback_with_exact_accounting() {
         .expect("decode tiny muxed WebM fixture");
     let origin = RangeFixtureOrigin::spawn_with_response(FixtureOriginResponse::Ogg(webm_bytes));
     let locator = origin.media_url_with_extension("webm");
-    let classified = crate::direct_progressive_open::classify_direct_media_url(&locator)
-        .expect("WebM должен классифицироваться direct");
+    let classified =
+        media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
+            .expect("WebM должен классифицироваться direct");
     assert_eq!(
         origin.request_count(),
         0,
@@ -412,7 +413,7 @@ fn n14a_consumer_http_webm_reaches_submitted_readback_with_exact_accounting() {
     );
     let mut app_config = fastiplayer_config::AppConfig::default();
     app_config.yt_dlp.enabled = false;
-    let opened = crate::direct_progressive_open::open_direct_media(
+    let opened = media_source_open::direct_progressive_open::open_direct_media(
         &classified,
         &app_config.network,
         &app_config.player.demux,
@@ -459,14 +460,15 @@ fn n14b_lifecycle_http_webm_close_restart_reaches_submitted_readback_without_ext
         .expect("decode tiny muxed WebM fixture");
     let origin = RangeFixtureOrigin::spawn_with_response(FixtureOriginResponse::Ogg(webm_bytes));
     let locator = origin.media_url_with_extension("webm");
-    let classified = crate::direct_progressive_open::classify_direct_media_url(&locator)
-        .expect("WebM должен классифицироваться direct");
+    let classified =
+        media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
+            .expect("WebM должен классифицироваться direct");
     let mut app_config = fastiplayer_config::AppConfig::default();
     app_config.yt_dlp.enabled = false;
     let mut wgpu_harness = OffscreenWgpuHarness::new();
 
     let mut open_render_and_close = || {
-        let opened = crate::direct_progressive_open::open_direct_media(
+        let opened = media_source_open::direct_progressive_open::open_direct_media(
             &classified,
             &app_config.network,
             &app_config.player.demux,

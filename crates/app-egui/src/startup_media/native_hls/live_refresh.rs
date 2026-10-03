@@ -45,8 +45,10 @@ impl HlsEndpointRefreshPort for NativeHlsEndpointRefreshPort {
             .map(SourceGeneration::new)
             .ok_or(HlsEndpointRefreshError::AttemptsExhausted)?;
         let adaptive_limits =
-            crate::web_media_adaptive_config::adaptive_transport_limits(&self.network_config)
-                .map_err(|_| HlsEndpointRefreshError::AttemptsExhausted)?;
+            media_source_open::web_media_adaptive_config::adaptive_transport_limits(
+                &self.network_config,
+            )
+            .map_err(|_| HlsEndpointRefreshError::AttemptsExhausted)?;
         let transport_request = native_transport_request(
             &self.parent,
             &self.source,

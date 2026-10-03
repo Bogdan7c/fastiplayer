@@ -588,7 +588,8 @@ pub(crate) struct PreparedWebMediaEnvelope {
     source: WebMediaSourceIntent,
     safe_label: SafeMediaLabel,
     playback_window: Option<player_core::MediaPlaybackWindow>,
-    vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+    vod_endpoint_recovery:
+        Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 impl fmt::Debug for PreparedWebMediaEnvelope {
@@ -618,7 +619,9 @@ impl PreparedWebMediaEnvelope {
         source: WebMediaSourceIntent,
         safe_label: SafeMediaLabel,
         playback_window: Option<player_core::MediaPlaybackWindow>,
-        vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+        vod_endpoint_recovery: Option<
+            media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+        >,
     ) -> Self {
         Self {
             tracks,
@@ -671,7 +674,7 @@ impl PreparedWebMediaEnvelope {
 
     pub(crate) fn vod_endpoint_recovery(
         &self,
-    ) -> Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment> {
+    ) -> Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment> {
         self.vod_endpoint_recovery.clone()
     }
 }

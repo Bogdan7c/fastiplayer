@@ -12,16 +12,16 @@ use web_media_core::ContainerFamily;
 use web_media_playback_plan::{DemuxCapabilityRegistration, DemuxCapabilitySnapshot};
 
 /// Готовая registry и точно соответствующий ей immutable planner snapshot.
-pub(crate) struct WebDemuxComposition {
+pub struct WebDemuxComposition {
     /// Concrete factories, которыми runtime фактически может открыть input.
-    pub(crate) registry: DemuxRegistry,
+    pub registry: DemuxRegistry,
     /// Per-container capability rows из тех же descriptor-ов.
-    pub(crate) capabilities: DemuxCapabilitySnapshot,
+    pub capabilities: DemuxCapabilitySnapshot,
 }
 
 impl WebDemuxComposition {
     /// Регистрирует existing Symphonia и S30 FLV/F4F owners в одном месте.
-    pub(crate) fn new(symphonia_options: DemuxerOptions) -> Result<Self> {
+    pub fn new(symphonia_options: DemuxerOptions) -> Result<Self> {
         let factories: Vec<Box<dyn DemuxFactory>> = vec![
             Box::new(
                 SymphoniaDemuxFactory::new(symphonia_options)
@@ -47,7 +47,7 @@ impl WebDemuxComposition {
     }
 
     /// Регистрирует только concrete TS/fMP4 owners для HLS ordered-segment path-а.
-    pub(crate) fn new_hls(
+    pub fn new_hls(
         symphonia_options: DemuxerOptions,
         mpeg_ts_options: MpegTsDemuxOptions,
     ) -> Result<Self> {
@@ -77,7 +77,7 @@ impl WebDemuxComposition {
 }
 
 /// Строит planner snapshot без потери exact per-registration input sets.
-pub(crate) fn capabilities_for_descriptors<'a>(
+pub fn capabilities_for_descriptors<'a>(
     descriptors: impl IntoIterator<Item = &'a DemuxFactoryDescriptor>,
 ) -> Result<DemuxCapabilitySnapshot> {
     let mut registrations = Vec::new();

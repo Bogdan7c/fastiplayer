@@ -162,7 +162,7 @@
 
 ## S30 web FLV/F4F registration (2026-07-23)
 
-- `app-egui::web_media_demux_registry` является малым S30 composition owner-ом Symphonia и FLV/F4F registry + planner snapshot. MPEG-TS здесь намеренно не зарегистрирован; существующий S29 local MPEG-TS composition остаётся отдельным.
+- `media-source-open::web_media_demux_registry` (до 2026-10-03 — `app-egui::web_media_demux_registry`, см. `mem:media-source-open/core`) является малым S30 composition owner-ом Symphonia и FLV/F4F registry + planner snapshot. MPEG-TS здесь намеренно не зарегистрирован; существующий S29 local MPEG-TS composition остаётся отдельным.
 - Raw FLV рекламирует только seekable/streaming bytes; F4F — только ordered segments, поэтому current progressive HTTP не получает fake F4F playability до HDS transport stage. `f4v` нормализуется в ISO-BMFF и никогда не входит во FLV factory.
 - Container/runtime детали: `mem:flv-demux/core`.
 

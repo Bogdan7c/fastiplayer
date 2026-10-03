@@ -72,10 +72,10 @@ impl ZeroProcessSpy {
 fn open_direct(
     locator: &str,
     app_config: &AppConfig,
-) -> crate::direct_progressive_open::DirectProgressiveOpenResult {
-    let classified = crate::direct_progressive_open::classify_direct_media_url(locator)
+) -> media_source_open::direct_progressive_open::DirectProgressiveOpenResult {
+    let classified = media_source_open::direct_progressive_open::classify_direct_media_url(locator)
         .expect("fixture locator должен классифицироваться direct");
-    crate::direct_progressive_open::open_direct_media(
+    media_source_open::direct_progressive_open::open_direct_media(
         &classified,
         &app_config.network,
         &app_config.player.demux,
@@ -147,7 +147,7 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     let locator = origin.media_url();
-    crate::direct_progressive_open::classify_direct_media_url(&locator)
+    media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
         .expect("HTTP Ogg classifier должен принять fixture");
     assert_eq!(
         origin.request_count(),
@@ -212,7 +212,7 @@ fn n14a_consumer_http_ogg_reaches_pcm_clock_with_exact_accounting() {
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     let locator = origin.media_url();
-    crate::direct_progressive_open::classify_direct_media_url(&locator)
+    media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
         .expect("HTTP Ogg classifier должен принять N14A fixture");
     assert_eq!(origin.request_count(), 0);
     assert_eq!(origin.response_body_bytes(), 0);
@@ -281,7 +281,7 @@ fn n14b_lifecycle_ftp_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extra
     let locator = origin.credentialed_media_url();
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
-    crate::direct_progressive_open::classify_direct_media_url(&locator)
+    media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
         .expect("FTP Ogg classifier должен принять fixture");
     assert_eq!(
         origin.retrieval_count(),
@@ -324,7 +324,7 @@ fn n14a_consumer_ftp_ogg_reaches_pcm_clock_with_exact_accounting() {
     let locator = origin.credentialed_media_url();
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
-    crate::direct_progressive_open::classify_direct_media_url(&locator)
+    media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
         .expect("FTP Ogg classifier должен принять N14A fixture");
     assert_eq!(origin.retrieval_count(), 0);
     assert_eq!(origin.transferred_body_bytes(), 0);

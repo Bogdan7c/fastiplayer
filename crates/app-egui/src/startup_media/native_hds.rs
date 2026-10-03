@@ -76,7 +76,8 @@ pub(crate) struct PreparedNativeHdsMedia {
     /// Stable root + neutral catalog selection projection.
     pub(crate) source_state: NativeHdsSourceState,
     /// VOD endpoint expiry owner arm-ится только после Installed.
-    pub(crate) endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+    pub(crate) endpoint_recovery:
+        media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
 }
 
 /// Fresh parent и catalog получают одну generation и stable source lineage.
@@ -96,10 +97,13 @@ pub(crate) fn prepare_native_hds_attempt(
     }
 
     let snapshot_identity = fresh_snapshot_identity(request.source)?;
-    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
-    let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)?;
-    let endpoint_recovery = crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
+    let generation =
+        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
+    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
+        request.network_config,
+    )?;
+    let endpoint_recovery =
+        media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
     let transport = native_transport_request(
         &snapshot_identity.parent,
         request.source,
@@ -150,7 +154,7 @@ pub(crate) fn prepare_native_hds_attempt(
         catalog_identity: snapshot_identity.catalog,
         fresh_parent: snapshot_identity.parent,
         capability_probe: &capability_probe,
-        preferred_height: crate::web_media_quality::preferred_height_policy(
+        preferred_height: media_source_open::web_media_quality::preferred_height_policy(
             request.web_media_config.preferred_video_height,
         ),
         expected_selection: request.expected_selection,
@@ -253,7 +257,7 @@ fn native_adaptive_http_context(
             const { NonZeroU8::new(3).expect("native HDS retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )?,
     )
     .map_err(anyhow::Error::new)

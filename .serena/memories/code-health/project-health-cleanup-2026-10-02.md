@@ -22,7 +22,7 @@
 - `player-core/src/session/tests/test_support.rs` (2.1k) — общая инфраструктура, не дробилась.
 
 ## План выноса web-media
-- `user/web-media-extraction/plan.md` (приватно, сессии-промпты там же, включая session-00 по багу guard-исходов): 3 волны (листья ~1.75k → opener-ы/orchestration ~7.6k → startup native jobs ~3k с портами), ждёт решения владельца.
+- `user/web-media-extraction/plan.md` (приватно, сессии-промпты там же, включая session-00 по багу guard-исходов): 3 волны (листья ~1.75k → opener-ы/orchestration ~7.6k → startup native jobs ~3k с портами). Session-01 выполнена 2026-10-03 → `mem:media-source-open/core`.
 
 ## Прочее
 - `docs/benchmarks/thinkpad-t480s*.json` удалены из дерева, ссылки на commit 6c2b670f.

@@ -12,7 +12,7 @@ use web_media_core::{ExactSelectionIdentity, WebMediaPresentationKind, WebMediaS
 use web_media_playback_plan::PlanningCandidateSnapshot;
 
 /// Neutral catalog/presentation projection до выбора runtime candidate-а.
-pub(crate) struct ExtractorCatalogProjection {
+pub struct ExtractorCatalogProjection {
     /// Existing neutral planning catalog; второй inventory не создаётся.
     catalog: PlanningCandidateSnapshot,
     /// Exact VOD/live lifecycle из extractor-owned public fields.
@@ -25,7 +25,7 @@ pub(crate) struct ExtractorCatalogProjection {
 
 impl ExtractorCatalogProjection {
     /// Проецирует canonical service snapshot без повторной normalization.
-    pub(crate) fn from_snapshot(snapshot: &YtDlpCandidateSnapshot) -> Result<Self> {
+    pub fn from_snapshot(snapshot: &YtDlpCandidateSnapshot) -> Result<Self> {
         let planning_projection = snapshot
             .planning_projection()
             .context("Не удалось выразить extractor candidates через neutral planner")?;
@@ -44,17 +44,17 @@ impl ExtractorCatalogProjection {
     }
 
     /// Возвращает existing neutral catalog для capability planning.
-    pub(crate) const fn catalog(&self) -> &PlanningCandidateSnapshot {
+    pub const fn catalog(&self) -> &PlanningCandidateSnapshot {
         &self.catalog
     }
 
     /// Возвращает число service-owned row-local planning rejections.
-    pub(crate) const fn planning_rejection_count(&self) -> usize {
+    pub const fn planning_rejection_count(&self) -> usize {
         self.planning_rejection_count
     }
 
     /// Добавляет exact active selection только после успешного candidate open.
-    pub(crate) fn with_active_selection(
+    pub fn with_active_selection(
         self,
         active_selection: &YtDlpCandidateSelection,
     ) -> Result<ExtractorAdapterProjection> {
@@ -80,7 +80,7 @@ impl ExtractorCatalogProjection {
 }
 
 /// Полная узкая projection после выбора active candidate-а.
-pub(crate) struct ExtractorAdapterProjection {
+pub struct ExtractorAdapterProjection {
     /// Existing neutral planning catalog.
     catalog: PlanningCandidateSnapshot,
     /// N01 provider-neutral exact active selection.
@@ -93,17 +93,17 @@ pub(crate) struct ExtractorAdapterProjection {
 
 impl ExtractorAdapterProjection {
     /// Возвращает neutral catalog без второго representation.
-    pub(crate) const fn catalog(&self) -> &PlanningCandidateSnapshot {
+    pub const fn catalog(&self) -> &PlanningCandidateSnapshot {
         &self.catalog
     }
 
     /// Возвращает neutral exact active selection.
-    pub(crate) const fn selection(&self) -> &WebMediaSelection {
+    pub const fn selection(&self) -> &WebMediaSelection {
         &self.selection
     }
 
     /// Заменяет parent-only selection на canonical installed component selection.
-    pub(crate) fn with_neutral_selection(mut self, selection: WebMediaSelection) -> Result<Self> {
+    pub fn with_neutral_selection(mut self, selection: WebMediaSelection) -> Result<Self> {
         if selection.parent() != self.selection.parent() {
             bail!("Final neutral selection относится к другому extractor parent");
         }
@@ -112,12 +112,12 @@ impl ExtractorAdapterProjection {
     }
 
     /// Возвращает exact presentation lifecycle kind.
-    pub(crate) const fn presentation(&self) -> WebMediaPresentationKind {
+    pub const fn presentation(&self) -> WebMediaPresentationKind {
         self.presentation
     }
 
     /// Передаёт metadata того же extraction generation в prepared result.
-    pub(crate) fn into_playlist_metadata(self) -> YtDlpPlaylistMetadata {
+    pub fn into_playlist_metadata(self) -> YtDlpPlaylistMetadata {
         self.playlist_metadata
     }
 }

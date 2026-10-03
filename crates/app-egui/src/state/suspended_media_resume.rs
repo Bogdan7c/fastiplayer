@@ -37,7 +37,8 @@ const RESUME_MEDIA_CLIENT_KEY: MediaOpenClientKey = MediaOpenClientKey::from_non
 pub(super) struct SuspendedMediaResume {
     attempt: ResumeAttempt,
     request_id: MediaOpenRequestId,
-    vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+    vod_endpoint_recovery:
+        Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
     phase: ResumePhase,
 }
 
@@ -68,7 +69,8 @@ struct ResumeIntentCommitContext {
     player_request_id: MediaInstallRequestId,
     media_instance_id: MediaInstanceId,
     warning: Option<ResumePositionWarning>,
-    vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+    vod_endpoint_recovery:
+        Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 impl AppState {

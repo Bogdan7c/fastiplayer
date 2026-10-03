@@ -17,9 +17,11 @@ pub(super) fn prepare_native_hls_attempt(
 
     // Fresh snapshot identity создаётся до I/O и остаётся общей для root, catalog и selection.
     let snapshot_identity = fresh_native_hls_snapshot_identity(request.source)?;
-    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
-    let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)?;
+    let generation =
+        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
+    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
+        request.network_config,
+    )?;
     // Первый context существует только для authoritative root fetch до content-based presentation.
     let admission_transport_request = native_transport_request(
         &snapshot_identity.parent,
@@ -51,7 +53,7 @@ pub(super) fn prepare_native_hls_attempt(
         Err(error) => return Err(error).context("native HLS top manifest fetch"),
     };
     let selection_policy = NativeHlsSelectionPolicy::new(
-        crate::web_media_quality::preferred_height_policy(
+        media_source_open::web_media_quality::preferred_height_policy(
             request.web_media_config.preferred_video_height,
         ),
         request
@@ -98,7 +100,8 @@ pub(super) fn prepare_native_hls_attempt(
             .context("native HLS selected child presentation detection failed")?
         }
     };
-    let vod_endpoint_recovery = crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
+    let vod_endpoint_recovery =
+        media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
     let transport_request = native_transport_request(
         &snapshot_identity.parent,
         request.source,
@@ -239,14 +242,14 @@ struct NativeHlsRuntimeRequest<'a> {
     source: &'a NativeHlsUrl,
     network_config: &'a NetworkConfig,
     cancellation: CancellationToken,
-    vod_endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+    vod_endpoint_recovery: media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
 }
 
 /// Prepared runtime сохраняет взаимоисключающие VOD recovery и live timeline attachments.
 enum PreparedNativeHlsRuntime {
     Vod {
         prepared: crate::web_media_hls_open::PreparedNativeHlsVod,
-        endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+        endpoint_recovery: media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
     },
     Live(crate::web_media_hls_open::PreparedNativeHlsLive),
 }

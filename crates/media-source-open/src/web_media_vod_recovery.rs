@@ -44,7 +44,7 @@ struct VodEndpointRecoveryShared {
 
 /// Cloneable runtime attachment, передаваемый и observer-у, и Installed app state.
 #[derive(Clone)]
-pub(crate) struct VodEndpointRecoveryAttachment {
+pub struct VodEndpointRecoveryAttachment {
     /// Один Arc гарантирует candidate-level A/V coalescing.
     shared: Arc<VodEndpointRecoveryShared>,
 }
@@ -62,7 +62,11 @@ impl std::fmt::Debug for VodEndpointRecoveryAttachment {
 impl VodEndpointRecoveryAttachment {
     /// Создаёт unarmed gate: ошибки speculative catalog probes не являются active expiry.
     #[must_use]
-    pub(crate) fn new() -> Self {
+    #[expect(
+        clippy::new_without_default,
+        reason = "явный new() подчёркивает создание unarmed gate; Default не добавляем при рефакторинге границы"
+    )]
+    pub fn new() -> Self {
         Self {
             shared: Arc::new(VodEndpointRecoveryShared {
                 state: Mutex::new(VodEndpointRecoveryGateState::Unarmed),
@@ -72,12 +76,12 @@ impl VodEndpointRecoveryAttachment {
 
     /// Возвращает type-erased observer для transport request-а.
     #[must_use]
-    pub(crate) fn observer(&self) -> Arc<dyn EndpointExpiryObserver> {
+    pub fn observer(&self) -> Arc<dyn EndpointExpiryObserver> {
         Arc::new(self.clone())
     }
 
     /// Разрешает expiry publication только после окончательного выбора playable candidate-а.
-    pub(crate) fn arm_after_candidate_finalization(&self) {
+    pub fn arm_after_candidate_finalization(&self) {
         let mut state = self.lock_state();
         if matches!(*state, VodEndpointRecoveryGateState::Unarmed) {
             *state = VodEndpointRecoveryGateState::Dormant;
@@ -85,7 +89,7 @@ impl VodEndpointRecoveryAttachment {
     }
 
     /// Забирает первый unclaimed signal ровно одной app recovery attempt-ой.
-    pub(crate) fn claim_pending_signal(&self) -> Option<EndpointExpirySignal> {
+    pub fn claim_pending_signal(&self) -> Option<EndpointExpirySignal> {
         let mut state = self.lock_state();
         let VodEndpointRecoveryGateState::Pending { signal, claimed } = &mut *state else {
             return None;
@@ -99,7 +103,7 @@ impl VodEndpointRecoveryAttachment {
 
     /// Сообщает wrapper-ам, что старый runtime больше не должен публиковать events.
     #[must_use]
-    pub(crate) fn is_recovery_pending(&self) -> bool {
+    pub fn is_recovery_pending(&self) -> bool {
         matches!(
             *self.lock_state(),
             VodEndpointRecoveryGateState::Pending { .. }
@@ -108,7 +112,7 @@ impl VodEndpointRecoveryAttachment {
 
     /// Возвращает generation первого coalesced signal-а для exact Installed fence.
     #[must_use]
-    pub(crate) fn pending_source_generation(&self) -> Option<SourceGeneration> {
+    pub fn pending_source_generation(&self) -> Option<SourceGeneration> {
         match &*self.lock_state() {
             VodEndpointRecoveryGateState::Pending { signal, .. } => {
                 Some(signal.source_generation())
@@ -120,12 +124,12 @@ impl VodEndpointRecoveryAttachment {
     }
 
     /// Снимает seamless hold только после terminal failure replacement preparation-а.
-    pub(crate) fn mark_recovery_failed(&self) {
+    pub fn mark_recovery_failed(&self) {
         *self.lock_state() = VodEndpointRecoveryGateState::Failed;
     }
 
     /// Оборачивает candidate demuxer до передачи ownership player-у.
-    pub(crate) fn wrap_demuxer(&self, demuxer: Box<dyn Demuxer + Send>) -> Box<dyn Demuxer + Send> {
+    pub fn wrap_demuxer(&self, demuxer: Box<dyn Demuxer + Send>) -> Box<dyn Demuxer + Send> {
         Box::new(VodEndpointRecoveryDemuxer {
             inner: demuxer,
             gate: self.clone(),
@@ -134,7 +138,7 @@ impl VodEndpointRecoveryAttachment {
     }
 
     /// Оборачивает optional receipted seek port тем же candidate-level gate-ом.
-    pub(crate) fn wrap_seek_port(
+    pub fn wrap_seek_port(
         &self,
         seek_port: Option<Arc<dyn PreparedDemuxSeekPort>>,
     ) -> Option<Arc<dyn PreparedDemuxSeekPort>> {

@@ -304,7 +304,7 @@ impl PreparedMediaDescriptor {
     /// Возвращает runtime-only VOD recovery attachment только для fresh yt-dlp candidate-а.
     pub(crate) fn vod_endpoint_recovery(
         &self,
-    ) -> Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment> {
+    ) -> Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment> {
         match self {
             Self::Web(envelope) => envelope.vod_endpoint_recovery(),
             Self::Local { .. } | Self::CallerPrepared { .. } => None,

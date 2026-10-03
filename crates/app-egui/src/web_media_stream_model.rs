@@ -263,7 +263,8 @@ pub(crate) struct WebMediaStreamConfiguration {
     active_candidate: WebMediaCandidatePresentation,
     preference: WebMediaSelectionPreference,
     component_variants: WebMediaComponentVariantConfiguration,
-    hls_subtitle_renditions: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+    hls_subtitle_renditions:
+        Arc<[media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
 }
 
 impl fmt::Debug for WebMediaStreamConfiguration {
@@ -407,7 +408,9 @@ impl WebMediaStreamConfiguration {
     /// Связывает descriptors только с exact подготовленным HLS candidate-ом.
     pub(crate) fn with_hls_subtitle_renditions(
         mut self,
-        renditions: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+        renditions: Arc<
+            [media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition],
+        >,
     ) -> Self {
         self.hls_subtitle_renditions = renditions;
         self
@@ -416,7 +419,7 @@ impl WebMediaStreamConfiguration {
     /// Возвращает installed descriptors без URI и без возможности скрытого fetch-а.
     pub(crate) fn hls_subtitle_renditions(
         &self,
-    ) -> &[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition] {
+    ) -> &[media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition] {
         &self.hls_subtitle_renditions
     }
 

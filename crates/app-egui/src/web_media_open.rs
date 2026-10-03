@@ -133,7 +133,7 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) playback_window: Option<player_core::MediaPlaybackWindow>,
     /// Candidate-level VOD expiry gate; live runtime сохраняет собственного refresh owner-а.
     pub(crate) vod_endpoint_recovery:
-        Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+        Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 impl PreparedYtDlpWebMedia {
@@ -157,7 +157,7 @@ struct OpenedWebCandidate {
     /// Player-facing demuxer.
     demuxer: Box<dyn Demuxer + Send>,
     /// Descriptor-only HLS subtitles.
-    subtitles: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+    subtitles: Arc<[media_source_open::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
     /// Dynamic timeline only для proven live provider-а.
     timeline_port: Option<DynamicMediaTimelinePort>,
     /// Async demux seek only для provider-а, который требует worker receipt.
@@ -167,7 +167,8 @@ struct OpenedWebCandidate {
     /// Fresh provider result финализируется до authorization barrier.
     component_variants: PreparedComponentVariantCatalog,
     /// Attachment создаётся отдельно для каждой physical candidate attempt.
-    vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+    vod_endpoint_recovery:
+        Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 /// Source-specific live refresh ports, собранные одним app composition boundary.
@@ -195,7 +196,8 @@ struct WebCandidateOpenContext {
     /// Общая cancellation generation transport/demux runtime-а.
     cancellation: CancellationToken,
     /// VOD-only observer/gate не подменяет HLS/DASH live refresh ports.
-    vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+    vod_endpoint_recovery:
+        Option<media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 /// Открывает YtDlp locator одним S19 → S21C → S22 production path-ом.
@@ -238,7 +240,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
     .context("Не удалось подготовить exact YtDlp candidate snapshot")?;
     // Новый узкий adapter projection локализует extractor DTO до neutral catalog boundary.
     let extractor_catalog_projection =
-        crate::web_media_extractor_adapter::ExtractorCatalogProjection::from_snapshot(
+        media_source_open::web_media_extractor_adapter::ExtractorCatalogProjection::from_snapshot(
             &candidate_snapshot,
         )?;
     // Сохраняем безопасный счётчик row-local planning rejections для diagnostics.
@@ -274,7 +276,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         candidate_snapshot: &candidate_snapshot,
         runtime: &runtime,
         component_selection_intent: &component_selection_intent,
-        preferred_height: crate::web_media_quality::preferred_height_policy(
+        preferred_height: media_source_open::web_media_quality::preferred_height_policy(
             web_media_config.preferred_video_height,
         ),
         cancellation: &cancellation,
@@ -477,7 +479,9 @@ fn selection_policy(
     PlaybackSelectionPolicy::new(
         hdr,
         codecs,
-        crate::web_media_quality::preferred_height_policy(web_media_config.preferred_video_height),
+        media_source_open::web_media_quality::preferred_height_policy(
+            web_media_config.preferred_video_height,
+        ),
         containers,
     )
     .map_err(Into::into)
@@ -647,8 +651,10 @@ mod tests {
         let factory = symphonia_demux::SymphoniaDemuxFactory::new(DemuxerOptions::default())
             .expect("Symphonia factory");
         let capabilities =
-            crate::web_media_demux_registry::capabilities_for_descriptors([factory.descriptor()])
-                .expect("capability snapshot");
+            media_source_open::web_media_demux_registry::capabilities_for_descriptors([
+                factory.descriptor()
+            ])
+            .expect("capability snapshot");
         let expected_inputs = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
             .with(DemuxInputCapability::StreamingBytes);
         for family in [
@@ -707,8 +713,10 @@ mod tests {
         );
 
         let capabilities =
-            crate::web_media_demux_registry::capabilities_for_descriptors([&descriptor])
-                .expect("capability snapshot");
+            media_source_open::web_media_demux_registry::capabilities_for_descriptors([
+                &descriptor,
+            ])
+            .expect("capability snapshot");
         assert_eq!(
             capabilities.input_capabilities_for(ContainerFamily::IsoBmff),
             iso_inputs

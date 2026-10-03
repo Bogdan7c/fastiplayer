@@ -17,7 +17,7 @@ use super::{
 };
 use crate::media_open::MediaOpenSourceRequest;
 use crate::playlist_runtime::{ActiveMediaIdentity, PlaylistRuntime};
-use crate::web_media_vod_recovery::VodEndpointRecoveryAttachment;
+use media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment;
 
 /// Recovery state принадлежит app composition boundary, а не transport или demux crate-у.
 #[derive(Default)]

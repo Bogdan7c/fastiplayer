@@ -599,6 +599,56 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             {"demux-api", "reqwest", "service-direct-media"},
         )
 
+    def test_media_source_open_stays_below_ui_and_render(self) -> None:
+        """Открытие источников не тянет UI/окно/GPU и не зависит обратно от app-egui."""
+
+        packages = complete_workspace_packages()
+        packages["app-egui"] = package_with_dependencies(
+            "app-egui", (("media-source-open", None),)
+        )
+        packages["media-source-open"] = package_with_dependencies(
+            "media-source-open",
+            (
+                ("demux-api", None),
+                ("player-core", None),
+                ("service-ytdlp", None),
+                ("source-core", None),
+                ("web-media-core", None),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "media-source-open"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["media-source-open"] = package_with_dependencies(
+            "media-source-open",
+            (
+                ("source-core", None),
+                ("app-egui", None),
+                ("egui", None),
+                ("render-wgpu-video", None),
+                ("wgpu", None),
+                ("winit", None),
+            ),
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertEqual(
+            {"app-egui", "egui", "render-wgpu-video", "wgpu", "winit"},
+            {
+                violation.dependency
+                for violation in failing_result.dependency_violations
+                if violation.owner == "media-source-open"
+            },
+        )
+
     def test_service_ytdlp_stops_before_concrete_playback_owners(self) -> None:
         """Extractor service не возвращает удалённый HTTP/WebM/player ownership."""
 

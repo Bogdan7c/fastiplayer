@@ -16,14 +16,14 @@ use source_core::{CancellationToken, LocalFileSource};
 /// Это только UI hint для file dialog-а. Реальное определение формата остаётся за
 /// Symphonia probe, поэтому файл без расширения или с нестандартным расширением не
 /// отсекается на уровне приложения.
-pub(crate) const SUPPORTED_LOCAL_MEDIA_EXTENSIONS: &[&str] = &[
+pub const SUPPORTED_LOCAL_MEDIA_EXTENSIONS: &[&str] = &[
     "wav", "aiff", "aif", "caf", "flac", "mp3", "mp2", "mp1", "m4a", "mp4", "ogg", "oga", "opus",
     "alac", "wv", "webm", "mkv", "mov", "ts",
 ];
 
 /// Local composition сохраняет typed registry cancellation до media-open boundary.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum LocalDemuxOpenError {
+pub enum LocalDemuxOpenError {
     /// Ошибка static registry/factory composition, не зависящая от media bytes.
     #[error("не удалось собрать local demux registry")]
     RegistrySetup(#[source] anyhow::Error),
@@ -34,7 +34,7 @@ pub(crate) enum LocalDemuxOpenError {
 
 impl LocalDemuxOpenError {
     /// Cancellation остаётся отдельным outcome, а не текстом внутри anyhow chain.
-    pub(crate) fn is_cancelled(&self) -> bool {
+    pub fn is_cancelled(&self) -> bool {
         matches!(
             self,
             Self::Open(DemuxOpenError::ProbeRejected(
@@ -76,7 +76,7 @@ pub(crate) fn open_local_demuxer(
 }
 
 /// Композирует все local-capable demux factories над уже открытым source handle-ом.
-pub(crate) fn open_local_demuxer_from_source(
+pub fn open_local_demuxer_from_source(
     local_source: LocalFileSource,
     extension_hint: Option<&str>,
     demux_config: &PlayerDemuxConfig,
@@ -140,6 +140,9 @@ pub(crate) fn demuxer_options_from_config(
 }
 
 #[cfg(test)]
+mod ts_fixture;
+
+#[cfg(test)]
 mod tests {
     use media_core::VideoPacketFraming;
 
@@ -173,11 +176,8 @@ mod tests {
     fn prepare_and_rebuild_open_generated_local_ts_with_annex_b_evidence() {
         let directory = tempfile::tempdir().expect("temp directory");
         let path = directory.path().join("generated.ts");
-        std::fs::write(
-            &path,
-            crate::media_open::local::tests::mpeg_ts_h264_aac_bytes(),
-        )
-        .expect("write generated TS");
+        std::fs::write(&path, super::ts_fixture::mpeg_ts_h264_aac_bytes())
+            .expect("write generated TS");
         let config = fastiplayer_config::PlayerDemuxConfig::default();
 
         let prepared = prepare_local_file(&path, &config).expect("prepare local TS");
@@ -199,11 +199,7 @@ mod tests {
     fn registry_probe_cancellation_remains_typed_at_local_boundary() {
         let directory = tempfile::tempdir().expect("temp directory");
         let path = directory.path().join("cancel-probe.ts");
-        std::fs::write(
-            &path,
-            crate::media_open::local::tests::mpeg_ts_h264_aac_bytes(),
-        )
-        .expect("write TS");
+        std::fs::write(&path, super::ts_fixture::mpeg_ts_h264_aac_bytes()).expect("write TS");
         let cancellation = source_core::CancellationToken::new();
         cancellation.cancel();
         let source = source_core::LocalFileSource::open(&path).expect("open one handle");

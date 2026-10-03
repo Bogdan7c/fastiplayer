@@ -99,10 +99,11 @@ fn initial_descriptor_backpressure_still_reaches_draw_readback_and_release() {
         .expect("decode muxed VP9 fixture");
     let origin = RangeFixtureOrigin::spawn_with_response(FixtureOriginResponse::Ogg(webm));
     let locator = origin.media_url_with_extension("webm");
-    let classified = crate::direct_progressive_open::classify_direct_media_url(&locator)
-        .expect("classify direct WebM");
+    let classified =
+        media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
+            .expect("classify direct WebM");
     let config = fastiplayer_config::AppConfig::default();
-    let opened = crate::direct_progressive_open::open_direct_media(
+    let opened = media_source_open::direct_progressive_open::open_direct_media(
         &classified,
         &config.network,
         &config.player.demux,

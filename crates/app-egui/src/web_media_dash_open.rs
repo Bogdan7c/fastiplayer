@@ -183,12 +183,14 @@ pub(crate) fn prepare_dash_candidate(
     capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
     endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<PreparedDashCandidate> {
-    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
+    let generation =
+        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
     let request_context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let service_components = candidate
         .dash_transport_components(&request_context)
         .context("Не удалось спроецировать yt-dlp DASH request material")?;
-    let limits = crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
+    let limits =
+        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
     let projected_components = service_components
         .into_iter()
         .map(|component| {
@@ -320,7 +322,7 @@ fn project_component<'candidate>(
             const { NonZeroU8::new(3).expect("non-zero DASH retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("DASH retry policy invalid")?,
     )
@@ -343,7 +345,8 @@ pub(crate) fn project_dash_live_runtime_material(
     cancellation: CancellationToken,
 ) -> Result<(Box<AdaptiveHttpContext>, DashManifestInput)> {
     let request_context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
-    let limits = crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
+    let limits =
+        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
     let projected = candidate
         .dash_transport_components(&request_context)?
         .into_iter()

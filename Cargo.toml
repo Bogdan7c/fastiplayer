@@ -14,6 +14,7 @@ members = [
     "crates/source-core",
     "crates/media-prefetch",
     "crates/service-direct-media",
+    "crates/media-source-open",
     "crates/settings-core",
     "crates/settings-derive",
     "crates/fastiplayer-settings",
@@ -215,6 +216,7 @@ mpeg-ts-demux = { version = "0.1.0-alpha.1", path = "crates/mpeg-ts-demux" }
 flv-demux = { version = "0.1.0-alpha.1", path = "crates/flv-demux" }
 symphonia-demux = { version = "0.1.0-alpha.1", path = "crates/symphonia-demux" }
 service-direct-media = { version = "0.1.0-alpha.1", path = "crates/service-direct-media" }
+media-source-open = { version = "0.1.0-alpha.1", path = "crates/media-source-open" }
 service-ytdlp = { version = "0.1.0-alpha.1", path = "crates/service-ytdlp" }
 source-core = { version = "0.1.0-alpha.1", path = "crates/source-core" }
 media-prefetch = { version = "0.1.0-alpha.1", path = "crates/media-prefetch" }

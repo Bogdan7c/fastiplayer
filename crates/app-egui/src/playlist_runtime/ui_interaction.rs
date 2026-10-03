@@ -17,11 +17,11 @@ use winit::window::Window;
 use playlist_core::PlaylistItemId;
 
 use crate::app_wake::{AppWakePort, CompletionPublishError, OwnerMailboxReceiver, owner_mailbox};
-use crate::local_media;
 use crate::process_shutdown::{
     FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_finished_thread,
     join_thread_until,
 };
+use media_source_open::local_media;
 
 use super::PlaylistRuntime;
 use super::discovery::{ManualAddCompletion, ManualAddTerminalOutcome, PlaylistDiscoveryStatus};

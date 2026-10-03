@@ -4,7 +4,7 @@ use web_media_hls::HlsSubtitleRenditionDescriptor;
 
 /// Descriptor доступного subtitle rendition, который безопасно переживает reopen/rematch.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct InstalledHlsSubtitleRendition {
+pub struct InstalledHlsSubtitleRendition {
     group_id: Box<str>,
     name: Box<str>,
     language: Option<Box<str>>,
@@ -27,7 +27,7 @@ impl std::fmt::Debug for InstalledHlsSubtitleRendition {
 
 impl InstalledHlsSubtitleRendition {
     /// Строит projection намеренно без URI/reference.
-    pub(crate) fn from_prepared(descriptor: &HlsSubtitleRenditionDescriptor) -> Self {
+    pub fn from_prepared(descriptor: &HlsSubtitleRenditionDescriptor) -> Self {
         Self {
             group_id: descriptor.group_id().into(),
             name: descriptor.name().into(),
@@ -38,17 +38,17 @@ impl InstalledHlsSubtitleRendition {
     }
 
     /// Master group exact установленного rendition.
-    pub(crate) fn group_id(&self) -> &str {
+    pub fn group_id(&self) -> &str {
         &self.group_id
     }
 
     /// Human-facing bounded rendition name.
-    pub(crate) fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
     /// Optional language metadata.
-    pub(crate) fn language(&self) -> Option<&str> {
+    pub fn language(&self) -> Option<&str> {
         self.language.as_deref()
     }
 
@@ -63,8 +63,10 @@ impl InstalledHlsSubtitleRendition {
     }
 
     /// Test-only fixture constructor остаётся внутри descriptor owner-а.
-    #[cfg(test)]
-    pub(crate) fn fixture(
+    /// Вне этого crate доступен только при feature `test-fixtures`, которую
+    /// включают dev-dependencies (тесты app-egui), а не рабочая сборка.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn fixture(
         group_id: &str,
         name: &str,
         language: Option<&str>,

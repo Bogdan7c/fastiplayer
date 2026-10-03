@@ -1,0 +1,46 @@
+[package]
+name = "media-source-open"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "media_source_open"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Тестовые конструкторы (например, `InstalledHlsSubtitleRendition::fixture`) для
+# тестов зависимых crate-ов. Включается только из `[dev-dependencies]`, поэтому в
+# рабочую сборку приложения не попадает.
+test-fixtures = []
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+fastiplayer-config.workspace = true
+source-core.workspace = true
+media-core.workspace = true
+player-core.workspace = true
+demux-api.workspace = true
+symphonia-demux.workspace = true
+mpeg-ts-demux.workspace = true
+flv-demux.workspace = true
+media-prefetch.workspace = true
+service-direct-media.workspace = true
+service-ytdlp.workspace = true
+web-media-core.workspace = true
+web-media-adaptive.workspace = true
+web-media-hls.workspace = true
+web-media-http.workspace = true
+web-media-ftp.workspace = true
+web-media-playback-plan.workspace = true
+web-media-transport-api.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
