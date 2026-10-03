@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::num::NonZeroU64;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use media_core::{MediaTagMetadata, TrackInfo, TrackKind};
@@ -13,9 +13,9 @@ use player_core::{
 use playlist_discovery::{LocalMediaFingerprint, LocalMediaKind};
 
 use super::local::LocalFingerprintValidation;
-
-/// Максимальная длина display-only label в Unicode scalar values.
-pub(crate) const SAFE_MEDIA_LABEL_MAX_CHARS: usize = 160;
+// Метка переехала в `media-source-open` (её используют native-типы подготовки);
+// прежний путь `crate::media_open::SafeMediaLabel` сохранён этим re-export-ом.
+pub(crate) use media_source_open::safe_media_label::SafeMediaLabel;
 
 /// Opaque identity клиента coordinator-а; Item ID и queue semantics сюда не входят.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,48 +38,6 @@ impl MediaOpenRequestId {
     /// production coordinator по-прежнему остаётся единственным allocator owner-ом.
     pub(crate) const fn from_non_zero(value: NonZeroU64) -> Self {
         Self(value)
-    }
-}
-
-/// Bounded/redacted label, безопасный для UI, diagnostics и `Debug`.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct SafeMediaLabel(String);
-
-impl SafeMediaLabel {
-    /// Принимает только уже redacted service-owned label и дополнительно ограничивает длину.
-    #[must_use]
-    pub(crate) fn from_service_safe_label(label: &str) -> Self {
-        Self(label.chars().take(SAFE_MEDIA_LABEL_MAX_CHARS).collect())
-    }
-
-    /// Строит display label только из filename, не раскрывая parent path.
-    #[must_use]
-    pub(crate) fn from_local_path(path: &Path) -> Self {
-        let filename = path
-            .file_name()
-            .unwrap_or(path.as_os_str())
-            .to_string_lossy();
-        Self::from_service_safe_label(&filename)
-    }
-
-    #[must_use]
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for SafeMediaLabel {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("SafeMediaLabel")
-            .field(&self.0)
-            .finish()
-    }
-}
-
-impl fmt::Display for SafeMediaLabel {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
     }
 }
 

@@ -89,16 +89,15 @@ pub(super) fn prepare_native_dash_live(
             request.system_capabilities.clone(),
             request.audio_capabilities,
         );
-    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
-        request.network_config,
-    )?;
+    let adaptive_limits =
+        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)?;
     let discovered = discover_native_dash_live_catalog(NativeDashLiveCatalogDiscoveryRequest {
         http: Box::new(preparation.http),
         generation: preparation.generation,
         manifest: preparation.manifest,
         demux_registry: preparation.demux_registry,
-        policy: media_source_open::web_media_dash_open::dash_policy(adaptive_limits)?,
-        wall_clock: Arc::new(media_source_open::web_media_dash_open::SystemDashWallClock),
+        policy: crate::web_media_dash_open::dash_policy(adaptive_limits)?,
+        wall_clock: Arc::new(crate::web_media_dash_open::SystemDashWallClock),
         timeline_port_generation: crate::web_media_open::next_dynamic_timeline_port_generation()?,
         initial_source_epoch: media_core::DynamicMediaTimelineEpoch::new(0),
         endpoint_refresh,
@@ -107,7 +106,7 @@ pub(super) fn prepare_native_dash_live(
         compatibility_edge_limit: ComponentVariantEdgeLimit::new(4_096)
             .map_err(anyhow::Error::new)?,
         capability_probe: &capability_probe,
-        preferred_height: media_source_open::web_media_quality::preferred_height_policy(
+        preferred_height: crate::web_media_quality::preferred_height_policy(
             request.web_media_config.preferred_video_height,
         ),
     })?;
@@ -131,7 +130,7 @@ pub(super) fn prepare_native_dash_live(
     };
     let opened = prepare_discovered_dash_live(discovered, component_selection.clone())?;
     let (demuxer, async_seek_handle, timeline_port) = opened.into_parts();
-    let seek_port = media_source_open::web_media_dash_open::prepared_dash_seek_port(
+    let seek_port = crate::web_media_dash_open::prepared_dash_seek_port(
         async_seek_handle
             .ok_or_else(|| anyhow!("DASH live runtime потерял seek receipt handle"))?,
     );

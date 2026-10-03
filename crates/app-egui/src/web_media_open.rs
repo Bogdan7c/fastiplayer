@@ -15,10 +15,8 @@
 pub(crate) mod content_probe_tests;
 
 pub(crate) use media_source_open::web_media_open::{
-    ComponentVariantFinalizationError, ExtractorMediaSourceState, NativeHdsCandidatePreparation,
-    NativeSmoothCandidatePreparation, YtDlpCandidateOpenIntent, catalog_capabilities,
-    next_dynamic_timeline_port_generation, prepare_native_hds_candidate,
-    prepare_native_smooth_candidate, prepare_yt_dlp_web_media,
+    ComponentVariantFinalizationError, ExtractorMediaSourceState, YtDlpCandidateOpenIntent,
+    prepare_yt_dlp_web_media,
 };
 // Результат подготовки по имени нужен только сквозным тестам `content_probe_tests`.
 #[cfg(test)]

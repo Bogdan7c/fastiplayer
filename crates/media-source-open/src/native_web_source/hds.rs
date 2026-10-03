@@ -9,14 +9,14 @@ use web_media_core::{
     WebMediaSelection, WebMediaSemanticSelectionRequest,
 };
 
-use super::types::SafeMediaLabel;
+use crate::safe_media_label::SafeMediaLabel;
 
 /// Process-local lineage намеренно не вычисляется из secret-bearing `.f4m` URL.
 static NEXT_NATIVE_HDS_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Reconstructible stable F4M root без URL в diagnostics.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct NativeHdsUrl {
+pub struct NativeHdsUrl {
     /// Exact root target доступен только native HDS composition owner-у.
     target: source_core::HttpRequestTarget,
     /// Уже redacted bounded label для UI и diagnostics.
@@ -28,7 +28,7 @@ pub(crate) struct NativeHdsUrl {
 impl NativeHdsUrl {
     /// Сохраняет reconstructible request target отдельно от публичного safe label.
     #[must_use]
-    pub(crate) fn new(target: source_core::HttpRequestTarget, safe_label: SafeMediaLabel) -> Self {
+    pub fn new(target: source_core::HttpRequestTarget, safe_label: SafeMediaLabel) -> Self {
         let source_identity = SourceIdentity::new(
             NEXT_NATIVE_HDS_SOURCE_ID
                 .fetch_add(1, Ordering::Relaxed)
@@ -43,19 +43,19 @@ impl NativeHdsUrl {
 
     /// Раскрывает root только app-owned HTTP preparation/recovery boundary.
     #[must_use]
-    pub(crate) const fn target(&self) -> &source_core::HttpRequestTarget {
+    pub const fn target(&self) -> &source_core::HttpRequestTarget {
         &self.target
     }
 
     /// Возвращает bounded label без query/credential material.
     #[must_use]
-    pub(crate) const fn safe_label(&self) -> &SafeMediaLabel {
+    pub const fn safe_label(&self) -> &SafeMediaLabel {
         &self.safe_label
     }
 
     /// Возвращает opaque lineage для fresh catalog/rematch identity.
     #[must_use]
-    pub(crate) const fn source_identity(&self) -> SourceIdentity {
+    pub const fn source_identity(&self) -> SourceIdentity {
         self.source_identity
     }
 }
@@ -74,7 +74,7 @@ impl fmt::Debug for NativeHdsUrl {
 /// Initial content admission может один раз перейти к page extractor-у;
 /// installed switch/reopen хранит только native semantic rematch intent.
 #[derive(Clone)]
-pub(crate) enum NativeHdsOpenIntent {
+pub enum NativeHdsOpenIntent {
     /// Единственный pre-Installed fallback сохраняет исходный page locator.
     InitialWithYtDlpFallback {
         /// Locator не входит в установленный native source state.
@@ -102,7 +102,7 @@ impl fmt::Debug for NativeHdsOpenIntent {
 
 /// Native HDS adapter владеет neutral catalog projection и reopen intent-ом.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct NativeHdsSourceState {
+pub struct NativeHdsSourceState {
     /// Canonical selection установленного fresh manifest snapshot-а.
     neutral_selection: WebMediaSelection,
     /// Provider-neutral component projection для sidebar/actions.
@@ -113,7 +113,7 @@ pub(crate) struct NativeHdsSourceState {
 
 impl NativeHdsSourceState {
     /// Собирает single-parent projection поверх canonical HDS coupled catalog-а.
-    pub(crate) fn new(
+    pub fn new(
         neutral_selection: WebMediaSelection,
         component_catalog: Arc<ComponentVariantCatalog>,
         preference: crate::web_media_stream_model::WebMediaSelectionPreference,
@@ -139,31 +139,29 @@ impl NativeHdsSourceState {
     }
 
     /// Возвращает exact neutral selection свежего установленного snapshot-а.
-    pub(crate) const fn neutral_selection(&self) -> &WebMediaSelection {
+    pub const fn neutral_selection(&self) -> &WebMediaSelection {
         &self.neutral_selection
     }
 
     /// Возвращает full provider-neutral component catalog projection.
-    pub(crate) const fn stream_configuration(
+    pub const fn stream_configuration(
         &self,
     ) -> &crate::web_media_stream_model::WebMediaStreamConfiguration {
         &self.stream_configuration
     }
 
     /// Возвращает inert parent attachment; actions живут в component catalog-е.
-    pub(crate) const fn catalog_attachment(
-        &self,
-    ) -> &crate::web_media_catalog::WebMediaCatalogAttachment {
+    pub const fn catalog_attachment(&self) -> &crate::web_media_catalog::WebMediaCatalogAttachment {
         &self.catalog_attachment
     }
 
     /// Controlled reopen всегда refresh-ит stable root и rematch-ит selection.
-    pub(crate) fn installed_reopen_intent(&self) -> NativeHdsOpenIntent {
+    pub fn installed_reopen_intent(&self) -> NativeHdsOpenIntent {
         NativeHdsOpenIntent::SemanticSelection(self.neutral_selection.semantic_rematch_request())
     }
 
     /// Проверяет component action против установленного catalog generation.
-    pub(crate) fn switch_intent_for_component(
+    pub fn switch_intent_for_component(
         &self,
         selection: ComponentVariantSemanticSelectionRequest,
     ) -> Option<NativeHdsOpenIntent> {

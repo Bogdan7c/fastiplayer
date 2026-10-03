@@ -10,7 +10,7 @@ use web_media_core::{
 };
 
 /// Общий результат native admission до strong-install barrier-а.
-pub(crate) enum NativeWebMediaAttempt<Prepared> {
+pub enum NativeWebMediaAttempt<Prepared> {
     /// Native owner полностью подготовил media без extractor-а.
     Prepared(Prepared),
     /// Native owner классифицировал единственный neutral fallback trigger.
@@ -18,7 +18,7 @@ pub(crate) enum NativeWebMediaAttempt<Prepared> {
 }
 
 /// Разрешённый extractor fallback с исходным page locator и точной причиной.
-pub(crate) struct ClaimedNativeExtractorFallback {
+pub struct ClaimedNativeExtractorFallback {
     /// Reconstructible page locator существует только у initial admission.
     locator: service_ytdlp::YtDlpMediaLocator,
     /// Product reason передаётся extractor adapter-у без повторной классификации.
@@ -27,15 +27,13 @@ pub(crate) struct ClaimedNativeExtractorFallback {
 
 impl ClaimedNativeExtractorFallback {
     /// Передаёт owned locator и reason единственному extractor callsite-у.
-    pub(crate) fn into_parts(
-        self,
-    ) -> (service_ytdlp::YtDlpMediaLocator, ExtractorInvocationReason) {
+    pub fn into_parts(self) -> (service_ytdlp::YtDlpMediaLocator, ExtractorInvocationReason) {
         (self.locator, self.reason)
     }
 }
 
 /// App owner единственного fallback attempt-а для одного native open lifecycle.
-pub(crate) struct NativeWebFallbackOwner {
+pub struct NativeWebFallbackOwner {
     /// Core state machine атомарно запрещает второй и post-Installed fallback.
     gate: WebMediaFallbackGate,
     /// Locator присутствует только до первого Installed native result-а.
@@ -44,7 +42,7 @@ pub(crate) struct NativeWebFallbackOwner {
 
 impl NativeWebFallbackOwner {
     /// Создаёт initial owner с одним доступным pre-Installed fallback-ом.
-    pub(crate) fn before_installed(locator: service_ytdlp::YtDlpMediaLocator) -> Self {
+    pub fn before_installed(locator: service_ytdlp::YtDlpMediaLocator) -> Self {
         Self {
             gate: WebMediaFallbackGate::before_installed(),
             initial_locator: Some(locator),
@@ -52,7 +50,7 @@ impl NativeWebFallbackOwner {
     }
 
     /// Создаёт Installed owner без extractor locator-а и без fallback capability.
-    pub(crate) fn installed() -> Self {
+    pub fn installed() -> Self {
         let mut gate = WebMediaFallbackGate::before_installed();
         gate.mark_installed();
         Self {
@@ -62,7 +60,7 @@ impl NativeWebFallbackOwner {
     }
 
     /// Атомарно разрешает ровно один trigger и возвращает точную extractor reason.
-    pub(crate) fn claim(
+    pub fn claim(
         &mut self,
         trigger: WebMediaFallbackTrigger,
     ) -> Result<ClaimedNativeExtractorFallback, WebMediaFallbackRejection> {

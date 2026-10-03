@@ -16,9 +16,9 @@ use super::native_hls_vertical::{
     prepare_native,
 };
 use crate::media_open::{NativeHlsUrl, SafeMediaLabel};
-use crate::startup_media::native_hls::PreparedNativeHlsLifecycle;
 use crate::web_media_open::content_probe_tests::direct_progressive::ZeroProcessSpy;
 use crate::web_media_open::content_probe_tests::direct_progressive_webm::OffscreenWgpuHarness;
+use media_source_open::native_startup::hls::PreparedNativeHlsLifecycle;
 
 const LIVE_VERTICAL_DEADLINE: Duration = Duration::from_secs(10);
 

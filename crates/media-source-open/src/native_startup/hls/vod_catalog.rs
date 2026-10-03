@@ -17,11 +17,9 @@ pub(super) fn prepare_native_hls_attempt(
 
     // Fresh snapshot identity создаётся до I/O и остаётся общей для root, catalog и selection.
     let snapshot_identity = fresh_native_hls_snapshot_identity(request.source)?;
-    let generation =
-        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
-    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
-        request.network_config,
-    )?;
+    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
+    let adaptive_limits =
+        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)?;
     // Первый context существует только для authoritative root fetch до content-based presentation.
     let admission_transport_request = native_transport_request(
         &snapshot_identity.parent,
@@ -53,7 +51,7 @@ pub(super) fn prepare_native_hls_attempt(
         Err(error) => return Err(error).context("native HLS top manifest fetch"),
     };
     let selection_policy = NativeHlsSelectionPolicy::new(
-        media_source_open::web_media_quality::preferred_height_policy(
+        crate::web_media_quality::preferred_height_policy(
             request.web_media_config.preferred_video_height,
         ),
         request
@@ -100,8 +98,7 @@ pub(super) fn prepare_native_hls_attempt(
             .context("native HLS selected child presentation detection failed")?
         }
     };
-    let vod_endpoint_recovery =
-        media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
+    let vod_endpoint_recovery = crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
     let transport_request = native_transport_request(
         &snapshot_identity.parent,
         request.source,
@@ -123,7 +120,7 @@ pub(super) fn prepare_native_hls_attempt(
 
     let demux_registry =
         native_hls_demux_registry(request.demux_config, adaptive_limits.maximum_segment_bytes)?;
-    let hls_policy = media_source_open::web_media_hls_open::hls_policy(adaptive_limits)?;
+    let hls_policy = crate::web_media_hls_open::hls_policy(adaptive_limits)?;
     let manifest = top_fetch.into_manifest(fetched_top, &http);
     let open_request = HlsVodOpenRequest {
         http,
@@ -137,7 +134,7 @@ pub(super) fn prepare_native_hls_attempt(
     };
 
     // Media playlist даёт один neutral parent; master публикует полный proven component catalog.
-    let discovered = media_source_open::web_media_hls_open::discover_native_hls_catalog(
+    let discovered = crate::web_media_hls_open::discover_native_hls_catalog(
         &open_request,
         snapshot_identity.catalog,
         presentation,
@@ -242,16 +239,16 @@ struct NativeHlsRuntimeRequest<'a> {
     source: &'a NativeHlsUrl,
     network_config: &'a NetworkConfig,
     cancellation: CancellationToken,
-    vod_endpoint_recovery: media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+    vod_endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
 }
 
 /// Prepared runtime сохраняет взаимоисключающие VOD recovery и live timeline attachments.
 enum PreparedNativeHlsRuntime {
     Vod {
-        prepared: media_source_open::web_media_hls_open::PreparedNativeHlsVod,
-        endpoint_recovery: media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+        prepared: crate::web_media_hls_open::PreparedNativeHlsVod,
+        endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
     },
-    Live(media_source_open::web_media_hls_open::PreparedNativeHlsLive),
+    Live(crate::web_media_hls_open::PreparedNativeHlsLive),
 }
 
 impl PreparedNativeHlsRuntime {
@@ -268,7 +265,7 @@ impl PreparedNativeHlsRuntime {
                 endpoint_recovery,
             } => {
                 endpoint_recovery.arm_after_candidate_finalization();
-                let media_source_open::web_media_hls_open::PreparedNativeHlsVod {
+                let crate::web_media_hls_open::PreparedNativeHlsVod {
                     demuxer,
                     seek_port,
                     initial_position,
@@ -309,13 +306,13 @@ fn prepare_native_hls_runtime(
         web_media_hls::HlsCatalogPresentation::Vod => {
             let prepared = match request.selection {
                 NativeHlsRuntimeSelection::ProviderDefault => {
-                    media_source_open::web_media_hls_open::prepare_native_hls_vod(
+                    crate::web_media_hls_open::prepare_native_hls_vod(
                         request.open,
                         request.vod_start,
                     )
                 }
                 NativeHlsRuntimeSelection::Catalog(selection) => {
-                    media_source_open::web_media_hls_open::prepare_native_hls_catalog_vod(
+                    crate::web_media_hls_open::prepare_native_hls_catalog_vod(
                         request.open,
                         *selection,
                         request.vod_start,
@@ -344,10 +341,10 @@ fn prepare_native_hls_runtime(
             };
             let prepared = match request.selection {
                 NativeHlsRuntimeSelection::ProviderDefault => {
-                    media_source_open::web_media_hls_open::prepare_native_hls_live(live_request)
+                    crate::web_media_hls_open::prepare_native_hls_live(live_request)
                 }
                 NativeHlsRuntimeSelection::Catalog(selection) => {
-                    media_source_open::web_media_hls_open::prepare_native_hls_catalog_live(
+                    crate::web_media_hls_open::prepare_native_hls_catalog_live(
                         live_request,
                         *selection,
                     )

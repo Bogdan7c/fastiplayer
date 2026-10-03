@@ -15,12 +15,12 @@ use super::native_hls_vertical::{
     decode_fixture,
 };
 use crate::media_open::{NativeDashSourceState, NativeDashUrl, SafeMediaLabel};
-use crate::startup_media::native_dash::{
+use crate::web_media_open::content_probe_tests::direct_progressive::ZeroProcessSpy;
+use crate::web_media_open::content_probe_tests::direct_progressive_webm::OffscreenWgpuHarness;
+use media_source_open::native_startup::dash::{
     NativeDashAttempt, NativeDashPreparationRequest, PreparedNativeDashLifecycle,
     PreparedNativeDashMedia, prepare_native_dash_attempt,
 };
-use crate::web_media_open::content_probe_tests::direct_progressive::ZeroProcessSpy;
-use crate::web_media_open::content_probe_tests::direct_progressive_webm::OffscreenWgpuHarness;
 
 /// Live refresh/seek/recovery не должны зависеть от бесконечного polling-а.
 const LIVE_VERTICAL_DEADLINE: Duration = Duration::from_secs(15);

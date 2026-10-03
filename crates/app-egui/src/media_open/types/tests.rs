@@ -28,14 +28,6 @@ fn service_labels_and_source_debug_do_not_leak_url_secrets() {
 }
 
 #[test]
-fn safe_label_is_bounded_by_named_unicode_limit() {
-    let raw_label = "я".repeat(SAFE_MEDIA_LABEL_MAX_CHARS + 25);
-    let label = SafeMediaLabel::from_service_safe_label(&raw_label);
-
-    assert_eq!(label.as_str().chars().count(), SAFE_MEDIA_LABEL_MAX_CHARS);
-}
-
-#[test]
 fn playback_window_identity_wraps_reopen_request_without_source_specific_types() {
     let semantic_identity = player_core::MediaPlaybackWindow::new(
         media_core::MediaTime::from_secs(10),

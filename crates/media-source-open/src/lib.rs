@@ -20,7 +20,10 @@
 
 pub mod direct_progressive_open;
 pub mod local_media;
+pub mod native_startup;
+pub mod native_web_source;
 pub mod prepared_web_media;
+pub mod safe_media_label;
 pub mod video_codec_mapping;
 pub mod web_media_adaptive_config;
 pub mod web_media_catalog;
