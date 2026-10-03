@@ -50,51 +50,50 @@ pub(super) struct PreparedHdsCandidate {
 }
 
 /// Direct `.f4m` composition переиспользует existing HDS catalog/runtime.
-pub(crate) struct NativeHdsCandidatePreparation<'request> {
+pub struct NativeHdsCandidatePreparation<'request> {
     /// Stable-root transport intent текущей physical attempt.
-    pub(crate) transport: TransportOpenRequest,
+    pub transport: TransportOpenRequest,
     /// Уже загруженный bounded root response.
-    pub(crate) fetched_manifest: HdsFetchedManifestInput,
+    pub fetched_manifest: HdsFetchedManifestInput,
     /// Existing source runtime policy для child/bootstrap/F4F reads.
-    pub(crate) source_config: &'request SourceRuntimeConfig,
+    pub source_config: &'request SourceRuntimeConfig,
     /// App network config владеет всеми HDS budgets.
-    pub(crate) network_config: &'request NetworkConfig,
+    pub network_config: &'request NetworkConfig,
     /// Existing registry с exact F4F `OrderedSegments` factory.
-    pub(crate) demux_registry: Arc<DemuxRegistry>,
+    pub demux_registry: Arc<DemuxRegistry>,
     /// Fresh exact catalog identity текущего root snapshot-а.
-    pub(crate) catalog_identity: ComponentVariantCatalogIdentity,
+    pub catalog_identity: ComponentVariantCatalogIdentity,
     /// Fresh parent нужен neutral semantic rematch-у.
-    pub(crate) fresh_parent: ExactSelectionIdentity,
+    pub fresh_parent: ExactSelectionIdentity,
     /// Immutable decoder/renderer/audio capability proof.
-    pub(crate) capability_probe: &'request dyn HdsRenditionCapabilityProbe,
+    pub capability_probe: &'request dyn HdsRenditionCapabilityProbe,
     /// Provider-default height ranking.
-    pub(crate) preferred_height: PreferredHeightPolicy,
+    pub preferred_height: PreferredHeightPolicy,
     /// Installed semantic selection для switch/reopen.
-    pub(crate) expected_selection: Option<&'request WebMediaSemanticSelectionRequest>,
+    pub expected_selection: Option<&'request WebMediaSemanticSelectionRequest>,
 }
 
 /// Direct HDS result до app strong-install barrier-а.
-pub(crate) struct PreparedNativeHdsCandidate {
+pub struct PreparedNativeHdsCandidate {
     /// Existing receipted HDS/F4F demux runtime.
-    pub(crate) demuxer: Box<dyn Demuxer + Send>,
+    pub demuxer: Box<dyn Demuxer + Send>,
     /// Worker-owned transactional seek boundary.
-    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    pub seek_port: Arc<dyn PreparedDemuxSeekPort>,
     /// Absolute HDS clock projection для zero-based player timeline.
-    pub(crate) playback_window: MediaPlaybackWindow,
+    pub playback_window: MediaPlaybackWindow,
     /// Canonical neutral selection fresh snapshot-а.
-    pub(crate) neutral_selection: WebMediaSelection,
+    pub neutral_selection: WebMediaSelection,
     /// Provider-neutral coupled rendition catalog.
-    pub(crate) component_catalog: Arc<ComponentVariantCatalog>,
+    pub component_catalog: Arc<ComponentVariantCatalog>,
 }
 
 /// Direct ingress открывает exact fresh row и сохраняет eager demux handoff.
-pub(crate) fn prepare_native_hds_candidate(
+pub fn prepare_native_hds_candidate(
     request: NativeHdsCandidatePreparation<'_>,
 ) -> Result<PreparedNativeHdsCandidate> {
-    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
-        request.network_config,
-    )
-    .context("Не удалось собрать native HDS adaptive transport limits")?;
+    let adaptive_limits =
+        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)
+            .context("Не удалось собрать native HDS adaptive transport limits")?;
     let policy = hds_policy(adaptive_limits, request.source_config.read_timeout())?;
     let discovered = discover_fetched_hds_renditions(HdsFetchedCatalogDiscoveryRequest {
         discovery: HdsCatalogDiscoveryRequest {
@@ -183,8 +182,7 @@ pub(super) fn prepare_hds_candidate(
     let StreamLayout::ContentProbed(_) = candidate.descriptor().layout() else {
         bail!("HDS candidate должен сохранять provider-owned content-probed F4F contract");
     };
-    let generation =
-        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation();
+    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let mut transport_request = candidate
         .hds_transport_request(&context)
@@ -193,7 +191,7 @@ pub(super) fn prepare_hds_candidate(
         transport_request = transport_request.with_endpoint_expiry_observer(observer);
     }
     let adaptive_limits =
-        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)
+        crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
             .context("Не удалось собрать HDS adaptive transport limits")?;
     let policy = hds_policy(adaptive_limits, source_config.read_timeout())?;
     let discovery_started_at = Instant::now();
@@ -338,7 +336,7 @@ fn hds_policy(
             const { NonZeroU8::new(3).expect("HDS retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("HDS adaptive retry policy invalid")?,
         demux_sniff_budget: DemuxSniffBudget::new(
@@ -466,10 +464,8 @@ mod tests {
         let source_config = SourceRuntimeConfig::from_network_config(&network_config)
             .expect("valid source runtime config");
         let adaptive_limits =
-            media_source_open::web_media_adaptive_config::adaptive_transport_limits(
-                &network_config,
-            )
-            .expect("valid adaptive limits");
+            crate::web_media_adaptive_config::adaptive_transport_limits(&network_config)
+                .expect("valid adaptive limits");
 
         let policy =
             hds_policy(adaptive_limits, source_config.read_timeout()).expect("valid HDS policy");
@@ -489,10 +485,8 @@ mod tests {
         let source_config = SourceRuntimeConfig::from_network_config(&network_config)
             .expect("valid source runtime config");
         let adaptive_limits =
-            media_source_open::web_media_adaptive_config::adaptive_transport_limits(
-                &network_config,
-            )
-            .expect("valid adaptive limits");
+            crate::web_media_adaptive_config::adaptive_transport_limits(&network_config)
+                .expect("valid adaptive limits");
 
         let policy =
             hds_policy(adaptive_limits, source_config.read_timeout()).expect("valid HDS policy");

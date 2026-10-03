@@ -53,9 +53,16 @@ web-media-hds.workspace = true
 hls-playlist-core.workspace = true
 dash-mpd-core.workspace = true
 bounded-xml-reader.workspace = true
+# Оркестрация HDS (`web_media_open::hds`): лимиты разбора F4M manifest-а и bootstrap-а.
+hds-manifest-core.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# Unit-тесты `web_media_open` (fallback, HDS provider default, content probe)
+# декодируют реальный звук production-декодером и проверяют frame contract.
+# Только тестовые зависимости: в рабочую сборку crate-а не попадают.
+audio.workspace = true
+video-frame-contract.workspace = true
 
 [lints]
 workspace = true

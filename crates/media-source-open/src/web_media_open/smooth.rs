@@ -51,40 +51,40 @@ pub(crate) struct PreparedSmoothCandidate {
 }
 
 /// Named direct-ingress request к тому же Smooth composition owner-у.
-pub(crate) struct NativeSmoothCandidatePreparation<'request> {
+pub struct NativeSmoothCandidatePreparation<'request> {
     /// Provider-neutral presentation-manifest transport intent.
-    pub(crate) transport: TransportOpenRequest,
+    pub transport: TransportOpenRequest,
     /// Первый root response и exact HTTP context без повторной загрузки.
-    pub(crate) fetched_manifest: SmoothFetchedManifestInput,
+    pub fetched_manifest: SmoothFetchedManifestInput,
     /// Shared source runtime configuration.
-    pub(crate) source_config: &'request SourceRuntimeConfig,
+    pub source_config: &'request SourceRuntimeConfig,
     /// App network policy определяет все adaptive budgets.
-    pub(crate) network_config: &'request NetworkConfig,
+    pub network_config: &'request NetworkConfig,
     /// Единственный production ISO-BMFF registry обеих осей.
-    pub(crate) demux_registry: Arc<DemuxRegistry>,
+    pub demux_registry: Arc<DemuxRegistry>,
     /// Fresh catalog identity текущего stable-root snapshot-а.
-    pub(crate) catalog_identity: ComponentVariantCatalogIdentity,
+    pub catalog_identity: ComponentVariantCatalogIdentity,
     /// Fresh exact parent того же catalog snapshot-а.
-    pub(crate) fresh_parent: ExactSelectionIdentity,
+    pub fresh_parent: ExactSelectionIdentity,
     /// Capability proof из immutable app snapshot-а.
-    pub(crate) capability_probe:
+    pub capability_probe:
         &'request crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
     /// Global preferred-height policy применяется только к initial provider default.
-    pub(crate) preferred_height: PreferredHeightPolicy,
+    pub preferred_height: PreferredHeightPolicy,
     /// Installed switch/reopen передаёт provider-neutral semantic intent.
-    pub(crate) expected_selection: Option<&'request WebMediaSemanticSelectionRequest>,
+    pub expected_selection: Option<&'request WebMediaSemanticSelectionRequest>,
 }
 
 /// Native result возвращает neutral selection рядом с тем же opened catalog snapshot-ом.
-pub(crate) struct PreparedNativeSmoothCandidate {
+pub struct PreparedNativeSmoothCandidate {
     /// Existing Smooth composite demux runtime.
-    pub(crate) demuxer: Box<dyn Demuxer + Send>,
+    pub demuxer: Box<dyn Demuxer + Send>,
     /// Worker-receipted VOD seek port.
-    pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    pub seek_port: Arc<dyn PreparedDemuxSeekPort>,
     /// Canonical neutral selection установленного fresh snapshot-а.
-    pub(crate) neutral_selection: WebMediaSelection,
+    pub neutral_selection: WebMediaSelection,
     /// Тот же immutable catalog для sidebar/switch/reopen projection.
-    pub(crate) component_catalog: Arc<ComponentVariantCatalog>,
+    pub component_catalog: Arc<ComponentVariantCatalog>,
 }
 
 /// Concrete S28A adapters используют один app-owned registry.
@@ -219,11 +219,11 @@ pub(super) fn prepare_smooth_candidate(
     }
 
     let adaptive_limits =
-        media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)
+        crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
             .context("Не удалось собрать Smooth adaptive transport limits")?;
     let request_context = YtDlpTransportRequestContext::new(
         provider_id,
-        media_source_open::web_media_adaptive_config::initial_adaptive_source_generation(),
+        crate::web_media_adaptive_config::initial_adaptive_source_generation(),
         cancellation,
     );
     let mut transport = candidate
@@ -286,13 +286,12 @@ pub(super) fn prepare_smooth_candidate(
 }
 
 /// Direct ingress переиспользует existing discovery/runtime и fetched root handoff.
-pub(crate) fn prepare_native_smooth_candidate(
+pub fn prepare_native_smooth_candidate(
     request: NativeSmoothCandidatePreparation<'_>,
 ) -> Result<PreparedNativeSmoothCandidate> {
-    let adaptive_limits = media_source_open::web_media_adaptive_config::adaptive_transport_limits(
-        request.network_config,
-    )
-    .context("Не удалось собрать native Smooth adaptive transport limits")?;
+    let adaptive_limits =
+        crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)
+            .context("Не удалось собрать native Smooth adaptive transport limits")?;
     let preparation = SmoothPrepareRequest::new(
         request.transport,
         request.source_config,
@@ -365,7 +364,7 @@ fn preparation_policy(limits: AdaptiveTransportLimits) -> Result<SmoothPreparati
             const { NonZeroU8::new(3).expect("Smooth retry attempts") },
             Duration::from_millis(100),
             Duration::from_secs(2),
-            media_source_open::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("Smooth retry policy invalid")?,
         smooth_xml_budgets()?,

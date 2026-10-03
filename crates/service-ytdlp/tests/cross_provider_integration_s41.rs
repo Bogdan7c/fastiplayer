@@ -38,12 +38,14 @@ const SETTINGS_ADAPTER_INLINE_TEST_EVIDENCE_PATH: &str =
 /// Canonical child owner того же settings projection-теста после S42 extraction.
 const SETTINGS_ADAPTER_PROJECTION_TEST_EVIDENCE_PATH: &str =
     "crates/app-egui/src/frame_prepare/settings_runtime_adapter/reconfigure_projection.rs";
-/// Исторический S41 owner обоих app web-open production symbols.
-const WEB_MEDIA_OPEN_PARENT_EVIDENCE_PATH: &str = "crates/app-egui/src/web_media_open.rs";
+/// S41 owner обоих web-open production symbols; вместе с деревом `web_media_open`
+/// переехал из `app-egui` в `media-source-open` (session-05 выноса web-media).
+const WEB_MEDIA_OPEN_PARENT_EVIDENCE_PATH: &str = "crates/media-source-open/src/web_media_open.rs";
 /// Exact runtime symbol, физически вынесенный из parent в S42 executor wave 5.
 const WEB_MEDIA_OPEN_CANDIDATE_SYMBOL: &str = "fn open_candidate";
 /// Canonical private owner concrete candidate open после S42 extraction.
-const WEB_MEDIA_OPEN_RUNTIME_EVIDENCE_PATH: &str = "crates/app-egui/src/web_media_open/runtime.rs";
+const WEB_MEDIA_OPEN_RUNTIME_EVIDENCE_PATH: &str =
+    "crates/media-source-open/src/web_media_open/runtime.rs";
 
 /// Возвращает workspace root через compile-time path текущего crate-а.
 fn workspace_root() -> PathBuf {

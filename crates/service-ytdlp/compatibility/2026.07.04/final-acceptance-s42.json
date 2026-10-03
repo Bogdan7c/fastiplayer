@@ -597,9 +597,9 @@
       "kind": "ExecutableTest",
       "role": "exclusion",
       "polarity": "Negative",
-      "package": "app-egui",
+      "package": "media-source-open",
       "target": "lib",
-      "path": "crates/app-egui/src/web_media_open/hds.rs",
+      "path": "crates/media-source-open/src/web_media_open/hds.rs",
       "symbol": "rejects_every_hds_live_intent_before_vod_preparation"
     },
     "conditional-special-providers": {

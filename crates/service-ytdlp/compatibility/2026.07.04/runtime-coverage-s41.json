@@ -4,11 +4,11 @@
   "session": "S41",
   "common_integration_path": {
     "candidate": {
-      "path": "crates/app-egui/src/web_media_open.rs",
+      "path": "crates/media-source-open/src/web_media_open.rs",
       "symbol": "prepare_yt_dlp_web_media"
     },
     "transport_and_demux": {
-      "path": "crates/app-egui/src/web_media_open.rs",
+      "path": "crates/media-source-open/src/web_media_open.rs",
       "symbol": "fn open_candidate"
     },
     "prepared_media": {

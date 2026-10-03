@@ -2723,6 +2723,7 @@ name = "media-source-open"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
+ "audio",
  "audio-core",
  "bounded-xml-reader",
  "capability-core",
@@ -2731,6 +2732,7 @@ dependencies = [
  "demux-api",
  "fastiplayer-config",
  "flv-demux",
+ "hds-manifest-core",
  "hls-playlist-core",
  "media-core",
  "media-prefetch",
@@ -2743,6 +2745,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+ "video-frame-contract",
  "web-media-adaptive",
  "web-media-core",
  "web-media-dash",

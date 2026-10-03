@@ -822,6 +822,8 @@ PROGRESSIVE_WEB_SOURCE_ANCHORS = (
 # Старые service-owned WebM opener symbols не должны вернуться ни в Rust, ни в runtime scripts.
 PROGRESSIVE_WEB_LEGACY_SCAN_PATHS = (
     Path("crates/app-egui/src"),
+    # Web-open composition (`web_media_open`) вынесена в media-source-open (session-05).
+    Path("crates/media-source-open/src"),
     Path("crates/service-ytdlp/src"),
     Path("crates/service-ytdlp/Cargo.toml"),
     Path("scripts/media-regression.sh"),

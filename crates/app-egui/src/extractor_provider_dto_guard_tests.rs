@@ -54,14 +54,8 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
         "url_topology_drafts/mapper.rs",
         "url_topology_drafts/model.rs",
         "url_topology_drafts/service_adapter.rs",
-        "web_media_open.rs",
-        "web_media_open/catalog.rs",
-        "web_media_open/content_probe_fallback.rs",
-        "web_media_open/hds.rs",
-        "web_media_open/preparation.rs",
-        "web_media_open/runtime.rs",
-        "web_media_open/smooth.rs",
-        "web_media_open/source_state.rs",
+        // Дерево `web_media_open` (yt-dlp/extractor orchestration) переехало в
+        // `media-source-open` (session-05) и сторожится allowlist-ом того crate-а.
     ];
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut rust_sources = Vec::new();
@@ -93,7 +87,12 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
 #[test]
 fn active_source_shape_excludes_ephemeral_endpoint_header_and_cookie_types() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let extractor_state = fs::read_to_string(source_root.join("web_media_open/source_state.rs"))
+    // Owner extractor source state переехал в `media-source-open` (session-05), но
+    // durable shape проверяется вместе с app-owned `media_open/web.rs`, поэтому
+    // тест остаётся здесь и читает соседний crate по пути внутри workspace.
+    let extractor_state_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../media-source-open/src/web_media_open/source_state.rs");
+    let extractor_state = fs::read_to_string(extractor_state_path)
         .expect("extractor source-state owner должен читаться");
     let neutral_source = fs::read_to_string(source_root.join("media_open/web.rs"))
         .expect("neutral web source owner должен читаться");

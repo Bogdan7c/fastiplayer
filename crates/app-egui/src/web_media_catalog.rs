@@ -11,9 +11,13 @@ pub(crate) use coordinator::{
 };
 pub(crate) use media_source_open::web_media_catalog::{
     WebMediaAutomaticQualityDirection, WebMediaCatalog, WebMediaCatalogAttachment,
-    WebMediaCatalogChoice, WebMediaCatalogState, WebMediaFacetAction, WebMediaFacetOption,
-    WebMediaMode, WebMediaRememberedPreference, WebMediaSelectionTarget,
+    WebMediaCatalogState, WebMediaFacetAction, WebMediaFacetOption, WebMediaMode,
+    WebMediaRememberedPreference, WebMediaSelectionTarget,
 };
+// Выбор каталога в production-коде app собирал только `web_media_open`, который
+// переехал в `media-source-open` (session-05); здесь он нужен лишь тестам coordinator-а.
+#[cfg(test)]
+pub(crate) use media_source_open::web_media_catalog::WebMediaCatalogChoice;
 // Ошибка catalog-а нужна только coordinator-у; наружу модуля не re-export-ится.
 use media_source_open::web_media_catalog::WebMediaCatalogSafeError;
 

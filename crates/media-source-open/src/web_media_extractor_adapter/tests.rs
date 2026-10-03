@@ -219,15 +219,24 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
     ];
     // В media-source-open provider DTO разрешены только самому адаптеру и
     // переехавшим из app-egui модулям, которые стояли в allowlist app-egui до
-    // переезда: exact/composed open intent-ы и протокольные HLS/DASH opener-ы
-    // с портами обновления endpoint-ов.
+    // переезда: exact/composed open intent-ы, протокольные HLS/DASH opener-ы
+    // с портами обновления endpoint-ов и дерево yt-dlp/extractor orchestration
+    // `web_media_open` (session-05).
     const ALLOWED_PRODUCTION_SOURCES: &[&str] = &[
         "web_media_dash_open.rs",
         "web_media_dash_refresh.rs",
         "web_media_extractor_adapter.rs",
         "web_media_hls_open.rs",
         "web_media_hls_refresh.rs",
+        "web_media_open.rs",
+        "web_media_open/catalog.rs",
         "web_media_open/component_variants.rs",
+        "web_media_open/content_probe_fallback.rs",
+        "web_media_open/hds.rs",
+        "web_media_open/preparation.rs",
+        "web_media_open/runtime.rs",
+        "web_media_open/smooth.rs",
+        "web_media_open/source_state.rs",
     ];
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut rust_sources = Vec::new();

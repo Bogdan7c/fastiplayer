@@ -13,8 +13,7 @@ pub(super) enum ResolvedCandidateIntent {
 }
 
 /// Выдаёт non-zero generation отдельному dynamic timeline port-у.
-pub(crate) fn next_dynamic_timeline_port_generation() -> Result<DynamicMediaTimelinePortGeneration>
-{
+pub fn next_dynamic_timeline_port_generation() -> Result<DynamicMediaTimelinePortGeneration> {
     let generation_value = NEXT_DYNAMIC_TIMELINE_PORT_GENERATION
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)

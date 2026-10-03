@@ -1136,6 +1136,11 @@ class SourceTextPolicyTests(unittest.TestCase):
             absolute_path = self.repository.root / relative_path
             if absolute_path.exists():
                 continue
+            # Source roots без расширения — каталоги: на них же опираются
+            # durable/presentation scan paths ниже (например, media-source-open).
+            if not relative_path.suffix:
+                absolute_path.mkdir(parents=True, exist_ok=True)
+                continue
             self.repository.write(relative_path, "# safe progressive runtime path\n")
         # Directory roots durable/presentation scan-а должны существовать даже без fixtures.
         for relative_path in GUARDRAIL.PROGRESSIVE_WEB_TRANSIENT_SECRET_SCAN_PATHS:
@@ -1168,8 +1173,28 @@ class SourceTextPolicyTests(unittest.TestCase):
             )
         )
 
-        # После удаления legacy fixture durable config не может принять auth transport type.
+        # Перенесённая в media-source-open web-open composition тоже сканируется.
         self.repository.write(legacy_path, "# safe progressive runtime path\n")
+        moved_composition_path = Path(
+            "crates/media-source-open/src/web_media_open/legacy_reintroduced.rs"
+        )
+        self.repository.write(
+            moved_composition_path,
+            "fn reopen() { open_streaming_media_from(); }\n",
+        )
+        moved_violations = GUARDRAIL.find_progressive_web_boundary_violations(
+            self.repository.root
+        )
+        self.assertTrue(
+            any(
+                violation.path == moved_composition_path
+                and "legacy service-owned WebM opener" in violation.rule
+                for violation in moved_violations
+            )
+        )
+        self.repository.write(moved_composition_path, "// safe composition\n")
+
+        # После удаления legacy fixture durable config не может принять auth transport type.
         durable_path = Path("crates/config/src/transient_auth.rs")
         self.repository.write(
             durable_path,

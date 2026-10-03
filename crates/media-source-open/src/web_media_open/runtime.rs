@@ -97,19 +97,18 @@ impl WebOpenRuntime {
         )
         .context("Player demux config нарушает validated runtime bounds")?;
         let demux_composition =
-            media_source_open::web_media_demux_registry::WebDemuxComposition::new(demuxer_options)
+            crate::web_media_demux_registry::WebDemuxComposition::new(demuxer_options)
                 .context("Не удалось собрать web demux registry")?;
         let hls_transport_limits =
-            media_source_open::web_media_adaptive_config::adaptive_transport_limits(network_config)
+            crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
                 .context("Network config нельзя преобразовать в HLS transport limits")?;
         let hls_mpeg_ts_options = mpeg_ts_demux::MpegTsDemuxOptions::default()
             .with_initial_probe_byte_budget(hls_transport_limits.maximum_segment_bytes);
-        let hls_demux_composition =
-            media_source_open::web_media_demux_registry::WebDemuxComposition::new_hls(
-                demuxer_options,
-                hls_mpeg_ts_options,
-            )
-            .context("Не удалось собрать HLS demux registry")?;
+        let hls_demux_composition = crate::web_media_demux_registry::WebDemuxComposition::new_hls(
+            demuxer_options,
+            hls_mpeg_ts_options,
+        )
+        .context("Не удалось собрать HLS demux registry")?;
         let demux_capabilities = DemuxCapabilitySnapshot::new(
             demux_composition
                 .capabilities
@@ -138,7 +137,7 @@ impl WebOpenRuntime {
     pub(super) fn playback_capabilities<'runtime>(
         &'runtime self,
         system_capabilities: &'runtime capability_core::SystemCapabilities,
-        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
+        audio_capabilities: audio_core::AudioDecodeCapabilitySnapshot,
     ) -> PlaybackCapabilitySnapshot<'runtime> {
         PlaybackCapabilitySnapshot::new(
             &self.transport_capabilities,
@@ -167,9 +166,9 @@ impl WebOpenRuntime {
             cancellation,
             vod_endpoint_recovery,
         } = context;
-        let endpoint_expiry_observer = vod_endpoint_recovery.as_ref().map(
-            media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment::observer,
-        );
+        let endpoint_expiry_observer = vod_endpoint_recovery
+            .as_ref()
+            .map(crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::observer);
         if smooth::candidate_is_smooth(candidate) {
             ensure_not_cancelled(is_cancelled)?;
             let prepared = smooth::prepare_smooth_candidate(
@@ -242,9 +241,9 @@ impl WebOpenRuntime {
                 vod_endpoint_recovery,
             });
         }
-        if media_source_open::web_media_hls_open::candidate_is_hls(candidate) {
+        if crate::web_media_hls_open::candidate_is_hls(candidate) {
             ensure_not_cancelled(is_cancelled)?;
-            let prepared = media_source_open::web_media_hls_open::prepare_hls_candidate(
+            let prepared = crate::web_media_hls_open::prepare_hls_candidate(
                 candidate,
                 self.provider_id.clone(),
                 &self.source_config,
@@ -269,9 +268,9 @@ impl WebOpenRuntime {
                 vod_endpoint_recovery,
             });
         }
-        if media_source_open::web_media_dash_open::candidate_is_dash(candidate) {
+        if crate::web_media_dash_open::candidate_is_dash(candidate) {
             ensure_not_cancelled(is_cancelled)?;
-            let prepared = media_source_open::web_media_dash_open::prepare_dash_candidate(
+            let prepared = crate::web_media_dash_open::prepare_dash_candidate(
                 candidate,
                 self.provider_id.clone(),
                 &self.source_config,
@@ -426,7 +425,7 @@ pub(super) fn progressive_transport_capabilities() -> Result<TransportCapability
     )?;
     let hls = TransportCapabilityRegistration::new(
         TransportFamily::Hls,
-        DemuxInputCapabilities::only(media_source_open::web_media_hls_open::hls_transport_input()),
+        DemuxInputCapabilities::only(crate::web_media_hls_open::hls_transport_input()),
     )?;
     let dash = TransportCapabilityRegistration::new(
         TransportFamily::Dash,

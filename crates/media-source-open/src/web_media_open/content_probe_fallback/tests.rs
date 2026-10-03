@@ -434,11 +434,9 @@ fn assert_child_service_snapshot_fallback() {
     );
 
     let neutral_projection =
-        media_source_open::web_media_extractor_adapter::ExtractorCatalogProjection::from_snapshot(
-            &snapshot,
-        )
-        .and_then(|projection| projection.with_active_selection(&first_selection))
-        .expect("extractor adapter должен построить neutral active selection");
+        crate::web_media_extractor_adapter::ExtractorCatalogProjection::from_snapshot(&snapshot)
+            .and_then(|projection| projection.with_active_selection(&first_selection))
+            .expect("extractor adapter должен построить neutral active selection");
     let stream_configuration =
         crate::web_media_stream_model::WebMediaStreamConfiguration::from_neutral_catalog(
             &planning,
