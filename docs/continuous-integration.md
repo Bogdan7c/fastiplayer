@@ -1,12 +1,10 @@
 # Continuous integration и required checks
 
 Физические GBM/VA-API и DMA-heap тесты выполняются только локально.
-`CI` и `Coverage (manual)` явно задают `FASTIPLAYER_TEST_SCOPE=hosted` и
-фильтруют пять аппаратных tests до выполнения. Native headers, SDK integration,
-программные VA-API tests и FFmpeg/WGPU через software adapter остаются удалёнными.
-Полный локальный coverage и hosted coverage имеют отдельную ответственность;
-точный контракт и сохранение аппаратных diagnostics описаны в
-[coverage policy](code-coverage.md#локальное-hardware-покрытие-и-hosted-software-gate).
+`CI` явно задаёт `FASTIPLAYER_TEST_SCOPE=hosted` и фильтрует пять аппаратных
+tests до выполнения (`scripts/test_execution_scope.py`). Native headers, SDK
+integration, программные VA-API tests и FFmpeg/WGPU через software adapter
+остаются удалёнными.
 
 ## Единый источник команд
 
@@ -25,38 +23,12 @@ scripts/pre-pr-checks.sh
 Отдельный CI job можно воспроизвести, передав runner-у имя проверки из
 `scripts/ci-checks.sh --help`. Все Cargo-команды используют `--locked`.
 
-По решению владельца от 2026-09-05 дорогой coverage ratchet запускается вручную:
-workflow `.github/workflows/coverage.yml` (`Coverage (manual)`, только
-`workflow_dispatch`) либо команда `scripts/coverage.sh check`. Он не входит
-в обязательные push/PR checks. Все функциональные workspace/no-default tests,
-FFmpeg/WGPU vertical seek и остальные quality gates остаются автоматическими.
-Быстрый job `Coverage baseline policy` валидирует tracked policy на каждом push/PR
-и защищает previous/proposed baseline pair на PR без instrumented build.
-Coverage runner один раз строит instrumented workspace,
-typed-prewarm-ит объявленные runtime Cargo roots и выполняет ровно три одинаковых
-normal-concurrency запуска. Blocking baseline schema v2 хранит exact
-source-coordinate sets: 3/3 coordinates считаются stable, 1/3–2/3 публикуются
-как variable diagnostics, 0/3 остаются uncovered.
-
-PR step `Validate baseline update policy` читает из целевой ветки обе части
-предыдущей policy — `coverage/baseline.json` и
-`coverage/measurement-exceptions.json` — и сравнивает их с текущей tracked
-парой через `coverage_stability.py check-baseline-update`. Отсутствующий либо
-malformed base artifact является failure; режима «принять первый baseline»
-после migration нет. Same-universe stable-coordinate loss запрещён безусловно,
-а cross-universe снижение exact `stable/total` требует новой полностью
-потреблённой measurement exception. Предыдущая exception остаётся provenance и
-не разрешает новый decrement.
-
-Raw JSON, LCOV, HTML и compact ratio summary сохраняются как report-only artifact
-`coverage-report`; результат ручного измерения принадлежит только stable cohort
-и v2 ratchet. Ручной workflow возвращает failure при regression, а не маскирует
-его через `continue-on-error`. Cohort manifest schema v2 фиксирует source/tool inventories, parent
-executables и typed runtime executable roots. До публикации runner fail-closed
-отклоняет LCOV с top-bit execution counter corruption, mutation executable set,
-symlink escape и partial/orphaned quarantine. Полная методика, команды
-`check`/`report`/одноразового `bootstrap` и crash-recovery limitation
-описаны в `docs/code-coverage.md`.
+Coverage-gate (stable-coordinate ratchet, baseline, manual workflow
+`Coverage (manual)` и job `Coverage baseline policy`) удалён по решению владельца
+2026-10-03: покрытие показывает лишь, что строка выполнилась, а не что тест
+проверил результат. Качество тестов задаётся правилом в `AGENTS.md` («тест
+проверяет результат, а не вызов») и функциональными тестами. Посмотреть покрытие
+для себя можно вручную: `cargo llvm-cov --workspace --all-features --html`.
 
 Семь local dependency patches остаются вне workspace и проверяются своими
 manifest/lock парами. Их exact direct-команды и removal gates перечислены в
@@ -68,16 +40,15 @@ suites. Local-media regressions получают только explicit `--scenar
 отдельно принимает только явно переданные `--case` + `--url`/`--fixture` через
 `scripts/progressive-web-smoke.sh`.
 
-All-target jobs `Workspace tests (all features)` и ручной `Coverage ratchet` на своих
-clean Ubuntu 24.04 runners явно устанавливают только native build dependencies:
+All-target job `Workspace tests (all features)` на clean Ubuntu 24.04 runner
+явно устанавливает только native build dependencies:
 `clang`, `libclang-dev`, `libasound2-dev`, `libavcodec-dev`, `libavutil-dev`,
 `libgbm-dev`, `libsoundtouch-dev`, `libva-dev`, `libvulkan1`,
 `mesa-vulkan-drivers` и `pkg-config`. Они нужны для bindgen, CPAL/ALSA, FFmpeg,
 GBM, VA-API, линковки SoundTouch backend example и headless lavapipe adapter.
-Обе jobs задают job-local `CARGO_PROFILE_TEST_DEBUG=0`: LLVM coverage mapping и
-состав тестов сохраняются, а полный DWARF не переполняет диск hosted runner до
+Job задаёт job-local `CARGO_PROFILE_TEST_DEBUG=0`: состав тестов сохраняется, а полный DWARF не переполняет диск hosted runner до
 запуска test binaries. Остальные jobs и локальные Cargo profiles не меняются.
-WGPU acceptance в этих jobs выполняется через software Vulkan/lavapipe; реальный
+WGPU acceptance в этом job выполняется через software Vulkan/lavapipe; реальный
 GPU, VA display, звуковое устройство и окно не требуются и не эмулируются.
 
 Toolchain-policy matrix устанавливает тот же workspace minimum явно, включая
@@ -95,11 +66,10 @@ VP9 fields; Ubuntu 26.04 job утверждает API 1.23 и наличие о�
 Operational checklist:
 
 1. Требовать pull request перед merge в `main`.
-2. Требовать все восемнадцать status checks выше.
+2. Требовать все семнадцать status checks из `.github/workflows/ci.yml`.
 3. Требовать актуальную ветку перед merge (`Require branches to be up to date`).
 4. Запретить merge при failed, pending или stale required checks.
-5. Не добавлять `Real playback smoke (manual, non-blocking)` и ручной
-   `Coverage ratchet` в required checks.
+5. Не добавлять `Real playback smoke (manual, non-blocking)` в required checks.
 6. Проверить настройки отдельным pull request с заведомо сломанной проверкой,
    затем удалить тестовую поломку.
 

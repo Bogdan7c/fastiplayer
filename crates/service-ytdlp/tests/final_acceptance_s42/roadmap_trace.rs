@@ -59,7 +59,7 @@ const EXPECTED_REQUIREMENT_IDS: [&str; 47] = [
     "audit-05-full-hermetic-suites",
     "audit-06-clippy-rustdoc-fmt",
     "audit-07-rust-toolchains",
-    "audit-08-dependency-coverage-inventory",
+    "audit-08-dependency-inventory",
     "audit-09-guardrails-module-sizes",
     "audit-10-secret-cancel-stale-shutdown",
     "audit-11-hardware-capability-exception",
@@ -262,14 +262,12 @@ fn assert_script_function(evidence_id: &str, evidence: &Value) {
         actual_fields,
         BTreeSet::from(["kind", "role", "target", "path", "symbol"])
     );
-    // Только два checked-in release owners разрешены version 1 trace.
+    // Единственный checked-in release owner, разрешённый version 1 trace.
     let path = required_string(evidence, "path");
-    // Target явно различает CI и coverage runners.
+    // Target явно называет CI runner.
     let expected_target = match path {
         // Main CI owner.
         "scripts/ci-checks.sh" => "ci-checks",
-        // Coverage owner.
-        "scripts/coverage.sh" => "coverage",
         // Новый script требует обсуждаемого schema update.
         _ => panic!("ScriptFunction evidence `{evidence_id}` имеет unknown owner `{path}`"),
     };

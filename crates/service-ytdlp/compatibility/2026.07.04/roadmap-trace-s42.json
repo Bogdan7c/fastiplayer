@@ -234,7 +234,6 @@
       "goal": "full hermetic suite owner remains wired into final acceptance",
       "evidence_ids": [
         "release-runner-owner",
-        "coverage-runner-composition",
         "release-runner-final-composition",
         "ci-tests-function"
       ]
@@ -250,17 +249,12 @@
       "evidence_ids": ["release-runner-toolchains", "toolchain-policy"]
     },
     {
-      "id": "audit-08-dependency-coverage-inventory",
-      "goal": "cargo-deny, cargo-machete and fail-closed coverage inventory remain release gates",
+      "id": "audit-08-dependency-inventory",
+      "goal": "cargo-deny and cargo-machete remain release gates",
       "evidence_ids": [
         "release-runner-locked-commands",
         "machete-inventory",
-        "coverage-inventory",
-        "coverage-runner-composition",
-        "coverage-lcov-underflow-validator",
-        "coverage-lcov-validation-wiring",
-        "ci-dependencies-function",
-        "coverage-suite-function"
+        "ci-dependencies-function"
       ]
     },
     {
@@ -876,11 +870,6 @@
       "path": "scripts/tests/test_s42_release_runner.py",
       "symbol": "test_ci_all_runs_exact_owner_sequence"
     },
-    "coverage-runner-composition": {
-      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
-      "path": "scripts/tests/test_s42_release_runner.py",
-      "symbol": "test_coverage_check_composes_stable_preflight_suite_and_ratchet"
-    },
     "release-runner-final-composition": {
       "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
       "path": "scripts/tests/test_s42_release_runner.py",
@@ -910,21 +899,6 @@
       "kind": "PythonUnittest", "role": "cross_cutting", "target": "DependencyAuditInventoryTests",
       "path": "scripts/tests/test_dependency_audit_inventory.py",
       "symbol": "test_cargo_machete_inventory_matches_workspace_members"
-    },
-    "coverage-inventory": {
-      "kind": "PythonUnittest", "role": "cross_cutting", "target": "CoveragePolicyInventoryTests",
-      "path": "scripts/tests/test_coverage_metrics.py",
-      "symbol": "test_checked_in_baseline_matches_exact_policy_inventory"
-    },
-    "coverage-lcov-underflow-validator": {
-      "kind": "PythonUnittest", "role": "cross_cutting", "target": "CoverageRatchetTests",
-      "path": "scripts/tests/test_coverage_metrics.py",
-      "symbol": "test_lcov_top_bit_execution_counter_is_rejected"
-    },
-    "coverage-lcov-validation-wiring": {
-      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
-      "path": "scripts/tests/test_s42_release_runner.py",
-      "symbol": "test_coverage_runner_rejects_counter_underflow_before_publication"
     },
     "guardrail-owner-pass": {
       "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42SourceGuardrailTests",
@@ -987,10 +961,6 @@
     "ci-dependencies-function": {
       "kind": "ScriptFunction", "role": "cross_cutting", "target": "ci-checks",
       "path": "scripts/ci-checks.sh", "symbol": "run_dependencies"
-    },
-    "coverage-suite-function": {
-      "kind": "ScriptFunction", "role": "cross_cutting", "target": "coverage",
-      "path": "scripts/coverage.sh", "symbol": "run_stable_coverage_suite"
     }
   }
 }

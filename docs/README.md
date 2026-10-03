@@ -30,7 +30,6 @@ Start with the English [project overview and build instructions](../README.md) a
 | Document | Language | Purpose |
 | --- | --- | --- |
 | [Continuous integration](continuous-integration.md) | RU | Canonical checks, dependencies, toolchain and patch policy |
-| [Coverage](code-coverage.md) | RU | Stable-coordinate coverage ratchet and qualification |
 | [Panic and invariant policy](panic-invariant-policy.md) | RU | Fallible boundaries and internal invariants |
 | [Manual media regressions](manual-media-regressions.md) | EN/RU | Explicit fixture-based playback verification |
 | [Runtime acceptance manifest](runtime-acceptance-manifest.md) | RU | Executable acceptance suites and outcome contract |

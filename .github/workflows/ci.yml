@@ -62,37 +62,6 @@ jobs:
           WGPU_BACKEND: vulkan
         run: scripts/media-regression.sh --scenario h264-ts-seek-wgpu-ffmpeg --path /tmp/fastiplayer-aud013-vertical-seek.ts
 
-  # Быстрый PR guard сохраняет защиту baseline без instrumented build.
-  coverage-baseline-policy:
-    name: Coverage baseline policy
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Validate tracked coverage policy
-        run: |
-          python3 scripts/coverage_stability.py validate --kind baseline --input coverage/baseline.json
-          python3 scripts/coverage_stability.py validate --kind measurement-exceptions --input coverage/measurement-exceptions.json
-      # PR не может снизить versioned baseline без точечной bounded exception.
-      - name: Validate baseline update policy
-        if: github.event_name == 'pull_request'
-        env:
-          # Base ref поступает от GitHub event и используется только для чтения versioned JSON.
-          COVERAGE_BASE_REF: origin/${{ github.base_ref }}
-        run: |
-          git show "${COVERAGE_BASE_REF}:coverage/baseline.json" > /tmp/coverage-previous-baseline.json
-          git show "${COVERAGE_BASE_REF}:coverage/measurement-exceptions.json" > /tmp/coverage-previous-measurement-exceptions.json
-          git show "${COVERAGE_BASE_REF}:coverage/policy.json" > /tmp/coverage-previous-policy.json
-          python3 scripts/coverage_stability.py check-baseline-update \
-            --previous-baseline /tmp/coverage-previous-baseline.json \
-            --previous-measurement-exceptions /tmp/coverage-previous-measurement-exceptions.json \
-            --proposed-baseline coverage/baseline.json \
-            --proposed-measurement-exceptions coverage/measurement-exceptions.json \
-            --identity-migrations coverage/identity-migrations.json \
-            --previous-policy /tmp/coverage-previous-policy.json \
-            --proposed-policy coverage/policy.json
-
   # Каждый matrix entry является отдельным GitHub Actions job для одного standalone fork.
   dependency-patch-tests:
     # Имя status check показывает конкретный patch manifest.

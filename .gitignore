@@ -2,7 +2,6 @@
 target/
 
 # Coverage raw profiles, LCOV и HTML являются локальными/CI artifacts.
-target/coverage/
 
 # Local environment files.
 .env

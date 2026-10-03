@@ -19,6 +19,8 @@ WHEN SOLVING CODE PROBLEMS, FIND THE ROOT CAUSE, NOT JUST THE SYMPTOM!!
 
 Always write tests in the code that verify working functionality, rather than only helpers or particular internal stages. For example, test that video from a source is not merely read, but actually played back (reaches the rendering stage).
 
+A test verifies a result, not a call. Every test must assert an observable outcome that would differ if the code under test were broken: returned values, produced frames/samples, state transitions, emitted errors, side effects. A test that only calls code (to execute lines, raise coverage, or "exercise" a branch) without checking what it produced is forbidden. Before finishing a test, ask: "If I broke this function (wrong value, skipped step, swallowed error), would this test fail?" If not, the test is not done.
+
 The user does not have a programming background, but takes responsibility for important architectural decisions. When asking a question, explain the options in plain language so the user can understand them and choose an appropriate option.
 
 This is "vibe coding taken to the max": we are not asking AI to do everything for us; we make decisions, understand the process, and learn AI-assisted development.

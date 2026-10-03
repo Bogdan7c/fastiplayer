@@ -52,7 +52,7 @@ Workspace tests need the native test dependencies above and a headless Vulkan ad
 
 Earlier command-verification scope is preserved in the [dated launch documentation context](docs/history/public-guide-verification-2026-09-05.md).
 
-The complete pre-PR workflow is described in [CI](docs/continuous-integration.md): `scripts/pre-pr-checks.sh` delegates to `scripts/ci-checks.sh all`, adding dependency policy, all seven standalone upstream patch suites, patch integration, and MSRV. It needs Python 3, Rust 1.92.0, cargo-deny 0.20.2, and cargo-machete 0.9.2 in addition to the primary toolchain. Coverage has a separate [qualification workflow](docs/code-coverage.md); never hand-edit its machine-generated baseline to make a change pass.
+The complete pre-PR workflow is described in [CI](docs/continuous-integration.md): `scripts/pre-pr-checks.sh` delegates to `scripts/ci-checks.sh all`, adding dependency policy, all seven standalone upstream patch suites, patch integration, and MSRV. It needs Python 3, Rust 1.92.0, cargo-deny 0.20.2, and cargo-machete 0.9.2 in addition to the primary toolchain.
 
 For a small change, first run the affected crate's functional tests, then the relevant gates and neighboring consumers. Explain skipped checks in the PR. Documentation-only changes require format, link, and command validation; rerunning hardware acceptance does not make a documentation edit more correct.
 

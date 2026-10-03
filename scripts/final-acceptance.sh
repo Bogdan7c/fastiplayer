@@ -7,7 +7,7 @@ set -Eeuo pipefail
 # Каталог скрипта вычисляется независимо от текущего рабочего каталога.
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
-# readonly запрещает случайно подменить владельцев CI и coverage проверок.
+# readonly запрещает случайно подменить владельца CI проверок.
 readonly SCRIPT_DIRECTORY="${script_directory}"
 
 # Функция печатает точный контракт S42 launcher-а.
@@ -18,7 +18,6 @@ Usage: scripts/final-acceptance.sh
 
 Runs:
   scripts/ci-checks.sh all
-  scripts/coverage.sh check
 
 Manual opt-in acceptance намеренно не запускается без явно переданных
 пользователем URL/fixtures и после automated gate остаётся NOT RUN.
@@ -45,8 +44,6 @@ main() {
     fi
     # Полный CI owner запускает locked compile/test/policy/patch matrix.
     "${SCRIPT_DIRECTORY}/ci-checks.sh" all
-    # Coverage owner отдельно запускает clean hermetic suite и blocking ratchet.
-    "${SCRIPT_DIRECTORY}/coverage.sh" check
     # Manual acceptance не подделывается автоматическим PASS без user inputs.
     printf '\nS42 automated acceptance: PASS\n'
     # Статус manual части формулируется однозначно для release report.

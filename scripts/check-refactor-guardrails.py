@@ -872,11 +872,6 @@ PROGRESSIVE_WEB_TRANSIENT_SECRET_PATTERNS = (
 # S28G включается только в repository, где существует concrete Symphonia factory.
 EXISTING_DEMUX_BOUNDARY_MARKER = Path("crates/symphonia-demux/src/factory.rs")
 
-# Эти crates участвуют в reuse foundation и поэтому остаются blocking coverage owners.
-EXISTING_DEMUX_REQUIRED_BLOCKING_CRATES = frozenset(
-    {"demux-api", "symphonia-demux", "web-media-http"}
-)
-
 # Exact anchors связывают registration inventory, отдельный Matroska DocType proof,
 # bounded scanner exception и human evidence artifact в один hardening gate.
 EXISTING_DEMUX_SOURCE_ANCHORS = (
@@ -1618,7 +1613,7 @@ def find_progressive_web_boundary_violations(
 def find_existing_demux_boundary_violations(
     repo_root: Path,
 ) -> list[SourcePolicyViolation]:
-    """Закрепляет S28G parser ownership, evidence и coverage classification."""
+    """Закрепляет S28G parser ownership и evidence."""
 
     # Минимальные unit-test repositories без Symphonia factory не собирают S28G tree.
     if not (repo_root / EXISTING_DEMUX_BOUNDARY_MARKER).is_file():
@@ -1629,7 +1624,6 @@ def find_existing_demux_boundary_violations(
         EXISTING_DEMUX_SOURCE_ANCHORS,
     )
     violations.extend(find_existing_demux_packet_parser_violations(repo_root))
-    violations.extend(find_existing_demux_coverage_policy_violations(repo_root))
     return violations
 
 
@@ -1664,87 +1658,6 @@ def find_existing_demux_packet_parser_violations(
                             matched_text=line.strip(),
                         )
                     )
-    return violations
-
-
-def find_existing_demux_coverage_policy_violations(
-    repo_root: Path,
-) -> list[SourcePolicyViolation]:
-    """Проверяет blocking classification owners, входящих в S28G foundation."""
-
-    relative_path = Path("coverage/policy.json")
-    policy_path = repo_root / relative_path
-    if not policy_path.is_file():
-        return [
-            SourcePolicyViolation(
-                path=relative_path,
-                line_number=0,
-                rule="S28G требует checked-in coverage policy",
-                matched_text="coverage policy is missing",
-            )
-        ]
-
-    try:
-        policy = json.loads(read_text_lossy(policy_path))
-    except (json.JSONDecodeError, OSError) as error:
-        return [
-            SourcePolicyViolation(
-                path=relative_path,
-                line_number=0,
-                rule="S28G coverage policy должна быть валидным JSON object",
-                matched_text=str(error),
-            )
-        ]
-
-    if not isinstance(policy, dict):
-        return [
-            SourcePolicyViolation(
-                path=relative_path,
-                line_number=0,
-                rule="S28G coverage policy должна быть JSON object",
-                matched_text=f"получен {type(policy).__name__}",
-            )
-        ]
-
-    blocking_rows = policy.get("blocking_crates")
-    informational_rows = policy.get("informational_crates")
-    if not isinstance(blocking_rows, list) or not all(
-        isinstance(crate_name, str) for crate_name in blocking_rows
-    ):
-        return [
-            SourcePolicyViolation(
-                path=relative_path,
-                line_number=0,
-                rule="S28G coverage policy требует string array `blocking_crates`",
-                matched_text=repr(blocking_rows),
-            )
-        ]
-    if not isinstance(informational_rows, list) or not all(
-        isinstance(crate_name, str) for crate_name in informational_rows
-    ):
-        return [
-            SourcePolicyViolation(
-                path=relative_path,
-                line_number=0,
-                rule="S28G coverage policy требует string array `informational_crates`",
-                matched_text=repr(informational_rows),
-            )
-        ]
-
-    blocking_crates = frozenset(blocking_rows)
-    informational_crates = frozenset(informational_rows)
-    violations = []
-    for crate_name in sorted(EXISTING_DEMUX_REQUIRED_BLOCKING_CRATES):
-        if crate_name in blocking_crates and crate_name not in informational_crates:
-            continue
-        violations.append(
-            SourcePolicyViolation(
-                path=relative_path,
-                line_number=0,
-                rule="S28G demux foundation crates обязаны оставаться blocking coverage owners",
-                matched_text=f"crate `{crate_name}` не имеет exact blocking classification",
-            )
-        )
     return violations
 
 

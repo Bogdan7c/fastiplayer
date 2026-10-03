@@ -39,7 +39,7 @@
   для последовательного поиска runtime-дефектов, но не заменяет 29-case S42
   topology/privacy checklist и сам по себе не является automated suite.
 - `scripts/final-acceptance.sh` — полный automated S42 gate
-  (`scripts/ci-checks.sh all` + `scripts/coverage.sh check`), без manual media.
+  (`scripts/ci-checks.sh all`), без manual media.
 
 ## Инвентарь runtime/fixture/hardware тестов
 

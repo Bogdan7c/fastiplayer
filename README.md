@@ -118,9 +118,9 @@ Values are medians from five scored runs after three warm-ups; RSS is the median
 
 A separate **2026-09-02 source-opening experiment** measured an 82.11% lower median time to the first consumer for native Ogg ingress versus the legacy extractor fixture. This is a fixture-based result on another machine, not whole-player startup or a VLC comparison. See the [benchmark guide and original methodology](docs/benchmarks/README.md#existing-n15-ingress-experiment).
 
-Functional media tests reach rendered-frame submission/readback or nonzero PCM. CI checks workspace tests, strict Clippy/rustdoc, formatting, architecture boundaries, locked dependencies, and toolchain/MSRV policy. Coverage has a separate measurement and qualification workflow. Physical display, VA-API import, and audio-device acceptance remain separate from headless tests.
+Functional media tests reach rendered-frame submission/readback or nonzero PCM. CI checks workspace tests, strict Clippy/rustdoc, formatting, architecture boundaries, locked dependencies, and toolchain/MSRV policy. Physical display, VA-API import, and audio-device acceptance remain separate from headless tests.
 
-For commands and evidence, see [Contributing](CONTRIBUTING.md), [CI](docs/continuous-integration.md), [coverage](docs/code-coverage.md), and the [documentation index](docs/README.md).
+For commands and evidence, see [Contributing](CONTRIBUTING.md), [CI](docs/continuous-integration.md), and the [documentation index](docs/README.md).
 
 ## Try it, share feedback, or support the work
 

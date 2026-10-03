@@ -13,8 +13,6 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 # Основной workflow владеет format, Clippy и standalone dependency-patch gates.
 CI_WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
-# Полное instrumented измерение вынесено в отдельный manual workflow.
-COVERAGE_WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "coverage.yml"
 # Отдельный workflow доказывает workspace check на primary toolchain и MSRV.
 TOOLCHAIN_WORKFLOW_PATH = (
     REPOSITORY_ROOT / ".github" / "workflows" / "toolchain-policy.yml"
@@ -37,7 +35,7 @@ EXPECTED_WORKSPACE_NATIVE_PACKAGES = frozenset(
         "pkg-config",
     }
 )
-# Tests и coverage компилируют Cargo examples и поэтому линкуют SoundTouch backend.
+# Tests компилируют Cargo examples и поэтому линкуют SoundTouch backend.
 EXPECTED_ALL_TARGET_NATIVE_PACKAGES = frozenset(
     {
         "clang",
@@ -149,7 +147,6 @@ class CiNativePrerequisitesTests(unittest.TestCase):
 
         # Основной CI source нужен четырём независимым contract tests.
         cls.ci_workflow = read_workflow(CI_WORKFLOW_PATH)
-        cls.coverage_workflow = read_workflow(COVERAGE_WORKFLOW_PATH)
         # Toolchain source нужен exact native dependency inventory test.
         cls.toolchain_workflow = read_workflow(TOOLCHAIN_WORKFLOW_PATH)
 
@@ -187,30 +184,25 @@ class CiNativePrerequisitesTests(unittest.TestCase):
         )
 
     def test_all_target_jobs_have_bounded_artifacts_and_native_dependencies(self) -> None:
-        """Tests и coverage VM получают bounded profile и все native libraries."""
+        """Tests VM получает bounded profile и все native libraries."""
 
-        # Каждая GitHub-hosted job работает на отдельной VM и владеет своим apt inventory.
-        for job_identifier in ("tests", "coverage"):
-            # Subtest сохраняет точное имя job при выпадении любого native dependency.
-            with self.subTest(job_identifier=job_identifier):
-                # Job извлекается отдельно, чтобы package одной VM не маскировал другую.
-                workflow = self.coverage_workflow if job_identifier == 'coverage' else self.ci_workflow
-                all_target_job = extract_job(workflow, job_identifier)
-                # Exact job-level env не позволяет полному DWARF снова переполнить runner.
-                self.assertIn(
-                    EXPECTED_ALL_TARGET_TEST_PROFILE_DEBUG,
-                    all_target_job.splitlines(),
-                )
-                # Именованный step является единственным владельцем native inventory этой VM.
-                install_step = extract_named_step(
-                    all_target_job,
-                    "Install native build dependencies",
-                )
-                # Exact set закрепляет SoundTouch/lavapipe и запрещает package creep.
-                self.assertEqual(
-                    EXPECTED_ALL_TARGET_NATIVE_PACKAGES,
-                    apt_install_packages(install_step),
-                )
+        # GitHub-hosted job работает на отдельной VM и владеет своим apt inventory.
+        all_target_job = extract_job(self.ci_workflow, "tests")
+        # Exact job-level env не позволяет полному DWARF снова переполнить runner.
+        self.assertIn(
+            EXPECTED_ALL_TARGET_TEST_PROFILE_DEBUG,
+            all_target_job.splitlines(),
+        )
+        # Именованный step является единственным владельцем native inventory этой VM.
+        install_step = extract_named_step(
+            all_target_job,
+            "Install native build dependencies",
+        )
+        # Exact set закрепляет SoundTouch/lavapipe и запрещает package creep.
+        self.assertEqual(
+            EXPECTED_ALL_TARGET_NATIVE_PACKAGES,
+            apt_install_packages(install_step),
+        )
 
     def test_cros_libva_workflow_compiles_against_real_pre_and_post_1_23_headers(self) -> None:
         """Две distro jobs компилируют production constructor по обе стороны ABI boundary."""

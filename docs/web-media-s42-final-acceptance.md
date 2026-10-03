@@ -47,14 +47,14 @@ Acceptance состоит из двух независимых частей:
 scripts/final-acceptance.sh
 ```
 
-Она запускает `scripts/ci-checks.sh all` и `scripts/coverage.sh check`. Gate
+Она запускает `scripts/ci-checks.sh all` (coverage-gate удалён 2026-10-03). Gate
 проверяет, среди прочего:
 
 - goal-to-code/tests traceability и exact S00 → S41 profile coverage;
 - отсутствие `Implemented` gaps и `Planned` rows;
 - full locked hermetic tests, strict Clippy/rustdoc/fmt;
 - primary Rust `1.96.0` и MSRV `1.92`;
-- cargo-deny, cargo-machete и coverage inventory;
+- cargo-deny и cargo-machete;
 - dependency/toolchain/refactor/module-size guardrails;
 - secret scope, cancellation, stale-generation и shutdown contracts;
 - hardware capability без расширения сверх owner-approved exact

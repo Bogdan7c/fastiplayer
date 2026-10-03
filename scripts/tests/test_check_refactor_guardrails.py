@@ -1005,11 +1005,6 @@ class SourceTextPolicyTests(unittest.TestCase):
 
         for relative_path, anchors, _ in GUARDRAIL.EXISTING_DEMUX_SOURCE_ANCHORS:
             self.repository.write(relative_path, "\n".join(anchors) + "\n")
-        self.repository.write(
-            "coverage/policy.json",
-            '{"blocking_crates":["demux-api","symphonia-demux","web-media-http"],'
-            '"informational_crates":[]}',
-        )
         self.assertEqual(
             [],
             GUARDRAIL.find_existing_demux_boundary_violations(self.repository.root),
@@ -1027,35 +1022,6 @@ class SourceTextPolicyTests(unittest.TestCase):
                 for violation in violations
             )
         )
-
-    def test_existing_demux_coverage_classification_is_exact_and_blocking(
-        self,
-    ) -> None:
-        """Demux foundation нельзя незаметно перевести в informational coverage."""
-
-        coverage_path = "coverage/policy.json"
-        self.repository.write(
-            coverage_path,
-            '{"blocking_crates":["demux-api","symphonia-demux","web-media-http"],'
-            '"informational_crates":[]}',
-        )
-        self.assertEqual(
-            [],
-            GUARDRAIL.find_existing_demux_coverage_policy_violations(
-                self.repository.root
-            ),
-        )
-
-        self.repository.write(
-            coverage_path,
-            '{"blocking_crates":["demux-api","web-media-http"],'
-            '"informational_crates":["symphonia-demux"]}',
-        )
-        violations = GUARDRAIL.find_existing_demux_coverage_policy_violations(
-            self.repository.root
-        )
-        self.assertEqual(1, len(violations))
-        self.assertIn("symphonia-demux", violations[0].matched_text)
 
     def test_playlist_topology_boundaries_pass_and_reject_flattening_or_secret_access(
         self,

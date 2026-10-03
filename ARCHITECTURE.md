@@ -89,6 +89,6 @@ Read [operational errors](docs/web-media-operational-errors.md), [dependency pol
 | Sources reach video/audio consumers | N14A/N14B suites and cross-source regression documented in [N15](docs/native-web-ingress-n15-acceptance.md) |
 | Seek lands through decode and rendering | [CI vertical seek acceptance](.github/workflows/ci.yml), [manual regressions](docs/manual-media-regressions.md) |
 | Actual device playback | [N15 hardware evidence](docs/native-web-ingress-n15-acceptance.md); [manual hardware workflow](.github/workflows/hardware-acceptance.yml) |
-| Stable coverage and reproducible gates | [Coverage policy](docs/code-coverage.md), [CI commands](docs/continuous-integration.md) |
+| Reproducible gates | [CI commands](docs/continuous-integration.md) |
 
 New boundary tests must exercise absent resources, active fakes/stubs, errors, accounting edges, and state the boundary must not own. Successful playback claims need consumer-level tests. Existing acceptance is scoped to the recorded revision, fixture, and machine; it is not a blanket claim about every GPU, URL, codec, or UI transition.
