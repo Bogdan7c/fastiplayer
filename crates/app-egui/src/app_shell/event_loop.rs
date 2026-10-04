@@ -17,8 +17,10 @@ use crate::frame_prepare::render_frame;
 use crate::redraw_pacing::should_request_redraw_after_window_event;
 
 use super::AppShell;
+use super::escape_dismissal;
 use super::hotkeys::{self, ShellHotkeyAction};
 use super::shutdown::AppShellProcessLifecycle;
+use crate::ui::keyboard_focus::keyboard_focus_owner;
 
 /// Запрашивает redraw только после реально видимой UI mutation и только для живого окна.
 fn request_redraw_for_visible_wake(window: Option<&Window>, visible_mutation: bool) -> bool {
@@ -188,14 +190,20 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             event: key_event, ..
         } = &event
         {
-            let keyboard_captured = egui_response.consumed
-                || app_state.egui_ctx.egui_wants_keyboard_input()
-                || app_state.egui_ctx.text_edit_focused();
-            if let Some(action) = hotkeys::classify_key_event(key_event, keyboard_captured) {
+            // `egui_response.consumed` для клавиш здесь не используется: egui-winit
+            // ставит его по `egui_wants_keyboard_input()`, то есть при фокусе на
+            // любой кнопке, и хоткеи глохли бы после клика мышью. Какие клавиши
+            // отдать виджету, решает политика владельца клавиатуры.
+            let keyboard_owner = keyboard_focus_owner(&app_state.egui_ctx);
+            if let Some(action) = hotkeys::classify_key_event(key_event, keyboard_owner) {
                 match action {
-                    ShellHotkeyAction::Close => {
-                        self.close_runtime_and_exit(event_loop, "Выход по Escape");
-                        return;
+                    ShellHotkeyAction::DismissTopmost => {
+                        let _dismissed = escape_dismissal::dismiss_topmost(
+                            &window,
+                            app_state,
+                            &mut self.playlist_runtime,
+                            renderer,
+                        );
                     }
                     ShellHotkeyAction::Legacy(key_code) => {
                         app_state.handle_hotkeys(&window, key_code, false);

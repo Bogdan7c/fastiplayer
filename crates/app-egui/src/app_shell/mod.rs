@@ -9,6 +9,7 @@
 //! Player/session/render internals остаются за своими модулями. Shell работает
 //! через boundary methods `AppState`, `Renderer` и startup/redraw helpers.
 
+mod escape_dismissal;
 mod event_loop;
 mod hotkeys;
 mod shutdown;

@@ -478,6 +478,11 @@ mod tests {
             raw_input(vec![pointer_button(click_position, false)]),
         );
         assert!(release_clicked);
+        // Клик мышью не оставляет кнопке фокус: хоткеи плеера не глохнут.
+        assert_eq!(
+            crate::ui::keyboard_focus::keyboard_focus_owner(&egui_ctx),
+            crate::ui::keyboard_focus::KeyboardFocusOwner::Nobody
+        );
     }
 
     #[test]

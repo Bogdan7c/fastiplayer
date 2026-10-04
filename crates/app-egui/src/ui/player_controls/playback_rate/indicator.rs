@@ -129,9 +129,9 @@ pub(in crate::ui::player_controls) fn render_reset_button_at(
         (layout.visible_rect.width() > 0.0).then(|| {
             // Sense::click сохраняет pointer, keyboard focus и accessibility-семантику.
             let response = ui.allocate_rect(layout.visible_rect, Sense::click());
-            // Как и у transport-кнопок, успешный click переносит focus на сам widget.
-            if response.clicked() {
-                response.request_focus();
+            // Как и у transport-кнопок, клик мышью не оставляет keyboard focus.
+            if response.clicked() && response.interact_pointer_pos().is_some() {
+                response.surrender_focus();
             }
             // Custom artwork требует явного описания для AccessKit.
             response.widget_info(|| {

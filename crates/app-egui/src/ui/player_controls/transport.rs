@@ -154,9 +154,10 @@ fn render_navigation_button(
         .add_enabled_ui(availability.is_enabled(), |ui| {
             // Sense::click сохраняет click, keyboard focus и accessibility-семантику кнопки.
             let response = ui.allocate_rect(button_rect, Sense::click());
-            // Клик переносит keyboard focus на transport widget, как у центральной кнопки.
-            if response.clicked() {
-                response.request_focus();
+            // Клик мышью не оставляет keyboard focus, как у центральной кнопки:
+            // иначе хоткеи плеера глохнут до следующего Esc.
+            if response.clicked() && response.interact_pointer_pos().is_some() {
+                response.surrender_focus();
             }
             // Custom painting требует явного AccessKit-описания виджета.
             response.widget_info(|| {
@@ -536,5 +537,33 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn mouse_click_on_navigation_button_leaves_keyboard_to_hotkeys() {
+        use crate::ui::keyboard_focus::{KeyboardFocusOwner, keyboard_focus_owner};
+
+        let context = crate::ui::test_frame::app_behavior_context();
+        let pointer_position = pos2(120.0, 100.0);
+        let mut actions = Vec::new();
+        for events in [
+            vec![Event::PointerMoved(pointer_position)],
+            vec![pointer_button(pointer_position, true)],
+            vec![pointer_button(pointer_position, false)],
+        ] {
+            actions.extend(render_actions_for_input(
+                &context,
+                raw_input(events),
+                NavigationDirection::Next,
+                NavigationControlAvailability::Ready,
+            ));
+        }
+
+        assert_eq!(
+            actions,
+            vec![ControlAction::Transport(TransportControlAction::Next)]
+        );
+        // Кнопка не забрала клавиатуру: хоткеи плеера продолжают работать.
+        assert_eq!(keyboard_focus_owner(&context), KeyboardFocusOwner::Nobody);
     }
 }

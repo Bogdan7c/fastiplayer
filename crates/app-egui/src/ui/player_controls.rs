@@ -11,6 +11,8 @@ use crate::ui::assets::IconId;
 use crate::ui::skin::{ControlsStyle, PlayerSkin, SkinId};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 
+#[cfg(test)]
+pub(crate) mod playback_button_test_harness;
 mod playback_rate;
 mod queue_mode_controls;
 mod transport;
@@ -548,8 +550,10 @@ fn render_playback_toggle_button_at(
     let accessible_label = skin.icon_text(icon_id);
     let button_response = button_response.on_hover_text(accessible_label);
 
-    if button_response.clicked() {
-        button_response.request_focus();
+    // Клик мышью не оставляет focus (иначе хоткеи глохнут); Tab-фокус остаётся
+    // для доступности и клавиш скорости `+ / - / 0` (`playback_rate`).
+    if button_response.clicked() && button_response.interact_pointer_pos().is_some() {
+        button_response.surrender_focus();
     }
 
     button_response

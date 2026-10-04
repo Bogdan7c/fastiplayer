@@ -50,14 +50,14 @@ mod transport_guard_regressions;
 mod transport_ui;
 mod ui_interaction;
 mod url_import;
+#[cfg(test)]
+pub(crate) use import_transaction::{
+    PlaylistImportDraft, PlaylistImportPreviewUiAcceptedFixture,
+    PlaylistImportPreviewUiCapacityFixture, PlaylistImportPreviewUiFixture,
+};
 pub(crate) use import_transaction::{
     PlaylistImportIntent, PlaylistImportIssueKind, PlaylistImportPreview, PlaylistImportPreviewId,
     PlaylistImportRejectedCount,
-};
-#[cfg(test)]
-pub(crate) use import_transaction::{
-    PlaylistImportPreviewUiAcceptedFixture, PlaylistImportPreviewUiCapacityFixture,
-    PlaylistImportPreviewUiFixture,
 };
 pub(crate) use settings::PlaylistSettingsStageError;
 use shell_boundary::PlaylistRuntimeLifecycle;

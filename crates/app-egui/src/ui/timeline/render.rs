@@ -194,4 +194,78 @@ mod tests {
         );
         assert_eq!(timeline_right_label(&timeline), "DVR 00:30–01:10 · LIVE");
     }
+
+    /// Кадр: кнопка (может держать фокус) над таймлайном 100 с.
+    fn render_button_and_timeline(
+        egui_ctx: &egui::Context,
+        state: &mut TimelineUiState,
+        events: Vec<egui::Event>,
+        focus_button: bool,
+    ) -> (Vec<super::super::TimelineAction>, Rect) {
+        let timeline = TimelineSnapshot::seekable_vod(media_core::MediaDuration::from_secs(100));
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0))),
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut timeline_rect = Rect::NOTHING;
+        let _ = crate::ui::test_frame::run_ui_frame(egui_ctx, input, |ui| {
+            let button = ui.button("Кнопка");
+            if focus_button {
+                button.request_focus();
+            }
+            let before = ui.cursor().min;
+            let interaction = render_timeline(
+                ui,
+                &timeline,
+                state,
+                &crate::ui::skin::minimal::MinimalSkin,
+                false,
+            );
+            timeline_rect = Rect::from_min_max(before, ui.min_rect().max);
+            actions = interaction.actions;
+        });
+        (actions, timeline_rect)
+    }
+
+    #[test]
+    fn click_on_timeline_seeks_and_leaves_keyboard_to_hotkeys() {
+        use crate::ui::keyboard_focus::{KeyboardFocusOwner, keyboard_focus_owner};
+
+        let egui_ctx = crate::ui::test_frame::app_behavior_context();
+        let mut state = TimelineUiState::default();
+        // Предусловие: какой-то виджет держит фокус (например, выбран Tab-ом).
+        let _ = render_button_and_timeline(&egui_ctx, &mut state, Vec::new(), true);
+        let (_, timeline_rect) =
+            render_button_and_timeline(&egui_ctx, &mut state, Vec::new(), false);
+        assert_eq!(keyboard_focus_owner(&egui_ctx), KeyboardFocusOwner::Widget);
+
+        let click_position = timeline_rect.center();
+        let pointer_button = |pressed| egui::Event::PointerButton {
+            pos: click_position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut actions = Vec::new();
+        for events in [
+            vec![egui::Event::PointerMoved(click_position)],
+            vec![pointer_button(true)],
+            vec![pointer_button(false)],
+        ] {
+            let (frame_actions, _) =
+                render_button_and_timeline(&egui_ctx, &mut state, events, false);
+            actions.extend(frame_actions);
+        }
+
+        // Клик по таймлайну перематывает и не оставляет фокуса: хоткеи снова работают.
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, super::super::TimelineAction::ClickSeek(_))),
+            "клик должен перематывать, получено {actions:?}"
+        );
+        assert_eq!(keyboard_focus_owner(&egui_ctx), KeyboardFocusOwner::Nobody);
+    }
 }
