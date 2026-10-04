@@ -13,7 +13,10 @@ use winit::window::Window;
 use crate::app_wake::{
     AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
 };
-use crate::media_open::{PreparedLocalOpenResult, prepare_local_open};
+use crate::media_open::local::PrepareLocalOpenError;
+use crate::media_open::{
+    LocalOpenFailureOutcome, LocalOpenFailureReason, PreparedLocalOpenResult, prepare_local_open,
+};
 use crate::process_shutdown::{
     FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_finished_thread,
     join_thread_until,
@@ -22,7 +25,8 @@ use media_source_open::local_media;
 
 /// Финальный результат одной фазы local picker/preparation pipeline.
 pub(crate) enum LocalFileOpenResult {
-    /// Пользователь закрыл dialog без выбора файла.
+    /// Пользователь закрыл dialog без выбора файла либо подготовку отменили.
+    /// Отмена — не ошибка: потребители не показывают по ней сообщение об ошибке.
     Cancelled,
 
     /// Picker вернул target; media/path I/O ещё не начинался.
@@ -33,8 +37,15 @@ pub(crate) enum LocalFileOpenResult {
         prepared: Box<PreparedLocalOpenResult>,
     },
 
-    /// Файл выбран, но adapter не смог подготовить demuxer.
-    PrepareFailed { path: PathBuf, error: String },
+    /// Файл выбран, но подготовка не удалась.
+    ///
+    /// Несёт типизированную причину, а не готовую строку: текст строит
+    /// `crate::local_open_message`, одинаково для кнопки Open и CLI-старта.
+    /// `path` нужен только для имени файла в тексте; путь к папке не показывается.
+    PrepareFailed {
+        path: PathBuf,
+        reason: LocalOpenFailureReason,
+    },
 
     /// Background job завершился раньше, чем отправил нормальный результат.
     JobFailed { error: String },
@@ -179,10 +190,7 @@ impl LocalFileOpenJob {
                 .map(|prepared| LocalFileOpenResult::Prepared {
                     prepared: Box::new(prepared),
                 })
-                .unwrap_or_else(|error| LocalFileOpenResult::PrepareFailed {
-                    path: selected_path,
-                    error: format!("{error:#}"),
-                });
+                .unwrap_or_else(|error| local_prepare_failure_result(selected_path, &error));
 
                 if worker_cancellation_requested.load(Ordering::Acquire) {
                     publish_local_file_completion(
@@ -323,21 +331,35 @@ fn publish_local_file_completion(
     }
 }
 
-/// Форматирует pending overlay после выбора файла.
-pub(crate) fn preparing_local_file_message(path: &std::path::Path) -> String {
-    let safe_label = crate::playlist_runtime::safe_local_open_label(path);
-    format!("Подготовка media-файла: {safe_label}")
-}
-
-/// Форматирует shell-level ошибку подготовки локального файла.
-pub(crate) fn local_file_prepare_error_message(path: &std::path::Path, error: &str) -> String {
-    let safe_label = crate::playlist_runtime::safe_local_open_label(path);
-    format!("Ошибка открытия media-файла {safe_label}: {error}")
+/// Переводит ошибку подготовки в terminal result job-а.
+///
+/// Отмена превращается в `Cancelled` (не ошибка), остальное — в `PrepareFailed` с причиной.
+/// Технические детали уходят в лог полной цепочкой, но без имени файла и пути.
+fn local_prepare_failure_result(
+    selected_path: PathBuf,
+    error: &PrepareLocalOpenError,
+) -> LocalFileOpenResult {
+    match error.user_outcome() {
+        LocalOpenFailureOutcome::Cancelled => {
+            debug!(error = %error.diagnostic_chain(), "Подготовка локального файла отменена");
+            LocalFileOpenResult::Cancelled
+        }
+        LocalOpenFailureOutcome::Failed(reason) => {
+            warn!(
+                reason = ?reason,
+                error = %error.diagnostic_chain(),
+                "Не удалось подготовить локальный файл"
+            );
+            LocalFileOpenResult::PrepareFailed {
+                path: selected_path,
+                reason,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -346,8 +368,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        LocalFileOpenDrain, LocalFileOpenJob, LocalFileOpenResult,
-        local_file_prepare_error_message, preparing_local_file_message,
+        LocalFileOpenDrain, LocalFileOpenJob, LocalFileOpenResult, LocalOpenFailureReason,
+        PrepareLocalOpenError, local_prepare_failure_result,
     };
     use crate::app_wake::{AppWakeOwner, AppWakePort, owner_mailbox};
     use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
@@ -381,27 +403,51 @@ mod tests {
         ));
     }
 
-    /// Проверяет, что prepare error не показывает ни filename, ни parent path.
+    /// Настоящий preparation job отдаёт типизированную причину, а не строку: из неё
+    /// кнопка Open и CLI-старт строят один и тот же текст.
     #[test]
-    fn prepare_error_uses_generic_label_without_selected_path() {
-        let path = PathBuf::from("/tmp/broken-media.webm");
-        let error_message = local_file_prepare_error_message(&path, "demux failed");
+    fn preparation_job_reports_typed_reason_for_missing_file() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let missing_path = directory.path().join("missing-job-clip.mkv");
+        let mut job = LocalFileOpenJob::spawn_preparation(
+            missing_path.clone(),
+            fastiplayer_config::PlayerDemuxConfig::default(),
+            AppWakePort::disconnected(AppWakeOwner::LocalFileOpen),
+        )
+        .expect("spawn preparation job");
 
-        assert!(error_message.contains("локальный media-файл"));
-        assert!(!error_message.contains("broken-media.webm"));
-        assert!(!error_message.contains("/tmp/"));
-        assert!(error_message.contains("demux failed"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let completion = loop {
+            if let Some(completion) = job.drain().completion {
+                break completion;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "job не завершился вовремя"
+            );
+            std::thread::yield_now();
+        };
+
+        let LocalFileOpenResult::PrepareFailed { path, reason } = completion else {
+            panic!("missing file must produce PrepareFailed");
+        };
+        assert_eq!(path, missing_path);
+        assert_eq!(reason, LocalOpenFailureReason::FileNotFound);
+        assert_eq!(
+            crate::local_open_message::local_open_failure_message(&path, reason),
+            "Не удалось открыть «missing-job-clip.mkv»: файл не найден"
+        );
     }
 
-    /// Проверяет pending-текст без раскрытия native/foreign path units.
+    /// Отмена подготовки становится `Cancelled`, а не ошибкой с текстом.
     #[test]
-    fn preparing_message_uses_generic_label_without_path_units() {
-        let path = PathBuf::from("/tmp/clip.mkv");
-
-        assert_eq!(
-            preparing_local_file_message(&path),
-            "Подготовка media-файла: локальный media-файл"
+    fn cancelled_preparation_error_becomes_silent_cancelled_result() {
+        let result = local_prepare_failure_result(
+            std::path::PathBuf::from("/private-parent-dir/clip.mkv"),
+            &PrepareLocalOpenError::Cancelled,
         );
+
+        assert!(matches!(result, LocalFileOpenResult::Cancelled));
     }
 
     /// Пустой queued wake event не должен объявлять видимую мутацию.

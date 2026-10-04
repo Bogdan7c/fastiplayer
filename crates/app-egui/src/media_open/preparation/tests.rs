@@ -300,3 +300,39 @@ fn live_timeline_and_static_window_conflict_fails_before_strong_install_barrier(
         ))
     ));
 }
+
+/// Строка плейлиста получает причину локальной ошибки: coordinator-путь (тот же
+/// `prepare_source`, что и при клике по строке) несёт её внутри `LocalOpen`.
+#[test]
+fn missing_local_file_preparation_carries_user_reason_for_playlist_row() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let request = crate::media_open::MediaOpenSourceRequest::Local {
+        path: directory.path().join("missing-row-item.mkv"),
+        expected_fingerprint: None,
+        demux_config: fastiplayer_config::PlayerDemuxConfig::default(),
+    };
+    let cancellation = super::super::executor::PreparationCancellation::new();
+
+    let result = super::prepare_source(request, &cancellation);
+
+    assert!(matches!(
+        result,
+        Err(MediaPreparationFailureKind::LocalOpen(
+            crate::media_open::LocalOpenFailureReason::FileNotFound
+        ))
+    ));
+}
+
+/// Изменение файла во время открытия сохраняет прежний отдельный вид отказа,
+/// но для пользователя превращается в причину «файл изменился».
+#[test]
+fn local_source_change_kind_maps_to_changed_during_open_reason() {
+    assert_eq!(
+        MediaPreparationFailureKind::LocalSourceChanged.local_open_failure_reason(),
+        Some(crate::media_open::LocalOpenFailureReason::ChangedDuringOpen)
+    );
+    assert_eq!(
+        MediaPreparationFailureKind::ExtractorOpen.local_open_failure_reason(),
+        None
+    );
+}

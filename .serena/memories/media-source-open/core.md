@@ -62,6 +62,10 @@ Library crate `crates/media-source-open` (lib `media_source_open`): открыт
 - Guardrail-ы/evidence/allowlist provider DTO/size baseline эти файлы не упоминали — правок не потребовалось.
 - По-прежнему в app: `WebMediaOpenRequest` (`media_open/web.rs`), `url_service_adapter`, фасад `web_media_open` + `content_probe_tests`, sidebar UI-проекция, `web_media_catalog/coordinator.rs`.
 
+## Политика `SafeMediaLabel::from_local_path` (UX edge cases, сессия 02, 2026-10-04)
+- Решение владельца 1а: в UI показывается **имя файла без пути к папке**. Путь без `file_name()` (`/`, `..`) → константа «(без имени)» (раньше подставлялся весь путь — утечка parent path). Non-UTF-8 имя — lossy (`�`), без паники. Тесты: `safe_media_label::tests::*`.
+- `app-egui::playlist_runtime::safe_local_open_label` больше не константа «локальный media-файл», а делегирует сюда. Тексты ошибок открытия локального файла — `mem:app-egui/local-open-error-messages-ux02`.
+
 ## Coverage baseline — ИСТОРИЯ (gate удалён 2026-10-03, `mem:testing/coverage`)
 - Аудит 2026-10-03 (после удаления gate): все тесты из списка ниже проверены на «тест проверяет результат» — оставлены; итоги аудита — `mem:testing/coverage`.
 - Всё ниже в этом разделе неактуально: `coverage/`, `scripts/coverage.sh`, baseline и пересъёмка больше не существуют. Регистрация нового crate-а в `coverage/policy.json` не нужна.

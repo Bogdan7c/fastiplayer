@@ -542,10 +542,8 @@ impl StartupMediaController {
 
         match admitted {
             crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFile(local_open) => {
-                let safe_label = crate::playlist_runtime::safe_local_open_label(
-                    local_open.path_for_safe_label(),
-                );
-                info!(source = %safe_label, "Автозагрузка файла из CLI");
+                // Имя файла в лог не пишем (решение владельца: имя — только в тексте UI).
+                info!("Автозагрузка файла из CLI");
                 match crate::local_file_open::LocalFileOpenJob::spawn_preparation(
                     local_open.into_path(),
                     app_config.player.demux,

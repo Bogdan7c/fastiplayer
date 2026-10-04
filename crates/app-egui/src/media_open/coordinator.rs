@@ -529,17 +529,15 @@ impl MediaOpenCoordinator {
                 } else {
                     current.terminal = Some(MediaOpenTerminalOutcome::PreparationFailed {
                         request_id: current.request_id,
-                        #[cfg(test)]
                         kind: MediaPreparationFailureKind::Cancelled,
                     });
                 }
                 current.phase = MediaOpenPhase::Failed;
             }
-            Err(_kind) => {
+            Err(kind) => {
                 current.terminal = Some(MediaOpenTerminalOutcome::PreparationFailed {
                     request_id: current.request_id,
-                    #[cfg(test)]
-                    kind: _kind,
+                    kind,
                 });
                 current.phase = MediaOpenPhase::Failed;
             }

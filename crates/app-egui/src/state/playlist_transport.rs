@@ -443,6 +443,7 @@ impl AppState {
                             playlist_runtime.report_playlist_navigation_failure(
                                 failed_request_id,
                                 active_item_id,
+                                playlist_target_failure_summary(&error),
                             )
                         })
                         .flatten();
@@ -695,4 +696,21 @@ fn desktop_seek_request_id(
     request_id: player_core::TimelineSeekRequestId,
 ) -> desktop_integration::TimelineSeekRequestId {
     desktop_integration::TimelineSeekRequestId::new(request_id.non_zero())
+}
+
+/// Переводит ошибку strong open в текст для строки очереди.
+///
+/// Понятную причину пока умеют давать только локальные файлы; для остальных отказов
+/// остаётся прежнее общее поведение (сетевые причины — отдельная сессия плана UX).
+fn playlist_target_failure_summary(
+    error: &StrongMediaOpenError,
+) -> crate::playlist_runtime::PlaylistTargetFailureSummary {
+    match error.local_open_failure_reason() {
+        Some(reason) => {
+            crate::playlist_runtime::PlaylistTargetFailureSummary::Specific(std::sync::Arc::from(
+                crate::local_open_message::local_open_failure_row_summary(reason),
+            ))
+        }
+        None => crate::playlist_runtime::PlaylistTargetFailureSummary::Generic,
+    }
 }

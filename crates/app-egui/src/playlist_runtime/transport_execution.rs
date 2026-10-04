@@ -14,11 +14,37 @@ use super::controller::{
     ControllerStableIntentDispatch, PlannedPlaylistInstall, PlaylistInstallRequest,
     UnstagedPlannedTargetFailureOutcome,
 };
-use super::controller::{ManualNavigationCancelOutcome, ManualNavigationFailureOutcome};
+use super::controller::{
+    ManualNavigationCancelOutcome, ManualNavigationFailureOutcome, RuntimeErrorCorrelationOutcome,
+};
 use super::discovery::PlaylistDiscoveryNavigationStatus;
 use super::identity::TransportActionOrigin;
 use super::{PlaylistMediaOpenGateError, PlaylistRuntime};
 use crate::media_open::MediaOpenRequestId;
+
+/// Общий текст бейджа, когда причина отказа автоперехода неизвестна (прежнее поведение).
+const GENERIC_AUTOMATIC_TARGET_FAILURE_SUMMARY: &str =
+    "Не удалось подготовить следующий элемент очереди";
+
+/// Что показать в строке очереди, когда подготовка элемента не удалась.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PlaylistTargetFailureSummary {
+    /// Причина неизвестна (сеть, player, протокол): прежнее поведение — общий текст
+    /// для автоперехода и отсутствие бейджа для ручной навигации.
+    Generic,
+    /// Понятная пользователю причина, уже сформулированная `crate::local_open_message`.
+    Specific(Arc<str>),
+}
+
+impl PlaylistTargetFailureSummary {
+    /// Текст бейджа для автоперехода: конкретная причина либо прежний общий текст.
+    fn automatic_badge_summary(&self) -> Arc<str> {
+        match self {
+            Self::Generic => Arc::from(GENERIC_AUTOMATIC_TARGET_FAILURE_SUMMARY),
+            Self::Specific(summary) => Arc::clone(summary),
+        }
+    }
+}
 
 /// Cancel различает manual/automatic wait и безопасный no-op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,25 +241,51 @@ impl PlaylistRuntime {
     }
 
     /// Preparation/player failure маршрутизируется владельцу exact navigation plan-а.
+    ///
+    /// `failure_summary` решает, что увидит строка очереди: понятную причину (локальный
+    /// файл) или прежний общий текст. Для ручной навигации бейдж ставится только при
+    /// известной причине — иначе поведение прежнее (только статус D55).
     pub(crate) fn report_playlist_navigation_failure(
         &mut self,
         request_id: MediaOpenRequestId,
         item_id: playlist_core::PlaylistItemId,
+        failure_summary: PlaylistTargetFailureSummary,
     ) -> Option<PlannedPlaylistInstall> {
         let mut automatic_continuation = None;
         if let Some(controller) = self.controller.as_mut() {
             match controller.report_automatic_target_failure(
                 request_id,
-                Arc::from("Не удалось подготовить следующий элемент очереди"),
+                failure_summary.automatic_badge_summary(),
             ) {
                 AutomaticTargetFailureOutcome::OpenItem { install } => {
                     automatic_continuation = Some(install);
                 }
                 AutomaticTargetFailureOutcome::Stopped { .. } => {}
                 AutomaticTargetFailureOutcome::StaleRequest => {
-                    let outcome = controller.report_manual_navigation_target_failure(request_id);
+                    let mut outcome =
+                        controller.report_manual_navigation_target_failure(request_id);
                     if matches!(outcome, ManualNavigationFailureOutcome::NotManualNavigation) {
-                        controller.report_unstaged_manual_navigation_target_failure(item_id);
+                        outcome =
+                            controller.report_unstaged_manual_navigation_target_failure(item_id);
+                    }
+                    if let (
+                        ManualNavigationFailureOutcome::AwaitingUserAfterFailure {
+                            item_id: failed_item_id,
+                        },
+                        PlaylistTargetFailureSummary::Specific(summary),
+                    ) = (outcome, failure_summary)
+                    {
+                        let recorded = controller.record_manual_navigation_failure_reason(
+                            failed_item_id,
+                            request_id,
+                            summary,
+                        );
+                        if recorded != RuntimeErrorCorrelationOutcome::Recorded {
+                            tracing::debug!(
+                                outcome = ?recorded,
+                                "Бейдж причины не поставлен: элемент уже не в очереди"
+                            );
+                        }
                     }
                 }
             }
@@ -461,6 +513,7 @@ mod tests {
                 .report_playlist_navigation_failure(
                     MediaOpenRequestId::from_non_zero(non_zero(390)),
                     item_ids[0],
+                    PlaylistTargetFailureSummary::Specific(Arc::from("Файл не найден")),
                 )
                 .is_none(),
             "explicit first-item failure must not start automatic skipping"
@@ -469,6 +522,15 @@ mod tests {
             .controller
             .as_mut()
             .expect("controller remains installed");
+        // Известная причина ручной навигации видна на строке именно отказавшего элемента.
+        assert_eq!(
+            controller
+                .runtime_errors
+                .get(&item_ids[0])
+                .map(|runtime_error| runtime_error.safe_summary().to_owned()),
+            Some("Файл не найден".to_owned())
+        );
+        assert!(!controller.runtime_errors.contains_key(&item_ids[1]));
         assert!(
             controller
                 .view_snapshot()
@@ -580,9 +642,24 @@ mod tests {
             .expect("automatic target admission");
 
         let continuation = runtime
-            .report_playlist_navigation_failure(failed_request_id, item_ids[1])
+            .report_playlist_navigation_failure(
+                failed_request_id,
+                item_ids[1],
+                PlaylistTargetFailureSummary::Generic,
+            )
             .expect("skip policy continues the fixed automatic plan");
         assert_eq!(continuation.item_id, item_ids[2]);
+        // Неизвестная причина сохраняет прежний общий текст бейджа автоперехода.
+        assert_eq!(
+            runtime
+                .controller
+                .as_ref()
+                .expect("controller remains installed")
+                .runtime_errors
+                .get(&item_ids[1])
+                .map(|runtime_error| runtime_error.safe_summary().to_owned()),
+            Some(GENERIC_AUTOMATIC_TARGET_FAILURE_SUMMARY.to_owned())
+        );
         assert!(
             !runtime
                 .controller

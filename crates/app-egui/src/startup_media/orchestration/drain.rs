@@ -21,16 +21,19 @@ impl StartupMediaController {
                     LocalFileOpenResult::Prepared { prepared } => {
                         self.hold_prepared(PreparedStartupMedia::Local(prepared), playlist_runtime);
                     }
-                    LocalFileOpenResult::PrepareFailed { error, .. }
-                    | LocalFileOpenResult::JobFailed { error } => {
-                        self.handle_preparation_failure(error, app_state, playlist_runtime);
-                    }
-                    LocalFileOpenResult::Cancelled => {
-                        self.handle_preparation_failure(
-                            "Startup local preparation отменена".to_owned(),
+                    LocalFileOpenResult::PrepareFailed { path, reason } => {
+                        self.handle_local_preparation_failure(
+                            &path,
+                            reason,
                             app_state,
                             playlist_runtime,
                         );
+                    }
+                    LocalFileOpenResult::JobFailed { error } => {
+                        self.handle_preparation_failure(error, app_state, playlist_runtime);
+                    }
+                    LocalFileOpenResult::Cancelled => {
+                        self.finish_cancelled_local_preparation();
                     }
                     LocalFileOpenResult::Selected { .. } => {
                         self.handle_preparation_failure(
@@ -136,5 +139,45 @@ impl StartupMediaController {
             changed |= self.begin_prepared_winner(app_state, playlist_runtime, renderer);
         }
         changed
+    }
+
+    /// Стартовая ошибка локального файла: тот же текст, что и у кнопки Open.
+    ///
+    /// В лог идёт только типизированная причина: текст для пользователя содержит имя
+    /// файла, а имя в лог не пишем. Строка restored-элемента получает короткую причину
+    /// («Файл не найден») — имя файла строка очереди и так показывает.
+    fn handle_local_preparation_failure(
+        &mut self,
+        path: &std::path::Path,
+        reason: crate::media_open::LocalOpenFailureReason,
+        app_state: &mut crate::state::AppState,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+    ) {
+        tracing::warn!(reason = ?reason, "Startup local media preparation failed");
+        let user_message = crate::local_open_message::local_open_failure_message(path, reason);
+        let row_summary = Arc::<str>::from(
+            crate::local_open_message::local_open_failure_row_summary(reason),
+        );
+        self.publish_preparation_failure(user_message, row_summary, app_state, playlist_runtime);
+    }
+
+    /// Отмена стартовой подготовки локального файла — не ошибка.
+    ///
+    /// Раньше отмена шла через `handle_preparation_failure`: пользователь видел текст
+    /// «Startup local preparation отменена», а отменённый элемент сохранённой очереди
+    /// ошибочно помечался «недоступным» и запускалась попытка следующего. Теперь цель
+    /// просто завершается: без сообщения, без бейджа и без перехода к следующему элементу.
+    /// Порядок «забрать target → preparation_failed()» тот же, что и у ошибки, поэтому
+    /// фазы orchestration и признак CLI-сбоя ведут себя одинаково.
+    fn finish_cancelled_local_preparation(&mut self) {
+        let cancelled_target = self.orchestration.target.take();
+        self.orchestration.preparation_failed();
+        tracing::debug!(
+            restored_current = matches!(
+                cancelled_target,
+                Some(StartupMediaTarget::RestoredCurrent(_))
+            ),
+            "Стартовая подготовка локального файла отменена"
+        );
     }
 }

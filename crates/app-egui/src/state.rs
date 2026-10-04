@@ -34,10 +34,8 @@ use crate::dma_buf_runtime_fallback::{
     DmaBufRuntimeFallbackController, DmaBufRuntimeFallbackError, DmaBufRuntimeFallbackFailure,
     PendingDmaBufLayoutRejection,
 };
-use crate::local_file_open::{
-    LocalFileOpenJob, LocalFileOpenRestoreOutcome, LocalFileOpenResult,
-    local_file_prepare_error_message, preparing_local_file_message,
-};
+use crate::local_file_open::{LocalFileOpenJob, LocalFileOpenRestoreOutcome, LocalFileOpenResult};
+use crate::local_open_message::{local_open_failure_message, local_open_preparing_message};
 use crate::settings_runtime::CommittedConfigSnapshot;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::startup_readiness::{

@@ -12,6 +12,10 @@ use source_core::{CancellationToken, LocalFileMetadataSnapshot, LocalFileSource}
 
 use super::{ActiveMediaSource, PreparedMediaOpen, SafeMediaLabel};
 
+mod failure;
+
+pub(crate) use failure::{LocalOpenFailureOutcome, LocalOpenFailureReason};
+
 /// Результат сравнения cached D64 fingerprint с реально открытым source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LocalFingerprintValidation {
@@ -54,6 +58,14 @@ pub(crate) enum PrepareLocalOpenError {
     /// Открытие либо чтение metadata source-а не удалось.
     #[error("не удалось открыть локальный media source: {0}")]
     Source(#[source] source_core::SourceError),
+    /// Путь указывает на каталог. На Linux `File::open` каталога успешен и ошибка всплыла бы
+    /// только при чтении внутри demux probe, где тип I/O-ошибки уже теряется, поэтому
+    /// каталог отсекается явной проверкой до открытия.
+    #[error("локальный путь указывает на каталог, а не на файл")]
+    Directory,
+    /// Файл существует, но имеет нулевой размер: разбирать нечего.
+    #[error("локальный media-файл пустой")]
+    EmptyFile,
     /// Container demuxer не смог открыть уже созданный source.
     #[error("не удалось открыть media container")]
     Demux(#[source] media_source_open::local_media::LocalDemuxOpenError),
@@ -98,8 +110,14 @@ fn prepare_local_open_with_hook(
     if source_cancellation.is_cancelled() {
         return Err(PrepareLocalOpenError::Cancelled);
     }
+    reject_directory_target(path)?;
     let local_source = LocalFileSource::open(path).map_err(PrepareLocalOpenError::Source)?;
     let opened_snapshot = local_source.metadata_snapshot();
+    // Размер берём у того же открытого handle-а: пустой файл не отдаём demux probe,
+    // иначе он неотличим от «формат не распознан».
+    if opened_snapshot.file_size_bytes == 0 {
+        return Err(PrepareLocalOpenError::EmptyFile);
+    }
     let actual_fingerprint = fingerprint_from_snapshot(opened_snapshot);
     let fingerprint_validation = match expected_fingerprint {
         None => LocalFingerprintValidation::NotRequested,
@@ -177,6 +195,24 @@ impl PreparedLocalOpenResult {
 
 fn fingerprint_from_snapshot(snapshot: LocalFileMetadataSnapshot) -> LocalMediaFingerprint {
     LocalMediaFingerprint::new(snapshot.file_size_bytes, snapshot.modified_at)
+}
+
+/// Отсекает каталог до открытия файла.
+///
+/// Ошибка stat не проглатывается: она возвращается как typed `Source` с исходным
+/// `io::ErrorKind` (нет файла, нет прав), ровно как вернул бы последующий `File::open`.
+fn reject_directory_target(path: &Path) -> Result<(), PrepareLocalOpenError> {
+    let metadata = fs::metadata(path).map_err(|source| {
+        PrepareLocalOpenError::Source(source_core::SourceError::LocalIo {
+            context: "metadata",
+            source,
+        })
+    })?;
+    if metadata.is_dir() {
+        Err(PrepareLocalOpenError::Directory)
+    } else {
+        Ok(())
+    }
 }
 
 fn ensure_not_cancelled(is_cancelled: &impl Fn() -> bool) -> Result<(), PrepareLocalOpenError> {
@@ -358,10 +394,14 @@ pub(crate) mod tests {
         assert!(matches!(result, Err(PrepareLocalOpenError::Cancelled)));
     }
 
+    /// Решение владельца 1а: в тексте для пользователя есть имя файла, но нет
+    /// родительского каталога; технический `Display` ошибки по-прежнему без пути.
     #[test]
-    fn malformed_local_ts_returns_safe_typed_error_without_path_disclosure() {
+    fn malformed_local_ts_reports_damaged_file_by_name_without_parent_path() {
         let directory = tempfile::tempdir().expect("temp directory");
-        let path = directory.path().join("private-customer-name.ts");
+        let parent = directory.path().join("private-customer-dir");
+        fs::create_dir(&parent).expect("create private parent");
+        let path = parent.join("private-customer-name.ts");
         let mut malformed = mpeg_ts_h264_aac_bytes();
         malformed.truncate(188 * 2 + 17);
         fs::write(&path, malformed).expect("write malformed TS fixture");
@@ -378,7 +418,16 @@ pub(crate) mod tests {
         };
 
         assert!(matches!(error, PrepareLocalOpenError::Demux(_)));
-        assert!(!error.to_string().contains("private-customer-name"));
+        assert!(!error.diagnostic_chain().contains("private-customer"));
+        let LocalOpenFailureOutcome::Failed(reason) = error.user_outcome() else {
+            panic!("malformed TS is a failure, not a cancellation");
+        };
+        let message = crate::local_open_message::local_open_failure_message(&path, reason);
+        assert_eq!(
+            message,
+            "Не удалось открыть «private-customer-name.ts»: файл повреждён или обрезан"
+        );
+        assert!(!message.contains("private-customer-dir"));
     }
 
     pub(crate) fn pcm_wav_bytes() -> Vec<u8> {

@@ -29,6 +29,10 @@
 
 - `web-media-adaptive` не создаёт durable locator/auth surface: он принимает S21T `TransportOpenRequest`, применяет scoped manifest/segment purpose material, manual redirect authorization и ephemeral cookie jar. Cross-origin hop монотонно снимает header/query secrets; raw targets/material не попадают в Debug/errors. См. `mem:media-services/adaptive-transport-s31-2026-07-23`.
 
+## Local file label policy (UX02, 2026-10-04)
+
+- Для локальных файлов UI показывает имя файла без parent path (решение владельца); путь без имени → «(без имени)». В логи имя не добавляется. Детали: `mem:media-source-open/core`, `mem:app-egui/local-open-error-messages-ux02`. URL-политика ниже не менялась.
+
 # Secret-safe URL/service locator boundaries — актуально 2026-07-17
 
 Эта memory дополняет `mem:core`, `mem:media-services/core`, `mem:media-services/direct-media` и `mem:playlist/core`.

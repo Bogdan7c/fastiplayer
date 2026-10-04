@@ -42,7 +42,9 @@ pub(crate) use suspend_resume::SuspendedTimelineResumePosition;
 mod guarded_transport;
 pub(crate) use guarded_transport::{GuardedTransportFollowUp, ReleasedPendingRequest};
 mod transport_execution;
-pub(crate) use transport_execution::{PlaylistMediaOpenIntent, RelativeBeyondEndNavigationOutcome};
+pub(crate) use transport_execution::{
+    PlaylistMediaOpenIntent, PlaylistTargetFailureSummary, RelativeBeyondEndNavigationOutcome,
+};
 #[cfg(test)]
 mod transport_execution_audit_regressions;
 #[cfg(test)]

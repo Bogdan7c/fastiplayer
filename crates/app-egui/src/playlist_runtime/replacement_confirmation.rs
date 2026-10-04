@@ -163,11 +163,6 @@ pub(crate) struct AdmittedLocalFileOpen {
 }
 
 impl AdmittedLocalFileOpen {
-    /// Даёт read-only path только для уже безопасного label formatter-а до consume.
-    pub(crate) fn path_for_safe_label(&self) -> &Path {
-        &self.path
-    }
-
     /// Передаёт exact native path только следующему preparation owner-у.
     pub(crate) fn into_path(self) -> PathBuf {
         self.path
@@ -212,7 +207,7 @@ pub(crate) struct InAppQueueReplacementIntent {
 }
 
 impl InAppQueueReplacementIntent {
-    /// Захватывает local path без probe/stat/open и строит generic redacted label.
+    /// Захватывает local path без probe/stat/open; label — только имя файла, без папок.
     pub(crate) fn local_file(path: PathBuf) -> Self {
         let safe_label = safe_local_open_label(&path);
         Self {
@@ -237,11 +232,14 @@ impl InAppQueueReplacementIntent {
 
 impl fmt::Debug for InAppQueueReplacementIntent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("InAppQueueReplacementIntent")
-            .field("target_kind", &self.target.kind_name())
-            .field("safe_label", &self.safe_label)
-            .finish()
+        let mut debug = formatter.debug_struct("InAppQueueReplacementIntent");
+        debug.field("target_kind", &self.target.kind_name());
+        // Имя локального файла показывается только в UI (решение владельца 1а), а `Debug`
+        // может попасть в лог — поэтому метку печатаем только для URL (там она host-only).
+        if !matches!(self.target, QueueReplacementTarget::LocalFile(_)) {
+            debug.field("safe_label", &self.safe_label);
+        }
+        debug.finish()
     }
 }
 
@@ -712,11 +710,13 @@ impl PlaylistRuntime {
     }
 }
 
-/// Safe helper для production local logs/status без parent path.
-pub(crate) fn safe_local_open_label(_path: &Path) -> SafeMediaLabel {
-    // Generic label намеренно не интерпретирует native или foreign path units:
-    // даже filename может быть чувствительным либо содержать чужой separator vocabulary.
-    SafeMediaLabel::from_service_safe_label("локальный media-файл")
+/// Метка локального файла для UI: только имя файла, без родительских каталогов.
+///
+/// Решение владельца (UX edge cases, сессия 02, вариант 1а): пользователь должен видеть,
+/// какой файл не открылся, но путь к папке не показывается нигде. Политику «только
+/// filename + нейтральная метка для пути без имени» держит `SafeMediaLabel::from_local_path`.
+pub(crate) fn safe_local_open_label(path: &Path) -> SafeMediaLabel {
+    SafeMediaLabel::from_local_path(path)
 }
 
 #[cfg(test)]

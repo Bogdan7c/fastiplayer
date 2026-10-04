@@ -129,6 +129,9 @@ Normal coordinator preparation, startup orchestration and settings rebuild now a
 - App forwards the captured old absolute position but never reads the fresh DVR range. Player returns either existing seek-backed `Applied` or typed `AdjustedToLiveEdge`; both retain non-persistent `Live` checkpoint semantics.
 - Full contract: `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.
 
+## UX02 typed local failure reason (2026-10-04)
+- `MediaOpenTerminalOutcome::PreparationFailed.kind` стал production-полем; `MediaPreparationFailureKind::LocalOpen` несёт `LocalOpenFailureReason`. Фазы/barrier coordinator-а не менялись. Контракт: `mem:app-egui/local-open-error-messages-ux02`.
+
 ## S42 dedicated coordinator tests (2026-08-27)
 - Coordinator inline unit tests now live in `crates/app-egui/src/media_open/coordinator/tests.rs`; the parent declares private `#[cfg(test)] mod tests;`.
 - Existing `same_lineage_tests` remains a child of that logical tests module at `crates/app-egui/src/media_open/coordinator/tests/same_lineage_tests.rs`.

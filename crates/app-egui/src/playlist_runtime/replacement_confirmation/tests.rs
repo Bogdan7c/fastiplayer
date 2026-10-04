@@ -161,7 +161,9 @@ fn nonempty_local_and_url_do_not_reach_lower_layer_before_matching_confirm() {
         .expect("local admission");
     let local_model = pending_model(&runtime, local_admission);
     assert_eq!(runtime.controller.dirty_revision(), dirty_before);
-    assert_eq!(local_model.safe_label(), "локальный media-файл");
+    // Решение владельца 1а: диалог называет файл, но не раскрывает его папку.
+    assert_eq!(local_model.safe_label(), "selected.mkv");
+    assert!(!local_model.safe_label().contains("/private/folder"));
 
     let secret_url = classified_url(
         "https://user:password@media.example.test/private/movie.mp4?token=secret#fragment",

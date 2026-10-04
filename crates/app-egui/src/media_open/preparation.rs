@@ -38,16 +38,8 @@ pub(super) fn prepare_source(
             )
             .map(super::local::PreparedLocalOpenResult::into_prepared_open)
             .map_err(|error| {
-                tracing::warn!(source = %safe_label, error = %error, "Подготовка локального media завершилась ошибкой");
-                match error {
-                    super::local::PrepareLocalOpenError::Cancelled => {
-                        MediaPreparationFailureKind::Cancelled
-                    }
-                    super::local::PrepareLocalOpenError::SourceChangedDuringPreparation => {
-                        MediaPreparationFailureKind::LocalSourceChanged
-                    }
-                    _ => MediaPreparationFailureKind::LocalOpen,
-                }
+                tracing::warn!(source = %safe_label, error = %error.diagnostic_chain(), "Подготовка локального media завершилась ошибкой");
+                local_preparation_failure_kind(&error)
             })
         }
         MediaOpenSourceRequest::Web(request) => match request.into_adapter() {
@@ -657,6 +649,28 @@ pub(crate) fn prepare_source_synchronously(
 ) -> Result<PreparedMediaOpen, MediaPreparationFailureKind> {
     let cancellation = super::executor::PreparationCancellation::new();
     prepare_source(source_request, &cancellation)
+}
+
+/// Переводит ошибку локальной подготовки в вид отказа coordinator-а.
+///
+/// `LocalSourceChanged` сохраняется отдельным видом (как было до сессии 02), остальные
+/// ошибки несут пользовательскую причину внутри `LocalOpen`, чтобы строка плейлиста
+/// могла показать «файл не найден» вместо общего текста.
+fn local_preparation_failure_kind(
+    error: &super::local::PrepareLocalOpenError,
+) -> MediaPreparationFailureKind {
+    if matches!(
+        error,
+        super::local::PrepareLocalOpenError::SourceChangedDuringPreparation
+    ) {
+        return MediaPreparationFailureKind::LocalSourceChanged;
+    }
+    match error.user_outcome() {
+        super::LocalOpenFailureOutcome::Cancelled => MediaPreparationFailureKind::Cancelled,
+        super::LocalOpenFailureOutcome::Failed(reason) => {
+            MediaPreparationFailureKind::LocalOpen(reason)
+        }
+    }
 }
 
 /// Сохраняет typed component/DASH причину через anyhow context chain.

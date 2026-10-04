@@ -4,6 +4,7 @@
 //! request phases, player — atomic install, а `AppState` — renderer pointers.
 
 mod compensation;
+mod local_failure_reason;
 mod pending;
 pub(super) use pending::PendingStrongMediaOpen;
 

@@ -429,6 +429,32 @@ impl PlaylistController {
         ManualNavigationFailureOutcome::AwaitingUserAfterFailure { item_id }
     }
 
+    /// Ставит строке очереди бейдж с понятной причиной после неудачной ручной навигации.
+    ///
+    /// Зовётся только когда причина известна (локальный файл: «Файл не найден» и т.п.).
+    /// При неизвестной причине поведение прежнее: только статус D55, без бейджа.
+    /// Бейдж снимается успешной установкой элемента, как и остальные runtime-ошибки;
+    /// курсор навигации и dirty-состояние очереди этот метод не трогает.
+    pub(crate) fn record_manual_navigation_failure_reason(
+        &mut self,
+        item_id: PlaylistItemId,
+        request_id: MediaOpenRequestId,
+        safe_summary: std::sync::Arc<str>,
+    ) -> super::RuntimeErrorCorrelationOutcome {
+        if self.queue.item(item_id).is_none() {
+            return super::RuntimeErrorCorrelationOutcome::ItemNotCommitted;
+        }
+        self.upsert_runtime_error(
+            item_id,
+            super::PlaylistItemErrorPhase::Preparation,
+            super::PlaylistItemErrorCategory::Unavailable,
+            safe_summary,
+            Some(request_id),
+            None,
+        );
+        super::RuntimeErrorCorrelationOutcome::Recorded
+    }
+
     /// Session 12 передаст сюда только exact matching clean `Ended` edge.
     pub(crate) fn mark_manual_navigation_origin_ended(
         &mut self,

@@ -73,7 +73,8 @@ impl AppState {
             backend_constraint,
         ) {
             let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
-            warn!(error = %error, source = %safe_label, "Не удалось отправить подготовленный файл в worker");
+            // Имя файла — только в тексте для пользователя, в лог его не пишем.
+            warn!(error = %error, "Не удалось отправить подготовленный файл в worker");
             self.set_startup_error(format!(
                 "Ошибка открытия media-файла {safe_label}: worker недоступен: {error}"
             ));
@@ -315,7 +316,7 @@ impl AppState {
         let had_visible_mutation = drain.has_payload();
 
         if let Some(path) = drain.preparing_path {
-            self.set_startup_pending(preparing_local_file_message(&path));
+            self.set_startup_pending(local_open_preparing_message(&path));
         }
 
         if let Some(result) = drain.completion {
@@ -376,10 +377,9 @@ impl AppState {
             LocalFileOpenResult::Prepared { prepared } => {
                 self.load_prepared_local_file(*prepared, playlist_runtime, renderer);
             }
-            LocalFileOpenResult::PrepareFailed { path, error } => {
-                let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
-                warn!(source = %safe_label, error = %error, "Не удалось подготовить локальный файл");
-                self.set_startup_error(local_file_prepare_error_message(&path, &error));
+            LocalFileOpenResult::PrepareFailed { path, reason } => {
+                // Техническая цепочка уже записана в лог worker-ом подготовки.
+                self.set_startup_error(local_open_failure_message(&path, reason));
             }
             LocalFileOpenResult::JobFailed { error } => {
                 warn!(error = %error, "Local file open job завершился ошибкой");
@@ -404,6 +404,7 @@ impl AppState {
         };
         let path = local_open.into_path();
         let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
+        let preparing_message = local_open_preparing_message(&path);
         match LocalFileOpenJob::spawn_preparation(
             path,
             self.committed_config_snapshot.demux_config_for_open(),
@@ -411,10 +412,10 @@ impl AppState {
         ) {
             Ok(job) => {
                 self.local_file_open_job = Some(job);
-                self.set_startup_pending(format!("Подготовка media-файла: {safe_label}"));
+                self.set_startup_pending(preparing_message);
             }
             Err(error) => {
-                warn!(error = %error, source = %safe_label, "Не удалось запустить local preparation");
+                warn!(error = %error, "Не удалось запустить local preparation");
                 self.set_startup_error(format!(
                     "Ошибка открытия media-файла {safe_label}: {error}"
                 ));

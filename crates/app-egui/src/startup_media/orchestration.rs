@@ -215,18 +215,33 @@ impl StartupMediaController {
         app_state: &mut crate::state::AppState,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
     ) {
-        let target = self.orchestration.target.take();
-        self.orchestration.preparation_failed();
         // `safe_error` уже прошёл protocol-specific sanitization и не содержит raw locator.
         // Публикуем его на единственной terminal boundary, чтобы acceptance и support могли
         // отличить source drift/unavailability от внутреннего player failure без чтения UI.
         tracing::warn!(error = %safe_error, "Startup media preparation failed");
-        self.startup_error = Some(safe_error.clone());
-        app_state.set_startup_error(safe_error.clone());
+        let row_summary = Arc::<str>::from(safe_error.as_str());
+        self.publish_preparation_failure(safe_error, row_summary, app_state, playlist_runtime);
+    }
+
+    /// Публикует стартовую ошибку в UI и строку очереди, ничего не записывая в лог.
+    ///
+    /// Лог — забота вызывающего: для локальных файлов текст для пользователя содержит
+    /// имя файла, которое в лог писать нельзя (решение владельца, UX сессия 02).
+    /// `row_summary` — короткий текст бейджа строки restored-элемента.
+    pub(super) fn publish_preparation_failure(
+        &mut self,
+        user_message: String,
+        row_summary: Arc<str>,
+        app_state: &mut crate::state::AppState,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+    ) {
+        let target = self.orchestration.target.take();
+        self.orchestration.preparation_failed();
+        self.startup_error = Some(user_message.clone());
+        app_state.set_startup_error(user_message);
 
         if let Some(StartupMediaTarget::RestoredCurrent(failed)) = target {
-            let next = playlist_runtime
-                .report_startup_restore_failure(failed, Arc::<str>::from(safe_error));
+            let next = playlist_runtime.report_startup_restore_failure(failed, row_summary);
             if let Some(next) = next {
                 self.start_restored_target(next, app_state, playlist_runtime);
             }

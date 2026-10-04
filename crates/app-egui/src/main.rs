@@ -13,6 +13,7 @@ mod app_wake;
 mod dma_buf_runtime_fallback;
 mod frame_prepare;
 mod local_file_open;
+mod local_open_message;
 mod media_open;
 mod playlist_action_runtime;
 mod playlist_runtime;

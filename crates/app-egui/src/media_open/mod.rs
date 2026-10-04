@@ -20,7 +20,10 @@ pub(crate) use coordinator::MediaOpenCoordinator;
 pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
 #[allow(unused_imports)]
 // Prepared envelope is intentionally introduced before callsite migration.
-pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult, prepare_local_open};
+pub(crate) use local::{
+    LocalFingerprintValidation, LocalOpenFailureOutcome, LocalOpenFailureReason,
+    PreparedLocalOpenResult, prepare_local_open,
+};
 // Native-типы источников и owner отката переехали в `media-source-open`
 // (`native_web_source`); прежние пути `crate::media_open::*` сохранены re-export-ами.
 pub(crate) use media_source_open::native_web_source::dash::{

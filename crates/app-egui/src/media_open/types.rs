@@ -471,7 +471,8 @@ pub(crate) enum MediaOpenCompletionDriveError {
 /// Почему media preparation завершилась без secret-bearing context-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MediaPreparationFailureKind {
-    LocalOpen,
+    /// Локальный файл не открылся; причина безопасна для показа (без пути и текста ОС).
+    LocalOpen(super::LocalOpenFailureReason),
     LocalSourceChanged,
     DirectOpen,
     NativeHlsOpen,
@@ -487,6 +488,46 @@ pub(crate) enum MediaPreparationFailureKind {
     ComponentCatalogUnavailable,
     Cancelled,
     WorkerPanicked,
+}
+
+impl MediaPreparationFailureKind {
+    /// Пользовательская причина, если отказала подготовка локального файла.
+    ///
+    /// `None` — отказ не локальный (сеть, extractor, отмена, panic): для них
+    /// понятных причин пока нет, и вызывающий код показывает общий текст.
+    pub(crate) const fn local_open_failure_reason(self) -> Option<super::LocalOpenFailureReason> {
+        match self {
+            Self::LocalOpen(reason) => Some(reason),
+            Self::LocalSourceChanged => Some(super::LocalOpenFailureReason::ChangedDuringOpen),
+            Self::DirectOpen
+            | Self::NativeHlsOpen
+            | Self::NativeDashOpen
+            | Self::NativeHdsOpen
+            | Self::NativeSmoothOpen
+            | Self::ExtractorOpen
+            | Self::DashLiveProfileExcluded
+            | Self::DashLiveSchemaRejected
+            | Self::ComponentCatalogUnavailable
+            | Self::Cancelled
+            | Self::WorkerPanicked => None,
+        }
+    }
+}
+
+impl MediaOpenTerminalOutcome {
+    /// Пользовательская причина отказа локального файла на этапе подготовки.
+    ///
+    /// `None` для любых других исходов (успех, отмена, отказ player-а, нелокальный отказ).
+    pub(crate) const fn local_open_failure_reason(&self) -> Option<super::LocalOpenFailureReason> {
+        match self {
+            Self::PreparationFailed { kind, .. } => kind.local_open_failure_reason(),
+            Self::Installed { .. }
+            | Self::Cancelled { .. }
+            | Self::PlayerRejected { .. }
+            | Self::PlayerFailed { .. }
+            | Self::FatalInvariant { .. } => None,
+        }
+    }
 }
 
 /// Fatal protocol failures не маскируются под recoverable media error.
@@ -521,8 +562,8 @@ pub(crate) enum MediaOpenTerminalOutcome {
     },
     PreparationFailed {
         request_id: MediaOpenRequestId,
-        /// Вид отказа проверяют только тесты; UI различает исходы по варианту.
-        #[cfg(test)]
+        /// Вид отказа. Production читает его через `local_open_failure_reason()`, чтобы
+        /// строка плейлиста показала понятную причину локальной ошибки.
         kind: MediaPreparationFailureKind,
     },
     PlayerRejected {
