@@ -4,6 +4,8 @@
 //! проигрывание с начала, затем seek-flush и декодирование до EOF. Зависание
 //! AMD VCN из-за неверных warp-параметров роняет процесс (Mesa abort), поэтому
 //! любой возврат бага global-motion parsing превращается в падение теста.
+//! Заодно проверяется время показа: каждый кадр несёт PTS temporal unit-а,
+//! который его показал (включая AV1 `show_existing_frame`).
 
 // Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
 // здесь работают как assertions. Production-политика паник сюда не относится.
@@ -50,8 +52,9 @@ const AFTER_SEEK_GENERATION: u64 = 2;
 /// Итог одной фазы: сколько temporal unit-ов отправлено и какие кадры вышли.
 #[derive(Default)]
 struct PhaseEvidence {
-    /// Отправленные decoder-у AV1 temporal unit-ы.
-    sent_packets: usize,
+    /// PTS отправленных decoder-у AV1 temporal unit-ов, усечённые до микросекунд,
+    /// как их передаёт VA-API decoder.
+    sent_packet_pts: Vec<Duration>,
     /// PTS опубликованных кадров в порядке получения.
     frame_pts: Vec<Duration>,
 }
@@ -215,6 +218,9 @@ fn send_video_packet(
     packet: Packet,
     evidence: &mut PhaseEvidence,
 ) {
+    let microsecond_pts = Duration::from_micros(
+        u64::try_from(packet.pts.as_micros()).expect("PTS packet-а помещается в u64 микросекунд"),
+    );
     let decode_packet = DecodePacket {
         track_id: packet.track_id,
         pts: packet.pts,
@@ -226,7 +232,7 @@ fn send_video_packet(
         resolved_color: None,
     };
     match decoder.send_packet(decode_packet) {
-        Ok(()) => evidence.sent_packets += 1,
+        Ok(()) => evidence.sent_packet_pts.push(microsecond_pts),
         Err(DecodeThreadSendError::Backpressure(reason)) => {
             panic!("неожиданный backpressure при serial отправке: {reason:?}")
         }
@@ -251,7 +257,7 @@ fn send_video_packet(
 /// неопубликованные кадры, поэтому до flush досчитываем их явно.
 fn wait_for_all_frames(decoder: &VideoDecodeThread, generation: u64, evidence: &mut PhaseEvidence) {
     let deadline = Instant::now() + DECODER_WAIT_TIMEOUT;
-    while evidence.frame_pts.len() < evidence.sent_packets {
+    while evidence.frame_pts.len() < evidence.sent_packet_pts.len() {
         collect_frames(decoder, generation, evidence);
         assert_decoder_alive(decoder);
         assert!(
@@ -332,15 +338,31 @@ fn assert_decoder_alive(decoder: &VideoDecodeThread) {
     }
 }
 
-/// Общие проверки фазы: кадров ровно столько же, сколько temporal unit-ов.
+/// Общие проверки фазы: каждый temporal unit показал ровно один кадр со своим PTS.
+///
+/// Сравнение по PTS ловит и потерю кадров, и `show_existing_frame`, который
+/// раньше выходил с PTS unit-а декодирования (0, 20, 20, 60, 20 ms…).
 fn assert_phase_frames(evidence: &PhaseEvidence, phase_name: &str) {
     assert!(
-        evidence.sent_packets > 0,
+        !evidence.sent_packet_pts.is_empty(),
         "{phase_name}: фаза не отправила ни одного пакета"
     );
     assert_eq!(
         evidence.frame_pts.len(),
-        evidence.sent_packets,
+        evidence.sent_packet_pts.len(),
         "{phase_name}: каждый AV1 temporal unit должен дать ровно один показанный кадр"
+    );
+    let first_mismatch = evidence
+        .frame_pts
+        .iter()
+        .zip(&evidence.sent_packet_pts)
+        .position(|(frame_pts, packet_pts)| frame_pts != packet_pts);
+    assert_eq!(
+        first_mismatch, None,
+        "{phase_name}: PTS кадра должен совпадать с PTS показавшего его temporal unit-а"
+    );
+    assert!(
+        evidence.frame_pts.windows(2).all(|pair| pair[0] < pair[1]),
+        "{phase_name}: PTS опубликованных кадров должны строго расти"
     );
 }

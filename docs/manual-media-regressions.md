@@ -56,7 +56,9 @@ scripts/media-regression.sh \
 Сценарий открывает файл через `symphonia-demux`, декодирует его production decoder thread-ом
 `video-vaapi` (NV12 DMA-BUF): первые 20 s с начала, затем seek-flush в середину и всё до EOF
 drain. Проверяется, что каждый temporal unit публикует ровно один кадр текущей generation и после
-seek нет кадров раньше decode point. Возврат бага вешает VCN, и Mesa обрывает процесс.
+seek нет кадров раньше decode point. PTS каждого кадра обязан совпадать с PTS temporal unit-а,
+который его показал (AV1 `show_existing_frame`). Возврат бага global motion вешает VCN, и Mesa
+обрывает процесс.
 
 Web-media/app UX is checked separately through the S42 manual runner:
 

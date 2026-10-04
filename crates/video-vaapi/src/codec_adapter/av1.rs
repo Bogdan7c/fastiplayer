@@ -1,5 +1,6 @@
 use cros_codecs::decoder::stateless::av1::Av1;
 
+use super::presentation_time::TemporalUnitPresentationTime;
 use super::*;
 
 /// Concrete cros-codecs decoder, который остаётся private деталью AV1 adapter-а.
@@ -196,6 +197,10 @@ pub(super) struct Av1VaapiCodecAdapter {
 
     /// Codec-owned packet lifetime и partial-consumption accounting.
     temporal_unit_input: Av1TemporalUnitInput,
+
+    /// Время показа: кадр (включая `show_existing_frame`) получает PTS
+    /// temporal unit-а, который его показал, а не unit-а декодирования.
+    presentation_time: TemporalUnitPresentationTime,
 }
 
 impl Av1VaapiCodecAdapter {
@@ -207,6 +212,7 @@ impl Av1VaapiCodecAdapter {
         Ok(Self {
             inner,
             temporal_unit_input: Av1TemporalUnitInput::default(),
+            presentation_time: TemporalUnitPresentationTime::default(),
         })
     }
 }
@@ -242,6 +248,8 @@ impl VaapiCodecAdapter for Av1VaapiCodecAdapter {
             self.temporal_unit_input.settle_after_submit_error(&error);
             return Err(error);
         }
+        // Все кадры, выпущенные до следующего temporal unit-а, показаны этим unit-ом.
+        self.presentation_time.begin_unit(timestamp_us);
 
         let inner = &mut self.inner;
         let pending_temporal_unit = self.temporal_unit_input.pending_temporal_unit_mut()?;
@@ -280,6 +288,7 @@ impl VaapiCodecAdapter for Av1VaapiCodecAdapter {
     /// Flush-ит cros decoder и сначала освобождает partially consumed old-generation input.
     fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
         self.temporal_unit_input.reset_after_flush();
+        self.presentation_time.reset_after_flush();
         self.inner.flush().map_err(VaapiAdapterDecodeError::from)
     }
 
@@ -291,7 +300,10 @@ impl VaapiCodecAdapter for Av1VaapiCodecAdapter {
 
     /// Возвращает следующий cros event в локальном wrapper-е.
     fn next_event(&mut self) -> Option<VaapiDecoderEvent> {
-        self.inner.next_event().map(VaapiDecoderEvent::from)
+        self.inner
+            .next_event()
+            .map(VaapiDecoderEvent::from)
+            .map(|event| self.presentation_time.stamp(event))
     }
 
     /// Возвращает stream info без раскрытия AV1 parser/backend типов.

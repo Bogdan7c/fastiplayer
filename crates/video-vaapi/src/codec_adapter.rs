@@ -136,12 +136,27 @@ impl From<&StreamInfo> for VaapiAdapterStreamInfo {
 pub(crate) struct VaapiDecodedFrameHandle {
     /// Concrete handle остаётся спрятанным внутри adapter module-а.
     inner: DynDecodedHandle<InternalVaapiFrame>,
+
+    /// Время показа (мкс), назначенное adapter-ом поверх timestamp-а cros handle.
+    ///
+    /// `None` значит, что временем показа служит timestamp самого decoded picture
+    /// (H.264/H.265 DPB). AV1/VP9 задают его через `TemporalUnitPresentationTime`.
+    presentation_timestamp_us: Option<u64>,
 }
 
 impl VaapiDecodedFrameHandle {
     /// Создаёт wrapper вокруг cros decoded handle.
     fn new(inner: DynDecodedHandle<InternalVaapiFrame>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            presentation_timestamp_us: None,
+        }
+    }
+
+    /// Назначает время показа кадра, не трогая surface и backing frame.
+    fn with_presentation_timestamp_us(mut self, presentation_timestamp_us: u64) -> Self {
+        self.presentation_timestamp_us = Some(presentation_timestamp_us);
+        self
     }
 
     /// Возвращает coded resolution decoded frame-а.
@@ -154,9 +169,13 @@ impl VaapiDecodedFrameHandle {
         self.inner.display_resolution().into()
     }
 
-    /// Возвращает timestamp frame-а в микросекундах.
+    /// Возвращает время показа frame-а в микросекундах.
+    ///
+    /// Adapter-назначенное время приоритетнее timestamp-а decoded picture: для
+    /// AV1/VP9 `show_existing_frame` у picture остаётся время unit-а декодирования.
     pub(crate) fn timestamp(&self) -> u64 {
-        self.inner.timestamp()
+        self.presentation_timestamp_us
+            .unwrap_or_else(|| self.inner.timestamp())
     }
 
     /// Блокируется до завершения VA decode work.
@@ -317,6 +336,7 @@ mod av1;
 mod factory;
 mod h264;
 mod h265;
+mod presentation_time;
 mod vp9;
 
 pub(crate) use factory::VaapiCodecAdapterFactory;

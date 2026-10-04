@@ -1,8 +1,13 @@
+use super::presentation_time::TemporalUnitPresentationTime;
 use super::*;
 /// Production VP9 adapter поверх существующего cros-codecs decoder-а.
 pub(super) struct Vp9VaapiCodecAdapter {
     /// cros-codecs stateless decoder спрятан за adapter trait-object.
     inner: cros_codecs::decoder::stateless::DynStatelessVideoDecoder<InternalVaapiFrame>,
+
+    /// Время показа: кадр (включая `show_existing_frame`) получает PTS packet-а,
+    /// который его показал, а не packet-а, где его декодировали.
+    presentation_time: TemporalUnitPresentationTime,
 }
 
 /// VP9 сохраняет старую configure-семантику: same-codec config не пересоздаёт decoder.
@@ -23,6 +28,7 @@ impl Vp9VaapiCodecAdapter {
 
         Ok(Self {
             inner: decoder.into_trait_object(),
+            presentation_time: TemporalUnitPresentationTime::default(),
         })
     }
 }
@@ -56,6 +62,9 @@ impl VaapiCodecAdapter for Vp9VaapiCodecAdapter {
         _decode_hints: VaapiPacketDecodeHints,
         frame_pool: &mut DmaFramePool,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
+        // Все кадры, выпущенные до следующего packet-а, показаны этим packet-ом.
+        self.presentation_time.begin_unit(timestamp_us);
+
         let mut alloc_cb = || {
             let frame = frame_pool.alloc_or_allocate();
             if frame.is_none() {
@@ -71,6 +80,7 @@ impl VaapiCodecAdapter for Vp9VaapiCodecAdapter {
 
     /// Flush-ит текущий VP9 decoder state.
     fn flush(&mut self) -> std::result::Result<(), VaapiAdapterDecodeError> {
+        self.presentation_time.reset_after_flush();
         self.inner.flush().map_err(VaapiAdapterDecodeError::from)
     }
 
@@ -81,7 +91,10 @@ impl VaapiCodecAdapter for Vp9VaapiCodecAdapter {
 
     /// Возвращает следующий cros event в локальном wrapper-е.
     fn next_event(&mut self) -> Option<VaapiDecoderEvent> {
-        self.inner.next_event().map(VaapiDecoderEvent::from)
+        self.inner
+            .next_event()
+            .map(VaapiDecoderEvent::from)
+            .map(|event| self.presentation_time.stamp(event))
     }
 
     /// Возвращает stream info без раскрытия cros type-а наружу module-а.
