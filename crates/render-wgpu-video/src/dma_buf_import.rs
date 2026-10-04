@@ -15,7 +15,10 @@ use anyhow::Context;
 use ash::vk;
 use video_core::{DmaBufFrameDescriptor, DmaBufFrameExportLayout, DmaBufLayerDescriptor};
 
+mod image_create_state;
 mod safety;
+#[cfg(test)]
+mod udmabuf_render_tests;
 
 /// Значение VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT из Vulkan headers.
 /// ash 0.38 не экспортирует эту константу напрямую.
@@ -696,6 +699,13 @@ impl DmaBufImporter {
         let mut external_memory_info = vk::ExternalMemoryImageCreateInfo::default()
             .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
 
+        // `MUTABLE_FORMAT` нужен для plane view в форматах R8/RG8 (R16/RG16);
+        // явный список этих форматов требует VUID-VkImageCreateInfo-tiling-02353.
+        let view_formats = image_create_state::multi_planar_view_formats(frame_format)?;
+        let mut view_format_list_info =
+            vk::ImageFormatListCreateInfo::default().view_formats(view_formats.as_slice());
+        let start_state = image_create_state::imported_dma_buf_start_state();
+
         let mut drm_modifier_info = if use_drm_modifier {
             Some(
                 vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
@@ -721,16 +731,18 @@ impl DmaBufImporter {
             .tiling(tiling)
             .usage(vk::ImageUsageFlags::SAMPLED)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::PREINITIALIZED)
-            .push_next(&mut external_memory_info);
+            .initial_layout(start_state.vulkan_initial_layout)
+            .push_next(&mut external_memory_info)
+            .push_next(&mut view_format_list_info);
 
         if let Some(ref mut drm_info) = drm_modifier_info {
             image_info = image_info.push_next(drm_info);
         }
 
         // SAFETY: `image_info` полностью описывает один multi-planar DMA-BUF image:
-        // размер/format берутся из validated descriptor-а, external-memory pNext и
-        // optional DRM modifier pNext живут до завершения вызова, allocator не нужен.
+        // размер/format берутся из validated descriptor-а; external-memory pNext,
+        // список view-форматов (и его `view_formats`) и optional DRM modifier pNext
+        // живут до завершения вызова, allocator не нужен.
         let vk_image = unsafe { raw_device.create_image(&image_info, None)? };
         // SAFETY: `vk_image` только что создан на `raw_device` и ещё не уничтожен, memory
         // к нему не привязана, поэтому requirements можно читать напрямую у Vulkan.
@@ -849,18 +861,16 @@ impl DmaBufImporter {
 
         // SAFETY: `hal_texture` создан из internal handle этого `self.device`, descriptor
         // совпадает с HAL descriptor-ом для публичной wgpu texture, а содержимое уже
-        // инициализировано внешним VA-API producer-ом до импорта.
-        // `initial_state = UNINITIALIZED` — сознательное сохранение семантики wgpu 29,
-        // где этот параметр не передавался и wgpu-core ставил его неявно (миграция из
-        // CHANGELOG wgpu 30, PR #9496). Такой первый барьер не обязан сохранять
-        // содержимое, импортированное от VA-API; корректное значение — отдельная задача
-        // (обновление egui/wgpu, сессия 03).
+        // инициализировано внешним VA-API producer-ом до импорта. `initial_state`
+        // согласован с `initialLayout` image-а (оба «UNDEFINED» для Vulkan), поэтому
+        // tracker wgpu не расходится с реальным layout-ом; обоснование и известное
+        // ограничение — у `imported_dma_buf_start_state`.
         let texture = unsafe {
             self.device
                 .create_texture_from_hal::<wgpu::hal::vulkan::Api>(
                     hal_texture,
                     &wgpu_desc,
-                    wgpu::TextureUses::UNINITIALIZED,
+                    start_state.wgpu_initial_state,
                 )
         };
 
@@ -1016,6 +1026,9 @@ impl DmaBufImporter {
             "single-plane DMA-BUF import",
         )?;
 
+        // Начальное состояние общее с multi-planar путём (Vulkan layout + wgpu tracker).
+        let start_state = image_create_state::imported_dma_buf_start_state();
+
         // 1. Создаём VkImage с external memory handle type.
         let mut external_memory_info = vk::ExternalMemoryImageCreateInfo::default()
             .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
@@ -1089,10 +1102,10 @@ impl DmaBufImporter {
             .tiling(tiling)
             .usage(vk::ImageUsageFlags::SAMPLED)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            // PREINITIALIZED означает что данные уже инициализированы вне Vulkan
-            // (VA-API decoder записал их в DMA-BUF). Это предотвращает потерю данных
-            // при layout transition из UNDEFINED.
-            .initial_layout(vk::ImageLayout::PREINITIALIZED)
+            // Для external memory спецификация допускает только UNDEFINED
+            // (VUID-VkImageCreateInfo-pNext-01443); подробности — у
+            // `imported_dma_buf_start_state`.
+            .initial_layout(start_state.vulkan_initial_layout)
             .push_next(&mut external_memory_info);
 
         // Добавляем DRM modifier info в pNext chain если нужно.
@@ -1245,17 +1258,14 @@ impl DmaBufImporter {
         // SAFETY: `hal_texture` создан из internal handle этого `self.device`, descriptor
         // совпадает с HAL descriptor-ом для публичной wgpu texture, а imported plane уже
         // инициализирована внешним VA-API producer-ом до wrapped WGPU texture.
-        // `initial_state = UNINITIALIZED` — сознательное сохранение семантики wgpu 29,
-        // где этот параметр не передавался и wgpu-core ставил его неявно (миграция из
-        // CHANGELOG wgpu 30, PR #9496). Такой первый барьер не обязан сохранять
-        // содержимое, импортированное от VA-API; корректное значение — отдельная задача
-        // (обновление egui/wgpu, сессия 03).
+        // `initial_state` согласован с `initialLayout` image-а, как и в multi-planar
+        // пути; обоснование — у `imported_dma_buf_start_state`.
         let texture = unsafe {
             self.device
                 .create_texture_from_hal::<wgpu::hal::vulkan::Api>(
                     hal_texture,
                     &wgpu_desc,
-                    wgpu::TextureUses::UNINITIALIZED,
+                    start_state.wgpu_initial_state,
                 )
         };
 

@@ -22,6 +22,9 @@ wgpu-types = "30"
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
 video-present-core = { workspace = true }
+# GPU-тест udmabuf: memfd/ioctl и блокирующее ожидание adapter/device.
+libc = { workspace = true }
+pollster = { workspace = true }
 
 [lints]
 workspace = true
