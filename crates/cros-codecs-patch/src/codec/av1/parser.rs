@@ -3011,11 +3011,15 @@ impl Parser {
         // load_previous(), i.e.: the parts that refer to the global motion
         // parameters.
         if fh.primary_ref_frame == PRIMARY_REF_NONE {
-            // setup_past_independence()
+            // setup_past_independence(): спецификация AV1 сбрасывает
+            // PrevGmParams для ref = LAST_FRAME..=ALTREF_FRAME и i = 0..=5.
+            // Полуоткрытые диапазоны оставляли ALTREF и параметр 5 нулями,
+            // из-за чего следующий global motion декодировался от неверного
+            // reference-значения.
             #[allow(clippy::needless_range_loop)]
-            for ref_frame in ReferenceFrameType::Last as usize..ReferenceFrameType::AltRef as usize
+            for ref_frame in ReferenceFrameType::Last as usize..=ReferenceFrameType::AltRef as usize
             {
-                for i in 0..5 {
+                for i in 0..=5 {
                     prev_gm_params[ref_frame][i] =
                         if i % 3 == 2 { 1 << WARPEDMODEL_PREC_BITS } else { 0 }
                 }
@@ -4249,5 +4253,62 @@ mod tests {
         let warp_params = [0, 0, 1 << WARPEDMODEL_PREC_BITS, 0, 8192, 73728];
 
         assert!(!Parser::setup_shear(&warp_params).unwrap());
+    }
+
+    #[test]
+    fn global_motion_translation_keeps_subexp_offset_for_large_values() {
+        use super::{Reader, WarpModelType, NUM_REF_FRAMES};
+
+        // Битовая строка для subexp с numSyms = 8193 (RotZoom translation):
+        // десять subexp_more_bits = 1 доводят mk до 4096, затем ветка
+        // subexp_final_bits читает ns(4097) = 5. По спецификации 5.9.28
+        // subexp = 5 + mk = 4101, после inverse_recenter и сдвига на
+        // precDiff = 10 параметр равен -2051 << 10. Без `+ mk` получалось
+        // -3 << 10, и VA-драйвер получал неверную warp-матрицу.
+        let global_param_bits = [0xFF, 0xC0, 0x14, 0x00];
+        let mut reader = Reader::new(&global_param_bits);
+        let prev_gm_params = [[0; 6]; NUM_REF_FRAMES];
+        let mut gm_params = [[0; 6]; NUM_REF_FRAMES];
+
+        Parser::read_global_param(
+            &mut reader,
+            WarpModelType::RotZoom,
+            1,     // ref_frame = LAST_FRAME
+            0,     // idx = translation x
+            false, // allow_high_precision_mv
+            &prev_gm_params,
+            &mut gm_params,
+        )
+        .unwrap();
+
+        assert_eq!(gm_params[1][0], -2051 << 10);
+    }
+
+    #[test]
+    fn global_motion_without_primary_ref_uses_identity_for_altref() {
+        use super::{FrameHeaderObu, Reader, ReferenceFrameType, WarpModelType, PRIMARY_REF_NONE};
+
+        // LAST..ALTREF_BWD: is_global = 0; ALTREF: is_global = 1,
+        // is_rot_zoom = 1, затем четыре параметра с subexp = 0 ("0" + f(3) = 000).
+        // При корректном setup_past_independence reference для ALTREF —
+        // identity, поэтому нулевые subexp-коды дают ровно identity-матрицу.
+        // Раньше ALTREF не сбрасывался, и параметр 2 становился 57344.
+        let global_motion_bits = [0x03, 0x00, 0x00, 0x00];
+        let mut reader = Reader::new(&global_motion_bits);
+        let mut parser = Parser::default();
+        let mut frame_header = FrameHeaderObu {
+            frame_is_intra: false,
+            primary_ref_frame: PRIMARY_REF_NONE,
+            ..Default::default()
+        };
+
+        parser.parse_global_motion_params(&mut reader, &mut frame_header).unwrap();
+
+        let altref = ReferenceFrameType::AltRef as usize;
+        let global_motion = &frame_header.global_motion_params;
+        let identity = 1 << WARPEDMODEL_PREC_BITS;
+        assert_eq!(global_motion.gm_type[altref], WarpModelType::RotZoom);
+        assert_eq!(global_motion.gm_params[altref], [0, 0, identity, 0, 0, identity]);
+        assert!(global_motion.warp_valid[altref]);
     }
 }
