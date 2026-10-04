@@ -5699,6 +5699,7 @@ dependencies = [
  "media-core",
  "nix 0.29.0",
  "static_assertions",
+ "symphonia-demux",
  "tracing",
  "video-backend-api",
  "video-core",

@@ -36,6 +36,28 @@ scripts/media-regression.sh \
 resource-release path, проверяет строго возрастающие PTS первых трёх кадров на старте и после
 middle seek, current seek generation, landing `pts >= target` и terminal EOF drain.
 
+## AV1 global motion через VA-API
+
+Аппаратная регрессия зависания AMD VCN из-за неверного разбора AV1 global motion
+(`decode_subexp` без `+ mk`). Нужен MP4 AV1 Main 8-bit с крупными global-motion
+translation и длительностью не меньше 40 s, а также хост с
+`vainfo --display drm` → `VAProfileAV1Profile0 : VAEntrypointVLD`. Эталонный фрагмент:
+yt-dlp формат 399 ролика `JrT1PjOjOjc`, 900–1000 s (в Git не добавляется):
+
+```bash
+url="$(yt-dlp -g -f 399 'https://www.youtube.com/watch?v=JrT1PjOjOjc')"
+ffmpeg -v error -ss 900 -i "$url" -t 100 -c copy -y /tmp/fastiplayer-av1-global-motion.mp4
+
+scripts/media-regression.sh \
+  --scenario av1-mp4-vaapi-global-motion \
+  --path /tmp/fastiplayer-av1-global-motion.mp4
+```
+
+Сценарий открывает файл через `symphonia-demux`, декодирует его production decoder thread-ом
+`video-vaapi` (NV12 DMA-BUF): первые 20 s с начала, затем seek-flush в середину и всё до EOF
+drain. Проверяется, что каждый temporal unit публикует ровно один кадр текущей generation и после
+seek нет кадров раньше decode point. Возврат бага вешает VCN, и Mesa обрывает процесс.
+
 Web-media/app UX is checked separately through the S42 manual runner:
 
 ```bash

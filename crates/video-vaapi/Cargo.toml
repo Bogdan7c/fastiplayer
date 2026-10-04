@@ -24,6 +24,7 @@ gbm-sys = "0.3"
 
 [dev-dependencies]
 static_assertions = "1.1"
+symphonia-demux.workspace = true
 
 [lints]
 workspace = true
