@@ -3,7 +3,6 @@
 //! Jobs готовят media параллельно state inspection. Этот модуль хранит результат
 //! до allocator gate и не выдаёт Item ID, dirty revision или desktop signal.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use player_core::PlaybackIntent;
@@ -15,6 +14,7 @@ use crate::state::PreparedSingleMediaOpen;
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
 
 use super::StartupMediaController;
+use super::pending_install::{StartupLocalTarget, StartupSiblingDiscovery};
 
 /// Чья подготовка сейчас владеет единственным startup media slot-ом.
 pub(super) enum StartupMediaTarget {
@@ -62,8 +62,8 @@ pub(super) struct StartupMediaOrchestration {
 pub(super) struct StartupPendingInstall {
     /// CLI failure может открыть сохранённый fallback только для proven pre-barrier terminal.
     pub(super) is_cli: bool,
-    /// Только успешный CLI local target запускает sibling discovery после domain commit-а.
-    pub(super) local_discovery: Option<(PathBuf, playlist_discovery::LocalMediaKind)>,
+    /// Локальный файл (CLI или восстановленный): имя для текста ошибки и sibling discovery.
+    pub(super) local_target: Option<StartupLocalTarget>,
     /// Newer user/CLI mutation wins observable startup result while old receipts are drained.
     pub(super) superseded: bool,
 }
@@ -475,7 +475,14 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_discovery: is_cli.then_some((path, media_kind)),
+                            local_target: Some(StartupLocalTarget {
+                                path,
+                                sibling_discovery: if is_cli {
+                                    StartupSiblingDiscovery::AfterInstall(media_kind)
+                                } else {
+                                    StartupSiblingDiscovery::Skip
+                                },
+                            }),
                             superseded: false,
                         });
                     })
@@ -550,7 +557,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_discovery: None,
+                            local_target: None,
                             superseded: false,
                         });
                     })
@@ -577,7 +584,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_discovery: None,
+                            local_target: None,
                             superseded: false,
                         });
                     })
@@ -609,7 +616,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_discovery: None,
+                            local_target: None,
                             superseded: false,
                         });
                     })
@@ -641,7 +648,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_discovery: None,
+                            local_target: None,
                             superseded: false,
                         });
                     })
@@ -673,7 +680,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_discovery: None,
+                            local_target: None,
                             superseded: false,
                         });
                     })
@@ -705,7 +712,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_discovery: None,
+                            local_target: None,
                             superseded: false,
                         });
                     })

@@ -29,7 +29,7 @@ const GENERIC_AUTOMATIC_TARGET_FAILURE_SUMMARY: &str =
 /// Что показать в строке очереди, когда подготовка элемента не удалась.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PlaylistTargetFailureSummary {
-    /// Причина неизвестна (сеть, player, протокол): прежнее поведение — общий текст
+    /// Причина неизвестна (сеть, протокол): прежнее поведение — общий текст
     /// для автоперехода и отсутствие бейджа для ручной навигации.
     Generic,
     /// Понятная пользователю причина, уже сформулированная `crate::local_open_message`.

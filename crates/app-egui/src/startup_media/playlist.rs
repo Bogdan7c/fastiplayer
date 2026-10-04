@@ -76,7 +76,7 @@ impl StartupMediaController {
                         playlist_runtime.begin_startup_action_retention();
                         self.orchestration.pending_install = Some(StartupPendingInstall {
                             is_cli: true,
-                            local_discovery: None,
+                            local_target: None,
                             superseded: false,
                         });
                         self.orchestration.phase = StartupMediaPhase::Applying;

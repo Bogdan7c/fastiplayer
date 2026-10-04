@@ -1,12 +1,66 @@
 //! Terminal policy renderer-bound startup install без preparation ownership.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::media_open::ActiveMediaSource;
-use crate::state::{StrongMediaOpenError, StrongMediaOpenPoll};
+use crate::state::{StrongMediaOpenError, StrongMediaOpenPoll, StrongMediaOpenUserOutcome};
 
 use super::StartupMediaController;
 use super::orchestration::StartupMediaPhase;
+
+/// Локальный файл, который устанавливает startup (CLI или восстановленный элемент).
+pub(super) struct StartupLocalTarget {
+    /// Путь нужен только для имени файла в тексте ошибки и для sibling discovery;
+    /// в лог он не попадает.
+    pub(super) path: PathBuf,
+    /// Искать ли соседние файлы после успешной установки.
+    pub(super) sibling_discovery: StartupSiblingDiscovery,
+}
+
+/// Решение о sibling discovery после успешной startup-установки локального файла.
+pub(super) enum StartupSiblingDiscovery {
+    /// Только CLI target запускает поиск соседей после domain commit-а.
+    AfterInstall(playlist_discovery::LocalMediaKind),
+    /// Восстановленный элемент очереди: очередь уже есть, соседей не ищем.
+    Skip,
+}
+
+/// Тексты неудачной startup-установки: для окна и для бейджа строки очереди.
+struct StartupInstallFailureTexts {
+    /// Сообщение в окне.
+    user_message: String,
+    /// Короткая причина для строки восстановленного элемента очереди.
+    row_summary: String,
+}
+
+/// Строит тексты ошибки startup-установки без побочных эффектов.
+///
+/// Для локального файла с известной причиной — тот же шаблон, что у кнопки Open
+/// («Не удалось открыть «clip.mkv»: формат видео не поддерживается»); неклассифицированная
+/// ошибка локального файла — «внутренняя ошибка плеера». Для web-источников окно показывает
+/// прежний технический текст (web — сессия 08), а бейдж строки — причину, если она известна.
+fn startup_install_failure_texts(
+    error: &StrongMediaOpenError,
+    local_target: Option<&StartupLocalTarget>,
+) -> StartupInstallFailureTexts {
+    let technical_text = error.to_string();
+    let row_summary = error.user_failure_reason().map_or_else(
+        || technical_text.clone(),
+        crate::local_open_message::local_open_failure_row_summary,
+    );
+    let user_message = match (local_target, error.user_outcome()) {
+        (Some(target), StrongMediaOpenUserOutcome::Failed(reason)) => {
+            crate::local_open_message::local_open_failure_message(&target.path, reason)
+        }
+        // Отмена без supersede и web-ошибки: прежнее поведение (см. риски сессии 03).
+        (Some(_), StrongMediaOpenUserOutcome::Silent) | (None, _) => technical_text,
+    };
+    StartupInstallFailureTexts {
+        user_message,
+        row_summary,
+    }
+}
 
 /// Разрешённая terminal policy не позволяет флагу supersede скрыть fatal outcome.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,7 +124,10 @@ impl StartupMediaController {
                 ) {
                     tracing::info!("Startup direct media Installed");
                 }
-                if let Some((path, media_kind)) = pending_context.local_discovery
+                if let Some(StartupLocalTarget {
+                    path,
+                    sibling_discovery: StartupSiblingDiscovery::AfterInstall(media_kind),
+                }) = pending_context.local_target
                     && let Err(error) = playlist_runtime
                         .start_sibling_discovery_for_installed_target(path, media_kind)
                 {
@@ -101,6 +158,8 @@ impl StartupMediaController {
             }
             StrongMediaOpenPoll::Failed(error) => {
                 let safe_error = error.to_string();
+                let failure_texts =
+                    startup_install_failure_texts(&error, pending_context.local_target.as_ref());
                 let failure_policy =
                     startup_install_failure_policy(&error, pending_context.superseded);
                 // Restore fallback может сразу перейти к следующему item и не дойти до общего
@@ -135,13 +194,17 @@ impl StartupMediaController {
                             && let Some(next) = playlist_runtime
                                 .report_startup_restore_install_failure(
                                     request_id,
-                                    Arc::<str>::from(safe_error.clone()),
+                                    Arc::<str>::from(failure_texts.row_summary),
                                 )
                         {
                             self.start_restored_target(next, app_state, playlist_runtime);
                             return true;
                         }
-                        self.handle_install_failure(safe_error, pending_context.is_cli, app_state);
+                        self.handle_install_failure(
+                            failure_texts.user_message,
+                            pending_context.is_cli,
+                            app_state,
+                        );
                         true
                     }
                     StartupInstallFailurePolicy::StickyFatal => {
@@ -208,5 +271,69 @@ mod tests {
             ),
             StartupInstallFailurePolicy::StickyFatal
         );
+    }
+
+    fn player_failed(
+        reason: crate::media_open::PlayerInstallFailureReason,
+    ) -> StrongMediaOpenError {
+        StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::PlayerFailed {
+            request_id: MediaOpenRequestId::from_non_zero(NonZeroU64::MIN),
+            reason,
+        })
+    }
+
+    fn local_target(path: &str) -> StartupLocalTarget {
+        StartupLocalTarget {
+            path: PathBuf::from(path),
+            sibling_discovery: StartupSiblingDiscovery::Skip,
+        }
+    }
+
+    /// CLI/восстановленный локальный файл получает тот же текст, что и кнопка Open.
+    #[test]
+    fn local_startup_player_failure_names_file_and_reason() {
+        let error =
+            player_failed(crate::media_open::PlayerInstallFailureReason::NoSuitableVideoDecoder);
+        let target = local_target("/home/private-parent-dir/movie.mkv");
+
+        let texts = startup_install_failure_texts(&error, Some(&target));
+
+        assert_eq!(
+            texts.user_message,
+            "Не удалось открыть «movie.mkv»: нет подходящего видеодекодера (проверьте настройку декодера)"
+        );
+        assert_eq!(
+            texts.row_summary,
+            "Нет подходящего видеодекодера (проверьте настройку декодера)"
+        );
+        assert!(!texts.user_message.contains("private-parent-dir"));
+    }
+
+    /// Web-источник (имени файла нет) сохраняет прежний технический текст до сессии 08,
+    /// но строка очереди уже получает понятную причину.
+    #[test]
+    fn web_startup_player_failure_keeps_technical_message_but_readable_row() {
+        let error =
+            player_failed(crate::media_open::PlayerInstallFailureReason::UnsupportedVideoFormat);
+
+        let texts = startup_install_failure_texts(&error, None);
+
+        assert_eq!(texts.user_message, error.to_string());
+        assert_eq!(texts.row_summary, "Формат видео не поддерживается");
+    }
+
+    /// Неклассифицированная ошибка не превращается в выдуманную причину для строки.
+    #[test]
+    fn unclassified_startup_failure_keeps_previous_texts() {
+        let error = StrongMediaOpenError::MissingTerminal;
+        let target = local_target("/videos/clip.mkv");
+
+        let texts = startup_install_failure_texts(&error, Some(&target));
+
+        assert_eq!(
+            texts.user_message,
+            "Не удалось открыть «clip.mkv»: внутренняя ошибка плеера"
+        );
+        assert_eq!(texts.row_summary, error.to_string());
     }
 }

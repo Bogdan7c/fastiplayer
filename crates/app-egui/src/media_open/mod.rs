@@ -7,11 +7,13 @@ mod coordinator;
 mod executor;
 pub(crate) mod local;
 mod native_hds_preparation;
+mod player_failure;
 mod player_port;
 mod preload_budget;
 mod preparation;
 mod speculative;
 mod types;
+mod user_failure;
 mod web;
 
 #[allow(unused_imports)] // Public mechanism inventory becomes consumed by Session 10D/11A.
@@ -43,6 +45,7 @@ pub(crate) use media_source_open::native_web_source::smooth::{
 pub(crate) use media_source_open::prepared_web_media::{
     PreparedWebMediaAttachments, PreparedWebMediaSeekAttachment, compose_prepared_web_media,
 };
+pub(crate) use player_failure::PlayerInstallFailureReason;
 pub(crate) use preload_budget::QueuePreloadResourceBudget;
 pub(crate) use preparation::{
     merge_yt_dlp_playlist_metadata, prepare_source_synchronously, service_duration_for_timeline,
@@ -62,6 +65,7 @@ pub(crate) use types::{
     PreparedMediaOpen, PreparedPlaylistCacheUpdate, SafeMediaLabel,
     SameLineagePositionPreparationPhase,
 };
+pub(crate) use user_failure::MediaOpenUserFailureReason;
 pub(crate) use web::{
     DirectResourceSettingsAction, PreparedWebMediaEnvelope, WebMediaOpenRequest,
     WebMediaOpenSettings, WebMediaSelectionSwitchIntent, WebMediaSelectionSwitchResolution,

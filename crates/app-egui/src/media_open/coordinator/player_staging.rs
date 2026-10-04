@@ -1,5 +1,45 @@
 use super::*;
 
+/// Причина terminal-а, который player опубликовал до `ReadyToCommit`.
+///
+/// До сессии 03 completion здесь только проверялся на наличие и выбрасывался, поэтому
+/// пользователь не узнавал, почему файл не открылся. Семантика фаз не меняется: любой
+/// terminal на стадии staging по-прежнему завершает request как `PlayerFailed`.
+/// Неожиданный `Installed`/`Cancelled` до Ready — нарушение ожиданий протокола, а не
+/// свойство файла, поэтому для пользователя это внутренняя ошибка.
+fn player_staging_completion_reason(
+    completion: &MediaInstallCompletion,
+) -> PlayerInstallFailureReason {
+    match completion {
+        MediaInstallCompletion::Failed { failure, .. } => reported_player_failure_reason(failure),
+        MediaInstallCompletion::Installed { .. } | MediaInstallCompletion::Cancelled { .. } => {
+            tracing::warn!(
+                ?completion,
+                "Player опубликовал не-Failed terminal до ReadyToCommit"
+            );
+            PlayerInstallFailureReason::InternalError
+        }
+    }
+}
+
+/// Классифицирует опубликованный player-ом отказ и пишет технические детали в лог.
+///
+/// Текст `PlayerError` и стадия нужны для диагностики, но не для экрана: в тексте для
+/// пользователя остаётся только классифицированная причина.
+pub(super) fn reported_player_failure_reason(
+    failure: &player_core::MediaInstallFailure,
+) -> PlayerInstallFailureReason {
+    let reason = PlayerInstallFailureReason::from_install_failure(failure);
+    tracing::warn!(
+        stage = ?failure.stage,
+        kind = ?failure.error.kind,
+        player_error = %failure.error.message,
+        ?reason,
+        "Player отказался установить media"
+    );
+    reason
+}
+
 pub(super) const fn same_lineage_position(
     expected_old_media_instance_id: player_core::MediaInstanceId,
 ) -> MediaOpenPositionPreparation {
@@ -76,8 +116,14 @@ impl MediaOpenCoordinator {
                 Ok(player_request_id)
             }
             Err(rejection) => {
+                // Различие «переполнено / поток завершился» остаётся в логе и в
+                // возвращаемой ошибке команды; пользователь видит «player не отвечает».
+                tracing::warn!(?rejection, "Player не принял команду установки media");
                 current.phase = MediaOpenPhase::Failed;
-                current.terminal = Some(MediaOpenTerminalOutcome::PlayerRejected { request_id });
+                current.terminal = Some(MediaOpenTerminalOutcome::PlayerRejected {
+                    request_id,
+                    reason: PlayerInstallFailureReason::from_dispatch_rejection(rejection),
+                });
                 Err(MediaOpenCommandError::PlayerDispatch(rejection))
             }
         }
@@ -172,10 +218,11 @@ impl MediaOpenCoordinator {
             .install_receipt
             .as_ref()
             .expect("PlayerStaging must own install receipt");
-        if receipt.take_completion().is_some() {
+        if let Some(completion) = receipt.take_completion() {
             current.phase = MediaOpenPhase::Failed;
             current.terminal = Some(MediaOpenTerminalOutcome::PlayerFailed {
                 request_id: current.request_id,
+                reason: player_staging_completion_reason(&completion),
             });
             return true;
         }

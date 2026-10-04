@@ -3,6 +3,8 @@
 //! Traversal/plan остаются в `PlaylistRuntime`; здесь живут только app candidate resources,
 //! coordinator request correlation и player receipts, нужные renderer owner-у.
 
+#[cfg(test)]
+mod failure_summary_tests;
 mod guarded_transport;
 mod lifecycle_settlement;
 
@@ -700,12 +702,13 @@ fn desktop_seek_request_id(
 
 /// Переводит ошибку strong open в текст для строки очереди.
 ///
-/// Понятную причину пока умеют давать только локальные файлы; для остальных отказов
-/// остаётся прежнее общее поведение (сетевые причины — отдельная сессия плана UX).
+/// Понятную причину дают отказ подготовки локального файла (сессия 02) и отказ player-а
+/// установить media (сессия 03); для остальных отказов остаётся прежнее общее поведение
+/// (сетевые причины — отдельная сессия плана UX).
 fn playlist_target_failure_summary(
     error: &StrongMediaOpenError,
 ) -> crate::playlist_runtime::PlaylistTargetFailureSummary {
-    match error.local_open_failure_reason() {
+    match error.user_failure_reason() {
         Some(reason) => {
             crate::playlist_runtime::PlaylistTargetFailureSummary::Specific(std::sync::Arc::from(
                 crate::local_open_message::local_open_failure_row_summary(reason),

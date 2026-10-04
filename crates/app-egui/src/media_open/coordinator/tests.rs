@@ -19,6 +19,7 @@ use crate::media_open::{
     PreparedWebMediaEnvelope, SafeMediaLabel, WebMediaSourceIntent,
 };
 
+mod player_failure_tests;
 mod same_lineage_tests;
 
 #[derive(Default)]

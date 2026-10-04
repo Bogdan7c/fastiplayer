@@ -515,17 +515,21 @@ impl MediaPreparationFailureKind {
 }
 
 impl MediaOpenTerminalOutcome {
-    /// Пользовательская причина отказа локального файла на этапе подготовки.
+    /// Пользовательская причина неудачного открытия, если она классифицирована.
     ///
-    /// `None` для любых других исходов (успех, отмена, отказ player-а, нелокальный отказ).
-    pub(crate) const fn local_open_failure_reason(&self) -> Option<super::LocalOpenFailureReason> {
+    /// `Some` — отказ подготовки локального файла или отказ player-а установить media.
+    /// `None` — успех, отмена, fatal-нарушение протокола или нелокальный отказ подготовки
+    /// (web-причины — сессия 08): вызывающий код сам решает, что показать.
+    pub(crate) const fn user_failure_reason(&self) -> Option<super::MediaOpenUserFailureReason> {
         match self {
-            Self::PreparationFailed { kind, .. } => kind.local_open_failure_reason(),
-            Self::Installed { .. }
-            | Self::Cancelled { .. }
-            | Self::PlayerRejected { .. }
-            | Self::PlayerFailed { .. }
-            | Self::FatalInvariant { .. } => None,
+            Self::PreparationFailed { kind, .. } => match kind.local_open_failure_reason() {
+                Some(reason) => Some(super::MediaOpenUserFailureReason::Preparation(reason)),
+                None => None,
+            },
+            Self::PlayerRejected { reason, .. } | Self::PlayerFailed { reason, .. } => {
+                Some(super::MediaOpenUserFailureReason::PlayerInstall(*reason))
+            }
+            Self::Installed { .. } | Self::Cancelled { .. } | Self::FatalInvariant { .. } => None,
         }
     }
 }
@@ -562,15 +566,21 @@ pub(crate) enum MediaOpenTerminalOutcome {
     },
     PreparationFailed {
         request_id: MediaOpenRequestId,
-        /// Вид отказа. Production читает его через `local_open_failure_reason()`, чтобы
+        /// Вид отказа. Production читает его через `user_failure_reason()`, чтобы
         /// строка плейлиста показала понятную причину локальной ошибки.
         kind: MediaPreparationFailureKind,
     },
+    /// Команда установки не дошла до player-а (очередь переполнена / поток завершился).
     PlayerRejected {
         request_id: MediaOpenRequestId,
+        /// Всегда `PlayerNotResponding`; поле есть, чтобы UI брал причину из одного места.
+        reason: super::PlayerInstallFailureReason,
     },
+    /// Player получил media и отказался его установить до commit barrier-а.
     PlayerFailed {
         request_id: MediaOpenRequestId,
+        /// Классифицированная причина отказа; технические детали уже записаны в лог.
+        reason: super::PlayerInstallFailureReason,
     },
     FatalInvariant {
         request_id: MediaOpenRequestId,

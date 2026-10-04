@@ -27,7 +27,7 @@ use super::{
     MediaOpenInvariantViolation, MediaOpenPhase, MediaOpenPositionPreparation, MediaOpenRequestId,
     MediaOpenSnapshot, MediaOpenSourceRequest, MediaOpenStartError, MediaOpenStartMode,
     MediaOpenStartOutcome, MediaOpenTerminalOutcome, MediaPreparationFailureKind,
-    PreparedMediaDescriptor, PreparedMediaOpen, SafeMediaLabel,
+    PlayerInstallFailureReason, PreparedMediaDescriptor, PreparedMediaOpen, SafeMediaLabel,
     SameLineagePositionPreparationPhase,
 };
 
@@ -645,7 +645,11 @@ impl MediaOpenCoordinator {
                     .install_receipt
                     .as_ref()
                     .and_then(|receipt| receipt.take_completion());
-                let Some(MediaInstallCompletion::Failed { request_id, .. }) = completion else {
+                let Some(MediaInstallCompletion::Failed {
+                    request_id,
+                    failure,
+                }) = completion
+                else {
                     self.publish_fatal(
                         MediaOpenInvariantViolation::MissingTerminalAfterPlayerControl,
                     );
@@ -658,6 +662,7 @@ impl MediaOpenCoordinator {
                 current.phase = MediaOpenPhase::Failed;
                 current.terminal = Some(MediaOpenTerminalOutcome::PlayerFailed {
                     request_id: current.request_id,
+                    reason: player_staging::reported_player_failure_reason(&failure),
                 });
             }
             _ => {

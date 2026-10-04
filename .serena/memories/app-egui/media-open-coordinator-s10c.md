@@ -132,6 +132,14 @@ Normal coordinator preparation, startup orchestration and settings rebuild now a
 ## UX02 typed local failure reason (2026-10-04)
 - `MediaOpenTerminalOutcome::PreparationFailed.kind` стал production-полем; `MediaPreparationFailureKind::LocalOpen` несёт `LocalOpenFailureReason`. Фазы/barrier coordinator-а не менялись. Контракт: `mem:app-egui/local-open-error-messages-ux02`.
 
+## UX03 typed player install failure reason (2026-10-04)
+- `MediaOpenTerminalOutcome::PlayerRejected { request_id, reason }` / `PlayerFailed { request_id, reason }`, где `reason: PlayerInstallFailureReason` (`media_open/player_failure.rs`, Copy: UnsupportedVideoFormat, UnsupportedAudioFormat, NoSuitableVideoDecoder, PreparationTimedOut, PlayerNotResponding, InternalError). Фазы/barrier/compensation не менялись; Rejected (transport Full/Disconnected, всегда PlayerNotResponding) и Failed остаются разными вариантами.
+- Классификация — app-side, исчерпывающий match по `player_core::PlayerErrorKind` без `_` (новый kind в player-core требует явного решения); стадия `VideoPreflightTimeout` побеждает kind. player-core НЕ получил новых типов: он уже публикует `MediaInstallFailure { stage, error: PlayerError }`.
+- Точки бывшей потери причины: `coordinator/player_staging.rs::drain_player_staging` (теперь `player_staging_completion_reason`; неожиданный Installed/Cancelled до Ready по-прежнему → `PlayerFailed`, причина InternalError) и `coordinator.rs` ветка `AuthorizationRejectedBeforeCommit` (`reported_player_failure_reason`). Технические детали (stage/kind/message) пишутся `warn!` здесь, player-core сам `Failed` не логирует.
+- Общая причина для текстов: `media_open::MediaOpenUserFailureReason { Preparation(LocalOpenFailureReason), PlayerInstall(PlayerInstallFailureReason) }` с `From`; `MediaOpenTerminalOutcome::user_failure_reason()` заменил `local_open_failure_reason()` на terminal-уровне.
+- Тесты: `media_open/coordinator/tests/player_failure_tests.rs` (fake Failed/Cancelled/AuthorizationRejectedBeforeCommit/stage rejection + реальный `PlayerWorker` с неизвестным видеокодеком → UnsupportedVideoFormat, старое media остаётся), `media_open/player_failure/tests.rs`.
+- Ожидание terminal на UI-потоке (`wait_until_signal_available`, blocking `recv()`) таймаута не имеет; ограничено только player-owned `staged_video_preflight_timeout` (15 s) → кнопка Open может «подвесить» окно до ~15 s. Зафиксировано, не исправлено.
+
 ## S42 dedicated coordinator tests (2026-08-27)
 - Coordinator inline unit tests now live in `crates/app-egui/src/media_open/coordinator/tests.rs`; the parent declares private `#[cfg(test)] mod tests;`.
 - Existing `same_lineage_tests` remains a child of that logical tests module at `crates/app-egui/src/media_open/coordinator/tests/same_lineage_tests.rs`.

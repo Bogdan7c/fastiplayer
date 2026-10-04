@@ -76,6 +76,7 @@ mod strong_media_open;
 mod suspended_media_resume;
 pub(crate) use strong_media_open::{
     InstalledSingleMediaOpen, PreparedSingleMediaOpen, StrongMediaOpenError, StrongMediaOpenPoll,
+    StrongMediaOpenUserOutcome,
 };
 mod telemetry_panel;
 mod timeline_inline_status;

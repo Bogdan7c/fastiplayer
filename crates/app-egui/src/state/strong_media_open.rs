@@ -4,7 +4,8 @@
 //! request phases, player — atomic install, а `AppState` — renderer pointers.
 
 mod compensation;
-mod local_failure_reason;
+mod user_failure_reason;
+pub(crate) use user_failure_reason::StrongMediaOpenUserOutcome;
 mod pending;
 pub(super) use pending::PendingStrongMediaOpen;
 

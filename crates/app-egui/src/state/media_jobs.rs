@@ -30,6 +30,30 @@ impl AppState {
         self.player_worker.command_sender()
     }
 
+    /// Сообщает пользователю, почему подготовленный локальный файл не установился.
+    ///
+    /// Раньше любая ошибка показывалась как «worker недоступен: …» с debug-дампом, хотя чаще всего
+    /// worker доступен и сам отказал (например, кодек не поддерживается). Теперь причина
+    /// берётся из типизированного исхода; отмена и «занято» — не ошибка для пользователя.
+    /// Функция только сообщает: старое воспроизведение при отказе до commit barrier-а не
+    /// затронуто, а ошибки после barrier-а уже обработала compensation strong-open-а.
+    fn report_prepared_local_install_failure(
+        &mut self,
+        path: &std::path::Path,
+        error: &crate::state::StrongMediaOpenError,
+    ) {
+        // Имя файла — только в тексте для пользователя, в лог его не пишем.
+        match error.user_outcome() {
+            crate::state::StrongMediaOpenUserOutcome::Silent => {
+                info!(error = %error, "Установка локального файла отменена или coordinator занят");
+            }
+            crate::state::StrongMediaOpenUserOutcome::Failed(reason) => {
+                warn!(error = %error, ?reason, "Не удалось установить подготовленный файл");
+                self.set_startup_error(local_open_failure_message(path, reason));
+            }
+        }
+    }
+
     /// Доставляет уже подготовленный локальный media в worker после async UI opening-а.
     pub(crate) fn load_prepared_local_file(
         &mut self,
@@ -72,12 +96,7 @@ impl AppState {
             player_core::PlaybackIntent::StartPaused,
             backend_constraint,
         ) {
-            let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
-            // Имя файла — только в тексте для пользователя, в лог его не пишем.
-            warn!(error = %error, "Не удалось отправить подготовленный файл в worker");
-            self.set_startup_error(format!(
-                "Ошибка открытия media-файла {safe_label}: worker недоступен: {error}"
-            ));
+            self.report_prepared_local_install_failure(&path, &error);
             return false;
         }
 

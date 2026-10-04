@@ -5,20 +5,31 @@
 //! одинаково. Причину определяет `media_open::LocalOpenFailureReason` (классификация
 //! живёт рядом с ошибкой), а здесь — только превращение причины в русский текст.
 //!
+//! Причины бывают двух стадий (`MediaOpenUserFailureReason`): подготовка файла (сессия 02)
+//! и отказ player-а установить уже подготовленный файл (сессия 03). Обе идут через одни и
+//! те же функции, поэтому шаблон «Не удалось открыть «clip.mkv»: …» везде одинаковый.
+//!
 //! Политика приватности (решение владельца 1а): показываем имя файла, но не путь к
 //! папке. Имя строит `safe_local_open_label`.
 
 use std::path::Path;
 
-use crate::media_open::LocalOpenFailureReason;
+use crate::media_open::{
+    LocalOpenFailureReason, MediaOpenUserFailureReason, PlayerInstallFailureReason,
+};
 use crate::playlist_runtime::safe_local_open_label;
 
 /// Сообщение об ошибке открытия: «Не удалось открыть «clip.mkv»: файл не найден».
-pub(crate) fn local_open_failure_message(path: &Path, reason: LocalOpenFailureReason) -> String {
+///
+/// Принимает и `LocalOpenFailureReason`, и `PlayerInstallFailureReason` (через `Into`).
+pub(crate) fn local_open_failure_message(
+    path: &Path,
+    reason: impl Into<MediaOpenUserFailureReason>,
+) -> String {
     let file_label = safe_local_open_label(path);
     format!(
         "Не удалось открыть «{file_label}»: {}",
-        failure_reason_phrase(reason)
+        failure_reason_phrase(reason.into())
     )
 }
 
@@ -31,12 +42,36 @@ pub(crate) fn local_open_preparing_message(path: &Path) -> String {
 /// Короткая причина для бейджа строки плейлиста: «Файл не найден».
 ///
 /// Имя файла не добавляется — строка очереди уже показывает его рядом.
-pub(crate) fn local_open_failure_row_summary(reason: LocalOpenFailureReason) -> String {
-    capitalize_first_letter(failure_reason_phrase(reason))
+pub(crate) fn local_open_failure_row_summary(
+    reason: impl Into<MediaOpenUserFailureReason>,
+) -> String {
+    capitalize_first_letter(failure_reason_phrase(reason.into()))
 }
 
 /// Человеческая формулировка причины, со строчной буквы (идёт после двоеточия).
-const fn failure_reason_phrase(reason: LocalOpenFailureReason) -> &'static str {
+const fn failure_reason_phrase(reason: MediaOpenUserFailureReason) -> &'static str {
+    match reason {
+        MediaOpenUserFailureReason::Preparation(reason) => preparation_failure_phrase(reason),
+        MediaOpenUserFailureReason::PlayerInstall(reason) => player_install_failure_phrase(reason),
+    }
+}
+
+/// Формулировки отказа player-а (таблица утверждена владельцем в сессии 03).
+const fn player_install_failure_phrase(reason: PlayerInstallFailureReason) -> &'static str {
+    match reason {
+        PlayerInstallFailureReason::UnsupportedVideoFormat => "формат видео не поддерживается",
+        PlayerInstallFailureReason::UnsupportedAudioFormat => "формат звука не поддерживается",
+        PlayerInstallFailureReason::NoSuitableVideoDecoder => {
+            "нет подходящего видеодекодера (проверьте настройку декодера)"
+        }
+        PlayerInstallFailureReason::PreparationTimedOut => "файл читается слишком долго",
+        PlayerInstallFailureReason::PlayerNotResponding => "плеер не отвечает, попробуйте ещё раз",
+        PlayerInstallFailureReason::InternalError => "внутренняя ошибка плеера",
+    }
+}
+
+/// Формулировки отказа подготовки локального файла (таблица сессии 02).
+const fn preparation_failure_phrase(reason: LocalOpenFailureReason) -> &'static str {
     match reason {
         LocalOpenFailureReason::FileNotFound => "файл не найден",
         LocalOpenFailureReason::AccessDenied => "нет доступа к файлу",

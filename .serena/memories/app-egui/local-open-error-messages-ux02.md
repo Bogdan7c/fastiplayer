@@ -18,8 +18,11 @@
 - Сквозные на реальных файлах через `prepare_local_open`: `local_open_message/tests.rs` (нет файла, chmod 000 с пропуском под root, каталог, пустой, текст-мусор, PNG→.mp4, обрезанный TS/MP4, `/`, non-UTF-8, отмена; родитель `private-parent-dir` не попадает в текст).
 - Классификация: `media_open/local/failure/tests.rs`; job: `local_file_open::tests::preparation_job_reports_typed_reason_for_missing_file`; coordinator: `media_open/preparation/tests.rs::missing_local_file_preparation_carries_user_reason_for_playlist_row`; плейлист-бейдж: `playlist_runtime::transport_execution::tests` (manual Specific, automatic Generic).
 
+## Сессия 03 (2026-10-04)
+- Тексты расширены причинами отказа player-а: `local_open_failure_message`/`local_open_failure_row_summary` принимают `impl Into<MediaOpenUserFailureReason>` (старые вызовы с `LocalOpenFailureReason` не менялись). Файл `state/strong_media_open/local_failure_reason.rs` переименован в `user_failure_reason.rs`: `StrongMediaOpenError::user_failure_reason()` (бейдж строки) и `user_outcome() -> StrongMediaOpenUserOutcome { Silent, Failed(reason) }` (Busy/Cancelled → Silent, неклассифицированное → InternalError). «worker недоступен» удалён (`AppState::report_prepared_local_install_failure`). Startup: `StartupPendingInstall.local_target: Option<StartupLocalTarget { path, sibling_discovery: StartupSiblingDiscovery }>` + `startup_install_failure_texts`. Детали: `mem:app-egui/media-open-coordinator-s10c` (UX03).
+
 ## Вне объёма (другие сессии / бэклог)
-- «worker недоступен» (сессия 03), английский текст пересборки после смены настроек (`settings_runtime_adapter`), стартовый pending «Подготовка local media...» без имени.
+- английский текст пересборки после смены настроек (`settings_runtime_adapter`), стартовый pending «Подготовка local media...» без имени.
 
 ## Старт (после приёмки)
 - `StartupMediaController::handle_preparation_failure` = лог + `publish_preparation_failure(user_message, row_summary)`; локальный старт — `orchestration/drain.rs::handle_local_preparation_failure` (лог только `reason`, бейдж restored-строки = короткая причина). Не логировать текст для пользователя локальных ошибок: он содержит имя файла.
