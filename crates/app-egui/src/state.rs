@@ -389,6 +389,7 @@ impl AppState {
     ) -> anyhow::Result<Self> {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_theme(egui::Theme::Dark);
+        crate::ui::egui_behavior::apply_app_egui_behavior(&egui_ctx);
 
         let viewport_id = egui_ctx.viewport_id();
         let egui_winit_state = egui_winit::State::new(

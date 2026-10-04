@@ -180,7 +180,7 @@ pub(crate) fn show(ui: &mut Ui, input: WindowChromeInput<'_>) -> WindowChromeOut
     egui::Panel::top(titlebar_panel_id())
         .exact_size(input.height_points)
         .frame(egui::Frame::NONE.fill(input.style.fill))
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             let chrome_rect = ui.max_rect();
             let icon_alignment = input.edge_alignment.left_icon_alignment(chrome_rect);
             let icon_output = titlebar_icon_area::show(

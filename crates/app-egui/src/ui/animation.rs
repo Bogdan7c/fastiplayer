@@ -1,11 +1,10 @@
 //! Состояние UI-анимаций и тонкие egui-адаптеры над нейтральной математикой.
 
-use std::hash::Hash;
 use std::time::Duration;
 
 use animation_core::Easing;
 use animation_core::visibility::{VisibilityEffect, VisibilitySample};
-use egui::{Id, Ui};
+use egui::{AsIdSalt, Id, Ui};
 use media_core::TimelineSnapshot;
 
 /// Authoritative цель visibility-перехода без неочевидного позиционного `bool`.
@@ -78,7 +77,7 @@ impl VisibilityAnimation {
     ///
     /// `id_salt` должен быть стабильным для одного логического элемента
     /// и уникальным среди соседних visibility-анимаций.
-    pub(crate) fn new(ui: &Ui, id_salt: impl Hash, spec: VisibilityAnimationSpec) -> Self {
+    pub(crate) fn new(ui: &Ui, id_salt: impl AsIdSalt, spec: VisibilityAnimationSpec) -> Self {
         Self {
             id: ui.make_persistent_id(id_salt),
             spec,

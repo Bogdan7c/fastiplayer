@@ -19,7 +19,7 @@ mod component_variants_tests;
 
 /// Рисует active web-media configuration и возвращает один same-item intent.
 pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) -> Option<UrlSidebarAction> {
-    egui::ScrollArea::vertical()
+    crate::ui::egui_behavior::vertical_scroll_area()
         .id_salt("url_stream_configuration_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {

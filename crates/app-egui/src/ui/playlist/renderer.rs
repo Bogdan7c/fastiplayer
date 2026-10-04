@@ -148,7 +148,7 @@ pub(super) fn show_rows(
         .or(drag_offset)
         .or(accent_scroll_offset)
         .or_else(|| anchored_scroll_offset(model, state, row_pitch));
-    let mut scroll_area = egui::ScrollArea::vertical()
+    let mut scroll_area = crate::ui::egui_behavior::vertical_scroll_area()
         .id_salt("playlist_rows_scroll")
         .auto_shrink([false, false]);
     if let Some(anchored_offset) = anchored_offset {

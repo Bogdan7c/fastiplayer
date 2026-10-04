@@ -793,7 +793,7 @@ impl AppState {
         let mut confirmation_action = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 if let Some(model) = playlist_confirmation {
                     confirmation_action =
                         crate::ui::queue_replacement_confirmation::render(ui, model);

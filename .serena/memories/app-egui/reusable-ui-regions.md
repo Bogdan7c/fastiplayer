@@ -45,6 +45,12 @@
 
 Текущая реализация и конкретные sidebar-инварианты: `mem:app-egui/sidebar-controller`. Painter boundary: `mem:app-egui/artwork-boundary`.
 
+## Глобальное поведение egui (с 2026-10-04, egui 0.35)
+
+- Единственный владелец глобальных настроек поведения egui — `crates/app-egui/src/ui/egui_behavior.rs`. `apply_app_egui_behavior(&Context)` вызывается один раз в `AppState::new` после `set_theme` и через `all_styles_mut` фиксирует прежнее (egui 0.34) поведение: `animation_time = 6/60 с`, `visuals.clip_rect_margin = 3.0`, `visuals.ime_composition.legacy_visuals = true`. Решение владельца: поведение UI при обновлениях egui не меняется; новые дефолты egui нейтрализуются здесь, а не по месту виджетов. Цвета/размеры controls по-прежнему в `ui::skin`.
+- Все вертикальные `ScrollArea` приложения создаются только через `egui_behavior::vertical_scroll_area()` (= `ScrollSource::ALL`, прокрутка перетаскиванием мышью как в 0.34; в 0.35 по умолчанию только touch). Guard-тест запрещает прямой `ScrollArea::vertical(` вне модуля и ожидает ровно 6 использований (settings layout ×2, URL, sidebar Info, playlist, telemetry) — при добавлении новой ScrollArea обновить число.
+- Функциональные тесты в модуле (анимация 0.1 с, clip-запас 3pt, mouse drag-scroll, IME без подчёркиваний) проверены мутацией: при дефолтах egui 0.35 падают. Panel-ы используют `show` (`show_inside` deprecated в 0.35); `show_collapsible`/`show_switched` (слайд, drag-to-close, double-click toggle) не используются — у сайдбара собственная анимация.
+
 ## S24 concrete URL entity (2026-07-22)
 
 - URL stream configuration подтверждает host/entity boundary: новый `ui/url_sidebar.rs` является только content renderer-ом `SidebarSection::Url`; единственный `egui::Panel::left(app_sidebar)` остаётся в `ui/sidebar.rs`.

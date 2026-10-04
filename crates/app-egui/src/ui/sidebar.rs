@@ -190,7 +190,7 @@ fn show_sidebar_host(
         .frame(egui::Frame::NONE.fill(SIDEBAR_FILL));
 
     let mut sidebar_rect = egui::Rect::NOTHING;
-    let _response = panel.show_inside(ui, |ui| {
+    let _response = panel.show(ui, |ui| {
         // Содержимое не имеет права задавать minimum width владельцу Panel.
         ui.set_min_width(0.0);
         let panel_rect = ui.max_rect();
@@ -281,7 +281,7 @@ fn content_child(
     ui: &mut Ui,
     panel_rect: egui::Rect,
     content_rect: egui::Rect,
-    id_salt: impl std::hash::Hash,
+    id_salt: impl egui::AsIdSalt,
 ) -> Ui {
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -322,7 +322,7 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
                 *context.url_action = url_sidebar::show(ui, context.url_model);
             }
             SidebarSection::Info => {
-                egui::ScrollArea::vertical()
+                crate::ui::egui_behavior::vertical_scroll_area()
                     .id_salt("info_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {

@@ -1,7 +1,7 @@
 //! Layout окна настроек: единый vertical settings list и command footer.
 
 use egui::collapsing_header::CollapsingState;
-use egui::{Button, Layout, RichText, ScrollArea, Ui};
+use egui::{Button, Layout, RichText, Ui};
 use settings_core::{SettingGroupId, SettingSectionId};
 
 use super::{
@@ -26,7 +26,7 @@ pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAc
             Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_min_height(status_height);
-                ScrollArea::vertical()
+                crate::ui::egui_behavior::vertical_scroll_area()
                     .id_salt("settings_status")
                     .auto_shrink([false, false])
                     .max_height(status_height)
@@ -51,7 +51,7 @@ pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAc
                 .filter(|field| field.descriptor.placement.section == selected_section.section)
                 .collect();
 
-            ScrollArea::vertical()
+            crate::ui::egui_behavior::vertical_scroll_area()
                 .id_salt(selected_section.section.as_str())
                 .auto_shrink([false, false])
                 .show(ui, |ui| {

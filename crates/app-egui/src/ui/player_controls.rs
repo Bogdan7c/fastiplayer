@@ -90,7 +90,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
 
     egui::Panel::bottom(panel_id)
         .frame(skin.bottom_panel_frame())
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             timeline::render_time_labels(
                 ui,
                 &player_snapshot.timeline,

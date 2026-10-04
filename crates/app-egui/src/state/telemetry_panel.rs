@@ -200,7 +200,7 @@ impl AppState {
             .default_size(280.0)
             .size_range(220.0..=520.0)
             .frame(telemetry_frame)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.heading("Telemetry");
                 ui.separator();
 
@@ -213,7 +213,7 @@ impl AppState {
                     row.append_to_layout_job(&mut job, font_id.clone());
                 }
 
-                egui::ScrollArea::vertical()
+                crate::ui::egui_behavior::vertical_scroll_area()
                     .id_salt("telemetry_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
