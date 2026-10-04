@@ -1,5 +1,7 @@
 # S00: безопасный backup и вынос `user/` (2026-09-04)
 
+> **Отменено решением владельца 2026-10-05:** `user/` снова в репозитории как публичные markdown-планы сессий, правило `/user/` из `.gitignore` удалено. Ниже — история S00; запрет «не возвращать документы под `user/`» больше не действует. Текущее правило: `mem:core` (раздел «Открытые направления»).
+
 - S00 публичного launch-плана завершён commit `a57a29d28015f2f74e095d1841cabbf39704035e` (`chore: move private user docs outside repository`), parent/pre-S00 HEAD: `c2adea8bcbfa6fbd546231b076c5359790288aee`.
 - History rewrite, push, remote-ref mutation и очистка stash/worktrees не выполнялись. После commit `main` был `ahead 1` относительно `origin/main`, рабочее дерево чистое.
 - `user/` отсутствует в working tree и index; корневое tracked-правило `/user/` в `.gitignore` запрещает случайное повторное добавление. Будущие сессии не должны возвращать приватные документы под `user/`.

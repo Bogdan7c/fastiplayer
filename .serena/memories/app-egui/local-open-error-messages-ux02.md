@@ -1,6 +1,6 @@
 # Понятные ошибки открытия локального файла (UX edge cases, сессия 02, 2026-10-04)
 
-План: `user/ux-edge-cases/02-local-open-error-messages.md`, итог: `user/ux-edge-cases/results/02.md` (приватно).
+План: `user/ux-edge-cases/02-local-open-error-messages.md`, итог: `user/ux-edge-cases/results/02.md`.
 
 ## Владельцы и границы
 - Классификация (бизнес-решение) — `app-egui/src/media_open/local/failure.rs`: `LocalOpenFailureReason` (Copy, без пути/текста ОС; FileNotFound, AccessDenied, IsDirectory, EmptyFile, UnrecognizedFormat, DamagedOrTruncated, ReadFailed, ReadTimedOut, NoAudioOrVideo, ChangedDuringOpen, InternalError), `LocalOpenFailureOutcome { Cancelled, Failed(reason) }` (отмена — не ошибка), `PrepareLocalOpenError::user_outcome()` и `diagnostic_chain()` (явный обход `Error::source()` для лога: thiserror `Display`/`{:#}` цепочку не печатает). Матчи по `DemuxOpenError`/`DemuxProbeRejection`/`DemuxFactoryOpenError` исчерпывающие (у enum-ов нет `non_exhaustive`) — новый вариант в demux-api потребует явного решения.

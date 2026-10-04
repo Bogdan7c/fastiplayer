@@ -82,3 +82,11 @@ The following are prohibited:
 - Hardcoding configuration.
 - Mixing input/output, business logic, and formatting.
 - Writing "magic" code without an explanation.
+
+## Session plans in `user/`
+
+Multi-session plans live in `user/<plan-name>/` and are public: the owner deliberately shares this AI-assisted workflow with the community.
+
+- A plan contains a `README.md` (owner decisions, shared rules, order, backlog), one Markdown file per session, and `results/NN.md` exit reports.
+- Only Markdown goes into `user/`. Never commit binaries, builds, logs, screenshots, media, secrets, cookies, tokens, or absolute personal paths outside the repository; keep such artifacts in a session scratchpad or another untracked location.
+- Session reports and plans are written for a public reader: no private data, but owner decisions and their reasons are welcome.
