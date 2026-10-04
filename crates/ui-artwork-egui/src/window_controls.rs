@@ -78,7 +78,7 @@ mod tests {
     fn painted_shapes(glyph: WindowControlGlyph, state: ButtonVisualState) -> Vec<ClippedShape> {
         let style = WindowControlStyle {
             fill: Color32::BLACK,
-            stroke: Stroke::new(1.0, Color32::WHITE),
+            stroke: Stroke::new(1.0_f32, Color32::WHITE),
             hover_fill: Color32::GRAY,
         };
         let output = Context::default().run_ui(RawInput::default(), |ui| {

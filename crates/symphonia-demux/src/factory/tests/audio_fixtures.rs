@@ -86,7 +86,9 @@ fn generated_wav_pcm() -> AudioContainerFixture {
 fn generated_aiff_pcm() -> AudioContainerFixture {
     let sample_data_le = pcm_samples_little_endian();
     let sample_data_be = sample_data_le
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .flat_map(|sample| [sample[1], sample[0]])
         .collect::<Vec<_>>();
     let form_size = 4_u32 + 8 + 18 + 8 + 8 + sample_data_be.len() as u32;

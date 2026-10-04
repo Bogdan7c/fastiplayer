@@ -286,7 +286,7 @@ fn undersized_output_capacity_returns_typed_buffer_overflow() -> Result<()> {
     assert!(matches!(
         error,
         TimestretchTempoError::Backend {
-            source: StretchError::BufferOverflow { .. }
+            stretch_error: StretchError::BufferOverflow { .. }
         }
     ));
 

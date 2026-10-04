@@ -458,7 +458,7 @@ fn with_iso_bmff_brand_family(mut body: Vec<u8>, brand: [u8; 4]) -> Vec<u8> {
     let ftyp_size = u32::from_be_bytes(body[0..4].try_into().expect("ftyp size bytes")) as usize;
     assert!(ftyp_size >= 16 && ftyp_size <= body.len());
     body[8..12].copy_from_slice(&brand);
-    for compatible_brand in body[16..ftyp_size].chunks_exact_mut(4) {
+    for compatible_brand in body[16..ftyp_size].as_chunks_mut::<4>().0 {
         compatible_brand.copy_from_slice(&brand);
     }
     body

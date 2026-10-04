@@ -1,7 +1,5 @@
 //! Вертикальная регрессия Ogg/Vorbis и forward-seek поверх active HTTP fetch-а.
 
-use std::io::Read as _;
-
 use base64::Engine as _;
 use flate2::read::GzDecoder;
 

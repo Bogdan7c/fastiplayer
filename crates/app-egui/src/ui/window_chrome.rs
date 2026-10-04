@@ -69,7 +69,7 @@ impl WindowChromeStyle {
         Self {
             fill: controls_style.top_panel_fill,
             title_color: controls_style.text_color,
-            icon_stroke: Stroke::new(1.6, controls_style.text_color),
+            icon_stroke: Stroke::new(1.6_f32, controls_style.text_color),
             button_hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
             close_hover_fill: Color32::from_rgb(196, 43, 43),
         }
@@ -495,7 +495,7 @@ mod tests {
         WindowChromeStyle {
             fill: Color32::from_rgba_unmultiplied(0, 0, 0, 145),
             title_color: Color32::WHITE,
-            icon_stroke: Stroke::new(1.0, Color32::WHITE),
+            icon_stroke: Stroke::new(1.0_f32, Color32::WHITE),
             button_hover_fill: Color32::from_gray(32),
             close_hover_fill: Color32::from_rgb(196, 43, 43),
         }

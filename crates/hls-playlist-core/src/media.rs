@@ -126,7 +126,7 @@ fn parse_iv(value: &str, line: HlsLineNumber) -> Result<[u8; 16], HlsParseError>
     }
     normalized.push_str(hex);
     let start = 16 - normalized.len() / 2;
-    for (index, pair) in normalized.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in normalized.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let text = std::str::from_utf8(pair).map_err(|_| syntax(line))?;
         padded[start + index] = u8::from_str_radix(text, 16).map_err(|_| syntax(line))?;
     }

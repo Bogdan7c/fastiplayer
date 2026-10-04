@@ -15,7 +15,7 @@ pub(super) enum ResolvedCandidateIntent {
 /// Выдаёт non-zero generation отдельному dynamic timeline port-у.
 pub fn next_dynamic_timeline_port_generation() -> Result<DynamicMediaTimelinePortGeneration> {
     let generation_value = NEXT_DYNAMIC_TIMELINE_PORT_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .map_err(|_| anyhow!("dynamic timeline port generation space исчерпан"))?;
@@ -35,7 +35,7 @@ pub(super) fn allocate_component_variant_catalog_generation(
     allocator: &AtomicU64,
 ) -> Result<web_media_core::ComponentVariantCatalogGeneration> {
     let generation_value = allocator
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .map_err(|_| anyhow!("component variant catalog generation space исчерпан"))?;

@@ -44,7 +44,7 @@ impl ExtractionGenerationAllocator {
     fn allocate(&self) -> Result<ExtractionGeneration, DashEndpointRefreshError> {
         let previous = self
             .last_issued
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .map_err(|_| DashEndpointRefreshError::AttemptsExhausted)?;

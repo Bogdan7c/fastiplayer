@@ -355,7 +355,7 @@ prepare_binary() {
         selected_binary_origin="explicit-external-prebuilt"
     else
         # Default workflow компилирует ровно production app package на pinned primary Rust.
-        cargo +1.96.0 build --release -p app-egui --locked
+        cargo +1.99.0 build --release -p app-egui --locked
         # Build обязан создать canonical executable до network/GUI запуска.
         if [[ ! -x "${DEFAULT_FASTIPLAYER_BINARY}" ]]; then
             print_error "release build не создал executable fastiplayer"

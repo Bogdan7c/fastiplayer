@@ -54,7 +54,7 @@ GPU, VA display, звуковое устройство и окно не треб
 Toolchain-policy matrix устанавливает тот же workspace minimum явно, включая
 прямой `libdrm-dev`: ALSA, libavcodec/libavutil, VA-API/DRM/GBM,
 clang/libclang и pkg-config. `Format and guardrails` отдельно устанавливает
-exact Rust 1.96.0 + `rustfmt`, а `Strict Clippy` — exact Rust 1.96.0 +
+exact Rust 1.99.0 + `rustfmt`, а `Strict Clippy` — exact Rust 1.99.0 +
 `clippy`, поэтому quality jobs не зависят от состава runner tool cache.
 
 Совместимость cros-libva с системными headers проверяется по обе стороны

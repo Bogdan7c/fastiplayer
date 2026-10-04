@@ -45,12 +45,12 @@ POLICY = load_policy_module()
 def write_policy_fixture(
     repository_root: Path,
     *,
-    workspace_msrv: str = "1.92",
+    workspace_msrv: str = "1.99",
     member_edition: str = "edition.workspace = true",
     member_rust_version: str = "rust-version.workspace = true",
     member_license: str = "license.workspace = true",
     metadata_edition: str = "2024",
-    metadata_rust_version: str = "1.92",
+    metadata_rust_version: str = "1.99",
     metadata_license: str = "MIT",
 ) -> dict[str, object]:
     """Создаёт минимальный workspace и соответствующий Cargo metadata fixture."""
@@ -70,7 +70,7 @@ def write_policy_fixture(
     # Toolchain file повторяет expected production pin и required quality components.
     (repository_root / "rust-toolchain.toml").write_text(
         "[toolchain]\n"
-        'channel = "1.96.0"\n'
+        'channel = "1.99.0"\n'
         'profile = "minimal"\n'
         'components = ["rustfmt", "clippy"]\n',
         encoding="utf-8",
@@ -130,7 +130,7 @@ class ToolchainPolicyTests(unittest.TestCase):
             metadata = write_policy_fixture(repository_root, workspace_msrv="1.85")
             # Rendered diagnostics проверяют user-actionable reason вместо implementation detail.
             messages = [violation.render() for violation in POLICY.validate_policy(repository_root, metadata)]
-            self.assertTrue(any('`rust-version` должен быть ровно "1.92"' in message for message in messages))
+            self.assertTrue(any('`rust-version` должен быть ровно "1.99"' in message for message in messages))
 
     def test_member_must_inherit_both_workspace_fields(self) -> None:
         """Literal member edition или rust-version не обходят root owner."""
@@ -143,7 +143,7 @@ class ToolchainPolicyTests(unittest.TestCase):
             metadata = write_policy_fixture(
                 repository_root,
                 member_edition='edition = "2024"',
-                member_rust_version='rust-version = "1.92"',
+                member_rust_version='rust-version = "1.99"',
             )
             # Diagnostics must name both missing inheritance fields.
             messages = [violation.render() for violation in POLICY.validate_policy(repository_root, metadata)]

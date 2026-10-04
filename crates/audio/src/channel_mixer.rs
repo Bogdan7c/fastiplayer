@@ -110,7 +110,7 @@ impl ChannelMixer {
                 }
             }
             ChannelMixPlan::StereoWithSilentExtraChannels => {
-                for input_frame in input_samples.chunks_exact(2) {
+                for input_frame in input_samples.as_chunks::<2>().0 {
                     output_samples.extend_from_slice(input_frame);
                     output_samples.extend(std::iter::repeat_n(0.0, self.output_channels - 2));
                 }

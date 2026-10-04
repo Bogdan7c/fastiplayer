@@ -114,7 +114,7 @@ require_output "${success_output}" "version=2099.12.31"
 require_output "${success_output}" "PASSED: system yt-dlp compatibility"
 # Exact Cargo test target доказывает связь shell runner-а с real-system Rust boundary test.
 require_output "$(<"${CARGO_ARGUMENTS_LOG}")" \
-    "+1.96.0 test -p service-ytdlp --locked --test system_ytdlp_compatibility system_ytdlp_reaches_candidate_and_topology_boundaries -- --ignored --exact --nocapture"
+    "+1.99.0 test -p service-ytdlp --locked --test system_ytdlp_compatibility system_ytdlp_reaches_candidate_and_topology_boundaries -- --ignored --exact --nocapture"
 
 # Cargo failure моделирует несовместимый system runtime либо rejected production output.
 if cargo_failure_output="$(env \

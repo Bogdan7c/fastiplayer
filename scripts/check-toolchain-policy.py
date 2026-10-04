@@ -3,7 +3,7 @@
 
 Скрипт намеренно не реализует общий semver parser. Он закрепляет принятые
 точные значения manifest/toolchain и читает Cargo locked metadata, тогда как
-реальная сборка CI на Rust 1.92 остаётся источником истины для crates без
+реальная сборка CI на Rust 1.99 остаётся источником истины для crates без
 объявленного `rust_version`.
 """
 
@@ -19,9 +19,9 @@ from typing import Any, Mapping, Sequence
 
 
 # Решение владельца: это единственный допустимый MSRV всего workspace.
-APPROVED_MSRV = "1.92"
+APPROVED_MSRV = "1.99"
 # Решение владельца: это закреплённый основной toolchain разработки и CI.
-APPROVED_PRIMARY_TOOLCHAIN = "1.96.0"
+APPROVED_PRIMARY_TOOLCHAIN = "1.99.0"
 # Единая edition должна наследоваться каждым workspace member из root manifest.
 APPROVED_EDITION = "2024"
 # First-party workspace members наследуют единый SPDX identifier владельца.

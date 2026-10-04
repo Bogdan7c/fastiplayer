@@ -800,7 +800,7 @@ impl TsFixtureBuilder {
     ) -> Self {
         let encoded_pes = Self::new().pes(pid, pts, None, elementary).finish();
         let null_payload = [0_u8; 184];
-        for encoded_packet in encoded_pes.chunks_exact(188) {
+        for encoded_packet in encoded_pes.as_chunks::<188>().0 {
             self.bytes.extend_from_slice(encoded_packet);
             for _ in 0..null_packets_between_payload_packets {
                 self.push_payload(0x1fff, false, &null_payload);

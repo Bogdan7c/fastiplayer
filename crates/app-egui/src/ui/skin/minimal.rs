@@ -150,8 +150,8 @@ impl PlayerSkin for MinimalSkin {
             // Active title совпадает по тону с marker-ом без цветного theme accent.
             active_title_color: Color32::from_rgb(245, 245, 245),
             separator_color: Color32::from_rgba_unmultiplied(255, 255, 255, 128),
-            insertion_stroke: egui::Stroke::new(1.5, light_stroke),
-            focus_stroke: egui::Stroke::new(1.0, light_stroke),
+            insertion_stroke: egui::Stroke::new(1.5_f32, light_stroke),
+            focus_stroke: egui::Stroke::new(1.0_f32, light_stroke),
         }
     }
 
@@ -168,7 +168,7 @@ impl PlayerSkin for MinimalSkin {
             surface_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
             surface_pressed: Color32::from_rgba_unmultiplied(255, 255, 255, 56),
             focus_outline: egui::Stroke::new(
-                1.5,
+                1.5_f32,
                 Color32::from_rgba_unmultiplied(245, 245, 245, 220),
             ),
             focus_inset: 1.5,
@@ -197,7 +197,7 @@ impl PlayerSkin for MinimalSkin {
             surface_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
             surface_pressed: Color32::from_rgba_unmultiplied(255, 255, 255, 56),
             focus_outline: egui::Stroke::new(
-                1.5,
+                1.5_f32,
                 Color32::from_rgba_unmultiplied(245, 245, 245, 220),
             ),
             focus_inset: 1.5,

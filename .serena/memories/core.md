@@ -4,7 +4,7 @@
 
 ## Проект
 - Rust-медиаплеер, Linux-first, `v0.1.0-alpha.1` опубликован. Имя и контракт переименования: `mem:project-identity/fastiplayer-2026-09-05`.
-- Стек и toolchain (Rust 1.96, MSRV 1.92, edition 2024): `mem:tech_stack`.
+- Стек и toolchain (Rust 1.99, MSRV 1.99, edition 2024): `mem:tech_stack`.
 - Правила кода и комментариев: `mem:conventions`. Порядок завершения задачи и проверки: `mem:task_completion`; команды: `mem:suggested_commands`; песочница тестов: `mem:testing/sandbox_policy`.
 - Как вести память: `mem:memory_maintenance` (core = граф ссылок, не журнал).
 

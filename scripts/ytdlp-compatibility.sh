@@ -151,7 +151,7 @@ main() {
     if ! env \
         "PATH=${compatibility_directory}:${PATH}" \
         "FASTIPLAYER_SYSTEM_YT_DLP_EXECUTABLE=${yt_dlp_executable}" \
-        cargo +1.96.0 test \
+        cargo +1.99.0 test \
         -p service-ytdlp \
         --locked \
         --test system_ytdlp_compatibility \

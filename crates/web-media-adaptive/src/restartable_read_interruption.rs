@@ -141,7 +141,7 @@ impl AdaptiveRestartableReadInterruption {
         let previous_identity = self
             .shared
             .next_attempt_identity
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < MAXIMUM_ATTEMPT_IDENTITY).then_some(current.saturating_add(1))
             })
             .map_err(|_| AdaptiveRestartableReadAttemptError::IdentitySpaceExhausted)?;

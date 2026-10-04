@@ -83,7 +83,7 @@ impl AudioClock {
 
         let frozen_at_origin_ns = self.frozen_at_origin_ns.load(Ordering::Relaxed);
         let paused_ns = self.current_origin_ns().saturating_sub(frozen_at_origin_ns);
-        let _ = self.paused_origin_offset_ns.fetch_update(
+        let _ = self.paused_origin_offset_ns.try_update(
             Ordering::AcqRel,
             Ordering::Acquire,
             |offset_ns| Some(offset_ns.saturating_add(paused_ns)),

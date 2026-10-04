@@ -17,9 +17,9 @@ readonly REPO_ROOT="${repo_root}"
 readonly CARGO_DENY_VERSION="0.20.2"
 readonly CARGO_MACHETE_VERSION="0.9.2"
 # Primary toolchain используется явно, чтобы локальный override не менял release gate.
-readonly PRIMARY_RUST_TOOLCHAIN="1.96.0"
+readonly PRIMARY_RUST_TOOLCHAIN="1.99.0"
 # MSRV проверяется отдельным compiler release, а не только полем rust-version.
-readonly MSRV_RUST_TOOLCHAIN="1.92.0"
+readonly MSRV_RUST_TOOLCHAIN="1.99.0"
 # Явный inventory ограничивает cargo-machete first-party workspace и исключает patch crates.
 readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/animation-core
@@ -107,7 +107,7 @@ Checks:
   docs                     Strict workspace/all-features rustdoc.
   tests                    Workspace/all-features tests without fail-fast.
   app-no-default-features  Compile app-egui without its default FFmpeg feature.
-  msrv                     Compile the workspace with the supported Rust 1.92.0.
+  msrv                     Compile the workspace with the supported Rust 1.99.0.
   all                      Run every blocking check in the order used locally.
 EOF
 }

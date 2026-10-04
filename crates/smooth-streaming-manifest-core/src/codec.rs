@@ -106,7 +106,7 @@ fn decode_even_hex(
         });
     }
     let mut decoded = Vec::with_capacity(decoded_len);
-    for pair in encoded_hex.as_bytes().chunks_exact(2) {
+    for pair in encoded_hex.as_bytes().as_chunks::<2>().0 {
         check_cancelled(is_cancelled)?;
         let high = hex_nibble(pair[0])?;
         let low = hex_nibble(pair[1])?;

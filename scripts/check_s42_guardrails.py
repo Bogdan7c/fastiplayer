@@ -37,7 +37,7 @@ from s42_f4f_guardrail import (
 # Metadata всегда строится exact primary Rust и не может изменить Cargo.lock.
 METADATA_COMMAND = (
     "cargo",
-    "+1.96.0",
+    "+1.99.0",
     "metadata",
     "--locked",
     "--no-deps",

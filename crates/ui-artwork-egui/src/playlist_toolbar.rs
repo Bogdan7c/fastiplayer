@@ -362,7 +362,7 @@ mod tests {
             icon_extent: 16.0,
             glyph_stroke_width: 1.5,
             surface_corner_radius: 4.0,
-            focus_outline: Stroke::new(1.5, Color32::WHITE),
+            focus_outline: Stroke::new(1.5_f32, Color32::WHITE),
             focus_inset: 1.5,
         }
     }

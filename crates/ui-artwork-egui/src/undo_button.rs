@@ -207,7 +207,7 @@ mod tests {
             glyph_height: 18.0,
             glyph_stroke_width: 2.0,
             surface_corner_radius: 4.0,
-            focus_outline: Stroke::new(1.5, Color32::WHITE),
+            focus_outline: Stroke::new(1.5_f32, Color32::WHITE),
             focus_inset: 1.5,
         }
     }

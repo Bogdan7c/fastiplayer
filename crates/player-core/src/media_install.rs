@@ -75,7 +75,7 @@ static NEXT_MEDIA_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 )]
 fn allocate_process_identity(counter: &AtomicU64, identity_name: &str) -> NonZeroU64 {
     let raw_identity = counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .unwrap_or_else(|_| panic!("{identity_name} identity space exhausted"));

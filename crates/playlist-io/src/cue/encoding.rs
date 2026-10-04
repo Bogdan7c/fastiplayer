@@ -35,7 +35,9 @@ fn decode_utf16(bytes: &[u8], little_endian: bool) -> Result<String, CueParseErr
         return Err(unsupported_encoding());
     }
     let units = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let encoded = [pair[0], pair[1]];
             if little_endian {

@@ -320,7 +320,7 @@ mod tests {
 
     fn playback_rate_style() -> PlaybackRateButtonStyle {
         PlaybackRateButtonStyle {
-            outline: Stroke::new(1.5, Color32::WHITE),
+            outline: Stroke::new(1.5_f32, Color32::WHITE),
             hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
             text_color: Color32::WHITE,
             font_id: FontId::proportional(14.0),
@@ -331,7 +331,7 @@ mod tests {
         QueueModeControlStyle {
             icon_extent: 18.0,
             glyph_stroke_width: 1.6,
-            focus_outline: Stroke::new(1.5, Color32::from_rgba_unmultiplied(245, 245, 245, 220)),
+            focus_outline: (1.5, Color32::from_rgba_unmultiplied(245, 245, 245, 220)).into(),
             focus_inset: 1.5,
         }
     }
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn media_kind_glyphs_are_visually_distinct_and_deterministic() {
-        let stroke = Stroke::new(1.0, Color32::WHITE);
+        let stroke = Stroke::new(1.0_f32, Color32::WHITE);
         let unknown_shapes = painted_shape_count(|painter| {
             painter.media_kind_icon(rect(), MediaKindGlyph::Unknown, stroke);
         });
@@ -662,7 +662,7 @@ mod tests {
                 ArtworkPainter::new(ui.painter()).media_kind_icon(
                     cell_rect,
                     glyph,
-                    Stroke::new(1.0, Color32::WHITE),
+                    Stroke::new(1.0_f32, Color32::WHITE),
                 );
             });
 
@@ -707,7 +707,7 @@ mod tests {
                 Stroke::NONE,
             );
             // Focus outline сохраняет отдельный overlay boundary.
-            artwork.playlist_row_outline(row_rect, Stroke::new(1.0, Color32::WHITE));
+            artwork.playlist_row_outline(row_rect, Stroke::new(1.0_f32, Color32::WHITE));
             // Marker рисуется отдельной shape без layout или interaction.
             artwork.playlist_row_marker(row_rect, marker_style);
         });
@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn volume_and_fullscreen_variants_remain_distinct() {
-        let stroke = Stroke::new(2.0, Color32::WHITE);
+        let stroke = Stroke::new(2.0_f32, Color32::WHITE);
         let audible = painted_shape_count(|p| {
             p.volume_button(
                 rect(),

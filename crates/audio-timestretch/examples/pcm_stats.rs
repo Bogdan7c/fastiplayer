@@ -73,7 +73,7 @@ fn main() -> Result<()> {
         for (second, chunk) in sample.samples.chunks(frames_per_sec * channels).enumerate() {
             let (mut l, mut r) = (0.0f64, 0.0f64);
             let mut count = 0usize;
-            for f in chunk.chunks_exact(2) {
+            for f in chunk.as_chunks::<2>().0 {
                 l += f64::from(f[0]) * f64::from(f[0]);
                 r += f64::from(f[1]) * f64::from(f[1]);
                 count += 1;
@@ -166,7 +166,7 @@ fn stereo_imbalance(samples: &[f32], channels: usize, window: usize) -> (f32, f3
     let mut count = 0usize;
     for w in samples.chunks_exact(channels * window) {
         let (mut l, mut r) = (0.0f64, 0.0f64);
-        for f in w.chunks_exact(2) {
+        for f in w.as_chunks::<2>().0 {
             l += f64::from(f[0]) * f64::from(f[0]);
             r += f64::from(f[1]) * f64::from(f[1]);
         }
@@ -199,7 +199,7 @@ fn stereo_correlation(samples: &[f32], channels: usize, window: usize) -> (f32, 
     let mut count = 0usize;
     for w in samples.chunks_exact(channels * window) {
         let (mut ll, mut rr, mut lr) = (0.0f64, 0.0f64, 0.0f64);
-        for f in w.chunks_exact(2) {
+        for f in w.as_chunks::<2>().0 {
             let (l, r) = (f64::from(f[0]), f64::from(f[1]));
             ll += l * l;
             rr += r * r;

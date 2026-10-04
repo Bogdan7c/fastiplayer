@@ -21,7 +21,7 @@ from typing import Any
 
 METADATA_COMMAND = (
     "cargo",
-    "+1.96.0",
+    "+1.99.0",
     "metadata",
     "--locked",
     "--no-deps",

@@ -138,10 +138,14 @@ pub enum TimestretchTempoError {
     BoundaryInvariant { message: String },
 
     /// Concrete backend сохранил typed `timestretch` error для диагностики.
-    #[error("timestretch backend failed: {source}")]
+    #[error("timestretch backend failed: {stretch_error}")]
     Backend {
+        // Поле намеренно не называется `source`: `thiserror` генерирует в `From`
+        // инициализатор `source: source` со span-ом этого поля, и clippy 1.99
+        // ложно считает его нашим `redundant_field_names`. `#[from]` всё равно
+        // делает поле источником ошибки для `std::error::Error::source()`.
         #[from]
-        source: StretchError,
+        stretch_error: StretchError,
     },
 }
 

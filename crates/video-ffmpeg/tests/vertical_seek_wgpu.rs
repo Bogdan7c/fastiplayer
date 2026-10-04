@@ -309,7 +309,9 @@ impl OffscreenWgpuHarness {
             .take(usize::try_from(TARGET_HEIGHT).expect("height помещается"))
             .any(|row| {
                 row[..visible_row_bytes]
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)
             });
         drop(mapped_bytes);

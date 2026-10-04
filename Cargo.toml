@@ -138,7 +138,7 @@ opt-level = 3
 [workspace.package]
 version = "0.1.0-alpha.1"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.99"
 license = "MIT"
 
 # Машинная проверка docs/panic-invariant-policy.md для first-party crate-ов.

@@ -176,7 +176,6 @@ impl PlaylistController {
                     request_id,
                     token,
                     desired_modes,
-                    queue_revision_before_commit: _,
                     ..
                 } = guarded;
                 match token.abort(&mut self.queue) {

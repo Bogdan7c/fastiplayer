@@ -589,7 +589,9 @@ fn decode_hex_payload(packet_hex: &str) -> Vec<u8> {
 
     packet_hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|byte_digits| {
             let byte_text = std::str::from_utf8(byte_digits)
                 .expect("VP9 fixture hex payload должен быть ASCII/UTF-8");

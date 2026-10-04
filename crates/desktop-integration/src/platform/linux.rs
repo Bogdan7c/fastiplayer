@@ -298,7 +298,7 @@ impl MprisPlayerInterface {
     fn next_request_id(&self) -> fdo::Result<DesktopCommandRequestId> {
         let value = self
             .next_request_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .map_err(|_| fdo::Error::Failed("desktop request id exhausted".to_string()))?;

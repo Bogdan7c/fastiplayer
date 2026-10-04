@@ -61,7 +61,7 @@ See the [compatibility matrix](docs/web-media-compatibility-matrix.md) and [reco
 ## Quick start
 
 
-Build prerequisites: Linux x86_64, a Vulkan-capable GPU/driver, Rust **1.96.0** from [rust-toolchain.toml](rust-toolchain.toml), a C/C++ toolchain, `clang`/`libclang`, `pkg-config`, and development headers for ALSA, FFmpeg, GBM/DRM, and VA-API. The locked MSRV check uses Rust **1.92.0**.
+Build prerequisites: Linux x86_64, a Vulkan-capable GPU/driver, Rust **1.99.0** from [rust-toolchain.toml](rust-toolchain.toml), a C/C++ toolchain, `clang`/`libclang`, `pkg-config`, and development headers for ALSA, FFmpeg, GBM/DRM, and VA-API. The locked MSRV check uses Rust **1.99.0**.
 
 Ubuntu 24.04 package names, aligned with the repository's CI prerequisites:
 

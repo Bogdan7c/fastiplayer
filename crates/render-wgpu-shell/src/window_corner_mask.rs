@@ -356,7 +356,9 @@ mod tests {
         assert_eq!(pixel(&premultiplied, 24, 4), [64, 128, 191, 255]);
         assert!(
             premultiplied
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|rgba| rgba[3] > 0 && rgba[3] < 255)
         );
 

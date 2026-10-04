@@ -5,7 +5,7 @@ name = "bounded-xml-reader"
 version.workspace = true
 # Edition остаётся единой для всего проекта.
 edition.workspace = true
-# MSRV проверяется общим workspace gate на Rust 1.92.
+# MSRV проверяется общим workspace gate на Rust 1.99.
 rust-version.workspace = true
 # First-party boundary распространяется под общей MIT license проекта.
 license.workspace = true

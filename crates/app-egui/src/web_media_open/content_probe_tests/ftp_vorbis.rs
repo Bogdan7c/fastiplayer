@@ -2,9 +2,7 @@
 
 use std::{
     env, fs,
-    io::{Read as _, Write as _},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
-    os::unix::fs::PermissionsExt as _,
     path::Path,
     process::Command,
     sync::{

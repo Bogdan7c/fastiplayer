@@ -140,7 +140,7 @@ pub(crate) fn parse_pat(section: &[u8]) -> Result<(u8, Vec<ProgramMapEntry>), Mp
     validate_common_section(section, 0x00, 12)?;
     let version = (section[5] >> 1) & 0x1f;
     let mut programs = Vec::new();
-    for entry in section[8..section.len() - 4].chunks_exact(4) {
+    for entry in section[8..section.len() - 4].as_chunks::<4>().0 {
         let program_number = u16::from_be_bytes([entry[0], entry[1]]);
         if program_number == 0 {
             continue;

@@ -158,19 +158,19 @@ class CiNativePrerequisitesTests(unittest.TestCase):
         # Pinned action устанавливает тот же exact primary compiler, что и repo policy.
         self.assertIn(f"- uses: {RUST_TOOLCHAIN_ACTION}", format_job)
         # Явный component гарантирует доступность cargo fmt на чистом runner.
-        self.assertIn("toolchain: 1.96.0\n          components: rustfmt", format_job)
+        self.assertIn("toolchain: 1.99.0\n          components: rustfmt", format_job)
 
         # Strict Clippy job владеет all-features/all-targets lint gate.
         clippy_job = extract_job(self.ci_workflow, "clippy")
         # Тот же pinned action исключает floating installer behavior.
         self.assertIn(f"- uses: {RUST_TOOLCHAIN_ACTION}", clippy_job)
         # Явный component устраняет подтверждённый `clippy is not installed` failure.
-        self.assertIn("toolchain: 1.96.0\n          components: clippy", clippy_job)
+        self.assertIn("toolchain: 1.99.0\n          components: clippy", clippy_job)
 
     def test_toolchain_workspace_check_installs_exact_native_inventory(self) -> None:
         """Workspace matrix получает все и только реально нужные native SDK."""
 
-        # Оба matrix toolchains исполняют один и тот же workspace-check job.
+        # Все matrix toolchains исполняют один и тот же workspace-check job.
         workspace_job = extract_job(self.toolchain_workflow, "workspace-check")
         # Именованный step является единым владельцем apt inventory этого job.
         install_step = extract_named_step(

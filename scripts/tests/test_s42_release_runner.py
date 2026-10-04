@@ -102,9 +102,9 @@ class S42ReleaseRunnerTests(unittest.TestCase):
         # CI script хранит оба semver release как readonly constants.
         ci_script = read_script("ci-checks.sh")
         # Primary release соответствует accepted S42 toolchain.
-        self.assertIn('readonly PRIMARY_RUST_TOOLCHAIN="1.96.0"', ci_script)
+        self.assertIn('readonly PRIMARY_RUST_TOOLCHAIN="1.99.0"', ci_script)
         # MSRV release соответствует workspace rust-version contract.
-        self.assertIn('readonly MSRV_RUST_TOOLCHAIN="1.92.0"', ci_script)
+        self.assertIn('readonly MSRV_RUST_TOOLCHAIN="1.99.0"', ci_script)
         # Primary compile commands обязаны использовать explicit rustup selector.
         self.assertIn('cargo +"${PRIMARY_RUST_TOOLCHAIN}" clippy', ci_script)
         # MSRV compile обязан использовать отдельный selector.

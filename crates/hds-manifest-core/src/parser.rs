@@ -468,7 +468,7 @@ fn decode_base64(value: &str, maximum_bytes: NonZeroUsize) -> Result<Vec<u8>, F4
     }
     let mut output = Vec::with_capacity(compact.len() / 4 * 3);
     let chunk_count = compact.len() / 4;
-    for (chunk_index, chunk) in compact.chunks_exact(4).enumerate() {
+    for (chunk_index, chunk) in compact.as_chunks::<4>().0.iter().enumerate() {
         let has_padding = chunk[2] == b'=' || chunk[3] == b'=';
         let padding_is_terminal = chunk_index + 1 == chunk_count;
         let padding_shape_is_valid =

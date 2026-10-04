@@ -226,7 +226,7 @@ pub fn open_direct_media(
 /// Создаёт process-local exact/semantic identity без locator payload.
 fn build_direct_component_identity() -> Result<MediaComponentIdentity> {
     let source_value = NEXT_DIRECT_SOURCE_IDENTITY
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .map_err(|_| anyhow!("direct source identity space исчерпан"))?;

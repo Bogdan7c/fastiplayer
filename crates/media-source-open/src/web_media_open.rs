@@ -454,7 +454,7 @@ struct OpenedCandidateComponent {
 /// Выдаёт новую non-zero process-local source lineage без URL/queue representation coupling.
 fn next_source_identity() -> Result<SourceIdentity> {
     let source_value = NEXT_YT_DLP_SOURCE_IDENTITY
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .map_err(|_| anyhow!("YtDlp source identity space исчерпан"))?;

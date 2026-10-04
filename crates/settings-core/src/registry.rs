@@ -146,7 +146,6 @@ impl<D> SettingsRegistry<D> {
     }
 
     /// Returns all descriptors in stable registry order.
-    #[must_use]
     pub fn descriptors(&self) -> impl ExactSizeIterator<Item = &SettingDescriptor> {
         self.entries.iter().map(RegisteredSetting::descriptor)
     }
