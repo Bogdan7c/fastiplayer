@@ -7,6 +7,15 @@
 //! Поэтому прежние значения зафиксированы здесь явно, в одном месте, а не
 //! размазаны по виджетам.
 //!
+//! egui 0.36 добавил ещё одно изменение: синхронизацию темы окна
+//! (`sync_window_theme`). Она тоже выключена здесь — см.
+//! `apply_app_egui_behavior`.
+//!
+//! Исключение: запас обрезки 3 pt у краёв `ScrollArea` (`clip_rect_margin`).
+//! egui 0.36 сделал эту настройку неработающей, и вернуть её нечем: обводка
+//! или подсветка у самого края прокручиваемого списка может срезаться на
+//! ≤3 pt. Владелец принял это отличие (4 октября 2026).
+//!
 //! Модуль владеет только глобальными настройками поведения egui. Цвета,
 //! отступы и размеры controls остаются в `ui::skin`.
 
@@ -20,12 +29,6 @@ use egui::scroll_area::ScrollSource;
 /// Собственные анимации приложения (`ui::animation`) задают время явно и от
 /// этого значения не зависят.
 const APP_ANIMATION_TIME_SECONDS: f32 = 6.0 / 60.0;
-
-/// Запас вокруг области обрезки (clip rect) содержимого `ScrollArea`, в points.
-///
-/// Без запаса обводка и "расширение" виджета при hover у края прокручиваемой
-/// области обрезаются. egui 0.34 использовал 3.0, egui 0.35 — 0.0.
-const APP_CLIP_RECT_MARGIN_POINTS: f32 = 3.0;
 
 /// Источник прокрутки для всех `ScrollArea` приложения.
 ///
@@ -44,11 +47,14 @@ const APP_SCROLL_SOURCE: ScrollSource = ScrollSource::ALL;
 pub(crate) fn apply_app_egui_behavior(egui_ctx: &egui::Context) {
     egui_ctx.all_styles_mut(|style| {
         style.animation_time = APP_ANIMATION_TIME_SECONDS;
-        style.visuals.clip_rect_margin = APP_CLIP_RECT_MARGIN_POINTS;
         // egui 0.35 на Linux рисует IME-композицию по-новому (подчёркивание,
         // курсор внутри композиции). `legacy_visuals` возвращает прежний вид.
         style.visuals.ime_composition.legacy_visuals = true;
     });
+    // egui 0.36 по умолчанию сам отправляет окну `ViewportCommand::SetTheme`,
+    // чтобы системные декорации следовали теме egui, и ради этого запрашивает
+    // лишнюю перерисовку. egui 0.35 тему окна не трогал; оставляем как было.
+    egui_ctx.options_mut(|options| options.sync_window_theme = false);
 }
 
 /// Вертикальная `ScrollArea` с прокруткой, как в остальном приложении.
@@ -106,17 +112,22 @@ mod tests {
         let legacy_frame_count = 6;
 
         // Кадр 0: анимация в состоянии "выключено".
-        let _ = egui_ctx.run_ui(frame_input(Vec::new(), 0.0), |ui| {
-            let _ = ui.ctx().animate_bool(animation_id, false);
-        });
+        let _ =
+            crate::ui::test_frame::run_ui_frame(&egui_ctx, frame_input(Vec::new(), 0.0), |ui| {
+                let _ = ui.ctx().animate_bool(animation_id, false);
+            });
 
         // Кадры 1..=6: включаем и смотрим, где анимация окажется через 0.1 с.
         let mut animated_value = 0.0;
         for frame_index in 1..=legacy_frame_count {
             let time_seconds = f64::from(frame_index) * FRAME_SECONDS;
-            let _ = egui_ctx.run_ui(frame_input(Vec::new(), time_seconds), |ui| {
-                animated_value = ui.ctx().animate_bool(animation_id, true);
-            });
+            let _ = crate::ui::test_frame::run_ui_frame(
+                &egui_ctx,
+                frame_input(Vec::new(), time_seconds),
+                |ui| {
+                    animated_value = ui.ctx().animate_bool(animation_id, true);
+                },
+            );
         }
 
         assert!(
@@ -125,30 +136,28 @@ mod tests {
         );
     }
 
-    /// Содержимое `ScrollArea` обрезается с запасом 3 points за её краем,
-    /// чтобы обводки/hover-расширения у края не срезались (egui 0.34).
+    /// egui не отправляет окну команду смены темы и не просит из-за неё
+    /// перерисовку, как в egui 0.35 (в 0.36 это делает `sync_window_theme`).
     #[test]
-    fn scroll_area_content_clip_keeps_legacy_margin() {
+    fn egui_does_not_push_theme_to_native_window() {
         let egui_ctx = app_context();
-        let mut content_clip_top = None;
-        let mut scroll_inner_top = None;
+        // Приложение выбирает тёмную тему так же, как `AppState::new`.
+        egui_ctx.set_theme(egui::Theme::Dark);
 
-        let _ = egui_ctx.run_ui(frame_input(Vec::new(), 0.0), |ui| {
-            // Отступ сверху, чтобы запас не упёрся в край экрана.
-            ui.add_space(50.0);
-            let scroll_output = vertical_scroll_area().max_height(100.0).show(ui, |ui| {
-                content_clip_top = Some(ui.clip_rect().top());
-                ui.allocate_space(vec2(100.0, TALL_CONTENT_HEIGHT));
+        let full_output =
+            crate::ui::test_frame::run_ui_frame(&egui_ctx, frame_input(Vec::new(), 0.0), |ui| {
+                ui.label("theme probe");
             });
-            scroll_inner_top = Some(scroll_output.inner_rect.top());
-        });
 
-        let content_clip_top = content_clip_top.unwrap_or(f32::NAN);
-        let scroll_inner_top = scroll_inner_top.unwrap_or(f32::NAN);
+        let sent_theme_commands = full_output
+            .viewport_output
+            .values()
+            .flat_map(|viewport_output| &viewport_output.commands)
+            .filter(|command| matches!(command, egui::ViewportCommand::SetTheme(_)))
+            .count();
         assert_eq!(
-            scroll_inner_top - content_clip_top,
-            APP_CLIP_RECT_MARGIN_POINTS,
-            "clip rect содержимого должен выходить за область прокрутки на запас"
+            sent_theme_commands, 0,
+            "egui не должен менять тему окна сам"
         );
     }
 
@@ -174,20 +183,24 @@ mod tests {
         let mut scroll_offset_y = 0.0;
         for (frame_index, events) in frames.into_iter().enumerate() {
             let time_seconds = frame_index as f64 * FRAME_SECONDS;
-            let _ = egui_ctx.run_ui(frame_input(events, time_seconds), |ui| {
-                // Область на всю ширину экрана (как у плейлиста), чтобы полоса
-                // прокрутки была у правого края, а не под курсором: иначе тест
-                // измерил бы клик по полосе, а не перетаскивание содержимого.
-                let scroll_output =
-                    vertical_scroll_area()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            // Пустое пространство без собственного drag-sense:
-                            // перетаскивание может забрать только сама ScrollArea.
-                            ui.allocate_space(vec2(100.0, TALL_CONTENT_HEIGHT));
-                        });
-                scroll_offset_y = scroll_output.state.offset.y;
-            });
+            let _ = crate::ui::test_frame::run_ui_frame(
+                &egui_ctx,
+                frame_input(events, time_seconds),
+                |ui| {
+                    // Область на всю ширину экрана (как у плейлиста), чтобы полоса
+                    // прокрутки была у правого края, а не под курсором: иначе тест
+                    // измерил бы клик по полосе, а не перетаскивание содержимого.
+                    let scroll_output =
+                        vertical_scroll_area()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                // Пустое пространство без собственного drag-sense:
+                                // перетаскивание может забрать только сама ScrollArea.
+                                ui.allocate_space(vec2(100.0, TALL_CONTENT_HEIGHT));
+                            });
+                    scroll_offset_y = scroll_output.state.offset.y;
+                },
+            );
         }
 
         assert!(
@@ -218,12 +231,16 @@ mod tests {
         let mut last_output = None;
         for (frame_index, events) in frames.into_iter().enumerate() {
             let time_seconds = frame_index as f64 * FRAME_SECONDS;
-            let output = egui_ctx.run_ui(frame_input(events, time_seconds), |ui| {
-                let response = ui.add(egui::TextEdit::singleline(&mut text).id(text_edit_id));
-                if frame_index == 0 {
-                    response.request_focus();
-                }
-            });
+            let output = crate::ui::test_frame::run_ui_frame(
+                &egui_ctx,
+                frame_input(events, time_seconds),
+                |ui| {
+                    let response = ui.add(egui::TextEdit::singleline(&mut text).id(text_edit_id));
+                    if frame_index == 0 {
+                        response.request_focus();
+                    }
+                },
+            );
             last_output = Some(output);
         }
 

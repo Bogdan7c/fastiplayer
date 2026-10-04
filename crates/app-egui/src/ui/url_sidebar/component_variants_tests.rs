@@ -44,10 +44,11 @@ fn accessible_labels_with_pending(
 ) -> Vec<String> {
     let context = egui::Context::default();
     context.enable_accesskit();
-    let full_output = context.run_ui(egui::RawInput::default(), |ui| {
-        let _action =
-            component_variants::show(ui, parent_generation(), projection, pending_selection);
-    });
+    let full_output =
+        crate::ui::test_frame::run_ui_frame(&context, egui::RawInput::default(), |ui| {
+            let _action =
+                component_variants::show(ui, parent_generation(), projection, pending_selection);
+        });
     full_output
         .platform_output
         .accesskit_update
@@ -68,7 +69,7 @@ fn button_frame(
     let mut button_rect = egui::Rect::NOTHING;
     let mut action = None;
     let mut enabled = false;
-    let _full_output = context.run_ui(input, |ui| {
+    let _full_output = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
         let response = variant_button(ui, row_action, active, switch_in_progress);
         button_rect = response.rect;
         enabled = response.enabled();
@@ -141,28 +142,29 @@ fn installed_missing_axis_is_honest_and_all_buttons_are_disabled() {
     let mut responses = Vec::new();
     let mut renderer_result = None;
     let pending_selection = unrelated_pending_selection();
-    let _full_output = context.run_ui(egui::RawInput::default(), |ui| {
-        let _action = component_variants::show(
-            ui,
-            parent_generation(),
-            &projection,
-            Some(&pending_selection),
-        );
-        renderer_result = Some(());
-        for variant_index in 0..2 {
-            responses.push(variant_button(
+    let _full_output =
+        crate::ui::test_frame::run_ui_frame(&context, egui::RawInput::default(), |ui| {
+            let _action = component_variants::show(
                 ui,
-                ComponentVariantSelectionAction {
-                    parent_generation: parent_generation(),
-                    catalog_generation: ComponentVariantCatalogGeneration::new(4),
-                    axis: WebMediaComponentVariantAxisKind::Video,
-                    variant_index,
-                },
-                false,
-                true,
-            ));
-        }
-    });
+                parent_generation(),
+                &projection,
+                Some(&pending_selection),
+            );
+            renderer_result = Some(());
+            for variant_index in 0..2 {
+                responses.push(variant_button(
+                    ui,
+                    ComponentVariantSelectionAction {
+                        parent_generation: parent_generation(),
+                        catalog_generation: ComponentVariantCatalogGeneration::new(4),
+                        axis: WebMediaComponentVariantAxisKind::Video,
+                        variant_index,
+                    },
+                    false,
+                    true,
+                ));
+            }
+        });
     assert_eq!(renderer_result, Some(()));
     assert!(responses.iter().all(|response| !response.enabled()));
     assert!(responses.iter().all(|response| !response.clicked()));
@@ -202,29 +204,30 @@ fn component_button_ids_are_stable_and_axis_or_index_distinguishes_them() {
     let context = egui::Context::default();
     let render_ids = |context: &egui::Context| {
         let mut ids = Vec::new();
-        let _full_output = context.run_ui(egui::RawInput::default(), |ui| {
-            for (axis, variant_index) in [
-                (WebMediaComponentVariantAxisKind::Video, 0),
-                (WebMediaComponentVariantAxisKind::Video, 1),
-                (WebMediaComponentVariantAxisKind::Audio, 0),
-                (WebMediaComponentVariantAxisKind::Coupled, 0),
-            ] {
-                ids.push(
-                    variant_button(
-                        ui,
-                        ComponentVariantSelectionAction {
-                            parent_generation: parent_generation(),
-                            catalog_generation: ComponentVariantCatalogGeneration::new(9),
-                            axis,
-                            variant_index,
-                        },
-                        false,
-                        false,
-                    )
-                    .id,
-                );
-            }
-        });
+        let _full_output =
+            crate::ui::test_frame::run_ui_frame(context, egui::RawInput::default(), |ui| {
+                for (axis, variant_index) in [
+                    (WebMediaComponentVariantAxisKind::Video, 0),
+                    (WebMediaComponentVariantAxisKind::Video, 1),
+                    (WebMediaComponentVariantAxisKind::Audio, 0),
+                    (WebMediaComponentVariantAxisKind::Coupled, 0),
+                ] {
+                    ids.push(
+                        variant_button(
+                            ui,
+                            ComponentVariantSelectionAction {
+                                parent_generation: parent_generation(),
+                                catalog_generation: ComponentVariantCatalogGeneration::new(9),
+                                axis,
+                                variant_index,
+                            },
+                            false,
+                            false,
+                        )
+                        .id,
+                    );
+                }
+            });
         ids
     };
 

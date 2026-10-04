@@ -128,6 +128,25 @@ fn sidebar_panel_id() -> egui::Id {
     egui::Id::new("app_sidebar")
 }
 
+/// Внешний rect sidebar host-а за этот кадр: вся полоса, которую панель
+/// забрала у окна, включая линию-разделитель.
+///
+/// egui 0.36 резервирует под линию-разделитель ~1 pt внутри размера панели:
+/// `ui.max_rect()` содержимого на эту полосу уже, а `default_size`/`size_range`
+/// задают внешний размер вместе с ней. Поэтому ширину хоста и границу видео
+/// берём по внешнему rect: иначе сохранённая ширина уменьшалась бы на 1 pt
+/// каждый кадр, а видео заходило бы под линию.
+fn sidebar_host_outer_rect(egui_ctx: &egui::Context, content_rect: egui::Rect) -> egui::Rect {
+    // `Panel::show` без slide-анимации всегда сохраняет `PanelState` в конце кадра.
+    let panel_state = egui::containers::panel::PanelState::load(egui_ctx, sidebar_panel_id());
+    debug_assert!(
+        panel_state.is_some(),
+        "egui Panel::show должен сохранить PanelState sidebar"
+    );
+    // Без состояния (нарушенный инвариант egui) лучше чуть уже, чем без sidebar.
+    panel_state.map_or(content_rect, |state| state.outer_rect)
+}
+
 /// Рисует единственный sidebar и возвращает rect, который вытесняет видео.
 #[must_use]
 pub(crate) fn show(
@@ -204,12 +223,16 @@ fn show_sidebar_host(
         ui.expand_to_include_rect(panel_rect);
     });
 
-    debug_assert!(sidebar_rect.is_positive());
+    let host_rect = sidebar_host_outer_rect(ui.ctx(), sidebar_rect);
+    // Гарантируется только внешняя полоса host-а (минимум 1 pt). Область
+    // содержимого на первом кадре выезда может быть пустой: в egui 0.36 этот
+    // 1 pt целиком занимает линия-разделитель.
+    debug_assert!(host_rect.is_positive());
     let width_change = fully_open
-        .then(|| host_state.accept_fully_open_width(sidebar_rect.width()))
+        .then(|| host_state.accept_fully_open_width(host_rect.width()))
         .flatten();
     SidebarOutput {
-        rect: sidebar_rect,
+        rect: host_rect,
         open_width_points: host_state.open_width_points(),
         width_change,
     }
@@ -429,6 +452,21 @@ mod tests {
         assert_eq!(reopened.width_change, None);
     }
 
+    /// Первый кадр выезда даёт панели минимальную ширину 1 pt. В egui 0.36 весь этот
+    /// pt занимает линия-разделитель, и область содержимого пустая: host всё равно
+    /// должен вернуть ненулевую полосу и не падать на проверке инварианта.
+    #[test]
+    fn first_opening_frame_with_minimal_width_keeps_one_point_host() {
+        let egui_ctx = egui::Context::default();
+        let mut host = SidebarHostState::from_committed(420);
+
+        let first_frame = render_host(&egui_ctx, &mut host, Vec::new(), 0.001);
+
+        assert_eq!(first_frame.rect.width(), 1.0);
+        assert_eq!(first_frame.open_width_points, 420.0);
+        assert_eq!(first_frame.width_change, None);
+    }
+
     /// Выезжающая копия другой секции не должна становиться геометрией resize-host.
     #[test]
     fn content_transition_does_not_replace_resized_host_width() {
@@ -502,7 +540,7 @@ mod tests {
             ..RawInput::default()
         };
         let mut output = None;
-        let _ = egui_ctx.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(egui_ctx, input, |ui| {
             output = Some(show_sidebar_host(
                 ui,
                 host,
@@ -529,7 +567,7 @@ mod tests {
         };
         let mut output = None;
         let mut remaining_rect = None;
-        let _ = egui_ctx.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(egui_ctx, input, |ui| {
             output = Some(show_sidebar_host(ui, host, 1.0, |ui, panel_rect, _, _| {
                 let incoming_rect = panel_rect.translate(egui::vec2(panel_rect.width(), 0.0));
                 let mut incoming_copy =

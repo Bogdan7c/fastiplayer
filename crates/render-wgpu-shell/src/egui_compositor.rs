@@ -34,9 +34,14 @@ impl EguiCompositor {
         queue: &wgpu::Queue,
         textures_delta: &egui::TexturesDelta,
     ) {
-        for (id, image_delta) in &textures_delta.set {
-            self.renderer
-                .update_texture(device, queue, *id, image_delta);
+        // egui 0.36 группирует дельты по текстуре: внутри одного id порядок дельт
+        // важен (частичные обновления поверх целой загрузки), между разными id — нет,
+        // как и в эталонной интеграции `egui_wgpu::winit`.
+        for (id, image_deltas) in &textures_delta.set {
+            for image_delta in image_deltas {
+                self.renderer
+                    .update_texture(device, queue, *id, image_delta);
+            }
         }
     }
 
@@ -44,10 +49,19 @@ impl EguiCompositor {
     ///
     /// Метод является отдельной boundary-операцией, чтобы порядок
     /// `upload -> prepare -> render -> submit -> free` был виден в callsite.
-    pub fn free_retired_textures(&mut self, textures_delta: &egui::TexturesDelta) {
+    ///
+    /// Это последний шаг жизни `TexturesDelta` кадра, поэтому метод забирает её
+    /// по значению. Вызывающий обязан до этого применить `set` через
+    /// [`Self::upload_changed_textures`].
+    pub fn free_retired_textures(&mut self, mut textures_delta: egui::TexturesDelta) {
         for id in &textures_delta.free {
             self.renderer.free_texture(id);
         }
+        // egui 0.36 в debug-сборке паникует, если `TexturesDelta` уничтожается
+        // с непустыми `set`/`free` (защита от потерянных обновлений текстур).
+        // Здесь обе части уже применены: `set` — при upload в начале кадра,
+        // `free` — циклом выше. Очищаем явно, как требует egui.
+        textures_delta.clear();
     }
 
     /// Обновляет egui vertex/index buffers и возвращает callback command buffers.

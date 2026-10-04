@@ -246,7 +246,7 @@ mod tests {
     ) -> Vec<ControlAction> {
         let mut actions = Vec::new();
 
-        let _ = egui_ctx.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(egui_ctx, input, |ui| {
             let playback_button_response =
                 ui.allocate_rect(test_playback_button_rect(), Sense::click());
 
@@ -267,7 +267,7 @@ mod tests {
     fn render_rate_button_clicked_for_input(egui_ctx: &egui::Context, input: RawInput) -> bool {
         let mut actions = Vec::new();
 
-        let _ = egui_ctx.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(egui_ctx, input, |ui| {
             // Кнопка интерактивна только при реальной non-1x скорости.
             let mut player_snapshot = PlayerSnapshot::empty();
             // Значение соответствует публичной UI-сетке и гарантированно валидно.
@@ -304,7 +304,7 @@ mod tests {
         // Progress записывается из реального production helper.
         let mut progress = f32::NAN;
         // Один Context сохраняет animation manager state между вызовами.
-        let _ = egui_ctx.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(egui_ctx, input, |ui| {
             progress = reveal_progress(ui, playback_rate, false);
         });
         // NaN означал бы, что render closure не выполнился.
@@ -489,16 +489,20 @@ mod tests {
         // Typed actions должны остаться пустыми даже при видимом closing-контуре.
         let mut actions = Vec::new();
         // Paint output позволяет отличить outline от отсутствующей текстовой shape.
-        let output = egui::Context::default().run_ui(RawInput::default(), |ui| {
-            render_reset_button_at(
-                ui,
-                layout,
-                test_playback_button_rect(),
-                &player_snapshot,
-                MinimalSkin.controls_style(),
-                &mut actions,
-            );
-        });
+        let output = crate::ui::test_frame::run_ui_frame(
+            &egui::Context::default(),
+            RawInput::default(),
+            |ui| {
+                render_reset_button_at(
+                    ui,
+                    layout,
+                    test_playback_button_rect(),
+                    &player_snapshot,
+                    MinimalSkin.controls_style(),
+                    &mut actions,
+                );
+            },
+        );
 
         // Единственный shape — пустой outline; надпись `1x` не рисуется.
         assert_eq!(output.shapes.len(), 1);
@@ -541,10 +545,10 @@ mod tests {
         let mut hidden = f32::NAN;
         let mut visible = f32::NAN;
 
-        let _ = context.run_ui(RawInput::default(), |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(&context, RawInput::default(), |ui| {
             hidden = reveal_progress(ui, PlaybackRate::NORMAL, true);
         });
-        let _ = context.run_ui(RawInput::default(), |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(&context, RawInput::default(), |ui| {
             visible = reveal_progress(ui, PlaybackRate::new(1.25).expect("valid test rate"), true);
         });
 

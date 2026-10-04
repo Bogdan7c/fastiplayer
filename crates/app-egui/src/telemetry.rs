@@ -169,7 +169,7 @@ impl Telemetry {
     /// Инкрементирует счётчик кадров, отправленных в swapchain surface.
     ///
     /// Вызывается каждый раз, когда кадр успешно отправлен на экран
-    /// через `surface_texture.present()`.
+    /// через `queue.present(surface_texture)`.
     #[inline]
     pub fn record_frame_presented_to_surface(&self) {
         self.frames_presented_to_surface

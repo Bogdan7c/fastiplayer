@@ -265,7 +265,7 @@ fn animation_frame(
         ..RawInput::default()
     };
     let mut progress = f32::NAN;
-    let _ = context.run_ui(input, |ui| {
+    let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
         progress = animated_bool(
             ui,
             ui.make_persistent_id("queue-mode-animation-test"),
@@ -345,7 +345,7 @@ fn active_transition_reverses_from_current_progress_without_jump() {
 
 #[test]
 fn settled_transition_does_not_keep_requesting_repaint() {
-    let context = egui::Context::default();
+    let context = crate::ui::test_frame::app_behavior_context();
     let _ = animation_frame(
         &context,
         0.0,
@@ -381,7 +381,7 @@ fn control_frame(
 ) -> (Vec<ControlAction>, bool) {
     let mut actions = Vec::new();
     let mut has_focus = false;
-    let _ = context.run_ui(input, |ui| {
+    let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
         let response = render_control(
             ui,
             Rect::from_min_size(pos2(20.0, 20.0), vec2(32.0, 32.0)),

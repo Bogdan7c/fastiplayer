@@ -33,7 +33,8 @@ fn render_overlay(
     // Два настоящих кадра egui проверяют и initial layout, и повторную отрисовку.
     for _ in 0..2 {
         let mut playlist_output = PlaylistUiOutput::default();
-        let output = context.run_ui(
+        let output = crate::ui::test_frame::run_ui_frame(
+            &context,
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,

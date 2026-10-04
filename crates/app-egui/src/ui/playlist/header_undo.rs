@@ -258,7 +258,7 @@ mod tests {
     ) -> Vec<PlaylistAction> {
         let mut output = PlaylistUiOutput::default();
         let style = MinimalSkin.playlist_header_undo_style();
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
             // Production sidebar сначала резервирует общий header rect.
             ui.allocate_rect(undo_rect(), Sense::hover());
             show(ui, undo_rect(), snapshot, &style, motion, &mut output);
@@ -271,7 +271,7 @@ mod tests {
         let mut output = PlaylistUiOutput::default();
         let mut has_focus = false;
         let style = MinimalSkin.playlist_header_undo_style();
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
             // Focus regression также учитывает перекрывающий parent hover-area.
             ui.allocate_rect(undo_rect(), Sense::hover());
             let response = render_control(
@@ -308,7 +308,7 @@ mod tests {
         let context = Context::default();
         let style = MinimalSkin.playlist_header_undo_style();
         let mut heading_height = 0.0;
-        let output = context.run_ui(RawInput::default(), |ui| {
+        let output = crate::ui::test_frame::run_ui_frame(&context, RawInput::default(), |ui| {
             heading_height = ui.text_style_height(&egui::TextStyle::Heading);
             paint(
                 ui,
@@ -442,28 +442,30 @@ mod tests {
         };
         let style = MinimalSkin.playlist_header_undo_style();
 
-        let active_output = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
-            let mut output = PlaylistUiOutput::default();
-            show(
-                ui,
-                undo_rect(),
-                &active_snapshot,
-                &style,
-                UiMotion::Reduced,
-                &mut output,
-            );
-        });
-        let hidden_output = context.run_ui(raw_input(Vec::new(), 0.01), |ui| {
-            let mut output = PlaylistUiOutput::default();
-            show(
-                ui,
-                undo_rect(),
-                &hidden_snapshot,
-                &style,
-                UiMotion::Reduced,
-                &mut output,
-            );
-        });
+        let active_output =
+            crate::ui::test_frame::run_ui_frame(&context, raw_input(Vec::new(), 0.0), |ui| {
+                let mut output = PlaylistUiOutput::default();
+                show(
+                    ui,
+                    undo_rect(),
+                    &active_snapshot,
+                    &style,
+                    UiMotion::Reduced,
+                    &mut output,
+                );
+            });
+        let hidden_output =
+            crate::ui::test_frame::run_ui_frame(&context, raw_input(Vec::new(), 0.01), |ui| {
+                let mut output = PlaylistUiOutput::default();
+                show(
+                    ui,
+                    undo_rect(),
+                    &hidden_snapshot,
+                    &style,
+                    UiMotion::Reduced,
+                    &mut output,
+                );
+            });
 
         assert!(!active_output.shapes.is_empty());
         assert!(hidden_output.shapes.is_empty());

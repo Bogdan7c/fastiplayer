@@ -13,6 +13,8 @@ pub(crate) mod playlist;
 pub(crate) mod queue_replacement_confirmation;
 pub mod sidebar;
 pub mod skin;
+#[cfg(test)]
+pub(crate) mod test_frame;
 pub mod timeline;
 pub mod titlebar_icon_area;
 pub(crate) mod url_sidebar;

@@ -381,9 +381,10 @@ mod tests {
     fn visible_labels(model: &UrlSidebarModel) -> Vec<String> {
         let context = egui::Context::default();
         context.enable_accesskit();
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
-            let _action = super::show(ui, model);
-        });
+        let output =
+            crate::ui::test_frame::run_ui_frame(&context, egui::RawInput::default(), |ui| {
+                let _action = super::show(ui, model);
+            });
         output
             .platform_output
             .accesskit_update
@@ -461,9 +462,10 @@ mod tests {
         };
         let context = egui::Context::default();
         let mut action = None;
-        let _output = context.run_ui(egui::RawInput::default(), |ui| {
-            action = super::show(ui, &model);
-        });
+        let _output =
+            crate::ui::test_frame::run_ui_frame(&context, egui::RawInput::default(), |ui| {
+                action = super::show(ui, &model);
+            });
 
         assert!(action.is_none());
         let labels = visible_labels(&model);

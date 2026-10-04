@@ -122,7 +122,7 @@ mod tests {
             ..egui::RawInput::default()
         };
         let mut output = PlaylistUiOutput::default();
-        let full_output = context.run_ui(input, |ui| {
+        let full_output = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
             ui.set_width(420.0);
             super::show(ui, model, MinimalSkin.playlist_toolbar_style(), &mut output);
             after_toolbar(ui);

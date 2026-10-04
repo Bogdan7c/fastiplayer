@@ -150,7 +150,7 @@ fn render_playlist_input_with_motion(
     input: RawInput,
 ) -> Vec<PlaylistAction> {
     let mut output = PlaylistUiOutput::default();
-    let _ = context.run_ui(input, |ui| {
+    let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
         // Фиксированный размер делает координаты колонок стабильными между input frames.
         ui.set_width(420.0);
         ui.set_height(120.0);
@@ -455,7 +455,7 @@ fn render_rows_output(
 ) -> egui::FullOutput {
     let mut state = PlaylistUiState::default();
     let mut output = PlaylistUiOutput::default();
-    context.run_ui(playlist_raw_input(events, 1.0), |ui| {
+    crate::ui::test_frame::run_ui_frame(context, playlist_raw_input(events, 1.0), |ui| {
         ui.set_width(420.0);
         ui.set_height(120.0);
         show_rows(
@@ -781,21 +781,22 @@ fn offscreen_active_change_follows_without_traversing_full_queue() {
     // Output второго кадра позволяет проверить bounded visible hint.
     let mut output = PlaylistUiOutput::default();
     // Some→Some с off-screen target стартует 360-ms follow.
-    let _ = context.run_ui(playlist_raw_input(Vec::new(), 0.01), |ui| {
-        // Production viewport совпадает с обычным headless helper.
-        ui.set_width(420.0);
-        // Небольшая высота гарантирует off-screen target.
-        ui.set_height(120.0);
-        // Реальный renderer остаётся единственным paint/interaction path.
-        show_rows(
-            ui,
-            &last_model,
-            row_style(),
-            UiMotion::Standard,
-            &mut state,
-            &mut output,
-        );
-    });
+    let _ =
+        crate::ui::test_frame::run_ui_frame(&context, playlist_raw_input(Vec::new(), 0.01), |ui| {
+            // Production viewport совпадает с обычным headless helper.
+            ui.set_width(420.0);
+            // Небольшая высота гарантирует off-screen target.
+            ui.set_height(120.0);
+            // Реальный renderer остаётся единственным paint/interaction path.
+            show_rows(
+                ui,
+                &last_model,
+                row_style(),
+                UiMotion::Standard,
+                &mut state,
+                &mut output,
+            );
+        });
     // State различает follow от nearby без раскрытия timeline storage.
     assert!(state.active_accent.is_following_for_test());
     // Даже 10k очередь публикует только bounded visible rows.
@@ -1518,18 +1519,19 @@ fn compound_accesskit_exposes_expanded_header_and_child_buttons() {
     context.enable_accesskit();
     let mut state = PlaylistUiState::default();
     let mut output = PlaylistUiOutput::default();
-    let full_output = context.run_ui(playlist_raw_input(Vec::new(), 1.0), |ui| {
-        ui.set_width(420.0);
-        ui.set_height(120.0);
-        show_rows(
-            ui,
-            &model,
-            row_style(),
-            UiMotion::Reduced,
-            &mut state,
-            &mut output,
-        );
-    });
+    let full_output =
+        crate::ui::test_frame::run_ui_frame(&context, playlist_raw_input(Vec::new(), 1.0), |ui| {
+            ui.set_width(420.0);
+            ui.set_height(120.0);
+            show_rows(
+                ui,
+                &model,
+                row_style(),
+                UiMotion::Reduced,
+                &mut state,
+                &mut output,
+            );
+        });
     let update = full_output
         .platform_output
         .accesskit_update
@@ -1592,7 +1594,8 @@ fn compound_rows_keep_same_visible_identities_at_supported_widths() {
         let context = egui::Context::default();
         let mut state = PlaylistUiState::default();
         let mut output = PlaylistUiOutput::default();
-        let _ = context.run_ui(
+        let _ = crate::ui::test_frame::run_ui_frame(
+            &context,
             RawInput {
                 screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 160.0))),
                 ..RawInput::default()

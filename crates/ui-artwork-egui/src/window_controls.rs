@@ -81,9 +81,10 @@ mod tests {
             stroke: Stroke::new(1.0_f32, Color32::WHITE),
             hover_fill: Color32::GRAY,
         };
-        let output = Context::default().run_ui(RawInput::default(), |ui| {
-            paint(ui.painter(), hit_rect(), glyph, state, style);
-        });
+        let output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                paint(ui.painter(), hit_rect(), glyph, state, style);
+            });
         output.shapes
     }
 

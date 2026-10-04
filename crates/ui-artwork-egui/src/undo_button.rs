@@ -229,9 +229,10 @@ mod tests {
         paint_state: UndoButtonPaintState,
         button_style: UndoButtonStyle,
     ) -> Rect {
-        let output = Context::default().run_ui(RawInput::default(), |ui| {
-            paint(ui.painter(), rect, paint_state, button_style);
-        });
+        let output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                paint(ui.painter(), rect, paint_state, button_style);
+            });
         output.shapes.iter().fold(Rect::NOTHING, |bounds, shape| {
             bounds.union(shape.shape.visual_bounding_rect())
         })
@@ -258,21 +259,23 @@ mod tests {
 
     #[test]
     fn idle_has_no_surface_while_hover_and_focus_keep_their_decorations() {
-        let idle_output = Context::default().run_ui(RawInput::default(), |ui| {
-            paint(ui.painter(), hit_rect(), state(), style());
-        });
-        let decorated_output = Context::default().run_ui(RawInput::default(), |ui| {
-            paint(
-                ui.painter(),
-                hit_rect(),
-                UndoButtonPaintState {
-                    surface_fill: Color32::from_white_alpha(28),
-                    focus_visible: true,
-                    ..state()
-                },
-                style(),
-            );
-        });
+        let idle_output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                paint(ui.painter(), hit_rect(), state(), style());
+            });
+        let decorated_output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                paint(
+                    ui.painter(),
+                    hit_rect(),
+                    UndoButtonPaintState {
+                        surface_fill: Color32::from_white_alpha(28),
+                        focus_visible: true,
+                        ..state()
+                    },
+                    style(),
+                );
+            });
 
         // Hover surface и focus outline добавляются, idle glyph geometry не меняется.
         assert_eq!(decorated_output.shapes.len(), idle_output.shapes.len() + 2);
@@ -310,7 +313,7 @@ mod tests {
         for pixels_per_point in [1.0, 1.25, 1.5, 2.0, 2.5] {
             let context = Context::default();
             context.set_pixels_per_point(pixels_per_point);
-            let output = context.run_ui(RawInput::default(), |ui| {
+            let output = crate::test_frame::run_ui_frame(&context, RawInput::default(), |ui| {
                 paint(ui.painter(), hit_rect(), state(), style());
             });
 

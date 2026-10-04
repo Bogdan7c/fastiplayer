@@ -14,6 +14,8 @@ mod playlist_toolbar;
 mod queue_mode_controls;
 mod settings_button;
 mod sidebar_buttons;
+#[cfg(test)]
+mod test_frame;
 mod timeline;
 mod transport_button;
 mod undo_button;
@@ -289,7 +291,7 @@ mod tests {
 
     fn painted_shape_count(mut paint: impl FnMut(ArtworkPainter<'_>)) -> usize {
         let context = Context::default();
-        let output = context.run_ui(RawInput::default(), |ui| {
+        let output = crate::test_frame::run_ui_frame(&context, RawInput::default(), |ui| {
             paint(ArtworkPainter::new(ui.painter()));
         });
         output.shapes.len()
@@ -451,14 +453,15 @@ mod tests {
             concave_radius: 24.0,
         };
         // Label исключён, чтобы единственным shape оставался outline path.
-        let output = Context::default().run_ui(RawInput::default(), |ui| {
-            ArtworkPainter::new(ui.painter()).playback_rate_button(
-                geometry,
-                None,
-                ButtonVisualState::Idle,
-                playback_rate_style(),
-            );
-        });
+        let output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                ArtworkPainter::new(ui.painter()).playback_rate_button(
+                    geometry,
+                    None,
+                    ButtonVisualState::Idle,
+                    playback_rate_style(),
+                );
+            });
         // Outline обязан оставаться одним детерминированным shape.
         assert_eq!(output.shapes.len(), 1);
         // Извлекаем реальные sampled points, а не дублируем формулу тестом.
@@ -520,22 +523,24 @@ mod tests {
 
     #[test]
     fn active_queue_mode_adds_surface_without_changing_glyph_geometry() {
-        let idle_output = Context::default().run_ui(RawInput::default(), |ui| {
-            ArtworkPainter::new(ui.painter()).queue_mode_control(
-                rect(),
-                QueueModeGlyph::Repeat,
-                queue_mode_state(false),
-                queue_mode_style(),
-            );
-        });
-        let active_output = Context::default().run_ui(RawInput::default(), |ui| {
-            ArtworkPainter::new(ui.painter()).queue_mode_control(
-                rect(),
-                QueueModeGlyph::Repeat,
-                queue_mode_state(true),
-                queue_mode_style(),
-            );
-        });
+        let idle_output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                ArtworkPainter::new(ui.painter()).queue_mode_control(
+                    rect(),
+                    QueueModeGlyph::Repeat,
+                    queue_mode_state(false),
+                    queue_mode_style(),
+                );
+            });
+        let active_output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                ArtworkPainter::new(ui.painter()).queue_mode_control(
+                    rect(),
+                    QueueModeGlyph::Repeat,
+                    queue_mode_state(true),
+                    queue_mode_style(),
+                );
+            });
 
         assert_eq!(active_output.shapes.len(), idle_output.shapes.len() + 1);
         for (idle_shape, active_shape) in idle_output
@@ -558,14 +563,15 @@ mod tests {
             QueueModeGlyph::Repeat,
             QueueModeGlyph::RepeatOne,
         ] {
-            let output = Context::default().run_ui(RawInput::default(), |ui| {
-                ArtworkPainter::new(ui.painter()).queue_mode_control(
-                    hit_rect,
-                    glyph,
-                    queue_mode_state(false),
-                    queue_mode_style(),
-                );
-            });
+            let output =
+                crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                    ArtworkPainter::new(ui.painter()).queue_mode_control(
+                        hit_rect,
+                        glyph,
+                        queue_mode_state(false),
+                        queue_mode_style(),
+                    );
+                });
 
             assert!(output.shapes.iter().all(|shape| {
                 hit_rect
@@ -580,23 +586,25 @@ mod tests {
         // Общий hit-area задаёт ось зеркального отражения для обеих иконок.
         let hit_rect = rect();
         // Отдельный paint pass сохраняет только два shape варианта Previous.
-        let previous_output = Context::default().run_ui(RawInput::default(), |ui| {
-            ArtworkPainter::new(ui.painter()).transport_button(
-                hit_rect,
-                TransportGlyph::Previous,
-                ButtonVisualState::Idle,
-                transport_style(),
-            );
-        });
+        let previous_output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                ArtworkPainter::new(ui.painter()).transport_button(
+                    hit_rect,
+                    TransportGlyph::Previous,
+                    ButtonVisualState::Idle,
+                    transport_style(),
+                );
+            });
         // Второй paint pass изолирует зеркальный вариант Next.
-        let next_output = Context::default().run_ui(RawInput::default(), |ui| {
-            ArtworkPainter::new(ui.painter()).transport_button(
-                hit_rect,
-                TransportGlyph::Next,
-                ButtonVisualState::Idle,
-                transport_style(),
-            );
-        });
+        let next_output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                ArtworkPainter::new(ui.painter()).transport_button(
+                    hit_rect,
+                    TransportGlyph::Next,
+                    ButtonVisualState::Idle,
+                    transport_style(),
+                );
+            });
         // Оба варианта обязаны состоять из ограничителя и треугольника.
         assert_eq!(previous_output.shapes.len(), 2);
         assert_eq!(next_output.shapes.len(), 2);
@@ -658,7 +666,7 @@ mod tests {
             // Общая ячейка совпадает с geometry-helper остальных artwork-тестов.
             let cell_rect = rect();
             // Реальный egui paint output позволяет проверить stroke, а не только опорные координаты.
-            let output = context.run_ui(RawInput::default(), |ui| {
+            let output = crate::test_frame::run_ui_frame(&context, RawInput::default(), |ui| {
                 ArtworkPainter::new(ui.painter()).media_kind_icon(
                     cell_rect,
                     glyph,
@@ -692,7 +700,7 @@ mod tests {
         // Отдельный context изолирует fill, focus outline и marker shapes.
         let context = Context::default();
         // Реальный facade path использует clipped painter как production ScrollArea.
-        let output = context.run_ui(RawInput::default(), |ui| {
+        let output = crate::test_frame::run_ui_frame(&context, RawInput::default(), |ui| {
             // Clip назначается до reservation, поэтому ShapeIdx сохраняет тот же контракт.
             let painter = ui.painter().with_clip_rect(clip_rect);
             // Artwork facade не получает playlist-domain state.
@@ -881,7 +889,7 @@ mod tests {
     fn playlist_separator_spans_row_and_is_one_physical_pixel_on_hidpi() {
         let row_rect = Rect::from_min_max(pos2(7.0, 11.0), pos2(307.0, 45.0));
         let context = Context::default();
-        let output = context.run_ui(RawInput::default(), |ui| {
+        let output = crate::test_frame::run_ui_frame(&context, RawInput::default(), |ui| {
             ArtworkPainter::new(ui.painter()).playlist_row_separator(
                 row_rect,
                 Color32::from_rgba_unmultiplied(255, 255, 255, 128),

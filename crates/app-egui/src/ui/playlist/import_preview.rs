@@ -246,7 +246,7 @@ mod tests {
         input: RawInput,
     ) -> ImportPreviewRenderResult {
         let mut result = None;
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
             result = Some(render_preview(ui, preview));
         });
         result.expect("preview result")

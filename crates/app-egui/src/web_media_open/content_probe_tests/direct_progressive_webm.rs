@@ -71,6 +71,7 @@ impl OffscreenWgpuHarness {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .expect("получить Vulkan adapter для direct WebM acceptance");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -227,7 +228,9 @@ impl OffscreenWgpuHarness {
             .recv_timeout(ACCEPTANCE_TIMEOUT)
             .expect("получить direct WebM map callback")
             .expect("map direct WebM readback buffer");
-        let mapped_bytes = readback_slice.get_mapped_range();
+        let mapped_bytes = readback_slice
+            .get_mapped_range()
+            .expect("получить mapped range direct WebM readback");
         let visible_row_bytes = usize::try_from(TARGET_WIDTH * 4).expect("visible row bytes");
         let padded_row_bytes =
             usize::try_from(self.padded_bytes_per_row).expect("padded row bytes");

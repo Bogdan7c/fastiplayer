@@ -319,7 +319,7 @@ mod tests {
     /// Замеряет, где header рисует крестик, тем же layout-ом, что и `show`.
     fn measured_close_center(context: &egui::Context, section: SidebarSection) -> egui::Pos2 {
         let mut close_center = None;
-        let _ = context.run_ui(header_input(Vec::new()), |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(context, header_input(Vec::new()), |ui| {
             ui.set_width(HEADER_TEST_WIDTH_POINTS);
             let header_rect = allocate_sidebar_header_rect(ui);
             let chrome = render_header_chrome(
@@ -361,7 +361,7 @@ mod tests {
         let mut settings_actions = Vec::new();
         let mut close_requested = false;
 
-        let _ = context.run_ui(header_input(events), |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(context, header_input(events), |ui| {
             ui.set_width(HEADER_TEST_WIDTH_POINTS);
             let mut render_context = SidebarRenderContext {
                 model: &settings_model,
@@ -454,7 +454,7 @@ mod tests {
                 ..RawInput::default()
             };
             let mut measured = None;
-            let _ = context.run_ui(input, |ui| {
+            let _ = crate::ui::test_frame::run_ui_frame(&context, input, |ui| {
                 ui.set_width(420.0);
                 let header_rect = allocate_sidebar_header_rect(ui);
                 let chrome = render_header_chrome(
@@ -570,7 +570,7 @@ mod tests {
             );
             let undo_rect = playlist_header_undo_rect(header_rect, edge_alignment, &undo_style);
             let mut measured = None;
-            let output = context.run_ui(input, |ui| {
+            let output = crate::ui::test_frame::run_ui_frame(&context, input, |ui| {
                 let chrome = render_header_chrome(
                     ui,
                     header_rect,
@@ -624,7 +624,7 @@ mod tests {
                 )),
                 ..RawInput::default()
             };
-            let output = context.run_ui(input, |ui| {
+            let output = crate::ui::test_frame::run_ui_frame(&context, input, |ui| {
                 let header_rect = egui::Rect::from_min_size(
                     egui::pos2(0.0, 12.0),
                     egui::vec2(420.0, SIDEBAR_HEADER_HEIGHT_POINTS),

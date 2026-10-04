@@ -109,7 +109,13 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
         };
         let staging_slice = staging_belt.allocate(staging_size, staging_alignment);
         {
-            let mut mapped = staging_slice.get_mapped_range_mut();
+            // wgpu 30 возвращает ошибку маппинга как `Result` (в wgpu 29 это была паника
+            // внутри wgpu). Свежий slice из belt всегда mapped, поэтому на рабочем пути
+            // поведение прежнее; при нарушении инварианта кадр получает типизированную
+            // ошибку upload-а вместо паники.
+            let mut mapped = staging_slice
+                .get_mapped_range_mut()
+                .context("host-planar staging belt slice is not mapped for writing")?;
             copy_plane_block_into_staging(
                 block_bytes,
                 mapped.slice(..),

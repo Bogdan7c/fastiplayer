@@ -616,7 +616,7 @@ mod tests {
         input: RawInput,
     ) -> Vec<PlaylistAction> {
         let mut output = PlaylistUiOutput::default();
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
             ui.set_width(420.0);
             show(ui, model, MinimalSkin.playlist_toolbar_style(), &mut output);
         });
@@ -632,7 +632,7 @@ mod tests {
     ) -> (Vec<PlaylistAction>, bool) {
         let mut output = PlaylistUiOutput::default();
         let mut has_focus = false;
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
             let response = render_control(
                 ui,
                 Rect::from_min_size(pos2(20.0, 20.0), vec2(28.0, 28.0)),
@@ -662,15 +662,16 @@ mod tests {
         control: ToolbarControl,
     ) -> Vec<egui::epaint::ClippedShape> {
         let context = Context::default();
-        let full_output = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
-            render_control(
-                ui,
-                Rect::from_min_size(pos2(20.0, 20.0), vec2(28.0, 28.0)),
-                control,
-                control.presentation(model),
-                MinimalSkin.playlist_toolbar_style(),
-            );
-        });
+        let full_output =
+            crate::ui::test_frame::run_ui_frame(&context, raw_input(Vec::new(), 0.0), |ui| {
+                render_control(
+                    ui,
+                    Rect::from_min_size(pos2(20.0, 20.0), vec2(28.0, 28.0)),
+                    control,
+                    control.presentation(model),
+                    MinimalSkin.playlist_toolbar_style(),
+                );
+            });
         full_output.shapes
     }
 
@@ -678,7 +679,7 @@ mod tests {
     fn icon_bar_flow_height(model: &PlaylistInteractionModel) -> f32 {
         let context = Context::default();
         let mut flow_height = 0.0;
-        let _ = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(&context, raw_input(Vec::new(), 0.0), |ui| {
             ui.set_width(420.0);
             let top_before_toolbar = ui.cursor().top();
             let mut output = PlaylistUiOutput::default();
@@ -692,7 +693,7 @@ mod tests {
     fn reserved_icon_bar_flow_height() -> f32 {
         let context = Context::default();
         let mut flow_height = 0.0;
-        let _ = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(&context, raw_input(Vec::new(), 0.0), |ui| {
             ui.set_width(420.0);
             let top_before_toolbar = ui.cursor().top();
             let style = MinimalSkin.playlist_toolbar_style();

@@ -141,7 +141,7 @@ pub(crate) struct RenderAcquireSample {
 
 /// Неблокирующий sample renderer submit/present latency.
 pub(crate) struct RenderTimingSample {
-    /// Время от `queue.submit()` до возврата из `surface_texture.present()`.
+    /// Время от `queue.submit()` до возврата из `queue.present(surface_texture)`.
     pub(crate) submit_present_elapsed: Duration,
 }
 

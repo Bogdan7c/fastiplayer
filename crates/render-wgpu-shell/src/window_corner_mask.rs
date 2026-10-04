@@ -216,6 +216,7 @@ mod tests {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .ok()?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -321,7 +322,9 @@ mod tests {
             .recv_timeout(GPU_TEST_TIMEOUT)
             .expect("receive mask readback callback")
             .expect("map mask readback");
-        let mapped = slice.get_mapped_range();
+        let mapped = slice
+            .get_mapped_range()
+            .expect("mapped mask readback range");
         let padded_stride = usize::try_from(padded_bytes_per_row).expect("padded stride");
         let visible_stride = usize::try_from(bytes_per_row).expect("visible stride");
         let pixels = mapped

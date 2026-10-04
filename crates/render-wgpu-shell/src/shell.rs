@@ -195,6 +195,9 @@ impl GpuContext {
                 power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                // wgpu 30: `false` сохраняет прежнее поведение — реальные лимиты адаптера
+                // без округления до «корзин» (защита от fingerprinting нужна браузерам).
+                apply_limit_buckets: false,
             })
             .await
             .context("Не удалось получить GPU адаптер. Проверьте драйверы Vulkan")?;
@@ -265,6 +268,9 @@ impl GpuContext {
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency,
+            // wgpu 30: `Auto` воспроизводит историческое поведение (sRGB для наших
+            // 8-битных форматов). HDR-вывод на экран — отдельная фича из бэклога.
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
 
         surface.configure(&device, &surface_config);
@@ -594,7 +600,7 @@ impl Renderer {
                 // Текущий encoder не будет submitted, поэтому его paint jobs больше
                 // не удерживают retired-текстуры. Предыдущие submit-ы уже переданы wgpu.
                 self.egui_compositor
-                    .free_retired_textures(&egui_textures_delta);
+                    .free_retired_textures(egui_textures_delta);
                 return dropped_frame;
             }
         };
@@ -626,7 +632,7 @@ impl Renderer {
                 tracing::error!(error = %error, "Video render failed");
                 // Encoder с egui paint jobs отбрасывается вместе с failed frame.
                 self.egui_compositor
-                    .free_retired_textures(&egui_textures_delta);
+                    .free_retired_textures(egui_textures_delta);
                 return RenderFrameOutcome::Failed(RenderFrameFailure::new(error.to_string()));
             }
         }
@@ -669,7 +675,7 @@ impl Renderer {
         // После submit-а wgpu самостоятельно удерживает ресурсы до завершения GPU work.
         // Теперь retired-текстуры можно безопасно уничтожить, не повреждая текущий кадр.
         self.egui_compositor
-            .free_retired_textures(&egui_textures_delta);
+            .free_retired_textures(egui_textures_delta);
         let queue_submit_elapsed = stage_started_at.elapsed();
 
         // Продвигаем wgpu callbacks для submitted work.
@@ -688,7 +694,9 @@ impl Renderer {
 
         // Показываем кадр на экране.
         let stage_started_at = Instant::now();
-        surface_texture.present();
+        // wgpu 30: `SurfaceTexture::present()` заменён на `Queue::present`; замер
+        // покрывает тот же участок — только сам вызов present.
+        self.gpu.queue.present(surface_texture);
         let surface_present_elapsed = stage_started_at.elapsed();
 
         let stages = RenderFrameStageTimings {

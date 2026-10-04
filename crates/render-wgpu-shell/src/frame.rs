@@ -58,7 +58,7 @@ pub struct RenderFrameStageTimings {
     /// Уведомление winit перед present.
     pub pre_present_notify: Duration,
 
-    /// Синхронная часть `surface_texture.present()`.
+    /// Синхронная часть `queue.present(surface_texture)`.
     pub surface_present: Duration,
 }
 
@@ -115,7 +115,7 @@ pub struct RenderFrameSlowestStage {
 /// Timing одного успешного render loop-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderFrameTiming {
-    /// Время от отправки command buffer-а до возврата из `surface_texture.present()`.
+    /// Время от отправки command buffer-а до возврата из `queue.present(surface_texture)`.
     pub submit_present_elapsed: Duration,
 
     /// Полная длительность renderer-owned части от входа в shell до present.

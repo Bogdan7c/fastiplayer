@@ -850,9 +850,18 @@ impl DmaBufImporter {
         // SAFETY: `hal_texture` создан из internal handle этого `self.device`, descriptor
         // совпадает с HAL descriptor-ом для публичной wgpu texture, а содержимое уже
         // инициализировано внешним VA-API producer-ом до импорта.
+        // `initial_state = UNINITIALIZED` — сознательное сохранение семантики wgpu 29,
+        // где этот параметр не передавался и wgpu-core ставил его неявно (миграция из
+        // CHANGELOG wgpu 30, PR #9496). Такой первый барьер не обязан сохранять
+        // содержимое, импортированное от VA-API; корректное значение — отдельная задача
+        // (обновление egui/wgpu, сессия 03).
         let texture = unsafe {
             self.device
-                .create_texture_from_hal::<wgpu::hal::vulkan::Api>(hal_texture, &wgpu_desc)
+                .create_texture_from_hal::<wgpu::hal::vulkan::Api>(
+                    hal_texture,
+                    &wgpu_desc,
+                    wgpu::TextureUses::UNINITIALIZED,
+                )
         };
 
         let view_contract = plane_view_contract_for_imported_format(frame_format);
@@ -1236,9 +1245,18 @@ impl DmaBufImporter {
         // SAFETY: `hal_texture` создан из internal handle этого `self.device`, descriptor
         // совпадает с HAL descriptor-ом для публичной wgpu texture, а imported plane уже
         // инициализирована внешним VA-API producer-ом до wrapped WGPU texture.
+        // `initial_state = UNINITIALIZED` — сознательное сохранение семантики wgpu 29,
+        // где этот параметр не передавался и wgpu-core ставил его неявно (миграция из
+        // CHANGELOG wgpu 30, PR #9496). Такой первый барьер не обязан сохранять
+        // содержимое, импортированное от VA-API; корректное значение — отдельная задача
+        // (обновление egui/wgpu, сессия 03).
         let texture = unsafe {
             self.device
-                .create_texture_from_hal::<wgpu::hal::vulkan::Api>(hal_texture, &wgpu_desc)
+                .create_texture_from_hal::<wgpu::hal::vulkan::Api>(
+                    hal_texture,
+                    &wgpu_desc,
+                    wgpu::TextureUses::UNINITIALIZED,
+                )
         };
 
         Ok(texture)

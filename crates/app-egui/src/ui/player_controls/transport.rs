@@ -452,7 +452,7 @@ mod tests {
         // Вектор накапливает только post-render intents проверяемого frame.
         let mut actions = Vec::new();
         // Egui обрабатывает pointer state внутри обычного immediate-mode pass.
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
             render_navigation_button(
                 ui,
                 button_rect,

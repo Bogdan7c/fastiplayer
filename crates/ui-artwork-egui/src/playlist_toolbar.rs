@@ -376,7 +376,7 @@ mod tests {
     }
 
     fn glyph_output(glyph: PlaylistToolbarGlyph) -> egui::FullOutput {
-        Context::default().run_ui(RawInput::default(), |ui| {
+        crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
             paint(
                 ui.painter(),
                 hit_rect(),
@@ -465,15 +465,16 @@ mod tests {
     #[test]
     fn hover_and_focus_add_surfaces_without_moving_glyph() {
         let idle_output = glyph_output(PlaylistToolbarGlyph::CurrentItem);
-        let decorated_output = Context::default().run_ui(RawInput::default(), |ui| {
-            paint(
-                ui.painter(),
-                hit_rect(),
-                PlaylistToolbarGlyph::CurrentItem,
-                state(Color32::from_white_alpha(28), true),
-                style(),
-            );
-        });
+        let decorated_output =
+            crate::test_frame::run_ui_frame(&Context::default(), RawInput::default(), |ui| {
+                paint(
+                    ui.painter(),
+                    hit_rect(),
+                    PlaylistToolbarGlyph::CurrentItem,
+                    state(Color32::from_white_alpha(28), true),
+                    style(),
+                );
+            });
 
         assert_eq!(decorated_output.shapes.len(), idle_output.shapes.len() + 2);
         for (idle_shape, decorated_shape) in idle_output

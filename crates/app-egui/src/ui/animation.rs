@@ -177,7 +177,7 @@ mod tests {
             scale: f32::NAN,
         };
         // Один Context сохраняет animation manager и stable Id между кадрами.
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
             sample = VisibilityAnimation::new(
                 ui,
                 "test_visibility",

@@ -123,6 +123,7 @@ impl OffscreenWgpuHarness {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .expect("получить Vulkan adapter для headless WGPU acceptance");
 
@@ -300,7 +301,9 @@ impl OffscreenWgpuHarness {
             .expect("успешно отобразить WGPU readback buffer");
 
         // Проверяем только видимые bytes каждой строки, исключая alignment padding.
-        let mapped_bytes = readback_slice.get_mapped_range();
+        let mapped_bytes = readback_slice
+            .get_mapped_range()
+            .expect("получить mapped range WGPU readback");
         let visible_row_bytes = usize::try_from(TARGET_WIDTH * 4).expect("row bytes помещаются");
         let padded_row_bytes =
             usize::try_from(self.padded_bytes_per_row).expect("stride помещается");

@@ -154,12 +154,12 @@ expect_used = "warn"
 panic = "warn"
 
 [workspace.dependencies]
-wgpu = { version = "29", features = ["vulkan"] }
+wgpu = { version = "30", features = ["vulkan"] }
 winit = "0.30"
-egui = "0.35"
+egui = "0.36"
 ui-artwork-egui = { version = "0.1.0-alpha.1", path = "crates/ui-artwork-egui" }
-egui-winit = "0.35"
-egui-wgpu = "0.35"
+egui-winit = "0.36"
+egui-wgpu = "0.36"
 pollster = "0.4"
 anyhow = "1.0"
 etcetera = "0.11"

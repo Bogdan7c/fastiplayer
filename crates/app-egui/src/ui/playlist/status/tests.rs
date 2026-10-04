@@ -60,7 +60,7 @@ fn playlist_status_height(
 ) -> f32 {
     let mut height = 0.0;
     let context = Context::default();
-    let _ = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
+    let _ = crate::ui::test_frame::run_ui_frame(&context, raw_input(Vec::new(), 0.0), |ui| {
         // Production sidebar ограничен по ширине; sizing pass должен реально проверить wrapping.
         ui.set_width(220.0);
         let mut state = PlaylistUiState::default();
@@ -156,7 +156,7 @@ fn action_frame(
 ) -> (Vec<super::super::actions::PlaylistAction>, Rect, bool, bool) {
     let mut output = PlaylistUiOutput::default();
     let mut response_state = None;
-    let _ = context.run_ui(input, |ui| {
+    let _ = crate::ui::test_frame::run_ui_frame(context, input, |ui| {
         let mut access = if authoritative {
             PlaylistStatusRenderAccess::Authoritative {
                 output: &mut output,
@@ -253,14 +253,14 @@ fn settled_status_has_no_idle_repaint_and_schedules_only_nearest_deadline() {
 
 #[test]
 fn production_ui_requests_one_delayed_wake_at_the_problem_deadline() {
-    let context = Context::default();
+    let context = crate::ui::test_frame::app_behavior_context();
     let model = playlist_model(0);
     let interaction = safe_feedback(1, "Не удалось выполнить действие");
     let mut state = PlaylistUiState::default();
     let mut output = PlaylistUiOutput::default();
 
     // Первый headless frame может сам запросить immediate repaint для инициализации шрифтов.
-    let _ = context.run_ui(raw_input(Vec::new(), 2.0), |ui| {
+    let _ = crate::ui::test_frame::run_ui_frame(&context, raw_input(Vec::new(), 2.0), |ui| {
         show_status(
             ui,
             &model,
@@ -270,16 +270,17 @@ fn production_ui_requests_one_delayed_wake_at_the_problem_deadline() {
             &mut output,
         );
     });
-    let full_output = context.run_ui(raw_input(Vec::new(), 2.1), |ui| {
-        show_status(
-            ui,
-            &model,
-            &interaction,
-            UiMotion::Reduced,
-            &mut state,
-            &mut output,
-        );
-    });
+    let full_output =
+        crate::ui::test_frame::run_ui_frame(&context, raw_input(Vec::new(), 2.1), |ui| {
+            show_status(
+                ui,
+                &model,
+                &interaction,
+                UiMotion::Reduced,
+                &mut state,
+                &mut output,
+            );
+        });
     let viewport_output = full_output
         .viewport_output
         .get(&egui::ViewportId::ROOT)
