@@ -86,8 +86,8 @@ pub(crate) struct AppRenderFrameResult {
 }
 
 /// Выбирает ближайший deadline независимых UI owners для одного `WaitUntil`.
-fn earliest_ui_wake_deadline(first: Option<Instant>, second: Option<Instant>) -> Option<Instant> {
-    first.into_iter().chain(second).min()
+fn earliest_ui_wake_deadline<const N: usize>(deadlines: [Option<Instant>; N]) -> Option<Instant> {
+    deadlines.into_iter().flatten().min()
 }
 
 /// Video stage, подготовленный до финального `render_wgpu_shell::RenderFrameInput`.
@@ -328,13 +328,12 @@ fn record_worker_events(
                 app_state.note_startup_player_event(media_instance_id, &player_event);
                 app_state.handle_cached_present_frame_player_event(&player_event);
                 app_state.handle_main_visual_override_player_event(&player_event);
+                app_state.handle_notification_player_event(&player_event);
                 match player_event {
                     PlayerEvent::MediaOpenRequested(_) => {
                         app_state.reset_dma_buf_runtime_fallback_for_new_media();
                     }
-                    PlayerEvent::FatalError(fatal_error) => {
-                        log_player_fatal_error(&fatal_error);
-                    }
+                    PlayerEvent::FatalError(fatal_error) => log_player_fatal_error(&fatal_error),
                     PlayerEvent::VideoBackendSelectionRequested(request) => {
                         app_state.note_video_backend_reselection_request(request);
                     }
@@ -1061,10 +1060,11 @@ pub(crate) fn render_frame(
                 || url_action_requested_repaint,
         ),
         close_requested: chrome_close_requested,
-        next_ui_wake_deadline: earliest_ui_wake_deadline(
+        next_ui_wake_deadline: earliest_ui_wake_deadline([
             undo_model.next_wake_deadline,
             settings_runtime.next_sidebar_resize_deadline(),
-        ),
+            app_state.next_notification_wake_deadline(),
+        ]),
     }
 }
 
@@ -1085,11 +1085,11 @@ mod tests {
         let sidebar_deadline = now + Duration::from_millis(500);
 
         assert_eq!(
-            earliest_ui_wake_deadline(Some(transport_deadline), Some(sidebar_deadline)),
+            earliest_ui_wake_deadline([Some(transport_deadline), Some(sidebar_deadline), None]),
             Some(sidebar_deadline)
         );
         assert_eq!(
-            earliest_ui_wake_deadline(None, Some(sidebar_deadline)),
+            earliest_ui_wake_deadline([None, Some(sidebar_deadline), Some(transport_deadline)]),
             Some(sidebar_deadline)
         );
     }

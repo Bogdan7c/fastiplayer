@@ -92,8 +92,12 @@ fn cancellation_and_busy_are_not_user_errors() {
     });
     let busy = StrongMediaOpenError::Start(MediaOpenStartError::Busy);
 
-    assert_eq!(cancelled.user_outcome(), StrongMediaOpenUserOutcome::Silent);
-    assert_eq!(busy.user_outcome(), StrongMediaOpenUserOutcome::Silent);
+    // Отмена молчит, «занято» — отдельный исход для временного уведомления (сессия 04).
+    assert_eq!(
+        cancelled.user_outcome(),
+        StrongMediaOpenUserOutcome::Cancelled
+    );
+    assert_eq!(busy.user_outcome(), StrongMediaOpenUserOutcome::Busy);
     assert_eq!(cancelled.user_failure_reason(), None);
     assert_eq!(busy.user_failure_reason(), None);
 }

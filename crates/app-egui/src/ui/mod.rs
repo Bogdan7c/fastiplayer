@@ -9,6 +9,7 @@ pub mod assets;
 pub(crate) mod egui_behavior;
 pub(crate) mod keyboard_focus;
 pub mod media_info;
+pub(crate) mod notifications;
 pub mod player_controls;
 pub(crate) mod playlist;
 pub(crate) mod queue_replacement_confirmation;

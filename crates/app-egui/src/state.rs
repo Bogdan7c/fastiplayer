@@ -62,7 +62,12 @@ use crate::video_pipeline_selector::{
 mod automatic_web_media_quality;
 mod main_visual_override;
 mod media_jobs;
+mod notification_routing;
+mod notifications;
 pub(crate) use media_jobs::playback_intent_from_snapshot;
+pub(crate) use notifications::{
+    CenterNotice, MediaFailureOrigin, NotificationId, NotificationsFrame, ToastKind, ToastView,
+};
 mod playlist_attachment;
 mod playlist_transport;
 pub(crate) use playlist_transport::LifecycleTimelineSeekSettlement;
@@ -261,8 +266,8 @@ pub struct AppState {
     /// Viewport anchor принадлежит только Playlist UI и не следует за active media.
     playlist_ui_state: crate::ui::playlist::PlaylistUiState,
 
-    /// Startup-ошибка shell-слоя, которую нужно показать без перевода player в Failed.
-    pub startup_error: Option<String>,
+    /// Единственный владелец уведомлений: фатальная ошибка media, временные и инфо-toast-ы.
+    notifications: notifications::NotificationCenter,
 
     /// Pending-состояние shell-слоя для операций, которые ещё не дошли до player.
     pub startup_pending: Option<String>,
@@ -437,7 +442,10 @@ impl AppState {
             audio_decode_capability_snapshot,
             playlist_attachment: None,
             playlist_ui_state: crate::ui::playlist::PlaylistUiState::default(),
-            startup_error: startup_context.startup_error,
+            notifications: startup_context.startup_error.map_or_else(
+                notifications::NotificationCenter::default,
+                notifications::NotificationCenter::with_media_open_failure,
+            ),
             startup_pending: None,
             last_player_snapshot: PlayerSnapshot::empty(),
             pending_redraw_after_worker_command: false,
@@ -705,24 +713,29 @@ impl AppState {
     }
 
     /// Показывает shell-level pending state, пока media ещё не передано в player.
+    ///
+    /// Начало нового открытия снимает прежнюю фатальную ошибку (решение владельца, сессия 04).
     pub fn set_startup_pending(&mut self, message: String) {
-        self.startup_error = None;
+        self.notifications.resolve_media_failure();
         self.startup_pending = Some(message);
         self.mark_pending_worker_redraw();
     }
 
     /// Показывает shell-level ошибку, которая возникла до открытия media в player.
+    ///
+    /// Ошибка становится фатальной ошибкой центра: висит до ×, успешного или нового открытия.
     pub fn set_startup_error(&mut self, message: String) {
         self.abort_startup_readiness(StartupReadinessAbortReason::PreparationFailed);
         self.startup_pending = None;
-        self.startup_error = Some(message);
+        self.notifications
+            .show_media_failure(message, MediaFailureOrigin::MediaOpen);
         self.mark_pending_worker_redraw();
     }
 
     /// Сбрасывает shell-level startup overlay после успешного открытия media.
     pub(super) fn clear_startup_status(&mut self) {
         self.startup_pending = None;
-        self.startup_error = None;
+        self.notifications.resolve_media_failure();
         self.mark_pending_worker_redraw();
     }
 

@@ -194,18 +194,9 @@ impl AppState {
         let start_time = self.start_time;
         let frame_duration_estimate_ms =
             player_snapshot.video_frame_duration_estimate.as_secs_f64() * 1000.0;
-        let player_error_message = player_snapshot
-            .last_error
-            .as_ref()
-            .map(std::string::ToString::to_string);
-        let error_message = player_error_message
-            .as_deref()
-            .or(self.startup_error.as_deref());
-        let pending_message = if error_message.is_none() {
-            self.startup_pending.as_deref()
-        } else {
-            None
-        };
+        // Уведомления: фатальная ошибка, прогресс и toast-ы приходят от единого владельца.
+        let notifications_frame = self.notifications_frame(player_snapshot, Instant::now());
+        let mut notification_output = crate::ui::notifications::NotificationUiOutput::default();
         let render_diagnostics = frame_context.render_diagnostics();
         let selected_skin =
             skin::skin_from_config(self.committed_config_snapshot.ui_skin()).unwrap_or_else(|| {
@@ -387,8 +378,8 @@ impl AppState {
             playlist_confirmation_action = Self::render_center_overlay(
                 ui,
                 player_snapshot.playback_state,
-                error_message,
-                pending_message,
+                &notifications_frame,
+                &mut notification_output,
                 playlist_models.import_preview,
                 playlist_models.confirmation,
                 &mut playlist_ui_output,
@@ -398,6 +389,7 @@ impl AppState {
         if sidebar_close_requested {
             self.sidebar_controller.hide();
         }
+        self.apply_notification_actions(notification_output);
         let egui_run_elapsed = egui_run_started_at.elapsed();
 
         if self.sidebar_controller.is_animating() {
@@ -766,7 +758,7 @@ impl AppState {
     /// Открывает локальный media-файл через file dialog.
     pub fn open_file(&mut self, window: &Window) {
         if self.has_pending_local_file_open() {
-            debug!("Local file open job уже активен, повторный dialog не запускаем");
+            self.notify_open_still_in_progress();
             return;
         }
         match LocalFileOpenJob::spawn_picker(window, self.local_file_open_wake_port.clone()) {
@@ -781,11 +773,12 @@ impl AppState {
         }
     }
     /// Стартовая подсказка принадлежит только Idle: пауза, seek и EOF сохраняют media.
+    /// Toast-ы уведомлений рисуются в углу центральной области всегда, поверх видео.
     fn render_center_overlay(
         ui: &mut egui::Ui,
         playback_state: PlaybackState,
-        error_message: Option<&str>,
-        pending_message: Option<&str>,
+        notifications: &super::NotificationsFrame,
+        notification_output: &mut crate::ui::notifications::NotificationUiOutput,
         playlist_import_preview: Option<&crate::playlist_runtime::PlaylistImportPreview>,
         playlist_confirmation: Option<&crate::playlist_runtime::PendingPlaylistConfirmation>,
         playlist_output: &mut crate::ui::playlist::PlaylistUiOutput,
@@ -801,22 +794,21 @@ impl AppState {
                     if let Some(action) = crate::ui::playlist::import_preview::render(ui, preview) {
                         playlist_output.push_action(action);
                     }
-                } else if let Some(error) = error_message {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
-                        ui.colored_label(egui::Color32::RED, error);
-                    });
-                } else if let Some(message) = pending_message {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
-                        ui.colored_label(egui::Color32::LIGHT_BLUE, message);
-                    });
+                } else if let Some(notice) = notifications.center.as_ref() {
+                    crate::ui::notifications::render_center_notice(ui, notice, notification_output);
                 } else if playback_state == PlaybackState::Idle {
                     ui.vertical_centered(|ui| {
                         ui.add_space(40.0);
                         ui.heading("Open a file or URL to start");
                     });
                 }
+                let toast_area_rect = ui.max_rect();
+                crate::ui::notifications::render_toast_stack(
+                    ui,
+                    toast_area_rect,
+                    notifications,
+                    notification_output,
+                );
             });
         confirmation_action
     }

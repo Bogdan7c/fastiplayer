@@ -14,10 +14,12 @@ use crate::media_open::{
 /// Исход strong open с точки зрения пользователя.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StrongMediaOpenUserOutcome {
-    /// Не ошибка для пользователя: открытие отменили или coordinator занят другим
-    /// открытием. Сообщение не показываем, пишем только лог (решение владельца, сессия 03;
-    /// отдельное «занято» — сессия 04).
-    Silent,
+    /// Не ошибка для пользователя: открытие отменили. Сообщение не показываем, только лог
+    /// (решение владельца, сессия 03).
+    Cancelled,
+    /// Coordinator занят другим открытием: не ошибка, а временное «Файл ещё открывается»
+    /// (сессия 04).
+    Busy,
     /// Показать «Не удалось открыть …» с этой причиной.
     Failed(MediaOpenUserFailureReason),
 }
@@ -40,9 +42,9 @@ impl StrongMediaOpenError {
     /// лучше честное «внутренняя ошибка», чем английский debug-дамп протокола.
     pub(crate) const fn user_outcome(&self) -> StrongMediaOpenUserOutcome {
         match self {
-            Self::Start(MediaOpenStartError::Busy)
-            | Self::Terminal(MediaOpenTerminalOutcome::Cancelled { .. }) => {
-                StrongMediaOpenUserOutcome::Silent
+            Self::Start(MediaOpenStartError::Busy) => StrongMediaOpenUserOutcome::Busy,
+            Self::Terminal(MediaOpenTerminalOutcome::Cancelled { .. }) => {
+                StrongMediaOpenUserOutcome::Cancelled
             }
             _ => match self.user_failure_reason() {
                 Some(reason) => StrongMediaOpenUserOutcome::Failed(reason),

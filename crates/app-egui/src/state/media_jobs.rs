@@ -34,7 +34,7 @@ impl AppState {
     ///
     /// Раньше любая ошибка показывалась как «worker недоступен: …» с debug-дампом, хотя чаще всего
     /// worker доступен и сам отказал (например, кодек не поддерживается). Теперь причина
-    /// берётся из типизированного исхода; отмена и «занято» — не ошибка для пользователя.
+    /// берётся из типизированного исхода; отмена — не ошибка, «занято» — временное уведомление.
     /// Функция только сообщает: старое воспроизведение при отказе до commit barrier-а не
     /// затронуто, а ошибки после barrier-а уже обработала compensation strong-open-а.
     fn report_prepared_local_install_failure(
@@ -44,8 +44,12 @@ impl AppState {
     ) {
         // Имя файла — только в тексте для пользователя, в лог его не пишем.
         match error.user_outcome() {
-            crate::state::StrongMediaOpenUserOutcome::Silent => {
-                info!(error = %error, "Установка локального файла отменена или coordinator занят");
+            crate::state::StrongMediaOpenUserOutcome::Cancelled => {
+                info!(error = %error, "Установка локального файла отменена");
+            }
+            crate::state::StrongMediaOpenUserOutcome::Busy => {
+                info!(error = %error, "Coordinator занят другим открытием");
+                self.notify_open_still_in_progress();
             }
             crate::state::StrongMediaOpenUserOutcome::Failed(reason) => {
                 warn!(error = %error, ?reason, "Не удалось установить подготовленный файл");

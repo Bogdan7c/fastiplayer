@@ -54,7 +54,8 @@ fn startup_install_failure_texts(
             crate::local_open_message::local_open_failure_message(&target.path, reason)
         }
         // Отмена без supersede и web-ошибки: прежнее поведение (см. риски сессии 03).
-        (Some(_), StrongMediaOpenUserOutcome::Silent) | (None, _) => technical_text,
+        (Some(_), StrongMediaOpenUserOutcome::Cancelled | StrongMediaOpenUserOutcome::Busy)
+        | (None, _) => technical_text,
     };
     StartupInstallFailureTexts {
         user_message,
@@ -115,7 +116,13 @@ impl StartupMediaController {
                         warning.available_position.subsec_millis(),
                     );
                     self.startup_error = Some(message.clone());
-                    app_state.set_startup_error(message);
+                    // Это информация, а не ошибка: media открыто, только с другой позиции.
+                    // Раньше текст шёл красной «вечной» ошибкой; теперь — инфо-toast (сессия 04).
+                    // Отметка startup readiness сохранена как была у `set_startup_error`.
+                    app_state.abort_startup_readiness(
+                        crate::startup_readiness::StartupReadinessAbortReason::PreparationFailed,
+                    );
+                    app_state.notify_info(message);
                 }
                 if matches!(
                     installed.source.physical_source(),
