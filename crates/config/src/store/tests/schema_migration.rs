@@ -33,7 +33,7 @@ fn current_schema_without_yt_dlp_output_budgets_uses_safe_defaults() {
         loaded.config.yt_dlp.single_item_json_node_limit,
         defaults.single_item_json_node_limit
     );
-    assert!(!loaded.created);
+    assert_eq!(loaded.origin, ConfigLoadOrigin::LoadedExisting);
     assert_eq!(
         fs::read_to_string(&config_path).expect("current file remains readable"),
         current_text
@@ -333,7 +333,7 @@ fn legacy_v5_without_playlist_uses_defaults_without_startup_rewrite() {
     let loaded = load_from_path(&config_path).expect("legacy config loads");
 
     assert_eq!(loaded.config.playlist, crate::PlaylistConfig::default());
-    assert!(!loaded.created);
+    assert_eq!(loaded.origin, ConfigLoadOrigin::LoadedExisting);
     assert_eq!(
         fs::read_to_string(&config_path).expect("legacy file remains readable"),
         legacy_text
@@ -542,7 +542,7 @@ resolve_timeout_ms = 30000
 
     assert_eq!(loaded.config.schema_version, 10);
     assert_eq!(loaded.config.web_media.preferred_video_height, None);
-    assert!(!loaded.created);
+    assert_eq!(loaded.origin, ConfigLoadOrigin::LoadedExisting);
     assert_eq!(
         fs::read_to_string(&config_path).expect("legacy file remains readable"),
         legacy_text

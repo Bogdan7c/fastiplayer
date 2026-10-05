@@ -13,7 +13,7 @@ mod schema;
 mod store;
 mod validation;
 
-pub use error::{ConfigError, ConfigResult};
+pub use error::{ConfigError, ConfigResult, ConfigWriteFailure};
 pub use frame_server::{FrameServerConfig, FrameServerLiveScrubDecodeModeConfig};
 pub use paths::{CONFIG_FILE_NAME, ConfigPaths};
 pub use schema::{
@@ -34,5 +34,8 @@ pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_8, LEGACY_SCHEMA_VERSION_9,
 };
 pub use store::{
-    LoadedConfig, load_from_path, load_or_create, load_or_create_at, save_validated_atomic_at,
+    BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigSaveOutcome,
+    ConfigSavePolicy, ConfigSaveTarget, ConfigSessionOnlyReason, ConfigWriteProblem, LoadedConfig,
+    load_from_path, load_or_create, load_or_create_at, load_or_recover_at,
+    save_validated_atomic_at,
 };

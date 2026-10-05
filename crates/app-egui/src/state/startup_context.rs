@@ -11,14 +11,24 @@ pub(crate) struct AppStateStartupContext {
     pub(super) process_started_at: Instant,
     /// Уже санитизированная bootstrap-ошибка переносится без изменения текста и lifecycle.
     pub(super) startup_error: Option<String>,
+    /// Предупреждение об итоге загрузки config-а (сессия 05): показывается до ×.
+    ///
+    /// `AppShell` передаёт его ровно один раз — в первый созданный `AppState`, поэтому
+    /// пересоздание `AppState` после suspend не показывает предупреждение повторно.
+    pub(super) config_warning: Option<String>,
 }
 
 impl AppStateStartupContext {
     /// Создаёт точный startup-контекст до запуска player worker-а.
-    pub(crate) fn new(process_started_at: Instant, startup_error: Option<String>) -> Self {
+    pub(crate) fn new(
+        process_started_at: Instant,
+        startup_error: Option<String>,
+        config_warning: Option<String>,
+    ) -> Self {
         Self {
             process_started_at,
             startup_error,
+            config_warning,
         }
     }
 }

@@ -258,3 +258,53 @@ fn fading_toast_requests_repaint_only_with_standard_motion() {
     assert!(reduced.shows("Перемотка недоступна"));
     assert_eq!(reduced.repaint_delay, Duration::MAX);
 }
+
+/// Сквозной сценарий сессии 05: битый `config.toml` на диске → восстановление config-ом →
+/// текст предупреждения → настоящий egui-кадр. Плашка видна и через час, × её закрывает.
+#[test]
+fn broken_config_on_disk_reaches_painted_warning_that_stays_until_closed() {
+    let config_directory = tempfile::tempdir().expect("temp dir создан");
+    let config_path = config_directory.path().join("config.toml");
+    std::fs::write(&config_path, "schema_version = 10\n[[[\n").expect("битый config записан");
+    let loaded = fastiplayer_config::load_or_recover_at(&config_path, std::time::SystemTime::now())
+        .expect("старт не падает");
+    let warning = crate::config_startup_notice::config_startup_warning(&loaded)
+        .expect("о восстановлении предупреждаем");
+    let fastiplayer_config::ConfigLoadOrigin::RecoveredFromBroken(recovery) = &loaded.origin else {
+        panic!("битый файл должен быть восстановлен: {:?}", loaded.origin);
+    };
+    assert!(
+        config_directory
+            .path()
+            .join(&recovery.backup_file_name)
+            .is_file()
+    );
+    assert!(warning.contains(&recovery.backup_file_name));
+
+    let now = Instant::now();
+    let mut center = NotificationCenter::with_startup_messages(None, Some(warning.clone()), now);
+    let egui_ctx = egui::Context::default();
+
+    let hour_later = now + Duration::from_secs(3_600);
+    let frame = center.frame(OpenProgress::Idle, UiMotion::Reduced, hour_later);
+    let rendered = settle(&egui_ctx, &frame);
+    assert!(
+        rendered.shows(&warning),
+        "предупреждение нарисовано: {:?}",
+        rendered.painted
+    );
+
+    let actions = click(&egui_ctx, &frame, rendered.center_of("×"));
+    let [NotificationAction::Dismiss(warning_id)] = actions.as_slice() else {
+        panic!("ожидалось одно закрытие: {actions:?}");
+    };
+    assert_eq!(
+        center.dismiss(*warning_id),
+        NotificationDismissOutcome::Dismissed
+    );
+    let after_dismiss = settle(
+        &egui_ctx,
+        &center.frame(OpenProgress::Idle, UiMotion::Reduced, hour_later),
+    );
+    assert!(!after_dismiss.shows(&warning));
+}

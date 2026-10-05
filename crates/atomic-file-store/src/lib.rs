@@ -8,6 +8,9 @@
 //! Caller выбирает только точный target и готовые bytes. Формат данных, mutex
 //! между соседними операциями, retry/backoff и пользовательские предупреждения
 //! остаются ответственностью caller-а.
+//!
+//! Уборка temp-файлов, брошенных прерванными прошлыми запусками, — отдельная явная
+//! операция [`remove_stale_temp_files`]: протокол записи сам каталог не сканирует.
 
 #![forbid(unsafe_code)]
 
@@ -16,6 +19,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+mod stale_temp;
+
+pub use stale_temp::{StaleTempCleanupReport, StaleTempScanError, remove_stale_temp_files};
 
 /// Ограничивает число collision-safe попыток создать owned temp-файл.
 const MAX_TEMP_FILE_CREATE_ATTEMPTS: u64 = 32;
@@ -267,7 +274,8 @@ fn parent_directory(target_path: &Path) -> &Path {
 
 /// Формирует имя без lossy преобразования исходного filename.
 fn temp_file_name(target_file_name: &OsStr, nonce: u64) -> OsString {
-    // Leading dot не является политикой cleanup: directory никогда не сканируется.
+    // Протокол записи каталог не сканирует; брошенные temp распознаёт только явная
+    // уборка `stale_temp`, поэтому формат имени менять только вместе с ней.
     let mut temp_file_name = OsString::from(".");
     // Exact platform string target-а сохраняется внутри candidate.
     temp_file_name.push(target_file_name);

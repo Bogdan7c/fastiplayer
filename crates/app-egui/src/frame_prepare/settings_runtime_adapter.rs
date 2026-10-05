@@ -333,6 +333,12 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         self.playlist_runtime.finalize_playlist_settings();
     }
 
+    fn report_settings_kept_for_session_only(&mut self) {
+        // Повтор (например, серия изменений ширины sidebar) продлевает ту же плашку.
+        self.app_state
+            .notify_transient(crate::config_startup_notice::SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE);
+    }
+
     fn apply_playlist_runtime_settings(
         &mut self,
         update: &fastiplayer_settings::PlaylistRuntimeSettingsUpdate,

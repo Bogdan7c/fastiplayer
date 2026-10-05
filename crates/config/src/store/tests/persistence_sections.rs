@@ -10,7 +10,7 @@ fn missing_config_is_created_with_defaults() {
 
     let loaded = load_or_create_at(&config_path).expect("default config created");
 
-    assert!(loaded.created);
+    assert_eq!(loaded.origin, ConfigLoadOrigin::CreatedDefault);
     assert_eq!(loaded.path, config_path);
     assert_eq!(loaded.config, AppConfig::default());
     assert!(loaded.path.exists());

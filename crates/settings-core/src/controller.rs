@@ -234,6 +234,19 @@ impl PersistReport {
         }
     }
 
+    /// Creates a report for settings that were validated and committed in memory, but
+    /// intentionally not written: persistence is disabled for this run by the store.
+    ///
+    /// This is a success for the transaction (no rollback): the user keeps the new
+    /// values until exit. Callers must tell the user that changes will not survive.
+    #[must_use]
+    pub const fn kept_for_session_only() -> Self {
+        Self {
+            outcome: PersistOutcome::SkippedSessionOnly,
+            durability_warning: None,
+        }
+    }
+
     /// Adds a non-fatal durability warning to the report.
     #[must_use]
     pub fn with_durability_warning(mut self, warning: impl Into<String>) -> Self {
@@ -250,6 +263,10 @@ pub enum PersistOutcome {
 
     /// Persistence was intentionally skipped because there were no changes.
     SkippedNoChanges,
+
+    /// Changes are applied in memory only: the store disabled writing for this run
+    /// (for example, the settings file belongs to a newer application version).
+    SkippedSessionOnly,
 }
 
 /// Runtime mechanism used for one route.

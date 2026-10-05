@@ -113,7 +113,8 @@ fn media_failure_never_expires_but_closes_by_dismiss() {
 #[test]
 fn successful_or_new_open_resolves_media_failure() {
     let now = Instant::now();
-    let mut center = NotificationCenter::with_media_open_failure("Файл не найден");
+    let mut center =
+        NotificationCenter::with_startup_messages(Some("Файл не найден".to_string()), None, now);
     assert_eq!(
         center_failure_message(&idle_frame(&mut center, now)).as_deref(),
         Some("Файл не найден")
@@ -361,4 +362,101 @@ fn reduced_motion_is_passed_to_frame_projection() {
     let mut center = NotificationCenter::default();
     let frame = center.frame(OpenProgress::Idle, UiMotion::Reduced, now);
     assert_eq!(frame.motion, UiMotion::Reduced);
+}
+
+/// Предупреждение о config-е (сессия 05): не истекает и не будит окно, уходит только по ×.
+#[test]
+fn startup_config_warning_stays_until_dismissed() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::with_startup_messages(
+        None,
+        Some("Файл настроек был повреждён".to_string()),
+        now,
+    );
+
+    let first_frame = idle_frame(&mut center, now);
+    assert_eq!(first_frame.center, None);
+    assert_eq!(
+        toast_messages(&first_frame),
+        vec!["Файл настроек был повреждён"]
+    );
+    assert_eq!(first_frame.toasts[0].kind, ToastKind::Warning);
+    // Без таймера окну незачем просыпаться ради этой плашки.
+    assert_eq!(center.next_wake_deadline(), None);
+
+    // Час спустя предупреждение всё ещё на месте.
+    let much_later = now + Duration::from_secs(3_600);
+    let later_frame = idle_frame(&mut center, much_later);
+    assert_eq!(
+        toast_messages(&later_frame),
+        vec!["Файл настроек был повреждён"]
+    );
+
+    let warning_id = later_frame.toasts[0].id;
+    assert_eq!(
+        center.dismiss(warning_id),
+        NotificationDismissOutcome::Dismissed
+    );
+    assert!(idle_frame(&mut center, much_later).toasts.is_empty());
+}
+
+/// Ошибка CLI и предупреждение config-а при старте живут в своих местах одновременно.
+#[test]
+fn startup_messages_keep_failure_in_center_and_warning_in_corner() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::with_startup_messages(
+        Some("Файл не найден".to_string()),
+        Some("Файл настроек был повреждён".to_string()),
+        now,
+    );
+
+    let frame = idle_frame(&mut center, now);
+
+    assert_eq!(
+        center_failure_message(&frame).as_deref(),
+        Some("Файл не найден")
+    );
+    assert_eq!(toast_messages(&frame), vec!["Файл настроек был повреждён"]);
+}
+
+/// Поток временных toast-ов не вытесняет предупреждение до ×: уходят временные.
+#[test]
+fn transient_burst_does_not_evict_warning_until_dismissed() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    center.notify_until_dismissed("Файл настроек был повреждён", now);
+    for index in 0..5 {
+        center.notify_transient(format!("Временное {index}"), now);
+    }
+
+    let frame = idle_frame(&mut center, now);
+
+    assert_eq!(frame.toasts.len(), MAX_VISIBLE_TOASTS);
+    assert_eq!(
+        toast_messages(&frame),
+        vec!["Временное 4", "Временное 3", "Файл настроек был повреждён"]
+    );
+    // Временные истекают, предупреждение остаётся.
+    let after_expiry = now + TRANSIENT_NOTIFICATION_LIFETIME + Duration::from_millis(1);
+    assert_eq!(
+        toast_messages(&idle_frame(&mut center, after_expiry)),
+        vec!["Файл настроек был повреждён"]
+    );
+}
+
+/// Если на экране одни предупреждения до ×, вытесняется самое старое из них.
+#[test]
+fn oldest_warning_is_evicted_when_only_warnings_overflow() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    for index in 0..=MAX_VISIBLE_TOASTS {
+        center.notify_until_dismissed(format!("Предупреждение {index}"), now);
+    }
+
+    let frame = idle_frame(&mut center, now);
+
+    assert_eq!(
+        toast_messages(&frame),
+        vec!["Предупреждение 3", "Предупреждение 2", "Предупреждение 1"]
+    );
 }

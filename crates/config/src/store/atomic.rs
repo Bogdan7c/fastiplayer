@@ -1,35 +1,30 @@
-use std::ffi::{OsStr, OsString};
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+//! Запись config-файла на диск.
+//!
+//! Весь протокол атомарной записи (temp рядом с target, права 0600, fsync, rename,
+//! sync каталога) принадлежит crate `atomic-file-store` — одному владельцу на весь
+//! проект. Здесь остаются только решения config-слоя: что записать (validated TOML с
+//! проверкой roundtrip), когда создать каталог и как сообщить об ошибке.
+//!
+//! Инвариант: и первое создание defaults, и обычный save идут через один протокол,
+//! поэтому прерванная запись никогда не оставляет обрезанный `config.toml` — в худшем
+//! случае рядом остаётся брошенный temp, который уберёт [`remove_stale_save_temp_files`].
 
+use std::ffi::OsStr;
+use std::fs;
+use std::io;
+use std::path::Path;
+
+use atomic_file_store::{AtomicFileWriteOutcome, remove_stale_temp_files, replace_file_atomically};
 use tracing::{info, warn};
 
+use crate::error::ConfigWriteFailure;
 use crate::{AppConfig, ConfigError, ConfigResult};
-
-/// Сколько разных имён временного файла пробуем до явной ошибки коллизии.
-const MAX_TEMP_CONFIG_CREATE_ATTEMPTS: u32 = 32;
 
 /// Валидирует конфигурацию и атомарно заменяет целевой TOML-файл.
 pub(super) fn save_validated(path: &Path, config: &AppConfig) -> ConfigResult<()> {
     let toml_text = prepare_validated_toml_for_save(path, config)?;
     create_parent_dir_if_needed(path)?;
-
-    let (temp_path, mut temp_file) = create_config_temp_file(path)?;
-    let write_result = write_and_sync_temp_config(&temp_path, &mut temp_file, &toml_text);
-    // На Windows открытый handle может мешать rename, поэтому закрываем его явно.
-    drop(temp_file);
-
-    if let Err(error) = write_result {
-        remove_temp_config_after_error(&temp_path);
-        return Err(error);
-    }
-    if let Err(error) = rename_temp_config(&temp_path, path) {
-        remove_temp_config_after_error(&temp_path);
-        return Err(error);
-    }
-
-    sync_parent_directory_best_effort(path);
+    replace_config_file(path, &toml_text)?;
     info!(path = %path.display(), "Сохранён config fastiplayer через atomic rename");
     Ok(())
 }
@@ -48,21 +43,60 @@ pub(super) fn create_parent_dir_if_needed(path: &Path) -> ConfigResult<()> {
     })
 }
 
-/// Создаёт новый config без риска перезаписать появившийся параллельно файл.
-pub(super) fn write_new_config_file(path: &Path, toml_text: &str) -> ConfigResult<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|source| ConfigError::CreateConfigFile {
+/// Атомарно записывает первый default config.
+///
+/// Раньше файл создавался сразу под настоящим именем без fsync: сбой посреди записи
+/// оставлял обрезанный TOML, и плеер падал при каждом следующем запуске. Теперь
+/// используется тот же протокол temp + fsync + rename, что и у обычного save.
+/// Защита от параллельного создания тем же процессом не нужна: config пишет только
+/// процесс, удерживающий lease единственного экземпляра.
+pub(super) fn write_initial_config(path: &Path, toml_text: &str) -> ConfigResult<()> {
+    create_parent_dir_if_needed(path)?;
+    replace_config_file(path, toml_text)
+}
+
+/// Удаляет temp-файлы config-а, брошенные прошлыми прерванными записями.
+///
+/// Вызывать только при старте под lease единственного экземпляра: тогда ни одна живая
+/// запись в этот config идти не может. Убираются два точных шаблона:
+/// текущий шаблон `atomic-file-store` и прежний собственный шаблон config-а
+/// `.config.toml.<pid>.<попытка>.tmp` (его могли оставить версии до этой правки).
+/// Ошибки уборки не мешают запуску: они только пишутся в лог.
+pub(super) fn remove_stale_save_temp_files(path: &Path) {
+    match remove_stale_temp_files(path) {
+        Ok(report) => {
+            if report.removed_count > 0 {
+                info!(
+                    removed_count = report.removed_count,
+                    "Удалены брошенные временные файлы config"
+                );
+            }
+            for failure_kind in report.removal_failures {
+                warn!(error_kind = ?failure_kind, "Не удалось удалить брошенный временный файл config");
+            }
+        }
+        Err(scan_error) => {
+            warn!(error = ?scan_error, "Не удалось просмотреть каталог config для уборки временных файлов")
+        }
+    }
+    remove_legacy_save_temp_files(path);
+}
+
+/// Записывает готовый TOML через единый протокол `atomic-file-store`.
+fn replace_config_file(path: &Path, toml_text: &str) -> ConfigResult<()> {
+    match replace_file_atomically(path, toml_text.as_bytes()) {
+        AtomicFileWriteOutcome::Durable => Ok(()),
+        // Файл уже заменён и читается; не подтверждена только устойчивость записи
+        // каталога к выключению питания. Это предупреждение, а не провал save.
+        AtomicFileWriteOutcome::ReplacedDurabilityUnconfirmed(sync_error) => {
+            warn!(path = %path.display(), error = ?sync_error, "Config записан, но sync каталога не подтверждён");
+            Ok(())
+        }
+        AtomicFileWriteOutcome::NotReplaced(failure) => Err(ConfigError::ReplaceConfigFile {
             path: path.to_path_buf(),
-            source,
-        })?;
-    file.write_all(toml_text.as_bytes())
-        .map_err(|source| ConfigError::WriteConfigFile {
-            path: path.to_path_buf(),
-            source,
-        })
+            failure: ConfigWriteFailure(failure),
+        }),
+    }
 }
 
 fn prepare_validated_toml_for_save(path: &Path, config: &AppConfig) -> ConfigResult<String> {
@@ -87,107 +121,65 @@ fn prepare_validated_toml_for_save(path: &Path, config: &AppConfig) -> ConfigRes
     Ok(toml_text)
 }
 
-fn create_config_temp_file(path: &Path) -> ConfigResult<(PathBuf, fs::File)> {
-    for attempt in 0..MAX_TEMP_CONFIG_CREATE_ATTEMPTS {
-        let temp_path = config_temp_path(path, attempt);
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
-            Ok(file) => return Ok((temp_path, file)),
-            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(source) => {
-                return Err(ConfigError::CreateConfigTempFile {
-                    path: temp_path,
-                    source,
-                });
-            }
-        }
-    }
-    Err(ConfigError::CreateConfigTempFile {
-        path: config_temp_path(path, MAX_TEMP_CONFIG_CREATE_ATTEMPTS),
-        source: io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "все candidate имена временного config-файла уже существуют",
-        ),
-    })
-}
-
-fn config_temp_path(path: &Path, attempt: u32) -> PathBuf {
+/// Убирает temp-файлы прежнего собственного шаблона `.config.toml.<pid>.<попытка>.tmp`.
+fn remove_legacy_save_temp_files(path: &Path) {
+    let Some(target_file_name) = path.file_name() else {
+        return;
+    };
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .unwrap_or_else(|| OsStr::new("config.toml"));
-    let mut temp_file_name = OsString::from(".");
-    temp_file_name.push(file_name);
-    temp_file_name.push(format!(".{}.{}.tmp", std::process::id(), attempt));
-    parent.join(temp_file_name)
-}
-
-fn write_and_sync_temp_config(
-    temp_path: &Path,
-    temp_file: &mut fs::File,
-    toml_text: &str,
-) -> ConfigResult<()> {
-    temp_file
-        .write_all(toml_text.as_bytes())
-        .map_err(|source| ConfigError::WriteConfigTempFile {
-            path: temp_path.to_path_buf(),
-            source,
-        })?;
-    temp_file
-        .flush()
-        .map_err(|source| ConfigError::FlushConfigTempFile {
-            path: temp_path.to_path_buf(),
-            source,
-        })?;
-    temp_file
-        .sync_all()
-        .map_err(|source| ConfigError::SyncConfigTempFile {
-            path: temp_path.to_path_buf(),
-            source,
-        })
-}
-
-fn rename_temp_config(temp_path: &Path, target_path: &Path) -> ConfigResult<()> {
-    fs::rename(temp_path, target_path).map_err(|source| ConfigError::RenameConfigFile {
-        source_path: temp_path.to_path_buf(),
-        target_path: target_path.to_path_buf(),
-        source,
-    })
-}
-
-fn remove_temp_config_after_error(temp_path: &Path) {
-    match fs::remove_file(temp_path) {
-        Ok(()) => {}
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            warn!(path = %temp_path.display(), error = %source, "Не удалось удалить временный config после ошибки save")
+    let directory_entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) => {
+            warn!(error = %error, "Не удалось просмотреть каталог config для уборки старых временных файлов");
+            return;
         }
-    }
-}
-
-fn sync_parent_directory_best_effort(path: &Path) {
-    let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    else {
-        return;
     };
-    match OpenOptions::new().read(true).open(parent) {
-        Ok(parent_directory) => {
-            if let Err(source) = parent_directory.sync_all() {
-                warn!(path = %parent.display(), error = %source, "Не удалось sync директорию config после atomic rename");
+    for directory_entry in directory_entries.flatten() {
+        if !is_legacy_save_temp_name(&directory_entry.file_name(), target_file_name) {
+            continue;
+        }
+        // Только обычный файл: каталог или symlink с похожим именем не наш.
+        if !directory_entry
+            .file_type()
+            .is_ok_and(|file_type| file_type.is_file())
+        {
+            continue;
+        }
+        match fs::remove_file(directory_entry.path()) {
+            Ok(()) => info!("Удалён брошенный временный файл config старого формата"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                warn!(error = %error, "Не удалось удалить брошенный временный файл config старого формата")
             }
         }
-        Err(source) => {
-            warn!(path = %parent.display(), error = %source, "Не удалось открыть директорию config для best-effort sync")
-        }
     }
+}
+
+/// Точное совпадение с прежним шаблоном `.<target>.<цифры>.<цифры>.tmp`.
+fn is_legacy_save_temp_name(candidate_name: &OsStr, target_file_name: &OsStr) -> bool {
+    let (Some(candidate_name), Some(target_file_name)) =
+        (candidate_name.to_str(), target_file_name.to_str())
+    else {
+        return false;
+    };
+    let Some(counters) = candidate_name
+        .strip_prefix('.')
+        .and_then(|rest| rest.strip_prefix(target_file_name))
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((process_id, attempt)) = counters.split_once('.') else {
+        return false;
+    };
+    [process_id, attempt]
+        .iter()
+        .all(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 #[cfg(test)]

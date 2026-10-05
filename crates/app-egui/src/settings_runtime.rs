@@ -180,6 +180,8 @@ impl SettingsRuntime {
         loaded_config: LoadedConfig,
         dynamic_options_wake_port: AppWakePort,
     ) -> SettingsResult<Self> {
+        // Право записи решено config-хранилищем при загрузке; store его только исполняет.
+        let store = AppConfigStore::from_save_target(loaded_config.save_target());
         let LoadedConfig { config, path, .. } = loaded_config;
         let controller_registry = app_config_registry()?;
         let registry = app_config_registry()?;
@@ -187,7 +189,6 @@ impl SettingsRuntime {
         let route_appliers = SettingsRuntimeRouteAppliers::from_config(controller.committed())?;
         let option_providers =
             default_option_providers(route_appliers.audio_output_device_controller.clone());
-        let store = AppConfigStore::new(path.clone());
 
         let runtime = Self {
             controller,

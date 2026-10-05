@@ -150,6 +150,8 @@ fn render_toast(
     let text_color = match toast.kind {
         ToastKind::Transient => ui.visuals().warn_fg_color,
         ToastKind::Info => ui.visuals().text_color(),
+        // Важное предупреждение выделено цветом ошибки: оно о потере настроек.
+        ToastKind::Warning => ui.visuals().error_fg_color,
     };
     ui.scope(|ui| {
         ui.multiply_opacity(opacity);

@@ -27,6 +27,8 @@ use crate::render_settings::{
 };
 use crate::system_capabilities::probe_system_capabilities;
 use fastiplayer_config::{ConfigPaths, LoadedConfig};
+
+use crate::config_startup_notice::config_startup_warning;
 use playlist_state::{PlaylistResumeStore, PlaylistStateStore};
 use render_wgpu_shell::Renderer;
 use tracing::{debug, info};
@@ -120,6 +122,9 @@ pub(crate) struct AppShell {
     /// Authoritative runtime owner пользовательских настроек.
     settings_runtime: SettingsRuntime,
 
+    /// Предупреждение об итоге загрузки config-а; забирается первым созданным `AppState`.
+    pending_config_warning: Option<String>,
+
     /// Scheduler idle wakeup-ов для shell background jobs.
     background_poll_scheduler: BackgroundPollScheduler,
 
@@ -191,6 +196,7 @@ impl AppShell {
         let player_timeline_wake_port = wake_proxy.port(AppWakeOwner::PlayerTimeline);
         // Сначала строятся все fallible process owners. Inspection запускается
         // последней: после неё constructor уже не может вернуть ошибку и detach-нуть thread.
+        let pending_config_warning = config_startup_warning(&loaded_config);
         let settings_runtime =
             SettingsRuntime::from_loaded_config_with_wake_port(loaded_config, settings_wake_port)?;
         let mut playlist_runtime = PlaylistRuntime::new_with_resume_policy(
@@ -233,6 +239,7 @@ impl AppShell {
             player_timeline_wake_port,
             suspended_local_file_open_job: None,
             settings_runtime,
+            pending_config_warning,
             background_poll_scheduler: BackgroundPollScheduler::new(),
             renderer_lifecycle: RendererLifecycleCoordinator::default(),
             process_lifecycle: AppShellProcessLifecycle::Running,
@@ -289,6 +296,7 @@ impl AppShell {
             AppStateStartupContext::new(
                 self.process_started_at,
                 self.startup_media.startup_error_message(),
+                self.pending_config_warning.take(),
             ),
             self.telemetry.clone(),
             self.settings_runtime.committed_snapshot(),

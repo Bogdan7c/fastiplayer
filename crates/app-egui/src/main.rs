@@ -10,6 +10,7 @@
 mod app_instance;
 mod app_shell;
 mod app_wake;
+mod config_startup_notice;
 mod dma_buf_runtime_fallback;
 mod frame_prepare;
 mod local_file_open;
@@ -87,7 +88,7 @@ fn main() -> Result<()> {
         "Process config/instance bootstrap complete"
     );
 
-    info!(created = loaded_config.created, "Config fastiplayer готов");
+    config_startup_notice::log_config_load_outcome(&loaded_config);
 
     // Один typed event loop принимает только лёгкие owner wake events.
     let event_loop = EventLoop::<AppWakeEvent>::with_user_event()

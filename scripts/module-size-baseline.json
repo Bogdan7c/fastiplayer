@@ -33,7 +33,7 @@
     "crates/render-wgpu-video/src/video/mod.rs": 1028,
     "crates/render-wgpu-video/src/video/p010_renderer.rs": 1395,
     "crates/fastiplayer-settings/src/routing.rs": 1939,
-    "crates/settings-core/src/controller.rs": 1607,
+    "crates/settings-core/src/controller.rs": 1624,
     "crates/settings-core/src/metadata.rs": 928,
     "crates/source-core/src/ftp_session.rs": 824,
     "crates/symphonia-demux/src/matroska_metadata.rs": 1211,

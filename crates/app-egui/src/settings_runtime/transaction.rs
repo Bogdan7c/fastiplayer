@@ -30,10 +30,15 @@ where
     A: SettingsRuntimeReconfigureHost,
 {
     fn persist(&mut self, request: PersistRequest<'_, AppConfig>) -> SettingsResult<PersistReport> {
-        self.store.persist(PersistRequest {
+        let report = self.store.persist(PersistRequest {
             document: request.document,
             changed_settings: request.changed_settings,
-        })
+        })?;
+        if report.outcome == PersistOutcome::SkippedSessionOnly {
+            // Изменение применено без записи на диск — пользователь должен это знать.
+            self.runtime_adapter.report_settings_kept_for_session_only();
+        }
+        Ok(report)
     }
 }
 

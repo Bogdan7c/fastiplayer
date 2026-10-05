@@ -43,6 +43,10 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
     /// Завершает staged irreversible work после successful persistence.
     fn finalize_settings_transaction(&mut self) {}
 
+    /// Сообщает пользователю, что настройки применены, но в файл не записаны
+    /// (config-хранилище запретило запись в этот запуск, сессия 05).
+    fn report_settings_kept_for_session_only(&mut self) {}
+
     /// Обратимо stage-ит playlist policy у process-lifetime owner-а.
     fn apply_playlist_runtime_settings(
         &mut self,

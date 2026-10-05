@@ -11,7 +11,10 @@
 //! - **временное уведомление** (перемотка недоступна, файл ещё открывается) — toast в углу,
 //!   исчезает само через [`TRANSIENT_NOTIFICATION_LIFETIME`];
 //! - **информационное уведомление** (позиция недоступна, открыто с другого места) — toast,
-//!   исчезает само через [`INFO_NOTIFICATION_LIFETIME`].
+//!   исчезает само через [`INFO_NOTIFICATION_LIFETIME`];
+//! - **важное предупреждение** (файл настроек был повреждён, сессия 05) — toast, который
+//!   не исчезает сам и закрывается только ×: пропустить его нельзя, даже если в момент
+//!   запуска пользователь не смотрел в окно.
 //!
 //! Прогресс («Открываем…») остаётся у shell-состояния `AppState`; здесь только правило, что
 //! он важнее старой ошибки (см. [`NotificationCenter::frame`]).
@@ -50,7 +53,8 @@ pub(crate) const INFO_NOTIFICATION_LIFETIME: Duration = Duration::from_secs(8);
 /// Сколько toast-ов видно одновременно (решение владельца: стопка до 3).
 ///
 /// Новое уведомление встаёт первым, самое старое вытесняется — экран не заваливается
-/// плашками, если события сыплются подряд.
+/// плашками, если события сыплются подряд. Важное предупреждение (до ×) вытесняется
+/// последним: сначала уходят плашки, которые и так исчезли бы сами.
 pub(crate) const MAX_VISIBLE_TOASTS: usize = 3;
 
 /// Текст временного уведомления о повторном Open, пока прошлое открытие не закончилось.
@@ -67,14 +71,17 @@ pub(crate) enum ToastKind {
     Transient,
     /// Информация, не требующая действия пользователя.
     Info,
+    /// Важное предупреждение: висит, пока пользователь не закроет его ×.
+    Warning,
 }
 
 impl ToastKind {
-    /// Время жизни уведомления этого вида.
-    const fn lifetime(self) -> Duration {
+    /// Время жизни уведомления этого вида; `None` — до закрытия пользователем.
+    const fn lifetime(self) -> Option<Duration> {
         match self {
-            Self::Transient => TRANSIENT_NOTIFICATION_LIFETIME,
-            Self::Info => INFO_NOTIFICATION_LIFETIME,
+            Self::Transient => Some(TRANSIENT_NOTIFICATION_LIFETIME),
+            Self::Info => Some(INFO_NOTIFICATION_LIFETIME),
+            Self::Warning => None,
         }
     }
 }
@@ -159,8 +166,8 @@ struct ToastEntry {
     message: Arc<str>,
     /// Когда плашка впервые появилась (повтор не перезапускает появление).
     shown_at: Instant,
-    /// Когда плашка исчезнет сама.
-    expires_at: Instant,
+    /// Когда плашка исчезнет сама; `None` — только по ×.
+    expires_at: Option<Instant>,
 }
 
 /// Фатальная ошибка внутри владельца.
@@ -198,10 +205,22 @@ pub(crate) struct NotificationCenter {
 }
 
 impl NotificationCenter {
-    /// Создаёт владельца с уже известной ошибкой открытия (например, ошибка CLI-аргумента).
-    pub(crate) fn with_media_open_failure(message: impl Into<Arc<str>>) -> Self {
+    /// Создаёт владельца с сообщениями, известными до создания окна.
+    ///
+    /// - `media_open_failure` — ошибка CLI-аргумента: фатальная ошибка открытия в центре;
+    /// - `config_warning` — итог восстановления config-а: важное предупреждение до ×.
+    pub(crate) fn with_startup_messages(
+        media_open_failure: Option<String>,
+        config_warning: Option<String>,
+        now: Instant,
+    ) -> Self {
         let mut center = Self::default();
-        center.show_media_failure(message, MediaFailureOrigin::MediaOpen);
+        if let Some(message) = media_open_failure {
+            center.show_media_failure(message, MediaFailureOrigin::MediaOpen);
+        }
+        if let Some(message) = config_warning {
+            center.notify_until_dismissed(message, now);
+        }
         center
     }
 
@@ -221,6 +240,15 @@ impl NotificationCenter {
         now: Instant,
     ) -> NotificationId {
         self.push_toast(ToastKind::Info, message.into(), now)
+    }
+
+    /// Показывает важное предупреждение, которое исчезнет только по ×.
+    pub(crate) fn notify_until_dismissed(
+        &mut self,
+        message: impl Into<Arc<str>>,
+        now: Instant,
+    ) -> NotificationId {
+        self.push_toast(ToastKind::Warning, message.into(), now)
     }
 
     /// Показывает фатальную ошибку текущего media, заменяя предыдущую.
@@ -310,12 +338,15 @@ impl NotificationCenter {
     /// Нужен на паузе: без воспроизведения кадры не рисуются, и без этого будильника
     /// toast висел бы до первого движения мыши.
     pub(crate) fn next_wake_deadline(&self) -> Option<Instant> {
-        self.toasts.iter().map(|toast| toast.expires_at).min()
+        self.toasts
+            .iter()
+            .filter_map(|toast| toast.expires_at)
+            .min()
     }
 
     /// Добавляет toast или продлевает такой же уже видимый.
     fn push_toast(&mut self, kind: ToastKind, message: Arc<str>, now: Instant) -> NotificationId {
-        let expires_at = now + kind.lifetime();
+        let expires_at = kind.lifetime().map(|lifetime| now + lifetime);
         // Повтор того же сообщения (пять нажатий ← подряд) — одна плашка с новым сроком.
         // Id и момент появления сохраняются, поэтому плашка не мигает повторным появлением.
         if let Some(position) = self
@@ -337,14 +368,29 @@ impl NotificationCenter {
             shown_at: now,
             expires_at,
         });
-        // Самые старые плашки вытесняются, если их стало больше лимита.
-        self.toasts.truncate(MAX_VISIBLE_TOASTS);
+        self.evict_overflow();
         id
     }
 
-    /// Убирает toast-ы, срок которых наступил.
+    /// Вытесняет лишние плашки сверх [`MAX_VISIBLE_TOASTS`].
+    ///
+    /// Сначала уходят самые старые плашки с таймером (они и так исчезли бы сами), и
+    /// только если остались одни предупреждения до × — самое старое из них.
+    fn evict_overflow(&mut self) {
+        while self.toasts.len() > MAX_VISIBLE_TOASTS {
+            let oldest_expiring = self
+                .toasts
+                .iter()
+                .rposition(|toast| toast.expires_at.is_some());
+            let evicted_position = oldest_expiring.unwrap_or(self.toasts.len() - 1);
+            self.toasts.remove(evicted_position);
+        }
+    }
+
+    /// Убирает toast-ы, срок которых наступил; предупреждения до × не трогает.
     fn expire(&mut self, now: Instant) {
-        self.toasts.retain(|toast| toast.expires_at > now);
+        self.toasts
+            .retain(|toast| toast.expires_at.is_none_or(|expires_at| expires_at > now));
     }
 
     /// Выдаёт новый уникальный идентификатор.

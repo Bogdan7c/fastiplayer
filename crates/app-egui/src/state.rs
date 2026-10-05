@@ -442,9 +442,10 @@ impl AppState {
             audio_decode_capability_snapshot,
             playlist_attachment: None,
             playlist_ui_state: crate::ui::playlist::PlaylistUiState::default(),
-            notifications: startup_context.startup_error.map_or_else(
-                notifications::NotificationCenter::default,
-                notifications::NotificationCenter::with_media_open_failure,
+            notifications: notifications::NotificationCenter::with_startup_messages(
+                startup_context.startup_error,
+                startup_context.config_warning,
+                Instant::now(),
             ),
             startup_pending: None,
             last_player_snapshot: PlayerSnapshot::empty(),

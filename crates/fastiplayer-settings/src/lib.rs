@@ -19,10 +19,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use fastiplayer_config::{
-    AppConfig, FrameServerConfig, HdrToSdrOperatorConfig, NetworkConfig, OpenGlesConfig,
-    PlayerDemuxConfig, PlaylistConfig, RenderProfile, ToneMappingMode as ConfigToneMappingMode,
-    UiConfig, VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig,
-    YtDlpConfig, save_validated_atomic_at,
+    AppConfig, ConfigSaveOutcome, ConfigSaveTarget, FrameServerConfig, HdrToSdrOperatorConfig,
+    NetworkConfig, OpenGlesConfig, PlayerDemuxConfig, PlaylistConfig, RenderProfile,
+    ToneMappingMode as ConfigToneMappingMode, UiConfig, VideoBackendPreference,
+    VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig, YtDlpConfig,
 };
 use player_core::{
     PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate, PlayerRuntimeVideoBackendPreference,

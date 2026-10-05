@@ -10,6 +10,7 @@ name = "fastiplayer_config"
 path = "src/lib.rs"
 
 [dependencies]
+atomic-file-store.workspace = true
 etcetera.workspace = true
 serde.workspace = true
 settings-core.workspace = true

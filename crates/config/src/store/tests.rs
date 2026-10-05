@@ -11,6 +11,7 @@ use crate::{
 mod field_validation;
 mod frame_server;
 mod persistence_sections;
+mod recovery;
 mod render_validation;
 /// Проверяет, что atomic save не оставил временных файлов рядом с config.
 fn assert_no_save_temp_files(config_directory: &Path) {

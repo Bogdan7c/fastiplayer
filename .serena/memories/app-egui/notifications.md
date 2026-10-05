@@ -15,6 +15,12 @@
 - `state/notification_routing.rs` — glue `AppState`: `notify_transient`, `notify_info`, `notify_open_still_in_progress` (intent-API для сессий 05/07/10/15), `handle_notification_player_event` (из `frame_prepare::record_worker_events`), `notifications_frame`, `apply_notification_actions`, `next_notification_wake_deadline`.
 - `ui/notifications.rs` — только отрисовка стандартными виджетами (`Frame::popup`, `Label::wrap`, `small_button("×")`), typed `NotificationAction::Dismiss(id)` через `NotificationUiOutput`. Toast-ы — `egui::Area` `Order::Foreground`, `pivot(RIGHT_BOTTOM)`, `fade_in(false)`: встроенное проявление Area игнорирует reduced motion; единственный владелец анимации — `toast_opacity(age, UiMotion)` (150 мс EaseOutCubic, Reduced → сразу 1.0).
 
+## Важное предупреждение до × (сессия 05, 2026-10-05)
+- `ToastKind::Warning` (`lifetime() -> None`, `expires_at: Option<Instant>`): не истекает, не будит окно (`next_wake_deadline` его пропускает), рисуется `error_fg_color`. API: `NotificationCenter::notify_until_dismissed`, конструктор `with_startup_messages(media_open_failure, config_warning, now)` (заменил `with_media_open_failure`). Переполнение стопки вытесняет сначала самые старые toast-ы с таймером, предупреждения — последними.
+- Предупреждение о config-е: `app-egui::config_startup_notice::config_startup_warning(&LoadedConfig)` (чистый перевод typed итога в русский текст без путей) → `AppShell.pending_config_warning` → `.take()` в `AppStateStartupContext::new(.., config_warning)` первого `AppState` (после suspend повторно не показывается).
+- «Применено, но не сохранится»: `SettingsRuntimeReconfigureHost::report_settings_kept_for_session_only` (default no-op) вызывается из `SettingsRuntimeApplyDelegate::persist` при `PersistOutcome::SkippedSessionOnly`; `FrameSettingsRuntimeAdapter` показывает transient toast `SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE`, статус окна настроек — тот же текст.
+- Сквозной тест: `render_tests::broken_config_on_disk_reaches_painted_warning_that_stays_until_closed`; settings: `settings_runtime/tests/session_only_persistence.rs`.
+
 ## Перерисовка (важно)
 - В этом приложении `ctx.request_repaint_after(d)` делает `has_requested_repaint()` истинным, и окно перерисовывается **немедленно**: задержка игнорируется (`frame_prepare/ui_prepare.rs`). Для таймеров используйте `AppRenderFrameResult.next_ui_wake_deadline` (`earliest_ui_wake_deadline([..])` в `frame_prepare.rs`), куда добавлен `next_notification_wake_deadline()`. `ctx.request_repaint()` — только пока идёт анимация.
 

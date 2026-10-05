@@ -105,8 +105,18 @@ pub(super) fn status_from_apply_report(report: &ApplyReport) -> SettingsUiStatus
         );
     }
 
+    let kept_for_session_only = report
+        .persistence
+        .as_ref()
+        .is_some_and(|persistence| persistence.outcome == PersistOutcome::SkippedSessionOnly);
+    let summary = if kept_for_session_only {
+        // «Сохранены» было бы неправдой: файл сознательно не записан.
+        crate::config_startup_notice::SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE
+    } else {
+        apply_final_state_text(report.final_state)
+    };
     SettingsUiStatus {
-        summary: Some(apply_final_state_text(report.final_state).to_string()),
+        summary: Some(summary.to_string()),
         details,
     }
 }
@@ -130,6 +140,9 @@ fn persist_report_text(report: &PersistReport) -> String {
     let outcome = match report.outcome {
         PersistOutcome::Persisted => "TOML сохранён atomically",
         PersistOutcome::SkippedNoChanges => "TOML не записывался: durable changes отсутствуют",
+        PersistOutcome::SkippedSessionOnly => {
+            "TOML не записывался: файл настроек в этом запуске не изменяется"
+        }
     };
     match &report.durability_warning {
         Some(warning) => format!("{outcome}; durability warning: {warning}"),

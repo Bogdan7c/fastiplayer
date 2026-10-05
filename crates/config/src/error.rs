@@ -1,6 +1,8 @@
+use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
+use atomic_file_store::{AtomicFileWriteCause, AtomicFileWriteFailure, AtomicFileWriteStage};
 use thiserror::Error;
 
 /// Результат операций с пользовательской TOML-конфигурацией.
@@ -42,86 +44,17 @@ pub enum ConfigError {
         source: io::Error,
     },
 
-    /// Не удалось создать новый default config.
-    #[error("не удалось создать default config {path}: {source}")]
-    CreateConfigFile {
-        /// Путь к создаваемому config-файлу.
-        path: PathBuf,
-
-        /// Исходная I/O ошибка.
-        #[source]
-        source: io::Error,
-    },
-
-    /// Не удалось записать содержимое config-файла.
-    #[error("не удалось записать default config {path}: {source}")]
-    WriteConfigFile {
-        /// Путь к записываемому config-файлу.
-        path: PathBuf,
-
-        /// Исходная I/O ошибка.
-        #[source]
-        source: io::Error,
-    },
-
-    /// Не удалось создать временный файл рядом с целевым config-файлом.
-    #[error("не удалось создать временный config-файл {path}: {source}")]
-    CreateConfigTempFile {
-        /// Путь временного файла.
-        path: PathBuf,
-
-        /// Исходная I/O ошибка.
-        #[source]
-        source: io::Error,
-    },
-
-    /// Не удалось записать весь сгенерированный TOML во временный файл.
-    #[error("не удалось записать временный config-файл {path}: {source}")]
-    WriteConfigTempFile {
-        /// Путь временного файла.
-        path: PathBuf,
-
-        /// Исходная I/O ошибка.
-        #[source]
-        source: io::Error,
-    },
-
-    /// Не удалось сбросить userspace buffer временного config-файла.
-    #[error("не удалось flush временного config-файла {path}: {source}")]
-    FlushConfigTempFile {
-        /// Путь временного файла.
-        path: PathBuf,
-
-        /// Исходная I/O ошибка.
-        #[source]
-        source: io::Error,
-    },
-
-    /// Не удалось синхронизировать временный config-файл с диском.
-    #[error("не удалось sync временного config-файла {path}: {source}")]
-    SyncConfigTempFile {
-        /// Путь временного файла.
-        path: PathBuf,
-
-        /// Исходная I/O ошибка.
-        #[source]
-        source: io::Error,
-    },
-
-    /// Не удалось заменить целевой config временным файлом через rename.
-    #[error(
-        "не удалось атомарно заменить config {target_path} временным файлом {source_path}: {source}"
-    )]
-    RenameConfigFile {
-        /// Временный файл, уже записанный и синхронизированный.
-        source_path: PathBuf,
-
+    /// Не удалось атомарно записать config-файл (первое создание defaults или save).
+    ///
+    /// Протокол записи принадлежит `atomic-file-store`: при этой ошибке прежний
+    /// config-файл (если он был) не заменён и остаётся полным.
+    #[error("не удалось записать config {path}: {failure}")]
+    ReplaceConfigFile {
         /// Целевой config-файл.
-        target_path: PathBuf,
+        path: PathBuf,
 
-        /// Исходная I/O ошибка.
-        #[source]
-        source: io::Error,
+        /// Этап протокола записи и безопасная причина.
+        failure: ConfigWriteFailure,
     },
 
     /// Не удалось прочитать существующий config.
@@ -192,4 +125,32 @@ pub enum ConfigError {
         #[source]
         source: Box<ConfigError>,
     },
+}
+
+/// Неудачная атомарная запись config-файла с человекочитаемым описанием этапа.
+///
+/// Обёртка нужна, чтобы сообщение об ошибке было по-русски и без имён Rust-типов:
+/// `atomic-file-store` намеренно отдаёт только typed этап и класс I/O ошибки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigWriteFailure(pub AtomicFileWriteFailure);
+
+impl fmt::Display for ConfigWriteFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let stage = match self.0.stage {
+            AtomicFileWriteStage::ValidateTargetPath => "путь не указывает на файл",
+            AtomicFileWriteStage::CreateTempFile => "не создан временный файл",
+            AtomicFileWriteStage::WriteTempFile => "не записан временный файл",
+            AtomicFileWriteStage::FlushTempFile => "не сброшен буфер временного файла",
+            AtomicFileWriteStage::SyncTempFile => "временный файл не сохранён на диск",
+            AtomicFileWriteStage::RenameTempFile => "временный файл не переименован в config",
+        };
+        match self.0.cause {
+            AtomicFileWriteCause::Io(error_kind) => {
+                write!(formatter, "{stage} ({})", io::Error::from(error_kind))
+            }
+            AtomicFileWriteCause::TempNameAttemptsExhausted => {
+                write!(formatter, "{stage} (все имена временного файла заняты)")
+            }
+        }
+    }
 }

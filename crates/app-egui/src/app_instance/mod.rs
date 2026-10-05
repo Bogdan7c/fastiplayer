@@ -215,7 +215,14 @@ pub(crate) fn bootstrap_process() -> Result<ProcessBootstrap, ProcessBootstrapEr
         std::env::args_os().skip(1),
         ConfigPaths::discover,
         &platform,
-        |paths| fastiplayer_config::load_or_create_at(paths.config_file()),
+        // Под уже взятым lease: восстановление переименовывает битый config и убирает
+        // брошенные temp, что безопасно только при единственном экземпляре.
+        |paths| {
+            fastiplayer_config::load_or_recover_at(
+                paths.config_file(),
+                std::time::SystemTime::now(),
+            )
+        },
         |process_args, _paths, loaded_config| {
             resolve_initial_media_argument(process_args.take_initial_media(), &loaded_config.config)
         },

@@ -7,7 +7,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use fastiplayer_config::{AppConfig, LoadedConfig, VideoBackendPreference};
+use fastiplayer_config::{
+    AppConfig, ConfigLoadOrigin, ConfigSavePolicy, LoadedConfig, VideoBackendPreference,
+};
 use fastiplayer_settings::{
     AppRouteApplyResult, AppRuntimeRoute, AppRuntimeRouteApplier, AppRuntimeRouteGroup,
     AppRuntimeRouteGroupUpdate, FrameServerRuntimeSettingsUpdate,
@@ -45,6 +47,7 @@ use crate::ui::sidebar::{SidebarWidthChange, SidebarWidthPoints};
 
 mod dynamic_options;
 mod preview;
+mod session_only_persistence;
 mod sidebar_resize;
 mod snapshot_routes;
 mod transaction_apply;
@@ -54,7 +57,8 @@ fn loaded_config_for_test(config: AppConfig) -> LoadedConfig {
     LoadedConfig {
         config,
         path: PathBuf::from("/tmp/fastiplayer-settings-runtime-test.toml"),
-        created: false,
+        origin: ConfigLoadOrigin::LoadedExisting,
+        save_policy: ConfigSavePolicy::WriteToFile,
     }
 }
 
@@ -62,7 +66,8 @@ fn loaded_config_for_test_at(config: AppConfig, path: PathBuf) -> LoadedConfig {
     LoadedConfig {
         config,
         path,
-        created: false,
+        origin: ConfigLoadOrigin::LoadedExisting,
+        save_policy: ConfigSavePolicy::WriteToFile,
     }
 }
 
@@ -331,6 +336,8 @@ struct RecordingRuntimeAdapter {
     transaction_events: Vec<SettingsTransactionEvent>,
     expected_persisted_path_at_finalize: Option<PathBuf>,
     persistence_visible_at_finalize: Vec<bool>,
+    /// Сколько раз runtime сообщил «применено, но не записано» (сессия 05).
+    session_only_reports: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,6 +373,7 @@ impl RecordingRuntimeAdapter {
             transaction_events: Vec::new(),
             expected_persisted_path_at_finalize: None,
             persistence_visible_at_finalize: Vec::new(),
+            session_only_reports: 0,
         })
     }
 }
@@ -424,6 +432,10 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
             self.persistence_visible_at_finalize.push(path.is_file());
         }
         self.finalize_calls += 1;
+    }
+
+    fn report_settings_kept_for_session_only(&mut self) {
+        self.session_only_reports += 1;
     }
 
     fn apply_playlist_runtime_settings(

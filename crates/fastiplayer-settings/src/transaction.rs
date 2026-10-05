@@ -26,34 +26,49 @@ impl SettingsValidator<AppConfig> for AppConfigValidator {
     }
 }
 
-/// Atomic TOML persister backed by `fastiplayer-config::save_validated_atomic_at`.
+/// Atomic TOML persister backed by `fastiplayer-config::ConfigSaveTarget`.
+///
+/// Право записи решает config-хранилище при загрузке: если в этот запуск запись
+/// запрещена (файл от новой версии, файл не читается), store не пишет диск и сообщает
+/// `PersistOutcome::SkippedSessionOnly` — изменения действуют до выхода без отката.
 #[derive(Debug, Clone)]
 pub struct AppConfigStore {
-    path: PathBuf,
+    save_target: ConfigSaveTarget,
 }
 
 impl AppConfigStore {
-    /// Creates a store for one concrete user config path.
+    /// Creates a writable store for one concrete user config path.
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self::from_save_target(ConfigSaveTarget::writable(path))
+    }
+
+    /// Creates a store that respects the write policy decided when config was loaded.
+    #[must_use]
+    pub fn from_save_target(save_target: ConfigSaveTarget) -> Self {
+        Self { save_target }
     }
 
     /// Returns the target TOML path used by this store.
     #[must_use]
     pub fn path(&self) -> &Path {
-        &self.path
+        self.save_target.path()
     }
 }
 
 impl SettingsPersister<AppConfig> for AppConfigStore {
     fn persist(&mut self, request: PersistRequest<'_, AppConfig>) -> SettingsResult<PersistReport> {
         // Важный invariant: этот метод не делает partial write сам; вся durability
-        // политика остаётся внутри `fastiplayer-config`.
-        save_validated_atomic_at(&self.path, request.document)
+        // политика и решение «можно ли писать» остаются внутри `fastiplayer-config`.
+        let save_outcome = self
+            .save_target
+            .save(request.document)
             .map_err(settings_error_from_display)?;
 
-        Ok(PersistReport::persisted())
+        Ok(match save_outcome {
+            ConfigSaveOutcome::Saved => PersistReport::persisted(),
+            ConfigSaveOutcome::KeptInMemoryOnly(_reason) => PersistReport::kept_for_session_only(),
+        })
     }
 }
 
@@ -193,5 +208,181 @@ where
     fn finalize_committed(&mut self, _request: CommittedFinalizeRequest<'_, AppConfig>) {
         self.runtime_applier.finalize_committed_routes();
         self.applied_route_count = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Режим «без записи» (UX edge cases, сессия 05): изменение настройки применяется
+    //! до выхода, файл на диске не трогается, транзакция не откатывается.
+
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use fastiplayer_config::{ConfigSavePolicy, ConfigSessionOnlyReason, load_or_recover_at};
+    use settings_core::{
+        ApplyFinalState, CommittedApplyRequest, CommittedFinalizeRequest, CommittedRollbackRequest,
+        PersistOutcome, RollbackReport, SettingValue, SettingsController,
+    };
+
+    use super::*;
+
+    /// Минимальный делегат: настоящие validator и store, runtime-маршруты — заглушка,
+    /// которая считает откаты (откат здесь означал бы потерю изменения пользователя).
+    struct SessionOnlyProbeDelegate {
+        store: AppConfigStore,
+        rollback_count: usize,
+    }
+
+    impl SettingsValidator<AppConfig> for SessionOnlyProbeDelegate {
+        fn validate(
+            &mut self,
+            request: ValidationRequest<'_, AppConfig>,
+        ) -> SettingsResult<ValidationReport> {
+            AppConfigValidator.validate(request)
+        }
+    }
+
+    impl SettingsPersister<AppConfig> for SessionOnlyProbeDelegate {
+        fn persist(
+            &mut self,
+            request: PersistRequest<'_, AppConfig>,
+        ) -> SettingsResult<PersistReport> {
+            self.store.persist(request)
+        }
+    }
+
+    impl CommittedSettingsApplier<AppConfig> for SessionOnlyProbeDelegate {
+        fn preflight_committed(
+            &mut self,
+            _request: CommittedApplyRequest<'_, AppConfig>,
+        ) -> SettingsResult<Vec<ApplyRouteReport>> {
+            Ok(Vec::new())
+        }
+
+        fn apply_committed(
+            &mut self,
+            request: CommittedApplyRequest<'_, AppConfig>,
+        ) -> SettingsResult<Vec<ApplyRouteReport>> {
+            Ok(request
+                .route_updates
+                .iter()
+                .map(|update| {
+                    ApplyRouteReport::applied(
+                        update.route.clone(),
+                        update.affected_settings.clone(),
+                    )
+                })
+                .collect())
+        }
+
+        fn rollback_committed(
+            &mut self,
+            request: CommittedRollbackRequest<'_, AppConfig>,
+        ) -> SettingsResult<Vec<RollbackReport>> {
+            self.rollback_count += 1;
+            Ok(request
+                .route_updates
+                .iter()
+                .map(|update| {
+                    RollbackReport::rolled_back(
+                        update.route.clone(),
+                        update.affected_settings.clone(),
+                    )
+                })
+                .collect())
+        }
+
+        fn finalize_committed(&mut self, _request: CommittedFinalizeRequest<'_, AppConfig>) {}
+    }
+
+    /// Уникальный временный каталог теста.
+    fn unique_test_directory() -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "fastiplayer-settings-session-only-{}-{timestamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("test directory created");
+        directory
+    }
+
+    /// Конфиг от новой версии: изменение применено и закоммичено, но не записано.
+    #[test]
+    fn session_only_store_applies_change_without_writing_or_rollback() {
+        let directory = unique_test_directory();
+        let config_path = directory.join("config.toml");
+        let newer_text = AppConfig::default()
+            .to_pretty_toml()
+            .expect("defaults serialize")
+            .replace("schema_version = 10", "schema_version = 99");
+        fs::write(&config_path, &newer_text).expect("newer config written");
+        let loaded = load_or_recover_at(&config_path, SystemTime::now()).expect("startup loads");
+        assert_eq!(
+            loaded.save_policy,
+            ConfigSavePolicy::SessionOnly(ConfigSessionOnlyReason::NewerSchemaVersion {
+                found: 99
+            })
+        );
+
+        let mut controller = SettingsController::new(
+            loaded.config.clone(),
+            app_config_registry().expect("registry builds"),
+        );
+        controller
+            .set_value(
+                SettingId::from("ui.language"),
+                SettingValue::Text("en".into()),
+            )
+            .expect("draft edit succeeds");
+        let mut delegate = SessionOnlyProbeDelegate {
+            store: AppConfigStore::from_save_target(loaded.save_target()),
+            rollback_count: 0,
+        };
+
+        let report = controller
+            .apply(&mut delegate)
+            .expect("apply returns report");
+
+        assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+        assert_eq!(
+            report.persistence.map(|persistence| persistence.outcome),
+            Some(PersistOutcome::SkippedSessionOnly)
+        );
+        assert_eq!(delegate.rollback_count, 0);
+        // Новое значение действует до выхода.
+        assert_eq!(controller.committed().ui.language, "en");
+        // Файл новой версии остался байт-в-байт прежним.
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("config still present"),
+            newer_text
+        );
+        fs::remove_dir_all(&directory).expect("test directory removed");
+    }
+
+    /// Обычный store по-прежнему пишет файл.
+    #[test]
+    fn writable_store_persists_document() {
+        let directory = unique_test_directory();
+        let config_path = directory.join("config.toml");
+        let mut store = AppConfigStore::new(&config_path);
+        let mut document = AppConfig::default();
+        document.ui.language = "en".into();
+
+        let report = store
+            .persist(PersistRequest {
+                document: &document,
+                changed_settings: &settings_core::SettingsDiff::default(),
+            })
+            .expect("persist succeeds");
+
+        assert_eq!(report.outcome, PersistOutcome::Persisted);
+        let saved = fs::read_to_string(&config_path).expect("saved config exists");
+        assert!(saved.contains("language = \"en\""));
+        fs::remove_dir_all(&directory).expect("test directory removed");
     }
 }
