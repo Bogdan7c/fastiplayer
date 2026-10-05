@@ -281,7 +281,8 @@ impl Default for PlaylistConfig {
             load_siblings: true,
             sibling_media_filter: PlaylistSiblingMediaFilter::SameAsOpened,
             playback_behavior: PlaylistPlaybackBehavior::StopAfterLast,
-            error_behavior: PlaylistErrorBehavior::Stop,
+            // Решение владельца (сессия 07): битый файл не останавливает очередь.
+            error_behavior: PlaylistErrorBehavior::Skip,
             state_save_debounce_ms: 2_000,
             resume_checkpoint_interval_ms: 5_000,
             previous_restart_threshold_ms: 5_000,

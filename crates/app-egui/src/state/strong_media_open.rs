@@ -7,7 +7,9 @@ mod compensation;
 mod user_failure_reason;
 pub(crate) use user_failure_reason::StrongMediaOpenUserOutcome;
 mod pending;
-pub(super) use pending::PendingStrongMediaOpen;
+pub(super) use pending::{
+    PendingStrongMediaOpen, PlaylistStrongMediaOpenPoll, UnstagedPlaylistMediaOpenError,
+};
 
 use std::num::NonZeroU64;
 use std::sync::Arc;

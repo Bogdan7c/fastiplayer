@@ -18,6 +18,7 @@ mod local_open_message;
 mod media_open;
 mod playlist_action_runtime;
 mod playlist_runtime;
+mod playlist_skip_message;
 mod process_shutdown;
 mod redraw_pacing;
 mod render_settings;

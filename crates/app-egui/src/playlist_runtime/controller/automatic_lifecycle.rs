@@ -1,5 +1,6 @@
 //! Edge-triggered Ended, D42 hold, D26 latch and bounded automatic error policy.
 
+mod skip_report;
 #[cfg(test)]
 mod tests;
 
@@ -14,6 +15,9 @@ use playlist_core::{
     AutomaticTraversalStart, PlaylistItemId, QueueRevisionSnapshot, RepeatMode,
 };
 
+use self::skip_report::AutomaticSkipReport;
+pub(super) use self::skip_report::SkipChainStart;
+pub(crate) use self::skip_report::{AutomaticQueueNotice, SkippedItemsSummary};
 use super::PlaylistController;
 use super::install::PlaylistInstallMutation;
 use super::manual_navigation::ManualNavigationTerminalAction;
@@ -132,6 +136,8 @@ pub(super) struct AutomaticLifecycle {
     pub(super) deferred_advance: Option<DeferredAdvanceLatch>,
     released_plan: Option<(MediaOpenRequestId, PlaylistItemId, AutomaticTraversalPlan)>,
     prepared_next_plan: Option<PreparedNextAutomaticPlan>,
+    /// Сводка пропусков битых элементов для уведомления пользователя (сессия 07).
+    skip_report: AutomaticSkipReport,
 }
 
 /// Pure automatic plan хранится до EOF, чтобы shuffle target preload-а не расходился с commit.
@@ -327,6 +333,8 @@ impl PlaylistController {
             active,
             disposition: EndedDisposition::Handled,
         });
+        // Новый terminal edge начинает новую цепочку пропусков: до неё файл реально играл.
+        self.begin_automatic_skip_chain(SkipChainStart::AfterPlayback);
         match ended_kind {
             EndedSnapshotKind::Clean => {
                 if playback_state == PlaybackState::Failed {
@@ -340,6 +348,8 @@ impl PlaylistController {
                 };
                 let _recorded =
                     self.record_playback_error(item_id, active.media_instance_id(), safe_summary);
+                // Упавший во время воспроизведения файл — первый пропуск цепочки.
+                self.record_automatic_skip(item_id);
                 self.evaluate_runtime_error(active)
             }
         }
@@ -400,6 +410,8 @@ impl PlaylistController {
     pub(super) fn cancel_automatic_continuation_for_manual_intent(&mut self) {
         self.automatic_lifecycle.deferred_advance = None;
         self.automatic_lifecycle.released_plan = None;
+        // Пользователь сам выбрал, что играть: сводка прерванной цепочки не нужна.
+        self.discard_automatic_skip_chain();
         if let Some(edge) = self.automatic_lifecycle.observed_ended.as_mut()
             && matches!(
                 edge.disposition,
@@ -473,12 +485,14 @@ impl PlaylistController {
             request_id,
             None,
         );
+        self.record_automatic_skip(item_id);
         if self.error_behavior == PlaylistErrorBehavior::Stop {
             self.mark_current_edge_handled();
             tracing::debug!(
                 cause = ?AutomaticStopCause::ErrorPolicy,
                 "automatic playlist lifecycle остановлен после ошибки target-а"
             );
+            self.finish_automatic_skip_chain_with_stop(AutomaticStopCause::ErrorPolicy);
             return AutomaticTargetFailureOutcome::Stopped {
                 #[cfg(test)]
                 cause: AutomaticStopCause::ErrorPolicy,
@@ -495,6 +509,9 @@ impl PlaylistController {
                 tracing::debug!(
                     cause = ?AutomaticStopCause::AllCandidatesFailed { attempted_count },
                     "automatic playlist lifecycle остановлен после ошибки target-а"
+                );
+                self.finish_automatic_skip_chain_with_stop(
+                    AutomaticStopCause::AllCandidatesFailed { attempted_count },
                 );
                 AutomaticTargetFailureOutcome::Stopped {
                     #[cfg(test)]
@@ -674,7 +691,7 @@ impl PlaylistController {
     }
 
     pub(super) fn stop_for_active(
-        &self,
+        &mut self,
         #[cfg_attr(
             not(test),
             expect(unused_variables, reason = "identity читают только тесты")
@@ -682,8 +699,10 @@ impl PlaylistController {
         active: ActiveMediaIdentity,
         cause: AutomaticStopCause,
     ) -> AutomaticLifecycleOutcome {
-        // Outcome несёт только факт остановки; причина остаётся в логе для диагностики.
+        // Outcome несёт только факт остановки; причина остаётся в логе для диагностики,
+        // а пользователю она доходит через итог цепочки пропусков (см. `skip_report`).
         tracing::debug!(?cause, "automatic playlist lifecycle остановлен");
+        self.finish_automatic_skip_chain_with_stop(cause);
         AutomaticLifecycleOutcome::Stop {
             #[cfg(test)]
             item_id: active.item_id(),

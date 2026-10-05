@@ -47,19 +47,20 @@ fn ui_window_corner_radius_validation_uses_zero_through_twenty_four_range() {
     assert!(error.to_string().contains("ui.window.corner_radius_px"));
 }
 
-/// Additive поле schema v10 получает default без отдельной миграции.
+/// Additive поле текущей схемы получает default без отдельной миграции.
 #[test]
-fn schema_v10_without_window_corner_radius_loads_default() {
+fn current_schema_without_window_corner_radius_loads_default() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
-    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v10.toml")
+    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v11.toml")
         .replace(
             "# Радиус прозрачного контура окна; 0 отключает скругление, диапазон 0..24 px.\ncorner_radius_px = 12\n",
             "",
         );
-    fs::write(&config_path, legacy_document).expect("legacy schema v10 fixture written");
+    fs::write(&config_path, legacy_document).expect("current schema fixture written");
 
-    let loaded = load_from_path(&config_path).expect("schema v10 without additive field loaded");
+    let loaded =
+        load_from_path(&config_path).expect("current schema without additive field loaded");
 
     assert_eq!(loaded.config.ui.window.corner_radius_px, 12);
 }

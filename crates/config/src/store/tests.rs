@@ -11,6 +11,7 @@ use crate::{
 mod field_validation;
 mod frame_server;
 mod persistence_sections;
+mod playlist_error_behavior_migration;
 mod recovery;
 mod render_validation;
 /// Проверяет, что atomic save не оставил временных файлов рядом с config.

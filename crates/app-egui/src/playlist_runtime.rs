@@ -46,6 +46,8 @@ pub(crate) use transport_execution::{
     PlaylistMediaOpenIntent, PlaylistTargetFailureSummary, RelativeBeyondEndNavigationOutcome,
 };
 #[cfg(test)]
+mod skip_notice_regressions;
+#[cfg(test)]
 mod transport_execution_audit_regressions;
 #[cfg(test)]
 mod transport_guard_regressions;
@@ -117,8 +119,9 @@ pub(crate) use compound_view::{
 pub(crate) use controller::ControllerRemovalUndoOutcome;
 pub(crate) use controller::PlaylistController;
 pub(crate) use controller::SiblingDiscoveryScopeId;
+pub(crate) use controller::SkippedItemsSummary;
 pub(crate) use controller::{
-    AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,
+    AutomaticLifecycleOutcome, AutomaticQueueNotice, ControllerInitialQueuePlaybackAction,
     ControllerManualNavigationOutcome, ControllerMoveItemsOutcome, ControllerPlayItemOutcome,
     ControllerStableIntentDispatch, DeferredTransportExecutionOutcome,
     LocalFileSelectionDisposition, ManualNavigationCancelOutcome, PlannedPlaylistInstall,

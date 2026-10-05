@@ -319,7 +319,7 @@ mod tests {
         let newer_text = AppConfig::default()
             .to_pretty_toml()
             .expect("defaults serialize")
-            .replace("schema_version = 10", "schema_version = 99");
+            .replace("schema_version = 11", "schema_version = 99");
         fs::write(&config_path, &newer_text).expect("newer config written");
         let loaded = load_or_recover_at(&config_path, SystemTime::now()).expect("startup loads");
         assert_eq!(

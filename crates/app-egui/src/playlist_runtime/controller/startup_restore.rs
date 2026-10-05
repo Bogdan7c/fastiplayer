@@ -9,7 +9,7 @@ use playlist_core::{
 };
 
 use super::PlaylistController;
-use super::automatic_lifecycle::{AutomaticStopCause, PlaylistErrorBehavior};
+use super::automatic_lifecycle::{AutomaticStopCause, PlaylistErrorBehavior, SkipChainStart};
 use super::install::{
     PlaylistInstallAdmissionError, PlaylistInstallMutation, PlaylistInstallRequest,
 };
@@ -128,7 +128,32 @@ impl PlaylistController {
     }
 
     /// D22 сохраняет unavailable row и строит bounded domain traversal только при Skip.
+    ///
+    /// Заодно ведёт цепочку пропусков (сессия 07): первая неудача восстановленного
+    /// элемента начинает цепочку «до первого воспроизведения», следующие её продолжают,
+    /// а остановка закрывает её итогом для уведомления.
     pub(crate) fn report_startup_restore_failure(
+        &mut self,
+        failed: StartupRestoreTarget,
+        safe_summary: Arc<str>,
+    ) -> StartupRestoreFailureOutcome {
+        // Reserved — это сам восстановленный current; AutomaticTraversal — уже продолжение.
+        if matches!(
+            failed.install.mutation,
+            PlaylistInstallMutation::Reserved(_)
+        ) {
+            self.begin_automatic_skip_chain(SkipChainStart::BeforeAnyPlayback);
+        }
+        self.record_automatic_skip(failed.install.item_id);
+        let outcome = self.startup_restore_failure_outcome(failed, safe_summary);
+        if let StartupRestoreFailureOutcome::Stopped { cause } = &outcome {
+            self.finish_automatic_skip_chain_with_stop(*cause);
+        }
+        outcome
+    }
+
+    /// Решение D22 для одного неудачного restored target без учёта сводки пропусков.
+    fn startup_restore_failure_outcome(
         &mut self,
         failed: StartupRestoreTarget,
         safe_summary: Arc<str>,

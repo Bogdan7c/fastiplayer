@@ -8,7 +8,8 @@
 //! - [`AppState::notify_transient`] — временное сообщение (исчезнет само через 5 с);
 //! - [`AppState::notify_info`] — информационное (8 с);
 //! - [`AppState::set_startup_error`] (в `state.rs`) — фатальная ошибка открытия в центре;
-//! - [`AppState::notify_open_still_in_progress`] — повторный Open во время открытия.
+//! - [`AppState::notify_open_still_in_progress`] — повторный Open во время открытия;
+//! - [`AppState::show_playlist_queue_notices`] — итоги автоматических пропусков в очереди.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -18,6 +19,8 @@ use tracing::debug;
 
 use super::AppState;
 use super::notifications::{NotificationsFrame, OPEN_STILL_IN_PROGRESS_MESSAGE, OpenProgress};
+use crate::playlist_runtime::AutomaticQueueNotice;
+use crate::playlist_skip_message::{PlaylistQueueNoticeDelivery, playlist_queue_notice_delivery};
 use crate::ui::animation::UiMotion;
 use crate::ui::notifications::{NotificationAction, NotificationUiOutput};
 
@@ -38,6 +41,21 @@ impl AppState {
     pub(crate) fn notify_open_still_in_progress(&mut self) {
         debug!("Открытие media уже идёт, повторный запрос отклонён с уведомлением");
         self.notify_transient(OPEN_STILL_IN_PROGRESS_MESSAGE);
+    }
+
+    /// Показывает итоги цепочек автоматических пропусков битых файлов очереди (сессия 07).
+    ///
+    /// Вид показа и текст выбирает `playlist_queue_notice_delivery`; здесь только маршрут
+    /// к соответствующему intent-методу.
+    pub(crate) fn show_playlist_queue_notices(&mut self, notices: Vec<AutomaticQueueNotice>) {
+        for notice in &notices {
+            debug!(?notice, "Итог автоматического пропуска в очереди");
+            match playlist_queue_notice_delivery(notice) {
+                PlaylistQueueNoticeDelivery::InfoToast(text) => self.notify_info(text),
+                PlaylistQueueNoticeDelivery::TransientToast(text) => self.notify_transient(text),
+                PlaylistQueueNoticeDelivery::MediaFailure(text) => self.set_startup_error(text),
+            }
+        }
     }
 
     /// Передаёт событие player-а владельцу уведомлений (recoverable-отказ → toast).

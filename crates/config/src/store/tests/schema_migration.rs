@@ -1,4 +1,4 @@
-//! Схема v2..v10: миграции, web-media/yt-dlp политики, плейлист и HDR-выбор.
+//! Схема v2..v11: миграции, web-media/yt-dlp политики, плейлист и HDR-выбор.
 
 use super::*;
 
@@ -15,7 +15,7 @@ fn default_config_is_valid() {
 fn current_schema_without_yt_dlp_output_budgets_uses_safe_defaults() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
-    let current_text = "schema_version = 10\n\n[yt_dlp]\nresolve_timeout_ms = 30000\n";
+    let current_text = "schema_version = 11\n\n[yt_dlp]\nresolve_timeout_ms = 30000\n";
     fs::write(&config_path, current_text).expect("current config written");
 
     let loaded = load_from_path(&config_path).expect("current config without additive keys loads");
@@ -68,7 +68,7 @@ vod_endpoint_recovery_stable_reset_ms = 54321
     .expect("schema v9 fixture written");
 
     let migrated = load_from_path(&config_path).expect("schema v9 config migrates");
-    assert_eq!(migrated.config.schema_version, 10);
+    assert_eq!(migrated.config.schema_version, CURRENT_SCHEMA_VERSION);
     assert!(!migrated.config.yt_dlp.enabled);
     assert_eq!(migrated.config.yt_dlp.resolve_timeout_ms, 43_210);
     assert_eq!(
@@ -172,7 +172,7 @@ fn schema_v10_rejects_legacy_web_media_key_inside_yt_dlp() {
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 10\n\n[yt_dlp]\npreferred_video_height = 1080\n",
+        "schema_version = 11\n\n[yt_dlp]\npreferred_video_height = 1080\n",
     )
     .expect("strict schema v10 fixture written");
 
@@ -187,7 +187,7 @@ fn schema_v10_web_media_section_rejects_unknown_fields() {
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 10\n\n[web_media]\nfuture_recovery_magic = true\n",
+        "schema_version = 11\n\n[web_media]\nfuture_recovery_magic = true\n",
     )
     .expect("strict web-media fixture written");
 
@@ -290,7 +290,7 @@ fn playlist_defaults_include_bounded_next_item_preload() {
         playlist.playback_behavior,
         crate::PlaylistPlaybackBehavior::StopAfterLast
     );
-    assert_eq!(playlist.error_behavior, crate::PlaylistErrorBehavior::Stop);
+    assert_eq!(playlist.error_behavior, crate::PlaylistErrorBehavior::Skip);
     assert_eq!(playlist.state_save_debounce_ms, 2_000);
     assert_eq!(playlist.resume_checkpoint_interval_ms, 5_000);
     assert_eq!(playlist.previous_restart_threshold_ms, 5_000);
@@ -421,7 +421,7 @@ resolve_timeout_ms = 30000
         loaded.config.web_media.hdr_selection,
         WebMediaHdrSelection::SdrOnly
     );
-    assert_eq!(loaded.config.schema_version, 10);
+    assert_eq!(loaded.config.schema_version, CURRENT_SCHEMA_VERSION);
 }
 
 /// Все поддерживаемые legacy-схемы переименовывают `[youtube]` без потери значений.
@@ -448,7 +448,7 @@ resolve_timeout_ms = 4321
 
         let loaded = load_from_path(&config_path).expect("legacy yt-dlp config loads");
 
-        assert_eq!(loaded.config.schema_version, 10);
+        assert_eq!(loaded.config.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(loaded.config.web_media.preferred_video_height, None);
         assert!(!loaded.config.yt_dlp.enabled);
         assert_eq!(
@@ -502,7 +502,7 @@ fn web_media_hdr_selection_stable_ids_roundtrip() {
             &config_path,
             format!(
                 r#"
-schema_version = 10
+schema_version = 11
 
 [web_media]
 hdr_selection = "{stable_id}"
@@ -519,7 +519,7 @@ hdr_selection = "{stable_id}"
             .to_pretty_toml()
             .expect("HDR selection config serializes");
         assert!(generated.contains(&format!("hdr_selection = \"{stable_id}\"")));
-        assert!(generated.contains("schema_version = 10"));
+        assert!(generated.contains("schema_version = 11"));
     }
 }
 
@@ -540,7 +540,7 @@ resolve_timeout_ms = 30000
 
     let loaded = load_from_path(&config_path).expect("schema v6 config loads");
 
-    assert_eq!(loaded.config.schema_version, 10);
+    assert_eq!(loaded.config.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(loaded.config.web_media.preferred_video_height, None);
     assert_eq!(loaded.origin, ConfigLoadOrigin::LoadedExisting);
     assert_eq!(
@@ -578,7 +578,7 @@ fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
         fs::write(
             &config_path,
             format!(
-                "schema_version = 10\n\n[web_media]\npreferred_video_height = {invalid_height}\n"
+                "schema_version = 11\n\n[web_media]\npreferred_video_height = {invalid_height}\n"
             ),
         )
         .expect("invalid preferred height fixture written");
@@ -588,7 +588,7 @@ fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
 
     fs::write(
         &config_path,
-        "schema_version = 10\n\n[web_media]\nitem_video_height_override = 720\n",
+        "schema_version = 11\n\n[web_media]\nitem_video_height_override = 720\n",
     )
     .expect("runtime-only override fixture written");
     let error = load_from_path(&config_path).expect_err("runtime-only override rejected in TOML");

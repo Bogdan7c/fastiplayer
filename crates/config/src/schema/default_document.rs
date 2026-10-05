@@ -42,7 +42,7 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "error_behavior = \"stop\"",
+        "error_behavior = \"skip\"",
         "# Automatic traversal после media-ошибки: остановиться или пропустить.",
     );
     insert_default_config_comment(

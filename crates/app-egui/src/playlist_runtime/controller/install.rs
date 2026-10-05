@@ -529,6 +529,9 @@ impl PlaylistController {
         self.replacement_detached_disposition = None;
         self.release_detached_tombstone_for_new_lineage(active_media);
         self.automatic_install_committed(active_media);
+        self.settle_automatic_skip_chain_after_install(
+            self.pending_target.map(PendingTarget::origin),
+        );
         self.pending_target = None;
         if let Some(item_id) = committed_item_id {
             self.runtime_errors.remove(&item_id);
@@ -583,6 +586,8 @@ impl PlaylistController {
         }
         self.release_detached_tombstone_for_new_lineage(active_media);
         self.automatic_install_committed(active_media);
+        // Явное открытие другого файла прерывает цепочку пропусков без итога.
+        self.discard_automatic_skip_chain();
         self.pending_target = None;
         self.publish_view(false);
         Ok(active_media)

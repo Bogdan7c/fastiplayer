@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 10;
+pub const CURRENT_SCHEMA_VERSION: u32 = 11;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -25,14 +25,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_8: u32 = 8;
 /// Последняя схема, где web-media policy находилась внутри `[yt_dlp]`.
 pub(crate) const LEGACY_SCHEMA_VERSION_9: u32 = 9;
 
+/// Последняя схема, где `playlist.error_behavior` по умолчанию был `stop`.
+///
+/// Решение владельца (UX edge cases, сессия 07): при переходе на v11 сохранённый
+/// `stop` один раз меняется на `skip`, потому что default-документ записывал значение
+/// явно и отличить «выбрал сам» от «осталось по умолчанию» невозможно.
+pub(crate) const LEGACY_SCHEMA_VERSION_10: u32 = 10;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Generic yt-dlp migration поднимает current schema и сохраняет полную legacy chain.
+    /// Текущая схема v11 и полная цепочка поддерживаемых legacy-версий v2..v10.
     #[test]
-    fn schema_v10_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
+    fn schema_v11_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 11);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -43,8 +50,9 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_7,
                 LEGACY_SCHEMA_VERSION_8,
                 LEGACY_SCHEMA_VERSION_9,
+                LEGACY_SCHEMA_VERSION_10,
             ],
-            [2, 3, 4, 5, 6, 7, 8, 9]
+            [2, 3, 4, 5, 6, 7, 8, 9, 10]
         );
     }
 }

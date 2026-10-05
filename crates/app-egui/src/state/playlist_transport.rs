@@ -7,6 +7,7 @@
 mod failure_summary_tests;
 mod guarded_transport;
 mod lifecycle_settlement;
+mod unadmitted_target_failure;
 
 pub(crate) use lifecycle_settlement::LifecycleTimelineSeekSettlement;
 #[cfg(test)]
@@ -20,6 +21,7 @@ use player_core::{
 use render_wgpu_shell::Renderer;
 use tracing::{debug, warn};
 
+use super::strong_media_open::PlaylistStrongMediaOpenPoll;
 use super::{AppState, StrongMediaOpenError, StrongMediaOpenPoll};
 use crate::media_open::{MediaOpenRequestId, MediaOpenSourceRequest};
 use crate::playlist_runtime::{
@@ -407,7 +409,19 @@ impl AppState {
             .playlist_transport
             .active_item_id
             .expect("active playlist request always retains its exact item ID");
-        match self.poll_prepared_media_strong(playlist_runtime) {
+        let poll = match self.poll_prepared_playlist_media_strong(playlist_runtime) {
+            PlaylistStrongMediaOpenPoll::Strong(poll) => poll,
+            PlaylistStrongMediaOpenPoll::TargetFailedBeforeAdmission(unstaged) => {
+                self.finish_playlist_target_failed_before_admission(
+                    playlist_runtime,
+                    renderer,
+                    active_request_id,
+                    *unstaged,
+                );
+                return;
+            }
+        };
+        match poll {
             StrongMediaOpenPoll::Pending => {}
             StrongMediaOpenPoll::Installed(installed) => {
                 self.record_installed_media(installed.as_ref());

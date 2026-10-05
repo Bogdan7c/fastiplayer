@@ -21,6 +21,9 @@
 - «Применено, но не сохранится»: `SettingsRuntimeReconfigureHost::report_settings_kept_for_session_only` (default no-op) вызывается из `SettingsRuntimeApplyDelegate::persist` при `PersistOutcome::SkippedSessionOnly`; `FrameSettingsRuntimeAdapter` показывает transient toast `SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE`, статус окна настроек — тот же текст.
 - Сквозной тест: `render_tests::broken_config_on_disk_reaches_painted_warning_that_stays_until_closed`; settings: `settings_runtime/tests/session_only_persistence.rs`.
 
+## Пропуски в очереди (сессия 07, 2026-10-05)
+- `AppState::show_playlist_queue_notices(Vec<AutomaticQueueNotice>)` (в `notification_routing.rs`) — маршрут итогов skip-цепочки; формулировки — `crate::playlist_skip_message::playlist_queue_notice_delivery` (по образцу `local_open_message`). Детали владельца — `mem:app-egui/playlist-controller-s20`.
+
 ## Перерисовка (важно)
 - В этом приложении `ctx.request_repaint_after(d)` делает `has_requested_repaint()` истинным, и окно перерисовывается **немедленно**: задержка игнорируется (`frame_prepare/ui_prepare.rs`). Для таймеров используйте `AppRenderFrameResult.next_ui_wake_deadline` (`earliest_ui_wake_deadline([..])` в `frame_prepare.rs`), куда добавлен `next_notification_wake_deadline()`. `ctx.request_repaint()` — только пока идёт анимация.
 

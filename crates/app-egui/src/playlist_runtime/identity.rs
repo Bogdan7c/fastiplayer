@@ -192,6 +192,11 @@ impl PendingTarget {
     pub(crate) const fn item_id(self) -> Option<PlaylistItemId> {
         self.item_id
     }
+
+    /// Кто инициировал открытие: автоматика очереди, пользователь или restore.
+    pub(crate) const fn origin(self) -> PendingTargetOrigin {
+        self.origin
+    }
 }
 
 /// Этап runtime-ошибки строки остаётся app-owned и не попадает в persistence DTO.

@@ -17,6 +17,72 @@ pub(crate) struct UnstagedPlaylistMediaOpenError {
     pub(crate) install: Box<crate::playlist_runtime::PlannedPlaylistInstall>,
 }
 
+/// Итог одного poll-а для playlist transport.
+pub(crate) enum PlaylistStrongMediaOpenPoll {
+    /// Обычный итог strong-протокола (pending, installed или ошибка без плана).
+    Strong(StrongMediaOpenPoll),
+    /// Файл очереди не подготовился до controller admission; план возвращается владельцу.
+    TargetFailedBeforeAdmission(Box<UnstagedPlaylistMediaOpenError>),
+}
+
+/// Не теряет план очереди, если сам файл не подготовился до controller admission.
+///
+/// Controller принимает план только на staging, то есть после успешной подготовки файла.
+/// Раньше при ошибке подготовки (файл удалён, формат битый) план выбрасывался вместе с
+/// pending-транзакцией, controller не узнавал request ID, и автоматический пропуск
+/// (`playlist.error_behavior = skip`) никогда не продолжал очередь (сессия 07).
+///
+/// `admission` — кому предназначался ещё не принятый план (`None`, если staging уже
+/// прошёл). План возвращается только при ошибке самого target-а: отмена и прочие ошибки
+/// протокола по-прежнему не продолжают очередь.
+fn return_unadmitted_playlist_plan(
+    error: Box<StrongMediaOpenError>,
+    admission: Option<PendingStrongMediaAdmission>,
+) -> PlaylistStrongMediaOpenPoll {
+    let unadmitted_install = admission.and_then(|admission| match admission {
+        PendingStrongMediaAdmission::Playlist(PreparedPlaylistTarget::Planned {
+            install, ..
+        }) => Some(install),
+        PendingStrongMediaAdmission::Playlist(
+            PreparedPlaylistTarget::QueueReplacement(_)
+            | PreparedPlaylistTarget::RestoredCurrent(_),
+        )
+        | PendingStrongMediaAdmission::SameLineage => None,
+    });
+    match unadmitted_install {
+        Some(install) if target_itself_failed(&error) => {
+            PlaylistStrongMediaOpenPoll::TargetFailedBeforeAdmission(Box::new(
+                UnstagedPlaylistMediaOpenError {
+                    error: *error,
+                    install: Box::new(install),
+                },
+            ))
+        }
+        Some(_) | None => PlaylistStrongMediaOpenPoll::Strong(StrongMediaOpenPoll::Failed(error)),
+    }
+}
+
+/// Ошибка относится к самому файлу (не открылся, отвергнут player-ом), а не к отмене.
+///
+/// Отмена во время подготовки приходит как `PreparationFailed { kind: Cancelled }`: её
+/// вызвал пользователь или смена очереди, и продолжать пропуском нельзя.
+const fn target_itself_failed(error: &StrongMediaOpenError) -> bool {
+    match error {
+        StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::PreparationFailed {
+            kind,
+            ..
+        }) => !matches!(
+            kind,
+            crate::media_open::MediaPreparationFailureKind::Cancelled
+        ),
+        StrongMediaOpenError::Terminal(
+            MediaOpenTerminalOutcome::PlayerRejected { .. }
+            | MediaOpenTerminalOutcome::PlayerFailed { .. },
+        ) => true,
+        _ => false,
+    }
+}
+
 /// Renderer-bound ownership незавершённой strong install транзакции.
 pub(crate) struct PendingStrongMediaOpen {
     request_id: MediaOpenRequestId,
@@ -109,18 +175,35 @@ impl AppState {
     }
 
     /// Продвигает не более одного логического этапа и никогда не ждёт worker receipt.
+    ///
+    /// Для владельцев вне очереди (startup, VOD recovery, same-item switch): ошибка target-а
+    /// до admission остаётся обычной ошибкой, как и раньше.
     pub(crate) fn poll_prepared_media_strong(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
     ) -> StrongMediaOpenPoll {
+        match self.poll_prepared_playlist_media_strong(playlist_runtime) {
+            PlaylistStrongMediaOpenPoll::Strong(poll) => poll,
+            PlaylistStrongMediaOpenPoll::TargetFailedBeforeAdmission(unstaged) => {
+                StrongMediaOpenPoll::Failed(Box::new(unstaged.error))
+            }
+        }
+    }
+
+    /// То же, что [`Self::poll_prepared_media_strong`], но для playlist transport: если файл
+    /// очереди не подготовился до controller admission, план возвращается вместе с ошибкой.
+    pub(crate) fn poll_prepared_playlist_media_strong(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+    ) -> PlaylistStrongMediaOpenPoll {
         let Some(mut pending) = self.pending_strong_media_open.take() else {
-            return StrongMediaOpenPoll::Pending;
+            return PlaylistStrongMediaOpenPoll::Strong(StrongMediaOpenPoll::Pending);
         };
         let phase = pending.phase.take_for_poll();
         let result = match phase {
-            PendingStrongMediaOpenPhase::Polling => {
-                StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::PendingPhaseStateLost))
-            }
+            PendingStrongMediaOpenPhase::Polling => PlaylistStrongMediaOpenPoll::Strong(
+                StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::PendingPhaseStateLost)),
+            ),
             PendingStrongMediaOpenPhase::Protocol {
                 mut deferred_rejection,
                 mut pending_staging,
@@ -131,15 +214,22 @@ impl AppState {
                     &mut deferred_rejection,
                     &mut pending_staging,
                 );
-                if matches!(result, StrongMediaOpenPoll::Pending) {
-                    pending.phase.retain_after_pending_poll(
-                        PendingStrongMediaOpenPhase::Protocol {
-                            deferred_rejection,
-                            pending_staging,
-                        },
-                    );
+                match result {
+                    StrongMediaOpenPoll::Pending => {
+                        pending.phase.retain_after_pending_poll(
+                            PendingStrongMediaOpenPhase::Protocol {
+                                deferred_rejection,
+                                pending_staging,
+                            },
+                        );
+                        PlaylistStrongMediaOpenPoll::Strong(StrongMediaOpenPoll::Pending)
+                    }
+                    StrongMediaOpenPoll::Failed(error) => return_unadmitted_playlist_plan(
+                        error,
+                        pending_staging.map(|staging| staging.admission),
+                    ),
+                    completed => PlaylistStrongMediaOpenPoll::Strong(completed),
                 }
-                result
             }
             PendingStrongMediaOpenPhase::PlaybackIntent {
                 mut installed,
@@ -162,7 +252,7 @@ impl AppState {
                         },
                     );
                 }
-                result
+                PlaylistStrongMediaOpenPoll::Strong(result)
             }
             PendingStrongMediaOpenPhase::PositionRestore {
                 mut installed,
@@ -185,7 +275,7 @@ impl AppState {
                         },
                     );
                 }
-                result
+                PlaylistStrongMediaOpenPoll::Strong(result)
             }
             PendingStrongMediaOpenPhase::PostInstalledRelease {
                 installed,
@@ -207,16 +297,16 @@ impl AppState {
                             receipt,
                         },
                     );
-                    StrongMediaOpenPoll::Pending
+                    PlaylistStrongMediaOpenPoll::Strong(StrongMediaOpenPoll::Pending)
                 } else {
-                    result.into_strong_poll()
+                    PlaylistStrongMediaOpenPoll::Strong(result.into_strong_poll())
                 }
             }
         };
         match result {
-            StrongMediaOpenPoll::Pending => {
+            PlaylistStrongMediaOpenPoll::Strong(StrongMediaOpenPoll::Pending) => {
                 self.pending_strong_media_open = Some(pending);
-                StrongMediaOpenPoll::Pending
+                PlaylistStrongMediaOpenPoll::Strong(StrongMediaOpenPoll::Pending)
             }
             completed => completed,
         }
@@ -411,6 +501,9 @@ impl AppState {
         }
     }
 }
+
+#[cfg(test)]
+mod unadmitted_plan_tests;
 
 #[cfg(test)]
 mod tests {

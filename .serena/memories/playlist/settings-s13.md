@@ -14,6 +14,10 @@ Session 13 completed PASS on 2026-07-15. This memory complements `mem:core`, `me
 - A debounce reconfigure failure followed by failed exact resume is `PartialFailure`, so compensation remains mandatory. Rollback retains staged state until debounce restore and exact resume both succeed. Repeated finalize is a no-op.
 - Session 14 supplies the real state-worker/debounce adapter. The Session 13 detached port is stateful policy storage and represents absent worker/scan explicitly; no disk store or production discovery coordinator was wired.
 
+## Error policy default (UX edge cases, сессия 07, 2026-10-05)
+- Config default `playlist.error_behavior = skip` (решение владельца), v10→v11 миграция переписывает `stop`→`skip` (`mem:config/schema-store-decomposition-s23`). Production controller всегда получает значение из config-а (`initialize_new_queue_policy`/`initialize_restored_queue_policy`/stage); собственный default `PlaylistController::new()` остался `Stop` и влияет только на тесты.
+- Видимая причина остановки/сводка пропусков: `mem:app-egui/playlist-controller-s20` (раздел «Сводка автоматических пропусков»).
+
 ## Verification
 - PASS: 79 config, 16 fastiplayer-settings, 25 settings-core, 393 app no-default, 52 discovery and 33 state tests; strict focused Clippy; fmt; locked workspace check; refactor guardrails; diff check and clean Serena production diagnostics.
 

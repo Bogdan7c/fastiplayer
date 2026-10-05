@@ -2,6 +2,7 @@ use crate::{
     AppConfig, CURRENT_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3,
     LEGACY_SCHEMA_VERSION_4, LEGACY_SCHEMA_VERSION_5, LEGACY_SCHEMA_VERSION_6,
     LEGACY_SCHEMA_VERSION_7, LEGACY_SCHEMA_VERSION_8, LEGACY_SCHEMA_VERSION_9,
+    LEGACY_SCHEMA_VERSION_10,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -47,9 +48,12 @@ pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_9) {
         migrate_web_media_policy(root_table);
     }
+    if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_10) {
+        migrate_playlist_error_behavior_to_skip(root_table);
+    }
 }
 
-/// Поднимает поддерживаемые v2-v9 структуры до текущей in-memory версии.
+/// Поднимает поддерживаемые v2-v10 структуры до текущей in-memory версии.
 pub(super) fn upgrade_config(config: &mut AppConfig) {
     if matches!(
         config.schema_version,
@@ -61,8 +65,32 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             | LEGACY_SCHEMA_VERSION_7
             | LEGACY_SCHEMA_VERSION_8
             | LEGACY_SCHEMA_VERSION_9
+            | LEGACY_SCHEMA_VERSION_10
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
+    }
+}
+
+/// Значения `playlist.error_behavior` в TOML (serde `snake_case` у `PlaylistErrorBehavior`).
+const PLAYLIST_ERROR_BEHAVIOR_STOP_ID: &str = "stop";
+const PLAYLIST_ERROR_BEHAVIOR_SKIP_ID: &str = "skip";
+
+/// v10 → v11: сохранённый `playlist.error_behavior = "stop"` становится `"skip"`.
+///
+/// Решение владельца (UX edge cases, сессия 07): default-документ v10 записывал `stop`
+/// явно, поэтому отличить сознательный выбор от значения по умолчанию нельзя, и новый
+/// default «пропускать битый файл» применяется ко всем. Остальные значения и ключи не
+/// трогаются: неизвестное значение по-прежнему отклонит strict parser.
+/// Повторно шаг не выполняется: после сохранения документ уже имеет v11.
+fn migrate_playlist_error_behavior_to_skip(root_table: &mut toml::Table) {
+    let Some(toml::Value::Table(playlist_table)) = root_table.get_mut("playlist") else {
+        return;
+    };
+    let Some(error_behavior) = playlist_table.get_mut("error_behavior") else {
+        return;
+    };
+    if error_behavior.as_str() == Some(PLAYLIST_ERROR_BEHAVIOR_STOP_ID) {
+        *error_behavior = toml::Value::String(PLAYLIST_ERROR_BEHAVIOR_SKIP_ID.to_owned());
     }
 }
 

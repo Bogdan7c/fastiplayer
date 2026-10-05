@@ -1,4 +1,4 @@
-schema_version = 10
+schema_version = 11
 
 [player]
 start_paused = true
@@ -54,7 +54,7 @@ sibling_media_filter = "same_as_opened"
 # Repeat default только для новой очереди без совместимого persisted state.
 playback_behavior = "stop_after_last"
 # Automatic traversal после media-ошибки: остановиться или пропустить.
-error_behavior = "stop"
+error_behavior = "skip"
 # Quiet period перед сохранением newest dirty playlist revision.
 state_save_debounce_ms = 2000
 # Интервал periodic checkpoint-а позиции; lifecycle boundaries сохраняются сразу.

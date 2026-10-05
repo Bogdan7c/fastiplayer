@@ -17,7 +17,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(loaded.config.render.color_adjustment.is_identity());
 
     let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-    assert!(created_toml.contains("schema_version = 10"));
+    assert!(created_toml.contains("schema_version = 11"));
     assert!(created_toml.contains("[web_media]"));
     assert!(created_toml.contains("[player.seek]"));
     assert!(created_toml.contains("# Настройки seek commit"));

@@ -986,6 +986,8 @@ pub(crate) fn render_frame(
     );
     web_media_runtime::advance_after_actions(app_state, playlist_runtime, renderer);
     crate::transport_runtime::poll_playlist_transport(app_state, playlist_runtime, renderer);
+    // Итоги пропусков битых файлов очереди — после всех transport-шагов этого кадра.
+    app_state.show_playlist_queue_notices(playlist_runtime.drain_automatic_queue_notices());
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
         Ok(tick) => tick,

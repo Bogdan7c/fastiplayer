@@ -305,6 +305,38 @@ impl PlaylistRuntime {
         }
     }
 
+    /// Файл очереди не подготовился, пока controller ещё не принял его план (сессия 07).
+    ///
+    /// Автоматический план уходит прямо его владельцу — так skip-цепочка продолжается тем же
+    /// фиксированным планом, а бейдж строки получает понятную причину. Ручной выбор идёт
+    /// прежним маршрутом по request ID (D55-якорь и бейдж причины без изменений).
+    pub(crate) fn report_playlist_target_failure_before_admission(
+        &mut self,
+        request_id: MediaOpenRequestId,
+        install: PlannedPlaylistInstall,
+        failure_summary: PlaylistTargetFailureSummary,
+    ) -> Option<PlannedPlaylistInstall> {
+        if !install.is_automatic_traversal() {
+            return self.report_playlist_navigation_failure(
+                request_id,
+                install.item_id,
+                failure_summary,
+            );
+        }
+        let controller = self.controller.as_mut()?;
+        let outcome = controller.report_unstaged_planned_target_failure(
+            install,
+            failure_summary.automatic_badge_summary(),
+        );
+        self.discovery.synchronize_navigation_interest(controller);
+        match outcome {
+            UnstagedPlannedTargetFailureOutcome::OpenItem { install } => Some(install),
+            UnstagedPlannedTargetFailureOutcome::Stopped { .. }
+            | UnstagedPlannedTargetFailureOutcome::Manual
+            | UnstagedPlannedTargetFailureOutcome::RuntimeUnavailable => None,
+        }
+    }
+
     /// Pre-staging failure маршрутизируется по origin/mutation самого exact plan-а.
     pub(crate) fn report_unstaged_planned_playlist_navigation_failure(
         &mut self,

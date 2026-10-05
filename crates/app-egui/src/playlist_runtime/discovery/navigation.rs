@@ -15,7 +15,7 @@ use playlist_discovery::{
 use super::{ActiveDiscoveryScope, PlaylistDiscoveryCoordinator};
 use crate::playlist_runtime::controller::{
     AutomaticDeferredAvailability, AutomaticDiscoveryReadiness, AutomaticLifecycleOutcome,
-    ControllerManualNavigationOutcome, DiscoveryManualWaitAvailability,
+    AutomaticQueueNotice, ControllerManualNavigationOutcome, DiscoveryManualWaitAvailability,
     DiscoveryNavigationInterest, EndedSnapshotKind,
 };
 use crate::playlist_runtime::identity::TransportActionOrigin;
@@ -104,6 +104,16 @@ impl PlaylistRuntime {
         );
         self.discovery.synchronize_navigation_interest(controller);
         Some(outcome)
+    }
+
+    /// Забирает итоги закончившихся цепочек автоматических пропусков (сессия 07).
+    ///
+    /// Каждый итог отдаётся ровно один раз; без controller-а итогов нет (пустой список).
+    pub(crate) fn drain_automatic_queue_notices(&mut self) -> Vec<AutomaticQueueNotice> {
+        self.controller
+            .as_mut()
+            .map(PlaylistController::drain_automatic_queue_notices)
+            .unwrap_or_default()
     }
 
     /// Event-generated target забирается exactly once; marker сам queue не меняет.

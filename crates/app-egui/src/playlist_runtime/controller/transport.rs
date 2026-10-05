@@ -91,6 +91,16 @@ pub(crate) struct PlannedPlaylistInstall {
     pub mutation: PlaylistInstallMutation,
 }
 
+impl PlannedPlaylistInstall {
+    /// План автоматического продолжения очереди (а не ручной выбор или restore).
+    pub(crate) const fn is_automatic_traversal(&self) -> bool {
+        matches!(
+            self.mutation,
+            PlaylistInstallMutation::AutomaticTraversal(_)
+        )
+    }
+}
+
 /// Play item не смешивает exact restart, coalesce и новый install.
 pub(crate) enum ControllerPlayItemOutcome {
     ItemNotCommitted,
