@@ -92,7 +92,11 @@ impl std::error::Error for PreferredVideoHeightError {}
 #[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
-    /// Начальная громкость в диапазоне `0.0..=1.0`.
+    /// Громкость пользователя в диапазоне `0.0..=1.0` (решение владельца, UX-11).
+    ///
+    /// Это последняя слышимая громкость: плеер записывает её сюда сам (с паузой
+    /// после изменения и при выходе) и восстанавливает при следующем запуске.
+    /// При mute здесь остаётся громкость «до mute», а сам mute хранится в `muted`.
     #[setting(
         id = "audio.volume",
         path = "audio.volume",
@@ -100,11 +104,11 @@ pub struct AudioConfig {
         group = "output",
         surface = "main-settings-window",
         label_id = "settings.audio.volume.label",
-        label_ru = "Громкость по умолчанию",
+        label_ru = "Громкость",
         description_id = "settings.audio.volume.description",
-        description_ru = "Стартовая громкость для нового media, не текущая runtime громкость.",
+        description_ru = "Громкость воспроизведения. Плеер запоминает её сам и восстанавливает при следующем запуске.",
         help_id = "settings.audio.volume.help",
-        help_ru = "Изменение применяется как default volume после Apply и не перезаписывает текущую громкость воспроизведения.",
+        help_ru = "Изменение слайдером в плеере сохраняется через несколько секунд и при выходе. Apply здесь сразу меняет и текущую громкость.",
         editor = "float",
         min = crate::validation::MIN_AUDIO_VOLUME,
         max = crate::validation::MAX_AUDIO_VOLUME,
@@ -113,6 +117,22 @@ pub struct AudioConfig {
         apply = "audio.apply"
     )]
     pub volume: f64,
+
+    /// Выключен ли звук (mute); громкость при этом хранится отдельно в `volume`.
+    #[setting(
+        id = "audio.muted",
+        path = "audio.muted",
+        section = "audio",
+        group = "output",
+        surface = "main-settings-window",
+        label_id = "settings.audio.muted.label",
+        label_ru = "Звук выключен",
+        description_id = "settings.audio.muted.description",
+        description_ru = "Mute. Плеер запоминает его сам; при включении звука вернётся сохранённая громкость.",
+        editor = "toggle",
+        apply = "audio.apply"
+    )]
+    pub muted: bool,
 
     /// Имя audio output device или `default`.
     #[setting(
@@ -157,6 +177,7 @@ impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             volume: 0.8,
+            muted: false,
             output_device: "default".to_string(),
             buffer_target_ms: 200,
         }

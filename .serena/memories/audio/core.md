@@ -22,6 +22,10 @@
 - Concrete `ChannelMixer` строит матрицу один раз при создании output. Same-count PCM копируется bit-for-bit; mono дублируется; positional 5.1 rear/side и 7.1-family сводятся в stereo с FL/FR=0 dB до нормализации, center/surround=−3 dB, LFE=0. Каждый stereo row статически нормализован по сумме модулей до full scale; dynamic limiter direct PCM не включается. `Discrete(n)` при изменении count и unsupported height layout дают typed `UnsupportedChannelConversion`, а не guessed downmix.
 - Локальный `symphonia-codec-aac` patch обязан преобразовывать AAC coded element order в canonical Symphonia planes. Для indexed `channel_configuration` spatial role задаётся coded position/type, а не конкретным `element_instance_tag`; произвольные уникальные 4-bit tags совместимы. Для AAC 5.1 coded `FC,FL,FR,RL,RR,LFE` отображается в plane indices `[2,0,1,4,5,3]`, после чего interleaved PCM имеет `FL,FR,FC,LFE,RL,RR`. Config 3–7, arbitrary tags и duplicate rejection закреплены patch tests.
 
+## Громкость пользователя (UX-11, 2026-10-06)
+
+- Concrete `AudioOutput` масштабирует каждый сэмпл громкостью в `output_sample_for_intent` (тест в `output/processing.rs`). Сохранение громкости/mute между запусками — app-слой: `mem:app-egui/user-audio-level-persistence-ux11`; семантика громкости в player-core не менялась.
+
 ## Проверки
 
 - `cargo test -p audio-core`

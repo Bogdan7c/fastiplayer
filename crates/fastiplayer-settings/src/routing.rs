@@ -883,6 +883,10 @@ fn player_update_from_settings(
             video_backend_changed = true;
             continue;
         }
+        // UX-11: у mute нет worker policy; текущий звук после Apply доставляет app-слой.
+        if setting_name == "audio.muted" {
+            continue;
+        }
         if matches!(
             setting_name,
             "player.start_paused"
@@ -1089,7 +1093,7 @@ fn group_for_setting(route: AppRuntimeRoute, setting_id: &str) -> AppRuntimeRout
         }
         AppRuntimeRoute::RenderPreview => AppRuntimeRouteGroup::RenderColorAdjustment,
         AppRuntimeRoute::RenderCommitted => AppRuntimeRouteGroup::RenderBackendLifecycle,
-        AppRuntimeRoute::Player if setting_id == "audio.volume" => {
+        AppRuntimeRoute::Player if matches!(setting_id, "audio.volume" | "audio.muted") => {
             AppRuntimeRouteGroup::PlayerDefaultVolume
         }
         AppRuntimeRoute::Player if setting_id == "audio.output_device" => {

@@ -51,6 +51,7 @@ mod session_only_persistence;
 mod sidebar_resize;
 mod snapshot_routes;
 mod transaction_apply;
+mod user_audio_level;
 mod web_media_recovery_apply;
 
 fn loaded_config_for_test(config: AppConfig) -> LoadedConfig {
@@ -338,6 +339,8 @@ struct RecordingRuntimeAdapter {
     persistence_visible_at_finalize: Vec<bool>,
     /// Сколько раз runtime сообщил «применено, но не записано» (сессия 05).
     session_only_reports: usize,
+    /// Уровни громкости, отправленные в текущее воспроизведение (UX-11).
+    delivered_audio_levels: Vec<crate::user_audio_level::UserAudioLevel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,6 +377,7 @@ impl RecordingRuntimeAdapter {
             expected_persisted_path_at_finalize: None,
             persistence_visible_at_finalize: Vec::new(),
             session_only_reports: 0,
+            delivered_audio_levels: Vec::new(),
         })
     }
 }
@@ -436,6 +440,14 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
 
     fn report_settings_kept_for_session_only(&mut self) {
         self.session_only_reports += 1;
+    }
+
+    fn apply_user_audio_level_to_playback(
+        &mut self,
+        level: crate::user_audio_level::UserAudioLevel,
+    ) -> super::PlaybackAudioLevelDelivery {
+        self.delivered_audio_levels.push(level);
+        super::PlaybackAudioLevelDelivery::Sent
     }
 
     fn apply_playlist_runtime_settings(

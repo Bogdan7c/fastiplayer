@@ -147,6 +147,7 @@ simple_ui = true
 
 [audio]
 volume = 0.8
+muted = false
 output_device = "default"
 buffer_target_ms = 200
 

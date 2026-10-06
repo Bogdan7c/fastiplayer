@@ -210,3 +210,35 @@ skin = "minimal"
     let reloaded = load_from_path(&config_path).expect("saved sidebar width roundtrips");
     assert_eq!(reloaded.config, loaded.config);
 }
+
+/// UX-11: config v11 до появления `audio.muted` загружается без ошибки (звук включён),
+/// а сохранённые громкость и mute переживают запись и повторное чтение.
+#[test]
+fn schema_v11_without_audio_muted_loads_unmuted_and_roundtrips_user_audio_level() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+schema_version = 11
+
+[audio]
+volume = 0.3
+"#,
+    )
+    .expect("schema v11 config without audio.muted written");
+
+    let loaded = load_from_path(&config_path).expect("old schema v11 audio shape accepted");
+    assert_eq!(loaded.config.audio.volume, 0.3);
+    assert!(!loaded.config.audio.muted);
+
+    let mut muted_config = loaded.config;
+    muted_config.audio.muted = true;
+    save_validated_atomic_at(&config_path, &muted_config).expect("muted config saved");
+    let persisted = fs::read_to_string(&config_path).expect("saved config readable");
+    assert!(persisted.contains("volume = 0.3\nmuted = true"));
+
+    let reloaded = load_from_path(&config_path).expect("saved audio level roundtrips");
+    assert_eq!(reloaded.config.audio.volume, 0.3);
+    assert!(reloaded.config.audio.muted);
+}

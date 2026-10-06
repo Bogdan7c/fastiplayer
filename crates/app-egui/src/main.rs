@@ -37,6 +37,7 @@ mod transport_runtime;
 mod ui;
 mod url_service_adapter;
 mod url_topology_drafts;
+mod user_audio_level;
 mod video_backend_constraint;
 mod video_pipeline_candidate;
 mod video_pipeline_selector;

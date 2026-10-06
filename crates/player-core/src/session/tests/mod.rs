@@ -66,6 +66,7 @@ mod post_target_landing;
 mod prepared_demux_seek;
 mod prepared_demux_seek_av;
 mod prepared_initial_position;
+mod restored_user_volume;
 mod scrub;
 mod scrub_driver;
 mod scrub_hold;

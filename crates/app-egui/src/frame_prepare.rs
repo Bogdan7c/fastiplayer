@@ -17,7 +17,7 @@ use render_core::{
 };
 use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, Renderer};
 use render_wgpu_video::WgpuRenderableFrame;
-use settings_core::{SettingId, SettingsResult};
+use settings_core::SettingId;
 use tracing::{error, instrument, warn};
 use video_core::DecodedPixelFormat;
 use video_present_core::VideoPresentFrameIdentity;
@@ -36,12 +36,15 @@ use crate::state::{
 use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::{Telemetry, VideoFrameTelemetryEvent};
 use crate::ui::window_chrome::{WindowChromeAction, WindowChromeResizeDirection};
+use crate::user_audio_level::PlayerAudioObservation;
 use media_source_open::video_codec_mapping::runtime_video_codec;
 
 #[path = "frame_prepare/geometry.rs"]
 mod geometry;
 #[path = "frame_prepare/input_snapshot.rs"]
 mod input_snapshot;
+#[path = "frame_prepare/runtime_settings_persistence.rs"]
+mod runtime_settings_persistence;
 #[path = "frame_prepare/sequence.rs"]
 mod sequence;
 #[path = "frame_prepare/settings_runtime_adapter.rs"]
@@ -59,8 +62,9 @@ mod ui_prepare;
 #[path = "frame_prepare/web_media_runtime.rs"]
 mod web_media_runtime;
 use input_snapshot::prepare_frame_input;
+use runtime_settings_persistence::persist_due_runtime_originated_settings;
 use sequence::{FrameSequenceContract, FrameSequenceObserver, FrameSequenceStage};
-use settings_runtime_adapter::FrameSettingsRuntimeAdapter;
+pub(crate) use settings_runtime_adapter::FrameSettingsRuntimeAdapter;
 use shared_frame_materialization::{
     SharedMaterializationUnsupportedReason, SharedVideoFrameLeaseRole,
     SharedVideoFrameMaterializationOutcome, SharedVideoFrameMaterializationRequest,
@@ -800,15 +804,16 @@ pub(super) fn render_outcome_marks_video_submitted(
     submitted_video_frame && matches!(render_frame_outcome, RenderFrameOutcome::Presented(_))
 }
 
-/// Принудительно flush-ит sidebar resize, пока renderer-bound AppState ещё доступен.
-pub(crate) fn flush_sidebar_resize_before_lifecycle_boundary(
+/// Даёт lifecycle flush-у (sidebar, громкость) settings adapter, пока renderer-bound
+/// AppState ещё доступен: перед suspend и terminal exit.
+pub(crate) fn with_lifecycle_settings_adapter<R>(
     window: &Arc<Window>,
     renderer: &mut Renderer,
     app_state: &mut AppState,
     playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-    settings_runtime: &mut SettingsRuntime,
     renderer_lifecycle: &mut RendererLifecycleCoordinator,
-) -> SettingsResult<crate::settings_runtime::SidebarResizeFlushOutcome> {
+    flush: impl FnOnce(&mut FrameSettingsRuntimeAdapter<'_>) -> R,
+) -> R {
     let mut runtime_adapter = FrameSettingsRuntimeAdapter::new(
         window.clone(),
         app_state,
@@ -816,7 +821,7 @@ pub(crate) fn flush_sidebar_resize_before_lifecycle_boundary(
         playlist_runtime,
         renderer_lifecycle,
     );
-    settings_runtime.flush_pending_sidebar_resize(&mut runtime_adapter)
+    flush(&mut runtime_adapter)
 }
 
 /// Рендерит один полный кадр: видео + egui overlay.
@@ -905,19 +910,12 @@ pub(crate) fn render_frame(
             playlist_runtime,
             renderer_lifecycle,
         );
-        if let Some(width_change) = sidebar_width_change {
-            let _pending_changed =
-                settings_runtime.record_sidebar_width_change(width_change, Instant::now());
-        }
-        let resize_requested_repaint = match settings_runtime
-            .flush_due_sidebar_resize(Instant::now(), &mut runtime_adapter)
-        {
-            Ok(outcome) => outcome.needs_redraw(),
-            Err(error) => {
-                settings_runtime.report_runtime_error("Не удалось сохранить ширину sidebar", error);
-                true
-            }
-        };
+        let resize_requested_repaint = persist_due_runtime_originated_settings(
+            settings_runtime,
+            sidebar_width_change,
+            PlayerAudioObservation::from_player_snapshot(frame_context.player_snapshot()),
+            &mut runtime_adapter,
+        );
         let actions_requested_repaint = match settings_runtime
             .handle_ui_actions_with_runtime_adapter(settings_actions, &mut runtime_adapter)
         {
@@ -1065,6 +1063,7 @@ pub(crate) fn render_frame(
         next_ui_wake_deadline: earliest_ui_wake_deadline([
             undo_model.next_wake_deadline,
             settings_runtime.next_sidebar_resize_deadline(),
+            settings_runtime.next_user_audio_level_persist_deadline(),
             app_state.next_notification_wake_deadline(),
         ]),
     }

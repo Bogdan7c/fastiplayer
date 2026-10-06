@@ -375,7 +375,8 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         "player.seek.paused_commit_behavior"
         | "player.seek.hotkey_small_step_secs"
         | "player.seek.hotkey_large_step_secs"
-        | "audio.volume" => SettingApplicationContract::new(
+        | "audio.volume"
+        | "audio.muted" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::Player,
             SettingStateOwner::PlayerSession,

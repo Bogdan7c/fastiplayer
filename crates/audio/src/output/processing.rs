@@ -97,3 +97,32 @@ pub(super) fn output_sample_for_intent(
 pub(super) fn reset_output_protection(limiter_envelope: &mut f32) {
     *limiter_envelope = 0.0;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// UX-11: громкость пользователя реально масштабирует сэмплы, которые уходят
+    /// на устройство; mute (0.0) даёт тишину, а не исходный сигнал.
+    #[test]
+    fn direct_pcm_sample_is_scaled_by_user_volume() {
+        let decoded_sample = 0.5_f32;
+        let limiter_gain = 1.0;
+
+        let at_thirty_percent = output_sample_for_intent(
+            decoded_sample,
+            0.3,
+            limiter_gain,
+            AudioOutputWriteIntent::DirectDecodedPcm,
+        );
+        let muted = output_sample_for_intent(
+            decoded_sample,
+            0.0,
+            limiter_gain,
+            AudioOutputWriteIntent::DirectDecodedPcm,
+        );
+
+        assert!((at_thirty_percent - 0.15).abs() < f32::EPSILON);
+        assert_eq!(muted, 0.0);
+    }
+}

@@ -46,10 +46,17 @@ impl CommittedConfigSnapshot {
         self.config.yt_dlp.clone()
     }
 
-    /// Default volume policy для startup/new media и mute-toggle restore.
+    /// Сохранённая слышимая громкость: стартовая для нового player-а и fallback,
+    /// который mute-toggle вернёт, если плеер сам не помнит громкость «до mute».
     #[must_use]
-    pub(crate) fn default_volume_for_new_media(&self) -> f32 {
-        self.config.audio.volume as f32
+    pub(crate) fn remembered_audible_volume(&self) -> f32 {
+        self.user_audio_level().audible_volume().as_player_ratio()
+    }
+
+    /// Сохранённые громкость и mute пользователя (UX-11).
+    #[must_use]
+    pub(crate) fn user_audio_level(&self) -> crate::user_audio_level::UserAudioLevel {
+        crate::user_audio_level::UserAudioLevel::from_audio_config(&self.config.audio)
     }
 
     /// Малый relative seek step для следующего hotkey event-а.

@@ -73,6 +73,7 @@ mod target_policy;
 #[cfg(test)]
 mod tests;
 mod transaction;
+mod user_audio_level_persistence;
 
 pub(crate) use committed_snapshot::CommittedConfigSnapshot;
 #[allow(unused_imports)]
@@ -88,12 +89,16 @@ pub(crate) use route_apply::SettingsRuntimeReconfigureHost;
 use route_apply::SettingsRuntimeRouteAppliers;
 #[cfg(test)]
 use route_apply::{MediaServiceRuntimeSnapshot, simulated_player_runtime_report};
+#[cfg(test)]
 pub(crate) use sidebar_resize::SidebarResizeFlushOutcome;
 use status_text::{
     group_reports, status_from_apply_report, status_from_cancel, status_from_preview_reports,
     status_from_reset,
 };
 pub(crate) use target_policy::SettingsRouteTargetPolicy;
+pub(crate) use user_audio_level_persistence::PlaybackAudioLevelDelivery;
+#[cfg(test)]
+pub(crate) use user_audio_level_persistence::UserAudioLevelFlushOutcome;
 
 /// Единый owner runtime settings state для `app-egui`.
 pub(crate) struct SettingsRuntime {
@@ -120,6 +125,9 @@ pub(crate) struct SettingsRuntime {
 
     /// Latest-only drag resize, ожидающий quiet-period перед atomic persistence.
     pending_sidebar_resize: Option<sidebar_resize::PendingSidebarResize>,
+
+    /// Громкость и mute пользователя: наблюдение за плеером и отложенная запись (UX-11).
+    user_audio_level: user_audio_level_persistence::UserAudioLevelPersistence,
 
     /// Открыто ли visual settings window; draft transaction начинается при `Open`.
     settings_window_open: bool,
@@ -189,6 +197,10 @@ impl SettingsRuntime {
         let route_appliers = SettingsRuntimeRouteAppliers::from_config(controller.committed())?;
         let option_providers =
             default_option_providers(route_appliers.audio_output_device_controller.clone());
+        let user_audio_level =
+            user_audio_level_persistence::UserAudioLevelPersistence::from_committed(
+                controller.committed(),
+            );
 
         let runtime = Self {
             controller,
@@ -199,6 +211,7 @@ impl SettingsRuntime {
             latest_apply_report: None,
             pending_apply: None,
             pending_sidebar_resize: None,
+            user_audio_level,
             settings_window_open: false,
             field_validation_errors: BTreeMap::new(),
             status: SettingsUiStatus::default(),
@@ -355,7 +368,13 @@ impl SettingsRuntime {
         let mut needs_redraw = false;
         if let Some(pending_apply) = self.pending_apply.take() {
             self.invalidate_ui_model();
+            let audio_level_before_apply = self.committed_user_audio_level();
             let report = self.apply_draft_with_runtime_adapter(runtime_adapter)?;
+            self.deliver_user_applied_audio_level(
+                audio_level_before_apply,
+                runtime_adapter,
+                Instant::now(),
+            );
             if pending_apply.close_on_success
                 && matches!(
                     report.final_state,

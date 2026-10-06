@@ -42,6 +42,8 @@ use settings_core::{
 };
 
 mod routing;
+#[cfg(test)]
+mod routing_audio_muted_tests;
 mod transaction;
 
 pub use routing::*;

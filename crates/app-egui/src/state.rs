@@ -422,7 +422,7 @@ impl AppState {
                 .with_timeline_activity_wake(timeline_activity_wake);
         let player_worker = PlayerWorker::spawn(worker_config)?;
         if let Err(error) = player_worker.try_send_command(PlayerCommand::SetVolume(
-            committed_config_snapshot.default_volume_for_new_media(),
+            committed_config_snapshot.remembered_audible_volume(),
         )) {
             warn!(error = %error, "Не удалось применить начальную громкость из config");
         }

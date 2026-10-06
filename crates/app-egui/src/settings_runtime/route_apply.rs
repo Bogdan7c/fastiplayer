@@ -47,6 +47,15 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
     /// (config-хранилище запретило запись в этот запуск, сессия 05).
     fn report_settings_kept_for_session_only(&mut self) {}
 
+    /// UX-11: переносит громкость/mute, изменённые Apply в окне настроек, в текущее
+    /// воспроизведение. По умолчанию плеера нет — уровень не доставлен.
+    fn apply_user_audio_level_to_playback(
+        &mut self,
+        _level: crate::user_audio_level::UserAudioLevel,
+    ) -> super::PlaybackAudioLevelDelivery {
+        super::PlaybackAudioLevelDelivery::NotDelivered
+    }
+
     /// Обратимо stage-ит playlist policy у process-lifetime owner-а.
     fn apply_playlist_runtime_settings(
         &mut self,

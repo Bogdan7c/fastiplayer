@@ -12,6 +12,7 @@
 mod escape_dismissal;
 mod event_loop;
 mod hotkeys;
+mod runtime_settings_flush;
 mod shutdown;
 
 #[cfg(test)]
@@ -35,7 +36,6 @@ use render_wgpu_shell::Renderer;
 use tracing::{debug, info};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use crate::frame_prepare::flush_sidebar_resize_before_lifecycle_boundary;
 use crate::local_file_open::{LocalFileOpenJob, LocalFileOpenRestoreOutcome};
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
@@ -146,41 +146,6 @@ pub(crate) struct AppShell {
 }
 
 impl AppShell {
-    /// Сохраняет pending sidebar resize до уничтожения renderer-bound geometry owner-а.
-    fn flush_sidebar_resize_for_lifecycle_boundary(&mut self) {
-        if self
-            .settings_runtime
-            .next_sidebar_resize_deadline()
-            .is_none()
-        {
-            return;
-        }
-        let (Some(window), Some(renderer), Some(app_state)) = (
-            self.window.as_ref(),
-            self.renderer.as_mut(),
-            self.app_state.as_mut(),
-        ) else {
-            tracing::error!(
-                "Pending sidebar resize дошёл до lifecycle boundary без активного AppState"
-            );
-            return;
-        };
-
-        if let Err(error) = flush_sidebar_resize_before_lifecycle_boundary(
-            window,
-            renderer,
-            app_state,
-            &mut self.playlist_runtime,
-            &mut self.settings_runtime,
-            &mut self.renderer_lifecycle,
-        ) {
-            self.settings_runtime.report_runtime_error(
-                "Не удалось сохранить ширину sidebar перед suspend/exit",
-                error,
-            );
-        }
-    }
-
     /// Создаёт пустой shell.
     ///
     /// Ресурсы инициализируются в Resumed, когда окно готово.
@@ -215,10 +180,12 @@ impl AppShell {
             config_paths.playlist_resume_file(),
         )));
         // Constructor доступен только после process bootstrap с acquired lease.
+        // MPRIS сразу видит реально слышимую громкость: при сохранённом mute это 0.
         playlist_runtime.start_desktop_transport(
             settings_runtime
                 .committed_snapshot()
-                .default_volume_for_new_media(),
+                .user_audio_level()
+                .effective_player_volume(),
         );
         playlist_runtime
             .begin_production_playlist_state_inspection(Arc::new(PlaylistStateStore::new(
@@ -378,14 +345,17 @@ impl AppShell {
         app_state.attach_playlist_runtime(playlist_attachment);
         self.playlist_runtime
             .attach_player_sender(app_state.player_command_sender());
-        if let Err(error) =
-            app_state
-                .player_command_sender()
-                .try_send(player_core::PlayerCommand::SetVolume(
-                    self.playlist_runtime.desktop_effective_volume().as_player(),
-                ))
-        {
-            tracing::warn!(error = %error, "Process-lifetime effective volume не принят новым player binding");
+        // UX-11: новый player binding получает уровень пользователя целиком
+        // (громкость «до mute» + mute), а не только слышимое число, иначе после
+        // включения звука вернулась бы громкость из fallback-а.
+        let restored_audio_level = self
+            .settings_runtime
+            .begin_player_audio_level_restore(std::time::Instant::now());
+        if let Err(error) = crate::user_audio_level::send_user_audio_level_to_player(
+            &app_state.player_command_sender(),
+            restored_audio_level,
+        ) {
+            tracing::warn!(error = %error, "Громкость пользователя не принята новым player binding");
         }
         let _resume_started = app_state.start_suspended_media_resume(&mut self.playlist_runtime);
 
@@ -422,7 +392,7 @@ impl AppShell {
 
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
     fn suspend_runtime(&mut self) {
-        self.flush_sidebar_resize_for_lifecycle_boundary();
+        self.flush_runtime_settings_for_lifecycle_boundary();
         let timeline_seek_deadline = Instant::now() + TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET;
         let mut transferred_local_file_open_job = None;
         if let Some(app_state) = &mut self.app_state {
@@ -528,7 +498,7 @@ impl AppShell {
             }
         }
 
-        self.flush_sidebar_resize_for_lifecycle_boundary();
+        self.flush_runtime_settings_for_lifecycle_boundary();
         let deadline = ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET);
         if let Some(app_state) = self.app_state.as_mut()
             && let Some(binding) = app_state.playlist_runtime_binding()

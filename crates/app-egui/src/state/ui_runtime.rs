@@ -461,7 +461,7 @@ impl AppState {
                             .try_send_command(PlayerCommand::ToggleMute {
                                 fallback_volume: self
                                     .committed_config_snapshot
-                                    .default_volume_for_new_media(),
+                                    .remembered_audible_volume(),
                             })
                     {
                         warn!(error = %error, "Не удалось переключить mute из UI");
@@ -712,9 +712,7 @@ impl AppState {
                 if let Err(error) = self
                     .player_worker
                     .try_send_command(PlayerCommand::ToggleMute {
-                        fallback_volume: self
-                            .committed_config_snapshot
-                            .default_volume_for_new_media(),
+                        fallback_volume: self.committed_config_snapshot.remembered_audible_volume(),
                     })
                 {
                     warn!(error = %error, "Не удалось переключить mute");

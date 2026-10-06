@@ -74,6 +74,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "render.opengles.enabled",
     "render.opengles.simple_ui",
     "audio.volume",
+    "audio.muted",
     "audio.output_device",
     "audio.buffer_target_ms",
     "network.memory_cache_mb",
@@ -185,26 +186,37 @@ fn user_visible_metadata_has_text_and_placement() {
     }
 }
 
+/// UX-11: `audio.volume` теперь «последняя громкость», а mute — отдельный toggle.
+/// Тексты не должны снова обещать «громкость по умолчанию», иначе UI соврёт владельцу.
 #[test]
-fn audio_volume_metadata_names_default_volume_not_current_runtime_volume() {
+fn audio_volume_metadata_names_remembered_volume_and_separate_mute() {
     let registry = registry();
-    let descriptor = descriptor(&registry, "audio.volume");
+    let volume = descriptor(&registry, "audio.volume");
 
-    assert!(descriptor.text.label.fallback_ru.contains("по умолчанию"));
-    let description = descriptor
+    assert_eq!(volume.text.label.fallback_ru, "Громкость");
+    let description = volume
         .text
         .description
         .as_ref()
         .expect("audio.volume description must exist");
-    assert!(description.fallback_ru.contains("Стартовая громкость"));
-    let help = descriptor
+    assert!(description.fallback_ru.contains("запоминает"));
+    let help = volume
         .text
         .help
         .as_ref()
         .expect("audio.volume help must exist");
     assert!(
         help.fallback_ru
-            .contains("не перезаписывает текущую громкость")
+            .contains("сразу меняет и текущую громкость")
+    );
+
+    let muted = descriptor(&registry, "audio.muted");
+    assert_eq!(muted.text.label.fallback_ru, "Звук выключен");
+    assert_eq!(
+        registry
+            .get_value(&AppConfig::default(), &SettingId::from("audio.muted"))
+            .expect("default audio.muted should be readable"),
+        SettingValue::Bool(false)
     );
 }
 

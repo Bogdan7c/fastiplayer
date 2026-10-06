@@ -572,6 +572,9 @@ pub(super) struct ScriptedAudioOutputHandle {
 
     /// Флаг «backend сообщил об ошибке потока» (как error callback CPAL).
     pub(super) stream_failed: Arc<AtomicBool>,
+
+    /// Громкости, которые session применила к output-у, в порядке вызовов.
+    pub(super) applied_volumes: Arc<Mutex<Vec<f32>>>,
 }
 
 impl ScriptedAudioOutputHandle {
@@ -588,7 +591,17 @@ impl ScriptedAudioOutputHandle {
             pause_count: Arc::new(AtomicUsize::new(0)),
             clear_count: Arc::new(AtomicUsize::new(0)),
             stream_failed: Arc::new(AtomicBool::new(false)),
+            applied_volumes: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Последняя громкость, которую session применила к output-у.
+    pub(super) fn last_applied_volume(&self) -> Option<f32> {
+        self.applied_volumes
+            .lock()
+            .expect("volume mutex не должен ломаться")
+            .last()
+            .copied()
     }
 
     /// Имитирует выдернутое устройство: backend сообщает об ошибке потока.
@@ -809,8 +822,14 @@ impl PlayerAudioOutput for ScriptedAudioOutput {
         Ok(generation)
     }
 
-    /// Volume не влияет на seek gate, поэтому fake только принимает boundary call.
-    fn set_volume(&mut self, _volume: f32) {}
+    /// Запоминает громкость: тесты проверяют, что она реально дошла до output-а.
+    fn set_volume(&mut self, volume: f32) {
+        self.handle
+            .applied_volumes
+            .lock()
+            .expect("volume mutex не должен ломаться")
+            .push(volume);
+    }
 
     /// Возвращает scripted buffer level для audio preroll gate.
     fn buffer_level_ms(&self) -> f64 {

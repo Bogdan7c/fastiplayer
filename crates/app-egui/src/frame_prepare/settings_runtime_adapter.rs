@@ -13,7 +13,7 @@ use reconfigure_projection::{
 };
 
 /// Runtime adapter одного frame-а: render live preview + committed runtime owners.
-pub(super) struct FrameSettingsRuntimeAdapter<'frame> {
+pub(crate) struct FrameSettingsRuntimeAdapter<'frame> {
     /// Native window target нужен только renderer lifecycle owner-у.
     window: Arc<Window>,
 
@@ -337,6 +337,20 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         // Повтор (например, серия изменений ширины sidebar) продлевает ту же плашку.
         self.app_state
             .notify_transient(crate::config_startup_notice::SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE);
+    }
+
+    fn apply_user_audio_level_to_playback(
+        &mut self,
+        level: crate::user_audio_level::UserAudioLevel,
+    ) -> crate::settings_runtime::PlaybackAudioLevelDelivery {
+        let sender = self.app_state.player_command_sender();
+        match crate::user_audio_level::send_user_audio_level_to_player(&sender, level) {
+            Ok(()) => crate::settings_runtime::PlaybackAudioLevelDelivery::Sent,
+            Err(error) => {
+                tracing::warn!(%error, "Player worker не принял громкость из настроек");
+                crate::settings_runtime::PlaybackAudioLevelDelivery::NotDelivered
+            }
+        }
     }
 
     fn apply_playlist_runtime_settings(

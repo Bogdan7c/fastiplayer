@@ -144,6 +144,8 @@ impl DesktopTransportOwner {
         commands
     }
 
+    /// Тесты проверяют, что MPRIS-громкость следует за snapshot-ом плеера.
+    #[cfg(test)]
     pub(super) const fn effective_volume(&self) -> EffectiveVolume {
         self.effective_volume
     }
@@ -403,13 +405,6 @@ impl PlaylistRuntime {
         self.desktop_transport
             .as_ref()
             .map_or_else(Vec::new, DesktopTransportOwner::drain_commands)
-    }
-
-    pub(crate) fn desktop_effective_volume(&self) -> EffectiveVolume {
-        self.desktop_transport
-            .as_ref()
-            .map(DesktopTransportOwner::effective_volume)
-            .unwrap_or(EffectiveVolume::FULL)
     }
 
     pub(crate) fn set_desktop_effective_volume(&mut self, volume: EffectiveVolume) -> bool {

@@ -28,11 +28,11 @@ fn desktop_backend_start_is_inside_lease_owning_shell_constructor() {
 }
 
 #[test]
-fn suspend_and_terminal_exit_force_flush_pending_sidebar_resize() {
+fn suspend_and_terminal_exit_force_flush_pending_sidebar_resize_and_volume() {
     let shell_source = include_str!("mod.rs");
     let flush_call = format!(
         "{}{}",
-        "self.flush_sidebar_resize_for_lifecycle_boundary", "();"
+        "self.flush_runtime_settings_for_lifecycle_boundary", "();"
     );
     assert_eq!(
         shell_source.matches(&flush_call).count(),
