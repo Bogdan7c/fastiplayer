@@ -30,16 +30,16 @@ mod worker_scheduler;
 pub use audio_core::{
     AudioChannelLayout, AudioChannelLayoutError, AudioChannelPosition, AudioDecoder,
     AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
-    AudioOutputClockTiming, AudioOutputFactory, AudioOutputInputFrameCount, AudioOutputSpec,
-    AudioOutputStreamFrameCount, AudioOutputWriteError, AudioOutputWriteIntent,
-    AudioOutputWriteReport, AudioPacketTimeBase, AudioPacketTiming, AudioTempoChannelCount,
-    AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoFrameSpan,
-    AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
-    AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorError,
-    AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
-    AudioTempoRatioInvalidReason, AudioTempoReportFrameCounts, AudioTempoSampleRateHz,
-    AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput, EncodedAudioPacket,
-    PlayerAudioClock, PlayerAudioOutput,
+    AudioOutputClockTiming, AudioOutputDeviceRequest, AudioOutputDeviceRoute, AudioOutputFactory,
+    AudioOutputInputFrameCount, AudioOutputSpec, AudioOutputStreamFrameCount,
+    AudioOutputStreamHealth, AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport,
+    AudioPacketTimeBase, AudioPacketTiming, AudioTempoChannelCount, AudioTempoDecodedMedia,
+    AudioTempoFrameCount, AudioTempoFrameSpan, AudioTempoOutputProgressMapping,
+    AudioTempoPcmFormat, AudioTempoProcessReport, AudioTempoProcessor, AudioTempoProcessorConfig,
+    AudioTempoProcessorError, AudioTempoProcessorFactory, AudioTempoProcessorHandle,
+    AudioTempoRatio, AudioTempoRatioInvalidReason, AudioTempoReportFrameCounts,
+    AudioTempoSampleRateHz, AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput,
+    CreatedAudioOutput, EncodedAudioPacket, PlayerAudioClock, PlayerAudioOutput,
 };
 pub use codec_core::VideoDecodeRequirement;
 pub use command::{
@@ -73,9 +73,9 @@ pub use diagnostics::{
 };
 pub use error::{PlayerError, PlayerErrorKind, PlayerResult};
 pub use event::{
-    BufferingState, CapabilitySummary, CorrelatedPlayerEvent, FramePresentationInfo, MediaSummary,
-    PlayerEvent, SeekAudioResumeInfo, SeekCommitInfo, SeekTargetFramePresentation,
-    VideoBackendSelectionRequest,
+    AudioOutputSwitchReason, BufferingState, CapabilitySummary, CorrelatedPlayerEvent,
+    FramePresentationInfo, MediaSummary, PlayerEvent, SeekAudioResumeInfo, SeekCommitInfo,
+    SeekTargetFramePresentation, VideoBackendSelectionRequest,
 };
 pub use frame_server_core::{
     BackendRevision, DeferredLiveScrubSettingsChange, LiveScrubDiagnostics,

@@ -188,6 +188,7 @@ pub(super) fn cached_present_frame_discard_reason_for_player_event(
         | PlayerEvent::AudioResumedAfterSeek(_)
         | PlayerEvent::AudioOutputReady
         | PlayerEvent::AudioPlaybackResumed
+        | PlayerEvent::AudioOutputSwitchedToSystemDefault(_)
         | PlayerEvent::VideoFrameReady(_)
         | PlayerEvent::BufferingStateChanged(_)
         | PlayerEvent::CapabilityScanCompleted(_)

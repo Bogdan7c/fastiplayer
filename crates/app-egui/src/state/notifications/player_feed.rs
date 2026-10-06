@@ -4,7 +4,8 @@
 //! фатальную ошибку, и безобидный отказ (seek на не-seekable потоке), а сбрасывает поле только
 //! при следующем открытии. Приложение показывало поле как есть. Здесь два источника разведены:
 //!
-//! - recoverable-отказ приходит событием `PlayerEvent::RecoverableError` → временный toast;
+//! - recoverable-отказ приходит событием `PlayerEvent::RecoverableError` → временный toast
+//!   (пропажа звукового устройства — информационный toast с человеческим текстом, сессия 10);
 //! - фатальность определяется только состоянием `PlaybackState::Failed` из snapshot-а
 //!   (как в `playlist_runtime::discovery::navigation::automatic_snapshot_kind`): старый
 //!   `last_error` без `Failed` больше ничего не показывает.
@@ -14,7 +15,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use player_core::{PlaybackState, PlayerEvent, PlayerSnapshot};
+use player_core::{PlaybackState, PlayerErrorKind, PlayerEvent, PlayerSnapshot};
+
+use crate::audio_output_message::{AUDIO_OUTPUT_UNAVAILABLE_MESSAGE, audio_output_switch_message};
 
 use super::{MediaFailureOrigin, NotificationCenter, ObservedPlayerFailure};
 
@@ -25,10 +28,23 @@ impl NotificationCenter {
     /// snapshot-а ([`Self::observe_player_snapshot`]) — player может перейти в `Failed` и без
     /// отдельного `FatalError`-события (сохранение causal-ошибки при сбое prepared seek).
     pub(crate) fn record_player_event(&mut self, event: &PlayerEvent, now: Instant) {
-        if let PlayerEvent::RecoverableError(error) = event {
-            // Текст ошибки не меняем (тексты — зона сессий 02/03/08), меняется только
-            // жизненный цикл: сообщение уходит само, а не висит до следующего файла.
-            self.notify_transient(error.to_string(), now);
+        match event {
+            // Пропавшее звуковое устройство (сессия 10): человеческий текст вместо
+            // технического `PlayerError`, информационная плашка — читать дольше.
+            PlayerEvent::RecoverableError(error)
+                if error.kind == PlayerErrorKind::AudioDeviceUnavailable =>
+            {
+                self.notify_info(AUDIO_OUTPUT_UNAVAILABLE_MESSAGE, now);
+            }
+            PlayerEvent::RecoverableError(error) => {
+                // Текст ошибки не меняем (тексты — зона сессий 02/03/08), меняется только
+                // жизненный цикл: сообщение уходит само, а не висит до следующего файла.
+                self.notify_transient(error.to_string(), now);
+            }
+            PlayerEvent::AudioOutputSwitchedToSystemDefault(reason) => {
+                self.notify_info(audio_output_switch_message(reason), now);
+            }
+            _ => {}
         }
     }
 

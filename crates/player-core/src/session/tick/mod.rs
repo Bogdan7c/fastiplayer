@@ -75,6 +75,9 @@ impl PlayerSession {
         }
 
         self.diagnose_audio_output_starvation(tick_context.now);
+        // Пропавшее устройство: поток мог сломаться между tick-ами — восстанавливаем звук
+        // до video-шага, чтобы presentation clock не стоял на мёртвом output-е.
+        self.recover_failed_audio_output_if_needed(tick_context.now);
 
         process_pending_video_packets(self, tick_context, &mut tick_result);
         // Demuxer мог создать deadline через `Instant::now()` уже после начала tick-а.

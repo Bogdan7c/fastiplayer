@@ -45,6 +45,7 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 mod test_support;
 mod tracing_capture;
 
+mod audio_output_recovery;
 mod audio_packet_window;
 mod audio_runtime;
 mod capability_selection;

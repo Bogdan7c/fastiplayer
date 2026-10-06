@@ -33,6 +33,7 @@ use crate::{
 use video_core::VideoDecoderThreadHandle;
 mod audio;
 mod audio_clock_mapping;
+mod audio_output_health;
 mod audio_packet_window;
 mod media_slots;
 mod render_resources;

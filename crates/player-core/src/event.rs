@@ -123,6 +123,19 @@ impl CorrelatedPlayerEvent {
     }
 }
 
+/// Почему player перевёл звук на системное устройство по умолчанию.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioOutputSwitchReason {
+    /// При открытии media выбранное устройство не открылось (отключено или занято).
+    SelectedDeviceUnavailable {
+        /// Имя устройства так, как его показывает список в настройках.
+        device_name: String,
+    },
+
+    /// Во время воспроизведения поток вывода сломался (устройство пропало).
+    ActiveDeviceStopped,
+}
+
 /// Событие, которое player-core отдаёт shell-слою после обработки команд или tick.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerEvent {
@@ -155,6 +168,11 @@ pub enum PlayerEvent {
 
     /// Audio output впервые принял `play` после install/pause текущего output-а.
     AudioPlaybackResumed,
+
+    /// Звук идёт на системное устройство по умолчанию вместо выбранного в настройках.
+    ///
+    /// Выбор пользователя не изменён: следующее открытие media снова попробует выбранное.
+    AudioOutputSwitchedToSystemDefault(AudioOutputSwitchReason),
 
     /// Кадр готов к presentation.
     VideoFrameReady(FramePresentationInfo),

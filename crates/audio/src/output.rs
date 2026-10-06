@@ -34,6 +34,7 @@ mod configuration;
 mod lifecycle;
 mod processing;
 mod resampler;
+mod stream_callbacks;
 
 use configuration::choose_supported_output_config;
 #[cfg(test)]
@@ -50,6 +51,7 @@ use processing::{
     limiter_release_decay_for_rate, output_sample_for_intent, reset_output_protection,
 };
 use resampler::LinearResampler;
+use stream_callbacks::{StreamCallbackShared, StreamFailureSignal};
 
 /// Аудиовыход с CPAL stream и ring buffer.
 pub struct AudioOutput {
@@ -97,6 +99,9 @@ pub struct AudioOutput {
 
     /// Последнее поколение seek, для которого audio buffer был очищен.
     clear_ack_generation: u64,
+
+    /// Сигнал error callback-а о поломке потока (например, устройство отключено).
+    stream_failure: StreamFailureSignal,
 }
 
 /// Результат низкоуровневой попытки остановить CPAL stream.
@@ -180,20 +185,24 @@ impl AudioOutput {
         let consumer = Arc::new(Mutex::new(consumer));
 
         let clock = Arc::new(AudioClock::new(stream_rate, stream_channels as u32));
-        let clock_for_callback = Arc::clone(&clock);
+        let stream_failure = StreamFailureSignal::default();
 
         // Получаем sample format и StreamConfig.
         let sample_format = output_config.sample_format();
         let stream_config = output_config.config();
 
         // Создаём stream в зависимости от sample format.
+        let callback_shared = StreamCallbackShared {
+            consumer: Arc::clone(&consumer),
+            clock: Arc::clone(&clock),
+            channels: stream_channels,
+            stream_failure: stream_failure.clone(),
+        };
         let stream = Self::build_stream_for_sample_format(
             &device,
             &stream_config,
             sample_format,
-            Arc::clone(&consumer),
-            clock_for_callback,
-            stream_channels,
+            callback_shared,
         )?;
 
         info!(buffer_capacity, "AudioOutput создан");
@@ -215,6 +224,7 @@ impl AudioOutput {
             limiter_envelope: 0.0,
             limiter_release_decay: limiter_release_decay_for_rate(stream_rate),
             clear_ack_generation: 0,
+            stream_failure,
         })
     }
 
@@ -361,6 +371,11 @@ impl AudioOutput {
         self.clear_ack_generation
     }
 
+    /// Возвращает здоровье backend stream-а: error callback только поднимает флаг (см. `StreamFailureSignal`).
+    pub fn stream_health(&self) -> audio_core::AudioOutputStreamHealth {
+        self.stream_failure.health()
+    }
+
     /// Возвращает уровень заполнения buffer в миллисекундах.
     pub fn buffer_level_ms(&self) -> f64 {
         let level = self.clock.buffer_level() as f64;
@@ -377,37 +392,19 @@ impl AudioOutput {
         device: &cpal::Device,
         config: &cpal::StreamConfig,
         sample_format: SampleFormat,
-        consumer: Arc<Mutex<HeapCons<f32>>>,
-        clock: Arc<AudioClock>,
-        channels: usize,
+        shared: StreamCallbackShared,
     ) -> Result<cpal::Stream> {
         match sample_format {
-            SampleFormat::I8 => Self::build_stream::<i8>(device, config, consumer, clock, channels),
-            SampleFormat::I16 => {
-                Self::build_stream::<i16>(device, config, consumer, clock, channels)
-            }
-            SampleFormat::I32 => {
-                Self::build_stream::<i32>(device, config, consumer, clock, channels)
-            }
-            SampleFormat::I64 => {
-                Self::build_stream::<i64>(device, config, consumer, clock, channels)
-            }
-            SampleFormat::U8 => Self::build_stream::<u8>(device, config, consumer, clock, channels),
-            SampleFormat::U16 => {
-                Self::build_stream::<u16>(device, config, consumer, clock, channels)
-            }
-            SampleFormat::U32 => {
-                Self::build_stream::<u32>(device, config, consumer, clock, channels)
-            }
-            SampleFormat::U64 => {
-                Self::build_stream::<u64>(device, config, consumer, clock, channels)
-            }
-            SampleFormat::F32 => {
-                Self::build_stream::<f32>(device, config, consumer, clock, channels)
-            }
-            SampleFormat::F64 => {
-                Self::build_stream::<f64>(device, config, consumer, clock, channels)
-            }
+            SampleFormat::I8 => Self::build_stream::<i8>(device, config, shared),
+            SampleFormat::I16 => Self::build_stream::<i16>(device, config, shared),
+            SampleFormat::I32 => Self::build_stream::<i32>(device, config, shared),
+            SampleFormat::I64 => Self::build_stream::<i64>(device, config, shared),
+            SampleFormat::U8 => Self::build_stream::<u8>(device, config, shared),
+            SampleFormat::U16 => Self::build_stream::<u16>(device, config, shared),
+            SampleFormat::U32 => Self::build_stream::<u32>(device, config, shared),
+            SampleFormat::U64 => Self::build_stream::<u64>(device, config, shared),
+            SampleFormat::F32 => Self::build_stream::<f32>(device, config, shared),
+            SampleFormat::F64 => Self::build_stream::<f64>(device, config, shared),
             other => anyhow::bail!("Unsupported sample format: {:?}", other),
         }
     }
@@ -416,16 +413,18 @@ impl AudioOutput {
     fn build_stream<T>(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
-        consumer: Arc<Mutex<HeapCons<f32>>>,
-        clock: Arc<AudioClock>,
-        channels: usize,
+        shared: StreamCallbackShared,
     ) -> Result<cpal::Stream>
     where
         T: SizedSample + Sample + FromSample<f32> + Send + 'static,
     {
-        let err_callback = move |err| {
-            warn!("CPAL error: {}", err);
-        };
+        let StreamCallbackShared {
+            consumer,
+            clock,
+            channels,
+            stream_failure,
+        } = shared;
+        let err_callback = move |err: cpal::StreamError| stream_failure.record_failure(&err);
 
         let stream = device.build_output_stream(
             config,

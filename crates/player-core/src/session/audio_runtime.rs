@@ -6,8 +6,9 @@ use tracing::{info, warn};
 use crate::pipeline::{AudioSeekRuntimeState, DecodedAudioPacket};
 use crate::seek_state::{PlaybackResumeIntent, SeekCommitState};
 use crate::{
-    AudioOutputSpec, PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
-    PlayerRuntimeAcceptedChange, SeekProgressBlocker, TrackId,
+    AudioOutputDeviceRequest, AudioOutputSpec, CreatedAudioOutput, PlaybackState, PlayerError,
+    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerRuntimeAcceptedChange, SeekProgressBlocker,
+    TrackId,
 };
 
 use super::{
@@ -320,9 +321,17 @@ impl PlayerSession {
             ));
         }
 
-        let mut output = self
+        // Пропавшее выбранное устройство не должно выключать звук: factory сама пробует
+        // устройство по умолчанию и сообщает маршрут (решение владельца, UX-сессия 10).
+        let CreatedAudioOutput {
+            mut output,
+            route: output_route,
+        } = self
             .audio_output_factory
-            .create_output(output_spec)
+            .create_output(
+                output_spec,
+                AudioOutputDeviceRequest::SelectedOrSystemDefault,
+            )
             .map_err(|error| {
                 PlayerError::new(
                     PlayerErrorKind::AudioDeviceUnavailable,
@@ -332,6 +341,7 @@ impl PlayerSession {
 
         output.set_volume(self.snapshot.volume);
         self.pipeline.install_audio_output(output, output_spec);
+        self.begin_audio_output_recovery_budget();
 
         if let Some(clock) = self.pipeline.audio_output_clock() {
             self.pipeline.install_audio_clock(clock);
@@ -341,6 +351,7 @@ impl PlayerSession {
             self.snapshot.playback_rate,
         );
         self.push_player_event(PlayerEvent::AudioOutputReady);
+        self.publish_audio_output_route(output_route);
 
         if self.playback_state() == PlaybackState::Playing {
             if let Some(Err(error)) = self.play_audio_output_with_resume_event() {
@@ -368,19 +379,26 @@ impl PlayerSession {
 
     /// Пересоздаёт active audio output, не уничтожая старый до успешного startup.
     ///
-    /// App-owned device controller уже содержит новый stable id. Factory читает
-    /// его при создании output-а; ошибка create/play оставляет старый output и clock
-    /// полностью рабочими.
+    /// `device_request` выбирает устройство: смена в настройках просит только выбранное
+    /// (app-owned controller уже содержит новый stable id), восстановление после
+    /// поломки потока — системное по умолчанию. Ошибка create/play оставляет старый
+    /// output и clock нетронутыми.
     pub(crate) fn recreate_active_audio_output(
         &mut self,
+        device_request: AudioOutputDeviceRequest,
     ) -> PlayerResult<PlayerRuntimeAcceptedChange> {
         let Some(output_spec) = self.pipeline.audio_output_input_spec() else {
             return Ok(PlayerRuntimeAcceptedChange::Unchanged);
         };
 
-        let mut replacement_output = self
+        // Маршрут здесь однозначно следует из запроса (SelectedOnly → выбранное,
+        // SystemDefault → default), поэтому уведомление формирует вызывающий код.
+        let CreatedAudioOutput {
+            output: mut replacement_output,
+            route: _,
+        } = self
             .audio_output_factory
-            .create_output(output_spec)
+            .create_output(output_spec, device_request)
             .map_err(|error| {
                 PlayerError::new(
                     PlayerErrorKind::AudioDeviceUnavailable,

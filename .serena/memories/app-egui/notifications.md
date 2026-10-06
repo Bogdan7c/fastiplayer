@@ -24,6 +24,9 @@
 ## Пропуски в очереди (сессия 07, 2026-10-05)
 - `AppState::show_playlist_queue_notices(Vec<AutomaticQueueNotice>)` (в `notification_routing.rs`) — маршрут итогов skip-цепочки; формулировки — `crate::playlist_skip_message::playlist_queue_notice_delivery` (по образцу `local_open_message`). Детали владельца — `mem:app-egui/playlist-controller-s20`.
 
+## Звуковое устройство (сессия 10, 2026-10-06)
+- `player_feed::record_player_event`: `PlayerEvent::AudioOutputSwitchedToSystemDefault(reason)` → info-toast (8 с) с текстом из `crate::audio_output_message::audio_output_switch_message`; `RecoverableError` с kind `AudioDeviceUnavailable` → info-toast `AUDIO_OUTPUT_UNAVAILABLE_MESSAGE` вместо технического Display; прочие recoverable — как раньше (transient). Тесты: `state/notifications/audio_device_tests.rs`. Player-сторона: `mem:player-core/audio-runtime`.
+
 ## Перерисовка (важно)
 - В этом приложении `ctx.request_repaint_after(d)` делает `has_requested_repaint()` истинным, и окно перерисовывается **немедленно**: задержка игнорируется (`frame_prepare/ui_prepare.rs`). Для таймеров используйте `AppRenderFrameResult.next_ui_wake_deadline` (`earliest_ui_wake_deadline([..])` в `frame_prepare.rs`), куда добавлен `next_notification_wake_deadline()`. `ctx.request_repaint()` — только пока идёт анимация.
 

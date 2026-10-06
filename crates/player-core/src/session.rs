@@ -36,6 +36,7 @@ use crate::{
 #[cfg(test)]
 use crate::{PlayerCommandOutcome, PlayerResult};
 
+mod audio_output_recovery;
 mod audio_packet_window;
 mod audio_playback_bounds;
 mod audio_runtime;
@@ -207,6 +208,9 @@ pub struct PlayerSession {
     /// Хранит requirement и track id, чтобы после `set_video_backend` активировать
     /// трек уже на новом backend-е без переоткрытия media.
     pending_video_backend_reselection: Option<PendingVideoBackendReselection>,
+
+    /// Счётчик попыток восстановить звук после поломки потока вывода.
+    audio_output_recovery: audio_output_recovery::AudioOutputRecoveryBudget,
 
     /// Rate limit для warn о полностью осушенном audio output buffer.
     ///
@@ -734,6 +738,7 @@ impl Default for PlayerSession {
             installed_staged_position: None,
             prepared_seek_landing: PreparedSeekLandingRuntime,
             pending_video_backend_reselection: None,
+            audio_output_recovery: audio_output_recovery::AudioOutputRecoveryBudget::default(),
             last_audio_starvation_warn_at: None,
             last_seen_audio_underrun_callbacks: 0,
             last_tick_observed_at: None,

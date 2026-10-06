@@ -34,6 +34,8 @@ use crate::ui::animation::UiMotion;
 mod player_feed;
 
 #[cfg(test)]
+mod audio_device_tests;
+#[cfg(test)]
 mod render_tests;
 #[cfg(test)]
 mod tests;

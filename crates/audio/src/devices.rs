@@ -246,6 +246,16 @@ fn cpal_015_stable_id_from_name(display_name: &str, duplicate_index: usize) -> S
 }
 
 /// Разбирает best-effort CPAL 0.15 id обратно в имя и индекс одноимённого device.
+/// Возвращает имя устройства для сообщений пользователю по stable id.
+///
+/// Формат id знает только этот модуль, поэтому имя извлекается здесь. Если id не в формате
+/// CPAL 0.15 (повреждён или от будущей схемы), показываем id как есть — это лучше, чем ничего.
+pub(crate) fn output_device_display_name(stable_id: &str) -> String {
+    parse_cpal_015_name_id(stable_id)
+        .map(|(display_name, _duplicate_index)| display_name)
+        .unwrap_or_else(|| stable_id.to_string())
+}
+
 fn parse_cpal_015_name_id(stable_id: &str) -> Option<(String, usize)> {
     let encoded = stable_id.strip_prefix(CPAL_015_NAME_ID_PREFIX)?;
     let (encoded_name, duplicate_index) = match encoded.rsplit_once('#') {
@@ -308,7 +318,8 @@ const fn hex_value(byte: u8) -> Option<u8> {
 mod tests {
     use super::{
         AudioOutputDeviceController, AudioOutputDeviceSelectionChange,
-        DEFAULT_AUDIO_OUTPUT_DEVICE_ID, cpal_015_stable_id_from_name, parse_cpal_015_name_id,
+        DEFAULT_AUDIO_OUTPUT_DEVICE_ID, cpal_015_stable_id_from_name, output_device_display_name,
+        parse_cpal_015_name_id,
     };
 
     #[test]
@@ -337,5 +348,23 @@ mod tests {
 
         assert_eq!(display_name, "USB DAC #1 Я");
         assert_eq!(duplicate_index, 2);
+    }
+
+    #[test]
+    fn display_name_for_user_is_decoded_device_name_without_duplicate_suffix() {
+        let stable_id = cpal_015_stable_id_from_name("front:CARD=Headset,DEV=0", 1);
+
+        assert_eq!(
+            output_device_display_name(&stable_id),
+            "front:CARD=Headset,DEV=0"
+        );
+    }
+
+    #[test]
+    fn display_name_for_foreign_id_falls_back_to_id_itself() {
+        assert_eq!(
+            output_device_display_name("future-scheme:abc"),
+            "future-scheme:abc"
+        );
     }
 }

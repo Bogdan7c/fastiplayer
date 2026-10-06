@@ -11,6 +11,7 @@
 mod app_instance;
 mod app_shell;
 mod app_wake;
+mod audio_output_message;
 mod config_startup_notice;
 mod dma_buf_runtime_fallback;
 mod fatal_startup;

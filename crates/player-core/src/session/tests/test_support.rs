@@ -1,8 +1,10 @@
 use super::*;
 use audio_core::{
-    AudioOutputClockTiming, AudioOutputInputFrameCount, AudioOutputStreamFrameCount,
-    AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport,
+    AudioOutputClockTiming, AudioOutputDeviceRequest, AudioOutputDeviceRoute,
+    AudioOutputInputFrameCount, AudioOutputStreamFrameCount, AudioOutputStreamHealth,
+    AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport, CreatedAudioOutput,
 };
+use std::sync::atomic::AtomicBool;
 
 // Общие test doubles и builders остаются в одном месте, чтобы доменные тесты
 // проверяли поведение `PlayerSession`, а не дублировали setup-код.
@@ -567,6 +569,9 @@ pub(super) struct ScriptedAudioOutputHandle {
 
     /// Сколько раз session очистила audio buffer для seek.
     pub(super) clear_count: Arc<AtomicUsize>,
+
+    /// Флаг «backend сообщил об ошибке потока» (как error callback CPAL).
+    pub(super) stream_failed: Arc<AtomicBool>,
 }
 
 impl ScriptedAudioOutputHandle {
@@ -582,7 +587,13 @@ impl ScriptedAudioOutputHandle {
             play_error: Arc::new(Mutex::new(None)),
             pause_count: Arc::new(AtomicUsize::new(0)),
             clear_count: Arc::new(AtomicUsize::new(0)),
+            stream_failed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Имитирует выдернутое устройство: backend сообщает об ошибке потока.
+    pub(super) fn fail_stream(&self) {
+        self.stream_failed.store(true, Ordering::Release);
     }
 
     /// Обновляет scripted buffer level, имитируя заполнение audio output-а.
@@ -810,6 +821,15 @@ impl PlayerAudioOutput for ScriptedAudioOutput {
     fn clock(&self) -> Arc<dyn PlayerAudioClock> {
         self.handle.clock()
     }
+
+    /// Сообщает scripted здоровье потока.
+    fn stream_health(&self) -> AudioOutputStreamHealth {
+        if self.handle.stream_failed.load(Ordering::Acquire) {
+            AudioOutputStreamHealth::Failed
+        } else {
+            AudioOutputStreamHealth::Running
+        }
+    }
 }
 
 /// Shared state factory fake-а для проверок lazy output init.
@@ -823,7 +843,26 @@ pub(super) struct ScriptedAudioOutputFactoryHandle {
 
     /// Последний output handle, созданный factory.
     pub(super) last_output_handle: Arc<Mutex<Option<ScriptedAudioOutputHandle>>>,
+
+    /// Запросы устройства в порядке вызовов factory.
+    pub(super) device_requests: Arc<Mutex<Vec<AudioOutputDeviceRequest>>>,
+
+    /// Какие устройства «подключены» в fake звуковой системе.
+    pub(super) devices: Arc<Mutex<ScriptedAudioDevices>>,
 }
+
+/// Fake звуковая система: выбранное в настройках устройство и системное по умолчанию.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScriptedAudioDevices {
+    /// Выбранное устройство подключено.
+    pub(super) selected_connected: bool,
+
+    /// Системное устройство по умолчанию доступно.
+    pub(super) system_default_connected: bool,
+}
+
+/// Имя выбранного устройства, которое fake factory сообщает в запасном маршруте.
+pub(super) const SCRIPTED_SELECTED_DEVICE_NAME: &str = "USB Headset";
 
 impl ScriptedAudioOutputFactoryHandle {
     /// Создаёт пустой assertion handle для factory.
@@ -832,6 +871,11 @@ impl ScriptedAudioOutputFactoryHandle {
             create_count: Arc::new(AtomicUsize::new(0)),
             created_specs: Arc::new(Mutex::new(Vec::new())),
             last_output_handle: Arc::new(Mutex::new(None)),
+            device_requests: Arc::new(Mutex::new(Vec::new())),
+            devices: Arc::new(Mutex::new(ScriptedAudioDevices {
+                selected_connected: true,
+                system_default_connected: true,
+            })),
         }
     }
 
@@ -846,6 +890,22 @@ impl ScriptedAudioOutputFactoryHandle {
             .lock()
             .expect("factory specs mutex не должен ломаться")
             .clone()
+    }
+
+    /// Возвращает запросы устройства, с которыми session вызывала factory.
+    pub(super) fn device_requests(&self) -> Vec<AudioOutputDeviceRequest> {
+        self.device_requests
+            .lock()
+            .expect("factory requests mutex не должен ломаться")
+            .clone()
+    }
+
+    /// Меняет «подключённость» устройств fake звуковой системы.
+    pub(super) fn set_devices(&self, devices: ScriptedAudioDevices) {
+        *self
+            .devices
+            .lock()
+            .expect("factory devices mutex не должен ломаться") = devices;
     }
 
     /// Возвращает handle последнего output-а, если factory создала output.
@@ -905,18 +965,34 @@ impl ScriptedAudioOutputFactory {
 }
 
 impl AudioOutputFactory for ScriptedAudioOutputFactory {
-    /// Создаёт scripted output и записывает spec, чтобы тест проверил lazy boundary call.
-    fn create_output(&self, spec: AudioOutputSpec) -> anyhow::Result<Box<dyn PlayerAudioOutput>> {
+    /// Создаёт scripted output и записывает spec/request, чтобы тест проверил boundary call.
+    fn create_output(
+        &self,
+        spec: AudioOutputSpec,
+        device_request: AudioOutputDeviceRequest,
+    ) -> anyhow::Result<CreatedAudioOutput> {
         self.handle.create_count.fetch_add(1, Ordering::Relaxed);
         self.handle
             .created_specs
             .lock()
             .expect("factory specs mutex не должен ломаться")
             .push(spec);
+        self.handle
+            .device_requests
+            .lock()
+            .expect("factory requests mutex не должен ломаться")
+            .push(device_request);
 
         if let Some(error) = self.creation_error {
             anyhow::bail!(error);
         }
+
+        let devices = *self
+            .handle
+            .devices
+            .lock()
+            .expect("factory devices mutex не должен ломаться");
+        let route = scripted_device_route(devices, device_request)?;
 
         let output = ScriptedAudioOutput::new(self.buffer_level_ms, self.play_error)
             .with_input_channels(spec.channels() as usize);
@@ -927,7 +1003,31 @@ impl AudioOutputFactory for ScriptedAudioOutputFactory {
             .lock()
             .expect("factory output mutex не должен ломаться") = Some(output_handle);
 
-        Ok(output)
+        Ok(CreatedAudioOutput::new(output, route))
+    }
+}
+
+/// Повторяет production-порядок попыток (`audio::output_device_fallback`) на fake устройствах.
+fn scripted_device_route(
+    devices: ScriptedAudioDevices,
+    device_request: AudioOutputDeviceRequest,
+) -> anyhow::Result<AudioOutputDeviceRoute> {
+    match device_request {
+        AudioOutputDeviceRequest::SelectedOnly if devices.selected_connected => {
+            Ok(AudioOutputDeviceRoute::SelectedDevice)
+        }
+        AudioOutputDeviceRequest::SystemDefault if devices.system_default_connected => {
+            Ok(AudioOutputDeviceRoute::SystemDefault)
+        }
+        AudioOutputDeviceRequest::SelectedOrSystemDefault if devices.selected_connected => {
+            Ok(AudioOutputDeviceRoute::SelectedDevice)
+        }
+        AudioOutputDeviceRequest::SelectedOrSystemDefault if devices.system_default_connected => {
+            Ok(AudioOutputDeviceRoute::SystemDefaultInsteadOfUnavailable {
+                unavailable_device_name: SCRIPTED_SELECTED_DEVICE_NAME.to_string(),
+            })
+        }
+        _ => anyhow::bail!("no scripted audio device for {device_request:?}"),
     }
 }
 

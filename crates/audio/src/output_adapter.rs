@@ -8,10 +8,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use audio_core::{
-    AudioOutputClockTiming, AudioOutputFactory, AudioOutputSpec, AudioOutputWriteError,
-    AudioOutputWriteIntent, AudioOutputWriteReport, PlayerAudioClock, PlayerAudioOutput,
+    AudioOutputClockTiming, AudioOutputDeviceRequest, AudioOutputFactory, AudioOutputSpec,
+    AudioOutputStreamHealth, AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport,
+    CreatedAudioOutput, PlayerAudioClock, PlayerAudioOutput,
 };
 
+use crate::output_device_fallback::open_output_for_device_request;
 use crate::{AudioClock, AudioOutput, AudioOutputDeviceController};
 
 /// Production factory, создающая concrete CPAL output за neutral boundary.
@@ -43,15 +45,21 @@ impl CpalAudioOutputFactory {
 }
 
 impl AudioOutputFactory for CpalAudioOutputFactory {
-    /// Создаёт concrete output и отдаёт его как neutral trait object.
-    fn create_output(&self, spec: AudioOutputSpec) -> anyhow::Result<Box<dyn PlayerAudioOutput>> {
-        let output_device_id = self.output_device_controller.selected_device_id()?;
-        let output = AudioOutput::new_with_device_id(
-            spec.sample_rate,
-            spec.channel_layout,
-            &output_device_id,
-        )?;
-        Ok(Box::new(output))
+    /// Создаёт concrete output на устройстве по запросу player-а и сообщает маршрут.
+    ///
+    /// Выбор в controller-е только читается: запасное устройство по умолчанию не
+    /// записывается в настройки.
+    fn create_output(
+        &self,
+        spec: AudioOutputSpec,
+        device_request: AudioOutputDeviceRequest,
+    ) -> anyhow::Result<CreatedAudioOutput> {
+        let selected_device_id = self.output_device_controller.selected_device_id()?;
+        let (output, route) =
+            open_output_for_device_request(&selected_device_id, device_request, |device_id| {
+                AudioOutput::new_with_device_id(spec.sample_rate, spec.channel_layout, device_id)
+            })?;
+        Ok(CreatedAudioOutput::new(Box::new(output), route))
     }
 }
 
@@ -94,6 +102,11 @@ impl PlayerAudioOutput for AudioOutput {
     fn clock(&self) -> Arc<dyn PlayerAudioClock> {
         let clock: Arc<dyn PlayerAudioClock> = self.clock().clone();
         clock
+    }
+
+    /// Сообщает, поднимал ли error callback CPAL флаг поломки потока.
+    fn stream_health(&self) -> AudioOutputStreamHealth {
+        AudioOutput::stream_health(self)
     }
 }
 

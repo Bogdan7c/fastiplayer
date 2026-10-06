@@ -8,6 +8,7 @@
 
 mod channel_layout;
 mod decode_capability;
+mod output_backend;
 mod tempo;
 
 use std::sync::Arc;
@@ -20,6 +21,10 @@ pub use channel_layout::{AudioChannelLayout, AudioChannelLayoutError, AudioChann
 pub use decode_capability::{
     AudioDecodeCapability, AudioDecodeCapabilityProvider, AudioDecodeCapabilityQueryError,
     AudioDecodeCapabilitySnapshot, AudioDecodeCodecFamily, AudioDecodeCodecFamilyQuery,
+};
+pub use output_backend::{
+    AudioOutputDeviceRequest, AudioOutputDeviceRoute, AudioOutputFactory, AudioOutputStreamHealth,
+    CreatedAudioOutput, PlayerAudioClock,
 };
 pub use tempo::{
     AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoFrameSpan,
@@ -648,12 +653,6 @@ impl AudioOutputClockTiming {
     }
 }
 
-/// Нейтральная фабрика audio output-а без знания о CPAL или concrete backend-е.
-pub trait AudioOutputFactory: Send + Sync {
-    /// Создаёт output под decoded audio spec.
-    fn create_output(&self, spec: AudioOutputSpec) -> Result<Box<dyn PlayerAudioOutput>>;
-}
-
 /// Нейтральный output contract, которым управляет playback pipeline.
 ///
 /// Output создаётся внутри playback worker-а и дальше остаётся thread-local.
@@ -691,21 +690,11 @@ pub trait PlayerAudioOutput {
 
     /// Возвращает playback clock как нейтральный shared handle.
     fn clock(&self) -> Arc<dyn PlayerAudioClock>;
-}
 
-/// Нейтральный playback clock для A/V sync и EOF-drain diagnostics.
-pub trait PlayerAudioClock: Send + Sync {
-    /// Возвращает текущую playback позицию относительно clock base.
-    fn now(&self) -> Duration;
-
-    /// Возвращает audible clock и конец всего уже принятого output PCM.
-    fn output_timing(&self) -> AudioOutputClockTiming;
-
-    /// Сбрасывает clock state после seek/output clear.
-    fn reset(&self);
-
-    /// Возвращает количество output callbacks, где stream недополучил samples.
-    fn underrun_callbacks(&self) -> u64;
+    /// Сообщает, жив ли backend stream (устройство могло пропасть во время playback-а).
+    fn stream_health(&self) -> AudioOutputStreamHealth {
+        AudioOutputStreamHealth::Running
+    }
 }
 
 #[cfg(test)]

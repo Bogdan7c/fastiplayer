@@ -355,6 +355,7 @@ impl StartupReadinessTracker {
             | PlayerEvent::SubtitleTrackSelected(_)
             | PlayerEvent::QualitySelectionChanged(_)
             | PlayerEvent::ConfigReloadRequested
+            | PlayerEvent::AudioOutputSwitchedToSystemDefault(_)
             | PlayerEvent::RecoverableError(_) => {}
         }
     }

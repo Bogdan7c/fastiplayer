@@ -1,4 +1,5 @@
 use super::*;
+use crate::AudioOutputDeviceRequest;
 
 impl PlayerWorkerRuntime {
     /// Обрабатывает wakeup от основной очереди команд.
@@ -332,7 +333,12 @@ impl PlayerWorkerRuntime {
         update: PlayerRuntimeAudioOutputRecreateUpdate,
         report: &mut PlayerRuntimeApplyReport,
     ) {
-        match self.session.recreate_active_audio_output() {
+        // Пользователь явно выбрал устройство: ошибку нельзя молча подменять default-ом,
+        // она должна вернуться в settings runtime для rollback-а выбора.
+        match self
+            .session
+            .recreate_active_audio_output(AudioOutputDeviceRequest::SelectedOnly)
+        {
             Ok(change) => report.push(PlayerRuntimeApplyGroupReport::accepted(
                 PlayerRuntimeApplyGroup::AudioOutput,
                 update.affected_settings,

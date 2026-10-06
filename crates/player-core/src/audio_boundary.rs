@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use audio_core::{
-    AudioDecoderConfig, AudioDecoderFactory, AudioDecoderHandle, AudioOutputFactory,
-    AudioOutputSpec, AudioTempoProcessorConfig, AudioTempoProcessorFactory,
-    AudioTempoProcessorHandle, PlayerAudioOutput,
+    AudioDecoderConfig, AudioDecoderFactory, AudioDecoderHandle, AudioOutputDeviceRequest,
+    AudioOutputFactory, AudioOutputSpec, AudioTempoProcessorConfig, AudioTempoProcessorFactory,
+    AudioTempoProcessorHandle, CreatedAudioOutput,
 };
 
 /// Factory по умолчанию для tests/manual `PlayerSession::new` без concrete audio crate.
@@ -29,7 +29,11 @@ pub(crate) struct MissingAudioOutputFactory;
 
 impl AudioOutputFactory for MissingAudioOutputFactory {
     /// Явно сообщает, что production output adapter не был установлен composition layer-ом.
-    fn create_output(&self, _spec: AudioOutputSpec) -> anyhow::Result<Box<dyn PlayerAudioOutput>> {
+    fn create_output(
+        &self,
+        _spec: AudioOutputSpec,
+        _device_request: AudioOutputDeviceRequest,
+    ) -> anyhow::Result<CreatedAudioOutput> {
         anyhow::bail!("audio output factory is not installed")
     }
 }

@@ -19,6 +19,7 @@ pub mod decoder;
 pub mod devices;
 pub mod output;
 mod output_adapter;
+mod output_device_fallback;
 
 pub use audio_core::{
     AudioChannelLayout, AudioChannelLayoutError, AudioChannelPosition, AudioDecodeCapability,
