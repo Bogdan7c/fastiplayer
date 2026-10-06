@@ -237,6 +237,9 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
         "web_media_open/runtime.rs",
         "web_media_open/smooth.rs",
         "web_media_open/source_state.rs",
+        // UX сессия 09: классификатор причин читает только `YtDlpTopologyError` (ошибку,
+        // не topology DTO); маркер `YtDlpTopology` совпадает с ним как с подстрокой.
+        "web_open_failure.rs",
     ];
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut rust_sources = Vec::new();

@@ -9,11 +9,14 @@ use std::time::{Duration, Instant};
 
 use crate::embed_recovery::{GENERIC_IMPERSONATE_EXTRACTOR_ARGS, GenericExtractorImpersonation};
 use crate::invocation::{ExtractorProcessInvocation, ExtractorProcessLauncher};
+use crate::process_output::StderrObservation;
 use crate::process_tree::{
     OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
     OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_pipe_reader,
     spawn_owned_process_with_launcher,
 };
+
+use crate::rejection_reason::StderrRejectionClassifier;
 
 use super::limits::{YtDlpTopologyBudgets, YtDlpTopologyError};
 
@@ -40,7 +43,8 @@ const TOPOLOGY_ARGUMENTS_BEFORE_POLICY: [&str; 7] = [
 pub(crate) struct TopologyProcessOutput {
     pub(crate) status: ExitStatus,
     pub(crate) stdout_lines: Vec<Vec<u8>>,
-    pub(crate) stderr_bytes: usize,
+    /// Объём stderr и причина отказа по строкам `ERROR:` (текст не хранится).
+    pub(crate) stderr: StderrObservation,
 }
 
 impl std::fmt::Debug for TopologyProcessOutput {
@@ -49,7 +53,8 @@ impl std::fmt::Debug for TopologyProcessOutput {
             .debug_struct("TopologyProcessOutput")
             .field("status", &self.status)
             .field("stdout_line_count", &self.stdout_lines.len())
-            .field("stderr_bytes", &self.stderr_bytes)
+            .field("stderr_bytes", &self.stderr.observed_bytes)
+            .field("rejection_reason", &self.stderr.rejection_reason)
             .finish()
     }
 }
@@ -124,6 +129,11 @@ pub(crate) fn run_topology_process_with_invocation(
         Err(OwnedProcessSpawnError::Cancellation) => {
             return Err(YtDlpTopologyError::Cancellation);
         }
+        // `NotFound` при запуске = программы нет в PATH (как в single-item пути
+        // `process.rs`); прочие OS-ошибки остаются общим `ProcessFailure`.
+        Err(OwnedProcessSpawnError::Process(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(YtDlpTopologyError::ExecutableNotFound);
+        }
         Err(OwnedProcessSpawnError::Process(error)) => {
             return Err(YtDlpTopologyError::process(error));
         }
@@ -195,7 +205,7 @@ pub(crate) fn run_topology_process_with_invocation(
                     )),
                 };
             }
-            let (stdout_result, stderr_bytes) = drain_topology_readers(
+            let (stdout_result, stderr) = drain_topology_readers(
                 stdout_reader,
                 stderr_reader,
                 operation_started_at,
@@ -205,7 +215,7 @@ pub(crate) fn run_topology_process_with_invocation(
             Ok(TopologyProcessOutput {
                 status,
                 stdout_lines: stdout_result.lines,
-                stderr_bytes,
+                stderr,
             })
         }
         ProcessWaitOutcome::TimedOut => finish_topology_outcome_after_abort(
@@ -254,7 +264,7 @@ fn combine_topology_process_failures(
 fn finish_topology_outcome_after_abort(
     primary: YtDlpTopologyError,
     stdout_reader: OwnedPipeReader<StdoutReadResult>,
-    stderr_reader: OwnedPipeReader<usize>,
+    stderr_reader: OwnedPipeReader<StderrObservation>,
 ) -> Result<TopologyProcessOutput, YtDlpTopologyError> {
     match abort_topology_readers(stdout_reader, stderr_reader) {
         Ok(()) => Err(primary),
@@ -285,9 +295,9 @@ fn spawn_stderr_reader(
     stderr: std::process::ChildStderr,
     budgets: YtDlpTopologyBudgets,
     budget_signal: Arc<AtomicU8>,
-) -> Result<OwnedPipeReader<usize>, YtDlpTopologyError> {
+) -> Result<OwnedPipeReader<StderrObservation>, YtDlpTopologyError> {
     spawn_owned_pipe_reader("yt-dlp-topology-stderr", stderr, move |reader| {
-        count_stderr(reader, budgets.stderr_bytes, budget_signal.as_ref())
+        observe_stderr(reader, budgets.stderr_bytes, budget_signal.as_ref())
     })
     .map_err(YtDlpTopologyError::process)
 }
@@ -377,28 +387,37 @@ fn finish_stdout_line(
     *current_line_overflowed = false;
 }
 
-fn count_stderr<R>(
+/// Считает stderr и потоково распознаёт причину отказа по строкам `ERROR:`.
+///
+/// Разборщик (`crate::rejection_reason`) держит не больше одной обрезанной строки и
+/// сразу стирает её текст, поэтому stderr по-прежнему не хранится и не покидает сервис.
+fn observe_stderr<R>(
     stderr: &mut R,
     stderr_budget: usize,
     budget_signal: &AtomicU8,
-) -> io::Result<usize>
+) -> io::Result<StderrObservation>
 where
     R: Read + ?Sized,
 {
     let mut read_buffer = [0_u8; PIPE_READ_CHUNK_BYTES];
     let mut observed_bytes = 0usize;
+    let mut rejection_classifier = StderrRejectionClassifier::default();
     loop {
         let bytes_read = stderr.read(&mut read_buffer)?;
         if bytes_read == 0 {
             break;
         }
+        rejection_classifier.observe(&read_buffer[..bytes_read]);
         observed_bytes = observed_bytes.saturating_add(bytes_read);
         if observed_bytes > stderr_budget {
             BudgetSignal::StderrBytes.publish(budget_signal);
         }
     }
 
-    Ok(observed_bytes.min(stderr_budget))
+    Ok(StderrObservation {
+        observed_bytes: observed_bytes.min(stderr_budget),
+        rejection_reason: rejection_classifier.finish(),
+    })
 }
 
 fn map_topology_pipe_drain_error(error: OwnedPipeDrainError) -> YtDlpTopologyError {
@@ -422,11 +441,11 @@ fn map_topology_pipe_drain_error(error: OwnedPipeDrainError) -> YtDlpTopologyErr
 /// Bounded drain обоих topology readers после нормального root exit.
 fn drain_topology_readers(
     stdout_reader: OwnedPipeReader<StdoutReadResult>,
-    stderr_reader: OwnedPipeReader<usize>,
+    stderr_reader: OwnedPipeReader<StderrObservation>,
     operation_started_at: Instant,
     operation_timeout: Duration,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<(StdoutReadResult, usize), YtDlpTopologyError> {
+) -> Result<(StdoutReadResult, StderrObservation), YtDlpTopologyError> {
     let drain_started_at = Instant::now();
     let stdout_result = stdout_reader
         .drain(
@@ -458,7 +477,7 @@ fn drain_topology_readers(
 /// Bounded останавливает оба topology reader worker-а после non-success outcome.
 fn abort_topology_readers(
     stdout_reader: OwnedPipeReader<StdoutReadResult>,
-    stderr_reader: OwnedPipeReader<usize>,
+    stderr_reader: OwnedPipeReader<StderrObservation>,
 ) -> Result<(), YtDlpTopologyError> {
     let stdout_result = stdout_reader.abort().map_err(YtDlpTopologyError::process);
     let stderr_result = stderr_reader.abort().map_err(YtDlpTopologyError::process);
@@ -570,6 +589,10 @@ impl BudgetSignal {
 }
 
 #[cfg(test)]
+#[path = "process/stderr_reason_tests.rs"]
+mod stderr_reason_tests;
+
+#[cfg(test)]
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -613,7 +636,7 @@ printf '%s\n' \
 
         assert!(output.status.success());
         assert_eq!(output.stdout_lines.len(), 2);
-        assert_eq!(output.stderr_bytes, 0);
+        assert_eq!(output.stderr.observed_bytes, 0);
         remove_script(script);
     }
 
@@ -698,7 +721,7 @@ printf '%s\n' '{"_type":"video","id":"ftp-audio"}'
         )
         .expect("process layer возвращает status вызывающему");
         assert!(!output.status.success());
-        assert_eq!(output.stderr_bytes, 20);
+        assert_eq!(output.stderr.observed_bytes, 20);
         assert!(!format!("{output:?}").contains("very-secret"));
         remove_script(nonzero_script);
 

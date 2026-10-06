@@ -8,10 +8,12 @@ use std::thread::{self, JoinHandle};
 use fastiplayer_config::YtDlpConfig;
 
 use crate::app_wake::AppWakePort;
+use crate::media_open::WebOpenFailureReason;
 use crate::process_shutdown::{
     FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_thread_until,
 };
 use crate::url_topology_drafts::map_yt_dlp_topology_to_playlist_drafts;
+use crate::web_open_message::{url_import_failure_message, url_import_internal_failure_message};
 
 use super::PlaylistRuntime;
 use super::import_transaction::{
@@ -30,12 +32,52 @@ pub(super) enum PlaylistUrlImportStartError {
     WorkerUnavailable,
 }
 
+/// Почему ссылка не превратилась в строки очереди (UX сессия 09).
+///
+/// Три исхода не сливаются: причина со стороны сайта/yt-dlp показывается пользователю,
+/// отмена молчит, внутренний сбой приложения не выдаётся за отказ сайта.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlaylistUrlImportFailure {
+    /// yt-dlp или сайт отказали; причина классифицирована `media-source-open`.
+    Rejected(WebOpenFailureReason),
+    /// Извлечение отменено (новый URL, кнопка «Отменить», shutdown) — не ошибка.
+    Cancelled,
+    /// Сбой внутри приложения: panic resolver-а, poisoned state, невалидный root locator.
+    Internal,
+}
+
 /// Terminal result, который UI owner может применить только при exact generation match.
 pub(super) enum PlaylistUrlImportCompletion {
     /// Topology успешно преобразована в source-neutral S08 draft.
     Resolved(PlaylistImportDraft),
-    /// Extraction либо mapping завершились безопасной общей ошибкой.
-    Failed,
+    /// Extraction либо mapping завершились типизированной ошибкой.
+    Failed(PlaylistUrlImportFailure),
+}
+
+/// Завершённый импорт вместе с доменом ссылки, которым подписывается текст ошибки.
+pub(super) struct FinishedPlaylistUrlImport {
+    /// Результат exact latest generation.
+    completion: PlaylistUrlImportCompletion,
+    /// Безопасный домен («youtube.com»); `None` — у ссылки нет домена.
+    display_host: Option<Arc<str>>,
+}
+
+/// Read-only факт «сейчас получаем структуру ссылки» для индикатора в toolbar.
+///
+/// Только домен: путь, query и токены ссылки сюда не попадают.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlaylistUrlImportProgress {
+    /// Безопасный домен («youtube.com»); `None` — у ссылки нет домена.
+    pub(crate) display_host: Option<Arc<str>>,
+}
+
+/// Итог явной отмены пользователем: отличает «отменили» от «нечего было отменять».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistUrlImportCancelOutcome {
+    /// Идущее извлечение остановлено, его результат не попадёт в очередь.
+    Cancelled,
+    /// Активного извлечения не было (уже завершилось или не запускалось).
+    NothingActive,
 }
 
 /// Service boundary скрывает process и mapping детали от lifecycle owner-а.
@@ -47,7 +89,7 @@ trait PlaylistUrlTopologyResolver: Send + Sync {
         yt_dlp_config: &YtDlpConfig,
         sensitive_durable_locator_count: usize,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<PlaylistImportDraft, ()>;
+    ) -> Result<PlaylistImportDraft, PlaylistUrlImportFailure>;
 }
 
 /// Production resolver переиспользует S15 extraction и чистый S16 mapper.
@@ -60,7 +102,7 @@ impl PlaylistUrlTopologyResolver for ServicePlaylistUrlTopologyResolver {
         yt_dlp_config: &YtDlpConfig,
         sensitive_durable_locator_count: usize,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<PlaylistImportDraft, ()> {
+    ) -> Result<PlaylistImportDraft, PlaylistUrlImportFailure> {
         // Service владеет процессом, bounded JSON contract и cooperative cancellation.
         let topology = service_ytdlp::YtDlpExtractorAdapter::default()
             .extract_topology_with_budgets(
@@ -70,9 +112,14 @@ impl PlaylistUrlTopologyResolver for ServicePlaylistUrlTopologyResolver {
                 web_media_core::ExtractorInvocationReason::CollectionTopologyResolution,
                 is_cancelled,
             )
-            .map_err(|_| ())?;
+            .map_err(|error| topology_extraction_failure(&error))?;
         // App mapper сохраняет exact root provenance и service-owned child reopen identity.
-        let preview = map_yt_dlp_topology_to_playlist_drafts(locator, &topology).map_err(|_| ())?;
+        let preview =
+            map_yt_dlp_topology_to_playlist_drafts(locator, &topology).map_err(|error| {
+                // Root locator уже прошёл classification: отказ здесь — дефект приложения.
+                tracing::error!(?error, "URL topology не превратилась в черновик очереди");
+                PlaylistUrlImportFailure::Internal
+            })?;
         // Source-neutral S08 preview пока показывает topology diagnostics общей категорией.
         let mut issues = preview
             .issues()
@@ -91,6 +138,22 @@ impl PlaylistUrlTopologyResolver for ServicePlaylistUrlTopologyResolver {
             None,
             sensitive_durable_locator_count,
         ))
+    }
+}
+
+/// Переводит ошибку yt-dlp topology в причину и пишет диагностику в лог.
+///
+/// Display ошибки сервиса не содержит URL, stderr и argv (`service-ytdlp`), поэтому его
+/// можно логировать целиком; пользователю уходит только типизированная причина.
+fn topology_extraction_failure(
+    error: &service_ytdlp::YtDlpTopologyError,
+) -> PlaylistUrlImportFailure {
+    match media_source_open::web_open_failure::classify_yt_dlp_topology_error(error) {
+        Some(reason) => {
+            tracing::warn!(?reason, %error, "yt-dlp не получил структуру URL");
+            PlaylistUrlImportFailure::Rejected(reason)
+        }
+        None => PlaylistUrlImportFailure::Cancelled,
     }
 }
 
@@ -127,12 +190,21 @@ impl PlaylistUrlImportWorkerState {
     }
 }
 
+/// Последний принятый request с точки зрения UI owner-а.
+struct ActivePlaylistUrlImport {
+    /// Exact generation, результат которой ещё ждём.
+    generation: u64,
+    /// Безопасный домен для индикатора и текста ошибки.
+    display_host: Option<Arc<str>>,
+}
+
 /// Process-lifetime owner одного worker-а и exact latest generation fence.
 pub(super) struct PlaylistUrlImportOwner {
     shared_state: Arc<Mutex<PlaylistUrlImportWorkerState>>,
     current_generation: Arc<AtomicU64>,
     next_generation: Option<u64>,
-    latest_generation: Option<u64>,
+    /// `Some` от submit до drain/cancel: ровно то время, пока виден индикатор.
+    active_request: Option<ActivePlaylistUrlImport>,
     resolver: Arc<dyn PlaylistUrlTopologyResolver>,
     worker: Option<JoinHandle<()>>,
     state_poisoned: bool,
@@ -165,7 +237,7 @@ impl PlaylistUrlImportOwner {
             shared_state,
             current_generation,
             next_generation: Some(1),
-            latest_generation: None,
+            active_request: None,
             resolver,
             worker,
             state_poisoned: false,
@@ -178,6 +250,7 @@ impl PlaylistUrlImportOwner {
         locator: service_ytdlp::YtDlpMediaLocator,
         yt_dlp_config: YtDlpConfig,
         sensitive_durable_locator_count: usize,
+        display_host: Option<String>,
     ) -> Result<(), PlaylistUrlImportStartError> {
         let Some(worker) = self.worker.as_ref() else {
             return Err(PlaylistUrlImportStartError::WorkerUnavailable);
@@ -203,7 +276,10 @@ impl PlaylistUrlImportOwner {
         });
         // Новый intent атомарно делает даже уже опубликованный старый completion недействительным.
         shared_state.completion = None;
-        self.latest_generation = Some(generation);
+        self.active_request = Some(ActivePlaylistUrlImport {
+            generation,
+            display_host: display_host.map(Arc::from),
+        });
         self.next_generation = generation.checked_add(1);
         drop(shared_state);
         worker.thread().unpark();
@@ -211,39 +287,70 @@ impl PlaylistUrlImportOwner {
     }
 
     /// Отменяет running/pending request и удаляет недоставленный stale completion.
-    pub(super) fn cancel_active(&mut self) {
+    ///
+    /// Running process видит смену generation через `is_cancelled` и останавливается
+    /// сервисом; его результат уже не пройдёт generation fence.
+    pub(super) fn cancel_active(&mut self) -> PlaylistUrlImportCancelOutcome {
         self.current_generation
             .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
-        self.latest_generation = None;
+        let outcome = match self.active_request.take() {
+            Some(_) => PlaylistUrlImportCancelOutcome::Cancelled,
+            None => PlaylistUrlImportCancelOutcome::NothingActive,
+        };
         let Ok(mut shared_state) = lock_worker_state(&self.shared_state) else {
             self.state_poisoned = true;
             tracing::error!("URL topology owner обнаружил poisoned worker state при отмене");
-            return;
+            return outcome;
         };
         shared_state.pending_request = None;
         shared_state.completion = None;
+        outcome
+    }
+
+    /// Индикатор «получаем структуру ссылки»: есть принятый, ещё не доставленный request.
+    pub(super) fn progress(&self) -> Option<PlaylistUrlImportProgress> {
+        self.active_request
+            .as_ref()
+            .map(|active| PlaylistUrlImportProgress {
+                display_host: active.display_host.clone(),
+            })
     }
 
     /// Неблокирующе забирает только exact latest terminal result.
-    pub(super) fn drain(&mut self) -> Option<PlaylistUrlImportCompletion> {
+    pub(super) fn drain(&mut self) -> Option<FinishedPlaylistUrlImport> {
         let Ok(mut shared_state) = lock_worker_state(&self.shared_state) else {
             self.state_poisoned = true;
-            self.latest_generation = None;
+            let display_host = self
+                .active_request
+                .take()
+                .and_then(|active| active.display_host);
             self.current_generation
                 .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
             tracing::error!("URL topology owner обнаружил poisoned worker state при drain");
-            return Some(PlaylistUrlImportCompletion::Failed);
+            return Some(FinishedPlaylistUrlImport {
+                completion: PlaylistUrlImportCompletion::Failed(PlaylistUrlImportFailure::Internal),
+                display_host,
+            });
         };
         let tagged = shared_state.completion.take()?;
-        if self.latest_generation != Some(tagged.generation)
-            || self.current_generation.load(Ordering::Acquire) != tagged.generation
+        let is_exact_latest = self
+            .active_request
+            .as_ref()
+            .is_some_and(|active| active.generation == tagged.generation);
+        if !is_exact_latest || self.current_generation.load(Ordering::Acquire) != tagged.generation
         {
             return None;
         }
-        self.latest_generation = None;
+        let display_host = self
+            .active_request
+            .take()
+            .and_then(|active| active.display_host);
         self.current_generation
             .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
-        Some(tagged.completion)
+        Some(FinishedPlaylistUrlImport {
+            completion: tagged.completion,
+            display_host,
+        })
     }
 
     /// Закрывает admission, будит idle worker и join-ит его в общем shutdown budget.
@@ -254,7 +361,7 @@ impl PlaylistUrlImportOwner {
         let Some(worker) = self.worker.as_ref() else {
             return ProcessOwnerShutdownOutcome::AlreadyCompleted;
         };
-        self.latest_generation = None;
+        self.active_request = None;
         self.current_generation
             .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
         match lock_worker_state(&self.shared_state) {
@@ -304,19 +411,44 @@ impl PlaylistRuntime {
         locator: service_ytdlp::YtDlpMediaLocator,
         yt_dlp_config: YtDlpConfig,
         sensitive_durable_locator_count: usize,
+        display_host: Option<String>,
     ) -> Result<(), PlaylistUrlImportStartError> {
-        self.url_import
-            .submit(locator, yt_dlp_config, sensitive_durable_locator_count)
+        self.url_import.submit(
+            locator,
+            yt_dlp_config,
+            sensitive_durable_locator_count,
+            display_host,
+        )
     }
 
     /// Общий supersede boundary cooperative-cancel-ит process и stale terminal slot.
     pub(in crate::playlist_runtime) fn cancel_playlist_url_import(&mut self) {
-        self.url_import.cancel_active();
+        // Supersede-у неважно, было ли что отменять: новый intent заменяет любой старый.
+        let _superseded = self.url_import.cancel_active();
+    }
+
+    /// Кнопка «Отменить» у индикатора: останавливает только получение структуры ссылки.
+    ///
+    /// Очередь, текущий трек, player, staged preview и черновик URL-формы не меняются;
+    /// отмена молчит — это не ошибка для пользователя.
+    pub(crate) fn cancel_playlist_url_import_by_user(&mut self) -> PlaylistUrlImportCancelOutcome {
+        let outcome = self.url_import.cancel_active();
+        tracing::debug!(?outcome, "Пользователь отменил получение структуры URL");
+        outcome
+    }
+
+    /// Read-only индикатор для toolbar: идёт ли получение структуры ссылки.
+    pub(crate) fn playlist_url_import_progress(&self) -> Option<PlaylistUrlImportProgress> {
+        self.url_import.progress()
     }
 
     /// UI-thread drain передаёт exact latest result единственной S08 transaction.
     pub(in crate::playlist_runtime) fn drain_playlist_url_import_job(&mut self) -> bool {
-        let Some(completion) = self.url_import.drain() else {
+        let Some(FinishedPlaylistUrlImport {
+            completion,
+            display_host,
+        }) = self.url_import.drain()
+        else {
             return false;
         };
         match completion {
@@ -330,11 +462,28 @@ impl PlaylistRuntime {
                     );
                 }
             }
-            PlaylistUrlImportCompletion::Failed => {
-                self.set_playlist_safe_feedback("Не удалось получить структуру media URL");
+            PlaylistUrlImportCompletion::Failed(failure) => {
+                self.report_playlist_url_import_failure(failure, display_host.as_deref());
             }
         }
         true
+    }
+
+    /// Показывает причину отказа в области проблем плейлиста; отмена молчит.
+    fn report_playlist_url_import_failure(
+        &mut self,
+        failure: PlaylistUrlImportFailure,
+        display_host: Option<&str>,
+    ) {
+        match failure {
+            PlaylistUrlImportFailure::Rejected(reason) => {
+                self.set_playlist_safe_feedback(url_import_failure_message(display_host, reason));
+            }
+            PlaylistUrlImportFailure::Internal => {
+                self.set_playlist_safe_feedback(url_import_internal_failure_message(display_host));
+            }
+            PlaylistUrlImportFailure::Cancelled => {}
+        }
     }
 }
 
@@ -389,10 +538,10 @@ fn url_import_worker_loop(
         }));
         let completion = match resolution {
             Ok(Ok(draft)) => PlaylistUrlImportCompletion::Resolved(draft),
-            Ok(Err(())) => PlaylistUrlImportCompletion::Failed,
+            Ok(Err(failure)) => PlaylistUrlImportCompletion::Failed(failure),
             Err(_) => {
                 tracing::error!("URL topology resolver завершился panic без раскрытия locator-а");
-                PlaylistUrlImportCompletion::Failed
+                PlaylistUrlImportCompletion::Failed(PlaylistUrlImportFailure::Internal)
             }
         };
         let Ok(mut worker_state) = lock_worker_state(&shared_state) else {

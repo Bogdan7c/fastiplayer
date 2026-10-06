@@ -8,11 +8,11 @@ use std::time::Duration;
 use anyhow::Context;
 use demux_api::DemuxOpenError;
 use fastiplayer_config::{NetworkConfig, PlayerDemuxConfig};
-use service_ytdlp::{YtDlpRejectionReason, YtDlpServiceError};
+use service_ytdlp::{YtDlpRejectionReason, YtDlpServiceError, YtDlpTopologyError};
 use source_core::CancellationToken;
 use web_media_transport_api::{AuthenticationFailure, TransportFailure, TransportOpenError};
 
-use super::{WebOpenFailureReason, classify_web_open_failure};
+use super::{WebOpenFailureReason, classify_web_open_failure, classify_yt_dlp_topology_error};
 use crate::web_media_open::ContentProbeRejection;
 
 /// Оборачивает типизированную ошибку так же, как production: `anyhow` + слои контекста.
@@ -456,5 +456,119 @@ fn yt_dlp_private_video_rejection_reaches_user_reason() {
     assert_eq!(
         yt_dlp_resolve_reason(script_directory.path()),
         WebOpenFailureReason::SitePrivateMedia
+    );
+}
+
+/// Ошибки получения списка видео (topology) дают ту же причину, что и открытие видео,
+/// а отмена — не причина (UX сессия 09).
+#[test]
+fn yt_dlp_topology_errors_map_to_user_reasons_and_cancellation_is_not_a_failure() {
+    let cases = [
+        (
+            YtDlpTopologyError::ExecutableNotFound,
+            WebOpenFailureReason::ExtractorNotInstalled,
+        ),
+        (
+            YtDlpTopologyError::AdapterDisabled,
+            WebOpenFailureReason::ExtractorDisabled,
+        ),
+        (
+            YtDlpTopologyError::Timeout,
+            WebOpenFailureReason::ExtractorTimedOut,
+        ),
+        (
+            YtDlpTopologyError::ExtractorRejection {
+                stderr_bytes: 64,
+                reason: YtDlpRejectionReason::PrivateMedia,
+            },
+            WebOpenFailureReason::SitePrivateMedia,
+        ),
+        (
+            YtDlpTopologyError::ExtractorRejection {
+                stderr_bytes: 0,
+                reason: YtDlpRejectionReason::Unclassified,
+            },
+            WebOpenFailureReason::SiteRejected,
+        ),
+        (
+            YtDlpTopologyError::EntryBudgetExceeded,
+            WebOpenFailureReason::CollectionTooLarge,
+        ),
+        (
+            YtDlpTopologyError::StdoutBudgetExceeded,
+            WebOpenFailureReason::ExtractorFailed,
+        ),
+    ];
+    for (error, expected) in cases {
+        assert_eq!(classify_yt_dlp_topology_error(&error), Some(expected));
+        // Та же причина находится и в цепочке anyhow с контекстом.
+        assert_eq!(classify_web_open_failure(&wrapped(error)), expected);
+    }
+    assert_eq!(
+        classify_yt_dlp_topology_error(&YtDlpTopologyError::Cancellation),
+        None
+    );
+}
+
+/// Прогоняет настоящее получение списка видео через adapter с заданным `PATH`.
+#[cfg(unix)]
+fn yt_dlp_topology_reason(search_directory: &std::path::Path) -> Option<WebOpenFailureReason> {
+    let adapter = service_ytdlp::YtDlpExtractorAdapter::with_process_launcher(Arc::new(
+        PathOverrideLauncher {
+            search_directory: search_directory.to_path_buf(),
+        },
+    ));
+    let locator = service_ytdlp::parse_yt_dlp_media_locator(
+        "https://video.example.test/playlist?list=private&token=hidden",
+    )
+    .expect("тестовый locator валиден");
+    let topology_error = adapter
+        .extract_topology_with_budgets(
+            &locator,
+            &fastiplayer_config::YtDlpConfig {
+                enabled: true,
+                resolve_timeout_ms: 5_000,
+                ..fastiplayer_config::YtDlpConfig::default()
+            },
+            service_ytdlp::YtDlpTopologyBudgets::default(),
+            web_media_core::ExtractorInvocationReason::CollectionTopologyResolution,
+            &|| false,
+        )
+        .expect_err("topology без рабочего yt-dlp обязана упасть");
+    classify_yt_dlp_topology_error(&topology_error)
+}
+
+/// yt-dlp нет в PATH → список видео не получен с причиной «не найдена программа».
+#[cfg(unix)]
+#[test]
+fn yt_dlp_topology_missing_from_path_is_extractor_not_installed() {
+    let empty_directory = tempfile::TempDir::new().expect("пустой каталог PATH");
+
+    assert_eq!(
+        yt_dlp_topology_reason(empty_directory.path()),
+        Some(WebOpenFailureReason::ExtractorNotInstalled)
+    );
+}
+
+/// Подставной yt-dlp отказывает с меткой «Private video» → причина доходит через
+/// topology-процесс, stderr reader и typed ошибку сервиса.
+#[cfg(unix)]
+#[test]
+fn yt_dlp_topology_private_rejection_reaches_user_reason() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_directory = tempfile::TempDir::new().expect("каталог подставного yt-dlp");
+    let executable = script_directory.path().join("yt-dlp");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'WARNING: [youtube:tab] abc: some entries are unavailable\\n' >&2\nprintf 'ERROR: [youtube] abc: Private video. Sign in if you have access\\n' >&2\nexit 1\n",
+    )
+    .expect("записать подставной yt-dlp");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("сделать подставной yt-dlp исполняемым");
+
+    assert_eq!(
+        yt_dlp_topology_reason(script_directory.path()),
+        Some(WebOpenFailureReason::SitePrivateMedia)
     );
 }

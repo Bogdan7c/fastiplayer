@@ -3,6 +3,7 @@
 mod export_menu;
 mod icon_bar;
 mod import_menu;
+mod url_import_progress;
 
 use playlist_core::PlaylistSortKey;
 
@@ -29,6 +30,11 @@ pub(super) fn show(
 ) {
     icon_bar::show(ui, model, style, output);
 
+    // Индикатор живёт под toolbar, а не в области проблем: та закрывает строки через
+    // 10 с, а yt-dlp может работать дольше (решение владельца, UX сессия 09).
+    if let Some(progress) = &model.url_import_progress {
+        url_import_progress::show(ui, progress, output);
+    }
     if model.url_editor_open {
         show_url_editor(ui, model, output);
     }

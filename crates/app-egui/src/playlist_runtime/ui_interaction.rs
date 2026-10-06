@@ -468,6 +468,7 @@ pub(crate) struct PlaylistInteractionModel {
     pub(crate) import_dialog_open: bool,
     pub(crate) export_dialog_open: bool,
     pub(crate) active_operation: Option<PlaylistActiveOperation>,
+    pub(crate) url_import_progress: Option<super::PlaylistUrlImportProgress>,
     pub(crate) manual_add_warning: Option<PlaylistManualAddWarning>,
     pub(crate) safe_feedback: Option<PlaylistSafeFeedback>,
     pub(crate) go_current_target: Option<PlaylistGoCurrentTarget>,
@@ -493,6 +494,7 @@ impl Default for PlaylistInteractionModel {
             import_dialog_open: false,
             export_dialog_open: false,
             active_operation: None,
+            url_import_progress: None,
             manual_add_warning: None,
             safe_feedback: None,
             go_current_target: None,
@@ -558,6 +560,7 @@ impl PlaylistRuntime {
             import_dialog_open: self.import_io.is_open(),
             export_dialog_open: self.export_io.is_open(),
             active_operation,
+            url_import_progress: self.playlist_url_import_progress(),
             manual_add_warning,
             safe_feedback: self.ui_interaction.safe_feedback().cloned(),
             go_current_target,
@@ -615,27 +618,7 @@ impl PlaylistRuntime {
                 .url_draft_mut()
                 .set_safe_error(PlaylistUrlDraftError::new("Плейлист заполнен")),
             Err(error) => {
-                let safe_message: Arc<str> = match error {
-                    super::UrlAppendValidationError::NotUrl => {
-                        "Введите корректный http(s) URL".into()
-                    }
-                    super::UrlAppendValidationError::Unsupported { safe_error } => {
-                        Arc::from(safe_error)
-                    }
-                    super::UrlAppendValidationError::RuntimeShuttingDown => {
-                        "Приложение завершает работу".into()
-                    }
-                    super::UrlAppendValidationError::LoadDecisionPending => {
-                        "Дождитесь загрузки плейлиста".into()
-                    }
-                    super::UrlAppendValidationError::LocatorMapping
-                    | super::UrlAppendValidationError::ConfirmationIdentityExhausted
-                    | super::UrlAppendValidationError::TopologyGenerationExhausted
-                    | super::UrlAppendValidationError::TopologyWorkerUnavailable
-                    | super::UrlAppendValidationError::CommitRejected => {
-                        "Не удалось добавить URL".into()
-                    }
-                };
+                let safe_message = super::url_draft_message::url_append_error_message(error);
                 self.ui_interaction
                     .url_draft_mut()
                     .set_safe_error(PlaylistUrlDraftError::new(safe_message));

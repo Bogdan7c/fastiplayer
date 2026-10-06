@@ -142,6 +142,8 @@ pub(crate) enum PlaylistAction {
     UpdateUrlDraft(PlaylistUrlDraftText),
     SubmitUrl,
     CancelUrlEditor,
+    /// Останавливает идущее получение структуры ссылки (кнопка «Отменить» у индикатора).
+    CancelUrlImport,
     Clear,
     Sort(SortCanonicalQueue),
     CancelNavigation,

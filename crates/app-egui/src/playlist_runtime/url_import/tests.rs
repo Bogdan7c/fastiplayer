@@ -105,9 +105,9 @@ impl PlaylistUrlTopologyResolver for ImmediateCompoundResolver {
         _yt_dlp_config: &YtDlpConfig,
         sensitive_durable_locator_count: usize,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<PlaylistImportDraft, ()> {
+    ) -> Result<PlaylistImportDraft, PlaylistUrlImportFailure> {
         if is_cancelled() {
-            Err(())
+            Err(PlaylistUrlImportFailure::Cancelled)
         } else {
             Ok(compound_draft(sensitive_durable_locator_count))
         }
@@ -124,9 +124,9 @@ impl PlaylistUrlTopologyResolver for ImmediateSingleResolver {
         _yt_dlp_config: &YtDlpConfig,
         sensitive_durable_locator_count: usize,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<PlaylistImportDraft, ()> {
+    ) -> Result<PlaylistImportDraft, PlaylistUrlImportFailure> {
         if is_cancelled() {
-            return Err(());
+            return Err(PlaylistUrlImportFailure::Cancelled);
         }
         Ok(PlaylistImportDraft::new(
             vec![PlaylistImportEntryDraft::Single(part(
@@ -154,14 +154,14 @@ impl PlaylistUrlTopologyResolver for RapidSubmitResolver {
         _yt_dlp_config: &YtDlpConfig,
         sensitive_durable_locator_count: usize,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<PlaylistImportDraft, ()> {
+    ) -> Result<PlaylistImportDraft, PlaylistUrlImportFailure> {
         if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
             self.first_started.send(()).expect("test receiver alive");
             while !is_cancelled() {
                 thread::yield_now();
             }
             self.first_cancelled.store(true, Ordering::Release);
-            return Err(());
+            return Err(PlaylistUrlImportFailure::Cancelled);
         }
         Ok(compound_draft(sensitive_durable_locator_count))
     }
@@ -180,13 +180,13 @@ impl PlaylistUrlTopologyResolver for ReleasedCompoundResolver {
         _yt_dlp_config: &YtDlpConfig,
         sensitive_durable_locator_count: usize,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<PlaylistImportDraft, ()> {
+    ) -> Result<PlaylistImportDraft, PlaylistUrlImportFailure> {
         self.started.send(()).expect("test receiver alive");
         while !self.release.load(Ordering::Acquire) && !is_cancelled() {
             thread::yield_now();
         }
         if is_cancelled() {
-            Err(())
+            Err(PlaylistUrlImportFailure::Cancelled)
         } else {
             Ok(compound_draft(sensitive_durable_locator_count))
         }
@@ -210,13 +210,13 @@ fn rapid_submit_cancels_running_and_delivers_only_exact_latest_generation() {
     };
 
     owner
-        .submit(locator("first"), config.clone(), 0)
+        .submit(locator("first"), config.clone(), 0, None)
         .expect("first request");
     started_receiver
         .recv_timeout(Duration::from_secs(1))
         .expect("first resolver started");
     owner
-        .submit(locator("latest"), config, 1)
+        .submit(locator("latest"), config, 1, None)
         .expect("latest request replaces running");
 
     let mut completion = None;
@@ -225,7 +225,8 @@ fn rapid_submit_cancels_running_and_delivers_only_exact_latest_generation() {
         completion.is_some()
     });
     assert!(first_cancelled.load(Ordering::Acquire));
-    let PlaylistUrlImportCompletion::Resolved(draft) = completion.expect("latest completion")
+    let PlaylistUrlImportCompletion::Resolved(draft) =
+        completion.expect("latest completion").completion
     else {
         panic!("latest request должен завершиться успешно");
     };
@@ -249,7 +250,7 @@ fn cancel_and_shutdown_are_bounded_and_never_publish_stale_completion() {
     });
     let mut owner = PlaylistUrlImportOwner::with_resolver(wake_port, resolver);
     owner
-        .submit(locator("cancelled"), YtDlpConfig::default(), 0)
+        .submit(locator("cancelled"), YtDlpConfig::default(), 0, None)
         .expect("request");
     started_receiver
         .recv_timeout(Duration::from_secs(1))
@@ -278,7 +279,7 @@ fn poisoned_worker_state_fails_closed_and_shutdown_reports_terminal_failure() {
     assert!(poisoner.join().is_err());
 
     assert_eq!(
-        owner.submit(locator("poisoned"), YtDlpConfig::default(), 0),
+        owner.submit(locator("poisoned"), YtDlpConfig::default(), 0, None),
         Err(PlaylistUrlImportStartError::WorkerUnavailable)
     );
     assert!(matches!(
@@ -575,3 +576,7 @@ fn whole_group_capacity_preview_never_commits_a_partial_compound() {
         playlist_core::MAX_PLAYLIST_ITEMS - 1
     );
 }
+
+/// UX сессия 09: индикатор, отмена пользователем, причины отказа, trim и подсказка схемы.
+#[path = "tests/progress.rs"]
+mod progress;

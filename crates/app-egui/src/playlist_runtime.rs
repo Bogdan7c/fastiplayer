@@ -53,6 +53,7 @@ mod transport_execution_audit_regressions;
 mod transport_guard_regressions;
 mod transport_ui;
 mod ui_interaction;
+mod url_draft_message;
 mod url_import;
 #[cfg(test)]
 pub(crate) use import_transaction::{
@@ -85,6 +86,7 @@ pub(crate) use ui_interaction::{
     PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistManualAddEventId,
     PlaylistManualAddWarning, PlaylistManualAddWarningKind, PlaylistSafeFeedbackGeneration,
 };
+pub(crate) use url_import::{PlaylistUrlImportCancelOutcome, PlaylistUrlImportProgress};
 mod startup;
 mod startup_import;
 pub(crate) use startup_import::StartupPlaylistImportTerminal;

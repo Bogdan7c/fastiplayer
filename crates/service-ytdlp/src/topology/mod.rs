@@ -167,7 +167,8 @@ fn topology_from_process_output(
 ) -> Result<YtDlpTopology, YtDlpTopologyError> {
     if !process_output.status.success() {
         return Err(YtDlpTopologyError::ExtractorRejection {
-            stderr_bytes: process_output.stderr_bytes,
+            stderr_bytes: process_output.stderr.observed_bytes,
+            reason: process_output.stderr.rejection_reason,
         });
     }
 
@@ -185,6 +186,8 @@ mod tests {
 
     use super::*;
     use crate::parse_yt_dlp_media_locator;
+    use crate::process_output::StderrObservation;
+    use crate::rejection_reason::YtDlpRejectionReason;
 
     #[test]
     fn disabled_adapter_and_invalid_budgets_fail_before_process_spawn() {
@@ -226,21 +229,31 @@ mod tests {
             TopologyProcessOutput {
                 status: std::process::ExitStatus::from_raw(7 << 8),
                 stdout_lines: Vec::new(),
-                stderr_bytes: 42,
+                stderr: StderrObservation {
+                    observed_bytes: 42,
+                    rejection_reason: YtDlpRejectionReason::PrivateMedia,
+                },
             },
             YtDlpTopologyBudgets::default(),
         )
         .expect_err("nonzero status должен быть extractor rejection");
+        // Причина из stderr доходит до ошибки, а не теряется на non-zero exit.
         assert!(matches!(
             nonzero_error,
-            YtDlpTopologyError::ExtractorRejection { stderr_bytes: 42 }
+            YtDlpTopologyError::ExtractorRejection {
+                stderr_bytes: 42,
+                reason: YtDlpRejectionReason::PrivateMedia,
+            }
         ));
 
         let malformed_error = topology_from_process_output(
             TopologyProcessOutput {
                 status: std::process::ExitStatus::from_raw(0),
                 stdout_lines: vec![b"{malformed".to_vec()],
-                stderr_bytes: 0,
+                stderr: StderrObservation {
+                    observed_bytes: 0,
+                    rejection_reason: YtDlpRejectionReason::Unclassified,
+                },
             },
             YtDlpTopologyBudgets::default(),
         )

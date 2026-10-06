@@ -31,6 +31,30 @@ pub(crate) fn web_open_failure_message(
     }
 }
 
+/// Отказ кнопки «Добавить URL» плейлиста (UX сессия 09): «Не удалось добавить ссылку
+/// (youtube.com): видео приватное».
+///
+/// Фраза причины — та же таблица, что и для открытия ссылки; отличается только начало,
+/// потому что пользователь не открывал видео, а добавлял ссылку в очередь.
+pub(crate) fn url_import_failure_message(
+    display_host: Option<&str>,
+    reason: WebOpenFailureReason,
+) -> String {
+    let phrase = web_open_failure_phrase(reason);
+    match display_host {
+        Some(host) => format!("Не удалось добавить ссылку ({host}): {phrase}"),
+        None => format!("Не удалось добавить ссылку: {phrase}"),
+    }
+}
+
+/// Внутренний сбой приложения при добавлении ссылки (не причина со стороны сайта).
+pub(crate) fn url_import_internal_failure_message(display_host: Option<&str>) -> String {
+    match display_host {
+        Some(host) => format!("Не удалось добавить ссылку ({host}) — попробуйте ещё раз"),
+        None => "Не удалось добавить ссылку — попробуйте ещё раз".to_owned(),
+    }
+}
+
 /// Человеческая формулировка web-причины, со строчной буквы (идёт после двоеточия).
 ///
 /// Таблица утверждена владельцем в сессии 08. Где пользователь может что-то сделать,
@@ -60,6 +84,9 @@ pub(crate) const fn web_open_failure_phrase(reason: WebOpenFailureReason) -> &'s
             "сайт не отдал видео: возможно, оно приватное, удалено, требует входа или недоступно в вашем регионе"
         }
         WebOpenFailureReason::CollectionLink => "ссылка ведёт на подборку, а не на одно видео",
+        WebOpenFailureReason::CollectionTooLarge => {
+            "в подборке слишком много видео, чтобы добавить её целиком"
+        }
         WebOpenFailureReason::NoPlayableFormat => {
             "у видео нет формата, который плеер умеет воспроизводить"
         }

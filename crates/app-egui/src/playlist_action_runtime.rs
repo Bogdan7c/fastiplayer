@@ -6,10 +6,10 @@ use render_wgpu_shell::Renderer;
 use winit::window::Window;
 
 use crate::playlist_runtime::{
-    ControllerMoveItemsOutcome, PlaylistRuntime, RemovalUndoOutcome,
-    RuntimeCompoundHeaderPlayOutcome, RuntimeCompoundPartPlayOutcome, RuntimeMoveItemsOutcome,
-    RuntimeRemovalOutcome, RuntimeToggleCompoundDisclosureOutcome, RuntimeUpdateSelectionOutcome,
-    ToggleCompoundDisclosureOutcome, UpdateSelectionOutcome,
+    ControllerMoveItemsOutcome, PlaylistRuntime, PlaylistUrlImportCancelOutcome,
+    RemovalUndoOutcome, RuntimeCompoundHeaderPlayOutcome, RuntimeCompoundPartPlayOutcome,
+    RuntimeMoveItemsOutcome, RuntimeRemovalOutcome, RuntimeToggleCompoundDisclosureOutcome,
+    RuntimeUpdateSelectionOutcome, ToggleCompoundDisclosureOutcome, UpdateSelectionOutcome,
 };
 use crate::state::AppState;
 use crate::ui::playlist::PlaylistAction;
@@ -183,6 +183,13 @@ pub(crate) fn apply_playlist_actions(
             }
             PlaylistAction::CancelUrlEditor => {
                 changed |= runtime.cancel_playlist_url_editor();
+            }
+            PlaylistAction::CancelUrlImport => {
+                // Перерисовка нужна, только если индикатор действительно исчез.
+                changed |= matches!(
+                    runtime.cancel_playlist_url_import_by_user(),
+                    PlaylistUrlImportCancelOutcome::Cancelled
+                );
             }
             PlaylistAction::Clear => {
                 if runtime.playlist_interaction_model().item_count == 0 {

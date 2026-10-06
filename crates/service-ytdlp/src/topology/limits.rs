@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 use crate::YtDlpLocatorParseError;
+use crate::rejection_reason::YtDlpRejectionReason;
 
 /// Максимальный stdout одного topology extraction по умолчанию.
 pub const DEFAULT_TOPOLOGY_STDOUT_BYTES: usize = 16 * 1024 * 1024;
@@ -151,6 +152,12 @@ pub enum YtDlpTopologyError {
     /// Child process превысил configured timeout.
     #[error("истекло время ожидания yt-dlp topology")]
     Timeout,
+    /// Программа `yt-dlp` не найдена в `PATH` (запуск вернул `NotFound`).
+    ///
+    /// Отдельный вариант (UX сессия 09): пользователю нужна подсказка «установите
+    /// yt-dlp», а не общий «сбой процесса».
+    #[error("программа yt-dlp не найдена для topology")]
+    ExecutableNotFound,
     /// OS/process plumbing failure без locator/argv payload.
     #[error("не удалось выполнить системный yt-dlp для topology")]
     ProcessFailure {
@@ -159,10 +166,14 @@ pub enum YtDlpTopologyError {
         source: anyhow::Error,
     },
     /// yt-dlp завершился non-zero.
-    #[error("yt-dlp extractor отклонил topology URL (stderr скрыт, {stderr_bytes} bytes)")]
+    #[error(
+        "yt-dlp extractor отклонил topology URL (stderr скрыт, {stderr_bytes} bytes, причина: {reason})"
+    )]
     ExtractorRejection {
         /// Bounded observed byte count без stderr payload.
         stderr_bytes: usize,
+        /// Причина, распознанная по строкам `ERROR:` (сам текст stderr не хранится).
+        reason: YtDlpRejectionReason,
     },
     /// Caller передал логически невалидный budget.
     #[error("некорректный topology budget: {field:?}")]

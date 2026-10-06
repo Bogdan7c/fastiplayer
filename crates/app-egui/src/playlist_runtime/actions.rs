@@ -9,10 +9,19 @@ use super::{AdmittedQueueReplacementIntent, PlaylistRuntime};
 use crate::media_open::SafeMediaLabel;
 use crate::url_service_adapter::{StartupUrlClassification, classify_startup_url};
 
+/// Что подсказать, если введённый текст не распознан как ссылка (UX сессия 09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotUrlInputHint {
+    /// С `https://` в начале текст стал бы поддерживаемой ссылкой («youtube.com/watch?v=…»).
+    MissingScheme,
+    /// Текст не похож на ссылку и с `https://`.
+    Unrecognized,
+}
+
 /// Pure URL append validation никогда не содержит исходную secret-bearing строку.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UrlAppendValidationError {
-    NotUrl,
+    NotUrl(NotUrlInputHint),
     Unsupported { safe_error: String },
     LocatorMapping,
     RuntimeShuttingDown,
@@ -127,11 +136,15 @@ impl PlaylistRuntime {
     }
 
     /// Direct URL коммитит сразу, а yt-dlp URL передаёт latest-only topology owner-у.
+    ///
+    /// Единственная граница ввода URL в очередь: пробелы и переводы строк вокруг
+    /// вставленной ссылки обрезаются здесь (UX сессия 09), а не в каждом parser-е.
     pub(crate) fn append_playlist_url(
         &mut self,
         input: &str,
         yt_dlp_config: &fastiplayer_config::YtDlpConfig,
     ) -> Result<UrlAppendActionOutcome, UrlAppendValidationError> {
+        let input = input.trim();
         if !self
             .admission_open
             .load(std::sync::atomic::Ordering::Acquire)
@@ -140,7 +153,9 @@ impl PlaylistRuntime {
         }
         self.supersede_startup_media_apply();
         let locator = match classify_startup_url(input) {
-            StartupUrlClassification::NotUrl => return Err(UrlAppendValidationError::NotUrl),
+            StartupUrlClassification::NotUrl => {
+                return Err(UrlAppendValidationError::NotUrl(not_url_input_hint(input)));
+            }
             StartupUrlClassification::Unsupported { reason } => {
                 return Err(UrlAppendValidationError::Unsupported {
                     safe_error: reason.safe_error(),
@@ -161,6 +176,7 @@ impl PlaylistRuntime {
                 yt_dlp_locator,
                 yt_dlp_config.clone(),
                 sensitive_durable_locator_count,
+                locator.display_host(),
             )
             .map_err(|error| match error {
                 super::url_import::PlaylistUrlImportStartError::GenerationExhausted => {
@@ -283,6 +299,36 @@ impl PlaylistRuntime {
         Ok(UrlAppendActionOutcome::Appended {
             item_count: item_ids.len(),
         })
+    }
+}
+
+/// Подсказка для текста, который не распознан как ссылка.
+///
+/// «Добавьте https://» советуем, только если с этой схемой текст действительно стал бы
+/// поддерживаемой ссылкой с доменом через точку («youtube.com/watch?v=…»): случайное
+/// слово («привет», «hello») ложного совета не получает. Сами схему не дописываем —
+/// решение владельца (UX сессия 09): плеер не угадывает за пользователя.
+fn not_url_input_hint(trimmed_input: &str) -> NotUrlInputHint {
+    // Схема уже есть или внутри пробелы — дело не в пропущенном `https://`.
+    if trimmed_input.is_empty()
+        || trimmed_input.contains("://")
+        || trimmed_input.chars().any(char::is_whitespace)
+    {
+        return NotUrlInputHint::Unrecognized;
+    }
+    let with_https_scheme = format!("https://{trimmed_input}");
+    let has_dotted_host = url::Url::parse(&with_https_scheme)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.contains('.')))
+        .unwrap_or(false);
+    let becomes_supported_url = matches!(
+        classify_startup_url(&with_https_scheme),
+        StartupUrlClassification::Supported(_)
+    );
+    if has_dotted_host && becomes_supported_url {
+        NotUrlInputHint::MissingScheme
+    } else {
+        NotUrlInputHint::Unrecognized
     }
 }
 

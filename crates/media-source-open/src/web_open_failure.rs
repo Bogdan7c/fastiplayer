@@ -12,7 +12,7 @@
 
 use dash_mpd_core::DashDynamicMpdError;
 use demux_api::{DemuxFactoryOpenError, DemuxOpenError};
-use service_ytdlp::{YtDlpRejectionReason, YtDlpServiceError};
+use service_ytdlp::{YtDlpRejectionReason, YtDlpServiceError, YtDlpTopologyError};
 use source_core::SourceError;
 use web_media_transport_api::{
     AuthenticationFailure, ProviderOpenError, TransportFailure, TransportOpenError,
@@ -45,6 +45,8 @@ pub enum WebOpenFailureReason {
     SiteRejected,
     /// Ссылка ведёт на подборку, а не на одно видео.
     CollectionLink,
+    /// В подборке больше видео, чем плеер добавляет за один раз (лимит `service-ytdlp`).
+    CollectionTooLarge,
     /// Ни один вариант видео/звука плеер воспроизвести не может.
     NoPlayableFormat,
     /// HTTP 404: страницы/файла нет.
@@ -119,6 +121,9 @@ fn classify_error_link(link: &(dyn std::error::Error + 'static)) -> Option<WebOp
     if let Some(service_error) = link.downcast_ref::<YtDlpServiceError>() {
         return classify_yt_dlp_service_error(service_error);
     }
+    if let Some(topology_error) = link.downcast_ref::<YtDlpTopologyError>() {
+        return classify_yt_dlp_topology_error(topology_error);
+    }
     if let Some(open_error) = link.downcast_ref::<TransportOpenError>() {
         return classify_transport_open_error(open_error);
     }
@@ -170,6 +175,40 @@ fn classify_yt_dlp_service_error(error: &YtDlpServiceError) -> Option<WebOpenFai
         }
         // Отмена — не ошибка для пользователя; решение принимает вызывающий код.
         YtDlpServiceError::Cancellation => None,
+    }
+}
+
+/// Причина неудачного получения структуры ссылки (список видео подборки) через `yt-dlp`.
+///
+/// Используется кнопкой «Добавить URL» плейлиста (UX сессия 09) и звеном цепочки
+/// `classify_web_open_failure`. `None` — отмена: это не ошибка для пользователя,
+/// решение принимает вызывающий код.
+#[must_use]
+pub fn classify_yt_dlp_topology_error(error: &YtDlpTopologyError) -> Option<WebOpenFailureReason> {
+    match error {
+        YtDlpTopologyError::ExecutableNotFound => Some(WebOpenFailureReason::ExtractorNotInstalled),
+        YtDlpTopologyError::AdapterDisabled => Some(WebOpenFailureReason::ExtractorDisabled),
+        YtDlpTopologyError::Timeout => Some(WebOpenFailureReason::ExtractorTimedOut),
+        YtDlpTopologyError::ExtractorRejection { reason, .. } => {
+            Some(classify_yt_dlp_rejection(*reason))
+        }
+        // Лимит числа записей — свойство подборки, а не поломка yt-dlp: «обновите yt-dlp»
+        // здесь было бы ложной подсказкой.
+        YtDlpTopologyError::EntryBudgetExceeded => Some(WebOpenFailureReason::CollectionTooLarge),
+        // Битый/слишком большой ответ, сбой процесса, некорректный внутренний лимит —
+        // со стороны пользователя это «yt-dlp завершился с ошибкой».
+        YtDlpTopologyError::ProcessFailure { .. }
+        | YtDlpTopologyError::InvalidBudgets { .. }
+        | YtDlpTopologyError::StdoutBudgetExceeded
+        | YtDlpTopologyError::StderrBudgetExceeded
+        | YtDlpTopologyError::JsonLineBudgetExceeded
+        | YtDlpTopologyError::TopologyDepthExceeded
+        | YtDlpTopologyError::JsonDepthExceeded
+        | YtDlpTopologyError::InvalidExtractorResponse { .. }
+        | YtDlpTopologyError::DelegationLocator { .. } => {
+            Some(WebOpenFailureReason::ExtractorFailed)
+        }
+        YtDlpTopologyError::Cancellation => None,
     }
 }
 

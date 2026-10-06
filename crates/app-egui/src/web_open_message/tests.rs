@@ -1,10 +1,13 @@
-use super::{web_open_failure_message, web_open_failure_phrase};
+use super::{
+    url_import_failure_message, url_import_internal_failure_message, web_open_failure_message,
+    web_open_failure_phrase,
+};
 use crate::local_open_message::local_open_failure_row_summary;
 use crate::media_open::{PlayerInstallFailureReason, WebOpenFailureReason};
 
 /// Все причины — исчерпывающий список проверяется компилятором через `match` в
 /// `web_open_failure_phrase`; здесь — тот же список для проверки свойств текста.
-const ALL_REASONS: [WebOpenFailureReason; 26] = [
+const ALL_REASONS: [WebOpenFailureReason; 27] = [
     WebOpenFailureReason::ExtractorNotInstalled,
     WebOpenFailureReason::ExtractorDisabled,
     WebOpenFailureReason::ExtractorTimedOut,
@@ -16,6 +19,7 @@ const ALL_REASONS: [WebOpenFailureReason; 26] = [
     WebOpenFailureReason::SiteUnsupported,
     WebOpenFailureReason::SiteRejected,
     WebOpenFailureReason::CollectionLink,
+    WebOpenFailureReason::CollectionTooLarge,
     WebOpenFailureReason::NoPlayableFormat,
     WebOpenFailureReason::NotFound,
     WebOpenFailureReason::Gone,
@@ -132,5 +136,27 @@ fn row_summary_is_capitalized_phrase_without_host() {
     assert_eq!(
         local_open_failure_row_summary(WebOpenFailureReason::NotFound),
         "Страница не найдена (ошибка 404) — проверьте ссылку"
+    );
+}
+
+/// Отказ «Добавить URL» показывает домен и ту же фразу причины, что и открытие ссылки;
+/// внутренний сбой не выдумывает причину со стороны сайта (UX сессия 09).
+#[test]
+fn url_import_failure_texts_name_domain_and_reason_without_inventing_site_cause() {
+    assert_eq!(
+        url_import_failure_message(Some("youtube.com"), WebOpenFailureReason::SitePrivateMedia),
+        "Не удалось добавить ссылку (youtube.com): видео приватное"
+    );
+    assert_eq!(
+        url_import_failure_message(None, WebOpenFailureReason::ExtractorNotInstalled),
+        "Не удалось добавить ссылку: не найдена программа yt-dlp — установите пакет yt-dlp"
+    );
+    assert_eq!(
+        url_import_internal_failure_message(Some("youtube.com")),
+        "Не удалось добавить ссылку (youtube.com) — попробуйте ещё раз"
+    );
+    assert_eq!(
+        url_import_internal_failure_message(None),
+        "Не удалось добавить ссылку — попробуйте ещё раз"
     );
 }
