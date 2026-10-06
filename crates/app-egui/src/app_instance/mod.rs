@@ -6,6 +6,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::path::PathBuf;
 
 use fastiplayer_config::{ConfigError, ConfigPaths, LoadedConfig};
 use thiserror::Error;
@@ -193,6 +194,11 @@ pub(crate) struct ProcessBootstrap {
 }
 
 /// Typed bootstrap errors фиксируют этап, не раскрывая CLI media или lock path.
+///
+/// Ошибки после определения путей несут папку настроек: текст для пользователя
+/// (`fatal_startup`) называет папку, которую нужно исправить. В `Display`
+/// (технический лог) путь по-прежнему не попадает. `ConfigError` в `Box`, чтобы
+/// `Result` bootstrap-а не раздувался ради редкого пути ошибки.
 #[derive(Debug, Error)]
 pub(crate) enum ProcessBootstrapError {
     #[error("некорректные аргументы запуска: {0}")]
@@ -201,11 +207,17 @@ pub(crate) enum ProcessBootstrapError {
     #[error("не удалось определить platform config paths: {0}")]
     DiscoverPaths(ConfigError),
 
-    #[error("не удалось получить право запуска: {0}")]
-    Lease(#[from] AppInstanceLeaseError),
+    #[error("не удалось получить право запуска: {lease_error}")]
+    Lease {
+        lease_error: AppInstanceLeaseError,
+        config_dir: PathBuf,
+    },
 
-    #[error("не удалось загрузить config fastiplayer: {0}")]
-    LoadConfig(ConfigError),
+    #[error("не удалось загрузить config fastiplayer: {config_error}")]
+    LoadConfig {
+        config_error: Box<ConfigError>,
+        config_dir: PathBuf,
+    },
 }
 
 /// Выполняет обязательный bootstrap order над реальными process dependencies.
@@ -248,8 +260,16 @@ fn bootstrap_with<Config, Prepared>(
 ) -> Result<BootstrapValues<Config, Prepared>, ProcessBootstrapError> {
     let mut process_args = ProcessArgs::parse(arguments)?;
     let paths = discover_paths().map_err(ProcessBootstrapError::DiscoverPaths)?;
-    let lease = platform.acquire(&paths)?;
-    let config = load_config(&paths).map_err(ProcessBootstrapError::LoadConfig)?;
+    let lease = platform
+        .acquire(&paths)
+        .map_err(|lease_error| ProcessBootstrapError::Lease {
+            lease_error,
+            config_dir: paths.config_dir().to_path_buf(),
+        })?;
+    let config = load_config(&paths).map_err(|config_error| ProcessBootstrapError::LoadConfig {
+        config_error: Box::new(config_error),
+        config_dir: paths.config_dir().to_path_buf(),
+    })?;
     let prepared = prepare_after_load(&mut process_args, &paths, &config);
 
     Ok(BootstrapValues {
@@ -298,6 +318,8 @@ mod tests {
         AppInstanceLeasePlatform, ProcessArgs, ProcessArgsError, ProcessBootstrapError,
         UnsafeAppInstanceArtifact, bootstrap_with,
     };
+    use crate::fatal_startup::test_support::RecordingPresenter;
+    use crate::fatal_startup::{FatalStartupError, ProcessConclusion, conclude_process};
 
     #[derive(Debug)]
     struct FakeGuard;
@@ -470,11 +492,76 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ProcessBootstrapError::Lease(
-                AppInstanceLeaseError::UnsupportedPlatform
-            ))
+            Err(ProcessBootstrapError::Lease {
+                lease_error: AppInstanceLeaseError::UnsupportedPlatform,
+                ..
+            })
         ));
         assert_eq!(*calls.borrow(), ["discover-paths", "acquire-lease"]);
+    }
+
+    /// Сквозной путь: ошибка bootstrap → текст для пользователя (через fake-показ) →
+    /// ненулевой код выхода. Проверяет и то, что до config дело не доходит.
+    #[test]
+    fn bootstrap_failures_reach_user_as_human_text_with_nonzero_exit() {
+        let cases: [(Vec<OsString>, Result<(), AppInstanceLeaseError>, &str); 3] = [
+            (
+                vec![OsString::from("--unknown")],
+                Ok(()),
+                "неизвестным параметром",
+            ),
+            (
+                Vec::new(),
+                Err(AppInstanceLeaseError::UnsafeArtifact {
+                    reason: UnsafeAppInstanceArtifact::ConfigDirectoryOwnerMismatch,
+                }),
+                "sudo chown -R \"$USER\": /explicit/test-root",
+            ),
+            (
+                Vec::new(),
+                Err(AppInstanceLeaseError::AlreadyRunning),
+                "Fastiplayer уже запущен.",
+            ),
+        ];
+
+        for (arguments, lease_outcome, expected_text) in cases {
+            let config_loaded = Rc::new(RefCell::new(false));
+            let platform = FakePlatform {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                outcome: lease_outcome,
+            };
+            let bootstrap_error = bootstrap_with(
+                arguments,
+                || Ok(ConfigPaths::from_config_dir("/explicit/test-root")),
+                &platform,
+                {
+                    let config_loaded = config_loaded.clone();
+                    move |_| {
+                        *config_loaded.borrow_mut() = true;
+                        Ok(())
+                    }
+                },
+                |_, _, _| (),
+            )
+            .err()
+            .expect("bootstrap must fail");
+            let presenter = RecordingPresenter::default();
+
+            let conclusion = conclude_process(
+                Err(FatalStartupError::from_bootstrap_error(&bootstrap_error)),
+                &presenter,
+            );
+
+            let shown = presenter.shown_notices();
+            assert_eq!(conclusion, ProcessConclusion::FailedToStart);
+            assert_eq!(shown.len(), 1);
+            assert!(
+                shown[0].notice.message.contains(expected_text),
+                "{}",
+                shown[0].notice.message
+            );
+            assert!(!*config_loaded.borrow());
+        }
     }
 
     #[test]
@@ -506,8 +593,9 @@ mod tests {
 
             assert!(matches!(
                 result,
-                Err(ProcessBootstrapError::Lease(actual_error))
-                    if actual_error == expected_error
+                Err(ProcessBootstrapError::Lease { lease_error, ref config_dir })
+                    if lease_error == expected_error
+                        && config_dir == std::path::Path::new("/explicit/test-root")
             ));
         }
     }

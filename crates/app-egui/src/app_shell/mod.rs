@@ -29,6 +29,7 @@ use crate::system_capabilities::probe_system_capabilities;
 use fastiplayer_config::{ConfigPaths, LoadedConfig};
 
 use crate::config_startup_notice::config_startup_warning;
+use crate::fatal_startup::{FatalStartupError, FatalStartupErrorSlot, FatalStartupReason};
 use playlist_state::{PlaylistResumeStore, PlaylistStateStore};
 use render_wgpu_shell::Renderer;
 use tracing::{debug, info};
@@ -133,6 +134,9 @@ pub(crate) struct AppShell {
 
     /// Terminal state запрещает повторные UI actions после начала process close.
     process_lifecycle: AppShellProcessLifecycle,
+
+    /// Первая фатальная ошибка запуска; `main` показывает её после shutdown.
+    fatal_startup_error: FatalStartupErrorSlot,
 
     /// Единственный platform path owner для будущего state worker integration.
     _config_paths: ConfigPaths,
@@ -243,6 +247,7 @@ impl AppShell {
             background_poll_scheduler: BackgroundPollScheduler::new(),
             renderer_lifecycle: RendererLifecycleCoordinator::default(),
             process_lifecycle: AppShellProcessLifecycle::Running,
+            fatal_startup_error: FatalStartupErrorSlot::default(),
             _config_paths: config_paths,
             _instance_lease: instance_lease,
         })
@@ -268,8 +273,10 @@ impl AppShell {
         let mut renderer = match Renderer::new(window.clone(), surface_present_settings) {
             Ok(renderer) => renderer,
             Err(error) => {
-                tracing::error!("Не удалось инициализировать рендерер: {}", error);
-                event_loop.exit();
+                self.exit_with_fatal_startup_error(
+                    event_loop,
+                    FatalStartupError::graphics_unavailable(&error),
+                );
                 return;
             }
         };
@@ -282,8 +289,13 @@ impl AppShell {
         let initial_render_settings = match self.settings_runtime.initial_render_settings() {
             Ok(settings) => settings,
             Err(error) => {
-                tracing::error!(error = %error, "Некорректные render color settings");
-                event_loop.exit();
+                self.exit_with_fatal_startup_error(
+                    event_loop,
+                    FatalStartupError::internal_failure(
+                        "Некорректные render color settings",
+                        &error,
+                    ),
+                );
                 return;
             }
         };
@@ -306,8 +318,10 @@ impl AppShell {
         ) {
             Ok(app_state) => app_state,
             Err(error) => {
-                tracing::error!(error = %error, "Не удалось запустить app state");
-                event_loop.exit();
+                self.exit_with_fatal_startup_error(
+                    event_loop,
+                    FatalStartupError::internal_failure("Не удалось запустить app state", &error),
+                );
                 return;
             }
         };
@@ -334,21 +348,30 @@ impl AppShell {
         );
 
         let Some(playlist_binding) = self.playlist_runtime.bind_resumed_app_state() else {
-            tracing::error!("Playlist runtime уже закрыт и не принимает новый AppState binding");
+            // Сначала фиксация (она же пишет деталь в лог): очистка ниже при
+            // зависании завершает процесс аварийно, и деталь иначе потерялась бы.
+            self.exit_with_fatal_startup_error(
+                event_loop,
+                FatalStartupError::new(
+                    FatalStartupReason::InternalFailure,
+                    "Playlist runtime уже закрыт и не принимает новый AppState binding",
+                ),
+            );
             Self::shutdown_uninstalled_app_state_or_exit(&mut app_state);
-            event_loop.exit();
             return;
         };
         let playlist_attachment = match self.playlist_runtime.app_state_attachment(playlist_binding)
         {
             Ok(attachment) => attachment,
             Err(error) => {
-                tracing::error!(
-                    ?error,
-                    "Playlist runtime не создал exact AppState attachment"
+                self.exit_with_fatal_startup_error(
+                    event_loop,
+                    FatalStartupError::internal_failure(
+                        "Playlist runtime не создал exact AppState attachment",
+                        &format!("{error:?}"),
+                    ),
                 );
                 Self::shutdown_uninstalled_app_state_or_exit(&mut app_state);
-                event_loop.exit();
                 return;
             }
         };
@@ -469,6 +492,25 @@ impl AppShell {
         info!("{reason}");
         self.finish_process_shutdown();
         event_loop.exit();
+    }
+
+    /// Фиксирует фатальную ошибку запуска и останавливает event loop.
+    ///
+    /// Ошибка не показывается здесь: окно ошибки блокирует поток, а owners
+    /// (player, playlist persistence, lease) должны сначала штатно завершиться.
+    /// `main` заберёт её через `take_fatal_startup_error` после `run_app`.
+    fn exit_with_fatal_startup_error(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        error: FatalStartupError,
+    ) {
+        self.fatal_startup_error.record(error);
+        event_loop.exit();
+    }
+
+    /// Забирает фатальную ошибку, из-за которой остановился event loop.
+    pub(crate) fn take_fatal_startup_error(&mut self) -> Option<FatalStartupError> {
+        self.fatal_startup_error.take()
     }
 
     /// Завершает process owners после возврата event loop либо из `exiting`.

@@ -1,17 +1,19 @@
 //! Entrypoint приложения.
 //!
 //! Модуль отвечает только за запуск процесса:
-//! - инициализацию tracing;
+//! - инициализацию tracing (первым делом, чтобы ошибки bootstrap попали в лог);
 //! - загрузку пользовательского config;
 //! - разбор initial media из CLI;
 //! - создание winit event loop;
-//! - запуск `AppShell`.
+//! - запуск `AppShell`;
+//! - показ фатальной ошибки запуска и код выхода (`fatal_startup`).
 
 mod app_instance;
 mod app_shell;
 mod app_wake;
 mod config_startup_notice;
 mod dma_buf_runtime_fallback;
+mod fatal_startup;
 mod frame_prepare;
 mod local_file_open;
 mod local_open_message;
@@ -46,29 +48,32 @@ mod window_corner_policy;
 #[cfg(test)]
 mod extractor_provider_dto_guard_tests;
 
-use anyhow::{Context, Result};
+use std::process::ExitCode;
+
 use tracing::info;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::app_instance::{ProcessBootstrap, bootstrap_process};
 use crate::app_shell::AppShell;
 use crate::app_wake::{AppWakeEvent, AppWakeProxy};
+use crate::fatal_startup::{FatalStartupError, SystemFatalStartupPresenter, conclude_process};
 use crate::startup_media::InitialMedia;
 
 /// Точка входа приложения.
 ///
 /// Shell lifecycle живёт в `app_shell`; здесь остаётся только процессный bootstrap.
-fn main() -> Result<()> {
+/// Любая фатальная ошибка запуска показывается пользователю и даёт ненулевой код
+/// выхода; штатное завершение — код 0.
+fn main() -> ExitCode {
     let process_started_at = std::time::Instant::now();
-    let ProcessBootstrap {
-        config_paths,
-        instance_lease,
-        loaded_config,
-        initial_media,
-        startup_error: cli_startup_error,
-    } = bootstrap_process().context("Process bootstrap fastiplayer завершился ошибкой")?;
+    init_tracing();
+    let run_outcome = run_application(process_started_at);
+    conclude_process(run_outcome, &SystemFatalStartupPresenter).exit_code()
+}
 
-    // Инициализируем tracing.
+/// Инициализирует tracing до bootstrap: ошибки аргументов, lease и config
+/// тоже попадают в лог. Фильтр берётся из `RUST_LOG`, по умолчанию `info`.
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -77,6 +82,17 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .with_target(false)
         .init();
+}
+
+/// Запускает приложение до закрытия окна или до первой фатальной ошибки запуска.
+fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalStartupError> {
+    let ProcessBootstrap {
+        config_paths,
+        instance_lease,
+        loaded_config,
+        initial_media,
+        startup_error: cli_startup_error,
+    } = bootstrap_process().map_err(|error| FatalStartupError::from_bootstrap_error(&error))?;
 
     info!(
         process_elapsed_ms = process_started_at.elapsed().as_secs_f64() * 1_000.0,
@@ -94,7 +110,7 @@ fn main() -> Result<()> {
     // Один typed event loop принимает только лёгкие owner wake events.
     let event_loop = EventLoop::<AppWakeEvent>::with_user_event()
         .build()
-        .context("Не удалось создать event loop")?;
+        .map_err(|error| FatalStartupError::graphical_session_unavailable(&error))?;
     info!(
         process_elapsed_ms = process_started_at.elapsed().as_secs_f64() * 1_000.0,
         "Process event loop ready"
@@ -118,12 +134,24 @@ fn main() -> Result<()> {
         config_paths,
         instance_lease,
     )
-    .context("Не удалось создать settings runtime app shell")?;
+    .map_err(|error| {
+        FatalStartupError::internal_failure("Не удалось создать settings runtime app shell", &error)
+    })?;
     let event_loop_result = event_loop.run_app(&mut app);
     // `exiting` обычно уже выполнил этот path; явный idempotent вызов также
     // защищает error-return event loop-а от обычного Drop незавершённых owners.
     app.finish_process_shutdown();
-    event_loop_result?;
+    let fatal_error_inside_event_loop = app.take_fatal_startup_error();
+    // Shell (и вместе с ним lease) освобождается до показа ошибки: окно ошибки ждёт
+    // пользователя, и повторный запуск в это время не должен упираться в «уже запущен».
+    drop(app);
+
+    if let Some(fatal_error) = fatal_error_inside_event_loop {
+        return Err(fatal_error);
+    }
+    event_loop_result.map_err(|error| {
+        FatalStartupError::internal_failure("Event loop завершился ошибкой", &error)
+    })?;
 
     info!("Приложение завершено");
     Ok(())

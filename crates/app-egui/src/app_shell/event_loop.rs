@@ -13,6 +13,7 @@ use winit::{
 };
 
 use crate::app_wake::{AppWakeEvent, AppWakeOwner};
+use crate::fatal_startup::FatalStartupError;
 use crate::frame_prepare::render_frame;
 use crate::redraw_pacing::should_request_redraw_after_window_event;
 
@@ -142,8 +143,10 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         let window = match event_loop.create_window(window_attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
-                tracing::error!("Не удалось создать окно: {}", error);
-                event_loop.exit();
+                self.exit_with_fatal_startup_error(
+                    event_loop,
+                    FatalStartupError::window_creation_failed(&error),
+                );
                 return;
             }
         };

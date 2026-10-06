@@ -1,6 +1,7 @@
-//! Desktop integration boundary для media controls.
+//! Desktop integration boundary для media controls и критических уведомлений.
 //!
-//! Crate владеет только neutral desktop vocabulary и Linux MPRIS codec. Player,
+//! Crate владеет только neutral desktop vocabulary, Linux MPRIS codec и доставкой
+//! критического уведомления рабочего стола (`notification`). Player,
 //! playlist/controller и process lease остаются за app composition root.
 
 #![forbid(unsafe_code)]
@@ -8,6 +9,7 @@
 mod command;
 mod error;
 mod event;
+mod notification;
 mod platform;
 mod runtime;
 mod shutdown;
@@ -20,6 +22,9 @@ pub use command::{
 };
 pub use error::{DesktopIntegrationError, DesktopIntegrationResult};
 pub use event::{DesktopBackendKind, DesktopIntegrationEvent};
+pub use notification::{
+    CriticalDesktopNotification, DesktopNotificationError, send_critical_desktop_notification,
+};
 pub use runtime::{DesktopIntegration, LatestSnapshotHandle, LatestSnapshotSource};
 pub use shutdown::{DesktopIntegrationShutdownOutcome, DesktopIntegrationShutdownTransportFailure};
 pub use snapshot::{

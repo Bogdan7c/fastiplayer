@@ -29,6 +29,29 @@
 - Focused tests: все четыре формата, empty/partial/capacity, CUE window, structural competition, exact first failure/no scan, commit-before-open и exact Item/Group allocator accounting. Verification: 805 app tests с default и no-default features, Rust 1.96 locked workspace check, fmt, refactor guardrails, diff check, touched-file diagnostics и strict Clippy кроме двух известных pre-existing `large_enum_variant` baseline warnings.
 
 
+## UX06: политика фатальных ошибок запуска (2026-10-05)
+
+- Владелец — `crates/app-egui/src/fatal_startup/`. Состав:
+  - тип `FatalStartupError { reason: FatalStartupReason, technical_detail }`: детали только в лог, пользователю только человеческий текст из `messages.rs`;
+  - перевод `ProcessBootstrapError` в `bootstrap_mapping.rs`;
+  - путь к папке настроек с `~`, плюс shell-quoted аргумент для `sudo chown -R "$USER": …`, в `config_location.rs`.
+- Порядок в `main`: tracing инициализируется ПЕРВЫМ (до bootstrap) → `run_application() -> Result<(), FatalStartupError>` → `conclude_process(outcome, &SystemFatalStartupPresenter).exit_code()`. Штатно 0, фатальная ошибка 1 (код 70 shutdown-timeout отдельный).
+- `ProcessBootstrapError::Lease { lease_error, config_dir }` и `LoadConfig { config_error: Box<ConfigError>, config_dir }` несут папку настроек для текста. В Display (лог) путь по-прежнему не попадает. Box нужен из-за clippy `result_large_err`.
+- Решения владельца:
+  - показ: kdialog на KDE (`XDG_CURRENT_DESKTOP` содержит `KDE`), иначе первым zenity; вторая утилита запасная, затем критическое D-Bus уведомление; текст ВСЕГДА дублируется в stderr;
+  - окно показывается и при запуске из терминала;
+  - «уже запущен» показывается окном (до сессии 13 forwarding);
+  - в ошибке папки настроек есть путь и команда `chown`.
+- Утилита считается сработавшей только при exit 0. Ненулевой код или отсутствие программы ведут к следующему каналу. У zenity обязателен `--no-markup`.
+- D-Bus уведомление: `desktop_integration::send_critical_desktop_notification`. Блокирующий zbus, urgency=2, expire=0, body экранируется, таймаут ответа 5 с.
+- Тесты:
+  - `fatal_startup/tests.rs` — сквозные: fake-presenter + код выхода для нет GPU / окна / сеанса / lease mismatch / bad CLI / нормального запуска;
+  - `messages/tests.rs` — нет Debug-имён, тексты уникальны;
+  - `dialog_utility/tests.rs` — поддельная утилита-скрипт проверяет argv и exit codes;
+  - `presentation/tests.rs` — цепочка каналов, порядок по desktop;
+  - `app_instance` — `bootstrap_failures_reach_user_as_human_text_with_nonzero_exit`;
+  - `desktop-integration/src/notification/linux/tests.rs` — частный dbus-daemon с конфигом БЕЗ servicedirs (иначе auto-activation настоящей службы на 60 с).
+
 ## S23 yt-dlp startup integration (2026-07-22)
 
 - CLI/restored yt-dlp preparation now uses the single S19 -> S21C -> S22 app composition path; the old service-owned WebM opener no longer exists. Startup winner/fallback, allocator gate and exact Installed ordering are unchanged.
