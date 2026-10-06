@@ -146,6 +146,44 @@ pub enum TransportFailure {
     /// Source оборвался после частичного progress.
     #[error("transport source был прерван")]
     Interrupted,
+    /// Сервер ответил, что ресурса нет (HTTP 404).
+    ///
+    /// Отдельно от `NetworkUnavailable`: мёртвая ссылка — это не «нет сети»,
+    /// и пользователю нужна другая подсказка (проверить ссылку, а не интернет).
+    #[error("transport remote endpoint не нашёл ресурс")]
+    NotFound,
+    /// Сервер ответил, что ресурс удалён навсегда (HTTP 410) — ссылка устарела.
+    #[error("transport remote endpoint сообщил, что ресурс удалён")]
+    Gone,
+    /// Сервер ограничил частоту запросов (HTTP 429).
+    #[error("transport remote endpoint ограничил частоту запросов")]
+    RateLimited,
+    /// Ошибка на стороне сервера (HTTP 5xx).
+    #[error("transport remote endpoint вернул серверную ошибку")]
+    ServerError,
+}
+
+impl TransportFailure {
+    /// Стоит ли пробовать другой вариант того же media после этой ошибки.
+    ///
+    /// Сохраняет прежнюю семантику выбора альтернативы: раньше 404/410/429/5xx
+    /// приходили как `NetworkUnavailable` и разрешали alternate candidate. Новые
+    /// варианты различают текст для пользователя, но не меняют выбор кандидатов.
+    #[must_use]
+    pub const fn allows_alternate_candidate(self) -> bool {
+        match self {
+            Self::NetworkUnavailable
+            | Self::NotFound
+            | Self::Gone
+            | Self::RateLimited
+            | Self::ServerError => true,
+            Self::AccessDenied
+            | Self::Timeout
+            | Self::RedirectRejected
+            | Self::InvalidResponse
+            | Self::Interrupted => false,
+        }
+    }
 }
 
 /// Typed refresh-specific failure.

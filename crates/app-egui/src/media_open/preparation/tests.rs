@@ -166,7 +166,35 @@ fn unrelated_ytdlp_failure_keeps_generic_classification() {
 
     assert_eq!(
         classify_yt_dlp_preparation_failure(&error),
-        MediaPreparationFailureKind::ExtractorOpen
+        MediaPreparationFailureKind::ExtractorOpen(
+            crate::media_open::WebOpenFailureReason::Unclassified
+        )
+    );
+}
+
+/// Типизированный отказ yt-dlp внутри anyhow-контекста доходит до вида ошибки
+/// подготовки и превращается в пользовательскую причину (без разбора строк).
+#[test]
+fn typed_ytdlp_rejection_reaches_preparation_kind_and_user_reason() {
+    let error = anyhow::Error::new(service_ytdlp::YtDlpServiceError::ExtractorRejection {
+        stderr_bytes: 120,
+        reason: service_ytdlp::YtDlpRejectionReason::GeoRestricted,
+    })
+    .context("Не удалось подготовить exact YtDlp candidate snapshot");
+
+    let kind = classify_yt_dlp_preparation_failure(&error);
+
+    assert_eq!(
+        kind,
+        MediaPreparationFailureKind::ExtractorOpen(
+            crate::media_open::WebOpenFailureReason::SiteGeoRestricted
+        )
+    );
+    assert_eq!(
+        kind.user_failure_reason(),
+        Some(crate::media_open::MediaOpenUserFailureReason::WebOpen(
+            crate::media_open::WebOpenFailureReason::SiteGeoRestricted
+        ))
     );
 }
 
@@ -332,7 +360,10 @@ fn local_source_change_kind_maps_to_changed_during_open_reason() {
         Some(crate::media_open::LocalOpenFailureReason::ChangedDuringOpen)
     );
     assert_eq!(
-        MediaPreparationFailureKind::ExtractorOpen.local_open_failure_reason(),
+        MediaPreparationFailureKind::ExtractorOpen(
+            crate::media_open::WebOpenFailureReason::Unclassified
+        )
+        .local_open_failure_reason(),
         None
     );
 }

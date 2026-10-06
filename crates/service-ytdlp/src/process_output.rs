@@ -13,6 +13,7 @@ use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor
 
 use crate::error::YtDlpServiceError;
 use crate::process_tree::{OwnedPipe, OwnedPipeReader, spawn_owned_pipe_reader};
+use crate::rejection_reason::{StderrRejectionClassifier, YtDlpRejectionReason};
 
 /// Отсутствие опубликованного overflow в shared atomic signal.
 const OUTPUT_BUDGET_WITHIN_LIMIT: u8 = 0;
@@ -185,12 +186,22 @@ where
     .map_err(YtDlpServiceError::process)
 }
 
-/// Запускает bounded stderr reader, который считает bytes без хранения payload.
+/// Итог чтения stderr: размер и распознанная причина отказа, без самого текста.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StderrObservation {
+    /// Число прочитанных bytes (не больше budget).
+    pub(crate) observed_bytes: usize,
+    /// Причина отказа по строкам `ERROR:`; осмысленна только при non-zero exit.
+    pub(crate) rejection_reason: YtDlpRejectionReason,
+}
+
+/// Запускает bounded stderr reader: считает bytes и потоково распознаёт причину
+/// отказа, не удерживая diagnostic payload (`crate::rejection_reason`).
 pub(crate) fn spawn_stderr_reader<R>(
     pipe: R,
     budget_bytes: u64,
     budget_signal: ProcessOutputBudgetSignal,
-) -> Result<OwnedPipeReader<usize>, YtDlpServiceError>
+) -> Result<OwnedPipeReader<StderrObservation>, YtDlpServiceError>
 where
     R: OwnedPipe,
 {
@@ -217,27 +228,33 @@ fn read_bounded_stdout(
     Ok(captured_bytes)
 }
 
-/// Считает stderr до `limit + 1`, не удерживая диагностический payload в памяти.
+/// Читает stderr до `limit + 1`: считает bytes и передаёт куски классификатору,
+/// который хранит не больше одной обрезанной строки и сразу её стирает.
 fn count_bounded_stderr(
     reader: &mut dyn Read,
     budget_bytes: u64,
     budget_signal: &ProcessOutputBudgetSignal,
-) -> io::Result<usize> {
+) -> io::Result<StderrObservation> {
     let probe_bytes = budget_bytes.saturating_add(1);
     let mut bounded_reader = reader.take(probe_bytes);
     let mut read_buffer = [0_u8; 8 * 1024];
     let mut observed_bytes = 0_u64;
+    let mut rejection_classifier = StderrRejectionClassifier::default();
     loop {
         let read_bytes = bounded_reader.read(&mut read_buffer)?;
         if read_bytes == 0 {
             break;
         }
         observed_bytes = observed_bytes.saturating_add(read_bytes as u64);
+        rejection_classifier.observe(read_buffer.get(..read_bytes).unwrap_or_default());
     }
     if observed_bytes > budget_bytes {
         budget_signal.publish(ProcessOutputStream::Stderr);
     }
-    Ok(usize::try_from(observed_bytes.min(budget_bytes)).unwrap_or(usize::MAX))
+    Ok(StderrObservation {
+        observed_bytes: usize::try_from(observed_bytes.min(budget_bytes)).unwrap_or(usize::MAX),
+        rejection_reason: rejection_classifier.finish(),
+    })
 }
 
 /// Проверяет structural JSON budget без materialization промежуточного DOM.

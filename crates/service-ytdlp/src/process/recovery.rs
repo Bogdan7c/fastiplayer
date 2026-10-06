@@ -110,7 +110,7 @@ fn recover_non_platform_embed(
         process_config.launch_context(ExtractorProcessPhase::RecoveryPageCapture),
         is_cancelled,
     )?;
-    ensure_yt_dlp_candidate_success(write_pages_output.status, write_pages_output.stderr_bytes)?;
+    ensure_yt_dlp_candidate_success(write_pages_output.status, write_pages_output.stderr)?;
 
     let evidence =
         read_recovery_embed_candidates(recovery_directory.path(), input_url, is_cancelled)?;

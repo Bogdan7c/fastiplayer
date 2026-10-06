@@ -16,6 +16,7 @@ use super::local::LocalFingerprintValidation;
 // Метка переехала в `media-source-open` (её используют native-типы подготовки);
 // прежний путь `crate::media_open::SafeMediaLabel` сохранён этим re-export-ом.
 pub(crate) use media_source_open::safe_media_label::SafeMediaLabel;
+pub(crate) use media_source_open::web_open_failure::WebOpenFailureReason;
 
 /// Opaque identity клиента coordinator-а; Item ID и queue semantics сюда не входят.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -469,17 +470,20 @@ pub(crate) enum MediaOpenCompletionDriveError {
 }
 
 /// Почему media preparation завершилась без secret-bearing context-а.
+///
+/// Web-варианты различают путь открытия (кто открывал) и несут пользовательскую причину
+/// (`WebOpenFailureReason`, UX сессия 08) — без URL и текста ошибки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MediaPreparationFailureKind {
     /// Локальный файл не открылся; причина безопасна для показа (без пути и текста ОС).
     LocalOpen(super::LocalOpenFailureReason),
     LocalSourceChanged,
-    DirectOpen,
-    NativeHlsOpen,
-    NativeDashOpen,
-    NativeHdsOpen,
-    NativeSmoothOpen,
-    ExtractorOpen,
+    DirectOpen(WebOpenFailureReason),
+    NativeHlsOpen(WebOpenFailureReason),
+    NativeDashOpen(WebOpenFailureReason),
+    NativeHdsOpen(WebOpenFailureReason),
+    NativeSmoothOpen(WebOpenFailureReason),
+    ExtractorOpen(WebOpenFailureReason),
     /// Dynamic DASH валиден, но использует намеренно исключённый timing/profile contract.
     DashLiveProfileExcluded,
     /// Dynamic DASH нарушает поддерживаемую schema/model форму.
@@ -493,18 +497,17 @@ pub(crate) enum MediaPreparationFailureKind {
 impl MediaPreparationFailureKind {
     /// Пользовательская причина, если отказала подготовка локального файла.
     ///
-    /// `None` — отказ не локальный (сеть, extractor, отмена, panic): для них
-    /// понятных причин пока нет, и вызывающий код показывает общий текст.
+    /// `None` — отказ не локальный (web, отмена, panic).
     pub(crate) const fn local_open_failure_reason(self) -> Option<super::LocalOpenFailureReason> {
         match self {
             Self::LocalOpen(reason) => Some(reason),
             Self::LocalSourceChanged => Some(super::LocalOpenFailureReason::ChangedDuringOpen),
-            Self::DirectOpen
-            | Self::NativeHlsOpen
-            | Self::NativeDashOpen
-            | Self::NativeHdsOpen
-            | Self::NativeSmoothOpen
-            | Self::ExtractorOpen
+            Self::DirectOpen(_)
+            | Self::NativeHlsOpen(_)
+            | Self::NativeDashOpen(_)
+            | Self::NativeHdsOpen(_)
+            | Self::NativeSmoothOpen(_)
+            | Self::ExtractorOpen(_)
             | Self::DashLiveProfileExcluded
             | Self::DashLiveSchemaRejected
             | Self::ComponentCatalogUnavailable
@@ -512,20 +515,49 @@ impl MediaPreparationFailureKind {
             | Self::WorkerPanicked => None,
         }
     }
+
+    /// Пользовательская причина, если отказала подготовка web-ссылки.
+    ///
+    /// `None` — отказ не web (локальный файл, отмена, panic).
+    pub(crate) const fn web_open_failure_reason(self) -> Option<WebOpenFailureReason> {
+        match self {
+            Self::DirectOpen(reason)
+            | Self::NativeHlsOpen(reason)
+            | Self::NativeDashOpen(reason)
+            | Self::NativeHdsOpen(reason)
+            | Self::NativeSmoothOpen(reason)
+            | Self::ExtractorOpen(reason) => Some(reason),
+            Self::DashLiveProfileExcluded => Some(WebOpenFailureReason::UnsupportedLiveProfile),
+            Self::DashLiveSchemaRejected => Some(WebOpenFailureReason::InvalidServerResponse),
+            Self::ComponentCatalogUnavailable => Some(WebOpenFailureReason::NoPlayableFormat),
+            Self::LocalOpen(_)
+            | Self::LocalSourceChanged
+            | Self::Cancelled
+            | Self::WorkerPanicked => None,
+        }
+    }
+
+    /// Единая пользовательская причина отказа подготовки (локальной или web).
+    pub(crate) const fn user_failure_reason(self) -> Option<super::MediaOpenUserFailureReason> {
+        if let Some(reason) = self.local_open_failure_reason() {
+            return Some(super::MediaOpenUserFailureReason::Preparation(reason));
+        }
+        match self.web_open_failure_reason() {
+            Some(reason) => Some(super::MediaOpenUserFailureReason::WebOpen(reason)),
+            None => None,
+        }
+    }
 }
 
 impl MediaOpenTerminalOutcome {
     /// Пользовательская причина неудачного открытия, если она классифицирована.
     ///
-    /// `Some` — отказ подготовки локального файла или отказ player-а установить media.
-    /// `None` — успех, отмена, fatal-нарушение протокола или нелокальный отказ подготовки
-    /// (web-причины — сессия 08): вызывающий код сам решает, что показать.
+    /// `Some` — отказ подготовки (локального файла или web-ссылки) или отказ player-а
+    /// установить media. `None` — успех, отмена, fatal-нарушение протокола, panic
+    /// подготовки: вызывающий код сам решает, что показать.
     pub(crate) const fn user_failure_reason(&self) -> Option<super::MediaOpenUserFailureReason> {
         match self {
-            Self::PreparationFailed { kind, .. } => match kind.local_open_failure_reason() {
-                Some(reason) => Some(super::MediaOpenUserFailureReason::Preparation(reason)),
-                None => None,
-            },
+            Self::PreparationFailed { kind, .. } => kind.user_failure_reason(),
             Self::PlayerRejected { reason, .. } | Self::PlayerFailed { reason, .. } => {
                 Some(super::MediaOpenUserFailureReason::PlayerInstall(*reason))
             }

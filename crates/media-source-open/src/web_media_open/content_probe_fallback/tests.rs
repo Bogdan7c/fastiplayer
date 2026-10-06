@@ -22,6 +22,7 @@ use web_media_core::{
 };
 
 use super::*;
+use web_media_transport_api::TransportFailure;
 
 /// Изолирует fake `yt-dlp` PATH от параллельных tests текущего process-а.
 const FALLBACK_CHILD_MARKER_ENV: &str = "FASTIPLAYER_FALLBACK_CHILD";
@@ -94,6 +95,40 @@ fn best_playable_network_fallback_is_bounded_to_one_alternate() {
 
     assert_eq!(attempts, [10, 20]);
     assert!(error.to_string().contains("network fallback исчерпан"));
+}
+
+/// 404/410/429/5xx получили свои варианты ради понятного текста, но право
+/// попробовать один alternate осталось прежним (раньше это был `NetworkUnavailable`).
+/// Итоговая ошибка сохраняет точную причину последней попытки — её читает UI.
+#[test]
+fn best_playable_http_status_failures_keep_one_alternate_and_exact_reason() {
+    for failure in [
+        TransportFailure::NotFound,
+        TransportFailure::Gone,
+        TransportFailure::RateLimited,
+        TransportFailure::ServerError,
+    ] {
+        let candidates = [10_u8, 20_u8, 30_u8];
+        let mut attempts = Vec::new();
+        let error = open_ranked_best(&candidates, &|| false, |candidate| {
+            attempts.push(*candidate);
+            Err::<(), _>(CandidateOpenError::from(anyhow::Error::new(
+                TransportOpenError::Transport(failure),
+            )))
+        })
+        .expect_err("недоступные identities должны исчерпать bounded fallback");
+
+        assert_eq!(
+            attempts,
+            [10, 20],
+            "{failure:?} должен дать ровно один alternate"
+        );
+        assert_eq!(
+            error.downcast_ref::<TransportOpenError>(),
+            Some(&TransportOpenError::Transport(failure)),
+            "{failure:?} должен дойти до вызывающего без подмены на NetworkUnavailable"
+        );
+    }
 }
 
 #[test]

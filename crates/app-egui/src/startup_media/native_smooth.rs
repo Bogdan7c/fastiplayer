@@ -26,9 +26,11 @@ use crate::media_open::NativeSmoothUrl;
 use crate::process_shutdown::{FinishedThreadJoin, join_finished_thread};
 
 use super::orchestration::PreparedStartupMedia;
+use super::web_failure::StartupWebPreparationFailure;
 
 /// Результат одного sequential native-admission/extractor-fallback startup job-а.
-type NativeSmoothStartupResult = std::result::Result<PreparedStartupMedia, String>;
+type NativeSmoothStartupResult =
+    std::result::Result<PreparedStartupMedia, StartupWebPreparationFailure>;
 
 /// Фоновый startup job сначала завершает native admission и только потом решает fallback.
 pub(super) struct NativeSmoothStartupJob {
@@ -73,7 +75,7 @@ impl NativeSmoothStartupJob {
                     worker_source_cancellation,
                     || worker_cancellation_requested.load(Ordering::Acquire),
                 )
-                .map_err(|error| format!("{error:#}"));
+                .map_err(|error| StartupWebPreparationFailure::from_preparation_error(&error));
                 if worker_cancellation_requested.load(Ordering::Acquire) {
                     return;
                 }
@@ -115,15 +117,17 @@ impl NativeSmoothStartupJob {
             FinishedThreadJoin::Joined | FinishedThreadJoin::AlreadyJoined => {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
-                        Err("Native Smooth startup opener завершился без результата".to_owned())
+                        Err(StartupWebPreparationFailure::unclassified(
+                            "Native Smooth startup opener завершился без результата",
+                        ))
                     })
                 })
             }
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
-                Some(Err(
-                    "Native Smooth startup opener завершился panic".to_owned()
-                ))
+                Some(Err(StartupWebPreparationFailure::unclassified(
+                    "Native Smooth startup opener завершился panic",
+                )))
             }
             FinishedThreadJoin::StillRunning => None,
         }
@@ -164,9 +168,10 @@ fn resolve_native_smooth_startup_media(
                 .map_err(|rejection| anyhow!("native Smooth fallback rejected: {rejection:?}"))?;
             let (fallback_locator, invocation_reason) = fallback.into_parts();
             if !app_config.yt_dlp.enabled {
-                return Err(anyhow!(
-                    "native Smooth admission requires extractor fallback ({invocation_reason:?}), но YtDlp отключён"
-                ));
+                // Типизированная причина (а не строка): классификатор покажет пользователю
+                // «загрузка через yt-dlp отключена в настройках».
+                return Err(anyhow::Error::new(service_ytdlp::YtDlpServiceError::AdapterDisabled)
+                    .context(format!("native Smooth admission requires extractor fallback ({invocation_reason:?})")));
             }
             tracing::info!(
                 ?invocation_reason,

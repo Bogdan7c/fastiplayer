@@ -83,7 +83,7 @@ impl ContentProbeProof {
 
 /// Точная безопасная причина отказа content probe до Installed barrier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(super) enum ContentProbeRejection {
+pub(crate) enum ContentProbeRejection {
     /// Demux не опубликовал ни одной media-дорожки.
     #[error("content probe не обнаружил video или audio track")]
     NoMediaTracks,

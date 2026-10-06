@@ -105,16 +105,17 @@ fn cancellation_and_busy_are_not_user_errors() {
 /// Неклассифицированная ошибка — честная «внутренняя ошибка», а не английский debug-дамп.
 #[test]
 fn unclassified_errors_become_internal_error_not_debug_dump() {
-    let web_failure = StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::PreparationFailed {
-        request_id: request_id(),
-        kind: MediaPreparationFailureKind::ExtractorOpen,
-    });
+    let panicked_preparation =
+        StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::PreparationFailed {
+            request_id: request_id(),
+            kind: MediaPreparationFailureKind::WorkerPanicked,
+        });
     let internal = StrongMediaOpenUserOutcome::Failed(MediaOpenUserFailureReason::PlayerInstall(
         PlayerInstallFailureReason::InternalError,
     ));
 
     for error in [
-        web_failure,
+        panicked_preparation,
         StrongMediaOpenError::MissingTerminal,
         StrongMediaOpenError::Start(MediaOpenStartError::ShuttingDown),
     ] {
@@ -165,4 +166,24 @@ fn open_button_text_for_each_player_reason_names_file_and_reason() {
         assert!(!text.contains("private-parent-dir"), "{text}");
         assert!(!text.contains('{') && !text.contains("Player"), "{text}");
     }
+}
+
+/// Отказ подготовки web-ссылки больше не «внутренняя ошибка»: причина доходит до
+/// бейджа строки и до сообщения окна (UX сессия 08).
+#[test]
+fn web_preparation_terminal_exposes_web_reason() {
+    let reason = crate::media_open::WebOpenFailureReason::NotFound;
+    let error = StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::PreparationFailed {
+        request_id: request_id(),
+        kind: MediaPreparationFailureKind::DirectOpen(reason),
+    });
+
+    assert_eq!(
+        error.user_failure_reason(),
+        Some(MediaOpenUserFailureReason::WebOpen(reason))
+    );
+    assert_eq!(
+        error.user_outcome(),
+        StrongMediaOpenUserOutcome::Failed(MediaOpenUserFailureReason::WebOpen(reason))
+    );
 }

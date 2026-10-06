@@ -32,3 +32,20 @@ fn unclassified_failure_keeps_generic_row_summary() {
         PlaylistTargetFailureSummary::Generic
     );
 }
+
+/// UX сессия 08: отказ подготовки web-элемента очереди даёт строке понятную причину
+/// вместо общего «Не удалось подготовить…».
+#[test]
+fn web_preparation_failure_puts_specific_reason_on_queue_row() {
+    let error = StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::PreparationFailed {
+        request_id: request_id(),
+        kind: crate::media_open::MediaPreparationFailureKind::ExtractorOpen(
+            crate::media_open::WebOpenFailureReason::SiteGeoRestricted,
+        ),
+    });
+
+    assert_eq!(
+        playlist_target_failure_summary(&error),
+        PlaylistTargetFailureSummary::Specific(Arc::from("Видео недоступно в вашем регионе"))
+    );
+}

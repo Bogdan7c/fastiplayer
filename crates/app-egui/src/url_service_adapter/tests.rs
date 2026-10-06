@@ -462,3 +462,58 @@ fn active_extended_locator_redacts_credentials_and_requires_acknowledgement() {
         assert!(!locator.safe_label().contains(secret));
     }
 }
+
+/// Домен для текста ошибки не раскрывает логин, пароль, порт, путь и query ссылки.
+#[test]
+fn display_host_shows_only_domain_without_secrets() {
+    let cases = [
+        (
+            "https://user:hunter2@www.example.test:8443/private/watch?v=secret&token=abc",
+            "example.test",
+        ),
+        (
+            "https://cdn.example.test/media/clip.mp4?sig=secret",
+            "cdn.example.test",
+        ),
+        ("http://127.0.0.1:9000/clip.mp4", "127.0.0.1"),
+    ];
+    for (exact_url, expected_host) in cases {
+        let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
+            panic!("тестовая ссылка должна поддерживаться: {expected_host}");
+        };
+
+        let display_host = locator.display_host();
+
+        assert_eq!(display_host.as_deref(), Some(expected_host));
+        let shown = display_host.unwrap_or_default();
+        for secret in [
+            "hunter2", "user", "secret", "token", "8443", "private", "watch",
+        ] {
+            assert!(
+                !shown.contains(secret),
+                "домен «{shown}» раскрыл «{secret}»"
+            );
+        }
+    }
+}
+
+/// CLI-ссылка при выключенном yt-dlp: понятный текст с доменом вместо «NetworkError: …».
+#[test]
+fn disabled_extractor_cli_link_explains_setting_in_plain_words() {
+    let StartupUrlClassification::Supported(locator) =
+        classify_startup_url("https://www.video.example.test/watch?v=secret")
+    else {
+        panic!("generic ссылка должна поддерживаться yt-dlp adapter-ом");
+    };
+    let mut app_config = AppConfig::default();
+    app_config.yt_dlp.enabled = false;
+
+    let error = locator
+        .validate_config(&app_config)
+        .expect_err("выключенный yt-dlp запрещает открытие");
+
+    assert_eq!(
+        error,
+        "Не удалось открыть ссылку (video.example.test): загрузка с сайтов через yt-dlp отключена в настройках"
+    );
+}

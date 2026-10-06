@@ -63,7 +63,7 @@ pub(crate) use types::{
     MediaOpenStartError, MediaOpenStartMode, MediaOpenStartOutcome, MediaOpenTerminalOutcome,
     MediaPreparationFailureKind, PlayerDispatchRejection, PreparedMediaDescriptor,
     PreparedMediaOpen, PreparedPlaylistCacheUpdate, SafeMediaLabel,
-    SameLineagePositionPreparationPhase,
+    SameLineagePositionPreparationPhase, WebOpenFailureReason,
 };
 pub(crate) use user_failure::MediaOpenUserFailureReason;
 pub(crate) use web::{

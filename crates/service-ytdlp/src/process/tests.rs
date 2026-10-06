@@ -1,4 +1,5 @@
 use super::*;
+use crate::rejection_reason::YtDlpRejectionReason;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -425,7 +426,7 @@ fn process_output_collects_stdout_and_stderr() {
 
     assert!(output.status.success());
     assert_eq!(output.stdout, b"stdout-text");
-    assert_eq!(output.stderr_bytes, b"stderr-text".len());
+    assert_eq!(output.stderr.observed_bytes, b"stderr-text".len());
 }
 
 /// Ровно разрешённое число stdout bytes остаётся успешным process result.
@@ -499,7 +500,7 @@ fn process_stderr_exact_boundary_succeeds_without_payload_capture() {
     .expect("stderr exact boundary должен быть допустим");
 
     assert!(output.status.success());
-    assert_eq!(output.stderr_bytes, 4);
+    assert_eq!(output.stderr.observed_bytes, 4);
     assert!(format!("{output:?}").contains("<redacted:4 bytes>"));
 }
 
@@ -823,7 +824,7 @@ fn failed_process_error_redacts_and_bounds_stderr() {
     assert!(!output_debug.contains("password"));
     assert!(!output_debug.contains("secret"));
 
-    let error = ensure_yt_dlp_candidate_success(output.status, output.stderr_bytes)
+    let error = ensure_yt_dlp_candidate_success(output.status, output.stderr)
         .expect_err("non-zero status должен стать typed extractor error");
     let formatted = format!("{error:?} {error}");
     assert!(!formatted.contains("password"));
@@ -831,4 +832,76 @@ fn failed_process_error_redacts_and_bounds_stderr() {
     assert!(!formatted.contains("example.test"));
     assert!(formatted.contains("stderr скрыт"));
     assert!(formatted.len() < 512);
+}
+
+/// Настоящий процесс печатает типичную ошибку `yt-dlp` с секретным URL и падает:
+/// причина распознаётся, а ни URL, ни текст stderr в ошибку не попадают.
+#[cfg(unix)]
+#[test]
+fn rejected_process_reports_recognized_reason_without_stderr_text() {
+    let directory = TestDirectory::create("rejection-reason");
+    let script = create_executable_test_script(
+        directory.path(),
+        "#!/bin/sh\n\
+         printf 'WARNING: [youtube] retrying\\n' >&2\n\
+         printf 'ERROR: [youtube] https://user:password@example.test/watch?v=secret: Private video. Sign in if you have access\\n' >&2\n\
+         exit 1\n",
+    )
+    .expect("test script должен создаться");
+    let output = run_process_with_timeout(
+        script.to_str().expect("test path UTF-8"),
+        &[],
+        Duration::from_secs(5),
+    )
+    .expect("скрипт завершается обычным non-zero status");
+
+    let error = ensure_yt_dlp_candidate_success(output.status, output.stderr)
+        .expect_err("non-zero status должен стать typed extractor error");
+
+    assert!(matches!(
+        error,
+        YtDlpServiceError::ExtractorRejection {
+            reason: YtDlpRejectionReason::PrivateMedia,
+            ..
+        }
+    ));
+    let formatted = format!("{error:?} {error}");
+    assert!(!formatted.contains("password"));
+    assert!(!formatted.contains("secret"));
+    assert!(!formatted.contains("example.test"));
+    assert!(!formatted.contains("Private video"));
+}
+
+/// Успешный выход не превращается в отказ, даже если в stderr были строки `ERROR:`.
+#[cfg(unix)]
+#[test]
+fn successful_exit_ignores_error_lines_in_stderr() {
+    let output = run_process_with_timeout(
+        "sh",
+        &["-c", "printf 'ERROR: Private video\\n' >&2; exit 0"],
+        Duration::from_secs(5),
+    )
+    .expect("процесс завершается успешно");
+
+    assert!(ensure_yt_dlp_candidate_success(output.status, output.stderr).is_ok());
+}
+
+/// Отсутствующая программа — отдельная типизированная причина, а не общий
+/// `ProcessFailure`: пользователю нужна подсказка «установите yt-dlp».
+#[test]
+fn missing_executable_is_typed_not_found() {
+    let directory = TestDirectory::create("missing-executable");
+    let missing_executable = directory.path().join("yt-dlp");
+
+    let error = run_process_with_timeout(
+        missing_executable.to_str().expect("test path UTF-8"),
+        &["--version"],
+        Duration::from_secs(5),
+    )
+    .expect_err("несуществующий executable не может запуститься");
+
+    assert!(
+        matches!(error, YtDlpServiceError::ExecutableNotFound),
+        "получено: {error:?}"
+    );
 }

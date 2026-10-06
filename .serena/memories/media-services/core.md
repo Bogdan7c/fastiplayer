@@ -1,3 +1,7 @@
+## UX08 — типизированные причины отказа web-open (2026-10-06)
+
+- `TransportFailure` получил `NotFound`/`Gone`/`RateLimited`/`ServerError` (404/410/429/5xx больше не `NetworkUnavailable`); `allows_alternate_candidate()` сохраняет прежний выбор alternate. `service-ytdlp`: `YtDlpServiceError::ExecutableNotFound`, `ExtractorRejection { stderr_bytes, reason: YtDlpRejectionReason }` — stderr классифицируется потоково по `ERROR:`-строкам, текст не хранится (redaction-инвариант сохранён). Детали: `mem:app-egui/web-open-error-reasons-ux08`.
+
 ## N01 provider-neutral native web ingress contracts (2026-08-31)
 
 - `web-media-core` now owns std-only ingress/presentation/selection/recovery/extractor-reason/fallback contracts while reusing the existing identity and component variant boundaries. No locator, secrets, process/HTTP/UI/runtime handles or concrete provider dependencies entered core.

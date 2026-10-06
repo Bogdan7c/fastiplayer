@@ -47,6 +47,13 @@ enum TestServerBehavior {
         target: String,
         serialized_cookie: String,
     },
+    /// Любой request получает заданный статус и дополнительные заголовки без body.
+    Status {
+        status_line: &'static str,
+        extra_headers: &'static str,
+    },
+    /// Соединение закрывается сразу после чтения request-а, без единого байта ответа.
+    CloseWithoutResponse,
 }
 
 /// Локальный server хранит только test-owned request capture.
@@ -210,6 +217,19 @@ fn handle_connection(
                 .expect("write redirect with Set-Cookie response");
         }
         TestServerBehavior::RedirectWithSetCookie { .. } => respond_full(stream, body),
+        TestServerBehavior::Status {
+            status_line,
+            extra_headers,
+        } => {
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\n{extra_headers}Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write status response");
+        }
+        // Drop соединения на стороне вызывающего закроет socket без ответа.
+        TestServerBehavior::CloseWithoutResponse => {}
     }
 }
 
@@ -868,6 +888,79 @@ fn forbidden_without_auth_challenge_is_typed_access_denied() {
     assert_eq!(
         error,
         TransportOpenError::Transport(TransportFailure::AccessDenied)
+    );
+}
+
+/// Открывает progressive resource на loopback server-е с заданным поведением.
+fn open_error_for(behavior: TestServerBehavior) -> TransportOpenError {
+    let server = TestServer::spawn(Vec::new(), behavior);
+    let (registry, provider) = registry();
+    registry
+        .open(request(
+            provider,
+            &server.url("/media.webm"),
+            MediaComponentRole::Muxed,
+            1,
+            None,
+            CancellationToken::new(),
+        ))
+        .expect_err("ответ без media должен остаться open error")
+}
+
+/// Мёртвая ссылка, устаревшая ссылка, лимит запросов и сбой сервера больше не
+/// выглядят как «нет сети»: каждый статус доходит до вызывающего своим вариантом.
+#[test]
+fn http_error_statuses_are_typed_instead_of_network_unavailable() {
+    let cases = [
+        ("404 Not Found", "", TransportFailure::NotFound),
+        ("410 Gone", "", TransportFailure::Gone),
+        (
+            "429 Too Many Requests",
+            "Retry-After: 1\r\n",
+            TransportFailure::RateLimited,
+        ),
+        ("503 Service Unavailable", "", TransportFailure::ServerError),
+        (
+            "500 Internal Server Error",
+            "",
+            TransportFailure::ServerError,
+        ),
+    ];
+    for (status_line, extra_headers, expected) in cases {
+        let error = open_error_for(TestServerBehavior::Status {
+            status_line,
+            extra_headers,
+        });
+        assert_eq!(
+            error,
+            TransportOpenError::Transport(expected),
+            "статус {status_line}"
+        );
+    }
+}
+
+/// Статусы без отдельного смысла для пользователя сохраняют прежнюю категорию.
+#[test]
+fn unclassified_http_status_keeps_previous_network_category() {
+    let error = open_error_for(TestServerBehavior::Status {
+        status_line: "400 Bad Request",
+        extra_headers: "",
+    });
+
+    assert_eq!(
+        error,
+        TransportOpenError::Transport(TransportFailure::NetworkUnavailable)
+    );
+}
+
+/// Сервер принял соединение и закрыл его без ответа — это сетевой сбой, а не 404.
+#[test]
+fn connection_closed_without_response_is_network_unavailable_not_http_status() {
+    let error = open_error_for(TestServerBehavior::CloseWithoutResponse);
+
+    assert_eq!(
+        error,
+        TransportOpenError::Transport(TransportFailure::NetworkUnavailable)
     );
 }
 

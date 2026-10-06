@@ -93,7 +93,9 @@ impl SameItemSwitchLifecyclePollPort for FakeSameItemSwitchContext {
                 SameItemSwitchLifecyclePoll::Failed(StrongMediaOpenError::Terminal(
                     crate::media_open::MediaOpenTerminalOutcome::PreparationFailed {
                         request_id,
-                        kind: crate::media_open::MediaPreparationFailureKind::ExtractorOpen,
+                        kind: crate::media_open::MediaPreparationFailureKind::ExtractorOpen(
+                            crate::media_open::WebOpenFailureReason::Unclassified,
+                        ),
                     },
                 ))
             }

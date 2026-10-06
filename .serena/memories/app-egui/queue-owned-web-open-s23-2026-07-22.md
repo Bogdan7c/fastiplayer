@@ -1,5 +1,7 @@
 # S23 — Queue-owned web open integration (2026-07-22)
 
+> UX08 (2026-10-06): recoverable web preparation failure теперь несёт пользовательскую причину — `MediaPreparationFailureKind::{DirectOpen, Native*Open, ExtractorOpen}(WebOpenFailureReason)` (классификатор `media_source_open::web_open_failure`); startup web jobs возвращают `StartupWebPreparationFailure` вместо `String`. Барьер Ready → authorize → Installed и сохранение старого playback не менялись. Детали: `mem:app-egui/web-open-error-reasons-ux08`.
+
 > S36 extension (2026-07-25): exact muxed ISM/MSS fMP4 H.264+AAC static VOD now composes through `web_media_open::smooth`. App owns planner registration, bounded policy, one injected S28A/F3A registry, fresh C3 catalog generation/finalization and neutral receipted seek projection; `web-media-smooth` owns manifest/sources/demux transaction. The same Ready → authorize → Installed barrier remains authoritative. Full contract: `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
 
 > S34/S35 extension (2026-07-24): static and dynamic DASH material is now owned by `web-media-dash` and app composition through the same queue/barrier architecture. Therefore older statements below that all DASH/non-progressive material is globally fail-closed are historical; only material without an implemented exact provider remains rejected. Full contracts: `mem:media-services/dash-vod-s34-2026-07-24` and `mem:media-services/dash-live-s35-2026-07-24`.

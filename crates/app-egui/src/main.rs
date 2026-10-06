@@ -42,6 +42,7 @@ mod video_pipeline_selector;
 mod web_media_catalog;
 mod web_media_open;
 mod web_media_stream_model;
+mod web_open_message;
 mod window_corner_policy;
 
 // Архитектурные сторожа provider DTO yt-dlp по исходникам app-egui.

@@ -5,8 +5,9 @@ use super::{
     MediaOpenSourceRequest, MediaPreparationFailureKind, NativeHlsOpenIntent,
     PreparedMediaDescriptor, PreparedMediaOpen, PreparedWebMediaAttachments,
     PreparedWebMediaEnvelope, PreparedWebMediaSeekAttachment, SafeMediaLabel, WebMediaOpenRequest,
-    WebMediaOpenSettings, WebMediaSourceIntent, compose_prepared_web_media,
+    WebMediaOpenSettings, WebMediaSourceIntent, WebOpenFailureReason, compose_prepared_web_media,
 };
+use media_source_open::web_open_failure::classify_web_open_failure;
 
 /// Выполняет ровно один source-specific preparation flow.
 pub(super) fn prepare_source(
@@ -57,7 +58,7 @@ pub(super) fn prepare_source(
             )
             .map_err(|error| {
                 tracing::warn!(source = %safe_label, error = %error, "Подготовка direct media завершилась ошибкой");
-                MediaPreparationFailureKind::DirectOpen
+                MediaPreparationFailureKind::DirectOpen(classify_web_open_failure(&error))
             })?;
                 if cancellation.is_cancelled() {
                     return Err(MediaPreparationFailureKind::Cancelled);
@@ -144,7 +145,9 @@ pub(super) fn prepare_source(
                             if cancellation.is_cancelled() {
                                 MediaPreparationFailureKind::Cancelled
                             } else {
-                                MediaPreparationFailureKind::NativeHlsOpen
+                                MediaPreparationFailureKind::NativeHlsOpen(
+                                    classify_web_open_failure(&error),
+                                )
                             }
                         })?;
                 match attempt {
@@ -194,7 +197,7 @@ pub(super) fn prepare_source(
                                 ?rejection,
                                 "Native HLS fallback отклонён единым lifecycle gate-ом"
                             );
-                            MediaPreparationFailureKind::NativeHlsOpen
+                            MediaPreparationFailureKind::NativeHlsOpen(WebOpenFailureReason::Unclassified)
                         })?;
                         let (locator, invocation_reason) = fallback.into_parts();
                         if !yt_dlp_config.enabled {
@@ -203,7 +206,9 @@ pub(super) fn prepare_source(
                                 ?invocation_reason,
                                 "Native HLS fallback запрещён отключённым extractor-ом"
                             );
-                            return Err(MediaPreparationFailureKind::NativeHlsOpen);
+                            return Err(MediaPreparationFailureKind::NativeHlsOpen(
+                                WebOpenFailureReason::ExtractorDisabled,
+                            ));
                         }
                         tracing::info!(
                             source = %safe_label,
@@ -280,7 +285,9 @@ pub(super) fn prepare_source(
                     if cancellation.is_cancelled() {
                         MediaPreparationFailureKind::Cancelled
                     } else {
-                        MediaPreparationFailureKind::NativeDashOpen
+                        MediaPreparationFailureKind::NativeDashOpen(classify_web_open_failure(
+                            &error,
+                        ))
                     }
                 })?;
                 match attempt {
@@ -314,7 +321,7 @@ pub(super) fn prepare_source(
                                 error = %error,
                                 "Native DASH composition нарушила prepared attachment contract"
                             );
-                            MediaPreparationFailureKind::NativeDashOpen
+                            MediaPreparationFailureKind::NativeDashOpen(WebOpenFailureReason::Unclassified)
                         })?;
                         Ok(PreparedMediaOpen {
                             prepared_media,
@@ -341,7 +348,7 @@ pub(super) fn prepare_source(
                                 ?rejection,
                                 "Native DASH fallback отклонён единым lifecycle gate-ом"
                             );
-                            MediaPreparationFailureKind::NativeDashOpen
+                            MediaPreparationFailureKind::NativeDashOpen(WebOpenFailureReason::Unclassified)
                         })?;
                         let (locator, invocation_reason) = fallback.into_parts();
                         if !yt_dlp_config.enabled {
@@ -350,7 +357,9 @@ pub(super) fn prepare_source(
                                 ?invocation_reason,
                                 "Initial native DASH fallback запрещён отключённым extractor-ом"
                             );
-                            return Err(MediaPreparationFailureKind::NativeDashOpen);
+                            return Err(MediaPreparationFailureKind::NativeDashOpen(
+                                WebOpenFailureReason::ExtractorDisabled,
+                            ));
                         }
                         tracing::info!(
                             source = %safe_label,
@@ -439,7 +448,9 @@ pub(super) fn prepare_source(
                     if cancellation.is_cancelled() {
                         MediaPreparationFailureKind::Cancelled
                     } else {
-                        MediaPreparationFailureKind::NativeSmoothOpen
+                        MediaPreparationFailureKind::NativeSmoothOpen(classify_web_open_failure(
+                            &error,
+                        ))
                     }
                 })?;
                 match attempt {
@@ -476,7 +487,7 @@ pub(super) fn prepare_source(
                                 error = %error,
                                 "Native Smooth composition нарушила prepared attachment contract"
                             );
-                            MediaPreparationFailureKind::NativeSmoothOpen
+                            MediaPreparationFailureKind::NativeSmoothOpen(WebOpenFailureReason::Unclassified)
                         })?;
                         Ok(PreparedMediaOpen {
                             prepared_media,
@@ -503,7 +514,7 @@ pub(super) fn prepare_source(
                                 ?rejection,
                                 "Native Smooth fallback отклонён единым lifecycle gate-ом"
                             );
-                            MediaPreparationFailureKind::NativeSmoothOpen
+                            MediaPreparationFailureKind::NativeSmoothOpen(WebOpenFailureReason::Unclassified)
                         })?;
                         let (locator, invocation_reason) = fallback.into_parts();
                         if !yt_dlp_config.enabled {
@@ -512,7 +523,9 @@ pub(super) fn prepare_source(
                                 ?invocation_reason,
                                 "Initial native Smooth fallback запрещён отключённым extractor-ом"
                             );
-                            return Err(MediaPreparationFailureKind::NativeSmoothOpen);
+                            return Err(MediaPreparationFailureKind::NativeSmoothOpen(
+                                WebOpenFailureReason::ExtractorDisabled,
+                            ));
                         }
                         tracing::info!(
                             source = %safe_label,
@@ -615,7 +628,7 @@ pub(super) fn prepare_source(
                         error = %error,
                         "YtDlp timeline mode не прошёл PreparedMedia boundary"
                     );
-                    MediaPreparationFailureKind::ExtractorOpen
+                    MediaPreparationFailureKind::ExtractorOpen(WebOpenFailureReason::Unclassified)
                 })?;
                 let source = WebMediaSourceIntent::extractor(
                     locator,
@@ -673,7 +686,8 @@ fn local_preparation_failure_kind(
     }
 }
 
-/// Сохраняет typed component/DASH причину через anyhow context chain.
+/// Сохраняет typed component/DASH причину через anyhow context chain; остальное
+/// классифицирует общий web-классификатор (`media_source_open::web_open_failure`).
 fn classify_yt_dlp_preparation_failure(error: &anyhow::Error) -> MediaPreparationFailureKind {
     if error
         .downcast_ref::<crate::web_media_open::ComponentVariantFinalizationError>()
@@ -690,7 +704,7 @@ fn classify_yt_dlp_preparation_failure(error: &anyhow::Error) -> MediaPreparatio
             }
         }
     } else {
-        MediaPreparationFailureKind::ExtractorOpen
+        MediaPreparationFailureKind::ExtractorOpen(classify_web_open_failure(error))
     }
 }
 
@@ -726,3 +740,7 @@ pub(crate) fn merge_yt_dlp_playlist_metadata(
 #[cfg(test)]
 #[path = "preparation/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "preparation/web_failure_tests.rs"]
+pub(super) mod web_failure_tests;

@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::locator::YtDlpLocatorParseError;
+use crate::rejection_reason::YtDlpRejectionReason;
 
 /// Typed ошибка generic `yt-dlp` service boundary.
 ///
@@ -46,6 +47,12 @@ pub enum YtDlpServiceError {
         limit_nodes: u64,
     },
 
+    /// Программа `yt-dlp` не найдена (запуск вернул `NotFound`): не установлена или
+    /// отсутствует в `PATH`. Отдельно от `ProcessFailure`, потому что пользователю нужна
+    /// конкретная подсказка — установить yt-dlp.
+    #[error("системный yt-dlp не найден")]
+    ExecutableNotFound,
+
     /// OS/process plumbing не позволил выполнить или корректно дождаться `yt-dlp`.
     #[error("не удалось выполнить системный yt-dlp")]
     ProcessFailure {
@@ -55,10 +62,14 @@ pub enum YtDlpServiceError {
     },
 
     /// Extractor завершился с non-zero status и отверг URL/media.
-    #[error("yt-dlp extractor отклонил URL (stderr скрыт, {stderr_bytes} bytes)")]
+    #[error(
+        "yt-dlp extractor отклонил URL (причина: {reason}, stderr скрыт, {stderr_bytes} bytes)"
+    )]
     ExtractorRejection {
         /// Размер скрытого stderr нужен для диагностики без раскрытия payload.
         stderr_bytes: usize,
+        /// Причина, распознанная по строкам `ERROR:` (сам текст не хранится).
+        reason: YtDlpRejectionReason,
     },
 
     /// `yt-dlp` завершился успешно, но вернул невалидный JSON/UTF-8 contract.

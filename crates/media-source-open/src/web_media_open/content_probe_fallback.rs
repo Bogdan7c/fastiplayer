@@ -21,7 +21,7 @@ use web_media_playback_plan::{
     PlanningCandidateSnapshot, PlaybackCapabilitySnapshot, PlaybackSelectionPolicy,
     rank_playable_opaque_alternatives,
 };
-use web_media_transport_api::{TransportFailure, TransportOpenError};
+use web_media_transport_api::TransportOpenError;
 
 use super::content_probe::ContentProbeRejection;
 use super::{
@@ -176,11 +176,11 @@ impl CandidateOpenError {
 
 impl From<anyhow::Error> for CandidateOpenError {
     fn from(error: anyhow::Error) -> Self {
+        // 404/410/429/5xx раньше приходили как `NetworkUnavailable`; intent-метод
+        // сохраняет прежнее право BestPlayable попробовать один alternate.
         if matches!(
             error.downcast_ref::<TransportOpenError>(),
-            Some(TransportOpenError::Transport(
-                TransportFailure::NetworkUnavailable
-            ))
+            Some(TransportOpenError::Transport(failure)) if failure.allows_alternate_candidate()
         ) {
             Self::NetworkUnavailable(error)
         } else {

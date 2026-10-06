@@ -19,8 +19,8 @@ use crate::invocation::{
 };
 use crate::locator::YtDlpMediaLocator;
 use crate::process_output::{
-    ProcessOutputBudgetSignal, YtDlpProcessOutputBudgets, spawn_stderr_reader, spawn_stdout_reader,
-    validate_json_node_budget,
+    ProcessOutputBudgetSignal, StderrObservation, YtDlpProcessOutputBudgets, spawn_stderr_reader,
+    spawn_stdout_reader, validate_json_node_budget,
 };
 use crate::process_tree::{
     OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
@@ -174,8 +174,8 @@ struct ProcessOutput {
     /// Полный stdout процесса.
     stdout: Vec<u8>,
 
-    /// Число stderr bytes без сохранения diagnostic payload.
-    stderr_bytes: usize,
+    /// Размер stderr и распознанная причина отказа без сохранения diagnostic payload.
+    stderr: StderrObservation,
 }
 
 impl std::fmt::Debug for ProcessOutput {
@@ -189,7 +189,7 @@ impl std::fmt::Debug for ProcessOutput {
             )
             .field(
                 "stderr",
-                &format_args!("<redacted:{} bytes>", self.stderr_bytes),
+                &format_args!("<redacted:{} bytes>", self.stderr.observed_bytes),
             )
             .finish()
     }
@@ -267,7 +267,7 @@ fn run_dump_single_json(
         is_cancelled,
     )?;
 
-    ensure_yt_dlp_candidate_success(command_output.status, command_output.stderr_bytes)?;
+    ensure_yt_dlp_candidate_success(command_output.status, command_output.stderr)?;
     validate_json_node_budget(&command_output.stdout, process_config.output_budgets())?;
     serde_json::from_slice(&command_output.stdout).map_err(YtDlpServiceError::invalid_response)
 }
@@ -311,6 +311,13 @@ fn run_process_with_extractor_invocation(
         Ok(process) => process,
         Err(OwnedProcessSpawnError::Cancellation) => {
             return Err(YtDlpServiceError::Cancellation);
+        }
+        // `NotFound` при запуске = программы нет в PATH; остальные OS-ошибки остаются
+        // общим `ProcessFailure` (права, ресурсы и т.п.).
+        Err(OwnedProcessSpawnError::Process(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Err(YtDlpServiceError::ExecutableNotFound);
         }
         Err(OwnedProcessSpawnError::Process(error)) => {
             return Err(YtDlpServiceError::process(error));
@@ -392,11 +399,11 @@ fn run_process_with_extractor_invocation(
                 &output_budget_signal,
                 is_cancelled,
             )?;
-            let (stdout, stderr_bytes) = pipe_output;
+            let (stdout, stderr) = pipe_output;
             Ok(ProcessOutput {
                 status,
                 stdout,
-                stderr_bytes,
+                stderr,
             })
         }
         ProcessWaitOutcome::TimedOut => match abort_pipe_readers(stdout_reader, stderr_reader) {
@@ -484,13 +491,13 @@ fn map_pipe_drain_error(error: OwnedPipeDrainError) -> YtDlpServiceError {
 /// Bounded drain обоих pipe-reader-ов с одним operation deadline и grace budget.
 fn drain_pipe_readers(
     stdout_reader: OwnedPipeReader<Vec<u8>>,
-    stderr_reader: OwnedPipeReader<usize>,
+    stderr_reader: OwnedPipeReader<StderrObservation>,
     operation_started_at: Instant,
     operation_timeout: Duration,
     output_budgets: YtDlpProcessOutputBudgets,
     output_budget_signal: &ProcessOutputBudgetSignal,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<(Vec<u8>, usize), YtDlpServiceError> {
+) -> Result<(Vec<u8>, StderrObservation), YtDlpServiceError> {
     let drain_started_at = Instant::now();
     let stdout_result = stdout_reader
         .drain(
@@ -512,7 +519,7 @@ fn drain_pipe_readers(
     // Budget signal читается один раз после завершения обоих drain-ов.
     match (stdout_result, stderr_result, output_budget_signal.load()) {
         (Ok(_), Ok(_), Some(stream)) => Err(stream.into_error(output_budgets)),
-        (Ok(stdout), Ok(stderr_bytes), None) => Ok((stdout, stderr_bytes)),
+        (Ok(stdout), Ok(stderr), None) => Ok((stdout, stderr)),
         (Err(primary), Ok(_), _) | (Ok(_), Err(primary), _) => Err(primary),
         (Err(primary), Err(cleanup), _) => Err(combine_process_failures(
             primary,
@@ -524,7 +531,7 @@ fn drain_pipe_readers(
 /// Bounded останавливает оба reader worker-а после non-success process outcome.
 fn abort_pipe_readers(
     stdout_reader: OwnedPipeReader<Vec<u8>>,
-    stderr_reader: OwnedPipeReader<usize>,
+    stderr_reader: OwnedPipeReader<StderrObservation>,
 ) -> Result<(), YtDlpServiceError> {
     let stdout_result = stdout_reader.abort().map_err(YtDlpServiceError::process);
     let stderr_result = stderr_reader.abort().map_err(YtDlpServiceError::process);
@@ -590,16 +597,20 @@ fn wait_for_process_with_timeout(
 }
 
 /// Преобразует ошибку metadata-only candidates command в читаемую ошибку.
+///
+/// Причина отказа уже распознана reader-ом stderr; здесь она только переносится в
+/// typed ошибку вместе с ограниченным размером (текст stderr сюда не доходит).
 fn ensure_yt_dlp_candidate_success(
     status: ExitStatus,
-    stderr_bytes: usize,
+    stderr: StderrObservation,
 ) -> Result<(), YtDlpServiceError> {
     if status.success() {
         return Ok(());
     }
 
     Err(YtDlpServiceError::ExtractorRejection {
-        stderr_bytes: stderr_bytes.min(MAX_REPORTED_STDERR_BYTES),
+        stderr_bytes: stderr.observed_bytes.min(MAX_REPORTED_STDERR_BYTES),
+        reason: stderr.rejection_reason,
     })
 }
 

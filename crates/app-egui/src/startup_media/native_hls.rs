@@ -27,9 +27,11 @@ use crate::app_wake::{
 use crate::media_open::NativeHlsUrl;
 use crate::process_shutdown::{FinishedThreadJoin, join_finished_thread};
 use crate::startup_media::orchestration::{PreparedStartupMedia, StartupMediaTarget};
+use crate::startup_media::web_failure::StartupWebPreparationFailure;
 
 /// Результат одного последовательного native-admission/extractor-fallback job-а.
-type NativeHlsStartupResult = std::result::Result<PreparedStartupMedia, String>;
+type NativeHlsStartupResult =
+    std::result::Result<PreparedStartupMedia, StartupWebPreparationFailure>;
 
 /// Caller-owned identity и start policy одного native HLS startup resolve.
 struct NativeHlsStartupResolveRequest {
@@ -78,7 +80,7 @@ impl NativeHlsStartupJob {
                     worker_source_cancellation,
                     || worker_cancellation_requested.load(Ordering::Acquire),
                 )
-                .map_err(|error| format!("{error:#}"));
+                .map_err(|error| StartupWebPreparationFailure::from_preparation_error(&error));
                 if worker_cancellation_requested.load(Ordering::Acquire) {
                     return;
                 }
@@ -116,13 +118,17 @@ impl NativeHlsStartupJob {
             FinishedThreadJoin::Joined | FinishedThreadJoin::AlreadyJoined => {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
-                        Err("Native HLS startup opener завершился без результата".to_owned())
+                        Err(StartupWebPreparationFailure::unclassified(
+                            "Native HLS startup opener завершился без результата",
+                        ))
                     })
                 })
             }
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
-                Some(Err("Native HLS startup opener завершился panic".to_owned()))
+                Some(Err(StartupWebPreparationFailure::unclassified(
+                    "Native HLS startup opener завершился panic",
+                )))
             }
             FinishedThreadJoin::StillRunning => None,
         }
@@ -219,9 +225,10 @@ fn resolve_native_hls_startup_media(
                 .map_err(|rejection| anyhow!("native HLS fallback rejected: {rejection:?}"))?;
             let (fallback_locator, invocation_reason) = fallback.into_parts();
             if !app_config.yt_dlp.enabled {
-                return Err(anyhow!(
-                    "native HLS admission requires extractor fallback ({invocation_reason:?}), но YtDlp отключён"
-                ));
+                // Типизированная причина (а не строка): классификатор покажет пользователю
+                // «загрузка через yt-dlp отключена в настройках».
+                return Err(anyhow::Error::new(service_ytdlp::YtDlpServiceError::AdapterDisabled)
+                    .context(format!("native HLS admission requires extractor fallback ({invocation_reason:?})")));
             }
             tracing::info!(
                 ?invocation_reason,

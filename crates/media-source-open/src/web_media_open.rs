@@ -15,6 +15,8 @@ pub mod component_variants;
 #[cfg(test)]
 mod component_variants_tests;
 mod content_probe;
+// Причину content probe читает классификатор отказов web-open (`crate::web_open_failure`).
+pub(crate) use content_probe::ContentProbeRejection;
 mod content_probe_fallback;
 mod hds;
 pub use hds::{NativeHdsCandidatePreparation, prepare_native_hds_candidate};

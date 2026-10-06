@@ -36,6 +36,7 @@ fn pending_message_reports_existing_yt_dlp_job() {
         startup_config: None,
         system_capabilities: None,
         startup_error: None,
+        web_display_host: None,
         terminal_shutdown_started: false,
         terminal_shutdown_completed: false,
     };
@@ -82,6 +83,7 @@ fn controller_with_test_yt_dlp_thread(join_handle: JoinHandle<()>) -> StartupMed
         startup_config: None,
         system_capabilities: None,
         startup_error: None,
+        web_display_host: None,
         terminal_shutdown_started: false,
         terminal_shutdown_completed: false,
     }

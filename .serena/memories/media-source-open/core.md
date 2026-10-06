@@ -66,6 +66,9 @@ Library crate `crates/media-source-open` (lib `media_source_open`): открыт
 - Решение владельца 1а: в UI показывается **имя файла без пути к папке**. Путь без `file_name()` (`/`, `..`) → константа «(без имени)» (раньше подставлялся весь путь — утечка parent path). Non-UTF-8 имя — lossy (`�`), без паники. Тесты: `safe_media_label::tests::*`.
 - `app-egui::playlist_runtime::safe_local_open_label` больше не константа «локальный media-файл», а делегирует сюда. Тексты ошибок открытия локального файла — `mem:app-egui/local-open-error-messages-ux02`.
 
+## Production-причина отказа web-open (UX сессия 08, 2026-10-06)
+- `web_open_failure::{WebOpenFailureReason, classify_web_open_failure}` — единственный перевод anyhow-цепочки web-open в Copy-причину (только `downcast_ref` звеньев, без строк). `ContentProbeRejection` стал `pub(crate)` + re-export в `web_media_open`. `content_probe_fallback` использует `TransportFailure::allows_alternate_candidate()` (новые 404/410/429/5xx варианты сохраняют прежний alternate). Детали и тесты — `mem:app-egui/web-open-error-reasons-ux08`.
+
 ## Coverage baseline — ИСТОРИЯ (gate удалён 2026-10-03, `mem:testing/coverage`)
 - Аудит 2026-10-03 (после удаления gate): все тесты из списка ниже проверены на «тест проверяет результат» — оставлены; итоги аудита — `mem:testing/coverage`.
 - Всё ниже в этом разделе неактуально: `coverage/`, `scripts/coverage.sh`, baseline и пересъёмка больше не существуют. Регистрация нового crate-а в `coverage/policy.json` не нужна.

@@ -7,8 +7,9 @@ use super::{
     MediaOpenSourceRequest, MediaPreparationFailureKind, NativeHdsOpenIntent, NativeHdsUrl,
     PreparedMediaDescriptor, PreparedMediaOpen, PreparedWebMediaAttachments,
     PreparedWebMediaEnvelope, PreparedWebMediaSeekAttachment, WebMediaOpenRequest,
-    WebMediaOpenSettings, WebMediaSourceIntent, compose_prepared_web_media,
+    WebMediaOpenSettings, WebMediaSourceIntent, WebOpenFailureReason, compose_prepared_web_media,
 };
+use media_source_open::web_open_failure::classify_web_open_failure;
 
 /// Подготавливает native HDS source либо единожды передаёт initial admission extractor-у.
 pub(super) fn prepare_native_hds_source(
@@ -60,7 +61,7 @@ pub(super) fn prepare_native_hds_source(
         if cancellation.is_cancelled() {
             MediaPreparationFailureKind::Cancelled
         } else {
-            MediaPreparationFailureKind::NativeHdsOpen
+            MediaPreparationFailureKind::NativeHdsOpen(classify_web_open_failure(&error))
         }
     })?;
 
@@ -79,7 +80,7 @@ pub(super) fn prepare_native_hds_source(
                     ?rejection,
                     "Native HDS fallback отклонён единым lifecycle gate-ом"
                 );
-                MediaPreparationFailureKind::NativeHdsOpen
+                MediaPreparationFailureKind::NativeHdsOpen(WebOpenFailureReason::Unclassified)
             })?;
             let (locator, invocation_reason) = fallback.into_parts();
             if !yt_dlp_config.enabled {
@@ -88,7 +89,9 @@ pub(super) fn prepare_native_hds_source(
                     ?invocation_reason,
                     "Initial native HDS fallback запрещён отключённым extractor-ом"
                 );
-                return Err(MediaPreparationFailureKind::NativeHdsOpen);
+                return Err(MediaPreparationFailureKind::NativeHdsOpen(
+                    WebOpenFailureReason::ExtractorDisabled,
+                ));
             }
             tracing::info!(
                 source = %safe_label,
@@ -152,7 +155,7 @@ fn install_prepared_native_hds(
             error = %error,
             "Native HDS composition нарушила prepared attachment contract"
         );
-        MediaPreparationFailureKind::NativeHdsOpen
+        MediaPreparationFailureKind::NativeHdsOpen(WebOpenFailureReason::Unclassified)
     })?;
 
     Ok(PreparedMediaOpen {

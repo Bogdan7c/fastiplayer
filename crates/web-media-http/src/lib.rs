@@ -479,6 +479,13 @@ fn map_source_open_error(
         SourceError::HttpStatus { status, .. } if status.as_u16() == 403 => {
             ProviderOpenError::Transport(TransportFailure::AccessDenied)
         }
+        SourceError::HttpStatus { status, .. } => {
+            match http_status_transport_failure(status.as_u16()) {
+                Some(failure) => ProviderOpenError::Transport(failure),
+                // Прочие не-2xx статусы (400, 405, 408 и т.п.) сохраняют прежнюю категорию.
+                None => ProviderOpenError::Transport(TransportFailure::NetworkUnavailable),
+            }
+        }
         SourceError::InvalidHttpRedirect { .. }
         | SourceError::HttpBodyTooLarge { .. }
         | SourceError::InvalidContentRange { .. }
@@ -496,8 +503,7 @@ fn map_source_open_error(
         SourceError::InvalidConfig { .. }
         | SourceError::LocalIo { .. }
         | SourceError::HttpClientBuild { .. }
-        | SourceError::HttpRequest { .. }
-        | SourceError::HttpStatus { .. } => {
+        | SourceError::HttpRequest { .. } => {
             ProviderOpenError::Transport(TransportFailure::NetworkUnavailable)
         }
         SourceError::HttpRangeRedirectRejected { .. } => {
@@ -506,6 +512,22 @@ fn map_source_open_error(
         SourceError::FtpTransport { .. } => {
             ProviderOpenError::Transport(TransportFailure::NetworkUnavailable)
         }
+    }
+}
+
+/// Различимые для пользователя HTTP-статусы ответа сервера.
+///
+/// 401/407/403 разбираются раньше (там важно, отправлялись ли секреты). Здесь —
+/// статусы, которые раньше схлопывались в `NetworkUnavailable` и выглядели как
+/// «нет сети»: мёртвая ссылка (404), устаревшая ссылка (410), лимит запросов (429)
+/// и сбой сервера (5xx). `None` — статус без отдельного смысла для пользователя.
+fn http_status_transport_failure(status_code: u16) -> Option<TransportFailure> {
+    match status_code {
+        404 => Some(TransportFailure::NotFound),
+        410 => Some(TransportFailure::Gone),
+        429 => Some(TransportFailure::RateLimited),
+        500..=599 => Some(TransportFailure::ServerError),
+        _ => None,
     }
 }
 

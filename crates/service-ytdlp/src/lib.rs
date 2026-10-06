@@ -15,6 +15,7 @@ mod metadata;
 mod process;
 mod process_output;
 mod process_tree;
+mod rejection_reason;
 mod topology;
 
 pub use candidate::{
@@ -48,6 +49,7 @@ pub use locator::{
     YtDlpInputScheme, YtDlpLocatorParseError, YtDlpMediaLocator, parse_yt_dlp_media_locator,
 };
 pub use metadata::{YtDlpPlaylistMetadata, resolve_yt_dlp_playlist_metadata_with_config};
+pub use rejection_reason::YtDlpRejectionReason;
 pub use topology::{
     DEFAULT_TOPOLOGY_DEPTH, DEFAULT_TOPOLOGY_ENTRY_COUNT, DEFAULT_TOPOLOGY_JSON_DEPTH,
     DEFAULT_TOPOLOGY_JSON_LINE_BYTES, DEFAULT_TOPOLOGY_STDERR_BYTES, DEFAULT_TOPOLOGY_STDOUT_BYTES,

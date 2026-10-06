@@ -40,6 +40,7 @@ mod orchestration;
 mod pending_install;
 mod playlist;
 mod shutdown;
+mod web_failure;
 mod yt_dlp;
 
 use native_dash::NativeDashStartupJob;
@@ -50,6 +51,7 @@ pub(crate) use orchestration::StartupMediaPhase;
 #[cfg(test)]
 pub(crate) use orchestration::apply_restored_playback_policy;
 use orchestration::{StartupMediaOrchestration, StartupMediaTarget};
+use web_failure::StartupWebPreparationFailure;
 pub(crate) use yt_dlp::PreparedYtDlpStartupMedia;
 
 /// Интервал polling-а фоновой подготовки startup media, когда playback ещё не активен.
@@ -69,12 +71,13 @@ pub(crate) enum InitialMedia {
 }
 
 /// Результат фоновой подготовки CLI YtDlp URL.
-type YtDlpStartupResult = std::result::Result<PreparedYtDlpStartupMedia, String>;
+type YtDlpStartupResult =
+    std::result::Result<PreparedYtDlpStartupMedia, StartupWebPreparationFailure>;
 
 /// Результат фоновой подготовки generic direct media URL.
 type DirectMediaStartupResult = std::result::Result<
     media_source_open::direct_progressive_open::DirectProgressiveOpenResult,
-    String,
+    StartupWebPreparationFailure,
 >;
 
 /// Фоновый job, который не блокирует создание окна и UI.
@@ -120,7 +123,9 @@ impl YtDlpStartupJob {
             .name("yt_dlp-startup-resolver".to_string())
             .spawn(move || {
                 let resolve_result = if worker_cancellation_requested.load(Ordering::Acquire) {
-                    Err("YtDlp startup preparation отменена shutdown lifecycle".to_string())
+                    Err(StartupWebPreparationFailure::unclassified(
+                        "YtDlp startup preparation отменена shutdown lifecycle",
+                    ))
                 } else {
                     resolve_yt_dlp_startup_media(
                         &thread_locator,
@@ -131,7 +136,7 @@ impl YtDlpStartupJob {
                         worker_source_cancellation,
                         || worker_cancellation_requested.load(Ordering::Acquire),
                     )
-                    .map_err(|error| format!("{error:#}"))
+                    .map_err(|error| StartupWebPreparationFailure::from_preparation_error(&error))
                 };
 
                 if worker_cancellation_requested.load(Ordering::Acquire) {
@@ -179,13 +184,17 @@ impl YtDlpStartupJob {
             FinishedThreadJoin::Joined | FinishedThreadJoin::AlreadyJoined => {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
-                        Err("YtDlp startup resolver завершился без результата".to_string())
+                        Err(StartupWebPreparationFailure::unclassified(
+                            "YtDlp startup resolver завершился без результата",
+                        ))
                     })
                 })
             }
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
-                Some(Err("YtDlp startup resolver завершился panic".to_string()))
+                Some(Err(StartupWebPreparationFailure::unclassified(
+                    "YtDlp startup resolver завершился panic",
+                )))
             }
             FinishedThreadJoin::StillRunning => None,
         }
@@ -230,7 +239,9 @@ impl DirectMediaStartupJob {
             .name("direct-media-startup-opener".to_string())
             .spawn(move || {
                 let open_result = if worker_cancellation_requested.load(Ordering::Acquire) {
-                    Err("Direct media startup preparation отменена shutdown lifecycle".to_string())
+                    Err(StartupWebPreparationFailure::unclassified(
+                        "Direct media startup preparation отменена shutdown lifecycle",
+                    ))
                 } else {
                     resolve_direct_media_startup_media(
                         &thread_locator,
@@ -238,7 +249,7 @@ impl DirectMediaStartupJob {
                         &demux_config,
                         source_core::CancellationToken::new(),
                     )
-                    .map_err(|error| format!("{error:#}"))
+                    .map_err(|error| StartupWebPreparationFailure::from_preparation_error(&error))
                 };
 
                 if worker_cancellation_requested.load(Ordering::Acquire) {
@@ -287,15 +298,17 @@ impl DirectMediaStartupJob {
             FinishedThreadJoin::Joined | FinishedThreadJoin::AlreadyJoined => {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
-                        Err("Direct media startup opener завершился без результата".to_string())
+                        Err(StartupWebPreparationFailure::unclassified(
+                            "Direct media startup opener завершился без результата",
+                        ))
                     })
                 })
             }
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
-                Some(Err(
-                    "Direct media startup opener завершился panic".to_string()
-                ))
+                Some(Err(StartupWebPreparationFailure::unclassified(
+                    "Direct media startup opener завершился panic",
+                )))
             }
             FinishedThreadJoin::StillRunning => None,
         }
@@ -347,6 +360,9 @@ pub(crate) struct StartupMediaController {
     /// Startup-ошибка shell-слоя, которую нужно показать после создания UI.
     startup_error: Option<String>,
 
+    /// Безопасный домен последней запущенной startup-ссылки — подпись текста её ошибки.
+    web_display_host: Option<String>,
+
     /// Terminal shutdown закрывает admission новых startup jobs.
     terminal_shutdown_started: bool,
 
@@ -378,6 +394,7 @@ impl StartupMediaController {
             startup_config: None,
             system_capabilities: None,
             startup_error,
+            web_display_host: None,
             terminal_shutdown_started: false,
             terminal_shutdown_completed: false,
         }

@@ -49,9 +49,14 @@ pub(crate) fn local_open_failure_row_summary(
 }
 
 /// Человеческая формулировка причины, со строчной буквы (идёт после двоеточия).
-const fn failure_reason_phrase(reason: MediaOpenUserFailureReason) -> &'static str {
+///
+/// Общая для local и web: web-причины формулирует `crate::web_open_message`.
+pub(crate) const fn failure_reason_phrase(reason: MediaOpenUserFailureReason) -> &'static str {
     match reason {
         MediaOpenUserFailureReason::Preparation(reason) => preparation_failure_phrase(reason),
+        MediaOpenUserFailureReason::WebOpen(reason) => {
+            crate::web_open_message::web_open_failure_phrase(reason)
+        }
         MediaOpenUserFailureReason::PlayerInstall(reason) => player_install_failure_phrase(reason),
     }
 }

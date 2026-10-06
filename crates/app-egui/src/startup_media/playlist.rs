@@ -5,6 +5,7 @@
 
 use super::StartupMediaController;
 use super::orchestration::{StartupMediaPhase, StartupMediaTarget, StartupPendingInstall};
+use super::pending_install::StartupInstallTarget;
 use crate::playlist_runtime::{PlaylistImportIntent, StartupPlaylistImportTerminal};
 
 impl StartupMediaController {
@@ -76,7 +77,7 @@ impl StartupMediaController {
                         playlist_runtime.begin_startup_action_retention();
                         self.orchestration.pending_install = Some(StartupPendingInstall {
                             is_cli: true,
-                            local_target: None,
+                            target: StartupInstallTarget::PlaylistEntry,
                             superseded: false,
                         });
                         self.orchestration.phase = StartupMediaPhase::Applying;

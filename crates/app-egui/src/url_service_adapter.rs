@@ -33,6 +33,15 @@ impl StartupUrlLocator {
         self.0.safe_label()
     }
 
+    /// Безопасный домен сайта для текста ошибки: «youtube.com».
+    ///
+    /// Только хост (`Url::host_str` не включает логин, пароль и порт); путь и query
+    /// не попадают никуда. Ведущий `www.` убирается ради читаемости. `None` — у ссылки
+    /// нет хоста (тогда текст ошибки обходится без домена).
+    pub(crate) fn display_host(&self) -> Option<String> {
+        safe_display_host(self.0.expose_secret_for_persistence())
+    }
+
     /// Проверяет service-specific runtime enablement без знания policy в caller-е.
     pub(crate) fn validate_config(&self, app_config: &AppConfig) -> Result<(), String> {
         self.0.validate_config(app_config)
@@ -46,6 +55,9 @@ impl StartupUrlLocator {
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
     ) {
+        // Домен запоминается до запуска job-а: им подписывается текст ошибки, если
+        // подготовка или установка этой ссылки сорвётся (UX сессия 08).
+        controller.remember_web_display_host(self.display_host());
         self.0
             .start(controller, app_state, app_config, system_capabilities);
     }
@@ -92,6 +104,13 @@ impl StartupUrlLocator {
     fn yt_dlp_input_scheme(&self) -> Option<service_ytdlp::YtDlpInputScheme> {
         self.0.yt_dlp_input_scheme()
     }
+}
+
+/// Безопасный домен ссылки для текста ошибки (см. `StartupUrlLocator::display_host`).
+fn safe_display_host(exposed_url: &str) -> Option<String> {
+    let parsed_url = url::Url::parse(exposed_url).ok()?;
+    let host = parsed_url.host_str()?;
+    Some(host.strip_prefix("www.").unwrap_or(host).to_owned())
 }
 
 impl fmt::Debug for StartupUrlLocator {
@@ -224,7 +243,11 @@ impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
         if app_config.yt_dlp.enabled {
             Ok(())
         } else {
-            Err("NetworkError: URL service adapter отключён в config".to_string())
+            // Тот же понятный текст, что и при отказе подготовки (UX сессия 08).
+            Err(crate::web_open_message::web_open_failure_message(
+                safe_display_host(self.locator.expose_secret_for_persistence()).as_deref(),
+                crate::media_open::WebOpenFailureReason::ExtractorDisabled,
+            ))
         }
     }
 

@@ -60,8 +60,8 @@ impl StartupMediaController {
                     },
                     playlist_runtime,
                 ),
-                Err(error) => {
-                    self.handle_preparation_failure(error, app_state, playlist_runtime);
+                Err(failure) => {
+                    self.handle_web_preparation_failure(failure, app_state, playlist_runtime);
                 }
             }
         }
@@ -77,8 +77,8 @@ impl StartupMediaController {
                     web_preparation::compose_direct_startup_media(source_locator, opened_media),
                     playlist_runtime,
                 ),
-                Err(error) => {
-                    self.handle_preparation_failure(error, app_state, playlist_runtime);
+                Err(failure) => {
+                    self.handle_web_preparation_failure(failure, app_state, playlist_runtime);
                 }
             }
         }
@@ -90,8 +90,8 @@ impl StartupMediaController {
             changed = true;
             match result {
                 Ok(prepared) => self.hold_prepared(prepared, playlist_runtime),
-                Err(error) => {
-                    self.handle_preparation_failure(error, app_state, playlist_runtime);
+                Err(failure) => {
+                    self.handle_web_preparation_failure(failure, app_state, playlist_runtime);
                 }
             }
         }
@@ -103,8 +103,8 @@ impl StartupMediaController {
             changed = true;
             match result {
                 Ok(prepared) => self.hold_prepared(prepared, playlist_runtime),
-                Err(error) => {
-                    self.handle_preparation_failure(error, app_state, playlist_runtime);
+                Err(failure) => {
+                    self.handle_web_preparation_failure(failure, app_state, playlist_runtime);
                 }
             }
         }
@@ -116,8 +116,8 @@ impl StartupMediaController {
             changed = true;
             match result {
                 Ok(prepared) => self.hold_prepared(prepared, playlist_runtime),
-                Err(error) => {
-                    self.handle_preparation_failure(error, app_state, playlist_runtime);
+                Err(failure) => {
+                    self.handle_web_preparation_failure(failure, app_state, playlist_runtime);
                 }
             }
         }
@@ -129,8 +129,8 @@ impl StartupMediaController {
             changed = true;
             match result {
                 Ok(prepared) => self.hold_prepared(prepared, playlist_runtime),
-                Err(error) => {
-                    self.handle_preparation_failure(error, app_state, playlist_runtime);
+                Err(failure) => {
+                    self.handle_web_preparation_failure(failure, app_state, playlist_runtime);
                 }
             }
         }

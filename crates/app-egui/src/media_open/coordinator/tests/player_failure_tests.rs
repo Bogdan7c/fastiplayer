@@ -401,3 +401,83 @@ fn real_player_rejects_unknown_video_codec_with_readable_reason_and_keeps_old_me
         old_media_instance_id
     );
 }
+
+/// UX сессия 08: web-ссылка не подготовилась (сервер ответил 404) — coordinator отдаёт
+/// типизированную причину, а настоящий player продолжает держать прежнее media.
+#[test]
+fn web_preparation_failure_reports_reason_and_keeps_old_media_playing() {
+    use crate::media_open::preparation::web_failure_tests::{LoopbackServer, ServerAnswer};
+
+    let mut worker =
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("player worker стартует");
+    let old_install = worker
+        .load_prepared_media(
+            player_core::PreparedMedia::from_external_label("old-media", Box::new(FakeDemuxer)),
+            false,
+        )
+        .expect("старое media принято worker-ом");
+    let old_snapshot = wait_for_worker_snapshot(&mut worker, |snapshot| {
+        snapshot.source_label.as_deref() == Some("old-media")
+            && snapshot.media_instance_id.is_some()
+    });
+    drop(old_install);
+
+    let server = LoopbackServer::spawn(ServerAnswer::Status {
+        status_line: "404 Not Found",
+        extra_headers: "",
+    });
+    let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
+        &server.secret_media_url(),
+    )
+    .expect("loopback mp4 ссылка — direct media");
+    let request = crate::media_open::MediaOpenSourceRequest::Web(
+        crate::media_open::WebMediaOpenRequest::direct(
+            locator,
+            fastiplayer_config::NetworkConfig::default(),
+            fastiplayer_config::PlayerDemuxConfig::default(),
+        ),
+    );
+    let mut coordinator = coordinator();
+    coordinator.attach_fake_player(Arc::new(worker.command_sender()));
+    coordinator
+        .start_fake(
+            client(306),
+            SafeMediaLabel::from_service_safe_label("direct mp4 (127.0.0.1)"),
+            move || {
+                let cancellation = crate::media_open::executor::PreparationCancellation::new();
+                crate::media_open::preparation::prepare_source(request, &cancellation)
+            },
+        )
+        .expect("request принят");
+    let request_id = coordinator.snapshot().expect("текущий request").request_id;
+
+    let deadline = Instant::now() + REAL_WORKER_DEADLINE;
+    let kind = loop {
+        coordinator.drain();
+        if let Ok(Some(MediaOpenTerminalOutcome::PreparationFailed { kind, .. })) =
+            coordinator.take_terminal(request_id)
+        {
+            break kind;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "подготовка не завершилась отказом"
+        );
+        thread::sleep(Duration::from_millis(1));
+    };
+
+    assert_eq!(
+        kind,
+        MediaPreparationFailureKind::DirectOpen(crate::media_open::WebOpenFailureReason::NotFound)
+    );
+    let snapshot_after_failure =
+        wait_for_worker_snapshot(&mut worker, |snapshot| snapshot.source_label.is_some());
+    assert_eq!(
+        snapshot_after_failure.source_label.as_deref(),
+        Some("old-media")
+    );
+    assert_eq!(
+        snapshot_after_failure.media_instance_id,
+        old_snapshot.media_instance_id
+    );
+}

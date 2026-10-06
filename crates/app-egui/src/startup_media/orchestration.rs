@@ -14,7 +14,7 @@ use crate::state::PreparedSingleMediaOpen;
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
 
 use super::StartupMediaController;
-use super::pending_install::{StartupLocalTarget, StartupSiblingDiscovery};
+use super::pending_install::{StartupInstallTarget, StartupLocalTarget, StartupSiblingDiscovery};
 
 /// Чья подготовка сейчас владеет единственным startup media slot-ом.
 pub(super) enum StartupMediaTarget {
@@ -62,8 +62,8 @@ pub(super) struct StartupMediaOrchestration {
 pub(super) struct StartupPendingInstall {
     /// CLI failure может открыть сохранённый fallback только для proven pre-barrier terminal.
     pub(super) is_cli: bool,
-    /// Локальный файл (CLI или восстановленный): имя для текста ошибки и sibling discovery.
-    pub(super) local_target: Option<StartupLocalTarget>,
+    /// Что устанавливается: от этого зависят шаблон текста ошибки и sibling discovery.
+    pub(super) target: StartupInstallTarget,
     /// Newer user/CLI mutation wins observable startup result while old receipts are drained.
     pub(super) superseded: bool,
 }
@@ -429,6 +429,7 @@ impl StartupMediaController {
             StartupMediaTarget::RestoredCurrent(target) => target.playback_intent(),
         };
         let mut pending_install = None;
+        let web_install_target = StartupInstallTarget::web(self.web_display_host());
 
         let install_result = match prepared {
             PreparedStartupMedia::Local(prepared) => {
@@ -475,7 +476,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_target: Some(StartupLocalTarget {
+                            target: StartupInstallTarget::Local(StartupLocalTarget {
                                 path,
                                 sibling_discovery: if is_cli {
                                     StartupSiblingDiscovery::AfterInstall(media_kind)
@@ -557,7 +558,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_target: None,
+                            target: web_install_target,
                             superseded: false,
                         });
                     })
@@ -584,7 +585,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_target: None,
+                            target: web_install_target,
                             superseded: false,
                         });
                     })
@@ -616,7 +617,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_target: None,
+                            target: web_install_target,
                             superseded: false,
                         });
                     })
@@ -648,7 +649,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_target: None,
+                            target: web_install_target,
                             superseded: false,
                         });
                     })
@@ -680,7 +681,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_target: None,
+                            target: web_install_target,
                             superseded: false,
                         });
                     })
@@ -712,7 +713,7 @@ impl StartupMediaController {
                     .map(|_| {
                         pending_install = Some(StartupPendingInstall {
                             is_cli,
-                            local_target: None,
+                            target: web_install_target,
                             superseded: false,
                         });
                     })
