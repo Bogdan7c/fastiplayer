@@ -54,6 +54,20 @@ impl YtDlpMetadataDemand {
             yt_dlp_config,
         }
     }
+
+    /// Ссылка, по которой реально пойдёт запрос метаданных (для проверки выбора ссылки).
+    #[cfg(test)]
+    pub(in crate::playlist_runtime) fn requested_locator(
+        &self,
+    ) -> &service_ytdlp::YtDlpMediaLocator {
+        &self.yt_dlp_locator
+    }
+
+    /// Identity строки, по которой применяется stale-guard.
+    #[cfg(test)]
+    pub(in crate::playlist_runtime) fn expected_locator(&self) -> &PlaylistLocator {
+        &self.expected_locator
+    }
 }
 
 /// Bounded admission result не смешивает coalescing, backpressure и disabled policy.

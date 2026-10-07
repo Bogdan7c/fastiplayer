@@ -111,7 +111,11 @@ trait PlaylistUrlTopologyResolver: Send + Sync {
 }
 
 /// Production resolver переиспользует S15 extraction и чистый S16 mapper.
-struct ServicePlaylistUrlTopologyResolver;
+#[derive(Default)]
+struct ServicePlaylistUrlTopologyResolver {
+    /// Extractor adapter с process launcher-ом; в тестах подменяется hermetic launcher-ом.
+    extractor_adapter: service_ytdlp::YtDlpExtractorAdapter,
+}
 
 impl PlaylistUrlTopologyResolver for ServicePlaylistUrlTopologyResolver {
     fn resolve(
@@ -122,7 +126,8 @@ impl PlaylistUrlTopologyResolver for ServicePlaylistUrlTopologyResolver {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<PlaylistImportDraft, PlaylistUrlImportFailure> {
         // Service владеет процессом, bounded JSON contract и cooperative cancellation.
-        let topology = service_ytdlp::YtDlpExtractorAdapter::default()
+        let topology = self
+            .extractor_adapter
             .extract_topology_with_budgets(
                 locator,
                 yt_dlp_config,
@@ -236,7 +241,10 @@ pub(super) struct PlaylistUrlImportOwner {
 impl PlaylistUrlImportOwner {
     /// Запускает ровно один worker; failure остаётся typed и не ломает runtime construction.
     pub(super) fn new(wake_port: AppWakePort) -> Self {
-        Self::with_resolver(wake_port, Arc::new(ServicePlaylistUrlTopologyResolver))
+        Self::with_resolver(
+            wake_port,
+            Arc::new(ServicePlaylistUrlTopologyResolver::default()),
+        )
     }
 
     /// Dependency injection сохраняет production thread/lifecycle semantics в focused tests.

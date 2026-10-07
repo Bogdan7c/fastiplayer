@@ -10,10 +10,8 @@ use super::action_jobs::{
     ManualAddJobId, ManualAddOrder, ManualAddStartError, PlaylistDiscoveryJobsReadModel,
     VisibleRefreshDemand, VisibleRefreshRequestOutcome,
 };
+use super::yt_dlp_metadata_demand::yt_dlp_metadata_demands;
 use crate::playlist_runtime::PlaylistRuntime;
-use crate::url_service_adapter::{
-    PlaylistUrlMetadataSource, StartupUrlClassification, classify_playlist_url,
-};
 
 impl PlaylistRuntime {
     /// Manual Add кнопки «Добавить файлы»: пачка добавляется в натуральном порядке имён.
@@ -80,33 +78,7 @@ impl PlaylistRuntime {
                 })
             })
             .collect();
-        let yt_dlp_demands = item_ids
-            .iter()
-            .filter_map(|item_id| {
-                let item = controller.queue().item(*item_id)?;
-                if item
-                    .cached_metadata()
-                    .title()
-                    .is_some_and(|title| !title.trim().is_empty())
-                {
-                    return None;
-                }
-                let secret_url = item.locator().as_secret_url()?;
-                let StartupUrlClassification::Supported(locator) =
-                    classify_playlist_url(secret_url)
-                else {
-                    return None;
-                };
-                let PlaylistUrlMetadataSource::YtDlp(yt_dlp_locator) =
-                    locator.playlist_metadata_source()?;
-                Some(super::yt_dlp_metadata::YtDlpMetadataDemand::new(
-                    *item_id,
-                    item.locator().clone(),
-                    yt_dlp_locator,
-                    yt_dlp_config.clone(),
-                ))
-            })
-            .collect();
+        let yt_dlp_demands = yt_dlp_metadata_demands(controller, item_ids, yt_dlp_config);
         let outcome = self.discovery.request_visible_refresh(local_demands);
         let _yt_dlp_outcome = self.discovery.request_yt_dlp_metadata(yt_dlp_demands);
         outcome

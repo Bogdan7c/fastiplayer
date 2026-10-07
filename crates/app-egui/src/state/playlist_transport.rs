@@ -189,8 +189,17 @@ impl AppState {
             {
                 Ok(request) => request,
                 Err(error) => {
-                    let failure_outcome = playlist_runtime
-                        .report_unstaged_planned_playlist_navigation_failure(next_install);
+                    // Если ролик нельзя открыть отдельно, бейдж строки получает эту причину.
+                    let failure_outcome =
+                        match playlist_runtime.operational_open_refusal_summary(&next_install) {
+                            Some(summary) => playlist_runtime
+                                .report_unstaged_planned_playlist_navigation_failure_with_summary(
+                                    next_install,
+                                    summary,
+                                ),
+                            None => playlist_runtime
+                                .report_unstaged_planned_playlist_navigation_failure(next_install),
+                        };
                     warn!(error = %error, "Playlist transport target не прошёл source boundary");
                     let UnstagedPlannedTargetFailureOutcome::OpenItem { install } = failure_outcome
                     else {
@@ -518,7 +527,12 @@ impl AppState {
     ) -> Result<MediaOpenSourceRequest, &'static str> {
         let open_intent = playlist_runtime
             .media_open_intent_for_planned_install(install)
-            .map_err(|_| "stale playlist target")?;
+            .map_err(|error| match error {
+                crate::playlist_runtime::PlaylistMediaOpenGateError::OperationalLocatorRefused(
+                    _,
+                ) => "playlist item has no standalone open locator",
+                _ => "stale playlist target",
+            })?;
         self.playlist_source_request_for_intent(open_intent)
     }
 

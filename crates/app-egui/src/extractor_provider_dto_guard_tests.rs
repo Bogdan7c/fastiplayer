@@ -48,6 +48,7 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
         "YtDlpTransportRequestContext",
     ];
     const ALLOWED_PRODUCTION_SOURCES: &[&str] = &[
+        "playlist_runtime/operational_open.rs",
         "playlist_runtime/url_import.rs",
         "startup_media/yt_dlp.rs",
         "url_topology_drafts.rs",

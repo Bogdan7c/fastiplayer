@@ -32,7 +32,7 @@ impl PlaylistRuntime {
 
     /// Возвращает только persisted current; `None` остаётся idle и не выбирает первый row.
     pub(crate) fn startup_restored_current(&mut self) -> Option<super::StartupRestoreTarget> {
-        let mut target = self.controller.as_ref()?.startup_restored_current()?;
+        let mut target = self.controller.as_mut()?.startup_restored_current()?;
         let position = self
             .resume_persistence
             .startup_position(target.item_id(), &target.locator);

@@ -163,8 +163,11 @@ impl PlaylistRuntime {
                     .map_err(|_| PlaylistMediaOpenGateError::InvalidPlaybackSpan)
             })
             .transpose()?;
+        // Открываем собственную identity ролика, а не ссылку на корень коллекции.
+        let locator = super::operational_open::operational_open_locator(item)
+            .map_err(PlaylistMediaOpenGateError::OperationalLocatorRefused)?;
         Ok(PlaylistMediaOpenIntent {
-            locator: item.locator().clone(),
+            locator,
             playback_window,
         })
     }
@@ -342,13 +345,22 @@ impl PlaylistRuntime {
         &mut self,
         install: PlannedPlaylistInstall,
     ) -> UnstagedPlannedTargetFailureOutcome {
+        self.report_unstaged_planned_playlist_navigation_failure_with_summary(
+            install,
+            Arc::from(GENERIC_AUTOMATIC_TARGET_FAILURE_SUMMARY),
+        )
+    }
+
+    /// Тот же отказ до staging, но с понятной причиной для бейджа строки.
+    pub(crate) fn report_unstaged_planned_playlist_navigation_failure_with_summary(
+        &mut self,
+        install: PlannedPlaylistInstall,
+        failure_summary: Arc<str>,
+    ) -> UnstagedPlannedTargetFailureOutcome {
         let Some(controller) = self.controller.as_mut() else {
             return UnstagedPlannedTargetFailureOutcome::RuntimeUnavailable;
         };
-        let outcome = controller.report_unstaged_planned_target_failure(
-            install,
-            Arc::from("Не удалось подготовить следующий элемент очереди"),
-        );
+        let outcome = controller.report_unstaged_planned_target_failure(install, failure_summary);
         self.discovery.synchronize_navigation_interest(controller);
         outcome
     }

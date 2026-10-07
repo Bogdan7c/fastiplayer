@@ -280,7 +280,8 @@ impl StartupMediaController {
             // Каждый D22 fallback создаётся domain-owner-ом с безопасным paused default.
             // Startup owner повторно применяет пользовательскую policy до нового admission.
             apply_restored_playback_policy(&mut target, &config);
-            let locator = target.locator.clone();
+            // Открываем собственную identity ролика, а не ссылку на корень коллекции.
+            let locator = target.open_locator.clone();
             let readiness_target = match target.position() {
                 crate::playlist_runtime::StartupPosition::KeepStart => {
                     crate::startup_readiness::StartupTargetExpectation::Beginning

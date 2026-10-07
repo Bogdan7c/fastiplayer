@@ -10,6 +10,7 @@ mod metadata_sort;
 mod navigation;
 mod settings_port;
 mod yt_dlp_metadata;
+mod yt_dlp_metadata_demand;
 
 #[allow(
     unused_imports,

@@ -18,6 +18,9 @@ use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::identity::{
     PendingTargetOrigin, PlaylistItemErrorCategory, PlaylistItemErrorPhase,
 };
+use crate::playlist_runtime::operational_open::{
+    OperationalOpenLocatorError, operational_open_locator,
+};
 
 /// Startup open всегда явно говорит, оставлять начало или восстанавливать checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +31,10 @@ pub(crate) enum StartupPosition {
 
 /// Opaque startup target сохраняет exact traversal mutation до `Installed`.
 pub(crate) struct StartupRestoreTarget {
+    /// Identity строки очереди (ключ resume-checkpoint, stale-guard); НЕ для сетевого open.
     pub(crate) locator: playlist_core::PlaylistLocator,
+    /// Locator, который реально открывается (собственная identity ролика коллекции).
+    pub(crate) open_locator: Box<playlist_core::PlaylistLocator>,
     pub(crate) position: StartupPosition,
     pub(super) install: PlannedPlaylistInstall,
 }
@@ -59,6 +65,29 @@ impl StartupRestoreTarget {
     }
 }
 
+/// Следующий шаг D22 до построения open target (внутренний, без locator-ов).
+enum StartupRestoreStep {
+    OpenItem {
+        item_id: PlaylistItemId,
+        plan: Box<AutomaticTraversalPlan>,
+    },
+    Stopped {
+        cause: AutomaticStopCause,
+    },
+}
+
+/// Итог попытки построить open target для строки очереди.
+enum StartupRestoreTargetBuild {
+    Ready(StartupRestoreTarget),
+    /// Строка исчезла из очереди.
+    Missing,
+    /// Открывать отдельно нечего; install возвращается для продолжения цепочки.
+    Refused {
+        install: PlannedPlaylistInstall,
+        refusal: OperationalOpenLocatorError,
+    },
+}
+
 /// Результат D22 preparation failure для одного restored target.
 pub(crate) enum StartupRestoreFailureOutcome {
     Stopped { cause: AutomaticStopCause },
@@ -74,19 +103,16 @@ impl PlaylistController {
     ) -> Option<StartupRestoreFailureOutcome> {
         let request = self.take_awaiting_startup_restore_failure(request_id)?;
         let item_id = request.target_item_id?;
-        let locator = self.queue.item(item_id)?.locator().clone();
-        Some(self.report_startup_restore_failure(
-            StartupRestoreTarget {
-                locator,
-                position: StartupPosition::KeepStart,
-                install: PlannedPlaylistInstall {
-                    item_id,
-                    playback_intent: PlaybackIntent::StartPaused,
-                    intent_revision: request.intent_revision,
-                    pending_origin: request.origin,
-                    expected_queue_revision: request.expected_queue_revision,
-                    mutation: request.mutation,
-                },
+        // Строка могла исчезнуть: тогда продолжать цепочку не от чего.
+        self.queue.item(item_id)?;
+        Some(self.report_startup_restore_install_failed(
+            PlannedPlaylistInstall {
+                item_id,
+                playback_intent: PlaybackIntent::StartPaused,
+                intent_revision: request.intent_revision,
+                pending_origin: request.origin,
+                expected_queue_revision: request.expected_queue_revision,
+                mutation: request.mutation,
             },
             safe_summary,
         ))
@@ -112,39 +138,55 @@ impl PlaylistController {
     }
 
     /// Возвращает persisted current без выбора первого элемента при `current=None`.
-    pub(crate) fn startup_restored_current(&self) -> Option<StartupRestoreTarget> {
+    ///
+    /// Если у current нет locator-а для открытия (например, у ролика коллекции сохранён
+    /// только внутренний идентификатор экстрактора), строка помечается ошибкой и D22
+    /// цепочка пропусков ведётся сразу — наружу выходят только открываемые target-ы.
+    pub(crate) fn startup_restored_current(&mut self) -> Option<StartupRestoreTarget> {
         let item_id = self.queue.traversal_current()?.item_id();
-        let item = self.queue.item(item_id)?;
-        Some(StartupRestoreTarget {
-            locator: item.locator().clone(),
-            position: StartupPosition::KeepStart,
-            install: self.planned_startup_restore_install(
-                item_id,
-                PlaylistInstallMutation::Reserved(
-                    playlist_core::ReservedQueueMutation::select_committed(item_id),
-                ),
+        let install = self.planned_startup_restore_install(
+            item_id,
+            PlaylistInstallMutation::Reserved(
+                playlist_core::ReservedQueueMutation::select_committed(item_id),
             ),
-        })
+        );
+        match self.build_startup_restore_target(install) {
+            StartupRestoreTargetBuild::Ready(target) => Some(target),
+            StartupRestoreTargetBuild::Missing => None,
+            StartupRestoreTargetBuild::Refused { install, refusal } => {
+                tracing::warn!(error = %refusal, "Restored current нельзя открыть отдельно");
+                match self
+                    .report_startup_restore_install_failed(install, Arc::from(refusal.to_string()))
+                {
+                    StartupRestoreFailureOutcome::OpenItem { target } => Some(target),
+                    StartupRestoreFailureOutcome::Stopped { .. } => None,
+                }
+            }
+        }
     }
 
     /// D22 сохраняет unavailable row и строит bounded domain traversal только при Skip.
-    ///
-    /// Заодно ведёт цепочку пропусков (сессия 07): первая неудача восстановленного
-    /// элемента начинает цепочку «до первого воспроизведения», следующие её продолжают,
-    /// а остановка закрывает её итогом для уведомления.
     pub(crate) fn report_startup_restore_failure(
         &mut self,
         failed: StartupRestoreTarget,
         safe_summary: Arc<str>,
     ) -> StartupRestoreFailureOutcome {
+        self.report_startup_restore_install_failed(failed.install, safe_summary)
+    }
+
+    /// Ведёт цепочку пропусков (сессия 07): первая неудача восстановленного
+    /// элемента начинает цепочку «до первого воспроизведения», следующие её продолжают,
+    /// а остановка закрывает её итогом для уведомления.
+    fn report_startup_restore_install_failed(
+        &mut self,
+        failed: PlannedPlaylistInstall,
+        safe_summary: Arc<str>,
+    ) -> StartupRestoreFailureOutcome {
         // Reserved — это сам восстановленный current; AutomaticTraversal — уже продолжение.
-        if matches!(
-            failed.install.mutation,
-            PlaylistInstallMutation::Reserved(_)
-        ) {
+        if matches!(failed.mutation, PlaylistInstallMutation::Reserved(_)) {
             self.begin_automatic_skip_chain(SkipChainStart::BeforeAnyPlayback);
         }
-        self.record_automatic_skip(failed.install.item_id);
+        self.record_automatic_skip(failed.item_id);
         let outcome = self.startup_restore_failure_outcome(failed, safe_summary);
         if let StartupRestoreFailureOutcome::Stopped { cause } = &outcome {
             self.finish_automatic_skip_chain_with_stop(*cause);
@@ -152,15 +194,53 @@ impl PlaylistController {
         outcome
     }
 
-    /// Решение D22 для одного неудачного restored target без учёта сводки пропусков.
+    /// Решение D22 для неудачного restored target без учёта сводки пропусков.
+    ///
+    /// Кандидат, у которого нет locator-а для открытия, пропускается тем же циклом
+    /// (не рекурсией: очередь может быть до 50 000 строк).
     fn startup_restore_failure_outcome(
         &mut self,
-        failed: StartupRestoreTarget,
-        safe_summary: Arc<str>,
+        mut failed: PlannedPlaylistInstall,
+        mut safe_summary: Arc<str>,
     ) -> StartupRestoreFailureOutcome {
-        let failed_item_id = failed.install.item_id;
+        loop {
+            let (item_id, plan) = match self.next_startup_restore_step(failed, safe_summary) {
+                StartupRestoreStep::OpenItem { item_id, plan } => (item_id, plan),
+                StartupRestoreStep::Stopped { cause } => {
+                    return StartupRestoreFailureOutcome::Stopped { cause };
+                }
+            };
+            let install = self.planned_startup_restore_install(
+                item_id,
+                PlaylistInstallMutation::AutomaticTraversal(plan),
+            );
+            match self.build_startup_restore_target(install) {
+                StartupRestoreTargetBuild::Ready(target) => {
+                    return StartupRestoreFailureOutcome::OpenItem { target };
+                }
+                StartupRestoreTargetBuild::Missing => {
+                    return StartupRestoreFailureOutcome::Stopped {
+                        cause: AutomaticStopCause::StructuralInvalidation,
+                    };
+                }
+                StartupRestoreTargetBuild::Refused { install, refusal } => {
+                    tracing::warn!(error = %refusal, "Кандидат restore нельзя открыть отдельно");
+                    self.record_automatic_skip(install.item_id);
+                    failed = install;
+                    safe_summary = Arc::from(refusal.to_string());
+                }
+            }
+        }
+    }
+
+    /// Отмечает ошибку строки и выбирает следующий шаг D22 без построения open target.
+    fn next_startup_restore_step(
+        &mut self,
+        failed: PlannedPlaylistInstall,
+        safe_summary: Arc<str>,
+    ) -> StartupRestoreStep {
         self.upsert_runtime_error(
-            failed_item_id,
+            failed.item_id,
             PlaylistItemErrorPhase::Preparation,
             PlaylistItemErrorCategory::Unavailable,
             safe_summary,
@@ -168,72 +248,68 @@ impl PlaylistController {
             None,
         );
         if self.repeat_mode == RepeatMode::RepeatOne {
-            return StartupRestoreFailureOutcome::Stopped {
+            return StartupRestoreStep::Stopped {
                 cause: AutomaticStopCause::RepeatOneError,
             };
         }
         if self.error_behavior == PlaylistErrorBehavior::Stop {
-            return StartupRestoreFailureOutcome::Stopped {
+            return StartupRestoreStep::Stopped {
                 cause: AutomaticStopCause::ErrorPolicy,
             };
         }
 
-        let traversal = match failed.install.mutation {
+        let traversal = match failed.mutation {
             PlaylistInstallMutation::Reserved(_) => self
                 .queue
                 .begin_automatic_error_traversal(AutomaticEndedIntent::new(self.repeat_mode)),
             PlaylistInstallMutation::AutomaticTraversal(plan) => {
-                match self.queue.advance_automatic_traversal_after_failure(*plan) {
+                return match self.queue.advance_automatic_traversal_after_failure(*plan) {
                     AutomaticTraversalAdvance::OpenItem { item_id, plan } => {
-                        return self.startup_restore_open_item(item_id, plan);
+                        StartupRestoreStep::OpenItem { item_id, plan }
                     }
                     AutomaticTraversalAdvance::AllFailed { attempted_count } => {
-                        return StartupRestoreFailureOutcome::Stopped {
+                        StartupRestoreStep::Stopped {
                             cause: AutomaticStopCause::AllCandidatesFailed { attempted_count },
-                        };
+                        }
                     }
-                }
+                };
             }
             PlaylistInstallMutation::ManualNavigation => {
-                return StartupRestoreFailureOutcome::Stopped {
+                return StartupRestoreStep::Stopped {
                     cause: AutomaticStopCause::StructuralInvalidation,
                 };
             }
         };
         match traversal {
             AutomaticTraversalStart::OpenItem { item_id, plan } => {
-                self.startup_restore_open_item(item_id, plan)
+                StartupRestoreStep::OpenItem { item_id, plan }
             }
-            AutomaticTraversalStart::ReplayCurrent { .. } => {
-                StartupRestoreFailureOutcome::Stopped {
-                    cause: AutomaticStopCause::RepeatOneError,
-                }
-            }
-            AutomaticTraversalStart::Stop(reason) => StartupRestoreFailureOutcome::Stopped {
+            AutomaticTraversalStart::ReplayCurrent { .. } => StartupRestoreStep::Stopped {
+                cause: AutomaticStopCause::RepeatOneError,
+            },
+            AutomaticTraversalStart::Stop(reason) => StartupRestoreStep::Stopped {
                 cause: AutomaticStopCause::Domain(reason),
             },
         }
     }
 
-    fn startup_restore_open_item(
+    /// Строит target с operational locator-ом либо сообщает, почему открыть строку нельзя.
+    fn build_startup_restore_target(
         &self,
-        item_id: PlaylistItemId,
-        plan: Box<AutomaticTraversalPlan>,
-    ) -> StartupRestoreFailureOutcome {
-        let Some(item) = self.queue.item(item_id) else {
-            return StartupRestoreFailureOutcome::Stopped {
-                cause: AutomaticStopCause::StructuralInvalidation,
-            };
+        install: PlannedPlaylistInstall,
+    ) -> StartupRestoreTargetBuild {
+        let Some(item) = self.queue.item(install.item_id) else {
+            return StartupRestoreTargetBuild::Missing;
         };
-        StartupRestoreFailureOutcome::OpenItem {
-            target: StartupRestoreTarget {
+        match operational_open_locator(item) {
+            Ok(open_locator) => StartupRestoreTargetBuild::Ready(StartupRestoreTarget {
                 locator: item.locator().clone(),
+                // Box держит target ниже порога `large_enum_variant` у enum-ов-обёрток.
+                open_locator: Box::new(open_locator),
                 position: StartupPosition::KeepStart,
-                install: self.planned_startup_restore_install(
-                    item_id,
-                    PlaylistInstallMutation::AutomaticTraversal(plan),
-                ),
-            },
+                install,
+            }),
+            Err(refusal) => StartupRestoreTargetBuild::Refused { install, refusal },
         }
     }
 
@@ -328,3 +404,7 @@ mod playback_policy_tests {
         assert_eq!(target.playback_intent(), PlaybackIntent::StartPaused);
     }
 }
+
+#[cfg(test)]
+#[path = "startup_restore/open_locator_tests.rs"]
+mod open_locator_tests;

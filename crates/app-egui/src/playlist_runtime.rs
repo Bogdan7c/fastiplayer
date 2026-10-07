@@ -38,6 +38,7 @@ pub(crate) use lifecycle_checkpoint::LifecycleTimelineCheckpointPosition;
 pub(crate) use local_files_replacement::LocalFilesReplacementOutcome;
 pub(crate) use resolved_url_collection::{DroppedWebUrlReplacementStart, ResolvedUrlCollection};
 mod media_reset;
+mod operational_open;
 mod persistence;
 mod persistence_runtime;
 mod prepared_next;
@@ -255,6 +256,8 @@ pub(crate) enum PlaylistMediaOpenGateError {
     ControllerInvariant(controller::PlaylistControllerInvariantViolation),
     InvalidPlaybackSpan,
     StalePlannedTarget,
+    /// У строки нет locator-а для открытия отдельного ролика (см. `operational_open`).
+    OperationalLocatorRefused(operational_open::OperationalOpenLocatorError),
 }
 
 /// Typed controller slot физически не содержит allocator до load decision.

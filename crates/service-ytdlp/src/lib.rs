@@ -57,15 +57,16 @@ pub use topology::{
     TOPOLOGY_SUMMARY_TEXT_MAX_UTF8_BYTES, YT_DLP_DURABLE_REOPEN_PAYLOAD_MAX_BYTES,
     YT_DLP_DURABLE_REOPEN_PAYLOAD_VERSION, YT_DLP_DURABLE_REOPEN_SERVICE_OWNER,
     YtDlpDelegationSummaryPolicy, YtDlpDurableReopenClassificationError,
-    YtDlpDurableReopenIdentityInput, YtDlpDurableReopenMaterialKind, YtDlpDurableReopenPayload,
-    YtDlpTopology, YtDlpTopologyBudgetField, YtDlpTopologyBudgets, YtDlpTopologyCollection,
+    YtDlpDurableReopenDecodeError, YtDlpDurableReopenIdentityInput, YtDlpDurableReopenMaterialKind,
+    YtDlpDurableReopenPayload, YtDlpDurableReopenPayloadInput, YtDlpTopology,
+    YtDlpTopologyBudgetField, YtDlpTopologyBudgets, YtDlpTopologyCollection,
     YtDlpTopologyDelegation, YtDlpTopologyEntry, YtDlpTopologyEntryKind, YtDlpTopologyError,
     YtDlpTopologyIdentity, YtDlpTopologyInvalidResponseReason, YtDlpTopologyKind,
     YtDlpTopologyMultiVideo, YtDlpTopologySummary, YtDlpTopologySummaryFieldState,
     YtDlpTopologySummaryUnavailableReason, YtDlpTopologyVideo, YtDlpUnavailableTopologyEntry,
     YtDlpUnavailableTopologyReason, classify_yt_dlp_delegation_reopen_target,
-    classify_yt_dlp_durable_reopen_identity, extract_yt_dlp_topology_with_budgets,
-    extract_yt_dlp_topology_with_config,
+    classify_yt_dlp_durable_reopen_identity, decode_yt_dlp_durable_reopen_payload,
+    extract_yt_dlp_topology_with_budgets, extract_yt_dlp_topology_with_config,
 };
 
 /// Отличает authority-style network URL от обычного local path.

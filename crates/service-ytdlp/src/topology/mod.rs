@@ -8,6 +8,7 @@ mod parser;
 mod parser_tests;
 mod process;
 mod reopen;
+mod reopen_decode;
 
 use fastiplayer_config::YtDlpConfig;
 use serde_json::{Value, json};
@@ -32,6 +33,11 @@ pub use reopen::{
     YT_DLP_DURABLE_REOPEN_SERVICE_OWNER, YtDlpDurableReopenClassificationError,
     YtDlpDurableReopenIdentityInput, YtDlpDurableReopenMaterialKind, YtDlpDurableReopenPayload,
     classify_yt_dlp_delegation_reopen_target, classify_yt_dlp_durable_reopen_identity,
+};
+
+pub use reopen_decode::{
+    YtDlpDurableReopenDecodeError, YtDlpDurableReopenPayloadInput,
+    decode_yt_dlp_durable_reopen_payload,
 };
 
 use crate::error::YtDlpServiceError;

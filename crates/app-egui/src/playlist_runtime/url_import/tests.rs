@@ -601,6 +601,7 @@ fn whole_group_capacity_preview_never_commits_a_partial_compound() {
     );
 }
 
+mod entry_open_locator;
 /// UX сессия 09: индикатор, отмена пользователем, причины отказа, trim и подсказка схемы.
 #[path = "tests/progress.rs"]
 mod progress;
