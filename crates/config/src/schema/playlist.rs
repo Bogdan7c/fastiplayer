@@ -1,5 +1,18 @@
 use serde::{Deserialize, Serialize};
 
+/// Сколько файлов берём из брошенной папки по умолчанию.
+pub const DEFAULT_DROPPED_FOLDER_MAX_FILES: u16 = 2_000;
+/// Минимум файлов из брошенной папки (меньше смысла нет).
+pub const MIN_DROPPED_FOLDER_MAX_FILES: u16 = 1;
+/// Максимум файлов из брошенной папки: защита от случайного броска корня диска.
+pub const MAX_DROPPED_FOLDER_MAX_FILES: u16 = 10_000;
+/// Глубина подпапок по умолчанию (0 — только сама брошенная папка).
+pub const DEFAULT_DROPPED_FOLDER_MAX_DEPTH: u16 = 8;
+/// Минимальная глубина: только сама папка, без подпапок.
+pub const MIN_DROPPED_FOLDER_MAX_DEPTH: u16 = 0;
+/// Максимальная глубина подпапок.
+pub const MAX_DROPPED_FOLDER_MAX_DEPTH: u16 = 32;
+
 /// Фильтр соседних файлов, который фиксируется новым discovery job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +47,21 @@ pub enum PlaylistErrorBehavior {
     Stop,
     /// Сохранить ошибку и перейти к следующему допустимому элементу.
     Skip,
+}
+
+/// Что делать с файлом плейлиста (`.m3u`, `.m3u8`, `.xspf`, `.cue`), брошенным в окно.
+///
+/// Во всех вариантах пользователь видит обычный предпросмотр импорта; вариант
+/// «новый плейлист» дополнительно проходит подтверждение замены непустой очереди.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DroppedPlaylistFileAction {
+    /// По месту броска: на панель плейлиста — добавить в конец, на видео — заменить очередь.
+    ByDropTarget,
+    /// Всегда открывать как новый плейлист (заменить очередь), куда бы ни бросили.
+    NewPlaylist,
+    /// Всегда добавлять в конец текущей очереди, куда бы ни бросили.
+    AppendToQueue,
 }
 
 /// Настройки playlist policy, применяемые через отдельный runtime owner.
@@ -269,6 +297,69 @@ pub struct PlaylistConfig {
         apply = "playlist.apply"
     )]
     pub previous_restart_threshold_ms: u64,
+
+    /// Максимум media-файлов, которые берутся из брошенной в окно папки (с подпапками).
+    #[setting(
+        id = "playlist.dropped_folder_max_files",
+        path = "playlist.dropped_folder_max_files",
+        section = "playlist",
+        group = "dropped_items",
+        surface = "main-settings-window",
+        label_id = "settings.playlist.dropped_folder_max_files.label",
+        label_ru = "Файлов из брошенной папки",
+        description_id = "settings.playlist.dropped_folder_max_files.description",
+        description_ru = "Сколько медиафайлов максимум взять из папки, брошенной в окно, вместе с подпапками.",
+        help_id = "settings.playlist.dropped_folder_max_files.help",
+        help_ru = "Если файлов больше, берутся первые по порядку, а плеер сообщает об этом.",
+        editor = "integer",
+        min = crate::MIN_DROPPED_FOLDER_MAX_FILES,
+        max = crate::MAX_DROPPED_FOLDER_MAX_FILES,
+        step = 100,
+        unit = "files",
+        apply = "playlist.apply"
+    )]
+    pub dropped_folder_max_files: u16,
+
+    /// Максимальная глубина вложенности подпапок при обходе брошенной папки.
+    #[setting(
+        id = "playlist.dropped_folder_max_depth",
+        path = "playlist.dropped_folder_max_depth",
+        section = "playlist",
+        group = "dropped_items",
+        surface = "main-settings-window",
+        label_id = "settings.playlist.dropped_folder_max_depth.label",
+        label_ru = "Глубина подпапок",
+        description_id = "settings.playlist.dropped_folder_max_depth.description",
+        description_ru = "На сколько уровней вглубь заходить в подпапки брошенной папки; 0 — только сама папка.",
+        editor = "integer",
+        min = crate::MIN_DROPPED_FOLDER_MAX_DEPTH,
+        max = crate::MAX_DROPPED_FOLDER_MAX_DEPTH,
+        step = 1,
+        unit = "levels",
+        apply = "playlist.apply"
+    )]
+    pub dropped_folder_max_depth: u16,
+
+    /// Поведение при броске файла плейлиста в окно.
+    #[setting(
+        id = "playlist.dropped_playlist_file_action",
+        path = "playlist.dropped_playlist_file_action",
+        section = "playlist",
+        group = "dropped_items",
+        surface = "main-settings-window",
+        label_id = "settings.playlist.dropped_playlist_file_action.label",
+        label_ru = "Файл плейлиста, брошенный в окно",
+        description_id = "settings.playlist.dropped_playlist_file_action.description",
+        description_ru = "Что делать с файлом плейлиста M3U, XSPF или CUE, брошенным в окно; перед применением всегда показывается предпросмотр.",
+        editor = "select",
+        apply = "playlist.apply",
+        options(
+            option(id = "by_drop_target", label_id = "settings.playlist.dropped_playlist_file_action.by_drop_target", label_ru = "По месту: на панель — добавить, на видео — заменить", value = DroppedPlaylistFileAction::ByDropTarget),
+            option(id = "new_playlist", label_id = "settings.playlist.dropped_playlist_file_action.new_playlist", label_ru = "Всегда как новый плейлист", value = DroppedPlaylistFileAction::NewPlaylist),
+            option(id = "append_to_queue", label_id = "settings.playlist.dropped_playlist_file_action.append_to_queue", label_ru = "Всегда добавлять в конец", value = DroppedPlaylistFileAction::AppendToQueue)
+        )
+    )]
+    pub dropped_playlist_file_action: DroppedPlaylistFileAction,
 }
 
 impl Default for PlaylistConfig {
@@ -286,6 +377,9 @@ impl Default for PlaylistConfig {
             state_save_debounce_ms: 2_000,
             resume_checkpoint_interval_ms: 5_000,
             previous_restart_threshold_ms: 5_000,
+            dropped_folder_max_files: DEFAULT_DROPPED_FOLDER_MAX_FILES,
+            dropped_folder_max_depth: DEFAULT_DROPPED_FOLDER_MAX_DEPTH,
+            dropped_playlist_file_action: DroppedPlaylistFileAction::ByDropTarget,
         }
     }
 }

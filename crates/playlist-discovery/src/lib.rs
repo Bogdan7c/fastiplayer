@@ -18,6 +18,7 @@ use symphonia_demux::{
 
 mod cancellation;
 mod executor;
+mod folder_walk;
 mod frontier;
 mod handle;
 mod job;
@@ -34,6 +35,10 @@ pub use executor::{
     DiscoveryShutdownReport, DiscoverySubmitError, FOREGROUND_ONLY_WORKER_COUNT,
     FOREGROUND_RESERVED_INPUT_SLOTS, LocalMediaProbe, MAX_DISCOVERY_WORKER_THREADS,
     MIN_DISCOVERY_WORKER_THREADS, PER_JOB_INPUT_LIMIT, SPECULATIVE_ACTIVE_JOB_LIMIT,
+};
+pub use folder_walk::{
+    FolderWalkError, FolderWalkLimits, FolderWalkOutcome, FolderWalkRequest, FolderWalkTruncation,
+    walk_media_folder,
 };
 pub use frontier::{
     AUTOMATIC_SIBLING_AFTER_QUOTA, AUTOMATIC_SIBLING_BEFORE_QUOTA, AUTOMATIC_SIBLING_RECORD_LIMIT,

@@ -210,13 +210,25 @@ fn rapid_submit_cancels_running_and_delivers_only_exact_latest_generation() {
     };
 
     owner
-        .submit(locator("first"), config.clone(), 0, None)
+        .submit(
+            locator("first"),
+            config.clone(),
+            0,
+            None,
+            PlaylistUrlImportDestination::AppendToQueue,
+        )
         .expect("first request");
     started_receiver
         .recv_timeout(Duration::from_secs(1))
         .expect("first resolver started");
     owner
-        .submit(locator("latest"), config, 1, None)
+        .submit(
+            locator("latest"),
+            config,
+            1,
+            None,
+            PlaylistUrlImportDestination::AppendToQueue,
+        )
         .expect("latest request replaces running");
 
     let mut completion = None;
@@ -250,7 +262,13 @@ fn cancel_and_shutdown_are_bounded_and_never_publish_stale_completion() {
     });
     let mut owner = PlaylistUrlImportOwner::with_resolver(wake_port, resolver);
     owner
-        .submit(locator("cancelled"), YtDlpConfig::default(), 0, None)
+        .submit(
+            locator("cancelled"),
+            YtDlpConfig::default(),
+            0,
+            None,
+            PlaylistUrlImportDestination::AppendToQueue,
+        )
         .expect("request");
     started_receiver
         .recv_timeout(Duration::from_secs(1))
@@ -279,7 +297,13 @@ fn poisoned_worker_state_fails_closed_and_shutdown_reports_terminal_failure() {
     assert!(poisoner.join().is_err());
 
     assert_eq!(
-        owner.submit(locator("poisoned"), YtDlpConfig::default(), 0, None),
+        owner.submit(
+            locator("poisoned"),
+            YtDlpConfig::default(),
+            0,
+            None,
+            PlaylistUrlImportDestination::AppendToQueue
+        ),
         Err(PlaylistUrlImportStartError::WorkerUnavailable)
     );
     assert!(matches!(
@@ -580,3 +604,4 @@ fn whole_group_capacity_preview_never_commits_a_partial_compound() {
 /// UX сессия 09: индикатор, отмена пользователем, причины отказа, trim и подсказка схемы.
 #[path = "tests/progress.rs"]
 mod progress;
+mod replace_destination;

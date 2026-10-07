@@ -7,6 +7,7 @@
 pub mod animation;
 pub mod assets;
 pub(crate) mod egui_behavior;
+pub(crate) mod external_drop_overlay;
 pub(crate) mod keyboard_focus;
 pub mod media_info;
 pub(crate) mod notifications;

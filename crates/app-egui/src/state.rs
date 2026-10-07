@@ -60,6 +60,7 @@ use crate::video_pipeline_selector::{
 };
 
 mod automatic_web_media_quality;
+mod external_open;
 mod main_visual_override;
 mod media_jobs;
 mod notification_routing;
@@ -269,6 +270,9 @@ pub struct AppState {
     /// Единственный владелец уведомлений: фатальная ошибка media, временные и инфо-toast-ы.
     notifications: notifications::NotificationCenter,
 
+    /// Жест перетаскивания файлов в окно и hit-test панели плейлиста.
+    external_open: crate::external_open::ExternalOpenOwner,
+
     /// Pending-состояние shell-слоя для операций, которые ещё не дошли до player.
     pub startup_pending: Option<String>,
 
@@ -447,6 +451,7 @@ impl AppState {
                 startup_context.config_warning,
                 Instant::now(),
             ),
+            external_open: crate::external_open::ExternalOpenOwner::default(),
             startup_pending: None,
             last_player_snapshot: PlayerSnapshot::empty(),
             pending_redraw_after_worker_command: false,

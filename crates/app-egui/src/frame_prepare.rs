@@ -932,7 +932,7 @@ pub(crate) fn render_frame(
     renderer_lifecycle.set_surface_event_pending(false);
 
     if let Some(action) = playlist_confirmation_action {
-        app_state.apply_playlist_confirmation_action(action, playlist_runtime);
+        app_state.apply_playlist_confirmation_action(action, playlist_runtime, renderer);
     }
     let playlist_action_requested_repaint = crate::playlist_action_runtime::apply_playlist_actions(
         window,

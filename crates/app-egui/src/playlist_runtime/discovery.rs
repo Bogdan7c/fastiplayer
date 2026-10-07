@@ -16,8 +16,8 @@ mod yt_dlp_metadata;
     reason = "Session 19 consumes Session 16 job read models"
 )]
 pub(crate) use action_jobs::{
-    ManualAddCompletion, ManualAddJobId, ManualAddStartError, ManualAddTerminalOutcome,
-    PlaylistDiscoveryJobsReadModel, VisibleRefreshRequestOutcome,
+    ManualAddCompletion, ManualAddJobId, ManualAddOrder, ManualAddStartError,
+    ManualAddTerminalOutcome, PlaylistDiscoveryJobsReadModel, VisibleRefreshRequestOutcome,
 };
 pub(in crate::playlist_runtime) use yt_dlp_metadata::YtDlpMetadataDemand;
 

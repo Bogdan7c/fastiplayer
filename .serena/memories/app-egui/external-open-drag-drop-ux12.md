@@ -1,0 +1,21 @@
+# UX12: внешние запросы открытия (drag & drop) — владелец и границы (2026-10-07)
+
+План/решения владельца: `user/ux-edge-cases/12-drag-and-drop.md` (решения 1–11), отчёт `user/ux-edge-cases/results/12.md`. Сессия 13 (второй экземпляр → файл в первый) переиспользует `ExternalOpenRequest` + `dispatch_external_open_request`.
+
+## Источник событий
+- winit 0.30.13 не умеет DnD на Wayland и не даёт точку броска/не-file URI на X11. Локальный патч `crates/winit-patch` (`[replace]`, `mem:dependency-patches/core`) добавляет additive API `winit::platform::external_drag::{ExternalDragEvent, ExternalDragPayload}` и provided-метод `ApplicationHandler::external_drag_event` (доставка из thread-local очереди после каждого обычного события; публичные `Event/WindowEvent` не менялись, legacy `DroppedFile` сохранён). Wayland: data device per seat, только action copy, `finish()` только при выбранном action, чтение pipe через calloop (1 MiB, 5 s). X11: позиция из XdndPosition, не-file URI и текст.
+- `external_open/winit_source.rs` — ЕДИНСТВЕННЫЙ winit-aware файл: Linux — external канал, non-Linux (cfg) — legacy HoveredFile/DroppedFile (без позиции → Video). При стабильном winit 0.31 + egui на нём: удалить патч и переписать только этот файл (DragEntered/Moved/Dropped/Left + DataTransfer).
+
+## Конвейер (crates/app-egui/src/external_open/)
+`winit_source` → `DropGestureEvent` → `gesture` (один `ExternalOpenRequest` на drop, порядок источника) → `target` (physical px / scale → points, hit-test rect панели плейлиста, публикуется UI каждый кадр только когда открыт раздел Playlist; нет точки/панели → `DropTarget::Video`) → `uri` (file:// percent-decode в байты → OsString без потерь, срез ?/#, host пустой/localhost; http(s) → `DroppedWebUrl` с redacted Debug; plain-text fallback) → `classify` (только fs::metadata) → `route::route_plan` → `OpenStep` → `dispatch::dispatch_external_open_request` через trait `ExternalOpenHost` (реализация для AppState в `state/external_open.rs` + `state/external_open/`). Владелец состояния жеста/подсветки — `ExternalOpenOwner` (поле `AppState.external_open`), UI подсветки — `ui/external_drop_overlay.rs`.
+
+## Правила (решения владельца)
+- Место решает: панель → добавить в конец; видео → новая очередь (подтверждение при непустой очереди). 1 медиа на видео = путь кнопки Open (`AppState::open_selected_local_file`).
+- N файлов на видео: `QueueReplacementTarget::LocalFiles { paths, truncation }` → `PlaylistRuntime::replace_queue_with_local_files` + Row Play первой строки. На панель: `start_manual_file_add_in_given_order` (`ManualAddOrder::PreserveGiven`; кнопка AddFiles остаётся NaturalSort).
+- Папки: рекурсивно, `playlist-discovery::folder_walk` (скрытые пропуск, symlink-папки не обходятся, файлы раньше подпапок, natural внутри папки), лимиты `playlist.dropped_folder_max_files/max_depth` (config v12, UI настроек). Обход в фоне (`playlist_runtime/dropped_collection.rs`, `DroppedCollectionWalkOwner`), ОСОЗНАННОЕ исключение из S14A: для папок сначала обход (только read_dir), потом подтверждение с числом («N файлов из папки „X“»). Явные открытия отменяют идущий обход через `supersede_playlist_import_flow`. Уведомление об усечении — только когда файлы реально добавлены.
+- Плейлист-файл: `playlist.dropped_playlist_file_action` (by_drop_target | new_playlist | append_to_queue) → `PlaylistRuntime::start_playlist_import_path` (preview всегда). Смесь плейлиста с медиа → плейлист пропущен с уведомлением; несколько плейлистов → первый.
+- Ссылки: панель → `append_playlist_url` (Add URL как есть); видео → topology job с `PlaylistUrlImportDestination::ReplaceAfterConfirmation` (коллекция раскрывается, подтверждение «N роликов с домена»), одиночная/direct → одна строка. Смесь ссылок с локальным → ссылки пропущены с уведомлением; несколько ссылок → первая.
+- Busy (открытие файла, импорт, обход, URL-импорт) → «Файл ещё открывается», бросок игнорируется.
+
+## Тесты
+`external_open/*/tests`, `pipeline_tests.rs`, `playlist_runtime/{local_files_replacement,dropped_collection,dropped_web_url,import_path}/tests.rs`, `url_import/tests/replace_destination.rs`, `ui/external_drop_overlay/tests.rs`, `playlist-discovery/src/folder_walk/tests.rs`, config `store/tests/playlist_dropped_items.rs`. AppState целиком не конструируется в тестах — host-уровень покрыт recording host + реальным PlaylistRuntime.

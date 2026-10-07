@@ -91,6 +91,7 @@ readonly -a DEPENDENCY_PATCH_MANIFESTS=(
     crates/symphonia-codec-aac-patch/Cargo.toml
     crates/symphonia-format-mkv-patch/Cargo.toml
     crates/wayland-scanner-patch/Cargo.toml
+    crates/winit-patch/Cargo.toml
 )
 
 # Функция печатает поддерживаемые стабильные имена проверок.
@@ -185,7 +186,7 @@ run_format_guardrails() {
     run_step "cargo metadata" run_cargo_metadata
     # Policy guard сверяет primary toolchain, MSRV и inheritance manifests.
     run_step "toolchain policy" python3 "${SCRIPT_DIRECTORY}/check-toolchain-policy.py"
-    # Inventory guard связывает семь root replace с standalone manifests и lock-файлами.
+    # Inventory guard связывает восемь root replace с standalone manifests и lock-файлами.
     run_step "dependency patch inventory" python3 "${SCRIPT_DIRECTORY}/check-dependency-patches.py"
     # Unit-тесты не позволяют самим policy scripts незаметно сломаться.
     run_step "guardrail unit tests" python3 -m unittest discover -s "${SCRIPT_DIRECTORY}/tests" -p 'test_*.py'
@@ -217,7 +218,7 @@ run_format_guardrails() {
     run_step "rustfmt" cargo +"${PRIMARY_RUST_TOOLCHAIN}" fmt --all --check
 }
 
-# Функция проверяет workspace integration contracts всех семи local patches.
+# Функция проверяет workspace integration contracts всех восьми local patches.
 run_dependency_patches() {
     # Integration suite компилируется тем же exact primary Rust, что и workspace.
     require_rust_release "dependency patch integration" "${PRIMARY_RUST_TOOLCHAIN}"
@@ -275,7 +276,7 @@ run_dependencies() {
     run_step "licenses, sources and duplicate inventory" \
         cargo +"${PRIMARY_RUST_TOOLCHAIN}" deny --locked check licenses bans sources \
         || dependency_policy_status=$?
-    # Versioned inventory исключает семь upstream patch directories и проверяется unit-тестом.
+    # Versioned inventory исключает восемь upstream patch directories и проверяется unit-тестом.
     local unused_dependencies_status=0
     run_step "unused direct dependencies" cargo +"${PRIMARY_RUST_TOOLCHAIN}" machete --with-metadata \
         "${WORKSPACE_CRATE_DIRECTORIES[@]}" \

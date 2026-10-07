@@ -351,6 +351,12 @@ impl AppState {
                     close_requested: &mut sidebar_close_requested,
                 },
             );
+            self.external_open.record_playlist_panel_rect(
+                super::external_open::playlist_panel_rect(
+                    sidebar_rect.as_ref(),
+                    self.sidebar_controller.displayed(),
+                ),
+            );
             if let Some(sidebar_output) = sidebar_rect {
                 sidebar_width_change = sidebar_output.width_change;
                 debug_assert!(
@@ -385,6 +391,11 @@ impl AppState {
                 &mut playlist_ui_output,
             );
             center_overlay_elapsed = stage_started_at.elapsed();
+            crate::ui::external_drop_overlay::show_external_drop_overlay(
+                ui.ctx(),
+                self.external_open
+                    .drop_overlay(video_viewport_rect, ui.ctx().pixels_per_point()),
+            );
         });
         if sidebar_close_requested {
             self.sidebar_controller.hide();

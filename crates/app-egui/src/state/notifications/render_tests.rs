@@ -265,7 +265,7 @@ fn fading_toast_requests_repaint_only_with_standard_motion() {
 fn broken_config_on_disk_reaches_painted_warning_that_stays_until_closed() {
     let config_directory = tempfile::tempdir().expect("temp dir создан");
     let config_path = config_directory.path().join("config.toml");
-    std::fs::write(&config_path, "schema_version = 11\n[[[\n").expect("битый config записан");
+    std::fs::write(&config_path, "schema_version = 12\n[[[\n").expect("битый config записан");
     let loaded = fastiplayer_config::load_or_recover_at(&config_path, std::time::SystemTime::now())
         .expect("старт не падает");
     let warning = crate::config_startup_notice::config_startup_warning(&loaded)

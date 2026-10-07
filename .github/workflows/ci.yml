@@ -73,7 +73,7 @@ jobs:
       fail-fast: false
       matrix:
         # Пути совпадают с root workspace.exclude и checked inventory.
-        patch: [cros-libva, cros-codecs, symphonia-format-caf, symphonia-format-isomp4, symphonia-format-mkv, symphonia-codec-aac, wayland-scanner]
+        patch: [cros-libva, cros-codecs, symphonia-format-caf, symphonia-format-isomp4, symphonia-format-mkv, symphonia-codec-aac, wayland-scanner, winit]
         include:
           # Каждый entry хранит собственный manifest и Cargo.lock.
           - patch: cros-libva
@@ -90,6 +90,8 @@ jobs:
             manifest: crates/symphonia-codec-aac-patch/Cargo.toml
           - patch: wayland-scanner
             manifest: crates/wayland-scanner-patch/Cargo.toml
+          - patch: winit
+            manifest: crates/winit-patch/Cargo.toml
     steps:
       # Checkout предоставляет standalone crates и их lock-файлы.
       - uses: actions/checkout@v4

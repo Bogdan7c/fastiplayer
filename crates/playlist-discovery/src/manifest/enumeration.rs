@@ -146,7 +146,7 @@ fn classify_candidate_entry(entry: &fs::DirEntry) -> io::Result<Option<bool>> {
 }
 
 /// Dot-hidden проверяется на native units без lossy conversion.
-fn is_hidden_filename(filename: &OsStr) -> bool {
+pub(crate) fn is_hidden_filename(filename: &OsStr) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;

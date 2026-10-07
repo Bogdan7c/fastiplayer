@@ -60,7 +60,7 @@ members = [
     "crates/video-vaapi",
     "crates/service-ytdlp",
 ]
-# Эти семь каталогов — инвентаризированные upstream patch crates из [replace].
+# Эти восемь каталогов — инвентаризированные upstream patch crates из [replace].
 # Они намеренно не наследуют first-party workspace metadata и MIT license.
 exclude = [
     "crates/cros-codecs-patch",
@@ -70,6 +70,7 @@ exclude = [
     "crates/symphonia-format-isomp4-patch",
     "crates/symphonia-format-mkv-patch",
     "crates/wayland-scanner-patch",
+    "crates/winit-patch",
 ]
 resolver = "2"
 
@@ -101,6 +102,11 @@ resolver = "2"
 # wayland-scanner: узкий backport официального dependency bump на quick-xml 0.41,
 # закрывающий RUSTSEC-2026-0194/0195 без миграции window/Wayland stack.
 "wayland-scanner:0.31.10" = { path = "crates/wayland-scanner-patch" }
+# winit 0.30.13: additive API `winit::platform::external_drag` (drag & drop из
+# внешних приложений: Wayland data device, X11 XDND с позицией, не-file URI и
+# текст). Публичный `WindowEvent` не меняется (egui-winit матчит его
+# исчерпывающе). Удалить, когда egui-winit перейдёт на стабильный winit 0.31.
+"winit:0.30.13" = { path = "crates/winit-patch" }
 
 # Все внешние зависимости в dev собираются оптимизированными: egui/wgpu/symphonia/cpal
 # на opt-level 0 не вытягивают realtime пути (UI tessellation, GPU submit/validation,

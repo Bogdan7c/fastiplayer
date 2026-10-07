@@ -29,7 +29,7 @@ fn schema_v10_stop_migrates_to_skip_and_roundtrips_idempotently() {
 
     let migrated = load_from_path(&config_path).expect("schema v10 config migrates");
     assert_eq!(migrated.config.schema_version, CURRENT_SCHEMA_VERSION);
-    assert_eq!(migrated.config.schema_version, 11);
+    assert_eq!(migrated.config.schema_version, 12);
     assert_eq!(
         migrated.config.playlist.error_behavior,
         PlaylistErrorBehavior::Skip
@@ -49,7 +49,7 @@ fn schema_v10_stop_migrates_to_skip_and_roundtrips_idempotently() {
     save_validated_atomic_at(&config_path, &migrated.config)
         .expect("migrated v11 config saves atomically");
     let saved_text = fs::read_to_string(&config_path).expect("saved v11 TOML readable");
-    assert!(saved_text.contains("schema_version = 11"));
+    assert!(saved_text.contains("schema_version = 12"));
     assert!(saved_text.contains("error_behavior = \"skip\""));
     assert!(!saved_text.contains("error_behavior = \"stop\""));
 

@@ -73,3 +73,7 @@ Session 15 completed PASS on 2026-07-15. This memory complements `mem:core`, `me
 
 ## 2026-07-17 generic yt-dlp visible/immediate metadata enrichment
 - URL network metadata остаётся вне neutral `playlist-discovery`: отдельный `app-egui::playlist_runtime::discovery::yt_dlp_metadata` process-lifetime owner использует bounded-work-executor и service-owned typed resolver для всех generic yt-dlp HTTP(S) URL. Immediate committed append и visible restored rows ставят exact Item ID+locator demands; metadata patch не меняет structural/current/playback state. Полный contract и проверки: `mem:app-egui/ytdlp-playlist-metadata-2026-07-17`.
+
+
+## UX12 Manual Add order (2026-10-07)
+- `discovery::action_jobs::ManualAddOrder::{NaturalSort, PreserveGiven}`. `start_manual_file_add` (кнопка AddFiles) = NaturalSort; `start_manual_file_add_in_given_order` (drag & drop на панель, включая результат обхода папки) = PreserveGiven. Порядок коммита и так задаётся `Batch(ordinal)` = индекс подачи, worker не менялся. См. `mem:app-egui/external-open-drag-drop-ux12`.

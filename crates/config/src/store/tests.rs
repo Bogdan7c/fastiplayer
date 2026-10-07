@@ -11,6 +11,7 @@ use crate::{
 mod field_validation;
 mod frame_server;
 mod persistence_sections;
+mod playlist_dropped_items;
 mod playlist_error_behavior_migration;
 mod recovery;
 mod render_validation;

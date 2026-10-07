@@ -99,3 +99,18 @@ dependent_crates = ["app-egui", "render-wgpu-shell", "video-vaapi"]
 focused_automated_tests = ["cargo test --manifest-path crates/wayland-scanner-patch/Cargo.toml --locked", "cargo check --workspace --all-features --locked", "cargo deny check"]
 manual_media_matrix = ["Wayland window startup", "egui clipboard/file dialog", "VA-API GBM/Wayland build integration"]
 removal_gate = "Удалить local patch сразу после crates.io release wayland-scanner, который допускает quick-xml >=0.41, при чистом cargo-deny и прохождении workspace/Wayland smoke checks."
+
+# Запись фиксирует additive-патч winit 0.30.13: приём drag & drop из внешних приложений.
+[[patch]]
+path = "crates/winit-patch"
+package = "winit"
+version = "0.30.13"
+upstream_repository = "https://github.com/rust-windowing/winit"
+# Checksum подтверждает exact crates.io archive; pristine-копия сравнивается через `diff -r` с registry source.
+upstream_revision = "crates.io:sha256:a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
+reason = "winit 0.30 не доставляет drag & drop на Wayland (нет wl_data_device), на X11 теряет не-file URI и точку броска. Патч добавляет additive API winit::platform::external_drag (Entered/Moved/Dropped/Left + URI/текст) по образцу winit 0.31, не меняя публичный WindowEvent (egui-winit матчит его исчерпывающе); legacy HoveredFile/DroppedFile сохраняются и на Wayland."
+owned_diff_areas = ["Cargo.toml", "Cargo.toml.orig", "examples/external_drag.rs", "src/application.rs", "src/event_loop.rs", "src/platform/mod.rs", "src/platform/external_drag.rs", "src/platform_impl/linux/mod.rs", "src/platform_impl/linux/external_drag/", "src/platform_impl/linux/wayland/mod.rs", "src/platform_impl/linux/wayland/external_drag.rs", "src/platform_impl/linux/wayland/seat/mod.rs", "src/platform_impl/linux/wayland/state.rs", "src/platform_impl/linux/x11/atoms.rs", "src/platform_impl/linux/x11/dnd.rs", "src/platform_impl/linux/x11/event_processor.rs", "src/platform_impl/linux/x11/mod.rs"]
+dependent_crates = ["app-egui", "render-wgpu-shell", "egui-winit", "accesskit_winit"]
+focused_automated_tests = ["cargo test --manifest-path crates/winit-patch/Cargo.toml --locked", "cargo check --workspace --all-targets --locked", "cargo +1.99.0 check --workspace --locked"]
+manual_media_matrix = ["Dolphin -> окно примера external_drag на KDE Wayland (файл, три файла, папка)", "Dolphin -> окно на X11 (XWayland, WAYLAND_DISPLAY не задан)", "ссылка из браузера -> окно (text/uri-list, text/x-moz-url)", "legacy HoveredFile/DroppedFile приходят на обоих бэкендах", "буфер обмена egui (smithay-clipboard) продолжает работать"]
+removal_gate = "Удалить, когда egui-winit поддерживает стабильный winit 0.31; заменить переходник приложения external_open::winit_source на DragEntered/DragMoved/DragDropped/DragLeft + DataTransfer, остальную логику не трогать."

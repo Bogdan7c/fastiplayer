@@ -152,6 +152,7 @@ fn manual_batch_is_natural_atomic_allows_duplicates_and_rebases_to_current_tail(
             "video2.mkv".into(),
             "video2.mkv".into(),
         ],
+        ManualAddOrder::NaturalSort,
         7,
     )
     .expect("manual job");
@@ -179,6 +180,28 @@ fn manual_batch_is_natural_atomic_allows_duplicates_and_rebases_to_current_tail(
         names,
         ["existing.mkv", "video2.mkv", "video2.mkv", "video10.mkv"]
     );
+}
+
+#[test]
+fn manual_batch_preserve_given_keeps_submission_order_instead_of_natural_sort() {
+    let (executor, _starts, _count) = executor(None);
+    let mut jobs = DiscoveryActionJobs::new();
+    let mut controller = PlaylistController::default();
+    jobs.start_manual_add(
+        &executor,
+        vec!["video10.mkv".into(), "b.mkv".into(), "video2.mkv".into()],
+        ManualAddOrder::PreserveGiven,
+        1,
+    )
+    .expect("manual job");
+    drain_until_terminal(&mut jobs, &executor, &mut controller, 1);
+    let names = controller
+        .queue()
+        .iter_playable_items()
+        .map(|item| item.cached_metadata().fallback_display_name())
+        .collect::<Vec<_>>();
+    // Натуральная сортировка дала бы b, video2, video10.
+    assert_eq!(names, ["video10.mkv", "b.mkv", "video2.mkv"]);
 }
 
 #[test]
@@ -233,6 +256,7 @@ fn duplicate_occurrences_keep_independent_probe_outcomes() {
     jobs.start_manual_add(
         &executor,
         vec!["flaky-duplicate.mkv".into(), "flaky-duplicate.mkv".into()],
+        ManualAddOrder::NaturalSort,
         1,
     )
     .expect("manual duplicate job");
@@ -256,8 +280,13 @@ fn zero_capacity_is_typed_noop_without_new_dirty_revision() {
         .append(vec![draft("full.mkv"); playlist_core::MAX_PLAYLIST_ITEMS])
         .expect("fill queue to hard cap");
     let dirty_before = controller.dirty_revision();
-    jobs.start_manual_add(&executor, vec!["rejected.mkv".into()], 1)
-        .expect("manual job");
+    jobs.start_manual_add(
+        &executor,
+        vec!["rejected.mkv".into()],
+        ManualAddOrder::NaturalSort,
+        1,
+    )
+    .expect("manual job");
     drain_until_terminal(&mut jobs, &executor, &mut controller, 1);
 
     let completion = jobs
@@ -283,6 +312,7 @@ fn manual_partial_summary_keeps_exact_failure_categories() {
             "fail.mkv".into(),
             "ok.mkv".into(),
         ],
+        ManualAddOrder::NaturalSort,
         1,
     )
     .expect("manual partial job");

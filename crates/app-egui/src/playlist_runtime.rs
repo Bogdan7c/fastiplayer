@@ -16,20 +16,34 @@ mod compound_view;
 mod controller;
 mod desktop_transport;
 pub(crate) mod discovery;
+mod dropped_collection;
+mod dropped_web_url;
 mod export_io;
 mod external_projection;
 mod identity;
 mod import_io;
+mod import_path;
 mod import_transaction;
 mod lifecycle_checkpoint;
 mod local_file_selection;
+mod local_files_replacement;
+pub(crate) use dropped_collection::{
+    CollectedDroppedFiles, DroppedCollectionDestination, DroppedCollectionEntry,
+    DroppedCollectionSource, DroppedCollectionTruncation, DroppedCollectionWalkCompletion,
+    DroppedCollectionWalkStartError,
+};
+pub(crate) use dropped_web_url::{DroppedWebUrlAppendOutcome, ServiceUrlReplacementOutcome};
+pub(crate) use import_path::PlaylistPathImportStart;
 pub(crate) use lifecycle_checkpoint::LifecycleTimelineCheckpointPosition;
+pub(crate) use local_files_replacement::LocalFilesReplacementOutcome;
+pub(crate) use resolved_url_collection::{DroppedWebUrlReplacementStart, ResolvedUrlCollection};
 mod media_reset;
 mod persistence;
 mod persistence_runtime;
 mod prepared_next;
 mod removal_undo;
 mod replacement_confirmation;
+mod resolved_url_collection;
 mod resume_persistence;
 pub(crate) use resume_persistence::InstalledCheckpointPosition;
 mod row_interactions;
@@ -149,10 +163,11 @@ pub(crate) use removal_undo::{RemovalUndoOutcome, RemovalUndoStatus, RuntimeRemo
     reason = "Session 19 consumes generalized confirmation model"
 )]
 pub(crate) use replacement_confirmation::{
-    AdmittedLocalFileOpen, AdmittedQueueReplacementIntent, InAppQueueReplacementAdmission,
-    InAppQueueReplacementIntent, PendingPlaylistConfirmation, PlaylistConfirmationAction,
-    PlaylistConfirmationReasons, QueueReplacementConfirmationDecision,
-    TrustedStartupQueueReplacementIntent, safe_local_open_label,
+    AdmittedLocalFileOpen, AdmittedQueueReplacementIntent, AdmittedResolvedUrlCollection,
+    InAppQueueReplacementAdmission, InAppQueueReplacementIntent, PendingPlaylistConfirmation,
+    PlaylistConfirmationAction, PlaylistConfirmationReasons, QueueReplacementAdmissionError,
+    QueueReplacementConfirmationDecision, TrustedStartupQueueReplacementIntent,
+    safe_local_open_label,
 };
 pub(crate) use row_interactions::{
     RuntimeCompoundHeaderPlayOutcome, RuntimeCompoundPartPlayOutcome, RuntimeMoveItemsOutcome,
@@ -307,6 +322,8 @@ pub(crate) struct PlaylistRuntime {
     import_transaction: import_transaction::PlaylistImportTransactionState,
     /// S09 single-root picker и bounded parser job живут отдельно от UI renderer-а.
     import_io: import_io::PlaylistImportIoOwner,
+    /// Фоновый обход брошенных папок (drag & drop): UI-поток по диску не ходит.
+    dropped_collection_walk: dropped_collection::DroppedCollectionWalkOwner,
     /// S17S связывает trusted startup parse/preview/commit с exact first-item open receipt.
     startup_import: startup_import::StartupPlaylistImportState,
     /// S17 latest-only yt-dlp topology worker живёт process lifetime.
@@ -376,6 +393,8 @@ impl PlaylistRuntime {
     ) -> Self {
         let ui_interaction = ui_interaction::PlaylistUiInteractionOwner::new(wake_port.clone());
         let import_io = import_io::PlaylistImportIoOwner::new(wake_port.clone());
+        let dropped_collection_walk =
+            dropped_collection::DroppedCollectionWalkOwner::new(wake_port.clone());
         let url_import = url_import::PlaylistUrlImportOwner::new(wake_port.clone());
         let export_io = export_io::PlaylistExportIoOwner::new(wake_port.clone());
         let desktop_transport = desktop_transport::DesktopTransportOwner::new(wake_port.clone());
@@ -418,6 +437,7 @@ impl PlaylistRuntime {
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
             import_transaction: import_transaction::PlaylistImportTransactionState::new(),
             import_io,
+            dropped_collection_walk,
             startup_import: startup_import::StartupPlaylistImportState::default(),
             url_import,
             export_io,

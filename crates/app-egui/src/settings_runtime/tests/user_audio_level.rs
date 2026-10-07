@@ -273,7 +273,7 @@ fn broken_config_volume_falls_back_to_default_level() {
     let config_path = directory.join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 11\n\n[audio]\nvolume = 5.0\nmuted = true\n",
+        "schema_version = 12\n\n[audio]\nvolume = 5.0\nmuted = true\n",
     )
     .expect("broken config written");
 

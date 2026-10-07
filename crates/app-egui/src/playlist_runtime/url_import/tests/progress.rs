@@ -376,3 +376,29 @@ fn topology_error_is_logged_with_reason_and_mapped_without_payload() {
         1
     );
 }
+
+#[test]
+fn dropped_url_on_panel_starts_the_same_import_job_as_add_url_with_the_same_indicator() {
+    let mut gated = GatedRuntime::new(GatedOutcome::Single);
+
+    let outcome = gated.runtime.append_dropped_web_url(
+        "  https://www.collection.example.test/root?list=1\n",
+        &enabled_config(),
+    );
+
+    // Бросок принят, worker получил точный адрес (без пробелов), а индикатор и признак
+    // «идёт открытие» (его читает busy-предикат drop-а) показывают только домен.
+    assert_eq!(
+        outcome,
+        crate::playlist_runtime::DroppedWebUrlAppendOutcome::Accepted
+    );
+    assert_eq!(
+        gated
+            .started
+            .recv_timeout(Duration::from_secs(1))
+            .expect("resolver started"),
+        "https://www.collection.example.test/root?list=1"
+    );
+    assert_eq!(gated.indicator(), host_indicator("collection.example.test"));
+    assert!(gated.runtime.playlist_url_import_progress().is_some());
+}

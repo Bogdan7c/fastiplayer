@@ -7,8 +7,8 @@ use playlist_discovery::DiscoveryCancellationCause;
 
 use super::PlaylistDiscoveryCoordinator;
 use super::action_jobs::{
-    ManualAddJobId, ManualAddStartError, PlaylistDiscoveryJobsReadModel, VisibleRefreshDemand,
-    VisibleRefreshRequestOutcome,
+    ManualAddJobId, ManualAddOrder, ManualAddStartError, PlaylistDiscoveryJobsReadModel,
+    VisibleRefreshDemand, VisibleRefreshRequestOutcome,
 };
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::url_service_adapter::{
@@ -16,10 +16,27 @@ use crate::url_service_adapter::{
 };
 
 impl PlaylistRuntime {
-    /// Запускает app-owned Manual Add без Item ID reservation до terminal commit.
+    /// Manual Add кнопки «Добавить файлы»: пачка добавляется в натуральном порядке имён.
     pub(crate) fn start_manual_file_add(
         &mut self,
         paths: Vec<PathBuf>,
+    ) -> Result<ManualAddJobId, ManualAddStartError> {
+        self.start_manual_file_add_ordered(paths, ManualAddOrder::NaturalSort)
+    }
+
+    /// Manual Add брошенных файлов/папок: пачка добавляется в порядке броска/обхода папок.
+    pub(crate) fn start_manual_file_add_in_given_order(
+        &mut self,
+        paths: Vec<PathBuf>,
+    ) -> Result<ManualAddJobId, ManualAddStartError> {
+        self.start_manual_file_add_ordered(paths, ManualAddOrder::PreserveGiven)
+    }
+
+    /// Запускает app-owned Manual Add без Item ID reservation до terminal commit.
+    fn start_manual_file_add_ordered(
+        &mut self,
+        paths: Vec<PathBuf>,
+        order: ManualAddOrder,
     ) -> Result<ManualAddJobId, ManualAddStartError> {
         if !self
             .admission_open
@@ -32,7 +49,7 @@ impl PlaylistRuntime {
             return Err(ManualAddStartError::LoadDecisionPending);
         }
         self.discovery
-            .start_manual_add(paths, self.manual_add_queue_generation.value())
+            .start_manual_add(paths, order, self.manual_add_queue_generation.value())
     }
 
     /// D31 принимает local refresh и service-owned YtDlp enrichment видимых rows.
@@ -111,6 +128,7 @@ impl PlaylistDiscoveryCoordinator {
     fn start_manual_add(
         &mut self,
         paths: Vec<PathBuf>,
+        order: ManualAddOrder,
         queue_generation: u64,
     ) -> Result<ManualAddJobId, ManualAddStartError> {
         // D25: новый Add завершает sibling scope, но committed target/batches уже domain-owned.
@@ -120,7 +138,7 @@ impl PlaylistDiscoveryCoordinator {
             .as_ref()
             .ok_or(ManualAddStartError::ExecutorUnavailable)?;
         self.action_jobs
-            .start_manual_add(executor, paths, queue_generation)
+            .start_manual_add(executor, paths, order, queue_generation)
     }
 
     pub(in crate::playlist_runtime) fn cancel_sibling_for_add(&mut self) {

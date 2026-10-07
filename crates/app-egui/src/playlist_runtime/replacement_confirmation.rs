@@ -7,8 +7,13 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::media_open::SafeMediaLabel;
-use crate::playlist_runtime::PlaylistRuntime;
+use crate::playlist_runtime::{DroppedCollectionTruncation, PlaylistRuntime};
 use crate::url_service_adapter::StartupUrlLocator;
+
+mod local_files;
+use local_files::AdmittedLocalFilesOpen;
+mod resolved_url_collection;
+pub(crate) use resolved_url_collection::AdmittedResolvedUrlCollection;
 
 /// Opaque identity одного confirmation intent-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,7 +202,11 @@ impl fmt::Debug for AdmittedUrlOpen {
 #[derive(Debug)]
 pub(crate) enum AdmittedQueueReplacementIntent {
     LocalFile(AdmittedLocalFileOpen),
+    /// Несколько файлов одного броска: новая очередь из них (drag & drop).
+    LocalFiles(AdmittedLocalFilesOpen),
     ServiceUrl(AdmittedUrlOpen),
+    /// Разобранная коллекция ссылки (плейлист YouTube и т.п.), брошенная на видео.
+    ResolvedUrlCollection(AdmittedResolvedUrlCollection),
 }
 
 /// In-app intent нельзя сконструировать как trusted startup origin.
@@ -217,10 +226,6 @@ impl InAppQueueReplacementIntent {
     }
 
     /// Захватывает typed service locator без network request и повторного URL parse-а.
-    #[allow(
-        dead_code,
-        reason = "production in-app URL editor belongs to a later session"
-    )]
     pub(crate) fn service_url(locator: StartupUrlLocator) -> Self {
         let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
         Self {
@@ -312,23 +317,34 @@ pub(super) enum ExportConfirmationInstallError {
 /// Secret-bearing payload никогда не реализует automatic `Debug`/`Display`.
 pub(super) enum QueueReplacementTarget {
     LocalFile(PathBuf),
+    /// `truncation` — усечение обхода папки лимитом; едет вместе с намерением, чтобы
+    /// уведомление «Добавлены первые N файлов» показал commit point, а не момент запроса.
+    LocalFiles {
+        paths: Vec<PathBuf>,
+        truncation: Option<DroppedCollectionTruncation>,
+    },
     ServiceUrl(StartupUrlLocator),
+    ResolvedUrlCollection(crate::playlist_runtime::ResolvedUrlCollection),
 }
 
 impl QueueReplacementTarget {
     fn kind_name(&self) -> &'static str {
         match self {
             Self::LocalFile(_) => "local-file",
+            Self::LocalFiles { .. } => "local-files",
             Self::ServiceUrl(_) => "service-url",
+            Self::ResolvedUrlCollection(_) => "resolved-url-collection",
         }
     }
 
     fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
-        matches!(
-            self,
-            Self::ServiceUrl(locator)
-                if locator.requires_sensitive_persistence_acknowledgement()
-        )
+        match self {
+            Self::ServiceUrl(locator) => locator.requires_sensitive_persistence_acknowledgement(),
+            Self::ResolvedUrlCollection(collection) => {
+                collection.requires_sensitive_persistence_acknowledgement()
+            }
+            Self::LocalFile(_) | Self::LocalFiles { .. } => false,
+        }
     }
 
     pub(super) fn admit(self) -> AdmittedQueueReplacementIntent {
@@ -336,8 +352,16 @@ impl QueueReplacementTarget {
             Self::LocalFile(path) => {
                 AdmittedQueueReplacementIntent::LocalFile(AdmittedLocalFileOpen { path })
             }
+            Self::LocalFiles { paths, truncation } => AdmittedQueueReplacementIntent::LocalFiles(
+                AdmittedLocalFilesOpen::new(paths, truncation),
+            ),
             Self::ServiceUrl(locator) => {
                 AdmittedQueueReplacementIntent::ServiceUrl(AdmittedUrlOpen { locator })
+            }
+            Self::ResolvedUrlCollection(collection) => {
+                AdmittedQueueReplacementIntent::ResolvedUrlCollection(
+                    AdmittedResolvedUrlCollection::new(collection),
+                )
             }
         }
     }

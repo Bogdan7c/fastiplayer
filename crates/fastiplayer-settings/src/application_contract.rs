@@ -497,7 +497,10 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "playlist.next_item_preload_enabled"
         | "playlist.next_item_preload_budget_mb"
         | "playlist.next_item_preload_lead_time_ms"
-        | "playlist.next_item_preload_max_hold_ms" => SettingApplicationContract::new(
+        | "playlist.next_item_preload_max_hold_ms"
+        | "playlist.dropped_folder_max_files"
+        | "playlist.dropped_folder_max_depth"
+        | "playlist.dropped_playlist_file_action" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::Playlist,
             SettingStateOwner::PlaylistPolicy,
@@ -599,6 +602,9 @@ mod tests {
             "playlist.playback_behavior",
             "playlist.error_behavior",
             "playlist.previous_restart_threshold_ms",
+            "playlist.dropped_folder_max_files",
+            "playlist.dropped_folder_max_depth",
+            "playlist.dropped_playlist_file_action",
         ] {
             let contract = setting_application_contract(&SettingId::from(setting_id))
                 .expect("playlist policy contract exists");

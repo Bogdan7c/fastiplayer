@@ -149,7 +149,7 @@ pub(super) fn dismiss_topmost(
         EscapeTarget::EguiPopup | EscapeTarget::Nothing => {}
         EscapeTarget::PlaylistConfirmation(cancel_action) => {
             // Тот же путь, что у кнопки «Отмена» в диалоге подтверждения.
-            app_state.apply_playlist_confirmation_action(cancel_action, playlist_runtime);
+            app_state.apply_playlist_confirmation_action(cancel_action, playlist_runtime, renderer);
         }
         EscapeTarget::PlaylistImportPreview(preview_id) => {
             // Тот же путь, что у кнопки «Отмена» в preview импорта. Флаг

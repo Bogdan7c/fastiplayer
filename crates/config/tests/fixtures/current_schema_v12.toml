@@ -1,4 +1,4 @@
-schema_version = 11
+schema_version = 12
 
 [player]
 start_paused = true
@@ -61,6 +61,12 @@ state_save_debounce_ms = 2000
 resume_checkpoint_interval_ms = 5000
 # Порог restart-current для Previous; 0 отключает эту ветку.
 previous_restart_threshold_ms = 5000
+# Сколько media-файлов брать из папки, брошенной в окно (с подпапками).
+dropped_folder_max_files = 2000
+# Глубина подпапок при обходе брошенной папки; 0 — только сама папка.
+dropped_folder_max_depth = 8
+# Файл плейлиста, брошенный в окно: by_drop_target / new_playlist / append_to_queue.
+dropped_playlist_file_action = "by_drop_target"
 
 [video]
 preferred_backend = "auto"

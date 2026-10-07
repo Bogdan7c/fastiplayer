@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 11;
+pub const CURRENT_SCHEMA_VERSION: u32 = 12;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -32,14 +32,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_9: u32 = 9;
 /// явно и отличить «выбрал сам» от «осталось по умолчанию» невозможно.
 pub(crate) const LEGACY_SCHEMA_VERSION_10: u32 = 10;
 
+/// Последняя схема до настроек drag & drop (`playlist.dropped_*`).
+///
+/// Решение владельца (UX edge cases, сессия 12): три новых поля добавляются со
+/// значениями по умолчанию; перезаписывать пользовательские значения нечего, поэтому
+/// миграция v11 -> v12 только поднимает версию (старый файл без полей грузится с defaults).
+pub(crate) const LEGACY_SCHEMA_VERSION_11: u32 = 11;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v11 и полная цепочка поддерживаемых legacy-версий v2..v10.
+    /// Текущая схема v12 и полная цепочка поддерживаемых legacy-версий v2..v11.
     #[test]
-    fn schema_v11_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 11);
+    fn schema_v12_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 12);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -51,8 +58,9 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_8,
                 LEGACY_SCHEMA_VERSION_9,
                 LEGACY_SCHEMA_VERSION_10,
+                LEGACY_SCHEMA_VERSION_11,
             ],
-            [2, 3, 4, 5, 6, 7, 8, 9, 10]
+            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
     }
 }

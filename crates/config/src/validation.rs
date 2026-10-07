@@ -7,6 +7,7 @@ use crate::{
 };
 
 mod media_services;
+mod playlist_drop;
 
 pub(crate) use media_services::{
     MAX_NETWORK_MEMORY_CACHE_MB, MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB, MAX_NETWORK_READ_AHEAD_MB,
@@ -16,6 +17,7 @@ pub(crate) use media_services::{
     MAX_YT_DLP_SINGLE_ITEM_STDOUT_BYTES, validate_web_media_config, validate_yt_dlp_config,
 };
 use media_services::{validate_audio_section, validate_network_section};
+use playlist_drop::validate_dropped_folder_limits;
 
 /// Минимальный decode-ahead: ноль ломает смысл backpressure окна.
 pub(crate) const MIN_DECODE_AHEAD_MS: u64 = 1;
@@ -268,7 +270,8 @@ fn validate_playlist_section(config: &AppConfig) -> ConfigResult<()> {
         config.playlist.previous_restart_threshold_ms,
         MIN_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS,
         MAX_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS,
-    )
+    )?;
+    validate_dropped_folder_limits(config)
 }
 
 /// Проверяет schema version как явную точку будущих миграций.

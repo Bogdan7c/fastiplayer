@@ -310,12 +310,19 @@ impl PlaylistImportIoOwner {
 }
 
 impl PlaylistRuntime {
+    /// Идёт ли выбор файла плейлиста или его разбор (новое открытие должно подождать).
+    pub(crate) fn has_playlist_import_in_flight(&self) -> bool {
+        self.import_io.is_open()
+    }
+
     /// Общая supersede boundary не позволяет late parser completion воскресить preview.
     pub(in crate::playlist_runtime) fn supersede_playlist_import_flow(&mut self) {
         self.import_io.cancel_active();
         self.cancel_playlist_url_import();
         self.import_transaction.cancel();
         self.startup_import.supersede();
+        // Устаревший обход брошенной папки не должен позже дать подтверждение/добавление.
+        self.supersede_dropped_collection_walk();
     }
 
     /// Запускает explicit append/replace import после post-render action drain.

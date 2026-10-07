@@ -291,6 +291,79 @@ fn next_item_preload_transaction_applies_once_then_persists_and_finalizes() {
     remove_file_if_exists(&path);
 }
 
+/// Три настройки брошенных папок/плейлистов видны в окне настроек и проходят Apply и запись в TOML.
+#[test]
+fn dropped_items_controls_are_listed_applied_through_playlist_route_and_persisted() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("dropped-items-controls");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    run_runtime_actions(&mut runtime, vec![SettingsUiAction::Open], &mut adapter);
+    // Окно настроек строится из дескрипторов: три поля обязаны быть среди отрисовываемых.
+    let listed_setting_ids: Vec<String> = runtime
+        .ui_model()
+        .fields
+        .iter()
+        .map(|field| field.descriptor.id.as_str().to_owned())
+        .collect();
+    for expected in [
+        "playlist.dropped_folder_max_files",
+        "playlist.dropped_folder_max_depth",
+        "playlist.dropped_playlist_file_action",
+    ] {
+        assert!(
+            listed_setting_ids.iter().any(|id| id == expected),
+            "в окне настроек нет поля {expected}"
+        );
+    }
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("playlist.dropped_folder_max_files"),
+                value: SettingValue::Integer(500),
+            },
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("playlist.dropped_folder_max_depth"),
+                value: SettingValue::Integer(3),
+            },
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("playlist.dropped_playlist_file_action"),
+                value: SettingValue::Select(settings_core::SettingOptionId::from(
+                    "append_to_queue",
+                )),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("apply report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert_eq!(adapter.playlist_updates.len(), 1);
+    let applied = adapter.playlist_updates[0].playlist;
+    assert_eq!(applied.dropped_folder_max_files, 500);
+    assert_eq!(applied.dropped_folder_max_depth, 3);
+    assert_eq!(
+        applied.dropped_playlist_file_action,
+        fastiplayer_config::DroppedPlaylistFileAction::AppendToQueue
+    );
+    let persisted =
+        fastiplayer_config::load_from_path(&path).expect("persisted config должен читаться");
+    assert_eq!(persisted.config.playlist, applied);
+    remove_file_if_exists(&path);
+}
+
 /// Global quality Apply проходит MediaService owner, сохраняется и не создаёт item override key.
 #[test]
 fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {

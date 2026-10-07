@@ -22,3 +22,7 @@
 - `[playlist]` остаётся strict/defaulted group с `load_siblings`, `sibling_media_filter`, playback/error behavior, save debounce, `resume_checkpoint_interval_ms` (default 5000, `1000..=60000`, step 1000) и previous restart threshold. Runtime contracts — `mem:playlist/settings-s13` и `mem:playlist/resume-position-sidecar-2026-07-19`.
 - `UiAnimationsConfig::reduced_motion` остаётся defaulted additive field; подробности: `mem:settings-ui/reduced-motion-2026-07-18`.
 - Verification owner set: config/settings tests, app settings runtime tests, smoke current config generation+parse, refactor guardrails, locked workspace check, fmt/diff checks.
+
+
+## UX12 schema v12 (2026-10-07)
+- `CURRENT_SCHEMA_VERSION = 12`: в `[playlist]` добавлены `dropped_folder_max_files` (2000, 1..=10000, step 100), `dropped_folder_max_depth` (8, 0..=32) и `dropped_playlist_file_action` (`by_drop_target` | `new_playlist` | `append_to_queue`). Миграция v11→v12 только поднимает версию, старые файлы получают defaults через serde(default). Валидация диапазонов — `validation/playlist_drop.rs` (вынесено, `validation.rs` у лимита 800). Контролы в окне настроек строятся из `#[setting]`-метаданных, Apply идёт через route playlist. Контекст: `mem:app-egui/external-open-drag-drop-ux12`.

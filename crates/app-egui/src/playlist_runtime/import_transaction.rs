@@ -161,6 +161,20 @@ impl PlaylistImportDraft {
         }
     }
 
+    /// Отдаёт entries, усечённые целыми записями под лимит очереди при ЗАМЕНЕ (вся очередь
+    /// освобождается, поэтому доступен весь `MAX_PLAYLIST_ITEMS`).
+    ///
+    /// Нужен потребителю, который не идёт через S08 preview (бросок ссылки на видео), но
+    /// обязан соблюдать ту же group-safe capacity-политику, что и `stage_playlist_import`.
+    pub(super) fn into_replacement_prefix(self) -> PlaylistReplacementPrefix {
+        let (entries, capacity_truncation) = capped_import_prefix(self.entries, MAX_PLAYLIST_ITEMS);
+        PlaylistReplacementPrefix {
+            entries,
+            capacity_truncation,
+            sensitive_durable_locator_count: self.sensitive_durable_locator_count,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn test_summary(&self) -> (usize, usize, bool, usize) {
         (
@@ -170,6 +184,16 @@ impl PlaylistImportDraft {
             self.sensitive_durable_locator_count,
         )
     }
+}
+
+/// Draft после усечения под лимит очереди для замены без S08 preview.
+pub(super) struct PlaylistReplacementPrefix {
+    /// Принятые целые записи в исходном порядке.
+    pub(super) entries: Vec<PlaylistImportEntryDraft>,
+    /// Сколько записей не поместилось; `None` — поместилось всё.
+    pub(super) capacity_truncation: Option<PlaylistImportCapacityTruncation>,
+    /// Число ссылок, требующих подтверждения сохранения «чувствительного» адреса.
+    pub(super) sensitive_durable_locator_count: usize,
 }
 
 /// Immutable read model единственного staged preview.
@@ -593,6 +617,8 @@ impl PlaylistRuntime {
             }
             return PlaylistImportContinueOutcome::RuntimeClosed;
         };
+        // Dirty revision до мутации: по нему ниже решаем, надо ли публиковать snapshot.
+        let dirty_before = controller.dirty_revision();
         let outcome = match intent {
             PlaylistImportIntent::AppendToQueue => {
                 controller.commit_import_append(staged.expected_revision, queue_drafts)
@@ -608,6 +634,11 @@ impl PlaylistRuntime {
                 ImportReplacementDisposition::Startup,
             ),
         };
+        // Инвариант: каждая runtime-граница, меняющая очередь, публикует committed snapshot
+        // persistence writer-у. Иначе импортированные строки (особенно AppendToQueue без
+        // последующего playback) не попадут на диск и пропадут при выходе. Публикация
+        // идемпотентна: при отклонённом commit dirty revision не меняется, и ничего не уходит.
+        self.publish_controller_mutation_if_dirty(dirty_before);
         self.import_transaction.cancel();
         if intent == PlaylistImportIntent::StartupReplace {
             match &outcome {

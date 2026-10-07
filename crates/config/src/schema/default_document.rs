@@ -62,6 +62,21 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "dropped_folder_max_files = 2000",
+        "# Сколько media-файлов брать из папки, брошенной в окно (с подпапками).",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "dropped_folder_max_depth = 8",
+        "# Глубина подпапок при обходе брошенной папки; 0 — только сама папка.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "dropped_playlist_file_action = \"by_drop_target\"",
+        "# Файл плейлиста, брошенный в окно: by_drop_target / new_playlist / append_to_queue.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[player.seek]",
         "# Настройки seek commit, resume после seek и hotkey-шагов.",
     );

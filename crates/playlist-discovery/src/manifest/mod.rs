@@ -3,6 +3,7 @@
 mod accounting;
 mod builder;
 mod enumeration;
+pub(crate) use enumeration::is_hidden_filename;
 mod types;
 
 use std::fs;

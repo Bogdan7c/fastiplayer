@@ -52,7 +52,7 @@ fn ui_window_corner_radius_validation_uses_zero_through_twenty_four_range() {
 fn current_schema_without_window_corner_radius_loads_default() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
-    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v11.toml")
+    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v12.toml")
         .replace(
             "# Радиус прозрачного контура окна; 0 отключает скругление, диапазон 0..24 px.\ncorner_radius_px = 12\n",
             "",

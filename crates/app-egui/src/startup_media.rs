@@ -573,6 +573,18 @@ impl StartupMediaController {
                     }
                 }
             }
+            crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFiles(_)
+            | crate::playlist_runtime::AdmittedQueueReplacementIntent::ResolvedUrlCollection(_) => {
+                // Набор файлов приходит только из drag & drop; trusted startup intent его
+                // создать не может. Ветка нужна для полноты match и честно сообщает об ошибке.
+                self.orchestration.preparation_failed();
+                warn!(
+                    "Trusted startup admission вернул набор файлов, которого CLI создать не может"
+                );
+                app_state.set_startup_error(
+                    "Внутренняя ошибка: стартовое открытие вернуло набор файлов".to_string(),
+                );
+            }
             crate::playlist_runtime::AdmittedQueueReplacementIntent::ServiceUrl(url_open) => {
                 let locator = url_open.into_locator();
                 info!(source = %locator.safe_label(), "Автозагрузка service URL из CLI");
@@ -719,7 +731,10 @@ pub(crate) fn resolve_direct_media_startup_media(
 }
 
 /// Распознаёт только утверждённые local playlist extensions без lossy path conversion.
-fn is_recognized_startup_playlist_path(path: &Path) -> bool {
+///
+/// Единственный владелец списка расширений плейлистов: им же пользуется классификатор
+/// внешнего открытия (`external_open::classify`), второго списка быть не должно.
+pub(crate) fn is_recognized_startup_playlist_path(path: &Path) -> bool {
     path.extension()
         .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|extension| {

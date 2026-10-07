@@ -174,6 +174,42 @@ fn append_commits_singles_and_groups_only_after_explicit_continue() {
 }
 
 #[test]
+fn append_import_publishes_committed_snapshot_to_persistence_owner() {
+    let mut runtime = runtime();
+    let revision_before = runtime
+        .playlist_persistence_view()
+        .latest_committed_revision;
+    assert_eq!(revision_before, None);
+    let preview = runtime
+        .stage_playlist_import(
+            PlaylistImportIntent::AppendToQueue,
+            PlaylistImportDraft::new(vec![single("imported").into()], Vec::new(), None, 0),
+        )
+        .expect("preview");
+
+    // Предпросмотр ничего не меняет в очереди, значит и публиковать нечего.
+    assert_eq!(
+        runtime
+            .playlist_persistence_view()
+            .latest_committed_revision,
+        None
+    );
+    assert!(matches!(
+        runtime.continue_playlist_import(preview.preview_id()),
+        PlaylistImportContinueOutcome::Committed(ControllerImportCommitOutcome::Committed { .. })
+    ));
+
+    // После commit persistence owner обязан увидеть новый committed snapshot.
+    assert!(
+        runtime
+            .playlist_persistence_view()
+            .latest_committed_revision
+            .is_some(),
+        "импорт должен опубликовать snapshot очереди writer-у"
+    );
+}
+
+#[test]
 fn composed_sensitive_and_replacement_reasons_use_one_ordered_slot() {
     let mut runtime = runtime();
     runtime

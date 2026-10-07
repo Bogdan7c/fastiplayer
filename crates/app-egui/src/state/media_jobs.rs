@@ -363,39 +363,7 @@ impl AppState {
                 self.mark_pending_worker_redraw();
             }
             LocalFileOpenResult::Selected { path } => {
-                if let crate::playlist_runtime::LocalFileSelectionDisposition::PlayCommittedItem {
-                    item_id,
-                } = playlist_runtime.classify_in_app_local_file_selection(&path)
-                {
-                    let outcome = playlist_runtime.play_playlist_row(item_id);
-                    if !crate::transport_runtime::apply_playlist_row_play(
-                        self,
-                        playlist_runtime,
-                        renderer,
-                        outcome,
-                    ) {
-                        self.set_startup_error(
-                            "Не удалось открыть выбранный файл из текущей очереди".to_string(),
-                        );
-                    }
-                    return;
-                }
-                let intent = crate::playlist_runtime::InAppQueueReplacementIntent::local_file(path);
-                match playlist_runtime.admit_in_app_queue_replacement(intent) {
-                    Ok(crate::playlist_runtime::InAppQueueReplacementAdmission::StartNow(
-                        admitted,
-                    )) => self.start_admitted_queue_replacement(admitted),
-                    Ok(crate::playlist_runtime::InAppQueueReplacementAdmission::AwaitingConfirmation) => {
-                        self.startup_pending = None;
-                        self.mark_pending_worker_redraw();
-                    }
-                    Err(error) => {
-                        warn!(error = %error, "Local open admission отклонён до preparation");
-                        self.set_startup_error(format!(
-                            "Не удалось начать открытие media: {error}"
-                        ));
-                    }
-                }
+                self.open_selected_local_file(path, playlist_runtime, renderer);
             }
             LocalFileOpenResult::Prepared { prepared } => {
                 self.load_prepared_local_file(*prepared, playlist_runtime, renderer);
@@ -411,19 +379,107 @@ impl AppState {
         }
     }
 
+    /// Открывает выбранный локальный файл: общий путь кнопки Open и drag & drop одного файла.
+    ///
+    /// Сначала проверяется, не лежит ли файл уже в очереди (тогда играем эту строку без
+    /// замены очереди), иначе идёт admission замены очереди с подтверждением.
+    pub(crate) fn open_selected_local_file(
+        &mut self,
+        path: std::path::PathBuf,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
+    ) {
+        if let crate::playlist_runtime::LocalFileSelectionDisposition::PlayCommittedItem {
+            item_id,
+        } = playlist_runtime.classify_in_app_local_file_selection(&path)
+        {
+            let outcome = playlist_runtime.play_playlist_row(item_id);
+            if !crate::transport_runtime::apply_playlist_row_play(
+                self,
+                playlist_runtime,
+                renderer,
+                outcome,
+            ) {
+                self.set_startup_error(
+                    "Не удалось открыть выбранный файл из текущей очереди".to_string(),
+                );
+            }
+            return;
+        }
+        let intent = crate::playlist_runtime::InAppQueueReplacementIntent::local_file(path);
+        self.apply_in_app_queue_replacement_admission(
+            playlist_runtime.admit_in_app_queue_replacement(intent),
+            playlist_runtime,
+            renderer,
+        );
+    }
+
+    /// Применяет итог admission замены очереди: старт сразу, ожидание Confirm или ошибка.
+    pub(crate) fn apply_in_app_queue_replacement_admission(
+        &mut self,
+        admission: Result<
+            crate::playlist_runtime::InAppQueueReplacementAdmission,
+            crate::playlist_runtime::QueueReplacementAdmissionError,
+        >,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
+    ) {
+        match admission {
+            Ok(crate::playlist_runtime::InAppQueueReplacementAdmission::StartNow(admitted)) => {
+                self.start_admitted_queue_replacement(admitted, playlist_runtime, renderer);
+            }
+            Ok(crate::playlist_runtime::InAppQueueReplacementAdmission::AwaitingConfirmation) => {
+                self.startup_pending = None;
+                self.mark_pending_worker_redraw();
+            }
+            Err(error) => {
+                warn!(error = %error, "Local open admission отклонён до preparation");
+                self.set_startup_error(format!("Не удалось начать открытие media: {error}"));
+            }
+        }
+    }
+
     /// Запускает нижний local preparation owner только после typed admission.
     pub(crate) fn start_admitted_queue_replacement(
         &mut self,
         admitted: crate::playlist_runtime::AdmittedQueueReplacementIntent,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
     ) {
-        let crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFile(local_open) =
-            admitted
-        else {
-            // Production URL editor отсутствует: такой intent не может появиться из текущего UI.
-            self.set_startup_error(
-                "Внутренняя ошибка: URL open route ещё не подключён к in-app UI".to_string(),
-            );
-            return;
+        let local_open = match admitted {
+            crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFile(local_open) => {
+                local_open
+            }
+            crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFiles(local_files) => {
+                let truncation = local_files.truncation();
+                self.replace_queue_with_admitted_local_files(
+                    local_files.into_paths(),
+                    truncation,
+                    playlist_runtime,
+                    renderer,
+                );
+                return;
+            }
+            crate::playlist_runtime::AdmittedQueueReplacementIntent::ServiceUrl(url_open) => {
+                // Ссылка, брошенная на видео: новая очередь из одной строки + Row Play.
+                self.replace_queue_with_admitted_service_url(
+                    &url_open.into_locator(),
+                    playlist_runtime,
+                    renderer,
+                );
+                return;
+            }
+            crate::playlist_runtime::AdmittedQueueReplacementIntent::ResolvedUrlCollection(
+                collection,
+            ) => {
+                // Коллекция по ссылке, брошенной на видео: новая очередь из её записей + Row Play.
+                self.replace_queue_with_admitted_resolved_url_collection(
+                    collection,
+                    playlist_runtime,
+                    renderer,
+                );
+                return;
+            }
         };
         let path = local_open.into_path();
         let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
@@ -451,12 +507,13 @@ impl AppState {
         &mut self,
         action: crate::playlist_runtime::PlaylistConfirmationAction,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
     ) {
         let outcome = playlist_runtime.respond_to_playlist_confirmation(action);
         playlist_runtime.finish_url_draft_after_confirmation(&outcome);
         match outcome {
             crate::playlist_runtime::PlaylistConfirmationApplyOutcome::QueueReplacementConfirmed(intent) => {
-                self.start_admitted_queue_replacement(intent);
+                self.start_admitted_queue_replacement(intent, playlist_runtime, renderer);
             }
             crate::playlist_runtime::PlaylistConfirmationApplyOutcome::Cancelled
             | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::Import(_)

@@ -21,6 +21,22 @@ pub const SUPPORTED_LOCAL_MEDIA_EXTENSIONS: &[&str] = &[
     "alac", "wv", "webm", "mkv", "mov", "ts",
 ];
 
+/// Похож ли путь на media-файл по расширению из [`SUPPORTED_LOCAL_MEDIA_EXTENSIONS`].
+///
+/// Единственное правило «media-кандидата» для массового отбора файлов (например,
+/// рекурсивный обход брошенной папки): регистр расширения не важен, файл без расширения
+/// не считается кандидатом. Формат окончательно определяет обычный probe при открытии.
+#[must_use]
+pub fn has_supported_local_media_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            SUPPORTED_LOCAL_MEDIA_EXTENSIONS
+                .iter()
+                .any(|supported| supported.eq_ignore_ascii_case(extension))
+        })
+}
+
 /// Local composition сохраняет typed registry cancellation до media-open boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalDemuxOpenError {
@@ -147,9 +163,27 @@ mod tests {
     use media_core::VideoPacketFraming;
 
     use super::{
-        SUPPORTED_LOCAL_MEDIA_EXTENSIONS, open_local_demuxer, open_local_demuxer_from_source,
-        prepare_local_file,
+        SUPPORTED_LOCAL_MEDIA_EXTENSIONS, has_supported_local_media_extension, open_local_demuxer,
+        open_local_demuxer_from_source, prepare_local_file,
     };
+
+    /// Кандидат определяется расширением без учёта регистра; прочее отсекается.
+    #[test]
+    fn media_candidate_rule_is_case_insensitive_and_rejects_other_files() {
+        use std::path::Path;
+
+        assert!(has_supported_local_media_extension(Path::new(
+            "/m/Film.MKV"
+        )));
+        assert!(has_supported_local_media_extension(Path::new("song.flac")));
+        assert!(!has_supported_local_media_extension(Path::new("cover.jpg")));
+        assert!(!has_supported_local_media_extension(Path::new(
+            "playlist.m3u"
+        )));
+        assert!(!has_supported_local_media_extension(Path::new(
+            "no_extension"
+        )));
+    }
 
     /// Проверяет, что file dialog покрывает audio/container hints, но не превращает их в gate.
     #[test]

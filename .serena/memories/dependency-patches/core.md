@@ -23,6 +23,13 @@
 - `symphonia-format-isomp4` now also owns the opt-in bounded generic fragmented-MP4 reconstruction API: separate single-track H.264/AAC-LC `ftyp+moov` initialization and canonical inspected `moof+mdat` media output. It preserves exact sample bytes/timing/flags and coded coverage, uses mandatory budgets/cancellation/fallible allocation, and never interprets Smooth ManifestWindow or retimes overhang.
 - Existing `IsoMp4Reader`, registry and local/progressive/HLS/DASH runtime paths are unchanged; later S36 composition is the only intended caller. Exact public boundary, fixtures, round-trip proofs and removal implications: `mem:media-services/smooth-streaming-fmp4-s36f1b-2026-07-25`.
 
+## winit 0.30.13 external drag patch (UX12 stage A, 2026-10-06)
+
+- Восьмой `[replace]`: `winit:0.30.13` -> `crates/winit-patch` (Apache-2.0, exclude, свой lock, inventory, CI matrix `winit`). Точная копия crates.io архива + additive API `winit::platform::external_drag` (`ExternalDragEvent` Entered/Moved/Dropped/Left, `ExternalDragPayload` с сырыми URI и plain_text, оба `#[non_exhaustive]`). Публичный `WindowEvent`/`Event` не менялись (egui-winit матчит исчерпывающе).
+- Доставка: новый provided-метод `ApplicationHandler::external_drag_event`; внутри thread-local очередь `platform_impl/linux/external_drag/queue.rs`, `dispatch_event_for_app` дренирует её после каждого события (через closure-API `run` не доставляется).
+- Wayland: `wayland/external_drag.rs` (sctk 0.19 data_device_manager, copy-only, неблокирующее чтение через calloop, лимит 1 MiB, таймаут 5 с, ошибка = `Left` + warn); legacy `DroppedFile` для file://. X11: расширен `x11/dnd.rs` (позиция, plain text, не-file URI в payload, legacy сохранён).
+- Removal gate: когда egui-winit поддерживает стабильный winit 0.31, заменить app-переходник `external_open::winit_source` на DragEntered/DragMoved/DragDropped/DragLeft + DataTransfer.
+
 ## Why Each Patch Is Still Needed
 
 - `symphonia-format-caf`: exact 0.6.0 replacement for S28C forward-only CAF. It stops initial chunk scan at `data` on non-seekable sources while preserving seekable full scan/seek-back, and exact-reads declared fixed/variable packets so structural truncation cannot become a short packet or clean EOS. Stream-friendly CAF must place `desc` and required codec configuration before `data`. Removal gate and tests live in `docs/dependency-patches.toml`; full proof: `mem:symphonia-demux/audio-containers-s28c-2026-07-22`.

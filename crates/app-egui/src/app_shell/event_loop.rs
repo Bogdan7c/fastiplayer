@@ -8,11 +8,16 @@ use std::{sync::Arc, time::Instant};
 
 use tracing::{debug, info, instrument};
 use winit::{
-    application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
-    event_loop::ActiveEventLoop, window::Window,
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::WindowEvent,
+    event_loop::ActiveEventLoop,
+    platform::external_drag::ExternalDragEvent,
+    window::{Window, WindowId},
 };
 
 use crate::app_wake::{AppWakeEvent, AppWakeOwner};
+use crate::external_open::winit_source::gesture_event_from_external_drag;
 use crate::fatal_startup::FatalStartupError;
 use crate::frame_prepare::render_frame;
 use crate::redraw_pacing::should_request_redraw_after_window_event;
@@ -167,6 +172,21 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         );
     }
 
+    /// Принимает файлы и ссылки, перетаскиваемые в окно (канал патча winit, Linux).
+    ///
+    /// Перевод события и вся логика броска живут в `external_open`; shell только
+    /// пересылает событие владельцу и просит перерисовку.
+    fn external_drag_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: ExternalDragEvent,
+    ) {
+        if let Some(gesture_event) = gesture_event_from_external_drag(event) {
+            self.handle_external_drop_gesture(gesture_event);
+        }
+    }
+
     /// Обрабатывает ввод, ресайз, закрытие и redraw активного окна.
     fn window_event(
         &mut self,
@@ -226,6 +246,18 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 window.request_redraw();
                 return;
             }
+        }
+
+        // Вне Linux файлы приходят устаревшими событиями winit (без позиции): собираем их в
+        // жест. На Linux эти же события дублируют канал `external_drag` и не используются.
+        #[cfg(not(target_os = "linux"))]
+        if let Some(gesture_event) = app_state.ingest_legacy_file_drop_event(&event) {
+            app_state.handle_external_drop_gesture(
+                gesture_event,
+                &mut self.playlist_runtime,
+                renderer,
+            );
+            window.request_redraw();
         }
 
         if egui_response.consumed {
@@ -307,6 +339,9 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         if self.process_lifecycle != AppShellProcessLifecycle::Running {
             return;
         }
+        // Бросок устаревшего источника завершается раз за проход цикла, после всех DroppedFile.
+        #[cfg(not(target_os = "linux"))]
+        self.flush_legacy_file_drop();
         let persistence_changed = self.drain_playlist_persistence();
         request_redraw_for_visible_wake(self.window.as_deref(), persistence_changed);
         let has_continuous_redraw = self.has_continuous_redraw();

@@ -88,6 +88,7 @@ pub(super) enum PlaylistRuntimeLifecycle {
 pub(crate) struct PlaylistShutdownReport {
     pub(crate) ui_interaction: ProcessOwnerShutdownOutcome,
     pub(crate) import_io: ProcessOwnerShutdownOutcome,
+    pub(crate) dropped_collection_walk: ProcessOwnerShutdownOutcome,
     pub(crate) url_import: ProcessOwnerShutdownOutcome,
     pub(crate) export_io: ProcessOwnerShutdownOutcome,
     pub(crate) prepared_next: ProcessOwnerShutdownOutcome,
@@ -281,6 +282,7 @@ impl PlaylistRuntime {
 
         let ui_interaction = self.ui_interaction.shutdown_until(deadline);
         let import_io = self.import_io.shutdown_until(deadline);
+        let dropped_collection_walk = self.dropped_collection_walk.shutdown_until(deadline);
         let url_import = self.url_import.shutdown_until(deadline);
         self.export_io.cancel_active();
         let export_io = self.export_io.shutdown_until(deadline);
@@ -294,6 +296,7 @@ impl PlaylistRuntime {
         let report = PlaylistShutdownReport {
             ui_interaction,
             import_io,
+            dropped_collection_walk,
             url_import,
             export_io,
             prepared_next,
@@ -337,6 +340,13 @@ impl PlaylistShutdownReport {
                 }
         ) || matches!(
             self.import_io,
+            ProcessOwnerShutdownOutcome::TimedOut { .. }
+                | ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    pending_threads: 1..,
+                    ..
+                }
+        ) || matches!(
+            self.dropped_collection_walk,
             ProcessOwnerShutdownOutcome::TimedOut { .. }
                 | ProcessOwnerShutdownOutcome::ThreadPanicked {
                     pending_threads: 1..,
@@ -392,6 +402,10 @@ impl PlaylistShutdownReport {
             self.import_io,
             ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
         );
+        let walk_failed = matches!(
+            self.dropped_collection_walk,
+            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
+        );
         let url_import_failed = matches!(
             self.url_import,
             ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
@@ -431,6 +445,7 @@ impl PlaylistShutdownReport {
         };
         ui_failed
             || import_failed
+            || walk_failed
             || url_import_failed
             || export_failed
             || prepared_next_failed

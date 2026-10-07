@@ -9,9 +9,12 @@
 //! Player/session/render internals остаются за своими модулями. Shell работает
 //! через boundary methods `AppState`, `Renderer` и startup/redraw helpers.
 
+mod dropped_collection_walk;
 mod escape_dismissal;
 mod event_loop;
+mod external_drop;
 mod hotkeys;
+mod resolved_url_collection;
 mod runtime_settings_flush;
 mod shutdown;
 
@@ -723,8 +726,12 @@ impl AppShell {
             ),
             _ => false,
         };
+        let walk_changed = self.drain_dropped_collection_walk();
+        let url_collection_changed = self.drain_resolved_url_collection();
         let _resume_status = self.playlist_runtime.suspended_media_status();
         desktop_changed
+            || walk_changed
+            || url_collection_changed
             || persistence_changed
             || discovery_changed
             || resume_changed

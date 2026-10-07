@@ -177,6 +177,7 @@ impl PlaylistRuntime {
                 yt_dlp_config.clone(),
                 sensitive_durable_locator_count,
                 locator.display_host(),
+                super::url_import::PlaylistUrlImportDestination::AppendToQueue,
             )
             .map_err(|error| match error {
                 super::url_import::PlaylistUrlImportStartError::GenerationExhausted => {

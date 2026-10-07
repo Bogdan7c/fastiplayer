@@ -35,6 +35,9 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "playlist.state_save_debounce_ms",
     "playlist.resume_checkpoint_interval_ms",
     "playlist.previous_restart_threshold_ms",
+    "playlist.dropped_folder_max_files",
+    "playlist.dropped_folder_max_depth",
+    "playlist.dropped_playlist_file_action",
     "video.preferred_backend",
     "video.max_decode_ahead_ms",
     "video.present_queue_frames",
@@ -278,6 +281,18 @@ fn metadata_ranges_match_validation_constants() {
         "playlist.resume_checkpoint_interval_ms",
         validation::MIN_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
         validation::MAX_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
+    );
+    assert_integer_range(
+        &registry,
+        "playlist.dropped_folder_max_files",
+        crate::MIN_DROPPED_FOLDER_MAX_FILES,
+        crate::MAX_DROPPED_FOLDER_MAX_FILES,
+    );
+    assert_integer_range(
+        &registry,
+        "playlist.dropped_folder_max_depth",
+        crate::MIN_DROPPED_FOLDER_MAX_DEPTH,
+        crate::MAX_DROPPED_FOLDER_MAX_DEPTH,
     );
     assert_integer_range(
         &registry,
@@ -649,6 +664,11 @@ fn static_enum_and_string_options_use_stable_ids() {
         &["stop_after_last", "repeat_queue", "repeat_one"],
     );
     assert_select_options(&registry, "playlist.error_behavior", &["stop", "skip"]);
+    assert_select_options(
+        &registry,
+        "playlist.dropped_playlist_file_action",
+        &["by_drop_target", "new_playlist", "append_to_queue"],
+    );
     assert_select_options(&registry, "render.profile", &["auto", "vulkan", "opengles"]);
     assert_select_options(&registry, "render.hdr_to_sdr.operator", &["bt2446_c"]);
     assert_select_options(&registry, "render.tone_mapping", &["auto", "disabled"]);

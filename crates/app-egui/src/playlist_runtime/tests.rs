@@ -144,6 +144,7 @@ fn media_open_timeout_requires_process_exit_without_collapsing_owner_outcomes() 
         prepared_next: ProcessOwnerShutdownOutcome::Completed,
         ui_interaction: ProcessOwnerShutdownOutcome::Completed,
         import_io: ProcessOwnerShutdownOutcome::Completed,
+        dropped_collection_walk: ProcessOwnerShutdownOutcome::Completed,
         url_import: ProcessOwnerShutdownOutcome::Completed,
         export_io: ProcessOwnerShutdownOutcome::Completed,
         startup: startup::PlaylistStartupShutdownOutcome::Completed,

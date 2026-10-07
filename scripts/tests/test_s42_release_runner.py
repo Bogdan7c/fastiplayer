@@ -81,6 +81,7 @@ class S42ReleaseRunnerTests(unittest.TestCase):
             "crates/symphonia-codec-aac-patch/Cargo.toml",
             "crates/symphonia-format-mkv-patch/Cargo.toml",
             "crates/wayland-scanner-patch/Cargo.toml",
+            "crates/winit-patch/Cargo.toml",
         )
         # Каждая manifest identity проверяется отдельно для точной diagnostics.
         for expected_manifest in expected_manifests:

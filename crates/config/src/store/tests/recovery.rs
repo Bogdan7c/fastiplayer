@@ -116,7 +116,7 @@ fn out_of_range_value_is_backed_up_with_field_name() {
 /// Слишком старая версия схемы (без миграции) считается повреждённой.
 #[test]
 fn unsupported_old_schema_version_is_backed_up() {
-    let broken_text = default_config_text().replace("schema_version = 11", "schema_version = 1");
+    let broken_text = default_config_text().replace("schema_version = 12", "schema_version = 1");
 
     assert_recovered_from_broken(
         broken_text.as_bytes(),
@@ -130,7 +130,7 @@ fn unsupported_old_schema_version_is_backed_up() {
 #[test]
 fn newer_schema_version_keeps_file_untouched_and_session_only() {
     // Реалистичный файл новой версии: другая версия и незнакомый нам ключ.
-    let newer_text = default_config_text().replace("schema_version = 11", "schema_version = 99")
+    let newer_text = default_config_text().replace("schema_version = 12", "schema_version = 99")
         + "\nfeature_from_the_future = true\n";
     let (temp_dir, config_path) = config_dir_with(newer_text.as_bytes());
 
@@ -171,7 +171,7 @@ fn newer_schema_version_keeps_file_untouched_and_session_only() {
 /// В режиме без записи некорректный документ по-прежнему отклоняется проверкой.
 #[test]
 fn session_only_save_still_rejects_invalid_document() {
-    let newer_text = default_config_text().replace("schema_version = 11", "schema_version = 99");
+    let newer_text = default_config_text().replace("schema_version = 12", "schema_version = 99");
     let (_temp_dir, config_path) = config_dir_with(newer_text.as_bytes());
     let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
 

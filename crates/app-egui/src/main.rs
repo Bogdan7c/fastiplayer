@@ -14,6 +14,7 @@ mod app_wake;
 mod audio_output_message;
 mod config_startup_notice;
 mod dma_buf_runtime_fallback;
+mod external_open;
 mod fatal_startup;
 mod frame_prepare;
 mod local_file_open;

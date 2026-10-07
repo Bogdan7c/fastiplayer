@@ -123,6 +123,20 @@ impl VisibleRefreshDemand {
     }
 }
 
+/// Порядок, в котором Manual Add кладёт пачку файлов в конец очереди.
+///
+/// Владелец выбора — action jobs: commit уже идёт строго в порядке отправки (по `Batch`
+/// ordinal), так что порядок целиком определяется тем, что мы отправили в probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManualAddOrder {
+    /// Натуральная сортировка по имени файла: кнопка «Добавить файлы» (диалог выбора).
+    NaturalSort,
+    /// Порядок как пришёл от вызывающего: бросок файлов/папок на панель плейлиста.
+    /// Пользователь сам задал порядок броском, а обход папок уже детерминирован — ровно
+    /// тот же порядок использует замена очереди, поэтому append не должен его пересортировать.
+    PreserveGiven,
+}
+
 struct ManualAddJob {
     handle: DiscoveryJobHandle,
     queue_generation: u64,
@@ -172,9 +186,13 @@ impl DiscoveryActionJobs {
         &mut self,
         executor: &DiscoveryExecutor,
         paths: Vec<PathBuf>,
+        order: ManualAddOrder,
         queue_generation: u64,
     ) -> Result<ManualAddJobId, ManualAddStartError> {
-        let paths = natural_order(paths);
+        let paths = match order {
+            ManualAddOrder::NaturalSort => natural_order(paths),
+            ManualAddOrder::PreserveGiven => paths,
+        };
         let requested = paths.len();
         let request_revision = self.allocate_request_revision();
         let handle = executor

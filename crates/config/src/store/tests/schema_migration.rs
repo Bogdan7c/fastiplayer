@@ -15,7 +15,7 @@ fn default_config_is_valid() {
 fn current_schema_without_yt_dlp_output_budgets_uses_safe_defaults() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
-    let current_text = "schema_version = 11\n\n[yt_dlp]\nresolve_timeout_ms = 30000\n";
+    let current_text = "schema_version = 12\n\n[yt_dlp]\nresolve_timeout_ms = 30000\n";
     fs::write(&config_path, current_text).expect("current config written");
 
     let loaded = load_from_path(&config_path).expect("current config without additive keys loads");
@@ -172,7 +172,7 @@ fn schema_v10_rejects_legacy_web_media_key_inside_yt_dlp() {
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 11\n\n[yt_dlp]\npreferred_video_height = 1080\n",
+        "schema_version = 12\n\n[yt_dlp]\npreferred_video_height = 1080\n",
     )
     .expect("strict schema v10 fixture written");
 
@@ -187,7 +187,7 @@ fn schema_v10_web_media_section_rejects_unknown_fields() {
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 11\n\n[web_media]\nfuture_recovery_magic = true\n",
+        "schema_version = 12\n\n[web_media]\nfuture_recovery_magic = true\n",
     )
     .expect("strict web-media fixture written");
 
@@ -502,7 +502,7 @@ fn web_media_hdr_selection_stable_ids_roundtrip() {
             &config_path,
             format!(
                 r#"
-schema_version = 11
+schema_version = 12
 
 [web_media]
 hdr_selection = "{stable_id}"
@@ -519,7 +519,7 @@ hdr_selection = "{stable_id}"
             .to_pretty_toml()
             .expect("HDR selection config serializes");
         assert!(generated.contains(&format!("hdr_selection = \"{stable_id}\"")));
-        assert!(generated.contains("schema_version = 11"));
+        assert!(generated.contains("schema_version = 12"));
     }
 }
 
@@ -578,7 +578,7 @@ fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
         fs::write(
             &config_path,
             format!(
-                "schema_version = 11\n\n[web_media]\npreferred_video_height = {invalid_height}\n"
+                "schema_version = 12\n\n[web_media]\npreferred_video_height = {invalid_height}\n"
             ),
         )
         .expect("invalid preferred height fixture written");
@@ -588,7 +588,7 @@ fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
 
     fs::write(
         &config_path,
-        "schema_version = 11\n\n[web_media]\nitem_video_height_override = 720\n",
+        "schema_version = 12\n\n[web_media]\nitem_video_height_override = 720\n",
     )
     .expect("runtime-only override fixture written");
     let error = load_from_path(&config_path).expect_err("runtime-only override rejected in TOML");

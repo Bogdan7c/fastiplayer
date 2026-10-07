@@ -19,9 +19,25 @@ use super::PlaylistRuntime;
 use super::import_transaction::{
     PlaylistImportDraft, PlaylistImportIntent, PlaylistImportIssue, PlaylistImportIssueKind,
 };
+use super::resolved_url_collection::ResolvedUrlCollection;
 
 /// Нулевое значение не является job generation и используется для отмены exact request-а.
 const NO_URL_IMPORT_GENERATION: u64 = 0;
+
+/// Куда попадёт результат получения структуры ссылки (решение владельца 9, сессия 12).
+///
+/// Сам job (классификация, прогресс-строка, отмена, типизированные отказы) один и тот же;
+/// различается только судьба успешного результата. Тип принадлежит владельцу URL-импорта,
+/// чтобы второй job для «ссылки на видео» не дублировался.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlaylistUrlImportDestination {
+    /// Кнопка «Добавить URL» и бросок на панель: результат идёт в S08 preview и дописывается
+    /// в конец очереди (поведение без изменений).
+    AppendToQueue,
+    /// Бросок на видео: результат НЕ трогает очередь, а ждёт замены очереди через общий
+    /// admission (подтверждение для непустой очереди) и воспроизведения первой строки.
+    ReplaceAfterConfirmation,
+}
 
 /// Ошибка admission не содержит исходный URL или service diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +74,8 @@ pub(super) enum PlaylistUrlImportCompletion {
 pub(super) struct FinishedPlaylistUrlImport {
     /// Результат exact latest generation.
     completion: PlaylistUrlImportCompletion,
+    /// Куда этот результат надо применить; фиксируется при submit и не меняется.
+    destination: PlaylistUrlImportDestination,
     /// Безопасный домен («youtube.com»); `None` — у ссылки нет домена.
     display_host: Option<Arc<str>>,
 }
@@ -196,6 +214,8 @@ struct ActivePlaylistUrlImport {
     generation: u64,
     /// Безопасный домен для индикатора и текста ошибки.
     display_host: Option<Arc<str>>,
+    /// Судьба результата; подмена destination у уже идущего job-а невозможна.
+    destination: PlaylistUrlImportDestination,
 }
 
 /// Process-lifetime owner одного worker-а и exact latest generation fence.
@@ -205,6 +225,9 @@ pub(super) struct PlaylistUrlImportOwner {
     next_generation: Option<u64>,
     /// `Some` от submit до drain/cancel: ровно то время, пока виден индикатор.
     active_request: Option<ActivePlaylistUrlImport>,
+    /// Разобранная коллекция, ждущая admission замены очереди (`ReplaceAfterConfirmation`).
+    /// Любая отмена/новый submit/shutdown очищает слот: устаревший результат не оживает.
+    resolved_replacement: Option<ResolvedUrlCollection>,
     resolver: Arc<dyn PlaylistUrlTopologyResolver>,
     worker: Option<JoinHandle<()>>,
     state_poisoned: bool,
@@ -238,6 +261,7 @@ impl PlaylistUrlImportOwner {
             current_generation,
             next_generation: Some(1),
             active_request: None,
+            resolved_replacement: None,
             resolver,
             worker,
             state_poisoned: false,
@@ -251,6 +275,7 @@ impl PlaylistUrlImportOwner {
         yt_dlp_config: YtDlpConfig,
         sensitive_durable_locator_count: usize,
         display_host: Option<String>,
+        destination: PlaylistUrlImportDestination,
     ) -> Result<(), PlaylistUrlImportStartError> {
         let Some(worker) = self.worker.as_ref() else {
             return Err(PlaylistUrlImportStartError::WorkerUnavailable);
@@ -279,7 +304,10 @@ impl PlaylistUrlImportOwner {
         self.active_request = Some(ActivePlaylistUrlImport {
             generation,
             display_host: display_host.map(Arc::from),
+            destination,
         });
+        // Новый intent делает недоставленную коллекцию прошлого job-а недействительной.
+        self.resolved_replacement = None;
         self.next_generation = generation.checked_add(1);
         drop(shared_state);
         worker.thread().unpark();
@@ -293,6 +321,7 @@ impl PlaylistUrlImportOwner {
     pub(super) fn cancel_active(&mut self) -> PlaylistUrlImportCancelOutcome {
         self.current_generation
             .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
+        self.resolved_replacement = None;
         let outcome = match self.active_request.take() {
             Some(_) => PlaylistUrlImportCancelOutcome::Cancelled,
             None => PlaylistUrlImportCancelOutcome::NothingActive,
@@ -320,15 +349,19 @@ impl PlaylistUrlImportOwner {
     pub(super) fn drain(&mut self) -> Option<FinishedPlaylistUrlImport> {
         let Ok(mut shared_state) = lock_worker_state(&self.shared_state) else {
             self.state_poisoned = true;
-            let display_host = self
-                .active_request
-                .take()
-                .and_then(|active| active.display_host);
+            let active = self.active_request.take();
+            let destination = active
+                .as_ref()
+                .map_or(PlaylistUrlImportDestination::AppendToQueue, |active| {
+                    active.destination
+                });
+            let display_host = active.and_then(|active| active.display_host);
             self.current_generation
                 .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
             tracing::error!("URL topology owner обнаружил poisoned worker state при drain");
             return Some(FinishedPlaylistUrlImport {
                 completion: PlaylistUrlImportCompletion::Failed(PlaylistUrlImportFailure::Internal),
+                destination,
                 display_host,
             });
         };
@@ -341,15 +374,13 @@ impl PlaylistUrlImportOwner {
         {
             return None;
         }
-        let display_host = self
-            .active_request
-            .take()
-            .and_then(|active| active.display_host);
+        let active = self.active_request.take()?;
         self.current_generation
             .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
         Some(FinishedPlaylistUrlImport {
             completion: tagged.completion,
-            display_host,
+            destination: active.destination,
+            display_host: active.display_host,
         })
     }
 
@@ -362,6 +393,7 @@ impl PlaylistUrlImportOwner {
             return ProcessOwnerShutdownOutcome::AlreadyCompleted;
         };
         self.active_request = None;
+        self.resolved_replacement = None;
         self.current_generation
             .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
         match lock_worker_state(&self.shared_state) {
@@ -397,6 +429,16 @@ impl PlaylistUrlImportOwner {
         }
     }
 
+    /// Кладёт разобранную коллекцию в слот ожидания admission (заменяет прежнюю).
+    pub(super) fn park_resolved_replacement(&mut self, collection: ResolvedUrlCollection) {
+        self.resolved_replacement = Some(collection);
+    }
+
+    /// Забирает разобранную коллекцию ровно один раз; после отмены слот пуст.
+    pub(super) fn take_resolved_replacement(&mut self) -> Option<ResolvedUrlCollection> {
+        self.resolved_replacement.take()
+    }
+
     #[cfg(test)]
     /// Подменяет только resolver будущих requests, не меняя worker/generation semantics.
     fn replace_resolver_for_test(&mut self, resolver: Arc<dyn PlaylistUrlTopologyResolver>) {
@@ -412,12 +454,14 @@ impl PlaylistRuntime {
         yt_dlp_config: YtDlpConfig,
         sensitive_durable_locator_count: usize,
         display_host: Option<String>,
+        destination: PlaylistUrlImportDestination,
     ) -> Result<(), PlaylistUrlImportStartError> {
         self.url_import.submit(
             locator,
             yt_dlp_config,
             sensitive_durable_locator_count,
             display_host,
+            destination,
         )
     }
 
@@ -446,12 +490,21 @@ impl PlaylistRuntime {
     pub(in crate::playlist_runtime) fn drain_playlist_url_import_job(&mut self) -> bool {
         let Some(FinishedPlaylistUrlImport {
             completion,
+            destination,
             display_host,
         }) = self.url_import.drain()
         else {
             return false;
         };
         match completion {
+            PlaylistUrlImportCompletion::Resolved(draft)
+                if destination == PlaylistUrlImportDestination::ReplaceAfterConfirmation =>
+            {
+                // Очередь не трогаем: коллекция ждёт, пока оболочка проведёт её через admission.
+                self.url_import.park_resolved_replacement(
+                    ResolvedUrlCollection::from_resolved_draft(draft, display_host),
+                );
+            }
             PlaylistUrlImportCompletion::Resolved(draft) => {
                 if let Err(error) =
                     self.stage_playlist_import(PlaylistImportIntent::AppendToQueue, draft)

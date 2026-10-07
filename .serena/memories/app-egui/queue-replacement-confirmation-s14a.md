@@ -38,6 +38,17 @@
 - Classification applies only to the main single-file Open route. Playlist toolbar `AddFiles` remains the independent Manual Add append pipeline and never receives replacement semantics.
 - Starting any new main-picker selection and explicit Row Play cancels only a pending guarded initial-directory start, not the active sibling discovery scope. Existing confirmation redaction, lifecycle, and trusted CLI contracts remain unchanged.
 
+## UX сессия 12, этап D (2026-10-07): ссылка, брошенная в окно
+- `InAppQueueReplacementIntent::service_url` теперь production (убран allow(dead_code)): бросок ссылки на видео = `classify_dropped_web_url` → `admit_in_app_queue_replacement` (подтверждение замены и/или D15 sensitive, safe label — только домен) → `AdmittedQueueReplacementIntent::ServiceUrl` → `AppState::replace_queue_with_admitted_service_url` → `PlaylistRuntime::replace_queue_with_service_url` (`commit_import_replace`, одна URL-строка) → Row Play. Модуль: `playlist_runtime/dropped_web_url.rs`. Startup-путь (`locator.start`) не используется in-app.
+- Бросок ссылки на панель плейлиста = `PlaylistRuntime::append_dropped_web_url` → тот же `append_playlist_url`, что у «Добавить URL» (прогресс, причины, sensitive confirm); отказ → toast с безопасным текстом.
+- (Ограничение снято решением 9) yt-dlp-ссылка на видео теперь раскрывается topology-job-ом Add URL и заменяет очередь её записями через `QueueReplacementTarget::ResolvedUrlCollection`; прямая media-ссылка по-прежнему одна строка. Детали: `mem:app-egui/url-collection-import-s17-2026-07-20`.
+- Busy-предикат броска включает `playlist_url_import_progress().is_some()`. Хост: `state/external_open/web_url.rs`.
+
 ## S08 source-neutral import continuation (2026-07-20)
 - `PendingPlaylistConfirmation` остаётся единственным authoritative slot-ом и получил typed import continuation target. Import partial/truncation решается preview Continue, после чего sensitive durable-locator acknowledgement и queue replacement компонуются в одном deterministic reason set; legacy replacement-only accessor дополнительно проверяет exact target variant и никогда не может подтвердить import continuation.
 - Новый import/URL/main-open/row-play/structural replacement/shutdown взаимно supersede staged import и slot; matching generalized Confirm повторно валидирует import generation + structural revision. Full transaction/lifecycle: `mem:app-egui/playlist-import-s08-2026-07-20`.
+
+## UX12 review fixes (2026-10-07): обход папки и усечение
+- `supersede_playlist_import_flow` теперь также отменяет идущий обход брошенной папки (`DroppedCollectionWalkOwner::cancel_active`, токен): `take_completion` превращает любой итог отменённого обхода в `Cancelled`, поэтому устаревший результат не даёт подтверждения/добавления. Поток не join-ится, `is_in_flight` остаётся true до забора результата.
+- `QueueReplacementTarget::LocalFiles { paths, truncation }` и `AdmittedLocalFilesOpen::truncation()`: уведомление об усечении лимитом показывается в `replace_queue_with_admitted_local_files` (момент реальной замены; после Cancel его нет), для Append — сразу (`truncation_notice_before_commit`).
+- `classify_request`: смесью считаются только MediaFile/Directory/WebUrl; Missing/Unsupported плейлист не пропускают.
