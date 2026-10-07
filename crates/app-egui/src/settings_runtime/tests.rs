@@ -47,6 +47,7 @@ use crate::ui::sidebar::{SidebarWidthChange, SidebarWidthPoints};
 
 mod dynamic_options;
 mod preview;
+mod render_keeps_draft;
 mod session_only_persistence;
 mod sidebar_resize;
 mod snapshot_routes;

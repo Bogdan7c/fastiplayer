@@ -1,6 +1,6 @@
 //! Generic field widgets по neutral `SettingEditor`.
 
-use egui::{ComboBox, DragValue, RichText, Slider, TextEdit, Ui};
+use egui::{ComboBox, DragValue, RichText, Slider, SliderClamping, TextEdit, Ui};
 use settings_core::{
     AutoFixedPositiveIntegerDescriptor, DefaultBehavior, NumericDescriptor, NumericRange,
     NumericStep, OptionProviderId, SelectDescriptor, SelectListDescriptor, SettingAccess,
@@ -138,11 +138,11 @@ fn render_numeric(
         (NumericRange::Integer { min, max }, SettingValue::Integer(current_value)) => {
             let mut edited_value = *current_value;
             let mut slider =
-                Slider::new(&mut edited_value, *min..=*max).step_by(integer_step(descriptor));
+                stepped_slider(&mut edited_value, *min..=*max, integer_step(descriptor));
             if let Some(unit) = &descriptor.unit {
                 slider = slider.text(unit.as_str());
             }
-            if ui.add(slider).changed() {
+            if ui.add(slider).changed() && edited_value != *current_value {
                 actions.push(set_value_action(
                     &field.descriptor.id,
                     SettingValue::Integer(edited_value),
@@ -152,13 +152,11 @@ fn render_numeric(
         (NumericRange::Float { min, max }, SettingValue::Float(current_value)) => {
             let step = float_step(descriptor);
             let mut edited_value = *current_value;
-            let mut slider = Slider::new(&mut edited_value, *min..=*max).step_by(step);
+            let mut slider = stepped_slider(&mut edited_value, *min..=*max, step);
             if let Some(unit) = &descriptor.unit {
                 slider = slider.text(unit.as_str());
             }
-            if ui.add(slider).changed()
-                && slider_value_really_changed(*current_value, edited_value, step)
-            {
+            if ui.add(slider).changed() && edited_value != *current_value {
                 actions.push(set_value_action(
                     &field.descriptor.id,
                     SettingValue::Float(edited_value),
@@ -169,15 +167,24 @@ fn render_numeric(
     }
 }
 
-/// Отличает реальное изменение слайдера от фантомного snap-а к step grid.
+/// Строит slider с шагом так, чтобы отрисовка НИКОГДА не меняла значение.
 ///
-/// Config может хранить float как `f32`; модель отдаёт `f64` после roundtrip-а,
-/// slider snap-ит его к step grid и сообщает `changed()` каждый кадр, хотя
-/// пользователь ничего не трогал. Фантомный SetValue затирал ResetField и
-/// заставлял runtime клонировать draft на каждом кадре. Реальное изменение
-/// всегда не меньше шага, фантомное — порядка f32 quantization noise.
-fn slider_value_really_changed(previous: f64, edited: f64, step: f64) -> bool {
-    (edited - previous).abs() >= step * 0.5
+/// Инвариант «отрисовка не меняет значение»: draft может лежать вне сетки шага
+/// (сетка egui привязана к началу диапазона: `min + k * step`) или вне диапазона
+/// (валидация такое уже подсвечивает). При `SliderClamping::Always` (по умолчанию)
+/// egui на каждом кадре сам привязывает старое значение к сетке и помечает ответ
+/// как `changed()` без участия пользователя — значение «уезжало» (2000 -> 2001)
+/// и помечалось изменённым. `SliderClamping::Edits` ограничивает и привязывает
+/// к сетке только значения, введённые пользователем (drag, клавиатура, ввод
+/// текста), а существующее значение оставляет нетронутым.
+fn stepped_slider<Num: egui::emath::Numeric>(
+    value: &mut Num,
+    range: std::ops::RangeInclusive<Num>,
+    step: f64,
+) -> Slider<'_> {
+    Slider::new(value, range)
+        .step_by(step)
+        .clamping(SliderClamping::Edits)
 }
 
 /// Рисует static или dynamic select.
@@ -462,11 +469,11 @@ fn render_vector_component(ui: &mut Ui, value: &mut f64, descriptor: &NumericDes
 
     let step = float_step(descriptor);
     let previous_value = *value;
-    let mut slider = Slider::new(value, min..=max).step_by(step);
+    let mut slider = stepped_slider(value, min..=max, step);
     if let Some(unit) = &descriptor.unit {
         slider = slider.text(unit.as_str());
     }
-    ui.add(slider).changed() && slider_value_really_changed(previous_value, *value, step)
+    ui.add(slider).changed() && *value != previous_value
 }
 
 /// Рисует read-only representation neutral value-а.
@@ -609,3 +616,7 @@ fn value_text(value: &SettingValue) -> String {
             .join(", "),
     }
 }
+
+#[cfg(test)]
+#[path = "field_widget_tests.rs"]
+mod tests;
