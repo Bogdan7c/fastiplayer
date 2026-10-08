@@ -8,6 +8,7 @@ use crate::{
 
 mod media_services;
 mod playlist_drop;
+mod ui;
 
 pub(crate) use media_services::{
     MAX_NETWORK_MEMORY_CACHE_MB, MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB, MAX_NETWORK_READ_AHEAD_MB,
@@ -18,6 +19,15 @@ pub(crate) use media_services::{
 };
 use media_services::{validate_audio_section, validate_network_section};
 use playlist_drop::validate_dropped_folder_limits;
+use ui::validate_ui_section;
+// Skin по умолчанию нужен снаружи модуля только тестам схемы.
+#[cfg(test)]
+pub(crate) use ui::DEFAULT_UI_SKIN;
+pub(crate) use ui::{
+    MAX_LIVE_PREVIEW_MAX_HZ, MAX_SIDEBAR_SLIDE_DURATION_MS, MAX_TITLEBAR_HEIGHT_PX,
+    MAX_UI_LANGUAGE_LEN, MIN_LIVE_PREVIEW_MAX_HZ, MIN_SIDEBAR_SLIDE_DURATION_MS,
+    MIN_TITLEBAR_HEIGHT_PX, MIN_UI_LANGUAGE_LEN,
+};
 
 /// Минимальный decode-ahead: ноль ломает смысл backpressure окна.
 pub(crate) const MIN_DECODE_AHEAD_MS: u64 = 1;
@@ -82,32 +92,11 @@ pub(crate) const MAX_CONSECUTIVE_CORRUPTED_PACKETS: usize = 4096;
 /// Верхний предел render latency, выше которого config почти наверняка ошибочен.
 pub(crate) const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
 
-/// Единственный skin, для которого текущий UI гарантирует layout contract.
-pub(crate) const DEFAULT_UI_SKIN: &str = "minimal";
-
-/// Минимальная частота live preview: ноль означал бы выключенный pacing, а не валидную частоту.
-pub(crate) const MIN_LIVE_PREVIEW_MAX_HZ: u16 = 1;
-
-/// Верхняя граница live preview защищает runtime от слишком частых preview updates.
-pub(crate) const MAX_LIVE_PREVIEW_MAX_HZ: u16 = 240;
-
 /// Минимальная live-scrub частота: ноль означал бы выключенный throttle, а не частоту.
 pub(crate) const MIN_FRAME_SERVER_LIVE_SCRUB_MAX_HZ: u16 = 1;
 
 /// Верхняя live-scrub частота защищает будущий runtime от слишком частых decode starts.
 pub(crate) const MAX_FRAME_SERVER_LIVE_SCRUB_MAX_HZ: u16 = 240;
-
-/// Нижняя граница времени анимации sidebar: ноль валиден и означает «без анимации».
-pub(crate) const MIN_SIDEBAR_SLIDE_DURATION_MS: u16 = 0;
-
-/// Верхняя граница времени анимации sidebar: дольше 5 секунд UI ощущается сломанным.
-pub(crate) const MAX_SIDEBAR_SLIDE_DURATION_MS: u16 = 5000;
-
-/// Минимальная высота кастомного titlebar: ниже кнопки окна становятся слишком мелкими.
-pub(crate) const MIN_TITLEBAR_HEIGHT_PX: u16 = 32;
-
-/// Максимальная высота кастомного titlebar: выше этого overlay начинает занимать слишком много видео.
-pub(crate) const MAX_TITLEBAR_HEIGHT_PX: u16 = 96;
 
 /// Нижний предел reference luminance: значения ниже 1 nit не имеют полезного UI-смысла.
 pub(crate) const MIN_HDR_TO_SDR_REFERENCE_NITS: f32 = 1.0;
@@ -120,12 +109,6 @@ pub(crate) const MIN_AUDIO_VOLUME: f64 = 0.0;
 
 /// Верхний предел default startup volume.
 pub(crate) const MAX_AUDIO_VOLUME: f64 = 1.0;
-
-/// Минимальная длина кода языка UI.
-pub(crate) const MIN_UI_LANGUAGE_LEN: usize = 1;
-
-/// Максимальная длина кода языка UI.
-pub(crate) const MAX_UI_LANGUAGE_LEN: usize = 16;
 
 /// Минимум для положительных `u64` полей без более узкой доменной границы.
 pub(crate) const MIN_POSITIVE_U64_SETTING_VALUE: u64 = 1;
@@ -617,71 +600,6 @@ fn validate_frame_server_section(config: &AppConfig) -> ConfigResult<()> {
         config.frame_server.live_scrub_max_hz,
         MIN_FRAME_SERVER_LIVE_SCRUB_MAX_HZ,
         MAX_FRAME_SERVER_LIVE_SCRUB_MAX_HZ,
-    )?;
-
-    Ok(())
-}
-
-/// Проверяет UI section.
-fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
-    let language = config.ui.language.trim();
-    if language.chars().count() < MIN_UI_LANGUAGE_LEN {
-        return Err(invalid_value(
-            "ui.language",
-            "язык UI не должен быть пустым".to_string(),
-        ));
-    }
-
-    if language.chars().count() > MAX_UI_LANGUAGE_LEN {
-        return Err(invalid_value(
-            "ui.language",
-            "язык UI должен быть коротким кодом, например `ru` или `en`".to_string(),
-        ));
-    }
-
-    if config.ui.skin.trim() != DEFAULT_UI_SKIN {
-        return Err(invalid_value(
-            "ui.skin",
-            format!(
-                "неизвестный skin `{}`; поддерживается только `{DEFAULT_UI_SKIN}`",
-                config.ui.skin
-            ),
-        ));
-    }
-
-    validate_u16_range(
-        "ui.settings.live_preview_max_hz",
-        config.ui.settings.live_preview_max_hz,
-        MIN_LIVE_PREVIEW_MAX_HZ,
-        MAX_LIVE_PREVIEW_MAX_HZ,
-    )?;
-
-    validate_u16_range(
-        "ui.sidebar.width_points",
-        config.ui.sidebar.width_points,
-        crate::MIN_SIDEBAR_WIDTH_POINTS,
-        crate::MAX_SIDEBAR_WIDTH_POINTS,
-    )?;
-
-    validate_u16_range(
-        "ui.animations.sidebar_slide_duration_ms",
-        config.ui.animations.sidebar_slide_duration_ms,
-        MIN_SIDEBAR_SLIDE_DURATION_MS,
-        MAX_SIDEBAR_SLIDE_DURATION_MS,
-    )?;
-
-    validate_u16_range(
-        "ui.window.titlebar_height_px",
-        config.ui.window.titlebar_height_px,
-        MIN_TITLEBAR_HEIGHT_PX,
-        MAX_TITLEBAR_HEIGHT_PX,
-    )?;
-
-    validate_u16_range(
-        "ui.window.corner_radius_px",
-        config.ui.window.corner_radius_px,
-        crate::MIN_WINDOW_CORNER_RADIUS_PX,
-        crate::MAX_WINDOW_CORNER_RADIUS_PX,
     )?;
 
     Ok(())
