@@ -17,6 +17,7 @@ mod dma_buf_runtime_fallback;
 mod external_open;
 mod fatal_startup;
 mod frame_prepare;
+mod fullscreen_chrome;
 mod instance_forwarding;
 mod local_file_open;
 mod local_open_message;

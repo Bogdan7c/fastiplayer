@@ -1065,6 +1065,7 @@ pub(crate) fn render_frame(
             settings_runtime.next_sidebar_resize_deadline(),
             settings_runtime.next_user_audio_level_persist_deadline(),
             app_state.next_notification_wake_deadline(),
+            app_state.fullscreen_chrome_wake_deadline(),
         ]),
     }
 }

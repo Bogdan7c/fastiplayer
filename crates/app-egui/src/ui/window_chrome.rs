@@ -33,6 +33,9 @@ pub(crate) struct WindowChromeInput<'title> {
     /// Текущее maximize-состояние окна, чтобы выбрать icon restore/maximize.
     pub(crate) is_maximized: bool,
 
+    /// Окно в полноэкранном режиме: «развернуть/восстановить» там не имеет смысла.
+    pub(crate) is_fullscreen: bool,
+
     /// Цвета и stroke-и, полученные от текущего UI skin-а.
     pub(crate) style: WindowChromeStyle,
 
@@ -223,6 +226,15 @@ pub(crate) fn show(ui: &mut Ui, input: WindowChromeInput<'_>) -> WindowChromeOut
                 &mut output.window_actions,
             );
         });
+
+    if input.is_fullscreen {
+        // Решение сессии UX 14: в фуллскрине окно уже на весь экран, и «развернуть»
+        // не имеет смысла. Ни двойной клик по заголовку, ни кнопка не меняют
+        // maximize-состояние; выход из фуллскрина — кнопка в нижней панели, F, Esc.
+        output
+            .window_actions
+            .retain(|action| *action != WindowChromeAction::ToggleMaximize);
+    }
 
     output
 }
@@ -514,6 +526,49 @@ mod tests {
             titlebar_icon_area::reserved_rect(chrome_rect, icon_alignment),
             edge_alignment,
         )
+    }
+
+    /// Двойной клик по центру заголовка в настоящих egui-кадрах; возвращает все действия окна.
+    fn window_actions_after_title_double_click(is_fullscreen: bool) -> Vec<WindowChromeAction> {
+        let egui_ctx = egui::Context::default();
+        let mut window_actions = Vec::new();
+        for frame_input in crate::ui::test_frame::click_frames(pos2(400.0, 20.0), 2) {
+            crate::ui::test_frame::run_ui_frame(&egui_ctx, frame_input, |ui| {
+                let output = show(
+                    ui,
+                    WindowChromeInput {
+                        title: "Fastiplayer",
+                        height_points: 40.0,
+                        is_maximized: false,
+                        is_fullscreen,
+                        style: test_style(),
+                        edge_alignment: test_edge_alignment(),
+                        active_sidebar_section: None,
+                    },
+                );
+                window_actions.extend(output.window_actions);
+            });
+        }
+        window_actions
+    }
+
+    #[test]
+    fn title_double_click_maximizes_only_outside_fullscreen() {
+        let windowed_actions = window_actions_after_title_double_click(false);
+        assert!(
+            windowed_actions.contains(&WindowChromeAction::ToggleMaximize),
+            "в окне двойной клик по заголовку разворачивает: {windowed_actions:?}"
+        );
+
+        let fullscreen_actions = window_actions_after_title_double_click(true);
+        assert!(
+            !fullscreen_actions.contains(&WindowChromeAction::ToggleMaximize),
+            "в фуллскрине maximize не запрашивается: {fullscreen_actions:?}"
+        );
+        assert!(
+            fullscreen_actions.contains(&WindowChromeAction::StartDrag),
+            "остальные действия заголовка фильтр не трогает: {fullscreen_actions:?}"
+        );
     }
 
     #[test]

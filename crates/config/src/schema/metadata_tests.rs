@@ -103,6 +103,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "ui.skin",
     "ui.window.titlebar_height_px",
     "ui.window.corner_radius_px",
+    "ui.window.fullscreen_autohide_delay_ms",
     "ui.sidebar.width_points",
     "ui.settings.live_preview_max_hz",
     "ui.animations.reduced_motion",
@@ -631,6 +632,12 @@ fn metadata_ranges_match_validation_constants() {
         "ui.window.corner_radius_px",
         crate::MIN_WINDOW_CORNER_RADIUS_PX,
         crate::MAX_WINDOW_CORNER_RADIUS_PX,
+    );
+    assert_integer_range(
+        &registry,
+        "ui.window.fullscreen_autohide_delay_ms",
+        validation::MIN_FULLSCREEN_AUTOHIDE_DELAY_MS,
+        validation::MAX_FULLSCREEN_AUTOHIDE_DELAY_MS,
     );
 }
 

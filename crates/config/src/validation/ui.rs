@@ -19,6 +19,12 @@ pub(crate) const MIN_SIDEBAR_SLIDE_DURATION_MS: u16 = 0;
 /// Верхняя граница времени анимации sidebar: дольше 5 секунд UI ощущается сломанным.
 pub(crate) const MAX_SIDEBAR_SLIDE_DURATION_MS: u16 = 5000;
 
+/// Нижняя граница задержки автоскрытия панелей в фуллскрине: ноль означает «не прятать».
+pub(crate) const MIN_FULLSCREEN_AUTOHIDE_DELAY_MS: u16 = 0;
+
+/// Верхняя граница задержки автоскрытия: дольше 30 секунд функция теряет смысл.
+pub(crate) const MAX_FULLSCREEN_AUTOHIDE_DELAY_MS: u16 = 30_000;
+
 /// Минимальная высота кастомного titlebar: ниже кнопки окна становятся слишком мелкими.
 pub(crate) const MIN_TITLEBAR_HEIGHT_PX: u16 = 32;
 
@@ -77,6 +83,13 @@ pub(super) fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
         config.ui.animations.sidebar_slide_duration_ms,
         MIN_SIDEBAR_SLIDE_DURATION_MS,
         MAX_SIDEBAR_SLIDE_DURATION_MS,
+    )?;
+
+    validate_u16_range(
+        "ui.window.fullscreen_autohide_delay_ms",
+        config.ui.window.fullscreen_autohide_delay_ms,
+        MIN_FULLSCREEN_AUTOHIDE_DELAY_MS,
+        MAX_FULLSCREEN_AUTOHIDE_DELAY_MS,
     )?;
 
     validate_u16_range(

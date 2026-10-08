@@ -1,5 +1,6 @@
 # Reduced motion (2026-07-18)
 
+- **С 2026-10-08 default `false`** (решение владельца, UX 14: анимации видны без ручной настройки; явно сохранённое `true` работает как раньше). Ниже — история.
 - Публичная additive-настройка: `ui.animations.reduced_motion: bool`, default `true`; schema version не повышалась благодаря `#[serde(default, deny_unknown_fields)]` на вложенной структуре.
 - Русское metadata/help описывает настройку как toggle с live Apply route `ui.apply`; старые TOML без поля загружаются со значением `true`, round-trip сохраняет поле.
 - `CommittedConfigSnapshot::reduced_motion()` даёт UI подтверждённое значение. `sidebar_slide_duration_seconds()` возвращает `0.0` при reduced motion.

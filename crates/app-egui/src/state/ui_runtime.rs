@@ -1,5 +1,8 @@
 use super::telemetry_panel::TelemetryPanelState;
 use super::*;
+use crate::fullscreen_chrome::ChromeHoldObservation;
+use crate::ui::fullscreen_chrome_panels;
+use crate::ui::video_surface_input::{self, VideoSurfaceAction};
 use tracing::warn;
 
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
@@ -217,6 +220,7 @@ impl AppState {
         let stale_video_dim_color = selected_skin.stale_frame_dim_color(animation_state);
         // Позиция анимации продвинута раньше в prepare_ui_frame; здесь только чтение.
         let sidebar_slide_progress = self.sidebar_controller.open_progress();
+        let chrome_presentation = self.fullscreen_chrome.presentation();
         let show_telemetry = self.committed_config_snapshot.show_telemetry();
         let titlebar_height_points = self.committed_config_snapshot.titlebar_height_points();
         let window_is_maximized = window.is_maximized();
@@ -282,17 +286,21 @@ impl AppState {
             }
 
             let stage_started_at = Instant::now();
-            let window_chrome_output = window_chrome::show(
+            // Заголовок и нижняя панель уезжают за край экрана по решению автоскрытия.
+            let titlebar = fullscreen_chrome_panels::show_titlebar(
                 ui,
+                chrome_presentation.hidden_fraction,
                 WindowChromeInput {
                     title: "Fastiplayer",
                     height_points: titlebar_height_points,
                     is_maximized: window_is_maximized,
+                    is_fullscreen: window_is_fullscreen,
                     style: WindowChromeStyle::from_controls_style(controls_style),
                     edge_alignment: window_chrome_edge_alignment,
                     active_sidebar_section: self.sidebar_controller.target(),
                 },
             );
+            let window_chrome_output = titlebar.inner;
             window_chrome_actions = window_chrome_output.window_actions;
             for titlebar_action in window_chrome_output.titlebar_icon_actions {
                 let TitlebarIconAreaAction::SelectSidebarSection(section) = titlebar_action;
@@ -309,8 +317,9 @@ impl AppState {
             top_bar_elapsed = stage_started_at.elapsed();
 
             let stage_started_at = Instant::now();
-            control_actions = player_controls::render_bottom_controls(
+            let bottom_controls = fullscreen_chrome_panels::show_bottom_controls(
                 ui,
+                chrome_presentation.hidden_fraction,
                 player_controls::BottomControlsInput {
                     player_snapshot,
                     timeline_state: &mut timeline_ui_state,
@@ -322,6 +331,7 @@ impl AppState {
                     playlist_transport: playlist_models.transport,
                 },
             );
+            control_actions = bottom_controls.inner;
             bottom_controls_elapsed = stage_started_at.elapsed();
 
             let sidebar_rect = sidebar::show(
@@ -380,6 +390,13 @@ impl AppState {
                     telemetry_panel_cache_elapsed + stage_started_at.elapsed();
             }
 
+            // До оверлеев: их виджеты регистрируются позже и перехватывают клики первыми.
+            if let Some(VideoSurfaceAction::ToggleFullscreen) =
+                video_surface_input::show(ui, ui.available_rect_before_wrap())
+            {
+                control_actions.push(ControlAction::ToggleFullscreen);
+            }
+
             let stage_started_at = Instant::now();
             playlist_confirmation_action = Self::render_center_overlay(
                 ui,
@@ -396,6 +413,16 @@ impl AppState {
                 self.external_open
                     .drop_overlay(video_viewport_rect, ui.ctx().pixels_per_point()),
             );
+            let visible_chrome_rects = [titlebar.visible_rect, bottom_controls.visible_rect]
+                .map(|visible_rect| visible_rect.unwrap_or(egui::Rect::NOTHING));
+            self.fullscreen_chrome.finish_frame(
+                ui.ctx(),
+                ChromeHoldObservation {
+                    visible_chrome_rects: &visible_chrome_rects,
+                    sidebar_open: self.sidebar_controller.displayed().is_some(),
+                    playback_state: player_snapshot.playback_state,
+                },
+            );
         });
         if sidebar_close_requested {
             self.sidebar_controller.hide();
@@ -403,8 +430,8 @@ impl AppState {
         self.apply_notification_actions(notification_output);
         let egui_run_elapsed = egui_run_started_at.elapsed();
 
-        if self.sidebar_controller.is_animating() {
-            // Пока анимация sidebar активна, просим следующий кадр явно:
+        if self.sidebar_controller.is_animating() || self.fullscreen_chrome.is_animating() {
+            // Пока анимация sidebar или панелей фуллскрина активна, просим следующий кадр явно:
             // без playback нет другого источника непрерывных redraw-ов.
             self.egui_ctx.request_repaint();
         }
@@ -656,19 +683,6 @@ impl AppState {
         TimelineLiveScrubSettingsSnapshot {
             decode_mode,
             max_hz: self.committed_config_snapshot.live_scrub_max_hz(),
-        }
-    }
-
-    /// Переключает fullscreen состояние окна.
-    pub(super) fn toggle_fullscreen(window: &Window) {
-        let is_fullscreen = window.fullscreen().is_some();
-        if is_fullscreen {
-            window.set_fullscreen(None);
-            return;
-        }
-
-        if let Some(monitor) = window.current_monitor() {
-            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
         }
     }
 

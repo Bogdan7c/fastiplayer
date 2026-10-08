@@ -161,6 +161,31 @@ pub struct UiWindowConfig {
         apply = "ui.apply"
     )]
     pub corner_radius_px: u16,
+
+    /// Через сколько миллисекунд бездействия в полноэкранном режиме прятать панели и курсор.
+    ///
+    /// `0` отключает автоскрытие. Окно в обычном режиме ничего не прячет (решение владельца,
+    /// сессия UX 14). Скорость уезда панелей берётся из анимации сайдбара.
+    #[setting(
+        id = "ui.window.fullscreen_autohide_delay_ms",
+        path = "ui.window.fullscreen_autohide_delay_ms",
+        section = "ui",
+        group = "window",
+        surface = "main-settings-window",
+        label_id = "settings.ui.window.fullscreen_autohide_delay_ms.label",
+        label_ru = "Скрывать панели в полноэкранном режиме через",
+        description_id = "settings.ui.window.fullscreen_autohide_delay_ms.description",
+        description_ru = "Сколько ждать без движения мыши и нажатий клавиш, прежде чем спрятать заголовок, нижнюю панель и курсор, мс.",
+        help_id = "settings.ui.window.fullscreen_autohide_delay_ms.help",
+        help_ru = "0 — никогда не прятать. Панели остаются на месте, пока видео на паузе, открыт сайдбар или меню, курсор над панелью или что-то перетаскивается. Панели уезжают с той же скоростью, что и сайдбар.",
+        editor = "integer",
+        min = crate::validation::MIN_FULLSCREEN_AUTOHIDE_DELAY_MS,
+        max = crate::validation::MAX_FULLSCREEN_AUTOHIDE_DELAY_MS,
+        step = 250,
+        unit = "ms",
+        apply = "ui.apply"
+    )]
+    pub fullscreen_autohide_delay_ms: u16,
 }
 
 impl Default for UiWindowConfig {
@@ -169,6 +194,7 @@ impl Default for UiWindowConfig {
         Self {
             titlebar_height_px: 40,
             corner_radius_px: 12,
+            fullscreen_autohide_delay_ms: 2500,
         }
     }
 }

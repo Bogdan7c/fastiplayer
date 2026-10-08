@@ -43,7 +43,12 @@
 - Проверяются разные lifecycle semantics сущностей: hide сохраняет state, explicit Cancel откатывает, Apply/OK/error не смешиваются.
 - Изменение host architecture требует обновить эту memory и focused UI/layout guardrails.
 
-Текущая реализация и конкретные sidebar-инварианты: `mem:app-egui/sidebar-controller`. Painter boundary: `mem:app-egui/artwork-boundary`.
+Текущая реализация и конкретные sidebar-инварианты: `mem:app-egui/sidebar-controller`.
+
+## Видимость chrome в фуллскрине (UX 14, 2026-10-08)
+
+- Единственный владелец видимости titlebar/нижней панели/курсора — `crate::fullscreen_chrome::FullscreenChromeController` (поле `AppState`). Панели НЕ знают об автоскрытии: их сдвигает генерик `ui::edge_slide` (дочерний `Ui` + «распорка»-Panel на видимую часть), обёртки — `ui::fullscreen_chrome_panels`. Новые элементы chrome, которые должны прятаться вместе с панелями, подключаются через `edge_slide`, а не собственным таймером; новая причина «не прятать» — новый вариант `ChromeHoldReason`.
+- Инвариант: при `hidden_fraction == 0` (всегда вне фуллскрина) раскладка окна идентична прямым панелям — закреплено тестом `edge_slide::tests`. Детали: `mem:app-egui/fullscreen-chrome-autohide-ux14`. Painter boundary: `mem:app-egui/artwork-boundary`.
 
 ## Глобальное поведение egui (с 2026-10-04; сейчас egui 0.36.2)
 

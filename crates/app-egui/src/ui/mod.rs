@@ -6,8 +6,10 @@
 
 pub mod animation;
 pub mod assets;
+pub(crate) mod edge_slide;
 pub(crate) mod egui_behavior;
 pub(crate) mod external_drop_overlay;
+pub(crate) mod fullscreen_chrome_panels;
 pub(crate) mod keyboard_focus;
 pub mod media_info;
 pub(crate) mod notifications;
@@ -21,4 +23,5 @@ pub(crate) mod test_frame;
 pub mod timeline;
 pub mod titlebar_icon_area;
 pub(crate) mod url_sidebar;
+pub(crate) mod video_surface_input;
 pub mod window_chrome;

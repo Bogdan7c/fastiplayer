@@ -27,3 +27,35 @@ pub(crate) fn app_behavior_context() -> egui::Context {
     crate::ui::egui_behavior::apply_app_egui_behavior(&egui_ctx);
     egui_ctx
 }
+
+/// Сырой ввод одного тестового кадра: окно 800×600 точек, момент `time_seconds`.
+pub(crate) fn input_at(time_seconds: f64, events: Vec<egui::Event>) -> egui::RawInput {
+    egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(800.0, 600.0),
+        )),
+        time: Some(time_seconds),
+        events,
+        ..Default::default()
+    }
+}
+
+/// Последовательность кадров «навести и кликнуть `click_count` раз» в точке `position`.
+///
+/// Клики идут с интервалом 50 мс — быстрее порога двойного клика egui.
+pub(crate) fn click_frames(position: egui::Pos2, click_count: usize) -> Vec<egui::RawInput> {
+    let button_event = |pressed| egui::Event::PointerButton {
+        pos: position,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut frames = vec![input_at(0.0, vec![egui::Event::PointerMoved(position)])];
+    for click_index in 0..click_count {
+        let click_start = 0.05 + click_index as f64 * 0.1;
+        frames.push(input_at(click_start, vec![button_event(true)]));
+        frames.push(input_at(click_start + 0.05, vec![button_event(false)]));
+    }
+    frames
+}

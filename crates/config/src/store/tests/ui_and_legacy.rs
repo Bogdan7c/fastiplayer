@@ -65,6 +65,47 @@ fn current_schema_without_window_corner_radius_loads_default() {
     assert_eq!(loaded.config.ui.window.corner_radius_px, 12);
 }
 
+/// Задержка автоскрытия: 0 («не прятать») и верхняя граница валидны, значение выше — отказ.
+#[test]
+fn fullscreen_autohide_delay_validation_accepts_zero_and_rejects_above_max() {
+    for valid_delay_ms in [0_u16, 2500_u16, 30_000_u16] {
+        let mut config = AppConfig::default();
+        config.ui.window.fullscreen_autohide_delay_ms = valid_delay_ms;
+        config.validate().expect("valid autohide delay accepted");
+    }
+
+    let mut config = AppConfig::default();
+    config.ui.window.fullscreen_autohide_delay_ms = 30_001;
+    let error = config
+        .validate()
+        .expect_err("oversized autohide delay rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("ui.window.fullscreen_autohide_delay_ms")
+    );
+}
+
+/// Конфиг без нового поля (записанный до сессии UX 14) получает default 2,5 с без миграции.
+#[test]
+fn current_schema_without_fullscreen_autohide_delay_loads_default() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v12.toml")
+        .replace(
+            "# Через сколько мс бездействия прятать панели и курсор в фуллскрине; 0 — не прятать.\nfullscreen_autohide_delay_ms = 2500\n",
+            "",
+        );
+    assert!(!legacy_document.contains("fullscreen_autohide_delay_ms"));
+    fs::write(&config_path, legacy_document).expect("current schema fixture written");
+
+    let loaded =
+        load_from_path(&config_path).expect("current schema without additive field loaded");
+
+    assert_eq!(loaded.config.ui.window.fullscreen_autohide_delay_ms, 2500);
+}
+
 /// Проверяет валидацию времени анимации sidebar: 0 валиден («без анимации»),
 /// значение выше верхней границы отклоняется до записи.
 #[test]

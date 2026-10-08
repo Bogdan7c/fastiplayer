@@ -56,6 +56,7 @@ pub(super) fn prepare_ui_frame(
 
     let settings_panel_open = settings_runtime.is_settings_window_open();
     app_state.advance_sidebar_slide(settings_panel_open, Instant::now());
+    app_state.advance_fullscreen_chrome(window, &egui_input, Instant::now());
     settings_runtime
         .set_visual_hold(!settings_panel_open && app_state.sidebar_slide_is_animating());
 

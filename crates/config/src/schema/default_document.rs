@@ -357,6 +357,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "fullscreen_autohide_delay_ms = 2500",
+        "# Через сколько мс бездействия прятать панели и курсор в фуллскрине; 0 — не прятать.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[ui.sidebar]",
         "# Геометрия общей панели Playlist/Settings/URL/Info.",
     );

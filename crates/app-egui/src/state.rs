@@ -61,6 +61,7 @@ use crate::video_pipeline_selector::{
 
 mod automatic_web_media_quality;
 mod external_open;
+mod fullscreen_chrome_routing;
 mod main_visual_override;
 mod media_jobs;
 mod notification_routing;
@@ -356,6 +357,8 @@ pub struct AppState {
 
     /// Анимация выезда settings sidebar; runtime open-state остаётся целью перехода.
     sidebar_controller: SidebarController,
+    /// Автоскрытие панелей и курсора в фуллскрине (`crate::fullscreen_chrome`).
+    fullscreen_chrome: crate::fullscreen_chrome::FullscreenChromeController,
 
     /// Ephemeral pending/error state URL content; Installed source остаётся authoritative.
     url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController,
@@ -481,6 +484,7 @@ impl AppState {
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_controller: SidebarController::default(),
+            fullscreen_chrome: crate::fullscreen_chrome::FullscreenChromeController::default(),
             url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController::default(),
             web_media_catalog_state: crate::web_media_catalog::WebMediaCatalogState::Inactive,
             automatic_web_media_quality:

@@ -111,6 +111,14 @@ impl CommittedConfigSnapshot {
         }
     }
 
+    /// Задержка автоскрытия панелей и курсора в полноэкранном режиме.
+    #[must_use]
+    pub(crate) fn fullscreen_autohide_delay(&self) -> crate::fullscreen_chrome::AutohideDelay {
+        crate::fullscreen_chrome::AutohideDelay::from_config_millis(
+            self.config.ui.window.fullscreen_autohide_delay_ms,
+        )
+    }
+
     /// Требует ли UI мгновенных layout-переходов и отключённого scale/pulse.
     #[must_use]
     pub(crate) fn reduced_motion(&self) -> bool {

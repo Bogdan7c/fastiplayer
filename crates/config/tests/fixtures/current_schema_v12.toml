@@ -211,6 +211,8 @@ skin = "minimal"
 titlebar_height_px = 40
 # Радиус прозрачного контура окна; 0 отключает скругление, диапазон 0..24 px.
 corner_radius_px = 12
+# Через сколько мс бездействия прятать панели и курсор в фуллскрине; 0 — не прятать.
+fullscreen_autohide_delay_ms = 2500
 
 # Геометрия общей панели Playlist/Settings/URL/Info.
 [ui.sidebar]

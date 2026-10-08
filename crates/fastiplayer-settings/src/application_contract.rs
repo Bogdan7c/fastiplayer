@@ -321,6 +321,7 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "ui.skin"
         | "ui.window.titlebar_height_px"
         | "ui.window.corner_radius_px"
+        | "ui.window.fullscreen_autohide_delay_ms"
         | "ui.sidebar.width_points"
         | "ui.animations.reduced_motion"
         | "ui.animations.sidebar_slide_duration_ms" => SettingApplicationContract::new(
