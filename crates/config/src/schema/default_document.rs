@@ -378,7 +378,7 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(toml_text, "[ui.animations]", "# Настройки UI-анимаций.");
     insert_default_config_comment(
         toml_text,
-        "reduced_motion = true",
+        "reduced_motion = false",
         "# Убирает пространственное движение и масштабирование; короткие переходы цвета сохраняются.",
     );
     insert_default_config_comment(

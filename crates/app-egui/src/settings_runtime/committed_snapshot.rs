@@ -163,14 +163,19 @@ mod tests {
 
     #[test]
     fn reduced_motion_forces_instant_sidebar_without_losing_saved_duration() {
+        // По умолчанию анимации включены: sidebar выезжает за сохранённую длительность.
         let default_snapshot = CommittedConfigSnapshot::from_config(&AppConfig::default());
-        assert!(default_snapshot.reduced_motion());
-        assert_eq!(default_snapshot.sidebar_slide_duration_seconds(), 0.0);
+        assert!(!default_snapshot.reduced_motion());
+        assert_eq!(default_snapshot.sidebar_slide_duration_seconds(), 0.5);
 
-        let mut animated_config = AppConfig::default();
-        animated_config.ui.animations.reduced_motion = false;
-        let animated_snapshot = CommittedConfigSnapshot::from_config(&animated_config);
-        assert!(!animated_snapshot.reduced_motion());
-        assert_eq!(animated_snapshot.sidebar_slide_duration_seconds(), 0.5);
+        let mut reduced_config = AppConfig::default();
+        reduced_config.ui.animations.reduced_motion = true;
+        let reduced_snapshot = CommittedConfigSnapshot::from_config(&reduced_config);
+        assert!(reduced_snapshot.reduced_motion());
+        assert_eq!(reduced_snapshot.sidebar_slide_duration_seconds(), 0.0);
+        assert_eq!(
+            reduced_config.ui.animations.sidebar_slide_duration_ms, 500,
+            "reduced motion не стирает сохранённую длительность"
+        );
     }
 }

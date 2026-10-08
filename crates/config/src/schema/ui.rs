@@ -300,10 +300,11 @@ pub struct UiAnimationsConfig {
 }
 
 impl Default for UiAnimationsConfig {
-    /// По умолчанию движение уменьшено, а сохранённая длительность доступна после отключения режима.
+    /// По умолчанию анимации включены (решение владельца 2026-10-08); `reduced_motion = true`
+    /// делает переходы мгновенными, сохранённая длительность при этом не теряется.
     fn default() -> Self {
         Self {
-            reduced_motion: true,
+            reduced_motion: false,
             sidebar_slide_duration_ms: 500,
         }
     }
