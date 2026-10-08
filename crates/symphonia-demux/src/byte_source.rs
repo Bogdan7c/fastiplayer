@@ -201,12 +201,17 @@ fn source_error_to_io_error(error: SourceError) -> io::Error {
 }
 
 /// Сохраняет прежнюю mapping semantics отдельно от ownership конкретной ошибки.
+///
+/// Временный сбой сети (до сюда он доходит только после исчерпания бюджета
+/// переподключения source-а) помечается стандартным `NetworkDown`: player не знает
+/// про `SourceError`, но по этой метке показывает «нет связи», а не «файл повреждён».
 fn source_error_io_kind(error: &SourceError) -> io::ErrorKind {
     match error {
         SourceError::Cancelled => io::ErrorKind::Interrupted,
         SourceError::NotSeekable { .. } | SourceError::HttpRangeUnsupported { .. } => {
             io::ErrorKind::Unsupported
         }
+        error if error.is_transient_network_failure() => io::ErrorKind::NetworkDown,
         _ => io::ErrorKind::Other,
     }
 }

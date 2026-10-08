@@ -119,7 +119,7 @@ fn pending_eof_publication_reaches_real_wgpu_submit_readback_and_release() {
         CancellationToken::new(),
     )
     .expect("open real WebM");
-    let (mut demuxer, _recovery) = opened.into_runtime_parts();
+    let mut demuxer = opened.into_runtime_parts().demuxer;
     let track = demuxer
         .tracks()
         .iter()
@@ -138,7 +138,7 @@ fn pending_eof_publication_reaches_real_wgpu_submit_readback_and_release() {
         CancellationToken::new(),
     )
     .expect("reopen WebM for second real frame");
-    let (mut tail_demuxer, _tail_recovery) = reopened.into_runtime_parts();
+    let mut tail_demuxer = reopened.into_runtime_parts().demuxer;
     let second_frame = decode_first_frame(tail_demuxer.as_mut(), tail_decoder.as_ref());
     // Два реальных кадра гарантируют release лишнего EOF tail, а первый доходит до render.
     let scheduled = ScheduledEofDecoder {

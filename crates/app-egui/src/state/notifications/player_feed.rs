@@ -15,11 +15,29 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use player_core::{PlaybackState, PlayerErrorKind, PlayerEvent, PlayerSnapshot};
+use player_core::{PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot};
 
 use crate::audio_output_message::{AUDIO_OUTPUT_UNAVAILABLE_MESSAGE, audio_output_switch_message};
 
 use super::{MediaFailureOrigin, NotificationCenter, ObservedPlayerFailure};
+
+/// Что сказать человеку при пропаже сети посреди просмотра (сессия 16).
+///
+/// К этому моменту плеер уже ждал возвращения связи весь бюджет
+/// `network.reconnect_wait_ms` с повторами и показывал буферизацию.
+pub(crate) const NETWORK_LOST_DURING_PLAYBACK_MESSAGE: &str = "Нет связи с сервером: \
+    воспроизведение остановлено. Проверьте подключение к сети и откройте видео снова.";
+
+/// Текст фатальной ошибки player-а для центра окна.
+///
+/// Пропажа сети получает человеческий текст. Для остальных видов текст пока прежний
+/// технический (человеческие тексты остальных `PlayerErrorKind` — вне сессии 16).
+fn player_failure_message(error: &PlayerError) -> Arc<str> {
+    match error.kind {
+        PlayerErrorKind::NetworkError => Arc::from(NETWORK_LOST_DURING_PLAYBACK_MESSAGE),
+        _ => Arc::from(error.to_string()),
+    }
+}
 
 impl NotificationCenter {
     /// Реагирует на событие player-а: recoverable-отказ становится временным уведомлением.
@@ -57,10 +75,7 @@ impl NotificationCenter {
     pub(crate) fn observe_player_snapshot(&mut self, snapshot: &PlayerSnapshot) {
         let observed = if snapshot.playback_state == PlaybackState::Failed {
             ObservedPlayerFailure::Failed {
-                message: snapshot
-                    .last_error
-                    .as_ref()
-                    .map(|error| Arc::from(error.to_string())),
+                message: snapshot.last_error.as_ref().map(player_failure_message),
             }
         } else {
             ObservedPlayerFailure::Healthy

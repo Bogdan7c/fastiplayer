@@ -10,6 +10,7 @@ use super::PlayerSession;
 use crate::{PipelinePauseReason, PlaybackState};
 
 mod demux_admission;
+mod demux_read_failure;
 mod presentation_scheduler;
 mod types;
 mod video_backlog_recovery_admission;

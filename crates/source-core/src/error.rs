@@ -47,6 +47,15 @@ pub enum SourceError {
     #[error("source operation cancelled")]
     Cancelled,
 
+    /// Владелец закрыл источник (media закрыто или заменено), чтение прекращено.
+    ///
+    /// Отличается от [`Self::Cancelled`] намеренно: `Cancelled` адаптеры переводят в
+    /// `io::ErrorKind::Interrupted`, а Symphonia и `std::io::Read::read_exact`
+    /// повторяют `Interrupted` бесконечно. Закрытый источник обязан завершать чтение
+    /// обычной ошибкой, чтобы фоновый поток разбора вышел, а не крутился (сессия 16).
+    #[error("source закрыт владельцем")]
+    SourceClosed,
+
     /// Значение config не может быть использовано source слоем.
     #[error("некорректное значение config-поля `{field}`: {message}")]
     InvalidConfig {
@@ -239,14 +248,30 @@ pub enum SourceError {
 }
 
 impl SourceError {
-    /// Возвращает `true`, если range read можно безопасно повторить один раз.
+    /// Возвращает `true` для временного сбоя связи или сервера.
+    ///
+    /// Это ошибки, после которых ресурс, скорее всего, снова станет доступен, и
+    /// чтение с того же байта имеет смысл повторить (сессия 16):
+    /// - нет связи, таймаут, оборванный или недочитанный ответ;
+    /// - ответы сервера 5xx («сервер временно не может»), 408 («запрос слишком
+    ///   долгий») и 429 («слишком много запросов, подождите»).
+    ///
+    /// 401/403/404/410 сюда намеренно не входят: ссылка мертва или нужна новая
+    /// подпись, и повтор того же запроса ничего не изменит (подписанные ссылки
+    /// yt-dlp восстанавливает отдельный VOD endpoint recovery). Отмена тоже не
+    /// является сбоем.
     #[must_use]
-    pub(crate) fn is_retryable_range_failure(&self) -> bool {
+    pub fn is_transient_network_failure(&self) -> bool {
         match self {
             Self::HttpTimeout { .. } | Self::HttpRequest { .. } | Self::HttpBodyRead { .. } => true,
             Self::UnexpectedEof { .. } => true,
-            Self::HttpStatus { status, .. } => status.is_server_error(),
+            Self::HttpStatus { status, .. } => {
+                status.is_server_error()
+                    || *status == StatusCode::REQUEST_TIMEOUT
+                    || *status == StatusCode::TOO_MANY_REQUESTS
+            }
             Self::Cancelled
+            | Self::SourceClosed
             | Self::InvalidConfig { .. }
             | Self::LocalIo { .. }
             | Self::InvalidHttpHeaderName { .. }
@@ -261,6 +286,15 @@ impl SourceError {
             | Self::InvalidContentRange { .. }
             | Self::NotSeekable { .. }
             | Self::FtpTransport { .. } => false,
+        }
+    }
+
+    /// Возвращает подсказку сервера `Retry-After`, если ошибка — HTTP-статус с ней.
+    #[must_use]
+    pub const fn http_retry_after(&self) -> HttpRetryAfter {
+        match self {
+            Self::HttpStatus { retry_after, .. } => *retry_after,
+            _ => HttpRetryAfter::Unavailable,
         }
     }
 }

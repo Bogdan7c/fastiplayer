@@ -425,7 +425,7 @@ fn n14a_consumer_http_webm_reaches_submitted_readback_with_exact_accounting() {
         CancellationToken::new(),
     )
     .expect("open direct WebM");
-    let (mut demuxer, _endpoint_recovery) = opened.into_runtime_parts();
+    let mut demuxer = opened.into_runtime_parts().demuxer;
     let video_track = demuxer
         .tracks()
         .iter()
@@ -480,7 +480,9 @@ fn n14b_lifecycle_http_webm_close_restart_reaches_submitted_readback_without_ext
             CancellationToken::new(),
         )
         .expect("open direct WebM lifecycle attempt");
-        let (mut demuxer, endpoint_recovery) = opened.into_runtime_parts();
+        let runtime_parts = opened.into_runtime_parts();
+        let mut demuxer = runtime_parts.demuxer;
+        let endpoint_recovery = runtime_parts.endpoint_recovery;
         let video_track = demuxer
             .tracks()
             .iter()

@@ -308,6 +308,30 @@ pub struct NetworkConfig {
         apply = "network.apply"
     )]
     pub read_timeout_ms: u64,
+
+    /// Сколько ждать восстановления связи, если сеть пропала посреди просмотра.
+    ///
+    /// Пока идёт ожидание, плеер повторяет запрос с того же места с растущими паузами
+    /// (0,5 → 8 с) и показывает буферизацию; после бюджета показывает ошибку.
+    /// `0` отключает переподключение: первая сетевая ошибка сразу останавливает просмотр.
+    #[setting(
+        id = "network.reconnect_wait_ms",
+        path = "network.reconnect_wait_ms",
+        section = "network",
+        group = "timeout",
+        surface = "main-settings-window",
+        label_id = "settings.network.reconnect_wait_ms.label",
+        label_ru = "Ожидание восстановления сети",
+        description_id = "settings.network.reconnect_wait_ms.description",
+        description_ru = "Сколько ждать возвращения сети при обрыве посреди просмотра; 0 — не ждать.",
+        editor = "integer",
+        min = 0,
+        max = crate::validation::MAX_NETWORK_RECONNECT_WAIT_MS,
+        step = 1000,
+        unit = "ms",
+        apply = "network.apply"
+    )]
+    pub reconnect_wait_ms: u64,
 }
 
 impl Default for NetworkConfig {
@@ -320,6 +344,7 @@ impl Default for NetworkConfig {
             prefetch_chunk_mb: 8,
             connect_timeout_ms: 15_000,
             read_timeout_ms: 15_000,
+            reconnect_wait_ms: 60_000,
         }
     }
 }

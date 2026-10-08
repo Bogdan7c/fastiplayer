@@ -1,16 +1,15 @@
 //! App-owned neutral runtime для stable progressive HTTP(S)/FTP(S) resource-ов.
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use demux_api::{
-    DemuxHints, DemuxInput, DemuxSniffBudget, DemuxSourceExtension, ProgressiveDemuxBufferLimits,
-    ProgressiveDemuxer,
-};
+use demux_api::{DemuxHints, DemuxInput, DemuxSniffBudget, DemuxSourceExtension};
 use fastiplayer_config::{NetworkConfig, PlayerDemuxConfig};
-use media_core::{DemuxRetryHint, Demuxer};
+use media_core::Demuxer;
+use player_core::PreparedDemuxSeekPort;
 use source_core::{CancellationToken, HttpPathScope, SourceRuntimeConfig};
 use symphonia_demux::{DemuxerOptions, MediaMetadata, TrackInfo};
 use tracing::debug;
@@ -24,7 +23,6 @@ use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
     RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration, TransportInput,
     TransportOpenRequest, TransportProvider, TransportRegistry, TransportRequestTarget,
-    TransportSeekability,
 };
 
 /// Один кибибайт в bytes для явной конвертации пользовательского config-а.
@@ -46,6 +44,9 @@ pub struct DirectProgressiveOpenResult {
     source_label: String,
     /// Demuxer, готовый к передаче player owner-у.
     demuxer: Box<dyn Demuxer + Send>,
+    /// Seek port seekable ресурса (Range): перемотка идёт через фоновый поток
+    /// demuxer-а. `None` у forward-only потока без Range.
+    demux_seek_port: Option<Arc<dyn PreparedDemuxSeekPort>>,
     /// Stable-resource recovery gate, armed только после полного direct open-а.
     endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
     /// Snapshot треков до перемещения demuxer-а.
@@ -79,16 +80,28 @@ impl DirectProgressiveOpenResult {
         self.demuxer.media_metadata()
     }
 
-    /// Передаёт demuxer и Installed recovery attachment общему composition owner-у.
+    /// Передаёт demuxer, seek port и Installed recovery attachment composition owner-у.
+    ///
+    /// Seek port обязан дойти до player-а вместе с demuxer-ом: seekable runtime
+    /// перематывается только через него (синхронный `seek` у него отключён).
     #[must_use]
-    pub fn into_runtime_parts(
-        self,
-    ) -> (
-        Box<dyn Demuxer + Send>,
-        crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
-    ) {
-        (self.demuxer, self.endpoint_recovery)
+    pub fn into_runtime_parts(self) -> DirectProgressiveRuntimeParts {
+        DirectProgressiveRuntimeParts {
+            demuxer: self.demuxer,
+            demux_seek_port: self.demux_seek_port,
+            endpoint_recovery: self.endpoint_recovery,
+        }
     }
+}
+
+/// Части открытого direct ресурса для общей `PreparedMedia` composition.
+pub struct DirectProgressiveRuntimeParts {
+    /// Неблокирующий demuxer для player-а.
+    pub demuxer: Box<dyn Demuxer + Send>,
+    /// Seek port seekable ресурса; `None` у forward-only потока.
+    pub demux_seek_port: Option<Arc<dyn PreparedDemuxSeekPort>>,
+    /// Gate восстановления протухшей ссылки.
+    pub endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
 }
 
 /// Классифицирует locator по capability rows production web demux registry.
@@ -192,20 +205,17 @@ pub fn open_direct_media(
         .registry
         .open(demux_input, hints, sniff_budget, cancellation.clone())
         .with_context(|| format!("Demux registry не открыл {locator}"))?;
-    let demuxer: Box<dyn Demuxer + Send> = match transport_seekability {
-        TransportSeekability::Seekable => demuxer,
-        TransportSeekability::Streaming => {
-            let limits = progressive_limits(prefetch_config)?;
-            let retry_hint = DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER)
-                .context("Minimum demux retry hint нарушает media-core bounds")?;
-            Box::new(
-                ProgressiveDemuxer::new(demuxer, cancellation, limits, retry_hint)
-                    .context("Не удалось запустить progressive demux worker")?,
-            )
-        }
-    };
+    // Разбор контейнера уходит в фоновый поток и для seekable, и для forward-only
+    // входа: сетевое ожидание не должно блокировать поток player-а (сессия 16).
+    let player_demuxer = crate::progressive_player_demux::into_player_demuxer(
+        demuxer,
+        transport_seekability,
+        cancellation,
+        prefetch_config,
+    )?;
     endpoint_recovery.arm_after_candidate_finalization();
-    let demuxer = endpoint_recovery.wrap_demuxer(demuxer);
+    let demuxer = endpoint_recovery.wrap_demuxer(player_demuxer.demuxer);
+    let demux_seek_port = endpoint_recovery.wrap_seek_port(player_demuxer.seek_port);
 
     debug!(
         source = %locator,
@@ -219,6 +229,7 @@ pub fn open_direct_media(
         tracks: demuxer.tracks().to_vec(),
         duration: demuxer.duration(),
         demuxer,
+        demux_seek_port,
         endpoint_recovery,
     })
 }
@@ -275,23 +286,5 @@ fn direct_sniff_budget(
         .context("Source read timeout нельзя использовать как demux sniff deadline")
 }
 
-/// Делит existing RAM window между bounded progressive event slots.
-fn progressive_limits(
-    prefetch_config: media_prefetch::PrefetchConfig,
-) -> Result<ProgressiveDemuxBufferLimits> {
-    let event_capacity = prefetch_config
-        .window_bytes()
-        .div_ceil(prefetch_config.chunk_bytes());
-    let event_capacity = usize::try_from(event_capacity)
-        .ok()
-        .and_then(NonZeroUsize::new)
-        .ok_or_else(|| anyhow!("prefetch window нельзя преобразовать в event capacity"))?;
-    let encoded_byte_capacity = usize::try_from(prefetch_config.window_bytes())
-        .ok()
-        .and_then(NonZeroUsize::new)
-        .ok_or_else(|| anyhow!("prefetch window нельзя преобразовать в byte capacity"))?;
-    Ok(ProgressiveDemuxBufferLimits::new(
-        event_capacity,
-        encoded_byte_capacity,
-    ))
-}
+#[cfg(test)]
+mod network_drop_tests;

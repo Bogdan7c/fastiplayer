@@ -152,7 +152,7 @@ fn range_redirect_restarts_stable_base_and_never_resurrects_body() {
     };
     let begin_count = Arc::new(AtomicUsize::new(0));
     let observed_hop_counts = Arc::new(Mutex::new(Vec::new()));
-    let mut source = source.with_range_redirect_handler(Box::new(PreserveBodyRedirectHandler {
+    let mut source = (*source).with_range_redirect_handler(Box::new(PreserveBodyRedirectHandler {
         begin_count: Arc::clone(&begin_count),
         observed_hop_counts: Arc::clone(&observed_hop_counts),
     }));

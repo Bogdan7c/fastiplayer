@@ -351,6 +351,7 @@ fn repeat_one_replays_clean_ended_but_stops_error_associated_ended() {
             PlaybackState::Ended,
             EndedSnapshotKind::ErrorAssociated {
                 safe_summary: Arc::from("decode failed"),
+                cause: super::PlaybackFailureCause::MediaFault,
             },
             AutomaticDeferredAvailability::Unavailable,
         ),
@@ -423,6 +424,7 @@ fn failed_snapshot_is_edge_triggered_error_policy_not_clean_eof() {
             PlaybackState::Failed,
             EndedSnapshotKind::ErrorAssociated {
                 safe_summary: Arc::from("renderer failed"),
+                cause: super::PlaybackFailureCause::MediaFault,
             },
             AutomaticDeferredAvailability::Unavailable,
         ),
@@ -435,6 +437,7 @@ fn failed_snapshot_is_edge_triggered_error_policy_not_clean_eof() {
             PlaybackState::Failed,
             EndedSnapshotKind::ErrorAssociated {
                 safe_summary: Arc::from("renderer failed again"),
+                cause: super::PlaybackFailureCause::MediaFault,
             },
             AutomaticDeferredAvailability::Unavailable,
         ),
@@ -547,6 +550,7 @@ fn skip_chain_snapshot_excludes_late_row_and_keeps_failed_badge() {
         PlaybackState::Ended,
         EndedSnapshotKind::ErrorAssociated {
             safe_summary: Arc::from("runtime failed"),
+            cause: super::PlaybackFailureCause::MediaFault,
         },
         AutomaticDeferredAvailability::Unavailable,
     ) else {

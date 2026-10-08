@@ -233,7 +233,9 @@ pub enum HttpSourceHop {
     /// Сервер потребовал ещё один policy-controlled redirect hop.
     Redirect(HttpRedirectHop),
     /// Сервер доказал byte seek через корректный `206 Content-Range`.
-    Seekable(HttpRangeSource),
+    ///
+    /// В `Box`, потому что Range source заметно больше двух других вариантов.
+    Seekable(Box<HttpRangeSource>),
     /// Сервер вернул полный `200` response body для forward-only чтения.
     Streaming(HttpStreamingSource),
 }
@@ -430,8 +432,9 @@ impl HttpSourceSession {
                     build_header_map(&request.headers)?,
                     request.request_body.into_bytes(),
                     response.headers(),
+                    self.async_client_owner.source_config.reconnect_policy(),
                 )?;
-                Ok(HttpSourceHop::Seekable(source))
+                Ok(HttpSourceHop::Seekable(Box::new(source)))
             }
             status if status.is_redirection() => {
                 parse_redirect_hop(&request.target, &secret_url, status, &response)

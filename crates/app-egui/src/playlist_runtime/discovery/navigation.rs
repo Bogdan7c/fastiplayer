@@ -5,7 +5,7 @@ mod tests;
 
 use std::{sync::Arc, time::Duration};
 
-use player_core::{PlaybackState, PlayerSnapshot};
+use player_core::{PlaybackState, PlayerErrorKind, PlayerSnapshot};
 use playlist_core::{ManualNavigationDirection, PlaylistItemId};
 use playlist_discovery::{
     AdmissionAdvanced, AdmissionDirection, DiscoveryCancellationCause, DiscoveryEvent,
@@ -16,7 +16,7 @@ use super::{ActiveDiscoveryScope, PlaylistDiscoveryCoordinator};
 use crate::playlist_runtime::controller::{
     AutomaticDeferredAvailability, AutomaticDiscoveryReadiness, AutomaticLifecycleOutcome,
     AutomaticQueueNotice, ControllerManualNavigationOutcome, DiscoveryManualWaitAvailability,
-    DiscoveryNavigationInterest, EndedSnapshotKind,
+    DiscoveryNavigationInterest, EndedSnapshotKind, PlaybackFailureCause,
 };
 use crate::playlist_runtime::identity::TransportActionOrigin;
 use crate::playlist_runtime::{PlaylistController, PlaylistRuntime, PlaylistRuntimeBinding};
@@ -150,7 +150,21 @@ fn automatic_snapshot_kind(player_snapshot: &PlayerSnapshot) -> EndedSnapshotKin
         || Arc::<str>::from(FAILED_PLAYBACK_WITHOUT_DETAILS),
         |error| Arc::<str>::from(format!("Ошибка воспроизведения ({:?})", error.kind)),
     );
-    EndedSnapshotKind::ErrorAssociated { safe_summary }
+    // Пропажу сети player классифицирует сам (`PlayerErrorKind::NetworkError`, сессия 16):
+    // это не дефект элемента, и очередь должна остановиться, а не пропускать дальше.
+    let network_lost = player_snapshot
+        .last_error
+        .as_ref()
+        .is_some_and(|error| error.kind == PlayerErrorKind::NetworkError);
+    let cause = if network_lost {
+        PlaybackFailureCause::NetworkLost
+    } else {
+        PlaybackFailureCause::MediaFault
+    };
+    EndedSnapshotKind::ErrorAssociated {
+        safe_summary,
+        cause,
+    }
 }
 
 impl PlaylistDiscoveryCoordinator {

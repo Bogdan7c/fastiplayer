@@ -23,6 +23,7 @@ pub mod local_media;
 pub mod native_startup;
 pub mod native_web_source;
 pub mod prepared_web_media;
+pub mod progressive_player_demux;
 pub mod safe_media_label;
 pub mod video_codec_mapping;
 pub mod web_media_adaptive_config;

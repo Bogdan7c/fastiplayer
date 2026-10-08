@@ -43,8 +43,9 @@ use super::view::{
 #[allow(unused_imports)]
 pub(crate) use automatic_lifecycle::{
     AutomaticDeferredAvailability, AutomaticLifecycleOutcome, AutomaticQueueNotice,
-    AutomaticStopCause, AutomaticTargetFailureOutcome, EndedSnapshotKind, PlaylistErrorBehavior,
-    QueuePreloadTarget, SkippedItemsSummary, UnstagedPlannedTargetFailureOutcome,
+    AutomaticStopCause, AutomaticTargetFailureOutcome, EndedSnapshotKind, PlaybackFailureCause,
+    PlaylistErrorBehavior, QueuePreloadTarget, SkippedItemsSummary,
+    UnstagedPlannedTargetFailureOutcome,
 };
 pub(crate) use discovery::{DiscoveryContinuation, DiscoveryContinuationRevision};
 pub(crate) use discovery_navigation::{AutomaticDiscoveryReadiness, DiscoveryNavigationInterest};

@@ -39,7 +39,23 @@ pub(crate) enum PlaylistErrorBehavior {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EndedSnapshotKind {
     Clean,
-    ErrorAssociated { safe_summary: Arc<str> },
+    ErrorAssociated {
+        safe_summary: Arc<str>,
+        cause: PlaybackFailureCause,
+    },
+}
+
+/// Почему упало воспроизведение — решает, что делать очереди дальше.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaybackFailureCause {
+    /// Сам элемент не играется (повреждён, кодек и т.п.): работает политика
+    /// `playlist.error_behavior` (по умолчанию пропуск, сессия 07).
+    MediaFault,
+    /// Пропала сеть: player уже ждал её весь бюджет `network.reconnect_wait_ms`.
+    /// Решение владельца (сессия 16): очередь останавливается, а не пропускает
+    /// элемент — иначе при долгой пропаже сети она пролистала бы все web-ссылки,
+    /// которые точно так же не откроются. Элемент битым не помечается.
+    NetworkLost,
 }
 
 /// D26 interface принимает только readiness possibility, не discovery executor.
@@ -57,10 +73,14 @@ pub(crate) enum AutomaticStopCause {
     Domain(AutomaticStopReason),
     ErrorPolicy,
     RepeatOneError,
-    AllCandidatesFailed { attempted_count: usize },
+    AllCandidatesFailed {
+        attempted_count: usize,
+    },
     ManualTraversalCancelled,
     StructuralInvalidation,
     DeferredCancelled,
+    /// Воспроизведение остановила пропажа сети (см. [`PlaybackFailureCause::NetworkLost`]).
+    NetworkLost,
 }
 
 /// Controller action для одного exact edge/reevaluation.
@@ -342,7 +362,14 @@ impl PlaylistController {
                 }
                 self.evaluate_clean_ended(active, deferred_availability)
             }
-            EndedSnapshotKind::ErrorAssociated { safe_summary } => {
+            EndedSnapshotKind::ErrorAssociated {
+                cause: PlaybackFailureCause::NetworkLost,
+                ..
+            } => self.stop_for_active(active, AutomaticStopCause::NetworkLost),
+            EndedSnapshotKind::ErrorAssociated {
+                safe_summary,
+                cause: PlaybackFailureCause::MediaFault,
+            } => {
                 let Some(item_id) = active.item_id() else {
                     return self.stop_for_active(active, AutomaticStopCause::ErrorPolicy);
                 };

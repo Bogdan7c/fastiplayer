@@ -10,7 +10,7 @@
 
 - `service-direct-media` теперь только classification/locator owner. Он парсит absolute HTTP(S)/FTP(S), строит checked `TransportRequestTarget`, хранит exact secret-bearing reopen/persistence identity и публикует только redacted `Debug`/`Display`/`safe_label`.
 - Service больше не владеет transport registry, concrete HTTP provider, prefetch, demux runtime/config или progressive worker. `src/transport.rs` удалён; normal dependencies ограничены `demux-api`, `source-core`, `thiserror`, `url`, `web-media-transport-api`. Это закреплено `scripts/check-refactor-guardrails.py`.
-- `app-egui::direct_progressive_open` — composition root. Он регистрирует existing `web-media-http` и `web-media-ftp`, строит protocol-specific `TransportOpenRequest`, передаёт ровно один returned `TransportInput` в production `WebDemuxComposition` и только для streaming input оборачивает demuxer в `ProgressiveDemuxer`.
+- `app-egui::direct_progressive_open` — composition root. Он регистрирует existing `web-media-http` и `web-media-ftp`, строит protocol-specific `TransportOpenRequest`, передаёт ровно один returned `TransportInput` в production `WebDemuxComposition` и (с UX16, 2026-10-08) оборачивает demuxer в фоновый `ProgressiveDemuxer` для ОБОИХ вариантов через `media-source-open::progressive_player_demux::into_player_demuxer`; seekable вход перематывается только через seek port — `mem:media-services/progressive-http-s22-2026-07-22` (UX16).
 - Locator parsing и app runtime ownership не смешаны: classification не выполняет network I/O; startup/queue preparation владеют cancellation и prepared-media lifecycle.
 
 ## Capability contract

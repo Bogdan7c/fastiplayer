@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use fastiplayer_config::NetworkConfig;
 
-use crate::{SourceError, SourceResult};
+use crate::{HttpReconnectPolicy, SourceError, SourceResult};
 
 /// Source-настройки, нормализованные из пользовательского `network` config.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +18,9 @@ pub struct SourceRuntimeConfig {
 
     /// Timeout чтения HTTP ответа.
     read_timeout: Duration,
+
+    /// Сколько HTTP Range чтение ждёт восстановления связи после обрыва.
+    reconnect_policy: HttpReconnectPolicy,
 }
 
 impl SourceRuntimeConfig {
@@ -58,6 +61,10 @@ impl SourceRuntimeConfig {
             read_ahead_bytes,
             connect_timeout: Duration::from_millis(network_config.connect_timeout_ms),
             read_timeout: Duration::from_millis(network_config.read_timeout_ms),
+            // Ноль — осознанное «не переподключаться», его validation config-а пропускает.
+            reconnect_policy: HttpReconnectPolicy::with_budget(Duration::from_millis(
+                network_config.reconnect_wait_ms,
+            )),
         })
     }
 
@@ -85,7 +92,16 @@ impl SourceRuntimeConfig {
         self.read_timeout
     }
 
+    /// Возвращает политику переподключения HTTP Range чтения.
+    #[must_use]
+    pub const fn reconnect_policy(&self) -> HttpReconnectPolicy {
+        self.reconnect_policy
+    }
+
     /// Создаёт компактный config для unit-тестов cache/source логики.
+    ///
+    /// Переподключение выключено: старые тесты проверяют поведение одной попытки,
+    /// а тесты переподключения задают бюджет явно через [`Self::with_reconnect_policy`].
     #[cfg(test)]
     pub(crate) const fn for_tests(
         memory_cache_bytes: u64,
@@ -97,7 +113,15 @@ impl SourceRuntimeConfig {
             read_ahead_bytes: memory_cache_bytes,
             connect_timeout,
             read_timeout,
+            reconnect_policy: HttpReconnectPolicy::disabled(),
         }
+    }
+
+    /// Возвращает копию config-а с другой политикой переподключения (только тесты).
+    #[cfg(test)]
+    pub(crate) const fn with_reconnect_policy(mut self, policy: HttpReconnectPolicy) -> Self {
+        self.reconnect_policy = policy;
+        self
     }
 }
 
@@ -117,6 +141,7 @@ mod tests {
             prefetch_chunk_mb: 1,
             connect_timeout_ms: 4,
             read_timeout_ms: 5,
+            reconnect_wait_ms: 6,
         };
 
         let runtime = SourceRuntimeConfig::from_network_config(&config).expect("config valid");
@@ -125,5 +150,9 @@ mod tests {
         assert_eq!(runtime.read_ahead_bytes(), 3 * 1024 * 1024);
         assert_eq!(runtime.connect_timeout(), Duration::from_millis(4));
         assert_eq!(runtime.read_timeout(), Duration::from_millis(5));
+        assert_eq!(
+            runtime.reconnect_policy(),
+            HttpReconnectPolicy::with_budget(Duration::from_millis(6))
+        );
     }
 }

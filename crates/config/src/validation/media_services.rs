@@ -16,6 +16,10 @@ pub(crate) const MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB: u64 = MAX_NETWORK_READ_A
 /// Верхний предел RAM cache, чтобы ошибочный config не занял всю память.
 pub(crate) const MAX_NETWORK_MEMORY_CACHE_MB: u64 = 4096;
 
+/// Верхний предел ожидания восстановления сети: 10 минут. Дольше держать
+/// пользователя перед спиннером бессмысленно — проще открыть файл заново.
+pub(crate) const MAX_NETWORK_RECONNECT_WAIT_MS: u64 = 600_000;
+
 /// Верхний предел ожидания `yt-dlp`, чтобы зависший resolver не жил бесконечно.
 pub(crate) const MAX_YT_DLP_RESOLVE_TIMEOUT_MS: u64 = 300_000;
 
@@ -130,6 +134,13 @@ pub(super) fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
         config.network.connect_timeout_ms,
     )?;
     validate_positive_u64("network.read_timeout_ms", config.network.read_timeout_ms)?;
+    // Ноль разрешён: он явно отключает переподключение.
+    validate_u64_range(
+        "network.reconnect_wait_ms",
+        config.network.reconnect_wait_ms,
+        0,
+        MAX_NETWORK_RECONNECT_WAIT_MS,
+    )?;
     Ok(())
 }
 

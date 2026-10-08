@@ -250,18 +250,21 @@ impl WebMediaHttpProvider {
                         self.prefetch_config,
                         request.http_range_request_limit(),
                     )?;
-                    let source = source.with_range_redirect_handler(Box::new(
+                    let source = (*source).with_range_redirect_handler(Box::new(
                         ScopedRangeRedirectHandler::new(
                             request.redirects(),
                             request.secrets().clone(),
                             redirect_state,
                         ),
                     ));
+                    // Токен open-а живёт, пока владелец держит media: его отмена (закрытие
+                    // или смена файла) прерывает чтение, ждущее восстановления сети.
                     let prefetch_source =
                         PrefetchingByteSource::new(Box::new(source), effective_prefetch_config)
                             .map_err(|_| {
                                 ProviderOpenError::Transport(TransportFailure::NetworkUnavailable)
-                            })?;
+                            })?
+                            .with_lifecycle_cancellation(request.cancellation().clone());
                     let mut seekable_source: Box<dyn ByteSource> = Box::new(prefetch_source);
                     if let Some(observer) = request.endpoint_expiry_observer().cloned() {
                         seekable_source = Box::new(EndpointExpiryObservingByteSource::new(
@@ -466,7 +469,8 @@ fn map_source_open_error(
     secret_delivery: SecretDelivery,
 ) -> ProviderOpenError {
     match source {
-        SourceError::Cancelled => ProviderOpenError::Cancelled,
+        // Закрытие источника владельцем — та же отмена с точки зрения open-а.
+        SourceError::Cancelled | SourceError::SourceClosed => ProviderOpenError::Cancelled,
         SourceError::HttpTimeout { .. } => ProviderOpenError::Transport(TransportFailure::Timeout),
         SourceError::HttpStatus { status, .. } if matches!(status.as_u16(), 401 | 407) => {
             let failure = match secret_delivery {

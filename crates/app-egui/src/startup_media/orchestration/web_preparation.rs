@@ -64,7 +64,8 @@ pub(super) fn compose_direct_startup_media(
     let metadata = opened_media.media_metadata().unwrap_or_default().tags;
     let safe_label = SafeMediaLabel::from_service_safe_label(&source_label);
     let source = WebMediaSourceIntent::direct(source_locator.clone());
-    let (demuxer, endpoint_recovery) = opened_media.into_runtime_parts();
+    let runtime_parts = opened_media.into_runtime_parts();
+    let endpoint_recovery = runtime_parts.endpoint_recovery;
     let descriptor = PreparedWebMediaEnvelope::new(
         tracks,
         duration,
@@ -80,8 +81,15 @@ pub(super) fn compose_direct_startup_media(
     )]
     let prepared_media = compose_prepared_web_media(
         &source_label,
-        demuxer,
-        PreparedWebMediaAttachments::default(),
+        runtime_parts.demuxer,
+        // Seekable ресурс перематывается только через seek port фонового
+        // demux-потока (сессия 16), поэтому порт обязан дойти до player-а.
+        PreparedWebMediaAttachments {
+            demux_seek: runtime_parts
+                .demux_seek_port
+                .map(crate::media_open::PreparedWebMediaSeekAttachment::WorkerReceipted),
+            ..PreparedWebMediaAttachments::default()
+        },
     )
     .expect("direct VOD has no conflicting timeline attachments");
 

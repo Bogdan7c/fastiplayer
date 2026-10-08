@@ -287,7 +287,8 @@ const fn classify_transport_failure(failure: TransportFailure) -> WebOpenFailure
 /// Сырая ошибка источника байтов (adaptive HLS/DASH/Smooth/HDS путь её сохраняет).
 fn classify_source_error(error: &SourceError) -> Option<WebOpenFailureReason> {
     let reason = match error {
-        SourceError::Cancelled => return None,
+        // Закрытие источника владельцем — не отказ, а отмена: причину не показываем.
+        SourceError::Cancelled | SourceError::SourceClosed => return None,
         SourceError::HttpStatus { status, .. } => classify_http_status(status.as_u16()),
         SourceError::HttpTimeout { .. } => WebOpenFailureReason::TimedOut,
         SourceError::HttpRequest { .. }

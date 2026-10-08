@@ -12,4 +12,13 @@
   - vertical current-generation proof: `crates/web-media-adaptive/src/tests/live_manifest_refresh.rs::live_manifest_refresh_fences_slow_stale_generation`.
 - The vertical test uses a held first TCP request as a real rendezvous, not a timing sleep. It supersedes A with B, rejects stale publication, requires current generation/body and exactly two requests.
 
+## HTTP Range reconnect (UX16, 2026-10-08)
+
+- Владелец политики — `src/http_reconnect.rs`: `HttpReconnectPolicy` (бюджет = `network.reconnect_wait_ms`, default 60 с, `0` = без повторов; `SourceRuntimeConfig::reconnect_policy()`, в `for_tests` выключено) и чистое `HttpReconnectSchedule::record_failure(now, retry_after)` (паузы 0,5→1→2→4→8 с, cap 8 с; `Retry-After` cap 60 с; пауза обрезается остатком бюджета; бюджет от первого сбоя одного логического read-а). `wait_before_reconnect` опрашивает cancellation каждые 10 мс.
+- Цикл повторов — `src/http/range_reconnect.rs` (дочерний модуль `http`, видит приватные поля `HttpRangeSource`): `read_range_with_reconnect` сохраняет частично полученный body (`RangeReadFailure { received_bytes, error }`) и продолжает с первого недостающего байта; `ensure_same_representation` сверяет каждый `206` с probe (total length; ETag/Last-Modified только если есть у обеих сторон) → `HttpRepresentationChanged`. Счётчик `RangeDiagnostics::reconnects`.
+- Классификация: `SourceError::is_transient_network_failure()` (timeout/request/body/short body, 5xx/408/429; НЕ 401/403/404/410 — подписи yt-dlp чинит VOD endpoint recovery) и `http_retry_after()`. Range-ответы 429/503 теперь несут `Retry-After`.
+- `SourceError::SourceClosed` — «владелец закрыл источник». Намеренно не `Cancelled`: адаптеры мапят `Cancelled` в `io::ErrorKind::Interrupted`, а Symphonia/`read_exact` повторяют `Interrupted` бесконечно. Ставит `media-prefetch` по lifecycle token.
+- `HttpSourceHop::Seekable(Box<HttpRangeSource>)` (clippy large_enum_variant).
+- Тесты: `src/http_reconnect/tests.rs`, `src/http/tests/reconnect.rs` (loopback), `src/http/tests.rs::interrupted_range_response_resumes_from_first_missing_byte`. Сквозные — `media-source-open/src/direct_progressive_open/network_drop_tests.rs`. Полная картина — `mem:media-services/progressive-http-s22-2026-07-22` (UX16).
+
 Related: `mem:media-services/manifest-supersede-cancellation-aud020-2026-08-24`, `mem:media-services/core`, `mem:testing/coverage`.

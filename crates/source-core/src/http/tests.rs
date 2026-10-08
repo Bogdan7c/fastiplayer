@@ -83,6 +83,20 @@ impl TestHttpServer {
         )
     }
 
+    /// Тот же config, но с бюджетом переподключения (по умолчанию в тестах выключено).
+    fn config_with_reconnect(&self, budget: Duration) -> HttpRangeSourceConfig {
+        HttpRangeSourceConfig::new(
+            SecretHttpUrl::from_secret_for_open(self.url.clone()),
+            Vec::new(),
+            SourceRuntimeConfig::for_tests(
+                1024 * 1024,
+                Duration::from_millis(100),
+                Duration::from_millis(100),
+            )
+            .with_reconnect_policy(HttpReconnectPolicy::with_budget(budget)),
+        )
+    }
+
     fn requests(&self) -> Vec<TestRequest> {
         self.requests.lock().expect("requests lock").clone()
     }
@@ -323,8 +337,10 @@ fn cancelled_range_read_returns_cancelled_without_advancing_position() {
     assert_eq!(diagnostics.bytes_read, 0);
 }
 
+/// Обрыв body посреди ответа: уже полученные 2 байта сохраняются, повтор
+/// запрашивает ровно недостающий хвост `bytes=2-4`, а не весь range заново.
 #[test]
-fn interrupted_range_response_retries_once() {
+fn interrupted_range_response_resumes_from_first_missing_byte() {
     let media = Arc::new(b"abcdefghij".to_vec());
     let media_for_server = Arc::clone(&media);
     let server = TestHttpServer::spawn(move |index, request, mut stream| {
@@ -348,19 +364,57 @@ fn interrupted_range_response_retries_once() {
         respond_with_range(stream, &request, &media_for_server);
     });
 
-    let mut source = HttpRangeSource::open(server.config(Vec::new())).expect("source opens");
+    let mut source = HttpRangeSource::open(server.config_with_reconnect(Duration::from_secs(5)))
+        .expect("source opens");
     let mut output = [0_u8; 5];
     let bytes_read = source
         .read(&mut output, &CancellationToken::never_cancelled())
-        .expect("interrupted read retried");
+        .expect("interrupted read resumed");
 
     assert_eq!(bytes_read, 5);
     assert_eq!(&output, b"abcde");
-    assert_eq!(server.requests().len(), 3);
+    assert_eq!(source.position(), 5);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[1].headers.get("range").map(String::as_str),
+        Some("bytes=0-4")
+    );
+    assert_eq!(
+        requests[2].headers.get("range").map(String::as_str),
+        Some("bytes=2-4"),
+        "повтор продолжает с первого недостающего байта"
+    );
+    assert_eq!(source.range_diagnostics().reconnects, 1);
 }
 
+/// Без бюджета (переподключение выключено в config) обрыв сразу виден caller-у.
 #[test]
-fn range_failure_retries_once() {
+fn interrupted_range_response_fails_without_reconnect_budget() {
+    let media = Arc::new(b"abcdefghij".to_vec());
+    let media_for_server = Arc::clone(&media);
+    let server = TestHttpServer::spawn(move |index, request, stream| {
+        if index == 1 {
+            let _ = stream.shutdown(Shutdown::Both);
+            return;
+        }
+        respond_with_range(stream, &request, &media_for_server);
+    });
+
+    let mut source = HttpRangeSource::open(server.config(Vec::new())).expect("source opens");
+    let mut output = [0_u8; 5];
+    let error = source
+        .read(&mut output, &CancellationToken::never_cancelled())
+        .expect_err("без бюджета обрыв не повторяется");
+
+    assert!(error.is_transient_network_failure(), "{error}");
+    assert_eq!(source.position(), 0);
+    assert_eq!(server.requests().len(), 2);
+}
+
+/// 500 — временная ошибка сервера: повтор после паузы 0,5 с отдаёт данные.
+#[test]
+fn server_error_is_retried_after_backoff() {
     let media = Arc::new(b"abcdefghij".to_vec());
     let media_for_server = Arc::clone(&media);
     let server = TestHttpServer::spawn(move |index, request, stream| {
@@ -377,13 +431,21 @@ fn range_failure_retries_once() {
         respond_with_range(stream, &request, &media_for_server);
     });
 
-    let mut source = HttpRangeSource::open(server.config(Vec::new())).expect("source opens");
+    let mut source = HttpRangeSource::open(server.config_with_reconnect(Duration::from_secs(5)))
+        .expect("source opens");
     let mut output = [0_u8; 4];
+    let started = std::time::Instant::now();
     let bytes_read = source
         .read(&mut output, &CancellationToken::never_cancelled())
-        .expect("server error retried once");
+        .expect("server error retried");
 
     assert_eq!(bytes_read, 4);
     assert_eq!(&output, b"abcd");
     assert_eq!(server.requests().len(), 3);
+    assert!(
+        started.elapsed() >= Duration::from_millis(500),
+        "повтор идёт после паузы, а не мгновенно"
+    );
 }
+
+mod reconnect;

@@ -209,6 +209,9 @@ impl AutomaticSkipReport {
             AutomaticStopCause::ManualTraversalCancelled
             | AutomaticStopCause::StructuralInvalidation
             | AutomaticStopCause::DeferredCancelled => None,
+            // Причину («Нет связи с сервером…») уже показывает ошибка player-а в центре;
+            // элемент не битый, поэтому «пропущен»/«остановлено на файле» было бы ложью.
+            AutomaticStopCause::NetworkLost => None,
         };
         if let Some(notice) = notice {
             self.pending_notices.push(notice);

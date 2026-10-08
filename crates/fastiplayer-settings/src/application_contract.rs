@@ -442,7 +442,8 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "network.prefetch_initial_chunk_kb"
         | "network.prefetch_chunk_mb"
         | "network.connect_timeout_ms"
-        | "network.read_timeout_ms" => SettingApplicationContract::new(
+        | "network.read_timeout_ms"
+        | "network.reconnect_wait_ms" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::MediaService,
             SettingStateOwner::MediaSourceLifecycle,

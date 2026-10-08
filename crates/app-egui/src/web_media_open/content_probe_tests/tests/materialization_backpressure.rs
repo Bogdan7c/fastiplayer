@@ -110,7 +110,7 @@ fn initial_descriptor_backpressure_still_reaches_draw_readback_and_release() {
         CancellationToken::new(),
     )
     .expect("open direct WebM");
-    let (mut demuxer, _recovery) = opened.into_runtime_parts();
+    let mut demuxer = opened.into_runtime_parts().demuxer;
     let track = demuxer
         .tracks()
         .iter()

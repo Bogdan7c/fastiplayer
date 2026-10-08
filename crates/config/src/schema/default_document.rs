@@ -172,6 +172,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "reconnect_wait_ms = 60000",
+        "# Сколько ждать возвращения сети при обрыве посреди просмотра, мс; 0 — не ждать.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "decoder_packet_channel_frames = 32",
         "# Bounded очередь packets между worker и decoder thread.",
     );

@@ -86,6 +86,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "network.prefetch_chunk_mb",
     "network.connect_timeout_ms",
     "network.read_timeout_ms",
+    "network.reconnect_wait_ms",
     "yt_dlp.enabled",
     "web_media.hdr_selection",
     "web_media.preferred_video_height",
@@ -572,6 +573,12 @@ fn metadata_ranges_match_validation_constants() {
         "network.read_timeout_ms",
         validation::MIN_POSITIVE_U64_SETTING_VALUE,
         validation::MAX_POSITIVE_U64_SETTING_VALUE,
+    );
+    assert_integer_range(
+        &registry,
+        "network.reconnect_wait_ms",
+        0_u64,
+        validation::MAX_NETWORK_RECONNECT_WAIT_MS,
     );
     assert_integer_range(
         &registry,

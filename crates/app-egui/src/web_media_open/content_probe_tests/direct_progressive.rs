@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use audio::decoder::EncodedAudioPacket;
 use audio::{AudioDecoderFactory, ProductionAudioDecoderFactory};
 use fastiplayer_config::AppConfig;
-use media_core::{DemuxReadEvent, DemuxRetryHint, Demuxer, TrackKind};
+use media_core::{DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, Demuxer, TrackKind};
+use player_core::{PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, PreparedDemuxSeekRequestId};
 use service_ytdlp::{ExtractorProcessInvocation, ExtractorProcessLauncher, YtDlpExtractorAdapter};
 use source_core::CancellationToken;
 use symphonia_demux::DemuxSeekability;
@@ -156,7 +157,11 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
     );
 
     let first_open = open_direct(&locator, &app_config);
-    let (mut first_demuxer, _first_endpoint_recovery) = first_open.into_runtime_parts();
+    let first_parts = first_open.into_runtime_parts();
+    let mut first_demuxer = first_parts.demuxer;
+    let first_seek_port = first_parts
+        .demux_seek_port
+        .expect("seekable direct Ogg отдаёт seek port");
     assert_eq!(first_demuxer.seekability(), DemuxSeekability::Seekable);
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     assert_eq!(
@@ -165,9 +170,7 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
         "initial open должен выполнить exact 3 Range requests"
     );
 
-    first_demuxer
-        .seek(Duration::from_millis(100))
-        .expect("seekable direct Ogg должен принять nonzero seek");
+    seek_through_port(first_seek_port.as_ref(), 1, Duration::from_millis(100));
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     assert_eq!(
         origin.request_count(),
@@ -175,9 +178,7 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
         "seek внутри downloaded source не должен повторно разрешать/open-ить root"
     );
 
-    first_demuxer
-        .seek(Duration::ZERO)
-        .expect("seekable direct Ogg должен принять обратный seek к началу");
+    seek_through_port(first_seek_port.as_ref(), 2, Duration::ZERO);
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     assert_eq!(
         origin.request_count(),
@@ -187,7 +188,9 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
 
     drop(first_demuxer);
     let reopened = open_direct(&locator, &app_config);
-    let (mut reopened_demuxer, endpoint_recovery) = reopened.into_runtime_parts();
+    let reopened_parts = reopened.into_runtime_parts();
+    let mut reopened_demuxer = reopened_parts.demuxer;
+    let endpoint_recovery = reopened_parts.endpoint_recovery;
     assert_nonzero_vorbis_pcm(&mut *reopened_demuxer);
     assert_eq!(
         origin.request_count(),
@@ -218,7 +221,7 @@ fn n14a_consumer_http_ogg_reaches_pcm_clock_with_exact_accounting() {
     assert_eq!(origin.response_body_bytes(), 0);
 
     let opened = open_direct(&locator, &app_config);
-    let (mut demuxer, _endpoint_recovery) = opened.into_runtime_parts();
+    let mut demuxer = opened.into_runtime_parts().demuxer;
     assert_nonzero_vorbis_pcm(demuxer.as_mut());
 
     assert_eq!(origin.request_count(), 3);
@@ -249,6 +252,37 @@ fn direct_expiry_signal() -> EndpointExpirySignal {
     )
 }
 
+/// Срок ожидания seek-квитанции.
+///
+/// Перемотка Ogg ищет страницу бинарным поиском, а каждый байтовый seek FTP-источника —
+/// это новое управляющее соединение с логином и REST: на loopback-фикстуре такая
+/// перемотка занимает ~9–10 с (так было и до сессии 16, только синхронно на потоке
+/// player-а). HTTP укладывается в миллисекунды.
+const SEEK_RECEIPT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Перематывает seekable direct runtime так же, как player: через seek port
+/// фонового demux-потока (сессия 16), и ждёт успешную квитанцию.
+fn seek_through_port(seek_port: &dyn PreparedDemuxSeekPort, request_id: u64, position: Duration) {
+    let request_id = PreparedDemuxSeekRequestId::new(request_id);
+    seek_port
+        .enqueue_seek(request_id, DemuxSeekRequest::accurate(position))
+        .expect("seekable direct runtime принимает seek в worker");
+    let deadline = Instant::now() + SEEK_RECEIPT_DEADLINE;
+    loop {
+        if let Some(receipt) = seek_port.poll_seek_receipt() {
+            assert_eq!(receipt.request_id, request_id);
+            assert!(
+                matches!(receipt.outcome, PreparedDemuxSeekOutcome::Succeeded(_)),
+                "seek должен завершиться успехом: {:?}",
+                receipt.outcome
+            );
+            return;
+        }
+        assert!(Instant::now() < deadline, "direct seek receipt timeout");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// HTTP `200` body передаётся demux worker-у и остаётся честно forward-only.
 #[test]
 fn forward_only_http_ogg_reuses_initial_body_and_rejects_seek() {
@@ -258,7 +292,7 @@ fn forward_only_http_ogg_reuses_initial_body_and_rejects_seek() {
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     let opened = open_direct(&origin.media_url(), &app_config);
-    let (mut demuxer, _endpoint_recovery) = opened.into_runtime_parts();
+    let mut demuxer = opened.into_runtime_parts().demuxer;
     assert!(matches!(
         demuxer.seekability(),
         DemuxSeekability::NotSeekable { .. }
@@ -290,29 +324,29 @@ fn n14b_lifecycle_ftp_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extra
     );
 
     let first_open = open_direct(&locator, &app_config);
-    let (mut first_demuxer, _first_endpoint_recovery) = first_open.into_runtime_parts();
+    let first_parts = first_open.into_runtime_parts();
+    let mut first_demuxer = first_parts.demuxer;
+    let first_seek_port = first_parts
+        .demux_seek_port
+        .expect("REST-backed FTP Ogg отдаёт seek port");
     assert_eq!(first_demuxer.seekability(), DemuxSeekability::Seekable);
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     let retrievals_after_open = origin.retrieval_count();
     assert!(retrievals_after_open > 0);
 
-    first_demuxer
-        .seek(Duration::from_millis(100))
-        .expect("FTP REST-backed Ogg должен принять seek");
+    seek_through_port(first_seek_port.as_ref(), 1, Duration::from_millis(100));
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     let retrievals_after_seek = origin.retrieval_count();
     assert!(retrievals_after_seek > retrievals_after_open);
 
-    first_demuxer
-        .seek(Duration::ZERO)
-        .expect("FTP REST-backed Ogg должен принять обратный seek к началу");
+    seek_through_port(first_seek_port.as_ref(), 2, Duration::ZERO);
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     let retrievals_after_backward_seek = origin.retrieval_count();
     assert!(retrievals_after_backward_seek > retrievals_after_seek);
 
     drop(first_demuxer);
     let reopened = open_direct(&locator, &app_config);
-    let (mut reopened_demuxer, _reopened_endpoint_recovery) = reopened.into_runtime_parts();
+    let mut reopened_demuxer = reopened.into_runtime_parts().demuxer;
     assert_nonzero_vorbis_pcm(&mut *reopened_demuxer);
     assert!(origin.retrieval_count() > retrievals_after_backward_seek);
 }
@@ -330,7 +364,7 @@ fn n14a_consumer_ftp_ogg_reaches_pcm_clock_with_exact_accounting() {
     assert_eq!(origin.transferred_body_bytes(), 0);
 
     let opened = open_direct(&locator, &app_config);
-    let (mut demuxer, _endpoint_recovery) = opened.into_runtime_parts();
+    let mut demuxer = opened.into_runtime_parts().demuxer;
     assert_nonzero_vorbis_pcm(demuxer.as_mut());
 
     assert_eq!(origin.retrieval_count(), 6);

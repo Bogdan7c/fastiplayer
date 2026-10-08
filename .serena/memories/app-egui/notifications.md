@@ -35,6 +35,9 @@
 - Отрисовка: `ui/buffering_indicator.rs` (угол из `input.time` + `request_repaint` при Standard; фиксированный угол и без repaint при Reduced), фигура — `ArtworkPainter::buffering_spinner` (`ui-artwork-egui/src/buffering_spinner.rs`, подложка + дуга 3/4 круга; проверка `rect.is_finite() && is_positive()` — `f32::min` пропускает NaN).
 - Тесты: `state/notifications/buffering/tests.rs` (фальшивое время), `state/center_overlay_tests.rs` (настоящий кадр egui: спиннер в центре, ошибка вместо спиннера, вращение/repaint только при Standard; repaint проверять на `app_behavior_context()` и после устоявшихся кадров), artwork — `buffering_spinner::tests`.
 
+## Пропажа сети посреди просмотра (сессия 16, 2026-10-08)
+- `player_feed::player_failure_message(&PlayerError)`: `PlayerErrorKind::NetworkError` → `NETWORK_LOST_DURING_PLAYBACK_MESSAGE` («Нет связи с сервером: воспроизведение остановлено. Проверьте подключение к сети и откройте видео снова.»); остальные виды — прежний технический Display. `NetworkError` ставит player-core (`session/tick/demux_read_failure.rs`) по `io::ErrorKind::NetworkDown` в цепочке ошибки demux-а — только после исчерпания бюджета переподключения `network.reconnect_wait_ms`. До этого player в Buffering, спиннер сессии 15 показывается сам. Тест: `notifications/tests.rs::network_failure_during_playback_shows_human_reason`. Известно: при открытой телеметрии длинный текст центра обрезается слева (старая особенность разметки).
+
 ## Перерисовка (важно)
 - В этом приложении `ctx.request_repaint_after(d)` делает `has_requested_repaint()` истинным, и окно перерисовывается **немедленно**: задержка игнорируется (`frame_prepare/ui_prepare.rs`). Для таймеров используйте `AppRenderFrameResult.next_ui_wake_deadline` (`earliest_ui_wake_deadline([..])` в `frame_prepare.rs`), куда добавлен `next_notification_wake_deadline()`. `ctx.request_repaint()` — только пока идёт анимация.
 

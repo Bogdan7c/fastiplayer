@@ -14,7 +14,7 @@ use demux_api::{
     ProgressiveDemuxer,
 };
 use fastiplayer_config::{NetworkConfig, PlayerDemuxConfig};
-use media_core::{DemuxRetryHint, Demuxer};
+use media_core::{DemuxRetryHint, DemuxSeekability, Demuxer};
 use service_ytdlp::{
     YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpProgressiveTransportRequestContext,
 };
@@ -314,6 +314,7 @@ impl WebOpenRuntime {
             .progressive_transport_components(&request_context)
             .context("YtDlp request material нельзя выразить через progressive transport")?;
         let mut opened_components = Vec::with_capacity(components.len());
+        let mut has_seekable_component = false;
         for component in components {
             ensure_not_cancelled(is_cancelled)?;
             let role = component.role();
@@ -327,6 +328,7 @@ impl WebOpenRuntime {
                 .open(transport_request)
                 .context("Progressive provider не открыл YtDlp component")?;
             let transport_seekability = opened_transport.seekability();
+            has_seekable_component |= transport_seekability == TransportSeekability::Seekable;
             let demux_input = match opened_transport.into_input() {
                 TransportInput::Seekable(source) => DemuxInput::byte_source(source),
                 TransportInput::Streaming(source) => {
@@ -352,11 +354,31 @@ impl WebOpenRuntime {
             opened_components.push(OpenedCandidateComponent { role, demuxer });
         }
         let demuxer = compose_candidate_components(opened_components)?;
+        let (demuxer, demux_seek_port) = if has_seekable_component {
+            // Seekable компонент читает сеть blocking-ом внутри разбора контейнера:
+            // весь собранный demuxer (с composite A/V) уходит в фоновый поток, чтобы
+            // обрыв сети не замораживал player (сессия 16). Forward-only компоненты
+            // уже обёрнуты поштучно в `open_demuxer`.
+            let composed_seekability = if demuxer.seekability() == DemuxSeekability::Seekable {
+                TransportSeekability::Seekable
+            } else {
+                TransportSeekability::Streaming
+            };
+            let player_demuxer = crate::progressive_player_demux::into_player_demuxer(
+                demuxer,
+                composed_seekability,
+                cancellation,
+                self.prefetch_config,
+            )?;
+            (player_demuxer.demuxer, player_demuxer.seek_port)
+        } else {
+            (demuxer, None)
+        };
         Ok(OpenedWebCandidate {
             demuxer,
             subtitles: Arc::from([]),
             timeline_port: None,
-            demux_seek_port: None,
+            demux_seek_port,
             playback_window: None,
             component_variants: PreparedComponentVariantCatalog::Unavailable,
             vod_endpoint_recovery,

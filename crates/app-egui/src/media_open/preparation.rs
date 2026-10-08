@@ -66,15 +66,23 @@ pub(super) fn prepare_source(
                 let tracks = opened.tracks().to_vec();
                 let duration = opened.duration();
                 let metadata = opened.media_metadata().unwrap_or_default().tags;
-                let (demuxer, endpoint_recovery) = opened.into_runtime_parts();
+                let runtime_parts = opened.into_runtime_parts();
+                let endpoint_recovery = runtime_parts.endpoint_recovery;
                 #[expect(
                     clippy::expect_used,
                     reason = "инвариант: direct VOD has no conflicting timeline attachments"
                 )]
                 let prepared_media = compose_prepared_web_media(
                     safe_label.as_str(),
-                    demuxer,
-                    PreparedWebMediaAttachments::default(),
+                    runtime_parts.demuxer,
+                    // Seekable ресурс перематывается только через seek port фонового
+                    // demux-потока (сессия 16), поэтому порт обязан дойти до player-а.
+                    PreparedWebMediaAttachments {
+                        demux_seek: runtime_parts
+                            .demux_seek_port
+                            .map(PreparedWebMediaSeekAttachment::WorkerReceipted),
+                        ..PreparedWebMediaAttachments::default()
+                    },
                 )
                 .expect("direct VOD has no conflicting timeline attachments");
                 let source = WebMediaSourceIntent::direct(locator);

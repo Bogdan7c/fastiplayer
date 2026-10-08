@@ -148,3 +148,52 @@ fn runtime_snapshot_boundary_treats_failed_state_as_error_not_clean_eof() {
     assert!(!runtime_error.safe_summary().contains("secret"));
     assert!(!runtime_error.safe_summary().contains("private.mkv"));
 }
+
+/// Сессия 16 (решение владельца): пропажа сети посреди просмотра — не дефект элемента.
+/// Даже при политике `skip` очередь останавливается, элемент не получает бейдж ошибки и
+/// пользователь не видит ложного «пропущен из-за ошибки» (причину показывает центр окна).
+#[test]
+fn runtime_snapshot_boundary_stops_queue_on_network_loss_instead_of_skipping() {
+    let (mut runtime, binding, item_ids, active) = runtime_with_active_first_item();
+    runtime
+        .controller
+        .set_error_behavior(PlaylistErrorBehavior::Skip);
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.media_instance_id = Some(active.media_instance_id());
+    player_snapshot.playback_state = PlaybackState::Failed;
+    player_snapshot.last_error = Some(PlayerError::new(
+        PlayerErrorKind::NetworkError,
+        "Ошибка чтения packet: connection refused",
+    ));
+
+    let outcome = runtime
+        .observe_playlist_automatic_snapshot(binding, &player_snapshot)
+        .expect("loaded runtime observes the network failure");
+
+    assert!(matches!(
+        outcome,
+        AutomaticLifecycleOutcome::Stop {
+            cause: crate::playlist_runtime::controller::AutomaticStopCause::NetworkLost,
+            ..
+        }
+    ));
+    assert!(
+        !runtime.controller.runtime_errors.contains_key(&item_ids[0]),
+        "элемент с пропавшей сетью не помечается битым"
+    );
+    assert!(
+        runtime
+            .controller
+            .drain_automatic_queue_notices()
+            .is_empty(),
+        "никакого «пропущен»/«остановлено на файле» при пропаже сети"
+    );
+    assert_eq!(
+        runtime
+            .controller
+            .active_media
+            .and_then(|media| media.item_id()),
+        Some(item_ids[0]),
+        "очередь не перешла к следующему элементу"
+    );
+}

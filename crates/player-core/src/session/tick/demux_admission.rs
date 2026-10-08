@@ -27,8 +27,8 @@ use super::{
 use crate::pipeline::{VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit};
 use crate::{
     PendingAudioPacket, PendingVideoPacket, PendingVideoPacketTimestamps, PipelineLatencyStage,
-    PipelinePauseReason, PlayerError, PlayerErrorKind, PlayerTickPacket, PlayerVideoDropReason,
-    session::PlayerSession, session::audio_runtime::sanitize_audio_high_water_mark,
+    PipelinePauseReason, PlayerTickPacket, PlayerVideoDropReason, session::PlayerSession,
+    session::audio_runtime::sanitize_audio_high_water_mark,
 };
 
 /// Результат маршрутизации demux packet-а внутри session queues.
@@ -442,10 +442,9 @@ pub(super) fn read_demux_packets(
                 session.clear_installed_demux_retry_after_terminal_event();
                 session.note_demux_error_for_seek_preroll_diagnostics();
                 tracing::warn!(error = %error, "Ошибка чтения packet");
-                session.mark_fatal_error(PlayerError::new(
-                    PlayerErrorKind::DemuxError,
-                    format!("Ошибка чтения packet: {error}"),
-                ));
+                session.mark_fatal_error(
+                    super::demux_read_failure::player_error_for_demux_read_failure(&error),
+                );
                 break;
             }
         }

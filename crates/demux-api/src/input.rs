@@ -178,9 +178,16 @@ impl Read for StreamingSourceByteReader {
             .source
             .lock()
             .map_err(|_| std::io::Error::other("streaming source mutex poisoned"))?;
-        source
-            .read(output, &self.cancellation)
-            .map_err(std::io::Error::other)
+        source.read(output, &self.cancellation).map_err(|error| {
+            // Та же метка, что у seekable пути (`symphonia-demux::byte_source`): по
+            // `NetworkDown` player отличает пропавшую сеть от повреждённого файла.
+            let kind = if error.is_transient_network_failure() {
+                std::io::ErrorKind::NetworkDown
+            } else {
+                std::io::ErrorKind::Other
+            };
+            std::io::Error::new(kind, error)
+        })
     }
 }
 

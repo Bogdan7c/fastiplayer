@@ -1,5 +1,5 @@
 use std::fmt;
-use std::io::Read;
+use std::time::SystemTime;
 
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, Response};
@@ -8,12 +8,13 @@ use reqwest::header::{
 };
 
 use crate::http_client::blocking_http_client_builder;
+use crate::http_retry_after::retry_after_from_headers;
 use crate::http_session::parse_redirect_hop;
 use crate::{
     ByteSource, CancellationToken, HttpRangeRedirectBodyForwarding, HttpRangeRedirectHandler,
-    HttpRangeRedirectHopCount, HttpRedirectRequestBehavior, HttpRequestTarget, NotSeekableReason,
-    RangeDiagnostics, SecretHttpUrl, Seekability, SourceError, SourceFingerprint, SourceResult,
-    SourceRuntimeConfig, SourceValidators,
+    HttpRangeRedirectHopCount, HttpReconnectPolicy, HttpRedirectRequestBehavior, HttpRequestTarget,
+    NotSeekableReason, RangeDiagnostics, SecretHttpUrl, Seekability, SourceError,
+    SourceFingerprint, SourceResult, SourceRuntimeConfig, SourceValidators,
 };
 
 /// HTTP header, который внешний service layer передал как данные direct URL-а.
@@ -113,6 +114,9 @@ pub struct HttpRangeSource {
 
     /// Range diagnostics для telemetry panel.
     diagnostics: RangeDiagnostics,
+
+    /// Сколько ждать восстановления связи после обрыва (из `[network]` config-а).
+    reconnect_policy: HttpReconnectPolicy,
 }
 
 impl fmt::Debug for HttpRangeSource {
@@ -129,6 +133,7 @@ impl fmt::Debug for HttpRangeSource {
             .field("content_length", &self.content_length)
             .field("fingerprint", &self.fingerprint)
             .field("diagnostics", &self.diagnostics)
+            .field("reconnect_policy", &self.reconnect_policy)
             .finish_non_exhaustive()
     }
 }
@@ -165,6 +170,7 @@ impl HttpRangeSource {
             content_length: probe.content_length,
             fingerprint,
             diagnostics: RangeDiagnostics::default(),
+            reconnect_policy: config.source_config.reconnect_policy(),
         })
     }
 
@@ -175,6 +181,7 @@ impl HttpRangeSource {
         headers: HeaderMap,
         request_body: Option<Vec<u8>>,
         response_headers: &HeaderMap,
+        reconnect_policy: HttpReconnectPolicy,
     ) -> SourceResult<Self> {
         let url =
             SecretHttpUrl::from_secret_for_open(target.expose_secret_for_request().to_owned());
@@ -202,6 +209,7 @@ impl HttpRangeSource {
             content_length,
             fingerprint,
             diagnostics: RangeDiagnostics::default(),
+            reconnect_policy,
         })
     }
 
@@ -221,48 +229,18 @@ impl HttpRangeSource {
         self.diagnostics
     }
 
-    /// Читает один bounded range с единственным retry при transport/body failure.
-    fn read_range_with_retry(
-        &mut self,
-        offset: u64,
-        output: &mut [u8],
-        cancellation: &CancellationToken,
-    ) -> SourceResult<usize> {
-        let mut attempts = 0_u8;
-        let length = output.len();
-
-        loop {
-            let result = self.read_range_once(offset, output, cancellation);
-            match result {
-                Ok(bytes_read) => return Ok(bytes_read),
-                Err(error) if attempts == 0 && error.is_retryable_range_failure() => {
-                    self.record_range_error(&error);
-                    attempts = attempts.saturating_add(1);
-                    tracing::warn!(
-                        source = %self.url,
-                        offset,
-                        length,
-                        error = %error,
-                        "HTTP Range read failed; retrying once"
-                    );
-                }
-                Err(error) => {
-                    self.record_range_error(&error);
-                    return Err(error);
-                }
-            }
-        }
-    }
-
     /// Выполняет один HTTP Range request и полностью читает response body.
+    ///
+    /// При обрыве body ошибка несёт число уже записанных в `output` байт: они
+    /// валидны, и повтор продолжит с первого недостающего байта.
     fn read_range_once(
         &mut self,
         offset: u64,
         output: &mut [u8],
         cancellation: &CancellationToken,
-    ) -> SourceResult<usize> {
+    ) -> Result<usize, RangeReadFailure> {
         if cancellation.is_cancelled() {
-            return Err(SourceError::Cancelled);
+            return Err(SourceError::Cancelled.into());
         }
 
         let length = output.len();
@@ -278,7 +256,7 @@ impl HttpRangeSource {
 
         loop {
             if cancellation.is_cancelled() {
-                return Err(SourceError::Cancelled);
+                return Err(SourceError::Cancelled.into());
             }
 
             self.diagnostics.range_requests = self.diagnostics.range_requests.saturating_add(1);
@@ -323,25 +301,34 @@ impl HttpRangeSource {
                         reason: NotSeekableReason::HttpRangeStatus {
                             status: response.status().as_u16(),
                         },
-                    });
+                    }
+                    .into());
                 }
 
+                // 429/503 часто говорят, сколько подождать: подсказка нужна политике
+                // переподключения, сам header наружу не уходит.
                 return Err(SourceError::HttpStatus {
                     operation: "range-read",
                     url: current_url,
                     status: response.status(),
-                    retry_after: crate::HttpRetryAfter::Unavailable,
-                });
+                    retry_after: retry_after_from_headers(response.headers(), SystemTime::now()),
+                }
+                .into());
             }
 
-            validate_content_range(&current_url, response.headers(), &range)?;
-            let bytes_read =
-                read_response_body_into(&current_url, response, offset, output, cancellation)?;
+            let parsed_range = validate_content_range(&current_url, response.headers(), &range)?;
+            self.ensure_same_representation(parsed_range.total_length, response.headers())?;
+            let read_result =
+                read_response_body_into(&current_url, response, offset, output, cancellation);
+            let received_bytes = match &read_result {
+                Ok(bytes_read) => *bytes_read,
+                Err(failure) => failure.received_bytes,
+            };
             self.diagnostics.bytes_read = self
                 .diagnostics
                 .bytes_read
-                .saturating_add(bytes_read as u64);
-            return Ok(bytes_read);
+                .saturating_add(received_bytes as u64);
+            return read_result;
         }
     }
 
@@ -421,7 +408,7 @@ impl ByteSource for HttpRangeSource {
             return Ok(0);
         }
 
-        let bytes_read = self.read_range_with_retry(
+        let bytes_read = self.read_range_with_reconnect(
             self.position,
             &mut output[..requested_length],
             cancellation,
@@ -614,54 +601,6 @@ pub(crate) fn validate_content_range(
     Ok(parsed_range)
 }
 
-/// Читает ровно ожидаемое количество bytes из response body в caller buffer.
-fn read_response_body_into(
-    url: &SecretHttpUrl,
-    mut response: reqwest::blocking::Response,
-    offset: u64,
-    output: &mut [u8],
-    cancellation: &CancellationToken,
-) -> SourceResult<usize> {
-    let expected_length = output.len();
-    let mut total_read = 0_usize;
-
-    while total_read < expected_length {
-        if cancellation.is_cancelled() {
-            return Err(SourceError::Cancelled);
-        }
-
-        match response.read(&mut output[total_read..]) {
-            Ok(0) => break,
-            Ok(bytes_read) => {
-                total_read = total_read.saturating_add(bytes_read);
-            }
-            Err(source) if source.kind() == std::io::ErrorKind::TimedOut => {
-                return Err(SourceError::HttpTimeout {
-                    operation: "range-read",
-                    url: url.clone(),
-                });
-            }
-            Err(source) => {
-                return Err(SourceError::HttpBodyRead {
-                    operation: "range-read",
-                    url: url.clone(),
-                    source,
-                });
-            }
-        }
-    }
-
-    if total_read != expected_length {
-        return Err(SourceError::UnexpectedEof {
-            offset,
-            expected_bytes: expected_length,
-            actual_bytes: total_read,
-        });
-    }
-
-    Ok(total_read)
-}
-
 /// Строит reqwest HeaderMap из внешних headers.
 pub(crate) fn build_header_map(headers: &[HttpHeader]) -> SourceResult<HeaderMap> {
     let mut header_map = HeaderMap::new();
@@ -788,6 +727,9 @@ fn build_http_fingerprint(
             .unwrap_or("no-last-modified")
     ))
 }
+
+mod range_reconnect;
+use range_reconnect::{RangeReadFailure, read_response_body_into};
 
 #[cfg(test)]
 mod range_redirect_tests;

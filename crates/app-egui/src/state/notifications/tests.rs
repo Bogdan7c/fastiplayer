@@ -305,6 +305,26 @@ fn real_player_fatal_failure_stays_until_dismissed_and_is_not_resurrected() {
     assert_eq!(format!("{:?}", session.snapshot()), snapshot_before);
 }
 
+/// Сессия 16: player остановился, потому что сеть не вернулась за бюджет ожидания.
+/// В центре — человеческая причина, без технической цепочки HTTP-ошибок.
+#[test]
+fn network_failure_during_playback_shows_human_reason() {
+    let mut session = PlayerSession::new();
+    session.mark_fatal_error(PlayerError::new(
+        PlayerErrorKind::NetworkError,
+        "Ошибка чтения packet: HTTP request `range-read` не удался: Connection refused",
+    ));
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    center.observe_player_snapshot(session.snapshot());
+
+    let message = center_failure_message(&idle_frame(&mut center, now))
+        .expect("Failed по сети показывает ошибку в центре");
+
+    assert_eq!(message, player_feed::NETWORK_LOST_DURING_PLAYBACK_MESSAGE);
+    assert!(!message.contains("range-read"), "{message}");
+}
+
 #[test]
 fn player_recovery_clears_player_failure_but_keeps_open_failure() {
     let now = Instant::now();

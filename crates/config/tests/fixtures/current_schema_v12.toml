@@ -171,6 +171,8 @@ prefetch_chunk_mb = 8
 connect_timeout_ms = 15000
 # Timeout чтения из сетевого источника.
 read_timeout_ms = 15000
+# Сколько ждать возвращения сети при обрыве посреди просмотра, мс; 0 — не ждать.
+reconnect_wait_ms = 60000
 
 # Provider-neutral policy выбора качества и восстановления web media.
 [web_media]

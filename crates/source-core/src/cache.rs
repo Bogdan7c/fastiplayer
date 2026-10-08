@@ -33,6 +33,9 @@ pub struct RangeDiagnostics {
 
     /// Количество timeout-ов на Range path.
     pub timeouts: u64,
+
+    /// Сколько раз Range чтение переподключалось после временного обрыва связи.
+    pub reconnects: u64,
 }
 
 /// Общая source диагностика, которую UI может показывать только в telemetry panel.

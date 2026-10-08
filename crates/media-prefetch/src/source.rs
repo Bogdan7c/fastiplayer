@@ -67,6 +67,9 @@ pub struct PrefetchingByteSource {
 
     /// Foreground logical position; обновляется синхронно с `read` и `seek`.
     logical_position: u64,
+
+    /// Токен жизни ресурса у владельца (закрытие/смена media), см. [`Self::with_lifecycle_cancellation`].
+    lifecycle_cancellation: CancellationToken,
 }
 
 impl PrefetchingByteSource {
@@ -126,7 +129,24 @@ impl PrefetchingByteSource {
             content_length,
             fingerprint,
             logical_position: start_position,
+            lifecycle_cancellation: CancellationToken::never_cancelled(),
         })
+    }
+
+    /// Привязывает foreground-чтение к жизни ресурса у владельца (сессия 16).
+    ///
+    /// Symphonia читает с вечным токеном, поэтому без привязки закрытие media не
+    /// могло прервать чтение, ждущее сети: фоновые повторы шли до конца бюджета.
+    /// После отмены токена ждущее и будущие чтения сразу возвращают
+    /// [`SourceError::SourceClosed`]; владелец затем освобождает source, и `Drop`
+    /// отменяет текущий fetch вместе с паузой переподключения.
+    #[must_use]
+    pub fn with_lifecycle_cancellation(
+        mut self,
+        lifecycle_cancellation: CancellationToken,
+    ) -> Self {
+        self.lifecycle_cancellation = lifecycle_cancellation;
+        self
     }
 
     /// Возвращает атомарный snapshot counters без доступа к inner source-у.
@@ -153,16 +173,23 @@ impl ByteSource for PrefetchingByteSource {
                 return Err(SourceError::Cancelled);
             }
 
-            if let Some(error) = state.fatal_error.take() {
-                self.shared.notify_all();
-                return Err(error);
+            if self.lifecycle_cancellation.is_cancelled() {
+                return Err(SourceError::SourceClosed);
             }
 
+            // Сначала отдаём уже скачанное: ошибка worker-а относится к fetch-границе
+            // окна (после всех буферизованных байт), и до неё плеер может играть ещё
+            // минуты. Раньше ошибка перебивала буфер и обрывала просмотр мгновенно.
             if state.seek_request.is_none() && state.buffer.available_from_cursor() > 0 {
                 let bytes_copied = state.buffer.copy_to(output);
                 self.logical_position = self.logical_position.saturating_add(bytes_copied as u64);
                 self.shared.notify_all();
                 return Ok(bytes_copied);
+            }
+
+            if let Some(error) = state.fatal_error.take() {
+                self.shared.notify_all();
+                return Err(error);
             }
 
             if state.seek_request.is_none() && state.buffer.is_eof_at_cursor() {
@@ -249,6 +276,10 @@ mod tests {
 
     #[path = "active_fetch.rs"]
     mod active_fetch;
+    #[path = "buffered_before_error.rs"]
+    mod buffered_before_error;
+    #[path = "lifecycle_cancellation.rs"]
+    mod lifecycle_cancellation;
 
     /// Частота проверки test cancellation во время искусственно медленного fake read-а.
     const FAKE_READ_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(5);
