@@ -10,10 +10,11 @@ use super::event::PhysicalDropPosition;
 use super::uri::items_from_drop_payload;
 use super::{DropGestureEvent, ExternalOpenOwner, dispatch_external_open_request};
 
-/// Хост-запись обращений к границам открытия.
+/// Хост-запись обращений к границам открытия (переиспользуют тесты пересылки
+/// второго запуска, `instance_forwarding`).
 #[derive(Default)]
-struct RecordingHost {
-    calls: Vec<String>,
+pub(crate) struct RecordingHost {
+    pub(crate) calls: Vec<String>,
 }
 
 fn joined(paths: &[PathBuf]) -> String {

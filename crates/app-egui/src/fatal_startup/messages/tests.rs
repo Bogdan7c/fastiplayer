@@ -27,9 +27,11 @@ fn every_reason() -> Vec<FatalStartupReason> {
     ];
     let mut reasons = vec![
         FatalStartupReason::InvalidArguments(ProcessArgsError::UnknownOption),
-        FatalStartupReason::InvalidArguments(ProcessArgsError::ExtraPositional),
         FatalStartupReason::ConfigLocationUnknown,
         FatalStartupReason::AlreadyRunning,
+        FatalStartupReason::RunningInstanceNotResponding,
+        FatalStartupReason::RunningInstanceShuttingDown,
+        FatalStartupReason::RunningInstanceDidNotTakeFiles,
         FatalStartupReason::ConfigFileUnusable {
             location: location(),
         },

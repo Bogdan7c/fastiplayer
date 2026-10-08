@@ -42,6 +42,21 @@ fn message_for(reason: &FatalStartupReason) -> String {
         FatalStartupReason::AlreadyRunning => "Fastiplayer уже запущен.\n\n\
              Перейдите в окно уже открытого плеера."
             .to_owned(),
+        FatalStartupReason::RunningInstanceNotResponding => {
+            "Fastiplayer уже запущен, но не отвечает.\n\n\
+             Подождите немного и попробуйте снова. Если окно плеера не реагирует, \
+             закройте его и откройте файл заново."
+                .to_owned()
+        }
+        FatalStartupReason::RunningInstanceShuttingDown => "Fastiplayer как раз закрывается.\n\n\
+             Подождите несколько секунд и откройте файл снова."
+            .to_owned(),
+        FatalStartupReason::RunningInstanceDidNotTakeFiles => {
+            format!(
+                "Fastiplayer уже запущен, но передать ему файлы не удалось.\n\n\
+                 Откройте их в окне уже запущенного плеера. {DETAILS_HINT}"
+            )
+        }
         FatalStartupReason::ConfigDirectoryUnusable { problem, location } => {
             config_directory_message(problem, location)
         }
@@ -80,9 +95,6 @@ fn invalid_arguments_message(arguments_error: ProcessArgsError) -> String {
         ProcessArgsError::UnknownOption => "Плеер запущен с неизвестным параметром.\n\n\
              Если имя файла начинается с «-», поставьте перед ним «--», например: \
              fastiplayer -- -видео.mkv"
-            .to_owned(),
-        ProcessArgsError::ExtraPositional => "При запуске можно открыть только один файл.\n\n\
-             Откройте один файл, а остальные добавьте в плейлист из окна плеера."
             .to_owned(),
     }
 }

@@ -75,6 +75,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 self.settings_runtime.poll_dynamic_options_refresh()
             }
             AppWakeOwner::PlaylistRuntime => self.drain_playlist_persistence(),
+            AppWakeOwner::InstanceForwarding => self.drain_instance_forwarding(),
             AppWakeOwner::PlayerTimeline => {
                 self.player_timeline_wake_port.clear_pending_for_drain();
                 match self.app_state.as_mut() {

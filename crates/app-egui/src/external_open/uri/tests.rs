@@ -135,3 +135,39 @@ fn query_and_fragment_are_cut_but_encoded_marks_stay_in_the_name() {
         local("/tmp/what?#.mkv")
     );
 }
+
+/// Сессия 13: путь второго экземпляра → `file://` → тот же разбор, что у броска,
+/// возвращает ровно исходные байты пути.
+#[cfg(unix)]
+#[test]
+fn absolute_path_round_trips_through_file_uri_byte_for_byte() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let paths = [
+        PathBuf::from("/home/user/My Movies/фильм.mkv"),
+        PathBuf::from("/tmp/what?#%.mkv"),
+        PathBuf::from("/tmp/a+b=c&d;e'f\"g.mkv"),
+        PathBuf::from(std::ffi::OsString::from_vec(
+            b"/tmp/\xFF\xFEclip.mkv".to_vec(),
+        )),
+    ];
+    for path in paths {
+        let uri = file_uri_from_absolute_path(&path).expect("абсолютный путь");
+        assert!(uri.starts_with("file:///"), "{uri}");
+        assert!(uri.is_ascii(), "URI должен быть ASCII: {uri}");
+        assert_eq!(item_from_uri(&uri), ExternalOpenItem::LocalPath(path));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn relative_path_is_not_turned_into_file_uri() {
+    assert_eq!(
+        file_uri_from_absolute_path(std::path::Path::new("movie.mkv")),
+        None
+    );
+    assert_eq!(
+        file_uri_from_absolute_path(std::path::Path::new("./a/b.mkv")),
+        None
+    );
+}

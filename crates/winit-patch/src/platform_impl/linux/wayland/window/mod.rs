@@ -543,6 +543,20 @@ impl Window {
         xdg_activation_token.commit();
     }
 
+    /// Fastiplayer: предъявляет композитору билет активации другого процесса для
+    /// уже существующей поверхности (`platform::external_activation`).
+    pub fn activate_with_token(
+        &self,
+        token: crate::window::ActivationToken,
+    ) -> Result<(), NotSupportedError> {
+        let xdg_activation = match self.xdg_activation.as_ref() {
+            Some(xdg_activation) => xdg_activation,
+            None => return Err(NotSupportedError::new()),
+        };
+        xdg_activation.activate(token.token, self.surface());
+        Ok(())
+    }
+
     pub fn request_activation_token(&self) -> Result<AsyncRequestSerial, NotSupportedError> {
         let xdg_activation = match self.xdg_activation.as_ref() {
             Some(xdg_activation) => xdg_activation,

@@ -24,6 +24,9 @@ pub(super) enum StartupSiblingDiscovery {
     AfterInstall(playlist_discovery::LocalMediaKind),
     /// Восстановленный элемент очереди: очередь уже есть, соседей не ищем.
     Skip,
+    /// CLI с несколькими файлами: соседей не ищем, остальные файлы набора встают
+    /// после первого в порядке командной строки (сессия 13, `cli_local_files`).
+    AppendCliFollowUpFiles(Vec<PathBuf>),
 }
 
 /// Что устанавливает startup: от этого зависит шаблон текста ошибки установки.
@@ -163,12 +166,33 @@ impl StartupMediaController {
                 }
                 if let StartupInstallTarget::Local(StartupLocalTarget {
                     path,
-                    sibling_discovery: StartupSiblingDiscovery::AfterInstall(media_kind),
+                    sibling_discovery,
                 }) = pending_context.target
-                    && let Err(error) = playlist_runtime
-                        .start_sibling_discovery_for_installed_target(path, media_kind)
                 {
-                    tracing::warn!(error = %error, "CLI target установлен без sibling discovery");
+                    match sibling_discovery {
+                        StartupSiblingDiscovery::AfterInstall(media_kind) => {
+                            if let Err(error) = playlist_runtime
+                                .start_sibling_discovery_for_installed_target(path, media_kind)
+                            {
+                                tracing::warn!(
+                                    error = %error,
+                                    "CLI target установлен без sibling discovery"
+                                );
+                            }
+                        }
+                        // Более новое действие пользователя победило: хвост набора не
+                        // добавляем поверх него (retained action применится ниже).
+                        StartupSiblingDiscovery::AppendCliFollowUpFiles(_)
+                            if pending_context.superseded => {}
+                        StartupSiblingDiscovery::AppendCliFollowUpFiles(follow_up_files) => {
+                            Self::queue_cli_follow_up_files_after_installed(
+                                follow_up_files,
+                                app_state,
+                                playlist_runtime,
+                            );
+                        }
+                        StartupSiblingDiscovery::Skip => {}
+                    }
                 }
                 let retained = match playlist_runtime.apply_retained_startup_actions() {
                     Ok(outcome) => outcome,

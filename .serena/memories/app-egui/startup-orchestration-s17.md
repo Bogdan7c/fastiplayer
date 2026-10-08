@@ -52,6 +52,14 @@
   - `app_instance` — `bootstrap_failures_reach_user_as_human_text_with_nonzero_exit`;
   - `desktop-integration/src/notification/linux/tests.rs` — частный dbus-daemon с конфигом БЕЗ servicedirs (иначе auto-activation настоящей службы на 60 с).
 
+## UX13: несколько файлов в CLI и второй запуск (2026-10-08)
+
+- Грамматика `ProcessArgs`: ноль и больше позиционных (`Vec<OsString>`, порядок и байты сохраняются), `ExtraPositional` удалён. `take_initial_media_arguments` / `initial_media_arguments`.
+- Классификация `startup_media/initial_arguments.rs`: 0/1 аргумент — прежний путь (`resolve_initial_media_argument`); ≥2 — правила броска сессии 12 (есть локальные файлы → только они; иначе первый плейлист; иначе первая ссылка; остальное — info-уведомление `startup_arguments_message.rs`). Вариант `InitialMedia::Several(SeveralInitialArguments)` несёт победителя и уведомление; `startup_media/cli_local_files.rs` раскладывает его в начале `start_pending_initial_media`.
+- Поток: первый файл — обычный CLI single-file путь (fallback, allocator gate, stepwise install); `StartupSiblingDiscovery::AppendCliFollowUpFiles(Vec<PathBuf>)` — после exact Installed остальные файлы добавляются `PlaylistRuntime::append_local_files_after_startup_target` (`playlist_runtime/startup_follow_up_files.rs`) до retained actions; superseded → ничего; без sibling discovery и без подтверждения.
+- Lease занят → `bootstrap_with` вызывает пересылку в запущенный экземпляр, config не читается; `ProcessStart::ForwardedToRunningInstance` → exit 0. Окно «уже запущен» (UX06) осталось только для провала пересылки без файлов. Граница и протокол: `mem:app-egui/instance-forwarding-ux13`.
+- Тесты: `app_instance/tests.rs` (вынесены из mod.rs ради лимита 800), `startup_media/initial_arguments/tests.rs`, `startup_media/cli_local_files/tests.rs`, `playlist_runtime/startup_follow_up_files/tests.rs`.
+
 ## S23 yt-dlp startup integration (2026-07-22)
 
 - CLI/restored yt-dlp preparation now uses the single S19 -> S21C -> S22 app composition path; the old service-owned WebM opener no longer exists. Startup winner/fallback, allocator gate and exact Installed ordering are unchanged.

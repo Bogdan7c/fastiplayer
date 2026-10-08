@@ -1827,6 +1827,16 @@ impl UnownedWindow {
     }
 
     #[inline]
+    /// Fastiplayer: на X11 билет не нужен — используется штатный `_NET_ACTIVE_WINDOW`
+    /// (`platform::external_activation`).
+    pub fn activate_with_token(
+        &self,
+        _token: crate::window::ActivationToken,
+    ) -> Result<(), NotSupportedError> {
+        self.focus_window();
+        Ok(())
+    }
+
     pub fn request_activation_token(&self) -> Result<AsyncRequestSerial, NotSupportedError> {
         let serial = AsyncRequestSerial::get();
         self.activation_sender

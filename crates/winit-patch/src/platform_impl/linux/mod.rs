@@ -538,6 +538,14 @@ impl Window {
         x11_or_wayland!(match self; Window(w) => w.focus_window())
     }
 
+    /// Fastiplayer: активация окна билетом другого процесса (`platform::external_activation`).
+    pub fn activate_with_token(
+        &self,
+        token: crate::window::ActivationToken,
+    ) -> Result<(), NotSupportedError> {
+        x11_or_wayland!(match self; Window(w) => w.activate_with_token(token))
+    }
+
     pub fn request_user_attention(&self, request_type: Option<UserAttentionType>) {
         x11_or_wayland!(match self; Window(w) => w.request_user_attention(request_type))
     }

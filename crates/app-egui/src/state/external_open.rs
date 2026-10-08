@@ -51,6 +51,25 @@ impl AppState {
         true
     }
 
+    /// Исполняет запрос открытия, пересланный вторым запуском (сессия 13).
+    ///
+    /// Тот же диспетчер, что у броска на видео: правила открытия, подтверждение
+    /// замены очереди и «Файл ещё открывается» не дублируются.
+    pub(crate) fn handle_forwarded_open_request(
+        &mut self,
+        request: crate::external_open::request::ExternalOpenRequest,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
+    ) {
+        let mut host = AppStateExternalOpenHost {
+            app_state: self,
+            playlist_runtime,
+            renderer,
+        };
+        let outcome = dispatch_external_open_request(&mut host, request);
+        info!(?outcome, "Файлы от второго запуска обработаны");
+    }
+
     /// Принимает устаревшее оконное событие файла (платформы без внешнего канала drag).
     #[cfg(not(target_os = "linux"))]
     pub(crate) fn ingest_legacy_file_drop_event(

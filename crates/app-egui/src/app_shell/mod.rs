@@ -14,6 +14,7 @@ mod escape_dismissal;
 mod event_loop;
 mod external_drop;
 mod hotkeys;
+mod instance_forwarding;
 mod resolved_url_collection;
 mod runtime_settings_flush;
 mod shutdown;
@@ -120,6 +121,9 @@ pub(crate) struct AppShell {
     /// Payload-free bridge для dynamic timeline worker revision.
     player_timeline_wake_port: crate::app_wake::AppWakePort,
 
+    /// Приём файлов от следующих запусков (сессия 13); process-lifetime, как lease.
+    instance_forwarding: crate::instance_forwarding::InstanceForwardingInbox,
+
     /// Exact local-file job переживает renderer suspend без detach или process flush.
     suspended_local_file_open_job: Option<LocalFileOpenJob>,
 
@@ -166,6 +170,7 @@ impl AppShell {
         let settings_wake_port = wake_proxy.port(AppWakeOwner::SettingsDynamicOptions);
         let playlist_wake_port = wake_proxy.port(AppWakeOwner::PlaylistRuntime);
         let player_timeline_wake_port = wake_proxy.port(AppWakeOwner::PlayerTimeline);
+        let instance_forwarding_wake_port = wake_proxy.port(AppWakeOwner::InstanceForwarding);
         // Сначала строятся все fallible process owners. Inspection запускается
         // последней: после неё constructor уже не может вернуть ошибку и detach-нуть thread.
         let pending_config_warning = config_startup_warning(&loaded_config);
@@ -197,6 +202,11 @@ impl AppShell {
             .map_err(|error| {
                 anyhow::anyhow!("playlist state inspection startup failed: {error:?}")
             })?;
+        // Под уже взятым lease: имя приложения на шине принадлежит единственному
+        // экземпляру. Запускается как можно раньше, чтобы второй запуск ждал недолго.
+        let instance_forwarding = crate::instance_forwarding::InstanceForwardingInbox::start(
+            instance_forwarding_wake_port,
+        );
         Ok(Self {
             process_started_at,
             window: None,
@@ -211,6 +221,7 @@ impl AppShell {
             playlist_runtime,
             local_file_open_wake_port: local_file_wake_port,
             player_timeline_wake_port,
+            instance_forwarding,
             suspended_local_file_open_job: None,
             settings_runtime,
             pending_config_warning,
@@ -390,6 +401,8 @@ impl AppShell {
 
         self.renderer = Some(renderer);
         self.app_state = Some(app_state);
+        // Запросы второго запуска, пришедшие до готовности окна, исполняются сейчас.
+        self.execute_pending_forwarded_requests();
         window.request_redraw();
     }
 
@@ -500,6 +513,9 @@ impl AppShell {
                 self.process_lifecycle = AppShellProcessLifecycle::ShuttingDown;
             }
         }
+        // Приём от следующих запусков закрывается первым: им честно ответят
+        // «плеер закрывается», а не примут файл, который уже некому открыть.
+        self.instance_forwarding.shutdown();
 
         self.flush_runtime_settings_for_lifecycle_boundary();
         let deadline = ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET);

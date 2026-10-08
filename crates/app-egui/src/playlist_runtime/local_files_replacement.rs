@@ -111,7 +111,8 @@ impl PlaylistRuntime {
 ///
 /// Метаданные — только имя файла как временный заголовок; настоящие заголовок и
 /// длительность подтянет обычное обновление видимых строк, как у Manual Add.
-fn local_file_entry_draft(path: PathBuf) -> PlaylistEntryDraft {
+/// Этим же черновиком пользуется добавление остальных файлов CLI после первого.
+pub(super) fn local_file_entry_draft(path: PathBuf) -> PlaylistEntryDraft {
     let fallback_title = path
         .file_name()
         .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy())

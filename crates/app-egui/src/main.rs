@@ -17,6 +17,7 @@ mod dma_buf_runtime_fallback;
 mod external_open;
 mod fatal_startup;
 mod frame_prepare;
+mod instance_forwarding;
 mod local_file_open;
 mod local_open_message;
 mod media_open;
@@ -29,6 +30,7 @@ mod render_settings;
 mod renderer_recreation;
 mod settings_runtime;
 pub mod settings_ui;
+mod startup_arguments_message;
 mod startup_media;
 mod startup_readiness;
 mod state;
@@ -57,7 +59,7 @@ use std::process::ExitCode;
 use tracing::info;
 use winit::event_loop::{ControlFlow, EventLoop};
 
-use crate::app_instance::{ProcessBootstrap, bootstrap_process};
+use crate::app_instance::{ProcessBootstrap, ProcessStart, bootstrap_process};
 use crate::app_shell::AppShell;
 use crate::app_wake::{AppWakeEvent, AppWakeProxy};
 use crate::fatal_startup::{FatalStartupError, SystemFatalStartupPresenter, conclude_process};
@@ -90,13 +92,20 @@ fn init_tracing() {
 
 /// Запускает приложение до закрытия окна или до первой фатальной ошибки запуска.
 fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalStartupError> {
+    let process_start =
+        bootstrap_process().map_err(|error| FatalStartupError::from_bootstrap_error(&error))?;
     let ProcessBootstrap {
         config_paths,
         instance_lease,
         loaded_config,
         initial_media,
         startup_error: cli_startup_error,
-    } = bootstrap_process().map_err(|error| FatalStartupError::from_bootstrap_error(&error))?;
+    } = match process_start {
+        ProcessStart::Primary(bootstrap) => *bootstrap,
+        // Плеер уже запущен и принял файлы/активацию: этому процессу делать нечего,
+        // окно не создаётся, код выхода 0.
+        ProcessStart::ForwardedToRunningInstance => return Ok(()),
+    };
 
     info!(
         process_elapsed_ms = process_started_at.elapsed().as_secs_f64() * 1_000.0,

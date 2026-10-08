@@ -14,7 +14,8 @@ use crate::state::PreparedSingleMediaOpen;
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
 
 use super::StartupMediaController;
-use super::pending_install::{StartupInstallTarget, StartupLocalTarget, StartupSiblingDiscovery};
+use super::cli_local_files::CliFollowUpLocalFiles;
+use super::pending_install::{StartupInstallTarget, StartupLocalTarget};
 
 /// Чья подготовка сейчас владеет единственным startup media slot-ом.
 pub(super) enum StartupMediaTarget {
@@ -56,6 +57,8 @@ pub(super) struct StartupMediaOrchestration {
     pub(super) expected_restore_generation: Option<crate::playlist_runtime::RestoreApplyGeneration>,
     /// Process owner помнит winner policy, пока renderer-bound transaction живёт в `AppState`.
     pub(super) pending_install: Option<StartupPendingInstall>,
+    /// Остальные файлы CLI-набора ждут `Installed` первого (`cli_local_files`).
+    pub(super) cli_follow_up_files: CliFollowUpLocalFiles,
 }
 
 /// Metadata startup winner-а, не владеющая renderer/player receipts.
@@ -80,6 +83,7 @@ impl StartupMediaOrchestration {
             sensitive_cli_persistence_warning: false,
             expected_restore_generation: None,
             pending_install: None,
+            cli_follow_up_files: CliFollowUpLocalFiles::none(),
         }
     }
 
@@ -438,7 +442,9 @@ impl StartupMediaController {
                     &prepared.tracks,
                 ));
                 let path = prepared.source_path.clone();
-                let media_kind = prepared.media_kind;
+                let sibling_discovery = self
+                    .orchestration
+                    .local_install_follow_up(is_cli, prepared.media_kind);
                 let source = ActiveMediaSource::LocalFile(path.clone());
                 let input = match target {
                     StartupMediaTarget::CliReplacement => {
@@ -479,11 +485,7 @@ impl StartupMediaController {
                             is_cli,
                             target: StartupInstallTarget::Local(StartupLocalTarget {
                                 path,
-                                sibling_discovery: if is_cli {
-                                    StartupSiblingDiscovery::AfterInstall(media_kind)
-                                } else {
-                                    StartupSiblingDiscovery::Skip
-                                },
+                                sibling_discovery,
                             }),
                             superseded: false,
                         });

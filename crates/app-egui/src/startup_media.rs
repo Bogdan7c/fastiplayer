@@ -28,10 +28,10 @@ use crate::startup_readiness::{
     StartupReadinessExpectation, StartupTargetExpectation,
 };
 use crate::state::AppState;
-use crate::url_service_adapter::{
-    StartupUrlClassification, StartupUrlLocator, classify_startup_url,
-};
+use crate::url_service_adapter::StartupUrlLocator;
 
+mod cli_local_files;
+mod initial_arguments;
 pub(crate) mod native_dash;
 pub(crate) mod native_hds;
 pub(crate) mod native_hls;
@@ -43,6 +43,10 @@ mod shutdown;
 mod web_failure;
 mod yt_dlp;
 
+pub(crate) use initial_arguments::SeveralInitialArguments;
+#[cfg(test)]
+pub(crate) use initial_arguments::resolve_initial_media_argument;
+pub(crate) use initial_arguments::resolve_initial_media_arguments;
 use native_dash::NativeDashStartupJob;
 use native_hds::NativeHdsStartupJob;
 use native_hls::NativeHlsStartupJob;
@@ -68,6 +72,9 @@ pub(crate) enum InitialMedia {
 
     /// URL, уже классифицированный одним service-owned adapter-ом.
     Url(StartupUrlLocator),
+
+    /// Несколько аргументов: победитель по правилам drag & drop и уведомление о пропусках.
+    Several(SeveralInitialArguments),
 }
 
 /// Результат фоновой подготовки CLI YtDlp URL.
@@ -480,6 +487,7 @@ impl StartupMediaController {
             self.drive_startup_orchestration(app_state, playlist_runtime, renderer);
             return;
         };
+        let initial_media = self.accept_several_initial_arguments(initial_media, app_state);
 
         self.orchestration
             .begin_target(StartupMediaTarget::CliReplacement);
@@ -542,6 +550,12 @@ impl StartupMediaController {
             }
             InitialMedia::Playlist(_) => {
                 unreachable!("playlist startup intent returned before media admission")
+            }
+            InitialMedia::Several(_) => {
+                // Набор уже развёрнут `accept_several_initial_arguments`; не падаем.
+                self.orchestration.preparation_failed();
+                app_state.set_startup_error("Внутренняя ошибка разбора аргументов".to_owned());
+                return;
             }
         };
         let admitted =
@@ -742,50 +756,6 @@ pub(crate) fn is_recognized_startup_playlist_path(path: &Path) -> bool {
                 .iter()
                 .any(|recognized| extension.eq_ignore_ascii_case(recognized))
         })
-}
-
-/// Классифицирует уже разобранный typed media intent после получения process lease.
-///
-/// Только валидный UTF-8 может быть URL. Native non-UTF-8 значение без lossy
-/// преобразования остаётся локальным `PathBuf`.
-pub(crate) fn resolve_initial_media_argument(
-    argument: Option<std::ffi::OsString>,
-    app_config: &AppConfig,
-) -> (Option<InitialMedia>, Option<String>) {
-    let Some(argument) = argument else {
-        return (None, None);
-    };
-    let utf8_argument = match argument.into_string() {
-        Ok(argument) => argument,
-        Err(native_argument) => {
-            let native_path = PathBuf::from(native_argument);
-            if is_recognized_startup_playlist_path(&native_path) {
-                return (Some(InitialMedia::Playlist(native_path)), None);
-            }
-            return (Some(InitialMedia::File(native_path)), None);
-        }
-    };
-
-    match classify_startup_url(&utf8_argument) {
-        StartupUrlClassification::NotUrl => {}
-        StartupUrlClassification::Supported(locator) => {
-            info!(source = %locator.safe_label(), "CLI аргумент принят URL service adapter-ом");
-            if let Err(safe_error) = locator.validate_config(app_config) {
-                return (None, Some(safe_error));
-            }
-            return (Some(InitialMedia::Url(locator)), None);
-        }
-        StartupUrlClassification::Unsupported { reason } => {
-            return (None, Some(reason.safe_error()));
-        }
-    }
-
-    // Всё остальное считаем локальным путём, как работало раньше.
-    let local_path = PathBuf::from(utf8_argument);
-    if is_recognized_startup_playlist_path(&local_path) {
-        return (Some(InitialMedia::Playlist(local_path)), None);
-    }
-    (Some(InitialMedia::File(local_path)), None)
 }
 
 #[cfg(test)]

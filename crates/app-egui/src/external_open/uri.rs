@@ -154,5 +154,41 @@ fn path_from_bytes(bytes: Vec<u8>) -> Option<PathBuf> {
     Some(PathBuf::from(without_drive_slash))
 }
 
+/// Абсолютный путь → `file:///…` без потерь: обратная операция к разбору `file://`.
+///
+/// Нужна второму экземпляру, который пересылает свои пути первому (сессия 13):
+/// получатель раскодирует URI тем же [`item_from_uri`], что и брошенные файлы.
+/// Кодируются **байты** пути: всё, кроме RFC 3986 unreserved (`A-Z a-z 0-9 - . _ ~`)
+/// и разделителя `/`, становится `%XX`. Поэтому не-UTF-8 имя, `%`, `?`, `#` и пробел
+/// проходят туда и обратно ровно теми же байтами.
+///
+/// `None` — путь не абсолютный: относительный путь вызывающий код обязан сначала
+/// привязать к своей рабочей папке, иначе получатель открыл бы не тот файл.
+#[cfg(unix)]
+pub(crate) fn file_uri_from_absolute_path(path: &std::path::Path) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+
+    if !path.is_absolute() {
+        return None;
+    }
+    let path_bytes = path.as_os_str().as_bytes();
+    let mut uri = String::with_capacity("file://".len() + path_bytes.len());
+    uri.push_str("file://");
+    for &byte in path_bytes {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+            uri.push(char::from(byte));
+        } else {
+            uri.push('%');
+            uri.push(char::from(UPPERCASE_HEX_DIGITS[usize::from(byte >> 4)]));
+            uri.push(char::from(UPPERCASE_HEX_DIGITS[usize::from(byte & 0x0F)]));
+        }
+    }
+    Some(uri)
+}
+
+/// Цифры для `%XX` (RFC 3986 рекомендует верхний регистр).
+#[cfg(unix)]
+const UPPERCASE_HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+
 #[cfg(test)]
 mod tests;

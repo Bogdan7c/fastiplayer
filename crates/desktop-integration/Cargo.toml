@@ -17,6 +17,14 @@ tracing = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.15" }
+# Ожидание подтверждения UI-потока в асинхронном обработчике службы пересылки
+# (instance_forwarding): канал на одно сообщение, таймер и гонка двух future.
+# Все три уже есть в дереве зависимостей zbus.
+async-channel = "2.5"
+async-io = "2.6"
+futures-lite = "2.6"
+# Сериализуемые аргументы низкоуровневого `call_method` клиента пересылки.
+serde = { workspace = true }
 
 [lints]
 workspace = true

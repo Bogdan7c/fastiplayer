@@ -11,16 +11,31 @@ use std::path::PathBuf;
 use fastiplayer_config::{ConfigError, ConfigPaths, LoadedConfig};
 use thiserror::Error;
 
-use crate::startup_media::{InitialMedia, resolve_initial_media_argument};
+use crate::startup_media::{InitialMedia, resolve_initial_media_arguments};
 
+mod forwarding;
 #[cfg(target_os = "linux")]
 mod linux;
 
+pub(crate) use forwarding::{
+    ForwardedPayload, RunningInstanceForwardingError, RunningInstanceForwardingFailure,
+};
+// Сквозной тест «второй запуск → первый» живёт у получателя (`instance_forwarding`).
+#[cfg(test)]
+pub(crate) use forwarding::{
+    ForwardingEnvironment, RunningInstanceForwarder, forward_arguments_to_running_instance,
+};
+
 /// Уже разобранные process arguments без lossy UTF-8 преобразования media path.
+///
+/// Грамматика: ноль или больше позиционных media-аргументов; option-подобная строка
+/// до `--` — ошибка `UnknownOption`, после `--` любой аргумент считается media.
+/// Несколько аргументов — обычный случай «Открыть с помощью» на нескольких выделенных
+/// файлах в файловом менеджере (решение владельца, сессия 13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessArgs {
-    /// Необязательный единственный media positional.
-    initial_media: Option<OsString>,
+    /// Media positionals в исходном порядке, байт-в-байт как их передала ОС.
+    initial_media_arguments: Vec<OsString>,
 }
 
 impl ProcessArgs {
@@ -28,7 +43,7 @@ impl ProcessArgs {
     pub(crate) fn parse(
         arguments: impl IntoIterator<Item = OsString>,
     ) -> Result<Self, ProcessArgsError> {
-        let mut initial_media = None;
+        let mut initial_media_arguments = Vec::new();
         let mut options_ended = false;
 
         for argument in arguments {
@@ -41,17 +56,27 @@ impl ProcessArgs {
                 return Err(ProcessArgsError::UnknownOption);
             }
 
-            if initial_media.replace(argument).is_some() {
-                return Err(ProcessArgsError::ExtraPositional);
-            }
+            initial_media_arguments.push(argument);
         }
 
-        Ok(Self { initial_media })
+        Ok(Self {
+            initial_media_arguments,
+        })
     }
 
-    /// Передаёт media intent следующему bootstrap-этапу без копирования или перекодировки.
-    fn take_initial_media(&mut self) -> Option<OsString> {
-        self.initial_media.take()
+    /// Сырые media-аргументы в исходном порядке без перекодировки (только чтение).
+    ///
+    /// Нужны пересылке запроса уже запущенному экземпляру: туда уходят ровно те же
+    /// аргументы, что получил процесс, а классифицирует их получатель.
+    pub(crate) fn initial_media_arguments(&self) -> &[OsString] {
+        &self.initial_media_arguments
+    }
+
+    /// Передаёт media-аргументы следующему bootstrap-этапу без копирования или перекодировки.
+    ///
+    /// После вызова в `ProcessArgs` аргументов не остаётся: классификация владеет ими сама.
+    pub(crate) fn take_initial_media_arguments(&mut self) -> Vec<OsString> {
+        std::mem::take(&mut self.initial_media_arguments)
     }
 }
 
@@ -61,10 +86,6 @@ pub(crate) enum ProcessArgsError {
     /// До `--` встретилась неизвестная option-подобная строка.
     #[error("неизвестная опция; локальный путь с ведущим '-' передавайте после '--'")]
     UnknownOption,
-
-    /// Передано больше одного media positional.
-    #[error("ожидался максимум один media argument")]
-    ExtraPositional,
 }
 
 /// Проверяет первый native code unit без преобразования всего пути в UTF-8.
@@ -218,12 +239,25 @@ pub(crate) enum ProcessBootstrapError {
         config_error: Box<ConfigError>,
         config_dir: PathBuf,
     },
+
+    /// Lease занят, но передать аргументы запущенному экземпляру не удалось.
+    #[error("плеер уже запущен, передать ему запрос не удалось: {0}")]
+    ForwardToRunningInstance(RunningInstanceForwardingError),
+}
+
+/// Чем закончился bootstrap процесса без ошибки.
+pub(crate) enum ProcessStart {
+    /// Этот процесс — единственный экземпляр: дальше создаются окно и плеер.
+    /// В `Box`, потому что второй вариант пустой (clippy `large_enum_variant`).
+    Primary(Box<ProcessBootstrap>),
+    /// Плеер уже запущен, и он принял запрос этого процесса: штатный выход с кодом 0.
+    ForwardedToRunningInstance,
 }
 
 /// Выполняет обязательный bootstrap order над реальными process dependencies.
-pub(crate) fn bootstrap_process() -> Result<ProcessBootstrap, ProcessBootstrapError> {
+pub(crate) fn bootstrap_process() -> Result<ProcessStart, ProcessBootstrapError> {
     let platform = NativeAppInstanceLeasePlatform;
-    let bootstrap = bootstrap_with(
+    let outcome = bootstrap_with(
         std::env::args_os().skip(1),
         ConfigPaths::discover,
         &platform,
@@ -236,48 +270,83 @@ pub(crate) fn bootstrap_process() -> Result<ProcessBootstrap, ProcessBootstrapEr
             )
         },
         |process_args, _paths, loaded_config| {
-            resolve_initial_media_argument(process_args.take_initial_media(), &loaded_config.config)
+            resolve_initial_media_arguments(
+                process_args.take_initial_media_arguments(),
+                &loaded_config.config,
+            )
+        },
+        |process_args| {
+            forwarding::forward_arguments_to_running_instance(
+                process_args.initial_media_arguments(),
+                forwarding::ForwardingEnvironment::of_current_process(),
+                &forwarding::DesktopRunningInstanceForwarder,
+            )
         },
     )?;
+    let bootstrap = match outcome {
+        BootstrapOutcome::Primary(bootstrap) => bootstrap,
+        BootstrapOutcome::ForwardedToRunningInstance => {
+            return Ok(ProcessStart::ForwardedToRunningInstance);
+        }
+    };
     let (initial_media, startup_error) = bootstrap.prepared;
 
-    Ok(ProcessBootstrap {
+    Ok(ProcessStart::Primary(Box::new(ProcessBootstrap {
         config_paths: bootstrap.paths,
         instance_lease: bootstrap.lease,
         loaded_config: bootstrap.config,
         initial_media,
         startup_error,
-    })
+    })))
 }
 
 /// Внутренний generic harness закрепляет ordering без реального home/config I/O.
+///
+/// Если lease занят другим экземпляром, вызывается `forward_to_running_instance`
+/// с ещё не тронутыми аргументами, и bootstrap на этом заканчивается: config этого
+/// процесса не читается, media не классифицируется.
 fn bootstrap_with<Config, Prepared>(
     arguments: impl IntoIterator<Item = OsString>,
     discover_paths: impl FnOnce() -> Result<ConfigPaths, ConfigError>,
     platform: &impl AppInstanceLeasePlatform,
     load_config: impl FnOnce(&ConfigPaths) -> Result<Config, ConfigError>,
     prepare_after_load: impl FnOnce(&mut ProcessArgs, &ConfigPaths, &Config) -> Prepared,
-) -> Result<BootstrapValues<Config, Prepared>, ProcessBootstrapError> {
+    forward_to_running_instance: impl FnOnce(&ProcessArgs) -> Result<(), RunningInstanceForwardingError>,
+) -> Result<BootstrapOutcome<Config, Prepared>, ProcessBootstrapError> {
     let mut process_args = ProcessArgs::parse(arguments)?;
     let paths = discover_paths().map_err(ProcessBootstrapError::DiscoverPaths)?;
-    let lease = platform
-        .acquire(&paths)
-        .map_err(|lease_error| ProcessBootstrapError::Lease {
-            lease_error,
-            config_dir: paths.config_dir().to_path_buf(),
-        })?;
+    let lease = match platform.acquire(&paths) {
+        Ok(lease) => lease,
+        Err(AppInstanceLeaseError::AlreadyRunning) => {
+            forward_to_running_instance(&process_args)
+                .map_err(ProcessBootstrapError::ForwardToRunningInstance)?;
+            return Ok(BootstrapOutcome::ForwardedToRunningInstance);
+        }
+        Err(lease_error) => {
+            return Err(ProcessBootstrapError::Lease {
+                lease_error,
+                config_dir: paths.config_dir().to_path_buf(),
+            });
+        }
+    };
     let config = load_config(&paths).map_err(|config_error| ProcessBootstrapError::LoadConfig {
         config_error: Box::new(config_error),
         config_dir: paths.config_dir().to_path_buf(),
     })?;
     let prepared = prepare_after_load(&mut process_args, &paths, &config);
 
-    Ok(BootstrapValues {
+    Ok(BootstrapOutcome::Primary(BootstrapValues {
         paths,
         lease,
         config,
         prepared,
-    })
+    }))
+}
+
+/// Generic-аналог [`ProcessStart`] для fake-able harness-а.
+enum BootstrapOutcome<Config, Prepared> {
+    Primary(BootstrapValues<Config, Prepared>),
+    ForwardedToRunningInstance,
 }
 
 /// Generic result существует только для fake-able ordering harness-а.
@@ -306,297 +375,4 @@ impl AppInstanceLeasePlatform for NativeAppInstanceLeasePlatform {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-    use std::ffi::OsString;
-    use std::rc::Rc;
-
-    use fastiplayer_config::ConfigPaths;
-
-    use super::{
-        AppInstanceLease, AppInstanceLeaseError, AppInstanceLeaseIoOperation,
-        AppInstanceLeasePlatform, ProcessArgs, ProcessArgsError, ProcessBootstrapError,
-        UnsafeAppInstanceArtifact, bootstrap_with,
-    };
-    use crate::fatal_startup::test_support::RecordingPresenter;
-    use crate::fatal_startup::{FatalStartupError, ProcessConclusion, conclude_process};
-
-    #[derive(Debug)]
-    struct FakeGuard;
-
-    struct FakePlatform {
-        calls: Rc<RefCell<Vec<&'static str>>>,
-        outcome: Result<(), AppInstanceLeaseError>,
-    }
-
-    impl AppInstanceLeasePlatform for FakePlatform {
-        fn acquire(&self, _paths: &ConfigPaths) -> Result<AppInstanceLease, AppInstanceLeaseError> {
-            self.calls.borrow_mut().push("acquire-lease");
-            self.outcome?;
-            Ok(AppInstanceLease::from_guard(FakeGuard))
-        }
-    }
-
-    #[test]
-    fn process_args_accepts_empty_and_one_media() {
-        assert_eq!(
-            ProcessArgs::parse(Vec::<OsString>::new()).expect("empty args"),
-            ProcessArgs {
-                initial_media: None
-            }
-        );
-        assert_eq!(
-            ProcessArgs::parse([OsString::from("movie.mkv")]).expect("one media"),
-            ProcessArgs {
-                initial_media: Some(OsString::from("movie.mkv"))
-            }
-        );
-    }
-
-    #[test]
-    fn process_args_rejects_unknown_option_and_extra_positional() {
-        assert_eq!(
-            ProcessArgs::parse([OsString::from("--unknown")]),
-            Err(ProcessArgsError::UnknownOption)
-        );
-        assert_eq!(
-            ProcessArgs::parse([OsString::from("one"), OsString::from("two")]),
-            Err(ProcessArgsError::ExtraPositional)
-        );
-    }
-
-    #[test]
-    fn process_args_double_dash_allows_leading_dash_local_path() {
-        assert_eq!(
-            ProcessArgs::parse([OsString::from("--"), OsString::from("-movie.mkv")])
-                .expect("path after delimiter"),
-            ProcessArgs {
-                initial_media: Some(OsString::from("-movie.mkv"))
-            }
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn process_args_preserves_non_utf8_local_path() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let media = OsString::from_vec(b"movie-\xFF.mkv".to_vec());
-        let parsed = ProcessArgs::parse([media.clone()]).expect("native local path");
-
-        assert_eq!(parsed.initial_media, Some(media));
-    }
-
-    #[test]
-    fn bootstrap_calls_discover_lease_load_and_prepare_in_exact_order() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let platform = FakePlatform {
-            calls: calls.clone(),
-            outcome: Ok(()),
-        };
-
-        let result = bootstrap_with(
-            [OsString::from("movie.mkv")],
-            {
-                let calls = calls.clone();
-                move || {
-                    calls.borrow_mut().push("discover-paths");
-                    Ok(ConfigPaths::from_config_dir("/explicit/test-root"))
-                }
-            },
-            &platform,
-            {
-                let calls = calls.clone();
-                move |_| {
-                    calls.borrow_mut().push("load-config");
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                move |_, _, _| calls.borrow_mut().push("prepare-media")
-            },
-        );
-
-        assert!(result.is_ok());
-        assert_eq!(
-            *calls.borrow(),
-            [
-                "discover-paths",
-                "acquire-lease",
-                "load-config",
-                "prepare-media"
-            ]
-        );
-    }
-
-    #[test]
-    fn invalid_args_stop_before_path_discovery() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let platform = FakePlatform {
-            calls: calls.clone(),
-            outcome: Ok(()),
-        };
-        let result = bootstrap_with(
-            [OsString::from("--unknown")],
-            {
-                let calls = calls.clone();
-                move || {
-                    calls.borrow_mut().push("discover-paths");
-                    Ok(ConfigPaths::from_config_dir("/unused"))
-                }
-            },
-            &platform,
-            |_| Ok(()),
-            |_, _, _| (),
-        );
-
-        assert!(matches!(
-            result,
-            Err(ProcessBootstrapError::Arguments(
-                ProcessArgsError::UnknownOption
-            ))
-        ));
-        assert!(calls.borrow().is_empty());
-    }
-
-    #[test]
-    fn unsupported_platform_stops_before_post_lease_side_effects() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let platform = FakePlatform {
-            calls: calls.clone(),
-            outcome: Err(AppInstanceLeaseError::UnsupportedPlatform),
-        };
-        let result = bootstrap_with(
-            Vec::<OsString>::new(),
-            {
-                let calls = calls.clone();
-                move || {
-                    calls.borrow_mut().push("discover-paths");
-                    Ok(ConfigPaths::from_config_dir("/explicit/test-root"))
-                }
-            },
-            &platform,
-            {
-                let calls = calls.clone();
-                move |_| {
-                    calls.borrow_mut().push("load-config");
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                move |_, _, _| calls.borrow_mut().push("prepare-media")
-            },
-        );
-
-        assert!(matches!(
-            result,
-            Err(ProcessBootstrapError::Lease {
-                lease_error: AppInstanceLeaseError::UnsupportedPlatform,
-                ..
-            })
-        ));
-        assert_eq!(*calls.borrow(), ["discover-paths", "acquire-lease"]);
-    }
-
-    /// Сквозной путь: ошибка bootstrap → текст для пользователя (через fake-показ) →
-    /// ненулевой код выхода. Проверяет и то, что до config дело не доходит.
-    #[test]
-    fn bootstrap_failures_reach_user_as_human_text_with_nonzero_exit() {
-        let cases: [(Vec<OsString>, Result<(), AppInstanceLeaseError>, &str); 3] = [
-            (
-                vec![OsString::from("--unknown")],
-                Ok(()),
-                "неизвестным параметром",
-            ),
-            (
-                Vec::new(),
-                Err(AppInstanceLeaseError::UnsafeArtifact {
-                    reason: UnsafeAppInstanceArtifact::ConfigDirectoryOwnerMismatch,
-                }),
-                "sudo chown -R \"$USER\": /explicit/test-root",
-            ),
-            (
-                Vec::new(),
-                Err(AppInstanceLeaseError::AlreadyRunning),
-                "Fastiplayer уже запущен.",
-            ),
-        ];
-
-        for (arguments, lease_outcome, expected_text) in cases {
-            let config_loaded = Rc::new(RefCell::new(false));
-            let platform = FakePlatform {
-                calls: Rc::new(RefCell::new(Vec::new())),
-                outcome: lease_outcome,
-            };
-            let bootstrap_error = bootstrap_with(
-                arguments,
-                || Ok(ConfigPaths::from_config_dir("/explicit/test-root")),
-                &platform,
-                {
-                    let config_loaded = config_loaded.clone();
-                    move |_| {
-                        *config_loaded.borrow_mut() = true;
-                        Ok(())
-                    }
-                },
-                |_, _, _| (),
-            )
-            .err()
-            .expect("bootstrap must fail");
-            let presenter = RecordingPresenter::default();
-
-            let conclusion = conclude_process(
-                Err(FatalStartupError::from_bootstrap_error(&bootstrap_error)),
-                &presenter,
-            );
-
-            let shown = presenter.shown_notices();
-            assert_eq!(conclusion, ProcessConclusion::FailedToStart);
-            assert_eq!(shown.len(), 1);
-            assert!(
-                shown[0].notice.message.contains(expected_text),
-                "{}",
-                shown[0].notice.message
-            );
-            assert!(!*config_loaded.borrow());
-        }
-    }
-
-    #[test]
-    fn fake_platform_errors_keep_shared_typed_mapping() {
-        let expected_errors = [
-            AppInstanceLeaseError::AlreadyRunning,
-            AppInstanceLeaseError::Io {
-                operation: AppInstanceLeaseIoOperation::AcquireLock,
-                kind: std::io::ErrorKind::PermissionDenied,
-            },
-            AppInstanceLeaseError::UnsafeArtifact {
-                reason: UnsafeAppInstanceArtifact::LockArtifactOwnerMismatch,
-            },
-            AppInstanceLeaseError::UnsupportedPlatform,
-        ];
-
-        for expected_error in expected_errors {
-            let platform = FakePlatform {
-                calls: Rc::new(RefCell::new(Vec::new())),
-                outcome: Err(expected_error),
-            };
-            let result = bootstrap_with(
-                Vec::<OsString>::new(),
-                || Ok(ConfigPaths::from_config_dir("/explicit/test-root")),
-                &platform,
-                |_| Ok(()),
-                |_, _, _| (),
-            );
-
-            assert!(matches!(
-                result,
-                Err(ProcessBootstrapError::Lease { lease_error, ref config_dir })
-                    if lease_error == expected_error
-                        && config_dir == std::path::Path::new("/explicit/test-root")
-            ));
-        }
-    }
-}
+mod tests;

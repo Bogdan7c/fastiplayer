@@ -22,6 +22,9 @@ pub(crate) enum AppWakeOwner {
     PlaylistRuntime,
     /// Player-visible dynamic timeline revision без payload.
     PlayerTimeline,
+    /// Запросы следующих запусков плеера (сессия 13): payload в ящике
+    /// `instance_forwarding::InstanceForwardingInbox`.
+    InstanceForwarding,
 }
 
 /// Лёгкое typed событие winit: payload остаётся в owner mailbox-е.

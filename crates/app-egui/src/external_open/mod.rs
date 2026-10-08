@@ -40,4 +40,4 @@ pub(crate) use owner::{DropOverlay, ExternalOpenOwner};
 pub(crate) use request::DropTarget;
 
 #[cfg(test)]
-mod pipeline_tests;
+pub(crate) mod pipeline_tests;

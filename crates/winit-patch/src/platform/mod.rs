@@ -7,6 +7,9 @@ pub mod android;
 // Additive-API приёма drag & drop из внешних приложений (доступен на всех платформах;
 // события генерируются только на Linux X11/Wayland).
 pub mod external_drag;
+// Additive-API Fastiplayer: активация уже открытого окна билетом другого процесса.
+#[cfg(any(x11_platform, wayland_platform, docsrs))]
+pub mod external_activation;
 #[cfg(any(ios_platform, docsrs))]
 pub mod ios;
 #[cfg(any(macos_platform, docsrs))]

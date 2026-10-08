@@ -47,8 +47,14 @@ pub(crate) enum FatalStartupReason {
     InvalidArguments(ProcessArgsError),
     /// Система не сообщила, где у пользователя папка настроек.
     ConfigLocationUnknown,
-    /// Другой экземпляр плеера уже работает.
+    /// Другой экземпляр плеера уже работает, а поднять его окно не удалось.
     AlreadyRunning,
+    /// Плеер уже запущен, но не ответил на запрос второго запуска (завис).
+    RunningInstanceNotResponding,
+    /// Плеер уже запущен, но как раз закрывается.
+    RunningInstanceShuttingDown,
+    /// Плеер уже запущен, но передать ему файлы не удалось.
+    RunningInstanceDidNotTakeFiles,
     /// Папку настроек нельзя безопасно использовать.
     ConfigDirectoryUnusable {
         problem: ConfigDirectoryProblem,

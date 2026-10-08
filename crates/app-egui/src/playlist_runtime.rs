@@ -105,6 +105,8 @@ pub(crate) use url_import::{PlaylistUrlImportCancelOutcome, PlaylistUrlImportPro
 mod startup;
 mod startup_import;
 pub(crate) use startup_import::StartupPlaylistImportTerminal;
+mod startup_follow_up_files;
+pub(crate) use startup_follow_up_files::StartupFollowUpFilesOutcome;
 mod startup_retained;
 mod startup_runtime;
 #[allow(unused_imports)]

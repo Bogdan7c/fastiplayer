@@ -1331,8 +1331,12 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 name = "desktop-integration"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "async-channel",
+ "async-io",
  "crossbeam-channel",
+ "futures-lite",
  "media-core",
+ "serde",
  "thiserror 2.0.18",
  "tracing",
  "zbus",

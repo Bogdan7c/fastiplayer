@@ -29,6 +29,7 @@
 - Доставка: новый provided-метод `ApplicationHandler::external_drag_event`; внутри thread-local очередь `platform_impl/linux/external_drag/queue.rs`, `dispatch_event_for_app` дренирует её после каждого события (через closure-API `run` не доставляется).
 - Wayland: `wayland/external_drag.rs` (sctk 0.19 data_device_manager, copy-only, неблокирующее чтение через calloop, лимит 1 MiB, таймаут 5 с, ошибка = `Left` + warn); legacy `DroppedFile` для file://. X11: расширен `x11/dnd.rs` (позиция, plain text, не-file URI в payload, legacy сохранён).
 - Removal gate: когда egui-winit поддерживает стабильный winit 0.31, заменить app-переходник `external_open::winit_source` на DragEntered/DragMoved/DragDropped/DragLeft + DataTransfer.
+- UX13 (2026-10-08): additive `winit::platform::external_activation::WindowExtExternalActivation::activate_with_token(ActivationToken)` — Wayland `xdg_activation.activate(token, surface)` для уже существующего окна (штатный winit 0.30 предъявляет билет только при создании, `focus_window` на Wayland пустой), X11 → `focus_window`. Потребитель — `app-egui::instance_forwarding::window_activation` (`mem:app-egui/instance-forwarding-ux13`).
 
 ## Why Each Patch Is Still Needed
 

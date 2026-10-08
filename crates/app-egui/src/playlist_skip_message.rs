@@ -101,8 +101,10 @@ const fn files_noun(count: usize) -> &'static str {
 }
 
 /// Три формы русского существительного после числа.
+///
+/// Общая для текстов уведомлений (её же использует `startup_arguments_message`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RussianPluralForm {
+pub(crate) enum RussianPluralForm {
     /// 1, 21, 101 — «файл».
     One,
     /// 2–4, 22–24 — «файла».
@@ -112,7 +114,7 @@ enum RussianPluralForm {
 }
 
 /// Числа на 11–14 всегда во множественной форме, иначе решает последняя цифра.
-const fn russian_plural_form(count: usize) -> RussianPluralForm {
+pub(crate) const fn russian_plural_form(count: usize) -> RussianPluralForm {
     let last_two_digits = count % 100;
     if last_two_digits >= 11 && last_two_digits <= 14 {
         return RussianPluralForm::Many;

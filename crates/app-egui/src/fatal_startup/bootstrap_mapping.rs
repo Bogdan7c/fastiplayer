@@ -8,8 +8,11 @@ use std::io::ErrorKind;
 
 use fastiplayer_config::ConfigPaths;
 
+use desktop_integration::InstanceForwardingError;
+
 use crate::app_instance::{
-    AppInstanceLeaseError, ProcessBootstrapError, UnsafeAppInstanceArtifact,
+    AppInstanceLeaseError, ForwardedPayload, ProcessBootstrapError, RunningInstanceForwardingError,
+    RunningInstanceForwardingFailure, UnsafeAppInstanceArtifact,
 };
 
 use super::{
@@ -33,8 +36,33 @@ impl FatalStartupError {
                     location: ConfigDirectoryLocation::for_current_user(config_dir),
                 }
             }
+            ProcessBootstrapError::ForwardToRunningInstance(forwarding_error) => {
+                forwarding_failure_reason(forwarding_error)
+            }
         };
         Self::new(reason, error.to_string())
+    }
+}
+
+/// Второй запуск не смог передать запрос первому экземпляру.
+///
+/// «Не отвечает» и «закрывается» пользователь может переждать, поэтому у них свои
+/// тексты. Остальные причины (нет шины, приёмник не появился, запрос отклонён)
+/// для человека одинаковы: открыть файл в уже запущенном окне.
+fn forwarding_failure_reason(
+    forwarding_error: &RunningInstanceForwardingError,
+) -> FatalStartupReason {
+    match &forwarding_error.failure {
+        RunningInstanceForwardingFailure::Delivery(
+            InstanceForwardingError::InstanceNotResponding,
+        ) => FatalStartupReason::RunningInstanceNotResponding,
+        RunningInstanceForwardingFailure::Delivery(
+            InstanceForwardingError::InstanceShuttingDown,
+        ) => FatalStartupReason::RunningInstanceShuttingDown,
+        _ => match forwarding_error.payload {
+            ForwardedPayload::WindowActivationOnly => FatalStartupReason::AlreadyRunning,
+            ForwardedPayload::MediaArguments => FatalStartupReason::RunningInstanceDidNotTakeFiles,
+        },
     }
 }
 
