@@ -1,6 +1,7 @@
 use super::telemetry_panel::TelemetryPanelState;
 use super::*;
 use crate::fullscreen_chrome::ChromeHoldObservation;
+use crate::ui::buffering_indicator::render_buffering_indicator;
 use crate::ui::fullscreen_chrome_panels;
 use crate::ui::video_surface_input::{self, VideoSurfaceAction};
 use tracing::warn;
@@ -796,6 +797,7 @@ impl AppState {
         }
     }
     /// Стартовая подсказка принадлежит только Idle: пауза, seek и EOF сохраняют media.
+    /// Спиннер ожидания данных — самое неважное сообщение центра после подсказки Idle.
     /// Toast-ы уведомлений рисуются в углу центральной области всегда, поверх видео.
     fn render_center_overlay(
         ui: &mut egui::Ui,
@@ -819,6 +821,8 @@ impl AppState {
                     }
                 } else if let Some(notice) = notifications.center.as_ref() {
                     crate::ui::notifications::render_center_notice(ui, notice, notification_output);
+                } else if notifications.shows_buffering_indicator() {
+                    render_buffering_indicator(ui, notifications.motion);
                 } else if playback_state == PlaybackState::Idle {
                     ui.vertical_centered(|ui| {
                         ui.add_space(40.0);

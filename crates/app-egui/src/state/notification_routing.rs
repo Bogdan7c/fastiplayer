@@ -64,21 +64,24 @@ impl AppState {
             .record_player_event(event, Instant::now());
     }
 
-    /// Ближайший момент, когда окно надо перерисовать, чтобы истёкший toast исчез.
+    /// Ближайший момент, когда окно надо перерисовать: истёкший toast исчезнет,
+    /// спиннер ожидания появится.
     pub(crate) fn next_notification_wake_deadline(&self) -> Option<Instant> {
         self.notifications.next_wake_deadline()
     }
 
     /// Готовит проекцию уведомлений для текущего кадра.
     ///
-    /// Сначала сверяет фатальную ошибку с состоянием player-а, затем строит проекцию с
-    /// учётом идущего открытия и настройки reduced motion.
+    /// Сначала сверяет фатальную ошибку и ожидание данных с состоянием player-а, затем
+    /// строит проекцию с учётом идущего открытия и настройки reduced motion.
     pub(super) fn notifications_frame(
         &mut self,
         player_snapshot: &PlayerSnapshot,
         now: Instant,
     ) -> NotificationsFrame {
         self.notifications.observe_player_snapshot(player_snapshot);
+        self.notifications
+            .observe_playback_waiting(player_snapshot.playback_state, now);
         let progress = self
             .startup_pending
             .as_deref()

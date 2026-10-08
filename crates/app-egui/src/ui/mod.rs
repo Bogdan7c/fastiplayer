@@ -6,6 +6,7 @@
 
 pub mod animation;
 pub mod assets;
+pub(crate) mod buffering_indicator;
 pub(crate) mod edge_slide;
 pub(crate) mod egui_behavior;
 pub(crate) mod external_drop_overlay;

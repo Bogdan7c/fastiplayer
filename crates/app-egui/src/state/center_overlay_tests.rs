@@ -264,3 +264,242 @@ fn real_seek_rejection_is_painted_as_toast_and_overlay_clears_after_lifetime() {
     );
     assert_eq!(expired, [START_HINT]);
 }
+
+/// Что нарисовал один настоящий кадр центрального overlay (сессия 15).
+struct OverlayPaint {
+    /// Круги и ломаные: так выглядит спиннер (подложка + дуга).
+    spinner_shapes: Vec<egui::Shape>,
+    /// Весь нарисованный текст.
+    text: Vec<String>,
+    /// Через сколько egui просит следующий кадр (`Duration::MAX` — не просит).
+    repaint_delay: std::time::Duration,
+}
+
+impl OverlayPaint {
+    /// Центр круглой подложки спиннера, если спиннер нарисован.
+    fn spinner_center(&self) -> Option<egui::Pos2> {
+        self.spinner_shapes.iter().find_map(|shape| match shape {
+            egui::Shape::Circle(circle) => Some(circle.center),
+            _ => None,
+        })
+    }
+}
+
+/// Кадр приложения так же, как `AppState`: snapshot → владелец уведомлений → overlay.
+fn paint_overlay_frame(
+    context: &egui::Context,
+    center: &mut NotificationCenter,
+    playback_state: PlaybackState,
+    motion: UiMotion,
+    now: std::time::Instant,
+    egui_time_seconds: f64,
+) -> OverlayPaint {
+    let snapshot = PlayerSnapshot {
+        playback_state,
+        ..Default::default()
+    };
+    center.observe_player_snapshot(&snapshot);
+    center.observe_playback_waiting(snapshot.playback_state, now);
+    let notifications = center.frame(OpenProgress::Idle, motion, now);
+    let mut playlist_output = PlaylistUiOutput::default();
+    let mut notification_output = NotificationUiOutput::default();
+    let output = crate::ui::test_frame::run_ui_frame(
+        context,
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 720.0),
+            )),
+            time: Some(egui_time_seconds),
+            ..Default::default()
+        },
+        |ui| {
+            AppState::render_center_overlay(
+                ui,
+                snapshot.playback_state,
+                &notifications,
+                &mut notification_output,
+                None,
+                None,
+                &mut playlist_output,
+            );
+        },
+    );
+    let mut text = Vec::new();
+    let mut spinner_shapes = Vec::new();
+    for clipped in output.shapes {
+        collect_painted_text(&clipped.shape, &mut text);
+        if matches!(clipped.shape, egui::Shape::Circle(_) | egui::Shape::Path(_)) {
+            spinner_shapes.push(clipped.shape);
+        }
+    }
+    let repaint_delay = output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay);
+    OverlayPaint {
+        spinner_shapes,
+        text,
+        repaint_delay,
+    }
+}
+
+/// Сессия 15: долгая буферизация рисует спиннер (без текста) в центре видео, короткая —
+/// ничего; выход из буферизации убирает спиннер в том же кадре.
+#[test]
+fn long_buffering_paints_centered_spinner_and_playing_removes_it_same_frame() {
+    use crate::state::notifications::BUFFERING_INDICATOR_APPEAR_DELAY;
+
+    let context = egui::Context::default();
+    let mut center = NotificationCenter::default();
+    let started_at = std::time::Instant::now();
+    let early = paint_overlay_frame(
+        &context,
+        &mut center,
+        PlaybackState::Buffering,
+        UiMotion::Standard,
+        started_at,
+        0.0,
+    );
+    assert!(
+        early.spinner_shapes.is_empty(),
+        "{:?}",
+        early.spinner_shapes
+    );
+
+    let stalled_at = started_at + BUFFERING_INDICATOR_APPEAR_DELAY;
+    let stalled = paint_overlay_frame(
+        &context,
+        &mut center,
+        PlaybackState::Buffering,
+        UiMotion::Standard,
+        stalled_at,
+        0.5,
+    );
+    assert_eq!(stalled.spinner_center(), Some(egui::pos2(640.0, 360.0)));
+    assert!(
+        stalled
+            .spinner_shapes
+            .iter()
+            .any(|shape| matches!(shape, egui::Shape::Path(_)))
+    );
+    // Решение владельца: только спиннер, без подписи и без подсказки старта.
+    assert!(stalled.text.is_empty(), "{:?}", stalled.text);
+
+    let resumed = paint_overlay_frame(
+        &context,
+        &mut center,
+        PlaybackState::Playing,
+        UiMotion::Standard,
+        stalled_at,
+        0.5,
+    );
+    assert!(
+        resumed.spinner_shapes.is_empty(),
+        "{:?}",
+        resumed.spinner_shapes
+    );
+}
+
+/// Сессия 15: ошибка в центре важнее спиннера, даже если player всё ещё буферизуется.
+#[test]
+fn media_failure_is_painted_instead_of_spinner_while_buffering() {
+    let context = egui::Context::default();
+    let mut center = NotificationCenter::default();
+    center.show_media_failure("Playback failed", MediaFailureOrigin::MediaOpen);
+    let started_at = std::time::Instant::now();
+    paint_overlay_frame(
+        &context,
+        &mut center,
+        PlaybackState::Buffering,
+        UiMotion::Standard,
+        started_at,
+        0.0,
+    );
+    let painted = paint_overlay_frame(
+        &context,
+        &mut center,
+        PlaybackState::Buffering,
+        UiMotion::Standard,
+        started_at + std::time::Duration::from_secs(3),
+        3.0,
+    );
+    assert!(painted.text.iter().any(|text| text == "Playback failed"));
+    assert_eq!(
+        painted.spinner_center(),
+        None,
+        "{:?}",
+        painted.spinner_shapes
+    );
+}
+
+/// Сессия 15: обычное движение вращает дугу и просит кадры; reduced motion рисует
+/// неподвижную дугу и не просит перерисовку ради анимации.
+#[test]
+fn spinner_rotates_only_with_standard_motion() {
+    let long_wait = std::time::Duration::from_secs(2);
+    let mut painted_by_motion = Vec::new();
+    for motion in [UiMotion::Standard, UiMotion::Reduced] {
+        // Контекст с настройками приложения: встроенные анимации egui выключены, поэтому
+        // запрос перерисовки может прийти только от спиннера.
+        let context = crate::ui::test_frame::app_behavior_context();
+        let mut center = NotificationCenter::default();
+        let started_at = std::time::Instant::now();
+        paint_overlay_frame(
+            &context,
+            &mut center,
+            PlaybackState::Seeking,
+            motion,
+            started_at,
+            0.0,
+        );
+        let appeared = paint_overlay_frame(
+            &context,
+            &mut center,
+            PlaybackState::Seeking,
+            motion,
+            started_at + long_wait,
+            2.0,
+        );
+        assert!(appeared.spinner_center().is_some(), "{motion:?}");
+        // Свежий контекст сам просит кадры, пока раскладка не устоится: сравниваем
+        // устоявшиеся кадры.
+        let first = paint_overlay_frame(
+            &context,
+            &mut center,
+            PlaybackState::Seeking,
+            motion,
+            started_at + long_wait,
+            2.15,
+        );
+        let second = paint_overlay_frame(
+            &context,
+            &mut center,
+            PlaybackState::Seeking,
+            motion,
+            started_at + long_wait,
+            2.3,
+        );
+        assert!(second.spinner_center().is_some(), "{motion:?}");
+        painted_by_motion.push((motion, first, second));
+    }
+
+    for (motion, first, second) in painted_by_motion {
+        match motion {
+            UiMotion::Standard => {
+                assert_eq!(first.repaint_delay, std::time::Duration::ZERO);
+                assert_ne!(
+                    first.spinner_shapes, second.spinner_shapes,
+                    "дуга должна вращаться"
+                );
+            }
+            UiMotion::Reduced => {
+                assert_eq!(first.repaint_delay, std::time::Duration::MAX);
+                assert_eq!(
+                    first.spinner_shapes, second.spinner_shapes,
+                    "дуга неподвижна"
+                );
+            }
+        }
+    }
+}

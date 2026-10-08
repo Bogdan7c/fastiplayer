@@ -19,6 +19,9 @@
 //! Прогресс («Открываем…») остаётся у shell-состояния `AppState`; здесь только правило, что
 //! он важнее старой ошибки (см. [`NotificationCenter::frame`]).
 //!
+//! Спиннер ожидания данных (сессия 15) — тоже сообщение центра, поэтому живёт здесь же
+//! (`buffering`): он самый неважный и уступает и ошибке, и прогрессу открытия.
+//!
 //! Инварианты:
 //! - модуль только показывает: он не меняет состояние player-а, очереди и не отдаёт команд;
 //! - время не читается из системных часов внутри модуля — `now` передаёт вызывающий кадр,
@@ -31,7 +34,12 @@ use std::time::{Duration, Instant};
 
 use crate::ui::animation::UiMotion;
 
+mod buffering;
 mod player_feed;
+
+#[cfg(test)]
+pub(crate) use buffering::BUFFERING_INDICATOR_APPEAR_DELAY;
+pub(crate) use buffering::BufferingIndicator;
 
 #[cfg(test)]
 mod audio_device_tests;
@@ -156,8 +164,18 @@ pub(crate) struct NotificationsFrame {
     pub(crate) center: Option<CenterNotice>,
     /// Видимые toast-ы, самый новый первым.
     pub(crate) toasts: Vec<ToastView>,
+    /// Спиннер ожидания данных; всегда `Hidden`, если `center` занят.
+    pub(crate) buffering: BufferingIndicator,
     /// Политика движения: при reduced motion toast появляется без анимации.
     pub(crate) motion: UiMotion,
+}
+
+impl NotificationsFrame {
+    /// Рисовать ли в центре спиннер ожидания данных (player ждёт дольше задержки,
+    /// и центр не занят ошибкой или прогрессом открытия).
+    pub(crate) fn shows_buffering_indicator(&self) -> bool {
+        self.buffering == BufferingIndicator::Visible
+    }
 }
 
 /// Toast внутри владельца.
@@ -204,6 +222,8 @@ pub(crate) struct NotificationCenter {
     observed_player_failure: ObservedPlayerFailure,
     /// Счётчик для выдачи уникальных [`NotificationId`].
     next_id: u64,
+    /// Как долго player непрерывно ждёт данные (спиннер в центре).
+    playback_waiting: buffering::PlaybackWaitingWatch,
 }
 
 impl NotificationCenter {
@@ -328,14 +348,25 @@ impl NotificationCenter {
                 age: now.saturating_duration_since(toast.shown_at),
             })
             .collect();
+        // Срок появления спиннера отмечается всегда, даже под сообщением центра: иначе
+        // будильник продолжал бы возвращать прошедший момент.
+        let waiting_indicator = self.playback_waiting.indicator(now);
+        // Ошибка и прогресс открытия важнее: спиннер не рисуется поверх них.
+        let buffering = if center.is_some() {
+            BufferingIndicator::Hidden
+        } else {
+            waiting_indicator
+        };
         NotificationsFrame {
             center,
             toasts,
+            buffering,
             motion,
         }
     }
 
-    /// Ближайший момент, когда нужно перерисовать окно, чтобы toast исчез вовремя.
+    /// Ближайший момент, когда нужно перерисовать окно, чтобы toast исчез вовремя
+    /// или спиннер ожидания появился вовремя.
     ///
     /// Нужен на паузе: без воспроизведения кадры не рисуются, и без этого будильника
     /// toast висел бы до первого движения мыши.
@@ -343,6 +374,7 @@ impl NotificationCenter {
         self.toasts
             .iter()
             .filter_map(|toast| toast.expires_at)
+            .chain(self.playback_waiting.appear_deadline())
             .min()
     }
 

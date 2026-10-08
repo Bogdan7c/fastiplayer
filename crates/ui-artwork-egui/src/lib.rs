@@ -3,6 +3,7 @@
 //! Crate не знает о событиях, playback-состоянии и виджетах: вызывающая сторона
 //! передаёт только painter, прямоугольники и типизированное визуальное состояние.
 
+mod buffering_spinner;
 mod compound_playlist_row;
 mod fullscreen_button;
 mod media_kind_icon;
@@ -28,6 +29,7 @@ mod window_title;
 
 use egui::Painter;
 
+pub use buffering_spinner::{BufferingSpinnerPaintState, BufferingSpinnerStyle};
 pub use compound_playlist_row::{
     CompoundPlaylistPartPosition, CompoundPlaylistRowKind, CompoundPlaylistRowStyle,
 };
@@ -280,6 +282,16 @@ impl<'a> ArtworkPainter<'a> {
     /// Затемняет видео сплошной полупрозрачной заливкой.
     pub fn video_dim_overlay(self, rect: egui::Rect, color: egui::Color32) {
         video_dim_overlay::paint(self.painter, rect, color);
+    }
+
+    /// Рисует индикатор ожидания данных: подложку и дугу под заданным углом.
+    pub fn buffering_spinner(
+        self,
+        rect: egui::Rect,
+        state: BufferingSpinnerPaintState,
+        style: BufferingSpinnerStyle,
+    ) {
+        buffering_spinner::paint(self.painter, rect, state, style);
     }
 }
 
