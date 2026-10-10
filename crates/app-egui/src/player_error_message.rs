@@ -38,7 +38,8 @@ pub(crate) const fn player_error_kind_phrase(kind: &PlayerErrorKind) -> &'static
         }
         PlayerErrorKind::HardwareDecoderUnavailable => "Аппаратное декодирование видео недоступно",
         PlayerErrorKind::RequiredVideoBackendUnavailable => {
-            "Выбранный способ показа видео недоступен на этом компьютере"
+            "Выбранный в настройках режим декодирования не подходит для этого видео или недоступен \
+             на этом компьютере. Выберите режим «Авто» в настройках"
         }
         PlayerErrorKind::DemuxError => {
             "Не удалось прочитать данные: файл повреждён или передача прервалась"
@@ -120,6 +121,20 @@ mod tests {
                 "{kind:?} без русского текста: {message}"
             );
         }
+    }
+
+    #[test]
+    fn required_backend_unavailable_tells_to_pick_auto_mode() {
+        // Режим «Hardware» без VA-API (или «Software» без FFmpeg-пути) приходит именно так.
+        let error = PlayerError::new(
+            PlayerErrorKind::RequiredVideoBackendUnavailable,
+            "Backend `vaapi` не имеет playable output для candidate video stream",
+        );
+        let message = player_error_user_message(&error);
+
+        assert!(message.contains("режим декодирования"), "{message}");
+        assert!(message.contains("«Авто»"), "{message}");
+        assert!(!message.contains("vaapi"), "{message}");
     }
 
     #[test]

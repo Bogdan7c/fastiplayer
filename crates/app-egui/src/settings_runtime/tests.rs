@@ -46,6 +46,7 @@ use crate::settings_ui::SettingsUiAction;
 use crate::ui::sidebar::{SidebarWidthChange, SidebarWidthPoints};
 
 mod dynamic_options;
+mod hardware_decode_hint;
 mod preview;
 mod render_keeps_draft;
 mod session_only_persistence;

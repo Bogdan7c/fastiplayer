@@ -65,6 +65,7 @@ struct PendingSettingsApply {
 
 mod committed_snapshot;
 mod dynamic_options;
+mod hardware_decode_hint;
 mod preview;
 mod route_apply;
 mod setting_labels;
@@ -83,6 +84,7 @@ pub(crate) use committed_snapshot::InitialRenderSettings;
 #[cfg(test)]
 use dynamic_options::current_option_value;
 use dynamic_options::default_option_providers;
+pub(crate) use hardware_decode_hint::HardwareDecodeAvailability;
 pub(crate) use preview::SettingsPreviewTick;
 #[cfg(test)]
 use route_apply::RenderOnlySettingsRuntimeAdapter;
@@ -175,6 +177,10 @@ pub(crate) struct SettingsRuntime {
 
     /// Memoized visual model; сбрасывается при любой мутации settings state.
     ui_model_cache: Option<SettingsUiModel>,
+
+    /// Что известно о VA-API (из capability report-а, собранного при старте).
+    /// Нужно только для предупреждения рядом с режимом «Hardware».
+    hardware_decode_availability: HardwareDecodeAvailability,
 }
 
 impl SettingsRuntime {
@@ -229,6 +235,7 @@ impl SettingsRuntime {
             dynamic_options_shutdown_completed: false,
             last_preview_sent_at: None,
             ui_model_cache: None,
+            hardware_decode_availability: HardwareDecodeAvailability::Unknown,
             visual_hold: false,
         };
 
@@ -302,6 +309,20 @@ impl SettingsRuntime {
             None => self.build_ui_model(),
         };
         self.ui_model_cache.insert(model)
+    }
+
+    /// Сообщает окну настроек, доступен ли VA-API (результат уже выполненного probe).
+    ///
+    /// Intent-метод владельца: UI-слой не знает про capability report. Модель
+    /// пересобирается только при реальном изменении.
+    pub(crate) fn set_hardware_decode_availability(
+        &mut self,
+        availability: HardwareDecodeAvailability,
+    ) {
+        if self.hardware_decode_availability != availability {
+            self.hardware_decode_availability = availability;
+            self.invalidate_ui_model();
+        }
     }
 
     /// Сбрасывает memoized visual model; обязан вызываться после любой мутации.
@@ -442,6 +463,14 @@ impl SettingsRuntime {
                 }
                 if let Some(options) = self.cached_options_for_descriptor(descriptor, &field) {
                     field = field.with_options(options);
+                }
+                if descriptor.id.as_str() == hardware_decode_hint::VIDEO_BACKEND_SETTING_ID
+                    && let Some(warning) = hardware_decode_hint::hardware_unavailable_warning(
+                        self.controller.draft().video.preferred_backend,
+                        self.hardware_decode_availability,
+                    )
+                {
+                    field = field.with_status(warning);
                 }
                 Ok(field)
             })

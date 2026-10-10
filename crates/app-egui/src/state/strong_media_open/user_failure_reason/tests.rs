@@ -139,7 +139,7 @@ fn open_button_text_for_each_player_reason_names_file_and_reason() {
         ),
         (
             PlayerInstallFailureReason::NoSuitableVideoDecoder,
-            "Не удалось открыть «clip.mkv»: нет подходящего видеодекодера (проверьте настройку декодера)",
+            "Не удалось открыть «clip.mkv»: нет подходящего видеодекодера (выберите режим «Авто» в настройках декодера)",
         ),
         (
             PlayerInstallFailureReason::PreparationTimedOut,

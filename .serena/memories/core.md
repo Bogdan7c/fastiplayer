@@ -35,3 +35,4 @@
 - `user/` — публичные markdown-планы сессий и отчёты `results/` (решение владельца 2026-10-05: workflow открыт сообществу, ignore `/user/` снят). Туда кладём только `.md`: никаких бинарников, логов, медиа, секретов и личных путей вне проекта. Прежнее правило S00 «user/ вне репозитория» (`mem:public-launch/s00-user-backup-2026-09-04`) отменено.
 - UX edge cases 2 / B3 (2026-10-10): глобальные хоткеи скорости, ↑/↓ и колесо над видео = громкость, Ctrl+O, подсказка времени на таймлайне — `mem:app-egui/global-hotkeys-volume-input-b3`.
 - Transport-команды во время playlist install (guard/terminal slot, исполнитель Runtime+AppState): `mem:app-egui/transport-guard-execution-2026-10-03`.
+- UX edge cases 2 / B6 (2026-10-10): строка-предупреждение в настройках при «Hardware» без VA-API — `mem:settings-ui/hardware-decode-warning-b6-2026-10-10`.

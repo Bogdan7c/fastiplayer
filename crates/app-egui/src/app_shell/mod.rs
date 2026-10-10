@@ -46,7 +46,7 @@ use crate::playlist_runtime::PlaylistRuntime;
 use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
 use crate::redraw_pacing::{BackgroundPollScheduler, RedrawControlAction};
 use crate::renderer_recreation::RendererLifecycleCoordinator;
-use crate::settings_runtime::SettingsRuntime;
+use crate::settings_runtime::{HardwareDecodeAvailability, SettingsRuntime};
 use crate::startup_media::{InitialMedia, StartupMediaController};
 use crate::state::{AppState, AppStateStartupContext, LifecycleTimelineSeekSettlement};
 use crate::telemetry::Telemetry;
@@ -315,6 +315,10 @@ impl AppShell {
         );
         let system_capabilities = probe_system_capabilities(renderer.render_capabilities());
         info!("{}", system_capabilities.summary_text());
+        // Окно настроек предупреждает о режиме «Hardware» по этому же отчёту (UX2 B6).
+        self.settings_runtime.set_hardware_decode_availability(
+            HardwareDecodeAvailability::from_system_capabilities(&system_capabilities),
+        );
         app_state.set_system_capabilities(system_capabilities.clone());
         app_state.init_video_pipeline(
             renderer.instance(),

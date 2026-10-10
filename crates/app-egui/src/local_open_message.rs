@@ -67,7 +67,7 @@ const fn player_install_failure_phrase(reason: PlayerInstallFailureReason) -> &'
         PlayerInstallFailureReason::UnsupportedVideoFormat => "формат видео не поддерживается",
         PlayerInstallFailureReason::UnsupportedAudioFormat => "формат звука не поддерживается",
         PlayerInstallFailureReason::NoSuitableVideoDecoder => {
-            "нет подходящего видеодекодера (проверьте настройку декодера)"
+            "нет подходящего видеодекодера (выберите режим «Авто» в настройках декодера)"
         }
         PlayerInstallFailureReason::PreparationTimedOut => "файл читается слишком долго",
         PlayerInstallFailureReason::PlayerNotResponding => "плеер не отвечает, попробуйте ещё раз",
