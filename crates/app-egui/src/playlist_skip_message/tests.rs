@@ -117,3 +117,26 @@ fn stop_policy_is_transient_toast_with_reason() {
         )
     );
 }
+
+/// B8: остановка из-за сети — ошибка в центре (висит до ×), а не исчезающая плашка.
+#[test]
+fn queue_blocked_by_network_or_rate_limit_is_center_error_with_reason() {
+    use crate::playlist_runtime::QueueBlockReason;
+
+    assert_eq!(
+        playlist_queue_notice_delivery(&AutomaticQueueNotice::StoppedOpenBlocked {
+            reason: QueueBlockReason::NoNetwork
+        }),
+        PlaylistQueueNoticeDelivery::MediaFailure(
+            "Нет подключения к сети — очередь остановлена".to_owned()
+        )
+    );
+    assert_eq!(
+        playlist_queue_notice_delivery(&AutomaticQueueNotice::StoppedOpenBlocked {
+            reason: QueueBlockReason::SiteRateLimited
+        }),
+        PlaylistQueueNoticeDelivery::MediaFailure(
+            "Сайт ограничил запросы — очередь остановлена".to_owned()
+        )
+    );
+}

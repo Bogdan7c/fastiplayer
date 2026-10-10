@@ -24,7 +24,7 @@ use playlist_state::{PlaylistStateSnapshot, PlaylistStateStore, QuarantineFileNa
 
 use super::transport_execution::playlist_install_request;
 use super::{
-    AutomaticQueueNotice, PlaylistRuntime, PlaylistStartupDrainOutcome,
+    AutomaticQueueNotice, PlaylistRuntime, PlaylistStartupDrainOutcome, PlaylistTargetFailure,
     PlaylistTargetFailureSummary,
 };
 use crate::app_wake::{AppWakeOwner, AppWakePort};
@@ -45,7 +45,7 @@ const QUEUE_FILE_NAMES: [&str; 3] = ["a-ok.mkv", "b-broken.mkv", "c-ok.mkv"];
 /// Каталог, который не должен просочиться в текст уведомления (решение владельца 1а).
 const PRIVATE_DIRECTORY: &str = "/home/private-owner/Videos";
 
-fn non_zero(value: u64) -> NonZeroU64 {
+pub(super) fn non_zero(value: u64) -> NonZeroU64 {
     NonZeroU64::new(value).expect("test identity is non-zero")
 }
 
@@ -89,7 +89,7 @@ fn drive_admitted_install_to_installed(
 }
 
 /// Принимает planned install и доводит его до Installed.
-fn install_planned(
+pub(super) fn install_planned(
     controller: &mut PlaylistController,
     install: PlannedPlaylistInstall,
     request_seed: u64,
@@ -115,15 +115,23 @@ fn install_planned(
 fn queue_with_a_playing(
     behavior: PlaylistErrorBehavior,
 ) -> (PlaylistController, Vec<PlaylistItemId>) {
+    queue_with_a_playing_from(
+        QUEUE_FILE_NAMES
+            .iter()
+            .map(|name| local_draft(name))
+            .collect(),
+        behavior,
+    )
+}
+
+/// То же для произвольных элементов очереди (например, web-ссылок): первый уже играет.
+pub(super) fn queue_with_a_playing_from(
+    drafts: Vec<PlaylistItemDraft>,
+    behavior: PlaylistErrorBehavior,
+) -> (PlaylistController, Vec<PlaylistItemId>) {
     let mut controller = PlaylistController::new();
-    let ControllerAppendOutcome::Added { item_ids, .. } = controller
-        .append(
-            QUEUE_FILE_NAMES
-                .iter()
-                .map(|name| local_draft(name))
-                .collect(),
-        )
-        .expect("append A, B, C")
+    let ControllerAppendOutcome::Added { item_ids, .. } =
+        controller.append(drafts).expect("append A, B, C")
     else {
         panic!("очередь A, B, C не пустая");
     };
@@ -140,7 +148,7 @@ fn queue_with_a_playing(
 }
 
 /// A доиграл до конца: controller планирует автоматический переход на B.
-fn clean_eof_plans_next(controller: &mut PlaylistController) -> PlannedPlaylistInstall {
+pub(super) fn clean_eof_plans_next(controller: &mut PlaylistController) -> PlannedPlaylistInstall {
     let active = controller.active_media().expect("A active");
     let AutomaticLifecycleOutcome::OpenItem { install } = controller.observe_automatic_snapshot(
         active.player_binding_generation(),
@@ -154,18 +162,18 @@ fn clean_eof_plans_next(controller: &mut PlaylistController) -> PlannedPlaylistI
     install
 }
 
-fn runtime_with(controller: PlaylistController) -> PlaylistRuntime {
+pub(super) fn runtime_with(controller: PlaylistController) -> PlaylistRuntime {
     let mut runtime =
         PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
     runtime.controller.install(controller);
     runtime
 }
 
-fn controller_mut(runtime: &mut PlaylistRuntime) -> &mut PlaylistController {
+pub(super) fn controller_mut(runtime: &mut PlaylistRuntime) -> &mut PlaylistController {
     runtime.controller.as_mut().expect("controller installed")
 }
 
-fn active_item_id(runtime: &PlaylistRuntime) -> Option<PlaylistItemId> {
+pub(super) fn active_item_id(runtime: &PlaylistRuntime) -> Option<PlaylistItemId> {
     runtime
         .playlist_controller()
         .and_then(PlaylistController::active_media)
@@ -176,7 +184,9 @@ fn active_item_id(runtime: &PlaylistRuntime) -> Option<PlaylistItemId> {
 ///
 /// Повторяет маршрут `AppState::show_playlist_queue_notices` без окна: информационные и
 /// временные плашки — в список toast-ов, `MediaFailure` — ошибка в центре.
-fn user_visible_messages(notices: &[AutomaticQueueNotice]) -> (Vec<String>, Option<String>) {
+pub(super) fn user_visible_messages(
+    notices: &[AutomaticQueueNotice],
+) -> (Vec<String>, Option<String>) {
     let mut toasts = Vec::new();
     let mut center_error = None;
     for notice in notices {
@@ -458,7 +468,9 @@ fn async_preparation_failure_before_admission_continues_to_c() {
         .report_playlist_target_failure_before_admission(
             MediaOpenRequestId::from_non_zero(non_zero(60)),
             b_install,
-            PlaylistTargetFailureSummary::Specific(Arc::from("файл не найден")),
+            PlaylistTargetFailure::ItemFault(PlaylistTargetFailureSummary::Specific(Arc::from(
+                "файл не найден",
+            ))),
         )
         .expect("Skip продолжает очередь после асинхронного провала B");
     assert_eq!(c_install.item_id, item_ids[2]);
@@ -494,7 +506,9 @@ fn async_preparation_failure_of_manual_next_waits_for_user() {
     let continuation = runtime.report_playlist_target_failure_before_admission(
         MediaOpenRequestId::from_non_zero(non_zero(80)),
         install,
-        PlaylistTargetFailureSummary::Specific(Arc::from("файл не найден")),
+        PlaylistTargetFailure::ItemFault(PlaylistTargetFailureSummary::Specific(Arc::from(
+            "файл не найден",
+        ))),
     );
 
     assert!(

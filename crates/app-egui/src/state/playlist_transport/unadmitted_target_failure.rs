@@ -9,7 +9,7 @@
 use render_wgpu_shell::Renderer;
 use tracing::{debug, warn};
 
-use super::playlist_target_failure_summary;
+use super::target_failure_class::playlist_target_failure;
 use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::state::AppState;
@@ -49,7 +49,7 @@ impl AppState {
         let continuation = playlist_runtime.report_playlist_target_failure_before_admission(
             failed_request_id,
             *install,
-            playlist_target_failure_summary(&error),
+            playlist_target_failure(&error),
         );
         if let Some(next_install) = continuation {
             self.begin_planned_playlist_install(playlist_runtime, renderer, next_install, None);

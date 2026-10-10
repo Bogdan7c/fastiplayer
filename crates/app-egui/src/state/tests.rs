@@ -803,7 +803,7 @@ fn playlist_transport_routes_only_pre_barrier_failure_through_navigation_owner()
         "automatic continuation разрешён только до barrier-а либо после exact compensation"
     );
     assert!(
-        failed_branch.contains("report_playlist_navigation_failure("),
+        failed_branch.contains("report_playlist_target_failure("),
         "terminal playlist failure должен вернуться controller-owned navigation owner-у"
     );
     assert!(

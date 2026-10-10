@@ -56,7 +56,9 @@ mod shutdown_report;
 mod suspend_resume;
 pub(crate) use suspend_resume::SuspendedTimelineResumePosition;
 mod guarded_transport;
+mod queue_block;
 pub(crate) use guarded_transport::{GuardedTransportFollowUp, ReleasedPendingRequest};
+pub(crate) use queue_block::{PlaylistTargetFailure, QueueBlockReason};
 mod transport_execution;
 pub(crate) use transport_execution::{
     PlaylistMediaOpenIntent, PlaylistTargetFailureSummary, RelativeBeyondEndNavigationOutcome,

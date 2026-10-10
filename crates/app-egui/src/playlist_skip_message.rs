@@ -12,10 +12,18 @@
 //! - если до этого что-то играло — обычная плашка «… Дальше в очереди ничего нет»;
 //! - явно выбранная политика «остановиться» — временная плашка (5 с) с причиной.
 
-use crate::playlist_runtime::{AutomaticQueueNotice, SkippedItemsSummary};
+use crate::playlist_runtime::{AutomaticQueueNotice, QueueBlockReason, SkippedItemsSummary};
 
 /// Текст, когда не открылся ни один элемент очереди.
 pub(crate) const NOTHING_IN_QUEUE_OPENED_MESSAGE: &str = "Ни один файл очереди не удалось открыть";
+
+/// Очередь встала, потому что нет сети (B8): файл не виноват, после возвращения сети — Play.
+pub(crate) const QUEUE_STOPPED_NO_NETWORK_MESSAGE: &str =
+    "Нет подключения к сети — очередь остановлена";
+
+/// Очередь встала, потому что сайт ограничил запросы (HTTP 429, B8).
+pub(crate) const QUEUE_STOPPED_SITE_RATE_LIMITED_MESSAGE: &str =
+    "Сайт ограничил запросы — очередь остановлена";
 
 /// Хвост сообщения, когда после пропусков открывать больше нечего.
 const END_OF_QUEUE_SUFFIX: &str = "Дальше в очереди ничего нет";
@@ -55,6 +63,17 @@ pub(crate) fn playlist_queue_notice_delivery(
                 None => "Очередь остановлена из-за ошибки файла".to_owned(),
             };
             PlaylistQueueNoticeDelivery::TransientToast(text)
+        }
+        // Центр, а не toast: пользователь мог отойти, и причина остановки должна дождаться
+        // его (висит до ×, нового открытия или успешной установки media).
+        AutomaticQueueNotice::StoppedOpenBlocked { reason } => {
+            PlaylistQueueNoticeDelivery::MediaFailure(
+                match reason {
+                    QueueBlockReason::NoNetwork => QUEUE_STOPPED_NO_NETWORK_MESSAGE,
+                    QueueBlockReason::SiteRateLimited => QUEUE_STOPPED_SITE_RATE_LIMITED_MESSAGE,
+                }
+                .to_owned(),
+            )
         }
     }
 }

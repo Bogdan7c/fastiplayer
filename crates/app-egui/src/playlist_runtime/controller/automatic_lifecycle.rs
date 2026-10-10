@@ -1,5 +1,6 @@
 //! Edge-triggered Ended, D42 hold, D26 latch and bounded automatic error policy.
 
+mod queue_block;
 mod skip_report;
 #[cfg(test)]
 mod tests;
@@ -15,6 +16,7 @@ use playlist_core::{
     AutomaticTraversalStart, PlaylistItemId, QueueRevisionSnapshot, RepeatMode,
 };
 
+pub(crate) use self::queue_block::{AutomaticTargetBlockedOutcome, QueueBlockedTarget};
 use self::skip_report::AutomaticSkipReport;
 pub(super) use self::skip_report::SkipChainStart;
 pub(crate) use self::skip_report::{AutomaticQueueNotice, SkippedItemsSummary};
@@ -27,6 +29,7 @@ use crate::playlist_runtime::PlaylistBindingGeneration;
 use crate::playlist_runtime::identity::{
     ActiveMediaIdentity, PendingTargetOrigin, PlaylistItemErrorCategory, PlaylistItemErrorPhase,
 };
+use crate::playlist_runtime::queue_block::QueueBlockReason;
 
 /// Runtime setting shell; config wiring остаётся Session 13.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +84,9 @@ pub(crate) enum AutomaticStopCause {
     DeferredCancelled,
     /// Воспроизведение остановила пропажа сети (см. [`PlaybackFailureCause::NetworkLost`]).
     NetworkLost,
+    /// Открытие следующего элемента упёрлось в общее обстоятельство (нет сети, лимит
+    /// запросов сайта): элемент не битый, очередь стоит на нём (B8).
+    OpenBlocked(QueueBlockReason),
 }
 
 /// Controller action для одного exact edge/reevaluation.
@@ -158,6 +164,8 @@ pub(super) struct AutomaticLifecycle {
     prepared_next_plan: Option<PreparedNextAutomaticPlan>,
     /// Сводка пропусков битых элементов для уведомления пользователя (сессия 07).
     skip_report: AutomaticSkipReport,
+    /// Элемент, на котором очередь остановилась из-за общего обстоятельства (B8).
+    blocked_target: Option<QueueBlockedTarget>,
 }
 
 /// Pure automatic plan хранится до EOF, чтобы shuffle target preload-а не расходился с commit.

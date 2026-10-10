@@ -22,6 +22,7 @@ use super::AutomaticStopCause;
 use crate::media_open::SafeMediaLabel;
 use crate::playlist_runtime::controller::PlaylistController;
 use crate::playlist_runtime::identity::PendingTargetOrigin;
+use crate::playlist_runtime::queue_block::QueueBlockReason;
 
 /// Сколько имён пропущенных файлов показывать; остальные сворачиваются в «и ещё K».
 ///
@@ -94,6 +95,9 @@ pub(crate) enum AutomaticQueueNotice {
     NothingInQueueOpened { skipped: SkippedItemsSummary },
     /// Очередь остановлена на битом элементе: так велит политика `stop` или repeat-one.
     StoppedOnFailedItem { failed_item: Option<SafeMediaLabel> },
+    /// Очередь остановилась на элементе, который не открылся из-за общего обстоятельства
+    /// (нет сети, лимит запросов сайта). Элемент не битый: ни пропуска, ни бейджа (B8).
+    StoppedOpenBlocked { reason: QueueBlockReason },
 }
 
 /// Одна идущая цепочка пропусков.
@@ -212,6 +216,11 @@ impl AutomaticSkipReport {
             // Причину («Нет связи с сервером…») уже показывает ошибка player-а в центре;
             // элемент не битый, поэтому «пропущен»/«остановлено на файле» было бы ложью.
             AutomaticStopCause::NetworkLost => None,
+            // Обстоятельство (нет сети) важнее прежних пропусков цепочки: пользователю нужно
+            // знать, почему очередь встала и что делать, а не сколько файлов пролистано.
+            AutomaticStopCause::OpenBlocked(reason) => {
+                Some(AutomaticQueueNotice::StoppedOpenBlocked { reason })
+            }
         };
         if let Some(notice) = notice {
             self.pending_notices.push(notice);
@@ -235,6 +244,8 @@ impl PlaylistController {
         &mut self,
         start: SkipChainStart,
     ) {
+        // Новый конец воспроизведения начинает разбор заново: прежняя остановка неактуальна.
+        self.clear_queue_block();
         self.automatic_lifecycle.skip_report.begin_chain(start);
     }
 
@@ -287,6 +298,9 @@ impl PlaylistController {
     /// Выбрасывает идущую цепочку без итога.
     pub(in crate::playlist_runtime::controller) fn discard_automatic_skip_chain(&mut self) {
         self.automatic_lifecycle.skip_report.discard_chain();
+        // Пользователь сам выбрал, что играть, либо установилась не-автоматическая media
+        // (settle сюда же): остановка по обстоятельству снята.
+        self.clear_queue_block();
     }
 
     /// Забирает итоги закончившихся цепочек ровно один раз.

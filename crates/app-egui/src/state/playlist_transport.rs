@@ -7,6 +7,7 @@
 mod failure_summary_tests;
 mod guarded_transport;
 mod lifecycle_settlement;
+mod target_failure_class;
 mod unadmitted_target_failure;
 
 pub(crate) use lifecycle_settlement::LifecycleTimelineSeekSettlement;
@@ -465,10 +466,10 @@ impl AppState {
                     let automatic_continuation = error
                         .allows_navigation_failure_recovery()
                         .then(|| {
-                            playlist_runtime.report_playlist_navigation_failure(
+                            playlist_runtime.report_playlist_target_failure(
                                 failed_request_id,
                                 active_item_id,
-                                playlist_target_failure_summary(&error),
+                                target_failure_class::playlist_target_failure(&error),
                             )
                         })
                         .flatten();

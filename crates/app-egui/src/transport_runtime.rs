@@ -150,6 +150,16 @@ pub(crate) fn apply_transport_action(
             TransportActionOrigin::Ui,
         ),
         TransportControlAction::TogglePlayback => {
+            // B8: очередь стоит на элементе, который не открылся из-за сети. Play, пока
+            // ничего не играет, продолжает именно с него, а не перезапускает доигравший.
+            if is_playback_idle_for_queue_resume(player_snapshot.playback_state)
+                && let Some(outcome) = playlist_runtime.play_queue_blocked_item()
+            {
+                if !apply_playlist_row_play(app_state, playlist_runtime, renderer, outcome) {
+                    warn!("Play не смог продолжить очередь с остановленного элемента");
+                }
+                return;
+            }
             if let Some(dispatch) = playlist_runtime.toggle_ui_stable_transport_intent() {
                 if dispatch.exact_current.is_some() || dispatch.pending_update.is_some() {
                     app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, dispatch);
@@ -601,6 +611,17 @@ pub(crate) fn apply_manual_navigation_outcome(
         | ControllerManualNavigationOutcome::StaleWait
         | ControllerManualNavigationOutcome::IntentRevisionExhausted => {}
     }
+}
+
+/// Продолжать остановленную очередь можно, только пока ничего не играет и не открывается.
+///
+/// Если пользователь успел перемотать доигравший файл или запустить другое, Play управляет
+/// тем, что играет сейчас, а не прыгает на остановленный элемент.
+const fn is_playback_idle_for_queue_resume(state: PlaybackState) -> bool {
+    matches!(
+        state,
+        PlaybackState::Ended | PlaybackState::Idle | PlaybackState::Stopped
+    )
 }
 
 fn send_legacy_toggle(app_state: &mut AppState) {

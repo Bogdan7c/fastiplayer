@@ -19,7 +19,7 @@ use super::controller::{
 };
 use super::discovery::PlaylistDiscoveryNavigationStatus;
 use super::identity::TransportActionOrigin;
-use super::{PlaylistMediaOpenGateError, PlaylistRuntime};
+use super::{PlaylistMediaOpenGateError, PlaylistRuntime, PlaylistTargetFailure};
 use crate::media_open::MediaOpenRequestId;
 
 /// Общий текст бейджа, когда причина отказа автоперехода неизвестна (прежнее поведение).
@@ -317,8 +317,16 @@ impl PlaylistRuntime {
         &mut self,
         request_id: MediaOpenRequestId,
         install: PlannedPlaylistInstall,
-        failure_summary: PlaylistTargetFailureSummary,
+        failure: PlaylistTargetFailure,
     ) -> Option<PlannedPlaylistInstall> {
+        let failure_summary = match failure {
+            PlaylistTargetFailure::ItemFault(summary) => summary,
+            PlaylistTargetFailure::QueueBlocked(reason) => {
+                // Нет сети и т.п.: очередь встаёт на элементе, продолжения нет (B8).
+                self.report_playlist_target_blocked_before_admission(request_id, install, reason);
+                return None;
+            }
+        };
         if !install.is_automatic_traversal() {
             return self.report_playlist_navigation_failure(
                 request_id,
