@@ -274,11 +274,7 @@ impl PlaylistRuntime {
                         .active_media
                         .ok_or(ResumeCheckpointError::ControllerInvariant)?;
                     self.suspended_media.active_source = Some(descriptor.active_source());
-                    if self.removal_undo.as_ref().is_some_and(|undo| {
-                        undo.active_lineage_at_removal() != Some(active.lineage_id())
-                    }) {
-                        self.removal_undo = None;
-                    }
+                    self.release_removal_undo_for_new_lineage(active);
                     return Ok(());
                 }
                 MediaOpenPhase::Failed => {
@@ -366,13 +362,7 @@ impl PlaylistRuntime {
         self.suspended_media.active_source = Some(source);
         self.suspended_media.checkpoint = None;
         self.suspended_media.status = Some(ResumeCheckpointStatus::Empty);
-        if self
-            .removal_undo
-            .as_ref()
-            .is_some_and(|undo| undo.active_lineage_at_removal() != Some(active_media.lineage_id()))
-        {
-            self.removal_undo = None;
-        }
+        self.release_removal_undo_for_new_lineage(active_media);
         Ok(active_media)
     }
 

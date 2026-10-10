@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use player_core::{MediaInstallRequestId, MediaInstanceId};
 use playlist_core::{PlaylistEntryId, PlaylistItemId, RemovalCurrentOutcome};
+use tracing::debug;
 
 use super::controller::{
     ControllerDestructiveRemoval, ControllerDestructiveRemovalOutcome, ControllerRemovalKind,
@@ -422,6 +423,28 @@ impl PlaylistRuntime {
         self.removal_undo = None;
     }
 
+    /// Единственное правило «новая lineage освобождает Undo». Его обязаны применять ВСЕ пути
+    /// регистрации установленного media (exact Installed, strong install, resume), иначе одно
+    /// из них молча убьёт Undo, который владелец разрешил сохранять (A9b/A9c): после
+    /// автоперехода Undo остаётся, если `undo_survives_current_change`.
+    pub(super) fn release_removal_undo_for_new_lineage(&mut self, installed: ActiveMediaIdentity) {
+        let Some(controller) = self.controller.as_ref() else {
+            return;
+        };
+        let lineage_changed = self.removal_undo.as_ref().is_some_and(|undo| {
+            undo.active_lineage_at_removal() != Some(installed.lineage_id())
+                && !controller.undo_survives_current_change(&undo.removal)
+        });
+        if lineage_changed {
+            debug!(
+                target: "rustiplayer::removal_undo",
+                lineage = ?installed.lineage_id(),
+                "Undo удаления сброшен: новая lineage и Undo не переживает смену текущего"
+            );
+            self.removal_undo = None;
+        }
+    }
+
     /// Exact Installed проходит через process owner, чтобы новая lineage освободила Undo сразу.
     pub(crate) fn on_playlist_installed(
         &mut self,
@@ -460,13 +483,8 @@ impl PlaylistRuntime {
             binding_generation,
             playback_intent,
         )?;
-        if let Some(installed_active) = drain.active_media
-            && self.removal_undo.as_ref().is_some_and(|undo| {
-                undo.removal.active_lineage_at_removal != Some(installed_active.lineage_id())
-                    && !controller.undo_survives_current_change(&undo.removal)
-            })
-        {
-            self.removal_undo = None;
+        if let Some(installed_active) = drain.active_media {
+            self.release_removal_undo_for_new_lineage(installed_active);
         }
         self.publish_controller_mutation_if_dirty(dirty_before);
         Ok(drain)

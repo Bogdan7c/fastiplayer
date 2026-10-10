@@ -40,3 +40,7 @@ Session 12A completed PASS on 2026-07-15. This memory extends `mem:app-egui/play
 - Чтобы Installed не блокировал Undo, `install.rs` коммитит dirty через `commit_install_dirty`: без structural-изменения и без shuffle `undo_blocking_revision` не двигается (persistence-сигнал обычный). Любое structural/mode-изменение по-прежнему блокирует.
 - С shuffle, при удалённой играющей строке и для Clear действует прежняя семантика (смена lineage сбрасывает Undo, restore откатывает pointer и shuffle-историю из snapshot).
 - Тесты: `removal_undo/tests/current_change.rs`, `playlist-core/src/queue/removal/tests.rs`.
+## Undo и боевой путь Installed (UX A9c, 2026-10-10)
+- Корень регрессии A9b: боевой автопереход регистрируется не прямым `on_playlist_installed`, а через `PlaylistRuntime::register_successful_strong_install` (`suspend_resume.rs`, зовётся из `state::strong_media_open`), где было СВОЁ безусловное «lineage сменилась -> removal_undo = None».
+- Единственное правило «новая lineage освобождает Undo» теперь в `removal_undo.rs::release_removal_undo_for_new_lineage` (учитывает `undo_survives_current_change`, пишет debug-лог target `rustiplayer::removal_undo`). ВСЕ пути регистрации установленного media обязаны звать его, а не сравнивать lineage сами.
+- Тесты боевого пути: `removal_undo/tests/current_change.rs` (`InstalledPath::StrongInstall`).
