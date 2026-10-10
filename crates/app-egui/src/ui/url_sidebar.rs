@@ -3,6 +3,8 @@
 use egui::{RichText, Ui};
 use web_media_core::CodecFamily;
 
+use crate::ui::stream_kind_labels::{LIVE_STREAM_LABEL, VOD_STREAM_LABEL};
+
 use crate::web_media_catalog::{
     WebMediaCatalogState, WebMediaFacetAction, WebMediaFacetOption, WebMediaMode,
 };
@@ -249,8 +251,8 @@ fn choose_single_sidebar_action(
 /// Русская подпись режима потока; неизвестный режим не маскируется под VOD.
 fn stream_kind_label(kind: UrlSidebarStreamKind) -> &'static str {
     match kind {
-        UrlSidebarStreamKind::Live => "Прямой эфир",
-        UrlSidebarStreamKind::Vod => "VOD",
+        UrlSidebarStreamKind::Live => LIVE_STREAM_LABEL,
+        UrlSidebarStreamKind::Vod => VOD_STREAM_LABEL,
         UrlSidebarStreamKind::Unknown => "Определяется",
     }
 }

@@ -21,6 +21,7 @@ pub(crate) mod playlist;
 pub(crate) mod queue_replacement_confirmation;
 pub mod sidebar;
 pub mod skin;
+pub(crate) mod stream_kind_labels;
 #[cfg(test)]
 pub(crate) mod test_frame;
 pub mod timeline;

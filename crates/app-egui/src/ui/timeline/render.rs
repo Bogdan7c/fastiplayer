@@ -5,6 +5,7 @@ use media_core::TimelineSnapshot;
 use ui_artwork_egui::{ArtworkPainter, TimelinePaintState};
 
 use crate::ui::skin::{PlayerSkin, TimelineStyle};
+use crate::ui::stream_kind_labels::LIVE_STREAM_SHORT_LABEL;
 
 use super::geometry::{
     TimelineBounds, artwork_timeline_style, format_media_duration, format_media_time,
@@ -96,11 +97,12 @@ fn timeline_right_label(timeline: &TimelineSnapshot) -> String {
     }
     match timeline.seekable_range {
         Some(range) => format!(
-            "DVR {}–{} · LIVE",
+            "DVR {}–{} · {}",
             format_media_time(Some(range.start)),
-            format_media_time(Some(range.end))
+            format_media_time(Some(range.end)),
+            LIVE_STREAM_SHORT_LABEL
         ),
-        None => "LIVE".to_owned(),
+        None => LIVE_STREAM_SHORT_LABEL.to_owned(),
     }
 }
 
@@ -196,13 +198,64 @@ mod tests {
             live_edge: Some(media_core::MediaTime::from_secs(70)),
             ..TimelineSnapshot::default()
         };
-        assert_eq!(timeline_right_label(&timeline), "LIVE");
+        assert_eq!(timeline_right_label(&timeline), "ЭФИР");
 
         timeline.seekable_range = media_core::TimelineRange::new(
             media_core::MediaTime::from_secs(30),
             media_core::MediaTime::from_secs(70),
         );
-        assert_eq!(timeline_right_label(&timeline), "DVR 00:30–01:10 · LIVE");
+        assert_eq!(timeline_right_label(&timeline), "DVR 00:30–01:10 · ЭФИР");
+    }
+
+    /// Рисует строку времени в окне минимальной ширины 400 (A4) и возвращает
+    /// подписи accessibility-дерева и правый край занятой области.
+    fn drawn_time_labels(timeline: &TimelineSnapshot) -> (Vec<String>, f32) {
+        let egui_ctx = crate::ui::test_frame::app_behavior_context();
+        egui_ctx.enable_accesskit();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0))),
+            ..Default::default()
+        };
+        let state = TimelineUiState::default();
+        let mut right_edge = 0.0;
+        let output = crate::ui::test_frame::run_ui_frame(&egui_ctx, input, |ui| {
+            render_time_labels(ui, timeline, &state, None);
+            right_edge = ui.min_rect().right();
+        });
+        let labels = output
+            .platform_output
+            .accesskit_update
+            .expect("AccessKit tree update")
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label().or_else(|| node.value()).map(ToOwned::to_owned))
+            .collect();
+        (labels, right_edge)
+    }
+
+    /// A15-live: у live-потока в плеере нарисована русская подпись, а не «LIVE»,
+    /// и она помещается в окно шириной 400 вместе с диапазоном DVR.
+    #[test]
+    fn live_time_label_is_drawn_in_russian_and_fits_minimum_window() {
+        let timeline = TimelineSnapshot {
+            mode: media_core::TimelineMode::Live,
+            live_edge: Some(media_core::MediaTime::from_secs(3_670)),
+            seekable_range: media_core::TimelineRange::new(
+                media_core::MediaTime::from_secs(30),
+                media_core::MediaTime::from_secs(3_670),
+            ),
+            ..TimelineSnapshot::default()
+        };
+        let (labels, right_edge) = drawn_time_labels(&timeline);
+        assert!(
+            labels.iter().any(|label| label.ends_with("· ЭФИР")),
+            "подпись live не нарисована: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label.contains("LIVE")),
+            "английский LIVE остался на экране: {labels:?}"
+        );
+        assert!(right_edge <= 400.0, "строка шире окна 400: {right_edge}");
     }
 
     /// Кадр: кнопка (может держать фокус) над таймлайном 100 с.
