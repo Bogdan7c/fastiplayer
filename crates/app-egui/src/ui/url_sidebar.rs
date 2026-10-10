@@ -9,8 +9,8 @@ use crate::web_media_catalog::{
 use crate::web_media_stream_model::component_variants::WebMediaComponentVariantProjection;
 use crate::web_media_stream_model::{
     UrlSidebarAction, UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPendingSelection,
-    UrlSidebarPlaybackStatus, UrlSidebarSafeError, WebMediaCandidatePresentation,
-    WebMediaSelectionPreference, WebMediaStreamGeneration,
+    UrlSidebarPlaybackStatus, UrlSidebarSafeError, UrlSidebarStreamKind,
+    WebMediaCandidatePresentation, WebMediaSelectionPreference, WebMediaStreamGeneration,
 };
 
 mod component_variants;
@@ -245,13 +245,22 @@ fn choose_single_sidebar_action(
     unified_action.or(component_action.map(UrlSidebarAction::ComponentVariant))
 }
 
+/// Русская подпись режима потока; неизвестный режим не маскируется под VOD.
+fn stream_kind_label(kind: UrlSidebarStreamKind) -> &'static str {
+    match kind {
+        UrlSidebarStreamKind::Live => "Прямой эфир",
+        UrlSidebarStreamKind::Vod => "VOD",
+        UrlSidebarStreamKind::Unknown => "Определяется",
+    }
+}
+
 fn status_grid(ui: &mut Ui, status: UrlSidebarPlaybackStatus) {
     egui::Grid::new("url_stream_status_grid")
         .num_columns(2)
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
             ui.weak("Режим");
-            ui.label(if status.is_live { "Live" } else { "VOD" });
+            ui.label(stream_kind_label(status.stream_kind));
             ui.end_row();
 
             ui.weak("Перемотка");
@@ -355,7 +364,7 @@ mod tests {
         WebMediaVideoComponentVariantAxis, WebMediaVideoComponentVariantPresentation,
     };
     use crate::web_media_stream_model::{
-        UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPlaybackStatus,
+        UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPlaybackStatus, UrlSidebarStreamKind,
         WebMediaCandidatePresentation, WebMediaContainerSummary, WebMediaSelectionPreference,
         WebMediaStreamGeneration,
     };
@@ -395,6 +404,36 @@ mod tests {
             .collect()
     }
 
+    fn direct_model_with(stream_kind: UrlSidebarStreamKind) -> UrlSidebarModel {
+        UrlSidebarModel::DirectMedia {
+            ingress: web_media_core::WebMediaIngressKind::DirectResource,
+            source_label: Arc::from("media.example.test"),
+            status: UrlSidebarPlaybackStatus {
+                stream_kind,
+                seekable: false,
+                buffering: false,
+                refresh_on_reopen: false,
+            },
+            catalog: crate::web_media_catalog::installed_only_catalog_state_for_test(),
+        }
+    }
+
+    /// Строка «Режим» показывает ровно ту подпись, что соответствует виду потока.
+    #[test]
+    fn mode_row_names_live_vod_and_unknown_streams_honestly() {
+        let live = visible_labels(&direct_model_with(UrlSidebarStreamKind::Live));
+        assert!(live.iter().any(|label| label == "Прямой эфир"));
+        assert!(!live.iter().any(|label| label == "VOD"));
+
+        let vod = visible_labels(&direct_model_with(UrlSidebarStreamKind::Vod));
+        assert!(vod.iter().any(|label| label == "VOD"));
+        assert!(!vod.iter().any(|label| label == "Прямой эфир"));
+
+        let unknown = visible_labels(&direct_model_with(UrlSidebarStreamKind::Unknown));
+        assert!(unknown.iter().any(|label| label == "Определяется"));
+        assert!(!unknown.iter().any(|label| label == "VOD"));
+    }
+
     #[test]
     fn url_content_does_not_create_second_sidebar_panel() {
         let source = include_str!("url_sidebar.rs");
@@ -431,7 +470,7 @@ mod tests {
             preference: WebMediaSelectionPreference::GlobalBestPlayable,
             item_scope: UrlSidebarItemScope::SingleItem,
             status: UrlSidebarPlaybackStatus {
-                is_live: false,
+                stream_kind: UrlSidebarStreamKind::Vod,
                 seekable: true,
                 buffering: false,
                 refresh_on_reopen: false,
@@ -453,7 +492,7 @@ mod tests {
             ingress: web_media_core::WebMediaIngressKind::DirectResource,
             source_label: Arc::from("media.example.test"),
             status: UrlSidebarPlaybackStatus {
-                is_live: false,
+                stream_kind: UrlSidebarStreamKind::Vod,
                 seekable: true,
                 buffering: false,
                 refresh_on_reopen: false,

@@ -405,3 +405,54 @@ fn secret_safe_model_never_contains_locator_path_query_or_userinfo() {
     assert!(!debug.contains("token"));
     assert!(!debug.contains("fragment"));
 }
+
+fn direct_web_source() -> ActiveMediaSource {
+    let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
+        "https://example.test/stream.mp4",
+    )
+    .expect("valid direct-media fixture");
+    ActiveMediaSource::Web(crate::media_open::WebMediaSourceIntent::direct(locator))
+}
+
+/// Snapshot установленного media с заданным режимом timeline (как его публикует player).
+fn installed_snapshot(mode: TimelineMode) -> PlayerSnapshot {
+    let mut snapshot = PlayerSnapshot::empty();
+    snapshot.media_instance_id = Some(player_core::MediaInstanceId::from_non_zero(
+        std::num::NonZeroU64::MIN,
+    ));
+    snapshot.timeline.mode = mode;
+    snapshot
+}
+
+fn direct_stream_kind(snapshot: &PlayerSnapshot) -> UrlSidebarStreamKind {
+    let model = UrlSidebarController::default().model(Some(&direct_web_source()), snapshot, None);
+    let UrlSidebarModel::DirectMedia { status, .. } = model else {
+        panic!("direct source должен давать DirectMedia");
+    };
+    status.stream_kind
+}
+
+#[test]
+fn live_timeline_is_reported_as_live_stream() {
+    assert_eq!(
+        direct_stream_kind(&installed_snapshot(TimelineMode::Live)),
+        UrlSidebarStreamKind::Live
+    );
+}
+
+#[test]
+fn static_timeline_is_reported_as_vod_stream() {
+    assert_eq!(
+        direct_stream_kind(&installed_snapshot(TimelineMode::Static)),
+        UrlSidebarStreamKind::Vod
+    );
+}
+
+/// Пока media не установлено, timeline лишь дефолтная: режим неизвестен, а не «VOD».
+#[test]
+fn snapshot_without_installed_media_has_unknown_stream_kind() {
+    assert_eq!(
+        direct_stream_kind(&PlayerSnapshot::empty()),
+        UrlSidebarStreamKind::Unknown
+    );
+}

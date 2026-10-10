@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use media_core::TimelineMode;
 use player_core::{PlaybackState, PlayerSnapshot};
 
 #[cfg(test)]
@@ -38,10 +39,25 @@ pub(crate) enum UrlSidebarItemScope {
     CompoundPart,
 }
 
+/// Вид потока, который sidebar может честно показать в строке «Режим».
+///
+/// Источник истины — `PlayerSnapshot::timeline.mode`: его публикует player после установки
+/// media (live HLS/DASH/yt-dlp приходят как динамическая timeline). Sidebar сам live не
+/// определяет и manifest-ы не читает.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UrlSidebarStreamKind {
+    /// Прямой эфир (динамическая live timeline).
+    Live,
+    /// Конечная запись.
+    Vod,
+    /// Media ещё не установлено (или уже сброшено): режим неизвестен, VOD не выдумываем.
+    Unknown,
+}
+
 /// Конечный playback status, который URL view может показать без worker handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UrlSidebarPlaybackStatus {
-    pub(crate) is_live: bool,
+    pub(crate) stream_kind: UrlSidebarStreamKind,
     pub(crate) seekable: bool,
     pub(crate) buffering: bool,
     pub(crate) refresh_on_reopen: bool,
@@ -237,14 +253,25 @@ impl UrlSidebarController {
 
 fn playback_status(snapshot: &PlayerSnapshot, refresh_on_reopen: bool) -> UrlSidebarPlaybackStatus {
     UrlSidebarPlaybackStatus {
-        // S23 production path поддерживает только finite progressive HTTP(S).
-        is_live: false,
+        stream_kind: stream_kind(snapshot),
         seekable: snapshot
             .media_info
             .as_ref()
             .is_some_and(|media_info| media_info.seekable),
         buffering: snapshot.playback_state == PlaybackState::Buffering,
         refresh_on_reopen,
+    }
+}
+
+/// Режим потока из snapshot-а player-а. Без установленного media timeline лишь дефолтная
+/// (`Static`), поэтому «VOD» по ней утверждать нельзя.
+fn stream_kind(snapshot: &PlayerSnapshot) -> UrlSidebarStreamKind {
+    if snapshot.media_instance_id.is_none() {
+        return UrlSidebarStreamKind::Unknown;
+    }
+    match snapshot.timeline.mode {
+        TimelineMode::Live => UrlSidebarStreamKind::Live,
+        TimelineMode::Static => UrlSidebarStreamKind::Vod,
     }
 }
 
