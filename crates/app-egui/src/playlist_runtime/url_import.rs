@@ -355,23 +355,16 @@ impl PlaylistUrlImportOwner {
 
     /// Неблокирующе забирает только exact latest terminal result.
     pub(super) fn drain(&mut self) -> Option<FinishedPlaylistUrlImport> {
+        // Poisoned state — терминальное состояние владельца (fail-closed, mem:panic-invariant-policy):
+        // повторно лочить нечего, а о сбое сообщает `fail_active_request_after_poison`
+        // ровно один раз — пока жив принятый request.
+        if self.state_poisoned {
+            return self.fail_active_request_after_poison();
+        }
         let Ok(mut shared_state) = lock_worker_state(&self.shared_state) else {
             self.state_poisoned = true;
-            let active = self.active_request.take();
-            let destination = active
-                .as_ref()
-                .map_or(PlaylistUrlImportDestination::AppendToQueue, |active| {
-                    active.destination
-                });
-            let display_host = active.and_then(|active| active.display_host);
-            self.current_generation
-                .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
             tracing::error!("URL topology owner обнаружил poisoned worker state при drain");
-            return Some(FinishedPlaylistUrlImport {
-                completion: PlaylistUrlImportCompletion::Failed(PlaylistUrlImportFailure::Internal),
-                destination,
-                display_host,
-            });
+            return self.fail_active_request_after_poison();
         };
         let tagged = shared_state.completion.take()?;
         let is_exact_latest = self
@@ -387,6 +380,22 @@ impl PlaylistUrlImportOwner {
             .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
         Some(FinishedPlaylistUrlImport {
             completion: tagged.completion,
+            destination: active.destination,
+            display_host: active.display_host,
+        })
+    }
+
+    /// Завершает принятый request внутренним сбоем; без активного request-а молчит.
+    ///
+    /// `active_request.take()` делает отчёт одноразовым: следующий drain (каждый кадр)
+    /// получает `None`, а не очередной `Failed`. Новый `submit` после poison получает
+    /// `WorkerUnavailable` (пользователь видит отказ), потому что worker state мёртв навсегда.
+    fn fail_active_request_after_poison(&mut self) -> Option<FinishedPlaylistUrlImport> {
+        let active = self.active_request.take()?;
+        self.current_generation
+            .store(NO_URL_IMPORT_GENERATION, Ordering::Release);
+        Some(FinishedPlaylistUrlImport {
+            completion: PlaylistUrlImportCompletion::Failed(PlaylistUrlImportFailure::Internal),
             destination: active.destination,
             display_host: active.display_host,
         })

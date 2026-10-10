@@ -316,6 +316,56 @@ fn poisoned_worker_state_fails_closed_and_shutdown_reports_terminal_failure() {
 }
 
 #[test]
+fn poisoned_state_reports_failure_once_then_refuses_new_imports() {
+    let wake_port = AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime);
+    let mut owner =
+        PlaylistUrlImportOwner::with_resolver(wake_port, Arc::new(ImmediateCompoundResolver));
+    owner
+        .submit(
+            locator("before-poison"),
+            YtDlpConfig::default(),
+            0,
+            Some("example.test".to_owned()),
+            PlaylistUrlImportDestination::ReplaceAfterConfirmation,
+        )
+        .expect("request accepted before poison");
+    let shared_state = Arc::clone(&owner.shared_state);
+    let poisoner = thread::spawn(move || {
+        let _guard = shared_state.lock().expect("test acquires worker state");
+        panic!("intentional test poison");
+    });
+    assert!(poisoner.join().is_err());
+
+    let finished = owner.drain().expect("first drain reports the failure");
+    assert!(matches!(
+        finished.completion,
+        PlaylistUrlImportCompletion::Failed(PlaylistUrlImportFailure::Internal)
+    ));
+    assert_eq!(
+        finished.destination,
+        PlaylistUrlImportDestination::ReplaceAfterConfirmation
+    );
+    assert_eq!(finished.display_host.as_deref(), Some("example.test"));
+    // Дальше владелец терминален: ни повторных сбоев, ни «висящего» индикатора.
+    for _ in 0..3 {
+        assert!(owner.drain().is_none());
+    }
+    assert!(owner.progress().is_none());
+    // Новый запуск получает явный отказ, а не молчание.
+    assert_eq!(
+        owner.submit(
+            locator("after-poison"),
+            YtDlpConfig::default(),
+            0,
+            None,
+            PlaylistUrlImportDestination::AppendToQueue
+        ),
+        Err(PlaylistUrlImportStartError::WorkerUnavailable)
+    );
+    assert!(owner.drain().is_none());
+}
+
+#[test]
 fn yt_dlp_video_uses_single_preview_then_append_without_confirmation_or_playback() {
     let wake_port = AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime);
     let mut runtime = PlaylistRuntime::new(wake_port);
