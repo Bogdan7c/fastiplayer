@@ -13,9 +13,12 @@
 mod support;
 
 use std::num::NonZeroU32;
+use std::time::{Duration, Instant};
 
 use source_core::CancellationToken;
-use support::{TestQueries, TestServer, adaptive_context, demux_registry, open_policy, response};
+use support::{
+    TestQueries, TestServer, adaptive_context, demux_registry, muxed_ts, open_policy, response,
+};
 use web_media_adaptive::{
     AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
     AdaptiveResourceQueryApplication,
@@ -54,6 +57,7 @@ variant.m3u8\n";
 #EXTINF:4,\n\
 segment.ts\n\
 #EXT-X-ENDLIST\n";
+    let segment = muxed_ts(0);
     let server = TestServer::start(move |_, request| {
         if request
             .request_line
@@ -76,6 +80,15 @@ segment.ts\n\
             .starts_with("GET /redirected/variant.m3u8 ")
         {
             return response("200 OK", &[], variant);
+        }
+        // Первый media-сегмент запрашивает фоновый worker отложенного открытия
+        // (`open_inner` в `ProgressiveDemuxer`) уже ПОСЛЕ возврата `prepare_hls_vod`.
+        // Это легитимный content-probe, поэтому отдаём настоящий TS, а не паникуем.
+        if request
+            .request_line
+            .starts_with("GET /redirected/segment.ts ")
+        {
+            return response("200 OK", &[], &segment);
         }
         panic!("unexpected HLS request: {}", request.request_line);
     });
@@ -111,24 +124,57 @@ segment.ts\n\
         policy: open_policy(),
     };
 
-    let _opened = prepare_hls_vod(request).expect("fetched master opens without top GET");
-    let requests = server.requests();
-    assert_eq!(requests.len(), 3, "top manifest must not be fetched twice");
-    assert!(
-        requests[0]
-            .request_line
-            .starts_with("GET /original/master.m3u8 ")
+    let opened = prepare_hls_vod(request).expect("fetched master opens without top GET");
+    // `prepare_hls_vod` возвращает неустановленный runtime: первый сегмент
+    // подтягивается фоновым worker-ом, поэтому в момент возврата сервер видел
+    // 3 или 4 запроса в зависимости от планировщика. Ждём реальное событие (запрос
+    // сегмента), а не фиксированную паузу, затем гасим runtime, чтобы дальше
+    // запросов уже не было, и проверяем полный детерминированный список.
+    wait_for_request(&server, "GET /redirected/segment.ts ");
+    drop(opened);
+    let lines: Vec<String> = server
+        .requests()
+        .into_iter()
+        .map(|request| request.request_line)
+        .collect();
+    let expected_prefixes = [
+        // Единственный top GET сделал сам тест (`fetch_top_manifest`): с редиректом.
+        "GET /original/master.m3u8 ",
+        "GET /redirected/master.m3u8 ",
+        // Дальше open не перезапрашивает master, а берёт variant и сегмент
+        // от effective-базы после редиректа (`/redirected/`).
+        "GET /redirected/variant.m3u8 ",
+        "GET /redirected/segment.ts ",
+    ];
+    assert_eq!(
+        lines.len(),
+        expected_prefixes.len(),
+        "top manifest and segment must each be fetched once: {lines:?}"
     );
-    assert!(
-        requests[1]
-            .request_line
-            .starts_with("GET /redirected/master.m3u8 ")
-    );
-    assert!(
-        requests[2]
-            .request_line
-            .starts_with("GET /redirected/variant.m3u8 ")
-    );
+    for (line, prefix) in lines.iter().zip(expected_prefixes) {
+        assert!(
+            line.starts_with(prefix),
+            "expected {prefix:?}, got {line:?}"
+        );
+    }
+}
+
+/// Ждёт, пока сервер увидит запрос с заданным началом строки; без этого событие
+/// фонового worker-а нельзя проверять детерминированно. Дедлайн нужен только чтобы
+/// сломанный код не повесил тест, на успешном пути он не участвует.
+fn wait_for_request(server: &TestServer, request_line_prefix: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !server
+        .requests()
+        .iter()
+        .any(|request| request.request_line.starts_with(request_line_prefix))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "server never saw {request_line_prefix:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]
