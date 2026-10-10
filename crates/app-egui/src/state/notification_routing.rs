@@ -10,6 +10,7 @@
 //! - [`AppState::set_startup_error`] (в `state.rs`) — фатальная ошибка открытия в центре;
 //! - [`AppState::notify_open_still_in_progress`] — повторный Open во время открытия;
 //! - [`AppState::show_playlist_queue_notices`] — итоги автоматических пропусков в очереди.
+//! - [`AppState::show_playlist_import_notices`] — как прочитан импортированный плейлист.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,7 +20,7 @@ use tracing::debug;
 
 use super::AppState;
 use super::notifications::{NotificationsFrame, OPEN_STILL_IN_PROGRESS_MESSAGE, OpenProgress};
-use crate::playlist_runtime::AutomaticQueueNotice;
+use crate::playlist_runtime::{AutomaticQueueNotice, PlaylistImportNotice};
 use crate::playlist_skip_message::{PlaylistQueueNoticeDelivery, playlist_queue_notice_delivery};
 use crate::ui::animation::UiMotion;
 use crate::ui::notifications::{NotificationAction, NotificationUiOutput};
@@ -55,6 +56,16 @@ impl AppState {
                 PlaylistQueueNoticeDelivery::TransientToast(text) => self.notify_transient(text),
                 PlaylistQueueNoticeDelivery::MediaFailure(text) => self.set_startup_error(text),
             }
+        }
+    }
+
+    /// Показывает факты о чтении импортированных плейлистов (B1: «прочитан в Windows-1251»).
+    ///
+    /// Это информация, а не ошибка: плейлист уже разобран, поэтому инфо-toast (8 с).
+    pub(crate) fn show_playlist_import_notices(&mut self, notices: Vec<PlaylistImportNotice>) {
+        for notice in notices {
+            debug!(?notice, "Уведомление о чтении плейлиста");
+            self.notify_info(notice.message());
         }
     }
 

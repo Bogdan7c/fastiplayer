@@ -3,7 +3,7 @@ use std::fmt;
 use media_core::MediaDuration;
 use playlist_core::PlaylistSingleImportDraft;
 
-use crate::{M3uDocumentSource, M3uIssueSummary, M3uLineNumber};
+use crate::{M3uDocumentSource, M3uIssueSummary, M3uLineNumber, PlaylistTextEncoding};
 
 /// Полностью классифицированный S05 parse result.
 #[derive(Clone, Debug)]
@@ -25,6 +25,8 @@ pub struct GenericM3uPreview {
     issues: M3uIssueSummary,
     /// Parse остановился на item cap.
     truncated_by_item_limit: bool,
+    /// Кодировка, в которой прочитан документ (Windows-1251 — запасной вариант).
+    text_encoding: PlaylistTextEncoding,
 }
 
 impl GenericM3uPreview {
@@ -33,11 +35,13 @@ impl GenericM3uPreview {
         entries: Vec<GenericM3uEntryDraft>,
         issues: M3uIssueSummary,
         truncated_by_item_limit: bool,
+        text_encoding: PlaylistTextEncoding,
     ) -> Self {
         Self {
             entries: entries.into_boxed_slice(),
             issues,
             truncated_by_item_limit,
+            text_encoding,
         }
     }
 
@@ -56,6 +60,11 @@ impl GenericM3uPreview {
     /// Возвращает bounded issue summary.
     pub const fn issues(&self) -> &M3uIssueSummary {
         &self.issues
+    }
+
+    /// Возвращает кодировку, в которой фактически прочитан документ.
+    pub const fn text_encoding(&self) -> PlaylistTextEncoding {
+        self.text_encoding
     }
 
     /// Сообщает, остановил ли item budget дальнейший preview.

@@ -5,6 +5,7 @@ use playlist_core::{CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, Pla
 
 use super::*;
 use crate::app_wake::{AppWakeOwner, AppWakePort};
+use crate::playlist_runtime::PlaylistImportNotice;
 use crate::playlist_runtime::controller::PlaylistController;
 
 fn runtime_with_queue_row(existing: &str) -> PlaylistRuntime {
@@ -107,4 +108,83 @@ fn closed_runtime_does_not_start_path_import() {
         PlaylistPathImportStart::RuntimeClosed
     );
     assert!(!runtime.has_playlist_import_in_flight());
+}
+
+/// Кодирует ASCII и русские буквы А-я в Windows-1251 (А = 0xC0 … я = 0xFF).
+///
+/// Намеренно не использует библиотеку декодирования, чтобы фикстура была независимой.
+fn windows_1251_bytes(text: &str) -> Vec<u8> {
+    text.chars()
+        .map(|character| match character {
+            '\u{0410}'..='\u{044F}' => {
+                u8::try_from(0xC0 + (u32::from(character) - 0x0410)).expect("cp1251 byte")
+            }
+            ascii if ascii.is_ascii() => u8::try_from(u32::from(ascii)).expect("ascii byte"),
+            other => panic!("символ {other:?} не поддержан тестовым кодировщиком"),
+        })
+        .collect()
+}
+
+#[test]
+fn windows_1251_m3u_imports_cyrillic_entries_and_reports_the_encoding_once() {
+    let directory = tempfile::tempdir().expect("dir");
+    let path = directory.path().join("старый.m3u");
+    std::fs::write(
+        &path,
+        windows_1251_bytes("#EXTM3U\n#EXTINF:1,Первый\none.mp3\n#EXTINF:2,Второй\ntwo.mp3\n"),
+    )
+    .expect("cp1251 playlist");
+    let mut runtime = runtime_with_queue_row("/old.mkv");
+
+    let start = runtime.start_playlist_import_path(path, PlaylistImportIntent::AppendToQueue);
+
+    assert_eq!(start, PlaylistPathImportStart::Started);
+    let preview = wait_for_preview(&mut runtime);
+    // Записи не потеряны: невалидный UTF-8 больше не отказ.
+    assert_eq!(preview.accepted().singles(), 2);
+    let notices = runtime.drain_playlist_import_notices();
+    assert_eq!(notices, vec![PlaylistImportNotice::TextReadAsWindows1251]);
+    assert_eq!(
+        notices[0].message(),
+        "Плейлист прочитан в кодировке Windows-1251"
+    );
+    // Уведомление отдаётся ровно один раз.
+    assert!(runtime.drain_playlist_import_notices().is_empty());
+}
+
+#[test]
+fn windows_1251_cue_imports_tracks_and_reports_the_encoding() {
+    let directory = tempfile::tempdir().expect("dir");
+    let path = directory.path().join("альбом.cue");
+    std::fs::write(
+        &path,
+        windows_1251_bytes(
+            "FILE \"альбом.flac\" FLAC\n  TRACK 01 AUDIO\n    TITLE \"Первая\"\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    TITLE \"Вторая\"\n    INDEX 01 01:00:00\n",
+        ),
+    )
+    .expect("cp1251 cue");
+    let mut runtime = runtime_with_queue_row("/old.mkv");
+
+    let start = runtime.start_playlist_import_path(path, PlaylistImportIntent::AppendToQueue);
+
+    assert_eq!(start, PlaylistPathImportStart::Started);
+    let preview = wait_for_preview(&mut runtime);
+    assert_eq!(preview.accepted().singles(), 2);
+    assert_eq!(
+        runtime.drain_playlist_import_notices(),
+        vec![PlaylistImportNotice::TextReadAsWindows1251]
+    );
+}
+
+#[test]
+fn utf8_playlist_import_shows_no_encoding_notice() {
+    let directory = tempfile::tempdir().expect("dir");
+    let playlist = write_playlist(&directory);
+    let mut runtime = runtime_with_queue_row("/old.mkv");
+
+    let _start = runtime.start_playlist_import_path(playlist, PlaylistImportIntent::AppendToQueue);
+    let preview = wait_for_preview(&mut runtime);
+
+    assert_eq!(preview.accepted().singles(), 2);
+    assert!(runtime.drain_playlist_import_notices().is_empty());
 }

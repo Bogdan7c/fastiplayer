@@ -33,6 +33,7 @@ pub(crate) use dropped_collection::{
     DroppedCollectionWalkStartError,
 };
 pub(crate) use dropped_web_url::{DroppedWebUrlAppendOutcome, ServiceUrlReplacementOutcome};
+pub(crate) use import_io::PlaylistImportNotice;
 pub(crate) use import_path::PlaylistPathImportStart;
 pub(crate) use lifecycle_checkpoint::LifecycleTimelineCheckpointPosition;
 pub(crate) use local_files_replacement::LocalFilesReplacementOutcome;

@@ -31,8 +31,11 @@ use crate::process_shutdown::{
 
 use super::PlaylistRuntime;
 use super::import_transaction::{PlaylistImportDraft, PlaylistImportIntent};
+pub(crate) use notice::PlaylistImportNotice;
+use notice::{PlaylistImportNoticeQueue, notices_for_cue, notices_for_expansion};
 
 mod materializer;
+mod notice;
 
 #[cfg(test)]
 mod supersede_cancel_contract;
@@ -46,6 +49,8 @@ enum PlaylistImportJobCompletion {
     Parsed {
         intent: PlaylistImportIntent,
         draft: PlaylistImportDraft,
+        /// Как был прочитан файл (например, запасная кодировка Windows-1251).
+        notices: Vec<PlaylistImportNotice>,
     },
     /// Ошибка безопасно классифицирована без path/URL payload.
     Failed(PlaylistImportJobError),
@@ -224,6 +229,8 @@ impl PlaylistImportJob {
 pub(super) struct PlaylistImportIoOwner {
     wake_port: AppWakePort,
     job: Option<PlaylistImportJob>,
+    /// Не показанные пользователю факты о чтении плейлистов.
+    notices: PlaylistImportNoticeQueue,
 }
 
 impl PlaylistImportIoOwner {
@@ -231,11 +238,22 @@ impl PlaylistImportIoOwner {
         Self {
             wake_port,
             job: None,
+            notices: PlaylistImportNoticeQueue::default(),
         }
     }
 
     pub(super) const fn is_open(&self) -> bool {
         self.job.is_some()
+    }
+
+    /// Отдаёт накопленные уведомления ровно один раз.
+    pub(super) fn drain_notices(&mut self) -> Vec<PlaylistImportNotice> {
+        self.notices.drain()
+    }
+
+    /// Запоминает факты о чтении только что разобранного плейлиста.
+    pub(super) fn record_notices(&mut self, notices: Vec<PlaylistImportNotice>) {
+        self.notices.extend(notices);
     }
 
     /// Superseding runtime intent инвалидирует и dialog, и parser completion.
@@ -310,6 +328,13 @@ impl PlaylistImportIoOwner {
 }
 
 impl PlaylistRuntime {
+    /// Забирает уведомления о чтении плейлистов (например, «прочитан в Windows-1251»).
+    ///
+    /// Каждое уведомление отдаётся ровно один раз; показывает их приложение.
+    pub(crate) fn drain_playlist_import_notices(&mut self) -> Vec<PlaylistImportNotice> {
+        self.import_io.drain_notices()
+    }
+
     /// Идёт ли выбор файла плейлиста или его разбор (новое открытие должно подождать).
     pub(crate) fn has_playlist_import_in_flight(&self) -> bool {
         self.import_io.is_open()
@@ -369,7 +394,12 @@ impl PlaylistRuntime {
                 }
                 changed
             }
-            PlaylistImportJobCompletion::Parsed { intent, draft } => {
+            PlaylistImportJobCompletion::Parsed {
+                intent,
+                draft,
+                notices,
+            } => {
+                self.import_io.record_notices(notices);
                 if intent == PlaylistImportIntent::StartupReplace
                     && self.controller.as_ref().is_none()
                 {
@@ -474,7 +504,12 @@ fn parse_selected_root(
     }
 
     let draft = materializer::materialize_expansion(&expansion);
-    PlaylistImportJobCompletion::Parsed { intent, draft }
+    let notices = notices_for_expansion(expansion.summary());
+    PlaylistImportJobCompletion::Parsed {
+        intent,
+        draft,
+        notices,
+    }
 }
 
 /// Читает один CUE root строго в пределах S12 byte budget и materialize-ит Singles.
@@ -534,7 +569,11 @@ fn parse_selected_cue_root(
         .map(|track| PlaylistImportEntryDraft::Single(track.import_draft().clone()))
         .collect();
     let draft = PlaylistImportDraft::new(entries, Vec::new(), None, 0);
-    PlaylistImportJobCompletion::Parsed { intent, draft }
+    PlaylistImportJobCompletion::Parsed {
+        intent,
+        draft,
+        notices: notices_for_cue(document.encoding()),
+    }
 }
 
 #[cfg(test)]
@@ -582,12 +621,15 @@ mod tests {
             let PlaylistImportJobCompletion::Parsed {
                 intent: actual_intent,
                 draft,
+                notices,
             } = completion
             else {
                 panic!("valid playlist root must produce staged draft");
             };
             let (entries, issues, truncated, _) = draft.test_summary();
             assert_eq!(actual_intent, intent);
+            // Валидный UTF-8 не даёт уведомлений о кодировке.
+            assert!(notices.is_empty());
             assert_eq!(entries, expected_entries);
             assert_eq!(issues, 0);
             assert!(!truncated);
@@ -672,6 +714,7 @@ mod tests {
         let mut owner = PlaylistImportIoOwner {
             wake_port,
             job: Some(job),
+            notices: PlaylistImportNoticeQueue::default(),
         };
         // Deadline превращает зависший import worker в точный test failure.
         let completion_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);

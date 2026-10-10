@@ -10,8 +10,8 @@ use url::Url;
 
 use crate::{
     GenericM3uPreview, M3uDeclaredFormat, M3uDocument, M3uParseRequest, M3uParserLimits,
-    PlaylistDocumentSource, XspfParseRequest, XspfParserLimits, XspfPlaylist, XspfTrack,
-    parse_m3u_document, parse_xspf_document,
+    PlaylistDocumentSource, PlaylistTextEncoding, XspfParseRequest, XspfParserLimits, XspfPlaylist,
+    XspfTrack, parse_m3u_document, parse_xspf_document,
 };
 
 use super::model::{
@@ -340,6 +340,10 @@ impl<Reader: LocalDocumentReader> ExpansionContext<'_, '_, Reader> {
             );
         }
         self.record_pre_omitted_diagnostics(preview.issues().omitted_issue_count());
+        // Запасной декодер Windows-1251 — не проблема документа, а факт для уведомления.
+        if preview.text_encoding() == PlaylistTextEncoding::Windows1251 {
+            self.summary.windows_1251_documents += 1;
+        }
 
         let mut source_complete = !preview.truncated_by_item_limit();
         if preview.truncated_by_item_limit() {

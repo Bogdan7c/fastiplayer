@@ -134,11 +134,12 @@ fn issue_storage_is_bounded_with_exact_omitted_accounting() {
 }
 
 #[test]
-fn invalid_utf8_is_fatal_without_lossy_replacement() {
+fn invalid_utf8_is_fatal_for_m3u8_without_lossy_replacement() {
+    // `.m3u8` всегда UTF-8: запасной Windows-1251 для него запрещён (решение B1).
     let error = parse_m3u_document(M3uParseRequest::new(
         &[0xff, b'\n'],
-        M3uDocumentSource::local("/tmp/list.m3u"),
-        M3uDeclaredFormat::M3u,
+        M3uDocumentSource::local("/tmp/list.m3u8"),
+        M3uDeclaredFormat::M3u8,
         M3uParserLimits::default(),
     ))
     .expect_err("invalid UTF-8");

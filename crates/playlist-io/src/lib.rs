@@ -14,6 +14,7 @@ mod locator;
 mod m3u;
 mod model;
 mod source;
+mod text_encoding;
 mod xspf;
 
 pub use cue::{
@@ -61,6 +62,7 @@ pub use source::{
     M3uDocumentSource, M3uDocumentSourceError, PlaylistDocumentSource, PlaylistDocumentSourceError,
     XspfDocumentSource, XspfDocumentSourceError,
 };
+pub use text_encoding::PlaylistTextEncoding;
 pub use xspf::{
     DEFAULT_MAX_XSPF_ATTRIBUTE_BYTES, DEFAULT_MAX_XSPF_ATTRIBUTE_COUNT,
     DEFAULT_MAX_XSPF_ATTRIBUTES_PER_ELEMENT, DEFAULT_MAX_XSPF_DEPTH,

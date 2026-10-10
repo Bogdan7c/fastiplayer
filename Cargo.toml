@@ -249,6 +249,8 @@ proc-macro2 = "1.0"
 quote = "1.0"
 syn = "2.0"
 url = "2.5"
+# Windows-1251 fallback для legacy .m3u/.cue (решение владельца B1); WHATWG-совместимые таблицы.
+encoding_rs = "0.8.42"
 percent-encoding = "2"
 unicode-normalization = "0.1"
 quick-xml = "0.41"

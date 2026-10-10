@@ -37,6 +37,7 @@ fn supersede_cancels_in_flight_job_before_late_completion_can_stage() {
     let mut owner = PlaylistImportIoOwner {
         wake_port,
         job: Some(job),
+        notices: PlaylistImportNoticeQueue::default(),
     };
     started_receiver.recv().expect("worker started");
 

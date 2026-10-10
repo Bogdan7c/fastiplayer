@@ -52,3 +52,6 @@
 - `state/center_overlay_tests.rs` — приоритеты overlay и сквозной toast через `render_center_overlay`. Запуск: `cargo test -p app-egui --locked -- notifications center_overlay`.
 
 Связанные: `mem:app-egui/center-overlay-state-2026-09-05`, `mem:app-egui/local-open-error-messages-ux02`, `mem:settings-ui/reduced-motion-2026-07-18`.
+
+## Чтение плейлиста (B1, 2026-10-10)
+- `AppState::show_playlist_import_notices(Vec<PlaylistImportNotice>)` -> `notify_info` («Плейлист прочитан в кодировке Windows-1251»); источник — `PlaylistRuntime::drain_playlist_import_notices` в `frame_prepare`. Детали: `mem:playlist/text-encoding-fallback-b1-2026-10-10`.

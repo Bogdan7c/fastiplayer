@@ -380,6 +380,8 @@ pub struct LocalPlaylistExpansionSummary {
     pub(crate) item_truncations: usize,
     /// Cancellation была замечена на document boundary.
     pub(crate) cancelled: bool,
+    /// Сколько документов прочитано запасным декодером Windows-1251.
+    pub(crate) windows_1251_documents: usize,
 }
 
 impl LocalPlaylistExpansionSummary {
@@ -431,6 +433,11 @@ impl LocalPlaylistExpansionSummary {
     /// Возвращает число item-budget truncations.
     pub const fn item_truncations(self) -> usize {
         self.item_truncations
+    }
+
+    /// Возвращает число документов, прочитанных как Windows-1251 (не валидный UTF-8).
+    pub const fn windows_1251_documents(self) -> usize {
+        self.windows_1251_documents
     }
 
     /// Сообщает, была ли замечена cancellation.

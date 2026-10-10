@@ -20,6 +20,8 @@ playlist-core.workspace = true
 media-core.workspace = true
 # WHATWG parser даёт единый syntax/base/file-URI boundary без самописного percent decoding.
 url.workspace = true
+# Fallback-декодер Windows-1251 для legacy-плейлистов без UTF-8 (общий text_encoding модуль).
+encoding_rs.workspace = true
 
 [lints]
 workspace = true

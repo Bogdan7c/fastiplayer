@@ -38,6 +38,9 @@ pub enum CueTextEncoding {
     Utf16LittleEndianWithBom,
     /// UTF-16 big-endian с обязательным BOM.
     Utf16BigEndianWithBom,
+    /// Запасной вариант (решение владельца B1): байты без BOM не были валидным UTF-8
+    /// и прочитаны как Windows-1251.
+    Windows1251,
 }
 
 /// Поддержанный FILE type, совместимый с текущим audio demux profile.

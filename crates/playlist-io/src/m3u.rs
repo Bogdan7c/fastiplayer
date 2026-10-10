@@ -11,18 +11,27 @@ use crate::{
     locator::{
         LocatorResolutionError, build_import_draft, duration_from_seconds, resolve_generic_locator,
     },
+    text_encoding::{LegacyFallback, PlaylistTextEncoding, decode_utf8_or_windows_1251},
 };
 
 /// Declared generic container family до content-first HLS distinction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum M3uDeclaredFormat {
-    /// Legacy/generic UTF-8 M3U с optional BOM warning.
+    /// Legacy/generic M3U: UTF-8 (optional BOM warning) либо запасная Windows-1251.
     M3u,
-    /// UTF-8 M3U8; BOM запрещён даже для non-HLS content.
+    /// M3U8: строго UTF-8 (без fallback); BOM запрещён даже для non-HLS content.
     M3u8,
 }
 
 impl M3uDeclaredFormat {
+    /// Политика запасной кодировки: `.m3u8` — всегда UTF-8, `.m3u` — допускает Windows-1251.
+    const fn legacy_fallback(self) -> LegacyFallback {
+        match self {
+            Self::M3u => LegacyFallback::Windows1251,
+            Self::M3u8 => LegacyFallback::Forbidden,
+        }
+    }
+
     /// Переводит parser intent в neutral provenance vocabulary.
     const fn provenance_kind(self) -> PlaylistImportSourceKind {
         match self {
@@ -74,8 +83,12 @@ pub fn parse_m3u_document(request: M3uParseRequest<'_>) -> Result<M3uDocument, M
         return Err(M3uParseError::new(M3uParseErrorKind::DocumentLimitExceeded));
     }
 
-    let original_text = std::str::from_utf8(document_bytes)
-        .map_err(|_| M3uParseError::new(M3uParseErrorKind::InvalidUtf8))?;
+    // `.m3u8` по спецификации всегда UTF-8 (fallback запрещён); обычный `.m3u` при
+    // невалидном UTF-8 читается как Windows-1251 (решение владельца B1).
+    let (decoded_text, text_encoding) =
+        decode_utf8_or_windows_1251(document_bytes, declared_format.legacy_fallback())
+            .map_err(|_| M3uParseError::new(M3uParseErrorKind::InvalidUtf8))?;
+    let original_text = decoded_text.as_ref();
     let (text_without_bom, had_bom) = match original_text.strip_prefix('\u{feff}') {
         Some(text_without_bom) => (text_without_bom, true),
         None => (original_text, false),
@@ -102,6 +115,7 @@ pub fn parse_m3u_document(request: M3uParseRequest<'_>) -> Result<M3uDocument, M
     Ok(M3uDocument::Generic(parse_generic_m3u(
         text_without_bom,
         had_bom,
+        text_encoding,
         &source,
         declared_format,
         limits,
@@ -112,6 +126,7 @@ pub fn parse_m3u_document(request: M3uParseRequest<'_>) -> Result<M3uDocument, M
 fn parse_generic_m3u(
     text: &str,
     had_bom: bool,
+    text_encoding: PlaylistTextEncoding,
     source: &M3uDocumentSource,
     declared_format: M3uDeclaredFormat,
     limits: M3uParserLimits,
@@ -215,7 +230,12 @@ fn parse_generic_m3u(
         issues.push(extinf_line, M3uImportIssueKind::OrphanedExtInf);
     }
 
-    GenericM3uPreview::new(entries, issues.finish(), truncated_by_item_limit)
+    GenericM3uPreview::new(
+        entries,
+        issues.finish(),
+        truncated_by_item_limit,
+        text_encoding,
+    )
 }
 
 /// Разбирает declared signed decimal и title.
