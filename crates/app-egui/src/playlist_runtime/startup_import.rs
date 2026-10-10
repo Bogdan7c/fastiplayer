@@ -10,7 +10,9 @@ use std::sync::atomic::Ordering;
 use playlist_core::{PlaylistItemId, QueueRevisionSnapshot, ReservedQueueMutation};
 
 use super::PlaylistRuntime;
-use super::controller::{PlannedPlaylistInstall, PlaylistInstallMutation, StablePlaybackIntent};
+use super::controller::{
+    PlannedPlaylistInstall, PlaylistInstallMutation, StablePlaybackIntent, StartupPosition,
+};
 use super::identity::{PendingTargetOrigin, TransportActionOrigin};
 use super::import_transaction::{PlaylistImportDraft, PlaylistImportIntent};
 
@@ -203,6 +205,7 @@ impl PlaylistRuntime {
             mutation: PlaylistInstallMutation::Reserved(ReservedQueueMutation::select_committed(
                 receipt.first_item_id,
             )),
+            start_position: StartupPosition::KeepStart,
         })
     }
 

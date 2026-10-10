@@ -22,11 +22,16 @@ use crate::playlist_runtime::operational_open::{
     OperationalOpenLocatorError, operational_open_locator,
 };
 
-/// Startup open всегда явно говорит, оставлять начало или восстанавливать checkpoint.
+/// Strong open всегда явно говорит, оставлять начало или восстанавливать позицию.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartupPosition {
     KeepStart,
+    /// Resume из checkpoint: позиция у самого конца откатывается к началу (политика B2).
     Restore(std::time::Duration),
+    /// Точное возвращение пользователем (Undo Clear): позиция применяется как есть, политика
+    /// B2 не действует. Undo обязан вернуть именно то состояние, которое было до Clear, даже
+    /// если до конца оставалось 3 секунды.
+    RestoreExact(std::time::Duration),
 }
 
 /// Opaque startup target сохраняет exact traversal mutation до `Installed`.
@@ -35,8 +40,9 @@ pub(crate) struct StartupRestoreTarget {
     pub(crate) locator: playlist_core::PlaylistLocator,
     /// Locator, который реально открывается (собственная identity ролика коллекции).
     pub(crate) open_locator: Box<playlist_core::PlaylistLocator>,
-    pub(crate) position: StartupPosition,
-    pub(super) install: PlannedPlaylistInstall,
+    /// Позиция старта живёт в `install.start_position` (единственный источник правды).
+    /// Box держит target ниже порога `large_enum_variant` у enum-ов-обёрток.
+    pub(super) install: Box<PlannedPlaylistInstall>,
 }
 
 impl StartupRestoreTarget {
@@ -57,11 +63,11 @@ impl StartupRestoreTarget {
 
     /// Position policy читается strong-open транзакцией до передачи domain install plan.
     pub(crate) const fn position(&self) -> StartupPosition {
-        self.position
+        self.install.start_position
     }
 
     pub(crate) fn set_position(&mut self, position: StartupPosition) {
-        self.position = position;
+        self.install.start_position = position;
     }
 }
 
@@ -113,6 +119,7 @@ impl PlaylistController {
                 pending_origin: request.origin,
                 expected_queue_revision: request.expected_queue_revision,
                 mutation: request.mutation,
+                start_position: StartupPosition::KeepStart,
             },
             safe_summary,
         ))
@@ -125,7 +132,7 @@ impl PlaylistController {
         player_request_id: MediaInstallRequestId,
         target: StartupRestoreTarget,
     ) -> Result<(), PlaylistInstallAdmissionError> {
-        let planned = target.install;
+        let planned = *target.install;
         self.accept_install_request(PlaylistInstallRequest {
             request_id,
             player_request_id,
@@ -171,7 +178,7 @@ impl PlaylistController {
         failed: StartupRestoreTarget,
         safe_summary: Arc<str>,
     ) -> StartupRestoreFailureOutcome {
-        self.report_startup_restore_install_failed(failed.install, safe_summary)
+        self.report_startup_restore_install_failed(*failed.install, safe_summary)
     }
 
     /// Ведёт цепочку пропусков (сессия 07): первая неудача восстановленного
@@ -306,8 +313,7 @@ impl PlaylistController {
                 locator: item.locator().clone(),
                 // Box держит target ниже порога `large_enum_variant` у enum-ов-обёрток.
                 open_locator: Box::new(open_locator),
-                position: StartupPosition::KeepStart,
-                install,
+                install: Box::new(install),
             }),
             Err(refusal) => StartupRestoreTargetBuild::Refused { install, refusal },
         }
@@ -325,6 +331,7 @@ impl PlaylistController {
             pending_origin: PendingTargetOrigin::RestoredCurrent,
             expected_queue_revision: self.queue.revision_snapshot(),
             mutation,
+            start_position: StartupPosition::KeepStart,
         }
     }
 }

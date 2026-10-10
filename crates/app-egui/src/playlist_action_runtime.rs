@@ -195,7 +195,10 @@ pub(crate) fn apply_playlist_actions(
                 if runtime.playlist_interaction_model().item_count == 0 {
                     continue;
                 }
-                let outcome = runtime.clear_playlist(Instant::now());
+                let outcome = runtime.clear_playlist_observing_playback(
+                    Instant::now(),
+                    app_state.playback_progress_for_clear(),
+                );
                 changed |= !matches!(outcome, RuntimeRemovalOutcome::NoChange);
                 if matches!(
                     outcome,
@@ -231,7 +234,22 @@ pub(crate) fn apply_playlist_actions(
             }
             PlaylistAction::UndoRemoval => {
                 // Только runtime owner проверяет deadline, invalidation и controller state.
-                let outcome = runtime.undo_last_removal(Instant::now());
+                let undo = runtime.undo_last_removal_resuming_playback(Instant::now());
+                let outcome = undo.outcome;
+                // Undo Clear возвращает и воспроизведение: тем же путём, что клик по строке.
+                if let Some(playback) = undo.playback {
+                    let started = crate::transport_runtime::apply_playlist_row_play(
+                        app_state,
+                        runtime,
+                        renderer,
+                        crate::playlist_runtime::RuntimeRowPlayOutcome::Controller(playback),
+                    );
+                    if !started {
+                        runtime.set_playlist_safe_feedback(
+                            "Плейлист восстановлен, но воспроизведение вернуть не удалось",
+                        );
+                    }
+                }
                 // UI side effect выбирается из typed outcome без потери причины отказа.
                 match undo_removal_ui_effect(outcome) {
                     UndoRemovalUiEffect::Restored { selected_entry_id } => {

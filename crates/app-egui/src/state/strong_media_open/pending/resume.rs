@@ -91,66 +91,62 @@ pub(crate) fn plan_post_installed_startup_position(
     strategy: super::super::PreparedPositionRestoreStrategy,
     facts: PostInstalledStartupPositionFacts,
 ) -> PostInstalledStartupPositionPlan {
-    match startup_position {
+    // `RestoreExact` (Undo Clear) отличается от `Restore` (resume из checkpoint) только тем, что
+    // политика B2 «у конца начинаем с начала» к нему не применяется.
+    let (requested_position, near_end_policy_applies) = match startup_position {
         crate::playlist_runtime::StartupPosition::KeepStart => {
-            PostInstalledStartupPositionPlan::Continue { warning: None }
+            return PostInstalledStartupPositionPlan::Continue { warning: None };
         }
-        crate::playlist_runtime::StartupPosition::Restore(_)
-            if facts.timeline == InstalledStartupTimeline::Live =>
-        {
-            PostInstalledStartupPositionPlan::Continue { warning: None }
-        }
-        crate::playlist_runtime::StartupPosition::Restore(requested_position)
-            if facts.timeline == InstalledStartupTimeline::StaticSeekable
-                && facts
-                    .duration
-                    .is_some_and(|duration| requested_position > duration) =>
-        {
-            PostInstalledStartupPositionPlan::Continue {
-                warning: Some(crate::playlist_runtime::ResumePositionWarning {
-                    requested_position,
-                    available_position: facts.current_position,
-                }),
-            }
-        }
-        crate::playlist_runtime::StartupPosition::Restore(requested_position)
-            if super::resume_policy::should_restart_from_beginning(
+        crate::playlist_runtime::StartupPosition::Restore(position) => (position, true),
+        crate::playlist_runtime::StartupPosition::RestoreExact(position) => (position, false),
+    };
+    if facts.timeline == InstalledStartupTimeline::Live {
+        return PostInstalledStartupPositionPlan::Continue { warning: None };
+    }
+    if facts.timeline == InstalledStartupTimeline::StaticSeekable
+        && facts
+            .duration
+            .is_some_and(|duration| requested_position > duration)
+    {
+        return PostInstalledStartupPositionPlan::Continue {
+            warning: Some(crate::playlist_runtime::ResumePositionWarning {
                 requested_position,
-                facts.duration,
-            ) =>
-        {
-            // Позиция у самого конца: начинаем с начала (политика B2). Если open уже
-            // позиционирован на сохранённую точку (native HLS), его нужно явно вернуть в 0.
-            match strategy {
-                super::super::PreparedPositionRestoreStrategy::SeekAfterInstall => {
-                    PostInstalledStartupPositionPlan::Continue { warning: None }
-                }
-                super::super::PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition => {
-                    PostInstalledStartupPositionPlan::Restore {
-                        requested_position: std::time::Duration::ZERO,
-                        position: player_core::InstalledPositionRestore::SeekTo(
-                            std::time::Duration::ZERO,
-                        ),
-                    }
+                available_position: facts.current_position,
+            }),
+        };
+    }
+    if near_end_policy_applies
+        && super::resume_policy::should_restart_from_beginning(requested_position, facts.duration)
+    {
+        // Позиция у самого конца: начинаем с начала (политика B2). Если open уже
+        // позиционирован на сохранённую точку (native HLS), его нужно явно вернуть в 0.
+        return match strategy {
+            super::super::PreparedPositionRestoreStrategy::SeekAfterInstall => {
+                PostInstalledStartupPositionPlan::Continue { warning: None }
+            }
+            super::super::PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition => {
+                PostInstalledStartupPositionPlan::Restore {
+                    requested_position: std::time::Duration::ZERO,
+                    position: player_core::InstalledPositionRestore::SeekTo(
+                        std::time::Duration::ZERO,
+                    ),
                 }
             }
+        };
+    }
+    let position = match strategy {
+        super::super::PreparedPositionRestoreStrategy::SeekAfterInstall => {
+            player_core::InstalledPositionRestore::SeekTo(requested_position)
         }
-        crate::playlist_runtime::StartupPosition::Restore(requested_position) => {
-            let position = match strategy {
-                super::super::PreparedPositionRestoreStrategy::SeekAfterInstall => {
-                    player_core::InstalledPositionRestore::SeekTo(requested_position)
-                }
-                super::super::PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition => {
-                    player_core::InstalledPositionRestore::AdoptPreparedInitialPosition {
-                        expected_target: requested_position,
-                    }
-                }
-            };
-            PostInstalledStartupPositionPlan::Restore {
-                requested_position,
-                position,
+        super::super::PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition => {
+            player_core::InstalledPositionRestore::AdoptPreparedInitialPosition {
+                expected_target: requested_position,
             }
         }
+    };
+    PostInstalledStartupPositionPlan::Restore {
+        requested_position,
+        position,
     }
 }
 
@@ -704,6 +700,43 @@ mod tests {
                 position: player_core::InstalledPositionRestore::AdoptPreparedInitialPosition {
                     expected_target: requested_position,
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn restore_exact_skips_near_end_policy_but_keeps_live_and_overrun_handling() {
+        use super::super::super::PreparedPositionRestoreStrategy as Strategy;
+        let secs = std::time::Duration::from_secs;
+        let facts = PostInstalledStartupPositionFacts::static_seekable(Some(secs(600)), secs(0));
+        // Undo Clear за 3 секунды до конца: возвращаемся ровно туда (B2 не применяется).
+        let exact = crate::playlist_runtime::StartupPosition::RestoreExact(secs(597));
+        assert_eq!(
+            plan_post_installed_startup_position(exact, Strategy::SeekAfterInstall, facts),
+            PostInstalledStartupPositionPlan::Restore {
+                requested_position: secs(597),
+                position: player_core::InstalledPositionRestore::SeekTo(secs(597)),
+            }
+        );
+        // Live: позиции нет, окно не восстанавливается.
+        let live_facts = PostInstalledStartupPositionFacts {
+            timeline: InstalledStartupTimeline::Live,
+            duration: None,
+            current_position: secs(40),
+        };
+        assert_eq!(
+            plan_post_installed_startup_position(exact, Strategy::SeekAfterInstall, live_facts),
+            PostInstalledStartupPositionPlan::Continue { warning: None }
+        );
+        // Файл стал короче сохранённой позиции: честное предупреждение, а не слепой seek.
+        let shorter = PostInstalledStartupPositionFacts::static_seekable(Some(secs(30)), secs(0));
+        assert_eq!(
+            plan_post_installed_startup_position(exact, Strategy::SeekAfterInstall, shorter),
+            PostInstalledStartupPositionPlan::Continue {
+                warning: Some(crate::playlist_runtime::ResumePositionWarning {
+                    requested_position: secs(597),
+                    available_position: secs(0),
+                }),
             }
         );
     }

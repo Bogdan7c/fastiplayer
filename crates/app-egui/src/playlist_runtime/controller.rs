@@ -78,7 +78,7 @@ pub(crate) use metadata::ControllerMetadataPatchError;
 pub(crate) use removal::{
     ControllerActiveMediaRebindOutcome, ControllerClearMediaResetCommit,
     ControllerDestructiveRemoval, ControllerDestructiveRemovalOutcome, ControllerRemovalKind,
-    ControllerRemovalUndoOutcome, DetachedActiveTombstone,
+    ControllerRemovalUndoOutcome, DetachedActiveTombstone, PlaybackProgressAtClear,
 };
 pub(crate) use reordering::ControllerMoveItemsOutcome;
 #[allow(unused_imports)]

@@ -155,7 +155,8 @@ impl super::StartupMediaController {
         let start = match self.orchestration.target.as_ref() {
             Some(StartupMediaTarget::RestoredCurrent(target)) => match target.position() {
                 crate::playlist_runtime::StartupPosition::KeepStart => HlsVodStartIntent::Beginning,
-                crate::playlist_runtime::StartupPosition::Restore(position) => {
+                crate::playlist_runtime::StartupPosition::Restore(position)
+                | crate::playlist_runtime::StartupPosition::RestoreExact(position) => {
                     HlsVodStartIntent::RestoreOrBeginning(MediaTime::from_duration(position))
                 }
             },

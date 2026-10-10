@@ -82,6 +82,13 @@ mod sidebar_controller;
 mod startup_context;
 mod strong_media_open;
 mod suspended_media_resume;
+#[cfg(test)]
+pub(crate) use strong_media_open::PreparedPositionRestoreStrategy;
+#[cfg(test)]
+pub(crate) use strong_media_open::pending::{
+    PostInstalledStartupPositionFacts, PostInstalledStartupPositionPlan,
+    plan_post_installed_startup_position,
+};
 pub(crate) use strong_media_open::{
     InstalledSingleMediaOpen, PreparedSingleMediaOpen, StrongMediaOpenError, StrongMediaOpenPoll,
     StrongMediaOpenUserOutcome,

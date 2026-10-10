@@ -40,7 +40,7 @@ fn planned_install() -> crate::playlist_runtime::PlannedPlaylistInstall {
 fn planned_admission() -> Option<PendingStrongMediaAdmission> {
     Some(PendingStrongMediaAdmission::Playlist(
         PreparedPlaylistTarget::Planned {
-            install: planned_install(),
+            install: Box::new(planned_install()),
             supersedes: None,
         },
     ))

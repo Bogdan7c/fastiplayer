@@ -14,7 +14,7 @@ use playlist_core::{
 
 use super::{
     ControllerActiveMediaRebindOutcome, ControllerDestructiveRemovalOutcome,
-    ControllerRemovalUndoOutcome,
+    ControllerRemovalUndoOutcome, PlaybackProgressAtClear,
 };
 use crate::media_open::{AuthorizationDispatchResolution, MediaOpenRequestId};
 use crate::playlist_runtime::controller::{
@@ -596,7 +596,7 @@ fn clear_resets_active_media_without_tombstone_for_every_repeat_mode() {
     ] {
         let (mut controller, _ids, active) = controller_with_active(3, 1);
         controller.repeat_mode = repeat_mode;
-        let clear = removed(controller.clear_queue());
+        let clear = removed(controller.clear_queue(PlaybackProgressAtClear::NotPlaying));
         assert_eq!(
             clear.media_reset_request,
             Some(player_core::ExactMediaTransportRequest {
@@ -632,7 +632,7 @@ fn clear_resets_non_playlist_active_identity_without_creating_tombstone() {
     );
     controller.active_media = Some(external_active);
 
-    let clear = removed(controller.clear_queue());
+    let clear = removed(controller.clear_queue(PlaybackProgressAtClear::NotPlaying));
     assert_eq!(
         clear.media_reset_request,
         Some(player_core::ExactMediaTransportRequest {
@@ -650,7 +650,7 @@ fn clear_without_active_media_creates_no_reset_request() {
     let (mut controller, _ids, _active) = controller_with_active(2, 0);
     controller.active_media = None;
 
-    let clear = removed(controller.clear_queue());
+    let clear = removed(controller.clear_queue(PlaybackProgressAtClear::NotPlaying));
 
     assert_eq!(clear.media_reset_request, None);
     assert!(controller.active_media().is_none());
@@ -665,7 +665,7 @@ fn d47_remove_others_and_clear_selection_never_start_playback() {
     assert_eq!(controller.selected_item_id(), Some(ids[1]));
     assert_eq!(controller.active_media(), Some(active.detached()));
 
-    let clear = removed(controller.clear_queue());
+    let clear = removed(controller.clear_queue(PlaybackProgressAtClear::NotPlaying));
     assert_eq!(controller.selected_item_id(), None);
     assert_eq!(
         clear

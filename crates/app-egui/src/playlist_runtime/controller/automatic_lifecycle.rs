@@ -18,10 +18,10 @@ use playlist_core::{
 use self::skip_report::AutomaticSkipReport;
 pub(super) use self::skip_report::SkipChainStart;
 pub(crate) use self::skip_report::{AutomaticQueueNotice, SkippedItemsSummary};
-use super::PlaylistController;
 use super::install::PlaylistInstallMutation;
 use super::manual_navigation::ManualNavigationTerminalAction;
 use super::transport::PlannedPlaylistInstall;
+use super::{PlaylistController, StartupPosition};
 use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::PlaylistBindingGeneration;
 use crate::playlist_runtime::identity::{
@@ -680,6 +680,7 @@ impl PlaylistController {
             pending_origin: PendingTargetOrigin::AutomaticAdvance,
             expected_queue_revision: self.queue.revision_snapshot(),
             mutation: PlaylistInstallMutation::AutomaticTraversal(plan),
+            start_position: StartupPosition::KeepStart,
         }
     }
 

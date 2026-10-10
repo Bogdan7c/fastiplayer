@@ -139,6 +139,7 @@ pub(crate) use compound_view::{
 };
 #[cfg(test)]
 pub(crate) use controller::ControllerRemovalUndoOutcome;
+pub(crate) use controller::PlaybackProgressAtClear;
 pub(crate) use controller::PlaylistController;
 pub(crate) use controller::SiblingDiscoveryScopeId;
 pub(crate) use controller::SkippedItemsSummary;

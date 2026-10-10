@@ -290,7 +290,8 @@ impl StartupMediaController {
                 crate::playlist_runtime::StartupPosition::KeepStart => {
                     crate::startup_readiness::StartupTargetExpectation::Beginning
                 }
-                crate::playlist_runtime::StartupPosition::Restore(target_position) => {
+                crate::playlist_runtime::StartupPosition::Restore(target_position)
+                | crate::playlist_runtime::StartupPosition::RestoreExact(target_position) => {
                     crate::startup_readiness::StartupTargetExpectation::Restore { target_position }
                 }
             };

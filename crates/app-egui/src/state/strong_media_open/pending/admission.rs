@@ -111,12 +111,12 @@ impl AppState {
                             expected_request_id,
                             request_id,
                             player_request_id,
-                            install,
+                            *install,
                         ),
                     None => playlist_runtime.accept_planned_playlist_install(
                         request_id,
                         player_request_id,
-                        install,
+                        *install,
                     ),
                 },
             };
@@ -253,6 +253,8 @@ impl AppState {
     ) -> MediaOpenRequestId {
         let intent = install.playback_intent;
         let intent_revision = install.intent_revision;
+        // Обычные переходы очереди стартуют с начала; Undo Clear возвращает точную позицию.
+        let startup_position = install.start_position;
         let driver = WgpuCandidateVideoPipelineResourceDriver::new(
             renderer.instance(),
             renderer.adapter(),
@@ -273,7 +275,7 @@ impl AppState {
             source: None,
             intent,
             intent_revision,
-            startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
+            startup_position,
             position_restore_strategy: super::PreparedPositionRestoreStrategy::SeekAfterInstall,
             lineage_commit: PendingStrongLineageCommit::NewLineageOrQueue,
             pre_barrier_failure: None,
@@ -283,7 +285,7 @@ impl AppState {
                     video_resource_port,
                     admission: PendingStrongMediaAdmission::Playlist(
                         PreparedPlaylistTarget::Planned {
-                            install,
+                            install: Box::new(install),
                             supersedes,
                         },
                     ),
@@ -469,12 +471,12 @@ impl AppState {
                     expected_request_id,
                     pending.request_id,
                     player_request_id,
-                    install,
+                    *install,
                 ),
                 None => playlist_runtime.accept_planned_playlist_install(
                     pending.request_id,
                     player_request_id,
-                    install,
+                    *install,
                 ),
             },
         };

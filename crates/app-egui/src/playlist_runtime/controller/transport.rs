@@ -16,7 +16,6 @@ use playlist_core::{
     ManualNavigationOutcome, PlaylistItemId, ReservedQueueMutation,
 };
 
-use super::PlaylistController;
 pub(super) use super::discovery_navigation::PendingManualTraversal;
 pub(crate) use super::discovery_navigation::{
     DiscoveryManualWaitAvailability, ManualNavigationWaitId, SiblingDiscoveryScopeId,
@@ -26,6 +25,7 @@ use super::install::{
     PlaylistInstallMutation,
 };
 use super::manual_navigation::{CursorStepOutcome, ManualNavigationInvalidation};
+use super::{PlaylistController, StartupPosition};
 use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::identity::{
     PendingTargetOrigin, PlaylistItemErrorPhase, TransportActionOrigin,
@@ -89,6 +89,9 @@ pub(crate) struct PlannedPlaylistInstall {
     pub pending_origin: PendingTargetOrigin,
     pub expected_queue_revision: playlist_core::QueueRevisionSnapshot,
     pub mutation: PlaylistInstallMutation,
+    /// С какой позиции начать после Installed. Обычные переходы очереди — `KeepStart`;
+    /// возврат воспроизведения после Undo Clear — `RestoreExact`.
+    pub start_position: super::StartupPosition,
 }
 
 impl PlannedPlaylistInstall {
@@ -313,6 +316,23 @@ impl PlaylistController {
         item_id: PlaylistItemId,
         origin: TransportActionOrigin,
     ) -> ControllerPlayItemOutcome {
+        self.play_item_with(
+            item_id,
+            origin,
+            StablePlaybackIntent::Playing,
+            StartupPosition::KeepStart,
+        )
+    }
+
+    /// Общее ядро Play row. `desired_intent`/`start_position` позволяют вернуть воспроизведение
+    /// не «с начала и играть», а в точности как было (Undo Clear: пауза и/или позиция).
+    pub(crate) fn play_item_with(
+        &mut self,
+        item_id: PlaylistItemId,
+        origin: TransportActionOrigin,
+        desired_intent: StablePlaybackIntent,
+        start_position: StartupPosition,
+    ) -> ControllerPlayItemOutcome {
         if self.queue.item(item_id).is_none() {
             return ControllerPlayItemOutcome::ItemNotCommitted;
         }
@@ -326,8 +346,7 @@ impl PlaylistController {
                 None,
             );
         }
-        let Some(intent_dispatch) =
-            self.record_stable_transport_intent(StablePlaybackIntent::Playing, origin)
+        let Some(intent_dispatch) = self.record_stable_transport_intent(desired_intent, origin)
         else {
             return ControllerPlayItemOutcome::IntentRevisionExhausted;
         };
@@ -364,7 +383,7 @@ impl PlaylistController {
                 request: ExactMediaTransportRequest {
                     media_instance_id: active.media_instance_id(),
                     action: ExactMediaTransportAction::RestartFromBeginning {
-                        intent: PlaybackIntent::StartPlaying,
+                        intent: desired_intent.as_install_intent(),
                     },
                 },
             };
@@ -373,13 +392,14 @@ impl PlaylistController {
         ControllerPlayItemOutcome::StartInstall {
             install: PlannedPlaylistInstall {
                 item_id,
-                playback_intent: PlaybackIntent::StartPlaying,
+                playback_intent: desired_intent.as_install_intent(),
                 intent_revision: intent_dispatch.revision,
                 pending_origin: PendingTargetOrigin::ExplicitRowPlay,
                 expected_queue_revision: self.queue.revision_snapshot(),
                 mutation: PlaylistInstallMutation::Reserved(
                     ReservedQueueMutation::select_committed(item_id),
                 ),
+                start_position,
             },
             intent_dispatch,
         }
@@ -642,6 +662,7 @@ impl PlaylistController {
             pending_origin: PendingTargetOrigin::ManualNavigation { origin },
             expected_queue_revision: self.queue.revision_snapshot(),
             mutation: PlaylistInstallMutation::ManualNavigation,
+            start_position: StartupPosition::KeepStart,
         }
     }
 

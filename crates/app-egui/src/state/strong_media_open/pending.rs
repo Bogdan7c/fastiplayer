@@ -9,6 +9,11 @@ use compensation::PostInstalledCompensationPoll;
 mod resume;
 mod resume_policy;
 use resume::InstalledResumeCommit;
+#[cfg(test)]
+pub(crate) use resume::{
+    PostInstalledStartupPositionFacts, PostInstalledStartupPositionPlan,
+    plan_post_installed_startup_position,
+};
 mod same_lineage;
 use same_lineage::{PendingStrongLineageCommit, SameLineageRestorePosition};
 
@@ -55,7 +60,7 @@ fn return_unadmitted_playlist_plan(
             PlaylistStrongMediaOpenPoll::TargetFailedBeforeAdmission(Box::new(
                 UnstagedPlaylistMediaOpenError {
                     error: *error,
-                    install: Box::new(install),
+                    install,
                 },
             ))
         }

@@ -81,6 +81,32 @@ impl AppState {
         self.last_player_snapshot.current_position
     }
 
+    /// Что player показывает в момент Clear плейлиста: по этому Undo вернёт воспроизведение (B7).
+    ///
+    /// Позиция осмысленна, только пока media загружено и живо; в остальных состояниях
+    /// (нет media, конец, ошибка, остановка) возвращать нечего.
+    pub(crate) fn playback_progress_for_clear(
+        &self,
+    ) -> crate::playlist_runtime::PlaybackProgressAtClear {
+        use crate::playlist_runtime::PlaybackProgressAtClear;
+        use player_core::PlaybackState;
+        match self.last_player_snapshot.playback_state {
+            PlaybackState::Playing
+            | PlaybackState::Paused
+            | PlaybackState::Buffering
+            | PlaybackState::Seeking
+            | PlaybackState::Scrubbing => {
+                PlaybackProgressAtClear::At(self.last_player_snapshot.current_position)
+            }
+            PlaybackState::Idle
+            | PlaybackState::Opening
+            | PlaybackState::Draining
+            | PlaybackState::Ended
+            | PlaybackState::Stopped
+            | PlaybackState::Failed => PlaybackProgressAtClear::NotPlaying,
+        }
+    }
+
     /// Strong-open слот свободен: отложенная команда может стартовать новый request.
     pub(crate) fn strong_media_open_slot_is_idle(&self) -> bool {
         self.playlist_transport.active_request_id.is_none()

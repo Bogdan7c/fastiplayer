@@ -127,13 +127,19 @@ impl PlaylistRuntime {
 
     /// Explicit row Play supersede-ит только replacement prompt и использует D59/D60 controller.
     pub(crate) fn play_playlist_row(&mut self, item_id: PlaylistItemId) -> RuntimeRowPlayOutcome {
-        self.supersede_startup_media_apply();
-        self.supersede_queue_replacement_confirmation_for_row_play();
-        self.discovery.cancel_initial_queue_playback();
+        self.supersede_competing_openers_for_row_play();
         let Some(controller) = self.controller.as_mut() else {
             return RuntimeRowPlayOutcome::LoadDecisionPending;
         };
         RuntimeRowPlayOutcome::Controller(controller.play_item(item_id, TransportActionOrigin::Ui))
+    }
+
+    /// Явный запуск строки (клик или возврат после Undo Clear) отменяет всё, что конкурирует
+    /// за право открыть media: startup apply, prompt замены очереди, отложенный старт новой очереди.
+    pub(super) fn supersede_competing_openers_for_row_play(&mut self) {
+        self.supersede_startup_media_apply();
+        self.supersede_queue_replacement_confirmation_for_row_play();
+        self.discovery.cancel_initial_queue_playback();
     }
 
     /// Одна group drop-команда становится не более чем одной persistent mutation.

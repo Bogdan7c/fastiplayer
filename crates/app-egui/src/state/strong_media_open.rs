@@ -6,7 +6,7 @@
 mod compensation;
 mod user_failure_reason;
 pub(crate) use user_failure_reason::StrongMediaOpenUserOutcome;
-mod pending;
+pub(super) mod pending;
 pub(super) use pending::{
     PendingStrongMediaOpen, PlaylistStrongMediaOpenPoll, UnstagedPlaylistMediaOpenError,
 };
@@ -90,7 +90,8 @@ pub(crate) fn prepared_position_restore_strategy(
             player_core::PreparedInitialPosition::PositionedAt {
                 target_position, ..
             },
-            crate::playlist_runtime::StartupPosition::Restore(restore_target),
+            crate::playlist_runtime::StartupPosition::Restore(restore_target)
+            | crate::playlist_runtime::StartupPosition::RestoreExact(restore_target),
         ) if target_position.as_duration() == restore_target => {
             Ok(PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition)
         }
@@ -98,7 +99,8 @@ pub(crate) fn prepared_position_restore_strategy(
             player_core::PreparedInitialPosition::PositionedAt {
                 target_position, ..
             },
-            crate::playlist_runtime::StartupPosition::Restore(restore_target),
+            crate::playlist_runtime::StartupPosition::Restore(restore_target)
+            | crate::playlist_runtime::StartupPosition::RestoreExact(restore_target),
         ) => Err(PreparedPositionRestoreContractError::TargetMismatch {
             prepared_target: target_position.as_duration(),
             restore_target,
@@ -114,7 +116,8 @@ enum PreparedPlaylistTarget {
     QueueReplacement(Box<playlist_core::PlaylistItemDraft>),
     RestoredCurrent(crate::playlist_runtime::StartupRestoreTarget),
     Planned {
-        install: crate::playlist_runtime::PlannedPlaylistInstall,
+        /// Box держит enum ниже порога `large_enum_variant` (план несёт позицию старта).
+        install: Box<crate::playlist_runtime::PlannedPlaylistInstall>,
         supersedes: Option<crate::media_open::MediaOpenRequestId>,
     },
 }
@@ -483,12 +486,12 @@ impl AppState {
                             expected_request_id,
                             request_id,
                             player_request_id,
-                            install,
+                            *install,
                         ),
                     None => playlist_runtime.accept_planned_playlist_install(
                         request_id,
                         player_request_id,
-                        install,
+                        *install,
                     ),
                 },
             };

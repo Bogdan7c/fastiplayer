@@ -3,8 +3,8 @@
 use playlist_core::ClearQueueOutcome;
 
 use super::{
-    ControllerDestructiveRemovalOutcome, ControllerRemovalKind, RemovalMutationError,
-    RemovedActiveMediaPolicy, SelectionAfterRemoval,
+    ControllerDestructiveRemovalOutcome, ControllerRemovalKind, PlaybackProgressAtClear,
+    RemovalMutationError, RemovedActiveMediaPolicy, SelectionAfterRemoval,
 };
 use crate::playlist_runtime::controller::PlaylistController;
 
@@ -17,7 +17,26 @@ pub(crate) enum ControllerClearMediaResetCommit {
 
 impl PlaylistController {
     /// Clear очищает queue и сразу отделяет Undo от прежнего playback lifecycle.
-    pub(crate) fn clear_queue(&mut self) -> ControllerDestructiveRemovalOutcome {
+    ///
+    /// `progress` — позиция из player-а: вместе с тем, что controller знает сам (элемент и
+    /// Play/Pause), она попадает в `ClearPlaybackResume`, чтобы Undo вернул воспроизведение.
+    pub(crate) fn clear_queue(
+        &mut self,
+        progress: PlaybackProgressAtClear,
+    ) -> ControllerDestructiveRemovalOutcome {
+        // Снимок обязан предшествовать мутации: Clear сбрасывает active identity и pending.
+        let playback_resume = self.capture_playback_resume_for_clear(progress);
+        let outcome = self.commit_clear_queue();
+        match outcome {
+            ControllerDestructiveRemovalOutcome::Removed(mut removal) => {
+                removal.playback_resume = playback_resume;
+                ControllerDestructiveRemovalOutcome::Removed(removal)
+            }
+            other => other,
+        }
+    }
+
+    fn commit_clear_queue(&mut self) -> ControllerDestructiveRemovalOutcome {
         // Snapshot exact ID-ов нужен общей removal transaction для одной domain mutation.
         let removed_entry_ids = self.queue.iter_top_level_entry_ids().collect::<Vec<_>>();
         self.commit_destructive_removal(

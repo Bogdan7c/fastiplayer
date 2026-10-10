@@ -10,13 +10,15 @@ use tracing::debug;
 use super::controller::{
     ControllerDestructiveRemoval, ControllerDestructiveRemovalOutcome, ControllerRemovalKind,
     ControllerRemovalUndoOutcome, ControllerTerminalDrain, InstalledPlaybackIntentCompletion,
-    ManualNavigationInvalidation, PlaylistControllerInvariantViolation,
+    ManualNavigationInvalidation, PlaybackProgressAtClear, PlaylistControllerInvariantViolation,
 };
 use super::identity::ActiveMediaIdentity;
 use super::identity::ActiveMediaLineageId;
 use super::view::{PlaylistDirtyRevision, PlaylistDirtySignal, PlaylistStructuralRevision};
 use super::{PlaylistBindingGeneration, PlaylistRuntime};
 use crate::media_open::{CancellationDispatchOutcome, MediaOpenCommandError, MediaOpenRequestId};
+
+mod playback_resume;
 
 #[cfg(test)]
 mod tests;
@@ -178,8 +180,19 @@ impl PlaylistRuntime {
         runtime_outcome
     }
 
-    /// Clear использует тот же last-action slot; empty no-op сохраняет прежний Undo.
+    /// Clear без сведений о воспроизведении (startup-путь, тесты): Undo вернёт только строки.
     pub(crate) fn clear_playlist(&mut self, now: Instant) -> RuntimeRemovalOutcome {
+        self.clear_playlist_observing_playback(now, PlaybackProgressAtClear::NotPlaying)
+    }
+
+    /// Clear использует тот же last-action slot; empty no-op сохраняет прежний Undo.
+    ///
+    /// `progress` — позиция player-а в момент Clear: по ней Undo вернёт воспроизведение (B7).
+    pub(crate) fn clear_playlist_observing_playback(
+        &mut self,
+        now: Instant,
+        progress: PlaybackProgressAtClear,
+    ) -> RuntimeRemovalOutcome {
         self.supersede_startup_media_apply();
         self.cancel_queue_replacement_confirmation_for_structural_replacement();
         self.supersede_manual_add_queue_generation();
@@ -197,7 +210,7 @@ impl PlaylistRuntime {
             return RuntimeRemovalOutcome::LoadDecisionPending;
         };
         let dirty_before = controller.dirty_revision();
-        let outcome = controller.clear_queue();
+        let outcome = controller.clear_queue(progress);
         let mut runtime_outcome = self.store_removal_outcome(outcome, now);
         self.publish_controller_mutation_if_dirty(dirty_before);
         if retention_active {

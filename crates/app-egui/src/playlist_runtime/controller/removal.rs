@@ -2,8 +2,11 @@
 
 mod clear;
 mod current_pointer;
+mod playback_resume;
 mod selection;
 pub(crate) use clear::ControllerClearMediaResetCommit;
+use playback_resume::ClearPlaybackResume;
+pub(crate) use playback_resume::PlaybackProgressAtClear;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -103,6 +106,8 @@ pub(crate) struct ControllerDestructiveRemoval {
     pub(crate) active_tombstone_item_id: Option<PlaylistItemId>,
     pub(crate) manual_navigation_invalidation: Option<ManualNavigationInvalidation>,
     pub(crate) pending_request_to_cancel: Option<MediaOpenRequestId>,
+    /// Только Clear: что играло, чтобы Undo вернул и воспроизведение (B7).
+    pub(crate) playback_resume: Option<ClearPlaybackResume>,
 }
 
 /// Typed action outcome не смешивает no-op, lock и revision failures.
@@ -568,6 +573,7 @@ impl PlaylistController {
             },
             manual_navigation_invalidation,
             pending_request_to_cancel,
+            playback_resume: None,
         }))
     }
 

@@ -514,4 +514,5 @@ fn metadata_patch_then_structural_change_still_invalidates_undo() {
     assert_eq!(queue_titles(&runtime)[1].as_deref(), Some("Fresh"));
 }
 
+mod clear_playback_resume;
 mod current_change;

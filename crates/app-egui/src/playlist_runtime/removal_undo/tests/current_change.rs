@@ -102,11 +102,11 @@ fn advance_automatically_via(
     target_item_id
 }
 
-fn queue_item_ids(runtime: &PlaylistRuntime) -> Vec<PlaylistItemId> {
+pub(super) fn queue_item_ids(runtime: &PlaylistRuntime) -> Vec<PlaylistItemId> {
     runtime.controller.queue.iter_playable_ids().collect()
 }
 
-fn current_item_id(runtime: &PlaylistRuntime) -> Option<PlaylistItemId> {
+pub(super) fn current_item_id(runtime: &PlaylistRuntime) -> Option<PlaylistItemId> {
     runtime
         .controller
         .queue

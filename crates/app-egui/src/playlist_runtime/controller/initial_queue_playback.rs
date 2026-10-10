@@ -5,7 +5,7 @@ use playlist_core::{PlaylistItemId, ReservedQueueMutation};
 
 use super::{
     ControllerStableIntentDispatch, PlannedPlaylistInstall, PlaylistController,
-    PlaylistInstallMutation, StablePlaybackIntent,
+    PlaylistInstallMutation, StablePlaybackIntent, StartupPosition,
 };
 use crate::playlist_runtime::identity::{
     ActiveMediaIdentity, PendingTargetOrigin, TransportActionOrigin,
@@ -137,6 +137,7 @@ impl PlaylistController {
                 mutation: PlaylistInstallMutation::Reserved(
                     ReservedQueueMutation::select_committed(first_item_id),
                 ),
+                start_position: StartupPosition::KeepStart,
             },
             intent_dispatch,
         })
