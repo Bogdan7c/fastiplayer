@@ -166,6 +166,8 @@ pub(crate) struct PlaylistController {
     pub(super) repeat_mode: RepeatMode,
     pub(super) structural_revision: PlaylistStructuralRevision,
     pub(super) dirty_revision: PlaylistDirtyRevision,
+    /// `dirty_revision` последнего изменения, кроме чистых metadata-патчей (см. `metadata.rs`).
+    pub(super) undo_blocking_revision: PlaylistDirtyRevision,
     pub(super) latest_dirty_signal: Option<PlaylistDirtySignal>,
     pub(super) next_lineage_identity: u64,
     install_state: Option<install::InstallState>,
@@ -218,6 +220,7 @@ impl PlaylistController {
             repeat_mode: RepeatMode::StopAtEnd,
             structural_revision: PlaylistStructuralRevision::INITIAL,
             dirty_revision: PlaylistDirtyRevision::CLEAN,
+            undo_blocking_revision: PlaylistDirtyRevision::CLEAN,
             latest_dirty_signal: None,
             next_lineage_identity: 1,
             install_state: None,
@@ -578,6 +581,7 @@ impl PlaylistController {
 
     pub(super) fn commit_dirty(&mut self, revision: PlaylistDirtyRevision) -> PlaylistDirtySignal {
         self.dirty_revision = revision;
+        self.undo_blocking_revision = revision;
         let signal = PlaylistDirtySignal::new(revision);
         self.latest_dirty_signal = Some(signal);
         signal

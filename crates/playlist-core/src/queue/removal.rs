@@ -1,6 +1,6 @@
 //! Opaque runtime-only snapshot для destructive removal Undo.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -124,7 +124,6 @@ pub struct PlaylistRemovalSnapshot {
     traversal_current: Option<TraversalCurrentItemId>,
     structural_revision: QueueRevision,
     traversal_revision: QueueRevision,
-    metadata_revision: QueueRevision,
     shuffle_traversal: Option<super::shuffle::ShuffleTraversal>,
 }
 
@@ -158,7 +157,7 @@ pub enum RemovalSnapshotRestoreError {
     InstallCommitLinearizing,
     /// После removal произошла другая structural mutation.
     StaleStructuralRevision,
-    /// Metadata либо allocator изменились после захвата snapshot.
+    /// Allocator либо traversal изменились после захвата snapshot.
     StalePersistentState,
     /// Current queue не является exact order-preserving результатом удаления из snapshot.
     NotRemovalResult,
@@ -177,7 +176,6 @@ impl PlaylistQueue {
             traversal_current: self.traversal_current,
             structural_revision: self.structural_revision,
             traversal_revision: self.traversal_revision,
-            metadata_revision: self.metadata_revision,
             shuffle_traversal: self.shuffle_traversal.clone(),
         }
     }
@@ -198,8 +196,10 @@ impl PlaylistQueue {
         {
             return Err(RemovalSnapshotRestoreError::StaleStructuralRevision);
         }
-        if self.metadata_revision != snapshot.metadata_revision
-            || self.item_id_allocator != snapshot.item_id_allocator
+        // Metadata-патчи (длительность, теги, обложка) после удаления допустимы: они не меняют
+        // порядок и состав строк. Их результат сохраняется при слиянии ниже.
+        // Allocator-ы обязаны совпасть: иначе после удаления выданы новые id.
+        if self.item_id_allocator != snapshot.item_id_allocator
             || self.compound_group_id_allocator != snapshot.compound_group_id_allocator
         {
             return Err(RemovalSnapshotRestoreError::StalePersistentState);
@@ -209,14 +209,16 @@ impl PlaylistQueue {
             .iter()
             .map(crate::PlaylistEntry::entry_id)
             .collect::<HashSet<_>>();
-        let expected_retained_entries = snapshot
+        // Текущая очередь обязана быть snapshot-ом без удалённых строк с тем же порядком.
+        // Сравниваем по идентичности, а не по содержимому: содержимое могло обновиться патчем.
+        let retained_entry_ids_in_snapshot_order = snapshot
             .entries
             .iter()
-            .filter(|entry| current_entry_ids.contains(&entry.entry_id()))
-            .cloned()
-            .collect::<Vec<_>>();
+            .map(crate::PlaylistEntry::entry_id)
+            .filter(|entry_id| current_entry_ids.contains(entry_id));
         if self.entries.len() >= snapshot.entries.len()
-            || expected_retained_entries != self.entries
+            || !retained_entry_ids_in_snapshot_order
+                .eq(self.entries.iter().map(crate::PlaylistEntry::entry_id))
             || current_entry_ids.len() != self.entries.len()
         {
             return Err(RemovalSnapshotRestoreError::NotRemovalResult);
@@ -241,7 +243,24 @@ impl PlaylistQueue {
             })
             .transpose()?;
 
-        self.entries = snapshot.entries.iter().cloned().collect();
+        // Оставшиеся строки берём из текущей очереди (с актуальными metadata-патчами),
+        // возвращаемые — из snapshot. Позиции определяет порядок snapshot-а.
+        let current_entries_by_id = self
+            .entries
+            .iter()
+            .map(|entry| (entry.entry_id(), entry))
+            .collect::<HashMap<_, _>>();
+        let merged_entries = snapshot
+            .entries
+            .iter()
+            .map(|snapshot_entry| {
+                current_entries_by_id
+                    .get(&snapshot_entry.entry_id())
+                    .map_or_else(|| snapshot_entry.clone(), |current| (*current).clone())
+            })
+            .collect::<Vec<_>>();
+        drop(current_entries_by_id);
+        self.entries = merged_entries;
         self.traversal_current = snapshot.traversal_current;
         self.shuffle_traversal = snapshot.shuffle_traversal;
         self.structural_revision = next_structural_revision;

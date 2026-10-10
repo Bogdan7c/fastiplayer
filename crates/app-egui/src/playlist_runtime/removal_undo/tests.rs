@@ -419,3 +419,97 @@ fn successful_new_lineage_install_releases_undo_slot_immediately() {
         Some(ids[1])
     );
 }
+
+/// Применяет фоновый metadata-патч (новый заголовок) к строке, как это делает discovery.
+fn patch_title(runtime: &mut PlaylistRuntime, item_id: PlaylistItemId, title: &str) {
+    let item = runtime.controller.queue.item(item_id).expect("row exists");
+    let patch = playlist_core::PlaylistMetadataPatch::new(
+        item_id,
+        item.locator().clone(),
+        item.local_fingerprint(),
+        item.cached_metadata()
+            .clone()
+            .with_title(Some(title.to_owned())),
+    );
+    let outcome = runtime
+        .controller
+        .apply_metadata_patches(vec![patch])
+        .expect("patch accepted");
+    assert!(
+        outcome.domain.changed_metadata(),
+        "fixture patch must change metadata"
+    );
+}
+
+fn queue_titles(runtime: &PlaylistRuntime) -> Vec<Option<String>> {
+    runtime
+        .controller
+        .queue
+        .iter_top_level_entry_ids()
+        .map(|entry_id| match entry_id {
+            PlaylistEntryId::Single(item_id) => runtime
+                .controller
+                .queue
+                .item(item_id)
+                .and_then(|item| item.cached_metadata().title().map(str::to_owned)),
+            other => panic!("fixture has only single rows, got {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn background_metadata_patch_of_other_row_keeps_undo_and_keeps_fresh_metadata() {
+    let (mut runtime, ids) = runtime_with_items(3);
+    let now = Instant::now();
+    let _removed = runtime.remove_playlist_item(ids[1], now);
+    let dirty_before_patch = runtime.controller.dirty_revision();
+
+    patch_title(&mut runtime, ids[2], "Duration arrived");
+    // Патч — реальное изменение для persistence, но не повод убивать Undo.
+    assert!(runtime.controller.dirty_revision() > dirty_before_patch);
+    assert!(
+        runtime
+            .removal_undo_status(now + Duration::from_secs(1))
+            .is_some()
+    );
+
+    assert!(matches!(
+        runtime.undo_last_removal(now + Duration::from_secs(2)),
+        RemovalUndoOutcome::Restored { .. }
+    ));
+    // Строка вернулась на прежнее место, а свежий заголовок соседа не откатился.
+    let restored_order: Vec<_> = runtime
+        .controller
+        .queue
+        .iter_top_level_entry_ids()
+        .collect();
+    assert_eq!(
+        restored_order,
+        ids.iter()
+            .copied()
+            .map(PlaylistEntryId::Single)
+            .collect::<Vec<_>>()
+    );
+    let titles = queue_titles(&runtime);
+    assert_eq!(titles[2].as_deref(), Some("Duration arrived"));
+    assert_ne!(titles[1].as_deref(), Some("Duration arrived"));
+}
+
+#[test]
+fn metadata_patch_then_structural_change_still_invalidates_undo() {
+    let (mut runtime, ids) = runtime_with_items(3);
+    let now = Instant::now();
+    let _removed = runtime.remove_playlist_item(ids[0], now);
+    patch_title(&mut runtime, ids[2], "Fresh");
+    let _append = runtime
+        .controller
+        .append(vec![draft(9)])
+        .expect("structural change");
+
+    assert_eq!(
+        runtime.undo_last_removal(now + Duration::from_secs(1)),
+        RemovalUndoOutcome::Invalidated
+    );
+    // Свежие metadata не пострадали от отклонённого Undo.
+    assert_eq!(queue_titles(&runtime)[1].as_deref(), Some("Fresh"));
+}

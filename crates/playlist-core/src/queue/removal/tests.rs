@@ -6,7 +6,8 @@ use rand::rngs::StdRng;
 use crate::{
     AddItemsOutcome, CachedPlaylistMetadata, LocalLocator, ManualNavigationIntent,
     ManualNavigationNoItem, ManualNavigationOutcome, PlaylistItemDraft, PlaylistMediaKind,
-    PlaylistQueue, RemovalSnapshotRestoreError, RepeatMode, TraversalCurrentEffect,
+    PlaylistMetadataPatch, PlaylistQueue, RemovalSnapshotRestoreError, RepeatMode,
+    TraversalCurrentEffect,
 };
 
 /// Создаёт строку с heap-backed locator/metadata для проверки реального sharing.
@@ -167,4 +168,55 @@ fn fifty_thousand_row_snapshot_shares_every_heavy_payload() {
         let queue_item = queue_entry.item(item_id).expect("queue row identity");
         assert!(snapshot_item.shares_payload_with(queue_item));
     }
+}
+
+#[test]
+fn snapshot_restore_after_metadata_patch_keeps_fresh_metadata_of_retained_rows() {
+    let mut queue = PlaylistQueue::new();
+    let ids = match queue
+        .append_batch(vec![draft(1), draft(2), draft(3)])
+        .expect("append")
+    {
+        AddItemsOutcome::Added(ids) => ids.into_vec(),
+        AddItemsOutcome::NoItemsProvided => panic!("fixture must append rows"),
+    };
+    let snapshot = queue.capture_removal_snapshot();
+    let _removed = queue.remove(crate::PlaylistEntryId::Single(ids[1]));
+    let retained = queue.item(ids[2]).expect("retained row").clone();
+    let _patched = queue
+        .apply_metadata_patch_batch(vec![PlaylistMetadataPatch::new(
+            ids[2],
+            retained.locator().clone(),
+            retained.local_fingerprint(),
+            retained
+                .cached_metadata()
+                .clone()
+                .with_title(Some("Fresh title".to_owned())),
+        )])
+        .expect("patch applies");
+
+    queue
+        .restore_removal_snapshot(snapshot)
+        .expect("metadata patch must not block restore");
+
+    let restored_order = queue.iter_top_level_entry_ids().collect::<Vec<_>>();
+    assert_eq!(
+        restored_order,
+        ids.iter()
+            .copied()
+            .map(crate::PlaylistEntryId::Single)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        queue
+            .item(ids[2])
+            .map(|item| item.cached_metadata().title()),
+        Some(Some("Fresh title"))
+    );
+    assert_ne!(
+        queue
+            .item(ids[1])
+            .map(|item| item.cached_metadata().title()),
+        Some(Some("Fresh title"))
+    );
 }

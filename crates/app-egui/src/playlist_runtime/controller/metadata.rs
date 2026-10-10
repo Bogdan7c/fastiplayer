@@ -74,7 +74,7 @@ impl PlaylistController {
     ) -> ControllerMetadataPatchOutcome {
         let changed_metadata = commit.domain.changed_metadata();
         let domain = self.queue.commit_metadata_patch_batch(commit.domain);
-        let dirty = changed_metadata.then(|| self.commit_dirty(commit.next_dirty));
+        let dirty = changed_metadata.then(|| self.commit_metadata_only_dirty(commit.next_dirty));
         if dirty.is_some() {
             self.publish_view(true);
         }
@@ -88,5 +88,24 @@ impl PlaylistController {
     ) -> Result<ControllerMetadataPatchOutcome, ControllerMetadataPatchError> {
         let commit = self.preflight_metadata_patches(patches)?;
         Ok(self.commit_metadata_patches(commit))
+    }
+
+    /// Ревизия, с которой сверяется Undo удаления: растёт при любом изменении, КРОМЕ чистых
+    /// metadata-патчей (длительность, теги, обложка приходят в фоне и не меняют состав,
+    /// порядок, режимы и текущий элемент очереди, поэтому восстановить строку после них
+    /// по-прежнему однозначно; домен при restore сохраняет свежие metadata оставшихся строк).
+    pub(crate) const fn undo_blocking_revision(&self) -> PlaylistDirtyRevision {
+        self.undo_blocking_revision
+    }
+
+    /// Публикует dirty-сигнал для persistence, не сдвигая `undo_blocking_revision`.
+    fn commit_metadata_only_dirty(
+        &mut self,
+        revision: PlaylistDirtyRevision,
+    ) -> PlaylistDirtySignal {
+        self.dirty_revision = revision;
+        let signal = PlaylistDirtySignal::new(revision);
+        self.latest_dirty_signal = Some(signal);
+        signal
     }
 }

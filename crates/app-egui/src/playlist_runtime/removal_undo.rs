@@ -26,7 +26,7 @@ pub(crate) const REMOVAL_UNDO_WINDOW: Duration = Duration::from_secs(8);
 /// Runtime-only transaction; snapshot не попадает в store/serde DTO.
 pub(super) struct RemovalUndoState {
     removal: ControllerDestructiveRemoval,
-    expected_dirty_revision: PlaylistDirtyRevision,
+    expected_undo_blocking_revision: PlaylistDirtyRevision,
     deadline: Instant,
 }
 
@@ -107,11 +107,11 @@ enum RemovalUndoAvailability {
 
 impl RemovalUndoState {
     fn new(removal: ControllerDestructiveRemoval, now: Instant) -> Option<Self> {
-        let expected_dirty_revision = removal.dirty.revision();
+        let expected_undo_blocking_revision = removal.dirty.revision();
         let deadline = now.checked_add(REMOVAL_UNDO_WINDOW)?;
         Some(Self {
             removal,
-            expected_dirty_revision,
+            expected_undo_blocking_revision,
             deadline,
         })
     }
@@ -119,13 +119,13 @@ impl RemovalUndoState {
     fn availability(
         &self,
         now: Instant,
-        current_dirty_revision: PlaylistDirtyRevision,
+        current_undo_blocking_revision: PlaylistDirtyRevision,
         active_media: Option<ActiveMediaIdentity>,
     ) -> RemovalUndoAvailability {
         if now >= self.deadline {
             return RemovalUndoAvailability::Expired;
         }
-        if current_dirty_revision != self.expected_dirty_revision {
+        if current_undo_blocking_revision != self.expected_undo_blocking_revision {
             return RemovalUndoAvailability::Invalidated;
         }
         if active_media.map(ActiveMediaIdentity::lineage_id)
@@ -345,7 +345,11 @@ impl PlaylistRuntime {
     pub(crate) fn removal_undo_status(&mut self, now: Instant) -> Option<RemovalUndoStatus> {
         let controller = self.controller.as_ref()?;
         let availability = self.removal_undo.as_ref().map(|undo| {
-            undo.availability(now, controller.dirty_revision(), controller.active_media())
+            undo.availability(
+                now,
+                controller.undo_blocking_revision(),
+                controller.active_media(),
+            )
         });
         match availability {
             Some(RemovalUndoAvailability::Available) => {
@@ -368,7 +372,11 @@ impl PlaylistRuntime {
         let Some(undo) = self.removal_undo.as_ref() else {
             return RemovalUndoOutcome::Unavailable;
         };
-        match undo.availability(now, controller.dirty_revision(), controller.active_media()) {
+        match undo.availability(
+            now,
+            controller.undo_blocking_revision(),
+            controller.active_media(),
+        ) {
             RemovalUndoAvailability::Expired => {
                 self.removal_undo = None;
                 return RemovalUndoOutcome::Expired;
