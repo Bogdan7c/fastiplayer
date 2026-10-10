@@ -190,6 +190,26 @@ fn cli_route_keeps_non_utf8_argument_as_native_local_path() {
 }
 
 #[test]
+fn cli_route_trims_whitespace_around_url_argument() {
+    let (initial_media, startup_error) = resolve_initial_media_argument(
+        Some(OsString::from(" https://media.example.test/video.mp4\n")),
+        &AppConfig::default(),
+    );
+
+    assert!(startup_error.is_none());
+    let Some(InitialMedia::Url(locator)) = initial_media else {
+        panic!("ссылка с пробелами вокруг должна открываться как ссылка, а не как путь");
+    };
+    assert_eq!(
+        locator
+            .to_playlist_locator()
+            .expect("locator должен иметь identity")
+            .expose_secret_for_persistence(),
+        "https://media.example.test/video.mp4"
+    );
+}
+
+#[test]
 fn cli_route_sends_yt_dlp_host_to_yt_dlp_path() {
     let (initial_media, startup_error) = resolve_initial_media_argument(
         Some(OsString::from("https://youtu.be/video-id")),

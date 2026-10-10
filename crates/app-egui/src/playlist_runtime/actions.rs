@@ -374,6 +374,33 @@ mod tests {
     }
 
     #[test]
+    fn pasted_url_with_surrounding_whitespace_is_appended_like_the_clean_one() {
+        let mut runtime = runtime();
+        let outcome = runtime
+            .append_playlist_url(
+                " \thttps://media.example.test/video2.mp4\r\n",
+                &fastiplayer_config::YtDlpConfig::default(),
+            )
+            .expect("пробелы вокруг ссылки не должны ломать добавление");
+        assert_eq!(outcome, UrlAppendActionOutcome::Appended { item_count: 1 });
+        assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);
+    }
+
+    #[test]
+    fn whitespace_only_url_input_is_refused_with_clear_error_and_leaves_queue_untouched() {
+        let mut runtime = runtime();
+        let result = runtime
+            .append_playlist_url(" \n\t\u{00A0}", &fastiplayer_config::YtDlpConfig::default());
+        assert_eq!(
+            result,
+            Err(UrlAppendValidationError::NotUrl(
+                NotUrlInputHint::Unrecognized
+            ))
+        );
+        assert_eq!(runtime.controller.queue().top_level_entry_count(), 0);
+    }
+
+    #[test]
     fn sensitive_url_requires_exact_process_lifetime_decision_and_never_uses_old_ui_accessor() {
         let mut runtime = runtime();
         let dirty_before = runtime.controller.dirty_revision();

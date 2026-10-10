@@ -517,3 +517,41 @@ fn disabled_extractor_cli_link_explains_setting_in_plain_words() {
         "Не удалось открыть ссылку (video.example.test): загрузка с сайтов через yt-dlp отключена в настройках"
     );
 }
+
+/// Все виды пробельных символов, которые встречаются вокруг вставленной ссылки.
+const SURROUNDING_WHITESPACE: [&str; 6] = [" ", "\n", "\r\n", "\t", "\u{00A0}", " \t\n\u{3000}"];
+
+#[test]
+fn surrounding_whitespace_does_not_change_classified_identity() {
+    let exact_url = "https://example.com/a.mp4";
+    let StartupUrlClassification::Supported(reference) = classify_startup_url(exact_url) else {
+        panic!("прямой media URL должен приниматься");
+    };
+    let reference_identity = persistence_identity(&reference);
+    assert_eq!(reference_identity, exact_url);
+
+    for padding in SURROUNDING_WHITESPACE {
+        let padded = format!("{padding}{exact_url}{padding}");
+        let StartupUrlClassification::Supported(locator) = classify_startup_url(&padded) else {
+            panic!("ссылка с пробелами вокруг должна приниматься: {padding:?}");
+        };
+        assert_eq!(
+            persistence_identity(&locator),
+            reference_identity,
+            "{padding:?}"
+        );
+    }
+}
+
+#[test]
+fn whitespace_only_input_is_not_a_url_instead_of_panicking() {
+    for blank in ["", " ", "\n", "\t \r\n", "\u{00A0}\u{00A0}"] {
+        assert!(
+            matches!(
+                classify_startup_url(blank),
+                StartupUrlClassification::NotUrl
+            ),
+            "{blank:?}"
+        );
+    }
+}

@@ -563,8 +563,15 @@ impl StartupUrlUnsupportedReason {
 }
 
 /// Последовательно спрашивает единый production registry без app parser-а.
+///
+/// Это общая точка классификации пользовательской ссылки: поле URL, вставка, drag & drop
+/// текста, CLI и пересылка во второй экземпляр приходят сюда. Ведущие и хвостовые
+/// пробельные символы (`\n`, `\r`, `\t`, неразрывный пробел и прочие Unicode
+/// White_Space) обрезаются здесь один раз, поэтому ссылка, скопированная вместе
+/// с переводом строки, открывается так же, как без него. Пробелы внутри ссылки не
+/// трогаются; строка из одних пробелов превращается в пустую и получает `NotUrl`.
 pub(crate) fn classify_startup_url(argument: &str) -> StartupUrlClassification {
-    PRODUCTION_STARTUP_URL_SERVICE_REGISTRY.classify(argument)
+    PRODUCTION_STARTUP_URL_SERVICE_REGISTRY.classify(argument.trim())
 }
 
 /// Повторно открывает persisted domain locator через тот же service registry, без app parser-а.
