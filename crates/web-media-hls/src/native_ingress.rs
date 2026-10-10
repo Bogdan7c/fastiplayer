@@ -282,8 +282,8 @@ fn parse_native_hls_top(
 /// Media topology имеет единственный reconstructible selection intent.
 ///
 /// Top-level media playlist не декларирует CODECS, поэтому звук в нём не гарантирован
-/// (видео без звука - обычный случай, A13-2): форма доказывается содержимым первого
-/// сегмента, а не предположением «видео + звук».
+/// (видео без звука - обычный случай, A13-2; радио без видео - A13-3): форма доказывается
+/// содержимым первого сегмента, а не предположением «видео + звук».
 fn native_media_selection() -> NativeHlsSemanticSelection {
     NativeHlsSemanticSelection {
         topology: NativeHlsTopology::Media,
@@ -291,7 +291,7 @@ fn native_media_selection() -> NativeHlsSemanticSelection {
             resolution: None,
             codecs: None,
             audio: HlsAudioLayoutIntent::Muxed,
-            main_track_layout: HlsMainTrackLayoutIntent::VideoWithOptionalAudio,
+            main_track_layout: HlsMainTrackLayoutIntent::VideoWithOptionalAudioOrAudioOnly,
         },
     }
 }
@@ -346,7 +346,8 @@ fn select_master_low_load(
 struct NativeMasterCandidate {
     variant_index: usize,
     codec_rank: usize,
-    resolution: (NonZeroU32, NonZeroU32),
+    /// У audio-only variant-а (радио) RESOLUTION нет.
+    resolution: Option<(NonZeroU32, NonZeroU32)>,
     codecs: Box<str>,
     audio: HlsAudioLayoutIntent,
     main_track_layout: HlsMainTrackLayoutIntent,
@@ -358,7 +359,7 @@ impl NativeMasterCandidate {
     /// Проецирует ranked row в reconstructible semantic runtime intent.
     fn runtime_intent(&self) -> HlsVariantSelectionIntent {
         HlsVariantSelectionIntent {
-            resolution: Some(self.resolution),
+            resolution: self.resolution,
             codecs: Some(self.codecs.clone()),
             audio: self.audio.clone(),
             main_track_layout: self.main_track_layout,
@@ -372,8 +373,6 @@ fn native_candidate(
     variant: &VariantStream,
     policy: &NativeHlsSelectionPolicy,
 ) -> Option<NativeMasterCandidate> {
-    let (width, height) = variant.resolution?;
-    let resolution = (NonZeroU32::new(width)?, NonZeroU32::new(height)?);
     let codecs = variant.codecs.clone()?;
     let parsed = codecs
         .split(',')
@@ -384,6 +383,17 @@ fn native_candidate(
                 .map(NormalizedCodec::parse)
         })
         .collect::<Option<Vec<_>>>()?;
+    let has_known_video_codec = parsed.iter().any(|codec| {
+        matches!(
+            codec.kind(),
+            CodecKind::Known(family) if family.media_kind() == CodecMediaKind::Video
+        )
+    });
+    if !has_known_video_codec && variant.resolution.is_none() {
+        return audio_only_candidate(variant_index, variant, codecs, &parsed);
+    }
+    let (width, height) = variant.resolution?;
+    let resolution = Some((NonZeroU32::new(width)?, NonZeroU32::new(height)?));
     let video_codecs = parsed
         .iter()
         .filter_map(|codec| match codec.kind() {
@@ -476,6 +486,42 @@ fn native_candidate(
     })
 }
 
+/// Variant интернет-радио: CODECS только аудио (mp4a/…), RESOLUTION и AUDIO group нет (A13-3).
+///
+/// Такой variant становится кандидатом наравне с видео-variant-ами, но всегда ранжируется после
+/// них (`usize::MAX` по codec rank): смешанный master (видео-лесенка + audio-only запасной
+/// вариант) по-прежнему выбирает видео. Среди audio-only побеждает больший bandwidth.
+fn audio_only_candidate(
+    variant_index: usize,
+    variant: &VariantStream,
+    codecs: Box<str>,
+    parsed: &[NormalizedCodec],
+) -> Option<NativeMasterCandidate> {
+    let audio_codec_count = parsed
+        .iter()
+        .filter(|codec| {
+            matches!(
+                codec.kind(),
+                CodecKind::Known(family) if family.media_kind() == CodecMediaKind::Audio
+            )
+        })
+        .count();
+    // Ровно один известный audio-кодек и никаких неизвестных токенов: форму нельзя угадать иначе.
+    if audio_codec_count != 1 || parsed.len() != 1 || variant.audio_group.is_some() {
+        return None;
+    }
+    Some(NativeMasterCandidate {
+        variant_index,
+        codec_rank: usize::MAX,
+        resolution: None,
+        codecs,
+        audio: HlsAudioLayoutIntent::Muxed,
+        main_track_layout: HlsMainTrackLayoutIntent::AudioOnly,
+        bandwidth: variant.average_bandwidth.unwrap_or(variant.bandwidth),
+        video_range: None,
+    })
+}
+
 fn rendition_evidence(rendition: &MediaRendition) -> Option<HlsAudioRenditionEvidence> {
     let channel_count = match rendition.channel_count {
         Some(count) => Some(NonZeroU16::new(u16::try_from(count.get()).ok()?)?),
@@ -498,8 +544,11 @@ fn compare_candidates(
         .then_with(|| left.codec_rank.cmp(&right.codec_rank))
         .then_with(|| {
             policy.preferred_height.compare(
-                VideoHeight::new(left.resolution.1.get()).ok(),
-                VideoHeight::new(right.resolution.1.get()).ok(),
+                left.resolution
+                    .and_then(|(_, height)| VideoHeight::new(height.get()).ok()),
+                right
+                    .resolution
+                    .and_then(|(_, height)| VideoHeight::new(height.get()).ok()),
             )
         })
         .then_with(|| right.bandwidth.cmp(&left.bandwidth))
@@ -657,7 +706,7 @@ video.m3u8\n";
         );
         assert_eq!(
             admitted_vod.runtime_intent().main_track_layout,
-            HlsMainTrackLayoutIntent::VideoWithOptionalAudio
+            HlsMainTrackLayoutIntent::VideoWithOptionalAudioOrAudioOnly
         );
 
         // Завершённый EVENT (A13-1) - это VOD: презентацию определяет ENDLIST, а не тип плейлиста.
@@ -748,6 +797,64 @@ video.m3u8\n";
             admit(group_without_audio_codec, &policy(None), None),
             Err(NativeHlsAdmissionError::ExtractorMaterialRequired)
         ));
+    }
+
+    /// A13-3: master из variant-ов только с audio-кодеком (радио) - native AudioOnly, лучший
+    /// bandwidth; в смешанном master видео по-прежнему выигрывает; неразрешимые формы
+    /// (AUDIO group, неизвестный токен CODECS, два кодека) остаются за extractor-ом.
+    #[test]
+    fn master_of_audio_only_variants_is_native_radio_but_video_still_wins() {
+        let radio = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.2\"\nlow.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS=\"mp4a.40.2\"\nhigh.m3u8\n";
+        let admitted = admit_native_hls_catalog(
+            radio.as_bytes(),
+            &target(),
+            HlsParserLimits::default(),
+            &policy(None),
+        )
+        .expect("radio master native");
+        assert_eq!(admitted.current_master_variant_index(), Some(1));
+        let intent = admitted.runtime_intent();
+        assert_eq!(
+            intent.main_track_layout,
+            HlsMainTrackLayoutIntent::AudioOnly
+        );
+        assert_eq!(intent.resolution, None);
+        assert_eq!(intent.codecs.as_deref(), Some("mp4a.40.2"));
+
+        let mixed = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS=\"mp4a.40.2\"\naudio.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS=\"avc1.64001f,mp4a.40.2\"\n720.m3u8\n";
+        let admitted = admit_native_hls_catalog(
+            mixed.as_bytes(),
+            &target(),
+            HlsParserLimits::default(),
+            &policy(None),
+        )
+        .expect("mixed master native");
+        assert_eq!(admitted.current_master_variant_index(), Some(1));
+        assert_eq!(
+            admitted.runtime_intent().main_track_layout,
+            HlsMainTrackLayoutIntent::MuxedAv
+        );
+
+        for unresolved in [
+            "#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.2\",AUDIO=\"a\"\nx.m3u8\n",
+            "#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.2,mystery\"\nx.m3u8\n",
+            "#EXT-X-STREAM-INF:BANDWIDTH=64000\nx.m3u8\n",
+        ] {
+            let manifest = format!(
+                "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"en\",URI=\"a.m3u8\"\n{unresolved}"
+            );
+            assert!(
+                matches!(
+                    admit(&manifest, &policy(None), None),
+                    Err(NativeHlsAdmissionError::ExtractorMaterialRequired)
+                ),
+                "{unresolved}"
+            );
+        }
     }
 
     #[test]

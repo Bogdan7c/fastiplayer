@@ -10,8 +10,8 @@ use web_media_adaptive::AdaptiveHttpContext;
 use web_media_transport_api::SourceGeneration;
 
 use super::{
-    HlsLiveComponentSnapshot, HlsLiveSegmentIdentity, HlsLiveTimelineEvidence,
-    HlsLiveVideoDecodeStartEvidence,
+    HlsLiveComponentSnapshot, HlsLiveRandomAccessSource, HlsLiveSegmentIdentity,
+    HlsLiveTimelineEvidence, HlsLiveVideoDecodeStartEvidence,
 };
 
 /// Общий owner main/audio snapshots, evidence и neutral timeline publication.
@@ -42,7 +42,7 @@ impl HlsLiveTimelineCoordinator {
         audio: Option<HlsLiveComponentSnapshot>,
         port_generation: DynamicMediaTimelinePortGeneration,
         source_epoch: DynamicMediaTimelineEpoch,
-        main_has_video: bool,
+        main_random_access: HlsLiveRandomAccessSource,
         http: AdaptiveHttpContext,
         generation: SourceGeneration,
     ) -> (Arc<Self>, DynamicMediaTimelinePort) {
@@ -52,19 +52,34 @@ impl HlsLiveTimelineCoordinator {
             source_epoch,
             state: DynamicMediaTimelineState::without_dvr(live_edge),
         });
-        let audio_evidence = audio.as_ref().map(|_| HlsLiveTimelineEvidence::new(false));
+        let audio_evidence = audio
+            .as_ref()
+            .map(|_| HlsLiveTimelineEvidence::new(HlsLiveRandomAccessSource::EveryAudioPacket));
         let coordinator = Arc::new(Self {
             state: Mutex::new(HlsLiveTimelineCoordinatorState {
                 transport: HlsLiveTransportSnapshot { http, generation },
                 main,
                 audio,
-                main_evidence: HlsLiveTimelineEvidence::new(main_has_video),
+                main_evidence: HlsLiveTimelineEvidence::new(main_random_access),
                 audio_evidence,
                 source_epoch,
                 publisher,
             }),
         });
         (coordinator, port)
+    }
+
+    /// Фиксирует random-access политику main-компонента по доказанной probe-ом форме дорожек.
+    ///
+    /// Owner знания о форме - открытый main demux; coordinator лишь принимает вывод и не
+    /// заглядывает в дорожки сам. Вызывается один раз сразу после открытия, до первых пакетов.
+    pub fn prove_main_random_access(&self, random_access: HlsLiveRandomAccessSource) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("HLS live timeline coordinator mutex poisoned"))?;
+        state.main_evidence.set_random_access(random_access);
+        Ok(())
     }
 
     /// Атомарно заменяет main/audio snapshots одного accepted refresh.
@@ -91,7 +106,9 @@ impl HlsLiveTimelineCoordinator {
         match (&mut state.audio_evidence, &audio) {
             (Some(evidence), Some(snapshot)) => evidence.retain_snapshot(snapshot),
             (None, Some(_)) => {
-                state.audio_evidence = Some(HlsLiveTimelineEvidence::new(false));
+                state.audio_evidence = Some(HlsLiveTimelineEvidence::new(
+                    HlsLiveRandomAccessSource::EveryAudioPacket,
+                ));
             }
             (_, None) => state.audio_evidence = None,
         }

@@ -494,6 +494,38 @@ fn main_track_layout_accepts_all_exact_shapes_and_rejects_opposite_tracks() {
     );
 }
 
+/// A13-3: top media playlist принимает «видео с опциональным звуком» ИЛИ «ровно один звук»;
+/// пустой набор, два звука и два видео отвергаются, а строгие формы не ослаблены.
+#[test]
+fn top_media_layout_accepts_video_or_single_audio_only() {
+    let video = track(1, TrackKind::Video);
+    let audio = track(2, TrackKind::Audio);
+    let layout = HlsMainTrackLayoutIntent::VideoWithOptionalAudioOrAudioOnly;
+    let accepts =
+        |tracks: &[media_core::TrackInfo]| validate_track_shape(tracks, layout, "top").is_ok();
+    assert!(accepts(std::slice::from_ref(&video)), "видео без звука");
+    assert!(accepts(&[video.clone(), audio.clone()]), "видео и звук");
+    assert!(accepts(std::slice::from_ref(&audio)), "только звук");
+    assert!(!accepts(&[]), "пустой набор дорожек");
+    assert!(
+        !accepts(&[audio.clone(), track(3, TrackKind::Audio)]),
+        "два звука"
+    );
+    assert!(
+        !accepts(&[video.clone(), track(4, TrackKind::Video)]),
+        "два видео"
+    );
+    // Строгий video-only из master variant-а по-прежнему не принимает «только звук».
+    assert!(
+        validate_track_shape(
+            std::slice::from_ref(&audio),
+            HlsMainTrackLayoutIntent::VideoWithOptionalAudio,
+            "variant",
+        )
+        .is_err()
+    );
+}
+
 #[test]
 fn codec_evidence_is_exact_but_order_independent() {
     assert!(codec_sets_match(

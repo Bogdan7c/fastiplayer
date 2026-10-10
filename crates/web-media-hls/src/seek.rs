@@ -35,6 +35,18 @@ pub(crate) struct HlsSeekAnchor {
     pub kind: HlsSeekAnchorKind,
 }
 
+/// Есть ли в потоке видео, то есть может ли decode-safe точка входа быть video RAP.
+///
+/// Знание принадлежит открытому demux-у (фактические дорожки после probe); index лишь хранит
+/// его, чтобы `DecodePointBefore`/`Preview` не требовали video RAP у потока без видео (A13-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HlsSeekVideoPresence {
+    /// Видео есть или форма ещё не доказана: decode-safe точка входа - video RAP.
+    Expected,
+    /// Доказано: видео нет, каждый аудио-пакет самодостаточен и является точкой входа.
+    Absent,
+}
+
 /// Preview-pinned decision не позволяет растущему index-у менять worker landing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HlsSeekDecision {
@@ -48,6 +60,7 @@ pub(crate) struct HlsSeekIndex {
     maximum_entries: usize,
     anchors: Vec<HlsSeekAnchor>,
     pending_preview: Option<HlsSeekDecision>,
+    video_presence: HlsSeekVideoPresence,
 }
 
 impl HlsSeekIndex {
@@ -57,7 +70,13 @@ impl HlsSeekIndex {
             maximum_entries,
             anchors: Vec::new(),
             pending_preview: None,
+            video_presence: HlsSeekVideoPresence::Expected,
         }
+    }
+
+    /// Фиксирует, что probe не нашёл видео: seek идёт по аудио-пакетам, а не по video RAP.
+    pub(crate) fn declare_video_absent(&mut self) {
+        self.video_presence = HlsSeekVideoPresence::Absent;
     }
 
     /// Добавляет первый concrete RAP/audio anchor каждого actual media segment-а.
@@ -348,7 +367,10 @@ impl HlsSeekIndex {
     pub(crate) fn required_kind(&self, request: DemuxSeekRequest) -> HlsSeekAnchorKind {
         match request.mode {
             DemuxSeekMode::DecodePointBefore | DemuxSeekMode::Preview => {
-                HlsSeekAnchorKind::VideoRandomAccessPoint
+                match self.video_presence {
+                    HlsSeekVideoPresence::Expected => HlsSeekAnchorKind::VideoRandomAccessPoint,
+                    HlsSeekVideoPresence::Absent => HlsSeekAnchorKind::AudioPacket,
+                }
             }
             DemuxSeekMode::Accurate => {
                 if self
@@ -466,6 +488,31 @@ mod tests {
             .iter()
             .filter_map(|anchor| (anchor.kind == kind).then_some(anchor.position.as_duration()))
             .collect()
+    }
+
+    /// A13-3: без видео `DecodePointBefore`/`Preview` садятся на аудио-пакет; пока видео не
+    /// исключено, по-прежнему требуется video RAP (аудио его не подменяет).
+    #[test]
+    fn decode_point_seek_uses_audio_anchor_only_after_video_is_declared_absent() {
+        let mut index = HlsSeekIndex::new(4);
+        let segment = HlsSegmentRestartCoordinate { segment_index: 0 };
+        index.observe_packet(
+            0,
+            segment,
+            Duration::ZERO,
+            Duration::ZERO,
+            &audio_packet(Duration::from_secs(2)),
+        );
+        let request = DemuxSeekRequest::decode_point_before(Duration::from_secs(5));
+        assert!(
+            index.anchor_for(request).is_err(),
+            "видео ожидается: аудио не якорь"
+        );
+
+        index.declare_video_absent();
+        let anchor = index.anchor_for(request).expect("аудио-якорь без видео");
+        assert_eq!(anchor.kind, HlsSeekAnchorKind::AudioPacket);
+        assert_eq!(anchor.position.as_duration(), Duration::from_secs(2));
     }
 
     #[test]

@@ -36,6 +36,14 @@ pub enum HlsMainTrackLayoutIntent {
     /// CODECS, поэтому «видео со звуком» и «видео без звука» различимы лишь после probe
     /// первого сегмента. Видео обязательно (оно задаёт seek anchor), звук опционален.
     VideoWithOptionalAudio,
+    /// Форму доказывает только содержимое: либо видео с опциональным звуком (как
+    /// `VideoWithOptionalAudio`), либо ровно один audio track без видео (интернет-радио).
+    ///
+    /// Только для top-level media playlist (A13-3): без master нет ни CODECS, ни RESOLUTION,
+    /// поэтому «видео» и «только звук» различимы лишь после probe первого сегмента. Два видео,
+    /// два звука и пустой набор дорожек по-прежнему отвергаются. Random-access политику live
+    /// выводит из фактической формы, а не из этого intent-а (см. `live::open`).
+    VideoWithOptionalAudioOrAudioOnly,
 }
 
 /// Explicit evidence для одного alternate audio rendition.

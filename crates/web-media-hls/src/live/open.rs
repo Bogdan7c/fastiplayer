@@ -13,7 +13,7 @@ use hls_playlist_core::{
 };
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer,
-    DynamicMediaTimelinePort, MediaMetadata, TrackInfo,
+    DynamicMediaTimelinePort, MediaMetadata, TrackInfo, TrackKind,
 };
 use source_core::HttpRequestTarget;
 use web_media_adaptive::{
@@ -23,13 +23,14 @@ use web_media_adaptive::{
 
 use super::refresh::{HlsLiveRefreshControl, HlsLiveRefreshOwner, HlsLiveRuntimeFailure};
 use super::{
-    HlsLiveComponentFactory, HlsLiveComponentKind, HlsLiveComponentSnapshot, HlsLiveRefreshError,
-    HlsLiveTimelineCoordinator, TransactionalHlsLiveAvDemuxer,
+    HlsLiveComponentFactory, HlsLiveComponentKind, HlsLiveComponentSnapshot,
+    HlsLiveRandomAccessSource, HlsLiveRefreshError, HlsLiveTimelineCoordinator,
+    TransactionalHlsLiveAvDemuxer,
 };
 use crate::catalog::{HlsCatalogMatchMode, HlsCatalogReopenError, HlsCatalogReopenSelection};
 use crate::open::{
     HlsVodOpenError, load_top_playlist, required_audio_container, required_main_container,
-    select_master, validate_key_fetch_bound,
+    select_master, validate_key_fetch_bound, validate_track_shape,
 };
 use crate::plan::{HlsComponentPlan, HlsPlanError, build_segment_scoped_component_plan};
 use crate::{
@@ -176,16 +177,18 @@ fn prepare_hls_live_with_catalog(
             )
         })
         .transpose()?;
-    let main_has_video = !matches!(
-        initial.main_track_layout,
-        crate::HlsMainTrackLayoutIntent::AudioOnly
-    );
+    // Предварительная политика по intent-у; для top media playlist (форма неизвестна до probe)
+    // она уточняется ниже по фактическим дорожкам открытого main demux-а.
+    let main_random_access = match initial.main_track_layout {
+        crate::HlsMainTrackLayoutIntent::AudioOnly => HlsLiveRandomAccessSource::EveryAudioPacket,
+        _ => HlsLiveRandomAccessSource::VideoDecodeStart,
+    };
     let (coordinator, timeline_port) = HlsLiveTimelineCoordinator::new(
         main_snapshot,
         audio_snapshot,
         request.timeline_port_generation,
         request.initial_source_epoch,
-        main_has_video,
+        main_random_access,
         request.common.http.clone(),
         request.common.generation,
     );
@@ -199,6 +202,17 @@ fn prepare_hls_live_with_catalog(
         Arc::clone(&refresh_control),
     );
     let main = main_factory.open().map_err(HlsLiveOpenError::Runtime)?;
+    if initial.main_track_layout
+        == crate::HlsMainTrackLayoutIntent::VideoWithOptionalAudioOrAudioOnly
+    {
+        // Форму доказывает probe: проверяем её и выводим random access из фактических дорожек.
+        // Без видео якорем становится аудио-пакет, иначе decode anchor не появится никогда.
+        validate_track_shape(main.tracks(), initial.main_track_layout, "main")
+            .map_err(|error| HlsLiveOpenError::Runtime(error.into()))?;
+        coordinator
+            .prove_main_random_access(random_access_for_tracks(main.tracks()))
+            .map_err(HlsLiveOpenError::Runtime)?;
+    }
     let demuxer: Box<dyn Demuxer + Send> =
         match (initial.audio_container, initial.audio_media.as_ref()) {
             (Some(audio_container), Some(_)) => {
@@ -251,6 +265,15 @@ fn prepare_hls_live_with_catalog(
         timeline_port,
         subtitles,
     })
+}
+
+/// Выводит random-access политику main-компонента из фактических дорожек.
+fn random_access_for_tracks(tracks: &[TrackInfo]) -> HlsLiveRandomAccessSource {
+    if tracks.iter().any(|track| track.kind == TrackKind::Video) {
+        HlsLiveRandomAccessSource::VideoDecodeStart
+    } else {
+        HlsLiveRandomAccessSource::EveryAudioPacket
+    }
 }
 
 /// Оборачивает HLS live/DVR seek существующей worker-receipted demux boundary.

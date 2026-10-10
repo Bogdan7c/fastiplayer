@@ -786,6 +786,9 @@ pub(crate) fn validate_track_shape(
         HlsMainTrackLayoutIntent::VideoOnly => video_tracks == 1 && audio_tracks == 0,
         HlsMainTrackLayoutIntent::AudioOnly => video_tracks == 0 && audio_tracks == 1,
         HlsMainTrackLayoutIntent::VideoWithOptionalAudio => video_tracks == 1 && audio_tracks <= 1,
+        HlsMainTrackLayoutIntent::VideoWithOptionalAudioOrAudioOnly => {
+            (video_tracks == 1 && audio_tracks <= 1) || (video_tracks == 0 && audio_tracks == 1)
+        }
     };
     if matches {
         Ok(())

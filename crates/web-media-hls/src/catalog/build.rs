@@ -599,6 +599,13 @@ fn provider_default_request(
                 video: video.variant.exact_identity().clone(),
             })
         }
+        // Форма «видео или только звук» принадлежит top-level media playlist (A13-3); у master
+        // variant-а она не возникает, а каталог такой строки не строит.
+        HlsMainTrackLayoutIntent::VideoWithOptionalAudioOrAudioOnly => {
+            Err(HlsCatalogBuildError::ProviderDefaultRejected {
+                reason: HlsCatalogSiblingRejectionReason::UnsupportedTrackShape,
+            })
+        }
         HlsMainTrackLayoutIntent::MuxedAv => {
             if audio_index.is_some() {
                 return Err(HlsCatalogBuildError::ProviderDefaultRejected {

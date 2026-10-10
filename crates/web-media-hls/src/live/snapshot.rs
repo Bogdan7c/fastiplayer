@@ -214,19 +214,40 @@ pub(crate) enum HlsLiveVideoDecodeStartEvidence {
     NotProven,
 }
 
+/// Что считается точкой входа декодера (random access) для main-компонента.
+///
+/// Политика выводится из фактической формы дорожек, а не из заранее заданного признака:
+/// звук-в-видео-потоке не может быть якорем (после seek видео обязано стартовать с keyframe),
+/// а у потока без видео (радио) каждый аудио-пакет самодостаточен.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HlsLiveRandomAccessSource {
+    /// Есть видео: якорь - только пакет с доказанным стартом декодера видео (keyframe + SPS/PPS).
+    VideoDecodeStart,
+    /// Видео нет: якорь - любой аудио-пакет (каждый AAC-фрейм независим), берётся первый по PTS.
+    EveryAudioPacket,
+}
+
 /// Rolling packet/RAP evidence, жёстко привязанное к retained segment identity.
 #[derive(Debug)]
 pub(crate) struct HlsLiveTimelineEvidence {
-    requires_video_random_access: bool,
+    random_access: HlsLiveRandomAccessSource,
     by_segment: HashMap<HlsLiveSegmentIdentity, SegmentPacketEvidence>,
 }
 
 impl HlsLiveTimelineEvidence {
-    pub fn new(requires_video_random_access: bool) -> Self {
+    pub fn new(random_access: HlsLiveRandomAccessSource) -> Self {
         Self {
-            requires_video_random_access,
+            random_access,
             by_segment: HashMap::new(),
         }
+    }
+
+    /// Уточняет политику random access после того, как probe доказал фактическую форму дорожек.
+    ///
+    /// Копившееся evidence не пересчитывается: вызывать нужно до чтения пакетов (сразу после
+    /// открытия первого сегмента), когда анкеров ещё нет.
+    pub fn set_random_access(&mut self, random_access: HlsLiveRandomAccessSource) {
+        self.random_access = random_access;
     }
 
     /// Запоминает только packet, который segment-scoped demux однозначно атрибутировал.
@@ -249,7 +270,7 @@ impl HlsLiveTimelineEvidence {
         let evidence = self.by_segment.entry(identity).or_default();
         let is_decode_anchor = match packet.kind {
             TrackKind::Video => video_decode_start == HlsLiveVideoDecodeStartEvidence::Proven,
-            TrackKind::Audio => !self.requires_video_random_access,
+            TrackKind::Audio => self.random_access == HlsLiveRandomAccessSource::EveryAudioPacket,
         };
         if is_decode_anchor {
             evidence.decode_anchor = Some(
@@ -452,7 +473,8 @@ mod tests {
         )
         .expect("valid initial snapshot");
         let identity = snapshot.segments[0].identity;
-        let mut evidence = HlsLiveTimelineEvidence::new(true);
+        let mut evidence =
+            HlsLiveTimelineEvidence::new(HlsLiveRandomAccessSource::VideoDecodeStart);
 
         assert!(evidence.proven_range(&snapshot).is_none());
         evidence.observe_packet(
@@ -478,6 +500,54 @@ mod tests {
         assert!(evidence.proven_range(&snapshot).is_none());
     }
 
+    fn audio_packet(pts: Duration) -> Packet {
+        Packet::new_with_keyframe_unbounded(
+            TrackId::new(2),
+            TrackKind::Audio,
+            pts,
+            Some(pts),
+            PacketKeyframe::Unknown,
+            Bytes::new(),
+        )
+        .with_duration(Duration::from_secs(1))
+    }
+
+    /// Звук становится якорем только когда доказано отсутствие видео (A13-3); в потоке с
+    /// видео аудио-пакет якоря не даёт, как и раньше.
+    #[test]
+    fn audio_packet_is_decode_anchor_only_when_random_access_comes_from_audio() {
+        let media =
+            media("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:10\n#EXTINF:6,\na.ts\n");
+        let snapshot = HlsLiveComponentSnapshot::initial(
+            HlsLiveComponentKind::Main,
+            &media,
+            segment_plan(&media),
+            Duration::from_secs(6),
+        )
+        .expect("valid initial snapshot");
+        let identity = snapshot.segments[0].identity;
+
+        let mut with_video =
+            HlsLiveTimelineEvidence::new(HlsLiveRandomAccessSource::VideoDecodeStart);
+        with_video.observe_packet(identity, &audio_packet(Duration::ZERO));
+        assert!(with_video.proven_range(&snapshot).is_none());
+
+        let mut radio = HlsLiveTimelineEvidence::new(HlsLiveRandomAccessSource::EveryAudioPacket);
+        radio.observe_packet(identity, &audio_packet(Duration::ZERO));
+        assert_eq!(
+            radio.anchor_for(&snapshot, Duration::from_secs(3)),
+            Some((identity, Duration::ZERO))
+        );
+        assert!(radio.proven_range(&snapshot).is_some());
+
+        // Политику уточняет probe: после перехода на audio-якорь тот же evidence начинает их принимать.
+        let mut proved_later =
+            HlsLiveTimelineEvidence::new(HlsLiveRandomAccessSource::VideoDecodeStart);
+        proved_later.set_random_access(HlsLiveRandomAccessSource::EveryAudioPacket);
+        proved_later.observe_packet(identity, &audio_packet(Duration::ZERO));
+        assert!(proved_later.proven_range(&snapshot).is_some());
+    }
+
     #[test]
     fn sliding_refresh_expires_old_evidence_and_advances_live_edge() {
         let initial_media = media(
@@ -499,7 +569,8 @@ mod tests {
         )
         .expect("valid initial snapshot");
         let expired_identity = initial.segments[0].identity;
-        let mut evidence = HlsLiveTimelineEvidence::new(true);
+        let mut evidence =
+            HlsLiveTimelineEvidence::new(HlsLiveRandomAccessSource::VideoDecodeStart);
         evidence.observe_packet(
             expired_identity,
             &video_packet(Duration::from_secs(1), PacketKeyframe::Keyframe),

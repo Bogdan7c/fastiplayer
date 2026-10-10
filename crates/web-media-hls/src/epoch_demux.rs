@@ -334,6 +334,10 @@ impl HlsComponentDemuxer {
             .public_tracks
             .iter()
             .any(|track| track.kind == TrackKind::Video);
+        if !has_video {
+            // Радио (A13-3): без видео точкой входа декодера служит аудио-пакет.
+            self.seek_index.lock().declare_video_absent();
+        }
         let mut inspected_events = 0_usize;
         let mut inspected_bytes = 0_usize;
         while !self

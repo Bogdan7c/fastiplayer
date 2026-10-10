@@ -45,10 +45,9 @@ use web_media_hls::{
     HlsCatalogDiscoveryOutcome, HlsCatalogDiscoveryRequest, HlsCatalogPresentation,
     HlsEndpointRefreshError, HlsEndpointRefreshPort, HlsEndpointRefreshReply,
     HlsEndpointRefreshRequest, HlsLiveOpenRequest, HlsManifestInput, HlsProviderDefaultAudioPolicy,
-    HlsRequestOverrides, HlsVodOpenError, HlsVodOpenRequest, NativeHlsCatalogAdmission,
-    NativeHlsSelectionPolicy, SecretInlineMediaPlaylist, admit_native_hls_catalog,
-    discover_hls_catalog, prepare_hls_catalog_vod_receipted, prepare_hls_live,
-    prepare_hls_vod_receipted,
+    HlsRequestOverrides, HlsVodOpenRequest, NativeHlsCatalogAdmission, NativeHlsSelectionPolicy,
+    SecretInlineMediaPlaylist, admit_native_hls_catalog, discover_hls_catalog,
+    prepare_hls_catalog_vod_receipted, prepare_hls_live, prepare_hls_vod_receipted,
 };
 use web_media_transport_api::SourceGeneration;
 
@@ -278,51 +277,6 @@ fn muxed_ts_and_fmp4_still_open_with_both_tracks() {
         kinds.sort_by_key(|kind| matches!(kind, TrackKind::Audio));
         assert_eq!(kinds, vec![TrackKind::Video, TrackKind::Audio]);
     }
-}
-
-/// Звук без видео в top media playlist по-прежнему отвергается формой, а не открывается "немым" видео.
-#[test]
-fn audio_only_top_media_is_still_rejected_by_shape() {
-    let (init, media) = support::audio_fmp4();
-    let (init, media) = (Arc::new(init), Arc::new(media));
-    let server = TestServer::start(move |_, request| {
-        if request.request_line.contains("/init.mp4") {
-            response("200 OK", &[], &init)
-        } else if request.request_line.contains("/seg.m4s") {
-            response("200 OK", &[], &media)
-        } else {
-            response("404 Not Found", &[], b"")
-        }
-    });
-    const PLAYLIST: &str = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-PLAYLIST-TYPE:VOD\n\
-        #EXT-X-TARGETDURATION:1\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1,\nseg.m4s\n\
-        #EXT-X-ENDLIST\n";
-    let admission = admit(PLAYLIST, &server.target("/media.m3u8"));
-    let opened = prepare_hls_vod_receipted(
-        vod_request(&server, PLAYLIST, &admission),
-        ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
-    );
-    let outcome = opened.map(|opened| {
-        let mut demuxer = opened.into_demuxer();
-        let deadline = Instant::now() + TEST_TIMEOUT;
-        loop {
-            match demuxer.next_event() {
-                Ok(DemuxReadEvent::TemporarilyUnavailable(_)) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Ok(DemuxReadEvent::Packet(_)) => return Ok(()),
-                Ok(_) => {}
-                Err(error) => return Err(error.to_string()),
-            }
-        }
-    });
-    let message = match outcome {
-        Err(error) => error.to_string(),
-        Ok(Err(message)) => message,
-        Ok(Ok(())) => panic!("audio-only top media не должен играть как video-only"),
-    };
-    assert!(message.contains("shape mismatch"), "{message}");
-    let _ = HlsVodOpenError::MissingVariant;
 }
 
 struct NoRefresh;
