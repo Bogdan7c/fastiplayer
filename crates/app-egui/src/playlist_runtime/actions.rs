@@ -386,6 +386,28 @@ mod tests {
         assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);
     }
 
+    /// A12: FTP(S) для direct media реально поддерживается (провайдер зарегистрирован),
+    /// поэтому «Добавить URL» принимает такую ссылку; недоступность сервера — это ошибка
+    /// сети при воспроизведении, а не отказ схемы. Исключённая схема отказывает сразу.
+    #[test]
+    fn add_url_accepts_supported_ftp_and_refuses_excluded_scheme_up_front() {
+        let mut runtime = runtime();
+        let config = fastiplayer_config::YtDlpConfig::default();
+        let ftp = runtime
+            .append_playlist_url("ftp://media.example.test/clip.mp4", &config)
+            .expect("ftp direct media поддерживается");
+        assert_eq!(ftp, UrlAppendActionOutcome::Appended { item_count: 1 });
+
+        let rtmp = runtime.append_playlist_url("rtmp://media.example.test/live", &config);
+        assert_eq!(
+            rtmp,
+            Err(UrlAppendValidationError::Unsupported {
+                safe_error: "Ссылки `rtmp` исключены из поддерживаемых в этой версии".to_owned()
+            })
+        );
+        assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);
+    }
+
     #[test]
     fn whitespace_only_url_input_is_refused_with_clear_error_and_leaves_queue_untouched() {
         let mut runtime = runtime();
