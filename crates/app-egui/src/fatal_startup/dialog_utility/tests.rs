@@ -1,6 +1,7 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use super::{DialogUtility, DialogUtilityChannel};
 use crate::fatal_startup::messages::FatalStartupNotice;
@@ -15,6 +16,13 @@ fn notice() -> FatalStartupNotice {
 
 /// Поддельная утилита: записывает свои аргументы (по одному на строку) и
 /// завершается с заданным кодом.
+///
+/// Скрипт создаёт отдельный короткоживущий `sh`, а не сам тестовый процесс. Если
+/// записать файл через `fs::write`, то дескриптор на запись существует в нашем
+/// процессе, и любой `fork` другого теста в этот момент наследует его до своего
+/// `exec`. Тогда наш `exec` скрипта падает с `ETXTBSY` («Text file busy»).
+/// Когда файл пишет дочерний `sh`, у тестового процесса такого дескриптора нет
+/// вообще, а к моменту `wait()` писатель уже закрыт: гонка невозможна.
 fn fake_dialog_program(directory: &Path, exit_code: i32) -> (PathBuf, PathBuf) {
     let arguments_log = directory.join("arguments.log");
     let program = directory.join("fake-dialog");
@@ -22,9 +30,28 @@ fn fake_dialog_program(directory: &Path, exit_code: i32) -> (PathBuf, PathBuf) {
         "#!/bin/sh\nfor argument in \"$@\"; do printf '%s\\0' \"$argument\" >> '{}'; done\nexit {exit_code}\n",
         arguments_log.display()
     );
-    fs::write(&program, script).expect("fake dialog script");
-    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).expect("fake dialog mode");
+    write_executable_script(&program, &script);
     (program, arguments_log)
+}
+
+/// Создаёт исполняемый файл с содержимым `script` руками внешнего `sh` (см. причину
+/// в документации `fake_dialog_program`) и дожидается его завершения.
+fn write_executable_script(program: &Path, script: &str) {
+    let mut writer = Command::new("sh")
+        // Путь передаётся позиционным аргументом, а не вклеивается в команду.
+        .args(["-c", "cat > \"$1\" && chmod 700 \"$1\"", "sh"])
+        .arg(program)
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("sh writer spawn");
+    writer
+        .stdin
+        .take()
+        .expect("sh writer stdin")
+        .write_all(script.as_bytes())
+        .expect("script into sh writer");
+    let status = writer.wait().expect("sh writer wait");
+    assert!(status.success(), "sh writer failed: {status:?}");
 }
 
 fn recorded_arguments(arguments_log: &Path) -> Vec<String> {
