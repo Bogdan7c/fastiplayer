@@ -24,6 +24,7 @@ use crate::{
     HlsEndpointRefreshReason, HlsRequiredContainer, SecretAes128Key, decrypt_aes128_cbc_pkcs7,
 };
 
+mod packed_ingest;
 mod streaming;
 
 use self::streaming::HlsResourceStreamState;
@@ -587,6 +588,8 @@ pub(crate) enum HlsSegmentSourceError {
     BytePositionOverflow,
     #[error("active read lifecycle")]
     ActiveRead(#[from] HlsActiveReadError),
+    #[error("packed audio")]
+    PackedAudio(#[from] crate::packed_audio::PackedAudioError),
 }
 
 fn map_runtime_source_error(error: impl Into<HlsSegmentSourceError>) -> OrderedSegmentReadError {
@@ -615,6 +618,9 @@ fn map_runtime_source_error(error: impl Into<HlsSegmentSourceError>) -> OrderedS
         },
         HlsSegmentSourceError::ActiveRead(_) => OrderedSegmentReadError::Failed {
             reason: "hls-active-read-lifecycle".to_owned(),
+        },
+        HlsSegmentSourceError::PackedAudio(_) => OrderedSegmentReadError::Failed {
+            reason: "hls-packed-audio-invalid".to_owned(),
         },
     }
 }

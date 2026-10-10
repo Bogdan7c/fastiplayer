@@ -14,6 +14,7 @@ mod live;
 mod manifest_profile;
 mod native_ingress;
 mod open;
+mod packed_audio;
 mod plan;
 mod request;
 mod seek;

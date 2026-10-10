@@ -116,7 +116,7 @@ impl HlsEpochSegmentSource {
     }
 
     /// Открывает один unencrypted resource до HTTP EOF, сохраняя общую policy.
-    fn open_streaming_resource(
+    pub(super) fn open_streaming_resource(
         &self,
         resource: &PlannedResource,
     ) -> Result<AdaptiveStreamingResource, HlsSegmentSourceError> {
@@ -263,6 +263,9 @@ impl OrderedResourceStreamSource for HlsEpochSegmentSource {
                             .map_err(map_resource_stream_error)?;
                         let plaintext = self
                             .decrypt(&ciphertext, encryption)
+                            .and_then(|plaintext| {
+                                Self::normalize_packed_audio(&resource, plaintext)
+                            })
                             .map_err(map_resource_stream_error)?;
                         self.stream_state = HlsResourceStreamState::Buffered {
                             resource,
@@ -270,15 +273,9 @@ impl OrderedResourceStreamSource for HlsEpochSegmentSource {
                             remainder: plaintext,
                         };
                     } else {
-                        let body = self
-                            .open_streaming_resource(&resource)
+                        self.stream_state = self
+                            .open_sniffed_resource(resource, resource_start)
                             .map_err(map_resource_stream_error)?;
-                        self.stream_state = HlsResourceStreamState::Streaming {
-                            resource,
-                            resource_start,
-                            body,
-                            remainder: Bytes::new(),
-                        };
                     }
                 }
                 HlsResourceStreamState::Streaming {
@@ -379,6 +376,9 @@ fn map_resource_stream_error(error: impl Into<HlsSegmentSourceError>) -> Ordered
         },
         HlsSegmentSourceError::ActiveRead(_) => OrderedResourceReadError::Failed {
             reason: "hls-active-read-lifecycle".to_owned(),
+        },
+        HlsSegmentSourceError::PackedAudio(_) => OrderedResourceReadError::Failed {
+            reason: "hls-packed-audio-invalid".to_owned(),
         },
     }
 }
