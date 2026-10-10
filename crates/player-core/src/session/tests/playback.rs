@@ -17,13 +17,58 @@ fn default_session_starts_idle() {
 fn play_pause_commands_update_snapshot_and_events() {
     let mut session = PlayerSession::new();
 
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session.dispatch_command(PlayerCommand::Pause).unwrap();
 
     let events = session.take_events();
     assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
     assert!(events.contains(&PlayerEvent::PlaybackStateChanged(PlaybackState::Playing)));
     assert!(events.contains(&PlayerEvent::PlaybackStateChanged(PlaybackState::Paused)));
+}
+
+/// A15: Play/Toggle у пустого player-а не создают «Playing без источника».
+#[test]
+fn play_and_toggle_without_media_stay_idle_and_publish_no_playing() {
+    let mut session = PlayerSession::new();
+
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session
+        .dispatch_command(PlayerCommand::TogglePlayback)
+        .unwrap();
+
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Idle);
+    assert!(
+        !session
+            .take_events()
+            .contains(&PlayerEvent::PlaybackStateChanged(PlaybackState::Playing))
+    );
+}
+
+/// После Stop media сброшено: Play снова не может вернуть `Playing` без источника.
+#[test]
+fn play_after_stop_without_media_stays_stopped() {
+    let mut session = PlayerSession::new();
+    session.dispatch_command(PlayerCommand::Stop).unwrap();
+
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Stopped);
+}
+
+/// Контрольная пара: с установленным demuxer-ом Play по-прежнему даёт `Playing`.
+#[test]
+fn play_with_installed_media_reaches_playing() {
+    let mut session = PlayerSession::new();
+    let demuxer = FakeDemuxer::new(
+        Vec::new(),
+        Some(Duration::from_secs(30)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    session.load_demuxer_with_autoplay("fake".to_owned(), Box::new(demuxer), false);
+
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Playing);
 }
 
 #[test]

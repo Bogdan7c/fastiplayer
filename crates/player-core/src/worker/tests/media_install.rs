@@ -6,12 +6,35 @@ use super::*;
 fn worker_starts_accepts_commands_publishes_snapshot_and_shutdowns() {
     let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();
 
+    // Play без установленного media — no-op: `Playing` бывает только у источника.
     worker.try_send_command(PlayerCommand::Play).unwrap();
+    worker.try_send_command(PlayerCommand::Pause).unwrap();
     let snapshot = wait_for_snapshot(&mut worker, |snapshot| {
-        snapshot.playback_state == PlaybackState::Playing
+        snapshot.playback_state == PlaybackState::Paused
+    });
+    let events = drain_events_until(&worker, |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerWorkerEvent::Player(CorrelatedPlayerEvent {
+                    event: PlayerEvent::PlaybackStateChanged(PlaybackState::Paused),
+                    ..
+                })
+            )
+        })
     });
 
-    assert_eq!(snapshot.playback_state, PlaybackState::Playing);
+    assert_eq!(snapshot.playback_state, PlaybackState::Paused);
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            PlayerWorkerEvent::Player(CorrelatedPlayerEvent {
+                event: PlayerEvent::PlaybackStateChanged(PlaybackState::Playing),
+                ..
+            })
+        )),
+        "Play без media не должен публиковать Playing"
+    );
     worker.shutdown().unwrap();
 }
 

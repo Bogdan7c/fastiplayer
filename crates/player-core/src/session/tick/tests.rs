@@ -725,7 +725,7 @@ fn vp9_profile2_10bit_keyframe_for_tests() -> Bytes {
 #[test]
 fn scheduler_presents_first_ready_frame() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session
         .pipeline
         .enqueue_queued_video_frame(decoded_frame(Duration::ZERO, 1));
@@ -761,7 +761,7 @@ fn scheduler_waits_for_future_frame() {
 #[test]
 fn scheduler_presents_frame_at_pts_minus_present_lead() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session.update_current_position(Duration::from_millis(8));
     session
         .pipeline
@@ -782,7 +782,7 @@ fn scheduler_presents_frame_at_pts_minus_present_lead() {
 #[test]
 fn scheduler_uses_fallback_position_when_audio_clock_is_absent() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session.update_current_position(Duration::from_millis(100));
     session
         .pipeline
@@ -804,7 +804,7 @@ fn scheduler_uses_fallback_position_when_audio_clock_is_absent() {
 #[test]
 fn worker_wakeup_for_5994_cadence_uses_pts_minus_present_lead_deadline() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session.update_current_position(Duration::ZERO);
     session
         .pipeline
@@ -833,7 +833,7 @@ fn worker_wakeup_for_5994_cadence_uses_pts_minus_present_lead_deadline() {
 fn worker_wakeup_for_24_and_30_fps_is_not_fixed_60hz_polling() {
     for frame_duration in [Duration::from_millis(33), Duration::from_millis(41)] {
         let mut session = PlayerSession::new();
-        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.begin_playback_without_media_for_test().unwrap();
         session.update_current_position(Duration::ZERO);
         session.pipeline.enqueue_queued_video_frame(decoded_frame(
             frame_duration,
@@ -886,7 +886,7 @@ fn worker_wakeup_scales_no_audio_frame_deadline_by_playback_rate() {
 
     for (playback_rate, min_delay, max_delay) in cases {
         let mut session = PlayerSession::new();
-        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.begin_playback_without_media_for_test().unwrap();
         session.update_current_position(Duration::ZERO);
         session
             .dispatch_command(PlayerCommand::SetPlaybackRate(playback_rate))
@@ -980,7 +980,7 @@ fn front_frame_scheduler_delay_uses_audio_media_mapping_for_playback_rate() {
 #[test]
 fn worker_wakeup_does_not_busy_spin_when_present_queue_is_healthy() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session.update_current_position(Duration::ZERO);
     let tick_config = PlayerTickConfig {
         target_video_present_queue: 4,
@@ -1099,7 +1099,7 @@ fn worker_wakeup_uses_audio_refill_deadline_while_draining_pending_audio_tail() 
 #[test]
 fn worker_wakeup_records_front_frame_pts_diff_for_diagnostics() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session.update_current_position(Duration::from_millis(10));
     session
         .pipeline
@@ -1560,7 +1560,7 @@ fn scheduler_5994_vs_60hz_phase_difference_is_not_late_drop() {
 #[test]
 fn scheduler_repeats_current_frame_when_queue_is_empty() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session
         .pipeline
         .set_present_video_frame(decoded_frame(Duration::ZERO, 1));
@@ -1595,7 +1595,7 @@ fn scheduler_repeats_current_frame_when_queue_is_empty() {
 #[test]
 fn scheduler_preserves_p010_boundary_frame_without_format_branching() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session
         .pipeline
         .enqueue_queued_video_frame(decoded_frame_with_format(
@@ -1650,7 +1650,7 @@ fn audio_demux_catchup_requires_selected_audio_and_low_buffer() {
 #[test]
 fn scheduler_requests_catch_up_after_one_delayed_tick() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     let tick_config = PlayerTickConfig::default();
     let frame_duration = session.pipeline.video_frame_duration_estimate();
 
@@ -1697,7 +1697,7 @@ fn scheduler_allows_decoder_burst_after_delay() {
 #[test]
 fn scheduler_requests_catch_up_when_present_queue_is_near_empty() {
     let mut session = PlayerSession::new();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     let tick_config = PlayerTickConfig {
         min_video_present_queue: 2,
         target_video_present_queue: 4,
@@ -2023,7 +2023,7 @@ fn pause_and_rate_changes_preserve_accelerated_scan_and_restore_on_slowdown() {
             .unwrap(),
         crate::PlayerCommandOutcome::Applied
     );
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     assert_eq!(
         session.pipeline.begin_video_backlog_recovery_scan(
             crate::pipeline::VideoBacklogRecoveryScanLimits::for_tests()
@@ -2115,7 +2115,7 @@ fn pause_and_rate_changes_preserve_accelerated_scan_and_restore_on_slowdown() {
         crate::pipeline::VideoBacklogRecoveryRouteOutcome::QueuedNormally
     );
 
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     assert_eq!(session.playback_state(), PlaybackState::Playing);
     assert!(!session.pipeline.video_backlog_recovery_scan_allows_demux());
     assert_eq!(session.pipeline.pending_video_packet_len(), 1);

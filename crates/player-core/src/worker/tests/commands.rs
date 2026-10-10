@@ -36,15 +36,11 @@ fn command_ordering_for_play_pause_stop_open_shutdown_is_preserved() {
         })
         .collect::<Vec<_>>();
 
-    let playing_index = player_events
-        .iter()
-        .position(|event| {
-            matches!(
-                event,
-                PlayerEvent::PlaybackStateChanged(PlaybackState::Playing)
-            )
-        })
-        .expect("missing Playing event");
+    // Play без media — no-op: `Playing` не публикуется (инвариант state machine).
+    assert!(!player_events.iter().any(|event| matches!(
+        event,
+        PlayerEvent::PlaybackStateChanged(PlaybackState::Playing)
+    )));
     let paused_index = player_events
         .iter()
         .position(|event| {
@@ -68,7 +64,6 @@ fn command_ordering_for_play_pause_stop_open_shutdown_is_preserved() {
         .position(|event| matches!(event, PlayerEvent::ShutdownRequested))
         .expect("missing Shutdown event");
 
-    assert!(playing_index < paused_index);
     assert!(paused_index < open_index);
     assert!(open_index < shutdown_index);
     worker.shutdown().unwrap();

@@ -125,7 +125,7 @@ fn playing_half_rate_change_reanchors_no_audio_clock_slower_than_wall_time() {
     let requested_rate = playback_rate(0.5);
     let initial_position = Duration::from_millis(100);
 
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session.update_current_position(initial_position);
     assert_rate_command_applied(
         session.dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate)),

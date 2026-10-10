@@ -539,12 +539,8 @@ fn audio_output_ready_and_resume_events_keep_exact_media_correlation_and_one_sho
     session
         .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("successful factory должен установить output");
-    session
-        .dispatch_command(PlayerCommand::Play)
-        .expect("installed output должен принять Play");
-    session
-        .dispatch_command(PlayerCommand::Play)
-        .expect("repeated Play остаётся idempotent command");
+    session.begin_playback_without_media_for_test().unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
 
     let correlated_events = session.take_correlated_events();
     let audio_events = correlated_events
@@ -1343,7 +1339,7 @@ fn lazy_audio_output_init_while_playing_calls_play() {
     let (factory, factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
     let mut session = PlayerSession::with_audio_output_factory(factory);
 
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     session
         .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("lazy init during Playing должен запустить output");
@@ -1361,7 +1357,7 @@ fn lazy_audio_output_play_error_stays_audio_device_unavailable() {
         ScriptedAudioOutputFactory::success(0.0, Some("fake audio play failed"));
     let mut session = PlayerSession::with_audio_output_factory(factory);
 
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     let error = session
         .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect_err("play error после lazy init должен быть видимым");

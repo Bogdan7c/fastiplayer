@@ -1,3 +1,8 @@
+## Play без media (A15-live, 2026-10-11)
+
+- Инвариант state machine: `Playing` бывает только при установленном media. `PlayerSession::play()` (владелец `session/runtime_control.rs`) без demuxer-а, вне `Opening` и без staged install — no-op с debug-логом; раньше пустой player уходил в `Playing` с тикающим таймером. Тело Play вынесено в `begin_playback`; юнит-тестам scheduler-а/аудио без настоящего demuxer-а доступен `#[cfg(test)] begin_playback_without_media_for_test`. Тесты: `session/tests/playback.rs` (`play_and_toggle_without_media_*`, `play_with_installed_media_reaches_playing`).
+- App-сторона: Play из пустого плеера при непустой очереди открывает `current` либо первый элемент (`PlaylistController::idle_play_target`, `PlaylistRuntime::play_idle_queue_target`, маршрут `transport_runtime/idle_resume.rs`).
+
 ## Command delivery contract (UX17, 2026-10-10)
 
 - Ordinary `PlayerCommandSender::try_send` не теряет команды при полной 128-очереди: упорядоченный резерв + слияние latest-value команд; receipt-команды при непустом резерве получают `Full`/`Backpressure`; shutdown обходит резерв. Owner `worker/command_queue.rs`, детали `mem:player-core/command-delivery-reserve-ux17`.

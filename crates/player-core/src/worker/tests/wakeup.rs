@@ -87,7 +87,11 @@ fn idle_worker_has_no_periodic_wakeup_timeout() {
 fn active_worker_uses_media_plan_as_wakeup_timeout() {
     let mut runtime = runtime_for_tests(Instant::now());
 
-    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
+    // Тест планировщика: нужен Playing без настоящего demuxer-а, минуя guard Play.
+    runtime
+        .session
+        .begin_playback_without_media_for_test()
+        .unwrap();
 
     let planned_at = Instant::now();
     let wakeup = runtime
@@ -123,7 +127,11 @@ fn overdue_worker_wakeup_runs_tick_without_blocking_wait() {
     // Production planner обязан сохранить immediate-work семантику нулевой задержки.
     runtime.config.coarse_wakeup_interval = Duration::ZERO;
     // Playing intent включает media scheduling без отдельного test-only seam-а.
-    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
+    // Тест планировщика: нужен Playing без настоящего demuxer-а, минуя guard Play.
+    runtime
+        .session
+        .begin_playback_without_media_for_test()
+        .unwrap();
     // Предыдущее время позволяет доказать реальный tick, а не только возврат `false`.
     let previous_tick_at = runtime.last_tick_at;
 
@@ -140,7 +148,11 @@ fn overdue_worker_wakeup_runs_tick_without_blocking_wait() {
 fn command_batch_yields_to_overdue_tick_during_command_storm() {
     let (mut runtime, command_tx) = runtime_for_tests_with_command_sender(Instant::now());
     runtime.config.coarse_wakeup_interval = Duration::ZERO;
-    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
+    // Тест планировщика: нужен Playing без настоящего demuxer-а, минуя guard Play.
+    runtime
+        .session
+        .begin_playback_without_media_for_test()
+        .unwrap();
 
     for command_index in 0..MAX_COMMANDS_PER_LOOP * 2 {
         command_tx
@@ -222,7 +234,11 @@ fn render_feedback_does_not_postpone_playback_timeout() {
     let (mut runtime, _command_tx, _shutdown_tx, render_client) =
         runtime_for_tests_with_wakeup_handles(Instant::now());
     runtime.config.coarse_wakeup_interval = Duration::from_millis(5);
-    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
+    // Тест планировщика: нужен Playing без настоящего demuxer-а, минуя guard Play.
+    runtime
+        .session
+        .begin_playback_without_media_for_test()
+        .unwrap();
     let wakeup = runtime
         .plan_next_worker_wakeup()
         .expect("active playback should plan a worker wakeup");

@@ -68,7 +68,7 @@ fn playing_session_with_active_output() -> (
     ScriptedAudioOutputHandle,
 ) {
     let (mut session, factory_handle) = session_with_audio_track();
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
     feed_one_audio_packet(&mut session);
     let first_output = factory_handle
         .last_output_handle()
@@ -229,7 +229,7 @@ fn paused_session_recovers_output_without_starting_it() {
 fn missing_saved_device_at_open_plays_on_default_and_keeps_audio_track() {
     let (mut session, factory_handle) = session_with_audio_track();
     factory_handle.set_devices(ONLY_SYSTEM_DEFAULT);
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
 
     feed_one_audio_packet(&mut session);
 
@@ -254,7 +254,7 @@ fn missing_saved_device_at_open_plays_on_default_and_keeps_audio_track() {
 fn no_device_at_all_at_open_keeps_video_playing_with_audio_error() {
     let (mut session, factory_handle) = session_with_audio_track();
     factory_handle.set_devices(NO_DEVICES);
-    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.begin_playback_without_media_for_test().unwrap();
 
     feed_one_audio_packet(&mut session);
 

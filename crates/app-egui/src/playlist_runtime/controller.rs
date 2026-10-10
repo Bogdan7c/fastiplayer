@@ -4,6 +4,7 @@ mod active_media_reuse;
 mod automatic_lifecycle;
 mod discovery;
 mod discovery_navigation;
+mod idle_play_target;
 mod import;
 mod initial_queue_playback;
 mod install;

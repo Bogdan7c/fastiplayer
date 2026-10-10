@@ -29,6 +29,21 @@ impl PlayerSession {
     pub(super) fn play(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
+        if self.has_no_media_to_play() {
+            // Инвариант: `Playing` бывает только у установленного media. Play без источника
+            // (пустой player, остановленный/сброшенный) — безвредный no-op: иначе UI рисует
+            // «Playing» и тикающий таймер, а играть нечему.
+            debug!("Play проигнорирован: media не установлено");
+            return Ok(());
+        }
+        self.begin_playback()
+    }
+
+    /// Тело Play после проверки инварианта «есть что играть».
+    ///
+    /// Вынесено, чтобы юнит-тесты scheduler-а/аудио (у которых нет настоящего demuxer-а)
+    /// могли запускать playback через [`Self::begin_playback_without_media_for_test`].
+    fn begin_playback(&mut self) -> PlayerResult<()> {
         if let Some(seek_commit) = self.seek_runtime.active_commit_mut() {
             seek_commit.resume_intent = PlaybackResumeIntent::Play;
             self.set_playback_state(PlaybackState::Seeking);
@@ -63,6 +78,22 @@ impl PlayerSession {
         self.anchor_monotonic_media_clock_if_needed(Instant::now());
 
         Ok(())
+    }
+
+    /// Test-only: запускает playback у session без demuxer-а (минуя guard Play).
+    #[cfg(test)]
+    pub(crate) fn begin_playback_without_media_for_test(&mut self) -> PlayerResult<()> {
+        self.begin_playback()
+    }
+
+    /// `true`, если играть нечего: нет demuxer-а, и media не открывается и не ставится.
+    ///
+    /// Во время `Opening` и staged install Play обязан дойти до lifecycle-а (autoplay intent),
+    /// поэтому там guard не срабатывает.
+    fn has_no_media_to_play(&self) -> bool {
+        !self.has_loaded_media_pipeline()
+            && !matches!(self.playback_state(), PlaybackState::Opening)
+            && !self.has_staged_media_install()
     }
 
     /// Запускает preroll перед autoplay, не включая audio stream раньше заполнения buffer.
