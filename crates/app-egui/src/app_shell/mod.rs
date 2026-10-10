@@ -18,6 +18,7 @@ mod instance_forwarding;
 mod resolved_url_collection;
 mod runtime_settings_flush;
 mod shutdown;
+mod window_limits;
 
 #[cfg(test)]
 mod tests;

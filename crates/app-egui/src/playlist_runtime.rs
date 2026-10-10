@@ -91,6 +91,8 @@ pub(crate) use shell_boundary::{PlaylistBindingRejection, PlaylistShutdownReport
 pub(crate) use suspend_resume::{
     ResumeAttempt, ResumeCheckpointError, ResumePlaybackIntent, ResumePositionWarning,
 };
+#[cfg(test)]
+pub(crate) use transport_ui::PlaylistGlobalTransportStatus;
 pub(crate) use transport_ui::{
     NavigationControlAvailability, PlaylistTransportUiModel, PlaylistUndoUiSnapshot,
     RemovalUndoUiModel,

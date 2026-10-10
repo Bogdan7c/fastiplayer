@@ -138,9 +138,8 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         let window_attributes = Window::default_attributes()
             .with_title("Fastiplayer")
             .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720))
-            // Ширина гарантирует полный порядок transport controls; единичная высота
-            // оставляет вертикальное ограничение практически на усмотрение compositor-а.
-            .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, 1.0))
+            // Минимум выведен из реальных размеров titlebar и нижней панели, см. `window_limits`.
+            .with_min_inner_size(super::window_limits::min_inner_size())
             .with_decorations(false)
             // X11 требует запросить alpha-capable native window до создания WGPU surface.
             .with_transparent(true)

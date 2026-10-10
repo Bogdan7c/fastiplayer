@@ -64,7 +64,7 @@ fn suspend_and_terminal_exit_force_flush_pending_sidebar_resize_and_volume() {
 }
 
 #[test]
-fn window_creation_keeps_minimum_logical_width_at_four_hundred_points() {
+fn window_creation_uses_derived_minimum_size() {
     let event_loop_source = include_str!("event_loop.rs");
     let creation = event_loop_source
         .split_once("let window_attributes = Window::default_attributes()")
@@ -74,6 +74,6 @@ fn window_creation_keeps_minimum_logical_width_at_four_hundred_points() {
         .expect("window attributes construction must stay bounded")
         .0;
 
-    assert!(creation.contains("with_min_inner_size"));
-    assert!(creation.contains("LogicalSize::new(400.0, 1.0)"));
+    // Минимум берётся из `window_limits`, а не из «магического» литерала в создании окна.
+    assert!(creation.contains("with_min_inner_size(super::window_limits::min_inner_size())"));
 }
