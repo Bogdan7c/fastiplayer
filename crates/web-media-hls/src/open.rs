@@ -9,7 +9,6 @@ use hls_playlist_core::{
     MediaContainerIntent, MediaPlaylist, MediaRendition, MediaRenditionType, VariantStream,
     parse_hls_playlist, validate_initial_profile, validate_vod_profile,
 };
-use media_core::TrackKind;
 use source_core::HttpRequestTarget;
 use web_media_adaptive::{
     AdaptiveResourceFetchRequest, AdaptiveResourcePurpose, AdaptiveResourceQueryApplication,
@@ -35,10 +34,12 @@ mod container_probe;
 pub(crate) use container_probe::open_epoch_probe;
 mod deferred_initial;
 mod result;
+mod track_shape;
 
 pub(crate) use container_probe::{required_audio_container, required_main_container};
 use deferred_initial::{HlsDeferredInitialComponent, open_deferred_initial_components};
 pub use result::{HlsInitialReadinessCapability, HlsVodOpenResult};
+pub(crate) use track_shape::validate_track_shape;
 
 /// Secret-safe prepare/open failure до production player mutation.
 #[derive(Debug, thiserror::Error)]
@@ -101,18 +102,6 @@ pub enum HlsVodOpenError {
     InitialRestoreCandidateMissing,
     #[error("HLS catalog reopen rejected: {0}")]
     CatalogReopen(#[from] HlsCatalogReopenError),
-}
-
-/// Actual demux tracks нарушили explicit selected topology.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "HLS {component} track shape mismatch: expected {expected:?}, video={video_tracks}, audio={audio_tracks}"
-)]
-pub(crate) struct HlsTrackShapeError {
-    component: &'static str,
-    expected: HlsMainTrackLayoutIntent,
-    video_tracks: usize,
-    audio_tracks: usize,
 }
 
 /// Выполняет blocking manifest orchestration и возвращает неустановленный nonblocking runtime.
@@ -765,39 +754,4 @@ fn rendition_matches(rendition: &MediaRendition, evidence: &HlsAudioRenditionEvi
                 .map(|rendition_count| rendition_count.get())
                 == Some(u64::from(channel_count.get()))
         })
-}
-
-/// Проверяет полную video/audio cardinality, а не только наличие требуемого kind.
-pub(crate) fn validate_track_shape(
-    tracks: &[media_core::TrackInfo],
-    expected: HlsMainTrackLayoutIntent,
-    component: &'static str,
-) -> Result<(), HlsTrackShapeError> {
-    let video_tracks = tracks
-        .iter()
-        .filter(|track| track.kind == TrackKind::Video)
-        .count();
-    let audio_tracks = tracks
-        .iter()
-        .filter(|track| track.kind == TrackKind::Audio)
-        .count();
-    let matches = match expected {
-        HlsMainTrackLayoutIntent::MuxedAv => video_tracks == 1 && audio_tracks == 1,
-        HlsMainTrackLayoutIntent::VideoOnly => video_tracks == 1 && audio_tracks == 0,
-        HlsMainTrackLayoutIntent::AudioOnly => video_tracks == 0 && audio_tracks == 1,
-        HlsMainTrackLayoutIntent::VideoWithOptionalAudio => video_tracks == 1 && audio_tracks <= 1,
-        HlsMainTrackLayoutIntent::VideoWithOptionalAudioOrAudioOnly => {
-            (video_tracks == 1 && audio_tracks <= 1) || (video_tracks == 0 && audio_tracks == 1)
-        }
-    };
-    if matches {
-        Ok(())
-    } else {
-        Err(HlsTrackShapeError {
-            component,
-            expected,
-            video_tracks,
-            audio_tracks,
-        })
-    }
 }
