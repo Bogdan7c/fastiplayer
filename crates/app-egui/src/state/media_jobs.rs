@@ -30,91 +30,6 @@ impl AppState {
         self.player_worker.command_sender()
     }
 
-    /// Сообщает пользователю, почему подготовленный локальный файл не установился.
-    ///
-    /// Раньше любая ошибка показывалась как «worker недоступен: …» с debug-дампом, хотя чаще всего
-    /// worker доступен и сам отказал (например, кодек не поддерживается). Теперь причина
-    /// берётся из типизированного исхода; отмена — не ошибка, «занято» — временное уведомление.
-    /// Функция только сообщает: старое воспроизведение при отказе до commit barrier-а не
-    /// затронуто, а ошибки после barrier-а уже обработала compensation strong-open-а.
-    fn report_prepared_local_install_failure(
-        &mut self,
-        path: &std::path::Path,
-        error: &crate::state::StrongMediaOpenError,
-    ) {
-        // Имя файла — только в тексте для пользователя, в лог его не пишем.
-        match error.user_outcome() {
-            crate::state::StrongMediaOpenUserOutcome::Cancelled => {
-                info!(error = %error, "Установка локального файла отменена");
-            }
-            crate::state::StrongMediaOpenUserOutcome::Busy => {
-                info!(error = %error, "Coordinator занят другим открытием");
-                self.notify_open_still_in_progress();
-            }
-            crate::state::StrongMediaOpenUserOutcome::Failed(reason) => {
-                warn!(error = %error, ?reason, "Не удалось установить подготовленный файл");
-                self.set_startup_error(local_open_failure_message(path, reason));
-            }
-        }
-    }
-
-    /// Доставляет уже подготовленный локальный media в worker после async UI opening-а.
-    pub(crate) fn load_prepared_local_file(
-        &mut self,
-        prepared: crate::media_open::PreparedLocalOpenResult,
-        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
-    ) -> bool {
-        let path = prepared.source_path.clone();
-        let opened_media_kind = prepared.media_kind;
-        let target_draft =
-            match crate::playlist_runtime::discovery::target_draft_from_prepared(&prepared) {
-                Ok(target_draft) => target_draft,
-                Err(error) => {
-                    self.set_startup_error(format!(
-                        "Не удалось подготовить metadata очереди для target: {error}"
-                    ));
-                    return false;
-                }
-            };
-        let desired_initial_intent = if self.committed_config_snapshot.autoplay_for_new_media() {
-            crate::playlist_runtime::StablePlaybackIntent::Playing
-        } else {
-            crate::playlist_runtime::StablePlaybackIntent::Paused
-        };
-        let source = ActiveMediaSource::LocalFile(path.clone());
-        let prepared_input = PreparedSingleMediaOpen::target_replacement(
-            prepared.prepared_media,
-            source.clone(),
-            prepared.safe_label,
-            target_draft,
-        );
-        let backend_constraint =
-            crate::video_backend_constraint::media_install_video_backend_constraint(
-                self.video_backend_preference(),
-            );
-        if let Err(error) = self.install_prepared_media_strong(
-            playlist_runtime,
-            renderer,
-            prepared_input,
-            player_core::PlaybackIntent::StartPaused,
-            backend_constraint,
-        ) {
-            self.report_prepared_local_install_failure(&path, &error);
-            return false;
-        }
-
-        self.record_installed_media_source(source);
-        if let Err(error) = playlist_runtime.start_sibling_discovery_then_play_from_beginning(
-            path.clone(),
-            opened_media_kind,
-            desired_initial_intent,
-        ) {
-            warn!(error = %error, "Target установлен, но sibling discovery не запущен");
-        }
-        true
-    }
-
     /// Возвращает восстановимый active source intent для controlled media rebuild.
     #[must_use]
     pub(crate) fn active_media_source(&self) -> Option<ActiveMediaSource> {
@@ -123,12 +38,6 @@ impl AppState {
 
     pub(crate) fn remember_active_media_source(&mut self, source: ActiveMediaSource) {
         self.active_media_source = Some(source);
-    }
-
-    /// Публикует app observable state только после exact player Installed.
-    pub(crate) fn record_installed_media_source(&mut self, source: ActiveMediaSource) {
-        self.record_installed_media_observables(source);
-        self.clear_installed_vod_endpoint_recovery();
     }
 
     /// Публикует exact Installed вместе с runtime-only VOD recovery attachment-ом.
@@ -295,10 +204,13 @@ impl AppState {
         Ok(())
     }
 
-    /// Возвращает `true`, пока shell ждёт file dialog или подготовку локального media.
+    /// Возвращает `true`, пока shell ждёт file dialog, подготовку или установку локального media.
+    ///
+    /// Установка входит сюда, чтобы повторный Open получил «Файл ещё открывается» сразу,
+    /// а не после выбора файла и подтверждения замены очереди.
     #[must_use]
     pub fn has_pending_local_file_open(&self) -> bool {
-        self.local_file_open_job.is_some()
+        self.local_file_open_job.is_some() || self.is_local_open_installing()
     }
 
     /// Передаёт renderer-bound local job process owner-у на время suspend.
@@ -324,8 +236,21 @@ impl AppState {
         LocalFileOpenRestoreOutcome::Restored
     }
 
-    /// Неблокирующе забирает события async открытия локального файла.
+    /// Неблокирующе продвигает открытие локального файла: установку из Open и async job.
     pub fn poll_local_file_open_job(
+        &mut self,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
+    ) -> bool {
+        // Установка опрашивается первой: её terminal освобождает общий слот для того,
+        // что могло ждать за ней (например, Next, отменивший открытие).
+        let install_changed = self.poll_local_open_install(playlist_runtime);
+        let job_changed = self.drain_local_file_open_job(playlist_runtime, renderer);
+        install_changed || job_changed
+    }
+
+    /// Забирает события async job-а (диалог выбора и подготовка файла).
+    fn drain_local_file_open_job(
         &mut self,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
         renderer: &render_wgpu_shell::Renderer,
@@ -366,7 +291,8 @@ impl AppState {
                 self.open_selected_local_file(path, playlist_runtime, renderer);
             }
             LocalFileOpenResult::Prepared { prepared } => {
-                self.load_prepared_local_file(*prepared, playlist_runtime, renderer);
+                // Только начинает установку: итог заберёт `poll_local_open_install`.
+                self.begin_local_open_install(*prepared, playlist_runtime, renderer);
             }
             LocalFileOpenResult::PrepareFailed { path, reason } => {
                 // Техническая цепочка уже записана в лог worker-ом подготовки.

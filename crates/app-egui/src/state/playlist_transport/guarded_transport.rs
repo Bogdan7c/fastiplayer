@@ -10,6 +10,8 @@
 //! - playlist transport (`active_request_id`) — lossless cancel здесь;
 //! - startup orchestration (`pending_strong_media_open`) — через её штатный supersede, чтобы
 //!   её terminal policy трактовала отмену как cancel-win, а не как ошибку restore.
+//! - установка из кнопки Open (`local_open_install`, UX сессия 18) — lossless cancel здесь;
+//!   её terminal заберёт сам владелец Open, отмена для пользователя молчаливая.
 //!
 //! Новый install, запланированный за чужим request-ом, ждёт освобождения strong-open слота.
 
@@ -25,6 +27,8 @@ use crate::state::AppState;
 enum SupersededRequestOwner {
     /// Request запущен playlist transport-ом; его terminal забирает `poll_playlist_transport`.
     PlaylistTransport,
+    /// Request запущен кнопкой Open; его terminal забирает `poll_local_open_install`.
+    LocalOpenInstall,
     /// Request запущен startup orchestration; её poll сам отменит и заберёт terminal.
     StartupOrchestration,
     /// Request уже завершён и забран — отменять нечего.
@@ -46,6 +50,16 @@ impl AppState {
                 {
                     warn!(error = %error, "Не удалось отменить playlist request, снятый guard-ом");
                 }
+            }
+            SupersededRequestOwner::LocalOpenInstall => {
+                // Решение владельца (сессия 18): Next/Stop/строка плейлиста во время открытия
+                // отменяют открытие. Новый install ждёт, пока владелец Open заберёт terminal.
+                if let Err(error) =
+                    playlist_runtime.cancel_media_open_lossless(released.request_id, released.cause)
+                {
+                    warn!(error = %error, "Не удалось отменить установку из Open, снятую guard-ом");
+                }
+                self.playlist_transport.queued_behind_foreign_request = Some(released.request_id);
             }
             SupersededRequestOwner::StartupOrchestration => {
                 // Startup poll увидит supersede, отменит свой request и применит cancel-win.
@@ -124,6 +138,8 @@ impl AppState {
     fn superseded_request_owner(&self, request_id: MediaOpenRequestId) -> SupersededRequestOwner {
         if self.playlist_transport.active_request_id == Some(request_id) {
             SupersededRequestOwner::PlaylistTransport
+        } else if self.local_open_install_owns_request(request_id) {
+            SupersededRequestOwner::LocalOpenInstall
         } else if self.foreign_request_is_pending(request_id) {
             SupersededRequestOwner::StartupOrchestration
         } else {

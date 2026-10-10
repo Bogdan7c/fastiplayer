@@ -21,6 +21,7 @@ use crate::media_open::{
 
 mod player_failure_tests;
 mod same_lineage_tests;
+mod slow_preflight_tests;
 
 #[derive(Default)]
 struct FakeDemuxer;

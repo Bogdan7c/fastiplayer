@@ -15,9 +15,9 @@ use crate::local_open_message::local_open_failure_message;
 use crate::media_open::PlayerInstallFailureReason;
 
 /// Все ожидания реального worker-а ограничены, чтобы регрессия не подвесила CI.
-const REAL_WORKER_DEADLINE: Duration = Duration::from_secs(5);
+pub(super) const REAL_WORKER_DEADLINE: Duration = Duration::from_secs(5);
 
-fn start_intent() -> MediaOpenInstallIntent {
+pub(super) fn start_intent() -> MediaOpenInstallIntent {
     MediaOpenInstallIntent {
         intent: player_core::PlaybackIntent::StartPaused,
         revision: player_core::PlaybackIntentRevision::INITIAL,
@@ -25,7 +25,7 @@ fn start_intent() -> MediaOpenInstallIntent {
 }
 
 /// Запускает request с уже подготовленным media и возвращает его ID.
-fn start_prepared_request(
+pub(super) fn start_prepared_request(
     coordinator: &mut MediaOpenCoordinator,
     client_number: u64,
     prepared: PreparedMediaOpen,
@@ -314,7 +314,7 @@ impl Demuxer for UnknownVideoCodecDemuxer {
 }
 
 /// Ждёт состояние настоящего worker-а с ограничением по времени.
-fn wait_for_worker_snapshot(
+pub(super) fn wait_for_worker_snapshot(
     worker: &mut PlayerWorker,
     predicate: impl Fn(&PlayerSnapshot) -> bool,
 ) -> PlayerSnapshot {

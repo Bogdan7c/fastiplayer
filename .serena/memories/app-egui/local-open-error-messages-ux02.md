@@ -21,6 +21,9 @@
 ## Сессия 03 (2026-10-04)
 - Тексты расширены причинами отказа player-а: `local_open_failure_message`/`local_open_failure_row_summary` принимают `impl Into<MediaOpenUserFailureReason>` (старые вызовы с `LocalOpenFailureReason` не менялись). Файл `state/strong_media_open/local_failure_reason.rs` переименован в `user_failure_reason.rs`: `StrongMediaOpenError::user_failure_reason()` (бейдж строки) и `user_outcome() -> StrongMediaOpenUserOutcome { Cancelled, Busy, Failed(reason) }` (сессия 04 разделила прежний `Silent`: Cancelled молча, Busy → toast «Файл ещё открывается», см. `mem:app-egui/notifications`; неклассифицированное → InternalError). «worker недоступен» удалён (`AppState::report_prepared_local_install_failure`). Startup: `StartupPendingInstall.local_target: Option<StartupLocalTarget { path, sibling_discovery: StartupSiblingDiscovery }>` + `startup_install_failure_texts`. Детали: `mem:app-egui/media-open-coordinator-s10c` (UX03).
 
+## Сессия 18 (2026-10-10)
+- Путь Open переехал: `load_prepared_local_file` и `report_prepared_local_install_failure` теперь в `state/local_open_install.rs` (`begin_local_open_install` + опрос `poll_local_open_install`, неблокирующе). Тексты те же; Cancelled (в т.ч. Next/Stop во время открытия) и Busy снимают строку «Открываем «…»…». Детали: `mem:app-egui/media-open-coordinator-s10c` (UX18).
+
 ## Вне объёма (другие сессии / бэклог)
 - английский текст пересборки после смены настроек (`settings_runtime_adapter`), стартовый pending «Подготовка local media...» без имени.
 

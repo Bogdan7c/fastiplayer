@@ -318,6 +318,14 @@ impl AppState {
         self.pending_strong_media_open.is_some()
     }
 
+    /// Request, который сейчас занимает общий слот: владельцы сверяют, что это их транзакция.
+    #[must_use]
+    pub(crate) fn pending_prepared_media_strong_request_id(&self) -> Option<MediaOpenRequestId> {
+        self.pending_strong_media_open
+            .as_ref()
+            .map(PendingStrongMediaOpen::request_id)
+    }
+
     /// Запрашивает lossless cancel startup transaction; enqueue-win всё равно будет drained.
     pub(crate) fn supersede_pending_prepared_media_strong(
         &mut self,

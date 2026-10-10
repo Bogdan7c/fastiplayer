@@ -60,6 +60,7 @@ use crate::video_pipeline_selector::{
 mod automatic_web_media_quality;
 mod external_open;
 mod fullscreen_chrome_routing;
+mod local_open_install;
 mod main_visual_override;
 mod media_jobs;
 mod notification_routing;
@@ -243,7 +244,8 @@ pub struct AppState {
     /// Renderer-bound receipts/candidate одной resume attempt; checkpoint остаётся в runtime.
     suspended_media_resume: Option<suspended_media_resume::SuspendedMediaResume>,
 
-    /// Renderer-bound startup install, который UI loop продвигает только неблокирующими шагами.
+    /// Общий renderer-bound strong install (старт, плейлист, Open, VOD, переключение качества),
+    /// который UI loop продвигает только неблокирующими шагами; владельцы различают свой request.
     pending_strong_media_open: Option<strong_media_open::PendingStrongMediaOpen>,
 
     /// S25/S36 transaction metadata поверх общего strong media-open envelope-а.
@@ -254,6 +256,8 @@ pub struct AppState {
 
     /// Активный async dialog/prepare job для локального файла.
     local_file_open_job: Option<LocalFileOpenJob>,
+    /// Неблокирующая установка файла из Open после подготовки (`state/local_open_install.rs`).
+    local_open_install: local_open_install::LocalOpenInstallOwner,
 
     /// Process-lifetime owner wake port для каждого нового local-file job-а.
     local_file_open_wake_port: AppWakePort,
@@ -389,6 +393,7 @@ impl AppState {
             same_item_switch: None,
             playlist_transport: playlist_transport::PlaylistTransportRuntimeState::default(),
             local_file_open_job: None,
+            local_open_install: local_open_install::LocalOpenInstallOwner::default(),
             local_file_open_wake_port,
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
