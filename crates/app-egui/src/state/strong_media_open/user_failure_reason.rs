@@ -5,6 +5,8 @@
 //! Классификацию технических ошибок делают владельцы (`media_open::local::failure`,
 //! `media_open::player_failure`); здесь только решение, показывать ли ошибку вообще.
 
+use player_core::MediaInstallCancellationCause;
+
 use super::StrongMediaOpenError;
 use crate::media_open::{
     MediaOpenStartError, MediaOpenTerminalOutcome, MediaOpenUserFailureReason,
@@ -36,6 +38,19 @@ impl StrongMediaOpenError {
         }
     }
 
+    /// Открытие оборвал сам пользователь или завершение приложения (не ошибка).
+    ///
+    /// `true` только для доказанного `Cancelled` с причиной из списка ниже; любой
+    /// другой исход (в том числе отмена по иным причинам) остаётся прежним.
+    pub(crate) const fn is_cancelled_by_user_or_shutdown(&self) -> bool {
+        match self {
+            Self::Terminal(MediaOpenTerminalOutcome::Cancelled { cause, .. }) => {
+                cancellation_cause_is_user_or_shutdown(*cause)
+            }
+            _ => false,
+        }
+    }
+
     /// Показывать ли ошибку пользователю и с какой причиной.
     ///
     /// Всё, что не отмена/«занято» и не классифицировано, — внутренняя ошибка плеера:
@@ -55,6 +70,24 @@ impl StrongMediaOpenError {
                 }
             },
         }
+    }
+}
+
+/// Причина отмены, за которой стоит действие пользователя либо закрытие приложения.
+///
+/// Match без `_`: новая причина отмены обязана получить явное решение, чтобы
+/// настоящая ошибка случайно не стала «тихой».
+const fn cancellation_cause_is_user_or_shutdown(cause: MediaInstallCancellationCause) -> bool {
+    match cause {
+        // Пользователь нажал Stop / отменил подготовку; приложение закрывается.
+        MediaInstallCancellationCause::UserCancelled
+        | MediaInstallCancellationCause::TransportStop
+        | MediaInstallCancellationCause::LifecycleShutdown => true,
+        // Замена запросом (supersede) обрабатывает startup-флаг; остальное — не про
+        // действие пользователя, поведение прежнее.
+        MediaInstallCancellationCause::Superseded
+        | MediaInstallCancellationCause::StructuralInvalidation
+        | MediaInstallCancellationCause::LifecycleSuspended => false,
     }
 }
 

@@ -83,7 +83,8 @@ fn startup_install_failure_texts(
             StartupInstallTarget::Web { display_host },
             StrongMediaOpenUserOutcome::Failed(reason),
         ) => crate::web_open_message::web_open_failure_message(display_host.as_deref(), reason),
-        // Отмена без supersede и элемент startup-плейлиста: прежнее поведение (риски сессии 03).
+        // Отмена по иным причинам и элемент startup-плейлиста: прежнее поведение. Отмену
+        // пользователем/закрытием (C5) до этой точки не доводим: см. `SilentUserCancel`.
         (
             StartupInstallTarget::Local(_) | StartupInstallTarget::Web { .. },
             StrongMediaOpenUserOutcome::Cancelled | StrongMediaOpenUserOutcome::Busy,
@@ -101,6 +102,10 @@ fn startup_install_failure_texts(
 enum StartupInstallFailurePolicy {
     /// Доказанный cancel/rejection до enqueue разрешает применить retained winner.
     ApplyRetainedCancelWin,
+    /// Пользователь нажал Stop / закрыл приложение во время открытия: не ошибка.
+    /// Ничего не показываем и не пробуем fallback/следующий элемент; retained
+    /// действия применяются как при cancel-win.
+    SilentUserCancel,
     /// Обычная pre-barrier ошибка запускает restore skip либо CLI fallback.
     HandlePreBarrierFailure(crate::media_open::MediaOpenRequestId),
     /// Missing, fatal и post-barrier ошибки остаются sticky и запрещают retained apply.
@@ -114,6 +119,8 @@ fn startup_install_failure_policy(
 ) -> StartupInstallFailurePolicy {
     if error.is_proven_pre_barrier_failure() && superseded {
         StartupInstallFailurePolicy::ApplyRetainedCancelWin
+    } else if error.is_cancelled_by_user_or_shutdown() {
+        StartupInstallFailurePolicy::SilentUserCancel
     } else if error.is_proven_pre_barrier_failure()
         && let Some(request_id) = error.terminal_request_id()
     {
@@ -224,16 +231,27 @@ impl StartupMediaController {
                     startup_install_failure_policy(&error, pending_context.superseded);
                 // Restore fallback может сразу перейти к следующему item и не дойти до общего
                 // install-failure handler, поэтому terminal owner фиксирует safe cause здесь.
-                tracing::warn!(
-                    error = %safe_error,
-                    terminal_request_id = ?error.terminal_request_id(),
-                    may_have_crossed_install_barrier = error.may_have_crossed_install_barrier(),
-                    superseded = pending_context.superseded,
-                    ?failure_policy,
-                    "Startup strong media install failed"
-                );
+                if failure_policy == StartupInstallFailurePolicy::SilentUserCancel {
+                    // Не ошибка: пользователь нажал Stop либо приложение закрывается.
+                    tracing::info!(
+                        reason = %safe_error,
+                        terminal_request_id = ?error.terminal_request_id(),
+                        "Startup media install отменён пользователем или закрытием приложения"
+                    );
+                } else {
+                    tracing::warn!(
+                        error = %safe_error,
+                        terminal_request_id = ?error.terminal_request_id(),
+                        may_have_crossed_install_barrier =
+                            error.may_have_crossed_install_barrier(),
+                        superseded = pending_context.superseded,
+                        ?failure_policy,
+                        "Startup strong media install failed"
+                    );
+                }
                 match failure_policy {
-                    StartupInstallFailurePolicy::ApplyRetainedCancelWin => {
+                    StartupInstallFailurePolicy::ApplyRetainedCancelWin
+                    | StartupInstallFailurePolicy::SilentUserCancel => {
                         if let Err(retained_error) =
                             playlist_runtime.apply_retained_startup_actions()
                         {
@@ -330,6 +348,72 @@ mod tests {
                 true,
             ),
             StartupInstallFailurePolicy::StickyFatal
+        );
+    }
+
+    fn cancelled(cause: MediaInstallCancellationCause) -> StrongMediaOpenError {
+        StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::Cancelled {
+            request_id: MediaOpenRequestId::from_non_zero(NonZeroU64::MIN),
+            cause,
+        })
+    }
+
+    /// Stop пользователя / закрытие приложения во время старта — не ошибка: ни окна,
+    /// ни fallback на следующий элемент. Остальные причины отмены ведут себя как раньше.
+    #[test]
+    fn user_or_shutdown_cancel_is_silent_and_other_causes_keep_previous_policy() {
+        let request_id = MediaOpenRequestId::from_non_zero(NonZeroU64::MIN);
+        for silent_cause in [
+            MediaInstallCancellationCause::UserCancelled,
+            MediaInstallCancellationCause::TransportStop,
+            MediaInstallCancellationCause::LifecycleShutdown,
+        ] {
+            assert_eq!(
+                startup_install_failure_policy(&cancelled(silent_cause), false),
+                StartupInstallFailurePolicy::SilentUserCancel,
+                "{silent_cause:?}"
+            );
+        }
+        for loud_cause in [
+            MediaInstallCancellationCause::Superseded,
+            MediaInstallCancellationCause::StructuralInvalidation,
+            MediaInstallCancellationCause::LifecycleSuspended,
+        ] {
+            assert_eq!(
+                startup_install_failure_policy(&cancelled(loud_cause), false),
+                StartupInstallFailurePolicy::HandlePreBarrierFailure(request_id),
+                "{loud_cause:?}"
+            );
+        }
+        // Supersede-флаг по-прежнему главнее: retained winner применяется.
+        assert_eq!(
+            startup_install_failure_policy(
+                &cancelled(MediaInstallCancellationCause::TransportStop),
+                true
+            ),
+            StartupInstallFailurePolicy::ApplyRetainedCancelWin
+        );
+    }
+
+    /// Реальные провалы не прячутся: ошибка player-а и протокола остаются видимыми.
+    #[test]
+    fn real_failures_are_not_silenced_by_cancel_policy() {
+        let request_id = MediaOpenRequestId::from_non_zero(NonZeroU64::MIN);
+        let failed =
+            player_failed(crate::media_open::PlayerInstallFailureReason::UnsupportedVideoFormat);
+
+        assert_eq!(
+            startup_install_failure_policy(&failed, false),
+            StartupInstallFailurePolicy::HandlePreBarrierFailure(request_id)
+        );
+        assert_eq!(
+            startup_install_failure_policy(&StrongMediaOpenError::MissingTerminal, false),
+            StartupInstallFailurePolicy::StickyFatal
+        );
+        let texts = startup_install_failure_texts(&failed, &local_target("/tmp/clip.mkv"));
+        assert_eq!(
+            texts.user_message,
+            "Не удалось открыть «clip.mkv»: формат видео не поддерживается"
         );
     }
 

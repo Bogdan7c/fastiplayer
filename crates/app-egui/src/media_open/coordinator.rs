@@ -314,11 +314,7 @@ impl MediaOpenCoordinator {
             current.phase = MediaOpenPhase::Failed;
             current.authorization_resolution =
                 Some(AuthorizationDispatchResolution::CancelWonBeforePlayerEnqueue { cause });
-            current.terminal = Some(MediaOpenTerminalOutcome::Cancelled {
-                request_id,
-                #[cfg(test)]
-                cause,
-            });
+            current.terminal = Some(MediaOpenTerminalOutcome::Cancelled { request_id, cause });
             return Ok(CancellationDispatchOutcome::CancelledBeforePlayerStaging);
         };
 
@@ -520,11 +516,10 @@ impl MediaOpenCoordinator {
                         return true;
                     }
                 };
-                if let Some(_cause) = cancellation_cause {
+                if let Some(cause) = cancellation_cause {
                     current.terminal = Some(MediaOpenTerminalOutcome::Cancelled {
                         request_id: current.request_id,
-                        #[cfg(test)]
-                        cause: _cause,
+                        cause,
                     });
                 } else {
                     current.terminal = Some(MediaOpenTerminalOutcome::PreparationFailed {
@@ -597,7 +592,6 @@ impl MediaOpenCoordinator {
                 current.phase = MediaOpenPhase::Failed;
                 current.terminal = Some(MediaOpenTerminalOutcome::Cancelled {
                     request_id: current.request_id,
-                    #[cfg(test)]
                     cause,
                 });
             }

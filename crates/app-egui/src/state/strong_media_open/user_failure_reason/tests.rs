@@ -187,3 +187,33 @@ fn web_preparation_terminal_exposes_web_reason() {
         StrongMediaOpenUserOutcome::Failed(MediaOpenUserFailureReason::WebOpen(reason))
     );
 }
+
+#[test]
+fn only_user_and_shutdown_cancellation_causes_are_silent_cancels() {
+    let cancelled = |cause| {
+        StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::Cancelled {
+            request_id: request_id(),
+            cause,
+        })
+    };
+    for (cause, expected) in [
+        (MediaInstallCancellationCause::UserCancelled, true),
+        (MediaInstallCancellationCause::TransportStop, true),
+        (MediaInstallCancellationCause::LifecycleShutdown, true),
+        (MediaInstallCancellationCause::Superseded, false),
+        (MediaInstallCancellationCause::StructuralInvalidation, false),
+        (MediaInstallCancellationCause::LifecycleSuspended, false),
+    ] {
+        assert_eq!(
+            cancelled(cause).is_cancelled_by_user_or_shutdown(),
+            expected,
+            "{cause:?}"
+        );
+    }
+    // Ошибка, не являющаяся отменой, никогда не считается «тихой».
+    assert!(
+        !player_failed(PlayerInstallFailureReason::InternalError)
+            .is_cancelled_by_user_or_shutdown()
+    );
+    assert!(!StrongMediaOpenError::MissingTerminal.is_cancelled_by_user_or_shutdown());
+}

@@ -592,8 +592,8 @@ pub(crate) enum MediaOpenTerminalOutcome {
     },
     Cancelled {
         request_id: MediaOpenRequestId,
-        /// Причину проверяют только тесты; production различает исходы по варианту.
-        #[cfg(test)]
+        /// Кто оборвал открытие: от этого зависит, показывать ли это как ошибку
+        /// (Stop пользователя и закрытие приложения — не ошибка, UX C5).
         cause: MediaInstallCancellationCause,
     },
     PreparationFailed {
