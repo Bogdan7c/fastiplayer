@@ -36,4 +36,5 @@
 - UX edge cases 2 / B3 (2026-10-10): глобальные хоткеи скорости, ↑/↓ и колесо над видео = громкость, Ctrl+O, подсказка времени на таймлайне — `mem:app-egui/global-hotkeys-volume-input-b3`.
 - Transport-команды во время playlist install (guard/terminal slot, исполнитель Runtime+AppState): `mem:app-egui/transport-guard-execution-2026-10-03`.
 - UX edge cases 2 / C2 (2026-10-11): Apply в настройках с пересборкой media не блокирует окно — многокадровая транзакция (settings-core `begin_apply/poll_apply/cancel_pending_apply`, неблокирующая пересборка `state/settings_media_rebuild`, подготовка источника в фоне, откат остаётся синхронным): `mem:settings-ui/multiframe-apply-c2-2026-10-11`.
+- UX edge cases 2 / C3 (2026-10-11): пересоздание audio output-а (потеря устройства / смена в настройках) больше не опережает видео на ~200 мс — хвост старого буфера заменяется тишиной в новом output-е: `mem:player-core/audio-runtime` (C3).
 - UX edge cases 2 / B6 (2026-10-10): строка-предупреждение в настройках при «Hardware» без VA-API — `mem:settings-ui/hardware-decode-warning-b6-2026-10-10`.

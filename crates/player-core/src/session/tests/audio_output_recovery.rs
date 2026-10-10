@@ -23,10 +23,10 @@ const AUDIO_TRACK: u32 = 2;
 const DECODED_PCM: [f32; 4] = [0.25, -0.5, 0.75, -1.0];
 
 /// Позиция, на которой «выдёргивают» устройство.
-const POSITION_AT_UNPLUG: Duration = Duration::from_secs(42);
+pub(super) const POSITION_AT_UNPLUG: Duration = Duration::from_secs(42);
 
 /// Session с fake decoder-ом и fake устройствами; звук ещё не создан.
-fn session_with_audio_track() -> (PlayerSession, ScriptedAudioOutputFactoryHandle) {
+pub(super) fn session_with_audio_track() -> (PlayerSession, ScriptedAudioOutputFactoryHandle) {
     let (factory, factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
     let mut session = PlayerSession::with_audio_output_factory(factory);
     let track_id = TrackId::new(AUDIO_TRACK);
@@ -47,7 +47,7 @@ fn session_with_audio_track() -> (PlayerSession, ScriptedAudioOutputFactoryHandl
 ///
 /// Packet всегда немного впереди позиции поломки: в реальном потоке после восстановления
 /// decoder отдаёт будущие packet-ы, а packet до привязки clock-а session законно отбрасывает.
-fn feed_one_audio_packet(session: &mut PlayerSession) {
+pub(super) fn feed_one_audio_packet(session: &mut PlayerSession) {
     session
         .pipeline
         .enqueue_pending_audio_packet(PendingAudioPacket::with_timing(
@@ -62,7 +62,7 @@ fn feed_one_audio_packet(session: &mut PlayerSession) {
 }
 
 /// Играющая session, у которой звук уже идёт в выбранное устройство.
-fn playing_session_with_active_output() -> (
+pub(super) fn playing_session_with_active_output() -> (
     PlayerSession,
     ScriptedAudioOutputFactoryHandle,
     ScriptedAudioOutputHandle,
@@ -85,7 +85,7 @@ const NO_DEVICES: ScriptedAudioDevices = ScriptedAudioDevices {
 };
 
 /// Выбранное устройство отключено, default работает.
-const ONLY_SYSTEM_DEFAULT: ScriptedAudioDevices = ScriptedAudioDevices {
+pub(super) const ONLY_SYSTEM_DEFAULT: ScriptedAudioDevices = ScriptedAudioDevices {
     selected_connected: false,
     system_default_connected: true,
 };

@@ -36,6 +36,7 @@ use crate::{
 #[cfg(test)]
 use crate::{PlayerCommandOutcome, PlayerResult};
 
+mod audio_output_handover;
 mod audio_output_recovery;
 mod audio_packet_window;
 mod audio_playback_bounds;

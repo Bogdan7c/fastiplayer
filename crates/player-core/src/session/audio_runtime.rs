@@ -13,6 +13,7 @@ use crate::{
 
 use super::{
     PlayerSession,
+    audio_output_handover::prefill_replacement_output_with_silence,
     audio_packet_window::{
         DecodedPcmPacketBoundary, DecodedPcmPacketClipOutcome, compose_decoded_pcm_ranges,
     },
@@ -406,6 +407,22 @@ impl PlayerSession {
                 )
             })?;
         replacement_output.set_volume(self.snapshot.volume);
+
+        // PCM, стоявший в очереди старого output-а, забрать нельзя; его место занимает
+        // тишина той же длины, иначе звук опередит видео на этот хвост (C3, см. модуль).
+        let unplayed_tail = self.audio_output_unplayed_tail();
+        let silence_frames = prefill_replacement_output_with_silence(
+            replacement_output.as_mut(),
+            output_spec,
+            unplayed_tail,
+        )?;
+        if silence_frames > 0 {
+            info!(
+                silence_frames,
+                unplayed_tail_ms = unplayed_tail.as_secs_f64() * 1_000.0,
+                "Хвост старого вывода звука заменён тишиной, чтобы не потерять синхрон A/V"
+            );
+        }
 
         let should_play = matches!(
             self.playback_state(),
