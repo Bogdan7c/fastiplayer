@@ -62,10 +62,19 @@ fn return_unadmitted_playlist_plan(
     }
 }
 
-/// Ошибка относится к самому файлу (не открылся, отвергнут player-ом), а не к отмене.
+/// Ошибка относится к самому файлу (не открылся, player не смог его установить), а не к отмене
+/// и не к занятости player-а.
 ///
-/// Отмена во время подготовки приходит как `PreparationFailed { kind: Cancelled }`: её
-/// вызвал пользователь или смена очереди, и продолжать пропуском нельзя.
+/// Не считаются виной файла:
+/// - отмена во время подготовки (`PreparationFailed { kind: Cancelled }`) и отмена request-а:
+///   её вызвал пользователь или смена очереди;
+/// - `PlayerRejected`: команда установки не дошла до player-а (очередь переполнена или поток
+///   завершился). Файл тут ни при чём; пропуск потратил бы на тот же недоступный player всю
+///   очередь и ложно пометил бы хорошие файлы битыми. Очередь остановится с причиной
+///   «player не отвечает» (ручная ветка).
+///
+/// Виной файла считаются отказ подготовки и `PlayerFailed` (player получил media и не смог
+/// его установить: неподдерживаемый кодек, повреждённый контейнер).
 const fn target_itself_failed(error: &StrongMediaOpenError) -> bool {
     match error {
         StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::PreparationFailed {
@@ -75,10 +84,7 @@ const fn target_itself_failed(error: &StrongMediaOpenError) -> bool {
             kind,
             crate::media_open::MediaPreparationFailureKind::Cancelled
         ),
-        StrongMediaOpenError::Terminal(
-            MediaOpenTerminalOutcome::PlayerRejected { .. }
-            | MediaOpenTerminalOutcome::PlayerFailed { .. },
-        ) => true,
+        StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::PlayerFailed { .. }) => true,
         _ => false,
     }
 }

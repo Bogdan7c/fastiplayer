@@ -126,3 +126,50 @@ fn already_admitted_plan_keeps_plain_failure() {
         PlaylistStrongMediaOpenPoll::Strong(StrongMediaOpenPoll::Failed(_))
     ));
 }
+
+/// Player не принял команду установки (занят или умер): файл не виноват, план не возвращается,
+/// иначе пропуск перебрал бы всю очередь и пометил хорошие файлы битыми.
+#[test]
+fn player_dispatch_rejection_keeps_plain_failure_without_plan() {
+    let rejected = Box::new(StrongMediaOpenError::Terminal(
+        MediaOpenTerminalOutcome::PlayerRejected {
+            request_id: request_id(),
+            reason: crate::media_open::PlayerInstallFailureReason::PlayerNotResponding,
+        },
+    ));
+
+    let poll = return_unadmitted_playlist_plan(rejected, planned_admission());
+
+    assert!(matches!(
+        poll,
+        PlaylistStrongMediaOpenPoll::Strong(StrongMediaOpenPoll::Failed(_))
+    ));
+}
+
+/// Player получил файл и отказался его ставить (например, неподдерживаемый кодек): это
+/// вина файла, план возвращается и пропуск идёт дальше по очереди.
+#[test]
+fn player_install_failure_returns_plan_with_reason() {
+    let expected_item_id = planned_install().item_id;
+    let failed = Box::new(StrongMediaOpenError::Terminal(
+        MediaOpenTerminalOutcome::PlayerFailed {
+            request_id: request_id(),
+            reason: crate::media_open::PlayerInstallFailureReason::UnsupportedVideoFormat,
+        },
+    ));
+
+    let poll = return_unadmitted_playlist_plan(failed, planned_admission());
+
+    let PlaylistStrongMediaOpenPoll::TargetFailedBeforeAdmission(unstaged) = poll else {
+        panic!("план очереди должен вернуться владельцу");
+    };
+    assert_eq!(unstaged.install.item_id, expected_item_id);
+    assert_eq!(
+        unstaged.error.user_failure_reason(),
+        Some(
+            crate::media_open::MediaOpenUserFailureReason::PlayerInstall(
+                crate::media_open::PlayerInstallFailureReason::UnsupportedVideoFormat
+            )
+        )
+    );
+}
