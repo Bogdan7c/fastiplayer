@@ -554,19 +554,6 @@ impl AppState {
         AppRouteApplyResult::Applied
     }
 
-    /// Переключает состояние воспроизведения через playback worker.
-    pub fn toggle_playback(&mut self) {
-        if let Err(error) = self
-            .player_worker
-            .try_send_command(PlayerCommand::TogglePlayback)
-        {
-            warn!(error = %error, "Не удалось переключить playback");
-            return;
-        }
-
-        self.mark_pending_worker_redraw();
-    }
-
     /// Инкрементирует счётчик кадров shell.
     #[inline]
     pub fn next_frame(&mut self) {

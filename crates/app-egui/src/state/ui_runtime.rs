@@ -714,7 +714,9 @@ impl AppState {
         }
     }
 
-    /// Обрабатывает горячие клавиши shell и отправляет команды в playback worker.
+    /// Обрабатывает legacy-горячие клавиши shell (F, M, J/L, стрелки, PageUp/PageDown)
+    /// и отправляет команды в playback worker. Space здесь намеренно нет: он идёт
+    /// через `ShellHotkeyAction::Transport(TogglePlayback)` в `app_shell/hotkeys.rs`.
     pub fn handle_hotkeys(
         &mut self,
         window: &Window,
@@ -726,10 +728,6 @@ impl AppState {
         }
 
         match key {
-            winit::keyboard::KeyCode::Space => {
-                self.toggle_playback();
-                true
-            }
             winit::keyboard::KeyCode::KeyF => {
                 Self::toggle_fullscreen(window);
                 true
