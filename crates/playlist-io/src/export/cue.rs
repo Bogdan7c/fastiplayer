@@ -114,6 +114,8 @@ pub(super) fn preflight(
         cue_tracks: prepared_tracks.into_boxed_slice(),
         groups: Box::new([]),
         warnings: Box::new([]),
+        // CUE — всё или ничего: пропуск трека ломает последовательность INDEX/FILE.
+        skipped: Box::new([]),
         secret_classification: PlaylistExportSecretClassification::NoSensitiveLocators,
     })
 }

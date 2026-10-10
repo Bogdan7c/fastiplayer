@@ -37,6 +37,14 @@ fn continuation(generation: u64, target_path: PathBuf) -> PlaylistExportConfirma
         target_path,
         document_bytes: b"#EXTM3U\n".to_vec(),
         overwrite_intent: PlaylistExportOverwriteIntent::ReplaceTargetSelectedBySaveDialog,
+        report: single_track_report(),
+    }
+}
+
+fn single_track_report() -> PlaylistExportReport {
+    PlaylistExportReport {
+        exported_tracks: 1,
+        skipped: PlaylistExportSkipCounts::default(),
         flattened_compound_groups: false,
     }
 }
@@ -201,7 +209,7 @@ fn writer_preserves_atomic_failure_and_post_rename_durability_distinction() {
     assert!(matches!(
         not_replaced,
         PlaylistExportJobCompletion::Failed {
-            error: PlaylistExportJobError::AtomicWriteFailed,
+            error: PlaylistExportJobError::WriteFailed(PlaylistExportWriteFailure::Other),
             ..
         }
     ));
@@ -227,7 +235,7 @@ fn cancellation_suppresses_completion_published_before_owner_drain() {
         PlaylistExportJobCompletion::Written {
             generation: 1,
             durability: PlaylistExportDurability::Durable,
-            flattened_compound_groups: false,
+            report: single_track_report(),
         }
     })
     .expect("spawn test job");
@@ -256,7 +264,7 @@ fn stale_generation_and_conflicting_writer_cannot_mutate_current_job() {
             PlaylistExportJobCompletion::Written {
                 generation: 1,
                 durability: PlaylistExportDurability::Durable,
-                flattened_compound_groups: false,
+                report: single_track_report(),
             }
         })
         .expect("spawn stale job");
@@ -343,3 +351,5 @@ fn worker_panic_keeps_exact_generation_for_owner_correlation() {
 
 #[path = "tests/pending_writer.rs"]
 mod pending_writer;
+#[path = "tests/skip_report.rs"]
+mod skip_report;

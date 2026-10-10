@@ -5,6 +5,8 @@
 //! neutral S04 atomic writer-у. Queue, selection и dirty revisions не мутируются.
 
 mod cue_availability;
+mod messages;
+mod report;
 
 use std::fmt;
 use std::path::PathBuf;
@@ -18,8 +20,8 @@ use playlist_core::{PlaylistEntryId, SecretUrlLocator, ServiceDurableReopenPaylo
 use playlist_io::{
     PlaylistExportDocumentTarget, PlaylistExportFormat, PlaylistExportLocatorPolicy,
     PlaylistExportLocatorRejection, PlaylistExportScope, PlaylistExportSecretClassification,
-    PlaylistExportSnapshot, PlaylistExportWarning, PortablePlaylistExportUrl,
-    PortableUrlSecretClassification, preflight_playlist_export,
+    PlaylistExportSkipCounts, PlaylistExportSnapshot, PlaylistExportWarning,
+    PortablePlaylistExportUrl, PortableUrlSecretClassification, preflight_playlist_export,
 };
 use pollster::FutureExt as _;
 use winit::window::Window;
@@ -35,6 +37,7 @@ use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url
 use super::PlaylistRuntime;
 
 pub(super) use cue_availability::CueExportAvailabilityCache;
+use report::{PlaylistExportReport, PlaylistExportWriteFailure};
 
 /// Пользовательский scope фиксируется до открытия save dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +70,7 @@ pub(super) struct PlaylistExportConfirmationContinuation {
     target_path: PathBuf,
     document_bytes: Vec<u8>,
     overwrite_intent: PlaylistExportOverwriteIntent,
-    flattened_compound_groups: bool,
+    report: PlaylistExportReport,
 }
 
 impl fmt::Debug for PlaylistExportConfirmationContinuation {
@@ -78,7 +81,7 @@ impl fmt::Debug for PlaylistExportConfirmationContinuation {
             .field("target_path", &"<redacted>")
             .field("document_bytes", &"<redacted>")
             .field("overwrite_intent", &self.overwrite_intent)
-            .field("flattened_compound_groups", &self.flattened_compound_groups)
+            .field("report", &self.report)
             .finish()
     }
 }
@@ -88,7 +91,10 @@ impl fmt::Debug for PlaylistExportConfirmationContinuation {
 enum PlaylistExportJobError {
     InvalidTarget,
     LocatorIneligible,
-    AtomicWriteFailed,
+    /// Все записи не представимы в формате: пустой файл не создаётся.
+    NothingToExport(PlaylistExportSkipCounts),
+    /// Запись файла не удалась; прежний файл (если был) не тронут.
+    WriteFailed(PlaylistExportWriteFailure),
     WorkerPanicked,
 }
 
@@ -106,7 +112,7 @@ enum PlaylistExportJobCompletion {
     Written {
         generation: u64,
         durability: PlaylistExportDurability,
-        flattened_compound_groups: bool,
+        report: PlaylistExportReport,
     },
     Failed {
         generation: u64,
@@ -450,12 +456,24 @@ fn prepare_and_write_export(
             };
         }
     };
+    // Если пропущено вообще всё, пустой документ не пишем: честный отказ.
+    if prepared.track_count() == 0 {
+        return PlaylistExportJobCompletion::Failed {
+            generation,
+            error: PlaylistExportJobError::NothingToExport(prepared.skip_counts()),
+        };
+    }
     let flattened_compound_groups = prepared.warnings().iter().any(|warning| {
         matches!(
             warning,
             PlaylistExportWarning::CompoundGroupingFlattened { .. }
         )
     });
+    let report = PlaylistExportReport {
+        exported_tracks: prepared.track_count(),
+        skipped: prepared.skip_counts(),
+        flattened_compound_groups,
+    };
     let secret_classification = prepared.secret_classification();
     let serialized = prepared.serialize();
     let document_bytes = serialized.into_bytes();
@@ -464,7 +482,7 @@ fn prepare_and_write_export(
         target_path,
         document_bytes,
         overwrite_intent,
-        flattened_compound_groups,
+        report,
     };
     match secret_classification {
         PlaylistExportSecretClassification::NoSensitiveLocators => {
@@ -501,27 +519,35 @@ fn write_prepared_export_with(
         target_path,
         document_bytes,
         overwrite_intent: PlaylistExportOverwriteIntent::ReplaceTargetSelectedBySaveDialog,
-        flattened_compound_groups,
+        report,
     } = continuation;
     match writer(&target_path, &document_bytes) {
         atomic_file_store::AtomicFileWriteOutcome::Durable => {
             PlaylistExportJobCompletion::Written {
                 generation,
                 durability: PlaylistExportDurability::Durable,
-                flattened_compound_groups,
+                report,
             }
         }
         atomic_file_store::AtomicFileWriteOutcome::ReplacedDurabilityUnconfirmed(_) => {
             PlaylistExportJobCompletion::Written {
                 generation,
                 durability: PlaylistExportDurability::ReplacedDurabilityUnconfirmed,
-                flattened_compound_groups,
+                report,
             }
         }
-        atomic_file_store::AtomicFileWriteOutcome::NotReplaced(_) => {
+        atomic_file_store::AtomicFileWriteOutcome::NotReplaced(failure) => {
+            // Технические детали (этап, класс ошибки) — только в лог; без пути.
+            tracing::warn!(
+                stage = ?failure.stage,
+                cause = ?failure.cause,
+                "Не удалось записать файл экспорта плейлиста"
+            );
             PlaylistExportJobCompletion::Failed {
                 generation,
-                error: PlaylistExportJobError::AtomicWriteFailed,
+                error: PlaylistExportJobError::WriteFailed(PlaylistExportWriteFailure::classify(
+                    failure,
+                )),
             }
         }
     }
@@ -625,37 +651,15 @@ impl PlaylistRuntime {
                 true
             }
             PlaylistExportJobCompletion::Written {
-                durability,
-                flattened_compound_groups,
-                ..
+                durability, report, ..
             } => {
-                if durability == PlaylistExportDurability::ReplacedDurabilityUnconfirmed {
-                    self.set_playlist_safe_feedback(
-                        "Файл заменён, но файловая система не подтвердила долговечность записи",
-                    );
-                } else if flattened_compound_groups {
-                    self.set_playlist_safe_feedback(
-                        "M3U8 сохранён: составные группы представлены отдельными строками",
-                    );
+                if let Some(message) = messages::written_feedback(durability, &report) {
+                    self.set_playlist_safe_feedback(message);
                 }
                 true
             }
             PlaylistExportJobCompletion::Failed { error, .. } => {
-                let safe_message = match error {
-                    PlaylistExportJobError::InvalidTarget => {
-                        "Выбранный путь нельзя использовать для экспорта"
-                    }
-                    PlaylistExportJobError::LocatorIneligible => {
-                        "Плейлист содержит источник, который нельзя безопасно экспортировать"
-                    }
-                    PlaylistExportJobError::AtomicWriteFailed => {
-                        "Не удалось атомарно сохранить файл плейлиста"
-                    }
-                    PlaylistExportJobError::WorkerPanicked => {
-                        "Фоновый экспорт плейлиста аварийно завершился"
-                    }
-                };
-                self.set_playlist_safe_feedback(safe_message);
+                self.set_playlist_safe_feedback(messages::failure_feedback(error));
                 true
             }
         }

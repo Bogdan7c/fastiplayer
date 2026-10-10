@@ -374,7 +374,8 @@ fn service_payload_requires_owner_portable_url_and_contributes_secret_classifica
         .expect("service snapshot");
     let target = PlaylistExportDocumentTarget::local_file(M3U8_TARGET).expect("absolute target");
 
-    let rejection = preflight_playlist_export(
+    // Решение B4: непредставимая запись пропускается, а не валит экспорт.
+    let skipped_plan = preflight_playlist_export(
         &snapshot,
         PlaylistExportFormat::M3u8,
         &target,
@@ -382,13 +383,16 @@ fn service_payload_requires_owner_portable_url_and_contributes_secret_classifica
             reject_service_identity: true,
         },
     )
-    .expect_err("nonportable service identity");
+    .expect("nonportable service identity is skipped, not fatal");
+    assert_eq!(skipped_plan.track_count(), 0);
+    let rejection = skipped_plan.skipped()[0];
     assert_eq!(
         rejection.reason(),
         PlaylistExportIneligible::LocatorPolicy(
             PlaylistExportLocatorRejection::NonPortableIdentity
         )
     );
+    assert_eq!(skipped_plan.skip_counts().no_stable_web_link, 1);
     let safe_error = format!("{rejection:?} {rejection}");
     assert!(!safe_error.contains("opaque-stable-child"));
     assert!(!safe_error.contains("must-not-export"));
@@ -424,11 +428,13 @@ fn non_utf_local_path_is_typed_ineligible_and_error_is_secret_safe() {
     let snapshot =
         PlaylistExportSnapshot::capture(&queue, PlaylistExportScope::Full).expect("snapshot");
     let target = PlaylistExportDocumentTarget::local_file(M3U8_TARGET).expect("absolute target");
-    let error =
-        preflight_playlist_export(&snapshot, PlaylistExportFormat::M3u8, &target, &policy())
-            .expect_err("non-UTF must be ineligible");
+    let plan = preflight_playlist_export(&snapshot, PlaylistExportFormat::M3u8, &target, &policy())
+        .expect("non-UTF entry is skipped, not fatal");
+    let error = plan.skipped()[0];
 
+    assert_eq!(plan.track_count(), 0);
     assert_eq!(error.reason(), PlaylistExportIneligible::NonUtf8LocalPath);
+    assert_eq!(plan.skip_counts().local_path_not_representable, 1);
     assert!(!format!("{error:?} {error}").contains("private"));
 }
 
@@ -486,4 +492,119 @@ fn selected_scope_rejects_subordinate_part_without_mutating_queue() {
     ));
     assert_eq!(fixture.queue.revision_snapshot(), revisions);
     assert_ne!(fixture.first_single, fixture.duplicate_single);
+}
+
+/// Очередь «хорошая, плохая (относительный путь), хорошая».
+fn queue_with_one_unexportable_between_two_good() -> PlaylistQueue {
+    let mut queue = PlaylistQueue::new();
+    queue
+        .append_one(PlaylistItemDraft::url(
+            secret_url("https://example.test/media/first.mp4"),
+            metadata("Первая", None, None),
+        ))
+        .expect("append first");
+    queue
+        .append_one(PlaylistItemDraft::local(
+            LocalLocator::Native(Path::new("relative/bad.webm").to_path_buf()),
+            None,
+            metadata("Плохая", None, None),
+        ))
+        .expect("append unexportable");
+    queue
+        .append_one(PlaylistItemDraft::url(
+            secret_url("https://example.test/media/third.mp4"),
+            metadata("Третья", None, None),
+        ))
+        .expect("append third");
+    queue
+}
+
+#[test]
+fn unexportable_entry_is_skipped_and_document_contains_the_rest() {
+    let queue = queue_with_one_unexportable_between_two_good();
+    let snapshot =
+        PlaylistExportSnapshot::capture(&queue, PlaylistExportScope::Full).expect("snapshot");
+    for (format, target_path) in [
+        (PlaylistExportFormat::M3u8, M3U8_TARGET),
+        (PlaylistExportFormat::Xspf, XSPF_TARGET),
+    ] {
+        let target = PlaylistExportDocumentTarget::local_file(target_path).expect("target");
+        let prepared = preflight_playlist_export(&snapshot, format, &target, &policy())
+            .expect("skip is not an error");
+
+        assert_eq!(prepared.track_count(), 2);
+        assert_eq!(prepared.skipped().len(), 1);
+        assert_eq!(prepared.skip_counts().local_path_not_representable, 1);
+        assert_eq!(prepared.skip_counts().total(), 1);
+        let document = prepared.serialize();
+        let text = document.as_str();
+        assert!(
+            text.contains("first.mp4") && text.contains("third.mp4"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("bad.webm") && !text.contains("Плохая"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn compound_with_rejected_root_exports_parts_flattened_in_xspf() {
+    let group = PlaylistCompoundGroupDraft::new(
+        PlaylistLocator::Local(LocalLocator::Native(
+            Path::new("relative/collection").to_path_buf(),
+        )),
+        metadata("Группа", None, None),
+        vec![PlaylistItemDraft::url(
+            secret_url("https://example.test/media/part-a.webm"),
+            metadata("Часть А", None, None),
+        )],
+    )
+    .expect("compound draft");
+    let mut queue = PlaylistQueue::new();
+    queue
+        .append_entries(vec![PlaylistEntryDraft::Compound(group)])
+        .expect("append compound");
+    let snapshot =
+        PlaylistExportSnapshot::capture(&queue, PlaylistExportScope::Full).expect("snapshot");
+    let target = PlaylistExportDocumentTarget::local_file(XSPF_TARGET).expect("target");
+
+    let prepared =
+        preflight_playlist_export(&snapshot, PlaylistExportFormat::Xspf, &target, &policy())
+            .expect("root rejection is not fatal");
+
+    assert_eq!(prepared.track_count(), 1);
+    assert!(prepared.skipped().is_empty());
+    assert_eq!(
+        prepared.warnings(),
+        &[PlaylistExportWarning::CompoundGroupingFlattened {
+            compound_group_count: 1
+        }]
+    );
+    assert!(prepared.serialize().as_str().contains("part-a.webm"));
+}
+
+#[test]
+fn all_entries_unexportable_gives_empty_plan_with_full_skip_report() {
+    let mut queue = PlaylistQueue::new();
+    for name in ["relative/a.webm", "relative/b.webm"] {
+        queue
+            .append_one(PlaylistItemDraft::local(
+                LocalLocator::Native(Path::new(name).to_path_buf()),
+                None,
+                metadata("x", None, None),
+            ))
+            .expect("append");
+    }
+    let snapshot =
+        PlaylistExportSnapshot::capture(&queue, PlaylistExportScope::Full).expect("snapshot");
+    let target = PlaylistExportDocumentTarget::local_file(M3U8_TARGET).expect("target");
+
+    let prepared =
+        preflight_playlist_export(&snapshot, PlaylistExportFormat::M3u8, &target, &policy())
+            .expect("plan");
+
+    assert_eq!(prepared.track_count(), 0);
+    assert_eq!(prepared.skip_counts().total(), 2);
 }

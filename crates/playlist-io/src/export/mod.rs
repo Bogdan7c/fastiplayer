@@ -6,6 +6,7 @@
 mod cue;
 mod locator;
 mod m3u8;
+mod skip;
 mod snapshot;
 mod xspf;
 
@@ -20,6 +21,7 @@ pub use locator::{
     PlaylistExportSecretClassification, PortablePlaylistExportUrl, PortablePlaylistExportUrlError,
     PortableUrlSecretClassification,
 };
+pub use skip::{PlaylistExportSkipCounts, PlaylistExportSkipReason};
 pub use snapshot::{PlaylistExportScope, PlaylistExportSnapshot, PlaylistExportSnapshotError};
 
 use locator::{PreparedExportLocator, preflight_group_locator, preflight_item_locator};
@@ -47,7 +49,8 @@ pub enum PlaylistExportAvailability {
 /// Нефатальное свойство результата, которое caller обязан показать до записи.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaylistExportWarning {
-    /// M3U8 сохраняет parts, но не может сохранить compound boundary.
+    /// Документ сохраняет parts, но не может сохранить compound boundary
+    /// (M3U8 не знает групп; в XSPF — адрес корня группы непредставим).
     CompoundGroupingFlattened {
         /// Число flattened top-level compound groups.
         compound_group_count: usize,
@@ -61,6 +64,8 @@ pub struct PreparedPlaylistExport {
     cue_tracks: Box<[PreparedCueTrack]>,
     groups: Box<[PreparedExportGroup]>,
     warnings: Box<[PlaylistExportWarning]>,
+    /// Записи, не представимые в формате: исключены из документа (решение B4).
+    skipped: Box<[PlaylistExportPreflightError]>,
     secret_classification: PlaylistExportSecretClassification,
 }
 
@@ -78,6 +83,16 @@ impl PreparedPlaylistExport {
     /// Возвращает format-specific warnings без их сокрытия внутри serializer-а.
     pub fn warnings(&self) -> &[PlaylistExportWarning] {
         &self.warnings
+    }
+
+    /// Возвращает пропущенные записи с безопасными причинами (без locator-ов).
+    pub fn skipped(&self) -> &[PlaylistExportPreflightError] {
+        &self.skipped
+    }
+
+    /// Возвращает счётчики пропусков по категориям причин для UI.
+    pub fn skip_counts(&self) -> PlaylistExportSkipCounts {
+        PlaylistExportSkipCounts::from_skipped(&self.skipped)
     }
 
     /// Возвращает aggregated secret classification для S11 confirmation/file mode.
@@ -107,6 +122,7 @@ impl fmt::Debug for PreparedPlaylistExport {
             .field("track_count", &self.track_count())
             .field("group_count", &self.groups.len())
             .field("warnings", &self.warnings)
+            .field("skipped_count", &self.skipped.len())
             .field("secret_classification", &self.secret_classification)
             .finish()
     }
@@ -203,6 +219,12 @@ impl fmt::Display for PlaylistExportSubject {
 }
 
 /// Строит format-specific immutable plan и выполняет все fallible checks заранее.
+///
+/// Для M3U8/XSPF запись, не представимая в формате (локальный путь без UTF-8,
+/// ссылка без стабильного адреса и т.п.), не валит экспорт: она попадает в
+/// [`PreparedPlaylistExport::skipped`], остальные записи экспортируются.
+/// Вызывающий обязан проверить `track_count() == 0` и не писать пустой файл.
+/// CUE остаётся «всё или ничего»: пропуск трека исказил бы CUE-последовательность.
 pub fn preflight_playlist_export(
     snapshot: &PlaylistExportSnapshot,
     format: PlaylistExportFormat,
@@ -214,40 +236,54 @@ pub fn preflight_playlist_export(
     }
     let mut tracks = Vec::with_capacity(snapshot.retained_item_count());
     let mut groups = Vec::new();
+    let mut skipped = Vec::new();
     let mut sensitive_locator_count = 0usize;
     let mut flattened_compound_group_count = 0usize;
 
     for entry in snapshot.entries() {
         match entry {
             PlaylistEntry::Single(item) => {
-                let track = preflight_track(item, format, target, locator_policy)?;
-                sensitive_locator_count += usize::from(track.locator.is_sensitive());
-                tracks.push(track);
+                match preflight_track(item, format, target, locator_policy) {
+                    Ok(track) => {
+                        sensitive_locator_count += usize::from(track.locator.is_sensitive());
+                        tracks.push(track);
+                    }
+                    Err(skip) => skipped.push(skip),
+                }
             }
             PlaylistEntry::Compound(group) => {
                 let first_track = tracks.len() + 1;
-                if format == PlaylistExportFormat::Xspf {
-                    let root_locator =
-                        preflight_group_locator(group, format, target, locator_policy).map_err(
-                            |reason| PlaylistExportPreflightError {
-                                subject: PlaylistExportSubject::Compound(group.group_id()),
-                                reason,
-                            },
-                        )?;
-                    sensitive_locator_count += usize::from(root_locator.is_sensitive());
-                    groups.push(PreparedExportGroup {
-                        first_track,
-                        track_count: group.retained_part_count(),
-                        root_locator,
-                    });
+                // Корень группы нужен только XSPF. Если его адрес непредставим,
+                // части всё равно экспортируются, но без границы группы
+                // (как в M3U8) — это честнее, чем терять играбельные части.
+                let root_locator = if format == PlaylistExportFormat::Xspf {
+                    preflight_group_locator(group, format, target, locator_policy).ok()
                 } else {
-                    flattened_compound_group_count += 1;
-                }
-
+                    None
+                };
                 for part in group.parts() {
-                    let track = preflight_track(part.item(), format, target, locator_policy)?;
-                    sensitive_locator_count += usize::from(track.locator.is_sensitive());
-                    tracks.push(track);
+                    match preflight_track(part.item(), format, target, locator_policy) {
+                        Ok(track) => {
+                            sensitive_locator_count += usize::from(track.locator.is_sensitive());
+                            tracks.push(track);
+                        }
+                        Err(skip) => skipped.push(skip),
+                    }
+                }
+                let exported_part_count = tracks.len() + 1 - first_track;
+                match root_locator {
+                    // Группа без единой выжившей части в документе не нужна.
+                    Some(root_locator) if exported_part_count > 0 => {
+                        sensitive_locator_count += usize::from(root_locator.is_sensitive());
+                        groups.push(PreparedExportGroup {
+                            first_track,
+                            track_count: exported_part_count,
+                            root_locator,
+                        });
+                    }
+                    Some(_) => {}
+                    None if exported_part_count > 0 => flattened_compound_group_count += 1,
+                    None => {}
                 }
             }
         }
@@ -268,6 +304,7 @@ pub fn preflight_playlist_export(
         cue_tracks: Box::new([]),
         groups: groups.into_boxed_slice(),
         warnings,
+        skipped: skipped.into_boxed_slice(),
         secret_classification: PlaylistExportSecretClassification::from_sensitive_count(
             sensitive_locator_count,
         ),
