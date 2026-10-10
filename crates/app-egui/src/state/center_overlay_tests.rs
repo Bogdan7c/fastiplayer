@@ -246,7 +246,9 @@ fn real_seek_rejection_is_painted_as_toast_and_overlay_clears_after_lifetime() {
         None,
     );
     assert!(
-        visible.iter().any(|text| text.contains("Seek невозможен")),
+        visible
+            .iter()
+            .any(|text| text.contains("Перемотка для этого видео недоступна")),
         "{visible:?}"
     );
     // Свежий player без media — Idle, поэтому подсказка старта законно остаётся.

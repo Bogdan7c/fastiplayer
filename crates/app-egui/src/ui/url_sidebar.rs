@@ -125,7 +125,7 @@ fn show_catalog_backed(
     if let Some(error) = safe_error {
         ui.add_space(8.0);
         ui.colored_label(ui.visuals().error_fg_color, safe_error_label(error));
-        ui.weak("Повтор выполняется через controlled reopen и не меняет очередь напрямую.");
+        ui.weak("Источник будет открыт заново; очередь при этом не меняется.");
     }
     if fallback_notice {
         ui.add_space(8.0);
@@ -432,6 +432,49 @@ mod tests {
         let unknown = visible_labels(&direct_model_with(UrlSidebarStreamKind::Unknown));
         assert!(unknown.iter().any(|label| label == "Определяется"));
         assert!(!unknown.iter().any(|label| label == "VOD"));
+    }
+
+    /// A10: под ошибкой источника нет технического жаргона («controlled reopen»).
+    #[test]
+    fn source_error_hint_is_plain_russian_without_internal_jargon() {
+        let active_candidate = candidate_presentation();
+        let model = UrlSidebarModel::CatalogBacked {
+            generation: WebMediaStreamGeneration::for_test(1, 1),
+            source_label: Arc::from("source"),
+            candidates: Arc::from([active_candidate.clone()]),
+            active_candidate,
+            pending_selection: None,
+            component_variants: Box::new(WebMediaComponentVariantProjection::Unavailable),
+            preference: WebMediaSelectionPreference::GlobalBestPlayable,
+            item_scope: UrlSidebarItemScope::SingleItem,
+            status: UrlSidebarPlaybackStatus {
+                stream_kind: UrlSidebarStreamKind::Vod,
+                seekable: true,
+                buffering: false,
+                refresh_on_reopen: false,
+            },
+            safe_error: Some(crate::web_media_stream_model::UrlSidebarSafeError::SourceUnavailable),
+            catalog: crate::web_media_catalog::WebMediaCatalogState::Inactive,
+            fallback_notice: false,
+        };
+
+        let labels = visible_labels(&model);
+
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == "Web-источник временно недоступен.")
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("Источник будет открыт заново"))
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label.contains("controlled reopen"))
+        );
     }
 
     #[test]

@@ -64,7 +64,7 @@ fn single_argument_takes_exactly_the_previous_single_path() {
     assert!(
         rejected_error
             .as_deref()
-            .is_some_and(|error| error.contains("scheme не поддерживается"))
+            .is_some_and(|error| error == "Такой тип ссылок не поддерживается")
     );
 }
 
@@ -160,7 +160,7 @@ fn unsupported_first_link_keeps_the_existing_safe_error_path() {
     assert!(
         startup_error
             .as_deref()
-            .is_some_and(|error| error.contains("scheme не поддерживается"))
+            .is_some_and(|error| error == "Такой тип ссылок не поддерживается")
     );
 }
 

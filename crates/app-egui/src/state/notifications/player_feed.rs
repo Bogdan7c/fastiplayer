@@ -15,29 +15,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use player_core::{PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot};
+use player_core::{PlaybackState, PlayerErrorKind, PlayerEvent, PlayerSnapshot};
 
 use crate::audio_output_message::{AUDIO_OUTPUT_UNAVAILABLE_MESSAGE, audio_output_switch_message};
+use crate::player_error_message::player_error_user_message;
 
 use super::{MediaFailureOrigin, NotificationCenter, ObservedPlayerFailure};
-
-/// Что сказать человеку при пропаже сети посреди просмотра (сессия 16).
-///
-/// К этому моменту плеер уже ждал возвращения связи весь бюджет
-/// `network.reconnect_wait_ms` с повторами и показывал буферизацию.
-pub(crate) const NETWORK_LOST_DURING_PLAYBACK_MESSAGE: &str = "Нет связи с сервером: \
-    воспроизведение остановлено. Проверьте подключение к сети и откройте видео снова.";
-
-/// Текст фатальной ошибки player-а для центра окна.
-///
-/// Пропажа сети получает человеческий текст. Для остальных видов текст пока прежний
-/// технический (человеческие тексты остальных `PlayerErrorKind` — вне сессии 16).
-fn player_failure_message(error: &PlayerError) -> Arc<str> {
-    match error.kind {
-        PlayerErrorKind::NetworkError => Arc::from(NETWORK_LOST_DURING_PLAYBACK_MESSAGE),
-        _ => Arc::from(error.to_string()),
-    }
-}
 
 impl NotificationCenter {
     /// Реагирует на событие player-а: recoverable-отказ становится временным уведомлением.
@@ -55,9 +38,9 @@ impl NotificationCenter {
                 self.notify_info(AUDIO_OUTPUT_UNAVAILABLE_MESSAGE, now);
             }
             PlayerEvent::RecoverableError(error) => {
-                // Текст ошибки не меняем (тексты — зона сессий 02/03/08), меняется только
-                // жизненный цикл: сообщение уходит само, а не висит до следующего файла.
-                self.notify_transient(error.to_string(), now);
+                // Технический `Display` ошибки остаётся для логов; пользователь видит русскую
+                // фразу по виду ошибки (A10). Toast уходит сам, а не висит до следующего файла.
+                self.notify_transient(player_error_user_message(error), now);
             }
             PlayerEvent::AudioOutputSwitchedToSystemDefault(reason) => {
                 self.notify_info(audio_output_switch_message(reason), now);
@@ -75,7 +58,10 @@ impl NotificationCenter {
     pub(crate) fn observe_player_snapshot(&mut self, snapshot: &PlayerSnapshot) {
         let observed = if snapshot.playback_state == PlaybackState::Failed {
             ObservedPlayerFailure::Failed {
-                message: snapshot.last_error.as_ref().map(player_failure_message),
+                message: snapshot
+                    .last_error
+                    .as_ref()
+                    .map(|error| Arc::from(player_error_user_message(error))),
             }
         } else {
             ObservedPlayerFailure::Healthy

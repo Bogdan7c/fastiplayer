@@ -287,6 +287,6 @@ fn cli_route_rejects_unsupported_media_protocol() {
     assert!(
         startup_error
             .as_deref()
-            .is_some_and(|error| error.contains("scheme не поддерживается"))
+            .is_some_and(|error| error == "Такой тип ссылок не поддерживается")
     );
 }

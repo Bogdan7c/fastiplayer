@@ -366,7 +366,7 @@ fn extended_s00_schemes_follow_implemented_or_excluded_profile_disposition() {
             active_reason,
             StartupUrlUnsupportedReason::ProfileExcludedInputScheme { input_scheme }
         );
-        assert!(active_reason.safe_error().contains("исключён"));
+        assert!(active_reason.safe_error().contains("исключены"));
     }
 }
 
@@ -553,5 +553,41 @@ fn whitespace_only_input_is_not_a_url_instead_of_panicking() {
             ),
             "{blank:?}"
         );
+    }
+}
+
+/// A10: пользователь видит человеческий русский текст, без имени Rust-вида ошибки
+/// (`NetworkError:`) и без внутренних терминов («media services», «provider», «profile»).
+#[test]
+fn unsupported_url_messages_are_plain_russian_without_internal_jargon() {
+    let ftp = service_ytdlp::YtDlpInputScheme::Ftp;
+    let cases = [
+        (
+            StartupUrlUnsupportedReason::InvalidSyntax,
+            "Некорректная ссылка",
+        ),
+        (
+            StartupUrlUnsupportedReason::UnsupportedScheme,
+            "Такой тип ссылок не поддерживается",
+        ),
+        (
+            StartupUrlUnsupportedReason::ImplementedProviderUnavailable { input_scheme: ftp },
+            "Ссылки `ftp` пока не поддерживаются",
+        ),
+        (
+            StartupUrlUnsupportedReason::ProfileExcludedInputScheme { input_scheme: ftp },
+            "Ссылки `ftp` исключены из поддерживаемых в этой версии",
+        ),
+        (
+            StartupUrlUnsupportedReason::NoRegisteredService,
+            "Эта ссылка не поддерживается",
+        ),
+    ];
+    for (reason, expected) in cases {
+        let message = reason.safe_error();
+        assert_eq!(message, expected);
+        for jargon in ["NetworkError", "media services", "provider", "profile"] {
+            assert!(!message.contains(jargon), "{message}");
+        }
     }
 }

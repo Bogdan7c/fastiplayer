@@ -144,7 +144,12 @@ fn runtime_snapshot_boundary_treats_failed_state_as_error_not_clean_eof() {
         .runtime_errors
         .get(&item_ids[0])
         .expect("failed active item receives a runtime badge");
-    assert!(runtime_error.safe_summary().contains("DemuxError"));
+    assert!(
+        runtime_error
+            .safe_summary()
+            .starts_with("Ошибка воспроизведения: ")
+    );
+    assert!(!runtime_error.safe_summary().contains("DemuxError"));
     assert!(!runtime_error.safe_summary().contains("secret"));
     assert!(!runtime_error.safe_summary().contains("private.mkv"));
 }

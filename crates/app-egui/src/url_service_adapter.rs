@@ -543,21 +543,16 @@ impl StartupUrlUnsupportedReason {
     /// Формирует bounded message только из typed/static данных.
     pub(crate) fn safe_error(self) -> String {
         match self {
-            Self::InvalidSyntax => "NetworkError: некорректный URL".to_string(),
-            Self::UnsupportedScheme => {
-                "NetworkError: URL scheme не поддерживается media services".to_string()
+            Self::InvalidSyntax => "Некорректная ссылка".to_string(),
+            Self::UnsupportedScheme => "Такой тип ссылок не поддерживается".to_string(),
+            Self::ImplementedProviderUnavailable { input_scheme } => {
+                format!("Ссылки `{}` пока не поддерживаются", input_scheme.as_str())
             }
-            Self::ImplementedProviderUnavailable { input_scheme } => format!(
-                "NetworkError: provider для `{}` ещё не реализован",
-                input_scheme.as_str()
-            ),
             Self::ProfileExcludedInputScheme { input_scheme } => format!(
-                "NetworkError: `{}` исключён утверждённым compatibility profile",
+                "Ссылки `{}` исключены из поддерживаемых в этой версии",
                 input_scheme.as_str()
             ),
-            Self::NoRegisteredService => {
-                "NetworkError: URL не поддерживается media services".to_string()
-            }
+            Self::NoRegisteredService => "Эта ссылка не поддерживается".to_string(),
         }
     }
 }

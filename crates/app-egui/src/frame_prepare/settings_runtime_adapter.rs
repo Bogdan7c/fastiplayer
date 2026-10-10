@@ -140,7 +140,10 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                 crate::media_open::SafeMediaLabel::from_local_path(&path),
                             ))
                         }
-                        Err(error) => Err(format!("local media rebuild failed: {error:#}")),
+                        Err(error) => {
+                            tracing::warn!(error = %format!("{error:#}"), "Не удалось пересобрать локальный файл после смены настроек");
+                            Err(crate::settings_rebuild_message::local_rebuild_failed_message())
+                        }
                     }
                 }
                 ActiveMediaSource::Web(web_intent) => {
@@ -184,7 +187,15 @@ impl FrameSettingsRuntimeAdapter<'_> {
                             )
                             .with_descriptor(descriptor))
                         }
-                        Err(error) => Err(format!("web media rebuild failed: {error:?}")),
+                        Err(error) => {
+                            tracing::warn!(
+                                ?error,
+                                "Не удалось пересобрать web-источник после смены настроек"
+                            );
+                            Err(crate::settings_rebuild_message::web_rebuild_failed_message(
+                                error.web_open_failure_reason(),
+                            ))
+                        }
                     }
                 }
                 ActiveMediaSource::PlaybackWindow { .. } => {

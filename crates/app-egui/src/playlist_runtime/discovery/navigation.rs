@@ -148,7 +148,7 @@ fn automatic_snapshot_kind(player_snapshot: &PlayerSnapshot) -> EndedSnapshotKin
 
     let safe_summary = player_snapshot.last_error.as_ref().map_or_else(
         || Arc::<str>::from(FAILED_PLAYBACK_WITHOUT_DETAILS),
-        |error| Arc::<str>::from(format!("Ошибка воспроизведения ({:?})", error.kind)),
+        |error| Arc::<str>::from(crate::player_error_message::player_error_row_summary(error)),
     );
     // Пропажу сети player классифицирует сам (`PlayerErrorKind::NetworkError`, сессия 16):
     // это не дефект элемента, и очередь должна остановиться, а не пропускать дальше.

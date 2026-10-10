@@ -23,8 +23,8 @@ pub(super) fn requires_remote_source_rebuild(affected_settings: &[SettingId]) ->
 pub(super) fn media_reconfigure_install_failure(
     error: crate::state::StrongMediaOpenError,
 ) -> AppRouteApplyResult {
-    let message =
-        format!("media rebuild failed while waiting for strong install completion: {error}");
+    tracing::warn!(%error, "Пересборка media при смене настроек не дошла до установки в player");
+    let message = crate::settings_rebuild_message::install_rebuild_failed_message();
     if error.may_have_crossed_install_barrier() {
         AppRouteApplyResult::PartialFailure { message }
     } else {

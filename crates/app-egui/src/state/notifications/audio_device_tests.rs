@@ -97,14 +97,14 @@ fn audio_device_error_is_shown_in_plain_russian_without_technical_text() {
 }
 
 #[test]
-fn other_recoverable_errors_keep_previous_transient_behavior() {
+fn other_recoverable_errors_are_transient_toasts_in_plain_russian() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
 
     center.record_player_event(
         &PlayerEvent::RecoverableError(PlayerError::new(
             PlayerErrorKind::SeekUnavailable,
-            "Seek невозможен",
+            "Live stream does not support seek",
         )),
         now,
     );
@@ -112,5 +112,7 @@ fn other_recoverable_errors_keep_previous_transient_behavior() {
     let toasts = visible_toasts(&mut center, now);
     assert_eq!(toasts.len(), 1);
     assert_eq!(toasts[0].0, ToastKind::Transient);
-    assert!(toasts[0].1.contains("Seek невозможен"));
+    assert_eq!(toasts[0].1, "Перемотка для этого видео недоступна");
+    assert!(!toasts[0].1.contains("SeekUnavailable"), "{toasts:?}");
+    assert!(!toasts[0].1.contains("seek"), "{toasts:?}");
 }

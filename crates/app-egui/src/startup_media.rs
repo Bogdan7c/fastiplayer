@@ -646,7 +646,9 @@ impl StartupMediaController {
             Err(error) => {
                 self.orchestration.preparation_failed();
                 warn!(error = %error, "Не удалось запустить YtDlp startup resolver");
-                let startup_error = format!("NetworkError: YtDlp error: {error}");
+                let startup_error =
+                    "Не удалось запустить загрузку ссылки через yt-dlp — попробуйте ещё раз"
+                        .to_owned();
                 self.startup_error = Some(startup_error.clone());
                 app_state.set_startup_error(startup_error);
             }
@@ -679,7 +681,9 @@ impl StartupMediaController {
             Err(error) => {
                 self.orchestration.preparation_failed();
                 warn!(error = %error, "Не удалось запустить direct media startup opener");
-                let startup_error = format!("NetworkError: Direct media error: {error}");
+                let startup_error =
+                    "Не удалось запустить открытие прямой ссылки на файл — попробуйте ещё раз"
+                        .to_owned();
                 self.startup_error = Some(startup_error.clone());
                 app_state.set_startup_error(startup_error);
             }

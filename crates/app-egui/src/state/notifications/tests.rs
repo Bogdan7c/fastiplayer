@@ -255,7 +255,9 @@ fn real_player_seek_rejection_becomes_transient_toast_and_overlay_clears() {
     assert_eq!(frame.toasts.len(), 1);
     assert_eq!(frame.toasts[0].kind, ToastKind::Transient);
     assert!(
-        frame.toasts[0].message.contains("Seek невозможен"),
+        frame.toasts[0]
+            .message
+            .contains("Перемотка для этого видео недоступна"),
         "{:?}",
         frame.toasts[0].message
     );
@@ -289,7 +291,7 @@ fn real_player_fatal_failure_stays_until_dismissed_and_is_not_resurrected() {
 
     let frame = idle_frame(&mut center, now + Duration::from_secs(3600));
     let message = center_failure_message(&frame).expect("Failed должен показать ошибку в центре");
-    assert!(message.contains("поток повреждён"), "{message}");
+    assert!(message.contains("файл повреждён"), "{message}");
     // Фатальная ошибка не дублируется временным toast-ом.
     assert!(frame.toasts.is_empty());
 
@@ -321,7 +323,10 @@ fn network_failure_during_playback_shows_human_reason() {
     let message = center_failure_message(&idle_frame(&mut center, now))
         .expect("Failed по сети показывает ошибку в центре");
 
-    assert_eq!(message, player_feed::NETWORK_LOST_DURING_PLAYBACK_MESSAGE);
+    assert_eq!(
+        message,
+        crate::player_error_message::NETWORK_LOST_DURING_PLAYBACK_MESSAGE
+    );
     assert!(!message.contains("range-read"), "{message}");
 }
 
