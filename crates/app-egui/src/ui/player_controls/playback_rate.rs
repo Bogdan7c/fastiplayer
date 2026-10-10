@@ -4,7 +4,7 @@ mod indicator;
 
 pub(super) use indicator::{control_layout, render_reset_button_at, reveal_progress};
 
-use egui::{Key, Modifiers, Ui};
+use egui::Ui;
 
 use super::ControlAction;
 
@@ -41,52 +41,30 @@ impl PlaybackRateInputAccumulator {
     }
 }
 
-/// Собирает wheel/touchpad и hotkey intent только с play/pause scoped surface.
+/// Собирает wheel/touchpad intent скорости только над кнопкой play/pause.
+///
+/// Клавиши `+`/`-`/`=`/`0` отсюда убраны (UX edge cases 2, B3): они глобальные и
+/// собираются в `ui::global_hotkeys` с учётом владельца клавиатуры.
 pub(super) fn collect_input_actions(
     ui: &mut Ui,
     playback_button_response: &egui::Response,
     actions: &mut Vec<ControlAction>,
 ) {
-    let keyboard_scoped_to_playback_button =
-        playback_button_response.hovered() || playback_button_response.has_focus();
     let wheel_scoped_to_playback_button = playback_button_response.hovered();
     let accumulator_id = playback_button_response
         .id
         .with("playback_rate_input_accumulator");
 
-    let input_intent = ui.ctx().input_mut(|input| {
-        if !keyboard_scoped_to_playback_button && !wheel_scoped_to_playback_button {
-            return PlaybackRateInputIntent::default();
+    let vertical_scroll_delta = ui.ctx().input_mut(|input| {
+        if !wheel_scoped_to_playback_button {
+            return 0.0;
         }
-
-        let (decrement_count, increment_count, reset_requested) =
-            if keyboard_scoped_to_playback_button {
-                (
-                    input.count_and_consume_key(Modifiers::NONE, Key::Minus) as i32,
-                    (input.count_and_consume_key(Modifiers::NONE, Key::Plus)
-                        + input.count_and_consume_key(Modifiers::NONE, Key::Equals))
-                        as i32,
-                    input.consume_key(Modifiers::NONE, Key::Num0),
-                )
-            } else {
-                (0, 0, false)
-            };
-        let vertical_scroll_delta = if wheel_scoped_to_playback_button {
-            input.smooth_scroll_delta().y
-        } else {
-            0.0
-        };
-
-        if vertical_scroll_delta != 0.0 {
+        let delta = input.smooth_scroll_delta().y;
+        if delta != 0.0 {
             // Wheel читаем только под курсором, чтобы focused play/pause не крал scroll у других зон.
             input.smooth_scroll_delta.y = 0.0;
         }
-
-        PlaybackRateInputIntent {
-            key_step_count: increment_count - decrement_count,
-            reset_requested,
-            vertical_scroll_delta,
-        }
+        delta
     });
 
     let wheel_step_count = ui.ctx().data_mut(|data| {
@@ -98,34 +76,13 @@ pub(super) fn collect_input_actions(
             return 0;
         }
 
-        accumulator.consume_vertical_delta(
-            input_intent.vertical_scroll_delta,
-            PLAYBACK_RATE_WHEEL_POINTS_PER_STEP,
-        )
+        accumulator
+            .consume_vertical_delta(vertical_scroll_delta, PLAYBACK_RATE_WHEEL_POINTS_PER_STEP)
     });
 
-    if input_intent.reset_requested {
-        actions.push(ControlAction::ResetPlaybackRate);
-        return;
+    if wheel_step_count != 0 {
+        actions.push(ControlAction::AdjustPlaybackRateSteps(wheel_step_count));
     }
-
-    let total_step_count = input_intent.key_step_count + wheel_step_count;
-    if total_step_count != 0 {
-        actions.push(ControlAction::AdjustPlaybackRateSteps(total_step_count));
-    }
-}
-
-/// Сырой intent из egui input, ещё без touchpad accumulation.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-struct PlaybackRateInputIntent {
-    /// Суммарный шаг от клавиш `+`/`-`.
-    key_step_count: i32,
-
-    /// Запрошен reset через `0`.
-    reset_requested: bool,
-
-    /// Вертикальная wheel/touchpad дельта в egui points.
-    vertical_scroll_delta: f32,
 }
 
 /// Форматирует скорость так же, как временная кнопка V1.
@@ -143,7 +100,8 @@ mod tests {
     use crate::ui::skin::PlayerSkin;
     use crate::ui::skin::minimal::MinimalSkin;
     use egui::{
-        Event, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Sense, TouchPhase, pos2, vec2,
+        Event, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Sense, TouchPhase,
+        pos2, vec2,
     };
     use player_core::{PlaybackRate, PlayerSnapshot};
 
@@ -199,16 +157,6 @@ mod tests {
             focused: true,
             events,
             ..Default::default()
-        }
-    }
-
-    fn key_press(key: Key, modifiers: Modifiers) -> Event {
-        Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers,
         }
     }
 
@@ -352,62 +300,6 @@ mod tests {
         );
 
         assert!(actions.is_empty());
-    }
-
-    /// `+` работает только в scoped surface; `Shift+=` покрывает обычную клавиатуру.
-    #[test]
-    fn plus_key_requires_hover_or_focus_scope() {
-        let egui_ctx = egui::Context::default();
-        let unscoped_actions = collect_actions_for_input(
-            &egui_ctx,
-            raw_input(vec![
-                Event::PointerMoved(test_outside_position()),
-                key_press(Key::Equals, Modifiers::SHIFT),
-            ]),
-            false,
-        );
-        assert!(unscoped_actions.is_empty());
-
-        let scoped_actions = collect_actions_for_input(
-            &egui_ctx,
-            raw_input(vec![
-                Event::PointerMoved(test_hover_position()),
-                key_press(Key::Equals, Modifiers::SHIFT),
-            ]),
-            false,
-        );
-        assert_eq!(
-            scoped_actions,
-            vec![ControlAction::AdjustPlaybackRateSteps(1)]
-        );
-    }
-
-    /// Keyboard focus без hover достаточно для `-`/`0`, но это не расширяет hotkeys глобально.
-    #[test]
-    fn keyboard_focus_scope_handles_minus_and_reset_without_hover() {
-        let egui_ctx = egui::Context::default();
-        let minus_actions = collect_actions_for_input(
-            &egui_ctx,
-            raw_input(vec![
-                Event::PointerMoved(test_outside_position()),
-                key_press(Key::Minus, Modifiers::NONE),
-            ]),
-            true,
-        );
-        assert_eq!(
-            minus_actions,
-            vec![ControlAction::AdjustPlaybackRateSteps(-1)]
-        );
-
-        let reset_actions = collect_actions_for_input(
-            &egui_ctx,
-            raw_input(vec![
-                Event::PointerMoved(test_outside_position()),
-                key_press(Key::Num0, Modifiers::NONE),
-            ]),
-            true,
-        );
-        assert_eq!(reset_actions, vec![ControlAction::ResetPlaybackRate]);
     }
 
     /// Проверяет, что egui temp state реально копит smooth wheel между кадрами.

@@ -2,8 +2,8 @@ use super::telemetry_panel::TelemetryPanelState;
 use super::*;
 use crate::fullscreen_chrome::ChromeHoldObservation;
 use crate::ui::buffering_indicator::render_buffering_indicator;
-use crate::ui::video_surface_input::{self, VideoSurfaceAction};
-use crate::ui::{control_action_coalescing, fullscreen_chrome_panels};
+use crate::ui::video_surface_input;
+use crate::ui::{control_action_coalescing, fullscreen_chrome_panels, global_hotkeys};
 use tracing::warn;
 
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
@@ -392,11 +392,14 @@ impl AppState {
             }
 
             // До оверлеев: их виджеты регистрируются позже и перехватывают клики первыми.
-            if let Some(VideoSurfaceAction::ToggleFullscreen) =
+            control_actions.extend(
                 video_surface_input::show(ui, ui.available_rect_before_wrap())
-            {
-                control_actions.push(ControlAction::ToggleFullscreen);
-            }
+                    .into_iter()
+                    .map(ControlAction::from),
+            );
+            // Глобальные клавиши (скорость, громкость, Ctrl+O) — после панелей кадра:
+            // сфокусированные виджеты уже забрали свои клавиши.
+            control_actions.extend(global_hotkeys::collect_actions(ui.ctx()));
 
             let stage_started_at = Instant::now();
             playlist_confirmation_action = Self::render_center_overlay(
@@ -493,6 +496,9 @@ impl AppState {
                     } else {
                         self.mark_pending_worker_redraw();
                     }
+                }
+                ControlAction::AdjustVolumeSteps(step_count) => {
+                    self.apply_volume_steps(player_snapshot, step_count);
                 }
                 ControlAction::ToggleMute => {
                     if let Err(error) =

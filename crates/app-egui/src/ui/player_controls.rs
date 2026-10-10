@@ -43,6 +43,9 @@ pub enum ControlAction {
     /// Установить новую громкость.
     SetVolume(f32),
 
+    /// Сдвинуть громкость на N шагов (колесо над видео, `↑`/`↓`); знак — направление.
+    AdjustVolumeSteps(i32),
+
     /// Переключить mute/unmute.
     ToggleMute,
 

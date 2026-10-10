@@ -2,6 +2,7 @@
 
 mod geometry;
 mod gesture;
+mod hover_tooltip;
 mod live_scrub;
 mod render;
 

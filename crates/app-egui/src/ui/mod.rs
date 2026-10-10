@@ -12,6 +12,7 @@ pub(crate) mod edge_slide;
 pub(crate) mod egui_behavior;
 pub(crate) mod external_drop_overlay;
 pub(crate) mod fullscreen_chrome_panels;
+pub(crate) mod global_hotkeys;
 pub(crate) mod keyboard_focus;
 pub mod media_info;
 pub(crate) mod notifications;

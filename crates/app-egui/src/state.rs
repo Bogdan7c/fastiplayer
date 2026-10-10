@@ -91,6 +91,7 @@ mod timeline_inline_status;
 mod ui_runtime;
 mod video_backend;
 mod vod_endpoint_recovery;
+mod volume_steps;
 mod web_media_catalog;
 
 #[cfg(test)]

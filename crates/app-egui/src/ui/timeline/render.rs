@@ -13,6 +13,7 @@ use super::geometry::{
 use super::gesture::{
     TimelineInteraction, TimelinePointerInput, TimelineUiState, map_timeline_interaction,
 };
+use super::hover_tooltip;
 
 /// Рисует timeline и возвращает user actions без отправки player commands.
 #[must_use]
@@ -34,6 +35,15 @@ pub fn render_timeline(
     let desired_size = Vec2::new(ui.available_width(), style.hit_height);
     let (response, painter) = ui.allocate_painter(desired_size, sense);
     let pointer_input = pointer_input_from_response(&response, bounds, style);
+    // Подсказка времени под курсором; для live и неперематываемого таймлайна текста нет.
+    let hover_text = response.hover_pos().and_then(|hover_position| {
+        hover_tooltip::hover_time_text(
+            timeline,
+            bounds,
+            pointer_fraction(response.rect, style, hover_position),
+        )
+    });
+    hover_tooltip::show(&response, hover_text);
     let interaction =
         map_timeline_interaction(timeline, state, bounds, pointer_input, live_scrub_enabled);
 
