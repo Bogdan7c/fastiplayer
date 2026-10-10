@@ -431,7 +431,7 @@
       "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
       "package": "playlist-io", "target": "budgets",
       "path": "crates/playlist-io/tests/budgets.rs",
-      "symbol": "invalid_utf8_is_fatal_without_lossy_replacement"
+      "symbol": "invalid_utf8_is_fatal_for_m3u8_without_lossy_replacement"
     },
     "playlist-non-utf-export": {
       "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
