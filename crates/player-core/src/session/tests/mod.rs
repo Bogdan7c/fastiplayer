@@ -70,6 +70,7 @@ mod restored_user_volume;
 mod scrub;
 mod scrub_driver;
 mod scrub_hold;
+mod scrub_track_list_marker;
 mod seek_commit_gates;
 mod seek_completion;
 mod seek_diagnostics;

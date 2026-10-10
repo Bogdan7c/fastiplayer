@@ -30,6 +30,12 @@ pub enum HlsMainTrackLayoutIntent {
     VideoOnly,
     /// Main component обязан содержать только требуемый audio track.
     AudioOnly,
+    /// Форму доказывает только содержимое: ровно один video track и не более одного audio.
+    ///
+    /// Используется для top-level media playlist без master: такой манифест не декларирует
+    /// CODECS, поэтому «видео со звуком» и «видео без звука» различимы лишь после probe
+    /// первого сегмента. Видео обязательно (оно задаёт seek anchor), звук опционален.
+    VideoWithOptionalAudio,
 }
 
 /// Explicit evidence для одного alternate audio rendition.

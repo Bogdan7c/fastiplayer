@@ -572,6 +572,33 @@ fn provider_default_request(
     coupled: &[PendingCoupled],
 ) -> Result<ComponentVariantSelectionRequest, HlsCatalogBuildError> {
     match intent.main_track_layout {
+        // Variant без audio-кодека в CODECS и без AUDIO group: звук либо отсутствует, либо
+        // зашит в сегменты вопреки CODECS. Каталог уже доказал фактическую форму дочернего
+        // playlist-а, поэтому берём строку, которую доказал probe: muxed, иначе video-only.
+        HlsMainTrackLayoutIntent::VideoWithOptionalAudio => {
+            if audio_index.is_some() {
+                return Err(HlsCatalogBuildError::ProviderDefaultRejected {
+                    reason: HlsCatalogSiblingRejectionReason::UnsupportedTrackShape,
+                });
+            }
+            if let Some(row) = coupled
+                .iter()
+                .find(|row| row.variant_index == variant_index)
+            {
+                return Ok(ComponentVariantSelectionRequest::Coupled {
+                    presentation: row.variant.exact_identity().clone(),
+                });
+            }
+            let video = videos
+                .iter()
+                .find(|row| row.variant_index == variant_index)
+                .ok_or(HlsCatalogBuildError::ProviderDefaultRejected {
+                    reason: HlsCatalogSiblingRejectionReason::UnsupportedTrackShape,
+                })?;
+            Ok(ComponentVariantSelectionRequest::VideoOnly {
+                video: video.variant.exact_identity().clone(),
+            })
+        }
         HlsMainTrackLayoutIntent::MuxedAv => {
             if audio_index.is_some() {
                 return Err(HlsCatalogBuildError::ProviderDefaultRejected {

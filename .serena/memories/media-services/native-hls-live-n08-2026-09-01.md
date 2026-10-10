@@ -70,3 +70,10 @@ PASS:
 - This exposed a root defect: HLS live accepted any TS H.264 IDR as a DVR decode anchor even when the retained access unit lacked SPS/PPS, so FFmpeg flush left audio progressing but video unable to restart.
 - `web-media-hls::live` now accepts an H.264/TS video anchor only with codec-core proof of ordered in-band SPS -> PPS -> IDR. Incomplete IDR packets remain valid playback packets but do not expand the seekable DVR range; fMP4/other-codec policy and ordinary MPEG-TS index semantics are unchanged.
 - Exact tests, dependency/API detail and §6.3 evidence: `mem:testing/native-web-ingress-n14b-2026-09-02`.
+
+## A13-2 video-only HLS (2026-10-10)
+
+- Top-level media playlist больше не предполагает «видео + звук»: `native_media_selection` отдаёт `HlsMainTrackLayoutIntent::VideoWithOptionalAudio` (video=1, audio<=1, форму доказывает содержимое первого сегмента через `validate_track_shape`). `MuxedAv`/`VideoOnly`/`AudioOnly` остаются для master-строк, где форма доказана каталогом.
+- Master-variant без audio-кодека в CODECS и без AUDIO group admitted native с тем же intent (раньше `native_candidate` требовал audio-кодек); variant с AUDIO group без audio-кодека по-прежнему уходит в extractor. В `catalog/build.rs::provider_default_request` для этого intent берётся coupled-строка варианта, иначе video-only строка (то, что доказал probe child-а).
+- Audio-only top media (радио) НЕ поддержан: live-evidence (`HlsLiveTimelineEvidence::requires_video_random_access`) фиксируется до probe по intent-у, а аудио-only live без video-якоря не получит decode anchor. VOD audio-only можно было бы принять тем же intent-ом, но live требует передавать признак «есть видео» из probe в coordinator - отдельная работа.
+- Тесты: `web-media-hls/tests/video_only_hls.rs` (ts VOD + seek, fMP4 VOD, live, master без audio-кодека через каталог, регрессия muxed, audio-only top по-прежнему shape mismatch).

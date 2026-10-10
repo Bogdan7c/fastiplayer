@@ -119,7 +119,17 @@ impl PlayerSession {
     /// Применяет lifecycle update от demuxer-а после container discontinuity.
     pub(crate) fn handle_demux_track_list_update(&mut self, track_update: DemuxTrackListUpdate) {
         let DemuxTrackListUpdate { tracks, duration } = track_update;
-        if self.seek_runtime.active_seek_landing_is_live_scrub() {
+        let first_post_seek_track_update = self.seek_runtime.record_first_track_list_update();
+        // Первый TracksChanged после принятого demux seek-а с той же топологией дорожек -
+        // маркер самого этого seek-а (HLS/fMP4 публикуют его при смене сегмента-якоря), а не
+        // внешняя команда. Отмена live-scrub здесь бросила бы цель перемотки при уже
+        // переставленном demuxer-е: звук «догоняет» по PTS пакетов, а видео без звука
+        // остаётся на старой позиции навсегда. Смена самих дорожек по-прежнему отменяет
+        // scrub (reused decoder больше не валиден).
+        let is_marker_of_active_seek = first_post_seek_track_update
+            && self.seek_runtime.active_commit().is_some()
+            && self.pipeline.tracks() == tracks.as_slice();
+        if self.seek_runtime.active_seek_landing_is_live_scrub() && !is_marker_of_active_seek {
             self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
         }
 
@@ -127,7 +137,6 @@ impl PlayerSession {
         let active_timeline_before_update =
             active_seek_before_update.map(|_| self.snapshot.timeline);
         let pipeline_generation_before_update = self.pipeline.seek_generation();
-        let first_post_seek_track_update = self.seek_runtime.record_first_track_list_update();
 
         info!(
             tracks = tracks.len(),

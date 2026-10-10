@@ -279,7 +279,11 @@ fn parse_native_hls_top(
     Ok(playlist)
 }
 
-/// Media topology имеет единственный reconstructible muxed selection intent.
+/// Media topology имеет единственный reconstructible selection intent.
+///
+/// Top-level media playlist не декларирует CODECS, поэтому звук в нём не гарантирован
+/// (видео без звука - обычный случай, A13-2): форма доказывается содержимым первого
+/// сегмента, а не предположением «видео + звук».
 fn native_media_selection() -> NativeHlsSemanticSelection {
     NativeHlsSemanticSelection {
         topology: NativeHlsTopology::Media,
@@ -287,7 +291,7 @@ fn native_media_selection() -> NativeHlsSemanticSelection {
             resolution: None,
             codecs: None,
             audio: HlsAudioLayoutIntent::Muxed,
-            main_track_layout: HlsMainTrackLayoutIntent::MuxedAv,
+            main_track_layout: HlsMainTrackLayoutIntent::VideoWithOptionalAudio,
         },
     }
 }
@@ -398,9 +402,13 @@ fn native_candidate(
             CodecKind::Known(family) if family.media_kind() == CodecMediaKind::Audio
         )
     });
-    if !has_audio_codec {
+    // Variant без audio-кодека и без AUDIO group - видео без звука (A13-2). Форму
+    // доказывает probe дочернего playlist-а, а не CODECS, поэтому intent допускает оба исхода.
+    // Variant с AUDIO group, но без audio-кодека остаётся неразрешимым без extractor-а.
+    if !has_audio_codec && variant.audio_group.is_some() {
         return None;
     }
+    let carries_no_audio_by_declaration = !has_audio_codec;
     let codec_rank = policy.codec_rank(*video_codec)?;
     if policy.dynamic_range == NativeHlsDynamicRangePolicy::SdrOnly
         && matches!(
@@ -411,6 +419,10 @@ fn native_candidate(
         return None;
     }
     let (audio, main_track_layout) = match variant.audio_group.as_deref() {
+        None if carries_no_audio_by_declaration => (
+            HlsAudioLayoutIntent::Muxed,
+            HlsMainTrackLayoutIntent::VideoWithOptionalAudio,
+        ),
         None => (
             HlsAudioLayoutIntent::Muxed,
             HlsMainTrackLayoutIntent::MuxedAv,
@@ -645,7 +657,7 @@ video.m3u8\n";
         );
         assert_eq!(
             admitted_vod.runtime_intent().main_track_layout,
-            HlsMainTrackLayoutIntent::MuxedAv
+            HlsMainTrackLayoutIntent::VideoWithOptionalAudio
         );
 
         // Завершённый EVENT (A13-1) - это VOD: презентацию определяет ENDLIST, а не тип плейлиста.
@@ -711,6 +723,31 @@ video.m3u8\n";
 
         let live = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nseg.ts\n";
         assert!(admit(live, &policy(None), None).is_ok());
+    }
+
+    /// A13-2: variant без audio-кодека и без AUDIO group - видео без звука, остаётся native;
+    /// форму потом доказывает probe. Variant с AUDIO group без audio-кодека по-прежнему
+    /// требует extractor (внешний звук нельзя угадать).
+    #[test]
+    fn master_variant_without_audio_codec_is_native_video_with_optional_audio() {
+        let video_only = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS=\"avc1.64001f\"\n\
+720.m3u8\n";
+        let admitted = admit(video_only, &policy(None), None).expect("video-only master native");
+        assert_eq!(
+            admitted.runtime_intent().main_track_layout,
+            HlsMainTrackLayoutIntent::VideoWithOptionalAudio
+        );
+        assert_eq!(admitted.runtime_intent().audio, HlsAudioLayoutIntent::Muxed);
+
+        let group_without_audio_codec = "#EXTM3U\n\
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"en\",DEFAULT=YES,URI=\"a.m3u8\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS=\"avc1.64001f\",AUDIO=\"a\"\n\
+720.m3u8\n";
+        assert!(matches!(
+            admit(group_without_audio_codec, &policy(None), None),
+            Err(NativeHlsAdmissionError::ExtractorMaterialRequired)
+        ));
     }
 
     #[test]
