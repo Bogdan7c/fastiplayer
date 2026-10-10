@@ -116,6 +116,13 @@ pub(super) struct SettingsMediaPrepareJob<T> {
     receiver: Receiver<Result<T, String>>,
     join_handle: Option<JoinHandle<()>>,
     cancel: SourcePreparationCancel,
+    /// `true`, пока результат подготовки ещё не передан UI.
+    ///
+    /// Токен отмены разделяют transport/demux подготовленного источника (фоновый seek-поток
+    /// progressive HTTP живёт под ним). После выдачи результата токен принадлежит уже
+    /// установленному media: отменять его в `Drop` нельзя, иначе перемотка сломается
+    /// (`demux seek worker has stopped`).
+    result_pending: bool,
 }
 
 impl<T: Send + 'static> SettingsMediaPrepareJob<T> {
@@ -140,6 +147,7 @@ impl<T: Send + 'static> SettingsMediaPrepareJob<T> {
             receiver,
             join_handle: Some(join_handle),
             cancel,
+            result_pending: true,
         })
     }
 
@@ -147,12 +155,14 @@ impl<T: Send + 'static> SettingsMediaPrepareJob<T> {
     pub(super) fn poll(&mut self) -> PrepareJobPoll<T> {
         match self.receiver.try_recv() {
             Ok(result) => {
+                self.result_pending = false;
                 self.reap_finished_thread();
                 PrepareJobPoll::Finished(result)
             }
             Err(TryRecvError::Empty) => PrepareJobPoll::Running,
             Err(TryRecvError::Disconnected) => {
                 // Поток завершился без результата (panic): это сбой подготовки, а не тишина.
+                self.result_pending = false;
                 self.reap_finished_thread();
                 warn!("Поток подготовки media для настроек завершился без результата");
                 PrepareJobPoll::Finished(Err(
@@ -184,8 +194,11 @@ impl<T: Send + 'static> SettingsMediaPrepareJob<T> {
 
 impl<T> Drop for SettingsMediaPrepareJob<T> {
     fn drop(&mut self) {
-        // Fail-safe: токен отменён, поток не должен пережить владельца дольше короткого срока.
-        self.cancel.cancel_for_lifecycle();
+        // Fail-safe: пока результат не выдан, поток не должен пережить владельца; токен
+        // отменяется только в этом случае (см. `result_pending`).
+        if self.result_pending {
+            self.cancel.cancel_for_lifecycle();
+        }
         let _status = join_thread_until(
             &mut self.join_handle,
             ShutdownDeadline::after(CANCELLED_PREPARE_JOIN_TIMEOUT),

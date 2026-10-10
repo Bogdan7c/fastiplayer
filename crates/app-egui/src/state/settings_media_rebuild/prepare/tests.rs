@@ -164,3 +164,42 @@ fn real_local_file_is_prepared_in_the_background_job() {
         prepared.err()
     );
 }
+
+#[test]
+fn token_of_a_delivered_result_is_not_cancelled_when_the_job_is_dropped() {
+    // Токен принадлежит подготовленному источнику (его seek-поток живёт под ним):
+    // после выдачи результата сброс job-а не должен его отменять.
+    let mut job = SettingsMediaPrepareJob::spawn_task(|cancel| Ok(cancel.clone()))
+        .expect("поток подготовки должен запуститься");
+    let source_token = wait_for_finish(&mut job).expect("подготовка успешна");
+
+    drop(job);
+
+    assert!(
+        !source_token.is_cancelled(),
+        "drop завершённого job-а сломал бы перемотку установленного media"
+    );
+}
+
+#[test]
+fn dropping_an_unfinished_job_cancels_its_preparation() {
+    let (token_sender, token_receiver) = mpsc::channel::<SourcePreparationCancel>();
+    let (release_sender, release_receiver) = mpsc::channel::<()>();
+    let job = SettingsMediaPrepareJob::<u8>::spawn_task(move |cancel| {
+        let _sent = token_sender.send(cancel.clone());
+        let _released = release_receiver.recv_timeout(Duration::from_secs(5));
+        Ok(0)
+    })
+    .expect("поток подготовки должен запуститься");
+    let task_token = token_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("задача должна стартовать");
+
+    drop(job);
+    let _unblock = release_sender.send(());
+
+    assert!(
+        task_token.is_cancelled(),
+        "незавершённая подготовка должна быть отменена при сбросе job-а"
+    );
+}

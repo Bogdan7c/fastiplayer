@@ -16,6 +16,9 @@
 - Current executor behavior was intentionally not rewritten in Session 08: existing `DeferredTechnicalDebt`, `deferred_boundary_settings`, persistence order, and unsupported-player plumbing remain until their scoped implementation/removal sessions.
 - Session 08B input: implement Player/MediaService/FrameServer rows through owner boundaries, including event-policy updates, worker reconfigure, audio/source recreation, and video pipeline rebuild with rollback and retryable busy/conflict.
 - Session 08C input: implement RenderCommitted rows via controlled renderer recreation; preserve live-render preview rows and cover active leases/device-lost/restore failure.
+## C2 (2026-10-11): многокадровая транзакция
+Apply с пересборкой media больше не блокирует UI: `begin_apply`/`poll_apply` в settings-core, маршрут-пересборка отдаёт Pending, persist только после успеха всех маршрутов. Контракт sync `apply` и порядок validate -> preflight -> routes -> persist -> finalize сохранены. Подробно: `mem:settings-ui/multiframe-apply-c2-2026-10-11`.
+
 ## Session 08D — end-to-end settings transaction (2026-07-11)
 
 - `SettingsController::apply` теперь выполняет validate -> generation/runtime preflight -> ordered runtime commit -> atomic TOML persistence -> final committed document/generation update.
