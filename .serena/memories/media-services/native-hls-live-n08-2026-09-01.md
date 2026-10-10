@@ -8,7 +8,7 @@
 
 ## Ownership и границы
 
-- `hls-playlist-core` остаётся владельцем profile validation. Initial live принимает sliding и `EXT-X-PLAYLIST-TYPE:EVENT`; explicit `PLAYLIST-TYPE:VOD` без ENDLIST отклоняется. LL-HLS, private state, unsupported encryption/DRM и прочие прежние exclusions не расширялись.
+- `hls-playlist-core` остаётся владельцем profile validation. Initial live принимает sliding и `EXT-X-PLAYLIST-TYPE:EVENT`; explicit `PLAYLIST-TYPE:VOD` без ENDLIST отклоняется. VOD/live выбирается по `ENDLIST`, не по типу: EVENT+ENDLIST (A13-1, 2026-10-10) - полноценный VOD (`validate_vod_profile` больше не отвергает EVENT, `HlsProfileError::EventPlaylist` удалён), EVENT без ENDLIST остаётся live; тесты `web-media-hls/tests/event_vod.rs`. LL-HLS, private state, unsupported encryption/DRM и прочие прежние exclusions не расширялись.
 - `web-media-hls::catalog::detect_hls_catalog_presentation` классифицирует selected master child по authoritative fetched root. Root повторно не GET-ится; child classification/profile check выполняется до app runtime composition.
 - `web-media-hls::live::prepare_hls_live_with_catalog` принимает `FetchedTop` только для initial handoff, затем нормализует refresh input к stable selected root `Fetch`; stale fetched bytes никогда не replay-ятся.
 - App `startup_media::native_hls::catalog_runtime` (файл `startup_media/native_hls/vod_catalog.rs` через path module) владеет одним native admission/catalog/rematch orchestration для VOD и live. Data plane не дублируется: VOD делегируется прежнему VOD owner-у, live — существующему S33 owner-у.

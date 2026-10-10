@@ -519,7 +519,7 @@ fn safe_session_metadata_is_validated_but_not_a_profile_feature() {
 }
 
 #[test]
-fn start_and_event_are_precise_vod_profile_rejections() {
+fn start_offset_is_precise_vod_profile_rejection_and_finished_event_is_vod() {
     let start = parse(
         "#EXTM3U\n#EXT-X-START:TIME-OFFSET=1.5\n#EXT-X-TARGETDURATION:5\n\
          #EXTINF:5,\nsegment.ts\n#EXT-X-ENDLIST\n",
@@ -535,10 +535,25 @@ fn start_and_event_are_precise_vod_profile_rejections() {
          #EXTINF:5,\nsegment.ts\n#EXT-X-ENDLIST\n",
     )
     .expect("valid event structure");
+    // Завершённый EVENT (ENDLIST) больше не меняется - это VOD (решение A13-1).
+    assert_eq!(validate_vod_profile(&event, None), Ok(()));
     assert_eq!(
-        validate_vod_profile(&event, None),
-        Err(HlsProfileError::EventPlaylist)
+        validate_live_profile(&event, None),
+        Err(HlsProfileError::EndedLivePlaylist),
+        "завершённый EVENT не должен одновременно считаться live"
     );
+
+    // EVENT без ENDLIST остаётся live: VOD-профиль его по-прежнему не принимает.
+    let running_event = parse(
+        "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:5\n\
+         #EXTINF:5,\nsegment.ts\n",
+    )
+    .expect("valid running event structure");
+    assert_eq!(
+        validate_vod_profile(&running_event, None),
+        Err(HlsProfileError::NonVod)
+    );
+    assert_eq!(validate_live_profile(&running_event, None), Ok(()));
 }
 
 /// URI вариантов часто несут токены доступа: `Debug` показывает только длину,

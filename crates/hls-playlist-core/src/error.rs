@@ -81,8 +81,6 @@ pub enum HlsProfileError {
     VariableSubstitution,
     #[error("content steering не входит в initial profile")]
     ContentSteering,
-    #[error("EVENT playlist не является VOD profile")]
-    EventPlaylist,
     #[error("fMP4 media segment не имеет действующего EXT-X-MAP")]
     FragmentedMp4MapRequired,
 }

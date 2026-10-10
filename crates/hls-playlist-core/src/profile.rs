@@ -85,9 +85,10 @@ pub fn validate_vod_profile(
     if !media.end_list {
         return Err(HlsProfileError::NonVod);
     }
-    if media.playlist_type == Some(HlsPlaylistType::Event) {
-        return Err(HlsProfileError::EventPlaylist);
-    }
+    // `EXT-X-PLAYLIST-TYPE:EVENT` намеренно не отвергается: по RFC 8216 (4.3.3.5) EVENT-плейлист
+    // только дополняется, а после `EXT-X-ENDLIST` не меняется вообще. Значит, завершённый EVENT
+    // (например, итог `ffmpeg -hls_playlist_type event`) - полноценный VOD с конечной длительностью.
+    // EVENT без ENDLIST сюда не доходит: его отсекает проверка `NonVod` выше и обслуживает live-профиль.
     validate_initial_profile(playlist)?;
     if container_intent == Some(MediaContainerIntent::FragmentedMp4)
         && media

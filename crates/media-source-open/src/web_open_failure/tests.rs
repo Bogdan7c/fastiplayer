@@ -586,13 +586,14 @@ fn parse_hls(
 
 #[test]
 fn hls_profile_exclusion_reaches_user_as_no_playable_format() {
-    // Завершённый EVENT-плейлист: валидный по RFC 8216, но вне VOD-профиля плеера.
+    // SAMPLE-AES: валидный по RFC 8216 плейлист, но вне VOD-профиля плеера (завершённый EVENT
+    // после A13-1 в профиле, поэтому для проверки берём шифрование, которое по-прежнему исключено).
     let playlist = parse_hls(
-        "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXTINF:2,\nx0.ts\n#EXT-X-ENDLIST\n",
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"k.key\"\n#EXTINF:2,\nx0.ts\n#EXT-X-ENDLIST\n",
     )
-    .expect("EVENT-плейлист структурно корректен");
+    .expect("плейлист с SAMPLE-AES структурно корректен");
     let profile_error = hls_playlist_core::validate_vod_profile(&playlist, None)
-        .expect_err("EVENT вне VOD-профиля");
+        .expect_err("SAMPLE-AES вне VOD-профиля");
 
     assert_eq!(
         classify_web_open_failure(&wrapped(profile_error)),

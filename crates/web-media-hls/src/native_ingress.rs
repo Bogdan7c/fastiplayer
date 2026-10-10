@@ -648,6 +648,21 @@ video.m3u8\n";
             HlsMainTrackLayoutIntent::MuxedAv
         );
 
+        // Завершённый EVENT (A13-1) - это VOD: презентацию определяет ENDLIST, а не тип плейлиста.
+        let finished_event = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:1\n\
+                              #EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n";
+        let admitted_event = admit_native_hls_catalog(
+            finished_event.as_bytes(),
+            &target(),
+            HlsParserLimits::default(),
+            &policy(None),
+        )
+        .expect("завершённый EVENT должен остаться native");
+        assert_eq!(
+            admitted_event.presentation_evidence(),
+            NativeHlsPresentationEvidence::TopMedia(HlsCatalogPresentation::Vod)
+        );
+
         for live_manifest in [
             "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n",
             "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n",
