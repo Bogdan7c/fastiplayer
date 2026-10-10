@@ -1,8 +1,10 @@
 use std::path::Path;
 
-use super::{FATAL_STARTUP_TITLE, notice_for};
+use super::{FATAL_RUNTIME_TITLE, FATAL_STARTUP_TITLE, notice_for};
 use crate::app_instance::ProcessArgsError;
-use crate::fatal_startup::{ConfigDirectoryLocation, ConfigDirectoryProblem, FatalStartupReason};
+use crate::fatal_startup::{
+    ConfigDirectoryLocation, ConfigDirectoryProblem, FatalErrorPhase, FatalStartupReason,
+};
 
 fn location() -> ConfigDirectoryLocation {
     ConfigDirectoryLocation::relative_to_home(
@@ -62,7 +64,7 @@ fn looks_like_rust_identifier(word: &str) -> bool {
 #[test]
 fn every_message_is_human_text_without_debug_names() {
     for reason in every_reason() {
-        let notice = notice_for(&reason);
+        let notice = notice_for(&reason, FatalErrorPhase::Startup);
 
         assert_eq!(notice.title, FATAL_STARTUP_TITLE);
         assert!(!notice.message.trim().is_empty(), "{reason:?}");
@@ -89,7 +91,7 @@ fn every_message_is_human_text_without_debug_names() {
 fn every_reason_has_its_own_message() {
     let messages: Vec<String> = every_reason()
         .iter()
-        .map(|reason| notice_for(reason).message)
+        .map(|reason| notice_for(reason, FatalErrorPhase::Startup).message)
         .collect();
 
     for (index, message) in messages.iter().enumerate() {
@@ -102,10 +104,13 @@ fn every_reason_has_its_own_message() {
 
 #[test]
 fn owner_problem_names_folder_and_gives_copyable_fix_command() {
-    let notice = notice_for(&FatalStartupReason::ConfigDirectoryUnusable {
-        problem: ConfigDirectoryProblem::OwnedByAnotherUser,
-        location: location(),
-    });
+    let notice = notice_for(
+        &FatalStartupReason::ConfigDirectoryUnusable {
+            problem: ConfigDirectoryProblem::OwnedByAnotherUser,
+            location: location(),
+        },
+        FatalErrorPhase::Startup,
+    );
 
     assert!(
         notice
@@ -124,13 +129,64 @@ fn owner_problem_names_folder_and_gives_copyable_fix_command() {
 
 #[test]
 fn lock_file_problem_names_the_file_to_delete() {
-    let notice = notice_for(&FatalStartupReason::ConfigDirectoryUnusable {
-        problem: ConfigDirectoryProblem::LockFileNotRegularFile {
-            lock_file_name: "instance.lock".to_owned(),
+    let notice = notice_for(
+        &FatalStartupReason::ConfigDirectoryUnusable {
+            problem: ConfigDirectoryProblem::LockFileNotRegularFile {
+                lock_file_name: "instance.lock".to_owned(),
+            },
+            location: location(),
         },
-        location: location(),
-    });
+        FatalErrorPhase::Startup,
+    );
 
     assert!(notice.message.contains("instance.lock"));
     assert!(notice.message.contains("Удалите его"));
+}
+
+#[test]
+fn runtime_recreation_graphics_failure_speaks_about_resume_without_startup_or_vulkan_wording() {
+    let notice = notice_for(
+        &FatalStartupReason::GraphicsUnavailable,
+        FatalErrorPhase::RuntimeRecreation,
+    );
+
+    assert_eq!(notice.title, FATAL_RUNTIME_TITLE);
+    assert!(
+        notice.message.contains("выхода из сна"),
+        "{}",
+        notice.message
+    );
+    assert!(notice.message.contains("Запустите его снова"));
+    for forbidden in ["Vulkan", "запустить вывод", "не запустился"] {
+        assert!(!notice.message.contains(forbidden), "{}", notice.message);
+        assert!(!notice.title.contains(forbidden), "{}", notice.title);
+    }
+}
+
+#[test]
+fn runtime_recreation_internal_failure_differs_from_startup_text() {
+    let startup = notice_for(
+        &FatalStartupReason::InternalFailure,
+        FatalErrorPhase::Startup,
+    );
+    let runtime = notice_for(
+        &FatalStartupReason::InternalFailure,
+        FatalErrorPhase::RuntimeRecreation,
+    );
+
+    assert_ne!(startup.message, runtime.message);
+    assert!(startup.message.contains("Во время запуска"));
+    assert!(!runtime.message.contains("запуска"), "{}", runtime.message);
+    assert!(runtime.message.contains("выхода из сна"));
+}
+
+#[test]
+fn startup_graphics_failure_keeps_the_original_vulkan_text() {
+    let notice = notice_for(
+        &FatalStartupReason::GraphicsUnavailable,
+        FatalErrorPhase::Startup,
+    );
+
+    assert_eq!(notice.title, FATAL_STARTUP_TITLE);
+    assert!(notice.message.contains("видеокарта с поддержкой Vulkan"));
 }

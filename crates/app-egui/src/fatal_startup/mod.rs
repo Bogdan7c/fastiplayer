@@ -40,6 +40,20 @@ use crate::app_instance::ProcessArgsError;
 /// аварийно выходит, если не уложился в срок штатного завершения.
 const FATAL_STARTUP_EXIT_CODE: u8 = 1;
 
+/// Фаза жизни процесса, в которой случилась фатальная ошибка.
+///
+/// Одна и та же причина (например, `GraphicsUnavailable`) по-разному выглядит для
+/// пользователя: при старте плеер «не запустился», а после выхода из сна он уже
+/// работал и «не смог восстановиться». Фаза выбирает заголовок и текст.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum FatalErrorPhase {
+    /// Первый запуск процесса: до этого момента окно с видео пользователь не видел.
+    #[default]
+    Startup,
+    /// Пересоздание renderer/runtime после suspend/resume в уже работавшем плеере.
+    RuntimeRecreation,
+}
+
 /// Почему приложение не смогло запуститься. Определяет текст для пользователя.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FatalStartupReason {
@@ -101,6 +115,7 @@ pub(crate) enum ConfigDirectoryProblem {
 pub(crate) struct FatalStartupError {
     reason: FatalStartupReason,
     technical_detail: String,
+    phase: FatalErrorPhase,
 }
 
 impl FatalStartupError {
@@ -109,7 +124,14 @@ impl FatalStartupError {
         Self {
             reason,
             technical_detail: technical_detail.into(),
+            phase: FatalErrorPhase::Startup,
         }
+    }
+
+    /// Помечает фазу, в которой случилась ошибка (по умолчанию `Startup`).
+    pub(crate) fn in_phase(mut self, phase: FatalErrorPhase) -> Self {
+        self.phase = phase;
+        self
     }
 
     /// Winit не смог подключиться к Wayland/X11 и создать event loop.
@@ -152,6 +174,11 @@ impl FatalStartupError {
         &self.reason
     }
 
+    /// Фаза процесса, в которой произошла ошибка; выбирает текст для пользователя.
+    pub(crate) fn phase(&self) -> FatalErrorPhase {
+        self.phase
+    }
+
     /// Техническая деталь для лога; пользователю не показывается.
     pub(crate) fn technical_detail(&self) -> &str {
         &self.technical_detail
@@ -180,6 +207,7 @@ impl FatalStartupErrorSlot {
             None => {
                 tracing::error!(
                     reason = ?error.reason(),
+                    phase = ?error.phase(),
                     detail = %error.technical_detail(),
                     "Фатальная ошибка запуска; event loop останавливается"
                 );
@@ -187,6 +215,7 @@ impl FatalStartupErrorSlot {
             }
             Some(_) => tracing::warn!(
                 reason = ?error.reason(),
+                phase = ?error.phase(),
                 detail = %error.technical_detail(),
                 "Повторная фатальная ошибка после уже зафиксированной; показана будет первая"
             ),

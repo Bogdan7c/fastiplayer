@@ -6,10 +6,13 @@
 
 use crate::app_instance::ProcessArgsError;
 
-use super::{ConfigDirectoryLocation, ConfigDirectoryProblem, FatalStartupReason};
+use super::{ConfigDirectoryLocation, ConfigDirectoryProblem, FatalErrorPhase, FatalStartupReason};
 
 /// Заголовок окна ошибки и уведомления; одинаков для всех причин.
 pub(super) const FATAL_STARTUP_TITLE: &str = "Fastiplayer не запустился";
+
+/// Заголовок для ошибки, случившейся в уже работавшем плеере (после сна/сворачивания).
+pub(super) const FATAL_RUNTIME_TITLE: &str = "Fastiplayer остановлен";
 
 /// Где пользователь увидит технические подробности: лог пишется только в stderr.
 const DETAILS_HINT: &str = "Подробности видны, если запустить fastiplayer из терминала.";
@@ -21,11 +24,55 @@ pub(crate) struct FatalStartupNotice {
     pub(crate) message: String,
 }
 
-/// Строит текст для пользователя по причине ошибки.
-pub(super) fn notice_for(reason: &FatalStartupReason) -> FatalStartupNotice {
-    FatalStartupNotice {
-        title: FATAL_STARTUP_TITLE,
-        message: message_for(reason),
+/// Строит текст для пользователя по причине и фазе ошибки.
+pub(super) fn notice_for(
+    reason: &FatalStartupReason,
+    phase: FatalErrorPhase,
+) -> FatalStartupNotice {
+    match phase {
+        FatalErrorPhase::Startup => FatalStartupNotice {
+            title: FATAL_STARTUP_TITLE,
+            message: message_for(reason),
+        },
+        FatalErrorPhase::RuntimeRecreation => FatalStartupNotice {
+            title: FATAL_RUNTIME_TITLE,
+            message: runtime_recreation_message_for(reason),
+        },
+    }
+}
+
+/// Текст для ошибки при восстановлении плеера после сна/сворачивания.
+///
+/// Достижимы только причины, которые может дать пересоздание renderer и runtime
+/// (`GraphicsUnavailable`, `InternalFailure`). Остальные причины — стартовые
+/// (аргументы, lease, папка настроек, окно); для них остаётся стартовый текст,
+/// но варианты перечислены явно, чтобы новая причина не прошла незамеченной.
+fn runtime_recreation_message_for(reason: &FatalStartupReason) -> String {
+    match reason {
+        FatalStartupReason::GraphicsUnavailable => {
+            "Не удалось восстановить вывод видео после выхода из сна или сворачивания окна: \
+             видеокарта или её драйвер не отвечают.\n\n\
+             Плеер закрывается. Запустите его снова; если это повторяется, \
+             обновите драйвер видеокарты."
+                .to_owned()
+        }
+        FatalStartupReason::InternalFailure => {
+            format!(
+                "Не удалось восстановить работу плеера после выхода из сна или сворачивания \
+                 окна.\n\nПлеер закрывается. Запустите его снова. {DETAILS_HINT}"
+            )
+        }
+        FatalStartupReason::InvalidArguments(_)
+        | FatalStartupReason::ConfigLocationUnknown
+        | FatalStartupReason::AlreadyRunning
+        | FatalStartupReason::RunningInstanceNotResponding
+        | FatalStartupReason::RunningInstanceShuttingDown
+        | FatalStartupReason::RunningInstanceDidNotTakeFiles
+        | FatalStartupReason::ConfigDirectoryUnusable { .. }
+        | FatalStartupReason::ConfigFileUnusable { .. }
+        | FatalStartupReason::UnsupportedPlatform
+        | FatalStartupReason::GraphicalSessionUnavailable
+        | FatalStartupReason::WindowCreationFailed => message_for(reason),
     }
 }
 

@@ -96,11 +96,12 @@ pub(super) fn deliver_notice(
 ) -> NoticeDelivery {
     tracing::error!(
         reason = ?error.reason(),
+        phase = ?error.phase(),
         detail = %error.technical_detail(),
         "Фатальная ошибка запуска"
     );
 
-    let notice = notice_for(error.reason());
+    let notice = notice_for(error.reason(), error.phase());
     write_notice_as_text(&notice, text_output);
 
     for channel in channels {

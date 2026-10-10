@@ -7,8 +7,8 @@ use fastiplayer_config::{ConfigError, ConfigPaths};
 
 use super::test_support::RecordingPresenter;
 use super::{
-    ConfigDirectoryProblem, FatalStartupError, FatalStartupErrorSlot, FatalStartupReason,
-    ProcessConclusion, conclude_process,
+    ConfigDirectoryProblem, FatalErrorPhase, FatalStartupError, FatalStartupErrorSlot,
+    FatalStartupReason, ProcessConclusion, conclude_process,
 };
 use crate::app_instance::{
     AppInstanceLeaseError, AppInstanceLeaseIoOperation, ProcessArgsError, ProcessBootstrapError,
@@ -244,4 +244,60 @@ fn slot_keeps_first_error_and_is_empty_after_take() {
 
     assert_eq!(slot.take(), Some(first));
     assert_eq!(slot.take(), None);
+}
+
+#[test]
+fn graphics_failure_during_runtime_recreation_is_not_shown_as_startup_error() {
+    // Технический текст, как его кладёт renderer при провале после resume.
+    let renderer_error = anyhow::anyhow!("surface lost: device lost after suspend")
+        .context("Не удалось получить GPU адаптер");
+    let error = FatalStartupError::graphics_unavailable(&renderer_error)
+        .in_phase(FatalErrorPhase::RuntimeRecreation);
+    let (conclusion, presenter) = conclude_with_fake(error.clone());
+
+    assert_eq!(conclusion, ProcessConclusion::FailedToStart);
+    assert_eq!(conclusion.exit_code(), ExitCode::from(1));
+    let shown = presenter.shown_notices();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].notice.title, "Fastiplayer остановлен");
+    let message = &shown[0].notice.message;
+    assert!(message.contains("выхода из сна"), "{message}");
+    for forbidden in ["Vulkan", "запустить вывод", "не запустился"] {
+        assert!(!message.contains(forbidden), "{message}");
+    }
+    // Техническая причина не потеряна: она в ошибке (идёт в лог) и не в окне.
+    assert!(
+        error
+            .technical_detail()
+            .contains("device lost after suspend")
+    );
+    assert_eq!(error.phase(), FatalErrorPhase::RuntimeRecreation);
+    assert!(!message.contains("device lost"));
+    assert!(!presenter.text_output().contains("не запустился"));
+}
+
+#[test]
+fn startup_phase_is_the_default_and_keeps_the_startup_title() {
+    let error = FatalStartupError::graphics_unavailable(&anyhow::anyhow!("no adapter"));
+    assert_eq!(error.phase(), FatalErrorPhase::Startup);
+    let (_, presenter) = conclude_with_fake(error);
+
+    assert_eq!(
+        presenter.shown_notices()[0].notice.title,
+        "Fastiplayer не запустился"
+    );
+}
+
+#[test]
+fn slot_keeps_phase_of_the_first_recorded_error() {
+    let mut slot = FatalStartupErrorSlot::default();
+    slot.record(
+        FatalStartupError::internal_failure("этап", &"сбой")
+            .in_phase(FatalErrorPhase::RuntimeRecreation),
+    );
+    slot.record(FatalStartupError::window_creation_failed(&"позже"));
+
+    let taken = slot.take().expect("первая ошибка сохранена");
+    assert_eq!(taken.phase(), FatalErrorPhase::RuntimeRecreation);
+    assert_eq!(*taken.reason(), FatalStartupReason::InternalFailure);
 }

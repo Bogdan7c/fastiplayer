@@ -35,7 +35,9 @@ use crate::system_capabilities::probe_system_capabilities;
 use fastiplayer_config::{ConfigPaths, LoadedConfig};
 
 use crate::config_startup_notice::config_startup_warning;
-use crate::fatal_startup::{FatalStartupError, FatalStartupErrorSlot, FatalStartupReason};
+use crate::fatal_startup::{
+    FatalErrorPhase, FatalStartupError, FatalStartupErrorSlot, FatalStartupReason,
+};
 use playlist_state::{PlaylistResumeStore, PlaylistStateStore};
 use render_wgpu_shell::Renderer;
 use tracing::{debug, info};
@@ -146,6 +148,12 @@ pub(crate) struct AppShell {
     /// Первая фатальная ошибка запуска; `main` показывает её после shutdown.
     fatal_startup_error: FatalStartupErrorSlot,
 
+    /// Фаза, в которой окажется следующая фатальная ошибка. `Startup`, пока runtime
+    /// ни разу не поднялся целиком; после первого успешного `restore_runtime` —
+    /// `RuntimeRecreation`: любой провал пересоздания после сна/сворачивания
+    /// показывается как потеря работавшего плеера, а не как «ошибка запуска».
+    fatal_error_phase: FatalErrorPhase,
+
     /// Единственный platform path owner для будущего state worker integration.
     _config_paths: ConfigPaths,
 
@@ -230,6 +238,7 @@ impl AppShell {
             renderer_lifecycle: RendererLifecycleCoordinator::default(),
             process_lifecycle: AppShellProcessLifecycle::Running,
             fatal_startup_error: FatalStartupErrorSlot::default(),
+            fatal_error_phase: FatalErrorPhase::Startup,
             _config_paths: config_paths,
             _instance_lease: instance_lease,
         })
@@ -406,6 +415,8 @@ impl AppShell {
 
         self.renderer = Some(renderer);
         self.app_state = Some(app_state);
+        // Runtime поднялся целиком: дальнейшие провалы пересоздания — уже не запуск.
+        self.fatal_error_phase = FatalErrorPhase::RuntimeRecreation;
         // Запросы второго запуска, пришедшие до готовности окна, исполняются сейчас.
         self.execute_pending_forwarded_requests();
         window.request_redraw();
@@ -495,7 +506,8 @@ impl AppShell {
         event_loop: &ActiveEventLoop,
         error: FatalStartupError,
     ) {
-        self.fatal_startup_error.record(error);
+        self.fatal_startup_error
+            .record(error.in_phase(self.fatal_error_phase));
         event_loop.exit();
     }
 

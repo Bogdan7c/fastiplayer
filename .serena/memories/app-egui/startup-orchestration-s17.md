@@ -52,6 +52,12 @@
   - `app_instance` — `bootstrap_failures_reach_user_as_human_text_with_nonzero_exit`;
   - `desktop-integration/src/notification/linux/tests.rs` — частный dbus-daemon с конфигом БЕЗ servicedirs (иначе auto-activation настоящей службы на 60 с).
 
+## UX2 C4: фаза фатальной ошибки (2026-10-11)
+
+- `FatalErrorPhase { Startup (по умолчанию), RuntimeRecreation }` в `fatal_startup/mod.rs`, поле `FatalStartupError::phase` (`in_phase`/`phase()`). `notice_for(reason, phase)` выбирает заголовок и текст: `Startup` — прежние («Fastiplayer не запустился», Vulkan), `RuntimeRecreation` — «Fastiplayer остановлен» + «Не удалось восстановить вывод видео после выхода из сна…», без слова Vulkan/«запуск».
+- Фазой владеет `AppShell::fatal_error_phase`: `Startup`, пока `restore_runtime` не прошёл целиком; после первого успеха `RuntimeRecreation`. Проставляется в единственной точке `exit_with_fatal_startup_error`. Корень: `restore_runtime` вызывается и из первого `resumed`, и после suspend/resume, и тип ошибки фазу не различал.
+- Лог несёт `phase` и полную техническую деталь (`{:#}`). Идея на будущее (не сделана, нужно решение владельца): при провале после resume один раз повторить `Renderer::new` / деградировать, а не закрывать процесс.
+
 ## UX13: несколько файлов в CLI и второй запуск (2026-10-08)
 
 - Грамматика `ProcessArgs`: ноль и больше позиционных (`Vec<OsString>`, порядок и байты сохраняются), `ExtraPositional` удалён. `take_initial_media_arguments` / `initial_media_arguments`.
