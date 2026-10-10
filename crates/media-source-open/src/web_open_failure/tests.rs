@@ -572,3 +572,41 @@ fn yt_dlp_topology_private_rejection_reaches_user_reason() {
         Some(WebOpenFailureReason::SitePrivateMedia)
     );
 }
+
+/// Разбирает настоящий HLS manifest тем же парсером, что и production.
+fn parse_hls(
+    document: &str,
+) -> Result<hls_playlist_core::HlsPlaylist, hls_playlist_core::HlsParseError> {
+    hls_playlist_core::parse_hls_playlist(hls_playlist_core::HlsParseRequest::new(
+        document.as_bytes(),
+        Some("http://media.example.test/index.m3u8"),
+        hls_playlist_core::HlsParserLimits::default(),
+    ))
+}
+
+#[test]
+fn hls_profile_exclusion_reaches_user_as_no_playable_format() {
+    // Завершённый EVENT-плейлист: валидный по RFC 8216, но вне VOD-профиля плеера.
+    let playlist = parse_hls(
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXTINF:2,\nx0.ts\n#EXT-X-ENDLIST\n",
+    )
+    .expect("EVENT-плейлист структурно корректен");
+    let profile_error = hls_playlist_core::validate_vod_profile(&playlist, None)
+        .expect_err("EVENT вне VOD-профиля");
+
+    assert_eq!(
+        classify_web_open_failure(&wrapped(profile_error)),
+        WebOpenFailureReason::NoPlayableFormat
+    );
+}
+
+#[test]
+fn malformed_hls_manifest_reaches_user_as_invalid_server_response() {
+    let parse_error = parse_hls("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:abc,\nx0.ts\n")
+        .expect_err("нечисловая длительность сегмента — структурная ошибка");
+
+    assert_eq!(
+        classify_web_open_failure(&wrapped(parse_error)),
+        WebOpenFailureReason::InvalidServerResponse
+    );
+}

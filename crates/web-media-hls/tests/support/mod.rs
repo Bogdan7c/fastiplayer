@@ -687,7 +687,7 @@ fn split_fmp4(
     )
 }
 
-fn decode_base64(encoded: &str) -> Vec<u8> {
+pub fn decode_base64(encoded: &str) -> Vec<u8> {
     let mut decoded = Vec::with_capacity(encoded.len() * 3 / 4);
     let mut accumulator = 0_u32;
     let mut accumulated_bits = 0_u8;

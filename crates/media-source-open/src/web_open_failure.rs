@@ -12,6 +12,7 @@
 
 use dash_mpd_core::DashDynamicMpdError;
 use demux_api::{DemuxFactoryOpenError, DemuxOpenError};
+use hls_playlist_core::{HlsParseError, HlsProfileError};
 use service_ytdlp::{YtDlpRejectionReason, YtDlpServiceError, YtDlpTopologyError};
 use source_core::SourceError;
 use web_media_transport_api::{
@@ -147,6 +148,15 @@ fn classify_error_link(link: &(dyn std::error::Error + 'static)) -> Option<WebOp
             .is_some()
     {
         return Some(WebOpenFailureReason::NoPlayableFormat);
+    }
+    // HLS manifest, который native-профиль плеера сознательно не принимает (EVENT-плейлист,
+    // LL-HLS, неподдерживаемое шифрование и т.п.): для пользователя это «формата нет».
+    if link.downcast_ref::<HlsProfileError>().is_some() {
+        return Some(WebOpenFailureReason::NoPlayableFormat);
+    }
+    // Структурно битый HLS manifest — это некорректный ответ сервера.
+    if link.downcast_ref::<HlsParseError>().is_some() {
+        return Some(WebOpenFailureReason::InvalidServerResponse);
     }
     link.downcast_ref::<DashDynamicMpdError>()
         .map(|dash_error| match dash_error {

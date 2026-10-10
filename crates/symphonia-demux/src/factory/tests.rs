@@ -20,6 +20,7 @@ mod audio_fixtures;
 mod fragmented_isomp4;
 mod matroska;
 mod ordered_segments;
+mod vp9_fragmented_isomp4;
 
 /// Counter гарантирует unique temp path даже при parallel unit tests одного process-а.
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);

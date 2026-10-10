@@ -43,3 +43,10 @@
 - Для ordered fMP4 offset относится к виртуальной конкатенации `Init -> Media*`; HLS отдельно сопоставляет его с plaintext half-open media spans.
 - Tests закрепляют exact ordered/local fMP4 offsets и generic absence для всех current non-ISO audio families на seekable и streaming factory paths.
 - Проверка 2026-08-05: direct patch `90/90`, `cargo test -p symphonia-demux` `174/174`, all-target Clippy `-D warnings` — PASS.
+
+
+## Дополнение 2026-10-10 (A13/C1) — VP8/VP9 в MP4/fMP4
+
+- Локальный isomp4 patch раньше принимал sample entry `vp08`/`vp09`, но не назначал треку codec id (трек становился `unknown_video`). Следствие: `packet_keyframe` в `symphonia-demux` не запускал VP9-пробу, все video packets были `PacketKeyframe::Unknown`, `HlsSeekIndex` не находил `VideoRandomAccessPoint`, и HLS VOD падал на `prime_initial_seek_anchor` («HLS VOD завершился до доказанного initial seek anchor»). Live HLS при этом "открывался" (anchor не нужен), но без keyframe-проб. Так не открывались YouTube HLS-форматы VP9 (itag 602-604, 616 и др., fMP4, video-only).
+- Фикс у владельца: `atoms/vpcc.rs` (`VpcCAtom`: profile/level из `vpcC`) + fallback codec id по типу sample entry в `stsd.rs`. Тесты: `symphonia-demux/src/factory/tests/vp9_fragmented_isomp4.rs` (codec/profile/keyframe flags), `web-media-hls/tests/vp9_fmp4_vod.rs` (receipted VOD video-only VP9 fMP4 доходит до keyframe packet; без фикса падает с anchor-ошибкой).
+- Native HLS профиль (не менялся): media playlist = `MuxedAv`, master-вариант без аудио-кодека в CODECS и без `RESOLUTION` не admitted; video-only media playlist по прямой native-ссылке даёт «main track shape mismatch». EVENT-плейлист (даже с ENDLIST) отвергается VOD-профилем, а live-профиль не принимает initial ENDLIST: завершённый EVENT не открывается нигде.

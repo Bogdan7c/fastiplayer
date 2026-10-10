@@ -47,10 +47,15 @@ impl OrderedSegmentSource for MemoryOrderedSource {
 
 /// Декодирует test-only fixture без production dependency.
 pub(super) fn decode_base64_fixture() -> Vec<u8> {
-    let mut decoded = Vec::with_capacity(GENERATED_FRAGMENTED_M4A_BASE64.len() * 3 / 4);
+    decode_base64(GENERATED_FRAGMENTED_M4A_BASE64)
+}
+
+/// Декодирует произвольный test-only base64 (переводы строк не допускаются, `=` завершает ввод).
+pub(super) fn decode_base64(encoded: &str) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(encoded.len() * 3 / 4);
     let mut accumulator = 0_u32;
     let mut accumulated_bits = 0_u8;
-    for encoded_byte in GENERATED_FRAGMENTED_M4A_BASE64.bytes() {
+    for encoded_byte in encoded.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
         let value = match encoded_byte {
             b'A'..=b'Z' => encoded_byte - b'A',
             b'a'..=b'z' => encoded_byte - b'a' + 26,

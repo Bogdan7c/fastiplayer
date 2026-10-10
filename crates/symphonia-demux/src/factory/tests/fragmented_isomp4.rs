@@ -59,7 +59,7 @@ fn insert_mehd_duration(init: &mut Vec<u8>, fragment_duration: u32) {
 }
 
 /// Открывает generated fixture как seekable local source без extension hint.
-fn open_local(bytes: &[u8]) -> (TemporaryMediaFile, Box<dyn Demuxer + Send>) {
+pub(super) fn open_local(bytes: &[u8]) -> (TemporaryMediaFile, Box<dyn Demuxer + Send>) {
     let fixture = TemporaryMediaFile::new("bin", bytes);
     let mut registry = DemuxRegistry::new();
     registry
@@ -86,7 +86,7 @@ fn open_local(bytes: &[u8]) -> (TemporaryMediaFile, Box<dyn Demuxer + Send>) {
 }
 
 /// Читает следующий packet, пропуская metadata/track lifecycle events.
-fn next_packet(demuxer: &mut dyn Demuxer) -> media_core::Packet {
+pub(super) fn next_packet(demuxer: &mut dyn Demuxer) -> media_core::Packet {
     loop {
         match demuxer.next_event().expect("read generated fMP4") {
             DemuxReadEvent::Packet(packet) => return packet,

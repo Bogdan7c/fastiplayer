@@ -66,6 +66,7 @@ pub(crate) mod trak;
 pub(crate) mod trex;
 pub(crate) mod trun;
 pub(crate) mod udta;
+pub(crate) mod vpcc;
 pub(crate) mod wave;
 
 use crate::atoms::limits::MAX_ITERATION_DEPTH;
@@ -116,6 +117,7 @@ pub use trak::TrakAtom;
 pub use trex::TrexAtom;
 pub use trun::TrunAtom;
 pub use udta::UdtaAtom;
+pub use vpcc::VpcCAtom;
 pub use wave::WaveAtom;
 
 /// Atom types.
@@ -280,6 +282,7 @@ pub enum AtomType {
     VisualSampleEntryMp4v,
     VisualSampleEntryVp8,
     VisualSampleEntryVp9,
+    VpCodecConfiguration,
     WorkTag,
     WriterTag,
     XidTag,
@@ -377,6 +380,7 @@ impl From<[u8; 4]> for AtomType {
             b"uuid" => AtomType::Uuid,
             b"vp08" => AtomType::VisualSampleEntryVp8,
             b"vp09" => AtomType::VisualSampleEntryVp9,
+            b"vpcC" => AtomType::VpCodecConfiguration,
             b"wave" => AtomType::AudioSampleEntryQtWave,
             // Metadata Boxes
             b"----" => AtomType::FreeFormTag,

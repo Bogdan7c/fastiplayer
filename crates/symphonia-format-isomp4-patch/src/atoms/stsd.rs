@@ -24,13 +24,14 @@ use symphonia_core::codecs::audio::{
 };
 use symphonia_core::codecs::subtitle::SubtitleCodecParameters;
 use symphonia_core::codecs::subtitle::well_known::CODEC_ID_MOV_TEXT;
+use symphonia_core::codecs::video::well_known::{CODEC_ID_VP8, CODEC_ID_VP9};
 use symphonia_core::codecs::video::{VideoCodecId, VideoCodecParameters, VideoExtraData};
 use symphonia_core::codecs::{CodecParameters, CodecProfile};
 
 use crate::atoms::{
     AlacAtom, Atom, AtomHeader, AtomIterator, AtomType, Av1CAtom, AvcCAtom, Dac3Atom, Dec3Atom,
-    DoviAtom, EsdsAtom, FlacAtom, HvcCAtom, OpusAtom, ReadAtom, Result, WaveAtom, decode_error,
-    unsupported_error,
+    DoviAtom, EsdsAtom, FlacAtom, HvcCAtom, OpusAtom, ReadAtom, Result, VpcCAtom, WaveAtom,
+    decode_error, unsupported_error,
 };
 use crate::fp::FpU16;
 
@@ -696,6 +697,10 @@ impl Atom for VisualSampleEntry {
                     let atom = it.read_atom::<HvcCAtom>()?;
                     atom.fill_video_sample_entry(&mut entry);
                 }
+                AtomType::VpCodecConfiguration => {
+                    let atom = it.read_atom::<VpcCAtom>()?;
+                    atom.fill_video_sample_entry(&mut entry);
+                }
                 AtomType::DolbyVisionConfiguration => {
                     let atom = it.read_atom::<DoviAtom>()?;
                     atom.fill_video_sample_entry(&mut entry);
@@ -716,6 +721,17 @@ impl Atom for VisualSampleEntry {
                         entry_header.atom_type()
                     );
                 }
+            }
+        }
+
+        // VP8/VP9 идентифицируются самим типом sample entry (`vp08`/`vp09`), даже если
+        // `vpcC` отсутствует или нечитаем. Без codec id верхний слой не может распознать
+        // keyframe-и (HLS/DASH fMP4 VOD тогда не находит seek anchor и не открывается).
+        if entry.codec_id == VideoCodecId::default() {
+            match header.atom_type() {
+                AtomType::VisualSampleEntryVp8 => entry.codec_id = CODEC_ID_VP8,
+                AtomType::VisualSampleEntryVp9 => entry.codec_id = CODEC_ID_VP9,
+                _ => {}
             }
         }
 
