@@ -53,6 +53,7 @@ mod session_only_persistence;
 mod sidebar_resize;
 mod snapshot_routes;
 mod status_text_user_facing;
+mod stepwise_apply;
 mod transaction_apply;
 mod user_audio_level;
 mod web_media_recovery_apply;

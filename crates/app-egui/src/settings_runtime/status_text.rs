@@ -165,6 +165,7 @@ fn apply_final_state_text(final_state: ApplyFinalState) -> &'static str {
             "Не удалось полностью вернуть прежние настройки; если плеер ведёт себя странно, перезапустите приложение"
         }
         ApplyFinalState::FullyApplied => "Настройки сохранены и применены",
+        ApplyFinalState::Cancelled => "Применение настроек прервано; изменения отменены",
     }
 }
 

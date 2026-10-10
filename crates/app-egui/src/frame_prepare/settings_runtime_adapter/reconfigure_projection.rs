@@ -19,19 +19,6 @@ pub(super) fn requires_remote_source_rebuild(affected_settings: &[SettingId]) ->
         .any(|setting_id| setting_id.as_str().starts_with("network."))
 }
 
-/// Сохраняет различие между доказанным pre-barrier failure и mutation, требующей rollback.
-pub(super) fn media_reconfigure_install_failure(
-    error: crate::state::StrongMediaOpenError,
-) -> AppRouteApplyResult {
-    tracing::warn!(%error, "Пересборка media при смене настроек не дошла до установки в player");
-    let message = crate::settings_rebuild_message::install_rebuild_failed_message();
-    if error.may_have_crossed_install_barrier() {
-        AppRouteApplyResult::PartialFailure { message }
-    } else {
-        AppRouteApplyResult::Failed { message }
-    }
-}
-
 /// Конвертирует project setting ids в typed player report ids.
 pub(super) fn player_runtime_ids_from_setting_ids(
     setting_ids: &[SettingId],

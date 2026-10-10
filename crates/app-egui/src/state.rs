@@ -65,9 +65,14 @@ mod main_visual_override;
 mod media_jobs;
 mod notification_routing;
 mod notifications;
+mod settings_media_rebuild;
 pub(crate) use media_jobs::playback_intent_from_snapshot;
 pub(crate) use notifications::{
     CenterNotice, NotificationId, NotificationsFrame, RetryOffer, ToastKind, ToastView,
+};
+pub(crate) use settings_media_rebuild::{
+    RebuildPrepareRequest, RebuildSourceInput, SettingsMediaRebuildStart,
+    media_reconfigure_install_failure, prepare_rebuild_source,
 };
 mod media_retry;
 #[cfg(test)]
@@ -272,6 +277,8 @@ pub struct AppState {
     local_file_open_job: Option<LocalFileOpenJob>,
     /// Неблокирующая установка файла из Open после подготовки (`state/local_open_install.rs`).
     local_open_install: local_open_install::LocalOpenInstallOwner,
+    /// Неблокирующая пересборка media после смены настроек (`state/settings_media_rebuild.rs`).
+    settings_media_rebuild: settings_media_rebuild::SettingsMediaRebuildOwner,
 
     /// Process-lifetime owner wake port для каждого нового local-file job-а.
     local_file_open_wake_port: AppWakePort,
@@ -408,6 +415,7 @@ impl AppState {
             playlist_transport: playlist_transport::PlaylistTransportRuntimeState::default(),
             local_file_open_job: None,
             local_open_install: local_open_install::LocalOpenInstallOwner::default(),
+            settings_media_rebuild: settings_media_rebuild::SettingsMediaRebuildOwner::default(),
             local_file_open_wake_port,
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
@@ -531,7 +539,10 @@ impl AppState {
         Option<player_core::PlayerRuntimeBoundaryActivity>,
         player_core::PlayerRuntimeApplyError,
     > {
-        if self.has_pending_prepared_media_strong() || self.has_pending_suspended_media_resume() {
+        if self.has_pending_prepared_media_strong()
+            || self.has_pending_suspended_media_resume()
+            || self.has_settings_media_rebuild()
+        {
             return Ok(Some(
                 player_core::PlayerRuntimeBoundaryActivity::PipelineLifecycle,
             ));

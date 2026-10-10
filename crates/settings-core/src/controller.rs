@@ -8,6 +8,9 @@ use crate::metadata::{
 };
 use crate::registry::SettingsRegistry;
 
+mod pending_apply;
+pub use pending_apply::{BeginApply, CommittedApplyProgress, PollApply, StepwiseCommittedApplier};
+
 /// Monotonic generation of one runtime settings route.
 ///
 /// Поколение хранится в core как нейтральное число: конкретный runtime сам решает,
@@ -414,6 +417,10 @@ pub enum ApplyFinalState {
 
     /// Persisted document and runtime state are fully aligned.
     FullyApplied,
+
+    /// Transaction was cancelled while a route was still pending (shutdown/suspend);
+    /// completed routes were rolled back and nothing was persisted.
+    Cancelled,
 }
 
 /// Route generation conflict captured in an apply report.
@@ -773,6 +780,8 @@ where
     preview: PreviewTransactionState<D>,
     route_generation_baselines: BTreeMap<SettingRouteId, RouteGeneration>,
     route_generations: BTreeMap<SettingRouteId, RouteGeneration>,
+    /// Stepwise-транзакция, ждущая маршрут (`pending_apply.rs`).
+    pending_apply: Option<pending_apply::PendingApply<D>>,
 }
 
 impl<D> SettingsController<D>
@@ -800,6 +809,7 @@ where
             preview: PreviewTransactionState::default(),
             route_generation_baselines: BTreeMap::new(),
             route_generations: BTreeMap::new(),
+            pending_apply: None,
         }
     }
 
@@ -987,220 +997,23 @@ where
     where
         A: SettingsValidator<D> + SettingsPersister<D> + CommittedSettingsApplier<D>,
     {
-        let changed_settings = self.diff()?;
-        if changed_settings.is_empty() {
-            return Ok(ApplyReport {
-                validation: None,
-                persistence: Some(PersistReport::skipped_no_changes()),
-                routes: Vec::new(),
-                rollback: Vec::new(),
-                changed_settings,
-                final_state: ApplyFinalState::NoChanges,
-                conflicts: Vec::new(),
-                errors: Vec::new(),
-            });
+        if self.pending_apply.is_some() {
+            // Одна транзакция за раз: синхронный apply не должен затирать ту, что ждёт маршрут.
+            return Err(SettingsError::access_failed(
+                "another settings transaction is still applying",
+            ));
         }
-
-        let route_updates = self.route_updates_for_diff(&changed_settings)?;
-        let conflicts = self.generation_conflicts(&route_updates);
-        if !conflicts.is_empty() {
-            let routes = conflicts
-                .iter()
-                .map(|conflict| ApplyRouteReport {
-                    route: conflict.route.clone(),
-                    result: ApplyRouteResult::Conflict {
-                        baseline: conflict.baseline,
-                        current: conflict.current,
-                    },
-                    mechanism: ApplyMechanism::InPlace,
-                    affected_settings: conflict.affected_settings.clone(),
-                })
-                .collect();
-            return Ok(ApplyReport {
-                validation: None,
-                persistence: None,
-                routes,
-                rollback: Vec::new(),
-                changed_settings,
-                final_state: ApplyFinalState::BlockedByConflicts,
-                conflicts,
-                errors: Vec::new(),
-            });
-        }
-
-        let validation = match delegate.validate(ValidationRequest {
-            committed: &self.committed,
-            draft: &self.draft,
-            changed_settings: &changed_settings,
-        }) {
-            Ok(report) => report,
-            Err(error) => {
-                return Ok(ApplyReport {
-                    validation: None,
-                    persistence: None,
-                    routes: Vec::new(),
-                    rollback: Vec::new(),
-                    changed_settings,
-                    final_state: ApplyFinalState::ValidationFailed,
-                    conflicts: Vec::new(),
-                    errors: vec![error],
-                });
-            }
+        let plan = match self.prepare_apply(delegate)? {
+            Ok(plan) => plan,
+            Err(report) => return Ok(*report),
         };
-
-        let apply_request = CommittedApplyRequest {
+        let apply_result = delegate.apply_committed(CommittedApplyRequest {
             previous_committed: &self.committed,
             requested: &self.draft,
-            route_updates: &route_updates,
-            changed_settings: &changed_settings,
-        };
-        let preflight_routes = match delegate.preflight_committed(apply_request) {
-            Ok(reports) => reports,
-            Err(error) => {
-                return Ok(ApplyReport {
-                    validation: Some(validation),
-                    persistence: None,
-                    routes: Vec::new(),
-                    rollback: Vec::new(),
-                    changed_settings,
-                    final_state: ApplyFinalState::RuntimeBlocked,
-                    conflicts: Vec::new(),
-                    errors: vec![error],
-                });
-            }
-        };
-        if !preflight_routes.is_empty() {
-            return Ok(ApplyReport {
-                validation: Some(validation),
-                persistence: None,
-                routes: preflight_routes,
-                rollback: Vec::new(),
-                changed_settings,
-                final_state: ApplyFinalState::RuntimeBlocked,
-                conflicts: Vec::new(),
-                errors: Vec::new(),
-            });
-        }
-
-        let mut errors = Vec::new();
-        let routes = match delegate.apply_committed(CommittedApplyRequest {
-            previous_committed: &self.committed,
-            requested: &self.draft,
-            route_updates: &route_updates,
-            changed_settings: &changed_settings,
-        }) {
-            Ok(routes) => routes,
-            Err(error) => {
-                let message = error.to_string();
-                errors.push(error);
-                route_updates
-                    .iter()
-                    .map(|update| {
-                        ApplyRouteReport::failed(
-                            update.route.clone(),
-                            update.affected_settings.clone(),
-                            message.clone(),
-                        )
-                    })
-                    .collect()
-            }
-        };
-
-        let runtime_commit_succeeded =
-            !routes.is_empty() && routes.iter().all(|report| report.result.is_full_success());
-        if !runtime_commit_succeeded {
-            let (rollback, rollback_delegate_failed) =
-                match delegate.rollback_committed(CommittedRollbackRequest {
-                    previous_committed: &self.committed,
-                    attempted: &self.draft,
-                    route_updates: &route_updates,
-                    changed_settings: &changed_settings,
-                }) {
-                    Ok(reports) => (reports, false),
-                    Err(error) => {
-                        errors.push(error);
-                        (Vec::new(), true)
-                    }
-                };
-            let rollback_failed = rollback_delegate_failed
-                || rollback
-                    .iter()
-                    .any(|report| matches!(report.result, RollbackResult::Failed { .. }));
-            return Ok(ApplyReport {
-                validation: Some(validation),
-                persistence: None,
-                routes,
-                rollback,
-                changed_settings,
-                final_state: if rollback_failed {
-                    ApplyFinalState::RollbackFailed
-                } else {
-                    ApplyFinalState::RuntimeApplyFailed
-                },
-                conflicts: Vec::new(),
-                errors,
-            });
-        }
-
-        let persistence = match delegate.persist(PersistRequest {
-            document: &self.draft,
-            changed_settings: &changed_settings,
-        }) {
-            Ok(report) => report,
-            Err(persist_error) => {
-                errors.push(persist_error);
-                let (rollback, rollback_delegate_failed) =
-                    match delegate.rollback_committed(CommittedRollbackRequest {
-                        previous_committed: &self.committed,
-                        attempted: &self.draft,
-                        route_updates: &route_updates,
-                        changed_settings: &changed_settings,
-                    }) {
-                        Ok(reports) => (reports, false),
-                        Err(rollback_error) => {
-                            errors.push(rollback_error);
-                            (Vec::new(), true)
-                        }
-                    };
-                let rollback_failed = rollback_delegate_failed
-                    || rollback
-                        .iter()
-                        .any(|report| matches!(report.result, RollbackResult::Failed { .. }));
-                return Ok(ApplyReport {
-                    validation: Some(validation),
-                    persistence: None,
-                    routes,
-                    rollback,
-                    changed_settings,
-                    final_state: if rollback_failed {
-                        ApplyFinalState::RollbackFailed
-                    } else {
-                        ApplyFinalState::PersistFailed
-                    },
-                    conflicts: Vec::new(),
-                    errors,
-                });
-            }
-        };
-
-        delegate.finalize_committed(CommittedFinalizeRequest {
-            previous_committed: &self.committed,
-            committed: &self.draft,
-            route_updates: &route_updates,
-            changed_settings: &changed_settings,
+            route_updates: &plan.route_updates,
+            changed_settings: &plan.changed_settings,
         });
-
-        self.commit_full_success(route_updates.iter().map(|update| update.route.clone()));
-        Ok(ApplyReport {
-            validation: Some(validation),
-            persistence: Some(persistence),
-            routes,
-            rollback: Vec::new(),
-            changed_settings,
-            final_state: ApplyFinalState::FullyApplied,
-            conflicts: Vec::new(),
-            errors,
-        })
+        Ok(self.finish_apply(delegate, plan, apply_result))
     }
 
     /// Атомарно коммитит одно runtime-originated значение через обычный transaction pipeline.
@@ -1217,6 +1030,12 @@ where
     where
         A: SettingsValidator<D> + SettingsPersister<D> + CommittedSettingsApplier<D>,
     {
+        if self.pending_apply.is_some() {
+            // Runtime-commit подменяет draft: во время stepwise-транзакции это запрещено.
+            return Err(SettingsError::access_failed(
+                "another settings transaction is still applying",
+            ));
+        }
         let RuntimeSettingCommitRequest { setting_id, value } = request;
         let route = self
             .registry

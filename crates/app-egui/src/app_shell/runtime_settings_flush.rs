@@ -51,6 +51,9 @@ impl AppShell {
             &mut self.playlist_runtime,
             &mut self.renderer_lifecycle,
             |runtime_adapter| {
+                // Незавершённое применение настроек отменяется первым: оно не должно ни
+                // записать config, ни мешать runtime-commit-ам ниже (C2).
+                settings_runtime.cancel_pending_apply(runtime_adapter);
                 // Ошибка sidebar не должна мешать сохранить громкость, и наоборот.
                 let sidebar_result = settings_runtime.flush_pending_sidebar_resize(runtime_adapter);
                 let audio_result = settings_runtime.flush_pending_user_audio_level(runtime_adapter);

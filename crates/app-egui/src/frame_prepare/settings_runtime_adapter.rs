@@ -4,12 +4,19 @@
 mod reconfigure_projection;
 
 use super::*;
-use crate::settings_runtime::SettingsRuntimePreflightFailure;
+use crate::settings_runtime::{
+    MediaRebuildProgress, PlayerApplyStart, PlayerMediaContinuation,
+    SettingsRuntimePreflightFailure,
+};
+use crate::state::{
+    RebuildPrepareRequest, RebuildSourceInput, SettingsMediaRebuildStart,
+    media_reconfigure_install_failure, prepare_rebuild_source,
+};
+use player_core::MediaInstallVideoBackendConstraint;
 use reconfigure_projection::{
-    first_player_route, media_reconfigure_install_failure, player_activity_from_settings,
-    player_pipeline_rebuild_failure_report, player_runtime_ids_from_setting_ids,
-    requires_remote_source_rebuild, requires_web_media_stream_reselection,
-    settings_boundary_activity_from_player,
+    first_player_route, player_activity_from_settings, player_pipeline_rebuild_failure_report,
+    player_runtime_ids_from_setting_ids, requires_remote_source_rebuild,
+    requires_web_media_stream_reselection, settings_boundary_activity_from_player,
 };
 
 /// Runtime adapter одного frame-а: render live preview + committed runtime owners.
@@ -62,14 +69,27 @@ struct ActiveMediaReconfigureConfig {
     rebuild_local_source: bool,
 }
 
+/// Как исполнять пересборку media: ждать на месте или вернуть управление UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RebuildExecution {
+    /// Подготовка и установка блокируют вызывающего (откат настроек, runtime-commit).
+    Blocking,
+    /// Подготовка идёт в фоне, установка продвигается по кадрам (C2: окно не виснет).
+    Stepwise,
+}
+
 impl FrameSettingsRuntimeAdapter<'_> {
     /// Перестраивает reconstructible source и завершает route только после exact Installed/restore.
+    ///
+    /// `Stepwise` возвращает `Pending` сразу после запуска фоновой подготовки; итог заберёт
+    /// `poll_media_rebuild`. `Blocking` всегда возвращает `Finished`.
     fn reconfigure_active_media(
         &mut self,
         config: ActiveMediaReconfigureConfig,
-    ) -> AppRouteApplyResult {
+        execution: RebuildExecution,
+    ) -> MediaRebuildProgress {
         let Some(active_source) = self.app_state.active_media_source() else {
-            return AppRouteApplyResult::Applied;
+            return MediaRebuildProgress::Finished(AppRouteApplyResult::Applied);
         };
         let playback_window = active_source.playback_window();
         if matches!(
@@ -77,7 +97,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
             ActiveMediaSource::LocalFile(_)
         ) && !config.rebuild_local_source
         {
-            return AppRouteApplyResult::Applied;
+            return MediaRebuildProgress::Finished(AppRouteApplyResult::Applied);
         }
         let web_reconfigure_policy = crate::media_open::WebMediaSettingsReconfigurePolicy {
             direct_resource: if config.rebuild_remote_source {
@@ -95,122 +115,113 @@ impl FrameSettingsRuntimeAdapter<'_> {
             .web_intent()
             .is_some_and(|source| !source.requires_settings_reconfigure(web_reconfigure_policy))
         {
-            return AppRouteApplyResult::Applied;
+            return MediaRebuildProgress::Finished(AppRouteApplyResult::Applied);
         }
 
         match self.app_state.runtime_reconfigure_boundary_activity() {
             Ok(Some(activity)) => {
-                return AppRouteApplyResult::RuntimeBusy {
+                return MediaRebuildProgress::Finished(AppRouteApplyResult::RuntimeBusy {
                     activity: settings_boundary_activity_from_player(activity),
-                };
+                });
             }
             Ok(None) => {}
             Err(PlayerRuntimeApplyError::Backpressure) => {
-                return AppRouteApplyResult::RuntimeBusy {
+                return MediaRebuildProgress::Finished(AppRouteApplyResult::RuntimeBusy {
                     activity: SettingsBoundaryActivity::PipelineLifecycle,
-                };
+                });
             }
             Err(error) => {
-                return AppRouteApplyResult::Failed {
+                return MediaRebuildProgress::Finished(AppRouteApplyResult::Failed {
                     message: format!("media reconfigure preflight failed: {error}"),
-                };
+                });
             }
         }
 
-        let playback_snapshot = self.app_state.refresh_player_snapshot();
-        let desired_intent = crate::state::playback_intent_from_snapshot(&playback_snapshot);
-        let preferred_runtime_codecs = config
+        let preferred_video_codecs = config
             .preferred_video_codec_order
             .iter()
             .copied()
             .map(runtime_video_codec)
             .collect::<Vec<_>>();
-
-        let prepared_result: Result<crate::state::PreparedSingleMediaOpen, String> =
-            match active_source.into_physical_source() {
-                ActiveMediaSource::LocalFile(path) => {
-                    match media_source_open::local_media::prepare_local_file(&path, &config.demux) {
-                        Ok(prepared_media) => {
-                            let prepared_media = prepared_media
-                                .with_preferred_video_codecs(&preferred_runtime_codecs);
-                            let source = ActiveMediaSource::LocalFile(path.clone());
-                            Ok(crate::state::PreparedSingleMediaOpen::new(
-                                prepared_media,
-                                source,
-                                crate::media_open::SafeMediaLabel::from_local_path(&path),
-                            ))
-                        }
-                        Err(error) => {
-                            tracing::warn!(error = %format!("{error:#}"), "Не удалось пересобрать локальный файл после смены настроек");
-                            Err(crate::settings_rebuild_message::local_rebuild_failed_message())
+        let source = match active_source.into_physical_source() {
+            ActiveMediaSource::LocalFile(path) => RebuildSourceInput::LocalFile {
+                path,
+                demux: config.demux,
+            },
+            ActiveMediaSource::Web(web_intent) => {
+                let system_capabilities =
+                    probe_system_capabilities(self.renderer.render_capabilities());
+                let adaptive_settings = crate::media_open::WebMediaOpenSettings {
+                    network_config: config.network.clone(),
+                    web_media_config: config.web_media.clone(),
+                    yt_dlp_config: config.yt_dlp.clone(),
+                    extractor_adapter: service_ytdlp::YtDlpExtractorAdapter::default(),
+                    demux_config: config.demux,
+                    preferred_video_codec_order: config.preferred_video_codec_order.clone(),
+                    system_capabilities: Box::new(system_capabilities),
+                    audio_capabilities: self.app_state.audio_decode_capability_snapshot(),
+                };
+                match web_intent.settings_reconfigure_request(
+                    web_reconfigure_policy,
+                    config.network.clone(),
+                    config.demux,
+                    adaptive_settings,
+                ) {
+                    crate::media_open::WebMediaSettingsReconfigureDecision::NoChange => {
+                        return MediaRebuildProgress::Finished(AppRouteApplyResult::Applied);
+                    }
+                    crate::media_open::WebMediaSettingsReconfigureDecision::Reopen(request) => {
+                        let safe_label = request.safe_label();
+                        RebuildSourceInput::Web {
+                            request: Box::new(request),
+                            safe_label,
                         }
                     }
                 }
-                ActiveMediaSource::Web(web_intent) => {
-                    let system_capabilities =
-                        probe_system_capabilities(self.renderer.render_capabilities());
-                    let adaptive_settings = crate::media_open::WebMediaOpenSettings {
-                        network_config: config.network.clone(),
-                        web_media_config: config.web_media.clone(),
-                        yt_dlp_config: config.yt_dlp.clone(),
-                        extractor_adapter: service_ytdlp::YtDlpExtractorAdapter::default(),
-                        demux_config: config.demux,
-                        preferred_video_codec_order: config.preferred_video_codec_order.clone(),
-                        system_capabilities: Box::new(system_capabilities),
-                        audio_capabilities: self.app_state.audio_decode_capability_snapshot(),
-                    };
-                    let request = match web_intent.settings_reconfigure_request(
-                        web_reconfigure_policy,
-                        config.network.clone(),
-                        config.demux,
-                        adaptive_settings,
-                    ) {
-                        crate::media_open::WebMediaSettingsReconfigureDecision::NoChange => {
-                            return AppRouteApplyResult::Applied;
-                        }
-                        crate::media_open::WebMediaSettingsReconfigureDecision::Reopen(request) => {
-                            request
-                        }
-                    };
-                    let safe_label = request.safe_label();
-                    match crate::media_open::prepare_source_synchronously(
-                        crate::media_open::MediaOpenSourceRequest::Web(request),
-                    ) {
-                        Ok(prepared_open) => {
-                            let (prepared_media, descriptor) = prepared_open.into_parts();
-                            let source = descriptor.active_source();
-                            Ok(crate::state::PreparedSingleMediaOpen::new(
-                                prepared_media
-                                    .with_preferred_video_codecs(&preferred_runtime_codecs),
-                                source,
-                                safe_label,
-                            )
-                            .with_descriptor(descriptor))
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                ?error,
-                                "Не удалось пересобрать web-источник после смены настроек"
-                            );
-                            Err(crate::settings_rebuild_message::web_rebuild_failed_message(
-                                error.web_open_failure_reason(),
-                            ))
-                        }
-                    }
-                }
-                ActiveMediaSource::PlaybackWindow { .. } => {
-                    unreachable!("into_physical_source removes playback-window wrappers")
-                }
-            };
-
-        let prepared_input = match prepared_result {
-            Ok(prepared_input) => prepared_input.with_playback_window(playback_window),
-            Err(message) => return AppRouteApplyResult::Failed { message },
+            }
+            ActiveMediaSource::PlaybackWindow { .. } => {
+                unreachable!("into_physical_source removes playback-window wrappers")
+            }
+        };
+        let prepare = RebuildPrepareRequest {
+            source,
+            preferred_video_codecs,
         };
         let backend_constraint =
             crate::video_backend_constraint::media_install_video_backend_constraint(
                 config.video_backend_preference,
             );
+        match execution {
+            RebuildExecution::Stepwise => {
+                self.app_state
+                    .begin_settings_media_rebuild(SettingsMediaRebuildStart {
+                        prepare,
+                        playback_window,
+                        backend_constraint,
+                    })
+            }
+            RebuildExecution::Blocking => MediaRebuildProgress::Finished(
+                self.rebuild_active_media_blocking(prepare, playback_window, backend_constraint),
+            ),
+        }
+    }
+
+    /// Блокирующая пересборка для отката: готовит источник и ждёт exact Installed на месте.
+    fn rebuild_active_media_blocking(
+        &mut self,
+        prepare: RebuildPrepareRequest,
+        playback_window: Option<player_core::MediaPlaybackWindow>,
+        backend_constraint: MediaInstallVideoBackendConstraint,
+    ) -> AppRouteApplyResult {
+        let playback_snapshot = self.app_state.refresh_player_snapshot();
+        let desired_intent = crate::state::playback_intent_from_snapshot(&playback_snapshot);
+        let prepared_input = match prepare_rebuild_source(
+            prepare,
+            &crate::media_open::SourcePreparationCancel::new(),
+        ) {
+            Ok(prepared_input) => prepared_input.with_playback_window(playback_window),
+            Err(message) => return AppRouteApplyResult::Failed { message },
+        };
         let installed = match self.app_state.install_prepared_media_strong(
             self.playlist_runtime,
             self.renderer,
@@ -396,10 +407,93 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         update: &PlayerCommittedSettingsUpdate,
         target_policy: SettingsRouteTargetPolicy,
     ) -> PlayerRuntimeApplyResult {
+        match self.apply_player_runtime_settings_with(
+            update,
+            target_policy,
+            RebuildExecution::Blocking,
+        ) {
+            PlayerApplyStart::Finished(result) => result,
+            PlayerApplyStart::AwaitingMediaRebuild(_) => Err(PlayerRuntimeApplyError::Fatal(
+                "блокирующий режим не должен возвращать ожидание пересборки".to_owned(),
+            )),
+        }
+    }
+
+    fn begin_player_runtime_settings(
+        &mut self,
+        update: &PlayerCommittedSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
+    ) -> PlayerApplyStart {
+        self.apply_player_runtime_settings_with(update, target_policy, RebuildExecution::Stepwise)
+    }
+
+    fn finish_player_runtime_settings(
+        &mut self,
+        continuation: PlayerMediaContinuation,
+        media_result: AppRouteApplyResult,
+    ) -> PlayerRuntimeApplyResult {
+        self.finish_player_runtime_settings_after_media(continuation, media_result)
+    }
+
+    fn apply_media_service_runtime_settings(
+        &mut self,
+        update: &MediaServiceRuntimeSettingsUpdate,
+        affected_settings: &[SettingId],
+        target_policy: SettingsRouteTargetPolicy,
+    ) -> AppRouteApplyResult {
+        match self.media_service_runtime_settings_with(
+            update,
+            affected_settings,
+            target_policy,
+            RebuildExecution::Blocking,
+        ) {
+            MediaRebuildProgress::Finished(result) => result,
+            MediaRebuildProgress::Pending => AppRouteApplyResult::Failed {
+                message: "блокирующий режим не должен возвращать ожидание пересборки".to_owned(),
+            },
+        }
+    }
+
+    fn begin_media_service_runtime_settings(
+        &mut self,
+        update: &MediaServiceRuntimeSettingsUpdate,
+        affected_settings: &[SettingId],
+        target_policy: SettingsRouteTargetPolicy,
+    ) -> MediaRebuildProgress {
+        self.media_service_runtime_settings_with(
+            update,
+            affected_settings,
+            target_policy,
+            RebuildExecution::Stepwise,
+        )
+    }
+
+    fn poll_media_rebuild(&mut self) -> MediaRebuildProgress {
+        self.app_state
+            .poll_settings_media_rebuild(self.playlist_runtime, self.renderer)
+    }
+
+    fn cancel_media_rebuild(&mut self) {
+        self.app_state
+            .cancel_settings_media_rebuild(self.playlist_runtime);
+    }
+}
+
+impl FrameSettingsRuntimeAdapter<'_> {
+    /// Player route по шагам: decoder/backend -> пересборка media -> worker -> event policy.
+    ///
+    /// В `Stepwise` режиме пересборка возвращает `AwaitingMediaRebuild`, а шаги после неё
+    /// ждут в продолжении; в `Blocking` всё завершается внутри вызова.
+    fn apply_player_runtime_settings_with(
+        &mut self,
+        update: &PlayerCommittedSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
+        execution: RebuildExecution,
+    ) -> PlayerApplyStart {
         let Some(target_backend_preference) = target_policy.video_backend_preference() else {
-            return Err(PlayerRuntimeApplyError::Fatal(
+            return PlayerApplyStart::Finished(Err(PlayerRuntimeApplyError::Fatal(
                 "player settings route не получил exact destination backend policy".to_owned(),
-            ));
+            )));
         };
         let mut report = PlayerRuntimeApplyReport::empty();
         let player_update = &update.player_core;
@@ -438,7 +532,10 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                     queue: self.renderer.queue(),
                 },
             ) {
-                return Ok(player_pipeline_rebuild_failure_report(player_update, error));
+                return PlayerApplyStart::Finished(Ok(player_pipeline_rebuild_failure_report(
+                    player_update,
+                    error,
+                )));
             }
 
             if let Some(decoder_update) = &player_update.decoder_thread_config {
@@ -461,16 +558,26 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
             remaining_player_update.video_backend = None;
         }
 
-        if let Some(media_update) = &update.media_pipeline {
-            let mut app_config = self.app_state.committed_app_config();
-            app_config.player.demux = media_update.demux;
-            app_config.player.preferred_video_codec_order =
-                media_update.preferred_video_codec_order.clone();
-            let reselect_web_media_stream = media_update
-                .affected_settings
-                .iter()
-                .any(|setting_id| setting_id.as_str() == "player.preferred_video_codec_order");
-            let media_result = self.reconfigure_active_media(ActiveMediaReconfigureConfig {
+        let continuation = PlayerMediaContinuation {
+            report,
+            remaining_player_update,
+            update: update.clone(),
+        };
+        let Some(media_update) = &update.media_pipeline else {
+            return PlayerApplyStart::Finished(
+                self.finish_player_runtime_settings_remaining(continuation),
+            );
+        };
+        let mut app_config = self.app_state.committed_app_config();
+        app_config.player.demux = media_update.demux;
+        app_config.player.preferred_video_codec_order =
+            media_update.preferred_video_codec_order.clone();
+        let reselect_web_media_stream = media_update
+            .affected_settings
+            .iter()
+            .any(|setting_id| setting_id.as_str() == "player.preferred_video_codec_order");
+        let media_progress = self.reconfigure_active_media(
+            ActiveMediaReconfigureConfig {
                 network: app_config.network,
                 web_media: app_config.web_media,
                 yt_dlp: app_config.yt_dlp,
@@ -480,55 +587,90 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                 reselect_web_media_stream,
                 rebuild_remote_source: true,
                 rebuild_local_source: true,
-            });
-            let affected_settings =
-                player_runtime_ids_from_setting_ids(&media_update.affected_settings);
-            match media_result {
-                AppRouteApplyResult::Applied | AppRouteApplyResult::Noop => {
-                    report.push(PlayerRuntimeApplyGroupReport::accepted(
-                        PlayerRuntimeApplyGroup::MediaPipeline,
-                        affected_settings,
-                        player_core::PlayerRuntimeAcceptedChange::Applied,
-                        "active media pipeline rebuilt with committed demux/codec policy",
-                    ));
-                }
-                AppRouteApplyResult::RuntimeBusy { activity } => {
-                    report.push(PlayerRuntimeApplyGroupReport::runtime_busy(
-                        PlayerRuntimeApplyGroup::MediaPipeline,
-                        affected_settings,
-                        player_activity_from_settings(activity),
-                        "active media pipeline boundary is busy",
-                    ));
-                    return Ok(report);
-                }
-                AppRouteApplyResult::Failed { message }
-                | AppRouteApplyResult::PartialFailure { message } => {
-                    report.push(PlayerRuntimeApplyGroupReport::fatal(
-                        PlayerRuntimeApplyGroup::MediaPipeline,
-                        affected_settings,
-                        message,
-                    ));
-                    return Ok(report);
-                }
-                AppRouteApplyResult::RendererRecreationFailed { failure } => {
-                    report.push(PlayerRuntimeApplyGroupReport::fatal(
-                        PlayerRuntimeApplyGroup::MediaPipeline,
-                        affected_settings,
-                        format!("unexpected renderer recreation failure: {failure:?}"),
-                    ));
-                    return Ok(report);
-                }
-                AppRouteApplyResult::Conflict { .. } | AppRouteApplyResult::PreviewPromoted => {
-                    report.push(PlayerRuntimeApplyGroupReport::fatal(
-                        PlayerRuntimeApplyGroup::MediaPipeline,
-                        affected_settings,
-                        "unexpected media-pipeline route outcome",
-                    ));
-                    return Ok(report);
-                }
+            },
+            execution,
+        );
+        match media_progress {
+            MediaRebuildProgress::Pending => {
+                PlayerApplyStart::AwaitingMediaRebuild(Box::new(continuation))
+            }
+            MediaRebuildProgress::Finished(media_result) => PlayerApplyStart::Finished(
+                self.finish_player_runtime_settings_after_media(continuation, media_result),
+            ),
+        }
+    }
+
+    /// Итог пересборки media определяет, продолжать ли worker/event-policy шаги.
+    fn finish_player_runtime_settings_after_media(
+        &mut self,
+        mut continuation: PlayerMediaContinuation,
+        media_result: AppRouteApplyResult,
+    ) -> PlayerRuntimeApplyResult {
+        let affected_settings = player_runtime_ids_from_setting_ids(
+            continuation
+                .update
+                .media_pipeline
+                .as_ref()
+                .map_or(&[][..], |media_update| &media_update.affected_settings),
+        );
+        let report = &mut continuation.report;
+        match media_result {
+            AppRouteApplyResult::Applied | AppRouteApplyResult::Noop => {
+                report.push(PlayerRuntimeApplyGroupReport::accepted(
+                    PlayerRuntimeApplyGroup::MediaPipeline,
+                    affected_settings,
+                    player_core::PlayerRuntimeAcceptedChange::Applied,
+                    "active media pipeline rebuilt with committed demux/codec policy",
+                ));
+            }
+            AppRouteApplyResult::RuntimeBusy { activity } => {
+                report.push(PlayerRuntimeApplyGroupReport::runtime_busy(
+                    PlayerRuntimeApplyGroup::MediaPipeline,
+                    affected_settings,
+                    player_activity_from_settings(activity),
+                    "active media pipeline boundary is busy",
+                ));
+                return Ok(continuation.report);
+            }
+            AppRouteApplyResult::Failed { message }
+            | AppRouteApplyResult::PartialFailure { message } => {
+                report.push(PlayerRuntimeApplyGroupReport::fatal(
+                    PlayerRuntimeApplyGroup::MediaPipeline,
+                    affected_settings,
+                    message,
+                ));
+                return Ok(continuation.report);
+            }
+            AppRouteApplyResult::RendererRecreationFailed { failure } => {
+                report.push(PlayerRuntimeApplyGroupReport::fatal(
+                    PlayerRuntimeApplyGroup::MediaPipeline,
+                    affected_settings,
+                    format!("unexpected renderer recreation failure: {failure:?}"),
+                ));
+                return Ok(continuation.report);
+            }
+            AppRouteApplyResult::Conflict { .. } | AppRouteApplyResult::PreviewPromoted => {
+                report.push(PlayerRuntimeApplyGroupReport::fatal(
+                    PlayerRuntimeApplyGroup::MediaPipeline,
+                    affected_settings,
+                    "unexpected media-pipeline route outcome",
+                ));
+                return Ok(continuation.report);
             }
         }
+        self.finish_player_runtime_settings_remaining(continuation)
+    }
 
+    /// Шаги после media: настройки worker-а и event policy.
+    fn finish_player_runtime_settings_remaining(
+        &mut self,
+        continuation: PlayerMediaContinuation,
+    ) -> PlayerRuntimeApplyResult {
+        let PlayerMediaContinuation {
+            mut report,
+            remaining_player_update,
+            update,
+        } = continuation;
         if !remaining_player_update.is_empty() {
             let worker_report = self
                 .app_state
@@ -554,12 +696,14 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         Ok(report)
     }
 
-    fn apply_media_service_runtime_settings(
+    /// Media-service route: policy-only изменения применяются на месте, сетевые — пересборкой.
+    fn media_service_runtime_settings_with(
         &mut self,
         update: &MediaServiceRuntimeSettingsUpdate,
         affected_settings: &[SettingId],
         target_policy: SettingsRouteTargetPolicy,
-    ) -> AppRouteApplyResult {
+        execution: RebuildExecution,
+    ) -> MediaRebuildProgress {
         let preferred_height_changed = requires_web_media_stream_reselection(affected_settings);
         let network_source_changed = requires_remote_source_rebuild(affected_settings);
         if !preferred_height_changed
@@ -568,29 +712,34 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                     || setting_id.as_str().starts_with("web_media.")
             })
         {
-            return self.app_state.apply_media_service_runtime_settings(update);
+            return MediaRebuildProgress::Finished(
+                self.app_state.apply_media_service_runtime_settings(update),
+            );
         }
         let Some(target_backend_preference) = target_policy.video_backend_preference() else {
-            return AppRouteApplyResult::Failed {
+            return MediaRebuildProgress::Finished(AppRouteApplyResult::Failed {
                 message: "media settings route не получил exact destination backend policy"
                     .to_owned(),
-            };
+            });
         };
 
         let mut app_config = self.app_state.committed_app_config();
         app_config.network = update.network.clone();
         app_config.web_media = update.web_media.clone();
         app_config.yt_dlp = update.yt_dlp.clone();
-        self.reconfigure_active_media(ActiveMediaReconfigureConfig {
-            network: app_config.network,
-            web_media: app_config.web_media,
-            yt_dlp: app_config.yt_dlp,
-            demux: app_config.player.demux,
-            preferred_video_codec_order: app_config.player.preferred_video_codec_order,
-            video_backend_preference: target_backend_preference,
-            reselect_web_media_stream: preferred_height_changed,
-            rebuild_remote_source: network_source_changed,
-            rebuild_local_source: false,
-        })
+        self.reconfigure_active_media(
+            ActiveMediaReconfigureConfig {
+                network: app_config.network,
+                web_media: app_config.web_media,
+                yt_dlp: app_config.yt_dlp,
+                demux: app_config.player.demux,
+                preferred_video_codec_order: app_config.player.preferred_video_codec_order,
+                video_backend_preference: target_backend_preference,
+                reselect_web_media_stream: preferred_height_changed,
+                rebuild_remote_source: network_source_changed,
+                rebuild_local_source: false,
+            },
+            execution,
+        )
     }
 }

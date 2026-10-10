@@ -2,8 +2,11 @@ use super::*;
 
 mod mechanism;
 mod snapshots;
+mod stepwise;
 #[cfg(test)]
 mod tests;
+
+pub(super) use stepwise::{PendingRoute, RouteApplyStart};
 
 use mechanism::media_service_apply_mechanism;
 pub(super) use snapshots::{
@@ -18,6 +21,37 @@ use snapshots::{
 pub(crate) struct SettingsRuntimePreflightFailure {
     pub(crate) route: fastiplayer_settings::AppRuntimeRoute,
     pub(crate) result: AppRouteApplyResult,
+}
+
+/// Прогресс пересборки media, которая идёт между кадрами (C2).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MediaRebuildProgress {
+    /// Пересборка запущена или ещё идёт; опрос повторится на следующем кадре.
+    Pending,
+    /// Пересборка завершилась; итог забирается ровно один раз.
+    Finished(AppRouteApplyResult),
+}
+
+/// Что player route уже сделал до пересборки media и что осталось доделать после неё.
+///
+/// Player route состоит из шагов: decoder/backend -> пересборка media -> worker settings ->
+/// event policy. Пересборка может занять несколько кадров, поэтому остальные шаги ждут в этой
+/// структуре и выполняются только после её успеха.
+pub(crate) struct PlayerMediaContinuation {
+    /// Отчёты шагов, уже выполненных до пересборки.
+    pub(crate) report: PlayerRuntimeApplyReport,
+    /// Часть player-core update, которую нужно отправить worker-у после пересборки.
+    pub(crate) remaining_player_update: PlayerRuntimeSettingsUpdate,
+    /// Исходный update: из него берутся affected ids и event policy.
+    pub(crate) update: PlayerCommittedSettingsUpdate,
+}
+
+/// Результат начала применения player route.
+pub(crate) enum PlayerApplyStart {
+    /// Route завершён в этом же вызове.
+    Finished(PlayerRuntimeApplyResult),
+    /// Route ждёт пересборку media; продолжение хранится у вызывающего.
+    AwaitingMediaRebuild(Box<PlayerMediaContinuation>),
 }
 
 /// Boundary для runtime owners, которые живут снаружи settings controller-а.
@@ -90,6 +124,52 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
         affected_settings: &[SettingId],
         target_policy: SettingsRouteTargetPolicy,
     ) -> AppRouteApplyResult;
+
+    /// Многокадровый вариант player route: пересборка media не блокирует вызывающего.
+    ///
+    /// По умолчанию (host без своей пересборки) route завершается синхронно.
+    fn begin_player_runtime_settings(
+        &mut self,
+        update: &PlayerCommittedSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
+    ) -> PlayerApplyStart {
+        PlayerApplyStart::Finished(self.apply_player_runtime_settings(update, target_policy))
+    }
+
+    /// Доделывает player route после того, как пересборка media дала итог.
+    fn finish_player_runtime_settings(
+        &mut self,
+        _continuation: PlayerMediaContinuation,
+        _media_result: AppRouteApplyResult,
+    ) -> PlayerRuntimeApplyResult {
+        Err(PlayerRuntimeApplyError::Fatal(
+            "host не начинал пересборку media, продолжать player route нечем".to_owned(),
+        ))
+    }
+
+    /// Многокадровый вариант media-service route; по умолчанию синхронный.
+    fn begin_media_service_runtime_settings(
+        &mut self,
+        update: &MediaServiceRuntimeSettingsUpdate,
+        affected_settings: &[SettingId],
+        target_policy: SettingsRouteTargetPolicy,
+    ) -> MediaRebuildProgress {
+        MediaRebuildProgress::Finished(self.apply_media_service_runtime_settings(
+            update,
+            affected_settings,
+            target_policy,
+        ))
+    }
+
+    /// Неблокирующе продвигает начатую пересборку media.
+    fn poll_media_rebuild(&mut self) -> MediaRebuildProgress {
+        MediaRebuildProgress::Finished(AppRouteApplyResult::Failed {
+            message: "host не начинал пересборку media".to_owned(),
+        })
+    }
+
+    /// Прерывает пересборку на lifecycle-границе (suspend/shutdown).
+    fn cancel_media_rebuild(&mut self) {}
 }
 
 /// Fallback host для unit tests и UI-only paths без active `AppState`.
@@ -493,21 +573,48 @@ impl SettingsRuntimeRouteAppliers {
         target_policy: SettingsRouteTargetPolicy,
         reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyReport {
+        let progress = self.start_player_route(route, update);
+        let player_core_result = if progress.audio_output_device_result.is_success() {
+            self.apply_player_core_update(update, target_policy, reconfigure_host)
+        } else {
+            audio_device_failed_core_not_started()
+        };
+        self.finish_player_route(progress, update, player_core_result)
+    }
+
+    /// Первый шаг player route: выбор audio-устройства (быстрый, синхронный).
+    fn start_player_route(
+        &mut self,
+        route: RuntimeCommittedRoute,
+        update: &PlayerCommittedSettingsUpdate,
+    ) -> PlayerRouteProgress {
         let previous_audio_output_device_id = self.player.audio_output_device_id.clone();
         let requested_audio_device_change = update
             .audio_output_device_id
             .as_ref()
             .is_some_and(|next_device_id| next_device_id != &previous_audio_output_device_id);
-        let mut audio_output_device_result = self.apply_player_audio_output_device(update);
+        let audio_output_device_result = self.apply_player_audio_output_device(update);
+        PlayerRouteProgress {
+            route,
+            previous_audio_output_device_id,
+            requested_audio_device_change,
+            audio_output_device_result,
+        }
+    }
 
-        let player_core_result = if audio_output_device_result.is_success() {
-            self.apply_player_core_update(update, target_policy, reconfigure_host)
-        } else {
-            AppRouteApplyResult::Failed {
-                message: "player owner apply was not started because audio device policy failed"
-                    .to_string(),
-            }
-        };
+    /// Последний шаг player route: итог core-шага определяет snapshot, откат устройства и отчёт.
+    fn finish_player_route(
+        &mut self,
+        progress: PlayerRouteProgress,
+        update: &PlayerCommittedSettingsUpdate,
+        player_core_result: AppRouteApplyResult,
+    ) -> AppRouteApplyReport {
+        let PlayerRouteProgress {
+            route,
+            previous_audio_output_device_id,
+            requested_audio_device_change,
+            mut audio_output_device_result,
+        } = progress;
 
         if !player_core_result.is_success() && requested_audio_device_change {
             audio_output_device_result = match self
@@ -582,12 +689,9 @@ impl SettingsRuntimeRouteAppliers {
             return AppRouteApplyResult::Noop;
         };
 
-        match reconfigure_host.apply_player_runtime_settings(update, target_policy) {
-            Ok(report) => player_runtime_report_result(&report),
-            Err(error) => AppRouteApplyResult::Failed {
-                message: player_runtime_error_message(error),
-            },
-        }
+        player_core_result_from(
+            reconfigure_host.apply_player_runtime_settings(update, target_policy),
+        )
     }
 
     /// Обновляет локальный policy snapshot только после успешного worker apply.
@@ -649,5 +753,31 @@ impl SettingsRuntimeRouteAppliers {
 
         self.media_service = next_snapshot;
         result
+    }
+}
+
+/// Состояние player route между audio-шагом и итогом core-шага (общее для sync и stepwise путей).
+pub(super) struct PlayerRouteProgress {
+    route: RuntimeCommittedRoute,
+    previous_audio_output_device_id: String,
+    requested_audio_device_change: bool,
+    audio_output_device_result: AppRouteApplyResult,
+}
+
+/// Итог core-шага, когда выбор audio-устройства провалился и worker не трогали.
+fn audio_device_failed_core_not_started() -> AppRouteApplyResult {
+    AppRouteApplyResult::Failed {
+        message: "player owner apply was not started because audio device policy failed"
+            .to_string(),
+    }
+}
+
+/// Приводит typed ответ worker-а к route-level результату.
+fn player_core_result_from(result: PlayerRuntimeApplyResult) -> AppRouteApplyResult {
+    match result {
+        Ok(report) => player_runtime_report_result(&report),
+        Err(error) => AppRouteApplyResult::Failed {
+            message: player_runtime_error_message(error),
+        },
     }
 }

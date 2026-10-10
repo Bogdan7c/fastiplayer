@@ -801,8 +801,8 @@ PROGRESSIVE_WEB_SOURCE_ANCHORS = (
         "queue media-open обязан использовать единый progressive web-open composition path",
     ),
     (
-        Path("crates/app-egui/src/frame_prepare/settings_runtime_adapter.rs"),
-        ("crate::media_open::prepare_source_synchronously(",),
+        Path("crates/app-egui/src/state/settings_media_rebuild/prepare.rs"),
+        ("cancel.prepare(MediaOpenSourceRequest::Web(",),
         "settings rebuild обязан использовать единый provider-neutral media-open preparation path",
     ),
     (

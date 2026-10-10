@@ -74,6 +74,11 @@ impl SettingsRuntime {
     /// Ближайший owner-produced deadline для idle winit event loop.
     #[must_use]
     pub(crate) fn next_sidebar_resize_deadline(&self) -> Option<Instant> {
+        if self.is_apply_in_flight() {
+            // Запись откладывается до конца применения; будить цикл по просроченному
+            // deadline бессмысленно — кадры и так идут, пока транзакция в полёте.
+            return None;
+        }
         self.pending_sidebar_resize
             .map(|pending| pending.persist_at)
     }
@@ -90,7 +95,7 @@ impl SettingsRuntime {
         let Some(pending) = self.pending_sidebar_resize else {
             return Ok(SidebarResizeFlushOutcome::NoPending);
         };
-        if now < pending.persist_at {
+        if self.is_apply_in_flight() || now < pending.persist_at {
             return Ok(SidebarResizeFlushOutcome::NoPending);
         }
 

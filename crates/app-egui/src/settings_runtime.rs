@@ -56,11 +56,14 @@ use crate::render_settings::{
 };
 use crate::settings_ui::{SettingsUiAction, SettingsUiField, SettingsUiModel, SettingsUiStatus};
 
-/// Явно запланированный apply между двумя UI frames, чтобы progress успел отрисоваться.
+/// Apply, который ещё не завершён: между двумя UI frames (чтобы progress успел отрисоваться)
+/// либо несколько кадров, пока пересборка media идёт неблокирующе (C2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingSettingsApply {
     /// Закрыть settings sidebar только после полного success/no-op.
     close_on_success: bool,
+    /// Стартует на следующем кадре или уже ждёт маршрут.
+    phase: stepwise_apply::PendingApplyPhase,
 }
 
 mod committed_snapshot;
@@ -72,6 +75,7 @@ mod setting_labels;
 mod settings_error_message;
 mod sidebar_resize;
 mod status_text;
+mod stepwise_apply;
 mod target_policy;
 #[cfg(test)]
 mod tests;
@@ -88,9 +92,12 @@ pub(crate) use hardware_decode_hint::HardwareDecodeAvailability;
 pub(crate) use preview::SettingsPreviewTick;
 #[cfg(test)]
 use route_apply::RenderOnlySettingsRuntimeAdapter;
-pub(crate) use route_apply::SettingsRuntimePreflightFailure;
 pub(crate) use route_apply::SettingsRuntimeReconfigureHost;
 use route_apply::SettingsRuntimeRouteAppliers;
+pub(crate) use route_apply::{
+    MediaRebuildProgress, PlayerApplyStart, PlayerMediaContinuation,
+    SettingsRuntimePreflightFailure,
+};
 #[cfg(test)]
 use route_apply::{MediaServiceRuntimeSnapshot, simulated_player_runtime_report};
 use setting_labels::SettingLabels;
@@ -126,8 +133,12 @@ pub(crate) struct SettingsRuntime {
     /// Последний apply report остаётся в runtime, чтобы будущий UI мог показать статус.
     latest_apply_report: Option<ApplyReport>,
 
-    /// Apply, который стартует на следующем frame после показа progress state.
+    /// Apply, который стартует на следующем frame после показа progress state
+    /// и может идти несколько кадров (C2).
     pending_apply: Option<PendingSettingsApply>,
+
+    /// Очередь маршрутов многокадровой транзакции; живёт, пока controller ждёт маршрут.
+    route_sequence: Option<stepwise_apply::StepwiseRouteSequence>,
 
     /// Latest-only drag resize, ожидающий quiet-period перед atomic persistence.
     pending_sidebar_resize: Option<sidebar_resize::PendingSidebarResize>,
@@ -220,6 +231,7 @@ impl SettingsRuntime {
             route_appliers,
             latest_apply_report: None,
             pending_apply: None,
+            route_sequence: None,
             pending_sidebar_resize: None,
             user_audio_level,
             settings_window_open: false,
@@ -389,31 +401,17 @@ impl SettingsRuntime {
     where
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
-        let mut needs_redraw = false;
-        if let Some(pending_apply) = self.pending_apply.take() {
-            self.invalidate_ui_model();
-            let audio_level_before_apply = self.committed_user_audio_level();
-            let report = self.apply_draft_with_runtime_adapter(runtime_adapter)?;
-            self.deliver_user_applied_audio_level(
-                audio_level_before_apply,
-                runtime_adapter,
-                Instant::now(),
-            );
-            if pending_apply.close_on_success
-                && matches!(
-                    report.final_state,
-                    ApplyFinalState::FullyApplied | ApplyFinalState::NoChanges
-                )
-            {
-                self.settings_window_open = false;
-            }
-            needs_redraw = true;
-        }
+        // Транзакция Apply стартует и продвигается здесь же: за кадр синхронные маршруты
+        // завершаются полностью, а пересборка media только запускается и опрашивается.
+        let mut needs_redraw = self.advance_pending_apply(runtime_adapter)?;
         if !actions.is_empty() {
             self.invalidate_ui_model();
         }
         for action in actions {
             if self.pending_apply.is_some() {
+                // «Занято»: первая транзакция не теряется, действие отбрасывается.
+                self.report_apply_still_running();
+                needs_redraw = true;
                 break;
             }
             needs_redraw |= self.handle_ui_action(action, runtime_adapter)?;
@@ -540,7 +538,10 @@ impl SettingsRuntime {
 
     /// Публикует progress status и переносит runtime transaction на следующий frame.
     fn schedule_apply(&mut self, close_on_success: bool) {
-        self.pending_apply = Some(PendingSettingsApply { close_on_success });
+        self.pending_apply = Some(PendingSettingsApply {
+            close_on_success,
+            phase: stepwise_apply::PendingApplyPhase::Scheduled,
+        });
         self.latest_apply_report = None;
         self.status = SettingsUiStatus {
             summary: Some("Применение настроек…".to_string()),

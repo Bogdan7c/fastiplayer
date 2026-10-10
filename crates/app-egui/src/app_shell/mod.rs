@@ -697,6 +697,7 @@ impl AppShell {
                 .as_ref()
                 .is_some_and(AppState::has_pending_local_file_open)
             || self.settings_runtime.has_pending_options_refresh()
+            || self.settings_runtime.has_pending_apply()
             || self
                 .app_state
                 .as_ref()

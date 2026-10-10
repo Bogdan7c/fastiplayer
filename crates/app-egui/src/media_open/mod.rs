@@ -3,6 +3,7 @@
 //! Модуль знает source preparation и neutral player install protocol, но намеренно
 //! не знает playlist Item ID, navigation, repeat/shuffle, confirmation или priority policy.
 
+mod cancellable_preparation;
 mod coordinator;
 mod executor;
 pub(crate) mod local;
@@ -18,6 +19,7 @@ mod user_failure;
 mod web;
 
 #[allow(unused_imports)] // Public mechanism inventory becomes consumed by Session 10D/11A.
+pub(crate) use cancellable_preparation::SourcePreparationCancel;
 pub(crate) use coordinator::MediaOpenCoordinator;
 #[allow(unused_imports)] // Named D38 budget is part of the Session 10C mechanism contract.
 pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
@@ -48,9 +50,7 @@ pub(crate) use media_source_open::prepared_web_media::{
 };
 pub(crate) use player_failure::PlayerInstallFailureReason;
 pub(crate) use preload_budget::QueuePreloadResourceBudget;
-pub(crate) use preparation::{
-    merge_yt_dlp_playlist_metadata, prepare_source_synchronously, service_duration_for_timeline,
-};
+pub(crate) use preparation::{merge_yt_dlp_playlist_metadata, service_duration_for_timeline};
 pub(crate) use retry_advice::RetryAdvice;
 pub(crate) use speculative::{SpeculativeMediaPreparation, SpeculativeMediaPreparationPoll};
 #[allow(

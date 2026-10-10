@@ -1,19 +1,22 @@
 //! End-to-end settings transaction coordinator for app-owned runtime routes.
 
+use super::stepwise_apply::StepwiseRouteSequence;
 use super::*;
 
 /// Делегат связывает neutral controller с store и конкретными runtime owners.
 pub(super) struct SettingsRuntimeApplyDelegate<'runtime, A> {
     /// Authoritative full-document validator.
-    validator: AppConfigValidator,
+    pub(super) validator: AppConfigValidator,
     /// Atomic TOML store, owned by `SettingsRuntime`.
-    store: &'runtime mut AppConfigStore,
+    pub(super) store: &'runtime mut AppConfigStore,
     /// App-owned route snapshots and intent appliers.
-    route_appliers: &'runtime mut SettingsRuntimeRouteAppliers,
+    pub(super) route_appliers: &'runtime mut SettingsRuntimeRouteAppliers,
     /// Renderer/player/media owners behind narrow boundaries.
-    runtime_adapter: &'runtime mut A,
+    pub(super) runtime_adapter: &'runtime mut A,
     /// Completed route prefix that must be compensated after a failure.
-    applied_route_count: usize,
+    pub(super) applied_route_count: usize,
+    /// Многокадровая очередь маршрутов (C2); синхронные пути передают пустой слот.
+    pub(super) route_sequence: &'runtime mut Option<StepwiseRouteSequence>,
 }
 
 impl<A> SettingsValidator<AppConfig> for SettingsRuntimeApplyDelegate<'_, A> {
@@ -109,6 +112,24 @@ where
         &mut self,
         request: CommittedRollbackRequest<'_, AppConfig>,
     ) -> SettingsResult<Vec<RollbackReport>> {
+        self.rollback_applied_routes(request)
+    }
+
+    fn finalize_committed(&mut self, _request: CommittedFinalizeRequest<'_, AppConfig>) {
+        self.runtime_adapter.finalize_settings_transaction();
+        self.applied_route_count = 0;
+    }
+}
+
+impl<A> SettingsRuntimeApplyDelegate<'_, A>
+where
+    A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
+{
+    /// Откатывает завершённый префикс маршрутов в обратном порядке (общий для всех путей).
+    pub(super) fn rollback_applied_routes(
+        &mut self,
+        request: CommittedRollbackRequest<'_, AppConfig>,
+    ) -> SettingsResult<Vec<RollbackReport>> {
         let rollback_routes = committed_routes_for_updates(
             request.attempted,
             request.previous_committed,
@@ -134,11 +155,6 @@ where
         self.applied_route_count = 0;
         Ok(reports)
     }
-
-    fn finalize_committed(&mut self, _request: CommittedFinalizeRequest<'_, AppConfig>) {
-        self.runtime_adapter.finalize_settings_transaction();
-        self.applied_route_count = 0;
-    }
 }
 
 impl SettingsRuntime {
@@ -152,6 +168,7 @@ impl SettingsRuntime {
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         self.invalidate_ui_model();
+        let mut unused_route_sequence = None;
         let report = {
             let mut delegate = SettingsRuntimeApplyDelegate {
                 validator: AppConfigValidator,
@@ -159,6 +176,7 @@ impl SettingsRuntime {
                 route_appliers: &mut self.route_appliers,
                 runtime_adapter,
                 applied_route_count: 0,
+                route_sequence: &mut unused_route_sequence,
             };
             self.controller
                 .commit_runtime_setting(request, &mut delegate)?
@@ -182,7 +200,11 @@ impl SettingsRuntime {
         self.apply_draft_with_runtime_adapter(&mut runtime_adapter)
     }
 
-    /// Production apply path: validate, preflight, runtime commit, persistence, final commit.
+    /// Синхронный apply: validate, preflight, runtime commit, persistence, final commit.
+    ///
+    /// Production идёт многокадровым путём (`begin_apply_with_runtime_adapter`); этот вариант
+    /// остаётся для тестов и проверяет, что транзакция без пересборки завершается за один вызов.
+    #[cfg(test)]
     pub(crate) fn apply_draft_with_runtime_adapter<A>(
         &mut self,
         runtime_adapter: &mut A,
@@ -191,6 +213,7 @@ impl SettingsRuntime {
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         self.invalidate_ui_model();
+        let mut unused_route_sequence = None;
         let report = {
             let mut delegate = SettingsRuntimeApplyDelegate {
                 validator: AppConfigValidator,
@@ -198,16 +221,25 @@ impl SettingsRuntime {
                 route_appliers: &mut self.route_appliers,
                 runtime_adapter,
                 applied_route_count: 0,
+                route_sequence: &mut unused_route_sequence,
             };
             self.controller.apply(&mut delegate)?
         };
+        self.conclude_apply(&report, runtime_adapter);
+        Ok(report)
+    }
+
+    /// Итог транзакции для остальных слоёв: snapshot, последний отчёт и статус панели.
+    pub(super) fn conclude_apply<A>(&mut self, report: &ApplyReport, runtime_adapter: &mut A)
+    where
+        A: SettingsRuntimeReconfigureHost,
+    {
         if report.final_state == ApplyFinalState::FullyApplied {
             runtime_adapter.sync_committed_config_snapshot(CommittedConfigSnapshot::from_config(
                 self.controller.committed(),
             ));
         }
         self.latest_apply_report = Some(report.clone());
-        self.status = status_from_apply_report(&self.setting_labels(), &report);
-        Ok(report)
+        self.status = status_from_apply_report(&self.setting_labels(), report);
     }
 }

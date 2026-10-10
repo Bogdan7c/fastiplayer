@@ -11,6 +11,31 @@ impl AppState {
         prepared_input: PreparedSingleMediaOpen,
         intent: PlaybackIntent,
     ) -> Result<(), StrongMediaOpenError> {
+        let video_backend_constraint =
+            crate::video_backend_constraint::media_install_video_backend_constraint(
+                self.video_backend_preference(),
+            );
+        self.begin_prepared_media_strong_with_backend_constraint(
+            playlist_runtime,
+            renderer,
+            prepared_input,
+            intent,
+            video_backend_constraint,
+        )
+    }
+
+    /// Тот же stepwise старт, но с явной политикой backend-а.
+    ///
+    /// Нужен пересборке media из настроек: целевая политика backend-а берётся из ещё не
+    /// зафиксированного (не persisted) документа и может отличаться от `video_backend_preference()`.
+    pub(crate) fn begin_prepared_media_strong_with_backend_constraint(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+        prepared_input: PreparedSingleMediaOpen,
+        intent: PlaybackIntent,
+        video_backend_constraint: MediaInstallVideoBackendConstraint,
+    ) -> Result<(), StrongMediaOpenError> {
         if self.pending_strong_media_open.is_some() {
             return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
         }
@@ -54,9 +79,7 @@ impl AppState {
         let (candidate_owner, video_resource_port) = player_selected_video_candidate_boundary(
             self.renderer_generation,
             self.player_worker.decoder_thread_config(),
-            crate::video_backend_constraint::media_install_video_backend_constraint(
-                self.video_backend_preference(),
-            ),
+            video_backend_constraint,
             driver,
         );
         let initial_revision = PlaybackIntentRevision::from_non_zero(

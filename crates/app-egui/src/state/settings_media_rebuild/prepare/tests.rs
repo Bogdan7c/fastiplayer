@@ -1,0 +1,166 @@
+//! Подготовка источника для пересборки: вне UI-потока, с отменой и человеческими ошибками.
+
+use std::io::Write;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use super::*;
+
+/// Ждёт итог фонового потока, опрашивая его так же, как это делает UI на кадрах.
+fn wait_for_finish<T: Send + 'static>(job: &mut SettingsMediaPrepareJob<T>) -> Result<T, String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match job.poll() {
+            PrepareJobPoll::Finished(result) => return result,
+            PrepareJobPoll::Running => {
+                assert!(Instant::now() < deadline, "фоновая подготовка зависла");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+}
+
+/// Минимальный валидный PCM WAV (моно, 8 кГц, 16 бит, 0,1 с тишины).
+fn tiny_pcm_wav() -> Vec<u8> {
+    let sample_rate: u32 = 8_000;
+    let data_len: u32 = 1_600;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&sample_rate.to_le_bytes());
+    bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    bytes.extend(std::iter::repeat_n(0u8, data_len as usize));
+    bytes
+}
+
+#[test]
+fn preparation_runs_on_a_background_thread_and_ui_poll_does_not_block() {
+    let caller_thread = std::thread::current().id();
+    let (release_sender, release_receiver) = mpsc::channel::<()>();
+    let mut job = SettingsMediaPrepareJob::spawn_task(move |_cancel| {
+        // Задача «долго готовится»: пока UI не отпустит её, она стоит.
+        release_receiver
+            .recv()
+            .map_err(|error| format!("release lost: {error}"))?;
+        Ok(std::thread::current().id())
+    })
+    .expect("поток подготовки должен запуститься");
+
+    // Пока подготовка идёт, опрос возвращается сразу и сообщает «ещё идёт».
+    let poll_started = Instant::now();
+    assert!(matches!(job.poll(), PrepareJobPoll::Running));
+    assert!(
+        poll_started.elapsed() < Duration::from_millis(200),
+        "опрос не должен ждать подготовку"
+    );
+
+    release_sender.send(()).expect("отпускаем подготовку");
+    let worker_thread = wait_for_finish(&mut job).expect("подготовка должна завершиться успехом");
+    assert_ne!(
+        worker_thread, caller_thread,
+        "подготовка должна идти не на потоке вызывающего (UI)"
+    );
+}
+
+#[test]
+fn preparation_error_text_reaches_the_ui_poll_unchanged() {
+    let mut job = SettingsMediaPrepareJob::<u8>::spawn_task(|_cancel| {
+        Err("Не удалось применить: источник недоступен".to_string())
+    })
+    .expect("поток подготовки должен запуститься");
+
+    assert_eq!(
+        wait_for_finish(&mut job),
+        Err("Не удалось применить: источник недоступен".to_string())
+    );
+}
+
+#[test]
+fn panicking_preparation_becomes_a_human_error_instead_of_silence() {
+    let mut job = SettingsMediaPrepareJob::<u8>::spawn_task(|_cancel| {
+        panic!("подготовка упала намеренно (тест)");
+    })
+    .expect("поток подготовки должен запуститься");
+
+    let result = wait_for_finish(&mut job);
+
+    assert_eq!(
+        result,
+        Err(crate::settings_rebuild_message::install_rebuild_failed_message())
+    );
+}
+
+#[test]
+fn cancel_reaches_the_running_preparation_and_stops_it() {
+    let (observed_sender, observed_receiver) = mpsc::channel::<bool>();
+    let mut job = SettingsMediaPrepareJob::<u8>::spawn_task(move |cancel| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cancel.is_cancelled() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let _sent = observed_sender.send(cancel.is_cancelled());
+        Ok(0)
+    })
+    .expect("поток подготовки должен запуститься");
+
+    job.cancel();
+
+    assert_eq!(
+        observed_receiver.recv_timeout(Duration::from_secs(5)),
+        Ok(true),
+        "фоновая задача должна увидеть отмену"
+    );
+}
+
+#[test]
+fn missing_local_file_gives_the_human_rebuild_message() {
+    let directory = tempfile::tempdir().expect("временная папка");
+    let result = prepare_rebuild_source(
+        RebuildPrepareRequest {
+            source: RebuildSourceInput::LocalFile {
+                path: directory.path().join("no-such-clip.wav"),
+                demux: PlayerDemuxConfig::default(),
+            },
+            preferred_video_codecs: Vec::new(),
+        },
+        &SourcePreparationCancel::new(),
+    );
+
+    assert_eq!(
+        result.err(),
+        Some(crate::settings_rebuild_message::local_rebuild_failed_message())
+    );
+}
+
+#[test]
+fn real_local_file_is_prepared_in_the_background_job() {
+    let mut fixture = tempfile::Builder::new()
+        .suffix(".wav")
+        .tempfile()
+        .expect("временный WAV");
+    fixture.write_all(&tiny_pcm_wav()).expect("запись WAV");
+    let request = RebuildPrepareRequest {
+        source: RebuildSourceInput::LocalFile {
+            path: fixture.path().to_path_buf(),
+            demux: PlayerDemuxConfig::default(),
+        },
+        preferred_video_codecs: Vec::new(),
+    };
+    let mut job = SettingsMediaPrepareJob::spawn(request).expect("запуск подготовки");
+
+    let prepared = wait_for_finish(&mut job);
+
+    assert!(
+        prepared.is_ok(),
+        "настоящий файл должен подготовиться: {:?}",
+        prepared.err()
+    );
+}

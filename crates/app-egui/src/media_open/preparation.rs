@@ -661,17 +661,6 @@ pub(super) fn prepare_source(
     }
 }
 
-/// Выполняет тот же source preparation path синхронно для settings transaction.
-///
-/// Settings уже владеет app-side runtime fence, поэтому отдельный background
-/// coordinator здесь не создаётся; physical adapter dispatch остаётся единым.
-pub(crate) fn prepare_source_synchronously(
-    source_request: MediaOpenSourceRequest,
-) -> Result<PreparedMediaOpen, MediaPreparationFailureKind> {
-    let cancellation = super::executor::PreparationCancellation::new();
-    prepare_source(source_request, &cancellation)
-}
-
 /// Переводит ошибку локальной подготовки в вид отказа coordinator-а.
 ///
 /// `LocalSourceChanged` сохраняется отдельным видом (как было до сессии 02), остальные

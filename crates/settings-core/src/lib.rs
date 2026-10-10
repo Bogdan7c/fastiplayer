@@ -17,14 +17,15 @@ mod registry;
 mod tests;
 
 pub use controller::{
-    ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,
-    CommittedApplyRequest, CommittedFinalizeRequest, CommittedRollbackRequest,
-    CommittedSettingsApplier, PendingPreviewUpdate, PersistOutcome, PersistReport, PersistRequest,
-    PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest,
-    PreviewRollbacker, PreviewRouteState, PreviewSettingsApplier, PreviewTransactionState,
-    ResetReport, ResetScope, RollbackReport, RollbackResult, RouteApplyUpdate, RouteGeneration,
-    RouteGenerationConflict, RuntimeSettingCommitRequest, SetValueReport, SettingsController,
-    SettingsPersister, SettingsValidator, ValidationReport, ValidationRequest,
+    ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, BeginApply,
+    CancelReport, CommittedApplyProgress, CommittedApplyRequest, CommittedFinalizeRequest,
+    CommittedRollbackRequest, CommittedSettingsApplier, PendingPreviewUpdate, PersistOutcome,
+    PersistReport, PersistRequest, PollApply, PreviewApplyReport, PreviewApplyRequest,
+    PreviewApplyResult, PreviewRollbackRequest, PreviewRollbacker, PreviewRouteState,
+    PreviewSettingsApplier, PreviewTransactionState, ResetReport, ResetScope, RollbackReport,
+    RollbackResult, RouteApplyUpdate, RouteGeneration, RouteGenerationConflict,
+    RuntimeSettingCommitRequest, SetValueReport, SettingsController, SettingsPersister,
+    SettingsValidator, StepwiseCommittedApplier, ValidationReport, ValidationRequest,
 };
 pub use diff::{SettingChange, SettingsDiff};
 pub use error::{

@@ -313,6 +313,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                     || self.playlist_runtime.has_pending_media_reset()
                     || app_state.has_pending_local_file_open()
                     || self.settings_runtime.has_pending_options_refresh()
+                    || self.settings_runtime.has_pending_apply()
                     || self
                         .playlist_runtime
                         .has_pending_playlist_persistence_work();

@@ -178,6 +178,10 @@ impl SettingsRuntime {
     /// Ближайший момент записи громкости для idle event loop.
     #[must_use]
     pub(crate) fn next_user_audio_level_persist_deadline(&self) -> Option<Instant> {
+        if self.is_apply_in_flight() {
+            // Запись громкости ждёт конец применения настроек (см. `next_sidebar_resize_deadline`).
+            return None;
+        }
         self.user_audio_level.persist_at
     }
 
@@ -191,7 +195,7 @@ impl SettingsRuntime {
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         match self.user_audio_level.persist_at {
-            Some(persist_at) if now >= persist_at => {
+            Some(persist_at) if now >= persist_at && !self.is_apply_in_flight() => {
                 self.flush_pending_user_audio_level(runtime_adapter)
             }
             _ => Ok(UserAudioLevelFlushOutcome::NoPending),

@@ -742,8 +742,8 @@ fn live_settings_rebuild_passes_active_stream_requirement() {
     // Live-путь применения runtime-настроек обязан прокинуть этот requirement в rebuild.
     let apply_section = source_section_between(
         frame_prepare_source,
-        "fn apply_player_runtime_settings(",
-        "fn apply_media_service_runtime_settings(",
+        "fn apply_player_runtime_settings_with(",
+        "fn finish_player_runtime_settings_after_media(",
     );
     assert!(
         apply_section.contains("self.app_state.active_video_stream_requirement()"),

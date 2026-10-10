@@ -126,82 +126,15 @@ impl AppState {
     }
 
     /// Восстанавливает controls только через exact request/instance boundaries после Installed.
+    ///
+    /// Блокирующий вариант (откат настроек); неблокирующий путь пересборки использует
+    /// `dispatch_playback_restore` + опрос receipt-а (`state/settings_media_rebuild`).
     pub(crate) fn restore_playback_after_media_reconfigure(
         &mut self,
         snapshot: &PlayerSnapshot,
         installed: &InstalledSingleMediaOpen,
     ) -> Result<(), String> {
-        let player_core::MediaInstallCompletion::Installed {
-            media_instance_id,
-            applied_intent,
-            ..
-        } = installed.completion
-        else {
-            return Err("media reconfigure completion was not Installed".to_string());
-        };
-        let desired_intent = playback_intent_from_snapshot(snapshot);
-        if applied_intent != desired_intent {
-            return Err(format!(
-                "Installed applied unexpected playback intent: {applied_intent:?}"
-            ));
-        }
-
-        self.player_worker
-            .try_send_command(PlayerCommand::SetVolume(snapshot.volume))
-            .map_err(|error| format!("volume restore dispatch failed: {error}"))?;
-        if let Some(selected_quality) = snapshot
-            .available_qualities
-            .iter()
-            .find(|quality| quality.selected)
-        {
-            self.player_worker
-                .try_send_command(PlayerCommand::SelectQuality(QualitySelection::Specific(
-                    selected_quality.id.clone(),
-                )))
-                .map_err(|error| format!("quality restore dispatch failed: {error}"))?;
-        }
-
-        let restore = player_core::InstalledMediaStateRestore {
-            request_id: installed.player_request_id,
-            media_instance_id,
-            video_track: snapshot.selected_tracks.video_track.map_or(
-                player_core::InstalledTrackRestore::KeepDefault,
-                player_core::InstalledTrackRestore::Select,
-            ),
-            audio_track: snapshot.selected_tracks.audio_track.map_or(
-                player_core::InstalledTrackRestore::KeepDefault,
-                player_core::InstalledTrackRestore::Select,
-            ),
-            subtitle_track: snapshot.selected_tracks.subtitle_track.map_or(
-                player_core::InstalledSubtitleRestore::KeepDefault,
-                player_core::InstalledSubtitleRestore::Select,
-            ),
-            volume: player_core::InstalledVolumeRestore::Set(snapshot.volume),
-            position: if snapshot.current_position > Duration::ZERO {
-                player_core::InstalledPositionRestore::SeekTo(snapshot.current_position)
-            } else {
-                player_core::InstalledPositionRestore::KeepStart
-            },
-        };
-        let restore_receipt = self
-            .player_worker
-            .restore_installed_media_state(restore)
-            .map_err(|error| format!("exact position/track restore dispatch failed: {error}"))?;
-        match restore_receipt
-            .wait_for_outcome()
-            .map_err(|error| format!("exact position/track restore outcome missing: {error}"))?
-        {
-            player_core::InstalledMediaStateRestoreOutcome::Applied {
-                media_instance_id: applied_instance,
-            } if applied_instance == media_instance_id => {}
-            outcome => {
-                return Err(format!(
-                    "exact position/track restore was rejected: {outcome:?}"
-                ));
-            }
-        }
-
-        Ok(())
+        self.dispatch_playback_restore(snapshot, installed)?.wait()
     }
 
     /// Возвращает `true`, пока shell ждёт file dialog, подготовку или установку локального media.

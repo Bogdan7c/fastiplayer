@@ -1502,3 +1502,6 @@ fn codec_order_descriptor() -> SettingDescriptor {
         apply_mode: SettingApplyMode::CommittedApply,
     }
 }
+
+#[path = "controller/pending_apply/tests.rs"]
+mod pending_apply_tests;
