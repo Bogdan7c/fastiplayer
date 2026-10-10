@@ -113,6 +113,28 @@ pub(crate) fn plan_post_installed_startup_position(
                 }),
             }
         }
+        crate::playlist_runtime::StartupPosition::Restore(requested_position)
+            if super::resume_policy::should_restart_from_beginning(
+                requested_position,
+                facts.duration,
+            ) =>
+        {
+            // Позиция у самого конца: начинаем с начала (политика B2). Если open уже
+            // позиционирован на сохранённую точку (native HLS), его нужно явно вернуть в 0.
+            match strategy {
+                super::super::PreparedPositionRestoreStrategy::SeekAfterInstall => {
+                    PostInstalledStartupPositionPlan::Continue { warning: None }
+                }
+                super::super::PreparedPositionRestoreStrategy::AdoptPreparedInitialPosition => {
+                    PostInstalledStartupPositionPlan::Restore {
+                        requested_position: std::time::Duration::ZERO,
+                        position: player_core::InstalledPositionRestore::SeekTo(
+                            std::time::Duration::ZERO,
+                        ),
+                    }
+                }
+            }
+        }
         crate::playlist_runtime::StartupPosition::Restore(requested_position) => {
             let position = match strategy {
                 super::super::PreparedPositionRestoreStrategy::SeekAfterInstall => {
@@ -682,6 +704,49 @@ mod tests {
                 position: player_core::InstalledPositionRestore::AdoptPreparedInitialPosition {
                     expected_target: requested_position,
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn restore_near_end_starts_from_beginning_but_mid_track_restores() {
+        use super::super::super::PreparedPositionRestoreStrategy as Strategy;
+        let secs = std::time::Duration::from_secs;
+        let facts = PostInstalledStartupPositionFacts::static_seekable(Some(secs(600)), secs(0));
+        let near_end = crate::playlist_runtime::StartupPosition::Restore(secs(597));
+        // Обычный путь: seek не нужен, трек играет с начала.
+        assert_eq!(
+            plan_post_installed_startup_position(near_end, Strategy::SeekAfterInstall, facts),
+            PostInstalledStartupPositionPlan::Continue { warning: None }
+        );
+        // Native HLS уже позиционирован у конца: обязателен явный возврат в 0.
+        assert_eq!(
+            plan_post_installed_startup_position(
+                near_end,
+                Strategy::AdoptPreparedInitialPosition,
+                facts
+            ),
+            PostInstalledStartupPositionPlan::Restore {
+                requested_position: std::time::Duration::ZERO,
+                position: player_core::InstalledPositionRestore::SeekTo(std::time::Duration::ZERO),
+            }
+        );
+        // Середина трека и неизвестная длительность восстанавливаются как раньше.
+        let mid = crate::playlist_runtime::StartupPosition::Restore(secs(100));
+        let expected_mid = PostInstalledStartupPositionPlan::Restore {
+            requested_position: secs(100),
+            position: player_core::InstalledPositionRestore::SeekTo(secs(100)),
+        };
+        assert_eq!(
+            plan_post_installed_startup_position(mid, Strategy::SeekAfterInstall, facts),
+            expected_mid
+        );
+        let unknown = PostInstalledStartupPositionFacts::static_seekable(None, secs(0));
+        assert_eq!(
+            plan_post_installed_startup_position(near_end, Strategy::SeekAfterInstall, unknown),
+            PostInstalledStartupPositionPlan::Restore {
+                requested_position: secs(597),
+                position: player_core::InstalledPositionRestore::SeekTo(secs(597)),
             }
         );
     }

@@ -7,6 +7,7 @@ mod compensation;
 mod live_same_item_restore;
 use compensation::PostInstalledCompensationPoll;
 mod resume;
+mod resume_policy;
 use resume::InstalledResumeCommit;
 mod same_lineage;
 use same_lineage::{PendingStrongLineageCommit, SameLineageRestorePosition};
