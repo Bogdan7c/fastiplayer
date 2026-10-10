@@ -9,8 +9,9 @@ use crate::web_media_catalog::{
 use crate::web_media_stream_model::component_variants::WebMediaComponentVariantProjection;
 use crate::web_media_stream_model::{
     UrlSidebarAction, UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPendingSelection,
-    UrlSidebarPlaybackStatus, UrlSidebarSafeError, UrlSidebarStreamKind,
-    WebMediaCandidatePresentation, WebMediaSelectionPreference, WebMediaStreamGeneration,
+    UrlSidebarPlaybackStatus, UrlSidebarSafeError, UrlSidebarSeekAvailability,
+    UrlSidebarStreamKind, WebMediaCandidatePresentation, WebMediaSelectionPreference,
+    WebMediaStreamGeneration,
 };
 
 mod component_variants;
@@ -86,7 +87,7 @@ fn show_single_web_media(
     catalog: &WebMediaCatalogState,
 ) {
     let heading = match ingress {
-        web_media_core::WebMediaIngressKind::DirectResource => "Прямой web-поток",
+        web_media_core::WebMediaIngressKind::DirectResource => "Прямая ссылка на медиафайл",
         web_media_core::WebMediaIngressKind::NativeManifest => "Нативный web-манифест",
         web_media_core::WebMediaIngressKind::ExtractorBacked => "Web-медиа",
     };
@@ -254,6 +255,15 @@ fn stream_kind_label(kind: UrlSidebarStreamKind) -> &'static str {
     }
 }
 
+fn seek_availability_label(seek: UrlSidebarSeekAvailability) -> &'static str {
+    match seek {
+        UrlSidebarSeekAvailability::Unknown => "Определяется",
+        UrlSidebarSeekAvailability::Unavailable => "Недоступна",
+        UrlSidebarSeekAvailability::Available => "Доступна",
+        UrlSidebarSeekAvailability::WithinLiveWindow => "В пределах окна эфира",
+    }
+}
+
 fn status_grid(ui: &mut Ui, status: UrlSidebarPlaybackStatus) {
     egui::Grid::new("url_stream_status_grid")
         .num_columns(2)
@@ -264,11 +274,7 @@ fn status_grid(ui: &mut Ui, status: UrlSidebarPlaybackStatus) {
             ui.end_row();
 
             ui.weak("Перемотка");
-            ui.label(if status.seekable {
-                "Доступна"
-            } else {
-                "Недоступна"
-            });
+            ui.label(seek_availability_label(status.seek));
             ui.end_row();
 
             ui.weak("Буферизация");
@@ -364,9 +370,9 @@ mod tests {
         WebMediaVideoComponentVariantAxis, WebMediaVideoComponentVariantPresentation,
     };
     use crate::web_media_stream_model::{
-        UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPlaybackStatus, UrlSidebarStreamKind,
-        WebMediaCandidatePresentation, WebMediaContainerSummary, WebMediaSelectionPreference,
-        WebMediaStreamGeneration,
+        UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPlaybackStatus, UrlSidebarSeekAvailability,
+        UrlSidebarStreamKind, WebMediaCandidatePresentation, WebMediaContainerSummary,
+        WebMediaSelectionPreference, WebMediaStreamGeneration,
     };
 
     fn candidate_presentation() -> WebMediaCandidatePresentation {
@@ -405,12 +411,19 @@ mod tests {
     }
 
     fn direct_model_with(stream_kind: UrlSidebarStreamKind) -> UrlSidebarModel {
+        direct_model_with_seek(stream_kind, UrlSidebarSeekAvailability::Unavailable)
+    }
+
+    fn direct_model_with_seek(
+        stream_kind: UrlSidebarStreamKind,
+        seek: UrlSidebarSeekAvailability,
+    ) -> UrlSidebarModel {
         UrlSidebarModel::DirectMedia {
             ingress: web_media_core::WebMediaIngressKind::DirectResource,
             source_label: Arc::from("media.example.test"),
             status: UrlSidebarPlaybackStatus {
                 stream_kind,
-                seekable: false,
+                seek,
                 buffering: false,
                 refresh_on_reopen: false,
             },
@@ -434,6 +447,43 @@ mod tests {
         assert!(!unknown.iter().any(|label| label == "VOD"));
     }
 
+    /// A14: строка «Перемотка» показывает то, что сообщил player, включая «в пределах окна».
+    #[test]
+    fn seek_row_names_each_availability_honestly() {
+        let cases = [
+            (UrlSidebarSeekAvailability::Unknown, "Определяется"),
+            (UrlSidebarSeekAvailability::Unavailable, "Недоступна"),
+            (UrlSidebarSeekAvailability::Available, "Доступна"),
+            (
+                UrlSidebarSeekAvailability::WithinLiveWindow,
+                "В пределах окна эфира",
+            ),
+        ];
+        for (seek, expected) in cases {
+            let labels = visible_labels(&direct_model_with_seek(UrlSidebarStreamKind::Live, seek));
+            assert!(labels.iter().any(|label| label == expected), "{labels:?}");
+            for (_, other) in cases.iter().filter(|(_, text)| *text != expected) {
+                // «Определяется» легально встречается и в строке «Режим» только для Unknown-режима.
+                assert!(
+                    !labels.iter().any(|label| label == other),
+                    "{other}: {labels:?}"
+                );
+            }
+        }
+    }
+
+    /// A14: заголовок direct-ссылки не называет её «web-потоком/эфиром»; для VOD не звучит как live.
+    #[test]
+    fn direct_resource_heading_names_a_file_link_not_a_live_stream() {
+        let labels = visible_labels(&direct_model_with(UrlSidebarStreamKind::Vod));
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == "Прямая ссылка на медиафайл")
+        );
+        assert!(!labels.iter().any(|label| label.contains("web-поток")));
+    }
+
     /// A10: под ошибкой источника нет технического жаргона («controlled reopen»).
     #[test]
     fn source_error_hint_is_plain_russian_without_internal_jargon() {
@@ -449,7 +499,7 @@ mod tests {
             item_scope: UrlSidebarItemScope::SingleItem,
             status: UrlSidebarPlaybackStatus {
                 stream_kind: UrlSidebarStreamKind::Vod,
-                seekable: true,
+                seek: UrlSidebarSeekAvailability::Available,
                 buffering: false,
                 refresh_on_reopen: false,
             },
@@ -514,7 +564,7 @@ mod tests {
             item_scope: UrlSidebarItemScope::SingleItem,
             status: UrlSidebarPlaybackStatus {
                 stream_kind: UrlSidebarStreamKind::Vod,
-                seekable: true,
+                seek: UrlSidebarSeekAvailability::Available,
                 buffering: false,
                 refresh_on_reopen: false,
             },
@@ -536,7 +586,7 @@ mod tests {
             source_label: Arc::from("media.example.test"),
             status: UrlSidebarPlaybackStatus {
                 stream_kind: UrlSidebarStreamKind::Vod,
-                seekable: true,
+                seek: UrlSidebarSeekAvailability::Available,
                 buffering: false,
                 refresh_on_reopen: false,
             },

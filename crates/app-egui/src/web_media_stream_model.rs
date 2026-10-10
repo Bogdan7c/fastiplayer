@@ -54,11 +54,28 @@ pub(crate) enum UrlSidebarStreamKind {
     Unknown,
 }
 
+/// Возможность перемотки, как её сообщает player (а не контейнер или статический признак).
+///
+/// Источник истины — `PlayerSnapshot::timeline` (`seekable` + `mode`): ровно по нему
+/// `PlayerSession` принимает или отклоняет команду seek (`NotSeekable` / `Expired`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UrlSidebarSeekAvailability {
+    /// Media ещё не установлено: что-либо обещать рано.
+    Unknown,
+    /// Player сейчас не принимает seek (источник без seek, нет индекса или окна эфира).
+    Unavailable,
+    /// Конечная запись: допустима любая позиция в пределах длительности.
+    Available,
+    /// Live с DVR-окном: seek принимается только внутри окна, дальше player ответит
+    /// «эта часть эфира уже недоступна».
+    WithinLiveWindow,
+}
+
 /// Конечный playback status, который URL view может показать без worker handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UrlSidebarPlaybackStatus {
     pub(crate) stream_kind: UrlSidebarStreamKind,
-    pub(crate) seekable: bool,
+    pub(crate) seek: UrlSidebarSeekAvailability,
     pub(crate) buffering: bool,
     pub(crate) refresh_on_reopen: bool,
 }
@@ -254,10 +271,7 @@ impl UrlSidebarController {
 fn playback_status(snapshot: &PlayerSnapshot, refresh_on_reopen: bool) -> UrlSidebarPlaybackStatus {
     UrlSidebarPlaybackStatus {
         stream_kind: stream_kind(snapshot),
-        seekable: snapshot
-            .media_info
-            .as_ref()
-            .is_some_and(|media_info| media_info.seekable),
+        seek: seek_availability(snapshot),
         buffering: snapshot.playback_state == PlaybackState::Buffering,
         refresh_on_reopen,
     }
@@ -272,6 +286,20 @@ fn stream_kind(snapshot: &PlayerSnapshot) -> UrlSidebarStreamKind {
     match snapshot.timeline.mode {
         TimelineMode::Live => UrlSidebarStreamKind::Live,
         TimelineMode::Static => UrlSidebarStreamKind::Vod,
+    }
+}
+
+/// Перемотка из `timeline` snapshot-а — тем же признаком, по которому player решает seek.
+/// `MediaInfo::seekable` не годится: это свойство контейнера, а не текущего состояния
+/// timeline (live-поток может быть «seekable» по контейнеру, но без окна эфира).
+fn seek_availability(snapshot: &PlayerSnapshot) -> UrlSidebarSeekAvailability {
+    if snapshot.media_instance_id.is_none() {
+        return UrlSidebarSeekAvailability::Unknown;
+    }
+    match (snapshot.timeline.seekable, snapshot.timeline.mode) {
+        (false, _) => UrlSidebarSeekAvailability::Unavailable,
+        (true, TimelineMode::Static) => UrlSidebarSeekAvailability::Available,
+        (true, TimelineMode::Live) => UrlSidebarSeekAvailability::WithinLiveWindow,
     }
 }
 

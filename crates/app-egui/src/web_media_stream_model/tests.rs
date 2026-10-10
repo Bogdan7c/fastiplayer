@@ -456,3 +456,57 @@ fn snapshot_without_installed_media_has_unknown_stream_kind() {
         UrlSidebarStreamKind::Unknown
     );
 }
+
+fn direct_seek_availability(snapshot: &PlayerSnapshot) -> UrlSidebarSeekAvailability {
+    let model = UrlSidebarController::default().model(Some(&direct_web_source()), snapshot, None);
+    let UrlSidebarModel::DirectMedia { status, .. } = model else {
+        panic!("direct source должен давать DirectMedia");
+    };
+    status.seek
+}
+
+/// A14: live без seekable-окна у player-а не обещает перемотку, даже если контейнер
+/// потенциально seekable (`MediaInfo::seekable` не участвует в решении).
+#[test]
+fn live_timeline_without_seekable_window_reports_seek_unavailable() {
+    let mut snapshot = installed_snapshot(TimelineMode::Live);
+    snapshot.timeline.seekable = false;
+    assert_eq!(
+        direct_seek_availability(&snapshot),
+        UrlSidebarSeekAvailability::Unavailable
+    );
+}
+
+/// Live с DVR-окном принимает seek только внутри окна, поэтому честная строка — «в пределах окна».
+#[test]
+fn live_timeline_with_seekable_window_reports_seek_within_window() {
+    let mut snapshot = installed_snapshot(TimelineMode::Live);
+    snapshot.timeline.seekable = true;
+    assert_eq!(
+        direct_seek_availability(&snapshot),
+        UrlSidebarSeekAvailability::WithinLiveWindow
+    );
+}
+
+#[test]
+fn seekable_static_timeline_reports_seek_available_and_unseekable_one_unavailable() {
+    let mut snapshot = installed_snapshot(TimelineMode::Static);
+    snapshot.timeline.seekable = true;
+    assert_eq!(
+        direct_seek_availability(&snapshot),
+        UrlSidebarSeekAvailability::Available
+    );
+    snapshot.timeline.seekable = false;
+    assert_eq!(
+        direct_seek_availability(&snapshot),
+        UrlSidebarSeekAvailability::Unavailable
+    );
+}
+
+#[test]
+fn snapshot_without_installed_media_has_unknown_seek_availability() {
+    assert_eq!(
+        direct_seek_availability(&PlayerSnapshot::empty()),
+        UrlSidebarSeekAvailability::Unknown
+    );
+}
