@@ -1,3 +1,4 @@
+use super::command_queue::CommandInboxDisconnected;
 use super::*;
 use crate::AudioOutputDeviceRequest;
 
@@ -22,10 +23,9 @@ impl PlayerWorkerRuntime {
 
     /// Забирает команду без блокировки, чтобы render/tick не starvation-ились.
     pub(super) fn receive_next_command(&self) -> Option<WorkerCommand> {
-        match self.command_rx.try_recv() {
-            Ok(command) => Some(command),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(WorkerCommand::Player(PlayerCommand::Shutdown)),
+        match self.command_inbox.try_receive() {
+            Ok(command) => command,
+            Err(CommandInboxDisconnected) => Some(WorkerCommand::Player(PlayerCommand::Shutdown)),
         }
     }
 

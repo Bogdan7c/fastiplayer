@@ -9,15 +9,16 @@ impl PlayerCommandSender {
         Ok(())
     }
 
-    /// Единая неблокирующая отправка ordinary worker command с terminal admission gate.
+    /// Единая неблокирующая отправка worker command с receipt и terminal admission gate.
+    ///
+    /// Пока у очереди непустой резерв, возвращает `Full`: команда с receipt не должна
+    /// обгонять уже принятые пользовательские команды (см. `command_queue`).
     pub(super) fn try_send_worker_command(
         &self,
         command: WorkerCommand,
     ) -> Result<(), PlayerWorkerSendError> {
         self.ensure_admission_open()?;
-        self.command_tx
-            .try_send(command)
-            .map_err(PlayerWorkerSendError::from)
+        self.command_queue.try_send_ordered_worker_command(command)
     }
 
     /// Ставит exact-instance transport/reset и возвращает receipt фактического owner apply.
@@ -233,14 +234,13 @@ impl PlayerCommandSender {
     ) -> Result<MediaInstallControlReceipt, PlayerWorkerSendError> {
         let (receipt, outcome_tx) = MediaInstallControlReceipt::new(request_id);
         self.ensure_admission_open()?;
-        self.command_tx
-            .send(WorkerCommand::MediaInstallControl(
+        self.command_queue
+            .send_lossless_worker_command(WorkerCommand::MediaInstallControl(
                 MediaInstallControlCommand {
                     control,
                     outcome_tx,
                 },
-            ))
-            .map_err(|_| PlayerWorkerSendError::Disconnected)?;
+            ))?;
         Ok(receipt)
     }
 
@@ -286,14 +286,23 @@ impl PlayerCommandSender {
     }
 
     /// Собирает sender fixture с отдельным D52 wake channel.
+    ///
+    /// Резерв такого sender-а ни с каким worker-ом не связан: fixture проверяет только
+    /// отправляющую сторону через сырой `command_tx`/receiver.
     #[cfg(test)]
     pub(super) fn for_tests(command_tx: Sender<WorkerCommand>) -> (Self, Receiver<()>) {
+        Self::for_tests_with_queue(WorkerCommandQueue::detached_for_tests(command_tx))
+    }
+
+    /// Собирает sender fixture поверх очереди, чей inbox принадлежит тестовому runtime.
+    #[cfg(test)]
+    pub(super) fn for_tests_with_queue(command_queue: WorkerCommandQueue) -> (Self, Receiver<()>) {
         let playback_intent_control = Arc::new(PlaybackIntentControl::default());
         let (playback_intent_wake_tx, playback_intent_wake_rx) = bounded(1);
         let admission_closed = Arc::new(AtomicBool::new(false));
         (
             Self {
-                command_tx,
+                command_queue,
                 playback_intent_control,
                 playback_intent_wake_tx,
                 admission_closed,
@@ -303,8 +312,15 @@ impl PlayerCommandSender {
     }
 
     /// Отправляет команду без блокировки render/UI thread.
+    ///
+    /// Если основная очередь занята, команда ложится в упорядоченный резерв и всё равно
+    /// дойдёт до worker-а в порядке отправки; промежуточные значения (громкость, цель
+    /// scrub-а) там сливаются. `Full` означает, что переполнен и резерв: команда потеряна.
     pub fn try_send(&self, command: PlayerCommand) -> Result<(), PlayerWorkerSendError> {
-        self.try_send_worker_command(WorkerCommand::Player(command))
+        self.ensure_admission_open()?;
+        self.command_queue
+            .try_send_player_command(command)
+            .map(|_admission| ())
     }
 
     /// Применяет committed runtime settings и ждёт реальный worker report.
@@ -321,15 +337,15 @@ impl PlayerCommandSender {
             return Err(PlayerRuntimeApplyError::Disconnected);
         }
 
-        match self
-            .command_tx
-            .try_send(WorkerCommand::ApplyRuntimeSettings {
+        match self.command_queue.try_send_ordered_worker_command(
+            WorkerCommand::ApplyRuntimeSettings {
                 update: Box::new(update),
                 response_tx,
-            }) {
+            },
+        ) {
             Ok(()) => {}
-            Err(TrySendError::Full(_command)) => return Err(PlayerRuntimeApplyError::Backpressure),
-            Err(TrySendError::Disconnected(_command)) => {
+            Err(PlayerWorkerSendError::Full) => return Err(PlayerRuntimeApplyError::Backpressure),
+            Err(PlayerWorkerSendError::Disconnected) => {
                 return Err(PlayerRuntimeApplyError::Disconnected);
             }
         }

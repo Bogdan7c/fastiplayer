@@ -155,7 +155,10 @@ fn command_batch_yields_to_overdue_tick_during_command_storm() {
     runtime.service_worker_fairness_checkpoint(processed_commands);
 
     assert_eq!(processed_commands, MAX_COMMANDS_PER_LOOP);
-    assert_eq!(runtime.command_rx.len(), MAX_COMMANDS_PER_LOOP);
+    assert_eq!(
+        runtime.command_inbox.main_receiver().len(),
+        MAX_COMMANDS_PER_LOOP
+    );
     assert!(runtime.last_tick_at > previous_tick_at);
 }
 

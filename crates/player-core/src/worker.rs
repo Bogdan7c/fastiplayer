@@ -59,6 +59,8 @@ use crate::{
     scheduler_timing_diagnostics,
 };
 
+mod command_queue;
+use command_queue::{WorkerCommandInbox, WorkerCommandQueue, worker_command_queue};
 mod handle;
 mod media_install_compatibility;
 mod runtime_commands;
@@ -507,8 +509,8 @@ impl PlayerRenderError {
 /// Cloneable sender для команд player worker.
 #[derive(Clone)]
 pub struct PlayerCommandSender {
-    /// Единственная bounded очередь команд worker-а.
-    command_tx: Sender<WorkerCommand>,
+    /// Bounded очередь команд worker-а с упорядоченным резервом при переполнении.
+    command_queue: WorkerCommandQueue,
 
     /// Shared latest-only D52 state, независимый от заполненности ordinary queue.
     playback_intent_control: Arc<PlaybackIntentControl>,
@@ -755,8 +757,8 @@ struct PlayerWorkerRuntime {
     /// Worker-owned state neutral decoder activity wait-а.
     decoder_activity: WorkerDecoderActivityState,
 
-    /// Receiver основной очереди команд.
-    command_rx: Receiver<WorkerCommand>,
+    /// Приём команд: основная очередь, затем упорядоченный резерв.
+    command_inbox: WorkerCommandInbox,
 
     /// Shared D52 state для drain exact installed updates.
     playback_intent_control: Arc<PlaybackIntentControl>,

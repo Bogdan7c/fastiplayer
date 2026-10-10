@@ -11,6 +11,7 @@ impl PlayerWorker {
         })?;
 
         let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
+        let (command_queue, command_inbox) = worker_command_queue(command_tx, command_rx);
         let playback_intent_control = Arc::new(PlaybackIntentControl::default());
         let (playback_intent_wake_tx, playback_intent_wake_rx) = bounded(1);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
@@ -25,7 +26,7 @@ impl PlayerWorker {
         let frame_server_config = config.frame_server_config;
 
         let command_sender = PlayerCommandSender {
-            command_tx,
+            command_queue,
             playback_intent_control: Arc::clone(&playback_intent_control),
             playback_intent_wake_tx: playback_intent_wake_tx.clone(),
             admission_closed,
@@ -59,7 +60,7 @@ impl PlayerWorker {
                     session,
                     worker_scheduler: WorkerScheduler,
                     decoder_activity: WorkerDecoderActivityState::default(),
-                    command_rx,
+                    command_inbox,
                     playback_intent_control,
                     playback_intent_wake_rx,
                     _playback_intent_wake_tx_guard: playback_intent_wake_tx,

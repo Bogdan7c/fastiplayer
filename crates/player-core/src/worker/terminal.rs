@@ -109,9 +109,8 @@ impl PlayerWorker {
 
         let command_result = self
             .command_sender
-            .command_tx
-            .try_send(WorkerCommand::Player(PlayerCommand::Shutdown))
-            .map_err(PlayerWorkerSendError::from);
+            .command_queue
+            .try_send_bypassing_reserve(WorkerCommand::Player(PlayerCommand::Shutdown));
         let cancellation_result = self
             .shutdown_tx
             .try_send(())

@@ -501,4 +501,42 @@ mod tests {
         assert!(result.actions.is_empty());
         assert!(!state.has_active_drag());
     }
+
+    /// Сессия UX 17: если timeline перестал быть seekable посреди live drag-а
+    /// (смена media / пропало DVR-окно), UI молча забывает жест без Cancel.
+    /// Выход player-а из Scrubbing в этом случае обеспечивает core (см.
+    /// `player-core` `worker/tests/command_loss.rs` и `expire_dynamic_seek_or_scrub`).
+    #[test]
+    fn live_drag_losing_bounds_clears_gesture_without_cancel_action() {
+        let mut state = TimelineUiState::default();
+        assert_eq!(
+            frame(
+                &mut state,
+                TimelinePointerInput {
+                    pointer_down_on_timeline: true,
+                    pointer_fraction: Some(0.2),
+                    ..Default::default()
+                },
+                true
+            ),
+            vec![TimelineAction::BeginLiveScrub(MediaTime::from_secs(20))]
+        );
+        assert!(state.has_active_live_scrub_gesture());
+
+        let result = map_timeline_interaction(
+            &timeline(),
+            &mut state,
+            None,
+            TimelinePointerInput {
+                dragged: true,
+                pointer_fraction: Some(0.7),
+                ..Default::default()
+            },
+            true,
+        );
+
+        assert!(result.actions.is_empty());
+        assert!(!state.has_active_live_scrub_gesture());
+        assert!(!state.has_active_drag());
+    }
 }

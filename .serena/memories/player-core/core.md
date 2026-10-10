@@ -1,3 +1,7 @@
+## Command delivery contract (UX17, 2026-10-10)
+
+- Ordinary `PlayerCommandSender::try_send` не теряет команды при полной 128-очереди: упорядоченный резерв + слияние latest-value команд; receipt-команды при непустом резерве получают `Full`/`Backpressure`; shutdown обходит резерв. Owner `worker/command_queue.rs`, детали `mem:player-core/command-delivery-reserve-ux17`.
+
 ## Video one-shot worker-receipted routing (2026-08-24)
 
 - `PreparedDemuxSeekRuntime::routes_one_shot_seek_through_worker()` is the storage-hiding capability boundary used by `start_one_shot_seek_landing`.

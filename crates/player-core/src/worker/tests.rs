@@ -17,6 +17,7 @@ use video_present_core::VideoFrameLeaseConfig;
 
 use super::*;
 
+mod command_loss;
 mod commands;
 mod media_install;
 #[path = "tests/queued_intent.rs"]
@@ -269,7 +270,30 @@ pub(super) fn runtime_for_tests(last_tick_at: Instant) -> PlayerWorkerRuntime {
 fn runtime_for_tests_with_command_sender(
     last_tick_at: Instant,
 ) -> (PlayerWorkerRuntime, Sender<WorkerCommand>) {
+    let (runtime, command_tx, _command_queue) = runtime_for_tests_with_command_queue(last_tick_at);
+    (runtime, command_tx)
+}
+
+/// Runtime и public sender поверх одной очереди с общим резервом (как в production).
+fn runtime_for_tests_with_public_sender(
+    last_tick_at: Instant,
+) -> (PlayerWorkerRuntime, PlayerCommandSender) {
+    let (runtime, _command_tx, command_queue) = runtime_for_tests_with_command_queue(last_tick_at);
+    (
+        runtime,
+        PlayerCommandSender::for_tests_with_queue(command_queue).0,
+    )
+}
+
+fn runtime_for_tests_with_command_queue(
+    last_tick_at: Instant,
+) -> (
+    PlayerWorkerRuntime,
+    Sender<WorkerCommand>,
+    WorkerCommandQueue,
+) {
     let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
+    let (command_queue, command_inbox) = worker_command_queue(command_tx.clone(), command_rx);
     let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
     let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
     let (render_bridge, _render_bridge_client) = RenderLeaseBridge::new();
@@ -284,7 +308,7 @@ fn runtime_for_tests_with_command_sender(
                 .with_playback_intent_control(Arc::clone(&playback_intent_control)),
             worker_scheduler: WorkerScheduler,
             decoder_activity: WorkerDecoderActivityState::default(),
-            command_rx,
+            command_inbox,
             playback_intent_control,
             playback_intent_wake_rx,
             _playback_intent_wake_tx_guard: playback_intent_wake_tx,
@@ -299,6 +323,7 @@ fn runtime_for_tests_with_command_sender(
             last_seek_stall_log_at: None,
         },
         command_tx,
+        command_queue,
     )
 }
 
@@ -311,6 +336,7 @@ fn runtime_for_tests_with_wakeup_handles(
     RenderLeaseBridgeClient,
 ) {
     let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
+    let (_command_queue, command_inbox) = worker_command_queue(command_tx.clone(), command_rx);
     let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
     let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
     let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
@@ -325,7 +351,7 @@ fn runtime_for_tests_with_wakeup_handles(
                 .with_playback_intent_control(Arc::clone(&playback_intent_control)),
             worker_scheduler: WorkerScheduler,
             decoder_activity: WorkerDecoderActivityState::default(),
-            command_rx,
+            command_inbox,
             playback_intent_control,
             playback_intent_wake_rx,
             _playback_intent_wake_tx_guard: playback_intent_wake_tx,
@@ -528,7 +554,7 @@ fn worker_with_terminal_thread_for_tests(
     PlayerWorker {
         snapshot_publication_lock: Arc::new(Mutex::new(())),
         command_sender: PlayerCommandSender {
-            command_tx,
+            command_queue: WorkerCommandQueue::detached_for_tests(command_tx),
             playback_intent_control,
             playback_intent_wake_tx,
             admission_closed,

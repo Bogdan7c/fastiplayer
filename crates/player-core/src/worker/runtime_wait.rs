@@ -344,9 +344,15 @@ impl PlayerWorkerRuntime {
                     shutdown_requested: self.handle_playback_intent_wakeup(),
                 }
             }
-            recv(self.command_rx) -> command_result => {
+            recv(self.command_inbox.main_receiver()) -> command_result => {
                 WorkerTimedWaitOutcome::Finished {
                     shutdown_requested: self.handle_command_wakeup(command_result),
+                }
+            }
+            recv(self.command_inbox.reserve_wake_receiver()) -> _ => {
+                // Резерв пополнился, пока worker спал: main loop разберёт его в batch-е.
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: false,
                 }
             }
             recv(self.shutdown_rx) -> _ => {
@@ -430,9 +436,15 @@ impl PlayerWorkerRuntime {
                     shutdown_requested: self.handle_playback_intent_wakeup(),
                 }
             }
-            recv(self.command_rx) -> command_result => {
+            recv(self.command_inbox.main_receiver()) -> command_result => {
                 WorkerTimedWaitOutcome::Finished {
                     shutdown_requested: self.handle_command_wakeup(command_result),
+                }
+            }
+            recv(self.command_inbox.reserve_wake_receiver()) -> _ => {
+                // Резерв пополнился, пока worker спал: main loop разберёт его в batch-е.
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: false,
                 }
             }
             recv(self.shutdown_rx) -> _ => {
@@ -545,8 +557,12 @@ impl PlayerWorkerRuntime {
             recv(self.playback_intent_wake_rx) -> _ => {
                 self.handle_playback_intent_wakeup()
             }
-            recv(self.command_rx) -> command_result => {
+            recv(self.command_inbox.main_receiver()) -> command_result => {
                 self.handle_command_wakeup(command_result)
+            }
+            recv(self.command_inbox.reserve_wake_receiver()) -> _ => {
+                // Резерв пополнился, пока worker спал: main loop разберёт его в batch-е.
+                false
             }
             recv(timeline_receiver) -> activity_result => {
                 matches!(

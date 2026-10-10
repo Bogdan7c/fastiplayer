@@ -2,8 +2,8 @@ use super::telemetry_panel::TelemetryPanelState;
 use super::*;
 use crate::fullscreen_chrome::ChromeHoldObservation;
 use crate::ui::buffering_indicator::render_buffering_indicator;
-use crate::ui::fullscreen_chrome_panels;
 use crate::ui::video_surface_input::{self, VideoSurfaceAction};
+use crate::ui::{control_action_coalescing, fullscreen_chrome_panels};
 use tracing::warn;
 
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
@@ -480,7 +480,7 @@ impl AppState {
         actions: Vec<ControlAction>,
     ) -> Vec<crate::ui::player_controls::TransportControlAction> {
         let mut transport_actions = Vec::new();
-        for action in actions {
+        for action in control_action_coalescing::coalesce_consecutive_volume(actions) {
             match action {
                 ControlAction::Transport(action) => transport_actions.push(action),
                 ControlAction::OpenFile => self.open_file(window),
