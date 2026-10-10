@@ -150,6 +150,9 @@ PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
 PLAYLIST_IO_ALLOWED_DEPENDENCIES = frozenset(
     {
         "bounded-xml-reader",
+        # Pure in-memory перекодировка Windows-1251 для legacy .m3u/.cue (B1):
+        # без filesystem/network/threads, граница parser-а не нарушается.
+        "encoding_rs",
         "hls-playlist-core",
         "media-core",
         "playlist-core",
