@@ -513,3 +513,5 @@ fn metadata_patch_then_structural_change_still_invalidates_undo() {
     // Свежие metadata не пострадали от отклонённого Undo.
     assert_eq!(queue_titles(&runtime)[1].as_deref(), Some("Fresh"));
 }
+
+mod current_change;

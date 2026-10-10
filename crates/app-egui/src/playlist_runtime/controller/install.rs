@@ -543,7 +543,8 @@ impl PlaylistController {
             };
             self.structural_revision = next_structural_revision;
         }
-        let mut dirty = queue_changed.then(|| self.commit_dirty(next_dirty));
+        let mut dirty =
+            queue_changed.then(|| self.commit_install_dirty(next_dirty, structural_changed));
         if let Some(mode_dirty) = self.apply_desired_modes(desired_modes)? {
             dirty = Some(mode_dirty);
         }

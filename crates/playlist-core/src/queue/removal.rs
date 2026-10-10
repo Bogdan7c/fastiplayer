@@ -163,6 +163,18 @@ pub enum RemovalSnapshotRestoreError {
     NotRemovalResult,
     /// Новую structural/traversal revision невозможно выделить.
     RevisionExhausted,
+    /// Восстановление «только строк» невозможно при включённом shuffle: порядок
+    /// воспроизведения (история и очередь shuffle) принадлежит snapshot-у, а не текущему pointer-у.
+    ShuffleActive,
+}
+
+/// Чьим считать pointer «что играет» после восстановления строк.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoredCurrentSource {
+    /// Pointer и shuffle-история берутся из snapshot (откат состояния на момент удаления).
+    Snapshot,
+    /// Pointer остаётся из текущей очереди: возвращаются только удалённые строки.
+    CurrentQueue,
 }
 
 impl PlaylistQueue {
@@ -184,6 +196,29 @@ impl PlaylistQueue {
     pub fn restore_removal_snapshot(
         &mut self,
         snapshot: PlaylistRemovalSnapshot,
+    ) -> Result<RemovalSnapshotRestoreOutcome, RemovalSnapshotRestoreError> {
+        self.restore_removal_snapshot_from(snapshot, RestoredCurrentSource::Snapshot)
+    }
+
+    /// Возвращает ТОЛЬКО удалённые строки на их прежние позиции; pointer «что играет»
+    /// остаётся из текущей очереди (он хранится по id строки, поэтому после вставки строк
+    /// перед ним продолжает указывать на тот же трек). Допустимо лишь без shuffle и когда
+    /// удалённые строки не содержали current на момент удаления: решение принимает вызывающий,
+    /// домен дополнительно отвергает включённый shuffle (в snapshot-е или в очереди).
+    pub fn restore_removed_rows_keeping_current(
+        &mut self,
+        snapshot: PlaylistRemovalSnapshot,
+    ) -> Result<RemovalSnapshotRestoreOutcome, RemovalSnapshotRestoreError> {
+        if self.shuffle_traversal.is_some() || snapshot.shuffle_traversal.is_some() {
+            return Err(RemovalSnapshotRestoreError::ShuffleActive);
+        }
+        self.restore_removal_snapshot_from(snapshot, RestoredCurrentSource::CurrentQueue)
+    }
+
+    fn restore_removal_snapshot_from(
+        &mut self,
+        snapshot: PlaylistRemovalSnapshot,
+        current_source: RestoredCurrentSource,
     ) -> Result<RemovalSnapshotRestoreOutcome, RemovalSnapshotRestoreError> {
         if self.active_reservation.is_some() {
             return Err(RemovalSnapshotRestoreError::InstallCommitLinearizing);
@@ -224,7 +259,10 @@ impl PlaylistQueue {
             return Err(RemovalSnapshotRestoreError::NotRemovalResult);
         }
         let snapshot_next_traversal = snapshot.traversal_revision.checked_next();
-        if self.traversal_revision != snapshot.traversal_revision
+        // При откате pointer-а revision обязана быть «как в snapshot» либо +1 (удаление current).
+        // При сохранении текущего pointer-а он мог уходить вперёд сколько угодно раз.
+        if current_source == RestoredCurrentSource::Snapshot
+            && self.traversal_revision != snapshot.traversal_revision
             && Some(self.traversal_revision) != snapshot_next_traversal
         {
             return Err(RemovalSnapshotRestoreError::StalePersistentState);
@@ -234,7 +272,8 @@ impl PlaylistQueue {
             .structural_revision
             .checked_next()
             .ok_or(RemovalSnapshotRestoreError::RevisionExhausted)?;
-        let traversal_changed = self.traversal_current != snapshot.traversal_current;
+        let traversal_changed = current_source == RestoredCurrentSource::Snapshot
+            && self.traversal_current != snapshot.traversal_current;
         let next_traversal_revision = traversal_changed
             .then(|| {
                 self.traversal_revision
@@ -261,8 +300,10 @@ impl PlaylistQueue {
             .collect::<Vec<_>>();
         drop(current_entries_by_id);
         self.entries = merged_entries;
-        self.traversal_current = snapshot.traversal_current;
-        self.shuffle_traversal = snapshot.shuffle_traversal;
+        if current_source == RestoredCurrentSource::Snapshot {
+            self.traversal_current = snapshot.traversal_current;
+            self.shuffle_traversal = snapshot.shuffle_traversal;
+        }
         self.structural_revision = next_structural_revision;
         if let Some(next_revision) = next_traversal_revision {
             self.traversal_revision = next_revision;

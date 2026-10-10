@@ -1,6 +1,7 @@
 //! Destructive queue mutations, detached active tombstone и controller-side Undo restore.
 
 mod clear;
+mod current_pointer;
 mod selection;
 pub(crate) use clear::ControllerClearMediaResetCommit;
 
@@ -674,7 +675,7 @@ impl PlaylistController {
         let Some(next_structural) = self.structural_revision.checked_next() else {
             return ControllerRemovalUndoOutcome::StructuralRevisionExhausted;
         };
-        if let Err(error) = self.queue.restore_removal_snapshot(removal.snapshot) {
+        if let Err(error) = self.restore_queue_for_undo(&removal, removal.snapshot.clone()) {
             return ControllerRemovalUndoOutcome::Domain(error);
         }
 

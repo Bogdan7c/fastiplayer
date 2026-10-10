@@ -121,6 +121,7 @@ impl RemovalUndoState {
         now: Instant,
         current_undo_blocking_revision: PlaylistDirtyRevision,
         active_media: Option<ActiveMediaIdentity>,
+        survives_current_change: bool,
     ) -> RemovalUndoAvailability {
         if now >= self.deadline {
             return RemovalUndoAvailability::Expired;
@@ -128,8 +129,11 @@ impl RemovalUndoState {
         if current_undo_blocking_revision != self.expected_undo_blocking_revision {
             return RemovalUndoAvailability::Invalidated;
         }
-        if active_media.map(ActiveMediaIdentity::lineage_id)
-            != self.removal.active_lineage_at_removal
+        // Смена lineage сбрасывает Undo, кроме случая «удалены только неиграющие строки, shuffle
+        // выключен»: тогда Undo вернёт строки, не трогая текущий pointer.
+        if !survives_current_change
+            && active_media.map(ActiveMediaIdentity::lineage_id)
+                != self.removal.active_lineage_at_removal
         {
             return RemovalUndoAvailability::Invalidated;
         }
@@ -349,6 +353,7 @@ impl PlaylistRuntime {
                 now,
                 controller.undo_blocking_revision(),
                 controller.active_media(),
+                controller.undo_survives_current_change(&undo.removal),
             )
         });
         match availability {
@@ -376,6 +381,7 @@ impl PlaylistRuntime {
             now,
             controller.undo_blocking_revision(),
             controller.active_media(),
+            controller.undo_survives_current_change(&undo.removal),
         ) {
             RemovalUndoAvailability::Expired => {
                 self.removal_undo = None;
@@ -457,6 +463,7 @@ impl PlaylistRuntime {
         if let Some(installed_active) = drain.active_media
             && self.removal_undo.as_ref().is_some_and(|undo| {
                 undo.removal.active_lineage_at_removal != Some(installed_active.lineage_id())
+                    && !controller.undo_survives_current_change(&undo.removal)
             })
         {
             self.removal_undo = None;

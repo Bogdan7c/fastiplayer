@@ -220,3 +220,80 @@ fn snapshot_restore_after_metadata_patch_keeps_fresh_metadata_of_retained_rows()
         Some(Some("Fresh title"))
     );
 }
+
+/// Собирает очередь из `count` строк и возвращает id в каноническом порядке.
+fn queue_with_rows(count: usize) -> (PlaylistQueue, Vec<crate::PlaylistItemId>) {
+    let mut queue = PlaylistQueue::new();
+    let ids = match queue
+        .append_batch((0..count).map(draft).collect())
+        .expect("fixture append")
+    {
+        AddItemsOutcome::Added(ids) => ids.into_vec(),
+        AddItemsOutcome::NoItemsProvided => panic!("fixture must append rows"),
+    };
+    (queue, ids)
+}
+
+#[test]
+fn restoring_rows_keeps_current_pointer_that_moved_after_removal() {
+    let (mut queue, ids) = queue_with_rows(4);
+    queue
+        .set_traversal_current(ids[0])
+        .expect("fixture current");
+    let snapshot = queue.capture_removal_snapshot();
+    let _removed = queue.remove(crate::PlaylistEntryId::Single(ids[1]));
+    // Автопереход A -> C и ещё один шаг C -> D: revision ушла вперёд больше чем на 1.
+    queue.set_traversal_current(ids[2]).expect("advance to C");
+    queue.set_traversal_current(ids[3]).expect("advance to D");
+
+    let restored = queue
+        .restore_removed_rows_keeping_current(snapshot)
+        .expect("rows come back without touching current");
+
+    assert_eq!(queue.iter_playable_ids().collect::<Vec<_>>(), ids);
+    // Указатель продолжает указывать на D по id, хотя D сдвинулся с индекса 2 на индекс 3.
+    assert_eq!(
+        restored
+            .traversal_current()
+            .map(|current| current.item_id()),
+        Some(ids[3])
+    );
+    assert_eq!(
+        queue.traversal_current().map(|current| current.item_id()),
+        Some(ids[3])
+    );
+}
+
+#[test]
+fn restoring_rows_keeping_current_refuses_active_shuffle_without_changing_queue() {
+    let (mut queue, ids) = queue_with_rows(4);
+    queue
+        .set_traversal_current(ids[0])
+        .expect("fixture current");
+    let mut random = StdRng::seed_from_u64(0x9B);
+    queue
+        .enable_shuffle_with_rng(&mut random)
+        .expect("shuffle enabled");
+    let snapshot = queue.capture_removal_snapshot();
+    let _removed = queue.remove(crate::PlaylistEntryId::Single(ids[1]));
+    let order_before = queue.iter_playable_ids().collect::<Vec<_>>();
+
+    assert_eq!(
+        queue.restore_removed_rows_keeping_current(snapshot),
+        Err(RemovalSnapshotRestoreError::ShuffleActive)
+    );
+    assert_eq!(queue.iter_playable_ids().collect::<Vec<_>>(), order_before);
+}
+
+#[test]
+fn restoring_rows_keeping_current_still_rejects_other_structural_changes() {
+    let (mut queue, ids) = queue_with_rows(3);
+    let snapshot = queue.capture_removal_snapshot();
+    let _removed = queue.remove(crate::PlaylistEntryId::Single(ids[1]));
+    let _later_append = queue.append_one(draft(9)).expect("later mutation");
+
+    assert_eq!(
+        queue.restore_removed_rows_keeping_current(snapshot),
+        Err(RemovalSnapshotRestoreError::StaleStructuralRevision)
+    );
+}
