@@ -35,7 +35,7 @@ use crate::dma_buf_runtime_fallback::{
     PendingDmaBufLayoutRejection,
 };
 use crate::local_file_open::{LocalFileOpenJob, LocalFileOpenRestoreOutcome, LocalFileOpenResult};
-use crate::local_open_message::{local_open_failure_message, local_open_preparing_message};
+use crate::local_open_message::local_open_preparing_message;
 use crate::settings_runtime::CommittedConfigSnapshot;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::startup_readiness::{
@@ -67,8 +67,14 @@ mod notification_routing;
 mod notifications;
 pub(crate) use media_jobs::playback_intent_from_snapshot;
 pub(crate) use notifications::{
-    CenterNotice, MediaFailureOrigin, NotificationId, NotificationsFrame, ToastKind, ToastView,
+    CenterNotice, NotificationId, NotificationsFrame, RetryOffer, ToastKind, ToastView,
 };
+mod media_retry;
+#[cfg(test)]
+pub(crate) use media_retry::{
+    LocalOpenSlot, MediaRetryPort, ReopenPosition, RetryStart, execute_media_retry,
+};
+pub(crate) use media_retry::{MediaRetryTarget, RetryPlan};
 mod playlist_attachment;
 mod playlist_transport;
 pub(crate) use playlist_transport::LifecycleTimelineSeekSettlement;
@@ -644,11 +650,7 @@ impl AppState {
     ///
     /// Ошибка становится фатальной ошибкой центра: висит до ×, успешного или нового открытия.
     pub fn set_startup_error(&mut self, message: String) {
-        self.abort_startup_readiness(StartupReadinessAbortReason::PreparationFailed);
-        self.startup_pending = None;
-        self.notifications
-            .show_media_failure(message, MediaFailureOrigin::MediaOpen);
-        self.mark_pending_worker_redraw();
+        self.report_open_failure(message, media_retry::RetryPlan::NotOffered);
     }
 
     /// Сбрасывает shell-level startup overlay после успешного открытия media.

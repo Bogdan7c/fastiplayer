@@ -16,6 +16,7 @@ use playlist_core::{
     ManualNavigationOutcome, PlaylistItemId, ReservedQueueMutation,
 };
 
+use super::active_media_reuse::ActiveMediaReuse;
 pub(super) use super::discovery_navigation::PendingManualTraversal;
 pub(crate) use super::discovery_navigation::{
     DiscoveryManualWaitAvailability, ManualNavigationWaitId, SiblingDiscoveryScopeId,
@@ -333,6 +334,28 @@ impl PlaylistController {
         desired_intent: StablePlaybackIntent,
         start_position: StartupPosition,
     ) -> ControllerPlayItemOutcome {
+        self.play_item_reusing_active(
+            item_id,
+            origin,
+            desired_intent,
+            start_position,
+            ActiveMediaReuse::RestartInPlace,
+        )
+    }
+
+    /// Ядро Play row с явным выбором: перезапускать ли уже загруженное media этого элемента.
+    ///
+    /// `ForceReopen` нужен, когда загруженное media мертво, хотя controller не считает его
+    /// сломанным (потеря сети посреди просмотра: `NetworkLost` не пишет runtime-ошибку,
+    /// B9). Перезапуск «с начала» на таком media ничего бы не исправил — нужен новый install.
+    pub(crate) fn play_item_reusing_active(
+        &mut self,
+        item_id: PlaylistItemId,
+        origin: TransportActionOrigin,
+        desired_intent: StablePlaybackIntent,
+        start_position: StartupPosition,
+        active_media_reuse: ActiveMediaReuse,
+    ) -> ControllerPlayItemOutcome {
         if self.queue.item(item_id).is_none() {
             return ControllerPlayItemOutcome::ItemNotCommitted;
         }
@@ -378,6 +401,7 @@ impl PlaylistController {
             .active_media
             .filter(|active| active.item_id() == Some(item_id))
             && !runtime_failed
+            && active_media_reuse == ActiveMediaReuse::RestartInPlace
         {
             return ControllerPlayItemOutcome::RestartActive {
                 request: ExactMediaTransportRequest {

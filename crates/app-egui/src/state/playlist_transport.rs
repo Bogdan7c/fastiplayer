@@ -474,6 +474,8 @@ impl AppState {
                         })
                         .flatten();
                     warn!(error = %error, "Playlist navigation install завершился ошибкой");
+                    // B9: ручной отказ виден и в центре (с «Повторить», если повтор осмыслен).
+                    self.show_manual_open_failure(playlist_runtime, &error);
                     if let Some(install) = automatic_continuation {
                         self.begin_planned_playlist_install(
                             playlist_runtime,

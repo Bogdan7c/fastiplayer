@@ -39,6 +39,7 @@ pub(crate) use lifecycle_checkpoint::LifecycleTimelineCheckpointPosition;
 pub(crate) use local_files_replacement::LocalFilesReplacementOutcome;
 pub(crate) use resolved_url_collection::{DroppedWebUrlReplacementStart, ResolvedUrlCollection};
 mod media_reset;
+mod open_retry;
 mod operational_open;
 mod persistence;
 mod persistence_runtime;
@@ -325,6 +326,8 @@ pub(crate) struct PlaylistRuntime {
     controller: PlaylistControllerSlot,
     /// Ровно один process-lifetime last-action removal Undo slot.
     removal_undo: Option<removal_undo::RemovalUndoState>,
+    /// Ручной отказ открытия элемента, ожидающий показа в центре (B9).
+    manual_open_failure: open_retry::ManualOpenFailureMailbox,
     /// Последний exact Clear reset, ещё не принятый bounded player channel-ом.
     media_reset: media_reset::PlaylistMediaResetOwner,
     /// D79 confirmation хранит secret-bearing intent вне renderer-bound `AppState`.
@@ -443,6 +446,7 @@ impl PlaylistRuntime {
             owner_receiver,
             controller: PlaylistControllerSlot::pending(),
             removal_undo: None,
+            manual_open_failure: open_retry::ManualOpenFailureMailbox::default(),
             media_reset: media_reset::PlaylistMediaResetOwner::default(),
             replacement_confirmation:
                 replacement_confirmation::QueueReplacementConfirmationState::new(),

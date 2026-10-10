@@ -42,7 +42,7 @@ impl AppState {
     ///
     /// Прямая ссылка на media (без topology) идёт прежним путём: замена очереди одной строкой.
     /// Результат коллекции применяет `apply_resolved_url_collection` (см. `resolved_url_collection`).
-    pub(super) fn request_queue_replacement_with_dropped_web_url(
+    pub(in crate::state) fn request_queue_replacement_with_dropped_web_url(
         &mut self,
         url: &DroppedWebUrl,
         playlist_runtime: &mut PlaylistRuntime,

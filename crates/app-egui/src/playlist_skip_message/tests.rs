@@ -119,6 +119,7 @@ fn stop_policy_is_transient_toast_with_reason() {
 }
 
 /// B8: остановка из-за сети — ошибка в центре (висит до ×), а не исчезающая плашка.
+/// B9: у неё есть «Повторить», продолжающее очередь (`ResumableMediaFailure`).
 #[test]
 fn queue_blocked_by_network_or_rate_limit_is_center_error_with_reason() {
     use crate::playlist_runtime::QueueBlockReason;
@@ -127,7 +128,7 @@ fn queue_blocked_by_network_or_rate_limit_is_center_error_with_reason() {
         playlist_queue_notice_delivery(&AutomaticQueueNotice::StoppedOpenBlocked {
             reason: QueueBlockReason::NoNetwork
         }),
-        PlaylistQueueNoticeDelivery::MediaFailure(
+        PlaylistQueueNoticeDelivery::ResumableMediaFailure(
             "Нет подключения к сети — очередь остановлена".to_owned()
         )
     );
@@ -135,7 +136,7 @@ fn queue_blocked_by_network_or_rate_limit_is_center_error_with_reason() {
         playlist_queue_notice_delivery(&AutomaticQueueNotice::StoppedOpenBlocked {
             reason: QueueBlockReason::SiteRateLimited
         }),
-        PlaylistQueueNoticeDelivery::MediaFailure(
+        PlaylistQueueNoticeDelivery::ResumableMediaFailure(
             "Сайт ограничил запросы — очередь остановлена".to_owned()
         )
     );

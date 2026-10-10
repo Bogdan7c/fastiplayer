@@ -10,6 +10,7 @@ use player_core::{
 };
 
 use super::*;
+use crate::state::media_retry::ReopenPosition;
 
 /// Проекция без идущего открытия; reduced motion не влияет на состав уведомлений.
 fn idle_frame(center: &mut NotificationCenter, now: Instant) -> NotificationsFrame {
@@ -328,6 +329,90 @@ fn network_failure_during_playback_shows_human_reason() {
         crate::player_error_message::NETWORK_LOST_DURING_PLAYBACK_MESSAGE
     );
     assert!(!message.contains("range-read"), "{message}");
+}
+
+/// B9: потеря сети посреди просмотра — «Повторить» переоткрывает с места обрыва.
+#[test]
+fn network_failure_during_playback_offers_reopen_from_failure_position() {
+    let failed_at = Duration::from_secs(83);
+    let snapshot = PlayerSnapshot {
+        playback_state: PlaybackState::Failed,
+        last_error: Some(PlayerError::new(
+            PlayerErrorKind::NetworkError,
+            "сеть пропала",
+        )),
+        current_position: failed_at,
+        ..Default::default()
+    };
+    let mut center = NotificationCenter::default();
+    center.observe_player_snapshot(&snapshot);
+
+    let Some(CenterNotice::MediaFailure(view)) = idle_frame(&mut center, Instant::now()).center
+    else {
+        panic!("Failed по сети показывает ошибку в центре");
+    };
+    assert_eq!(view.retry, RetryOffer::Available);
+    assert_eq!(
+        center.request_retry(view.id),
+        RetryRequestOutcome::Requested
+    );
+    assert_eq!(
+        center.take_retry_request(),
+        Some(MediaRetryTarget::ReopenFailedPlayback {
+            position: ReopenPosition::At(failed_at)
+        })
+    );
+}
+
+/// Без известной позиции переоткрытие идёт с начала.
+#[test]
+fn network_failure_at_zero_position_reopens_from_start() {
+    let snapshot = PlayerSnapshot {
+        playback_state: PlaybackState::Failed,
+        last_error: Some(PlayerError::new(
+            PlayerErrorKind::NetworkError,
+            "сеть пропала",
+        )),
+        ..Default::default()
+    };
+    let mut center = NotificationCenter::default();
+    center.observe_player_snapshot(&snapshot);
+    let Some(CenterNotice::MediaFailure(view)) = idle_frame(&mut center, Instant::now()).center
+    else {
+        panic!("ошибка в центре");
+    };
+
+    center.request_retry(view.id);
+
+    assert_eq!(
+        center.take_retry_request(),
+        Some(MediaRetryTarget::ReopenFailedPlayback {
+            position: ReopenPosition::FromStart
+        })
+    );
+}
+
+/// Отказы, которые повтор не лечит (демуксер, декодер), кнопки не получают.
+#[test]
+fn non_network_playback_failure_has_no_retry() {
+    for kind in [
+        PlayerErrorKind::DemuxError,
+        PlayerErrorKind::UnsupportedVideoCodec,
+        PlayerErrorKind::RenderDeviceLost,
+    ] {
+        let snapshot = PlayerSnapshot {
+            playback_state: PlaybackState::Failed,
+            last_error: Some(PlayerError::new(kind.clone(), "сбой")),
+            ..Default::default()
+        };
+        let mut center = NotificationCenter::default();
+        center.observe_player_snapshot(&snapshot);
+        let Some(CenterNotice::MediaFailure(view)) = idle_frame(&mut center, Instant::now()).center
+        else {
+            panic!("{kind:?}: ошибка в центре");
+        };
+        assert_eq!(view.retry, RetryOffer::Unavailable, "{kind:?}");
+    }
 }
 
 #[test]

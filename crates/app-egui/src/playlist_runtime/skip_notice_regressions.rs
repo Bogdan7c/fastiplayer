@@ -193,7 +193,10 @@ pub(super) fn user_visible_messages(
         match playlist_queue_notice_delivery(notice) {
             PlaylistQueueNoticeDelivery::InfoToast(text)
             | PlaylistQueueNoticeDelivery::TransientToast(text) => toasts.push(text),
-            PlaylistQueueNoticeDelivery::MediaFailure(text) => center_error = Some(text),
+            PlaylistQueueNoticeDelivery::MediaFailure(text)
+            | PlaylistQueueNoticeDelivery::ResumableMediaFailure(text) => {
+                center_error = Some(text);
+            }
         }
     }
     (toasts, center_error)

@@ -15,10 +15,11 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use player_core::{PlaybackState, PlayerErrorKind, PlayerEvent, PlayerSnapshot};
+use player_core::{PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot};
 
 use crate::audio_output_message::{AUDIO_OUTPUT_UNAVAILABLE_MESSAGE, audio_output_switch_message};
 use crate::player_error_message::player_error_user_message;
+use crate::state::media_retry::{MediaRetryTarget, ReopenPosition, RetryPlan};
 
 use super::{MediaFailureOrigin, NotificationCenter, ObservedPlayerFailure};
 
@@ -73,7 +74,16 @@ impl NotificationCenter {
             ObservedPlayerFailure::Failed {
                 message: Some(message),
             } => {
-                self.show_media_failure(Arc::clone(message), MediaFailureOrigin::PlayerFailed);
+                let retry = snapshot
+                    .last_error
+                    .as_ref()
+                    .and_then(|error| failure_retry_target(error, snapshot.current_position))
+                    .map_or(RetryPlan::NotOffered, RetryPlan::Offered);
+                self.show_media_failure_planned(
+                    Arc::clone(message),
+                    MediaFailureOrigin::PlayerFailed,
+                    retry,
+                );
             }
             // `Failed` без текста: как и раньше, текст не придумываем (новые тексты ошибок —
             // вне объёма сессии), но и устаревшую ошибку player-а не оставляем.
@@ -93,5 +103,41 @@ impl NotificationCenter {
         {
             self.media_failure = None;
         }
+    }
+}
+
+/// Что повторять, если воспроизведение упало (`Failed`): есть ли смысл и с какого места.
+///
+/// Повтор предлагается только для потери сети посреди просмотра: источник мог вернуться,
+/// и переоткрытие с места обрыва продолжит просмотр. Остальные виды отказа повтором не
+/// лечатся (декодер, формат, устройство рендера). `match` исчерпывающий намеренно:
+/// новый `PlayerErrorKind` не скомпилируется, пока для него не решено, нужен ли повтор.
+fn failure_retry_target(
+    error: &PlayerError,
+    position_at_failure: std::time::Duration,
+) -> Option<MediaRetryTarget> {
+    match error.kind {
+        PlayerErrorKind::NetworkError => Some(MediaRetryTarget::ReopenFailedPlayback {
+            position: ReopenPosition::from_playback_position(position_at_failure),
+        }),
+        PlayerErrorKind::UnsupportedVideoCodec
+        | PlayerErrorKind::UnsupportedVideoProfile
+        | PlayerErrorKind::UnsupportedVideoBitDepth
+        | PlayerErrorKind::UnsupportedVideoChroma
+        | PlayerErrorKind::UnsupportedHdrMode
+        | PlayerErrorKind::UnsupportedAudioCodec
+        | PlayerErrorKind::UnsupportedRenderFormat
+        | PlayerErrorKind::HardwareDecoderUnavailable
+        | PlayerErrorKind::RequiredVideoBackendUnavailable
+        | PlayerErrorKind::DemuxError
+        | PlayerErrorKind::SeekUnavailable
+        | PlayerErrorKind::SeekTimeout
+        | PlayerErrorKind::SeekTargetExpired
+        | PlayerErrorKind::DecoderFlushFailed
+        | PlayerErrorKind::AudioDeviceUnavailable
+        | PlayerErrorKind::RenderDeviceLost
+        | PlayerErrorKind::ConfigError
+        | PlayerErrorKind::RuntimeError
+        | PlayerErrorKind::InvalidCommand => None,
     }
 }

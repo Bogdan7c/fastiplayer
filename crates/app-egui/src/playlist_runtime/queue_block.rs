@@ -133,9 +133,16 @@ impl PlaylistRuntime {
             AutomaticTargetBlockedOutcome::StaleRequest => {
                 // Не автоматический переход, а ручной выбор: прежняя D55-семантика
                 // «ждём пользователя», но без бейджа, ведь файл не виноват.
-                let outcome = controller.report_manual_navigation_target_failure(request_id);
+                let mut outcome = controller.report_manual_navigation_target_failure(request_id);
                 if matches!(outcome, ManualNavigationFailureOutcome::NotManualNavigation) {
-                    controller.report_unstaged_manual_navigation_target_failure(item_id);
+                    outcome = controller.report_unstaged_manual_navigation_target_failure(item_id);
+                }
+                // B9: ручной отказ из-за сети тоже виден в центре (с «Повторить»).
+                if let ManualNavigationFailureOutcome::AwaitingUserAfterFailure {
+                    item_id: failed_item_id,
+                } = outcome
+                {
+                    self.manual_open_failure.note(failed_item_id);
                 }
             }
         }

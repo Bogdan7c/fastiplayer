@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use animation_core::Easing;
 
-use crate::state::{CenterNotice, NotificationId, NotificationsFrame, ToastKind, ToastView};
+use crate::state::{
+    CenterNotice, NotificationId, NotificationsFrame, RetryOffer, ToastKind, ToastView,
+};
 use crate::ui::animation::UiMotion;
 
 /// Отступ сообщения в центре от верха центральной области (как было до сессии 04).
@@ -42,6 +44,10 @@ const PROGRESS_TEXT_COLOR: egui::Color32 = egui::Color32::LIGHT_BLUE;
 const DISMISS_BUTTON_LABEL: &str = "×";
 const DISMISS_BUTTON_HINT: &str = "Закрыть";
 
+/// Подпись кнопки повтора. Обычная кнопка egui с текстом, поэтому в дереве accesskit она
+/// видна как кнопка «Повторить» (экранные дикторы и тесты находят её по подписи).
+pub(crate) const RETRY_BUTTON_LABEL: &str = "Повторить";
+
 /// Stable egui id области toast-ов: одна область на всё окно.
 const TOAST_STACK_AREA_ID: &str = "fastiplayer_notification_toasts";
 
@@ -50,6 +56,8 @@ const TOAST_STACK_AREA_ID: &str = "fastiplayer_notification_toasts";
 pub(crate) enum NotificationAction {
     /// Нажат × у уведомления с этим id.
     Dismiss(NotificationId),
+    /// Нажата «Повторить» у ошибки открытия с этим id (B9).
+    Retry(NotificationId),
 }
 
 /// Действия, собранные за кадр; применяются владельцем после egui pass-а.
@@ -93,6 +101,10 @@ pub(crate) fn render_center_notice(
                             )
                             .wrap(),
                         );
+                        // «Повторить» левее ×: главное действие рядом с текстом ошибки.
+                        if failure.retry == RetryOffer::Available && retry_button(ui) {
+                            output.push(NotificationAction::Retry(failure.id));
+                        }
                         if dismiss_button(ui) {
                             output.push(NotificationAction::Dismiss(failure.id));
                         }
@@ -167,6 +179,11 @@ fn render_toast(
             });
         });
     });
+}
+
+/// Кнопка «Повторить»; возвращает `true`, если по ней кликнули в этом кадре.
+fn retry_button(ui: &mut egui::Ui) -> bool {
+    ui.button(RETRY_BUTTON_LABEL).clicked()
 }
 
 /// Кнопка ×; возвращает `true`, если по ней кликнули в этом кадре.

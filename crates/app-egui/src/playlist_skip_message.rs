@@ -37,6 +37,9 @@ pub(crate) enum PlaylistQueueNoticeDelivery {
     TransientToast(String),
     /// Ошибка в центре: висит до ×, успешного открытия или нового открытия.
     MediaFailure(String),
+    /// Ошибка в центре с кнопкой «Повторить», которая продолжает остановленную очередь
+    /// (B9): то же, что Play на остановленном элементе.
+    ResumableMediaFailure(String),
 }
 
 /// Выбирает вид показа и формулирует текст для одного итога цепочки.
@@ -67,7 +70,7 @@ pub(crate) fn playlist_queue_notice_delivery(
         // Центр, а не toast: пользователь мог отойти, и причина остановки должна дождаться
         // его (висит до ×, нового открытия или успешной установки media).
         AutomaticQueueNotice::StoppedOpenBlocked { reason } => {
-            PlaylistQueueNoticeDelivery::MediaFailure(
+            PlaylistQueueNoticeDelivery::ResumableMediaFailure(
                 match reason {
                     QueueBlockReason::NoNetwork => QUEUE_STOPPED_NO_NETWORK_MESSAGE,
                     QueueBlockReason::SiteRateLimited => QUEUE_STOPPED_SITE_RATE_LIMITED_MESSAGE,

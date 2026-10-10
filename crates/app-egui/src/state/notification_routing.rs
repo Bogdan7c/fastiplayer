@@ -8,6 +8,8 @@
 //! - [`AppState::notify_transient`] — временное сообщение (исчезнет само через 5 с);
 //! - [`AppState::notify_info`] — информационное (8 с);
 //! - [`AppState::set_startup_error`] (в `state.rs`) — фатальная ошибка открытия в центре;
+//! - [`AppState::report_open_failure`] — то же, но владелец ошибки решает, будет ли
+//!   «Повторить» и что повторять (B9, `state::media_retry`);
 //! - [`AppState::notify_open_still_in_progress`] — повторный Open во время открытия;
 //! - [`AppState::show_playlist_queue_notices`] — итоги автоматических пропусков в очереди.
 //! - [`AppState::show_playlist_import_notices`] — как прочитан импортированный плейлист.
@@ -19,9 +21,14 @@ use player_core::{PlayerEvent, PlayerSnapshot};
 use tracing::debug;
 
 use super::AppState;
-use super::notifications::{NotificationsFrame, OPEN_STILL_IN_PROGRESS_MESSAGE, OpenProgress};
+use super::media_retry::{MediaRetryTarget, RetryPlan};
+use super::notifications::{
+    MediaFailureOrigin, NotificationsFrame, OPEN_STILL_IN_PROGRESS_MESSAGE, OpenProgress,
+    RetryRequestOutcome,
+};
 use crate::playlist_runtime::{AutomaticQueueNotice, PlaylistImportNotice};
 use crate::playlist_skip_message::{PlaylistQueueNoticeDelivery, playlist_queue_notice_delivery};
+use crate::startup_readiness::StartupReadinessAbortReason;
 use crate::ui::animation::UiMotion;
 use crate::ui::notifications::{NotificationAction, NotificationUiOutput};
 
@@ -44,6 +51,21 @@ impl AppState {
         self.notify_transient(OPEN_STILL_IN_PROGRESS_MESSAGE);
     }
 
+    /// Показывает ошибку открытия в центре; `retry` — решение владельца ошибки о «Повторить».
+    ///
+    /// Общая точка для `set_startup_error` (без повтора) и ошибок, у которых повтор осмыслен.
+    /// Ошибка висит до ×, успешного открытия или нового открытия, как и раньше.
+    pub(crate) fn report_open_failure(&mut self, message: String, retry: RetryPlan) {
+        self.abort_startup_readiness(StartupReadinessAbortReason::PreparationFailed);
+        self.startup_pending = None;
+        self.notifications.show_media_failure_planned(
+            message,
+            MediaFailureOrigin::MediaOpen,
+            retry,
+        );
+        self.mark_pending_worker_redraw();
+    }
+
     /// Показывает итоги цепочек автоматических пропусков битых файлов очереди (сессия 07).
     ///
     /// Вид показа и текст выбирает `playlist_queue_notice_delivery`; здесь только маршрут
@@ -55,6 +77,12 @@ impl AppState {
                 PlaylistQueueNoticeDelivery::InfoToast(text) => self.notify_info(text),
                 PlaylistQueueNoticeDelivery::TransientToast(text) => self.notify_transient(text),
                 PlaylistQueueNoticeDelivery::MediaFailure(text) => self.set_startup_error(text),
+                // Очередь стоит из-за сети: «Повторить» = Play на остановленном элементе (B9).
+                PlaylistQueueNoticeDelivery::ResumableMediaFailure(text) => self
+                    .report_open_failure(
+                        text,
+                        RetryPlan::Offered(MediaRetryTarget::ResumeBlockedQueue),
+                    ),
             }
         }
     }
@@ -105,6 +133,15 @@ impl AppState {
     pub(super) fn apply_notification_actions(&mut self, mut output: NotificationUiOutput) {
         for action in output.take_actions() {
             match action {
+                NotificationAction::Retry(id) => {
+                    // Исполняется в этом же кадре (`apply_requested_media_retry`): здесь нет
+                    // ни очереди, ни renderer-а, поэтому цель только запоминается.
+                    let outcome = self.notifications.request_retry(id);
+                    debug!(?outcome, "Нажата «Повторить»");
+                    if outcome == RetryRequestOutcome::Requested {
+                        self.mark_pending_worker_redraw();
+                    }
+                }
                 NotificationAction::Dismiss(id) => {
                     // «Уже нет» — штатный no-op: плашка могла истечь в том же кадре.
                     let outcome = self.notifications.dismiss(id);

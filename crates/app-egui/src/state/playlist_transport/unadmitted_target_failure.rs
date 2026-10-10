@@ -51,6 +51,8 @@ impl AppState {
             *install,
             playlist_target_failure(&error),
         );
+        // B9: ручной отказ виден и в центре (с «Повторить», если повтор осмыслен).
+        self.show_manual_open_failure(playlist_runtime, &error);
         if let Some(next_install) = continuation {
             self.begin_planned_playlist_install(playlist_runtime, renderer, next_install, None);
         }

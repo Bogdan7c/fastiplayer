@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::external_open::request::DroppedWebUrl;
 use crate::ui::notifications::{
     NotificationAction, NotificationUiOutput, render_center_notice, render_toast_stack,
 };
@@ -39,6 +40,8 @@ struct RenderedFrame {
     painted: Vec<PaintedText>,
     actions: Vec<NotificationAction>,
     repaint_delay: Duration,
+    /// Подписи кнопок в дереве accesskit (пусто, если accesskit в контексте не включён).
+    accesskit_button_labels: Vec<String>,
 }
 
 impl RenderedFrame {
@@ -91,10 +94,24 @@ fn render_frame(
         .viewport_output
         .get(&egui::ViewportId::ROOT)
         .map_or(Duration::MAX, |viewport| viewport.repaint_delay);
+    let accesskit_button_labels = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .map(|update| {
+            update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == egui::accesskit::Role::Button)
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
     RenderedFrame {
         painted,
         actions: notification_output.take_actions(),
         repaint_delay,
+        accesskit_button_labels,
     }
 }
 
@@ -148,9 +165,10 @@ fn center_failure_close_button_removes_failure_from_next_frame() {
 
     let actions = click(&egui_ctx, &frame, rendered.center_of("×"));
     assert_eq!(actions, [NotificationAction::Dismiss(failure_id)]);
-    for NotificationAction::Dismiss(id) in actions {
-        assert_eq!(center.dismiss(id), NotificationDismissOutcome::Dismissed);
-    }
+    assert_eq!(
+        center.dismiss(failure_id),
+        NotificationDismissOutcome::Dismissed
+    );
 
     let after_dismiss = settle(
         &egui_ctx,
@@ -307,4 +325,128 @@ fn broken_config_on_disk_reaches_painted_warning_that_stays_until_closed() {
         &center.frame(OpenProgress::Idle, UiMotion::Reduced, hour_later),
     );
     assert!(!after_dismiss.shows(&warning));
+}
+
+/// Ошибка открытия с «Повторить» (B9): настоящий кадр рисует кнопку рядом с ×, клик по ней
+/// даёт typed-действие `Retry`, а клик по × по-прежнему только закрывает.
+#[test]
+fn center_failure_with_retry_paints_button_and_click_emits_retry_action() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    let failure_id = center.show_media_failure_planned(
+        "Не удалось открыть ссылку (media.test): нет соединения с сервером — проверьте интернет",
+        MediaFailureOrigin::MediaOpen,
+        RetryPlan::Offered(MediaRetryTarget::WebUrl(DroppedWebUrl::new(
+            "http://media.test/video.mp4".to_owned(),
+        ))),
+    );
+    let egui_ctx = egui::Context::default();
+    let frame = center.frame(OpenProgress::Idle, UiMotion::Reduced, now);
+    let rendered = settle(&egui_ctx, &frame);
+
+    assert!(rendered.shows(crate::ui::notifications::RETRY_BUTTON_LABEL));
+    assert!(rendered.shows("×"));
+    assert!(
+        rendered.center_of("Повторить").x < rendered.center_of("×").x,
+        "«Повторить» левее ×"
+    );
+    assert!(rendered.actions.is_empty(), "без клика действий нет");
+
+    let retry_actions = click(&egui_ctx, &frame, rendered.center_of("Повторить"));
+    assert_eq!(retry_actions, [NotificationAction::Retry(failure_id)]);
+    let close_actions = click(&egui_ctx, &frame, rendered.center_of("×"));
+    assert_eq!(close_actions, [NotificationAction::Dismiss(failure_id)]);
+}
+
+/// Без решения владельца о повторе кнопки нет вовсе (формат не поддерживается и т.п.).
+#[test]
+fn center_failure_without_retry_paints_no_retry_button() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    center.show_media_failure(
+        "Не удалось открыть «clip.mkv»: формат файла не распознан или не поддерживается",
+        MediaFailureOrigin::MediaOpen,
+    );
+    let egui_ctx = egui::Context::default();
+
+    let rendered = settle(
+        &egui_ctx,
+        &center.frame(OpenProgress::Idle, UiMotion::Reduced, now),
+    );
+
+    assert!(!rendered.shows("Повторить"));
+    assert!(rendered.shows("×"));
+}
+
+/// Доступность: «Повторить» — обычная кнопка egui с подписью, поэтому видна в дереве accesskit.
+#[test]
+fn retry_button_is_a_labeled_button_in_the_accesskit_tree() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    center.show_media_failure_planned(
+        "Нет связи с сервером",
+        MediaFailureOrigin::PlayerFailed,
+        RetryPlan::Offered(MediaRetryTarget::ResumeBlockedQueue),
+    );
+    let egui_ctx = egui::Context::default();
+    egui_ctx.enable_accesskit();
+
+    let rendered = settle(
+        &egui_ctx,
+        &center.frame(OpenProgress::Idle, UiMotion::Reduced, now),
+    );
+
+    assert!(
+        rendered
+            .accesskit_button_labels
+            .iter()
+            .any(|label| label == "Повторить"),
+        "кнопки accesskit: {:?}",
+        rendered.accesskit_button_labels
+    );
+}
+
+/// Сквозной путь B9 через настоящий кадр: ошибка сети при открытии URL → в центре
+/// «Повторить» → клик → тот же URL уходит в путь открытия ссылки.
+#[test]
+fn clicking_retry_in_a_painted_frame_reopens_the_same_url() {
+    use crate::state::media_retry::test_support::{RecordingRetryPort, RetryCall};
+
+    let now = Instant::now();
+    let url = DroppedWebUrl::new("http://media.test/video.mp4".to_owned());
+    let reason = crate::media_open::WebOpenFailureReason::NoConnection;
+    let mut center = NotificationCenter::default();
+    center.show_media_failure_planned(
+        crate::web_open_message::web_open_failure_message(Some("media.test"), reason),
+        MediaFailureOrigin::MediaOpen,
+        RetryPlan::for_reason(reason.into(), MediaRetryTarget::WebUrl(url.clone())),
+    );
+    let egui_ctx = egui::Context::default();
+    let frame = center.frame(OpenProgress::Idle, UiMotion::Reduced, now);
+    let rendered = settle(&egui_ctx, &frame);
+
+    let actions = click(&egui_ctx, &frame, rendered.center_of("Повторить"));
+    let [NotificationAction::Retry(failure_id)] = actions.as_slice() else {
+        panic!("ожидался один запрос повтора: {actions:?}");
+    };
+    // То же, что делает `AppState::apply_notification_actions` и исполнитель кадра.
+    assert_eq!(
+        center.request_retry(*failure_id),
+        RetryRequestOutcome::Requested
+    );
+    let target = center.take_retry_request().expect("цель принята");
+    let mut port = RecordingRetryPort::new(center);
+    crate::state::media_retry::execute_media_retry(&mut port, target);
+
+    assert_eq!(
+        port.calls,
+        [RetryCall::ClearFailure, RetryCall::OpenWebUrl(url)]
+    );
+    let after = settle(
+        &egui_ctx,
+        &port
+            .center
+            .frame(OpenProgress::Idle, UiMotion::Reduced, now),
+    );
+    assert!(!after.shows("Повторить"), "ошибка снята, кнопки нет");
 }

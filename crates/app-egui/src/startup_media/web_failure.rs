@@ -11,6 +11,9 @@ use std::sync::Arc;
 use media_source_open::web_open_failure::{WebOpenFailureReason, classify_web_open_failure};
 
 use super::StartupMediaController;
+use super::StartupMediaTarget;
+use crate::external_open::request::DroppedWebUrl;
+use crate::state::{MediaRetryTarget, RetryPlan};
 
 /// Почему startup-подготовка web-ссылки не удалась.
 #[derive(Debug)]
@@ -84,7 +87,42 @@ impl StartupMediaController {
         let row_summary = Arc::<str>::from(
             crate::local_open_message::local_open_failure_row_summary(failure.reason()),
         );
-        self.publish_preparation_failure(user_message, row_summary, app_state, playlist_runtime);
+        let retry = self.web_failure_retry_plan(failure.reason());
+        self.publish_preparation_failure(
+            user_message,
+            row_summary,
+            retry,
+            app_state,
+            playlist_runtime,
+        );
+    }
+
+    /// Что повторять по кнопке «Повторить» для отказа стартовой web-ссылки (B9).
+    ///
+    /// - ссылка из командной строки: открыть эту же ссылку, как будто её бросили на видео;
+    /// - элемент восстановленной очереди: обычный Play этой строки.
+    ///
+    /// Кнопка предлагается, только если причина внешняя (`retry_advice`): сети нет, сервер
+    /// занят. Для приватного видео или 404 повтор ничего не изменит.
+    fn web_failure_retry_plan(&self, reason: WebOpenFailureReason) -> RetryPlan {
+        let target = match self.orchestration.target.as_ref() {
+            Some(StartupMediaTarget::CliReplacement) => self
+                .cli_url_target_draft
+                .as_ref()
+                .and_then(|draft| draft.locator().as_secret_url())
+                .map(|locator| {
+                    MediaRetryTarget::WebUrl(DroppedWebUrl::new(
+                        locator.expose_secret_for_persistence().to_owned(),
+                    ))
+                }),
+            Some(StartupMediaTarget::RestoredCurrent(restore)) => {
+                Some(MediaRetryTarget::QueueItem(restore.item_id()))
+            }
+            None => None,
+        };
+        target.map_or(RetryPlan::NotOffered, |target| {
+            RetryPlan::for_reason(reason.into(), target)
+        })
     }
 }
 

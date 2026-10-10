@@ -31,6 +31,7 @@ use crate::state::AppState;
 use crate::url_service_adapter::StartupUrlLocator;
 
 mod cli_local_files;
+mod failure_publish;
 mod initial_arguments;
 pub(crate) mod native_dash;
 pub(crate) mod native_hds;

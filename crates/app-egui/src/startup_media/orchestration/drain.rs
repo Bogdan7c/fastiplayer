@@ -1,6 +1,7 @@
 //! Сбор завершившихся startup jobs и передача единственного winner-а orchestration owner-у.
 
 use crate::local_file_open::LocalFileOpenResult;
+use crate::state::MediaRetryTarget;
 
 use super::*;
 
@@ -158,7 +159,19 @@ impl StartupMediaController {
         let row_summary = Arc::<str>::from(
             crate::local_open_message::local_open_failure_row_summary(reason),
         );
-        self.publish_preparation_failure(user_message, row_summary, app_state, playlist_runtime);
+        // Повтор — открыть тот же файл тем же путём, что кнопка Open (B9), если причина
+        // внешняя (диск подключили, права поправили).
+        let retry = RetryPlan::for_reason(
+            reason.into(),
+            MediaRetryTarget::LocalFile(path.to_path_buf()),
+        );
+        self.publish_preparation_failure(
+            user_message,
+            row_summary,
+            retry,
+            app_state,
+            playlist_runtime,
+        );
     }
 
     /// Отмена стартовой подготовки локального файла — не ошибка.

@@ -941,6 +941,8 @@ pub(crate) fn render_frame(
         renderer,
         playlist_actions,
     );
+    // «Повторить» на ошибке открытия: исполняется тем же путём, что исходное действие.
+    app_state.apply_requested_media_retry(playlist_runtime, renderer);
     let url_action_requested_repaint = match url_sidebar_action {
         Some(action) => {
             if let Err(error) =

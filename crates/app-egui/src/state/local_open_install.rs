@@ -358,7 +358,7 @@ impl AppState {
             }
             StrongMediaOpenUserOutcome::Failed(reason) => {
                 warn!(error = %error, ?reason, "Не удалось установить подготовленный файл");
-                self.set_startup_error(local_open_failure_message(path, reason));
+                self.report_local_open_failure(path, reason);
             }
         }
     }

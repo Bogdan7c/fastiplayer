@@ -271,6 +271,13 @@ impl PlaylistRuntime {
                         outcome =
                             controller.report_unstaged_manual_navigation_target_failure(item_id);
                     }
+                    // B9: ручной отказ виден не только на строке, но и в центре (с «Повторить»).
+                    if let ManualNavigationFailureOutcome::AwaitingUserAfterFailure {
+                        item_id: failed_item_id,
+                    } = outcome
+                    {
+                        self.manual_open_failure.note(failed_item_id);
+                    }
                     if let (
                         ManualNavigationFailureOutcome::AwaitingUserAfterFailure {
                             item_id: failed_item_id,

@@ -11,6 +11,7 @@ mod player_failure;
 mod player_port;
 mod preload_budget;
 mod preparation;
+mod retry_advice;
 mod speculative;
 mod types;
 mod user_failure;
@@ -50,6 +51,7 @@ pub(crate) use preload_budget::QueuePreloadResourceBudget;
 pub(crate) use preparation::{
     merge_yt_dlp_playlist_metadata, prepare_source_synchronously, service_duration_for_timeline,
 };
+pub(crate) use retry_advice::RetryAdvice;
 pub(crate) use speculative::{SpeculativeMediaPreparation, SpeculativeMediaPreparationPoll};
 #[allow(
     unused_imports,

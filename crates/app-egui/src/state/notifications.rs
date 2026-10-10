@@ -32,6 +32,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::state::media_retry::{MediaRetryTarget, RetryPlan};
 use crate::ui::animation::UiMotion;
 
 mod buffering;
@@ -139,13 +140,38 @@ pub(crate) struct ToastView {
     pub(crate) age: Duration,
 }
 
+/// Предлагает ли фатальная ошибка кнопку «Повторить» (B9).
+///
+/// Отдельный тип вместо `bool`: на месте вызова видно, что именно решается, а UI не знает,
+/// *что* будет повторено — это остаётся у владельца ошибки ([`MediaRetryTarget`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryOffer {
+    /// Повтор не предлагается (формат не поддерживается, ссылка неверна и т.п.).
+    Unavailable,
+    /// Рядом с × рисуется кнопка «Повторить».
+    Available,
+}
+
+/// Исход нажатия «Повторить» в уведомлениях.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryRequestOutcome {
+    /// Запрос принят; исполнитель заберёт цель через [`NotificationCenter::take_retry_request`].
+    Requested,
+    /// Такой ошибки уже нет (истекла, заменена или закрыта в том же кадре).
+    AlreadyGone,
+    /// Ошибка есть, но владелец не предлагал для неё повтор.
+    NotOffered,
+}
+
 /// Фатальная ошибка в проекции текущего кадра.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MediaFailureView {
-    /// Идентификатор для кнопки ×.
+    /// Идентификатор для кнопок × и «Повторить».
     pub(crate) id: NotificationId,
     /// Текст для пользователя.
     pub(crate) message: Arc<str>,
+    /// Рисовать ли кнопку «Повторить».
+    pub(crate) retry: RetryOffer,
 }
 
 /// Что показывать в центре экрана.
@@ -196,6 +222,9 @@ struct MediaFailureEntry {
     id: NotificationId,
     origin: MediaFailureOrigin,
     message: Arc<str>,
+    /// Что повторить по кнопке «Повторить» (или что повтор не предлагается).
+    /// Цель задаёт тот, кто породил ошибку: центр её не угадывает.
+    retry: RetryPlan,
 }
 
 /// Что владелец последний раз видел в состоянии player-а (для `player_feed`).
@@ -220,6 +249,8 @@ pub(crate) struct NotificationCenter {
     media_failure: Option<MediaFailureEntry>,
     /// Последнее увиденное состояние отказа player-а.
     observed_player_failure: ObservedPlayerFailure,
+    /// Принятое нажатие «Повторить», которое ещё не забрал исполнитель.
+    retry_request: Option<MediaRetryTarget>,
     /// Счётчик для выдачи уникальных [`NotificationId`].
     next_id: u64,
     /// Как долго player непрерывно ждёт данные (спиннер в центре).
@@ -282,13 +313,51 @@ impl NotificationCenter {
         message: impl Into<Arc<str>>,
         origin: MediaFailureOrigin,
     ) -> NotificationId {
+        self.show_media_failure_planned(message, origin, RetryPlan::NotOffered)
+    }
+
+    /// Фатальная ошибка, у которой владелец решил судьбу кнопки «Повторить» (B9).
+    ///
+    /// `retry` — решение владельца ошибки: он знает, осмыслен ли повтор и чем он
+    /// выполняется; центр цель только хранит.
+    pub(crate) fn show_media_failure_planned(
+        &mut self,
+        message: impl Into<Arc<str>>,
+        origin: MediaFailureOrigin,
+        retry: RetryPlan,
+    ) -> NotificationId {
         let id = self.allocate_id();
         self.media_failure = Some(MediaFailureEntry {
             id,
             origin,
             message: message.into(),
+            retry,
         });
         id
+    }
+
+    /// Нажатие «Повторить» на ошибке с этим id: запоминает цель для исполнителя.
+    ///
+    /// Сама ошибка остаётся на экране: её снимет исполнитель, если повтор реально
+    /// стартовал (при «занято» ошибка должна сохраниться).
+    pub(crate) fn request_retry(&mut self, id: NotificationId) -> RetryRequestOutcome {
+        let Some(failure) = self
+            .media_failure
+            .as_ref()
+            .filter(|failure| failure.id == id)
+        else {
+            return RetryRequestOutcome::AlreadyGone;
+        };
+        let RetryPlan::Offered(target) = &failure.retry else {
+            return RetryRequestOutcome::NotOffered;
+        };
+        self.retry_request = Some(target.clone());
+        RetryRequestOutcome::Requested
+    }
+
+    /// Забирает принятое нажатие «Повторить» (ровно один раз).
+    pub(crate) fn take_retry_request(&mut self) -> Option<MediaRetryTarget> {
+        self.retry_request.take()
     }
 
     /// Снимает фатальную ошибку: media успешно открылось или началось новое открытие.
@@ -335,6 +404,10 @@ impl NotificationCenter {
                 CenterNotice::MediaFailure(MediaFailureView {
                     id: failure.id,
                     message: Arc::clone(&failure.message),
+                    retry: match failure.retry {
+                        RetryPlan::Offered(_) => RetryOffer::Available,
+                        RetryPlan::NotOffered => RetryOffer::Unavailable,
+                    },
                 })
             }),
         };

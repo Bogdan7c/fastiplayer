@@ -1,5 +1,6 @@
 //! Process-lifetime playlist controller: queue ownership, presentation state и typed outcomes.
 
+mod active_media_reuse;
 mod automatic_lifecycle;
 mod discovery;
 mod discovery_navigation;
@@ -40,6 +41,7 @@ use super::view::{
     PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistViewState, rebuild_snapshot,
 };
 
+pub(crate) use active_media_reuse::ActiveMediaReuse;
 #[allow(unused_imports)]
 pub(crate) use automatic_lifecycle::{
     AutomaticDeferredAvailability, AutomaticLifecycleOutcome, AutomaticQueueNotice,

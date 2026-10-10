@@ -296,7 +296,7 @@ impl AppState {
             }
             LocalFileOpenResult::PrepareFailed { path, reason } => {
                 // Техническая цепочка уже записана в лог worker-ом подготовки.
-                self.set_startup_error(local_open_failure_message(&path, reason));
+                self.report_local_open_failure(&path, reason);
             }
             LocalFileOpenResult::JobFailed { error } => {
                 warn!(error = %error, "Local file open job завершился ошибкой");
