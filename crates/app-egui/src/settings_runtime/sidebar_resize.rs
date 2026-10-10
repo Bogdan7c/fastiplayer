@@ -141,7 +141,7 @@ impl SettingsRuntime {
         // Geometry rollback остаётся отдельным намерением внешнего AppState owner-а.
         runtime_adapter.restore_sidebar_width(committed_width_before_attempt);
         self.invalidate_ui_model();
-        self.status = status_from_apply_report(&report);
+        self.status = status_from_apply_report(&self.setting_labels(), &report);
         tracing::error!(
             final_state = ?report.final_state,
             attempted_width_points = pending.width_points.value(),

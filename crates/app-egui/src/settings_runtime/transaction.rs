@@ -207,7 +207,7 @@ impl SettingsRuntime {
             ));
         }
         self.latest_apply_report = Some(report.clone());
-        self.status = status_from_apply_report(&report);
+        self.status = status_from_apply_report(&self.setting_labels(), &report);
         Ok(report)
     }
 }

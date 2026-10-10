@@ -49,7 +49,7 @@ impl SettingsRuntime {
 
         if !reports.is_empty() {
             self.last_preview_sent_at = Some(now);
-            self.status = status_from_preview_reports(&reports);
+            self.status = status_from_preview_reports(&self.setting_labels(), &reports);
         }
 
         let repaint_after =
@@ -68,7 +68,7 @@ impl SettingsRuntime {
         let report = self.controller.cancel(&mut rollbacker)?;
         self.settings_window_open = false;
         self.field_validation_errors.clear();
-        self.status = status_from_cancel(&report);
+        self.status = status_from_cancel(&self.setting_labels(), &report);
         self.last_preview_sent_at = None;
         Ok(true)
     }

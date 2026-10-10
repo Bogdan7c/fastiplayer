@@ -221,7 +221,7 @@ impl SettingsRuntime {
                 // Controller уже откатил transaction. Громкость в плеере не трогаем:
                 // пользователь слышит то, что выбрал, просто config остался прежним.
                 self.invalidate_ui_model();
-                self.status = status_from_apply_report(&report);
+                self.status = status_from_apply_report(&self.setting_labels(), &report);
                 tracing::error!(
                     final_state = ?report.final_state,
                     attempted_volume = target.audible_volume().as_config_ratio(),
