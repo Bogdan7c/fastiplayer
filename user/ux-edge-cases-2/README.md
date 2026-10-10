@@ -41,6 +41,17 @@
 | A9 | Undo удаления пропадает от фоновых metadata-патчей/автоперехода | `app-egui/src/playlist_runtime/removal_undo.rs` |
 | A10 | Ошибки на смеси языков (`{Kind:?}: …`, «media services», «controlled reopen», `rebuild failed: {error:?}`) | `player-core/src/error.rs`, `url_service_adapter.rs`, `url_sidebar.rs`, `settings_runtime_adapter.rs` |
 
+### A+. Найдено по ходу (A10 и живой приёмкой группы A)
+
+| # | Что |
+|---|---|
+| A9c | Регрессия A9b: Undo пропадает через ~0.7 с после автоперехода (живой прогон), хотя юнит-тесты зелёные |
+| A11 | Панель статуса применения настроек целиком англо-техническая (`settings_runtime/status_text.rs`, `route_apply/snapshots.rs`, сообщения `renderer_recreation`/`dma_buf_runtime_fallback`) |
+| A12 | «Добавить URL» принимает `ftp://…` как direct media; отказ приходит только при попытке воспроизвести |
+| A13 | Нативный HLS с локального http (ffmpeg-манифесты ts/fMP4, VOD и live) не открывается: «native HLS VOD runtime preparation» / «admission rejected malformed/profile input» — исследовать, возможно связано с C1 |
+| A14 | У live в URL-сайдбаре «Перемотка: Доступна», а перемотка даёт «недоступна»; заголовок «Прямой web-поток» и у VOD |
+| A15 | Play на непустом плейлисте без выбранной строки показал «Playing» без открытия источника (один раз, не подтверждено) |
+
 ### B. По решениям владельца
 
 B1, B2, B3, B4, B6, B7, B8, B9 — см. решения выше.
