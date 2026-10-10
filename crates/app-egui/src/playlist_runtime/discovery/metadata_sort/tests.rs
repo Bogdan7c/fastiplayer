@@ -506,3 +506,45 @@ fn partial_probe_failure_still_prepares_sort_and_reports_typed_warning_count() {
     let outcome = controller.commit_canonical_sort(commit);
     assert_eq!(outcome.domain.metadata().applied_count(), 1);
 }
+
+/// Регрессия: terminal discovery и batch с records лежат в независимых слотах mailbox-а.
+/// Если owner читает события до terminal и не дочитывает после, batch, опубликованный
+/// между этими двумя чтениями, теряется, и Sort готовится без свежих patches.
+/// Гонка окном в микросекунды, поэтому прогоняем много независимых job-ов подряд:
+/// каждый обязан вернуть patch от успешного probe.
+#[test]
+fn probe_batch_published_with_terminal_is_never_lost_across_many_jobs() {
+    let mut controller = PlaylistController::new();
+    controller
+        .append(vec![PlaylistItemDraft::local(
+            LocalLocator::Native("/music/good.mkv".into()),
+            Some(LocalSourceFingerprint::new(10, SystemTime::UNIX_EPOCH)),
+            CachedPlaylistMetadata::new("good.mkv", PlaylistMediaKind::Video),
+        )])
+        .unwrap();
+    let structural_revision = controller.view_snapshot().structural_revision();
+    let discovery_executor = playlist_discovery::DiscoveryExecutor::start_with_probe(
+        Arc::new(PartialProbe),
+        Arc::new(DiscoveryWake),
+    )
+    .unwrap();
+    let cpu_executor = start_cpu_executor().unwrap();
+    let mut owner =
+        MetadataSortOwner::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+    for job_index in 0..1000 {
+        owner
+            .start(
+                Some(&discovery_executor),
+                Some(&cpu_executor),
+                &controller,
+                SortCanonicalQueue::new(PlaylistSortKey::Title, SortDirection::Ascending),
+            )
+            .unwrap();
+        let MetadataSortTerminal::Prepared { patches, .. } =
+            drain_terminal(&mut owner, &cpu_executor, structural_revision)
+        else {
+            panic!("job {job_index}: успешный probe обязан дать Prepared terminal");
+        };
+        assert_eq!(patches.len(), 1, "job {job_index}: patch потерян");
+    }
+}

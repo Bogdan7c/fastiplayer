@@ -342,6 +342,13 @@ impl MetadataSortOwner {
             }
             let summary = probe.handle.take_final_summary();
             if summary.is_some() {
+                // Terminal и record-события лежат в независимых слотах mailbox-а. Worker
+                // публикует batch ДО terminal, но между первым drain_probe_events и
+                // take_final_summary он мог успеть опубликовать оба. Поэтому после
+                // получения terminal дочитываем события: всё, что опубликовано до terminal,
+                // теперь гарантированно видно. Без этого patches теряются, и Sort
+                // молча готовится без свежих метаданных (плавающий тест).
+                drain_probe_events(probe);
                 active.patches = patches_from_records(&probe.records, &probe.demands);
             }
             summary

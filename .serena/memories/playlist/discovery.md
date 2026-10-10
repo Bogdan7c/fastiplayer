@@ -61,3 +61,6 @@ Session 09A completed PASS on 2026-07-14. This memory complements `mem:core`, `m
 ## S07 nested local playlist ownership (2026-07-20)
 - Recursive `.m3u`/`.m3u8`/`.xspf` import НЕ добавлен в `playlist-discovery`: общий local playlist filesystem/DFS/budget/cycle owner находится в `playlist-io::local_expansion`. `playlist-discovery` сохраняет single-media probe/directory-manifest/executor ownership и не получает dependency на `playlist-io` или queue authority.
 - Canonical identity S07 transient и используется только active-stack cycle detection; reversible path/tree/budget/cancellation contract: `mem:playlist/io-s07-nested-local-expansion-2026-07-20`.
+
+## F1: порядок чтения mailbox (2026-10-11)
+- Инвариант потребителя: terminal и record-события лежат в независимых слотах mailbox-а; worker публикует batch ДО terminal. Поэтому после `take_final_summary()` обязателен повторный `drain_events()` — иначе batch, опубликованный между первым drain и take terminal, теряется (так же сделано в `action_jobs::drain_manual/drain_visible`). `MetadataSortOwner::drain` этого не делал: Sort тихо готовился без patches (плавающие тесты `partial_probe_failure_*` и `premature_discovery_wakes_*`, ~1–2% под нагрузкой). Исправлено, регрессия — `probe_batch_published_with_terminal_is_never_lost_across_many_jobs`.
