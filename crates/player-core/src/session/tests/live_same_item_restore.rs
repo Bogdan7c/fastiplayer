@@ -111,7 +111,7 @@ fn dvr_state(start: u64, end: u64, live_edge: u64) -> DynamicMediaTimelineState 
     .expect("DVR end does not exceed live edge")
 }
 
-fn fake_live_media(
+pub(super) fn fake_live_media(
     generation_value: u64,
     initial_state: DynamicMediaTimelineState,
     drop_count: Arc<AtomicUsize>,
@@ -141,7 +141,7 @@ fn fake_live_media_with_seek_result(
     (prepared_media, publisher)
 }
 
-fn install_correlated_live(
+pub(super) fn install_correlated_live(
     session: &mut PlayerSession,
     prepared_media: PreparedMedia,
     autoplay: bool,
@@ -172,7 +172,7 @@ fn install_correlated_live(
     (request_id, media_instance_id)
 }
 
-fn begin_live_restore(
+pub(super) fn begin_live_restore(
     session: &mut PlayerSession,
     request_id: MediaInstallRequestId,
     media_instance_id: MediaInstanceId,

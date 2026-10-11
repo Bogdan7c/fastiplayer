@@ -315,12 +315,10 @@ impl PlayerSession {
                 requested_position,
                 live_edge: prepared_live_edge,
             } => {
-                let live_edge = self
-                    .snapshot
-                    .timeline
-                    .live_edge
-                    .map(media_core::MediaTime::as_duration)
-                    .unwrap_or(prepared_live_edge);
+                // `prepared_live_edge` здесь уже позиция входа (join, F3): она фиксирована на
+                // момент открытия источника. Текущий live edge мог уйти вперёд, но demux
+                // читает с join, и часы на edge отрезали бы hold-back-запас.
+                let live_edge = prepared_live_edge;
                 let requested = MediaTime::from_duration(requested_position);
                 let reason = match self.snapshot.timeline.seekable_range {
                     Some(available_range) if available_range.contains(requested) => {

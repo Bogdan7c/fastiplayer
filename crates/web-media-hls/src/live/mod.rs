@@ -5,6 +5,7 @@
 
 mod av;
 mod demux;
+mod hold_back;
 mod open;
 mod refresh;
 mod snapshot;

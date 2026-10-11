@@ -87,6 +87,14 @@ PASS:
 - (Закрыто в A13-4, см. раздел ниже.) Было не поддержано: packed audio сегменты (`.aac`/`.mp3` + ID3 PRIV timestamp) - контейнеры HLS закрыты на `HlsRequiredContainer::{TransportStream, FragmentedMp4}`, content probe отдаёт typed `UnsupportedMainContainer`.
 - Тесты: `web-media-hls/tests/audio_only_hls.rs` (ts VOD+seek, fMP4 VOD, ts live скользящее окно с DVR из аудио-якорей, master радио через каталог, регрессия muxed), unit в `src/tests.rs`, `live/snapshot.rs`, `seek.rs`, `native_ingress/tests.rs` (тесты native_ingress вынесены из файла по лимиту S42).
 
+## F3 hold-back живого HLS (2026-10-11)
+
+- Корень циклов Playing->Buffering->Playing раз в сегмент: demux читал с `edge - 3*target` (RFC 8216 §6.3.3), но часы плеера по контракту S31L стартовали на `live_edge`; PCM раньше `media_clock_base` обрезается (`audio_playback_bounds`), hold-back обнулялся, новый сегмент приходил впритык.
+- Владелец `web-media-hls/src/live/hold_back.rs`: `HOLD_BACK_TARGET_DURATIONS = 3`, `join_position(main, audio)` (max стартов компонентов), `start_index_for_join`. Coordinator вычисляет join один раз при создании (`HlsLiveTimelineCoordinator::join_position()`), публикует его в каждом состоянии, factory `open()` читает с сегмента этой позиции.
+- `media-core::DynamicMediaTimelineState::join_position()/with_join_position()` (по умолчанию = live_edge; DASH live и прочие источники не менялись). Player-core стартует часы с join в initial install, `decide_live_same_item_position_restore` и staged `AdjustedToLiveEdge` (поле `live_edge` там исторически называется так, но несёт join).
+- `EXT-X-SERVER-CONTROL` HOLD-BACK парсер пропускает (не поддержан). Явный Play после протухшей паузы (`expired_live_resume_target`) по-прежнему seek-ит на край.
+- Тесты: `live/hold_back.rs` (в т.ч. модель 60 с по расписанию), `tests/live_hold_back.rs`, `player-core session/tests/live_join_position.rs`, media-core unit.
+
 ## A13-4 packed audio HLS (2026-10-11)
 
 - Packed audio (`.aac` ADTS, `.mp3`, ID3 PRIV `com.apple.streaming.transportStreamTimestamp`) поддержан **нормализацией в audio-only MPEG-TS на границе источника сегментов**, а не новым контейнером/демуксером. Модуль `web-media-hls/src/packed_audio/` (`mod.rs` API, `id3.rs` разбор ID3v2.3/2.4 + PRIV, `transport_stream.rs` PAT+PMT+один PES с PTS). Подключение: `source/packed_ingest.rs` (`open_sniffed_resource`, `normalize_packed_audio`), вызывается из `source/streaming.rs` (`Opening` для открытых ресурсов; для AES - после decrypt). Ordered-segments путь (fMP4) не затронут.

@@ -144,7 +144,8 @@ pub enum InstalledMediaStateRestoreOutcome {
         media_instance_id: MediaInstanceId,
         /// Абсолютная позиция старого instance-а, которую пытались сохранить.
         requested_position: Duration,
-        /// Fresh safe live edge нового generation.
+        /// Позиция входа в эфир нового generation: fresh safe edge за вычетом hold-back
+        /// источника (у источников без hold-back совпадает с самим краем).
         live_edge: Duration,
         /// Typed причина отказа от восстановления старой позиции.
         reason: InstalledLiveEdgeAdjustmentReason,

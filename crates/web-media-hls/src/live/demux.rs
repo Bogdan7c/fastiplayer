@@ -12,6 +12,7 @@ use media_core::{
 };
 use web_media_transport_api::SourceGeneration;
 
+use super::hold_back;
 use super::refresh::{HlsLiveEndpointExpirySignal, HlsLiveRefreshControl};
 use super::{
     HlsLiveComponentKind, HlsLiveComponentSnapshot, HlsLiveSegmentIdentity,
@@ -56,7 +57,8 @@ impl HlsLiveComponentFactory {
 
     pub fn open(&self) -> Result<HlsLiveComponentDemuxer> {
         let snapshot = self.snapshot()?;
-        let start_index = live_start_index(&snapshot);
+        let join_position = self.coordinator.join_position()?;
+        let start_index = hold_back::start_index_for_join(&snapshot, join_position);
         HlsLiveComponentDemuxer::open_at(self.clone(), snapshot, start_index, None, None)
     }
 
@@ -615,16 +617,6 @@ impl Demuxer for HlsLiveComponentDemuxer {
         *self = replacement;
         Ok(result)
     }
-}
-
-fn live_start_index(snapshot: &HlsLiveComponentSnapshot) -> usize {
-    let safe_distance = snapshot.target_duration.saturating_mul(3);
-    let target = snapshot.manifest_live_edge.saturating_sub(safe_distance);
-    snapshot
-        .segments
-        .iter()
-        .rposition(|segment| segment.timeline_start <= target)
-        .unwrap_or(0)
 }
 
 /// Key bytes не переживают accepted manifest revision либо transport generation.

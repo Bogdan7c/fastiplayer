@@ -152,7 +152,8 @@ fn live_edge_commit(
 ) -> StagedPositionCommit {
     StagedPositionCommit::AdjustedToLiveEdge {
         requested_position: position,
-        live_edge: snapshot.state.live_edge().as_duration(),
+        // Позиция входа в эфир (hold-back), а не край: с неё источник начал отдавать данные.
+        live_edge: snapshot.state.join_position().as_duration(),
     }
 }
 

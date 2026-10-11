@@ -11,7 +11,7 @@ use web_media_transport_api::SourceGeneration;
 
 use super::{
     HlsLiveComponentSnapshot, HlsLiveRandomAccessSource, HlsLiveSegmentIdentity,
-    HlsLiveTimelineEvidence, HlsLiveVideoDecodeStartEvidence,
+    HlsLiveTimelineEvidence, HlsLiveVideoDecodeStartEvidence, hold_back,
 };
 
 /// Общий owner main/audio snapshots, evidence и neutral timeline publication.
@@ -27,6 +27,10 @@ struct HlsLiveTimelineCoordinatorState {
     audio_evidence: Option<HlsLiveTimelineEvidence>,
     source_epoch: DynamicMediaTimelineEpoch,
     publisher: DynamicMediaTimelinePublisher,
+    /// Позиция входа в эфир (hold-back), выбранная один раз при открытии. Она не
+    /// пересчитывается на refresh: часы плеера уже стартовали с неё, а demux читает
+    /// с соответствующего ей сегмента.
+    join_position: std::time::Duration,
 }
 
 #[derive(Clone)]
@@ -47,10 +51,14 @@ impl HlsLiveTimelineCoordinator {
         generation: SourceGeneration,
     ) -> (Arc<Self>, DynamicMediaTimelinePort) {
         let live_edge = shared_live_edge(&main, audio.as_ref());
+        let join_position = hold_back::join_position(&main, audio.as_ref());
         let (port, publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
             port_generation,
             source_epoch,
-            state: DynamicMediaTimelineState::without_dvr(live_edge),
+            state: with_join(
+                DynamicMediaTimelineState::without_dvr(live_edge),
+                join_position,
+            ),
         });
         let audio_evidence = audio
             .as_ref()
@@ -64,9 +72,19 @@ impl HlsLiveTimelineCoordinator {
                 audio_evidence,
                 source_epoch,
                 publisher,
+                join_position,
             }),
         });
         (coordinator, port)
+    }
+
+    /// Позиция входа в эфир, выбранная при создании coordinator-а (см. `hold_back`).
+    pub fn join_position(&self) -> Result<std::time::Duration> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("HLS live timeline coordinator mutex poisoned"))?;
+        Ok(state.join_position)
     }
 
     /// Фиксирует random-access политику main-компонента по доказанной probe-ом форме дорожек.
@@ -260,11 +278,28 @@ fn publish_latest(state: &mut HlsLiveTimelineCoordinatorState) -> Result<()> {
         }
         _ => DynamicMediaTimelineState::without_dvr(live_edge),
     };
+    let timeline = with_join(timeline, state.join_position);
     state
         .publisher
         .publish(state.source_epoch, timeline)
         .context("HLS live timeline publisher rejected refresh")?;
     Ok(())
+}
+
+/// Добавляет hold-back позицию входа к состоянию.
+///
+/// Позиция берётся из тех же snapshot-ов, что и live edge, но edge общий для main/audio
+/// (минимум), поэтому позицию прижимаем к нему: контракт media-core запрещает join правее
+/// edge. После прижимания `with_join_position` не может отказать; запасной возврат
+/// исходного состояния (join = edge) нужен только чтобы не вводить панику в production.
+fn with_join(
+    state: DynamicMediaTimelineState,
+    join_position: std::time::Duration,
+) -> DynamicMediaTimelineState {
+    let join_position = join_position.min(state.live_edge().as_duration());
+    state
+        .with_join_position(MediaTime::from_duration(join_position))
+        .unwrap_or(state)
 }
 
 fn shared_live_edge(

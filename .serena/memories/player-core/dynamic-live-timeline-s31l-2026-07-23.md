@@ -33,6 +33,10 @@
 - `player-core/src/worker/tests.rs`: paused idle worker wakes on a sliding live window.
 - App/desktop tests cover live resume suppression, suspend KeepStart, expired MPRIS seek, capability/range and labels.
 
+## F3 join position (2026-10-11)
+
+- `DynamicMediaTimelineState` получил `join_position` (<= live_edge, по умолчанию = live_edge). Вместо «часы на live edge» initial install, live same-item restore и staged `AdjustedToLiveEdge` ставят часы/позицию на `join_position`: источник сам отодвигает вход назад (HLS hold-back, `mem:media-services/native-hls-live-n08-2026-09-01`). Public `timeline.live_edge` остаётся настоящим краем. Причина: audio раньше `media_clock_base` обрезается, поэтому demux, читающий раньше часов, не давал запаса. Тесты: `session/tests/live_join_position.rs`.
+
 ## S35S installed same-item restore extension (2026-07-24)
 
 - `PlayerSession` now owns the fresh-generation DVR decision for `InstalledPositionRestore::RestoreLiveSameItemPosition`: it observes the latest snapshot of the exact installed port before deciding.

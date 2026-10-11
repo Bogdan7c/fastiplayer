@@ -210,9 +210,13 @@ impl PlayerSession {
             .then_some(TimelineNotSeekableReason::LiveWindowUnavailable);
 
         if initial_install {
-            self.current_source_position = live_edge.as_duration();
-            self.snapshot.set_timeline_position(live_edge);
-            self.pipeline.set_media_clock_base(live_edge.as_duration());
+            // Вход в эфир идёт с позиции источника (hold-back), а не с самого края: demux
+            // отдаёт данные с неё, и часы на edge отрезали бы весь запас (см. F3).
+            let join_position = dynamic_snapshot.state.join_position();
+            self.current_source_position = join_position.as_duration();
+            self.snapshot.set_timeline_position(join_position);
+            self.pipeline
+                .set_media_clock_base(join_position.as_duration());
         }
 
         self.expire_dynamic_seek_targets_outside_retention(seekable_range, availability_range);
@@ -257,10 +261,12 @@ impl PlayerSession {
             }
             None => crate::InstalledLiveEdgeAdjustmentReason::DvrWindowUnavailable,
         };
-        let live_edge = fresh_snapshot.state.live_edge().as_duration();
+        // Новая generation стартовала с hold-back позиции своего источника (F3): часы
+        // ставим туда же, где demux начал отдавать данные, а не на самый край.
+        let live_edge = fresh_snapshot.state.join_position().as_duration();
         self.current_source_position = live_edge;
         self.snapshot
-            .set_timeline_position(fresh_snapshot.state.live_edge());
+            .set_timeline_position(fresh_snapshot.state.join_position());
         self.pipeline.set_media_clock_base(live_edge);
 
         Ok(LiveSameItemPositionRestoreDecision::AdjustedToLiveEdge {

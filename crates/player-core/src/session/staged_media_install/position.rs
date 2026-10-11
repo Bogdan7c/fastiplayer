@@ -60,6 +60,8 @@ pub(crate) enum StagedPositionCommit {
     },
     AdjustedToLiveEdge {
         requested_position: Duration,
+        /// Позиция входа в эфир новой generation (hold-back), с которой стартуют часы.
+        /// Имя историческое: до F3 это был сам край эфира.
         live_edge: Duration,
     },
 }
@@ -93,6 +95,7 @@ pub(crate) enum InstalledStagedPositionOutcome {
     },
     AdjustedToLiveEdge {
         requested_position: Duration,
+        /// Позиция входа в эфир (hold-back), на которую встали часы; см. выше.
         live_edge: Duration,
         reason: InstalledLiveEdgeAdjustmentReason,
     },

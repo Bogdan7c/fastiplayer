@@ -78,6 +78,10 @@ impl DynamicMediaTimelineRevision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DynamicMediaTimelineState {
     live_edge: MediaTime,
+    /// Позиция, с которой плеер начинает воспроизведение при подключении к эфиру.
+    /// По умолчанию совпадает с `live_edge`; источник отодвигает её назад (hold-back),
+    /// чтобы у плеера был запас данных, а не «догонялка» с нулевым запасом.
+    join_position: MediaTime,
     availability_range: Option<TimelineRange>,
     seekable_range: Option<TimelineRange>,
 }
@@ -88,6 +92,7 @@ impl DynamicMediaTimelineState {
     pub const fn without_dvr(live_edge: MediaTime) -> Self {
         Self {
             live_edge,
+            join_position: live_edge,
             availability_range: None,
             seekable_range: None,
         }
@@ -109,6 +114,7 @@ impl DynamicMediaTimelineState {
         }
         Ok(Self {
             live_edge,
+            join_position: live_edge,
             availability_range: Some(seekable_range),
             seekable_range: Some(seekable_range),
         })
@@ -122,6 +128,7 @@ impl DynamicMediaTimelineState {
         validate_availability_range(live_edge, availability_range)?;
         Ok(Self {
             live_edge,
+            join_position: live_edge,
             availability_range: Some(availability_range),
             seekable_range: None,
         })
@@ -149,6 +156,7 @@ impl DynamicMediaTimelineState {
         }
         Ok(Self {
             live_edge,
+            join_position: live_edge,
             availability_range: Some(availability_range),
             seekable_range: Some(seekable_range),
         })
@@ -158,6 +166,36 @@ impl DynamicMediaTimelineState {
     #[must_use]
     pub const fn live_edge(self) -> MediaTime {
         self.live_edge
+    }
+
+    /// Возвращает позицию входа в эфир: с неё стартуют часы воспроизведения.
+    ///
+    /// Не позже `live_edge`; без явного `with_join_position` равна ему.
+    #[must_use]
+    pub const fn join_position(self) -> MediaTime {
+        self.join_position
+    }
+
+    /// Отодвигает позицию входа в эфир назад от live edge (hold-back).
+    ///
+    /// Источник обязан выбирать позицию, с которой он реально начинает отдавать
+    /// пакеты: часы плеера стартуют ровно с неё, всё, что раньше, обрезается.
+    pub fn with_join_position(
+        self,
+        join_position: MediaTime,
+    ) -> Result<Self, DynamicMediaTimelineValidationError> {
+        if join_position > self.live_edge {
+            return Err(
+                DynamicMediaTimelineValidationError::JoinPositionAfterLiveEdge {
+                    join_position,
+                    live_edge: self.live_edge,
+                },
+            );
+        }
+        Ok(Self {
+            join_position,
+            ..self
+        })
     }
 
     /// Возвращает authoritative server availability window, если оно известно.
@@ -249,6 +287,14 @@ pub enum DynamicMediaTimelineValidationError {
         live_edge: MediaTime,
         /// Availability, которому edge противоречит.
         availability_range: TimelineRange,
+    },
+    /// Позиция входа в эфир не может быть правее live edge.
+    #[error("dynamic join position {join_position:?} is after live edge {live_edge:?}")]
+    JoinPositionAfterLiveEdge {
+        /// Некорректная позиция входа.
+        join_position: MediaTime,
+        /// Live edge, правее которого её поставили.
+        live_edge: MediaTime,
     },
     /// DVR range должен иметь положительную длину.
     #[error("dynamic DVR range must be non-empty: {seekable_range:?}")]
@@ -469,6 +515,46 @@ mod tests {
             source_epoch: DynamicMediaTimelineEpoch::new(4),
             state: DynamicMediaTimelineState::without_dvr(MediaTime::from_secs(50)),
         })
+    }
+
+    #[test]
+    fn join_position_defaults_to_edge_and_cannot_pass_it() {
+        let edge = MediaTime::from_secs(50);
+        let state = DynamicMediaTimelineState::without_dvr(edge);
+        assert_eq!(state.join_position(), edge);
+
+        let held_back = state
+            .with_join_position(MediaTime::from_secs(44))
+            .expect("join before edge is valid");
+        assert_eq!(held_back.join_position(), MediaTime::from_secs(44));
+        // Hold-back не меняет ни edge, ни диапазоны.
+        assert_eq!(held_back.live_edge(), edge);
+        assert_eq!(held_back.seekable_range(), None);
+
+        assert_eq!(
+            state.with_join_position(MediaTime::from_secs(51)),
+            Err(
+                DynamicMediaTimelineValidationError::JoinPositionAfterLiveEdge {
+                    join_position: MediaTime::from_secs(51),
+                    live_edge: edge,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn join_position_survives_publication_to_consumer_snapshot() {
+        let (port, publisher) = no_dvr_pair();
+        let state = DynamicMediaTimelineState::without_dvr(MediaTime::from_secs(60))
+            .with_join_position(MediaTime::from_secs(54))
+            .expect("valid join");
+        publisher
+            .publish(DynamicMediaTimelineEpoch::new(4), state)
+            .expect("same epoch publication");
+        assert_eq!(
+            port.observe().snapshot.state.join_position(),
+            MediaTime::from_secs(54)
+        );
     }
 
     #[test]

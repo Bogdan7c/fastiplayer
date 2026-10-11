@@ -58,6 +58,7 @@ mod dynamic_timeline;
 mod eof_drain;
 mod exact_media_transport;
 mod installed_media_restore;
+mod live_join_position;
 mod live_same_item_restore;
 mod media_lifecycle;
 mod playback;
