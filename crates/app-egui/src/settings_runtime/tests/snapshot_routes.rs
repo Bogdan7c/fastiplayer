@@ -186,12 +186,24 @@ fn committed_snapshot_updates_hotkey_seek_policy_without_synthetic_event() {
     assert_eq!(snapshot.hotkey_large_seek_step(), Duration::from_secs(45));
 }
 
+/// Первый запуск без config-а: открытый файл сразу играет, а диагностическая
+/// панель telemetry скрыта (решение владельца 2026-10-11).
+#[test]
+fn default_config_autoplays_new_media_and_hides_telemetry() {
+    let snapshot = CommittedConfigSnapshot::from_config(&AppConfig::default());
+
+    assert!(snapshot.autoplay_for_new_media());
+    assert!(!snapshot.show_telemetry());
+}
+
 #[test]
 fn local_open_snapshot_uses_current_committed_config() {
     let config = custom_config_for_test();
     let snapshot = CommittedConfigSnapshot::from_config(&config);
 
-    assert!(snapshot.autoplay_for_new_media());
+    // В custom config-е start_paused включён вопреки default: snapshot обязан
+    // отдать паузу, а не default-автозапуск.
+    assert!(!snapshot.autoplay_for_new_media());
     assert_eq!(
         snapshot
             .demux_config_for_open()

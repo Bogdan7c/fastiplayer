@@ -19,6 +19,7 @@ Notable project changes are recorded here in a Keep a Changelog-like structure. 
 - A broken queue item is skipped with a visible reason; a queue without network stops on the first item instead of failing through it.
 - A broken config no longer prevents startup: it is backed up to `.bak` and defaults are used with a warning.
 - A lost audio device falls back to the default output.
+- New installations start playing an opened file immediately and hide the diagnostic telemetry panel; existing configs keep their saved values.
 - Upgraded to Rust 1.99, egui 0.36, and wgpu 30.
 
 ### Fixed

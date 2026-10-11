@@ -1,7 +1,7 @@
 schema_version = 12
 
 [player]
-start_paused = true
+start_paused = false
 resume_last_position = true
 preferred_video_codec_order = [
     "vp9",
@@ -202,7 +202,7 @@ single_item_stderr_limit_bytes = 8388608
 single_item_json_node_limit = 1000000
 
 [ui]
-show_telemetry = true
+show_telemetry = false
 language = "ru"
 # UI skin id; unknown id является config error.
 skin = "minimal"

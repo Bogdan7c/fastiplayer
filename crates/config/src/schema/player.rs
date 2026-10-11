@@ -74,10 +74,14 @@ pub struct PlayerConfig {
 }
 
 impl Default for PlayerConfig {
-    /// Возвращает безопасное поведение первого запуска.
+    /// Возвращает поведение первого запуска.
     fn default() -> Self {
         Self {
-            start_paused: true,
+            // Открытый файл сразу играет, как в привычных плеерах; пауза при
+            // открытии — опция для тех, кто её включит. Меняется только default
+            // новых config-ов: явно записанное `true` у прежних установок не
+            // мигрируется (решение владельца 2026-10-11).
+            start_paused: false,
             resume_last_position: true,
             seek: PlayerSeekConfig::default(),
             demux: PlayerDemuxConfig::default(),

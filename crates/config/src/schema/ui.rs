@@ -100,7 +100,10 @@ impl Default for UiConfig {
     /// Возвращает русскоязычный UI по умолчанию.
     fn default() -> Self {
         Self {
-            show_telemetry: true,
+            // Диагностическая панель нужна разработчику, а не зрителю: по умолчанию
+            // скрыта. Явно записанное `true` у прежних установок не мигрируется
+            // (решение владельца 2026-10-11).
+            show_telemetry: false,
             language: "ru".to_string(),
             skin: "minimal".to_string(),
             window: UiWindowConfig::default(),

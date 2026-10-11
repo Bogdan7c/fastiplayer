@@ -530,12 +530,14 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
     }
 }
 
+/// Config, у которого ключевые поля отличаются от `AppConfig::default()`:
+/// тесты по нему доказывают, что runtime берёт committed config, а не default.
 fn custom_config_for_test() -> AppConfig {
     let mut config = AppConfig::default();
-    config.player.start_paused = false;
+    config.player.start_paused = true;
     config.player.demux.max_consecutive_corrupted_packets = 17;
     config.audio.volume = 0.42;
-    config.ui.show_telemetry = false;
+    config.ui.show_telemetry = true;
     config.render.color_adjustment.brightness = 0.1;
     config.render.hdr_to_sdr.sdr_reference_white_nits = 180.0;
     config

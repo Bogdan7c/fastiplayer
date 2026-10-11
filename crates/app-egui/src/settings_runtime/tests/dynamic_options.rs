@@ -127,7 +127,7 @@ fn toggle_open_opens_closed_settings_and_cancels_open_settings() {
         .handle_ui_actions(
             vec![SettingsUiAction::SetValue {
                 setting_id: SettingId::from("ui.show_telemetry"),
-                value: SettingValue::Bool(true),
+                value: SettingValue::Bool(!config.ui.show_telemetry),
             }],
             &mut render_adapter,
         )
