@@ -4,7 +4,7 @@
 
 [![Watch the Fastiplayer trailer: live scrubbing, speed and color](assets/fastiplayer-trailer-cover.png)](https://www.youtube.com/watch?v=eMfzBhpSF8M)
 
-**[Watch on YouTube — 72 seconds, 1080p60, with sound](https://www.youtube.com/watch?v=eMfzBhpSF8M)** · [Build and run](../README.md#quick-start)
+**[Watch on YouTube — 72 seconds, 1080p60, with sound](https://www.youtube.com/watch?v=eMfzBhpSF8M)** · [Build and run](../README.md#try-it)
 
 This is the real application on the current development computer, recorded in OBS Studio and edited in DaVinci Resolve. Each feature is shown in a continuous segment at its captured speed. English titles sit clear of the timeline and color controls. The interface still includes Russian text; its settings design and localization remain roadmap work.
 
@@ -27,13 +27,13 @@ Video color controls adjust the film image. Fuller customization of the applicat
 
 ![Fastiplayer playing Sintel with the main picture, timeline, and playback controls visible](assets/fastiplayer-playback.png)
 
-Local H.264 video with AAC source audio, using VA-API hardware decoding and WGPU/Vulkan rendering. This frame follows the live timeline drag and shows resumed playback. The source film runs at 24 FPS; OBS captures the application at 60 FPS.
+Local H.264 video with AAC source audio, using VA-API hardware decoding and WGPU/Vulkan rendering, in a maximized window with no panels open. This screenshot was re-captured on 2026-10-11 to show the current interface; see [capture details](assets/README.md#2026-10-11-screenshots).
 
 ## Queue
 
-![Fastiplayer queue showing the authorized Sintel Trailer beside the playing film](assets/fastiplayer-queue.png)
+![Fastiplayer queue with the Sintel Trailer and Big Buck Bunny beside the playing film](assets/fastiplayer-queue.png)
 
-The queue shares the window with playback. Only the public film name is visible; no local path appears. The trailer shows the panel opening and closing. Playlist import/export and persistence are working capabilities described in the [README](../README.md#what-works-today), but are not exercised in this short trailer.
+The queue shares the window with playback. Only public film names are visible; no local path appears. This screenshot was re-captured on 2026-10-11. The trailer shows the panel opening and closing. Playlist import/export and persistence are working capabilities described in the [README](../README.md#what-works-today), but are not exercised in this short trailer.
 
 ## Settings
 

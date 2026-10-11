@@ -8,12 +8,16 @@ Build: `cargo build -p app-egui --release --locked`, default features, Rust **1.
 ## Published assets
 
 - `fastiplayer-trailer-cover.png`: a genuine final-card frame at 01:10.5 from the trailer, including native Resolve titles over the captured application.
-- `fastiplayer-playback.png`: resumed playback following a live timeline drag.
-- `fastiplayer-main.png`: identical bytes to the playback screenshot, preserving the compatible path used in existing alpha release notes.
-- `fastiplayer-queue.png`: the queue sidebar with the authorized Sintel Trailer alongside playback.
+- `fastiplayer-playback.png`: playback at 00:34 of the Sintel Trailer with the window maximized and no panels open (2026-10-11 capture, see below).
+- `fastiplayer-main.png`: the original 2026-09-06 playback screenshot, kept unchanged at the path used in the existing alpha release notes.
+- `fastiplayer-queue.png`: playback at 00:29 with the queue sidebar open, holding the Sintel Trailer and Big Buck Bunny (2026-10-11 capture, see below).
 - `fastiplayer-settings.png`: video color settings during playback, with saturation deliberately raised to 2.45 to show its effect.
 
 Screenshots are **1920×1080 PNG** frames extracted from the real OBS recordings, with the recorded cursor included. The cover is extracted from the finished trailer. The player UI and movie frames are not retouched. The [demo page](../demo.md) supplies timecodes and distinguishes the demonstrated interactions from future features.
+
+### 2026-10-11 screenshots
+
+`fastiplayer-playback.png` and `fastiplayer-queue.png` were re-captured on **2026-10-11** on the same computer (Linux **7.2.9-2-cachyos**) to show the current interface. Source revision [`727d5346`](https://github.com/Bogdan7c/fastiplayer/commit/727d5346f687614aaf79567ce4b14ef07af72edf), `cargo build -p app-egui --release --locked`, Rust **1.99.0**, with a separate temporary profile and telemetry hidden. The player ran in an isolated nested KWin Wayland session at 1920×1080 with VA-API hardware decoding and WGPU/Vulkan rendering; frames are KWin screenshots of that session without a cursor, losslessly recompressed. Media: the official Sintel Trailer and Big Buck Bunny, both © copyright Blender Foundation, CC BY 3.0. The UI and movie frames are not retouched.
 
 Video is hosted on YouTube. Large recordings, film media, the DNxHR master, and the Resolve `.drp` project are kept outside Git. The previous silent 39-second MP4 is superseded by this trailer; its historical bytes remain in Git history. Existing releases and tags are unchanged.
 
@@ -53,8 +57,10 @@ Source: the official [`sintel_trailer-1080p.mp4`](https://download.blender.org/d
 | Artifact | SHA-256 |
 | --- | --- |
 | Trailer cover | `038e1ce5b04251e8a27a0293f9ad6420f137b83c86df6ed3fbe09dc32f90848c` |
-| Playback screenshot / main alias | `52119803082f4b8d6b36e469357ea2702a4359786555e02e3b73e8670f2f2f15` |
-| Queue screenshot | `b0177f1bf5548232a469b1020846ca431a983850bc013f47cb0367d6c6970d1c` |
+| Main alias (2026-09-06 playback screenshot) | `52119803082f4b8d6b36e469357ea2702a4359786555e02e3b73e8670f2f2f15` |
+| Playback screenshot (2026-10-11) | `415eba4d1e0ca6dfd52693b59f93a2702fad54ea7176885d8a01833713a6eebd` |
+| Queue screenshot (2026-10-11) | `e0728be8c1c61ebc42feeebede7b4bd3c25eb3d5ea275340e8274006b8826719` |
+| 2026-10-11 capture executable | `a594701a5db4f3a21dc465615b43b3dcaaeb7c09236af7ffc87ebdb29b3f5ac8` |
 | Settings screenshot | `6bc96bfc351a93ee45172a0b3b7f0ff2b4387050c5c2d8076e40d2a0f39fbe74` |
 | YouTube upload MP4 | `558470d240ec3c6df155bc12694416facecf5e42a7c7e1853170dabb58f7bb94` |
 | Official Sintel Trailer MP4 | `34bbd52a4b89fdf63c8ace50b268da26653a59508288100cd3c23de276db7931` |

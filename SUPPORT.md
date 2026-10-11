@@ -2,7 +2,7 @@
 
 **Early alpha · Active development · Linux-first · Source builds**
 
-Fastiplayer is unfinished software maintained by one core maintainer. There is no guaranteed response time or commercial support service. Start with the [build guide](CONTRIBUTING.md#clone-and-build-on-linux), [known limitations](README.md#current-limitations), and [media compatibility matrix](docs/web-media-compatibility-matrix.md).
+Fastiplayer is unfinished software maintained by one core maintainer. There is no guaranteed response time or commercial support service. Start with the [build guide](CONTRIBUTING.md#clone-and-build-on-linux), [known limitations](README.md#good-to-know), and [media compatibility matrix](docs/web-media-compatibility-matrix.md).
 
 | Need | Route |
 | --- | --- |

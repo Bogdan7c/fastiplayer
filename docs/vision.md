@@ -4,7 +4,7 @@ Watching a film, listening to an album, or opening a stream should feel easy. Fa
 
 **Early alpha · Active development · Linux-first · Source builds**
 
-That is the direction, and the alpha is a working step toward it. Live timeline scrubbing, playback speed control, real-time video color adjustments, animated controls, local and supported network playback, and queue management already exist. The interface, compatibility, installation experience, and platform coverage are still developing. [Watch the 72-second trailer with sound](https://www.youtube.com/watch?v=eMfzBhpSF8M), [see the demonstrations in detail](demo.md), [build it](../README.md#quick-start), or check the [current limitations](../README.md#current-limitations).
+That is the direction, and the alpha is a working step toward it. Live timeline scrubbing, playback speed control, real-time video color adjustments, animated controls, local and supported network playback, and queue management already exist. The interface, compatibility, installation experience, and platform coverage are still developing. [Watch the 72-second trailer with sound](https://www.youtube.com/watch?v=eMfzBhpSF8M), [see the demonstrations in detail](demo.md), [build it](../README.md#try-it), or check the [current limitations](../README.md#good-to-know).
 
 ## Lightness with evidence
 
