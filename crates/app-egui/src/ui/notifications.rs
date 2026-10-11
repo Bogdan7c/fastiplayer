@@ -93,14 +93,18 @@ pub(crate) fn render_center_notice(
             CenterNotice::MediaFailure(failure) => {
                 let error_color = ui.visuals().error_fg_color;
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width(CENTER_NOTICE_MAX_WIDTH);
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(failure.message.as_ref()).color(error_color),
-                            )
-                            .wrap(),
-                        );
+                    // Корень «обрезается слева / кнопка под телеметрией»: `set_max_width(560)`
+                    // РАСШИРЯЕТ доступную ширину, если область уже 560 (узкое окно с открытой
+                    // панелью телеметрии), и плашка вылезала за край центральной области.
+                    // Ограничиваем сверху, но никогда не выше реально доступного.
+                    ui.set_max_width(ui.available_width().min(CENTER_NOTICE_MAX_WIDTH));
+                    // `horizontal_wrapped`, а не `horizontal`: в обычной горизонтальной строке
+                    // переносимая подпись занимает всю доступную ширину и выталкивает кнопки
+                    // за край (под панель телеметрии). В wrapped-раскладке текст течёт по
+                    // строкам, а кнопки встают следом и при нехватке места переходят на
+                    // новую строку — всегда целиком внутри доступной области.
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(failure.message.as_ref()).color(error_color));
                         // «Повторить» левее ×: главное действие рядом с текстом ошибки.
                         if failure.retry == RetryOffer::Available && retry_button(ui) {
                             output.push(NotificationAction::Retry(failure.id));

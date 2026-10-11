@@ -450,3 +450,135 @@ fn clicking_retry_in_a_painted_frame_reopens_the_same_url() {
     );
     assert!(!after.shows("Повторить"), "ошибка снята, кнопки нет");
 }
+
+/// Результат кадра «панель телеметрии справа + центральные уведомления» (G3).
+struct TelemetryLayoutFrame {
+    /// Область центральных уведомлений: всё, что не занято панелью телеметрии.
+    central_rect: egui::Rect,
+    /// Нарисованный текст с прямоугольниками и clip-областью, в которой он виден.
+    painted: Vec<(PaintedText, egui::Rect)>,
+    actions: Vec<NotificationAction>,
+}
+
+/// Рисует кадр так же, как кадр приложения: панель телеметрии, затем центральная область.
+fn render_frame_with_telemetry(
+    egui_ctx: &egui::Context,
+    frame: &NotificationsFrame,
+    screen_size: egui::Vec2,
+    events: Vec<egui::Event>,
+) -> TelemetryLayoutFrame {
+    let mut notification_output = NotificationUiOutput::default();
+    let mut central_rect = egui::Rect::NOTHING;
+    let output = crate::ui::test_frame::run_ui_frame(
+        egui_ctx,
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size)),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            crate::state::AppState::render_telemetry_panel(ui, &[]);
+            central_rect = ui.available_rect_before_wrap();
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| {
+                    if let Some(notice) = frame.center.as_ref() {
+                        render_center_notice(ui, notice, &mut notification_output);
+                    }
+                });
+        },
+    );
+    let mut painted = Vec::new();
+    for clipped in &output.shapes {
+        let mut texts = Vec::new();
+        collect_painted_text(&clipped.shape, &mut texts);
+        painted.extend(texts.into_iter().map(|text| (text, clipped.clip_rect)));
+    }
+    TelemetryLayoutFrame {
+        central_rect,
+        painted,
+        actions: notification_output.take_actions(),
+    }
+}
+
+/// G3: при открытой панели телеметрии и минимальной ширине окна 400 кнопка «Повторить» и ×
+/// видны целиком в области центральных уведомлений и не заходят под панель телеметрии.
+#[test]
+fn center_failure_buttons_stay_fully_visible_beside_the_telemetry_panel() {
+    let message =
+        "Не удалось открыть ссылку (127.0.0.1): нет соединения с сервером — проверьте интернет";
+    let mut center = NotificationCenter::default();
+    let failure_id = center.show_media_failure_planned(
+        message,
+        MediaFailureOrigin::MediaOpen,
+        RetryPlan::Offered(MediaRetryTarget::ResumeBlockedQueue),
+    );
+    let frame = center.frame(OpenProgress::Idle, UiMotion::Reduced, Instant::now());
+
+    for width in [400.0, 640.0, 1280.0] {
+        let screen_size = egui::vec2(width, 600.0);
+        let egui_ctx = egui::Context::default();
+        let mut rendered = render_frame_with_telemetry(&egui_ctx, &frame, screen_size, Vec::new());
+        for _ in 0..2 {
+            rendered = render_frame_with_telemetry(&egui_ctx, &frame, screen_size, Vec::new());
+        }
+
+        assert!(
+            rendered.central_rect.width() > 0.0,
+            "ширина {width}: у центральной области нет места: {:?}",
+            rendered.central_rect
+        );
+        for label in ["Повторить", "×"] {
+            let (text, clip_rect) = rendered
+                .painted
+                .iter()
+                .find(|(text, _)| text.text == label)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ширина {width}: {label:?} не нарисован; центр {:?}; текст {:?}",
+                        rendered.central_rect, rendered.painted
+                    )
+                });
+            assert!(
+                rendered.central_rect.contains_rect(text.rect),
+                "ширина {width}: {label:?} {:?} вне центральной области {:?}",
+                text.rect,
+                rendered.central_rect
+            );
+            assert!(
+                clip_rect.contains_rect(text.rect),
+                "ширина {width}: {label:?} {:?} обрезан clip-областью {clip_rect:?}",
+                text.rect
+            );
+        }
+
+        // Кнопки не только видны, но и кликаются там, где нарисованы.
+        let retry_center = rendered
+            .painted
+            .iter()
+            .find(|(text, _)| text.text == "Повторить")
+            .map(|(text, _)| text.rect.center())
+            .expect("кнопка «Повторить» нарисована");
+        let pointer_button = |pressed| egui::Event::PointerButton {
+            pos: retry_center,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let mut actions = Vec::new();
+        for events in [
+            vec![egui::Event::PointerMoved(retry_center)],
+            vec![pointer_button(true)],
+            vec![pointer_button(false)],
+        ] {
+            actions.extend(
+                render_frame_with_telemetry(&egui_ctx, &frame, screen_size, events).actions,
+            );
+        }
+        assert_eq!(
+            actions,
+            [NotificationAction::Retry(failure_id)],
+            "ширина {width}: клик по «Повторить» не дошёл до владельца"
+        );
+    }
+}
