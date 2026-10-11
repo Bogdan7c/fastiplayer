@@ -266,7 +266,7 @@ impl CodecContext {
             };
 
             #[cfg(test)]
-            LIVE_CODEC_CONTEXT_ALLOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            LIVE_CODEC_CONTEXT_ALLOCATIONS.with(|live| live.set(live.get() + 1));
 
             // SAFETY: context принадлежит wrapper-у. `format_negotiator` находится
             // в Box, поэтому address стабилен до Drop. FFmpeg может вызывать
@@ -496,17 +496,26 @@ impl Drop for CodecContext {
         free_context(self.raw_context);
 
         #[cfg(test)]
-        LIVE_CODEC_CONTEXT_ALLOCATIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        LIVE_CODEC_CONTEXT_ALLOCATIONS.with(|live| live.set(live.get().saturating_sub(1)));
     }
 }
 
+// Счётчик живых `CodecContext` только для тестов. Он thread-local, а не
+// process-wide: `cargo test` гоняет тесты бинаря параллельно, и общий счётчик
+// видел бы контексты чужих тестов (гонка `before=1, after=0`). Изоляция
+// корректна, потому что `CodecContext: !Send + !Sync` (см. assert_not_impl_any
+// в tests.rs): контекст создаётся и освобождается на одном и том же потоке,
+// так что инкремент и декремент всегда попадают в один и тот же счётчик.
 #[cfg(all(test, feature = "ffmpeg"))]
-static LIVE_CODEC_CONTEXT_ALLOCATIONS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static LIVE_CODEC_CONTEXT_ALLOCATIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
 
+/// Число живых `CodecContext`, созданных текущим потоком (тестовый счётчик).
 #[cfg(all(test, feature = "ffmpeg"))]
 fn live_codec_context_allocations_for_test() -> usize {
-    LIVE_CODEC_CONTEXT_ALLOCATIONS.load(std::sync::atomic::Ordering::Relaxed)
+    LIVE_CODEC_CONTEXT_ALLOCATIONS.with(std::cell::Cell::get)
 }
 
 #[cfg(feature = "ffmpeg")]
