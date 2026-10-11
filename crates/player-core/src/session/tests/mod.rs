@@ -62,6 +62,7 @@ mod installed_media_restore;
 mod live_join_position;
 mod live_same_item_restore;
 mod media_lifecycle;
+mod paused_poster_frame;
 mod playback;
 mod playback_rate;
 mod playback_window;

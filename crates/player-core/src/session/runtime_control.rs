@@ -228,6 +228,9 @@ impl PlayerSession {
         self.freeze_current_position_for_pause(paused_media_position);
         self.set_playback_state(PlaybackState::Paused);
         self.clear_queued_video_frames();
+        // Пауза до первого кадра (старт на паузе, Pause во время preroll) не должна оставлять
+        // экран чёрным: см. `paused_poster_frame`.
+        self.request_paused_poster_frame_if_missing();
 
         Ok(())
     }

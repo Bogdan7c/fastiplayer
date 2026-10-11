@@ -412,6 +412,11 @@ fn pause_during_scrub_cancels_without_hidden_seek_commit() {
         &mut session,
         vec![fake_track(1, TrackKind::Video)],
     );
+    // Как при настоящем воспроизведении: кадр уже на экране, поэтому пауза не запрашивает
+    // кадр-постер (см. `paused_poster_frame`) и тест проверяет только свой сценарий.
+    session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(1), 1));
     session.dispatch_command(PlayerCommand::Play).unwrap();
     session
         .dispatch_command(PlayerCommand::begin_scrub())
@@ -449,6 +454,11 @@ fn pause_during_scrub_cancels_without_hidden_seek_commit() {
 fn toggle_during_scrub_uses_last_confirmed_playback_state() {
     let mut playing_session = PlayerSession::new();
     install_fake_media(&mut playing_session, vec![fake_track(1, TrackKind::Video)]);
+    // Как при настоящем воспроизведении: кадр уже на экране, поэтому пауза не запрашивает
+    // кадр-постер (см. `paused_poster_frame`) и тест проверяет только свой сценарий.
+    playing_session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(1), 1));
     playing_session
         .dispatch_command(PlayerCommand::Play)
         .unwrap();

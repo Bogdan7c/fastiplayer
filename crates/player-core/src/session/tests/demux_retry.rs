@@ -426,6 +426,11 @@ fn chained_demux_retry_blocks_ready_preroll_until_next_accepted_packet() {
 #[test]
 fn paused_intent_is_not_overridden_by_demux_recovery() {
     let (mut session, output_handle) = playing_av_retry_session([], None, None);
+    // Как при настоящем воспроизведении: кадр уже на экране, поэтому пауза не запрашивает
+    // кадр-постер (см. `paused_poster_frame`) и тест проверяет только свой сценарий.
+    session
+        .pipeline
+        .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(10), 92));
     session
         .dispatch_command(PlayerCommand::Pause)
         .expect("fixture pause должна завершиться успешно");

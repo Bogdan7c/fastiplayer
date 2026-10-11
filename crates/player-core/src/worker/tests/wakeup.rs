@@ -8,6 +8,11 @@ fn playback_intent_wakeup_applies_exact_installed_update_and_publishes_snapshot(
         runtime_for_tests_with_wakeup_handles(Instant::now());
     let seek_request_log = Arc::new(Mutex::new(Vec::new()));
     install_worker_video_media(&mut runtime, seek_request_log);
+    // Как при настоящем воспроизведении: на экране уже есть кадр, поэтому пауза не запрашивает
+    // кадр-постер (см. `paused_poster_frame`) и тест проверяет только свой сценарий.
+    runtime
+        .session
+        .show_frame_on_screen_for_tests(decoded_frame_for_tests(FrameResourceHandle(1)));
 
     runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
     assert_eq!(

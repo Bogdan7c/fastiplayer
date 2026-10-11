@@ -53,6 +53,7 @@ mod eof_drain;
 mod exact_media_transport;
 mod installed_media_restore;
 mod media_lifecycle;
+mod paused_poster_frame;
 mod playback_rate;
 mod position_clock;
 mod prepared_demux_seek;
