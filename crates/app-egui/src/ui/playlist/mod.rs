@@ -14,6 +14,7 @@ mod virtualized_drag;
 
 pub(crate) use actions::PlaylistAction;
 pub(crate) use header_undo::show as show_header_undo;
+pub(crate) use status::PreviousPlayback;
 
 use std::sync::Arc;
 
@@ -120,6 +121,8 @@ pub(crate) struct PlaylistShowInput<'a> {
     pub(crate) model: Option<&'a PlaylistViewModel>,
     /// Toolbar/forms/status читают только authoritative interaction snapshot.
     pub(crate) interaction: &'a PlaylistInteractionModel,
+    /// Состояние ранее открытого воспроизведения: от него зависит текст статуса ошибки выбора.
+    pub(crate) previous_playback: PreviousPlayback,
     /// Skin-owned визуальные токены строк.
     pub(crate) row_style: crate::ui::skin::PlaylistRowStyle,
     /// Skin-owned геометрия и цвета toolbar.
@@ -148,6 +151,7 @@ pub(crate) fn show(
     let PlaylistShowInput {
         model,
         interaction,
+        previous_playback,
         row_style,
         toolbar_style,
         motion,
@@ -174,7 +178,15 @@ pub(crate) fn show(
         return;
     }
     toolbar::show(ui, interaction, toolbar_style, output);
-    status::show_status(ui, model, interaction, motion, state, output);
+    status::show_status(
+        ui,
+        model,
+        interaction,
+        previous_playback,
+        motion,
+        state,
+        output,
+    );
     renderer::show_rows(ui, model, row_style, motion, state, output);
 }
 

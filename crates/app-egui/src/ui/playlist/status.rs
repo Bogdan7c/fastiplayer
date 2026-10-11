@@ -2,6 +2,7 @@
 
 mod lifetime;
 mod presentation;
+mod previous_playback;
 
 use egui::{Rect, Response, Sense, Ui, UiBuilder, pos2, vec2};
 
@@ -20,6 +21,7 @@ pub(super) use self::presentation::{navigation_message, save_message};
 const STATUS_MEASUREMENT_MAX_HEIGHT_POINTS: f32 = 4_096.0;
 
 pub(super) use lifetime::PlaylistStatusLifetimeState;
+pub(crate) use previous_playback::PreviousPlayback;
 
 /// Результат invisible sizing pass разделяет content и стандартный separator.
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +59,7 @@ pub(super) fn show_status(
     ui: &mut Ui,
     model: &PlaylistViewModel,
     interaction: &PlaylistInteractionModel,
+    previous_playback: PreviousPlayback,
     motion: UiMotion,
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
@@ -64,7 +67,8 @@ pub(super) fn show_status(
     // Верхняя граница не двигается при появлении или исчезновении сообщений.
     ui.separator();
 
-    let current_presentation = PlaylistStatusPresentation::from_models(model, interaction);
+    let current_presentation =
+        PlaylistStatusPresentation::from_models(model, interaction, previous_playback);
     // Egui frame time является единственным clock status lifetime owner-а.
     let frame_time = ui.input(|input| input.time);
     let frame = state

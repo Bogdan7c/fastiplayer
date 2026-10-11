@@ -12,6 +12,7 @@ use crate::playlist_runtime::{
 };
 
 use super::super::actions::PlaylistAction;
+use super::previous_playback::PreviousPlayback;
 
 /// Snapshot содержит только согласованные warning/error и не владеет временем.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,7 @@ impl PlaylistStatusPresentation {
     pub(super) fn from_models(
         model: &PlaylistViewModel,
         interaction: &PlaylistInteractionModel,
+        previous_playback: PreviousPlayback,
     ) -> Option<Self> {
         let mut presentation = Self { rows: Vec::new() };
 
@@ -39,7 +41,7 @@ impl PlaylistStatusPresentation {
         // Persistence сохраняет Retry, block и fatal distinctions.
         presentation.push_persistence(model.save());
         // Обычные wait/cancel/exhausted navigation lifecycle намеренно отсутствуют.
-        presentation.push_navigation(model.navigation());
+        presentation.push_navigation(model.navigation(), previous_playback);
 
         (!presentation.rows.is_empty()).then_some(presentation)
     }
@@ -127,8 +129,13 @@ impl PlaylistStatusPresentation {
         ));
     }
 
-    fn push_navigation(&mut self, navigation: PlaylistNavigationView) {
-        let Some((identity, message, action)) = navigation_problem(navigation) else {
+    fn push_navigation(
+        &mut self,
+        navigation: PlaylistNavigationView,
+        previous_playback: PreviousPlayback,
+    ) {
+        let Some((identity, message, action)) = navigation_problem(navigation, previous_playback)
+        else {
             return;
         };
         self.rows.push(PlaylistStatusRow::new(
@@ -167,8 +174,15 @@ pub(super) enum PlaylistStatusProblemIdentity {
 /// Navigation identity отделяет failed state от action tooltip presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PlaylistNavigationProblemIdentity {
-    AwaitingUserAfterFailure { item_id: PlaylistItemId },
-    Fatal { scope_id: SiblingDiscoveryScopeId },
+    /// `previous_playback` входит в identity: когда состояние плеера меняется, текст строки
+    /// пересоздаётся и не врёт (например, «продолжает играть» после остановки).
+    AwaitingUserAfterFailure {
+        item_id: PlaylistItemId,
+        previous_playback: PreviousPlayback,
+    },
+    Fatal {
+        scope_id: SiblingDiscoveryScopeId,
+    },
 }
 
 impl PlaylistStatusProblemIdentity {
@@ -379,13 +393,27 @@ fn save_problem(
 }
 
 /// Форматирует только navigation failures; wait/exhausted/cancelled остаются silent.
+///
+/// Фраза про предыдущее воспроизведение зависит от реального состояния плеера: она не
+/// должна утверждать, что что-то играет, когда не играет ничего.
 pub(in crate::ui::playlist) const fn navigation_message(
     navigation: PlaylistNavigationView,
+    previous_playback: PreviousPlayback,
 ) -> Option<(&'static str, StatusTone)> {
     match navigation {
         PlaylistNavigationView::Idle => None,
         PlaylistNavigationView::AwaitingUserAfterFailure { .. } => Some((
-            "Не удалось открыть выбранный элемент. Предыдущее воспроизведение продолжает работать. Автоматический переход остановлен; Next, Previous или повтор продолжат сохранённый курсор",
+            match previous_playback {
+                PreviousPlayback::Playing => {
+                    "Не удалось открыть выбранный элемент. Предыдущий трек продолжает играть. Автопереход остановлен: нажмите «Следующий», «Предыдущий» или «Повторить»"
+                }
+                PreviousPlayback::Paused => {
+                    "Не удалось открыть выбранный элемент. Предыдущий трек остался на паузе. Автопереход остановлен: нажмите «Следующий», «Предыдущий» или «Повторить»"
+                }
+                PreviousPlayback::NothingPlaying => {
+                    "Не удалось открыть выбранный элемент. Автопереход остановлен: нажмите «Следующий», «Предыдущий» или «Повторить»"
+                }
+            },
             StatusTone::Error,
         )),
         PlaylistNavigationView::Fatal { .. } => {
@@ -396,18 +424,22 @@ pub(in crate::ui::playlist) const fn navigation_message(
 
 fn navigation_problem(
     navigation: PlaylistNavigationView,
+    previous_playback: PreviousPlayback,
 ) -> Option<(
     PlaylistNavigationProblemIdentity,
     &'static str,
     Option<PlaylistStatusAction>,
 )> {
-    let (message, _) = navigation_message(navigation)?;
+    let (message, _) = navigation_message(navigation, previous_playback)?;
     let (identity, action) = match navigation {
         PlaylistNavigationView::AwaitingUserAfterFailure {
             item_id,
             origin_already_ended,
         } => (
-            PlaylistNavigationProblemIdentity::AwaitingUserAfterFailure { item_id },
+            PlaylistNavigationProblemIdentity::AwaitingUserAfterFailure {
+                item_id,
+                previous_playback,
+            },
             Some(PlaylistStatusAction::CancelNavigation {
                 origin_already_ended,
             }),
@@ -443,7 +475,14 @@ mod tests {
             ..PlaylistInteractionModel::default()
         };
 
-        assert!(PlaylistStatusPresentation::from_models(&model(), &interaction).is_none());
+        assert!(
+            PlaylistStatusPresentation::from_models(
+                &model(),
+                &interaction,
+                PreviousPlayback::NothingPlaying
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -462,8 +501,12 @@ mod tests {
             manual_add_warning: Some(warning),
             ..PlaylistInteractionModel::default()
         };
-        let presentation = PlaylistStatusPresentation::from_models(&model(), &interaction)
-            .expect("partial result is a warning");
+        let presentation = PlaylistStatusPresentation::from_models(
+            &model(),
+            &interaction,
+            PreviousPlayback::NothingPlaying,
+        )
+        .expect("partial result is a warning");
 
         assert_eq!(presentation.rows().len(), 1);
         assert!(presentation.rows()[0].text().contains("Добавлено 2 из 5"));
@@ -500,8 +543,12 @@ mod tests {
             }),
             ..PlaylistInteractionModel::default()
         };
-        let presentation = PlaylistStatusPresentation::from_models(&model, &interaction)
-            .expect("warning/error fixtures create a presentation");
+        let presentation = PlaylistStatusPresentation::from_models(
+            &model,
+            &interaction,
+            PreviousPlayback::NothingPlaying,
+        )
+        .expect("warning/error fixtures create a presentation");
         let actions: Vec<_> = presentation
             .rows()
             .iter()
@@ -539,14 +586,52 @@ mod tests {
             PlaylistStartupWarningView::None,
         );
 
-        let blocked_row =
-            PlaylistStatusPresentation::from_models(&blocked, &PlaylistInteractionModel::default())
-                .expect("blocked save is visible");
-        let faulted_row =
-            PlaylistStatusPresentation::from_models(&faulted, &PlaylistInteractionModel::default())
-                .expect("faulted save is visible");
+        let blocked_row = PlaylistStatusPresentation::from_models(
+            &blocked,
+            &PlaylistInteractionModel::default(),
+            PreviousPlayback::NothingPlaying,
+        )
+        .expect("blocked save is visible");
+        let faulted_row = PlaylistStatusPresentation::from_models(
+            &faulted,
+            &PlaylistInteractionModel::default(),
+            PreviousPlayback::NothingPlaying,
+        )
+        .expect("faulted save is visible");
 
         assert_eq!(blocked_row.rows()[0].tone(), StatusTone::Warning);
         assert_eq!(faulted_row.rows()[0].tone(), StatusTone::Error);
+    }
+
+    #[test]
+    fn failed_selection_text_and_identity_follow_real_playback_state() {
+        let item_id =
+            PlaylistItemId::from_persistence_value(5).expect("fixture item identity is non-zero");
+        let model = model().with_status_for_test(
+            PlaylistProbeView::Idle,
+            PlaylistSaveView::Idle,
+            PlaylistNavigationView::AwaitingUserAfterFailure {
+                item_id,
+                origin_already_ended: false,
+            },
+            PlaylistStartupWarningView::None,
+        );
+        let row_for = |previous_playback| {
+            let presentation = PlaylistStatusPresentation::from_models(
+                &model,
+                &PlaylistInteractionModel::default(),
+                previous_playback,
+            )
+            .expect("failed selection is visible");
+            presentation.rows()[0].clone()
+        };
+
+        let playing = row_for(PreviousPlayback::Playing);
+        let idle = row_for(PreviousPlayback::NothingPlaying);
+
+        assert!(playing.text().contains("продолжает играть"));
+        assert!(!idle.text().contains("продолжает играть"));
+        // Смена состояния плеера меняет identity, поэтому устаревший текст не залипает.
+        assert_ne!(playing.identity(), idle.identity());
     }
 }

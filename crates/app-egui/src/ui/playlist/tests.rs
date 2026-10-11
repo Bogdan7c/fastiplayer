@@ -13,6 +13,7 @@ use playlist_core::{
 };
 use ui_artwork_egui::MediaKindGlyph;
 
+use super::PreviousPlayback;
 use super::renderer::{anchored_scroll_offset, row_fill, show_rows};
 use super::row_content::{
     INDEX_WIDTH, MEDIA_KIND_WIDTH, ROW_HEIGHT, TOOLTIP_MAX_WIDTH, accessibility_text,
@@ -1125,6 +1126,7 @@ fn disabled_animation_copy_does_not_replace_viewport_or_publish_hint() {
             super::PlaylistShowInput {
                 model: Some(&model),
                 interaction: &interaction,
+                previous_playback: super::PreviousPlayback::NothingPlaying,
                 row_style: row_style(),
                 toolbar_style: toolbar_style(),
                 motion: UiMotion::Standard,
@@ -1285,13 +1287,32 @@ fn error_retry_and_failed_navigation_have_distinct_accessibility() {
     assert!(failed_text.contains("Ошибка"));
     assert!(!failed_text.contains("повторная попытка"));
 
-    let (navigation, _) = navigation_message(PlaylistNavigationView::AwaitingUserAfterFailure {
+    // Фраза о предыдущем воспроизведении зависит от реального состояния плеера.
+    let failed_selection = PlaylistNavigationView::AwaitingUserAfterFailure {
         item_id,
         origin_already_ended: false,
-    })
-    .expect("D55 status");
-    assert!(navigation.contains("Автоматический переход остановлен"));
-    assert!(navigation.contains("Next, Previous или повтор"));
+    };
+    let message_for = |previous_playback| {
+        navigation_message(failed_selection, previous_playback)
+            .expect("D55 status")
+            .0
+    };
+    let playing = message_for(PreviousPlayback::Playing);
+    let paused = message_for(PreviousPlayback::Paused);
+    let nothing = message_for(PreviousPlayback::NothingPlaying);
+    assert!(playing.contains("Предыдущий трек продолжает играть"));
+    assert!(paused.contains("Предыдущий трек остался на паузе"));
+    assert!(!nothing.contains("Предыдущий трек"), "{nothing}");
+    for text in [playing, paused, nothing] {
+        assert!(text.contains("Автопереход остановлен"), "{text}");
+        assert!(text.contains("«Следующий»"), "{text}");
+        assert!(text.contains("«Повторить»"), "{text}");
+        assert!(
+            !text.contains("Next") && !text.contains("Previous"),
+            "{text}"
+        );
+        assert!(!text.contains("курсор"), "{text}");
+    }
 }
 
 #[test]

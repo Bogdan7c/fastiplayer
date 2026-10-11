@@ -330,6 +330,9 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
                     playlist::PlaylistShowInput {
                         model: context.playlist_model,
                         interaction: context.playlist_interaction,
+                        previous_playback: playlist::PreviousPlayback::from_playback_state(
+                            context.snapshot.playback_state,
+                        ),
                         row_style: context.playlist_row_style,
                         toolbar_style: context.playlist_toolbar_style,
                         motion: context.ui_motion,
