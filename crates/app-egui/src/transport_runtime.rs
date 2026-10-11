@@ -22,11 +22,13 @@ use crate::playlist_runtime::{
     PlaylistDiscoveryNavigationAction, PlaylistRuntime, RuntimeRowPlayOutcome,
     TransportActionOrigin,
 };
+use crate::startup_media::StartupMediaController;
 use crate::state::AppState;
 use crate::ui::player_controls::TransportControlAction;
 
 mod guarded;
 mod idle_resume;
+mod stop_preparation;
 
 pub(crate) use guarded::poll_playlist_transport;
 use guarded::{apply_guarded_transport, apply_neutral_stop_request};
@@ -289,6 +291,7 @@ pub(crate) fn request_navigation(
 pub(crate) fn apply_desktop_commands(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
+    startup_media: &mut StartupMediaController,
     renderer: &Renderer,
     player_snapshot: &PlayerSnapshot,
     commands: Vec<DesktopCommand>,
@@ -362,6 +365,13 @@ pub(crate) fn apply_desktop_commands(
                 }
             }
             DesktopTransportAction::Stop => {
+                // Сначала подготовка без coordinator-request-а (иначе она откроет видео позже),
+                // затем прежний путь: guard установки / остановка активного media.
+                let cancelled = stop_preparation::cancel_pending_preparations_for_stop(
+                    app_state,
+                    startup_media,
+                );
+                visible_change |= cancelled.cancelled_anything();
                 let stop = playlist_runtime.request_desktop_stop();
                 apply_neutral_stop_request(
                     app_state,

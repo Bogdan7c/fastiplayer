@@ -347,6 +347,64 @@ fn mpris_stop_during_in_flight_stops_installed_instance() {
 }
 
 #[test]
+fn mpris_stop_during_awaiting_ready_cancels_item_open_without_advancing_queue() {
+    // Элемент очереди ещё готовится (coordinator-request есть, Ready не было): Stop
+    // отменяет именно его через guard, ничего не открывает дальше, а повторный Play
+    // строки открывает её заново.
+    let (mut runtime, _binding, [a, b, _c]) = runtime_with_items();
+    start_row_install(&mut runtime, a, 71);
+    assert_eq!(phase(&runtime), Some(ControllerInstallPhase::AwaitingReady));
+
+    let Some(Err(guard)) = runtime.request_desktop_stop() else {
+        panic!("Stop во время подготовки элемента очереди идёт через guard");
+    };
+    let GuardedTransportFollowUp::ExecuteAfterRelease {
+        released,
+        executed: DeferredTransportExecutionOutcome::NeutralStop(stop_request),
+    } = runtime.resolve_transport_guard(guard, Duration::ZERO)
+    else {
+        panic!("Stop должен освободить pending request и выполниться сразу");
+    };
+
+    assert_eq!(
+        released.request_id,
+        request_id(71),
+        "отменён именно этот request"
+    );
+    assert_eq!(
+        released.cause,
+        MediaInstallCancellationCause::TransportStop,
+        "причина — тихая отмена C5, а не supersede и не ошибка"
+    );
+    assert!(
+        stop_request.is_none(),
+        "останавливать нечего: ничего не играет"
+    );
+    assert_eq!(
+        phase(&runtime),
+        None,
+        "install закрыт, очередь не перешла к B"
+    );
+    assert_eq!(active_item(&runtime), None, "ни A, ни B не стали активными");
+    assert!(
+        runtime
+            .take_terminal_transport_execution(Duration::ZERO)
+            .is_none(),
+        "после Stop не остаётся отложенной команды открыть что-то ещё"
+    );
+
+    // Play строки после Stop открывает заново (не no-op).
+    let RuntimeRowPlayOutcome::Controller(ControllerPlayItemOutcome::StartInstall {
+        install, ..
+    }) = runtime.play_playlist_row(a)
+    else {
+        panic!("Play после Stop обязан начать новое открытие той же строки");
+    };
+    assert_eq!(install.item_id, a);
+    assert_ne!(install.item_id, b);
+}
+
+#[test]
 fn guard_without_pending_install_executes_immediately_without_release() {
     let (mut runtime, _binding, [a, _b, _c]) = runtime_with_items();
     let guard = TransportGuardOutcome::ExecuteNow {

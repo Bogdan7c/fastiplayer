@@ -12,6 +12,7 @@ mod player_failure;
 mod player_port;
 mod preload_budget;
 mod preparation;
+mod preparation_cancel;
 mod retry_advice;
 mod speculative;
 mod types;
@@ -51,6 +52,7 @@ pub(crate) use media_source_open::prepared_web_media::{
 pub(crate) use player_failure::PlayerInstallFailureReason;
 pub(crate) use preload_budget::QueuePreloadResourceBudget;
 pub(crate) use preparation::{merge_yt_dlp_playlist_metadata, service_duration_for_timeline};
+pub(crate) use preparation_cancel::{PreparationCancelCause, PreparationCancelOutcome};
 pub(crate) use retry_advice::RetryAdvice;
 pub(crate) use speculative::{SpeculativeMediaPreparation, SpeculativeMediaPreparationPoll};
 #[allow(

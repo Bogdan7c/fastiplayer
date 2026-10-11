@@ -41,6 +41,7 @@ mod orchestration;
 mod pending_install;
 mod playlist;
 mod shutdown;
+mod user_stop;
 mod web_failure;
 mod yt_dlp;
 
@@ -376,6 +377,10 @@ pub(crate) struct StartupMediaController {
 
     /// Завершённый controller отличает первый terminal call от повторного.
     terminal_shutdown_completed: bool,
+
+    /// Пользователь нажал Stop во время подготовки: итоги ещё живых job-ов отбрасываются
+    /// молча (см. `user_stop`).
+    preparation_stopped_by_user: bool,
 }
 
 impl StartupMediaController {
@@ -405,6 +410,7 @@ impl StartupMediaController {
             web_display_host: None,
             terminal_shutdown_started: false,
             terminal_shutdown_completed: false,
+            preparation_stopped_by_user: false,
         }
     }
 

@@ -39,6 +39,7 @@ fn pending_message_reports_existing_yt_dlp_job() {
         web_display_host: None,
         terminal_shutdown_started: false,
         terminal_shutdown_completed: false,
+        preparation_stopped_by_user: false,
     };
 
     assert!(controller.has_pending_startup_job());
@@ -86,6 +87,7 @@ fn controller_with_test_yt_dlp_thread(join_handle: JoinHandle<()>) -> StartupMed
         web_display_host: None,
         terminal_shutdown_started: false,
         terminal_shutdown_completed: false,
+        preparation_stopped_by_user: false,
     }
 }
 

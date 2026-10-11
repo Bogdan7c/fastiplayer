@@ -75,8 +75,23 @@ impl LocalFileOpenDrain {
     }
 }
 
+/// Какую фазу открытия локального файла выполняет job.
+///
+/// Нужна, чтобы Stop отменял только подготовку: диалог выбора файла принадлежит
+/// пользователю, и транспортная команда его не закрывает.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalFileOpenJobKind {
+    /// Системный диалог выбора файла.
+    Picker,
+    /// Подготовка (чтение, demux-probe) уже выбранного файла.
+    Preparation,
+}
+
 /// Фоновый job ровно одной фазы выбора либо подготовки локального файла.
 pub(crate) struct LocalFileOpenJob {
+    /// Фаза, которую выполняет этот job.
+    kind: LocalFileOpenJobKind,
+
     /// Owner mailbox хранит latest path отдельно от lossless terminal result.
     mailbox_receiver: OwnerMailboxReceiver<PathBuf, LocalFileOpenResult>,
 
@@ -146,6 +161,7 @@ impl LocalFileOpenJob {
             .map_err(|error| format!("Не удалось запустить local file picker job: {error}"))?;
 
         Ok(Self::from_parts(
+            LocalFileOpenJobKind::Picker,
             mailbox_receiver,
             join_handle,
             cancellation_requested,
@@ -204,6 +220,7 @@ impl LocalFileOpenJob {
             .map_err(|error| format!("Не удалось запустить local file preparation job: {error}"))?;
 
         Ok(Self::from_parts(
+            LocalFileOpenJobKind::Preparation,
             mailbox_receiver,
             join_handle,
             cancellation_requested,
@@ -212,12 +229,14 @@ impl LocalFileOpenJob {
     }
 
     fn from_parts(
+        kind: LocalFileOpenJobKind,
         mailbox_receiver: OwnerMailboxReceiver<PathBuf, LocalFileOpenResult>,
         join_handle: JoinHandle<()>,
         cancellation_requested: Arc<AtomicBool>,
         source_cancellation: source_core::CancellationToken,
     ) -> Self {
         Self {
+            kind,
             mailbox_receiver,
             join_handle: Some(join_handle),
             pending_completion: None,
@@ -225,6 +244,36 @@ impl LocalFileOpenJob {
             source_cancellation,
             terminal_shutdown_completed: false,
         }
+    }
+
+    /// Отменяет только подготовку файла; диалог выбора пользователя не закрывается.
+    ///
+    /// Intent-граница для транспортной команды Stop: у picker-job-а ничего не меняется и
+    /// возвращается `NothingPending`, у preparation-job-а поднимается кооперативная отмена.
+    pub(crate) fn cancel_preparation(
+        &self,
+        cause: crate::media_open::PreparationCancelCause,
+    ) -> crate::media_open::PreparationCancelOutcome {
+        use crate::media_open::{PreparationCancelCause, PreparationCancelOutcome};
+        let PreparationCancelCause::UserStop = cause;
+        match self.kind {
+            LocalFileOpenJobKind::Picker => PreparationCancelOutcome::NothingPending,
+            LocalFileOpenJobKind::Preparation => {
+                self.request_cancellation();
+                PreparationCancelOutcome::Cancelled
+            }
+        }
+    }
+
+    /// Просит worker прервать работу, не дожидаясь его выхода (в отличие от `shutdown_until`).
+    ///
+    /// Кооперативная отмена: поднимается флаг и токен источника, которые проверяют
+    /// подготовка и demux-probe. Worker сам опубликует `LocalFileOpenResult::Cancelled`,
+    /// а владелец заберёт его обычным `drain()`, поэтому join на UI-потоке не нужен.
+    /// Повторный вызов безопасен.
+    fn request_cancellation(&self) {
+        self.cancellation_requested.store(true, Ordering::Release);
+        self.source_cancellation.cancel();
     }
 
     /// Неблокирующе забирает оба независимых slot-а и никогда не ждёт join.
@@ -262,8 +311,23 @@ impl LocalFileOpenJob {
             }
         };
 
+        // После отмены владельцем любой итог (в том числе уже готовый `Prepared`, который
+        // worker успел опубликовать до флага) становится тихим `Cancelled`: отменённая
+        // подготовка не имеет права ничего установить.
+        let cancelled_by_owner = self.cancellation_requested.load(Ordering::Acquire);
+        let completion = completion.map(|result| {
+            if cancelled_by_owner {
+                LocalFileOpenResult::Cancelled
+            } else {
+                result
+            }
+        });
+
         LocalFileOpenDrain {
-            preparing_path: mailbox_drain.latest_progress,
+            // Строка «Открываем…» отменённой подготовки больше не показывается.
+            preparing_path: mailbox_drain
+                .latest_progress
+                .filter(|_| !cancelled_by_owner),
             completion,
         }
     }
@@ -379,6 +443,7 @@ mod tests {
         let (_publisher, mailbox_receiver) =
             owner_mailbox(AppWakePort::disconnected(AppWakeOwner::LocalFileOpen));
         LocalFileOpenJob {
+            kind: super::LocalFileOpenJobKind::Preparation,
             mailbox_receiver,
             join_handle: Some(join_handle),
             pending_completion: None,
@@ -448,6 +513,92 @@ mod tests {
         );
 
         assert!(matches!(result, LocalFileOpenResult::Cancelled));
+    }
+
+    /// Job с настоящим mailbox-ом: worker публикует «опоздавший» итог после отпускания.
+    fn job_with_late_failure(
+        kind: super::LocalFileOpenJobKind,
+    ) -> (LocalFileOpenJob, Arc<AtomicBool>) {
+        let (publisher, mailbox_receiver) =
+            owner_mailbox(AppWakePort::disconnected(AppWakeOwner::LocalFileOpen));
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = Arc::clone(&release);
+        let join_handle = std::thread::spawn(move || {
+            while !worker_release.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            let _ = publisher.publish_completion(LocalFileOpenResult::PrepareFailed {
+                path: std::path::PathBuf::from("clip.mkv"),
+                reason: LocalOpenFailureReason::FileNotFound,
+            });
+        });
+        let mut job = test_job(join_handle);
+        job.kind = kind;
+        job.mailbox_receiver = mailbox_receiver;
+        (job, release)
+    }
+
+    fn drain_completion(job: &mut LocalFileOpenJob) -> LocalFileOpenResult {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(completion) = job.drain().completion {
+                return completion;
+            }
+            assert!(std::time::Instant::now() < deadline, "job не завершился");
+            std::thread::yield_now();
+        }
+    }
+
+    /// Stop по подготовке: даже опубликованная ошибка/результат становится тихим `Cancelled`.
+    #[test]
+    fn stop_turns_late_preparation_outcome_into_silent_cancel() {
+        let (mut job, release) = job_with_late_failure(super::LocalFileOpenJobKind::Preparation);
+
+        let outcome = job.cancel_preparation(crate::media_open::PreparationCancelCause::UserStop);
+        release.store(true, Ordering::Release);
+
+        assert_eq!(
+            outcome,
+            crate::media_open::PreparationCancelOutcome::Cancelled
+        );
+        assert!(matches!(
+            drain_completion(&mut job),
+            LocalFileOpenResult::Cancelled
+        ));
+    }
+
+    /// Контроль: без Stop тот же итог доходит как есть (обычное открытие не затронуто).
+    #[test]
+    fn without_stop_the_same_outcome_is_delivered_unchanged() {
+        let (mut job, release) = job_with_late_failure(super::LocalFileOpenJobKind::Preparation);
+        release.store(true, Ordering::Release);
+
+        assert!(matches!(
+            drain_completion(&mut job),
+            LocalFileOpenResult::PrepareFailed {
+                reason: LocalOpenFailureReason::FileNotFound,
+                ..
+            }
+        ));
+    }
+
+    /// Stop не закрывает диалог выбора файла: итог picker-а не меняется.
+    #[test]
+    fn stop_does_not_touch_file_picker_job() {
+        let (mut job, release) = job_with_late_failure(super::LocalFileOpenJobKind::Picker);
+
+        let outcome = job.cancel_preparation(crate::media_open::PreparationCancelCause::UserStop);
+        release.store(true, Ordering::Release);
+
+        assert_eq!(
+            outcome,
+            crate::media_open::PreparationCancelOutcome::NothingPending
+        );
+        assert!(!job.cancellation_requested.load(Ordering::Acquire));
+        assert!(matches!(
+            drain_completion(&mut job),
+            LocalFileOpenResult::PrepareFailed { .. }
+        ));
     }
 
     /// Пустой queued wake event не должен объявлять видимую мутацию.

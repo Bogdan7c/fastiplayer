@@ -729,6 +729,7 @@ impl AppShell {
                 let changed = crate::transport_runtime::apply_desktop_commands(
                     app_state,
                     &mut self.playlist_runtime,
+                    &mut self.startup_media,
                     renderer,
                     &snapshot,
                     desktop_commands,

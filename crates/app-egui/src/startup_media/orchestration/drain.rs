@@ -12,6 +12,11 @@ impl StartupMediaController {
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
         renderer: &render_wgpu_shell::Renderer,
     ) -> bool {
+        if self.preparation_stopped_by_user {
+            // Stop отменил подготовку: итоги оставшихся job-ов не имеют права ничего начать
+            // и ничего показать (ни winner, ни ошибку, ни бейдж строки).
+            return self.discard_stopped_preparation_jobs();
+        }
         let mut changed = false;
         if let Some(job) = self.local_startup_job.as_mut() {
             let drain = job.drain();
