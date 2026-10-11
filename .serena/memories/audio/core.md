@@ -86,3 +86,9 @@
 - Playback clock Opus всегда 48 kHz. Поле input sample rate из `OpusHead` — только metadata и может быть нулём; `symphonia-demux::track_mapper` публикует 48 kHz даже при исходном metadata rate 44.1 kHz.
 - Functional proof: реальный пакет, созданный libopus `MSEncoder`, проходит public `create_audio_decoder` -> multistream decode -> production `ChannelMixer` 5.1→stereo; отдельные parser tests закрепляют exact Wikimedia row-05 header/mapping. Реальный WebM fixture проверяется `symphonia-demux/tests/audio_fixture_decode_seek.rs`.
 - Source `pre_skip`/seek preroll не спрятаны в decoder `reset()`: существующий lifecycle не различает initial start и post-seek discontinuity. Будущая sample-exact работа должна передать trim/discontinuity intent на demux/player boundary, а не менять ownership внутри codec adapter-а.
+
+
+## F2: stream удерживается до первого play (2026-10-11)
+- CPAL 0.15 на ALSA/PipeWire запускает stream при построении. `AudioOutput::new_with_device_id` замораживает clock ДО build_stream и ставит stream на backend-паузу (`output/lifecycle.rs::hold_new_stream`; unsupported pause -> logical gate). До `play()` callback выдаёт тишину, не считает underrun и не берёт PCM из ring-а.
+- Чистая часть data callback-а — `output/callback_fill.rs::fill_from_ring` -> `CallbackFill::{Held, Played}`; `Held` не underrun. Underrun = тишина при играющем output-е. Тесты там же.
+- Известно: после `Ended` output не паузится и копит underrun-ы; на live-краю бывают короткие Playing->Buffering->Playing циклы.

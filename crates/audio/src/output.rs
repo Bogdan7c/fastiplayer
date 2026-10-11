@@ -30,20 +30,22 @@ use crate::channel_mixer::ChannelMixer;
 use crate::clock::AudioClock;
 use crate::devices::{DEFAULT_AUDIO_OUTPUT_DEVICE_ID, output_device_from_stable_id};
 
+mod callback_fill;
 mod configuration;
 mod lifecycle;
 mod processing;
 mod resampler;
 mod stream_callbacks;
 
+use callback_fill::{CallbackFill, fill_from_ring};
 use configuration::choose_supported_output_config;
 #[cfg(test)]
 use configuration::{
     output_sample_format_is_supported, sample_format_priority, select_supported_output_config,
 };
-use lifecycle::pause_stream_with_policy;
 #[cfg(test)]
 use lifecycle::{PauseErrorPolicy, classify_pause_error};
+use lifecycle::{hold_new_stream, pause_stream_with_policy};
 #[cfg(test)]
 use processing::{PEAK_LIMITER_CEILING, soft_clip_sample};
 use processing::{
@@ -185,6 +187,8 @@ impl AudioOutput {
         let consumer = Arc::new(Mutex::new(consumer));
 
         let clock = Arc::new(AudioClock::new(stream_rate, stream_channels as u32));
+        // Callback не должен ничего считать до первого `play()`: см. `hold_new_stream`.
+        let _initial_timing = clock.freeze_output_timing();
         let stream_failure = StreamFailureSignal::default();
 
         // Получаем sample format и StreamConfig.
@@ -205,6 +209,8 @@ impl AudioOutput {
             callback_shared,
         )?;
 
+        let backend_stream_state = hold_new_stream(&stream)?;
+
         info!(buffer_capacity, "AudioOutput создан");
 
         Ok(Self {
@@ -218,7 +224,7 @@ impl AudioOutput {
             channel_mix_buffer: Vec::new(),
             volume: 1.0,
             is_playing: false,
-            backend_stream_state: BackendStreamState::Paused,
+            backend_stream_state,
             resampler: needs_resample
                 .then(|| LinearResampler::new(decoder_rate, stream_rate, stream_channels)),
             limiter_envelope: 0.0,
@@ -456,59 +462,42 @@ impl AudioOutput {
     ) where
         T: Sample + FromSample<f32>,
     {
-        let mut filled = 0u64;
-        let mut silence = 0u64;
-
-        match consumer.lock() {
+        let (filled, silence) = match consumer.lock() {
             Ok(mut consumer) => {
-                // Logical pause нужен даже для backend-ов без CPAL pause:
-                // callback выдаёт silence, но не расходует ring PCM и clock.
-                if clock.output_timing_is_frozen() {
-                    data.fill(T::EQUILIBRIUM);
+                let fill = fill_from_ring(data, &mut consumer, clock, channels);
+                let CallbackFill::Played {
+                    played_samples,
+                    silence_samples,
+                } = fill
+                else {
                     return;
-                }
-
-                // Underrun не должен рвать interleaved кадр: чтение, оборванное
-                // посреди кадра, сдвигает каналы всего последующего потока
-                // (звук «прыгает» между левым и правым). Читаем целые кадры,
-                // неполный хвост оставляем в ring buffer до следующего callback.
-                let channels = channels.max(1);
-                let occupied = consumer.occupied_len();
-                let frame_aligned_occupied = occupied - (occupied % channels);
-                let to_fill = data.len().min(frame_aligned_occupied);
-
-                for sample in data[..to_fill].iter_mut() {
-                    match consumer.try_pop() {
-                        Some(value) => {
-                            *sample = convert_sample_for_output(value);
-                            filled += 1;
-                        }
-                        None => {
-                            *sample = T::EQUILIBRIUM;
-                            silence += 1;
-                        }
-                    }
-                }
-                for sample in data[to_fill..].iter_mut() {
-                    *sample = T::EQUILIBRIUM;
-                    silence += 1;
-                }
-
+                };
                 // Clock publication входит в ту же critical section, что и
                 // consumer read. Seek clear поэтому либо увидит весь callback,
                 // либо сбросит его целиком, но не получит поздний старый anchor.
-                clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
-                drop(consumer);
+                clock.record_output_callback(
+                    played_samples,
+                    silence_samples,
+                    callback_info,
+                    callback_observed_at,
+                );
+                (played_samples, silence_samples)
             }
             Err(_) => {
                 data.fill(T::EQUILIBRIUM);
                 if clock.output_timing_is_frozen() {
                     return;
                 }
-                silence = data.len() as u64;
-                clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
+                let silence_samples = data.len() as u64;
+                clock.record_output_callback(
+                    0,
+                    silence_samples,
+                    callback_info,
+                    callback_observed_at,
+                );
+                (0, silence_samples)
             }
-        }
+        };
 
         if filled == 0 && silence > 0 {
             tracing::debug!(

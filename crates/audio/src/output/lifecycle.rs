@@ -79,6 +79,26 @@ impl AudioOutput {
     }
 }
 
+/// Удерживает только что построенный stream до первого `play()`.
+///
+/// Почему это нужно: CPAL 0.15 на ALSA (в том числе поверх PipeWire) запускает stream
+/// сразу при построении, а `AudioOutput` создаётся лениво по первому decoded PCM и
+/// получает `play()` позже (по готовности preroll). Всё это время callback крутился
+/// с пустым ring buffer-ом и накручивал счётчик underrun-ов (на live HLS — десятки
+/// callback-ов на старте), хотя звука ещё никто не просил, а PCM, записанный до `play()`,
+/// мог уйти на устройство раньше времени.
+///
+/// Удержание двухслойное: clock замораживается ещё до построения stream-а (callback
+/// выдаёт тишину, ничего не считает и не берёт PCM) — это работает на любом backend-е;
+/// здесь stream дополнительно ставится на backend-паузу. Если backend паузу не
+/// поддерживает, остаётся только logical gate, и `play()` не вызывает `stream.play()`.
+pub(super) fn hold_new_stream(stream: &cpal::Stream) -> Result<BackendStreamState> {
+    Ok(match pause_stream_with_policy(stream)? {
+        PauseStreamOutcome::Paused => BackendStreamState::Paused,
+        PauseStreamOutcome::UnsupportedByBackend => BackendStreamState::Running,
+    })
+}
+
 /// Политика обработки ошибки `StreamTrait::pause`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PauseErrorPolicy {
