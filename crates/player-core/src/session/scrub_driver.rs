@@ -15,6 +15,7 @@ use frame_server_core::{
 use media_core::{DemuxSeekRequest, MediaDemuxError, MediaTime, TrackTimestamp};
 
 use super::PlayerSession;
+use super::scrub_preview_policy::demux_seek_failure_is_user_visible;
 use crate::seek_state::{
     SeekCommitState, SeekLandingExecution, SeekLandingGenerationStartError, SeekTargetRetention,
     demux_seek_request_for_transaction,
@@ -392,7 +393,14 @@ impl ScrubTransactionLifecycle for PlayerSession {
             Ok(seek_result) => seek_result,
             Err(error) => {
                 let lifecycle_error = scrub_lifecycle_error_from_demux_seek_error(&error);
-                self.record_recoverable_error(player_error_from_scrub_demux_seek_error(error));
+                if demux_seek_failure_is_user_visible(context.request_kind(), &error) {
+                    self.record_recoverable_error(player_error_from_scrub_demux_seek_error(error));
+                } else {
+                    tracing::debug!(
+                        error = %error,
+                        "Live-scrub preview не поддержан demuxer-ом источника; отказ не публикуется"
+                    );
+                }
                 return Err(lifecycle_error);
             }
         };

@@ -31,6 +31,7 @@ use super::scrub_orchestration::{
     LIVE_SCRUB_FORWARD_EXTENSION_MAX, ReusedDecoderScrubLandingRequest,
     initial_scrub_generation_before_target,
 };
+use super::scrub_preview_policy::generic_landing_start_failure_is_user_visible;
 use super::seek_admission::SeekTimelineAdmission;
 
 mod error_mapping;
@@ -420,7 +421,9 @@ impl PlayerSession {
         self.snapshot.timeline.stale_frame = false;
         self.snapshot.timeline.preview_state = TimelinePreviewState::Failed;
         self.set_playback_state(PlaybackState::Paused);
-        if self.snapshot.last_error.is_none() {
+        if self.snapshot.last_error.is_none()
+            && generic_landing_start_failure_is_user_visible(route.request_kind())
+        {
             self.record_recoverable_error(PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
                 "SeekLanding не смог стартовать reused-decoder scrub route",

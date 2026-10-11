@@ -62,6 +62,7 @@ mod runtime_control;
 mod scrub_command_correlation;
 mod scrub_driver;
 mod scrub_orchestration;
+mod scrub_preview_policy;
 mod seek_admission;
 mod seek_commit_gates;
 mod seek_completion;
