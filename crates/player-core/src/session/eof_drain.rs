@@ -217,8 +217,28 @@ impl PlayerSession {
             "EOF drain finished; entering Ended"
         );
         self.update_current_position(end_position);
+        self.park_audio_output_after_eof();
         self.set_playback_state(PlaybackState::Ended);
         true
+    }
+
+    /// Ставит audio output на backend-паузу, когда хвост звука уже доигран до конца.
+    ///
+    /// Почему здесь: после `Ended` играть больше нечему, но cpal stream продолжал бы
+    /// крутить data callback с пустым ring-ом (каждые ~10-30 мс), копя ложные
+    /// «underrun-ы» и будя CPU. Пауза берёт тот же путь, что и пользовательский
+    /// `Pause` (`pause_audio_output_and_capture_clock`), поэтому clock замораживается
+    /// атомарно, а `Play`/seek после `Ended` возобновляют вывод обычным resume-путём
+    /// (флаг play-request сброшен).
+    ///
+    /// Вызывается строго после `eof_drain_ready_to_end`: хвост (включая submitted DAC tail)
+    /// уже доигран, поэтому пауза его не обрезает. Ошибка паузы не фатальна: звука
+    /// больше не будет, а fatal-ошибка на корректном конце файла была бы хуже
+    /// лишних callback-ов; причина остаётся в логе.
+    fn park_audio_output_after_eof(&mut self) {
+        if let Some(Err(error)) = self.pipeline.pause_audio_output_and_capture_clock() {
+            warn!(error = %error, "Не удалось поставить audio output на паузу после EOF");
+        }
     }
 
     /// Запускает decoder-side EOF/DPB drain без seek flush и без generation advance.

@@ -91,4 +91,5 @@
 ## F2: stream удерживается до первого play (2026-10-11)
 - CPAL 0.15 на ALSA/PipeWire запускает stream при построении. `AudioOutput::new_with_device_id` замораживает clock ДО build_stream и ставит stream на backend-паузу (`output/lifecycle.rs::hold_new_stream`; unsupported pause -> logical gate). До `play()` callback выдаёт тишину, не считает underrun и не берёт PCM из ring-а.
 - Чистая часть data callback-а — `output/callback_fill.rs::fill_from_ring` -> `CallbackFill::{Held, Played}`; `Held` не underrun. Underrun = тишина при играющем output-е. Тесты там же.
-- Известно: после `Ended` output не паузится и копит underrun-ы; на live-краю бывают короткие Playing->Buffering->Playing циклы.
+- F4 (2026-10-11): после доигранного EOF-drain session паузит output (`session/eof_drain.rs::park_audio_output_after_eof`, тот же путь, что `Pause`) -> callback-и `Held`, underrun-ы не копятся. До паузы ~8 callback-ов (~250 мс ожидания DAC-хвоста) честно считаются underrun-ами. Play/seek после `Ended` возобновляют вывод обычным resume.
+- Известно: на live-краю бывают короткие Playing->Buffering->Playing циклы.

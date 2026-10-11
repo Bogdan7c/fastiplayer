@@ -22,3 +22,8 @@
 ## Audio-aware demux starvation recovery (2026-08-27)
 
 Temporary installed-demux starvation with selected audio now proactively freezes output when usable runway cannot cover remaining retry wait plus the canonically sanitized audio low-water scheduler/callback margin, independently of queued video. Remaining wait uses a fresh post-demux decision timestamp. Any exact current pending retry, including chained TUA after a recovered packet, blocks resume until the next matching accepted source event clears the source-wait fence; then the existing audio+video preroll gate is authoritative. Buffering resume publishes `Playing`/`AudioPlaybackResumed` only after successful output play and clock anchoring; recoverable play failure remains Buffering and is retried by the ordinary preroll lifecycle. Full invariants and tests: `mem:player-core/audio-starvation-buffering-resume-2026-08-27`.
+
+
+## F4: пауза output-а на конце файла (2026-10-11)
+
+`finish_eof_drain_if_ready` (`session/eof_drain.rs`) перед `Ended` вызывает `park_audio_output_after_eof` -> `pipeline.pause_audio_output_and_capture_clock()` (путь `Pause`). Только после `eof_drain_ready_to_end`, поэтому хвост не обрезается. Ошибка паузы не фатальна (warn). Флаг play-request сброшен, поэтому replay/seek после `Ended` зовут `play` как обычно. Тесты: `session/tests/eof_audio_park.rs`, `audio::output::callback_fill` (`tail_is_played_fully_then_paused_output_is_held_without_underruns`).

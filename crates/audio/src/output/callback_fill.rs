@@ -176,4 +176,46 @@ mod tests {
         assert_eq!(data, [0.25, 0.25, 0.0, 0.0, 0.0, 0.0]);
         assert_eq!(consumer.occupied_len(), 1);
     }
+
+    #[test]
+    fn tail_is_played_fully_then_paused_output_is_held_without_underruns() {
+        // F4: сценарий конца файла. Хвост доигрывается целиком (пока clock идёт),
+        // затем пауза (`pause_and_freeze_clock` морозит clock) — все следующие callback-и
+        // Held, ring не трогается, underrun-ов нет; resume снова даёт настоящую игру.
+        let clock = AudioClock::new(48_000, 2);
+        let (mut producer, mut consumer) = ring_with(64, &[0.5; 8]);
+        let mut data = [1.0_f32; 8];
+
+        assert_eq!(
+            fill_from_ring(&mut data, &mut consumer, &clock, 2),
+            CallbackFill::Played {
+                played_samples: 8,
+                silence_samples: 0
+            },
+            "хвост не должен обрезаться"
+        );
+        assert_eq!(data, [0.5; 8]);
+
+        let _frozen_timing = clock.freeze_output_timing();
+        for _ in 0..100 {
+            data.fill(1.0);
+            assert_eq!(
+                fill_from_ring(&mut data, &mut consumer, &clock, 2),
+                CallbackFill::Held
+            );
+            assert_eq!(data, [0.0; 8]);
+        }
+
+        // Replay/seek после Ended: resume + новый PCM играют как обычно.
+        assert_eq!(producer.push_slice(&[0.25; 8]), 8);
+        clock.resume_output_timing();
+        assert_eq!(
+            fill_from_ring(&mut data, &mut consumer, &clock, 2),
+            CallbackFill::Played {
+                played_samples: 8,
+                silence_samples: 0
+            }
+        );
+        assert_eq!(data, [0.25; 8]);
+    }
 }
