@@ -38,11 +38,13 @@ Read the [vision](docs/vision.md) for the longer view and the multimedia archite
 
 - **Local video and audio**, playback controls, seeking, and stream selection within supported media profiles. Video uses VA-API hardware decoding where supported, or FFmpeg software decoding, with WGPU/Vulkan rendering.
 - **Playback speed with pitch-preserving time stretching.** Hear the pace change from 1.0× to 1.5× and back in the trailer; pause preserves the picture and resume continues playback.
-- **Live timeline scrubbing.** Drag in either direction and watch the main picture follow, then release to resume playback. Ordinary playback audio pauses during the drag; this is not reverse-audio scrubbing. File drag-and-drop remains on the roadmap.
+- **Live timeline scrubbing.** Drag in either direction and watch the main picture follow, then release to resume playback. Ordinary playback audio pauses during the drag; this is not reverse-audio scrubbing.
+- **Drag-and-drop and "Open with".** Drop files, folders, playlists, or links into the window on Wayland or X11: dropping on the panel appends to the queue, dropping on the video starts a new queue after confirmation. Opening a file while Fastiplayer is already running hands it to the existing window.
+- **Keyboard and mouse control:** volume from the mouse wheel over the video or the arrow keys, playback-speed hotkeys, Ctrl+O, and a time hint over the timeline. Volume and mute persist between launches.
 - **Real-time video color controls**, including saturation and contrast with live preview and reset. These adjust the video image; fuller customization of the application's appearance is planned separately.
 - **Animated panels and controls** connect playback, queue navigation, and settings within the same window. The interface and settings design are still evolving.
-- **Network playback:** native progressive HTTP(S)/FTP(S), HLS and DASH VOD/live/DVR, and supported static Smooth Streaming and HDS profiles. Web-page extraction can use optional system `yt-dlp`.
-- **A persistent queue:** M3U/M3U8, XSPF, and CUE import/export, queue navigation, and playback-position restore. [See the queue](docs/demo.md#queue).
+- **Network playback:** native progressive HTTP(S)/FTP(S), HLS and DASH VOD/live/DVR, and supported static Smooth Streaming and HDS profiles. HLS also covers audio-only streams such as internet radio, including packed ADTS AAC and MP3 segments. Web-page extraction can use optional system `yt-dlp`.
+- **A persistent queue:** M3U/M3U8, XSPF, and CUE import/export, queue navigation, and playback-position restore. Legacy `.m3u` and `.cue` files in Windows-1251 are read with a notice; a broken item is skipped with a visible reason. [See the queue](docs/demo.md#queue).
 - **Runtime settings**, live previews where supported, and controlled Apply/rollback. Some changes rebuild the affected playback component; busy operations can require a retry. [See settings](docs/demo.md#settings).
 - **GPU HDR-to-SDR tone mapping**, including verified AV1 10-bit P010 input on the SDR output path.
 
@@ -89,7 +91,7 @@ cargo check -p app-egui --no-default-features --locked
 
 ## Roadmap to 1.0
 
-The next major capability is a native Rust subtitle engine. The planned sequence then develops browser handoff, the interface, customization, localization, older-hardware rendering, drag-and-drop, and Windows support. These are future capabilities, not features included in the alpha.
+The next major capability is a native Rust subtitle engine. The planned sequence then develops browser handoff, the interface, customization, localization, older-hardware rendering, and Windows support. Drag-and-drop, item 7, has already landed in `main` ahead of that order; the remaining items are future capabilities, not features included in the alpha.
 
 
 The implementation order is fixed in [milestone 1.0](https://github.com/Bogdan7c/fastiplayer/milestone/1); these are planned capabilities:
@@ -100,7 +102,7 @@ The implementation order is fixed in [milestone 1.0](https://github.com/Bogdan7c
 4. [Make application colors and appearance fully configurable from settings.](https://github.com/Bogdan7c/fastiplayer/issues/4)
 5. [Add localization infrastructure and initial translations.](https://github.com/Bogdan7c/fastiplayer/issues/5)
 6. [Add an OpenGL ES 2.0 renderer for older Linux hardware.](https://github.com/Bogdan7c/fastiplayer/issues/6)
-7. [Add drag-and-drop for local files and URLs.](https://github.com/Bogdan7c/fastiplayer/issues/7)
+7. ~~[Add drag-and-drop for local files and URLs.](https://github.com/Bogdan7c/fastiplayer/issues/7)~~ **Done in `main`** (after `v0.1.0-alpha.1`).
 8. [Complete native Windows application support.](https://github.com/Bogdan7c/fastiplayer/issues/8)
 
 NVDEC, native HDR output, and macOS are possible later directions, dependent on resources and hardware validation. They have no dates and do not change this order. See the [longer-term vision](docs/vision.md#beyond-the-current-roadmap).
@@ -132,4 +134,4 @@ The project is open to support with development tools and equipment. To discuss 
 
 For suspected vulnerabilities, use [GitHub Private Vulnerability Reporting](https://github.com/Bogdan7c/fastiplayer/security/advisories/new) and follow [SECURITY.md](SECURITY.md). Keep private media URLs, credentials, and exploit details out of public reports.
 
-First-party workspace code is [MIT licensed](LICENSE). The seven [patched upstream crates](docs/dependency-patches.toml) retain their own licenses and notices: BSD-3-Clause for cros-codecs/cros-libva, MPL-2.0 for the four Symphonia patches, and MIT for wayland-scanner. [Changelog](CHANGELOG.md) · [Existing alpha release](https://github.com/Bogdan7c/fastiplayer/releases/tag/v0.1.0-alpha.1).
+First-party workspace code is [MIT licensed](LICENSE). The eight [patched upstream crates](docs/dependency-patches.toml) retain their own licenses and notices: BSD-3-Clause for cros-codecs/cros-libva, MPL-2.0 for the four Symphonia patches, MIT for wayland-scanner, and Apache-2.0 for winit. [Changelog](CHANGELOG.md) · [Existing alpha release](https://github.com/Bogdan7c/fastiplayer/releases/tag/v0.1.0-alpha.1).

@@ -48,7 +48,7 @@ The [ordered roadmap](../README.md#roadmap-to-10) and [GitHub milestone](https:/
 4. Configurable application colors and appearance.
 5. Localization infrastructure and initial translations.
 6. An OpenGL ES 2.0 renderer for older Linux hardware.
-7. Drag-and-drop for local files and URLs.
+7. Drag-and-drop for local files and URLs — done in `main` after `v0.1.0-alpha.1`.
 8. Native Windows application support.
 
 These are planned capabilities. They do not imply that subtitles, browser integration, or Windows support already ship in the alpha.

@@ -23,7 +23,7 @@ For supported media and measured outcomes, use the [compatibility matrix](docs/w
 | GPU video rendering | [render-core](crates/render-core/src), [render-wgpu-video](crates/render-wgpu-video/src) | Materialize frames, GPU color conversion/tone mapping, viewport and render diagnostics |
 | Device, surface and presentation | [render-wgpu-shell](crates/render-wgpu-shell/src) | WGPU device/surface, video + egui composition, submit and present |
 
-The [workspace manifest](Cargo.toml) records the actual dependency graph. The seven patched upstream crates are outside the first-party workspace and have separate manifests, locks, licenses, and validation; see the [patch inventory](docs/dependency-patches.toml).
+The [workspace manifest](Cargo.toml) records the actual dependency graph. The eight patched upstream crates are outside the first-party workspace and have separate manifests, locks, licenses, and validation; see the [patch inventory](docs/dependency-patches.toml).
 
 ## Source opening and playback lifecycle
 

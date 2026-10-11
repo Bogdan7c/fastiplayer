@@ -4,6 +4,32 @@ Notable project changes are recorded here in a Keep a Changelog-like structure. 
 
 ## [Unreleased]
 
+### Added
+
+- Drag-and-drop of files, folders, playlists, and links on Wayland and X11 (roadmap item 7), backed by an additive [winit patch](docs/dependency-patches.toml).
+- Opening a file while Fastiplayer is running forwards it to the existing window over D-Bus instead of refusing to start.
+- Volume from the mouse wheel and arrow keys, playback-speed hotkeys, Ctrl+O, a timeline time hint; volume and mute persist between launches.
+- Audio-only HLS (internet radio), including packed ADTS AAC/MP3 segments; video-only HLS; finished EVENT playlists open as VOD; VP9 in fMP4 HLS.
+- `.m3u`/`.cue` playlists in Windows-1251 are read with a notice; playlist export reports skipped entries.
+- A "Retry" action for open errors; URL import shows progress, cancellation, and a clear rejection reason.
+
+### Changed
+
+- User-facing errors explain the cause in plain (currently Russian) text instead of internal messages: missing files, broken media, network and web-page failures, settings rebuilds.
+- A broken queue item is skipped with a visible reason; a queue without network stops on the first item instead of failing through it.
+- A broken config no longer prevents startup: it is backed up to `.bak` and defaults are used with a warning.
+- A lost audio device falls back to the default output.
+- Upgraded to Rust 1.99, egui 0.36, and wgpu 30.
+
+### Fixed
+
+- Settings Apply that rebuilds media no longer freezes the window.
+- Stop during source preparation cancels opening quietly, without an error.
+- Pausing before the first frame shows a poster frame instead of a black screen.
+- Live HLS starts behind the live edge, removing buffering cycles at the edge.
+- Recreating the audio output no longer shifts audio against video.
+- VA-API AV1 global-motion parsing no longer hangs AMD VCN; AV1/VP9 frame presentation times follow the shown temporal unit.
+
 ### Planned
 
 - Continue the ordered [roadmap to 1.0](README.md#roadmap-to-10); roadmap entries are not shipped features.
