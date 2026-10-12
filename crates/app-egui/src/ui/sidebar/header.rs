@@ -71,8 +71,8 @@ pub(super) fn show(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRe
     let chrome_output = render_header_chrome(
         ui,
         header_rect,
-        sidebar_section_title(section),
-        sidebar_close_tooltip(section),
+        section,
+        context.window_chrome_edge_alignment,
         playlist_position,
     );
     // Явные assertions закрепляют вертикальное центрирование реального egui layout.
@@ -124,8 +124,8 @@ fn allocate_sidebar_header_rect(ui: &mut Ui) -> egui::Rect {
 fn render_header_chrome(
     ui: &mut Ui,
     header_rect: egui::Rect,
-    title: &str,
-    close_tooltip: &str,
+    section: SidebarSection,
+    edge_alignment: WindowChromeEdgeAlignment,
     playlist_position: Option<PlaylistHeaderPosition>,
 ) -> SidebarHeaderChromeOutput {
     let mut header_ui = ui.new_child(
@@ -137,7 +137,6 @@ fn render_header_chrome(
     header_ui.set_clip_rect(header_rect.intersect(ui.clip_rect()));
     // Strong theme token делает все section headings яркими без цветового hardcode.
     let strong_text_color = header_ui.visuals().strong_text_color();
-    let title_response = header_ui.label(RichText::new(title).heading().color(strong_text_color));
     let (close_response, playlist_position_response) = header_ui
         .with_layout(
             egui::Layout::right_to_left(egui::Align::Center),
@@ -145,7 +144,7 @@ fn render_header_chrome(
                 // Крестик остаётся крайним правым элементом общего header.
                 let close_response = header_ui
                     .add(Button::new(RichText::new("×").strong()))
-                    .on_hover_text(close_tooltip);
+                    .on_hover_text(sidebar_close_tooltip(section));
                 // Position добавляется после крестика в right-to-left layout и оказывается слева от него.
                 let playlist_position_response = playlist_position.map(|position| {
                     header_ui.label(RichText::new(position.visible_text()).color(strong_text_color))
@@ -154,6 +153,29 @@ fn render_header_chrome(
             },
         )
         .inner;
+
+    // Начало всех заголовков находится под центром первой иконки (Playlist).
+    // Берём движущийся rect header-а: при смене секции текст следует за контентом.
+    let title = RichText::new(sidebar_section_title(section))
+        .heading()
+        .color(strong_text_color);
+    let title_size = egui::WidgetText::from(title.clone())
+        .into_galley(
+            &header_ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Heading,
+        )
+        .size();
+    let title_start_x = edge_alignment
+        .sidebar_section_button_rect(header_rect, SidebarSection::Playlist)
+        .center()
+        .x;
+    let title_rect = egui::Rect::from_min_size(
+        egui::pos2(title_start_x, header_rect.center().y - title_size.y / 2.0),
+        title_size,
+    );
+    let title_response = header_ui.put(title_rect, egui::Label::new(title).extend());
 
     SidebarHeaderChromeOutput {
         close_clicked: close_response.clicked(),
@@ -325,8 +347,8 @@ mod tests {
             let chrome = render_header_chrome(
                 ui,
                 header_rect,
-                sidebar_section_title(section),
-                sidebar_close_tooltip(section),
+                section,
+                WindowChromeEdgeAlignment::from_controls_style(MinimalSkin.controls_style()),
                 None,
             );
             close_center = Some(chrome.close_rect.center());
@@ -460,8 +482,8 @@ mod tests {
                 let chrome = render_header_chrome(
                     ui,
                     header_rect,
-                    sidebar_section_title(section),
-                    sidebar_close_tooltip(section),
+                    section,
+                    WindowChromeEdgeAlignment::from_controls_style(MinimalSkin.controls_style()),
                     None,
                 );
                 ui.separator();
@@ -486,6 +508,58 @@ mod tests {
                 .windows(2)
                 .all(|pair| (pair[0] - pair[1]).abs() < f32::EPSILON)
         );
+    }
+
+    /// Начало нарисованного текста общее для всех секций, включая сдвиг при анимации.
+    #[test]
+    fn painted_headings_share_start_under_first_icon() {
+        let edge_alignment =
+            WindowChromeEdgeAlignment::from_controls_style(MinimalSkin.controls_style());
+        for section in [
+            SidebarSection::Playlist,
+            SidebarSection::Settings,
+            SidebarSection::Url,
+            SidebarSection::Info,
+        ] {
+            for (width, offset) in [(350.0, 0.0), (420.0, -147.0), (600.0, 273.0)] {
+                let context = egui::Context::default();
+                let header_rect = egui::Rect::from_min_size(
+                    egui::pos2(offset, 12.0),
+                    egui::vec2(width, SIDEBAR_HEADER_HEIGHT_POINTS),
+                );
+                let input = RawInput {
+                    screen_rect: Some(egui::Rect::from_min_max(
+                        egui::pos2(-400.0, 0.0),
+                        egui::pos2(1200.0, 180.0),
+                    )),
+                    ..RawInput::default()
+                };
+                let output = crate::ui::test_frame::run_ui_frame(&context, input, |ui| {
+                    render_header_chrome(ui, header_rect, section, edge_alignment, None);
+                });
+                let painted_rect = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::epaint::Shape::Text(text)
+                            if text.galley.job.text == sidebar_section_title(section) =>
+                        {
+                            Some(text.galley.rect.translate(text.pos.to_vec2()))
+                        }
+                        _ => None,
+                    })
+                    .expect("section heading must reach the painter");
+                let icon_rect = edge_alignment
+                    .sidebar_section_button_rect(header_rect, SidebarSection::Playlist);
+                assert!(
+                    // egui округляет начало строки до ближайшего физического пикселя.
+                    (painted_rect.left() - icon_rect.center().x).abs()
+                        <= 0.5 / context.pixels_per_point(),
+                    "{section:?}: painted title {painted_rect:?} must start under first icon {icon_rect:?}"
+                );
+                assert!((painted_rect.center().y - header_rect.center().y).abs() < 0.1);
+            }
+        }
     }
 
     /// Position использует только confirmed active ID и однобазовый canonical index.
@@ -574,8 +648,8 @@ mod tests {
                 let chrome = render_header_chrome(
                     ui,
                     header_rect,
-                    sidebar_section_title(SidebarSection::Playlist),
-                    sidebar_close_tooltip(SidebarSection::Playlist),
+                    SidebarSection::Playlist,
+                    edge_alignment,
                     Some(position),
                 );
                 measured = Some(chrome);
@@ -632,8 +706,8 @@ mod tests {
                 let _chrome = render_header_chrome(
                     ui,
                     header_rect,
-                    sidebar_section_title(section),
-                    sidebar_close_tooltip(section),
+                    section,
+                    WindowChromeEdgeAlignment::from_controls_style(MinimalSkin.controls_style()),
                     None,
                 );
             });

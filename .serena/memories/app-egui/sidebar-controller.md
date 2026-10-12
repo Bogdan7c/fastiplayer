@@ -44,3 +44,9 @@
 - Sidebar projection получает только ingress kind, safe label, presentation и optional safe stream configuration; locator, request material, raw exact/semantic identities и catalog attachment в read-only projection отсутствуют.
 - Extractor публикует neutral candidate/separate targets; direct/native HLS публикуют один видимый inert `InstalledOnly/Automatic` row без fake parent generation и без action. Catalog generation stale fence сохраняется.
 - Временная reverse route table с extractor selection tokens живёт отдельно в `web_media_stream_model/catalog_routes.rs` и должна быть удалена N05B. Полный handoff: `mem:app-egui/native-web-ingress-n05a-2026-08-31`.
+
+
+## Общая начальная позиция заголовков (2026-10-12)
+- Решение владельца: начало каждого заголовка Playlist/Settings/URL/Info находится на одной X-координате — под центром ПЕРВОЙ иконки (Playlist). Центр текста не привязывается к значку своей секции.
+- Владелец геометрии — общий `ui/sidebar/header.rs`; опорная координата берётся через `WindowChromeEdgeAlignment::sidebar_section_button_rect(header_rect, SidebarSection::Playlist)`, относительно движущегося header rect.
+- Высота 32 pt, trailing крестик/Playlist position, Undo и close semantics сохраняются. Регрессия `painted_headings_share_start_under_first_icon` проверяет начало реальной Text shape для всех секций, нескольких ширин и сдвигов, с допуском половины физического пикселя на округление egui.
