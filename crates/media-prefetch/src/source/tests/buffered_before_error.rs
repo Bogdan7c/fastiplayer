@@ -16,7 +16,7 @@ fn buffered_bytes_are_delivered_before_worker_error() {
 
     let error = loop {
         match source.read(&mut output, &token()) {
-            Ok(0) => panic!("EOF раньше ошибки: {delivered:?}"),
+            Ok(0) => panic!("EOF beforehand: {delivered:?}"),
             Ok(bytes_read) => delivered.extend_from_slice(&output[..bytes_read]),
             Err(error) => break error,
         }
@@ -25,23 +25,23 @@ fn buffered_bytes_are_delivered_before_worker_error() {
     assert_eq!(
         delivered,
         bytes[..16],
-        "до ошибки отданы ровно все скачанные байты, без потерь и дыр"
+        "to error, exactly all downloaded bytes are given, without losses and holes"
     );
     assert!(matches!(
         error,
         SourceError::UnexpectedEof { offset: 16, .. }
     ));
-    assert_eq!(source.position(), 16, "ошибка не сдвигает позицию");
+    assert_eq!(source.position(), 16, "error does not shift position");
 
     let mut tail = Vec::new();
     loop {
         let bytes_read = source
             .read(&mut output, &token())
-            .expect("после ошибки worker повторяет fetch с той же границы");
+            .expect("After the error, the worker repeats the fetch from the same boundary.");
         if bytes_read == 0 {
             break;
         }
         tail.extend_from_slice(&output[..bytes_read]);
     }
-    assert_eq!(tail, bytes[16..], "продолжение склеено с того же байта");
+    assert_eq!(tail, bytes[16..], "sequencing");
 }

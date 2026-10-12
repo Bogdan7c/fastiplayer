@@ -114,7 +114,7 @@ pub fn classify_direct_media_url(
     )]
     let composition =
         crate::web_media_demux_registry::WebDemuxComposition::new(DemuxerOptions::default())
-            .expect("production web demux registrations должны собираться из static identities");
+            .expect("Production web demux registrations must be collected from static identities.");
     service_direct_media::parse_direct_media_url(argument, &composition.registry)
 }
 
@@ -126,23 +126,23 @@ pub fn open_direct_media(
     cancellation: CancellationToken,
 ) -> Result<DirectProgressiveOpenResult> {
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
-        .context("Network config нельзя преобразовать в source runtime policy")?;
+        .context("Network config cannot be converted to source runtime policy.")?;
     let prefetch_config = prefetch_config(network_config)?;
     let mut transport_registry = TransportRegistry::new();
 
     let http_provider = WebMediaHttpProvider::new(source_config.clone(), prefetch_config)
-        .context("Не удалось создать progressive HTTP provider")?;
+        .context("Could not create the progressive HTTP provider")?;
     let http_provider_id = http_provider.descriptor().provider_id().clone();
     transport_registry
         .register(Box::new(http_provider))
-        .context("Не удалось зарегистрировать progressive HTTP provider")?;
+        .context("Failed to register a progressive HTTP provider")?;
 
     let ftp_provider = WebMediaFtpProvider::new(source_config.clone())
-        .context("Не удалось создать progressive FTP provider")?;
+        .context("Could not create the progressive FTP provider")?;
     let ftp_provider_id = ftp_provider.descriptor().provider_id().clone();
     transport_registry
         .register(Box::new(ftp_provider))
-        .context("Не удалось зарегистрировать progressive FTP provider")?;
+        .context("Could not register the progressive FTP provider")?;
 
     let request_target = locator.request_target_for_open();
     let component = build_direct_component_identity()?;
@@ -152,7 +152,7 @@ pub fn open_direct_media(
             let secret_scope =
                 SecretRequestScope::from_target(&target, HttpPathScope::from_target_path(&target));
             let redirect_limit = RedirectHopLimit::new(DIRECT_REDIRECT_HOP_LIMIT)
-                .context("Direct redirect limit нарушает transport bounds")?;
+                .context("Direct redirect limit violates transport bounds")?;
             TransportOpenRequest::new(
                 http_provider_id,
                 component,
@@ -163,7 +163,7 @@ pub fn open_direct_media(
                 RedirectPolicy::cross_origin_without_secrets(redirect_limit),
                 cancellation.clone(),
             )
-            .context("Direct HTTP request нарушает secret-scope contract")?
+            .context("Direct HTTP request violates secret-scope contract")?
             .with_endpoint_expiry_observer(endpoint_recovery.observer())
         }
         TransportRequestTarget::Ftp(target) => TransportOpenRequest::for_ftp(
@@ -174,13 +174,13 @@ pub fn open_direct_media(
             SourceGeneration::new(INITIAL_SOURCE_GENERATION),
             cancellation.clone(),
         )
-        .context("Direct FTP request нарушает no-HTTP-material contract")?
+        .context("Direct FTP request violates no-HTTP material contract")?
         .with_endpoint_expiry_observer(endpoint_recovery.observer()),
     };
 
     let opened_transport = transport_registry
         .open(request)
-        .with_context(|| format!("Progressive transport не открыл {locator}"))?;
+        .with_context(|| format!("Progressive transport failed {locator}"))?;
     let transport_seekability = opened_transport.seekability();
     let demux_input = match opened_transport.into_input() {
         TransportInput::Seekable(source) => DemuxInput::byte_source(source),
@@ -192,19 +192,19 @@ pub fn open_direct_media(
     let demuxer_options = DemuxerOptions::from_max_consecutive_corrupted_packets(
         demux_config.max_consecutive_corrupted_packets,
     )
-    .context("Player demux config нарушает validated runtime bounds")?;
+    .context("Player demux config violates validated runtime bounds")?;
     let demux_composition =
         crate::web_media_demux_registry::WebDemuxComposition::new(demuxer_options)
-            .context("Не удалось собрать production web demux registry")?;
+            .context("The production web demux registry was not completed.")?;
     let hints = DemuxHints::none().with_extension(
         DemuxSourceExtension::new(locator.extension().as_extension_hint())
-            .context("Service вернул некорректную direct extension identity")?,
+            .context("Service returns incorrect direct extension identity")?,
     );
     let sniff_budget = direct_sniff_budget(&source_config, prefetch_config)?;
     let demuxer = demux_composition
         .registry
         .open(demux_input, hints, sniff_budget, cancellation.clone())
-        .with_context(|| format!("Demux registry не открыл {locator}"))?;
+        .with_context(|| format!("Demux registry failed {locator}"))?;
     // Разбор контейнера уходит в фоновый поток и для seekable, и для forward-only
     // входа: сетевое ожидание не должно блокировать поток player-а (сессия 16).
     let player_demuxer = crate::progressive_player_demux::into_player_demuxer(
@@ -221,7 +221,7 @@ pub fn open_direct_media(
         source = %locator,
         extension = locator.extension().as_extension_hint(),
         seekability = ?demuxer.seekability(),
-        "Direct media открыт через neutral HTTP/FTP progressive ingress"
+        "Direct media is open through neutral HTTP/FTP progressive ingress"
     );
 
     Ok(DirectProgressiveOpenResult {
@@ -240,19 +240,19 @@ fn build_direct_component_identity() -> Result<MediaComponentIdentity> {
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
-        .map_err(|_| anyhow!("direct source identity space исчерпан"))?;
+        .map_err(|_| anyhow!("direct source identity space exhausted"))?;
     let source = SourceIdentity::new(source_value);
     let exact_format = CandidateFormatIdentity::new("direct-resource")
-        .context("Static direct format identity некорректна")?;
+        .context("Static direct format identity wrongly")?;
     let exact = CandidateIdentity::new(
         source,
         ExtractionGeneration::new(DIRECT_DESCRIPTOR_GENERATION),
         exact_format,
     );
     let semantic = SemanticIdentity::new(source, "direct-resource")
-        .context("Static direct semantic identity некорректна")?;
+        .context("Static direct semantic identity is incorrect.")?;
     MediaComponentIdentity::new(exact, semantic, MediaComponentRole::Muxed)
-        .context("Direct component identities имеют разный source lineage")
+        .context("Direct component identities different source lineage")
 }
 
 /// Строит existing prefetch policy без второго cache/read-ahead config-а.
@@ -281,9 +281,9 @@ fn direct_sniff_budget(
     let max_bytes = usize::try_from(prefetch_config.initial_chunk_bytes())
         .ok()
         .and_then(NonZeroUsize::new)
-        .ok_or_else(|| anyhow!("prefetch initial chunk нельзя использовать как sniff budget"))?;
+        .ok_or_else(|| anyhow!("prefetch initial chunk cannot be used as sniff budget"))?;
     DemuxSniffBudget::new(max_bytes, NonZeroUsize::MIN, source_config.read_timeout())
-        .context("Source read timeout нельзя использовать как demux sniff deadline")
+        .context("Source read timeout cannot be used as demux sniff deadline.")
 }
 
 #[cfg(test)]

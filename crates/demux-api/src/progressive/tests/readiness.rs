@@ -54,7 +54,7 @@ fn deferred_open_failure_is_nonblocking_and_preserves_typed_error() {
     assert_eq!(
         readiness.wait_until(Instant::now() + Duration::from_secs(1)),
         ProgressiveDemuxReadiness::EventAvailable,
-        "queued typed failure обязан иметь приоритет над worker terminal state"
+        "queued typed failure must take precedence over worker terminal state"
     );
     let error = progressive
         .next_event()
@@ -181,7 +181,7 @@ fn readiness_port_observes_worker_panic_as_terminal_without_fake_event() {
     );
     let error = progressive
         .next_event()
-        .expect_err("panic не должен превращаться в synthetic event");
+        .expect_err("panic must not be transformed into synthetic event");
     assert!(
         error
             .downcast_ref::<super::super::ProgressiveDemuxWorkerStoppedError>()
@@ -217,11 +217,11 @@ fn readiness_port_ignores_stale_generation_and_preserves_queue_accounting() {
     );
     {
         let queue = shared.lock_queue();
-        assert_eq!(queue.messages.len(), 1, "port не потребляет queued event");
+        assert_eq!(queue.messages.len(), 1, "port consume queued event");
         assert_eq!(
             queue.queued_encoded_bytes,
             packet_bytes.len(),
-            "port не меняет byte accounting"
+            "port does not change byte accounting"
         );
     }
 
@@ -229,7 +229,7 @@ fn readiness_port_ignores_stale_generation_and_preserves_queue_accounting() {
     assert_eq!(
         readiness.wait_until(Instant::now()),
         ProgressiveDemuxReadiness::DeadlineReached,
-        "stale-only queue не является readiness нового player intent-а"
+        "stale-only queue is not readiness new player intent-?"
     );
     let queue = shared.lock_queue();
     assert_eq!(queue.messages.len(), 1);

@@ -212,7 +212,7 @@ def load_workspace_packages(repo_root: Path) -> dict[str, dict[str, Any]]:
         metadata = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
         # Причина сохраняет line/column invalid JSON.
-        raise GuardrailInputError(f"cargo metadata вернул невалидный JSON: {error}") from error
+        raise GuardrailInputError(f"cargo metadata returned invalid JSON: {error}") from error
     # Package rows индексируются сначала по opaque Cargo id.
     packages_by_id = {
         package["id"]: package
@@ -227,17 +227,17 @@ def load_workspace_packages(repo_root: Path) -> dict[str, dict[str, Any]]:
         package = packages_by_id.get(package_id)
         # Невалидный id нельзя молча пропустить.
         if package is None:
-            raise GuardrailInputError(f"workspace member `{package_id}` отсутствует в packages")
+            raise GuardrailInputError(f"workspace member `{package_id}` is missing from packages")
         # Package name является стабильной owner identity для diagnostics.
         package_name = package.get("name")
         # Нестроковое или duplicate имя разрушает dependency map.
         if not isinstance(package_name, str) or package_name in workspace_packages:
-            raise GuardrailInputError(f"невалидное/duplicate package name `{package_name}`")
+            raise GuardrailInputError(f"invalid or duplicate package name `{package_name}`")
         # Validated row сохраняется без неявной нормализации.
         workspace_packages[package_name] = package
     # Пустой workspace не может доказать release architecture.
     if not workspace_packages:
-        raise GuardrailInputError("cargo metadata не содержит workspace packages")
+        raise GuardrailInputError("cargo metadata lacking workspace packages")
     # Полный map используется dependency и source inventory проверками.
     return workspace_packages
 
@@ -258,7 +258,7 @@ def dependency_maps(
         dependencies = package.get("dependencies")
         # Broken row делает audit недостоверным.
         if not isinstance(dependencies, list):
-            raise GuardrailInputError(f"package `{package_name}` не содержит dependencies")
+            raise GuardrailInputError(f"package `{package_name}` does not contain dependencies")
         # Dependency name берётся из Cargo resolved package vocabulary.
         all_names = {
             dependency["name"]
@@ -300,7 +300,7 @@ def find_dependency_violations(
             violations.append(
                 Violation(
                     location=owner,
-                    rule="HTTP client dependency разрешена только source-core",
+                    rule="HTTP client dependency is only allowed by source core",
                     evidence=dependency,
                 )
             )
@@ -311,7 +311,7 @@ def find_dependency_violations(
             violations.append(
                 Violation(
                     location=owner,
-                    rule="alternative TS/FLV/fMP4 parser dependency запрещена",
+                    rule="alternative TS/FLV/fMP4 parser dependency is prohibited",
                     evidence=dependency,
                 )
             )
@@ -330,7 +330,7 @@ def find_dependency_violations(
             violations.append(
                 Violation(
                     location=owner,
-                    rule="обязательный HTTP/cache/prefetch ownership edge отсутствует",
+                    rule="HTTP/cache/prefetch ownership edge is not required",
                     evidence=dependency,
                 )
             )
@@ -343,7 +343,7 @@ def find_dependency_violations(
             violations.append(
                 Violation(
                     location=owner,
-                    rule="transport ownership edge запрещена classification-only owner-у",
+                    rule="transport ownership edge forbidden classification-only owner-at",
                     evidence=dependency,
                 )
             )
@@ -366,12 +366,12 @@ def production_rust_files(
         manifest_path = package.get("manifest_path")
         # Broken path не должен уменьшить audited source inventory.
         if not isinstance(manifest_path, str):
-            raise GuardrailInputError("workspace package не содержит manifest_path")
+            raise GuardrailInputError("workspace package lacking manifest_path")
         # Только src/ считается production module tree.
         source_root = Path(manifest_path).parent / "src"
         # Crate без src directory требует отдельного manifest decision.
         if not source_root.is_dir():
-            raise GuardrailInputError(f"workspace source root отсутствует: {source_root}")
+            raise GuardrailInputError(f"workspace source root is missing: {source_root}")
         # Rust modules собираются рекурсивно.
         for source_path in source_root.rglob("*.rs"):
             # Dedicated test files/directories не являются production module debt.
@@ -426,7 +426,7 @@ def find_source_violations(
                     relative_path,
                     source_text,
                     MPEG_TS_PATTERNS,
-                    "MPEG-TS parsing принадлежит mpeg-ts-demux",
+                    "MPEG-TS parsing is owned by mpeg-ts-demux",
                 )
             )
         # FLV declarations разрешены только exact first-party owner-у.
@@ -436,7 +436,7 @@ def find_source_violations(
                     relative_path,
                     source_text,
                     FLV_PATTERNS,
-                    "FLV/F4F parsing принадлежит flv-demux",
+                    "FLV/F4F parsing is owned by flv-demux",
                 )
             )
         # Focused owner применяет exact F4F exception и generic fMP4 policy.
@@ -449,7 +449,7 @@ def find_source_violations(
                 relative_path,
                 source_text,
                 FFMPEG_ENCODER_PATTERNS,
-                "FFmpeg encoder/output API запрещён decode-only boundary",
+                "FFmpeg encoder/output API banned decode-only boundary",
             )
         )
         # HTTP byte cache declaration разрешена только source-core.
@@ -459,7 +459,7 @@ def find_source_violations(
                     relative_path,
                     source_text,
                     HTTP_CACHE_PATTERNS,
-                    "HTTP byte cache implementation принадлежит source-core",
+                    "HTTP byte cache implementation belongs to source core",
                 )
             )
         # Byte prefetch declaration разрешена только media-prefetch.
@@ -469,7 +469,7 @@ def find_source_violations(
                     relative_path,
                     source_text,
                     PREFETCH_PATTERNS,
-                    "byte prefetch implementation принадлежит media-prefetch",
+                    "byte prefetch implementation belongs to media prefetch",
                 )
             )
     # Stable ordering делает review deterministic.
@@ -530,7 +530,7 @@ def find_legacy_webm_violations(
         source_path = repo_root / relative_path
         # Runtime evidence path обязан существовать.
         if not source_path.is_file():
-            raise GuardrailInputError(f"legacy WebM audit path отсутствует: {relative_path}")
+            raise GuardrailInputError(f"legacy WebM audit path is missing: {relative_path}")
         # Rust inline tests не должны влиять на production legacy status.
         source_text = source_path.read_text(encoding="utf-8")
         # Shell scripts не содержат Rust cfg(test) module.
@@ -542,7 +542,7 @@ def find_legacy_webm_violations(
                 relative_path,
                 source_text,
                 LEGACY_WEBM_PATTERNS,
-                "legacy service-owned WebM opener запрещён",
+                "legacy service-owned WebM opener forbidden",
             )
         )
     # Stable order сохраняет deterministic output.

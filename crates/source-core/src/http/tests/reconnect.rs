@@ -29,7 +29,7 @@ fn not_found_is_not_retried() {
     let started = Instant::now();
     let error = source
         .read(&mut [0_u8; 4], &CancellationToken::never_cancelled())
-        .expect_err("404 не лечится повтором");
+        .expect_err("404 is not treated again");
 
     assert!(
         matches!(error, SourceError::HttpStatus { status, .. } if status == StatusCode::NOT_FOUND),
@@ -38,7 +38,7 @@ fn not_found_is_not_retried() {
     assert_eq!(
         server.requests().len(),
         2,
-        "probe + один range, без повторов"
+        "probe + single-handed range, repeatless"
     );
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(source.range_diagnostics().reconnects, 0);
@@ -66,7 +66,7 @@ fn forbidden_is_not_retried() {
         .expect("source opens");
     let error = source
         .read(&mut [0_u8; 4], &CancellationToken::never_cancelled())
-        .expect_err("403 не лечится повтором");
+        .expect_err("403 is not treated again");
 
     assert!(!error.is_transient_network_failure(), "{error}");
     assert_eq!(server.requests().len(), 2);
@@ -105,7 +105,7 @@ fn service_unavailable_waits_for_retry_after_header() {
     let mut output = [0_u8; 4];
     let bytes_read = source
         .read(&mut output, &CancellationToken::never_cancelled())
-        .expect("после Retry-After сервер отвечает");
+        .expect("After Retry-After, the server responds");
 
     assert_eq!(&output[..bytes_read], b"abcd");
     let request_times = request_times.lock().expect("request times lock").clone();
@@ -113,7 +113,7 @@ fn service_unavailable_waits_for_retry_after_header() {
     let server_directed_wait = request_times[2].duration_since(request_times[1]);
     assert!(
         server_directed_wait >= Duration::from_secs(1),
-        "ожидание {server_directed_wait:?} короче Retry-After"
+        "waiting {server_directed_wait:?} shorter Retry-After"
     );
 }
 
@@ -137,13 +137,13 @@ fn outage_longer_than_budget_returns_last_transient_error() {
     let started = Instant::now();
     let error = source
         .read(&mut [0_u8; 4], &CancellationToken::never_cancelled())
-        .expect_err("сеть так и не вернулась");
+        .expect_err("The network never came back.");
     let elapsed = started.elapsed();
 
     assert!(error.is_transient_network_failure(), "{error}");
     assert!(
         elapsed >= Duration::from_millis(1_200) && elapsed < Duration::from_secs(5),
-        "сдаёмся по бюджету, а не сразу и не бесконечно: {elapsed:?}"
+        "budget out, Not immediately and not indefinitely: {elapsed:?}"
     );
     // Попытки в моменты ~0; 0,5; 1,2 с — паузы 0,5 и 0,7 (обрезана бюджетом).
     assert_eq!(source.range_diagnostics().reconnects, 2);
@@ -182,7 +182,7 @@ fn changed_etag_is_typed_representation_change_without_retry() {
     let mut output = [0_u8; 4];
     let error = source
         .read(&mut output, &CancellationToken::never_cancelled())
-        .expect_err("подмена файла обнаружена");
+        .expect_err("file substitution detected");
 
     assert!(matches!(
         error,
@@ -190,8 +190,11 @@ fn changed_etag_is_typed_representation_change_without_retry() {
             reason: HttpRepresentationChange::Validators
         }
     ));
-    assert_eq!(output, [0_u8; 4], "байты чужого файла не отданы caller-у");
-    assert_eq!(server.requests().len(), 2, "изменение файла не повторяется");
+    assert_eq!(
+        output, [0_u8; 4],
+        "bytes of someone else's file are not given to caller-u"
+    );
+    assert_eq!(server.requests().len(), 2, "File change is not repeated");
 }
 
 /// Другой полный размер файла — тоже изменение, даже без validators.
@@ -221,7 +224,7 @@ fn changed_total_length_is_typed_representation_change() {
         .expect("source opens");
     let error = source
         .read(&mut [0_u8; 4], &CancellationToken::never_cancelled())
-        .expect_err("другой размер файла обнаружен");
+        .expect_err("Another file size discovered");
 
     assert!(matches!(
         error,
@@ -262,7 +265,7 @@ fn missing_validator_in_later_response_is_not_a_change() {
     let mut output = [0_u8; 4];
     source
         .read(&mut output, &CancellationToken::never_cancelled())
-        .expect("ответ без validators читается");
+        .expect("The answer without validators is read");
 
     assert_eq!(&output, b"abcd");
 }
@@ -303,18 +306,18 @@ fn cancellation_during_backoff_stops_reconnect_without_new_requests() {
 
     let error = source
         .read(&mut [0_u8; 4], &cancellation)
-        .expect_err("отмена прерывает ожидание");
+        .expect_err("cancellation interrupts the waiting");
 
     assert!(matches!(error, SourceError::Cancelled));
     assert!(
         started.elapsed() < Duration::from_secs(2),
-        "ожидание Retry-After 30 с оборвано отменой"
+        "Retry-After 30 is cancelled."
     );
     cancel_thread.join().expect("cancel thread");
     thread::sleep(Duration::from_millis(100));
     assert_eq!(
         range_attempts.load(Ordering::SeqCst),
         1,
-        "после отмены повторный запрос не уходит"
+        "After cancellation, the request does not go away."
     );
 }

@@ -230,7 +230,7 @@ impl WorkerCommandQueue {
                 }
                 Err(TrySendError::Full(command)) => {
                     warn!(
-                        "Очередь команд player worker-а заполнена: команды временно уходят в резерв"
+                        "player worker command queue is full: commands are temporarily buffered in reserve"
                     );
                     command
                 }
@@ -339,7 +339,7 @@ impl WorkerCommandQueue {
             state.episode.rejected += 1;
             warn!(
                 reserve_capacity = COMMAND_RESERVE_CAPACITY,
-                "Резерв команд player worker-а полон: команда отвергнута"
+                "Player worker command reserve is full: command rejected"
             );
             return Err(PlayerWorkerSendError::Full);
         }
@@ -399,7 +399,7 @@ impl WorkerCommandInbox {
                 reserved = episode.reserved,
                 coalesced = episode.coalesced,
                 rejected = episode.rejected,
-                "Резерв команд player worker-а разобран"
+                "Player worker command reserve drained"
             );
         }
     }

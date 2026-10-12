@@ -87,7 +87,7 @@ where
                 candidate_selection.exact_identity().clone(),
                 candidate_selection.semantic_identity().clone(),
             )
-            .context("YtDlp catalog parent identities нарушают source lineage")?,
+            .context("YtDlp catalog parent identities violate source lineage")?,
             preparation::next_component_variant_catalog_generation()?,
         );
         let hls_endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>> =
@@ -204,9 +204,9 @@ pub(super) fn ranked_best_playable_candidates<'candidate>(
 ) -> Result<Vec<&'candidate YtDlpNormalizedCandidate>> {
     candidate_snapshot
         .validate_planning_snapshot_alignment(planning_snapshot)
-        .context("Service/planner candidate snapshots не соответствуют друг другу")?;
+        .context("Service/planner candidates snapshots do not match each other")?;
     let ranking = rank_playable_opaque_alternatives(planning_snapshot, capabilities, policy)
-        .context("Не удалось получить planner-owned BestPlayable ranking")?;
+        .context("Could not obtain planner-owned BestPlayable ranking")?;
     map_ranked_service_candidates(candidate_snapshot, ranking.ranked_candidate_identities())
 }
 
@@ -227,7 +227,7 @@ fn map_ranked_service_candidates<'candidate, 'ranked_identity>(
             candidate.descriptor().semantic_identity().clone(),
         );
         if canonical_candidates.insert(identity, candidate).is_some() {
-            bail!("Service snapshot содержит duplicate canonical candidate identity");
+            bail!("Service snapshot: duplicate canonical candidate identity");
         }
     }
 
@@ -235,12 +235,12 @@ fn map_ranked_service_candidates<'candidate, 'ranked_identity>(
     for (exact_identity, semantic_identity) in ranked_identities {
         let identity = (exact_identity.clone(), semantic_identity.clone());
         let candidate = canonical_candidates.remove(&identity).ok_or_else(|| {
-            anyhow::anyhow!("Planner ranking нельзя полностью сопоставить service snapshot-у")
+            anyhow::anyhow!("Planner ranking cannot be fully matched by service snapshot.")
         })?;
         ranked_candidates.push(candidate);
     }
     if ranked_candidates.is_empty() {
-        bail!("Planner ranking не содержит BestPlayable candidate");
+        bail!("Planner ranking does not include BestPlayable candidate");
     }
     Ok(ranked_candidates)
 }
@@ -256,7 +256,7 @@ pub(super) fn open_ranked_best<'candidate, Candidate, Opened>(
     let mut last_retryable_error = None;
     for candidate in candidates {
         if is_cancelled() {
-            bail!("YtDlp candidate fallback отменён до следующей попытки");
+            bail!("YtDlp candidate fallback cancelled before next attempt");
         }
         match open(candidate) {
             Ok(opened) => return Ok((candidate, opened)),
@@ -268,7 +268,7 @@ pub(super) fn open_ranked_best<'candidate, Candidate, Opened>(
                 network_unavailable_count = network_unavailable_count.saturating_add(1);
                 if network_unavailable_count > MAX_NETWORK_UNAVAILABLE_FALLBACKS {
                     return Err(error.context(format!(
-                        "BestPlayable network fallback исчерпан (content_rejections={rejection_count}, unavailable_candidates={network_unavailable_count})"
+                        "BestPlayable network fallback is exhausted (content_rejections={rejection_count}, unavailable_candidates={network_unavailable_count})"
                     )));
                 }
                 last_retryable_error = Some(CandidateOpenError::NetworkUnavailable(error));
@@ -278,7 +278,7 @@ pub(super) fn open_ranked_best<'candidate, Candidate, Opened>(
     }
 
     let exhausted_context = format!(
-        "Planner-ranked BestPlayable candidates исчерпаны (content_rejections={rejection_count}, unavailable_candidates={network_unavailable_count})"
+        "Planner-ranked BestPlayable candidates exhausted (content_rejections={rejection_count}, unavailable_candidates={network_unavailable_count})"
     );
     match last_retryable_error {
         Some(CandidateOpenError::ContentProbe(rejection)) => {
@@ -290,7 +290,7 @@ pub(super) fn open_ranked_best<'candidate, Candidate, Opened>(
         // Fatal не сохраняется для fallback-а, но match остаётся total при
         // дальнейшем расширении CandidateOpenError.
         Some(CandidateOpenError::Fatal(error)) => Err(error),
-        None => bail!("Planner ranking не предоставил candidate для открытия"),
+        None => bail!("Planner ranking does not provide a candidate for opening"),
     }
 }
 

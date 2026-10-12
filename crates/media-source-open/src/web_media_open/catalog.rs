@@ -173,13 +173,13 @@ fn complete_projected_choices(
             && pair[0].choice.mode == pair[1].choice.mode
             && pair[0].choice.target != pair[1].choice.target
     }) {
-        anyhow::bail!("parent catalog ranking неоднозначен без source-order tie-breaker");
+        anyhow::bail!("parent catalog ranking ambiguous source-order tie-breaker");
     }
     if !choices
         .iter()
         .any(|projected| &projected.choice.target == active)
     {
-        anyhow::bail!("active Installed choice отсутствует в playable parent catalog");
+        anyhow::bail!("active Installed choice absent playable parent catalog");
     }
     Ok(choices)
 }
@@ -196,10 +196,10 @@ fn complete_parent_choices(
             && pair[0].mode == pair[1].mode
             && pair[0].target != pair[1].target
     }) {
-        anyhow::bail!("parent catalog ranking неоднозначен без source-order tie-breaker");
+        anyhow::bail!("parent catalog ranking ambiguous source-order tie-breaker");
     }
     if !choices.iter().any(|choice| &choice.target == active) {
-        anyhow::bail!("active Installed choice отсутствует в playable parent catalog");
+        anyhow::bail!("active Installed choice absent playable parent catalog");
     }
     Ok(choices)
 }
@@ -216,7 +216,7 @@ fn parent_choices(
 ) -> Result<Vec<ProjectedCatalogChoice>> {
     snapshot
         .validate_planning_snapshot_alignment(planning)
-        .context("Catalog service/planner snapshots не соответствуют друг другу")?;
+        .context("Catalog service/planner snapshots do not match each other")?;
     let ranking =
         web_media_playback_plan::rank_playable_opaque_alternatives(planning, capabilities, policy)?;
     let rejected = ranking
@@ -233,9 +233,7 @@ fn parent_choices(
         let selection = snapshot.selection_for(candidate)?;
         let parent_rank = ranking
             .rank_of_candidate(selection.exact_identity(), selection.semantic_identity())
-            .ok_or_else(|| {
-                anyhow::anyhow!("playable candidate отсутствует в opaque planner ranking")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("playable candidate absent opaque planner ranking"))?;
         let target = candidate_target(&selection)?;
         choices.push(ProjectedCatalogChoice {
             choice: WebMediaCatalogChoice {
@@ -280,9 +278,7 @@ fn parent_choices(
                 video_selection.exact_identity(),
                 video_selection.semantic_identity(),
             )
-            .ok_or_else(|| {
-                anyhow::anyhow!("composed video отсутствует в opaque planner ranking")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("composed video absent opaque planner ranking"))?;
         let composed = first_compatible_composition(&playable_audio, |audio| {
             let audio_selection = snapshot.selection_for(audio)?;
             compose_catalog_inventory_av(snapshot, &video_selection, &audio_selection)

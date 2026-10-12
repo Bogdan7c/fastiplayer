@@ -55,8 +55,8 @@ fn controller_with_hanging_cli_preparation(after: WorkerAfterRelease) -> Hanging
             source_locator: service_ytdlp::parse_yt_dlp_media_locator(
                 "https://www.youtube.com/watch?v=test",
             )
-            .expect("test locator должен проходить service parse"),
-            pending_message: "Подготовка YtDlp stream...".to_string(),
+            .expect("The test location must be service parse."),
+            pending_message: "Preparation of YtDlp stream...".to_string(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -91,7 +91,10 @@ fn drain_until_slots_free(controller: &mut StartupMediaController) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while controller.has_pending_startup_job() {
         controller.discard_stopped_preparation_jobs();
-        assert!(Instant::now() < deadline, "job не освободил слот за 5 с");
+        assert!(
+            Instant::now() < deadline,
+            "job did not release the slot for 5 seconds"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -107,50 +110,43 @@ fn stop_cancels_hanging_preparation_and_late_failure_stays_silent() {
     let outcome = controller.cancel_pending_preparation(PreparationCancelCause::UserStop);
 
     assert_eq!(outcome, PreparationCancelOutcome::Cancelled);
-    let job = controller
-        .yt_dlp_startup_job
-        .as_ref()
-        .expect("слот держится до реального выхода worker-а, без join на UI-потоке");
-    assert!(
-        job.cancellation_requested.load(Ordering::Acquire),
-        "флаг отмены поднят"
+    let job = controller.yt_dlp_startup_job.as_ref().expect(
+        "The slot is held until the real output of the worker, without joining on the UI-stream.",
     );
+    assert!(job.cancellation_requested.load(Ordering::Acquire), "flag");
     assert!(
         job.source_cancellation.is_cancelled(),
-        "токен сети/yt-dlp прерван"
+        "Network token/yt-dlp interrupted"
     );
     assert_eq!(controller.orchestration.phase, StartupMediaPhase::Idle);
     assert!(
         !controller.orchestration.has_pending_work(),
-        "запланированный CLI-старт больше не ждёт результата"
+        "Planned CLI Start No Longer Expects Results"
     );
     assert!(
         !controller.discard_stopped_preparation_jobs(),
-        "пока worker висит, слот не освобождается"
+        "While the worker is hanging, the slot is not released."
     );
 
     release.store(true, Ordering::Release);
     drain_until_slots_free(&mut controller);
 
-    assert!(
-        controller.startup_error.is_none(),
-        "опоздавшая ошибка не показана"
-    );
+    assert!(controller.startup_error.is_none(), "late error not shown");
     assert!(
         !controller.orchestration.cli_failed,
-        "CLI-цель не помечена проваленной"
+        "CLI target not marked as failed"
     );
     assert!(
         controller.orchestration.prepared.is_none(),
-        "ничего не готово к установке"
+        "nothing ready for installation"
     );
     assert!(
         controller.orchestration.pending_install.is_none(),
-        "установка не начиналась"
+        "installation did not begin"
     );
     assert!(
         controller.orchestration.restored_fallback_started,
-        "restored fallback запрещён: очередь не перебирается"
+        "restored fallback forbidden: queue not crossed"
     );
     assert_eq!(controller.orchestration.phase, StartupMediaPhase::Idle);
     assert_eq!(controller.pending_message(), None);
@@ -190,7 +186,7 @@ fn repeated_stop_after_cancellation_is_nothing_pending_for_freed_slots() {
     assert_eq!(
         controller.cancel_pending_preparation(PreparationCancelCause::UserStop),
         PreparationCancelOutcome::NothingPending,
-        "второй Stop ничего не находит"
+        "second Stop finds nothing"
     );
 }
 
@@ -205,7 +201,7 @@ fn stop_without_preparation_changes_nothing() {
     assert!(!controller.preparation_stopped_by_user);
     assert!(
         !controller.orchestration.restored_fallback_started,
-        "Stop без подготовки не запрещает будущий restore"
+        "Stop without preparation does not prohibit the future restore"
     );
     assert_eq!(
         controller.orchestration.phase,

@@ -70,17 +70,17 @@ impl PsiSectionAssembler {
         let mut sections = Vec::new();
         if payload_unit_start {
             let Some((&pointer, remainder)) = unread.split_first() else {
-                return Err(malformed("PSI payload-unit-start без pointer_field"));
+                return Err(malformed("PSI payload-unit start without pointer_field"));
             };
             let pointer = usize::from(pointer);
             if pointer > remainder.len() {
-                return Err(malformed("PSI pointer_field выходит за payload"));
+                return Err(malformed("PSI pointer_field is coming to payload"));
             }
             if !self.bytes.is_empty() {
                 self.append(&remainder[..pointer], &mut sections)?;
                 if !self.bytes.is_empty() {
                     return Err(malformed(
-                        "новая PSI section началась до завершения предыдущей",
+                        "The new PSI section begins before the previous one is completed.",
                     ));
                 }
             }
@@ -112,7 +112,7 @@ impl PsiSectionAssembler {
                 let section_length =
                     (usize::from(self.bytes[1] & 0x0f) << 8) | usize::from(self.bytes[2]);
                 if !(4..=1_021).contains(&section_length) {
-                    return Err(malformed("PSI section_length вне MPEG-TS bounds"));
+                    return Err(malformed("PSI section_length outside MPEG-TS bounds"));
                 }
                 let expected = 3 + section_length;
                 self.expected_length = Some(expected);
@@ -125,7 +125,7 @@ impl PsiSectionAssembler {
             if self.bytes.len() == expected {
                 if mpeg_crc32(&self.bytes) != 0 {
                     self.reset();
-                    return Err(malformed("PSI CRC32 не совпадает"));
+                    return Err(malformed("PSI CRC32 doesn't match"));
                 }
                 sections.push(std::mem::take(&mut self.bytes));
                 self.expected_length = None;
@@ -152,7 +152,7 @@ pub(crate) fn parse_pat(section: &[u8]) -> Result<(u8, Vec<ProgramMapEntry>), Mp
         });
     }
     if programs.is_empty() {
-        return Err(malformed("PAT не содержит ни одной program mapping"));
+        return Err(malformed("PAT does not contain any mapping program."));
     }
     Ok((version, programs))
 }
@@ -167,12 +167,12 @@ pub(crate) fn parse_pmt(section: &[u8]) -> Result<ProgramMap, MpegTsDemuxError> 
     let mut cursor = 12 + program_info_length;
     let payload_end = section.len() - 4;
     if cursor > payload_end {
-        return Err(malformed("PMT program descriptors выходят за section"));
+        return Err(malformed("PMT program descriptors go beyond the section"));
     }
     let mut streams = Vec::new();
     while cursor < payload_end {
         if payload_end - cursor < 5 {
-            return Err(malformed("оборван PMT elementary stream entry"));
+            return Err(malformed("PMT elementary stream entry"));
         }
         let stream_type = section[cursor];
         let pid = (u16::from(section[cursor + 1] & 0x1f) << 8) | u16::from(section[cursor + 2]);
@@ -180,7 +180,7 @@ pub(crate) fn parse_pmt(section: &[u8]) -> Result<ProgramMap, MpegTsDemuxError> 
             (usize::from(section[cursor + 3] & 0x0f) << 8) | usize::from(section[cursor + 4]);
         cursor += 5;
         if cursor + descriptor_length > payload_end {
-            return Err(malformed("PMT ES descriptors выходят за section"));
+            return Err(malformed("PMT ES descriptors go beyond section"));
         }
         let kind = match stream_type {
             0x1b => Some(StreamKind::H264),
@@ -229,11 +229,11 @@ fn validate_common_section(
     minimum_length: usize,
 ) -> Result<(), MpegTsDemuxError> {
     if section.len() < minimum_length || section[0] != expected_table_id {
-        return Err(malformed("неожиданный PSI table_id или короткая section"));
+        return Err(malformed("PSI table_id or short section"));
     }
     if section[1] & 0x80 == 0 || section[5] & 0x01 == 0 {
         return Err(malformed(
-            "PSI section_syntax/current_next не разрешают применение",
+            "PSI section_syntax/current_next does not allow use",
         ));
     }
     Ok(())

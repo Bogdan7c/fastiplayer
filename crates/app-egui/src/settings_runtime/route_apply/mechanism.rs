@@ -14,7 +14,7 @@ pub(super) fn media_service_apply_mechanism(
 ) -> SettingsResult<ApplyMechanism> {
     if affected_settings.is_empty() {
         return Err(SettingsError::access_failed(
-            "MediaService route не содержит affected settings",
+            "MediaService route has no affected settings",
         ));
     }
 
@@ -24,7 +24,7 @@ pub(super) fn media_service_apply_mechanism(
             SettingsError::AccessFailed {
                 id: Some(setting_id.clone()),
                 message: format!(
-                    "MediaService setting `{}` не имеет checked application contract",
+                    "MediaService setting `{}` has no checked application contract",
                     setting_id.as_str()
                 ),
             }
@@ -33,7 +33,7 @@ pub(super) fn media_service_apply_mechanism(
             return Err(SettingsError::AccessFailed {
                 id: Some(setting_id.clone()),
                 message: format!(
-                    "setting `{}` принадлежит {:?}, а не MediaService route",
+                    "setting `{}` belongs to {:?}, not the MediaService route",
                     setting_id.as_str(),
                     contract.route
                 ),
@@ -47,7 +47,7 @@ pub(super) fn media_service_apply_mechanism(
                 return Err(SettingsError::AccessFailed {
                     id: Some(setting_id.clone()),
                     message: format!(
-                        "MediaService setting `{}` использует неподдерживаемый app-report mechanism {incompatible:?}",
+                        "MediaService setting `{}` uses unsupported app-report mechanism {incompatible:?}",
                         setting_id.as_str()
                     ),
                 });

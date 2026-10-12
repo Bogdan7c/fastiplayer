@@ -632,7 +632,7 @@ impl EventProcessor {
                 }
             },
             Err(error) => {
-                tracing::warn!("drag & drop: не удалось прочитать данные источника: {error}");
+                tracing::warn!("drag & drop: could not read source data: {error}");
                 // Не просим те же данные заново на каждом `XdndPosition`.
                 self.dnd.gesture.mark_payload_unavailable();
             },

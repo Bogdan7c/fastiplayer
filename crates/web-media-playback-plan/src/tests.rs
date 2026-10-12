@@ -50,9 +50,9 @@ fn absent_transport_demux_video_and_audio_are_exact_typed_rejections() {
 
     let PlaybackPlanningError::ExactCandidateNotPlayable(rejection) =
         plan_playback(&snapshot, capabilities, &request, &policy)
-            .expect_err("all four capability layers отсутствуют")
+            .expect_err("all four capability layers absent")
     else {
-        panic!("ожидался exact candidate rejection");
+        panic!("The exact candidate rejection was expected");
     };
 
     assert_eq!(rejection.reasons().len(), 4);
@@ -139,7 +139,7 @@ fn all_four_layout_shapes_are_playable_without_runtime_construction() {
         let request = exact_request(&candidate);
         let snapshot = candidate_snapshot(vec![candidate]);
         let outcome = plan_playback(&snapshot, capabilities, &request, &policy)
-            .expect("layout должен быть playable");
+            .expect("layout should be playable");
         assert_eq!(outcome.selected().layout(), expected_layout);
     }
 }
@@ -184,7 +184,7 @@ fn best_playable_prefers_complete_av_over_preferred_video_only_codec() {
         &SelectionRequest::BestPlayable,
         &policy,
     )
-    .expect("playable A/V candidate должен победить silent video");
+    .expect("playable A/V candidate must win silent video");
 
     assert_eq!(outcome.selected().layout(), StreamLayoutKind::Separate);
 }
@@ -236,7 +236,7 @@ fn best_playable_prefers_declared_av_content_probe_over_video_only_and_audio_onl
         &SelectionRequest::BestPlayable,
         &policy,
     )
-    .expect("declared A/V content-probed candidate должен победить single-track alternatives");
+    .expect("declared A/V content-probed candidate must win single-track alternatives");
 
     assert_eq!(outcome.selected().semantic_identity().key(), "declared-av");
     assert_eq!(outcome.selected().layout(), StreamLayoutKind::ContentProbed);
@@ -285,7 +285,7 @@ fn best_playable_does_not_promote_unknown_content_probe_to_complete_av() {
         &SelectionRequest::BestPlayable,
         &policy,
     )
-    .expect("unknown content probe и video-only candidate должны оставаться playable");
+    .expect("unknown content probe and video-only candidate must remain playable");
 
     assert_eq!(
         outcome.selected().semantic_identity().key(),
@@ -342,7 +342,7 @@ fn grouped_opaque_ranking_is_stable_when_source_order_reverses() {
     ] {
         assert_eq!(snapshot.candidates().len(), 2);
         let ranking = rank_playable_opaque_alternatives(&snapshot, capabilities, &policy)
-            .expect("оба opaque alternatives playable");
+            .expect("both opaque alternatives playable");
         assert_eq!(ranking.rank_of(&better_selection), Some(0));
         assert_eq!(ranking.rank_of(&worse_selection), Some(1));
         let ranked_identities = ranking.ranked_candidate_identities().collect::<Vec<_>>();
@@ -370,7 +370,7 @@ fn preferred_height_uses_exact_lower_and_higher_buckets() {
     let policy = selection_policy(
         HdrSelectionPolicy::SdrOnly,
         PreferredHeightPolicy::Prefer(
-            PreferredVideoHeight::new(2160).expect("2160 preference валидна"),
+            PreferredVideoHeight::new(2160).expect("2160 preference valid"),
         ),
         vec![VideoCodec::Vp9],
         vec![ContainerFamily::WebM],
@@ -628,7 +628,7 @@ fn one_incompatible_candidate_does_not_block_another() {
         &SelectionRequest::BestPlayable,
         &policy,
     )
-    .expect("HTTP candidate должен пройти");
+    .expect("HTTP candidate must pass");
     assert_eq!(outcome.selected().semantic_identity().key(), "http");
     assert_eq!(outcome.rejected_candidates().len(), 1);
     assert!(
@@ -666,12 +666,12 @@ fn exact_rejects_stale_generation_and_changed_semantic_identity() {
             CandidateIdentity::new(
                 TEST_SOURCE,
                 ExtractionGeneration::new(10),
-                CandidateFormatIdentity::new("same-id").expect("format identity валидна"),
+                CandidateFormatIdentity::new("same-id").expect("format identity valid"),
             ),
             SemanticIdentity::new(TEST_SOURCE, "current-semantic")
-                .expect("semantic identity валидна"),
+                .expect("semantic identity valid"),
         )
-        .expect("stale exact request structurally валиден"),
+        .expect("stale exact request structurally valid"),
     );
     assert!(matches!(
         plan_playback(&snapshot, capabilities, &stale, &policy),
@@ -681,9 +681,9 @@ fn exact_rejects_stale_generation_and_changed_semantic_identity() {
     let changed_semantic = SelectionRequest::Exact(
         ExactSelectionIdentity::new(
             candidate.descriptor().identity().clone(),
-            SemanticIdentity::new(TEST_SOURCE, "old-semantic").expect("semantic identity валидна"),
+            SemanticIdentity::new(TEST_SOURCE, "old-semantic").expect("semantic identity valid"),
         )
-        .expect("exact request structurally валиден"),
+        .expect("exact request structurally valid"),
     );
     assert_eq!(
         plan_playback(&snapshot, capabilities, &changed_semantic, &policy),
@@ -754,14 +754,14 @@ fn transport_demux_input_shape_mismatch_is_not_reported_as_absence() {
             TransportFamily::ProgressiveHttp(HttpScheme::Https),
             DemuxInputCapabilities::only(DemuxInputCapability::StreamingBytes),
         )
-        .expect("transport registration валидна"),
+        .expect("transport registration valid"),
     ]);
     let demux = DemuxCapabilitySnapshot::new(vec![
         DemuxCapabilityRegistration::new(
             ContainerFamily::WebM,
             DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
         )
-        .expect("demux registration валидна"),
+        .expect("demux registration valid"),
     ]);
     let video = empty_video_capabilities();
     let capabilities = PlaybackCapabilitySnapshot::new(
@@ -779,9 +779,9 @@ fn transport_demux_input_shape_mismatch_is_not_reported_as_absence() {
 
     let PlaybackPlanningError::ExactCandidateNotPlayable(rejection) =
         plan_playback(&snapshot, capabilities, &request, &policy)
-            .expect_err("transport/demux shapes не пересекаются")
+            .expect_err("transport/demux shapes do not overlap")
     else {
-        panic!("ожидался exact demux rejection");
+        panic!("It was expected to be exact demux rejection.");
     };
     assert!(rejection.reasons().iter().any(|reason| matches!(
         reason,
@@ -831,14 +831,14 @@ fn content_probed_ogg_is_playable_without_invented_decode_requirements() {
             TransportFamily::ProgressiveHttp(HttpScheme::Https),
             DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
         )
-        .expect("HTTP transport registration валидна"),
+        .expect("HTTP transport registration valid"),
     ]);
     let demux = DemuxCapabilitySnapshot::new(vec![
         DemuxCapabilityRegistration::new(
             ContainerFamily::Ogg,
             DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
         )
-        .expect("Ogg demux registration валидна"),
+        .expect("Ogg demux registration valid"),
     ]);
     let video = empty_video_capabilities();
     let capabilities = PlaybackCapabilitySnapshot::new(
@@ -855,7 +855,7 @@ fn content_probed_ogg_is_playable_without_invented_decode_requirements() {
     );
 
     let outcome = plan_playback(&snapshot, capabilities, &request, &policy)
-        .expect("content-probed Ogg должен пройти static planner layers");
+        .expect("content-probed Ogg must pass static planner layers");
     assert_eq!(outcome.selected().layout(), StreamLayoutKind::ContentProbed);
     assert_eq!(outcome.selected().matched_video_output(), None);
 }
@@ -920,7 +920,7 @@ fn content_probed_height_hint_ranks_without_bypassing_runtime_hdr_proof() {
         &SelectionRequest::BestPlayable,
         &policy,
     )
-    .expect("soft HDR hint не должен подменять runtime proof");
+    .expect("soft HDR hint don't runtime proof");
 
     assert_eq!(outcome.selected().semantic_identity().key(), "probed-720");
 }
@@ -936,7 +936,7 @@ fn content_probed_ogg_rejects_missing_ogg_demux() {
             TransportFamily::ProgressiveHttp(HttpScheme::Https),
             DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
         )
-        .expect("HTTP transport registration валидна"),
+        .expect("HTTP transport registration valid"),
     ]);
     let demux = DemuxCapabilitySnapshot::default();
     let video = empty_video_capabilities();
@@ -955,9 +955,9 @@ fn content_probed_ogg_rejects_missing_ogg_demux() {
 
     let PlaybackPlanningError::ExactCandidateNotPlayable(rejection) =
         plan_playback(&snapshot, capabilities, &request, &policy)
-            .expect_err("без Ogg demux content-probed candidate должен быть отклонён")
+            .expect_err("without Ogg demux content-probed candidate must be rejected")
     else {
-        panic!("ожидался exact content-probed rejection");
+        panic!("expected exact content-probed rejection");
     };
     assert!(rejection.reasons().iter().any(|reason| matches!(
         reason,
@@ -981,14 +981,14 @@ fn hls_deferred_rejects_without_hls_transport() {
             TransportFamily::ProgressiveHttp(HttpScheme::Https),
             DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
         )
-        .expect("progressive transport registration валидна"),
+        .expect("progressive transport registration valid"),
     ]);
     let demux = DemuxCapabilitySnapshot::new(vec![
         DemuxCapabilityRegistration::new(
             ContainerFamily::MpegTs,
             DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments),
         )
-        .expect("TS demux registration валидна"),
+        .expect("TS demux registration valid"),
     ]);
     let video = empty_video_capabilities();
     let capabilities = PlaybackCapabilitySnapshot::new(
@@ -1006,9 +1006,9 @@ fn hls_deferred_rejects_without_hls_transport() {
 
     let PlaybackPlanningError::ExactCandidateNotPlayable(rejection) =
         plan_playback(&snapshot, capabilities, &request, &policy)
-            .expect_err("deferred HLS без transport capability отклонён")
+            .expect_err("deferred HLS without transport capability rejected")
     else {
-        panic!("ожидался exact transport rejection");
+        panic!("exact transport rejection was expected");
     };
     assert!(rejection.reasons().iter().any(|reason| matches!(
         reason,
@@ -1087,9 +1087,9 @@ fn unknown_dynamic_range_is_not_guessed_as_sdr() {
 
     let PlaybackPlanningError::ExactCandidateNotPlayable(rejection) =
         plan_playback(&snapshot, capabilities, &request, &policy)
-            .expect_err("unknown range нельзя угадать как SDR")
+            .expect_err("The unknown range cannot be guessed as SDR.")
     else {
-        panic!("ожидался policy rejection");
+        panic!("expected policy rejection");
     };
     assert!(rejection.reasons().iter().any(|reason| matches!(
         reason,

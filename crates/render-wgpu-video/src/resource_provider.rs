@@ -181,7 +181,7 @@ impl WgpuSubmissionQueueBinding {
             },
             Err(poisoned_state) => {
                 tracing::error!(
-                    "WGPU submission queue binding poisoned; используем последнее доступное состояние для safe release"
+                    "WGPU submission queue binding poisoned; use the last available state for safe release"
                 );
                 let mut state = poisoned_state.into_inner();
                 match &state.active_queue {
@@ -218,7 +218,7 @@ impl WgpuSubmissionQueueBinding {
             Err(poisoned_state) => {
                 tracing::error!(
                     release_id,
-                    "WGPU submission release registry poisoned при callback cleanup"
+                    "WGPU submission release registry poisoned with callback cleanup"
                 );
                 poisoned_state
                     .into_inner()

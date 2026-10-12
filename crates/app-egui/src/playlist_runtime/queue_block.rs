@@ -114,7 +114,7 @@ impl PlaylistRuntime {
     /// поэтому повторный отказ снова остановит очередь на этом же элементе.
     pub(crate) fn play_queue_blocked_item(&mut self) -> Option<RuntimeRowPlayOutcome> {
         let target = self.controller.as_ref()?.queue_blocked_target()?;
-        tracing::debug!(item_id = ?target.item_id, reason = ?target.reason, "Play продолжает остановленную очередь");
+        tracing::debug!(item_id = ?target.item_id, reason = ?target.reason, "Play resumes the stopped queue");
         Some(self.play_playlist_row(target.item_id))
     }
 

@@ -25,7 +25,7 @@ pub(crate) fn apply_prefetch_seek(
             offset,
             buffered_end,
             superseded_pending_seek,
-            "media prefetch foreground seek остался внутри RAM window"
+            "media prefetch foreground seek remained inside RAM window"
         );
         shared.notify_all();
         return Ok(());
@@ -60,7 +60,7 @@ pub(crate) fn apply_prefetch_seek(
     tracing::debug!(
         offset,
         previous_buffered_end = buffered_end,
-        "media prefetch foreground seek поставил новое RAM window в pending"
+        "media prefetch foreground seek set up RAM window into pending"
     );
     shared.notify_all();
     Ok(())

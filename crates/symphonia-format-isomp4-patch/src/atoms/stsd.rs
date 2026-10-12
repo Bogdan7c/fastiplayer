@@ -938,13 +938,13 @@ mod tests {
 
         match atom_iterator.next_header() {
             Ok(Some(_)) => {}
-            Ok(None) => panic!("synthetic atom должен содержать header"),
-            Err(_) => panic!("synthetic atom header должен читаться"),
+            Ok(None) => panic!("A synthetic atom should contain a header."),
+            Err(_) => panic!("synthetic atom header must be readable"),
         }
 
         match atom_iterator.read_atom::<A>() {
             Ok(atom) => atom,
-            Err(_) => panic!("synthetic atom должен парситься"),
+            Err(_) => panic!("The synthetic atom must be scavenged."),
         }
     }
 
@@ -1056,7 +1056,7 @@ mod tests {
             read_atom_from_payload::<ColourInformationAtom>(*b"colr", nclx_colr_payload());
         let nclx = colour_information
             .nclx
-            .expect("nclx colr должен стать typed metadata");
+            .expect("nclx colr must become typed metadata");
 
         assert_eq!(nclx.color_primaries, 9);
         assert_eq!(nclx.transfer_characteristics, 16);
@@ -1129,7 +1129,7 @@ mod tests {
             let stsd = read_atom_from_payload::<StsdAtom>(*b"stsd", stsd_payload);
             let visual_sample_entry = stsd
                 .visual_sample_entry()
-                .expect("avc1/avc3 должны распознаваться как video sample entries");
+                .expect("avc1/avc3 should be recognized as video sample entries.");
 
             assert_eq!(visual_sample_entry.codec_id, CODEC_ID_H264);
             assert_eq!(

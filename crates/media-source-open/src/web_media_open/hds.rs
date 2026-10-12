@@ -93,7 +93,7 @@ pub fn prepare_native_hds_candidate(
 ) -> Result<PreparedNativeHdsCandidate> {
     let adaptive_limits =
         crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)
-            .context("Не удалось собрать native HDS adaptive transport limits")?;
+            .context("The native HDS adaptive transport limits")?;
     let policy = hds_policy(adaptive_limits, request.source_config.read_timeout())?;
     let discovered = discover_fetched_hds_renditions(HdsFetchedCatalogDiscoveryRequest {
         discovery: HdsCatalogDiscoveryRequest {
@@ -120,15 +120,15 @@ pub fn prepare_native_hds_candidate(
             request.fresh_parent,
             discovered.provider_default().clone(),
         )
-        .context("native HDS provider default нарушил catalog parent identity")?,
+        .context("Native HDS provider default violated catalog parent identity")?,
     };
     let WebMediaSelectionShape::Components(selected) = neutral_selection.shape() else {
-        bail!("native HDS selection потерял component catalog shape");
+        bail!("The native HDS selection has lost its catalog shape component.");
     };
     let web_media_core::ComponentVariantSelectionRequest::Coupled { presentation } =
         selected.exact_selection_request()
     else {
-        bail!("native HDS selection должна оставаться coupled A/V");
+        bail!("Native HDS selection must remain coupled A/V");
     };
     let opened = prepare_discovered_hds_vod(discovered, presentation)?;
     let hds_window = opened.presentation_window();
@@ -180,19 +180,19 @@ pub(super) fn prepare_hds_candidate(
 ) -> Result<PreparedHdsCandidate> {
     ensure_hds_vod_intent(live_intent)?;
     let StreamLayout::ContentProbed(_) = candidate.descriptor().layout() else {
-        bail!("HDS candidate должен сохранять provider-owned content-probed F4F contract");
+        bail!("HDS candidate must preserve the provider-owned content-probed F4F contract");
     };
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let mut transport_request = candidate
         .hds_transport_request(&context)
-        .context("YtDlp HDS request material нельзя выразить как F4M manifest request")?;
+        .context("YtDlp HDS request material cannot be expressed as F4M manifest request")?;
     if let Some(observer) = endpoint_expiry_observer {
         transport_request = transport_request.with_endpoint_expiry_observer(observer);
     }
     let adaptive_limits =
         crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
-            .context("Не удалось собрать HDS adaptive transport limits")?;
+            .context("The HDS adaptive transport limits are not available.")?;
     let policy = hds_policy(adaptive_limits, source_config.read_timeout())?;
     let discovery_started_at = Instant::now();
     let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
@@ -208,7 +208,7 @@ pub(super) fn prepare_hds_candidate(
         elapsed_seconds = discovery_started_at.elapsed().as_secs_f64(),
         admitted_renditions = discovered.catalog().coupled_presentations().len(),
         rejected_renditions = discovered.rejections().len(),
-        "HDS rendition catalog discovery завершён"
+        "HDS rendition catalog discovery completed"
     );
     let catalog = Arc::new(discovered.catalog().clone());
     let provider_selection = match component_selection_intent {
@@ -253,7 +253,7 @@ fn ensure_hds_vod_intent(live_intent: YtDlpLiveIntent) -> Result<()> {
         return Ok(());
     }
 
-    bail!("HDS live/DVR не входит в approved S38 base/VOD profile");
+    bail!("HDS live/DVR not included in approved S38 base/VOD profile");
 }
 
 /// Переводит neutral HDS clock boundary в существующий player-owned window.
@@ -262,7 +262,7 @@ fn hds_playback_window(start: Duration, end_exclusive: Duration) -> Result<Media
         MediaTime::from_duration(start),
         Some(MediaTime::from_duration(end_exclusive)),
     )
-    .context("HDS presentation window нельзя выразить через player boundary")
+    .context("HDS presentation window cannot be expressed through player boundary.")
 }
 
 /// Adapter не переносит Progressive vocabulary в player-core.
@@ -434,7 +434,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("HDS live/DVR не входит в approved S38 base/VOD profile")
+                    .contains("HDS live/DVR not included in approved S38 base/VOD profile")
             );
         }
 

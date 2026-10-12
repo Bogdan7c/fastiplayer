@@ -57,7 +57,7 @@ fn declared_catalog_rejects_missing_active_choice() {
         vec![fixture_choice(1, 1, WebMediaMode::VideoAndAudio)],
         &WebMediaSelectionTarget::Fixture(2),
     )
-    .expect_err("missing active choice должен fail closed");
+    .expect_err("missing active choice must fail closed");
 
     assert!(error.to_string().contains("active Installed choice"));
 }
@@ -76,7 +76,7 @@ fn declared_catalog_projection_has_no_candidate_or_provider_io() {
     ] {
         assert!(
             !source.contains(forbidden),
-            "declared catalog projection не должна содержать `{forbidden}`"
+            "The declared catalog projection must not contain {forbidden}."
         );
     }
 }

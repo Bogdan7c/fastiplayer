@@ -33,7 +33,7 @@ require_output() {
     # Substring comparison не зависит от Cargo formatting или terminal colors.
     if [[ "${output}" != *"${expected_text}"* ]]; then
         # Failure показывает и ожидание, и фактически полученный output.
-        printf 'FAIL: ожидалась строка `%s`\n%s\n' "${expected_text}" "${output}" >&2
+        printf 'FAIL: expected text: %s\n%s\n' "${expected_text}" "${output}" >&2
         # Self-test не продолжает последующие scenarios после нарушенного contract.
         exit 1
     fi
@@ -48,7 +48,7 @@ require_absent() {
     # Совпадение означает ложную положительную диагностику runner-а.
     if [[ "${output}" == *"${forbidden_text}"* ]]; then
         # Failure не печатает лишнее process окружение.
-        printf 'FAIL: обнаружена запрещённая строка `%s`\n' "${forbidden_text}" >&2
+        printf 'FAIL: found forbidden text: %s\n' "${forbidden_text}" >&2
         # Self-test завершается немедленно.
         exit 1
     fi
@@ -95,7 +95,7 @@ require_absent "${help_output}" "PASSED: system yt-dlp compatibility"
 # Неизвестный argument должен остановить runner до executable discovery.
 if unknown_argument_output="$(${COMPATIBILITY_RUNNER} --unknown-option 2>&1)"; then
     # Успех неизвестного argument-а нарушил бы маленький CLI surface.
-    printf 'FAIL: неизвестный argument завершился успешно\n' >&2
+    printf 'FAIL: unknown argument completed successfully\n' >&2
     # Self-test возвращает failure вызывающей проверке.
     exit 1
 fi
@@ -123,7 +123,7 @@ if cargo_failure_output="$(env \
     "FASTIPLAYER_FAKE_CARGO_EXIT_CODE=19" \
     "${COMPATIBILITY_RUNNER}" 2>&1)"; then
     # Runner не имеет права превращать failed Rust test в success.
-    printf 'FAIL: failed Cargo compatibility test завершился успешно\n' >&2
+    printf 'FAIL: failed Cargo compatibility test completed successfully\n' >&2
     # Self-test возвращает failure.
     exit 1
 fi
@@ -140,7 +140,7 @@ if version_failure_output="$(env \
     "FASTIPLAYER_FAKE_YTDLP_VERSION_FAILURE=1" \
     "${COMPATIBILITY_RUNNER}" 2>&1)"; then
     # Неработающий diagnostic command не должен считаться совместимым executable.
-    printf 'FAIL: failed yt-dlp --version завершился успешно\n' >&2
+    printf 'FAIL: failed yt-dlp-version completed successfully \n' >&2
     # Self-test возвращает failure.
     exit 1
 fi

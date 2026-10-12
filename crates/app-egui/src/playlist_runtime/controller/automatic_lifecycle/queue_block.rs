@@ -78,7 +78,7 @@ impl PlaylistController {
         tracing::debug!(
             item_id = ?item_id,
             cause = ?AutomaticStopCause::OpenBlocked(reason),
-            "automatic playlist lifecycle остановлен обстоятельством, элемент не помечен битым"
+            "automatic playlist lifecycle halted, component"
         );
         self.finish_automatic_skip_chain_with_stop(AutomaticStopCause::OpenBlocked(reason));
         self.publish_view(false);

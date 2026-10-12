@@ -245,10 +245,10 @@ pub struct OrderedSegment {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OrderedSegmentReadError {
     /// Caller отменил чтение через shared token.
-    #[error("чтение ordered segment отменено")]
+    #[error("Reading ordered segment cancelled")]
     Cancelled,
     /// Source завершился operational error-ом с bounded safe причиной.
-    #[error("ошибка чтения ordered segment: {reason}")]
+    #[error("Reading error ordered segment: {reason}")]
     Failed {
         /// Secret-safe bounded transport reason.
         reason: String,
@@ -295,16 +295,16 @@ pub enum OrderedResourceReadOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OrderedResourceReadError {
     /// Caller отменил чтение через shared token; это не resource EOF.
-    #[error("чтение ordered resource stream отменено")]
+    #[error("Reading ordered resource stream cancelled")]
     Cancelled,
     /// Committed owner прервал physical body read ради transactional replacement.
     ///
     /// Это не cancellation, EOF или malformed input: parser обязан unwind-нуть текущий
     /// read, а source owner решает commit replacement либо byte-zero rollback reopen.
-    #[error("активное чтение ordered resource прервано с возможностью restart")]
+    #[error("Active reading ordered resource interrupted with restart option")]
     RestartableReadInterrupted,
     /// Source завершил pull operational error-ом; это не resource EOF.
-    #[error("ошибка чтения ordered resource stream: {reason}")]
+    #[error("Reading error ordered resource stream: {reason}")]
     Failed {
         /// Secret-safe bounded transport reason.
         reason: String,

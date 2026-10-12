@@ -74,11 +74,7 @@ fn main() -> Result<()> {
             println!(
                 "{name:>22}: {elapsed:.3} s wall, throughput {throughput:.1}x realtime, \
                  need >{playback_rate}x -> {}",
-                if feed_ok {
-                    "OK"
-                } else {
-                    "НЕ УСПЕВАЕТ"
-                }
+                if feed_ok { "OK" } else { "FALLING BEHIND" }
             );
             let _ = output_samples;
         }
@@ -137,7 +133,7 @@ fn decode(path: &Path) -> Result<Sample> {
     }
 
     if samples.is_empty() {
-        bail!("нет декодированных samples");
+        bail!("No decoded samples");
     }
     Ok(Sample {
         samples,

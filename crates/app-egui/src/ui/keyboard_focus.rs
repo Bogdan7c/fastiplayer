@@ -61,7 +61,7 @@ mod tests {
     fn nobody_owns_keyboard_without_focus() {
         let egui_ctx = app_behavior_context();
         let _ = run_ui_frame(&egui_ctx, screen_input(Vec::new()), |ui| {
-            let _ = ui.button("Кнопка без фокуса");
+            let _ = ui.button("Button without focus");
         });
 
         assert_eq!(keyboard_focus_owner(&egui_ctx), KeyboardFocusOwner::Nobody);
@@ -73,7 +73,7 @@ mod tests {
         // Первый кадр запрашивает фокус, второй применяет его, как в живом приложении.
         for _ in 0..2 {
             let _ = run_ui_frame(&egui_ctx, screen_input(Vec::new()), |ui| {
-                ui.button("Кнопка").request_focus();
+                ui.button("Button").request_focus();
             });
         }
 

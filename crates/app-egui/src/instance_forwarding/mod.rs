@@ -111,7 +111,7 @@ impl InstanceForwardingInbox {
         let service = match start_service(config, sink) {
             Ok(service) => Some(service),
             Err(error) => {
-                warn!(%error, "Служба приёма файлов от второго запуска не запущена");
+                warn!(%error, "File forwarding service did not start");
                 None
             }
         };
@@ -138,15 +138,13 @@ impl InstanceForwardingInbox {
             acknowledgement.acknowledge();
             if self.pending_requests.len() == PENDING_REQUEST_LIMIT {
                 self.pending_requests.pop_front();
-                warn!(
-                    "Слишком много пересланных запросов до готовности окна: самый старый отброшен"
-                );
+                warn!("Too many forwarded requests before window readiness; discarded the oldest");
             }
             self.pending_requests.push_back(request);
             accepted += 1;
         }
         if accepted > 0 {
-            info!(accepted, "Приняты запросы от второго запуска");
+            info!(accepted, "Requests received from the second instance");
         }
         accepted
     }

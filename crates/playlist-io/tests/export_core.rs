@@ -116,7 +116,7 @@ fn queue_fixture() -> QueueFixture {
         ])
         .expect("fixture append");
     let AddPlaylistEntriesOutcome::Added(allocated) = outcome else {
-        panic!("non-empty fixture обязана allocate entries");
+        panic!("Non-empty fixture must allocate entries");
     };
     let entry_ids: Vec<_> = allocated.iter_entry_ids().collect();
     QueueFixture {
@@ -226,7 +226,7 @@ fn xspf_roundtrip_preserves_flattened_identity_and_compound_extension() {
         XspfDocumentSource::local(XSPF_TARGET),
         XspfParserLimits::default(),
     ))
-    .expect("exported XSPF должен пройти hardened parser");
+    .expect("Exported XSPF must pass hardened parser");
 
     assert_eq!(parsed.tracks().len(), 4);
     assert_eq!(
@@ -264,9 +264,9 @@ fn m3u8_roundtrip_restores_relative_local_path_and_url_duplicates() {
         M3uDeclaredFormat::M3u8,
         M3uParserLimits::default(),
     ))
-    .expect("exported M3U8 должен пройти parser");
+    .expect("Exported M3U8 must pass parser");
     let M3uDocument::Generic(preview) = parsed else {
-        panic!("exported M3U8 не должен классифицироваться как HLS");
+        panic!("Exported M3U8 should not be classified as HLS.");
     };
     let drafts: Vec<_> = preview.entries().collect();
 
@@ -324,9 +324,9 @@ fn m3u8_uses_file_uri_when_relative_filename_would_be_misread_as_uri_scheme() {
         M3uDeclaredFormat::M3u8,
         M3uParserLimits::default(),
     ))
-    .expect("file URI fallback должен roundtrip");
+    .expect("URI fallback file should be roundtrip");
     let M3uDocument::Generic(preview) = parsed else {
-        panic!("generic export не является HLS");
+        panic!("Generic export is not HLS");
     };
     assert_eq!(
         preview

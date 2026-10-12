@@ -36,7 +36,7 @@ fn progressive_muxed_format(
 fn muxed_video_requirement(candidate: &PlanningCandidate) -> &VideoDecodeRequirement {
     match candidate.runtime_requirements() {
         CandidateRuntimeRequirements::Muxed { video, .. } => video,
-        unexpected => panic!("ожидался muxed runtime requirement, получен {unexpected:?}"),
+        unexpected => panic!("Expected muxed runtime requirement, received {unexpected:?}"),
     }
 }
 
@@ -44,7 +44,7 @@ fn muxed_video_requirement(candidate: &PlanningCandidate) -> &VideoDecodeRequire
 fn muxed_video_codec_tag(candidate: &PlanningCandidate) -> &str {
     match candidate.descriptor().layout() {
         StreamLayout::Muxed(component) => component.video().codec().raw().as_str(),
-        unexpected => panic!("ожидался muxed descriptor, получен {unexpected:?}"),
+        unexpected => panic!("Expected muxed descriptor, received {unexpected:?}"),
     }
 }
 
@@ -54,7 +54,7 @@ fn video_requirement(candidate: &PlanningCandidate) -> &VideoDecodeRequirement {
         CandidateRuntimeRequirements::Muxed { video, .. }
         | CandidateRuntimeRequirements::Separate { video, .. }
         | CandidateRuntimeRequirements::VideoOnly { video } => video,
-        unexpected => panic!("ожидался video runtime requirement, получен {unexpected:?}"),
+        unexpected => panic!("video runtime requirement received {unexpected:?}"),
     }
 }
 
@@ -73,7 +73,7 @@ fn hds_declared_h264_aac_with_flv_hint_keeps_content_probed_requirements() {
             "dynamic_range": "SDR"
         }]
     }))
-    .expect("synthetic HDS document должен десериализоваться");
+    .expect("The synthetic HDS document must be deserialized.");
     let snapshot = super::normalize_candidate_document(
         document,
         SourceIdentity::new(70),
@@ -81,13 +81,13 @@ fn hds_declared_h264_aac_with_flv_hint_keeps_content_probed_requirements() {
     );
     let planning_snapshot = snapshot
         .planning_snapshot()
-        .expect("declared HDS codecs должны пройти planning admission");
+        .expect("declared HDS codecs must pass planning admission");
     let [candidate] = planning_snapshot.candidates() else {
-        panic!("ожидался один HDS planning candidate");
+        panic!("one expected HDS planning candidate");
     };
 
     let StreamLayout::ContentProbed(component) = candidate.descriptor().layout() else {
-        panic!("HDS resource должен оставаться content-probed");
+        panic!("HDS resource should remain content-probed");
     };
     assert_eq!(component.probe_container(), ContainerFamily::F4f);
     assert!(matches!(
@@ -110,7 +110,7 @@ fn hds_declared_h264_aac_with_flv_hint_keeps_content_probed_requirements() {
             assert_eq!(video.codec, VideoCodec::H264);
             assert_eq!(*audio, AudioDecodeCodecFamily::Aac);
         }
-        unexpected => panic!("ожидались declared HDS requirements, получены {unexpected:?}"),
+        unexpected => panic!("Expected declared HDS requirements received {unexpected:?}"),
     }
 }
 
@@ -136,7 +136,7 @@ fn h264_baseline_indications_keep_full_planning_inventory_and_exact_requirements
             )
         ]
     }))
-    .expect("synthetic yt-dlp document должен десериализоваться");
+    .expect("synthetic yt-dlp document should be deserialized");
     let snapshot = super::normalize_candidate_document(
         document,
         SourceIdentity::new(71),
@@ -145,7 +145,7 @@ fn h264_baseline_indications_keep_full_planning_inventory_and_exact_requirements
 
     let planning_snapshot = snapshot
         .planning_snapshot()
-        .expect("оба H.264 Baseline profile и playable сосед должны планироваться");
+        .expect("both H.264 Baseline profile and playable neighbor should be planned");
     assert_eq!(planning_snapshot.candidates().len(), 3);
 
     let baseline_candidate = &planning_snapshot.candidates()[1];
@@ -193,7 +193,7 @@ fn youtube_vp9_profile2_hdr_shorthand_maps_to_complete_runtime_requirement() {
             }
         ]
     }))
-    .expect("synthetic yt-dlp document должен десериализоваться");
+    .expect("synthetic yt-dlp document should be deserialized");
     let snapshot = super::normalize_candidate_document(
         document,
         SourceIdentity::new(72),
@@ -202,7 +202,7 @@ fn youtube_vp9_profile2_hdr_shorthand_maps_to_complete_runtime_requirement() {
 
     let planning_snapshot = snapshot
         .planning_snapshot()
-        .expect("yt-dlp vp9.2 HDR и playable SDR сосед должны планироваться");
+        .expect("yt-dlp vp9.2 HDR and playable SDR Neighbor should be planned");
     assert_eq!(planning_snapshot.candidates().len(), 2);
 
     let hdr = video_requirement(&planning_snapshot.candidates()[1]);
@@ -213,7 +213,7 @@ fn youtube_vp9_profile2_hdr_shorthand_maps_to_complete_runtime_requirement() {
     let color = hdr
         .color
         .as_ref()
-        .expect("HDR10 должен дать strict color evidence");
+        .expect("HDR10 must provide strict color evidence");
     assert_eq!(color.range, ColorRange::Limited);
     assert_eq!(color.matrix, MatrixCoefficients::Bt2020);
     assert_eq!(color.primaries, ColorPrimaries::Bt2020);
@@ -228,7 +228,7 @@ fn ambiguous_hdr_label_does_not_create_color_evidence() {
     let mut hdr = progressive_muxed_format("ambiguous-hdr", "webm", "webm", "vp9.2", "opus");
     hdr["dynamic_range"] = json!("HDR");
     let document: YtDlpCandidateDocument = serde_json::from_value(json!({"formats": [hdr]}))
-        .expect("synthetic yt-dlp document должен десериализоваться");
+        .expect("synthetic yt-dlp document should be deserialized");
     let snapshot = super::normalize_candidate_document(
         document,
         SourceIdentity::new(73),
@@ -237,7 +237,7 @@ fn ambiguous_hdr_label_does_not_create_color_evidence() {
 
     let planning = snapshot
         .planning_snapshot()
-        .expect("ambiguous HDR остаётся typed planner candidate");
+        .expect("ambiguous HDR remains typed planner candidate");
     let requirement = video_requirement(&planning.candidates()[0]);
     assert!(requirement.requires_hdr_processing());
     assert!(requirement.color.is_none());
@@ -265,7 +265,7 @@ fn unplannable_bare_hevc_row_keeps_independent_h264_candidate_available() {
             )
         ]
     }))
-    .expect("synthetic yt-dlp document должен десериализоваться");
+    .expect("synthetic yt-dlp document should be deserialized");
     // Production normalizer обязан признать обе rows до planning admission.
     let snapshot = super::normalize_candidate_document(
         document,
@@ -282,7 +282,7 @@ fn unplannable_bare_hevc_row_keeps_independent_h264_candidate_available() {
             StreamLayout::Muxed(component) => component.video().codec().raw().as_str() == "hevc",
             _ => false,
         })
-        .expect("bare HEVC row должна быть accepted normalizer-ом")
+        .expect("The bare HEVC row must be accepted as normalizer.")
         .descriptor()
         .identity()
         .clone();
@@ -290,7 +290,7 @@ fn unplannable_bare_hevc_row_keeps_independent_h264_candidate_available() {
     // Новый production boundary возвращает и neutral snapshot, и row-local diagnostics.
     let projection = snapshot
         .planning_projection()
-        .expect("одна неподдерживаемая row не должна разрушать planning projection");
+        .expect("One unsupported row should not destroy planning projection.");
     // Рабочий H.264 остаётся единственным downstream planning candidate-ом.
     assert_eq!(projection.snapshot().candidates().len(), 1);
     assert_eq!(
@@ -310,10 +310,10 @@ fn unplannable_bare_hevc_row_keeps_independent_h264_candidate_available() {
     // Alignment сверяет полный canonical plannable set, а не rejected соседнюю row.
     snapshot
         .validate_planning_snapshot_alignment(projection.snapshot())
-        .expect("service/planner alignment должна принять локализованный HEVC rejection");
+        .expect("service/planner alignment must accept localized HEVC rejection");
     // Совместимый старый API также не должен возвращаться к snapshot-wide fail-fast.
     let compatible_snapshot = snapshot
         .planning_snapshot()
-        .expect("совместимый API должен сохранить рабочий H.264 candidate");
+        .expect("compatible API must keep the worker H.264 candidate");
     assert_eq!(compatible_snapshot.candidates().len(), 1);
 }

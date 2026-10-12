@@ -165,7 +165,7 @@ impl PlaylistSettingsOwner {
 
     pub(super) fn preflight(&self) -> Result<(), String> {
         if self.staged.is_some() {
-            return Err("playlist settings transaction уже staged".to_string());
+            return Err("playlist settings transaction already staged".to_string());
         }
         Ok(())
     }

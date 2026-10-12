@@ -122,7 +122,7 @@ fn decoder_replacement_cancels_video_backlog_recovery_scan_without_clearing_pack
     assert_eq!(
         pipeline.pending_video_packet_len(),
         pending_packets_before_replacement,
-        "decoder replacement не владеет очисткой compressed backlog"
+        "decoder replacement purifier compressed backlog"
     );
 }
 
@@ -535,7 +535,7 @@ fn playback_pipeline_decoder_activity_boundary_preserves_typed_statuses() {
             assert!(snapshot.captured_epoch().is_some());
         }
         unexpected_status => {
-            panic!("activity snapshot должен быть available, got {unexpected_status:?}");
+            panic!("activity snapshot must be available, got {unexpected_status:?}");
         }
     }
     assert!(
@@ -562,7 +562,7 @@ fn playback_pipeline_decoder_activity_boundary_preserves_typed_statuses() {
             assert_eq!(error.message(), "activity fatal");
         }
         unexpected_status => {
-            panic!("activity unavailable reason должен сохранить fatal, got {unexpected_status:?}");
+            panic!("activity unavailable reason should save fatal, got {unexpected_status:?}");
         }
     }
     assert!(

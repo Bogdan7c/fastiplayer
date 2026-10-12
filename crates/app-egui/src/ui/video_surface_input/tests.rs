@@ -34,7 +34,10 @@ fn double_click_on_video_requests_fullscreen_toggle_once() {
 fn single_click_on_video_does_nothing() {
     let actions = actions_after_clicks(surface_rect(), egui::pos2(400.0, 300.0), 1);
 
-    assert!(actions.is_empty(), "одиночный клик не должен ничего делать");
+    assert!(
+        actions.is_empty(),
+        "A single click doesn’t have to do anything."
+    );
 }
 
 #[test]
@@ -111,7 +114,7 @@ fn wheel_up_over_video_requests_one_louder_step_and_consumes_the_scroll() {
     assert_eq!(actions, vec![VideoSurfaceAction::AdjustVolumeSteps(1)]);
     assert_eq!(
         scroll_left_for_others, 0.0,
-        "прокрутка не должна уходить дальше"
+        "scrolling should not go any further"
     );
 }
 
@@ -128,12 +131,9 @@ fn wheel_over_sidebar_area_does_not_change_volume_and_stays_scroll() {
 
     assert!(
         actions.is_empty(),
-        "над плейлистом колесо не громкость: {actions:?}"
+        "over the playlist wheel is not volume: {actions:?}"
     );
-    assert!(
-        scroll_left_for_others > 0.0,
-        "прокрутка плейлиста сохранена"
-    );
+    assert!(scroll_left_for_others > 0.0, "playlist scrolling saved");
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn small_wheel_deltas_accumulate_until_a_whole_step() {
     assert_eq!(
         accumulator.take_steps(15.0),
         1,
-        "45 points = шаг + остаток 5"
+        "45 points = step + remainder 5"
     );
-    assert_eq!(accumulator.take_steps(-45.0), -1, "остаток 5 - 45 = -40");
+    assert_eq!(accumulator.take_steps(-45.0), -1, "remaining 5 - 45 = -40");
 }

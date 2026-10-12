@@ -8,7 +8,7 @@ struct MissingMetadata {
         group = "schema",
         surface = "main",
         label_id = "settings.schema_version.label",
-        label_ru = "Версия схемы",
+        label_ru = "Schematic version",
         editor = "read_only",
         apply = "system.apply",
         read_only,

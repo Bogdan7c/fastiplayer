@@ -84,7 +84,7 @@ impl ProcessArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum ProcessArgsError {
     /// До `--` встретилась неизвестная option-подобная строка.
-    #[error("неизвестная опция; локальный путь с ведущим '-' передавайте после '--'")]
+    #[error("unknown option; pass local paths starting with '-' after '--'")]
     UnknownOption,
 }
 
@@ -174,18 +174,18 @@ pub(crate) enum UnsafeAppInstanceArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum AppInstanceLeaseError {
     /// Другой процесс уже удерживает stable lock inode.
-    #[error("другой экземпляр fastiplayer уже запущен")]
+    #[error("another fastiplayer instance is already running")]
     AlreadyRunning,
 
     /// Безопасная операция завершилась системной I/O ошибкой.
-    #[error("не удалось получить instance lease на этапе {operation:?}: {kind:?}")]
+    #[error("could not acquire the instance lease during {operation:?}: {kind:?}")]
     Io {
         operation: AppInstanceLeaseIoOperation,
         kind: std::io::ErrorKind,
     },
 
     /// Artifact не соответствует обязательному типу, owner-у или identity.
-    #[error("небезопасный instance-lock artifact: {reason:?}")]
+    #[error("unsafe instance-lock artifact: {reason:?}")]
     UnsafeArtifact { reason: UnsafeAppInstanceArtifact },
 
     /// Эта сборка пока не имеет adapter-а с тем же строгим contract.
@@ -196,7 +196,7 @@ pub(crate) enum AppInstanceLeaseError {
             reason = "Linux build keeps the shared cross-platform error vocabulary"
         )
     )]
-    #[error("single-instance lease не поддерживается на этой платформе")]
+    #[error("single-instance lease is unsupported on this platform")]
     UnsupportedPlatform,
 }
 
@@ -222,26 +222,26 @@ pub(crate) struct ProcessBootstrap {
 /// `Result` bootstrap-а не раздувался ради редкого пути ошибки.
 #[derive(Debug, Error)]
 pub(crate) enum ProcessBootstrapError {
-    #[error("некорректные аргументы запуска: {0}")]
+    #[error("invalid startup arguments: {0}")]
     Arguments(#[from] ProcessArgsError),
 
-    #[error("не удалось определить platform config paths: {0}")]
+    #[error("could not determine platform configuration paths: {0}")]
     DiscoverPaths(ConfigError),
 
-    #[error("не удалось получить право запуска: {lease_error}")]
+    #[error("could not acquire permission to start: {lease_error}")]
     Lease {
         lease_error: AppInstanceLeaseError,
         config_dir: PathBuf,
     },
 
-    #[error("не удалось загрузить config fastiplayer: {config_error}")]
+    #[error("could not load fastiplayer configuration: {config_error}")]
     LoadConfig {
         config_error: Box<ConfigError>,
         config_dir: PathBuf,
     },
 
     /// Lease занят, но передать аргументы запущенному экземпляру не удалось.
-    #[error("плеер уже запущен, передать ему запрос не удалось: {0}")]
+    #[error("the player is already running; could not forward the request: {0}")]
     ForwardToRunningInstance(RunningInstanceForwardingError),
 }
 

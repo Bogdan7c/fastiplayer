@@ -169,7 +169,7 @@ fn staged_update_targets_exact_old_current_instance_until_commit() {
     );
     let pending = control
         .take_pending_current_for_staged()
-        .expect("staged update обязан адресовать old current exact instance");
+        .expect("Staged update must address old current exact instance");
     assert_eq!(pending.request_id, candidate_request);
     assert_eq!(pending.media_instance_id, instance(10));
     assert_eq!(pending.intent, PlaybackIntent::StartPaused);

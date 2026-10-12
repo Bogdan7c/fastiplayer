@@ -298,7 +298,7 @@ fn secret_context_enforces_origin_path_secure_and_purpose_scope() {
     assert_eq!(
         segment_material.cookie_seeds_for_request().len(),
         1,
-        "готовый Cookie header и scoped seeds обязаны оставаться разными intents"
+        "finished Cookie header and scoped seeds You have to be different intents"
     );
     assert!(segment_material.request_data_for_request().is_none());
     assert_eq!(

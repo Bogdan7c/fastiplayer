@@ -59,9 +59,9 @@ impl std::fmt::Display for NotSeekableReason {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::HttpRangeStatus { status } => {
-                write!(formatter, "HTTP Range probe вернул status {status}")
+                write!(formatter, "HTTP Range probe returned status {status}")
             }
-            Self::FtpRestUnsupported => formatter.write_str("FTP REST не подтверждён после TYPE I"),
+            Self::FtpRestUnsupported => formatter.write_str("FTP REST not confirmed after TYPE I"),
             Self::Unknown => formatter.write_str("seekability unknown"),
         }
     }

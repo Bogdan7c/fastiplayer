@@ -27,7 +27,7 @@ fn generous_budgets() -> XmlBudgets {
         .maximum_namespace_bytes(8 * 1024)
         .maximum_text_bytes(32 * 1024)
         .build()
-        .expect("test задаёт каждое обязательное поле")
+        .expect("The test specifies each mandatory field.")
 }
 
 /// Читает весь event stream и сохраняет exact terminal error semantics.
@@ -45,7 +45,7 @@ fn event_element(event: &XmlEvent) -> &XmlElement {
     match event {
         XmlEvent::StartElement(element) | XmlEvent::EmptyElement(element) => element,
         XmlEvent::EndElement(_) | XmlEvent::Text(_) => {
-            panic!("ожидался element event")
+            panic!("expected element event")
         }
     }
 }
@@ -56,7 +56,7 @@ fn namespace_resolved_events_keep_domain_schema_outside_reader() {
         <playlist xmlns="urn:test" xmlns:x="urn:ext" xml:base="https://example.invalid/">
             <x:track title="A &amp; B">a&lt;b&#x21;&apos;&quot;&gt;</x:track>
         </playlist>"#;
-    let events = collect_events(xml, generous_budgets()).expect("валидный XML читается");
+    let events = collect_events(xml, generous_budgets()).expect("valid XML readable");
 
     let root = event_element(&events[0]);
     assert_eq!(root.name().namespace_uri(), Some("urn:test"));
@@ -88,7 +88,7 @@ fn namespace_resolved_events_keep_domain_schema_outside_reader() {
 fn doctype_and_external_entity_fixture_is_rejected_without_resolution() {
     let malicious_xml = include_bytes!("fixtures/doctype_external.xml");
     let error = collect_events(malicious_xml, generous_budgets())
-        .expect_err("DOCTYPE обязан быть rejected до external resolution");
+        .expect_err("DOCTYPE must be rejected before an external resolution.");
     assert_eq!(error, XmlReadError::DocTypeForbidden);
 }
 
@@ -96,7 +96,7 @@ fn doctype_and_external_entity_fixture_is_rejected_without_resolution() {
 fn internal_custom_entity_fixture_is_rejected_at_doctype_boundary() {
     let malicious_xml = include_bytes!("fixtures/doctype_internal_entity.xml");
     let error = collect_events(malicious_xml, generous_budgets())
-        .expect_err("internal entity declaration не разрешена");
+        .expect_err("internal entity declaration not allowed");
     assert_eq!(error, XmlReadError::DocTypeForbidden);
 }
 
@@ -104,12 +104,12 @@ fn internal_custom_entity_fixture_is_rejected_at_doctype_boundary() {
 fn undeclared_custom_entity_fixture_is_rejected_but_predefined_entities_are_legal() {
     let malicious_xml = include_bytes!("fixtures/custom_entity_reference.xml");
     let error = collect_events(malicious_xml, generous_budgets())
-        .expect_err("custom general reference не раскрывается");
+        .expect_err("custom general reference open-ended");
     assert_eq!(error, XmlReadError::CustomEntityForbidden);
 
     let legal_xml = br#"<root>&lt;&gt;&amp;&apos;&quot;&#65;&#x42;</root>"#;
     let events = collect_events(legal_xml, generous_budgets())
-        .expect("predefined и numeric references разрешены");
+        .expect("Predefined and numeric references are allowed");
     let text = events
         .iter()
         .filter_map(|event| match event {
@@ -135,9 +135,9 @@ fn depth_fixture_is_stopped_at_caller_limit() {
         .maximum_namespace_bytes(1024)
         .maximum_text_bytes(1024)
         .build()
-        .expect("test задаёт complete budgets");
+        .expect("The test sets out the complete budgets.");
     let error = collect_events(malicious_xml, budgets)
-        .expect_err("пятый depth level обязан превысить caller limit");
+        .expect_err("fifth depth level must exceed caller limit");
     assert_eq!(
         error,
         XmlReadError::DepthExceeded {
@@ -162,9 +162,9 @@ fn attribute_bomb_fixture_is_stopped_before_domain_event_materialization() {
         .maximum_namespace_bytes(1024)
         .maximum_text_bytes(1024)
         .build()
-        .expect("test задаёт complete budgets");
-    let error = collect_events(malicious_xml, budgets)
-        .expect_err("девятый attribute обязан остановить start tag");
+        .expect("The test sets out the complete budgets.");
+    let error =
+        collect_events(malicious_xml, budgets).expect_err("ninth attribute must stop start tag");
     assert_eq!(
         error,
         XmlReadError::AttributesPerElementExceeded {
@@ -189,9 +189,9 @@ fn namespace_bomb_fixture_hits_parser_side_limit_before_event() {
         .maximum_namespace_bytes(4096)
         .maximum_text_bytes(1024)
         .build()
-        .expect("test задаёт complete budgets");
+        .expect("The test sets out the complete budgets.");
     let error = collect_events(malicious_xml, budgets)
-        .expect_err("NsReader обязан остановить allocation до выдачи event-а");
+        .expect_err("NsReader must stop allocation prior to delivery event-?");
     assert_eq!(
         error,
         XmlReadError::NamespaceDeclarationsPerElementExceeded { maximum: 4 }
@@ -213,9 +213,9 @@ fn document_wide_namespace_count_and_bytes_are_independently_bounded() {
         .maximum_namespace_bytes(4096)
         .maximum_text_bytes(1024)
         .build()
-        .expect("test задаёт complete budgets");
+        .expect("The test sets out the complete budgets.");
     assert_eq!(
-        collect_events(xml, count_budgets).expect_err("вторая declaration превышает count"),
+        collect_events(xml, count_budgets).expect_err("the second declaration exceeds the count"),
         XmlReadError::NamespaceDeclarationCountExceeded {
             observed: 2,
             maximum: 1,
@@ -234,7 +234,7 @@ fn document_wide_namespace_count_and_bytes_are_independently_bounded() {
         .maximum_namespace_bytes(5)
         .maximum_text_bytes(1024)
         .build()
-        .expect("test задаёт complete budgets");
+        .expect("The test sets out the complete budgets.");
     assert!(matches!(
         collect_events(xml, byte_budgets),
         Err(XmlReadError::NamespaceBytesExceeded { .. })
@@ -257,7 +257,7 @@ fn caller_defined_document_token_attribute_and_text_budgets_are_independent() {
         .maximum_namespace_bytes(64)
         .maximum_text_bytes(64)
         .build()
-        .expect("test задаёт complete budgets");
+        .expect("The test sets out the complete budgets.");
     assert!(matches!(
         BoundedXmlReader::new(xml, small_document),
         Err(XmlReadError::DocumentBytesExceeded { .. })
@@ -275,7 +275,7 @@ fn caller_defined_document_token_attribute_and_text_budgets_are_independent() {
         .maximum_namespace_bytes(64)
         .maximum_text_bytes(64)
         .build()
-        .expect("test задаёт complete budgets");
+        .expect("The test sets out the complete budgets.");
     assert!(matches!(
         collect_events(xml, small_tokens),
         Err(XmlReadError::TokensExceeded { .. })
@@ -293,7 +293,7 @@ fn caller_defined_document_token_attribute_and_text_budgets_are_independent() {
         .maximum_namespace_bytes(64)
         .maximum_text_bytes(64)
         .build()
-        .expect("test задаёт complete budgets");
+        .expect("The test sets out the complete budgets.");
     assert!(matches!(
         collect_events(xml, small_attribute_bytes),
         Err(XmlReadError::AttributeBytesExceeded { .. })
@@ -311,16 +311,16 @@ fn caller_defined_document_token_attribute_and_text_budgets_are_independent() {
         .maximum_namespace_bytes(64)
         .maximum_text_bytes(3)
         .build()
-        .expect("test задаёт complete budgets");
+        .expect("The test sets out the complete budgets.");
     assert_eq!(
-        collect_events(xml, small_text).expect_err("четыре text bytes превышают limit"),
+        collect_events(xml, small_text).expect_err("Four text bytes exceed the limit"),
         XmlReadError::TextBytesExceeded {
             observed: 4,
             maximum: 3,
         }
     );
 
-    collect_events(xml, generous_budgets()).expect("те же bytes проходят generous policy");
+    collect_events(xml, generous_budgets()).expect("The same bytes are subject to generous policy");
 }
 
 #[test]
@@ -362,21 +362,21 @@ fn malformed_namespace_duplicate_attribute_and_document_shape_fail_closed() {
 fn complete_builder_has_no_hidden_defaults_and_failed_reader_is_fused() {
     let missing = XmlBudgets::builder()
         .build()
-        .expect_err("пустой builder не подставляет policy");
+        .expect_err("An empty builder does not substitute policy");
     assert_eq!(missing.field(), XmlBudgetKind::DocumentBytes);
 
     let mut reader = BoundedXmlReader::new(b"<root>&custom;</root>", generous_budgets())
-        .expect("byte budget допускает reader");
+        .expect("Byte budget allows readers to");
     assert!(matches!(
         reader.next_event(),
         Ok(Some(XmlEvent::StartElement(_)))
     ));
     let first_error = reader
         .next_event()
-        .expect_err("custom entity terminal-ит reader");
+        .expect_err("custom entity terminal and reader");
     let repeated_error = reader
         .next_event()
-        .expect_err("reader не продолжает parsing после failure");
+        .expect_err("reader continues parsing afterward failure");
     assert_eq!(first_error, XmlReadError::CustomEntityForbidden);
     assert_eq!(repeated_error, first_error);
 }
@@ -385,7 +385,7 @@ fn complete_builder_has_no_hidden_defaults_and_failed_reader_is_fused() {
 fn unsupported_declared_encoding_is_rejected_without_guessing() {
     let xml = br#"<?xml version="1.0" encoding="windows-1251"?><root/>"#;
     assert_eq!(
-        collect_events(xml, generous_budgets()).expect_err("legacy encoding не угадывается"),
+        collect_events(xml, generous_budgets()).expect_err("legacy encoding guesslessly"),
         XmlReadError::UnsupportedEncoding
     );
 }
@@ -394,21 +394,21 @@ fn unsupported_declared_encoding_is_rejected_without_guessing() {
 fn xml_1_1_and_declaration_after_any_content_are_rejected_explicitly() {
     let xml_1_1 = br#"<?xml version="1.1"?><root/>"#;
     assert_eq!(
-        collect_events(xml_1_1, generous_budgets()).expect_err("partial XML 1.1 support запрещён"),
+        collect_events(xml_1_1, generous_budgets()).expect_err("partial XML 1.1 support forbidden"),
         XmlReadError::UnsupportedXmlVersion
     );
 
     let misplaced = br#"<!--prolog comment--><?xml version="1.0"?><root/>"#;
     assert_eq!(
         collect_events(misplaced, generous_budgets())
-            .expect_err("declaration после comment уже не является первым construct"),
+            .expect_err("declaration afterward comment It is no longer the first construct"),
         XmlReadError::MisplacedXmlDeclaration
     );
 
     let non_xml_whitespace = "\u{00a0}<root/>".as_bytes();
     assert_eq!(
         collect_events(non_xml_whitespace, generous_budgets())
-            .expect_err("NBSP вне root не является XML markup whitespace"),
+            .expect_err("NBSP outside root is not XML markup whitespace"),
         XmlReadError::TextOutsideRoot
     );
 }
@@ -425,19 +425,19 @@ fn declaration_duplicate_order_and_standalone_grammar_are_validated() {
     let invalid_order = br#"<?xml version="1.0" standalone="yes" encoding="UTF-8"?><root/>"#;
     assert_eq!(
         collect_events(invalid_order, generous_budgets())
-            .expect_err("encoding после standalone нарушает declaration grammar"),
+            .expect_err("encoding afterward standalone breach declaration grammar"),
         XmlReadError::MalformedAttribute
     );
 
     let invalid_standalone = br#"<?xml version="1.0" standalone="maybe"?><root/>"#;
     assert_eq!(
         collect_events(invalid_standalone, generous_budgets())
-            .expect_err("standalone принимает только yes/no"),
+            .expect_err("standalone accepts yes/no"),
         XmlReadError::MalformedAttribute
     );
 
     let valid_standalone = br#"<?xml version="1.0" encoding="utf-8" standalone="no"?><root/>"#;
-    collect_events(valid_standalone, generous_budgets()).expect("полная XML 1.0 declaration legal");
+    collect_events(valid_standalone, generous_budgets()).expect("XML 1.0 Declaration Legal");
 }
 
 #[test]
@@ -445,7 +445,7 @@ fn custom_entity_inside_attribute_is_rejected() {
     let xml = br#"<root title="unsafe &custom; value"/>"#;
     assert_eq!(
         collect_events(xml, generous_budgets())
-            .expect_err("custom attribute entity не раскрывается"),
+            .expect_err("The custom attribute entity is not disclosed"),
         XmlReadError::CustomEntityForbidden
     );
 }

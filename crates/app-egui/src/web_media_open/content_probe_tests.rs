@@ -305,10 +305,10 @@ fn respond_to_range_request(
     let (range_start, requested_end) = request
         .lines()
         .find_map(parse_range_header)
-        .expect("ContentProbed provider должен отправить Range header");
+        .expect("ContentProbed Provider Should Send Range Header");
     assert!(
         range_start < ogg_bytes.len(),
-        "ContentProbed Range start находится за концом Ogg fixture"
+        "ContentProbed Range start is behind the end of Ogg fixture"
     );
     let range_end = requested_end.min(ogg_bytes.len() - 1);
     let response_body = &ogg_bytes[range_start..=range_end];
@@ -431,7 +431,7 @@ fn assert_owner_scoped_cookie_playback() {
     assert_child_succeeded("scoped-cookie ContentProbed playback", &child_output);
     assert!(
         origin.request_count() > 0,
-        "protected origin должен получить production HTTP Range request"
+        "protected origin must receive a production HTTP Range request"
     );
 }
 
@@ -452,11 +452,11 @@ fn assert_owner_content_probe_fallback() {
     assert_child_succeeded("ContentProbed fallback", &child_output);
     assert!(
         rejected_origin.request_count() > 0,
-        "первый ranked candidate должен дойти до real HTTP/demux proof"
+        "First ranked candidate must reach real HTTP/demux proof"
     );
     assert!(
         playable_origin.request_count() > 0,
-        "typed rejection должна открыть второй real HTTP candidate"
+        "typed rejection should open the second real HTTP candidate"
     );
 }
 
@@ -478,11 +478,11 @@ fn assert_owner_network_fallback() {
     assert_child_succeeded("network-unavailable ContentProbed fallback", &child_output);
     assert!(
         unavailable_origin.request_count() > 0,
-        "первый ranked candidate должен выполнить real HTTP attempt"
+        "The first ranked candidate will perform a real HTTP attempt."
     );
     assert!(
         playable_origin.request_count() > 0,
-        "typed NetworkUnavailable должен открыть один соседний candidate"
+        "typed NetworkUnavailable should open one of the neighbouring candidate"
     );
 }
 
@@ -633,11 +633,11 @@ fn assert_child_content_probe_fallback() {
             ))
             .expect("query production AAC capability"),
         audio::AudioDecodeCapability::Available,
-        "fixture declared codec должен пройти static capability admission"
+        "fixture declared codec must pass static capability admission"
     );
     let mut prepared =
         prepare_content_probed_test_media("content-probed-fallback", audio_capabilities)
-            .expect("typed content rejection должна открыть второй Ogg candidate");
+            .expect("Typed content rejection must open a second Ogg candidate.");
     assert_prepared_opus_reaches_pcm(&mut prepared, &audio_decoder_factory, "fallback-playable");
 }
 
@@ -648,7 +648,7 @@ fn assert_child_network_fallback() {
         "content-probed-network-fallback",
         audio_decoder_factory.audio_decode_capability_snapshot(),
     )
-    .expect("typed NetworkUnavailable должен открыть второй Ogg candidate");
+    .expect("Typed NetworkUnavailable to open second Ogg candidate");
     assert_prepared_opus_reaches_pcm(
         &mut prepared,
         &audio_decoder_factory,
@@ -679,7 +679,7 @@ fn assert_prepared_opus_reaches_pcm(
             .format()
             .as_str(),
         expected_format_id,
-        "prepared selection должна принадлежать реально открывшемуся candidate-у"
+        "prepared selection It must belong to the real opener candidate-at"
     );
 
     // Sidebar model фиксирует именно generic layout, а не ложный audio-only metadata guess.
@@ -693,7 +693,7 @@ fn assert_prepared_opus_reaches_pcm(
             .active_candidate()
             .audio_codec,
         None,
-        "null acodec должен остаться неизвестным до authoritative demux probe"
+        "null acodec must remain unknown until authoritative demux probe"
     );
 
     // После открытия право назвать codec принадлежит реальному demux track list-у.
@@ -703,7 +703,7 @@ fn assert_prepared_opus_reaches_pcm(
         .iter()
         .find(|track| track.kind == TrackKind::Audio)
         .cloned()
-        .expect("production demuxer должен обнаружить Ogg audio track");
+        .expect("production demuxer should detect Ogg audio track");
     assert_eq!(audio_track.codec_id, "A_OPUS");
     assert_eq!(audio_track.sample_rate, Some(48_000));
     assert_eq!(audio_track.channels, Some(1));
@@ -713,7 +713,7 @@ fn assert_prepared_opus_reaches_pcm(
             .tracks()
             .iter()
             .all(|track| track.kind != TrackKind::Video),
-        "audio-only Ogg не должен создавать выдуманный video track"
+        "audio-only Ogg must not create a fictional video track"
     );
 
     // Production decoder строится только из опубликованного neutral TrackInfo.
@@ -736,7 +736,7 @@ fn assert_prepared_opus_reaches_pcm(
         .expect("decode production Ogg/Opus packet");
     assert!(
         !decoded_samples.is_empty(),
-        "production Opus decoder должен вернуть ненулевой PCM buffer"
+        "production Opus decoder must return non-zero PCM buffer"
     );
     assert_pcm_advances_clock(&decoded_samples, decoder.sample_rate(), decoder.channels());
 }

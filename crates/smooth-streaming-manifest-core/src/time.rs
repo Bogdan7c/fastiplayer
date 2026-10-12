@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Ошибка построения exact Smooth Streaming clock value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SmoothTimeError {
-    #[error("Smooth Streaming timescale обязан быть ненулевым")]
+    #[error("Smooth Streaming timescale must be nonzero")]
     ZeroTimescale,
 }
 
@@ -18,7 +18,7 @@ pub enum SmoothTimeError {
 pub struct SmoothTimescale(NonZeroU64);
 
 impl SmoothTimescale {
-    #[must_use = "валидированный timescale нужен для exact clock values"]
+    #[must_use = "Validated timescale is required for exact clock values"]
     pub fn new(ticks_per_second: u64) -> Result<Self, SmoothTimeError> {
         NonZeroU64::new(ticks_per_second)
             .map(Self)

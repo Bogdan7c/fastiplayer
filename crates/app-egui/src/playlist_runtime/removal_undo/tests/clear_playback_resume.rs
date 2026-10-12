@@ -37,8 +37,8 @@ fn runtime_playing(
 fn start_install(playback: Option<ControllerPlayItemOutcome>) -> PlannedPlaylistInstall {
     match playback {
         Some(ControllerPlayItemOutcome::StartInstall { install, .. }) => install,
-        Some(_) => panic!("Undo Clear должен планировать новое открытие строки"),
-        None => panic!("Undo Clear должен вернуть воспроизведение"),
+        Some(_) => panic!("Undo Clear must plan to reopen the line"),
+        None => panic!("Undo Clear must return the playback"),
     }
 }
 
@@ -57,7 +57,7 @@ fn position_plan_after_install(
 #[test]
 fn clear_stops_playback_then_undo_reopens_same_item_at_same_position_playing() {
     let (mut runtime, ids) = runtime_playing(1, StablePlaybackIntent::Playing);
-    let active = runtime.controller.active_media().expect("B играет");
+    let active = runtime.controller.active_media().expect("B plays");
     let now = Instant::now();
 
     let cleared =
@@ -69,7 +69,7 @@ fn clear_stops_playback_then_undo_reopens_same_item_at_same_position_playing() {
     assert!(runtime.controller.active_media().is_none());
     let reset = runtime
         .pending_media_reset_request()
-        .expect("reset запрошен");
+        .expect("reset requested");
     assert_eq!(reset.media_instance_id, active.media_instance_id());
     assert_eq!(reset.action, ExactMediaTransportAction::ResetMedia);
 
@@ -164,7 +164,7 @@ fn clear_while_item_is_still_opening_reopens_that_item_from_start() {
         .controller
         .play_item(ids[2], TransportActionOrigin::Ui)
     else {
-        panic!("клик по другой строке начинает установку");
+        panic!("Clicking on another line starts the installation");
     };
     runtime
         .controller
@@ -177,7 +177,7 @@ fn clear_while_item_is_still_opening_reopens_that_item_from_start() {
             expected_queue_revision: install.expected_queue_revision,
             mutation: install.mutation,
         })
-        .expect("запрос принят");
+        .expect("request");
     let now = Instant::now();
 
     runtime.clear_playlist_observing_playback(now, PlaybackProgressAtClear::At(POSITION_1_23));
@@ -234,7 +234,7 @@ fn undo_clear_is_unavailable_after_opening_another_file() {
             crate::state::ActiveMediaSource::LocalFile("other.mp4".into()),
             PlaybackIntent::StartPlaying,
         )
-        .expect("внешний файл установлен");
+        .expect("external file installed");
 
     assert!(
         runtime

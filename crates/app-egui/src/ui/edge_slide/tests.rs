@@ -111,9 +111,9 @@ fn visible_panels_leave_exactly_the_same_layout_as_direct_panels() {
     let frame = run_slid_frame(&egui_ctx, input_at(1.0, Vec::new()), 0.0);
 
     assert_eq!(frame.remaining_rect, remaining_rect_with_direct_panels());
-    let top_visible = frame.top_visible.expect("заголовок виден");
+    let top_visible = frame.top_visible.expect("headline");
     assert_eq!(top_visible.height(), TITLEBAR_HEIGHT);
-    let bottom_visible = frame.bottom_visible.expect("нижняя панель видна");
+    let bottom_visible = frame.bottom_visible.expect("bottom panel visible");
     assert_eq!(bottom_visible.bottom(), full_window_rect().bottom());
     assert!(bottom_visible.height() >= BOTTOM_CONTENT_HEIGHT);
 }
@@ -134,15 +134,15 @@ fn half_hidden_panels_show_and_reserve_half_of_their_height() {
     let egui_ctx = measured_context();
     let bottom_height = run_slid_frame(&egui_ctx, input_at(0.9, Vec::new()), 0.0)
         .bottom_visible
-        .expect("нижняя панель видна")
+        .expect("bottom panel visible")
         .height();
 
     let frame = run_slid_frame(&egui_ctx, input_at(1.0, Vec::new()), 0.5);
 
-    let top_visible = frame.top_visible.expect("половина заголовка видна");
+    let top_visible = frame.top_visible.expect("half-header visible");
     assert_eq!(top_visible.top(), 0.0);
     assert_eq!(top_visible.height(), TITLEBAR_HEIGHT * 0.5);
-    let bottom_visible = frame.bottom_visible.expect("половина нижней панели видна");
+    let bottom_visible = frame.bottom_visible.expect("half-bottom panel visible");
     assert!((bottom_visible.height() - bottom_height * 0.5).abs() < 1.0);
     assert_eq!(frame.remaining_rect.top(), TITLEBAR_HEIGHT * 0.5);
     assert_eq!(frame.remaining_rect.bottom(), bottom_visible.top());
@@ -157,13 +157,16 @@ fn hidden_panel_buttons_do_not_receive_clicks() {
     let clicked_when_visible = click_frames(button_position, 1)
         .into_iter()
         .any(|input| run_slid_frame(&visible_ctx, input, 0.0).top_button_clicked);
-    assert!(clicked_when_visible, "видимая кнопка обязана нажиматься");
+    assert!(clicked_when_visible, "the visible button must be pressed");
 
     let hidden_ctx = measured_context();
     let clicked_when_hidden = click_frames(button_position, 1)
         .into_iter()
         .any(|input| run_slid_frame(&hidden_ctx, input, 1.0).top_button_clicked);
-    assert!(!clicked_when_hidden, "уехавшая кнопка не должна нажиматься");
+    assert!(
+        !clicked_when_hidden,
+        "The left button should not be pressed"
+    );
 }
 
 #[test]

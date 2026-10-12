@@ -31,22 +31,21 @@ pub struct YtDlpDurableReopenPayloadInput<'payload> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum YtDlpDurableReopenDecodeError {
     /// Payload записал другой сервис.
-    #[error("Ссылка на ролик принадлежит другому сервису и не может быть открыта через yt-dlp")]
+    #[error("The link to the video belongs to another service and cannot be opened through yt-dlp")]
     ForeignOwner,
     /// Версия грамматики неизвестна этой сборке.
-    #[error("Ссылка на ролик сохранена в неподдерживаемом формате (версия {version})")]
+    #[error("The link to the video is saved in an unsupported format (version {version})")]
     UnsupportedVersion {
         /// Версия из payload-а.
         version: u16,
     },
     /// Сохранён только внутренний идентификатор экстрактора, URL-формы нет.
     #[error(
-        "У ролика не сохранилась собственная ссылка, только внутренний идентификатор; \
-         откройте плейлист по исходной ссылке заново"
+        "The video does not have its own link, only an internal identifier; open the playlist at the original link again"
     )]
     ExtractorIdentityWithoutUrl,
     /// Сохранённые bytes не являются допустимой ссылкой.
-    #[error("Сохранённая ссылка на ролик повреждена")]
+    #[error("The saved link to the video is damaged")]
     InvalidStoredLocator,
 }
 

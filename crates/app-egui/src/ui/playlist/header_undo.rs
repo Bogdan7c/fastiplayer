@@ -198,7 +198,7 @@ mod tests {
     fn undo_snapshot(seconds_remaining: u64) -> PlaylistUndoUiSnapshot {
         PlaylistUndoUiSnapshot {
             undo: Some(RemovalUndoUiModel {
-                kind_label: "очистку плейлиста",
+                kind_label: "clearing Playlist",
                 seconds_remaining,
             }),
             next_wake_deadline: None,
@@ -293,13 +293,13 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_and_accessibility_share_exact_russian_countdown_label() {
+    fn tooltip_and_accessibility_share_exact_english_countdown_label() {
         assert_eq!(
             undo_snapshot(4)
                 .undo
                 .expect("authoritative Undo fixture")
                 .action_label(),
-            "Отменить очистку плейлиста (4 с)"
+            "Undo clearing Playlist (4 s)"
         );
     }
 

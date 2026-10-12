@@ -169,7 +169,7 @@ pub(super) fn dismiss_topmost(
             window.set_fullscreen(None);
         }
     }
-    debug!(?target, "Esc обработан");
+    debug!(?target, "Esc handled");
     target
 }
 

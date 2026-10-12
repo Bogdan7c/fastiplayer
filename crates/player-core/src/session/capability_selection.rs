@@ -138,7 +138,7 @@ impl PlayerSession {
         else {
             return Err(PlayerError::new(
                 PlayerErrorKind::InvalidCommand,
-                format!("Video track `{track_id}` не найден в текущем media"),
+                format!("Video track '{track_id}' not found in current media"),
             ));
         };
 
@@ -164,7 +164,7 @@ impl PlayerSession {
             return Err(PlayerError::new(
                 PlayerErrorKind::UnsupportedVideoCodec,
                 format!(
-                    "Video codec `{}` не поддерживается текущей capability model",
+                    "Video codec '{}' is not supported by the current capability model",
                     track.codec_id
                 ),
             ));
@@ -196,7 +196,7 @@ impl PlayerSession {
                     info!(
                         track_id = %track.id,
                         requirement = %requirement.describe(),
-                        "Video track выбран до bitstream refinement; strict capability check будет повторён перед decode"
+                        "Video track selected to bitstream refinement; strict capability check will be repeated before decode"
                     );
                     return Ok(VideoTrackSelectionOutcome::Accepted(
                         AcceptedVideoSelection {
@@ -273,7 +273,7 @@ impl PlayerSession {
             track_id = %track_id,
             requirement = %requirement.describe(),
             ?resume_strategy,
-            "Активный video backend не тянет стрим; запрошен бесшовный backend reselection"
+            "Active video backend does not pull stream; seamless backend reselection requested"
         );
         self.pending_video_backend_reselection = Some(PendingVideoBackendReselection {
             requirement: requirement.clone(),
@@ -313,7 +313,7 @@ impl PlayerSession {
                 PlayerError::new(
                     PlayerErrorKind::InvalidCommand,
                     format!(
-                        "Отложенный video track {} отсутствует после backend reselection",
+                        "Delayed video track {} missing after backend reselection",
                         pending.track_id
                     ),
                 )
@@ -377,7 +377,7 @@ impl PlayerSession {
         if positioning_in_flight {
             debug!(
                 seek_generation = self.pipeline.seek_generation(),
-                "Video backend replacement продолжает существующий seek generation"
+                "Video backend replacement continuing seek generation"
             );
             return Ok(());
         }
@@ -395,7 +395,7 @@ impl PlayerSession {
         self.mark_fatal_error(PlayerError::new(
             PlayerErrorKind::UnsupportedVideoCodec,
             format!(
-                "Не удалось подобрать decode backend для {}: {reason}",
+                "Failed to find decode backend for {}: {reason}",
                 pending.requirement.describe()
             ),
         ));
@@ -477,7 +477,7 @@ impl PlayerSession {
         else {
             return Err(PlayerError::new(
                 PlayerErrorKind::InvalidCommand,
-                format!("Active video track `{track_id}` отсутствует в текущем media"),
+                format!("Active video track '{track_id}' not available in current media"),
             ));
         };
 
@@ -547,7 +547,7 @@ impl PlayerSession {
             .and_then(|capabilities| capabilities.check_video_requirement(requirement).ok())
             .map(|output| {
                 format!(
-                    "; другой playable backend `{}` объявляет contract `{}`",
+                    "Another playable backend '{}' announces contract '{}'",
                     output.backend.as_str(),
                     output.frame_contract.diagnostic_label()
                 )
@@ -557,8 +557,7 @@ impl PlayerSession {
         PlayerError::new(
             PlayerErrorKind::UnsupportedVideoCodec,
             format!(
-                "Active video backend `{active_backend_id}` не имеет playable output для {}; \
-                 contract другого backend-а не используется{other_backend_hint}",
+                "Active video backend '{active_backend_id}' has no playable output for {}; contract of another backend is not used {other_backend_hint}",
                 requirement.describe()
             ),
         )
@@ -611,7 +610,7 @@ impl PlayerSession {
             else {
                 return Err(PlayerError::new(
                     PlayerErrorKind::InvalidCommand,
-                    format!("Active video track `{track_id}` отсутствует в текущем media"),
+                    format!("Active video track '{track_id}' not available in current media"),
                 ));
             };
             self.configure_decoder_stream_for_track(track, &requirement, frame_contract)?;

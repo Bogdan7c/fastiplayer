@@ -11,7 +11,7 @@ impl PlaybackPipeline {
     ) {
         debug_assert!(
             self.video_decoder_thread.is_none(),
-            "staged media decoder устанавливается только после retirement прежнего owner-а"
+            "The staged media decoder is only set after the retirement of the former owner."
         );
         self.cancel_video_backlog_recovery_scan_for_decoder_replacement();
         self.video_backend = decoder_thread

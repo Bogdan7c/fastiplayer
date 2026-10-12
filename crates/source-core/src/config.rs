@@ -32,7 +32,7 @@ impl SourceRuntimeConfig {
             .and_then(|megabytes| megabytes.checked_mul(1024))
             .ok_or(SourceError::InvalidConfig {
                 field: "network.memory_cache_mb",
-                message: "значение не помещается в байтовый budget".to_string(),
+                message: "The value does not fit into the byte budget".to_string(),
             })?;
         let read_ahead_bytes = network_config
             .read_ahead_mb
@@ -40,19 +40,19 @@ impl SourceRuntimeConfig {
             .and_then(|megabytes| megabytes.checked_mul(1024))
             .ok_or(SourceError::InvalidConfig {
                 field: "network.read_ahead_mb",
-                message: "значение не помещается в байтовый budget".to_string(),
+                message: "The value does not fit into the byte budget".to_string(),
             })?;
         if network_config.connect_timeout_ms == 0 {
             return Err(SourceError::InvalidConfig {
                 field: "network.connect_timeout_ms",
-                message: "timeout подключения должен быть положительным".to_string(),
+                message: "The connection timeout should be positive.".to_string(),
             });
         }
 
         if network_config.read_timeout_ms == 0 {
             return Err(SourceError::InvalidConfig {
                 field: "network.read_timeout_ms",
-                message: "timeout чтения должен быть положительным".to_string(),
+                message: "Reading timeout should be positive.".to_string(),
             });
         }
 

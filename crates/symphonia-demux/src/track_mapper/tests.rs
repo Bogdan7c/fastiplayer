@@ -344,8 +344,8 @@ fn video_metadata_exact_track_id_match_is_used_first() {
         2,
         &mut metadata_by_track,
     )
-    .expect("exact video track metadata должна быть найдена");
-    let metadata = video_track.metadata.expect("video metadata должна быть");
+    .expect("The exact video track metadata must be found.");
+    let metadata = video_track.metadata.expect("video metadata must have");
 
     assert_eq!(metadata.coded_width, Some(3840));
     assert!(metadata_by_track.is_empty());
@@ -364,8 +364,8 @@ fn single_matroska_video_metadata_entry_can_fallback_to_symphonia_track_id() {
         2,
         &mut metadata_by_track,
     )
-    .expect("single video track metadata fallback должен сработать");
-    let metadata = video_track.metadata.expect("video metadata должна быть");
+    .expect("single video track metadata fallback should work");
+    let metadata = video_track.metadata.expect("video metadata must have");
 
     assert_eq!(metadata.coded_height, Some(2160));
     assert!(metadata_by_track.is_empty());
@@ -432,7 +432,7 @@ fn map_tracks_preserves_display_orientation_metadata() {
     let video_metadata = mapping.tracks[0]
         .video
         .as_ref()
-        .expect("orientation сама по себе является video metadata");
+        .expect("The orientation itself is video metadata.");
 
     assert_eq!(
         video_metadata.orientation,
@@ -469,7 +469,7 @@ fn avc3_metadata_preserves_in_band_parameter_set_framing() {
         mapping.tracks[0]
             .video
             .as_ref()
-            .expect("H.264 track должен иметь video metadata")
+            .expect("H.264 track should have a video metadata")
             .packet_framing,
         VideoPacketFraming::LengthPrefixedWithInBandParameterSets
     );
@@ -494,7 +494,7 @@ fn avc3_metadata_cannot_relabel_non_h264_video_framing() {
     assert_eq!(mapping.tracks[0].codec_id, "V_VP9");
     assert!(
         mapping.tracks[0].video.is_none(),
-        "чужой avc3 tag не должен даже создавать video metadata для VP9"
+        "stranger avc3 tag Shouldn't even create video metadata for VP9"
     );
 }
 
@@ -507,7 +507,7 @@ fn symphonia_video_dimensions_are_used_without_matroska_metadata() {
     let video_metadata = mapping.tracks[0]
         .video
         .as_ref()
-        .expect("Symphonia video metadata должна попасть в neutral model");
+        .expect("Symphonia video metadata must be included in the neutral model.");
 
     assert_eq!(video_metadata.coded_width, Some(1920));
     assert_eq!(video_metadata.coded_height, Some(1080));
@@ -527,7 +527,7 @@ fn mp4_av1c_sdr_metadata_reaches_neutral_track() {
     let video_metadata = mapping.tracks[0]
         .video
         .as_ref()
-        .expect("SDR AV1 track должен содержать neutral video metadata");
+        .expect("SDR AV1 track contains neutral video metadata");
 
     assert_eq!(
         video_metadata.profile,
@@ -557,7 +557,7 @@ fn mp4_av1c_hdr_metadata_reaches_neutral_track() {
     let video_metadata = mapping.tracks[0]
         .video
         .as_ref()
-        .expect("HDR AV1 track должен содержать neutral video metadata");
+        .expect("HDR AV1 track contains neutral video metadata");
 
     assert_eq!(
         video_metadata.profile,
@@ -580,11 +580,11 @@ fn matroska_hdr_fallback_is_merged_with_symphonia_video_metadata() {
     let video_metadata = mapping.tracks[0]
         .video
         .as_ref()
-        .expect("video metadata должна быть объединена");
+        .expect("video metadata should be combined");
     let color = video_metadata
         .color
         .as_ref()
-        .expect("Matroska HDR fallback должен сохранить color metadata");
+        .expect("Matroska HDR fallback should retain color metadata");
 
     assert_eq!(video_metadata.coded_width, Some(1920));
     assert_eq!(video_metadata.coded_height, Some(1080));
@@ -617,11 +617,11 @@ fn mp4_color_metadata_wins_over_matroska_color_fallback() {
     let video_metadata = mapping.tracks[0]
         .video
         .as_ref()
-        .expect("MP4 color metadata должна создать video metadata");
+        .expect("MP4 color metadata should create video metadata");
     let color = video_metadata
         .color
         .as_ref()
-        .expect("MP4 color metadata должна попасть в neutral model");
+        .expect("MP4 color metadata should be included in the neutral model.");
 
     assert_eq!(video_metadata.coded_width, Some(1920));
     assert_eq!(video_metadata.coded_height, Some(1080));

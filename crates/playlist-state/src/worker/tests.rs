@@ -21,7 +21,7 @@ mod lifecycle;
 fn revision(value: u64) -> SaveRevision {
     let mut revision = SaveRevision::FIRST;
     for _ in 1..value {
-        revision = revision.checked_next().expect("малый test revision");
+        revision = revision.checked_next().expect("small-scale test revision");
     }
     revision
 }
@@ -32,18 +32,18 @@ fn captured_snapshot(revision: SaveRevision, item_count: usize) -> ImmutableSave
         let locator = SecretUrlLocator::from_reopenable_url(format!(
             "https://media.invalid/{item_index}.mp4?private=value"
         ))
-        .expect("test URL непустой");
+        .expect("test URL");
         let metadata =
             CachedPlaylistMetadata::new(format!("item-{item_index}"), PlaylistMediaKind::Video);
         queue
             .append_one(PlaylistItemDraft::url(locator, metadata))
-            .expect("test queue остаётся bounded");
+            .expect("test queue remains bounded");
     }
     ImmutableSaveSnapshot::capture(
         revision,
         PlaylistStateSnapshot::new(&queue, RepeatMode::StopAtEnd),
     )
-    .expect("малый snapshot валиден")
+    .expect("snapshot")
 }
 
 #[derive(Default)]
@@ -67,7 +67,7 @@ impl CountingWakePort {
                 self.count() < expected_count
             })
             .expect("test wake condvar");
-        assert!(!timeout.timed_out(), "wake signal не опубликован");
+        assert!(!timeout.timed_out(), "wake signal published");
     }
 }
 
@@ -138,9 +138,9 @@ impl SnapshotWriter for ScriptedWriter {
         let json = serde_json::from_slice(
             &snapshot
                 .serialize_json()
-                .expect("test snapshot сериализуется"),
+                .expect("Test snapshot is serialized"),
         )
-        .expect("serialized snapshot является JSON");
+        .expect("Serialized snapshot: JSON");
         self.written_json
             .lock()
             .expect("test writer lock")
@@ -199,7 +199,10 @@ impl BlockingWriter {
                 state.entered_writes < expected_writes
             })
             .expect("test condvar wait");
-        assert!(!timeout.timed_out(), "writer не вошёл в ожидаемую write");
+        assert!(
+            !timeout.timed_out(),
+            "The writer is not included in the expected write"
+        );
         assert!(state.entered_writes >= expected_writes);
     }
 
@@ -238,9 +241,9 @@ impl SnapshotWriter for BlockingWriter {
         let json_snapshot = serde_json::from_slice(
             &snapshot
                 .serialize_json()
-                .expect("test snapshot сериализуется"),
+                .expect("Test snapshot is serialized"),
         )
-        .expect("serialized snapshot является JSON");
+        .expect("Serialized snapshot: JSON");
         let mut state = self.state.lock().expect("test blocking lock");
         state.entered_writes += 1;
         state.active_writes += 1;
@@ -265,11 +268,11 @@ fn started_test_worker(
     wake_port: Arc<CountingWakePort>,
 ) -> SaveWorker {
     SaveWorker::start_with_dependencies(
-        SaveDebounce::new(Duration::from_secs(30)).expect("test debounce валиден"),
+        SaveDebounce::new(Duration::from_secs(30)).expect("test debounce valid"),
         wake_port,
         writer,
     )
-    .expect("test thread запускается")
+    .expect("Test thread starts")
 }
 
 #[test]
@@ -286,7 +289,7 @@ fn thread_spawn_failure_is_typed_and_does_not_panic() {
     let writer = Arc::new(ScriptedWriter::new([], []));
     let wake_port = Arc::new(CountingWakePort::default());
     let outcome = SaveWorker::start_with_spawner(
-        SaveDebounce::new(Duration::from_secs(2)).expect("debounce валиден"),
+        SaveDebounce::new(Duration::from_secs(2)).expect("debounce valid"),
         wake_port,
         writer,
         &FailingThreadSpawner,
@@ -306,13 +309,13 @@ fn latest_only_shutdown_coalesces_snapshot_and_matching_allocator_watermark() {
     assert_eq!(
         worker
             .submit_snapshot(captured_snapshot(revision(1), 1))
-            .expect("revision 1 принимается"),
+            .expect("revision 1 adopted"),
         SubmitSnapshotOutcome::Accepted
     );
     assert_eq!(
         worker
             .submit_snapshot(captured_snapshot(revision(2), 2))
-            .expect("revision 2 принимается"),
+            .expect("revision 2 adopted"),
         SubmitSnapshotOutcome::Accepted
     );
 
@@ -332,12 +335,12 @@ fn same_revision_is_a_no_op_before_queue_admission() {
     let worker = started_test_worker(writer, wake_port);
     worker
         .submit_snapshot(captured_snapshot(revision(1), 1))
-        .expect("first snapshot принимается");
+        .expect("First snapshot accepted.");
 
     assert_eq!(
         worker
             .submit_snapshot(captured_snapshot(revision(1), 2))
-            .expect("same revision является typed no-op"),
+            .expect("The same revision is typed no-op"),
         SubmitSnapshotOutcome::NoOpSameOrOlderRevision
     );
     assert!(matches!(
@@ -353,12 +356,12 @@ fn mutation_during_write_runs_next_revision_without_parallel_write() {
     let worker = started_test_worker(writer.clone(), wake_port);
     worker
         .submit_snapshot(captured_snapshot(revision(1), 1))
-        .expect("revision 1 принимается");
-    worker.retry_now().expect("manual retry принимается");
+        .expect("revision 1 adopted");
+    worker.retry_now().expect("manual retry accepted");
     writer.wait_until_entered(1);
     worker
         .submit_snapshot(captured_snapshot(revision(2), 2))
-        .expect("mutation во время write принимается");
+        .expect("Mutation is accepted during writing");
 
     writer.release();
     let shutdown = worker.shutdown(None, Duration::from_secs(2));
@@ -375,18 +378,18 @@ fn full_command_queue_returns_latest_snapshot_to_caller() {
     let worker = started_test_worker(writer.clone(), wake_port);
     worker
         .submit_snapshot(captured_snapshot(revision(1), 1))
-        .expect("revision 1 принимается");
-    worker.retry_now().expect("write запускается немедленно");
+        .expect("revision 1 adopted");
+    worker.retry_now().expect("Write starts immediately.");
     writer.wait_until_entered(1);
 
     for value in 2..=9 {
         worker
             .submit_snapshot(captured_snapshot(revision(value), value as usize))
-            .expect("ровно capacity commands принимаются");
+            .expect("Capacity commands are accepted.");
     }
     let newest_committed = match worker.submit_snapshot(captured_snapshot(revision(10), 10)) {
         Err(SubmitSnapshotError::Backpressure(snapshot)) => *snapshot,
-        other => panic!("ожидался typed backpressure, получено {other:?}"),
+        other => panic!("Typed backpressure received {other:?}"),
     };
 
     writer.release();
@@ -403,7 +406,7 @@ fn full_shutdown_admission_retries_without_losing_command_ownership() {
     // Existing control command занимает единственный slot до controlled retry wait.
     assert!(
         command_sender.try_send(WorkerCommand::RetryNow).is_ok(),
-        "test precondition заполняет command queue"
+        "test precondition fill command queue"
     );
     // Acknowledgement channel нужен только для полного production-shaped shutdown command.
     let (acknowledgement_sender, _acknowledgement_receiver) = std::sync::mpsc::sync_channel(1);
@@ -449,7 +452,7 @@ fn full_shutdown_admission_stops_at_deadline_without_waiting() {
     // Existing command обязан остаться в queue после deadline failure.
     assert!(
         command_sender.try_send(WorkerCommand::RetryNow).is_ok(),
-        "test precondition заполняет command queue"
+        "test precondition fill command queue"
     );
     // Acknowledgement sender сохраняет production shape проверяемого command-а.
     let (acknowledgement_sender, _acknowledgement_receiver) = std::sync::mpsc::sync_channel(1);
@@ -500,8 +503,8 @@ fn disconnected_shutdown_admission_returns_without_policy_callbacks() {
     let admission = send_shutdown_with_admission_policy(
         &command_sender,
         shutdown_command,
-        || panic!("disconnected admission не должен проверять deadline"),
-        || panic!("disconnected admission не должен ждать capacity"),
+        || panic!("Disconnected admission does not check the deadline"),
+        || panic!("Disconnected admission does not wait for capacity"),
     );
 
     // Typed internal failure завершает admission без scheduler или wall-clock.
@@ -562,7 +565,7 @@ fn publish_vs_clear_race_never_loses_disconnect_payload() {
             producer_mailbox.publish_disconnect(WorkerDisconnectReason::CommandChannelClosed);
         });
         let mut events = mailbox.drain();
-        producer.join().expect("test producer завершается");
+        producer.join().expect("Test Producer is completed");
         events.extend(mailbox.drain());
         assert!(events.iter().any(|event| {
             matches!(
@@ -586,12 +589,12 @@ fn targeted_retry_never_performs_second_full_write() {
     let worker = started_test_worker(writer.clone(), wake_port.clone());
     worker
         .submit_snapshot(captured_snapshot(revision(1), 1))
-        .expect("snapshot принимается");
-    worker.retry_now().expect("full write запускается");
+        .expect("snapshot accepted");
+    worker.retry_now().expect("Full Write Launched");
 
     wake_port.wait_for_count(1);
     let _first_attempt_events = worker.drain_events();
-    worker.retry_now().expect("targeted retry запускается");
+    worker.retry_now().expect("Targeted retry launches");
     let shutdown = worker.shutdown(None, Duration::from_secs(2));
 
     assert!(matches!(shutdown, SaveWorkerShutdownOutcome::Complete(_)));
@@ -601,7 +604,7 @@ fn targeted_retry_never_performs_second_full_write() {
 
 #[test]
 fn retry_backoff_caps_resets_and_manual_retry_is_immediate_with_fake_time() {
-    let debounce = SaveDebounce::new(Duration::from_secs(2)).expect("debounce валиден");
+    let debounce = SaveDebounce::new(Duration::from_secs(2)).expect("debounce valid");
     let mut state = WorkerState::new(debounce);
     let failure = NotReplacedFailure {
         stage: NotReplacedStage::SyncTempFile,
@@ -613,7 +616,7 @@ fn retry_backoff_caps_resets_and_manual_retry_is_immediate_with_fake_time() {
 
     for _ in 0..10 {
         state.apply_full_write_outcome(revision(1), AtomicWriteOutcome::NotReplaced(failure), now);
-        let scheduled = state.pending_attempt.expect("retry запланирован");
+        let scheduled = state.pending_attempt.expect("retry is scheduled to be");
         assert!(scheduled.deadline.saturating_sub(now) <= MAXIMUM_RETRY_DELAY);
         now = scheduled.deadline;
     }
@@ -638,11 +641,11 @@ fn retry_backoff_caps_resets_and_manual_retry_is_immediate_with_fake_time() {
 #[test]
 fn live_debounce_reschedule_preserves_dirty_revision() {
     let mut state =
-        WorkerState::new(SaveDebounce::new(Duration::from_secs(2)).expect("debounce валиден"));
+        WorkerState::new(SaveDebounce::new(Duration::from_secs(2)).expect("debounce valid"));
     state.accept_snapshot(captured_snapshot(revision(3), 3), Duration::from_secs(5));
 
     state.reschedule_debounce(
-        SaveDebounce::new(Duration::from_secs(10)).expect("debounce валиден"),
+        SaveDebounce::new(Duration::from_secs(10)).expect("debounce valid"),
         Duration::from_secs(6),
     );
 
@@ -660,7 +663,7 @@ fn shutdown_flushes_only_newest_committed_revision_before_debounce() {
     let worker = started_test_worker(writer.clone(), wake_port);
     worker
         .submit_snapshot(captured_snapshot(revision(1), 1))
-        .expect("older committed принимается");
+        .expect("older committed accepted.");
 
     let shutdown = worker.shutdown(
         Some(captured_snapshot(revision(2), 2)),
@@ -686,8 +689,8 @@ fn shutdown_timeout_does_not_claim_join_or_durability_success() {
     let worker = started_test_worker(writer.clone(), wake_port);
     worker
         .submit_snapshot(captured_snapshot(revision(1), 1))
-        .expect("snapshot принимается");
-    worker.retry_now().expect("write запускается");
+        .expect("snapshot accepted");
+    worker.retry_now().expect("write off");
     writer.wait_until_entered(1);
 
     let shutdown = worker.shutdown(None, Duration::from_millis(10));
@@ -712,24 +715,24 @@ fn every_save_block_skips_thread_and_target_access() {
         SaveBlockReason::QuarantineSourceChanged,
     ];
     for reason in reasons {
-        let directory = tempfile::tempdir().expect("tempdir доступен");
+        let directory = tempfile::tempdir().expect("Tempdir is available");
         let target_path = directory.path().join("playlist-state.json");
-        fs::write(&target_path, b"protected").expect("protected target создаётся");
+        fs::write(&target_path, b"protected").expect("Protected target is created");
         let wake_port = Arc::new(CountingWakePort::default());
         let outcome = SaveWorker::start(
             SaveWorkerAccess::SaveBlocked(reason),
             Arc::new(PlaylistStateStore::new(&target_path)),
-            SaveDebounce::new(Duration::from_secs(2)).expect("debounce валиден"),
+            SaveDebounce::new(Duration::from_secs(2)).expect("debounce valid"),
             wake_port,
         )
-        .expect("blocked start не вызывает OS spawn");
+        .expect("Blocked start does not include OS spawn");
 
         assert!(matches!(
             outcome,
             SaveWorkerStartOutcome::SaveBlocked(returned_reason) if returned_reason == reason
         ));
         assert_eq!(
-            fs::read(&target_path).expect("target остаётся"),
+            fs::read(&target_path).expect("target remains"),
             b"protected"
         );
     }

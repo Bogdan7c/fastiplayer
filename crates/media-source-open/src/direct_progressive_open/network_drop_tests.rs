@@ -34,7 +34,7 @@ fn generated_wav(pcm_bytes: usize) -> (Vec<u8>, Vec<u8>) {
     let sample_data = (0..pcm_bytes / 2)
         .flat_map(|index| (index as u16).to_le_bytes())
         .collect::<Vec<_>>();
-    let data_len = u32::try_from(sample_data.len()).expect("fixture помещается в u32");
+    let data_len = u32::try_from(sample_data.len()).expect("fixture is placed in u32");
     let mut bytes = Vec::with_capacity(44 + sample_data.len());
     bytes.extend_from_slice(b"RIFF");
     bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
@@ -261,18 +261,18 @@ fn drop_test_network_config(reconnect_wait: Duration) -> NetworkConfig {
 /// Открывает fixture через production direct path и взводит обрыв.
 fn open_and_arm(origin: &FlakyRangeOrigin, reconnect_wait: Duration) -> Box<dyn Demuxer + Send> {
     let locator = super::classify_direct_media_url(&origin.url())
-        .expect("loopback wav URL классифицируется как direct media");
+        .expect("The loopback wav URL is classified as direct media.");
     let opened = super::open_direct_media(
         &locator,
         &drop_test_network_config(reconnect_wait),
         &PlayerDemuxConfig::default(),
         CancellationToken::new(),
     )
-    .expect("до обрыва файл открывается");
+    .expect("before the cliff, the file opens");
     let parts = opened.into_runtime_parts();
     assert!(
         parts.demux_seek_port.is_some(),
-        "seekable direct ресурс обязан отдать player-у seek port"
+        "seekable direct Resources must be given player-at seek port"
     );
     origin.arm_outage();
     parts.demuxer
@@ -285,7 +285,7 @@ fn decode_with_production_decoder(demuxer: &dyn Demuxer, packets: &[Vec<u8>]) ->
         .tracks()
         .iter()
         .find(|track| track.kind == TrackKind::Audio)
-        .expect("WAV fixture содержит audio track");
+        .expect("WAV fixture includes audio track");
     let mut decoder = ProductionAudioDecoderFactory::default()
         .create_decoder(AudioDecoderConfig::from_track_metadata(
             audio_track.id.get(),
@@ -298,7 +298,7 @@ fn decode_with_production_decoder(demuxer: &dyn Demuxer, packets: &[Vec<u8>]) ->
     for payload in packets {
         let packet =
             EncodedAudioPacket::new(audio_track.id.get(), AudioPacketTiming::unknown(), payload);
-        pcm.extend(decoder.decode(&packet).expect("PCM packet декодируется"));
+        pcm.extend(decoder.decode(&packet).expect("PCM packet is decoded"));
     }
     pcm
 }
@@ -348,7 +348,7 @@ fn drain_demuxer(demuxer: &mut dyn Demuxer) -> DemuxDrain {
             }
         }
     }
-    panic!("demuxer не дошёл ни до EOS, ни до ошибки за 60 с");
+    panic!("demuxer reached neither EOS nor an error within 60 seconds");
 }
 
 /// Обрыв на 3 с посреди файла: после восстановления сети demuxer продолжает с
@@ -371,21 +371,21 @@ fn range_playback_survives_three_second_network_outage() {
 
     assert!(
         drain.error.is_none(),
-        "обрыв сети не должен убивать воспроизведение: {:?}",
+        "Network breaks must not kill reproduction: {:?}",
         drain.error
     );
     assert_eq!(drain.payload.len(), sample_data.len());
     assert!(
         drain.payload == sample_data,
-        "байты после обрыва склеены неверно"
+        "After the cliff, the bytes are incorrectly glued together"
     );
     assert!(
         drain.temporarily_unavailable_events > 0,
-        "во время обрыва player должен видеть «данных пока нет»"
+        "During the cliff, the player must see “no data yet”"
     );
     assert!(
         drain.longest_next_event < MAXIMUM_PLAYER_THREAD_STALL,
-        "поток player-а заблокирован на {:?}",
+        "flow player-and locked in {:?}",
         drain.longest_next_event
     );
 
@@ -394,14 +394,14 @@ fn range_playback_survives_three_second_network_outage() {
     assert_eq!(
         pcm.len(),
         expected_samples,
-        "аудио-потребитель получил все сэмплы"
+        "The audio user received all the samples."
     );
     for (index, sample) in pcm.iter().enumerate() {
         // Fixture: sample с номером n равен (n mod 65536) как i16 → f32 в [-1, 1).
         let expected = f32::from(index as u16 as i16) / 32_768.0;
         assert!(
             (sample - expected).abs() < 1.0e-6,
-            "сэмпл {index}: {sample} вместо {expected}"
+            "sample {index}: {sample} instead of {expected}"
         );
     }
 }
@@ -423,21 +423,21 @@ fn outage_longer_than_budget_fails_with_network_down_after_buffered_bytes() {
 
     let drain = drain_demuxer(demuxer.as_mut());
 
-    let error = drain.error.expect("сеть не вернулась за бюджет");
+    let error = drain.error.expect("The network has not returned to budget");
     let network_down = error.chain().any(|cause| {
         cause
             .downcast_ref::<std::io::Error>()
             .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::NetworkDown)
     });
-    assert!(network_down, "ошибка не помечена как сетевая: {error:#}");
+    assert!(network_down, "Error not marked as network error: {error:#}");
     assert!(
         started.elapsed() >= Duration::from_millis(1_500),
-        "ошибка не раньше бюджета ожидания"
+        "error must not occur before the wait budget expires"
     );
-    assert!(!drain.payload.is_empty(), "скачанное до обрыва доиграно");
+    assert!(!drain.payload.is_empty(), "cliff-down");
     assert!(
         sample_data.starts_with(&drain.payload),
-        "доигранные байты — точное начало файла"
+        "Pre-played bytes – the exact beginning of the file"
     );
     assert!(drain.longest_next_event < MAXIMUM_PLAYER_THREAD_STALL);
 }
@@ -459,14 +459,14 @@ fn closing_media_during_outage_stops_reconnects_without_blocking() {
     let waiting_deadline = Instant::now() + Duration::from_secs(20);
     let accepted_before_wait = origin.accepted_connections();
     loop {
-        assert!(Instant::now() < waiting_deadline, "обрыв так и не наступил");
-        match demuxer.next_event().expect("до бюджета ошибок нет") {
+        assert!(Instant::now() < waiting_deadline, "cliff never came");
+        match demuxer.next_event().expect("No budget errors") {
             DemuxReadEvent::TemporarilyUnavailable(_)
                 if origin.accepted_connections() > accepted_before_wait + 2 =>
             {
                 break;
             }
-            DemuxReadEvent::EndOfStream => panic!("EOS раньше обрыва"),
+            DemuxReadEvent::EndOfStream => panic!("EOS before the break"),
             _ => thread::sleep(Duration::from_millis(1)),
         }
     }
@@ -481,11 +481,11 @@ fn closing_media_during_outage_stops_reconnects_without_blocking() {
 
     assert!(
         drop_duration < MAXIMUM_PLAYER_THREAD_STALL,
-        "закрытие media заблокировано на {drop_duration:?}"
+        "closure media locked on {drop_duration:?}"
     );
     assert_eq!(
         origin.accepted_connections(),
         accepted_after_cancel,
-        "после закрытия media повторы в сеть продолжаются"
+        "After the media closes, the network repeats"
     );
 }

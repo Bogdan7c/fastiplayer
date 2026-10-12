@@ -37,7 +37,7 @@ impl SegmentByteRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SourceRangeError {
     /// Конечный offset не помещается в `u64`.
-    #[error("segment byte range переполняет u64")]
+    #[error("segment byte range overflows u64")]
     Overflow,
 }
 
@@ -142,16 +142,16 @@ impl AdaptiveSegmentSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AdaptiveSegmentSnapshotError {
     /// Sequence обязан строго возрастать внутри snapshot-а.
-    #[error("adaptive segment snapshot содержит немонотонную sequence")]
+    #[error("adaptive segment snapshot contains non-monotonic sequence")]
     NonMonotonicSequence,
     /// Snapshot превысил caller-owned descriptor bound.
-    #[error("adaptive segment snapshot превышает descriptor limit")]
+    #[error("adaptive segment snapshot exceeds the descriptor limit")]
     SegmentLimitExceeded,
     /// Same/older generation не может заменить уже installed snapshot.
-    #[error("adaptive segment snapshot generation не продвигает lifecycle")]
+    #[error("adaptive segment snapshot generation does not advance the lifecycle")]
     NonAdvancingGeneration,
     /// Manifest nature обязана совпадать с S21T open request.
-    #[error("adaptive segment snapshot presentation не совпадает с transport request")]
+    #[error("adaptive segment snapshot presentation does not match transport request")]
     PresentationMismatch,
 }
 

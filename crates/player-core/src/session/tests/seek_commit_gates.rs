@@ -124,7 +124,7 @@ fn video_audio_seek_waits_for_audio_runtime_after_clear_ack() {
 
     let seek_commit = session
         .seek_commit()
-        .expect("seek commit должен остаться открытым до audio runtime readiness");
+        .expect("Seek Demand is open until audio runtime readiness");
 
     assert_eq!(
         session.pipeline.audio_buffer_clear_generation(),
@@ -155,7 +155,7 @@ fn audio_only_seek_does_not_commit_when_output_is_absent() {
 
     let seek_commit = session
         .seek_commit()
-        .expect("audio-only seek должен ждать audio runtime readiness");
+        .expect("Audio-only seek awaits audio runtime readiness");
 
     assert_eq!(
         session.seek_audio_gate_status(seek_commit, 50.0),
@@ -194,9 +194,7 @@ fn playing_video_seek_does_not_soft_commit_without_ready_audio() {
         .unwrap();
     present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
 
-    let seek_commit = session
-        .seek_commit()
-        .expect("seek должен ждать ready audio");
+    let seek_commit = session.seek_commit().expect("Seek to wait for ready audio");
     session.finish_seek_commit_if_ready_for_tests(
         seek_commit.started_at + Duration::from_millis(250),
         Duration::from_secs(10),
@@ -221,7 +219,7 @@ fn playing_video_seek_does_not_soft_commit_without_ready_audio() {
                         && presentation.frame_pts == Duration::from_secs(6)
             )
         },
-        "target frame event должен быть опубликован до ожидания audio",
+        "target frame event should be published before waiting audio",
     );
     assert!(target_frame_event_index < events.len());
     assert!(
@@ -278,7 +276,7 @@ fn paused_video_audio_seek_does_not_wait_for_audio_runtime() {
                         && presentation.frame_pts == Duration::from_secs(6)
             )
         },
-        "paused seek должен опубликовать target frame event",
+        "paused seek must publish target frame event",
     );
     let commit_event_index = event_index(
         &events,
@@ -290,7 +288,7 @@ fn paused_video_audio_seek_does_not_wait_for_audio_runtime() {
                         && commit.resume_intent == PlaybackResumeIntent::Pause
             )
         },
-        "paused seek должен опубликовать commit event",
+        "paused seek must publish commit event",
     );
     assert!(target_frame_event_index < commit_event_index);
 }

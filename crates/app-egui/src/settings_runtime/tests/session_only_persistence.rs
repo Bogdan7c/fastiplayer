@@ -20,13 +20,13 @@ fn newer_schema_config_on_disk(test_name: &str) -> (PathBuf, PathBuf, String) {
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => panic!("test directory must be removable: {error}"),
     }
-    fs::create_dir_all(&directory).expect("test directory создаётся");
+    fs::create_dir_all(&directory).expect("Test directory is created");
     let config_path = directory.join("config.toml");
     let newer_text = AppConfig::default()
         .to_pretty_toml()
-        .expect("defaults сериализуются")
+        .expect("defaults are serialized")
         .replace("schema_version = 12", "schema_version = 99");
-    fs::write(&config_path, &newer_text).expect("config новой версии записан");
+    fs::write(&config_path, &newer_text).expect("Config new version recorded");
     (directory, config_path, newer_text)
 }
 
@@ -35,11 +35,11 @@ fn newer_schema_config_on_disk(test_name: &str) -> (PathBuf, PathBuf, String) {
 fn apply_with_newer_config_keeps_change_and_reports_session_only() {
     let (directory, config_path, newer_text) = newer_schema_config_on_disk("apply");
     let loaded =
-        load_or_recover_at(&config_path, SystemTime::now()).expect("старт не должен падать");
+        load_or_recover_at(&config_path, SystemTime::now()).expect("start should not fall");
     let mut runtime =
-        SettingsRuntime::from_loaded_config(loaded).expect("settings runtime должен построиться");
+        SettingsRuntime::from_loaded_config(loaded).expect("settings runtime should be built");
     let mut adapter = RecordingRuntimeAdapter::from_config(&AppConfig::default())
-        .expect("adapter должен стартовать");
+        .expect("The adapter should start.");
 
     run_runtime_actions(
         &mut runtime,
@@ -53,7 +53,7 @@ fn apply_with_newer_config_keeps_change_and_reports_session_only() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("apply должен оставить report");
+        .expect("apply should leave the report");
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     // Значение действует до выхода (не откатилось из-за отказа записи).
     assert_eq!(
@@ -74,10 +74,10 @@ fn apply_with_newer_config_keeps_change_and_reports_session_only() {
     );
     // Файл новой версии не изменился ни на байт.
     assert_eq!(
-        fs::read_to_string(&config_path).expect("config на месте"),
+        fs::read_to_string(&config_path).expect("config in place"),
         newer_text
     );
-    fs::remove_dir_all(&directory).expect("test directory удаляется");
+    fs::remove_dir_all(&directory).expect("Test directory removed");
 }
 
 /// Обычный config: hook «не сохранится» не вызывается, статус прежний.
@@ -89,9 +89,9 @@ fn apply_with_writable_config_does_not_report_session_only() {
         AppConfig::default(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter = RecordingRuntimeAdapter::from_config(&AppConfig::default())
-        .expect("adapter должен стартовать");
+        .expect("The adapter should start.");
 
     run_runtime_actions(
         &mut runtime,
@@ -106,8 +106,8 @@ fn apply_with_writable_config_does_not_report_session_only() {
     assert_eq!(adapter.session_only_reports, 0);
     assert_eq!(
         runtime.status.summary.as_deref(),
-        Some("Настройки сохранены и применены")
+        Some("Settings saved and applied")
     );
-    assert!(path.exists(), "обычный Apply пишет TOML");
+    assert!(path.exists(), "routine Apply writer TOML");
     remove_file_if_exists(&path);
 }

@@ -210,7 +210,7 @@ fn fixture_origin_drop_does_not_publish_a_synthetic_request() {
 
         assert!(
             requests.lock().expect("request journal").is_empty(),
-            "остановка fixture не должна выглядеть как HTTP-запрос"
+            "stoppage fixture It doesn't look like it HTTP-request"
         );
     }
 }

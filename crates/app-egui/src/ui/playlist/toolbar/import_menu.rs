@@ -19,8 +19,8 @@ const IMPORT_MENU_ITEMS: [ImportMenuItem; 2] =
 impl ImportMenuItem {
     const fn label(self) -> &'static str {
         match self {
-            Self::AppendToQueue => "Добавить к плейлисту",
-            Self::ReplaceQueue => "Открыть как новый плейлист",
+            Self::AppendToQueue => "Add to the playlist",
+            Self::ReplaceQueue => "Open as new Playlist",
         }
     }
 
@@ -67,7 +67,7 @@ mod tests {
     fn menu_items_preserve_exact_visible_order_and_typed_intents() {
         assert_eq!(
             IMPORT_MENU_ITEMS.map(ImportMenuItem::label),
-            ["Добавить к плейлисту", "Открыть как новый плейлист",]
+            ["Add to the playlist", "Open as new Playlist",]
         );
         assert_eq!(
             IMPORT_MENU_ITEMS.map(ImportMenuItem::action),

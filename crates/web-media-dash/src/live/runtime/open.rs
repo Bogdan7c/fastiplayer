@@ -288,13 +288,13 @@ fn open_plan(
                 generation,
                 policy,
                 registry,
-                live_transport.context("DASH live transport provider отсутствует")?,
+                live_transport.context("DASH live transport provider is not available")?,
             );
             Ok(Box::new(factory.open()?))
         }
         DashPresentationPlan::Separate { video, audio } => {
             let live_transport =
-                live_transport.context("DASH live transport provider отсутствует")?;
+                live_transport.context("DASH live transport provider is not available")?;
             let video_factory = DashComponentFactory::new_live(
                 video,
                 http.clone(),

@@ -54,7 +54,7 @@ impl fmt::Display for MediaInstallControlReceiptError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingOwnerOutcome => {
-                formatter.write_str("player owner завершился без media install control outcome")
+                formatter.write_str("Player owner finished without a media install control outcome")
             }
         }
     }

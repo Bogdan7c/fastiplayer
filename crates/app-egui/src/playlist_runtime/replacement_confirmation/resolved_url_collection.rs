@@ -47,25 +47,17 @@ impl InAppQueueReplacementIntent {
 
 /// Подпись: «1 ролик с youtube.com», «12 роликов с youtube.com»; без домена — «по ссылке».
 fn collection_label(item_count: usize, display_host: Option<&str>) -> SafeMediaLabel {
-    let noun = russian_clips_noun(item_count);
+    let noun = videos_noun(item_count);
     let source = match display_host {
-        Some(host) => format!("с {host}"),
-        None => "по ссылке".to_owned(),
+        Some(host) => format!("from {host}"),
+        None => "from the link".to_owned(),
     };
     SafeMediaLabel::from_service_safe_label(&format!("{item_count} {noun} {source}"))
 }
 
-/// Форма слова «ролик» для числа: 1 ролик, 2 ролика, 5 роликов, 11 роликов, 21 ролик.
-fn russian_clips_noun(count: usize) -> &'static str {
-    let last_two_digits = count % 100;
-    if (11..=14).contains(&last_two_digits) {
-        return "роликов";
-    }
-    match count % 10 {
-        1 => "ролик",
-        2..=4 => "ролика",
-        _ => "роликов",
-    }
+/// Английское единственное число используется только для ровно одного ролика.
+fn videos_noun(count: usize) -> &'static str {
+    if count == 1 { "video" } else { "videos" }
 }
 
 #[cfg(test)]
@@ -75,10 +67,10 @@ mod tests {
     #[test]
     fn label_has_count_plural_and_domain_only() {
         let label = |count, host| collection_label(count, host).as_str().to_owned();
-        assert_eq!(label(1, Some("youtube.com")), "1 ролик с youtube.com");
-        assert_eq!(label(3, Some("youtube.com")), "3 ролика с youtube.com");
-        assert_eq!(label(12, Some("youtube.com")), "12 роликов с youtube.com");
-        assert_eq!(label(21, Some("youtube.com")), "21 ролик с youtube.com");
-        assert_eq!(label(5, None), "5 роликов по ссылке");
+        assert_eq!(label(1, Some("youtube.com")), "1 video from youtube.com");
+        assert_eq!(label(3, Some("youtube.com")), "3 videos from youtube.com");
+        assert_eq!(label(12, Some("youtube.com")), "12 videos from youtube.com");
+        assert_eq!(label(21, Some("youtube.com")), "21 videos from youtube.com");
+        assert_eq!(label(5, None), "5 videos from the link");
     }
 }

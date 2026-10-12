@@ -162,7 +162,7 @@ impl CompositeAvDemuxer {
                 CompositeComponent::Audio => self.pending_audio_packet.take(),
             };
             let Some(packet) = packet else {
-                anyhow::bail!("selected pending packet исчез до composite emission");
+                anyhow::bail!("Selected pending packet disappeared before composite emission");
             };
             return Ok(self.emitted_packet_event(component, packet));
         }
@@ -172,14 +172,14 @@ impl CompositeAvDemuxer {
                 || self.can_emit_while_peer_unavailable(CompositeComponent::Video, video_packet);
             if can_emit_video {
                 let Some(video_packet) = self.pending_video_packet.take() else {
-                    anyhow::bail!("video pending packet исчез до composite emission");
+                    anyhow::bail!("Video pending packet disappeared before composite emission");
                 };
                 return Ok(self.emitted_packet_event(CompositeComponent::Video, video_packet));
             }
             if let Some(audio_retry_hint) = audio_retry_hint {
                 return Ok(DemuxReadEvent::TemporarilyUnavailable(audio_retry_hint));
             }
-            anyhow::bail!("audio component не имеет packet, EOF или retry hint");
+            anyhow::bail!("The audio component has no packet, EOF or retry hint.");
         }
 
         if let Some(audio_packet) = self.pending_audio_packet.as_ref() {
@@ -187,14 +187,16 @@ impl CompositeAvDemuxer {
                 || self.can_emit_while_peer_unavailable(CompositeComponent::Audio, audio_packet);
             if can_emit_audio {
                 let Some(audio_packet) = self.pending_audio_packet.take() else {
-                    anyhow::bail!("audio pending packet исчез до composite emission");
+                    anyhow::bail!(
+                        "Previous PostPrevious audio pending packet disappears to composite emission"
+                    );
                 };
                 return Ok(self.emitted_packet_event(CompositeComponent::Audio, audio_packet));
             }
             if let Some(video_retry_hint) = video_retry_hint {
                 return Ok(DemuxReadEvent::TemporarilyUnavailable(video_retry_hint));
             }
-            anyhow::bail!("video component не имеет packet, EOF или retry hint");
+            anyhow::bail!("Video component has no packet, EOF, or retry hint");
         }
 
         if self.video_eof && self.audio_eof {
@@ -203,7 +205,7 @@ impl CompositeAvDemuxer {
         if let Some(retry_hint) = minimum_retry_hint(video_retry_hint, audio_retry_hint) {
             return Ok(DemuxReadEvent::TemporarilyUnavailable(retry_hint));
         }
-        anyhow::bail!("composite read не имеет pending packet, terminal state или retry hint")
+        anyhow::bail!("composite read does not have pending packet, terminal state or retry hint")
     }
 }
 

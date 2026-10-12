@@ -57,7 +57,7 @@ schema_version = 5
         let error =
             load_from_path(&config_path).expect_err(&format!("{forbidden_key} must be rejected"));
 
-        assert!(error.to_string().contains("TOML-схеме"));
+        assert!(error.to_string().contains("TOML schema"));
         assert!(error.to_string().contains(forbidden_key));
     }
 }
@@ -160,7 +160,7 @@ hover_preview_enabled = true
 
     let error = load_from_path(&config_path).expect_err("current schema rejects removed key");
 
-    assert!(error.to_string().contains("TOML-схеме"));
+    assert!(error.to_string().contains("TOML schema"));
     assert!(error.to_string().contains("hover_preview_enabled"));
 }
 

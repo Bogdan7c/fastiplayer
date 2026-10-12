@@ -37,7 +37,7 @@ fn actions_with_focus(holder: FocusHolder, events: Vec<Event>) -> (Vec<ControlAc
             }
         }
         FocusHolder::Button => {
-            let response = ui.button("Кнопка");
+            let response = ui.button("Button");
             if request_focus {
                 response.request_focus();
             }
@@ -150,11 +150,11 @@ fn focused_widget_keeps_arrows_for_itself() {
 
     assert!(
         actions.is_empty(),
-        "громкость не должна меняться: {actions:?}"
+        "Volume should not be changed: {actions:?}"
     );
     assert!(
         arrow_still_available_to_widget,
-        "стрелка должна остаться виджету (навигация по плейлисту)"
+        "The arrow must remain the widget (playlist navigation)"
     );
 }
 

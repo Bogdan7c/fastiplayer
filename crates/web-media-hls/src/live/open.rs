@@ -93,7 +93,7 @@ impl std::fmt::Debug for HlsLiveOpenResult {
 /// Secret-safe S33 prepare/runtime error.
 #[derive(Debug, thiserror::Error)]
 pub enum HlsLiveOpenError {
-    #[error("inline HLS manifest нельзя безопасно refresh-ить как live")]
+    #[error("inline HLS manifest cannot be safely refreshed as a live stream")]
     InlineManifestCannotRefresh,
     #[error("HLS manifest fetch failed: {0}")]
     Transport(#[from] AdaptiveTransportError),
@@ -109,9 +109,9 @@ pub enum HlsLiveOpenError {
     Plan(#[from] HlsPlanError),
     #[error("HLS live refresh continuity rejected")]
     RefreshContinuity,
-    #[error("HLS live refresh worker не запущен: {0}")]
+    #[error("HLS live refresh worker could not be started: {0}")]
     RefreshWorkerSpawn(#[source] std::io::Error),
-    #[error("HLS live receipted demux worker не запущен: {0}")]
+    #[error("HLS live receipted demux worker could not be started: {0}")]
     ProgressiveStartup(#[from] ProgressiveDemuxStartupError),
     #[error("HLS live runtime failed: {0}")]
     Runtime(#[source] anyhow::Error),

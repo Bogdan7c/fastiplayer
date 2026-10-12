@@ -42,11 +42,11 @@ const PROGRESS_TEXT_COLOR: egui::Color32 = egui::Color32::LIGHT_BLUE;
 
 /// Символ и подсказка кнопки закрытия.
 const DISMISS_BUTTON_LABEL: &str = "×";
-const DISMISS_BUTTON_HINT: &str = "Закрыть";
+const DISMISS_BUTTON_HINT: &str = "Close";
 
 /// Подпись кнопки повтора. Обычная кнопка egui с текстом, поэтому в дереве accesskit она
 /// видна как кнопка «Повторить» (экранные дикторы и тесты находят её по подписи).
-pub(crate) const RETRY_BUTTON_LABEL: &str = "Повторить";
+pub(crate) const RETRY_BUTTON_LABEL: &str = "Repeat.";
 
 /// Stable egui id области toast-ов: одна область на всё окно.
 const TOAST_STACK_AREA_ID: &str = "fastiplayer_notification_toasts";

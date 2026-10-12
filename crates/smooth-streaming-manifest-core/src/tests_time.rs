@@ -2,8 +2,8 @@ use crate::{SmoothTime, SmoothTimeError, SmoothTimescale};
 
 #[test]
 fn cross_timescale_equality_is_exact_for_ten_million_and_forty_eight_thousand() {
-    let manifest_clock = SmoothTimescale::new(10_000_000).expect("timescale валиден");
-    let audio_clock = SmoothTimescale::new(48_000).expect("timescale валиден");
+    let manifest_clock = SmoothTimescale::new(10_000_000).expect("timescale valid");
+    let audio_clock = SmoothTimescale::new(48_000).expect("timescale valid");
 
     assert_eq!(
         SmoothTime::new(5_000_000, manifest_clock),
@@ -13,8 +13,8 @@ fn cross_timescale_equality_is_exact_for_ten_million_and_forty_eight_thousand() 
 
 #[test]
 fn cross_timescale_order_never_uses_lossy_rescale() {
-    let manifest_clock = SmoothTimescale::new(10_000_000).expect("timescale валиден");
-    let audio_clock = SmoothTimescale::new(48_000).expect("timescale валиден");
+    let manifest_clock = SmoothTimescale::new(10_000_000).expect("timescale valid");
+    let audio_clock = SmoothTimescale::new(48_000).expect("timescale valid");
     let earlier = SmoothTime::new(4_999_999, manifest_clock);
     let exact_half_second = SmoothTime::new(24_000, audio_clock);
     let later = SmoothTime::new(5_000_001, manifest_clock);
@@ -25,8 +25,8 @@ fn cross_timescale_order_never_uses_lossy_rescale() {
 
 #[test]
 fn maximum_tick_values_compare_without_overflow() {
-    let fastest = SmoothTimescale::new(u64::MAX).expect("timescale валиден");
-    let unit = SmoothTimescale::new(1).expect("timescale валиден");
+    let fastest = SmoothTimescale::new(u64::MAX).expect("timescale valid");
+    let unit = SmoothTimescale::new(1).expect("timescale valid");
 
     assert_eq!(SmoothTime::new(u64::MAX, fastest), SmoothTime::new(1, unit));
 }

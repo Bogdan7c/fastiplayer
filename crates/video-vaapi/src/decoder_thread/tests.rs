@@ -27,7 +27,7 @@ fn assert_activity_received_after(
 ) -> video_core::VideoDecoderActivityEpoch {
     match subscription.activity_since(observed_epoch) {
         video_core::VideoDecoderActivityWaitOutcome::ActivityReceived { epoch } => epoch,
-        other => panic!("activity epoch должен продвинуться, got {other:?}"),
+        other => panic!("The activity epoch must advance, got {other:?}"),
     }
 }
 
@@ -38,7 +38,7 @@ fn assert_no_activity_after(
 ) {
     match subscription.activity_since(observed_epoch) {
         video_core::VideoDecoderActivityWaitOutcome::NoNewActivityAfterEpoch { .. } => {}
-        other => panic!("activity epoch не должен был продвинуться, got {other:?}"),
+        other => panic!("activity epoch I shouldn't have moved on, got {other:?}"),
     }
 }
 
@@ -429,7 +429,7 @@ fn decoder_thread_activity_snapshot_is_available() {
             );
         }
         VideoDecoderActivitySnapshot::Unavailable { reason } => {
-            panic!("VAAPI activity snapshot должен быть Available, got {reason:?}");
+            panic!("VAAPI activity snapshot must have Available, got {reason:?}");
         }
     }
 }

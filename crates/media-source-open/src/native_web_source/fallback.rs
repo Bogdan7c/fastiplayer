@@ -110,7 +110,7 @@ mod tests {
             let mut owner = NativeWebFallbackOwner::before_installed(test_locator());
             let (_, actual_reason) = owner
                 .claim(trigger)
-                .expect("allowlisted pre-Installed trigger должен открыть fallback")
+                .expect("allowlisted pre-Installed trigger should open fallback")
                 .into_parts();
             assert_eq!(actual_reason, expected_reason);
             assert!(matches!(
@@ -164,7 +164,7 @@ mod tests {
                 owner
                     .claim(WebMediaFallbackTrigger::ProviderDocument)
                     .is_ok(),
-                "forbidden trigger не должен расходовать единственный legal attempt"
+                "A forbidden trigger should not be used for a single legal attempt."
             );
         }
     }

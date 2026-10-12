@@ -33,7 +33,7 @@ fn untouched_queue() -> (PlaylistController, Vec<PlaylistItemId>) {
         .append(local_drafts(&["a", "b", "c"]))
         .expect("append a, b, c")
     else {
-        panic!("очередь не пустая");
+        panic!("queue");
     };
     (controller, item_ids)
 }
@@ -49,7 +49,7 @@ fn play_without_current_requests_open_of_first_item() {
         ..
     })) = runtime.play_idle_queue_target()
     else {
-        panic!("Play должен запросить открытие первого элемента");
+        panic!("Play must request the opening of the first element.");
     };
 
     assert_eq!(install.item_id, item_ids[0]);
@@ -69,7 +69,7 @@ fn play_path_is_absent_for_empty_queue_and_installed_media() {
     let ControllerPlayItemOutcome::StartInstall { install, .. } =
         controller.play_item(item_ids[0], TransportActionOrigin::Ui)
     else {
-        panic!("A стартует install");
+        panic!("A starts install");
     };
     install_planned(&mut controller, install, 10);
     let mut runtime = runtime_with(controller);

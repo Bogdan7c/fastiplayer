@@ -70,7 +70,7 @@ pub(super) fn render_content(
 ) {
     match row.row() {
         CompoundRuntimeRow::Single { .. } => {
-            unreachable!("обычная строка рендерится существующим renderer path")
+            unreachable!("regular line rendered by existing renderer path")
         }
         CompoundRuntimeRow::CompoundHeader { .. } => {
             // Leading cell резервирует постоянную доступную hit-area disclosure.
@@ -121,7 +121,7 @@ pub(super) fn configure_accessibility(
     let label = accessibility_text(top_level_index, row);
     match row.row() {
         CompoundRuntimeRow::Single { .. } => {
-            unreachable!("обычная строка использует существующий selectable node")
+            unreachable!("A regular line uses an existing selectable node.")
         }
         CompoundRuntimeRow::CompoundHeader {
             expanded, selected, ..
@@ -156,7 +156,7 @@ pub(super) fn handle_interaction(
 ) -> CompoundRowInteractionResult {
     match row.row() {
         CompoundRuntimeRow::Single { .. } => {
-            unreachable!("обычная строка использует существующий interaction path")
+            unreachable!("A regular line uses an existing interaction path.")
         }
         CompoundRuntimeRow::CompoundHeader {
             entry_id,
@@ -270,14 +270,14 @@ fn handle_part_response(
         }
     }
     response.context_menu(|menu_ui| {
-        if menu_ui.button("Воспроизвести часть").clicked() {
+        if menu_ui.button("Play part").clicked() {
             context.output.push_action(play_action);
             menu_ui.close();
         }
     });
 }
 
-/// Russian screen-reader text явно различает group и subordinate part.
+/// Английский текст для средств доступности явно различает группу и вложенную часть.
 fn accessibility_text(top_level_index: usize, row: &CompoundRuntimeVisibleRow) -> String {
     let presentation = row.presentation();
     let runtime_details = runtime_accessibility_details(presentation);
@@ -290,13 +290,9 @@ fn accessibility_text(top_level_index: usize, row: &CompoundRuntimeVisibleRow) -
             selected,
             ..
         } => {
-            let disclosure = if expanded {
-                "Развёрнуто"
-            } else {
-                "Свёрнуто"
-            };
+            let disclosure = if expanded { "Expanded" } else { "Collapsed" };
             let mut text = format!(
-                "Составная запись {}. {}. Частей: {}. {}. Тип: {}. Длительность: {}.",
+                "Compound entry {}. {}. Parts: {}. {}. Type: {}. Duration: {}.",
                 top_level_index + 1,
                 presentation.display_title(),
                 retained_part_count,
@@ -305,13 +301,13 @@ fn accessibility_text(top_level_index: usize, row: &CompoundRuntimeVisibleRow) -
                 format_duration(presentation.duration()),
             );
             if active_part_item_id.is_some() {
-                text.push_str(" Группа содержит текущую воспроизводимую часть.");
+                text.push_str(" This group contains the part currently playing.");
             }
             if selected {
-                text.push_str(" Выбрано.");
+                text.push_str(" Selected.");
             }
             text.push_str(&runtime_details);
-            text.push_str(" Пробел раскрывает или сворачивает; Enter воспроизводит.");
+            text.push_str(" Space expands or collapses; Enter plays.");
             text
         }
         CompoundRuntimeRow::CompoundPart {
@@ -320,7 +316,7 @@ fn accessibility_text(top_level_index: usize, row: &CompoundRuntimeVisibleRow) -
             ..
         } => {
             let mut text = format!(
-                "Вложенная часть {} из {}. {}. Тип: {}. Длительность: {}.",
+                "Nested part {} of {}. {}. Type: {}. Duration: {}.",
                 ordinal.one_based(),
                 retained_part_count,
                 presentation.display_title(),
@@ -328,10 +324,10 @@ fn accessibility_text(top_level_index: usize, row: &CompoundRuntimeVisibleRow) -
                 format_duration(presentation.duration()),
             );
             if presentation.is_active() {
-                text.push_str(" Сейчас играет эта часть.");
+                text.push_str(" This part is currently playing.");
             }
             text.push_str(&runtime_details);
-            text.push_str(" Удаление и перемещение этой части недоступны.");
+            text.push_str(" This part cannot be removed or moved.");
             text
         }
     }
@@ -341,11 +337,11 @@ fn accessibility_text(top_level_index: usize, row: &CompoundRuntimeVisibleRow) -
 fn runtime_accessibility_details(row: &crate::playlist_runtime::PlaylistVisibleRow) -> String {
     match (row.runtime_error(), row.is_pending()) {
         (Some(error), true) => format!(
-            " Предыдущая попытка завершилась ошибкой; выполняется повторная попытка. Ошибка: {}.",
+            " The previous attempt failed; retrying. Error: {}.",
             error.safe_summary()
         ),
-        (Some(error), false) => format!(" Ошибка: {}.", error.safe_summary()),
-        (None, true) => " Выполняется открытие.".to_owned(),
+        (Some(error), false) => format!(" Error: {}.", error.safe_summary()),
+        (None, true) => " Opening.".to_owned(),
         (None, false) => String::new(),
     }
 }
@@ -385,7 +381,7 @@ mod tests {
         assert_eq!(
             header_fill(style, true, false, true),
             style.selected_fill,
-            "selection не дублируется active child outline-ом на header"
+            "selection is not duplicated by active child outline on header"
         );
         assert_ne!(style.compound_active_header_fill, style.selected_fill);
     }

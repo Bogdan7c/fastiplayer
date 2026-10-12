@@ -120,46 +120,46 @@ pub enum SmoothDeclaredCountKind {
 /// Верхнеуровневая taxonomy готова принять D2 XML parser без string matching.
 #[derive(Error, PartialEq, Eq)]
 pub enum SmoothManifestError {
-    #[error("подготовка Smooth Streaming manifest отменена")]
+    #[error("Smooth Streaming manifest preparation canceled")]
     Cancelled,
-    #[error("hardened XML boundary отклонила manifest")]
+    #[error("hardened XML boundary flinch manifest")]
     Xml {
         #[source]
         source: bounded_xml_reader::XmlReadError,
     },
     /// Well-formed XML document не является Smooth client manifest.
-    #[error("document root не является SmoothStreamingMedia")]
+    #[error("document root is not SmoothStreamingMedia")]
     InvalidRoot,
-    #[error("Smooth Streaming manifest превысил обязательный budget")]
+    #[error("Smooth Streaming manifest exceeds the mandatory budget")]
     LimitExceeded {
         limit: SmoothManifestLimitKind,
         maximum: usize,
     },
-    #[error("Smooth Streaming manifest нарушает обязательную schema")]
+    #[error("Smooth Streaming manifest violates mandatory schema")]
     MalformedSchema { field: SmoothSchemaField },
-    #[error("Smooth Streaming version {major}.{minor} не поддерживается")]
+    #[error("Smooth Streaming version {major}.{minor} is not supported")]
     UnsupportedVersion { major: u16, minor: u16 },
-    #[error("Smooth Streaming manifest несовместим с VOD profile")]
+    #[error("Smooth Streaming manifest is incompatible with VOD profile")]
     ProfileIncompatible {
         reason: SmoothProfileIncompatibility,
     },
-    #[error("DRM-protected Smooth Streaming manifest не поддерживается")]
+    #[error("DRM-protected Smooth Streaming manifest is not supported")]
     DrmProtected,
-    #[error("private Smooth Streaming extension не поддерживается")]
+    #[error("private Smooth Streaming extension unsupported")]
     PrivateExtension,
-    #[error("Smooth Streaming construct не входит в поддерживаемый profile")]
+    #[error("Smooth Streaming construct is not included in the supported profile")]
     UnsupportedConstruct {
         construct: SmoothUnsupportedConstruct,
     },
-    #[error("fragment URL template не прошёл безопасную grammar")]
+    #[error("The fragment URL template did not pass the secure grammar")]
     InvalidUrlTemplate { reason: SmoothUrlTemplateError },
-    #[error("chunk timeline не прошёл exact normalization")]
+    #[error("chunk timeline doesn't pass exact normalization")]
     InvalidTimeline { reason: SmoothTimelineError },
-    #[error("codec configuration не прошла bounded opaque boundary")]
+    #[error("codec configuration failed bounded opaque boundary")]
     InvalidCodecConfiguration {
         reason: SmoothCodecConfigurationError,
     },
-    #[error("declared manifest count не совпадает с normalized count")]
+    #[error("The declared manifest count does not match the normalized count.")]
     DeclaredCountMismatch {
         kind: SmoothDeclaredCountKind,
         declared: u64,

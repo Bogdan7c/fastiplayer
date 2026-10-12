@@ -73,7 +73,7 @@ fn final_receipt_physically_cancels_partial_preview_body_without_stale_publicati
                     }
                     assert!(
                         Instant::now() < disconnect_deadline,
-                        "cancelled preview response остался физически подключён"
+                        "cancelled preview response He remained physically connected"
                     );
                 }
             }
@@ -122,7 +122,7 @@ fn final_receipt_physically_cancels_partial_preview_body_without_stale_publicati
         }
         assert!(
             Instant::now() < initial_target_deadline,
-            "initial playback не доказал target preview anchor"
+            "initial playback did not establish the target preview anchor"
         );
     }
     loop {
@@ -137,7 +137,7 @@ fn final_receipt_physically_cancels_partial_preview_body_without_stale_publicati
 
     let preview = demuxer
         .seek_with_request(DemuxSeekRequest::accurate(Duration::from_secs(75)))
-        .expect("preview command публикует ранее доказанный exact anchor");
+        .expect("preview command publishes previously proven exact anchor");
     assert_eq!(
         preview.actual_position.as_duration(),
         Duration::from_secs(70)
@@ -152,7 +152,7 @@ fn final_receipt_physically_cancels_partial_preview_body_without_stale_publicati
             | Ok(DemuxReadEvent::TracksChanged(_))
             | Ok(DemuxReadEvent::MediaMetadataChanged(_)) => {}
             Ok(event) => panic!(
-                "preview replacement завершился до partial body: {event:?}; attempts={}; requests={:?}",
+                "preview replacement completed to partial body: {event:?}; attempts={}; requests={:?}",
                 target_attempts.load(Ordering::Acquire),
                 server.requests()
             ),
@@ -164,7 +164,7 @@ fn final_receipt_physically_cancels_partial_preview_body_without_stale_publicati
         }
         assert!(
             Instant::now() < preview_start_deadline,
-            "preview replacement не открыл partial body; attempts={}; requests={:?}",
+            "preview replacement failed partial body; attempts={}; requests={:?}",
             target_attempts.load(Ordering::Acquire),
             server.requests()
         );
@@ -191,7 +191,7 @@ fn final_receipt_physically_cancels_partial_preview_body_without_stale_publicati
     let receipt = wait_for_receipt(&seek_handle);
     assert_eq!(receipt.fence, final_fence);
     let ProgressiveAsyncSeekOutcome::Succeeded(final_result) = receipt.outcome else {
-        panic!("final seek обязан завершиться успешно: {receipt:?}");
+        panic!("final seek must be completed successfully: {receipt:?}");
     };
     assert_eq!(
         final_result.actual_position.as_duration(),
@@ -200,12 +200,12 @@ fn final_receipt_physically_cancels_partial_preview_body_without_stale_publicati
     assert_eq!(
         target_attempts.load(Ordering::Acquire),
         2,
-        "obsolete preview нельзя рестартовать либо публиковать в completed cache"
+        "obsolete preview You can not restart or publish in completed cache"
     );
     let presented_packet = first_post_seek_video_packet(&mut *demuxer);
     assert_eq!(
         presented_packet.pts,
         Duration::from_secs(40),
-        "stale discontinuous preview generation не должна публиковать packet"
+        "The stale discontinuous preview generation does not publish the packet"
     );
 }

@@ -355,7 +355,7 @@ impl fmt::Display for AcceptedMediaInstallTerminalError {
         match self {
             Self::MissingInstalled { request_id } => write!(
                 formatter,
-                "accepted media install request {} не содержит обязательный Installed terminal",
+                "accepted media install request {} does not contain the mandatory Installed terminal",
                 request_id.get()
             ),
             Self::InstalledRequestMismatch {
@@ -363,13 +363,13 @@ impl fmt::Display for AcceptedMediaInstallTerminalError {
                 installed_request_id,
             } => write!(
                 formatter,
-                "Installed terminal request {} не совпал с expected request {}",
+                "Installed terminal request {} did not match the expected request {}",
                 installed_request_id.get(),
                 expected_request_id.get()
             ),
             Self::UnexpectedCompletion(completion) => write!(
                 formatter,
-                "accepted authorization завершилась unexpected terminal: {completion:?}"
+                "accepted authorization finished unexpected terminal: {completion:?}"
             ),
         }
     }
@@ -546,7 +546,7 @@ impl fmt::Display for MediaInstallReceiptWaitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingOwnerOutcome => {
-                formatter.write_str("player owner завершился без media install phase outcome")
+                formatter.write_str("player owner finished off media install phase outcome")
             }
         }
     }

@@ -23,14 +23,14 @@ fn vp9_fragmented_mp4_track_is_recognised_as_vp9_with_profile() {
     let video = tracks
         .iter()
         .find(|track| track.kind == TrackKind::Video)
-        .expect("VP9 fMP4 содержит video track");
+        .expect("VP9 fMP4 contains video track");
     assert_eq!(video.codec_id, "V_VP9");
     assert_eq!(
         video.video.as_ref().and_then(|metadata| metadata.profile),
         Some(codec_core::VideoProfile::Vp9(
             codec_core::Vp9Profile::Profile0
         )),
-        "profile обязан приходить из vpcC"
+        "profile must come vpcC"
     );
 }
 
@@ -50,6 +50,6 @@ fn vp9_fragmented_mp4_packets_expose_keyframes() {
             PacketKeyframe::Keyframe,
             PacketKeyframe::NotKeyframe,
         ],
-        "без распознанного VP9 codec id все packets были бы Unknown, и HLS VOD не нашёл бы anchor"
+        "Without a recognized VP9 codec id, all packets would be Unknown, and HLS VOD would not find anchor."
     );
 }

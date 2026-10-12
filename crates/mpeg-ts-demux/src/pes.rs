@@ -77,26 +77,29 @@ impl PesAssembler {
 
 fn parse_pes(pid: u16, byte_offset: u64, bytes: Vec<u8>) -> Result<PesPacket, MpegTsDemuxError> {
     if bytes.len() < 9 || bytes[..3] != [0x00, 0x00, 0x01] {
-        return Err(malformed(pid, "PES start code/header отсутствует"));
+        return Err(malformed(pid, "PES start code/header absent"));
     }
     let declared_packet_length = usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
     if declared_packet_length != 0 && declared_packet_length + 6 > bytes.len() {
-        return Err(malformed(pid, "PES packet_length больше собранных bytes"));
+        return Err(malformed(pid, "PES packet_length more collected bytes"));
     }
     if bytes[6] & 0xc0 != 0x80 {
-        return Err(malformed(pid, "PES marker bits не равны `10`"));
+        return Err(malformed(pid, "PES marker bits are not equal to '10'"));
     }
     let timestamp_flags = (bytes[7] >> 6) & 0x03;
     let optional_header_length = usize::from(bytes[8]);
     let payload_start = 9 + optional_header_length;
     if payload_start > bytes.len() {
-        return Err(malformed(pid, "PES optional header выходит за packet"));
+        return Err(malformed(
+            pid,
+            "PES optional header extends beyond the packet",
+        ));
     }
     let pts = match timestamp_flags {
         0b10 => Some(parse_timestamp(&bytes[9..], 0b0010)?),
         0b11 => Some(parse_timestamp(&bytes[9..], 0b0011)?),
         0b00 => None,
-        _ => return Err(malformed(pid, "PES запрещает DTS без PTS")),
+        _ => return Err(malformed(pid, "PES bans DTS without PTS")),
     };
     let dts = if timestamp_flags == 0b11 {
         Some(parse_timestamp(&bytes[14..], 0b0001)?)
@@ -120,12 +123,12 @@ fn parse_pes(pid: u16, byte_offset: u64, bytes: Vec<u8>) -> Result<PesPacket, Mp
 fn parse_timestamp(bytes: &[u8], expected_prefix: u8) -> Result<u64, MpegTsDemuxError> {
     if bytes.len() < 5 || bytes[0] & 1 == 0 || bytes[2] & 1 == 0 || bytes[4] & 1 == 0 {
         return Err(MpegTsDemuxError::Malformed {
-            reason: "оборван PES timestamp или отсутствуют marker bits".to_owned(),
+            reason: "PES timestamp or no marker bits".to_owned(),
         });
     }
     if bytes[0] >> 4 != expected_prefix {
         return Err(MpegTsDemuxError::Malformed {
-            reason: "неверный PES timestamp prefix".to_owned(),
+            reason: "PES timestamp prefix".to_owned(),
         });
     }
     Ok((u64::from((bytes[0] >> 1) & 0x07) << 30)

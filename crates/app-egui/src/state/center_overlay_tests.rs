@@ -196,7 +196,7 @@ fn center_overlay_preserves_error_pending_and_queue_priority_without_actions() {
             Some(&preview),
             None,
         );
-        assert!(imported.iter().any(|text| text == "Добавить к плейлисту"));
+        assert!(imported.iter().any(|text| text == "Add to the playlist"));
         let confirmed = render_overlay(
             &snapshot,
             Some("Playback failed"),
@@ -207,9 +207,9 @@ fn center_overlay_preserves_error_pending_and_queue_priority_without_actions() {
         assert!(
             confirmed
                 .iter()
-                .any(|text| text == "Заменить текущую очередь?")
+                .any(|text| text == "Replace the current queue?")
         );
-        assert!(!confirmed.iter().any(|text| text == "Добавить к плейлисту"));
+        assert!(!confirmed.iter().any(|text| text == "Add to the playlist"));
         for text in [&imported, &confirmed] {
             for hidden in [START_HINT, "Playback failed", "Opening media"] {
                 assert!(!text.iter().any(|text| text == hidden));
@@ -248,7 +248,7 @@ fn real_seek_rejection_is_painted_as_toast_and_overlay_clears_after_lifetime() {
     assert!(
         visible
             .iter()
-            .any(|text| text.contains("Перемотка для этого видео недоступна")),
+            .any(|text| text.contains("Seeking is unavailable for this video")),
         "{visible:?}"
     );
     // Свежий player без media — Idle, поэтому подсказка старта законно остаётся.
@@ -492,14 +492,14 @@ fn spinner_rotates_only_with_standard_motion() {
                 assert_eq!(first.repaint_delay, std::time::Duration::ZERO);
                 assert_ne!(
                     first.spinner_shapes, second.spinner_shapes,
-                    "дуга должна вращаться"
+                    "arch should rotate"
                 );
             }
             UiMotion::Reduced => {
                 assert_eq!(first.repaint_delay, std::time::Duration::MAX);
                 assert_eq!(
                     first.spinner_shapes, second.spinner_shapes,
-                    "дуга неподвижна"
+                    "arc must remain stationary"
                 );
             }
         }

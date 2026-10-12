@@ -79,14 +79,14 @@ pub fn into_player_demuxer(
                 cancellation,
                 limits,
                 DemuxRetryHint::new(SEEKABLE_RETRY_HINT)
-                    .context("Seekable progressive retry hint нарушает media-core bounds")?,
+                    .context("Seekable progressive retry hint violates media-core bounds")?,
                 ProgressiveRuntimeGeneration::new(PROGRESSIVE_RUNTIME_GENERATION),
                 ProgressiveAsyncSeekLimits::new(MAXIMUM_OUTSTANDING_SEEK_RECEIPTS),
             )
-            .context("Не удалось запустить seekable progressive demux worker")?;
-            let seek_handle = progressive
-                .async_seek_handle()
-                .ok_or_else(|| anyhow!("seekable progressive runtime не выдал seek handle"))?;
+            .context("Could not start the seekable progressive demux worker")?;
+            let seek_handle = progressive.async_seek_handle().ok_or_else(|| {
+                anyhow!("Seekable progressive runtime did not return a seek handle")
+            })?;
             Ok(ProgressivePlayerDemuxer {
                 demuxer: Box::new(progressive),
                 seek_port: Some(Arc::new(ProgressivePreparedDemuxSeekPort {
@@ -96,9 +96,9 @@ pub fn into_player_demuxer(
         }
         TransportSeekability::Streaming => {
             let retry_hint = DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER)
-                .context("Minimum demux retry hint нарушает media-core bounds")?;
+                .context("Minimum demux retry hint violates media-core bounds")?;
             let progressive = ProgressiveDemuxer::new(demuxer, cancellation, limits, retry_hint)
-                .context("Не удалось запустить progressive demux worker")?;
+                .context("The progressive demux worker was not launched.")?;
             Ok(ProgressivePlayerDemuxer {
                 demuxer: Box::new(progressive),
                 seek_port: None,
@@ -122,7 +122,7 @@ fn progressive_limits(
     let encoded_byte_capacity = usize::try_from(prefetch_config.window_bytes())
         .ok()
         .and_then(NonZeroUsize::new)
-        .ok_or_else(|| anyhow!("prefetch window нельзя преобразовать в byte capacity"))?;
+        .ok_or_else(|| anyhow!("prefetch window cannot be converted into byte capacity"))?;
     Ok(ProgressiveDemuxBufferLimits::new(
         PROGRESSIVE_EVENT_QUEUE_CAPACITY,
         encoded_byte_capacity,

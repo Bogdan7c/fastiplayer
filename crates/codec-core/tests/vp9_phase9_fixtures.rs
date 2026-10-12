@@ -444,7 +444,7 @@ fn all_golden_headers_parse_to_expected_requirements() {
             ExpectedProbeKind::Candidate => {
                 let Vp9RequirementProbe::Candidate(candidate) = probe else {
                     panic!(
-                        "{} должен быть VP9 candidate, получено {probe:?}",
+                        "{} must be a VP9 candidate, received {probe:?}",
                         fixture.name
                     );
                 };
@@ -453,7 +453,7 @@ fn all_golden_headers_parse_to_expected_requirements() {
             ExpectedProbeKind::Rejected => {
                 let Vp9RequirementProbe::Rejected(rejection) = probe else {
                     panic!(
-                        "{} должен быть typed VP9 reject, получено {probe:?}",
+                        "{} must be typed VP9 reject, received {probe:?}",
                         fixture.name
                     );
                 };
@@ -473,7 +473,7 @@ fn metadata_fixtures_resolve_to_expected_fields() {
             .get(&fixture.bitstream_header)
             .unwrap_or_else(|| {
                 panic!(
-                    "metadata fixture {} ссылается на неизвестный header",
+                    "Metadata fixture {} references unknown header",
                     fixture.name
                 )
             });
@@ -541,10 +541,10 @@ fn conflict_fixture_records_expected_conflicts() {
     let fixture = metadata_fixtures()
         .into_iter()
         .find(|fixture| fixture.name == "container_profile0_conflicts_with_profile2_bitstream")
-        .expect("conflict fixture должен быть описан в JSON");
+        .expect("Conflict fixture should be described in JSON.");
     let header = headers_by_name
         .get(&fixture.bitstream_header)
-        .expect("conflict fixture должен ссылаться на golden header");
+        .expect("Conflict fixture should be referred to as Golden Header");
     let resolved_metadata = resolve_vp9_metadata(
         Some(metadata_source_from_fixture(&fixture.container)),
         Some(candidate_from_header_fixture(header)),
@@ -563,13 +563,12 @@ fn conflict_fixture_records_expected_conflicts() {
 /// Читает raw golden header fixtures из JSON.
 fn golden_header_fixtures() -> Vec<GoldenHeaderFixture> {
     serde_json::from_str(VP9_GOLDEN_HEADERS_JSON)
-        .expect("VP9 golden header fixtures должны быть валидным JSON")
+        .expect("VP9 golden header fixtures must be valid JSON")
 }
 
 /// Читает metadata resolver fixtures из JSON.
 fn metadata_fixtures() -> Vec<MetadataFixture> {
-    serde_json::from_str(VP9_METADATA_CASES_JSON)
-        .expect("VP9 metadata fixtures должны быть валидным JSON")
+    serde_json::from_str(VP9_METADATA_CASES_JSON).expect("VP9 metadata fixtures must be valid JSON")
 }
 
 /// Индексирует golden headers по имени для metadata fixtures.
@@ -584,7 +583,7 @@ fn golden_headers_by_name() -> BTreeMap<String, GoldenHeaderFixture> {
 fn decode_hex_payload(packet_hex: &str) -> Vec<u8> {
     assert!(
         packet_hex.len().is_multiple_of(2),
-        "VP9 fixture hex payload должен иметь чётную длину"
+        "VP9 fixture hex payload must be evenly lengthed."
     );
 
     packet_hex
@@ -594,8 +593,8 @@ fn decode_hex_payload(packet_hex: &str) -> Vec<u8> {
         .iter()
         .map(|byte_digits| {
             let byte_text = std::str::from_utf8(byte_digits)
-                .expect("VP9 fixture hex payload должен быть ASCII/UTF-8");
-            u8::from_str_radix(byte_text, 16).expect("VP9 fixture hex payload должен быть hex")
+                .expect("VP9 fixture hex payload should be ASCII/UTF-8");
+            u8::from_str_radix(byte_text, 16).expect("VP9 fixture hex payload must be hex")
         })
         .collect()
 }
@@ -625,7 +624,7 @@ fn assert_candidate_matches_fixture(
         candidate.decoded_format,
         expected
             .decoded_format
-            .expect("candidate fixture должен указать decoded_format")
+            .expect("Candidate fixture should specify decoded_format")
             .into_model(),
         "{fixture_name}: unexpected decoded format"
     );
@@ -641,22 +640,22 @@ fn assert_candidate_matches_fixture(
     let bitstream_color = candidate
         .bitstream_color
         .as_ref()
-        .expect("candidate fixture должен иметь bitstream color metadata");
+        .expect("Candidate fixture should have bitstream color metadata");
     assert_color_matches_expected(
         fixture_name,
         bitstream_color,
         expected
             .range
-            .expect("candidate fixture должен указать range"),
+            .expect("The candidate fixture should specify the range"),
         expected
             .matrix
-            .expect("candidate fixture должен указать matrix"),
+            .expect("Candidate fixture should specify the matrix"),
         expected
             .primaries
-            .expect("candidate fixture должен указать primaries"),
+            .expect("Candidate fixture should specify the primaries"),
         expected
             .transfer
-            .expect("candidate fixture должен указать transfer"),
+            .expect("Candidate fixture should specify transfer"),
     );
 }
 
@@ -668,7 +667,7 @@ fn assert_rejection_matches_fixture(
 ) {
     match expected
         .rejection
-        .expect("rejected fixture должен указать rejection kind")
+        .expect("Rejected fixture should indicate rejection kind")
     {
         ExpectedRejectionKind::UnsupportedBitDepth => {
             assert_eq!(
@@ -676,7 +675,7 @@ fn assert_rejection_matches_fixture(
                 Vp9RequirementRejection::UnsupportedBitDepth(
                     expected
                         .unsupported_bit_depth
-                        .expect("unsupported_bit_depth должен быть указан")
+                        .expect("unsupported_bit_depth should be indicated")
                 ),
                 "{fixture_name}: unexpected bit-depth rejection"
             );
@@ -687,7 +686,7 @@ fn assert_rejection_matches_fixture(
                 Vp9RequirementRejection::UnsupportedChroma(
                     expected
                         .unsupported_chroma
-                        .expect("unsupported_chroma должен быть указан")
+                        .expect("unsupported_chroma should be indicated")
                         .into_model()
                 ),
                 "{fixture_name}: unexpected chroma rejection"
@@ -702,7 +701,7 @@ fn candidate_from_header_fixture(fixture: &GoldenHeaderFixture) -> Vp9Requiremen
     let probe = probe_vp9_packet_requirement(&packet_bytes);
     let Vp9RequirementProbe::Candidate(candidate) = probe else {
         panic!(
-            "{} должен давать bitstream candidate для metadata fixture, получено {probe:?}",
+            "{} should give bitstream candidate for metadata fixture, obtained {probe:?}",
             fixture.name
         );
     };

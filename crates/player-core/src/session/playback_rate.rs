@@ -122,7 +122,7 @@ impl PlayerSession {
                 restored_staged_video_packets = recovery_report.restored_staged_packets,
                 pending_video_packets = self.pipeline.pending_video_packet_len(),
                 playback_rate = %playback_rate,
-                "Playback-rate downshift восстановил video recovery continuation"
+                "Playback-rate downshift restored video recovery continuation"
             );
         }
     }
@@ -144,7 +144,7 @@ impl PlayerSession {
                     report,
                 ),
             (Some(_), None) => Err(anyhow::anyhow!(
-                "tempo backend подтвердил rate change без audio clock snapshot"
+                "tempo backend confirmed rate change without audio clock snapshot"
             )),
             (None, Some(captured_audio_clock)) => {
                 self.pipeline

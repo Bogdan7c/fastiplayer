@@ -146,11 +146,10 @@ impl HlsComponentDemuxer {
         epoch_index: usize,
         seek_cancellation: DemuxSeekCancellationToken,
     ) -> Result<Self> {
-        let epoch = plan
-            .epochs
-            .get(epoch_index)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("HLS seek epoch отсутствует в immutable plan"))?;
+        let epoch =
+            plan.epochs.get(epoch_index).cloned().ok_or_else(|| {
+                anyhow::anyhow!("HLS seek epoch is missing from the immutable plan")
+            })?;
         Self::open_from_epoch_plan(
             plan,
             http,
@@ -185,7 +184,7 @@ impl HlsComponentDemuxer {
             .get(anchor.epoch_index)
             .and_then(|epoch| epoch.restart_tail(anchor.restart_segment))
             .ok_or_else(|| {
-                anyhow::anyhow!("HLS seek restart отсутствует в immutable epoch plan")
+                anyhow::anyhow!("HLS seek restart is not available in the immutable epoch plan")
             })?;
         // Anchor может быть впервые доказан из manifest suffix-а. Его timestamp origin
         // относится именно к сохранённому presentation origin, а не обязательно к началу epoch-а.
@@ -350,7 +349,7 @@ impl HlsComponentDemuxer {
             inspected_bytes = inspected_bytes.saturating_add(event_encoded_bytes(&event));
             self.ensure_seek_scan_within_budget(inspected_events, inspected_bytes)?;
             if matches!(event, DemuxReadEvent::EndOfStream) {
-                anyhow::bail!("HLS VOD завершился до доказанного initial seek anchor");
+                anyhow::bail!("HLS VOD is completed before the proven initial seek anchor");
             }
             self.replay_events.push_back(event);
         }
@@ -388,7 +387,9 @@ impl HlsComponentDemuxer {
                     retained_audio_packets.push_back(packet);
                 }
                 DemuxReadEvent::EndOfStream => {
-                    anyhow::bail!("HLS replacement parser не воспроизвёл доказанный seek anchor");
+                    anyhow::bail!(
+                        "HLS replacement parser does not reproduce the proven seek anchor"
+                    );
                 }
                 DemuxReadEvent::Packet(_)
                 | DemuxReadEvent::TracksChanged(_)
@@ -407,9 +408,13 @@ impl HlsComponentDemuxer {
             Some(DemuxReadEvent::TracksChanged(_)) => Ok(()),
             Some(unexpected) => {
                 self.replay_events.push_front(unexpected);
-                anyhow::bail!("HLS composite audio replacement не начал replay с TracksChanged")
+                anyhow::bail!(
+                    "HLS composite audio replacement doesn't start replay with TracksChanged"
+                )
             }
-            None => anyhow::bail!("HLS composite audio replacement не содержит replay lifecycle"),
+            None => {
+                anyhow::bail!("HLS composite audio replacement does not include replay lifecycle")
+            }
         }
     }
 
@@ -419,10 +424,10 @@ impl HlsComponentDemuxer {
         inspected_bytes: usize,
     ) -> Result<()> {
         if inspected_events > self.policy.maximum_seek_replay_events.get() {
-            anyhow::bail!("HLS seek replay превысил caller-owned event budget");
+            anyhow::bail!("HLS seek replay exceeds caller-owned event budget");
         }
         if inspected_bytes > self.policy.maximum_seek_replay_bytes.get() {
-            anyhow::bail!("HLS seek replay превысил caller-owned encoded-byte budget");
+            anyhow::bail!("HLS seek replay exceeds caller-owned encoded-byte budget");
         }
         Ok(())
     }
@@ -469,7 +474,7 @@ impl HlsComponentDemuxer {
                 .zip(&next_layout)
                 .any(|((previous_kind, _), (next_kind, _))| previous_kind != next_kind)
         {
-            anyhow::bail!("HLS discontinuity изменила required component track topology");
+            anyhow::bail!("HLS discontinuity changes required component track topology");
         }
         self.track_mapping.clear();
         let mut refreshed = Vec::with_capacity(inner_tracks.len());
@@ -489,7 +494,7 @@ impl HlsComponentDemuxer {
             .track_mapping
             .iter()
             .find_map(|(inner, public)| (*inner == packet.track_id).then_some(*public))
-            .ok_or_else(|| anyhow::anyhow!("HLS epoch packet с неизвестным track id"))?;
+            .ok_or_else(|| anyhow::anyhow!("HLS epoch packet with unknown track id"))?;
         let origin = *self
             .current_timestamp_origin
             .get_or_insert_with(|| packet.dts.map_or(packet.pts, |dts| packet.pts.min(dts)));
@@ -507,14 +512,14 @@ impl HlsComponentDemuxer {
             None => None,
         };
         let byte_position = packet.byte_offset.ok_or_else(|| {
-            anyhow::anyhow!("HLS packet не содержит exact source byte-position provenance")
+            anyhow::anyhow!("HLS packet does not contain exact source byte-position provenance")
         })?;
         let manifest_segment = self
             .media_spans
             .manifest_segment_for_byte_position(byte_position)?
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "HLS packet source byte-position не принадлежит planned media resource"
+                    "HLS packet source byte-position does not belong to planned media resource"
                 )
             })?;
         self.seek_index.lock().observe_manifest_packet(

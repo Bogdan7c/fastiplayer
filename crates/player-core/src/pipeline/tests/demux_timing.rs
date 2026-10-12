@@ -14,14 +14,14 @@ fn demux_boundaries_preserve_eof_and_seek_results() {
 
     let event = pipeline
         .demux_next_event()
-        .expect("installed demuxer должен быть видим через boundary")
-        .expect("fake demuxer не должен возвращать ошибку");
+        .expect("The installed demuxer must be visible through the boundary.")
+        .expect("Fake Demuxer should not return the error.");
     assert_eq!(event, DemuxReadEvent::EndOfStream);
 
     let seek_result = pipeline
         .seek_demuxer(DemuxSeekRequest::accurate(Duration::from_secs(3)))
-        .expect("installed demuxer должен принять seek через boundary")
-        .expect("fake demuxer должен принять accurate seek");
+        .expect("Installed Demuxer must accept boundary seek")
+        .expect("Fake Demuxer must accept accurate seek");
     assert_eq!(seek_result.actual_position, MediaTime::from_secs(3));
 }
 

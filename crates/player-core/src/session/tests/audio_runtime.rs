@@ -518,7 +518,7 @@ fn audio_output_factory_success_installs_output_and_clock() {
 
     session
         .ensure_audio_output_for_decoded_spec(stereo_output_spec())
-        .expect("successful factory должен установить output");
+        .expect("Successful factory must install output");
 
     assert!(session.pipeline.has_audio_output());
     assert!(session.pipeline.has_audio_clock());
@@ -532,13 +532,13 @@ fn audio_output_ready_and_resume_events_keep_exact_media_correlation_and_one_sho
     let (factory, _factory_handle) = ScriptedAudioOutputFactory::success(25.0, None);
     let mut session = PlayerSession::with_audio_output_factory(factory);
     let media_instance_id = MediaInstanceId::from_non_zero(
-        NonZeroU64::new(77).expect("media instance id должен быть non-zero"),
+        NonZeroU64::new(77).expect("media instance id should be non-zero"),
     );
     session.snapshot.media_instance_id = Some(media_instance_id);
 
     session
         .ensure_audio_output_for_decoded_spec(stereo_output_spec())
-        .expect("successful factory должен установить output");
+        .expect("Successful factory must install output");
     session.begin_playback_without_media_for_test().unwrap();
     session.begin_playback_without_media_for_test().unwrap();
 
@@ -1068,7 +1068,7 @@ fn active_tempo_processor_rejection_preserves_old_rate_and_audio_path() {
     let _proof_keyframe = session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен считаться уже переданным decoder-у");
+        .expect("The proof keyframe must be considered decoder already");
     session
         .pipeline
         .enqueue_pending_video_packet(PendingVideoPacket::new(
@@ -1128,7 +1128,7 @@ fn active_tempo_processor_rejection_preserves_old_rate_and_audio_path() {
         session
             .pipeline
             .front_pending_video_packet()
-            .expect("rejected rate не должен менять старый runway")
+            .expect("Rejected rate does not change the old runway")
             .encoded_bytes,
         Bytes::from_static(b"old-decoder-runway")
     );
@@ -1319,7 +1319,7 @@ fn audio_output_factory_creation_error_becomes_audio_device_unavailable() {
 
     let error = session
         .ensure_audio_output_for_decoded_spec(stereo_output_spec())
-        .expect_err("factory error должен стать player error");
+        .expect_err("factory error should player error");
 
     assert_eq!(error.kind, PlayerErrorKind::AudioDeviceUnavailable);
     assert!(error.message.contains("device missing"));
@@ -1342,11 +1342,11 @@ fn lazy_audio_output_init_while_playing_calls_play() {
     session.begin_playback_without_media_for_test().unwrap();
     session
         .ensure_audio_output_for_decoded_spec(stereo_output_spec())
-        .expect("lazy init during Playing должен запустить output");
+        .expect("Lazy Init During Playing: Launching Output");
 
     let output_handle = factory_handle
         .last_output_handle()
-        .expect("factory должен создать output handle");
+        .expect("Manufacturers should create an output handle");
     assert_eq!(session.playback_state(), PlaybackState::Playing);
     assert_eq!(output_handle.play_count.load(Ordering::Relaxed), 1);
 }
@@ -1360,11 +1360,11 @@ fn lazy_audio_output_play_error_stays_audio_device_unavailable() {
     session.begin_playback_without_media_for_test().unwrap();
     let error = session
         .ensure_audio_output_for_decoded_spec(stereo_output_spec())
-        .expect_err("play error после lazy init должен быть видимым");
+        .expect_err("play error after lazy init should be visible");
 
     let output_handle = factory_handle
         .last_output_handle()
-        .expect("factory должен успеть установить output до play error");
+        .expect("Factory must be able to set output before play error");
     assert_eq!(error.kind, PlayerErrorKind::AudioDeviceUnavailable);
     assert!(error.message.contains("fake audio play failed"));
     assert_eq!(output_handle.play_count.load(Ordering::Relaxed), 1);
@@ -1372,7 +1372,7 @@ fn lazy_audio_output_play_error_stays_audio_device_unavailable() {
     assert!(events.contains(&PlayerEvent::AudioOutputReady));
     assert!(
         !events.contains(&PlayerEvent::AudioPlaybackResumed),
-        "failed output play не имеет права публиковать resume"
+        "failed output play I have no right to publish resume"
     );
 }
 

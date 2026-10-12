@@ -78,7 +78,7 @@ impl fmt::Debug for TransportInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TransportInputError {
     /// Provider попытался опубликовать non-seekable source как seekable.
-    #[error("transport provider вернул non-seekable source в seekable result")]
+    #[error("transport provider returned a non-seekable source in a seekable result")]
     SourceIsNotSeekable,
 }
 

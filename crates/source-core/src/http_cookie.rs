@@ -71,7 +71,7 @@ fn seeded_cookie_jar(
                   parse того же текста не может провалиться"
     )]
     let initial_url = Url::parse(initial_target.expose_secret_for_request())
-        .expect("HttpRequestTarget уже доказал абсолютный HTTP(S) URL");
+        .expect("HttpRequestTarget has already proven the absolute HTTP(S) URL");
     let jar = Jar::default();
     for cookie_seed in cookie_seeds {
         let validation_jar = Jar::default();
@@ -235,10 +235,10 @@ impl fmt::Debug for ScopedHttpCookieJar {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ScopedHttpCookieJarError {
     /// Caller передал initial target, не доказанный scope-ом.
-    #[error("initial cookie target находится вне HTTP request scope")]
+    #[error("The initial target cookie is outside the HTTP request scope")]
     InitialTargetOutsideScope,
     /// Extractor cookie state нельзя представить как serialized Cookie header.
-    #[error("serialized cookies имеют недопустимую форму")]
+    #[error("serialized cookies intolerable")]
     InvalidSerializedCookies,
 }
 

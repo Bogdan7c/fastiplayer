@@ -82,7 +82,7 @@ pub(super) fn forward_with(
         }
     };
     call_outcome.map_err(classify_call_error)?;
-    info!("Запрос передан уже запущенному экземпляру");
+    info!("The request was sent to an already launched copy");
     Ok(())
 }
 
@@ -118,10 +118,10 @@ fn wait_for_listener(
             return Ok(());
         }
         if started_at.elapsed() >= config.listener_wait {
-            warn!("Запущенный экземпляр так и не начал принимать запросы");
+            warn!("The launched copy never started accepting requests.");
             return Err(InstanceForwardingError::InstanceNotListening);
         }
-        debug!("Запущенный экземпляр ещё не принимает запросы, ждём");
+        debug!("The run copy does not accept requests yet, wait");
         std::thread::sleep(config.listener_poll_interval);
     }
 }
@@ -133,7 +133,7 @@ fn ensure_listener_belongs_to_same_user(
     application_name: &BusName<'_>,
 ) -> Result<(), InstanceForwardingError> {
     let own_unique_name = connection.unique_name().ok_or_else(|| {
-        InstanceForwardingError::Transport("у соединения нет уникального имени".to_owned())
+        InstanceForwardingError::Transport("The compound has no unique name.".to_owned())
     })?;
     let own_uid = bus
         .get_connection_unix_user(BusName::from(own_unique_name.as_ref()))
@@ -151,7 +151,7 @@ fn ensure_listener_belongs_to_same_user(
     } else {
         warn!(
             listener_uid,
-            "Имя приложения на шине принадлежит другому пользователю"
+            "The name of the application on the bus belongs to another user."
         );
         Err(InstanceForwardingError::ForeignInstanceOwner)
     }

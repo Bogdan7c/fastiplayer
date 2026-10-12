@@ -494,7 +494,7 @@ mod tests {
             .find(|output| {
                 output.decode_format.profile == VideoProfile::H264(H264Profile::Baseline)
             })
-            .expect("successful FFmpeg probe должен объявлять exact H.264 Baseline output");
+            .expect("successful FFmpeg probe must declare exact H.264 Baseline output");
 
         assert_eq!(
             baseline_output.decode_format.codec,

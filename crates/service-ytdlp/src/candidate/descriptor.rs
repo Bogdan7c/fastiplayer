@@ -119,7 +119,7 @@ fn normalize_content_probed(
                     ContentProbedTrackEvidence::Declared(normalize_video_track(format, codec)?)
                 }
                 CodecKind::Unknown => {
-                    unreachable!("normalize_codec уже отклонил unknown video codec")
+                    unreachable!("normalize_codec has been rejected by the unknown video codec.")
                 }
             }
         }
@@ -134,7 +134,7 @@ fn normalize_content_probed(
                     ContentProbedTrackEvidence::Declared(normalize_audio_track(format, codec)?)
                 }
                 CodecKind::Unknown => {
-                    unreachable!("normalize_codec уже отклонил unknown audio codec")
+                    unreachable!("normalize_codec has been rejected by the unknown audio codec.")
                 }
             }
         }

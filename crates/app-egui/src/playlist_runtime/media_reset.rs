@@ -8,7 +8,7 @@ use super::PlaylistRuntime;
 use super::controller::ControllerClearMediaResetCommit;
 
 /// Безопасное сообщение не раскрывает player/controller internals.
-const MEDIA_RESET_FAILURE_MESSAGE: &str = "Очередь очищена, но воспроизведение не удалось сбросить";
+const MEDIA_RESET_FAILURE_MESSAGE: &str = "The queue was cleared, but playback could not be reset";
 
 /// Runtime хранит только ещё не принятую worker-ом команду.
 #[derive(Debug, Default)]
@@ -83,7 +83,7 @@ impl PlaylistRuntime {
                 self.set_playlist_safe_feedback(MEDIA_RESET_FAILURE_MESSAGE);
                 tracing::warn!(
                     media_instance_id = request.media_instance_id.get(),
-                    "Clear media reset не принят: player worker отключён"
+                    "Clear media reset not accepted: player worker disabled"
                 );
             }
         }
@@ -116,14 +116,14 @@ impl PlaylistRuntime {
             Ok(outcome) => {
                 tracing::warn!(
                     ?outcome,
-                    "Clear media reset завершился typed terminal failure"
+                    "Clear media reset ended with typed terminal failure"
                 );
                 PlaylistMediaResetReceiptDisposition::Failed
             }
             Err(error) => {
                 tracing::warn!(
                     error = %error,
-                    "Clear media reset потерял authoritative owner outcome"
+                    "Clear media reset lost authoritative owner outcome"
                 );
                 PlaylistMediaResetReceiptDisposition::Failed
             }

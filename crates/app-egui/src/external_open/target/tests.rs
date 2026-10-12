@@ -65,7 +65,7 @@ fn invalid_scale_falls_back_to_video_instead_of_dividing() {
         assert_eq!(
             hit_test.resolve(physical(10.0, 10.0), invalid_scale),
             DropTarget::Video,
-            "масштаб {invalid_scale} должен давать безопасный default"
+            "The {invalid_scale} scale should give a safe default."
         );
     }
 }

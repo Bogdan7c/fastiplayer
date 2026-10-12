@@ -67,7 +67,7 @@ fn report_timeline_seek_lifecycle_settlement(settlement: LifecycleTimelineSeekSe
             checkpoint_position,
         } => debug!(
             ?checkpoint_position,
-            "Lifecycle дождался terminal outcomes всех pending timeline seek-ов"
+            "Lifecycle wait terminal outcomes everyone pending timeline seek-owls"
         ),
         LifecycleTimelineSeekSettlement::DeadlineElapsed {
             checkpoint_position,
@@ -75,7 +75,7 @@ fn report_timeline_seek_lifecycle_settlement(settlement: LifecycleTimelineSeekSe
         } => tracing::warn!(
             ?checkpoint_position,
             abandoned_receipt_count,
-            "Lifecycle deadline отменил pending timeline seek; сохраняем pre-seek позицию"
+            "Lifecycle deadline cancels pending timeline seek; keep pre-seek position"
         ),
         LifecycleTimelineSeekSettlement::MissingOwnerOutcome {
             checkpoint_position,
@@ -83,7 +83,7 @@ fn report_timeline_seek_lifecycle_settlement(settlement: LifecycleTimelineSeekSe
         } => tracing::error!(
             ?checkpoint_position,
             abandoned_receipt_count,
-            "Player owner потерял pending timeline seek outcome; сохраняем pre-seek позицию"
+            "Player owner loses pending timeline seek outcome; save pre-see position"
         ),
     }
 }
@@ -282,10 +282,7 @@ impl AppShell {
             Err(error) => {
                 self.exit_with_fatal_startup_error(
                     event_loop,
-                    FatalStartupError::internal_failure(
-                        "Некорректные render color settings",
-                        &error,
-                    ),
+                    FatalStartupError::internal_failure("Incorrect render color settings", &error),
                 );
                 return;
             }
@@ -311,7 +308,10 @@ impl AppShell {
             Err(error) => {
                 self.exit_with_fatal_startup_error(
                     event_loop,
-                    FatalStartupError::internal_failure("Не удалось запустить app state", &error),
+                    FatalStartupError::internal_failure(
+                        "We failed to launch the app state.",
+                        &error,
+                    ),
                 );
                 return;
             }
@@ -349,7 +349,7 @@ impl AppShell {
                 event_loop,
                 FatalStartupError::new(
                     FatalStartupReason::InternalFailure,
-                    "Playlist runtime уже закрыт и не принимает новый AppState binding",
+                    "Playlist runtime is closed and does not accept new AppState binding",
                 ),
             );
             Self::shutdown_uninstalled_app_state_or_exit(&mut app_state);
@@ -362,7 +362,7 @@ impl AppShell {
                 self.exit_with_fatal_startup_error(
                     event_loop,
                     FatalStartupError::internal_failure(
-                        "Playlist runtime не создал exact AppState attachment",
+                        "Playlist runtime does not provide exact AppState attachment",
                         &format!("{error:?}"),
                     ),
                 );
@@ -383,7 +383,7 @@ impl AppShell {
             &app_state.player_command_sender(),
             restored_audio_level,
         ) {
-            tracing::warn!(error = %error, "Громкость пользователя не принята новым player binding");
+            tracing::warn!(error = %error, "User Loudness Not Accepted by New player binding");
         }
         let _resume_started = app_state.start_suspended_media_resume(&mut self.playlist_runtime);
 
@@ -465,7 +465,7 @@ impl AppShell {
             if let Err(error) = lifecycle_result {
                 tracing::error!(
                     ?error,
-                    "Suspend active-media checkpoint завершился lifecycle invariant failure"
+                    "Suspend active-media checkpoint ends with lifecycle invariant failure"
                 );
             }
             app_state.clear_cached_present_frame_for_runtime_drop();
@@ -477,7 +477,7 @@ impl AppShell {
                 self.suspended_local_file_open_job = Some(transferred_job);
             } else {
                 tracing::error!(
-                    "Suspend обнаружил второй local-file owner; rejected job завершается bounded"
+                    "Suspend second-hand local-file owner; rejected job finish bounded"
                 );
                 Self::shutdown_local_job_owner_or_exit(&mut transferred_job);
             }
@@ -522,7 +522,7 @@ impl AppShell {
             TerminalEntryDisposition::AlreadyCompleted => return,
             TerminalEntryDisposition::ExitRequired => {
                 tracing::error!(
-                    "Повторный terminal вход застал незавершённый shutdown; lease остаётся удержанным"
+                    "Repeated terminal entrance caught incomplete shutdown; lease stays on"
                 );
                 std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
             }
@@ -608,18 +608,18 @@ impl AppShell {
             OwnerTerminalDisposition::ExitRequired => {
                 tracing::error!(
                     ?report,
-                    "Process owners не завершились до общего deadline; немедленно завершаем process с удержанным lease"
+                    "Process owners are not completed before the general deadline; immediately complete the process with the retained lease"
                 );
                 std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
             }
             OwnerTerminalDisposition::Failed => {
                 tracing::warn!(
                     ?report,
-                    "Process owners терминальны, но shutdown завершился типизированной ошибкой"
+                    "Process owners are terminal, but the shutdown ended with a typed error"
                 );
             }
             OwnerTerminalDisposition::Completed => {
-                info!(?report, "Process owners штатно завершены");
+                info!(?report, "Process owners properly completed");
             }
         }
 
@@ -639,14 +639,14 @@ impl AppShell {
             OwnerTerminalDisposition::ExitRequired => {
                 tracing::error!(
                     ?player,
-                    "AppState process owner не завершился после ошибки renderer construction"
+                    "AppState process owner fails after renderer construction error"
                 );
                 std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
             }
             OwnerTerminalDisposition::Failed => {
                 tracing::warn!(
                     ?player,
-                    "AppState process owner завершился terminal failure после construction error"
+                    "AppState process owner ended terminal failure after construction error"
                 );
             }
             OwnerTerminalDisposition::Completed => {}
@@ -665,11 +665,11 @@ impl AppShell {
         let outcome = job.shutdown_until(ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET));
         match process_owner_disposition(outcome) {
             OwnerTerminalDisposition::ExitRequired => {
-                tracing::error!(?outcome, "Local-file owner не завершился bounded");
+                tracing::error!(?outcome, "Local-file owner is not bounded.");
                 std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
             }
             OwnerTerminalDisposition::Failed => {
-                tracing::warn!(?outcome, "Local-file owner завершился panic");
+                tracing::warn!(?outcome, "Local-file owner finished panic");
             }
             OwnerTerminalDisposition::Completed => {}
         }
@@ -742,7 +742,7 @@ impl AppShell {
         let persistence_changed = match self.playlist_runtime.drain_playlist_persistence() {
             Ok(visible_change) => visible_change,
             Err(error) => {
-                tracing::error!(error = %error, "Не удалось применить playlist persistence event");
+                tracing::error!(error = %error, "Could not apply playlist persistence event");
                 false
             }
         };

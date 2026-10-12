@@ -15,25 +15,25 @@ fn captured_snapshot(revision: SaveRevision, item_count: usize) -> ImmutableSave
         let locator = SecretUrlLocator::from_reopenable_url(format!(
             "https://media.invalid/{item_index}.mp4?secret=redacted-in-debug"
         ))
-        .expect("test URL непустой");
+        .expect("test URL");
         let metadata =
             CachedPlaylistMetadata::new(format!("item-{item_index}"), PlaylistMediaKind::Video);
         queue
             .append_one(PlaylistItemDraft::url(locator, metadata))
-            .expect("test queue не превышает capacity");
+            .expect("Test queue does not exceed capacity");
     }
     ImmutableSaveSnapshot::capture(
         revision,
         PlaylistStateSnapshot::new(&queue, RepeatMode::RepeatQueue),
     )
-    .expect("малый test snapshot сериализуем")
+    .expect("Small test snapshot serialized")
 }
 
 #[test]
 fn atomic_write_replaces_complete_json_and_preserves_allocator_watermark() {
-    let directory = tempfile::tempdir().expect("tempdir доступен");
+    let directory = tempfile::tempdir().expect("Tempdir is available");
     let target_path = directory.path().join("playlist-state.json");
-    fs::write(&target_path, b"old-state").expect("старый target создаётся");
+    fs::write(&target_path, b"old-state").expect("Old target is created");
     let store = Arc::new(PlaylistStateStore::new(&target_path));
     let writer = AtomicSnapshotWriter::new(store);
 
@@ -41,8 +41,8 @@ fn atomic_write_replaces_complete_json_and_preserves_allocator_watermark() {
 
     assert_eq!(outcome, AtomicWriteOutcome::Durable);
     let written_json: serde_json::Value =
-        serde_json::from_slice(&fs::read(&target_path).expect("target читается после replace"))
-            .expect("target содержит complete JSON");
+        serde_json::from_slice(&fs::read(&target_path).expect("target read after replace"))
+            .expect("The target contains complete JSON.");
     assert_eq!(written_json["entries"].as_array().map(Vec::len), Some(2));
     assert_eq!(written_json["next_item_id"].as_u64(), Some(3));
 }
@@ -52,7 +52,7 @@ fn atomic_write_replaces_complete_json_and_preserves_allocator_watermark() {
 fn atomic_write_creates_user_only_target_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
-    let directory = tempfile::tempdir().expect("tempdir доступен");
+    let directory = tempfile::tempdir().expect("Tempdir is available");
     let target_path = directory.path().join("playlist-state.json");
     let store = Arc::new(PlaylistStateStore::new(&target_path));
     let writer = AtomicSnapshotWriter::new(store);
@@ -62,7 +62,7 @@ fn atomic_write_creates_user_only_target_permissions() {
         AtomicWriteOutcome::Durable
     );
     let mode = fs::metadata(&target_path)
-        .expect("target metadata доступна")
+        .expect("target metadata available")
         .permissions()
         .mode()
         & 0o777;
@@ -71,15 +71,15 @@ fn atomic_write_creates_user_only_target_permissions() {
 
 #[test]
 fn rename_failure_keeps_target_and_cleans_only_owned_temp_file() {
-    let directory = tempfile::tempdir().expect("tempdir доступен");
+    let directory = tempfile::tempdir().expect("Tempdir is available");
     let target_path = directory.path().join("playlist-state.json");
-    fs::create_dir(&target_path).expect("directory target провоцирует rename failure");
+    fs::create_dir(&target_path).expect("Directory target causes rename failure");
     let target_marker = target_path.join("marker");
-    fs::write(&target_marker, b"original").expect("marker создаётся");
+    fs::write(&target_marker, b"original").expect("marker is created");
     let foreign_temp = directory
         .path()
         .join(".playlist-state.json.save-foreign.tmp");
-    fs::write(&foreign_temp, b"foreign").expect("чужой temp создаётся");
+    fs::write(&foreign_temp, b"foreign").expect("The alien temp is created");
     let store = Arc::new(PlaylistStateStore::new(&target_path));
     let writer = AtomicSnapshotWriter::new(store);
 
@@ -91,15 +91,15 @@ fn rename_failure_keeps_target_and_cleans_only_owned_temp_file() {
             if failure.stage == NotReplacedStage::RenameTempFile
     ));
     assert_eq!(
-        fs::read(&target_marker).expect("marker не потерян"),
+        fs::read(&target_marker).expect("marker not lost"),
         b"original"
     );
     assert_eq!(
-        fs::read(&foreign_temp).expect("чужой temp не удалён"),
+        fs::read(&foreign_temp).expect("alien temp not removed"),
         b"foreign"
     );
     let owned_temp_count = fs::read_dir(directory.path())
-        .expect("directory перечисляется")
+        .expect("directory is listed")
         .filter_map(Result::ok)
         .filter(|entry| {
             entry

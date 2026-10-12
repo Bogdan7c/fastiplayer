@@ -8,7 +8,7 @@ use crate::instance_forwarding::{ForwardedInstanceAction, ForwardedInstanceReque
 fn open_uris(action: &ForwardedInstanceAction) -> Vec<&str> {
     match action {
         ForwardedInstanceAction::Open(uris) => uris.iter().map(|uri| uri.as_str()).collect(),
-        ForwardedInstanceAction::Activate => panic!("ожидалось действие Open"),
+        ForwardedInstanceAction::Activate => panic!("expected an Open action"),
     }
 }
 
@@ -19,7 +19,7 @@ fn open_keeps_every_uri_in_request_order() {
         "https://example.org/a".to_owned(),
         "file:///%FF.mkv".to_owned(),
     ])
-    .expect("корректные URI");
+    .expect("correct URI");
 
     assert_eq!(
         open_uris(&action),
@@ -53,7 +53,7 @@ fn too_many_uris_are_rejected() {
 #[test]
 fn exactly_the_uri_count_limit_is_accepted() {
     let uris = vec!["file:///a".to_owned(); MAX_FORWARDED_URIS];
-    let action = admit_open_uris(uris).expect("ровно лимит допустим");
+    let action = admit_open_uris(uris).expect("exactly the URI limit is allowed");
     assert_eq!(open_uris(&action).len(), MAX_FORWARDED_URIS);
 }
 
@@ -72,7 +72,7 @@ fn total_size_over_limit_is_rejected_even_if_each_uri_fits() {
     let count = MAX_TOTAL_FORWARDED_URI_BYTES / one_uri.len() + 1;
     assert!(
         count <= MAX_FORWARDED_URIS,
-        "тест должен упереться в суммарный лимит"
+        "the test must exceed the total size limit"
     );
     assert_eq!(
         admit_open_uris(vec![one_uri; count]),
@@ -92,7 +92,7 @@ fn garbage_strings_without_scheme_are_rejected() {
         assert_eq!(
             admit_open_uris(vec![garbage.to_owned()]),
             Err(ForwardedRequestRejection::UriWithoutScheme { position: 1 }),
-            "строка {garbage:?} должна быть отклонена"
+            "line {garbage:?} must be rejected."
         );
     }
 }
@@ -114,7 +114,7 @@ fn sender_side_constructor_applies_the_same_rules() {
         Err(ForwardedRequestRejection::UriWithoutScheme { position: 1 })
     );
     let request =
-        ForwardedInstanceRequest::open(Vec::new(), None).expect("пустой список — активация");
+        ForwardedInstanceRequest::open(Vec::new(), None).expect("blank list - activation");
     assert_eq!(request.action(), &ForwardedInstanceAction::Activate);
 }
 
@@ -142,7 +142,7 @@ fn only_the_same_user_is_admitted() {
     assert_eq!(
         admit_peer(Some(0), 1000),
         Err(ForwardedRequestRejection::ForeignUser { peer_uid: 0 }),
-        "даже root не может подсунуть файлы чужому сеансу через этот протокол"
+        "Even root can't slip files to someone else's session through this protocol."
     );
     assert_eq!(
         admit_peer(None, 1000),

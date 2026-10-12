@@ -14,7 +14,7 @@ fn drain_player_commands(inbox: &WorkerCommandInbox) -> Vec<PlayerCommand> {
     loop {
         match inbox.try_receive() {
             Ok(Some(WorkerCommand::Player(command))) => commands.push(command),
-            Ok(Some(_other)) => panic!("тест ждёт только player commands"),
+            Ok(Some(_other)) => panic!("The test is only for player commands."),
             Ok(None) | Err(CommandInboxDisconnected) => return commands,
         }
     }

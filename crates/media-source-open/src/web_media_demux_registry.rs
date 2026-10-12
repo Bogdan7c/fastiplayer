@@ -25,11 +25,11 @@ impl WebDemuxComposition {
         let factories: Vec<Box<dyn DemuxFactory>> = vec![
             Box::new(
                 SymphoniaDemuxFactory::new(symphonia_options)
-                    .context("Не удалось создать Symphonia demux factory")?,
+                    .context("The Symphonia demux factory was not built.")?,
             ),
             Box::new(
                 FlvDemuxFactory::new(FlvDemuxOptions::default())
-                    .context("Не удалось создать FLV/F4F demux factory")?,
+                    .context("It was not possible to create FLV/F4F demux factory.")?,
             ),
         ];
         let capabilities =
@@ -38,7 +38,7 @@ impl WebDemuxComposition {
         for factory in factories {
             registry
                 .register(factory)
-                .context("Не удалось зарегистрировать web demux factory")?;
+                .context("The web demux factory was not registered.")?;
         }
         Ok(Self {
             registry,
@@ -54,11 +54,11 @@ impl WebDemuxComposition {
         let factories: Vec<Box<dyn DemuxFactory>> = vec![
             Box::new(
                 SymphoniaDemuxFactory::new(symphonia_options)
-                    .context("Не удалось создать HLS Symphonia demux factory")?,
+                    .context("The HLS Symphonia demux factory was not built.")?,
             ),
             Box::new(
                 MpegTsDemuxFactory::new(mpeg_ts_options)
-                    .context("Не удалось создать HLS MPEG-TS demux factory")?,
+                    .context("Could not create the HLS MPEG-TS demux factory")?,
             ),
         ];
         let capabilities =
@@ -67,7 +67,7 @@ impl WebDemuxComposition {
         for factory in factories {
             registry
                 .register(factory)
-                .context("Не удалось зарегистрировать HLS demux factory")?;
+                .context("Could not register the HLS demux factory")?;
         }
         Ok(Self {
             registry,
@@ -84,7 +84,7 @@ pub fn capabilities_for_descriptors<'a>(
     for descriptor in descriptors {
         for registration in &descriptor.containers {
             let families = container_families_for_demux_id(registration.container.as_str())
-                .ok_or_else(|| anyhow!("Неизвестный container ID в demux descriptor"))?;
+                .ok_or_else(|| anyhow!("Unknown container ID in the demux descriptor"))?;
             for family in families {
                 registrations.push(DemuxCapabilityRegistration::new(
                     *family,

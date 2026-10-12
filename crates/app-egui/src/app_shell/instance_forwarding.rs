@@ -36,7 +36,7 @@ impl AppShell {
         while let Some(request) = self.instance_forwarding.take_next_pending_request() {
             let (action, activation_token) = request.into_parts();
             let raise = raise_window(window, activation_token);
-            tracing::info!(?raise, "Окно поднято по запросу второго запуска");
+            tracing::info!(?raise, "Window raised at second instance request");
             if let Some(open_request) = external_open_request_for(action) {
                 app_state.handle_forwarded_open_request(
                     open_request,

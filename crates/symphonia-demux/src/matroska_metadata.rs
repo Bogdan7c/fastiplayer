@@ -548,7 +548,7 @@ fn parse_track_entry(
         tracing::debug!(
             track = track_number,
             ?codec_id,
-            "Video track metadata не VP9"
+            "Video track metadata not VP9"
         );
     }
 
@@ -913,15 +913,12 @@ mod tests {
         let video_tracks_by_track = extract_video_tracks_from_bytes(&bytes);
         let video_track = video_tracks_by_track
             .get(&TrackId::new(1))
-            .expect("video track должен быть извлечён");
+            .expect("The video track must be extracted.");
         let metadata = video_track
             .metadata
             .as_ref()
-            .expect("video metadata должен быть извлечён");
-        let color = metadata
-            .color
-            .as_ref()
-            .expect("Colour metadata должна быть");
+            .expect("video metadata must be extracted");
+        let color = metadata.color.as_ref().expect("Colour metadata should be");
 
         assert_eq!(video_track.codec_id.as_deref(), Some("V_VP9"));
         assert_eq!(metadata.coded_width, Some(3840));
@@ -968,15 +965,15 @@ mod tests {
         let video_tracks_by_track = extract_video_tracks_from_bytes(&bytes);
         let video_track = video_tracks_by_track
             .get(&TrackId::new(1))
-            .expect("video track должен читаться из prefix-а большого Segment");
+            .expect("video track must be read from the prefix of a large Segment");
         let metadata = video_track
             .metadata
             .as_ref()
-            .expect("video metadata должна читаться из prefix-а большого Segment");
+            .expect("video metadata must be read from the prefix of a large Segment");
         let color = metadata
             .color
             .as_ref()
-            .expect("Colour metadata должна сохраниться из prefix-а");
+            .expect("Colour metadata should be stored from prefix");
 
         assert_eq!(metadata.coded_width, Some(3840));
         assert_eq!(metadata.bit_depth, Some(BitDepth::Ten));
@@ -1001,7 +998,7 @@ mod tests {
         let video_tracks_by_track = extract_video_tracks_from_bytes(&bytes);
         let video_track = video_tracks_by_track
             .get(&TrackId::new(2))
-            .expect("video track должен быть извлечён по TrackType");
+            .expect("video track must be extracted by TrackType");
 
         assert_eq!(video_track.codec_id.as_deref(), Some("V_VP9"));
         assert!(video_track.metadata.is_none());

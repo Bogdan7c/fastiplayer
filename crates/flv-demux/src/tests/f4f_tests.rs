@@ -145,7 +145,7 @@ fn rejects_unknown_and_duplicate_top_level_boxes() {
     )
     .err()
     .expect("duplicate mandatory top-level box must be rejected");
-    assert!(duplicate_mdat_error.to_string().contains("ровно по одному"));
+    assert!(duplicate_mdat_error.to_string().contains("exactly one"));
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn nested_boxes_share_one_fragment_wide_budget() {
     )
     .err()
     .expect("ten nested and top-level boxes must exceed a nine-box budget");
-    assert!(error.to_string().contains("всём fragment"));
+    assert!(error.to_string().contains("fragment"));
 }
 
 #[test]
@@ -437,7 +437,7 @@ fn truncated_large_size_box_header_is_malformed() {
     bytes.extend_from_slice(b"mdat");
     bytes.extend_from_slice(&[0, 0, 0]);
     let error = f4f_open_error(bytes, FlvDemuxOptions::default());
-    assert!(error.contains("large-size box header обрезан"), "{error}");
+    assert!(error.contains("large-size box header cropped"), "{error}");
 }
 
 #[test]
@@ -459,7 +459,7 @@ fn oversized_fragment_and_empty_mdat_are_rejected_before_flv_parsing() {
     empty_mdat.extend_from_slice(&f4f_moof());
     empty_mdat.extend_from_slice(&iso_box(b"mdat", &[]));
     let error = f4f_open_error(empty_mdat, FlvDemuxOptions::default());
-    assert!(error.contains("пустой mdat"), "{error}");
+    assert!(error.contains("empty mdat"), "{error}");
 }
 
 #[test]
@@ -480,24 +480,20 @@ fn malformed_afra_fields_are_rejected_with_exact_reason() {
         (
             "version",
             unsupported_version,
-            "full-box version 2 не поддерживается",
+            "afra full-box version 2 is not supported",
         ),
-        ("flags", unknown_flags, "неизвестные full-box flags"),
+        ("flags", unknown_flags, "unknown full-box flags"),
         ("shape", reserved_shape_bits, "afra reserved bits"),
-        (
-            "timescale",
-            zero_timescale,
-            "afra TimeScale не может быть нулём",
-        ),
+        ("timescale", zero_timescale, "afra TimeScale cannot be zero"),
         (
             "local entries",
             excessive_local_entries,
-            "afra local entries превышает",
+            "afra local entries exceeds",
         ),
         (
             "trailing",
             trailing_bytes,
-            "afra payload содержит trailing bytes",
+            "afra payload contains trailing bytes",
         ),
     ];
     for (case, payload, expected) in cases {
@@ -519,12 +515,8 @@ fn malformed_inline_abst_header_fields_are_rejected_with_exact_reason() {
     zero_timescale[9..13].copy_from_slice(&0_u32.to_be_bytes());
     let cases: [(&str, Vec<u8>, &str); 3] = [
         ("reserved", reserved_bits, "abst reserved bits"),
-        ("profile", reserved_profile, "abst Profile зарезервирован"),
-        (
-            "timescale",
-            zero_timescale,
-            "abst TimeScale не может быть нулём",
-        ),
+        ("profile", reserved_profile, "abst Profile reserved"),
+        ("timescale", zero_timescale, "abst TimeScale cannot be zero"),
     ];
     for (case, payload, expected) in cases {
         let segment = f4f_media_with_inline_bootstrap(

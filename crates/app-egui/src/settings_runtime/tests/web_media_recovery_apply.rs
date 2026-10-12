@@ -30,28 +30,28 @@ fn recovery_policy_value_actions(requested: &WebMediaConfig) -> Vec<SettingsUiAc
             setting_id: SettingId::from(RECOVERY_SETTING_NAMES[1]),
             value: SettingValue::Integer(
                 i64::try_from(requested.vod_endpoint_recovery_max_consecutive_attempts)
-                    .expect("test attempts помещаются в i64"),
+                    .expect("Test attempts are placed in i64."),
             ),
         },
         SettingsUiAction::SetValue {
             setting_id: SettingId::from(RECOVERY_SETTING_NAMES[2]),
             value: SettingValue::Integer(
                 i64::try_from(requested.vod_endpoint_recovery_initial_backoff_ms)
-                    .expect("test initial backoff помещается в i64"),
+                    .expect("Test initial backoff is placed in i64."),
             ),
         },
         SettingsUiAction::SetValue {
             setting_id: SettingId::from(RECOVERY_SETTING_NAMES[3]),
             value: SettingValue::Integer(
                 i64::try_from(requested.vod_endpoint_recovery_max_backoff_ms)
-                    .expect("test maximum backoff помещается в i64"),
+                    .expect("Test maximum backoff is placed in i64."),
             ),
         },
         SettingsUiAction::SetValue {
             setting_id: SettingId::from(RECOVERY_SETTING_NAMES[4]),
             value: SettingValue::Integer(
                 i64::try_from(requested.vod_endpoint_recovery_stable_reset_ms)
-                    .expect("test stable reset помещается в i64"),
+                    .expect("The test stable reset is placed in the i64"),
             ),
         },
     ]
@@ -101,9 +101,9 @@ fn recovery_policy_success_applies_exact_target_then_persists_finalizes_and_sync
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     adapter.expected_persisted_path_at_finalize = Some(path.clone());
 
     run_runtime_actions(
@@ -114,7 +114,7 @@ fn recovery_policy_success_applies_exact_target_then_persists_finalizes_and_sync
 
     let report = runtime
         .latest_apply_report()
-        .expect("успешный recovery report должен сохраниться");
+        .expect("Successful recovery report should be maintained");
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(report.routes.len(), 1);
     assert_eq!(report.routes[0].route, SettingRouteId::from("web_media"));
@@ -140,8 +140,8 @@ fn recovery_policy_success_applies_exact_target_then_persists_finalizes_and_sync
         adapter.committed_snapshots[0].as_config().web_media,
         requested_web_media
     );
-    let persisted = fastiplayer_config::load_from_path(&path)
-        .expect("persisted recovery policy должна читаться");
+    let persisted =
+        fastiplayer_config::load_from_path(&path).expect("Continued Recovery Policy should read");
     assert_eq!(persisted.config.web_media, requested_web_media);
     remove_file_if_exists(&path);
 }
@@ -152,14 +152,14 @@ fn recovery_policy_persistence_failure_rolls_owner_back_without_finalize_or_sync
     let requested_web_media = requested_recovery_policy(&config.web_media);
     let path = temp_config_path("vod-recovery-policy-persist-failure");
     remove_file_if_exists(&path);
-    fs::create_dir_all(&path).expect("target directory создаёт deterministic rename failure");
+    fs::create_dir_all(&path).expect("Target director creates deterministic rename failure");
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     run_runtime_actions(
         &mut runtime,
@@ -169,7 +169,7 @@ fn recovery_policy_persistence_failure_rolls_owner_back_without_finalize_or_sync
 
     let report = runtime
         .latest_apply_report()
-        .expect("recovery persistence failure report должен сохраниться");
+        .expect("Recovery Persistent Failure Report should continue");
     assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
     assert_eq!(report.routes[0].mechanism, ApplyMechanism::InPlace);
     assert_eq!(report.rollback.len(), 1);
@@ -191,7 +191,7 @@ fn recovery_policy_persistence_failure_rolls_owner_back_without_finalize_or_sync
     assert_eq!(adapter.finalize_calls, 0);
     assert!(adapter.committed_snapshots.is_empty());
     assert_eq!(runtime.committed_config().web_media, config.web_media);
-    fs::remove_dir_all(&path).expect("test target directory должна удалиться");
+    fs::remove_dir_all(&path).expect("Test target directory should be removed");
 }
 
 #[test]
@@ -212,9 +212,9 @@ fn preferred_height_only_and_mixed_reports_match_the_rebuild_contract() {
             config.clone(),
             path.clone(),
         ))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
         let mut adapter =
-            RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+            RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
         let mut actions = vec![
             SettingsUiAction::Open,
             SettingsUiAction::SetValue {
@@ -231,7 +231,7 @@ fn preferred_height_only_and_mixed_reports_match_the_rebuild_contract() {
 
         let report = runtime
             .latest_apply_report()
-            .expect("preferred-height report должен сохраниться");
+            .expect("Preferred-height report should be retained");
         assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
         assert_eq!(report.routes.len(), 1);
         assert_eq!(report.routes[0].mechanism, ApplyMechanism::PipelineRebuild);
@@ -244,28 +244,28 @@ fn unknown_and_foreign_media_service_settings_fail_before_any_owner_mutation() {
     for (raw_setting_id, expected_message) in [
         (
             "yt_dlp.future_unknown",
-            "MediaService setting `yt_dlp.future_unknown` не имеет checked application contract",
+            "MediaService setting `yt_dlp.future_unknown` has no checked application contract",
         ),
         (
             "ui.language",
-            "setting `ui.language` принадлежит Ui, а не MediaService route",
+            "setting `ui.language` belongs to Ui, not the MediaService route",
         ),
     ] {
         let config = custom_config_for_test();
         let exact_setting_id = SettingId::from(raw_setting_id);
         let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-            .expect("route appliers должны принять валидированный config");
+            .expect("route appliers must accept validated config");
         let media_snapshot_before = appliers.media_service.clone();
         let mut adapter =
-            RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+            RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
         let invalid_route =
             media_service_route_with_affected_setting(&config, exact_setting_id.clone());
         let RuntimeCommittedUpdate::MediaService(attempted_update) = &invalid_route.update else {
-            panic!("fixture должна передавать MediaService update");
+            panic!("Fixture should be transmitted to MediaService update");
         };
         assert_ne!(
             attempted_update.web_media, config.web_media,
-            "invalid route payload должен требовать observable owner mutation"
+            "The invalid route payload must require an observable owner mutation."
         );
 
         let error = appliers
@@ -274,7 +274,7 @@ fn unknown_and_foreign_media_service_settings_fail_before_any_owner_mutation() {
                 SettingsRouteTargetPolicy::from_config(&config),
                 &mut adapter,
             )
-            .expect_err("invalid MediaService contract должен fail closed");
+            .expect_err("invalid MediaService contract must fail closed");
 
         assert_eq!(
             error,

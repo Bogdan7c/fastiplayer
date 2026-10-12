@@ -325,16 +325,16 @@ impl fmt::Debug for HttpRequestScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HttpRequestTargetError {
     /// Locator не является syntactically valid absolute URL.
-    #[error("некорректный absolute HTTP request target")]
+    #[error("Incorrect absolute HTTP request target")]
     InvalidSyntax,
     /// Scheme не входит в exact HTTP(S) vocabulary.
-    #[error("HTTP request target использует неподдерживаемую схему")]
+    #[error("HTTP request target uses an unsupported scheme")]
     UnsupportedScheme,
     /// Opaque URL нельзя использовать как hierarchical network target.
-    #[error("HTTP request target не является hierarchical URL")]
+    #[error("HTTP request target is not a hierarchical URL")]
     NonHierarchical,
     /// Network target обязан иметь host.
-    #[error("HTTP request target не содержит host")]
+    #[error("HTTP request target does not include host")]
     MissingHost,
 }
 
@@ -393,10 +393,10 @@ impl fmt::Debug for HttpPathScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HttpPathScopeError {
     /// Scope обязан начинаться с `/`.
-    #[error("HTTP path scope должен быть absolute path")]
+    #[error("The HTTP path scope must be absolute path.")]
     NotAbsolute,
     /// Query и fragment не являются частью path scope.
-    #[error("HTTP path scope не может содержать query или fragment")]
+    #[error("HTTP path scope cannot contain query or fragment")]
     ContainsQueryOrFragment,
 }
 
@@ -449,10 +449,10 @@ impl fmt::Debug for ValidatedHttpHeaders {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HttpHeaderValidationError {
     /// Header name нарушает HTTP grammar.
-    #[error("некорректное имя HTTP header")]
+    #[error("The incorrect HTTP header name")]
     InvalidName,
     /// Header value содержит недопустимые bytes.
-    #[error("некорректное значение HTTP header")]
+    #[error("Incorrect value of HTTP header")]
     InvalidValue,
 }
 

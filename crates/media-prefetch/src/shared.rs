@@ -136,7 +136,7 @@ impl PrefetchSharedState {
             offset,
             buffered_end,
             next_fetch_will_materialize_offset,
-            "media prefetch foreground seek сохранил последовательное чтение"
+            "Media prefetch foreground seek preserved sequential reading"
         );
         true
     }

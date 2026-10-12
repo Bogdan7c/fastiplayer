@@ -111,7 +111,7 @@ fn test_output_budgets() -> YtDlpProcessOutputBudgets {
         config.single_item_stderr_limit_bytes,
         config.single_item_json_node_limit,
     )
-    .expect("default output budgets валидны")
+    .expect("default output budgets valid")
 }
 
 /// Собирает test process policy через тот же instance-owned launcher contract.
@@ -136,7 +136,7 @@ fn explicit_output_budgets(
     json_nodes: u64,
 ) -> YtDlpProcessOutputBudgets {
     YtDlpProcessOutputBudgets::new(stdout_bytes, stderr_bytes, json_nodes)
-        .expect("explicit test output budgets валидны")
+        .expect("explicit test output budgets valid")
 }
 
 /// Прямой caller service API не может обойти верхние resource limits AppConfig-а.
@@ -148,7 +148,7 @@ fn process_config_rejects_unvalidated_resource_budget_above_config_maximum() {
     };
 
     let error = YtDlpProcessConfig::from_yt_dlp_config(&config)
-        .expect_err("direct YtDlpConfig caller не должен обходить validation");
+        .expect_err("direct YtDlpConfig caller don't validation");
 
     assert!(matches!(error, YtDlpServiceError::ProcessFailure { .. }));
 }
@@ -198,13 +198,13 @@ impl EscapedProcessGuard {
 impl Drop for EscapedProcessGuard {
     fn drop(&mut self) {
         let Some(process_id) = self.wait_for_process_id() else {
-            eprintln!("escaped fixture не записал PID для cleanup");
+            eprintln!("escaped fixture does not record a cleanup PID");
             return;
         };
         // SAFETY: положительный PID прочитан из app-owned fixture marker-а.
         let kill_result = unsafe { libc::kill(process_id, libc::SIGKILL) };
         if kill_result == -1 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-            eprintln!("escaped fixture PID {process_id} не получил SIGKILL");
+            eprintln!("escaped fixture PID {process_id} didn't get it SIGKILL");
             return;
         }
 
@@ -217,7 +217,7 @@ impl Drop for EscapedProcessGuard {
                 return;
             }
             if cleanup_started_at.elapsed() >= Duration::from_secs(2) {
-                eprintln!("escaped fixture PID {process_id} не был reap-нут вовремя");
+                eprintln!("escaped fixture PID {process_id} did not reap in time");
                 return;
             }
             thread::sleep(Duration::from_millis(10));
@@ -440,7 +440,7 @@ fn process_stdout_exact_boundary_succeeds() {
         explicit_output_budgets(4, 16, 16),
         &|| false,
     )
-    .expect("stdout exact boundary должен быть допустим");
+    .expect("stdout exact boundary must be allowed");
 
     assert!(output.status.success());
     assert_eq!(output.stdout, b"1234");
@@ -468,7 +468,7 @@ fn process_stdout_limit_plus_one_is_typed_and_stops_descendant() {
         explicit_output_budgets(4, 16, 16),
         &|| false,
     )
-    .expect_err("stdout limit + 1 должен остановить process");
+    .expect_err("stdout limit + 1 must stop process");
 
     assert!(matches!(
         error,
@@ -476,13 +476,13 @@ fn process_stdout_limit_plus_one_is_typed_and_stops_descendant() {
     ));
     assert!(started_at.elapsed() < Duration::from_secs(2));
     let descendant_pid = fs::read_to_string(descendant_pid_record)
-        .expect("fixture должен записать descendant PID")
+        .expect("fixture should write down descendant PID")
         .trim()
         .parse::<libc::pid_t>()
-        .expect("fixture descendant PID должен быть числом");
+        .expect("The fixture descendant PID must be a number.");
     assert!(
         !process_id_is_running(descendant_pid),
-        "stdout overflow должен остановить descendant той же process group"
+        "stdout overflow should stop descendant from the same process group."
     );
 }
 
@@ -497,7 +497,7 @@ fn process_stderr_exact_boundary_succeeds_without_payload_capture() {
         explicit_output_budgets(16, 4, 16),
         &|| false,
     )
-    .expect("stderr exact boundary должен быть допустим");
+    .expect("stderr exact boundary must be allowed");
 
     assert!(output.status.success());
     assert_eq!(output.stderr.observed_bytes, 4);
@@ -515,7 +515,7 @@ fn process_stderr_limit_plus_one_is_typed() {
         explicit_output_budgets(16, 4, 16),
         &|| false,
     )
-    .expect_err("stderr limit + 1 должен остановить process");
+    .expect_err("stderr limit + 1 must stop process");
 
     assert!(matches!(
         error,
@@ -548,7 +548,7 @@ printf '%s' '"}'
 
     let document: YtDlpCandidateDocument =
         resolve_yt_dlp_candidate_document_with_cancellation(&locator, &process_config, &|| false)
-            .expect("large valid JSON должен пройти process и DTO boundaries");
+            .expect("large valid JSON must pass process and DTO boundaries");
     let snapshot = normalize_candidate_document(
         document,
         SourceIdentity::new(7007),
@@ -804,7 +804,7 @@ fn process_cancellation_stops_running_child() {
     )
     .expect_err("cancelled process must not complete successfully");
 
-    assert!(error.to_string().contains("отмен"));
+    assert!(error.to_string().contains("canceled"));
     assert!(started_at.elapsed() < Duration::from_secs(1));
 }
 
@@ -818,19 +818,19 @@ fn failed_process_error_redacts_and_bounds_stderr() {
         ],
         Duration::from_secs(1),
     )
-    .expect("test process должен завершиться обычным non-zero status");
+    .expect("The test process must be completed with the normal non-zero status.");
 
     let output_debug = format!("{output:?}");
     assert!(!output_debug.contains("password"));
     assert!(!output_debug.contains("secret"));
 
     let error = ensure_yt_dlp_candidate_success(output.status, output.stderr)
-        .expect_err("non-zero status должен стать typed extractor error");
+        .expect_err("non-zero status should typed extractor error");
     let formatted = format!("{error:?} {error}");
     assert!(!formatted.contains("password"));
     assert!(!formatted.contains("secret"));
     assert!(!formatted.contains("example.test"));
-    assert!(formatted.contains("stderr скрыт"));
+    assert!(formatted.contains("stderr hidden"));
     assert!(formatted.len() < 512);
 }
 
@@ -847,16 +847,16 @@ fn rejected_process_reports_recognized_reason_without_stderr_text() {
          printf 'ERROR: [youtube] https://user:password@example.test/watch?v=secret: Private video. Sign in if you have access\\n' >&2\n\
          exit 1\n",
     )
-    .expect("test script должен создаться");
+    .expect("A test script should be created.");
     let output = run_process_with_timeout(
         script.to_str().expect("test path UTF-8"),
         &[],
         Duration::from_secs(5),
     )
-    .expect("скрипт завершается обычным non-zero status");
+    .expect("The script ends with the usual non-zero status.");
 
     let error = ensure_yt_dlp_candidate_success(output.status, output.stderr)
-        .expect_err("non-zero status должен стать typed extractor error");
+        .expect_err("non-zero status should typed extractor error");
 
     assert!(matches!(
         error,
@@ -881,7 +881,7 @@ fn successful_exit_ignores_error_lines_in_stderr() {
         &["-c", "printf 'ERROR: Private video\\n' >&2; exit 0"],
         Duration::from_secs(5),
     )
-    .expect("процесс завершается успешно");
+    .expect("The process is completed successfully");
 
     assert!(ensure_yt_dlp_candidate_success(output.status, output.stderr).is_ok());
 }
@@ -898,10 +898,10 @@ fn missing_executable_is_typed_not_found() {
         &["--version"],
         Duration::from_secs(5),
     )
-    .expect_err("несуществующий executable не может запуститься");
+    .expect_err("A non-existent executable cannot start.");
 
     assert!(
         matches!(error, YtDlpServiceError::ExecutableNotFound),
-        "получено: {error:?}"
+        "got: {error:?}"
     );
 }

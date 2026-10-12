@@ -16,7 +16,7 @@ fn generation_token(playback: u64, scrub: u64) -> ScrubGenerationToken {
 }
 
 fn target_for_tests(track_id: TrackId, millis: u64) -> ScrubTarget {
-    let time_base = TimeBase::new(1, 1_000).expect("валидная test timebase");
+    let time_base = TimeBase::new(1, 1_000).expect("validation");
     ScrubTarget::new(
         MediaTime::from_millis(millis),
         TrackTimestamp::new(track_id, millis as i64, time_base),
@@ -348,7 +348,7 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
                 ScrubEventFrameIdentity::Video(frame.frame_identity)
             );
         }
-        other => panic!("ожидали normalized Committed event, получили {other:?}"),
+        other => panic!("expected normalized Committed event, received {other:?}"),
     }
 
     match events[6] {
@@ -360,7 +360,7 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
                 ScrubEventFrameIdentity::Video(frame.frame_identity)
             );
         }
-        other => panic!("ожидали normalized MatchedPlayback event, получили {other:?}"),
+        other => panic!("expected normalized MatchedPlayback event, received {other:?}"),
     }
 
     match events[2] {
@@ -370,7 +370,7 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
                 ScrubDriverOutcomeKind::PreTargetReleased
             );
         }
-        other => panic!("ожидали normalized Progress event, получили {other:?}"),
+        other => panic!("expected normalized Progress event, received {other:?}"),
     }
 
     match events[3] {
@@ -380,7 +380,7 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
                 ScrubDriverOutcomeKind::ExactFrameReady
             );
         }
-        other => panic!("ожидали normalized PreviewFrameReady event, получили {other:?}"),
+        other => panic!("expected normalized PreviewFrameReady event, received {other:?}"),
     }
 
     match events[8] {
@@ -397,7 +397,7 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
                 ))
             );
         }
-        other => panic!("ожидали normalized Failed event, получили {other:?}"),
+        other => panic!("expected normalized Failed event, received {other:?}"),
     }
 }
 

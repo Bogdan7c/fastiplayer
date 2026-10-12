@@ -109,7 +109,7 @@ fn parses_positive_and_signed_composition_offsets() {
     unsigned_payload.extend_from_slice(&9_u32.to_be_bytes());
     let unsigned = match parse_trun(&unsigned_payload) {
         Ok(trun) => trun,
-        Err(_) => panic!("valid version 0 trun должен парситься"),
+        Err(_) => panic!("The valid version 0 trun should be parsed"),
     };
     assert_eq!(unsigned.sample_composition_offset(0), 7);
     assert_eq!(unsigned.sample_composition_offset(1), 9);
@@ -119,7 +119,7 @@ fn parses_positive_and_signed_composition_offsets() {
     signed_payload.extend_from_slice(&(-4_i32).to_be_bytes());
     let signed = match parse_trun(&signed_payload) {
         Ok(trun) => trun,
-        Err(_) => panic!("valid version 1 trun должен парситься"),
+        Err(_) => panic!("The valid version 1 trun must be parsed"),
     };
     assert_eq!(signed.sample_composition_offset(0), -4);
 }

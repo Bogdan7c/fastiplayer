@@ -36,7 +36,7 @@ pub(crate) enum OperationalOpenLocatorError {
     #[error("{0}")]
     Service(#[from] YtDlpDurableReopenDecodeError),
     /// Категория payload-а не является stable identity (конструктор payload-а такое не создаёт).
-    #[error("Сохранённые данные ролика не годятся для повторного открытия")]
+    #[error("The saved data of the video is not suitable for reopening")]
     NotStableIdentity,
 }
 

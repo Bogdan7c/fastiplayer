@@ -260,7 +260,7 @@ impl fmt::Display for CachedMetadataError {
         match self {
             Self::ArtistsLimitExceeded { provided, maximum } => write!(
                 formatter,
-                "artists list содержит {provided} значений при лимите {maximum}"
+                "artists list contains {provided} values; the limit is {maximum}"
             ),
         }
     }

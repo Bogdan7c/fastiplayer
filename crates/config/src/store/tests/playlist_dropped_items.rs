@@ -80,7 +80,7 @@ fn custom_drop_settings_roundtrip_through_file() {
 fn out_of_range_drop_limits_are_rejected_with_field_name() {
     let mut zero_files = AppConfig::default();
     zero_files.playlist.dropped_folder_max_files = MIN_DROPPED_FOLDER_MAX_FILES - 1;
-    let error = zero_files.validate().expect_err("0 файлов недопустимо");
+    let error = zero_files.validate().expect_err("0 files are unacceptable");
     assert!(
         error
             .to_string()
@@ -93,7 +93,7 @@ fn out_of_range_drop_limits_are_rejected_with_field_name() {
 
     let mut too_deep = AppConfig::default();
     too_deep.playlist.dropped_folder_max_depth = MAX_DROPPED_FOLDER_MAX_DEPTH + 1;
-    let error = too_deep.validate().expect_err("слишком глубоко");
+    let error = too_deep.validate().expect_err("deeply");
     assert!(
         error
             .to_string()

@@ -110,7 +110,7 @@ fn deferred_hls_like_absent_codec_keeps_resolution_switch_and_automatic_codec() 
         catalog
             .automatic_quality_target(WebMediaAutomaticQualityDirection::Lower)
             .is_none(),
-        "720p — нижняя ступень этого fixture"
+        "720p is the lower rung of this fixture."
     );
 }
 
@@ -338,19 +338,19 @@ fn catalog_from_attachment_matches_direct_construction_and_keeps_attachment() {
         vec![fixture_choice(1), fixture_choice(2)],
         WebMediaSelectionTarget::Fixture(2),
     )
-    .expect("fixture attachment согласован");
+    .expect("fixture attachment agreed");
     let attachment_before = attachment.clone();
 
     let from_attachment =
         WebMediaCatalog::from_attachment(12, Some(parent_generation), &attachment)
-            .expect("согласованный attachment строит catalog");
+            .expect("Consistent attachment builds a catalog");
     let direct = WebMediaCatalog::new(
         12,
         Some(parent_generation),
         attachment.choices(),
         attachment.active(),
     )
-    .expect("прямая сборка из тех же choices/active");
+    .expect("direct assembly of the same choices/active");
 
     assert_eq!(from_attachment, direct);
     assert_eq!(from_attachment.generation(), 12);
@@ -372,7 +372,7 @@ fn installed_only_attachment_builds_catalog_without_parent_generation() {
     let attachment = WebMediaCatalogAttachment::installed_only();
 
     let catalog = WebMediaCatalog::from_attachment(3, None, &attachment)
-        .expect("installed-only attachment строит catalog");
+        .expect("installed-only attachment builds a catalog");
 
     assert_eq!(catalog.generation(), 3);
     assert_eq!(catalog.parent_generation(), None);

@@ -376,7 +376,7 @@ impl DiscoveryActionJobs {
                 if demand_still_current(controller, demand) {
                     let recorded = controller.mark_committed_source_unavailable(
                         demand.item_id,
-                        Arc::from("Источник временно недоступен"),
+                        Arc::from("Source temporarily unavailable"),
                     );
                     if recorded
                         != super::super::controller::RuntimeErrorCorrelationOutcome::Recorded

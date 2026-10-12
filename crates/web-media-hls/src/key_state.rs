@@ -137,9 +137,9 @@ impl ExtractorAesOverride {
 /// Недопустимые значения extractor override.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ExtractorAesOverrideError {
-    #[error("extractor AES key hex не кодирует exact 16-byte key")]
+    #[error("extractor AES key hex does not encode an exact 16-byte key")]
     InvalidKeyHex,
-    #[error("extractor AES IV hex не помещается в 16 bytes")]
+    #[error("extractor AES IV hex does not fit in 16 bytes")]
     InvalidIvHex,
 }
 
@@ -212,17 +212,17 @@ impl HlsKeyState {
 /// Типизированные profile/key-state ошибки до network/player mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HlsKeyStateError {
-    #[error("HLS key file должен содержать ровно 16 bytes")]
+    #[error("The HLS key file must contain exactly 16 bytes.")]
     InvalidKeyLength,
-    #[error("HLS encryption method не поддерживается")]
+    #[error("HLS encryption method is not supported")]
     UnsupportedMethod,
-    #[error("HLS KEYFORMAT не равен identity")]
+    #[error("HLS KEYFORMAT is not identity")]
     UnsupportedKeyFormat,
-    #[error("AES-128 declaration не содержит key URI")]
+    #[error("AES-128 declaration does not contain a key URI")]
     MissingKeyUri,
-    #[error("encrypted EXT-X-MAP требует explicit IV")]
+    #[error("encrypted EXT-X-MAP requires an explicit IV")]
     EncryptedMapRequiresExplicitIv,
-    #[error("initialization map заявляет encryption без active key")]
+    #[error("initialization map declares encryption without active key")]
     MissingActiveKey,
 }
 

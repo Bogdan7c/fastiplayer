@@ -86,7 +86,7 @@ fn playable_item_id_at(queue: &PlaylistQueue, row_index: usize) -> PlaylistItemI
     queue
         .iter_playable_ids()
         .nth(row_index)
-        .expect("fixture должен содержать playable строку по заданной позиции")
+        .expect("fixture must contain a playable line for a given position")
 }
 
 /// Формирует deterministic viewport для настоящего headless egui interaction pass.
@@ -1265,7 +1265,7 @@ fn error_retry_and_failed_navigation_have_distinct_accessibility() {
         active: true,
         pending: true,
         selected: true,
-        safe_error_summary: Some("Источник временно недоступен".into()),
+        safe_error_summary: Some("Source temporarily unavailable".into()),
     });
     let failed = PlaylistVisibleRow::from_test_fixture(PlaylistVisibleRowTestFixture {
         item_id,
@@ -1276,16 +1276,16 @@ fn error_retry_and_failed_navigation_have_distinct_accessibility() {
         active: false,
         pending: false,
         selected: false,
-        safe_error_summary: Some("Источник временно недоступен".into()),
+        safe_error_summary: Some("Source temporarily unavailable".into()),
     });
 
     let retrying_text = accessibility_text(0, &retrying);
     let failed_text = accessibility_text(0, &failed);
-    assert!(retrying_text.contains("Тип: Видео"));
-    assert!(retrying_text.contains("Предыдущая попытка завершилась ошибкой"));
-    assert!(retrying_text.contains("выполняется повторная попытка"));
-    assert!(failed_text.contains("Ошибка"));
-    assert!(!failed_text.contains("повторная попытка"));
+    assert!(retrying_text.contains("Type: Video"));
+    assert!(retrying_text.contains("The previous attempt failed"));
+    assert!(retrying_text.contains("retrying"));
+    assert!(failed_text.contains("Error"));
+    assert!(!failed_text.contains("retrying"));
 
     // Фраза о предыдущем воспроизведении зависит от реального состояния плеера.
     let failed_selection = PlaylistNavigationView::AwaitingUserAfterFailure {
@@ -1300,18 +1300,18 @@ fn error_retry_and_failed_navigation_have_distinct_accessibility() {
     let playing = message_for(PreviousPlayback::Playing);
     let paused = message_for(PreviousPlayback::Paused);
     let nothing = message_for(PreviousPlayback::NothingPlaying);
-    assert!(playing.contains("Предыдущий трек продолжает играть"));
-    assert!(paused.contains("Предыдущий трек остался на паузе"));
-    assert!(!nothing.contains("Предыдущий трек"), "{nothing}");
+    assert!(playing.contains("The previous track is still playing"));
+    assert!(paused.contains("The previous track is still paused"));
+    assert!(!nothing.contains("The previous track"), "{nothing}");
     for text in [playing, paused, nothing] {
-        assert!(text.contains("Автопереход остановлен"), "{text}");
-        assert!(text.contains("«Следующий»"), "{text}");
-        assert!(text.contains("«Повторить»"), "{text}");
+        assert!(text.contains("Automatic advance is stopped"), "{text}");
+        assert!(text.contains("Next"), "{text}");
+        assert!(text.contains("Retry"), "{text}");
         assert!(
-            !text.contains("Next") && !text.contains("Previous"),
+            !text.contains("NextItem") && !text.contains("PreviousItem"),
             "{text}"
         );
-        assert!(!text.contains("курсор"), "{text}");
+        assert!(!text.contains("cursor"), "{text}");
     }
 }
 
@@ -1327,7 +1327,7 @@ fn save_warning_exposes_retry_and_unavailable_row_stays_non_modal() {
         attempt: PlaylistSaveAttempt::for_test(3),
     })
     .expect("D69 warning");
-    assert!(warning.contains("Повтор сохранения доступен"));
+    assert!(warning.contains("Retry is available"));
 
     let unavailable = PlaylistVisibleRow::from_test_fixture(PlaylistVisibleRowTestFixture {
         item_id: PlaylistItemId::from_persistence_value(9).unwrap(),
@@ -1338,10 +1338,10 @@ fn save_warning_exposes_retry_and_unavailable_row_stays_non_modal() {
         active: false,
         pending: false,
         selected: false,
-        safe_error_summary: Some("Файл недоступен".into()),
+        safe_error_summary: Some("File unavailable".into()),
     });
-    assert!(accessibility_text(8, &unavailable).contains("Файл недоступен"));
-    assert!(accessibility_text(8, &unavailable).contains("Тип: Медиа"));
+    assert!(accessibility_text(8, &unavailable).contains("File unavailable"));
+    assert!(accessibility_text(8, &unavailable).contains("Type: Media"));
 }
 
 #[test]
@@ -1362,7 +1362,7 @@ fn long_and_unicode_safe_text_does_not_expand_visible_hint() {
     let text = accessibility_text(0, &row);
 
     assert!(text.contains("безопасное отображение non-UTF-8 имени"));
-    assert!(text.contains("Тип: Аудио"));
+    assert!(text.contains("Type: Audio"));
 }
 
 /// Создаёт один compound header с двумя exact playable parts без filesystem I/O.
@@ -1372,13 +1372,13 @@ fn compound_queue() -> (PlaylistQueue, PlaylistEntryId, Vec<PlaylistItemId>) {
         CachedPlaylistMetadata::new("Альбом", PlaylistMediaKind::Audio),
         vec![draft(1), draft(2)],
     )
-    .expect("compound fixture содержит две части");
+    .expect("Compound fixture is two parts");
     let mut queue = PlaylistQueue::new();
     let AddPlaylistEntriesOutcome::Added(allocated) = queue
         .append_entries(vec![PlaylistEntryDraft::Compound(group)])
-        .expect("compound fixture добавляется атомарно")
+        .expect("compound fixture is added atomically")
     else {
-        panic!("непустой compound fixture обязан выделить identities");
+        panic!("Non-empty compound fixture must identify identities");
     };
     let entry_id = allocated.iter_entry_ids().next().expect("header identity");
     let part_item_ids = allocated.iter_playable_item_ids().collect();
@@ -1569,11 +1569,11 @@ fn compound_accesskit_exposes_expanded_header_and_child_buttons() {
             .iter()
             .filter(|node| {
                 node.label()
-                    .is_some_and(|label| label.contains("Вложенная часть"))
+                    .is_some_and(|label| label.contains("Nested part"))
             })
             .count(),
         2,
-        "обе exact parts должны иметь отдельные accessible names"
+        "Both exact parts must have separate accessible names."
     );
 
     let assistive_actions = render_playlist_input(

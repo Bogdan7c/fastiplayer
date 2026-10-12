@@ -76,7 +76,7 @@ fn diagnostics_queue_snapshot_reports_video_recovery_staging_without_mutation() 
     let _proof_keyframe = session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен считаться уже переданным decoder-у");
+        .expect("The proof keyframe must be considered decoder already");
     session.pipeline.mark_video_decoder_bootstrapped();
     assert_eq!(
         session.pipeline.begin_video_backlog_recovery_scan(
@@ -140,11 +140,11 @@ fn diagnostics_records_latency_drop_and_wakeup_with_queue_attribution() {
         .worst_latencies
         .worker_scheduler
         .worst
-        .expect("worker scheduler latency sample должен сохраниться");
+        .expect("Worker scheduler latency sample should be retained");
     let drop_attribution = diagnostics
         .drops
         .last
-        .expect("video drop attribution должен сохраниться");
+        .expect("Video drop attribution should be retained");
 
     assert_eq!(latency_sample.queues.pending_audio_packets, 1);
     assert_eq!(latency_sample.queues.pending_video_packets, 1);

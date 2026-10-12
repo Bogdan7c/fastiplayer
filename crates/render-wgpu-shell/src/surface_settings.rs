@@ -50,7 +50,7 @@ pub(crate) fn choose_present_mode(
         present_modes
             .first()
             .copied()
-            .context("Surface capabilities не вернул ни одного present mode")
+            .context("Surface capabilities have not returned any present mode")
     };
     let requested = match preference {
         ShellPresentMode::Auto => return auto_choice(),
@@ -61,7 +61,7 @@ pub(crate) fn choose_present_mode(
     if present_modes.contains(&requested) {
         return Ok(requested);
     }
-    tracing::warn!(requested = ?requested, available = ?present_modes, "Запрошенный present mode не поддержан surface-ом; откат к FIFO/первому доступному");
+    tracing::warn!(requested = ?requested, available = ?present_modes, "Requested present mode not supported by surface; rollback to FIFO/first available");
     auto_choice()
 }
 
@@ -112,7 +112,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("Surface capabilities не вернул ни одного present mode")
+                .contains("Surface capabilities have not returned any present mode")
         );
     }
 }

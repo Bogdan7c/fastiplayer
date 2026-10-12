@@ -641,7 +641,7 @@ impl video_core::VideoDecoderThreadHandle for RecordingVideoDecoderThread {
 /// Создаёт capabilities, где аппаратный backend принимает только VP9 Profile 0.
 fn capabilities_with_vp9_profile0_for_decoder_io() -> capability_core::SystemCapabilities {
     let backend_id = codec_core::DecodeBackendId::new("decoder_io_test_backend")
-        .expect("test backend id должен быть валидным");
+        .expect("The test backend id must be valid.");
     let output = capability_core::SupportedVideoOutput {
         backend: backend_id.clone(),
         decode_format: codec_core::SupportedVideoDecodeFormat {
@@ -684,7 +684,7 @@ fn capabilities_with_vp9_profile0_and_profile2_for_decoder_io()
 -> capability_core::SystemCapabilities {
     let mut capabilities = capabilities_with_vp9_profile0_for_decoder_io();
     let backend_id = codec_core::DecodeBackendId::new("decoder_io_profile_two")
-        .expect("test backend id должен быть валидным");
+        .expect("The test backend id must be valid.");
     let output = capability_core::SupportedVideoOutput {
         backend: backend_id.clone(),
         decode_format: codec_core::SupportedVideoDecodeFormat {
@@ -970,9 +970,7 @@ fn front_frame_scheduler_delay_uses_audio_media_mapping_for_playback_rate() {
         Duration::from_millis(250)
     );
     assert_eq!(
-        audio_clock_scheduler_delay_for(
-            PlaybackRate::new(0.5).expect("0.5x rate должен быть валиден")
-        ),
+        audio_clock_scheduler_delay_for(PlaybackRate::new(0.5).expect("0.5x rate must be valid")),
         Duration::from_secs(2)
     );
 }
@@ -1876,7 +1874,7 @@ fn audio_catchup_recovery_keeps_runway_until_proven_keyframe() {
     install_fixed_audio_output(&mut session, 1_000.0);
     assert!(
         !can_read_next_demux_packet_with_audio_priority(&session, &tick_config, false),
-        "audio high-water обязан приостановить даже уже активный recovery scan"
+        "audio high-water It is necessary to suspend even the already active recovery scan"
     );
     install_fixed_audio_output(&mut session, 40.0);
     assert!(can_read_next_demux_packet_with_audio_priority(
@@ -2001,7 +1999,7 @@ fn pause_and_rate_changes_preserve_accelerated_scan_and_restore_on_slowdown() {
     let proof_keyframe = session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен считаться уже переданным decoder-у");
+        .expect("The proof keyframe must be considered decoder already");
     assert_eq!(
         proof_keyframe.encoded_bytes,
         Bytes::from_static(b"recovery-proof-keyframe")
@@ -2055,7 +2053,8 @@ fn pause_and_rate_changes_preserve_accelerated_scan_and_restore_on_slowdown() {
         1
     );
 
-    let changed_rate = PlaybackRate::new(2.0).expect("2x должен входить в validated range");
+    let changed_rate =
+        PlaybackRate::new(2.0).expect("2x should be included in the validated range.");
     assert_eq!(
         session
             .dispatch_command(PlayerCommand::SetPlaybackRate(changed_rate))
@@ -2069,7 +2068,8 @@ fn pause_and_rate_changes_preserve_accelerated_scan_and_restore_on_slowdown() {
         1
     );
 
-    let slow_rate = PlaybackRate::new(0.5).expect("0.5x должен входить в validated range");
+    let slow_rate =
+        PlaybackRate::new(0.5).expect("0.5x should be included in the validated range.");
     assert_eq!(
         session
             .dispatch_command(PlayerCommand::SetPlaybackRate(slow_rate))
@@ -2087,11 +2087,11 @@ fn pause_and_rate_changes_preserve_accelerated_scan_and_restore_on_slowdown() {
     let old_runway_packet = session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("старый decoder runway должен остаться первым");
+        .expect("The old decoder runway should be the first.");
     let restored_staged_packet = session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("staged continuation должен быть восстановлен после runway");
+        .expect("Staged continuation must be restored after runway");
     assert_eq!(
         old_runway_packet.encoded_bytes,
         Bytes::from_static(b"old-decoder-runway")
@@ -2213,7 +2213,7 @@ fn demux_audio_catchup_preserves_runway_until_stream_provides_proven_keyframe() 
     session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+        .expect("Proof keyframe should simulate the already sent decoder packet");
     for packet_index in 0..5u64 {
         session
             .pipeline
@@ -2235,7 +2235,7 @@ fn demux_audio_catchup_preserves_runway_until_stream_provides_proven_keyframe() 
     assert_eq!(
         session.pipeline.pending_video_packet_len(),
         preserved_backlog_len,
-        "первый scanned interframe не должен очищать decodable runway"
+        "The first scanned interframe should not clear the decodable runway."
     );
     assert_eq!(
         session.pipeline.video_backlog_recovery_staged_packet_len(),
@@ -2379,7 +2379,7 @@ fn video_backlog_recovery_scan_limit_bounds_packets_and_tick_telemetry() {
     session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+        .expect("Proof keyframe should simulate the already sent decoder packet");
     for packet_index in 0..5u64 {
         session
             .pipeline
@@ -2505,7 +2505,7 @@ fn production_recovery_scan_reaches_keyframe_after_target_asset_long_gop() {
     session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+        .expect("Proof keyframe should simulate the already sent decoder packet");
     for packet_index in 0..5u64 {
         session
             .pipeline
@@ -2525,11 +2525,11 @@ fn production_recovery_scan_reaches_keyframe_after_target_asset_long_gop() {
     };
     assert!(
         tick_config.max_video_backlog_recovery_scan_packets > 420,
-        "production scan limit обязан покрывать измеренный 420-frame GOP"
+        "production scan limit must cover the measured 420-frame GOP"
     );
     assert!(
         tick_config.max_video_backlog_recovery_scan_bytes > TARGET_ASSET_MAX_GOP_COMPRESSED_BYTES,
-        "production byte limit обязан покрывать измеренный 20.63 MiB GOP payload"
+        "production byte limit must cover the measured 20.63 MiB GOP payload"
     );
     let mut tick_result = PlayerTickResult::default();
 
@@ -2837,7 +2837,7 @@ fn temporary_demux_readiness_stops_current_pass_without_eof_or_error_mapping() {
     let mut tick_result = PlayerTickResult::default();
     let read_count = Arc::new(AtomicUsize::new(0));
     let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(25))
-        .expect("focused retry delay должен быть допустим");
+        .expect("A focused retry delay should be allowed.");
     let demuxer = AdmissionTestDemuxer::with_events([
         media_core::DemuxReadEvent::TemporarilyUnavailable(retry_hint),
         media_core::DemuxReadEvent::EndOfStream,
@@ -2848,7 +2848,7 @@ fn temporary_demux_readiness_stops_current_pass_without_eof_or_error_mapping() {
         .install_opened_media(Box::new(demuxer), None, None, Vec::new());
     session
         .dispatch_command(PlayerCommand::Play)
-        .expect("play intent должен примениться к focused session");
+        .expect("Play intent should apply to a focused session");
 
     let packets_read = read_demux_packets(
         &mut session,
@@ -2872,7 +2872,7 @@ fn installed_demux_retry_avoids_busy_spin_and_recovers_buffering_on_packet() {
     let tick_config = PlayerTickConfig::default();
     let read_count = Arc::new(AtomicUsize::new(0));
     let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(20))
-        .expect("focused retry delay должен быть допустим");
+        .expect("A focused retry delay should be allowed.");
     let recovered_packet = media_core::Packet::new_unbounded(
         media_core::TrackId::new(7),
         TrackKind::Video,
@@ -2905,7 +2905,7 @@ fn installed_demux_retry_avoids_busy_spin_and_recovers_buffering_on_packet() {
                 tick_config.audio_demux_low_water_mark_ms,
             ),
         )
-        .expect("drained retry должен войти в Buffering без audio output");
+        .expect("drained retry must be included in Buffering without audio output");
     assert_eq!(session.playback_state(), PlaybackState::Buffering);
     assert_eq!(read_count.load(Ordering::Relaxed), 1);
 
@@ -2946,12 +2946,12 @@ fn installed_demux_retry_avoids_busy_spin_and_recovers_buffering_on_packet() {
     assert_eq!(
         session.playback_state(),
         PlaybackState::Buffering,
-        "первый packet доказывает recovery source-а, но не playback readiness"
+        "The first packet proves recovery source, but not playback readiness"
     );
     assert!(
         session
             .finish_autoplay_preroll_if_ready(tick_config.audio_preroll_target_ms)
-            .expect("empty-track fixture должна пройти existing preroll gate")
+            .expect("Empty-track fixture can be used in the existing preroll gate")
     );
     assert_eq!(session.playback_state(), PlaybackState::Playing);
     assert!(session.snapshot().last_error.is_none());
@@ -3009,9 +3009,9 @@ fn expired_demux_retry_waits_for_full_video_pipeline_capacity() {
     let retry_delay = Duration::from_millis(1);
     let retry_observed_at = planned_at
         .checked_sub(retry_delay)
-        .expect("focused deadline должен помещаться перед planned instant");
+        .expect("A focused deadline must be placed before the planned instant.");
     let retry_hint = media_core::DemuxRetryHint::new(retry_delay)
-        .expect("focused retry delay должен быть допустим");
+        .expect("A focused retry delay should be allowed.");
     session.schedule_installed_demux_retry(retry_observed_at, retry_hint);
 
     assert_eq!(
@@ -3031,17 +3031,17 @@ fn expired_demux_retry_waits_for_full_video_pipeline_capacity() {
     assert_eq!(
         session.installed_demux_retry_delay(planned_at),
         Some(Duration::ZERO),
-        "downstream backpressure не должен очищать retry fence"
+        "downstream backpressure should not retry fence"
     );
 
     let _pending_packet = session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("focused pending queue должна быть заполнена");
+        .expect("Focused pending queue must be filled in");
     let _queued_frame = session
         .pipeline
         .pop_queued_video_frame_front()
-        .expect("focused present queue должна быть заполнена");
+        .expect("Focused present queue must be filled in");
     session
         .pipeline
         .set_video_decoder_thread(RecordingVideoDecoderThread::new());
@@ -3069,7 +3069,7 @@ fn installed_demux_retry_deadline_is_stale_after_seek_replace_and_shutdown() {
     let mut session = PlayerSession::new();
     let tick_config = PlayerTickConfig::default();
     let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(50))
-        .expect("focused retry delay должен быть допустим");
+        .expect("A focused retry delay should be allowed.");
     session.pipeline.install_opened_media(
         Box::new(AdmissionTestDemuxer::new()),
         None,
@@ -3101,7 +3101,7 @@ fn installed_demux_retry_deadline_is_stale_after_seek_replace_and_shutdown() {
     assert!(session.installed_demux_read_is_blocked(Instant::now()));
     session
         .dispatch_command(PlayerCommand::Shutdown)
-        .expect("shutdown должен очистить installed demux retry");
+        .expect("Shutdown should clean installed demux retry");
     assert!(!session.installed_demux_read_is_blocked(Instant::now()));
     let wakeup_after_shutdown = session.worker_wakeup_plan(
         Instant::now(),
@@ -3124,7 +3124,7 @@ fn demux_retry_tie_break_preserves_existing_work_first() {
     let planned_at = Instant::now();
     let shared_delay = Duration::from_millis(20);
     let retry_hint = media_core::DemuxRetryHint::new(shared_delay)
-        .expect("focused retry delay должен быть допустим");
+        .expect("A focused retry delay should be allowed.");
     session.schedule_installed_demux_retry(planned_at, retry_hint);
     let existing_plan = PlayerWorkerWakeupPlan {
         delay: Some(shared_delay),
@@ -3177,7 +3177,7 @@ fn route_demuxed_audio_packet_preserves_shared_payload_and_metadata() {
     let pending_packet = session
         .pipeline
         .pop_pending_audio_packet_front()
-        .expect("audio packet должен попасть в pending audio queue");
+        .expect("The audio packet must be included in the pending audio queue");
 
     assert_eq!(pending_packet.track_id(), TrackId::new(2));
     assert_eq!(pending_packet.pts(), Duration::from_millis(42));
@@ -3196,7 +3196,7 @@ fn route_demuxed_audio_packet_preserves_shared_payload_and_metadata() {
         pending_packet
             .timing()
             .time_base()
-            .expect("audio pending packet должен сохранить raw time base")
+            .expect("An audio pending packet should save the raw time base.")
             .denom(),
         48_000
     );
@@ -3236,7 +3236,7 @@ fn route_demuxed_video_packet_preserves_shared_payload_keyframe_and_pts() {
     let pending_packet = session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("video packet должен попасть в pending video queue");
+        .expect("The video packet should be included in the pending video queue.");
 
     assert_eq!(pending_packet.track_id, TrackId::new(1));
     assert_eq!(pending_packet.pts, Duration::from_millis(120));
@@ -3248,7 +3248,7 @@ fn route_demuxed_video_packet_preserves_shared_payload_keyframe_and_pts() {
     assert_eq!(
         pending_packet
             .track_pts
-            .expect("video pending packet должен сохранить raw PTS")
+            .expect("The video pending packet will save the raw PTS")
             .units
             .get(),
         10_800
@@ -3256,7 +3256,7 @@ fn route_demuxed_video_packet_preserves_shared_payload_keyframe_and_pts() {
     assert_eq!(
         pending_packet
             .track_dts
-            .expect("video pending packet должен сохранить raw DTS")
+            .expect("The video pending packet should retain the raw DTS")
             .units
             .get(),
         7_200
@@ -3383,7 +3383,7 @@ fn pending_video_packet_preserves_track_timestamps_through_decode_boundary() {
     let sent_packet = decoder_thread
         .sent_packets()
         .pop()
-        .expect("decoder должен получить packet");
+        .expect("Decoder should receive packet.");
     assert_eq!(sent_packet.pts, Duration::from_millis(120));
     assert_eq!(sent_packet.dts, Some(Duration::from_millis(80)));
     assert_eq!(sent_packet.track_pts, Some(track_pts));
@@ -3824,7 +3824,7 @@ fn suppressed_preroll_diagnostic_increments_matching_active_seek_counter_only() 
     );
     let diagnostics = session
         .active_seek_diagnostics(Instant::now(), &PlayerTickConfig::default())
-        .expect("active seek diagnostics должны оставаться доступны");
+        .expect("Active search diagnostics should be available.");
 
     assert_eq!(drained_frames, 0);
     assert_eq!(
@@ -3874,7 +3874,7 @@ fn decoder_packet_send_fatal_error_marks_session_failed() {
         .snapshot()
         .last_error
         .as_ref()
-        .expect("fatal decoder send должен записать last_error");
+        .expect("fatal decoder send should record last_error");
     assert_eq!(last_error.kind, PlayerErrorKind::RuntimeError);
     assert!(last_error.message.contains("fatal send failure"));
 }
@@ -3972,7 +3972,7 @@ fn released_handles_after_contract_mismatch_batch(
 ) -> Vec<video_core::FrameResourceHandle> {
     assert!(
         mismatch_frame_index < 3,
-        "mismatch index должен указывать на один из трёх test frames"
+        "The mismatch index should indicate one of the three test frames."
     );
 
     let mut session = PlayerSession::new();
@@ -4016,7 +4016,7 @@ fn released_handles_after_contract_mismatch_batch(
     assert_eq!(
         drained_frames,
         accepted_handles.len(),
-        "один receive-pass обязан извлечь весь scripted batch до проверки контрактов"
+        "One receive-pass must retrieve all scripted batch prior to contract verification"
     );
 
     session.clear_video_frames();
@@ -4038,7 +4038,7 @@ fn first_contract_mismatch_releases_every_frame_extracted_in_the_batch_once() {
             video_core::FrameResourceHandle(82),
             video_core::FrameResourceHandle(83),
         ],
-        "mismatch первого кадра не должен терять release двух оставшихся handles"
+        "The first frame mismatch must not lose the release of the two remaining handles."
     );
 }
 
@@ -4051,7 +4051,7 @@ fn second_contract_mismatch_releases_every_frame_extracted_in_the_batch_once() {
             video_core::FrameResourceHandle(82),
             video_core::FrameResourceHandle(83),
         ],
-        "mismatch второго кадра не должен терять release последнего handle"
+        "The second frame mismatch must not lose the last handle release."
     );
 }
 
@@ -4265,9 +4265,9 @@ fn packet_refinement_rejection_stops_before_decoder_send() {
         .snapshot()
         .last_error
         .as_ref()
-        .expect("rejected bitstream refinement должен стать fatal before send");
+        .expect("Rejected bitstream refinement must be fatal before sending");
     assert_eq!(last_error.kind, PlayerErrorKind::UnsupportedVideoProfile);
-    assert!(last_error.message.contains("profile VP9 Profile 2"));
+    assert!(last_error.message.contains("Profile VP9 Profile 2"));
 }
 
 /// Packet, который потребовал другой backend, остаётся в FIFO и ни на одном

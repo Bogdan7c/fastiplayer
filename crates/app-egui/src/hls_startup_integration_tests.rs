@@ -379,7 +379,7 @@ fn stale_native_restore_keeps_beginning_candidate_and_routes_typed_warning_witho
                 available_position: Duration::ZERO,
             }),
         },
-        "Continue сохраняет installed/current candidate и не создаёт player/demux seek"
+        "Continue saves installed/current candidate and does not create player/demux seek"
     );
     assert_eq!(receipt_probe.poll_seek_receipt(), None);
     assert_eq!(server.request_count("/stale.m3u8"), 1);

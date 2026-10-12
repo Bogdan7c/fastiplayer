@@ -44,7 +44,7 @@ pub(super) fn start_cpu_executor() -> Option<BoundedExecutor> {
     .inspect_err(|error| {
         tracing::error!(
             ?error,
-            "CPU executor сортировки плейлиста не запустился; metadata sort недоступен"
+            "CPU executor sort playlist not started; metadata sort not available"
         );
     })
     .ok()

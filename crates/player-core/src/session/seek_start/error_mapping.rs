@@ -26,7 +26,7 @@ pub(super) fn player_error_from_seek_demux_request_error(
     match error {
         SeekDemuxRequestError::UnsupportedSeekMode { mode } => PlayerError::new(
             PlayerErrorKind::SeekUnavailable,
-            format!("Seek mode {mode:?} пока не поддерживается текущим demux contract"),
+            format!("Seek mode {mode:?} is not supported by the current demux contract."),
         ),
     }
 }

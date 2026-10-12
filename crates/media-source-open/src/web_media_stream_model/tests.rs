@@ -45,11 +45,11 @@ fn exact_parent(source: u64, extraction: u64) -> ExactSelectionIdentity {
         source,
         web_media_core::ExtractionGeneration::new(extraction),
         web_media_core::CandidateFormatIdentity::new("active-parent")
-            .expect("fixture exact identity валидна"),
+            .expect("Fixture exact identity valid"),
     );
     let semantic = web_media_core::SemanticIdentity::new(source, "semantic-parent")
-        .expect("fixture semantic identity валидна");
-    ExactSelectionIdentity::new(exact, semantic).expect("fixture source lineage совпадает")
+        .expect("fixture semantic identity valid");
+    ExactSelectionIdentity::new(exact, semantic).expect("fixture source lineage is the same as")
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn installed_hls_subtitles_survive_configuration_clone_without_locator() {
         .with_hls_subtitle_renditions(Arc::from([rendition]));
     let rebuilt = configured.clone();
     let [retained] = rebuilt.hls_subtitle_renditions() else {
-        panic!("exact installed rendition должен сохраниться");
+        panic!("The exact installed rendition must be maintained.");
     };
     assert_eq!(retained.group_id(), "subs");
     assert_eq!(retained.name(), "English");
@@ -90,13 +90,13 @@ fn stale_generation_cannot_resolve_neutral_switch_selection() {
         configuration
             .selection_for_switch(stale_generation, 0)
             .is_none(),
-        "stale generation не должна получить exact neutral selection"
+        "The stale generation does not receive exact neutral selection."
     );
     assert!(
         configuration
             .selection_for_switch(current_generation, 0)
             .is_some(),
-        "matching generation должна получить bounded selection"
+        "matching generation should receive bounded selection"
     );
 }
 

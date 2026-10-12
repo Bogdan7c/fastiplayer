@@ -18,7 +18,7 @@ const PREFETCH_WORKER_THREAD_NAME: &str = "media-prefetch";
 
 /// Ошибка запуска background worker-а до публикации готового byte source вызывающему коду.
 #[derive(Debug, thiserror::Error)]
-#[error("не удалось запустить worker thread `{thread_name}`: {source}")]
+#[error("failed to launch worker thread `{thread_name}`: {source}")]
 pub struct PrefetchStartupError {
     /// Имя потока сохраняет контекст fallible OS boundary.
     thread_name: &'static str,
@@ -254,11 +254,8 @@ impl Drop for PrefetchingByteSource {
                 .downcast_ref::<&'static str>()
                 .copied()
                 .or_else(|| panic_payload.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("panic payload не является строкой");
-            tracing::error!(
-                panic_message,
-                "media-prefetch worker thread завершился panic-ом"
-            );
+                .unwrap_or("panic payload is not a string");
+            tracing::error!(panic_message, "media-prefetch worker thread panicked");
         }
     }
 }
@@ -337,7 +334,7 @@ mod tests {
         fn read_records(&self) -> Vec<ReadRecord> {
             self.state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned")
+                .expect("Fake state mutex should not be poisoned.")
                 .read_records
                 .clone()
         }
@@ -346,7 +343,7 @@ mod tests {
         fn seek_offsets(&self) -> Vec<u64> {
             self.state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned")
+                .expect("Fake state mutex should not be poisoned.")
                 .seek_offsets
                 .clone()
         }
@@ -399,7 +396,7 @@ mod tests {
         fn with_read_delay(self, read_delay: Duration) -> Self {
             self.state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned")
+                .expect("Fake state mutex should not be poisoned.")
                 .read_delay = read_delay;
             self
         }
@@ -408,7 +405,7 @@ mod tests {
         fn with_wait_until_cancelled(self) -> Self {
             self.state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned")
+                .expect("Fake state mutex should not be poisoned.")
                 .wait_until_cancelled = true;
             self
         }
@@ -417,7 +414,7 @@ mod tests {
         fn with_fail_on_read_call(self, read_call: usize) -> Self {
             self.state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned")
+                .expect("Fake state mutex should not be poisoned.")
                 .fail_on_read_call = Some(read_call);
             self
         }
@@ -496,7 +493,7 @@ mod tests {
             });
         }
 
-        let start = usize::try_from(offset).expect("fake offset должен помещаться в usize");
+        let start = usize::try_from(offset).expect("Fake offset must be placed in usize.");
         let available = state.bytes.len().saturating_sub(start);
         let returned_len = available.min(output.len());
 
@@ -523,7 +520,7 @@ mod tests {
             let mut state = self
                 .state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned");
+                .expect("Fake state mutex should not be poisoned.");
             let read_delay = state.read_delay;
             let wait_until_cancelled = state.wait_until_cancelled;
             let (call_index, record_index, offset) = record_started_read(&mut state, output.len());
@@ -540,7 +537,7 @@ mod tests {
                 let mut state = self
                     .state
                     .lock()
-                    .expect("fake state mutex не должен быть poisoned");
+                    .expect("Fake state mutex should not be poisoned.");
                 return complete_recorded_read(
                     &mut state,
                     output,
@@ -557,7 +554,7 @@ mod tests {
             let mut state = self
                 .state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned");
+                .expect("Fake state mutex should not be poisoned.");
 
             if let Seekability::NotSeekable { reason } = &state.seekability
                 && offset != state.position
@@ -575,14 +572,14 @@ mod tests {
         fn position(&self) -> u64 {
             self.state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned")
+                .expect("Fake state mutex should not be poisoned.")
                 .position
         }
 
         fn seekability(&self) -> Seekability {
             self.state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned")
+                .expect("Fake state mutex should not be poisoned.")
                 .seekability
                 .clone()
         }
@@ -595,7 +592,7 @@ mod tests {
             let state = self
                 .state
                 .lock()
-                .expect("fake state mutex не должен быть poisoned");
+                .expect("Fake state mutex should not be poisoned.");
             Some(state.bytes.len() as u64)
         }
 
@@ -611,7 +608,7 @@ mod tests {
         window_bytes: u64,
     ) -> PrefetchConfig {
         PrefetchConfig::new(initial_chunk_bytes, chunk_bytes, window_bytes)
-            .expect("test config должен сохранять инварианты prefetch buffer")
+            .expect("The test config must retain the prefetch buffer invariants.")
     }
 
     /// Запускает production spawner и делает startup failure явной причиной падения success-path теста.
@@ -620,7 +617,7 @@ mod tests {
         config: PrefetchConfig,
     ) -> PrefetchingByteSource {
         PrefetchingByteSource::new(inner, config)
-            .expect("production thread spawner должен запускаться в success-path тесте")
+            .expect("Production thread spawner should be started in the success-path test")
     }
 
     /// Данные с предсказуемым содержимым, где byte равен offset modulo 251.
@@ -646,7 +643,7 @@ mod tests {
         }
 
         panic!(
-            "worker не сделал {expected} read-вызовов, текущая история: {:?}",
+            "worker did not {expected} read-challenge, current-story: {:?}",
             handle.read_records()
         );
     }
@@ -672,7 +669,7 @@ mod tests {
         }
 
         panic!(
-            "worker не начал read с offset {expected_offset}, текущая история: {:?}",
+            "worker did not start reading with offset {expected_offset}, current history: {:?}",
             handle.read_records()
         );
     }
@@ -686,7 +683,7 @@ mod tests {
         loop {
             let bytes_read = source
                 .read(&mut output, &cancellation)
-                .expect("prefetch source должен читаться без ошибок");
+                .expect("Prefetch source should be read without errors.");
 
             if bytes_read == 0 {
                 return result;
@@ -715,7 +712,7 @@ mod tests {
             },
         );
         let startup_error = match startup_result {
-            Ok(_) => panic!("fake spawner обязан вернуть startup error"),
+            Ok(_) => panic!("Fake spawner must return the startup error"),
             Err(startup_error) => startup_error,
         };
 
@@ -772,7 +769,7 @@ mod tests {
         let mut output = [0; 8];
         let bytes_read = source
             .read(&mut output, &token())
-            .expect("read должен пройти");
+            .expect("Read should go through.");
         assert_eq!(bytes_read, 8);
         wait_for_read_count(&handle, 3);
     }
@@ -786,12 +783,12 @@ mod tests {
         wait_for_read_count(&handle, 2);
         source
             .seek(4)
-            .expect("seek внутри RAM-window должен пройти");
+            .expect("The search inside the RAM-window must be completed.");
 
         let mut output = [0; 4];
         let bytes_read = source
             .read(&mut output, &token())
-            .expect("read должен пройти");
+            .expect("Read should go through.");
 
         assert_eq!(bytes_read, 4);
         assert_eq!(output, bytes[4..8]);
@@ -814,13 +811,13 @@ mod tests {
         wait_for_read_count(&handle, 2);
         source
             .seek(40)
-            .expect("seekable source должен принять seek за окно");
+            .expect("Seekable source must accept the request window");
         wait_for_read_count(&handle, 3);
 
         let mut output = [0; 4];
         let bytes_read = source
             .read(&mut output, &token())
-            .expect("read должен пройти");
+            .expect("Read should go through.");
 
         assert_eq!(bytes_read, 4);
         assert_eq!(output, bytes[40..44]);
@@ -829,7 +826,7 @@ mod tests {
             .read_records()
             .into_iter()
             .find(|record| record.offset == 40)
-            .expect("worker должен refetch-нуть с requested seek offset");
+            .expect("Employee must refetch with requested seek offset");
         assert_eq!(refetch_record.requested_len, 4);
     }
 
@@ -846,7 +843,7 @@ mod tests {
         let seek_started = Instant::now();
         source
             .seek(seek_offset)
-            .expect("seek за окно должен отменить текущий fetch");
+            .expect("A search outside the window must cancel the current fetch.");
 
         let refetch_record = wait_for_read_offset(
             &handle,
@@ -855,14 +852,14 @@ mod tests {
         );
         assert!(
             seek_started.elapsed() < read_delay,
-            "worker должен начать новый fetch до завершения старого read_delay"
+            "The worker must start a new fetch before the old read_delay is completed."
         );
         assert_eq!(refetch_record.requested_len, 8);
 
         let mut output = [0; 8];
         let bytes_read = source
             .read(&mut output, &token())
-            .expect("seek-cancel не должен стать foreground ошибкой");
+            .expect("The search-cancel should not be a foreground error.");
 
         assert_eq!(bytes_read, 8);
         assert_eq!(
@@ -883,12 +880,12 @@ mod tests {
         wait_for_read_count(&handle, 1);
         source
             .seek(seek_offset)
-            .expect("seek за окно должен пройти");
+            .expect("A search for the window must pass through.");
 
         let mut output = [0; 8];
         let bytes_read = source
             .read(&mut output, &token())
-            .expect("Cancelled от старого fetch-а не должен протечь в foreground read");
+            .expect("Cancelled from old fetch-and should not leak in foreground read");
 
         assert_eq!(bytes_read, 8);
         assert_eq!(
@@ -911,13 +908,13 @@ mod tests {
         wait_for_read_count(&handle, 2);
         let bytes_read = source
             .read(&mut output, &token())
-            .expect("forward read должен пройти");
+            .expect("The forward read should go through.");
         assert_eq!(bytes_read, 8);
         assert_eq!(output[..bytes_read], bytes[..8]);
 
         let error = source
             .seek(0)
-            .expect_err("backward seek за пределами окна должен быть NotSeekable");
+            .expect_err("backward seek outside the window should be NotSeekable");
         assert!(matches!(error, SourceError::NotSeekable { .. }));
     }
 
@@ -952,7 +949,7 @@ mod tests {
 
         let error = source
             .read(&mut output, &token())
-            .expect_err("worker error должен дойти до foreground read");
+            .expect_err("worker error should reach foreground read");
 
         assert!(matches!(error, SourceError::UnexpectedEof { .. }));
     }
@@ -971,7 +968,7 @@ mod tests {
 
         assert!(
             started.elapsed() < Duration::from_secs(1),
-            "drop должен завершиться после cancellation текущего fetch token"
+            "drop must be terminated after cancellation of current fetch token"
         );
     }
 
@@ -1002,11 +999,11 @@ mod tests {
 
         let error = source
             .read(&mut output, &cancellation)
-            .expect_err("foreground cancellation должен прервать ожидание данных");
+            .expect_err("foreground cancellation should interrupt the waiting for data");
 
         canceller
             .join()
-            .expect("cancellation helper thread не должен panic-овать");
+            .expect("Cancellation of helper thread should not be panic-free.");
         assert!(matches!(error, SourceError::Cancelled));
     }
 }

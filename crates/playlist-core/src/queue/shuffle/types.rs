@@ -92,42 +92,42 @@ impl fmt::Display for ShuffleTraversalRestoreError {
         match self {
             Self::HistoryLimitExceeded { restored, maximum } => write!(
                 formatter,
-                "shuffle history содержит {restored} записей при максимуме {maximum}"
+                "shuffle history contains {restored} entries; the maximum is {maximum}"
             ),
             Self::HistoryItemNotCommitted { item_id } => {
                 write!(
                     formatter,
-                    "shuffle history ссылается на отсутствующий item {item_id}"
+                    "shuffle history refers to the absent item {item_id}"
                 )
             }
             Self::UpcomingEntryNotCommitted { entry_id } => {
                 write!(
                     formatter,
-                    "shuffle upcoming ссылается на отсутствующий top-level entry {entry_id:?}"
+                    "shuffle upcoming refers to the absent top-level entry {entry_id:?}"
                 )
             }
             Self::DuplicateUpcomingEntry { entry_id } => {
                 write!(
                     formatter,
-                    "shuffle upcoming повторяет top-level entry {entry_id:?}"
+                    "shuffle upcoming duplicates top-level entry {entry_id:?}"
                 )
             }
             Self::InvalidHistoryCursor => {
-                formatter.write_str("shuffle history cursor не согласован с history/current")
+                formatter.write_str("shuffle history cursor is inconsistent with history/current")
             }
             Self::CurrentDoesNotMatchHistory { current_item_id } => write!(
                 formatter,
-                "shuffle history cursor не указывает на current item {current_item_id}"
+                "shuffle history cursor does not point to current item {current_item_id}"
             ),
             Self::CurrentEntryPresentInUpcoming {
                 current_item_id,
                 current_entry_id,
             } => write!(
                 formatter,
-                "current item {current_item_id} и его entry {current_entry_id:?} ошибочно присутствуют в shuffle upcoming"
+                "current item {current_item_id} and its entry {current_entry_id:?} are mistakenly present in shuffle upcoming"
             ),
             Self::IdleUpcomingDoesNotCoverCanonicalQueue => formatter
-                .write_str("idle shuffle upcoming не содержит все canonical IDs ровно по одному"),
+                .write_str("idle shuffle upcoming must contain every canonical ID exactly once"),
         }
     }
 }
@@ -146,9 +146,9 @@ pub enum ShuffleQueueRestoreError {
 impl fmt::Display for ShuffleQueueRestoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Queue(error) => write!(formatter, "canonical queue restore отклонён: {error}"),
+            Self::Queue(error) => write!(formatter, "canonical queue restore rejected: {error}"),
             Self::Traversal(error) => {
-                write!(formatter, "shuffle traversal restore отклонён: {error}")
+                write!(formatter, "shuffle traversal restore rejected: {error}")
             }
         }
     }
@@ -176,10 +176,10 @@ impl fmt::Display for ShuffleToggleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InstallCommitLinearizing => {
-                formatter.write_str("shuffle toggle заблокирован install commit")
+                formatter.write_str("shuffle toggle is blocked from install commit")
             }
             Self::TraversalRevisionExhausted => {
-                formatter.write_str("shuffle toggle исчерпал traversal revision")
+                formatter.write_str("shuffle toggle exhausted traversal revision")
             }
         }
     }
@@ -235,20 +235,20 @@ impl fmt::Display for BulkRemoveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InstallCommitLinearizing => {
-                formatter.write_str("bulk remove заблокирован install commit")
+                formatter.write_str("bulk remove blocked by install commit")
             }
             Self::CompoundPartTarget {
                 part_item_id,
                 compound_entry_id,
             } => write!(
                 formatter,
-                "{part_item_id} является частью {compound_entry_id:?}; bulk remove требует group target"
+                "{part_item_id} is part of {compound_entry_id:?}; bulk remove requires group target"
             ),
             Self::StructuralRevisionExhausted => {
-                formatter.write_str("bulk remove исчерпал structural revision")
+                formatter.write_str("bulk remove exhausted structural revision")
             }
             Self::TraversalRevisionExhausted => {
-                formatter.write_str("bulk remove исчерпал traversal revision")
+                formatter.write_str("bulk remove exhausted traversal revision")
             }
         }
     }

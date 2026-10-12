@@ -301,13 +301,13 @@ impl PlaybackPlanningError {
 impl std::fmt::Display for PlaybackPlanningError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
-            Self::EmptyCandidates => "нет statically-compatible candidates",
-            Self::ExactSourceMismatch => "exact candidate относится к другому source",
-            Self::StaleExactIdentity { .. } => "exact candidate identity устарела",
-            Self::ExactCandidateUnavailable => "exact candidate отсутствует в snapshot",
-            Self::ExactSemanticIdentityChanged => "semantic attributes exact candidate изменились",
-            Self::ExactCandidateNotPlayable(_) => "exact candidate сейчас не playable",
-            Self::NoPlayableCandidates { .. } => "нет candidate-а с полным capability path",
+            Self::EmptyCandidates => "No statically-compatible candidates",
+            Self::ExactSourceMismatch => "The exact candidate refers to another source.",
+            Self::StaleExactIdentity { .. } => "The exact candidate identity is outdated.",
+            Self::ExactCandidateUnavailable => "The exact candidate is not available in snapshot",
+            Self::ExactSemanticIdentityChanged => "semantic attributes exact candidate has changed",
+            Self::ExactCandidateNotPlayable(_) => "The exact candidate is not playable.",
+            Self::NoPlayableCandidates { .. } => "no candidate-full capability path",
         };
         formatter.write_str(message)
     }

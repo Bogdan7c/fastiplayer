@@ -84,8 +84,8 @@ fn eof_drain_tick_does_not_read_new_demux_packets() {
         .pipeline
         .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
     session
-        .select_default_video_track(&tracks, "fake EOF drain media содержит video track")
-        .expect("fake EOF drain video track должен получить fresh decode requirement");
+        .select_default_video_track(&tracks, "fake EOF drain media containing video track")
+        .expect("Fake EOF drain video track should receive a fresh decode requirement");
     session.set_snapshot_duration(Some(Duration::from_secs(30)));
     session.apply_demux_seekability(DemuxSeekability::Seekable);
     session.set_playback_state(PlaybackState::Playing);
@@ -149,7 +149,7 @@ fn eof_finishes_video_backlog_recovery_scan_without_discarding_tail() {
     session
         .pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+        .expect("Proof keyframe should simulate the already sent decoder packet");
     session
         .pipeline
         .enqueue_pending_video_packet(PendingVideoPacket::new(
@@ -196,18 +196,18 @@ fn eof_finishes_video_backlog_recovery_scan_without_discarding_tail() {
     assert_eq!(
         session.pipeline.pending_video_packet_len(),
         3,
-        "EOF обязан вернуть staged continuation после сохранённого backlog"
+        "EOF must return staged continuation after saved backlog"
     );
     assert!(
         decoder.eof_drain_requests().is_empty(),
-        "decoder drain должен дождаться отправки восстановленного tail"
+        "decoder drain You have to wait for the rebuilt tail"
     );
     let restored_pts = (0..3)
         .map(|_| {
             session
                 .pipeline
                 .pop_pending_video_packet_front()
-                .expect("EOF tail packet должен сохраниться")
+                .expect("EOF tail packet should be maintained")
                 .pts
         })
         .collect::<Vec<_>>();
@@ -409,7 +409,7 @@ fn video_eof_drain_decodes_pending_video_tail_before_ending() {
 
     assert!(
         decoder.eof_drain_requests().is_empty(),
-        "decoder EOF drain нельзя начинать до отправки уже считанного video tail"
+        "decoder EOF drain You can’t start before you’ve already read it video tail"
     );
 
     let tick_started_at = Instant::now();
@@ -530,11 +530,11 @@ fn seek_near_eof_with_video_and_audio_tail_reaches_auto_next_terminal_state() {
             .present_video_frame()
             .map(|frame| frame.pts),
         Some(landing_frame_position),
-        "near-EOF seek должен реально представить target-or-after video frame"
+        "near-EOF seek must be realistically target-or-after video frame"
     );
     assert!(
         !audio_output.written_samples().is_empty(),
-        "post-seek audio tail должен пройти decode и output write"
+        "post-seek audio tail must pass decode and output write"
     );
     assert!(harness.session.pipeline.pending_audio_packet_is_empty());
     assert!(harness.session.pipeline.pending_video_packet_is_empty());
@@ -579,7 +579,7 @@ fn seek_near_eof_with_video_and_audio_tail_reaches_auto_next_terminal_state() {
             event,
             PlayerEvent::PlaybackStateChanged(PlaybackState::Ended)
         )),
-        "Ended snapshot/event — точный terminal edge, который допускает playlist auto-next"
+        "Ended snapshot/event - Precise terminal edge that allows playlist auto-next"
     );
 }
 

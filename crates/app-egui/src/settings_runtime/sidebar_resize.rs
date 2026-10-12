@@ -150,7 +150,7 @@ impl SettingsRuntime {
         tracing::error!(
             final_state = ?report.final_state,
             attempted_width_points = pending.width_points.value(),
-            "Не удалось сохранить ширину sidebar; live geometry возвращена к committed config"
+            "Could not save sidebar width; live geometry restored to committed configuration"
         );
         Ok(SidebarResizeFlushOutcome::Failed)
     }

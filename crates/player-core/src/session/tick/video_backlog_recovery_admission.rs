@@ -40,30 +40,32 @@ pub(super) fn try_begin_video_backlog_recovery_scan(
                 catchup_video_packet_limit = audio_catchup_pending_video_limit(tick_config),
                 audio_buffer_ms = session.audio_buffer_level_ms().unwrap_or(0.0),
                 playback_rate = %session.snapshot().playback_rate,
-                "Video backlog recovery scan начат без очистки текущей очереди"
+                "Video backlog recovery scan started without cleaning the current queue"
             );
         }
         VideoBacklogRecoveryScanStart::AlreadyScanning => {}
         VideoBacklogRecoveryScanStart::BackoffUntilBacklogDrains => {
-            trace!("Video backlog recovery ждёт разгрузки pending FIFO после rollback");
+            trace!("Video backlog recovery awaits unloading of pending FIFO after rollback");
         }
         VideoBacklogRecoveryScanStart::NoSelectedVideo => {
-            trace!("Video backlog recovery не запущен: video track не выбран");
+            trace!("Video backlog recovery not running: video track not selected");
         }
         VideoBacklogRecoveryScanStart::NoActiveVideoRequirement => {
-            trace!("Video backlog recovery не запущен: codec requirement отсутствует");
+            trace!("Video backlog recovery not running: no codec requirement");
         }
         VideoBacklogRecoveryScanStart::CodecWithoutNoFlushRecoveryProof { codec } => {
             trace!(
                 ?codec,
-                "Video backlog recovery не запущен: no-flush cut не доказан для codec"
+                "Video backlog recovery not running: no-flush cut not proven for codec"
             );
         }
         VideoBacklogRecoveryScanStart::NoProvenKeyframeObserved => {
-            trace!("Video backlog recovery не запущен: container ещё не доказал keyframe");
+            trace!("Video backlog recovery not started: container has not proved a keyframe yet");
         }
         VideoBacklogRecoveryScanStart::DecoderAwaitingKeyframe => {
-            trace!("Video backlog recovery не запущен: decoder уже ожидает bootstrap keyframe");
+            trace!(
+                "Video backlog recovery not launched: decoder is waiting for bootstrap keyframe"
+            );
         }
     }
 }
@@ -85,7 +87,7 @@ pub(super) fn log_video_backlog_recovery_outcome(
                 recovery_keyframe_pts_ms = recovery_keyframe_pts.as_secs_f64() * 1000.0,
                 audio_buffer_ms = session.audio_buffer_level_ms().unwrap_or(0.0),
                 playback_rate = %session.snapshot().playback_rate,
-                "Video backlog атомарно переключён на proven keyframe"
+                "Video backlog switched to proven keyframe"
             );
         }
         DemuxPacketRouteOutcome::VideoBacklogRecoveryScanLimitReached {
@@ -100,7 +102,7 @@ pub(super) fn log_video_backlog_recovery_outcome(
                 restored_staged_bytes,
                 pending_packets_after_restore,
                 playback_rate = %session.snapshot().playback_rate,
-                "Video backlog recovery достиг bounded scan limit и восстановил continuation"
+                "Video backlog recovery reaches bounded scan limit and restores continuation"
             );
         }
         DemuxPacketRouteOutcome::Queued

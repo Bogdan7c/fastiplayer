@@ -21,5 +21,5 @@ pub(crate) fn limits_builder() -> SmoothManifestLimitsBuilder {
 pub(crate) fn limits() -> SmoothManifestLimits {
     limits_builder()
         .build()
-        .expect("полный test budget должен быть валиден")
+        .expect("The full test budget must be valid")
 }

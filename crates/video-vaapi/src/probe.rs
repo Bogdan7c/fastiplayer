@@ -59,14 +59,14 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
         return BackendCapabilities::unavailable(
             backend_id,
             VAAPI_DISPLAY_NAME,
-            "libva не смог открыть ни один DRM render node",
+            "libva could not open any DRM render node",
         );
     };
 
     let vendor = match display.query_vendor_string() {
         Ok(vendor) => Some(vendor),
         Err(error) => {
-            warn!(error, "VA-API vendor string недоступен");
+            warn!(error, "VA-API vendor string not available");
             None
         }
     };
@@ -125,7 +125,7 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
                 Some(rt_format_mask) => rt_format_mask,
                 None => {
                     diagnostics.push(format!(
-                        "{}: {DECODE_ENTRYPOINT_LABEL} не сообщил RT format",
+                        "{}: {DECODE_ENTRYPOINT_LABEL} not reported by RT format",
                         profile_label(profile)
                     ));
                     continue;
@@ -797,12 +797,12 @@ fn known_driver_quirks(driver_name: &str) -> Vec<DriverQuirk> {
         "intel-i965" => vec![DriverQuirk {
             id: "legacy-intel-i965".to_string(),
             description:
-                "Старый Intel VA-API driver; VP9/AV1 support может быть ограничен, H.264 важнее для legacy playback"
+                "Old Intel VA-API driver; VP9/AV1 support may be limited, H.264 more important for legacy playback"
                     .to_string(),
         }],
         "intel-ihd" => vec![DriverQuirk {
             id: "intel-ihd-modern".to_string(),
-            description: "Современный Intel media driver; обычно основной путь для VP9/AV1"
+            description: "Modern Intel media driver; usually the main path for VP9/AV1"
                 .to_string(),
         }],
         _ => Vec::new(),

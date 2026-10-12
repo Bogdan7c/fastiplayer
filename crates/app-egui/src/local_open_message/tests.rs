@@ -52,7 +52,7 @@ fn prepare_and_classify(path: &Path) -> LocalOpenFailureOutcome {
         CancellationToken::never_cancelled(),
         || false,
     ) {
-        Ok(_) => panic!("fixture {path:?} должен не открыться"),
+        Ok(_) => panic!("fixture {path:?} should not open."),
         Err(error) => error.user_outcome(),
     }
 }
@@ -72,7 +72,7 @@ fn assert_failure_text(
     assert_eq!(message, expected_message);
     assert!(
         !message.contains(PRIVATE_PARENT_DIR),
-        "текст не должен раскрывать родительский каталог: {message}"
+        "The text should not disclose the parent catalog: {message}"
     );
 }
 
@@ -84,7 +84,7 @@ fn missing_file_reports_not_found_with_filename_only() {
     assert_failure_text(
         &path,
         LocalOpenFailureReason::FileNotFound,
-        "Не удалось открыть «missing-clip.mkv»: файл не найден",
+        "Could not open “missing-clip.mkv”: file not found",
     );
 }
 
@@ -98,14 +98,14 @@ fn unreadable_file_reports_access_denied() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("chmod 000");
     if fs::File::open(&path).is_ok() {
         // Под root права не ограничивают чтение — сценарий невоспроизводим.
-        eprintln!("пропуск: процесс читает файл с правами 000 (вероятно, root)");
+        eprintln!("skipped: process can read a file with mode 000 (probably root)");
         return;
     }
 
     assert_failure_text(
         &path,
         LocalOpenFailureReason::AccessDenied,
-        "Не удалось открыть «locked-clip.wav»: нет доступа к файлу",
+        "Could not open “locked-clip.wav”: access to the file is denied",
     );
 }
 
@@ -118,7 +118,7 @@ fn directory_reports_folder_not_file() {
     assert_failure_text(
         &path,
         LocalOpenFailureReason::IsDirectory,
-        "Не удалось открыть «folder-named-like-clip.mkv»: это папка, а не файл",
+        "Could not open “folder-named-like-clip.mkv”: this is a folder, not a file",
     );
 }
 
@@ -130,7 +130,7 @@ fn zero_byte_file_reports_empty_file() {
     assert_failure_text(
         &path,
         LocalOpenFailureReason::EmptyFile,
-        "Не удалось открыть «empty-clip.mp4»: файл пустой",
+        "Could not open “empty-clip.mp4”: the file is empty",
     );
 }
 
@@ -143,7 +143,7 @@ fn text_garbage_reports_unrecognized_format() {
     assert_failure_text(
         &path,
         LocalOpenFailureReason::UnrecognizedFormat,
-        "Не удалось открыть «notes-renamed.mkv»: формат файла не распознан или не поддерживается",
+        "Could not open “notes-renamed.mkv”: file format is unrecognized or unsupported",
     );
 }
 
@@ -158,7 +158,7 @@ fn png_picture_renamed_to_mp4_reports_unrecognized_format() {
     assert_failure_text(
         &path,
         LocalOpenFailureReason::UnrecognizedFormat,
-        "Не удалось открыть «photo.mp4»: формат файла не распознан или не поддерживается",
+        "Could not open “photo.mp4”: file format is unrecognized or unsupported",
     );
 }
 
@@ -172,7 +172,7 @@ fn truncated_transport_stream_reports_damaged_file() {
     assert_failure_text(
         &path,
         LocalOpenFailureReason::DamagedOrTruncated,
-        "Не удалось открыть «cut-recording.ts»: файл повреждён или обрезан",
+        "Could not open “cut-recording.ts”: the file is corrupted or truncated",
     );
 }
 
@@ -191,7 +191,7 @@ fn truncated_mp4_reports_damaged_file() {
     assert_failure_text(
         &path,
         LocalOpenFailureReason::DamagedOrTruncated,
-        "Не удалось открыть «cut-video.mp4»: файл повреждён или обрезан",
+        "Could not open “cut-video.mp4”: the file is corrupted or truncated",
     );
 }
 
@@ -201,7 +201,7 @@ fn path_without_filename_uses_neutral_label() {
     assert_failure_text(
         Path::new("/"),
         LocalOpenFailureReason::IsDirectory,
-        "Не удалось открыть «(без имени)»: это папка, а не файл",
+        "Could not open “(unnamed)”: this is a folder, not a file",
     );
 }
 
@@ -220,7 +220,7 @@ fn non_utf8_filename_message_is_lossy_without_panic() {
     assert_failure_text(
         &path,
         LocalOpenFailureReason::FileNotFound,
-        "Не удалось открыть «missing-\u{fffd}-clip.mkv»: файл не найден",
+        "Could not open “missing-\u{fffd}-clip.mkv”: file not found",
     );
 }
 
@@ -237,7 +237,7 @@ fn cancelled_preparation_is_not_user_visible_failure() {
         CancellationToken::never_cancelled(),
         || true,
     ) {
-        Ok(_) => panic!("отменённая подготовка не должна завершиться успехом"),
+        Ok(_) => panic!("Abandoned preparation should not be successful"),
         Err(error) => error.user_outcome(),
     };
 
@@ -270,10 +270,10 @@ fn every_reason_has_distinct_row_summary_starting_with_capital_letter() {
     assert_eq!(distinct.len(), reasons.len(), "{summaries:?}");
     assert_eq!(
         local_open_failure_row_summary(LocalOpenFailureReason::FileNotFound),
-        "Файл не найден"
+        "File not found"
     );
     for summary in &summaries {
-        let first_letter = summary.chars().next().expect("summary не пустой");
+        let first_letter = summary.chars().next().expect("sketchy");
         assert!(first_letter.is_uppercase(), "{summary}");
     }
 }
@@ -282,5 +282,5 @@ fn every_reason_has_distinct_row_summary_starting_with_capital_letter() {
 fn preparing_message_names_file_without_parent_directory() {
     let path = Path::new("/home/private-parent-dir/clip.mkv");
 
-    assert_eq!(local_open_preparing_message(path), "Открываем «clip.mkv»…");
+    assert_eq!(local_open_preparing_message(path), "Opening “clip.mkv”…");
 }

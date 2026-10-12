@@ -237,7 +237,7 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
         if settings.profile == RenderProfile::OpenGles {
             return Err(apply_error(
                 RendererRecreationApplyErrorKind::UnsupportedProfile,
-                "OpenGL ES renderer отсутствует; active Vulkan renderer сохранён",
+                "OpenGL ES renderer is absent; the active Vulkan renderer was preserved",
             ));
         }
 

@@ -183,7 +183,7 @@ mod tests {
         assert_eq!(reduced_snapshot.sidebar_slide_duration_seconds(), 0.0);
         assert_eq!(
             reduced_config.ui.animations.sidebar_slide_duration_ms, 500,
-            "reduced motion не стирает сохранённую длительность"
+            "reduced motion must not erase the stored duration"
         );
     }
 }

@@ -23,7 +23,7 @@ print_error() {
     local error_message="$1"
 
     # stderr отделяет диагностику от обычного вывода help/dry-run.
-    printf 'Ошибка: %s\n' "${error_message}" >&2
+    printf 'Error: %s\n' "${error_message}" >&2
 }
 
 # Функция завершает скрипт при некорректном использовании CLI или env vars.
@@ -35,7 +35,7 @@ fail_usage() {
     print_error "${error_message}"
 
     # Короткая подсказка ведет к полному help без перегрузки stderr.
-    printf 'Запустите %s --help для списка параметров.\n' "${0}" >&2
+    printf 'Run %s-help for the list of parameters \n' "${0}" >&2
 
     # Отдельный код помогает отличать usage error от падения configure/make.
     exit "${USAGE_ERROR_EXIT_CODE}"
@@ -73,7 +73,7 @@ normalize_boolean() {
             ;;
         *)
             # Непонятное значение лучше остановить явно, чем молча выбрать default.
-            fail_usage "ожидался boolean 0/1/true/false/yes/no/on/off, получено '${raw_value}'"
+            fail_usage "expected boolean 0/1/true/false/yes/no/on/off, obtained '${raw_value}'"
             ;;
     esac
 }
@@ -91,7 +91,7 @@ validate_ffmpeg_version() {
             ;;
         *)
             # Ошибка не даёт случайно перейти на другую ABI/API ветку.
-            fail_usage "FFmpeg version '${requested_version}' не относится к stable 8.1.x"
+            fail_usage "FFmpeg version '${requested_version}' does not apply to stable 8.1.x"
             ;;
     esac
 }
@@ -104,7 +104,7 @@ validate_source_directory() {
     # `configure` является входной точкой сборки FFmpeg из исходников.
     if [[ ! -x "${source_directory}/configure" ]]; then
         # Без configure продолжать нельзя: make будет падать не по сути задачи.
-        fail_usage "в '${source_directory}' не найден исполняемый FFmpeg configure"
+        fail_usage "In '${source_directory}' no executable FFmpeg configure found"
     fi
 }
 
@@ -143,7 +143,7 @@ require_command() {
     # command -v проверяет PATH без запуска самой команды.
     if ! command -v "${required_command}" >/dev/null 2>&1; then
         # Ошибка содержит точное имя отсутствующего инструмента.
-        print_error "команда '${required_command}' не найдена в PATH"
+        print_error "${required_command} not found in PATH"
 
         # Продолжать нельзя, потому что build path точно упадёт.
         exit 1
@@ -318,12 +318,12 @@ print_dry_run_commands() {
     # Если source-dir задан, download/extract пропускаются.
     if [[ -n "${source_directory}" ]]; then
         # Показываем проверку source tree как комментарий для пользователя.
-        printf '# source-dir будет использован без download/extract: %s\n' "${source_directory}"
+        printf '# source-dir will be used without download/extract: %s\n' "${source_directory}"
     else
         # Если archive задан, curl не нужен.
         if [[ -n "${source_archive}" ]]; then
             # Существующий archive позволяет работать без сети.
-            printf '# source-archive будет использован без download: %s\n' "${source_archive}"
+            printf '# source-archive will be used without download: %s\n' "${source_archive}"
         else
             # Default path для downloaded archive живёт внутри target.
             print_shell_command curl -L --fail --output "${resolved_archive_path}" "${download_url}"
@@ -439,7 +439,7 @@ print_pkg_config_probe_command() {
 # Функция проверяет установленные pkg-config файлы и версии FFmpeg libraries.
 probe_installed_libraries() {
     # Probe относится к tooling/install verification, а не к startup/runtime capability.
-    printf '\nПроверяю установленные FFmpeg .pc files через pkg-config:\n'
+    printf '\n Checking installed FFmpeg .pc files via pkg-config:\n'
 
     # Команда печатается перед выполнением для прозрачности.
     print_pkg_config_probe_command
@@ -452,7 +452,7 @@ probe_installed_libraries() {
 # Функция печатает env vars, которые нужны будущему build script или ручной проверке.
 print_environment_exports() {
     # Пустая строка отделяет итог сборки от export подсказок.
-    printf '\nДля будущих build/probe экспериментов используйте:\n'
+    printf '\n For future build/probe experiments, use: \n'
 
     # PKG_CONFIG_PATH нужен будущему Rust build.rs/pkg-config lookup.
     printf 'export PKG_CONFIG_PATH=%q\n' "${ffmpeg_prefix}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
@@ -461,7 +461,7 @@ print_environment_exports() {
     printf 'export LD_LIBRARY_PATH=%q\n' "${ffmpeg_prefix}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
     # Guardrail формулируется здесь, потому что это самый частый источник путаницы.
-    printf '\nGuardrail: этот prefix не делает fastiplayer runtime-зависимым от FFmpeg.\n'
+    printf '\nGuardrail: this prefix does not make fastiplayer runtime-dependent on FFmpeg.\n'
 }
 
 # Функция разбирает CLI options и выставляет runtime variables.
@@ -486,7 +486,7 @@ parse_arguments() {
                 ;;
             --version)
                 # У version должен быть следующий аргумент.
-                [[ $# -ge 2 ]] || fail_usage "--version требует значение"
+                [[ $# -ge 2 ]] || fail_usage "-version requires a value"
 
                 # Новая версия сохраняется до финальной валидации.
                 ffmpeg_version="$2"
@@ -496,7 +496,7 @@ parse_arguments() {
                 ;;
             --prefix)
                 # У prefix должен быть следующий аргумент.
-                [[ $# -ge 2 ]] || fail_usage "--prefix требует путь"
+                [[ $# -ge 2 ]] || fail_usage "--prefix path"
 
                 # CLI prefix считается явным и не будет перезаписан version default-ом.
                 ffmpeg_prefix="$2"
@@ -509,7 +509,7 @@ parse_arguments() {
                 ;;
             --work-dir)
                 # У work-dir должен быть следующий аргумент.
-                [[ $# -ge 2 ]] || fail_usage "--work-dir требует путь"
+                [[ $# -ge 2 ]] || fail_usage "--work-dir requires a path"
 
                 # Work dir хранит downloads/source/build cache.
                 work_directory="$2"
@@ -519,7 +519,7 @@ parse_arguments() {
                 ;;
             --source-dir)
                 # У source-dir должен быть следующий аргумент.
-                [[ $# -ge 2 ]] || fail_usage "--source-dir требует путь"
+                [[ $# -ge 2 ]] || fail_usage "--source-dir path"
 
                 # Source dir отключает download/extract path.
                 source_directory="$2"
@@ -529,7 +529,7 @@ parse_arguments() {
                 ;;
             --source-archive)
                 # У source-archive должен быть следующий аргумент.
-                [[ $# -ge 2 ]] || fail_usage "--source-archive требует путь"
+                [[ $# -ge 2 ]] || fail_usage "--source-archive path"
 
                 # Source archive позволяет работать без сети.
                 source_archive="$2"
@@ -539,7 +539,7 @@ parse_arguments() {
                 ;;
             --url)
                 # У url должен быть следующий аргумент.
-                [[ $# -ge 2 ]] || fail_usage "--url требует значение"
+                [[ $# -ge 2 ]] || fail_usage "-url requires a value"
 
                 # Явный URL нужен для mirrors или предварительно проверенного архива.
                 download_url="$2"
@@ -552,7 +552,7 @@ parse_arguments() {
                 ;;
             --jobs)
                 # У jobs должен быть следующий аргумент.
-                [[ $# -ge 2 ]] || fail_usage "--jobs требует число"
+                [[ $# -ge 2 ]] || fail_usage "-jobs require a number"
 
                 # Значение проверяется после parsing вместе с env default.
                 make_jobs="$2"
@@ -590,7 +590,7 @@ parse_arguments() {
                 ;;
             *)
                 # Неизвестные positional/options лучше остановить сразу.
-                fail_usage "неизвестный параметр '$1'"
+                fail_usage "unknown parameter '$1'"
                 ;;
         esac
     done
@@ -643,13 +643,13 @@ validate_inputs() {
     # make -j требует положительное целое число.
     if [[ ! "${make_jobs}" =~ ^[1-9][0-9]*$ ]]; then
         # Нечисловой jobs лучше поймать до запуска make.
-        fail_usage "--jobs/FASTIPLAYER_FFMPEG_JOBS должен быть положительным целым числом"
+        fail_usage "jobs/FASTIPLAYER_FFMPEG_JOBS must be a positive integer."
     fi
 
     # source-dir и source-archive одновременно создают неоднозначный source of truth.
     if [[ -n "${source_directory}" && -n "${source_archive}" ]]; then
         # Останавливаемся, чтобы пользователь явно выбрал один источник.
-        fail_usage "нельзя одновременно задавать --source-dir и --source-archive"
+        fail_usage "You can’t use source-dir and source-archive at the same time."
     fi
 }
 

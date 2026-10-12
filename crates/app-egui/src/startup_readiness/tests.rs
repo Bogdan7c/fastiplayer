@@ -16,7 +16,7 @@ const RESTORE_TARGET: Duration = Duration::from_secs(355);
 
 fn media_instance(raw_id: u64) -> MediaInstanceId {
     MediaInstanceId::from_non_zero(
-        NonZeroU64::new(raw_id).expect("test media instance должен быть non-zero"),
+        NonZeroU64::new(raw_id).expect("Test media instance should be non-zero."),
     )
 }
 
@@ -280,7 +280,7 @@ fn unknown_audio_does_not_infer_absence_from_video_only_snapshot() {
     let attempt = tracker
         .active_attempt
         .as_ref()
-        .expect("Unknown audio не должен публиковать readiness");
+        .expect("Unknown audio does not publish readiness.");
     assert_eq!(attempt.expectation.audio, StartupAudioExpectation::Unknown);
 
     tracker.note_prepared_consumer_proof(
@@ -292,7 +292,7 @@ fn unknown_audio_does_not_infer_absence_from_video_only_snapshot() {
     );
     assert!(
         !tracker.has_active_attempt(),
-        "только authoritative NotPresent proof закрывает audio-less gate"
+        "only authoritative NotPresent proof close audio-less gate"
     );
 }
 
@@ -333,7 +333,7 @@ fn playing_audio_only_completes_without_inventing_surface_presentation() {
 
     assert!(
         !tracker.has_active_attempt(),
-        "authoritative audio-only topology не должна ждать несуществующий video surface"
+        "authoritative audio-only topology does not have to wait for a non-existent video surface"
     );
 }
 
@@ -375,7 +375,7 @@ fn playing_restore_requires_exact_target_surface_and_audio_resume() {
             .active_attempt
             .as_ref()
             .is_some_and(|attempt| attempt.surface_presented_at.is_none()),
-        "pre-target surface не должен закрывать video gate"
+        "The pre-target surface should not close the video gate."
     );
     tracker.note_surface_frame_presented(
         Some(media_instance_id),

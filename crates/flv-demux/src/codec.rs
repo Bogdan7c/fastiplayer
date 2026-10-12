@@ -46,7 +46,7 @@ pub(crate) fn parse_video_tag(
 ) -> Result<CodecTagEvent, FlvDemuxError> {
     let first = *payload
         .first()
-        .ok_or_else(|| malformed("пустой video tag"))?;
+        .ok_or_else(|| malformed("empty video tag"))?;
     if first & 0x80 != 0 {
         parse_enhanced_video_tag(payload, active_configuration)
     } else {
@@ -58,12 +58,12 @@ pub(crate) fn parse_video_tag(
 pub(crate) fn parse_audio_tag(payload: &Bytes) -> Result<CodecTagEvent, FlvDemuxError> {
     let header = *payload
         .first()
-        .ok_or_else(|| malformed("пустой audio tag"))?;
+        .ok_or_else(|| malformed("empty audio tag"))?;
     let format = header >> 4;
     let is_16_bit = header & 0x02 != 0;
     match format {
         0 if is_16_bit => Err(unsupported(
-            "platform-endian 16-bit PCM неоднозначен и намеренно отклонён",
+            "platform-endian 16-bit PCM is ambiguous and intentionally rejected",
         )),
         0 => audio_packet("A_PCM_U8", payload.slice(1..)),
         1 => audio_packet("A_ADPCM_SWF", payload.slice(1..)),
@@ -71,9 +71,9 @@ pub(crate) fn parse_audio_tag(payload: &Bytes) -> Result<CodecTagEvent, FlvDemux
         3 if is_16_bit => audio_packet("A_PCM_S16LE", payload.slice(1..)),
         3 => audio_packet("A_PCM_U8", payload.slice(1..)),
         10 => parse_aac_tag(payload),
-        7 | 8 => Err(unsupported("G.711 вне выбранного S30 codec scope")),
+        7 | 8 => Err(unsupported("G.711 outside the S30 codec scope")),
         unsupported_format => Err(unsupported(format!(
-            "legacy audio SoundFormat={unsupported_format} не поддерживается"
+            "legacy audio SoundFormat={unsupported_format} unsupported"
         ))),
     }
 }
@@ -87,7 +87,7 @@ fn parse_legacy_video_tag(
     validate_video_frame_type(frame_type)?;
     match first & 0x0f {
         7 if matches!(frame_type, 3 | 4) => Err(unsupported(format!(
-            "legacy AVC не допускает FLV FrameType={frame_type}"
+            "legacy AVC does not allow FLV FrameType={frame_type}"
         ))),
         7 => parse_video_packet_body(
             VideoCodec::H264,
@@ -98,10 +98,10 @@ fn parse_legacy_video_tag(
             false,
         ),
         12 => Err(unsupported(
-            "legacy HEVC codec id 12 не является доказанным Enhanced RTMP path",
+            "legacy HEVC codec id 12 is not a proven Enhanced RTMP path",
         )),
         codec_id => Err(unsupported(format!(
-            "legacy video CodecID={codec_id} (H263/Screen/VP6/unknown) не поддерживается"
+            "legacy video CodecID={codec_id} (H263/Screen/VP6/unknown) unsupported"
         ))),
     }
 }
@@ -114,30 +114,30 @@ fn parse_enhanced_video_tag(
     let packet_type = header & 0x0f;
     if packet_type == 6 {
         return Err(unsupported(
-            "Enhanced RTMP multitrack video не поддерживается",
+            "Enhanced RTMP multitrack video is not supported",
         ));
     }
     if packet_type == 7 {
-        return Err(unsupported("Enhanced RTMP ModEx не поддерживается"));
+        return Err(unsupported("Enhanced RTMP ModEx is not supported"));
     }
     if packet_type == 5 {
         return Err(unsupported(
-            "Enhanced RTMP MPEG2TS packet type не поддерживается",
+            "Enhanced RTMP MPEG2TS packet type is not supported",
         ));
     }
     let fourcc = payload
         .get(1..5)
-        .ok_or_else(|| malformed("Enhanced video FourCC обрезан"))?;
+        .ok_or_else(|| malformed("Enhanced video FourCC cropped"))?;
     let (codec, codec_id) = match fourcc {
         b"vp08" => (VideoCodec::Vp8, "V_VP8"),
         b"vp09" => (VideoCodec::Vp9, "V_VP9"),
         b"av01" => (VideoCodec::Av1, "V_AV1"),
         b"avc1" => (VideoCodec::H264, "V_MPEG4/ISO/AVC"),
         b"hvc1" => (VideoCodec::H265, "V_MPEGH/ISO/HEVC"),
-        b"vvc1" | b"vvi1" => return Err(unsupported("VVC вне выбранного S30 codec scope")),
+        b"vvc1" | b"vvi1" => return Err(unsupported("VVC outside of S30 codec scope")),
         other => {
             return Err(unsupported(format!(
-                "Enhanced video FourCC `{}` не поддерживается",
+                "Enhanced video FourCC '{}' not supported",
                 String::from_utf8_lossy(other)
             )));
         }
@@ -166,16 +166,16 @@ fn parse_video_packet_body(
 ) -> Result<CodecTagEvent, FlvDemuxError> {
     let packet_type = *body
         .first()
-        .ok_or_else(|| malformed("video packet type обрезан"))?;
+        .ok_or_else(|| malformed("video packet type cropped"))?;
     if !enhanced && packet_type == 3 {
         return Err(unsupported(
-            "legacy AVC packet type 3 зарезервирован для Enhanced RTMP",
+            "legacy AVC packet type 3 reserved for Enhanced RTMP",
         ));
     }
     let body = body.slice(1..);
     let body = if matches!(packet_type, 0 | 2) {
         if body.len() < 3 {
-            return Err(malformed("legacy AVC composition-time field обрезан"));
+            return Err(malformed("legacy AVC composition-time field cropped"));
         }
         body.slice(3..)
     } else {
@@ -212,14 +212,14 @@ fn parse_video_packet_body_with_type(
                     } else {
                         let composition = body
                             .get(..3)
-                            .ok_or_else(|| malformed("signed SI24 composition offset обрезан"))?;
+                            .ok_or_else(|| malformed("signed SI24 composition offset"))?;
                         (read_si24(composition), body.slice(3..))
                     }
                 } else {
                     (0, body)
                 };
             if packet_bytes.is_empty() {
-                return Err(malformed("coded video frame payload пуст"));
+                return Err(malformed("coded video frame payload is empty"));
             }
             let configuration = active_configuration
                 .filter(|configuration| configuration.video_codec == Some(codec));
@@ -254,10 +254,10 @@ fn parse_video_packet_body_with_type(
             track_id: VIDEO_TRACK_ID,
         }),
         4 => Err(unsupported(
-            "Enhanced video metadata packet type не является media packet",
+            "Enhanced video metadata packet type not media packet",
         )),
         unknown => Err(unsupported(format!(
-            "Enhanced/AVC video packet type {unknown} не поддерживается"
+            "Enhanced/AVC video packet type {unknown} is not supported"
         ))),
     }
 }
@@ -269,7 +269,7 @@ fn validate_video_configuration(
     enhanced: bool,
 ) -> Result<TrackConfiguration, FlvDemuxError> {
     if bytes.is_empty() {
-        return Err(invalid_config(codec_id, "configuration payload пуст"));
+        return Err(invalid_config(codec_id, "configuration payload is empty"));
     }
     match codec {
         VideoCodec::H264 => parse_avc_decoder_configuration_record(&bytes)
@@ -318,7 +318,7 @@ fn validate_video_configuration(
 fn parse_aac_tag(payload: &Bytes) -> Result<CodecTagEvent, FlvDemuxError> {
     let packet_type = *payload
         .get(1)
-        .ok_or_else(|| malformed("AACPacketType обрезан"))?;
+        .ok_or_else(|| malformed("AACPacketType cut off"))?;
     let body = payload.slice(2..);
     match packet_type {
         0 => {
@@ -338,7 +338,7 @@ fn parse_aac_tag(payload: &Bytes) -> Result<CodecTagEvent, FlvDemuxError> {
                 video_codec: None,
             }))
         }
-        1 if body.is_empty() => Err(malformed("AAC raw packet пуст")),
+        1 if body.is_empty() => Err(malformed("AAC raw packet is empty")),
         1 => Ok(EncodedTagPacket {
             track_id: AUDIO_TRACK_ID,
             kind: TrackKind::Audio,
@@ -347,7 +347,7 @@ fn parse_aac_tag(payload: &Bytes) -> Result<CodecTagEvent, FlvDemuxError> {
             bytes: body,
         }
         .into()),
-        unknown => Err(unsupported(format!("AAC packet type {unknown} неизвестен"))),
+        unknown => Err(unsupported(format!("AAC packet type {unknown} unknown"))),
     }
 }
 
@@ -360,7 +360,7 @@ impl From<EncodedTagPacket> for CodecTagEvent {
 fn audio_packet(codec_id: &'static str, bytes: Bytes) -> Result<CodecTagEvent, FlvDemuxError> {
     if bytes.is_empty() {
         return Err(malformed(format!(
-            "legacy audio payload для {codec_id} пуст"
+            "legacy audio payload for {codec_id} is empty"
         )));
     }
     Ok(CodecTagEvent::Packet(EncodedTagPacket {
@@ -377,10 +377,10 @@ fn validate_video_frame_type(frame_type: u8) -> Result<(), FlvDemuxError> {
     match frame_type {
         1..=4 => Ok(()),
         5 => Err(unsupported(
-            "video command/info frame не содержит coded media",
+            "video command/info frame does not contain coded media",
         )),
         reserved => Err(unsupported(format!(
-            "зарезервированный FLV video FrameType={reserved}"
+            "Reserved FLV video FrameType={reserved}"
         ))),
     }
 }
@@ -391,7 +391,7 @@ pub(crate) fn legacy_audio_configuration(
 ) -> Result<Option<TrackConfiguration>, FlvDemuxError> {
     let header = *payload
         .first()
-        .ok_or_else(|| malformed("пустой audio tag"))?;
+        .ok_or_else(|| malformed("empty audio tag"))?;
     let format = header >> 4;
     if format == 10 {
         return Ok(None);
@@ -399,7 +399,7 @@ pub(crate) fn legacy_audio_configuration(
     let rate = [5_500, 11_025, 22_050, 44_100][usize::from((header >> 2) & 3)];
     let channels = if header & 1 != 0 { 2 } else { 1 };
     let codec_id = match (format, header & 2 != 0) {
-        (0, true) => return Err(unsupported("platform-endian 16-bit PCM неоднозначен")),
+        (0, true) => return Err(unsupported("platform-endian 16-bit PCM ambiguous")),
         (0 | 3, false) => "A_PCM_U8",
         (3, true) => "A_PCM_S16LE",
         (1, _) => "A_ADPCM_SWF",
@@ -428,7 +428,7 @@ fn parse_audio_specific_config(bytes: &[u8]) -> Result<(u32, u32), FlvDemuxError
     if !matches!(audio_object_type, 2 | 5 | 29) {
         return Err(invalid_config(
             "AAC",
-            format!("audio object type {audio_object_type} не входит в profile"),
+            format!("audio object type {audio_object_type} is not included in the profile"),
         ));
     }
     let core_sample_rate = read_aac_sample_rate(&mut bits)?;
@@ -439,7 +439,7 @@ fn parse_audio_specific_config(bytes: &[u8]) -> Result<(u32, u32), FlvDemuxError
         if extension_object_type != 2 {
             return Err(invalid_config(
                 "AAC",
-                format!("SBR/PS core object type {extension_object_type} не поддерживается"),
+                format!("SBR/PS core object type {extension_object_type} is not supported"),
             ));
         }
         extension_sample_rate
@@ -492,10 +492,7 @@ fn read_aac_sample_rate(bits: &mut AacBitReader<'_>) -> Result<u32, FlvDemuxErro
         15 => {
             let explicit = bits.read(24)?;
             if explicit == 0 {
-                return Err(invalid_config(
-                    "AAC",
-                    "explicit sample rate не может быть 0",
-                ));
+                return Err(invalid_config("AAC", "explicit sample rate can't 0"));
             }
             explicit
         }
@@ -531,7 +528,7 @@ impl<'a> AacBitReader<'a> {
         {
             return Err(invalid_config(
                 "AAC",
-                "AudioSpecificConfig bit field обрезан",
+                "AudioSpecificConfig bit field cropped",
             ));
         }
         let mut value = 0_u32;

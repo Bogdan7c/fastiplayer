@@ -123,7 +123,7 @@ pub(crate) struct HlsProjectedRuntimeMaterial {
 enum HlsCandidateTopologyError {
     /// Два независимых manifest URL уже являются compound topology, а не AUDIO rendition master-а.
     #[error(
-        "compound HLS candidate содержит два независимых manifest resource; alternate AUDIO поддерживается только внутри одного master playlist"
+        "Compound HLS candidate contains two independent manifest resources; alternate AUDIO is supported only within one master playlist"
     )]
     IndependentManifestResources,
 }
@@ -188,7 +188,7 @@ pub fn prepare_hls_candidate(
     )?)?;
     if live_intent == service_ytdlp::YtDlpLiveIntent::Live {
         let endpoint_refresh = endpoint_refresh
-            .ok_or_else(|| anyhow!("HLS live candidate потерял app endpoint refresh port"))?;
+            .ok_or_else(|| anyhow!("HLS live candidate loses app endpoint refresh port"))?;
         let request = HlsLiveOpenRequest {
             common: HlsVodOpenRequest {
                 http,
@@ -207,7 +207,7 @@ pub fn prepare_hls_candidate(
         let (opened, component_variants) = match component_selection_intent {
             crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
                 prepare_hls_live_receipted(request, hls_async_seek_limits())
-                    .context("HLS live preflight завершился ошибкой")?,
+                    .context("HLS live preflight ended in error")?,
                 crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
             ),
             crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
@@ -229,7 +229,7 @@ pub fn prepare_hls_candidate(
                 let catalog = Arc::new(snapshot.catalog().clone());
                 (
                     prepare_hls_catalog_live_receipted(request, reopen, hls_async_seek_limits())
-                        .context("HLS live catalog reopen завершился ошибкой")?,
+                        .context("HLS live catalog reopen ended up with an error")?,
                     crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
                         catalog,
                         provider_selection: selected,
@@ -245,15 +245,15 @@ pub fn prepare_hls_candidate(
             .into();
         let seek_handle = opened
             .async_seek_handle()
-            .ok_or_else(|| anyhow!("HLS live runtime потерял receipted seek handle"))?;
+            .ok_or_else(|| anyhow!("HLS live runtime lost its receipted seek handle"))?;
         let initial_readiness = opened.initial_readiness();
         let (mut demuxer, timeline_port, _) = opened.into_parts();
         // Любой live HLS должен доказать хотя бы один реальный track до Installed.
         // Иначе неизвестный fMP4 sample entry превращается в бесконечное пустое playback state.
         wait_for_initial_hls_tracks(demuxer.as_mut(), &initial_readiness)
-            .context("HLS live не достиг install-ready track состояния")?;
+            .context("HLS live did not reach an install-ready track state")?;
         prove_deferred_hls_codec_evidence(candidate, demuxer.as_mut(), capability_probe)
-            .context("HLS deferred candidate не прошёл post-open codec proof")?;
+            .context("HLS deferred candidate fails to pass post-open codec proof")?;
         return Ok(PreparedHlsCandidate {
             demuxer,
             seek_port: Arc::new(HlsPreparedDemuxSeekPort {
@@ -269,7 +269,7 @@ pub fn prepare_hls_candidate(
         service_ytdlp::YtDlpLiveIntent::Unspecified | service_ytdlp::YtDlpLiveIntent::NotLive
     ) {
         return Err(anyhow!(
-            "yt-dlp live intent несовместим с HLS playback profile"
+            "yt-dlp live intent is not compatible with HLS playback profile"
         ));
     }
     let request = HlsVodOpenRequest {
@@ -285,7 +285,7 @@ pub fn prepare_hls_candidate(
     let (opened, component_variants) = match component_selection_intent {
         crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
             prepare_hls_vod_receipted(request, hls_async_seek_limits())
-                .context("HLS VOD preflight завершился ошибкой")?,
+                .context("HLS VOD preflight ended in error")?,
             crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
         ),
         crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
@@ -307,7 +307,7 @@ pub fn prepare_hls_candidate(
             let catalog = Arc::new(snapshot.catalog().clone());
             (
                 prepare_hls_catalog_vod_receipted(request, reopen, hls_async_seek_limits())
-                    .context("HLS VOD catalog reopen завершился ошибкой")?,
+                    .context("HLS VOD catalog reopen ended in error")?,
                 crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
                     catalog,
                     provider_selection: selected,
@@ -323,15 +323,15 @@ pub fn prepare_hls_candidate(
         .into();
     let seek_handle = opened
         .async_seek_handle()
-        .ok_or_else(|| anyhow!("HLS VOD runtime потерял receipted seek handle"))?;
+        .ok_or_else(|| anyhow!("HLS VOD runtime lost its receipted seek handle"))?;
     let initial_readiness = opened.initial_readiness();
     let mut demuxer = opened.into_demuxer();
     // Static HLS обязан опубликовать tracks и duration до PreparedMedia/Installed:
     // startup restore начинается сразу после Installed и не ждёт поздний TracksChanged.
     wait_for_initial_hls_tracks(demuxer.as_mut(), &initial_readiness)
-        .context("HLS VOD не достиг install-ready track/timeline состояния")?;
+        .context("HLS VOD did not reach an install-ready track/timeline state")?;
     prove_deferred_hls_codec_evidence(candidate, demuxer.as_mut(), capability_probe)
-        .context("HLS deferred candidate не прошёл post-open codec proof")?;
+        .context("HLS deferred candidate fails to pass post-open codec proof")?;
     Ok(PreparedHlsCandidate {
         demuxer,
         seek_port: Arc::new(HlsPreparedDemuxSeekPort {
@@ -375,17 +375,17 @@ pub(crate) fn project_hls_runtime_material(
     let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let mut transport_request = candidate
         .hls_transport_request(&context)
-        .context("Не удалось спроецировать yt-dlp HLS transport material")?;
+        .context("It was not possible to project yt-dlp HLS transport material")?;
     if let Some(observer) = endpoint_expiry_observer {
         transport_request = transport_request.with_endpoint_expiry_observer(observer);
     }
     let material = candidate
         .hls_request_material()
-        .context("Не удалось получить validated yt-dlp HLS material")?;
+        .context("Not able to get validated yt-dlp HLS material")?;
     let selected_target = transport_request
         .target()
         .as_http()
-        .context("HLS transport request должен содержать HTTP target")?
+        .context("HLS transport request contains HTTP target")?
         .clone();
     let manifest = match material.manifest().kind() {
         YtDlpHlsManifestInputKind::FetchSelectedUrl => HlsManifestInput::Fetch {
@@ -397,7 +397,7 @@ pub(crate) fn project_hls_runtime_material(
                 material
                     .manifest()
                     .inline_playlist_for_parse()
-                    .ok_or_else(|| anyhow!("inline HLS type-state потерял playlist bytes"))?,
+                    .ok_or_else(|| anyhow!("Inline HLS type-state lost playlist bytes"))?,
             ),
         },
     };
@@ -411,7 +411,7 @@ pub(crate) fn project_hls_runtime_material(
             )
         })
         .transpose()
-        .context("yt-dlp hls_aes нарушил validated AES boundary")?;
+        .context("yt-dlp hls_aes violated validated AES boundary")?;
     let adaptive_limits =
         crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
     let http = AdaptiveHttpContext::new(
@@ -426,7 +426,7 @@ pub(crate) fn project_hls_runtime_material(
         )
         .context("HLS retry policy invalid")?,
     )
-    .context("Не удалось создать HLS adaptive HTTP context")?;
+    .context("Could not create the HLS adaptive HTTP context")?;
     Ok(HlsProjectedRuntimeMaterial {
         http,
         manifest,
@@ -471,14 +471,14 @@ fn selection_and_containers(
         }
         StreamLayout::ContentProbed(_) => {
             return Err(anyhow!(
-                "HLS open не поддерживает generic content-probed layout"
+                "HLS open does not support generic content-probed layout"
             ));
         }
     };
     let resolution = match layout {
         StreamLayout::HlsMuxedCodecDeferred(component) => {
             let height = NonZeroU32::new(component.height().pixels())
-                .ok_or_else(|| anyhow!("HLS deferred video height равен нулю"))?;
+                .ok_or_else(|| anyhow!("HLS deferred video height is zero."))?;
             let width = component
                 .width()
                 .and_then(|width| NonZeroU32::new(width.pixels()));
@@ -489,16 +489,16 @@ fn selection_and_containers(
                 let width = NonZeroU32::new(
                     track
                         .width_pixels()
-                        .ok_or_else(|| anyhow!("HLS video width evidence отсутствует"))?,
+                        .ok_or_else(|| anyhow!("HLS video width evidence is missing"))?,
                 )
-                .ok_or_else(|| anyhow!("HLS video width равен нулю"))?;
+                .ok_or_else(|| anyhow!("HLS video width is zero."))?;
                 let height = NonZeroU32::new(
                     track
                         .height()
-                        .ok_or_else(|| anyhow!("HLS video height evidence отсутствует"))?
+                        .ok_or_else(|| anyhow!("HLS video height evidence is missing."))?
                         .pixels(),
                 )
-                .ok_or_else(|| anyhow!("HLS video height равен нулю"))?;
+                .ok_or_else(|| anyhow!("HLS video height is zero."))?;
                 Ok((width, height))
             })
             .transpose()?,
@@ -531,7 +531,7 @@ fn selection_and_containers(
                     container
                         .consistent_family()
                         .map_err(|conflict| anyhow!("HLS container hints conflict: {conflict:?}"))?
-                        .ok_or_else(|| anyhow!("HLS container evidence отсутствует"))?,
+                        .ok_or_else(|| anyhow!("HLS container evidence is absent"))?,
                 )?
             },
             alternate_audio: matches!(layout, StreamLayout::Muxed(_))
@@ -553,17 +553,17 @@ fn prove_deferred_hls_codec_evidence(
     let video = tracks
         .iter()
         .find(|track| track.kind == TrackKind::Video)
-        .ok_or_else(|| anyhow!("deferred HLS demuxer не содержит video track"))?;
+        .ok_or_else(|| anyhow!("deferred HLS demuxer does not contain video track"))?;
     let audio = tracks
         .iter()
         .find(|track| track.kind == TrackKind::Audio)
-        .ok_or_else(|| anyhow!("deferred HLS demuxer не содержит audio track"))?;
+        .ok_or_else(|| anyhow!("deferred HLS demuxer does not contain audio track"))?;
     capability_probe
         .prove_video(video)
-        .map_err(|_| anyhow!("deferred HLS video codec не поддерживается"))?;
+        .map_err(|_| anyhow!("Deferred HLS video codec is unsupported"))?;
     capability_probe
         .prove_audio(audio)
-        .map_err(|_| anyhow!("deferred HLS audio codec не поддерживается"))?;
+        .map_err(|_| anyhow!("Deferred HLS audio codec is unsupported"))?;
     Ok(())
 }
 
@@ -582,7 +582,7 @@ fn wait_for_initial_hls_tracks(
         }
         if Instant::now() >= deadline {
             return Err(anyhow!(
-                "HLS runtime не опубликовал непустой track snapshot до open deadline"
+                "HLS runtime did not publish a nonempty track snapshot before the open deadline"
             ));
         }
         match demuxer
@@ -599,23 +599,25 @@ fn wait_for_initial_hls_tracks(
             DemuxReadEvent::TemporarilyUnavailable(_) => match readiness {
                 HlsInitialReadinessCapability::AlreadySynchronous => {
                     return Err(anyhow!(
-                        "синхронный HLS runtime не опубликовал initial topology сразу"
+                        "HLS runtime did not publish initial topology immediately."
                     ));
                 }
                 HlsInitialReadinessCapability::Progressive(port) => {
                     match port.wait_until(deadline) {
                         ProgressiveDemuxReadiness::EventAvailable => {}
                         ProgressiveDemuxReadiness::Cancelled => {
-                            return Err(anyhow!("HLS runtime отменён до initial track topology"));
+                            return Err(anyhow!(
+                                "HLS runtime was canceled before publishing the initial track topology"
+                            ));
                         }
                         ProgressiveDemuxReadiness::WorkerStopped => {
                             return Err(anyhow!(
-                                "HLS runtime worker завершился до initial track topology"
+                                "HLS runtime worker finished before initial track topology"
                             ));
                         }
                         ProgressiveDemuxReadiness::DeadlineReached => {
                             return Err(anyhow!(
-                                "HLS runtime не опубликовал непустой track snapshot до open deadline"
+                                "HLS runtime did not publish a nonempty track snapshot before the open deadline"
                             ));
                         }
                     }
@@ -623,13 +625,13 @@ fn wait_for_initial_hls_tracks(
             },
             DemuxReadEvent::EndOfStream => {
                 return Err(anyhow!(
-                    "HLS runtime достиг EOS до непустого initial track snapshot"
+                    "HLS runtime reaches EOS before non-empty initial track snapshot"
                 ));
             }
             DemuxReadEvent::Packet(_) => {
                 // Packet при пустой topology нарушает ProgressiveDemuxer contract.
                 return Err(anyhow!(
-                    "HLS runtime опубликовал packet до непустого initial track snapshot"
+                    "HLS runtime published a packet before a nonempty initial track snapshot"
                 ));
             }
         }
@@ -663,7 +665,7 @@ fn hls_main_container_evidence(container: ContainerFamily) -> Result<HlsContaine
             HlsRequiredContainer::FragmentedMp4,
         )),
         other => Err(anyhow!(
-            "HLS container {other:?} не входит в TS/fMP4 profile"
+            "HLS container {other:?} is not included in TS/fMP4 profile"
         )),
     }
 }

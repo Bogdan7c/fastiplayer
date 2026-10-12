@@ -62,9 +62,7 @@ impl DynamicOptionsRefreshJob {
                 }
                 match result_publisher.publish_completion(snapshots) {
                     Ok(crate::app_wake::WakeDelivery::EventLoopClosed) => {
-                        tracing::debug!(
-                            "Event loop закрыт; settings terminal оставлен без wake retry"
-                        );
+                        tracing::debug!("Event loop closed; Settings terminal will not retry wake");
                     }
                     Ok(
                         crate::app_wake::WakeDelivery::Armed
@@ -72,14 +70,14 @@ impl DynamicOptionsRefreshJob {
                     ) => {}
                     Err(crate::app_wake::CompletionPublishError::AlreadyPublished) => {
                         tracing::warn!(
-                            "dynamic options refresh попытался опубликовать второй terminal result"
+                            "Dynamic options refresh attempted to publish a second terminal result"
                         );
                     }
                 }
             })
             .map_err(|error| {
                 settings_core::SettingsError::access_failed(format!(
-                    "не удалось запустить фоновый refresh dynamic options: {error}"
+                    "Could not start background dynamic options refresh: {error}"
                 ))
             })?;
 
@@ -161,7 +159,7 @@ impl Drop for DynamicOptionsRefreshJob {
             return;
         };
         if join_handle.join().is_err() {
-            tracing::warn!("dynamic options refresh panic обнаружен во время fail-safe Drop");
+            tracing::warn!("Dynamic options refresh panic detected during fail-safe Drop");
         }
     }
 }
@@ -243,7 +241,7 @@ impl SettingOptionProvider for AudioOutputDeviceOptionProvider {
             audio::DEFAULT_AUDIO_OUTPUT_DEVICE_ID,
             SettingText::new(
                 "settings.audio.output_device.default",
-                "Системное устройство",
+                "System default device",
             ),
         )];
 
@@ -268,7 +266,7 @@ impl SettingOptionProvider for AudioOutputDeviceOptionProvider {
 #[cfg(not(test))]
 fn audio_output_device_option(device: audio::AudioOutputDeviceInfo) -> SettingOption {
     let label = if device.is_system_default {
-        format!("{} (текущее системное)", device.display_name)
+        format!("{} (current system default)", device.display_name)
     } else {
         device.display_name
     };
@@ -334,7 +332,7 @@ pub(super) fn current_option_value(
 fn unavailable_current_label(current_id: &SettingOptionId) -> SettingText {
     SettingText::new(
         "settings.dynamic_options.unavailable_current",
-        format!("{} (сейчас недоступно)", current_id.as_str()),
+        format!("{} (currently unavailable)", current_id.as_str()),
     )
 }
 
@@ -388,7 +386,7 @@ impl SettingsRuntime {
         }
         if self.dynamic_options_shutdown_started {
             return Err(settings_core::SettingsError::access_failed(
-                "dynamic options shutdown уже начат; новый refresh запрещён",
+                "Dynamic options shutdown has started; new refresh is prohibited",
             ));
         }
 
@@ -440,7 +438,7 @@ impl SettingsRuntime {
 
         let Some(active_job) = self.active_options_refresh.as_mut() else {
             if self.start_pending_latest_options_refresh().is_err() {
-                tracing::warn!("не удалось запустить latest dynamic options refresh");
+                tracing::warn!("Could not start the latest dynamic options refresh");
             }
             self.dynamic_options_wake_port
                 .acknowledge_abandoned_mailbox();
@@ -461,12 +459,14 @@ impl SettingsRuntime {
             DynamicOptionsRefreshCompletion::Snapshots(_)
             | DynamicOptionsRefreshCompletion::Cancelled => false,
             DynamicOptionsRefreshCompletion::Failed => {
-                tracing::warn!("фоновый refresh dynamic options завершился без terminal result");
+                tracing::warn!(
+                    "Background dynamic options refresh finished without a terminal result"
+                );
                 false
             }
         };
         if self.start_pending_latest_options_refresh().is_err() {
-            tracing::warn!("не удалось запустить latest dynamic options refresh");
+            tracing::warn!("Could not start the latest dynamic options refresh");
         }
         had_visible_mutation
     }
@@ -490,7 +490,7 @@ impl SettingsRuntime {
             let _visible_mutation = self.poll_dynamic_options_refresh();
             assert!(
                 Instant::now() < deadline,
-                "фоновый refresh dynamic options должен завершиться в тесте"
+                "Background refresh dynamic options should end in the test"
             );
             std::thread::yield_now();
         }

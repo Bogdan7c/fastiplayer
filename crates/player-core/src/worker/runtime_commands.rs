@@ -439,7 +439,7 @@ impl PlayerWorkerRuntime {
                     request,
                     PlayerError::new(
                         PlayerErrorKind::DemuxError,
-                        "Локальный файл должен быть подготовлен adapter-слоем до player-core",
+                        "The local file must be prepared by the adapter layer to the player-core",
                     ),
                 );
             }

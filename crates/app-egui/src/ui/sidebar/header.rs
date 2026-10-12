@@ -189,18 +189,18 @@ fn playlist_header_position(model: Option<&PlaylistViewModel>) -> Option<Playlis
 /// Возвращает локализованный heading без знания о render branch.
 const fn sidebar_section_title(section: SidebarSection) -> &'static str {
     match section {
-        SidebarSection::Playlist => "Плейлист",
-        SidebarSection::Settings => "Настройки",
+        SidebarSection::Playlist => "Playlist",
+        SidebarSection::Settings => "Settings",
         SidebarSection::Url => "URL",
-        SidebarSection::Info => "Информация",
+        SidebarSection::Info => "Info",
     }
 }
 
 /// Settings сохраняет rollback-обещание, остальные секции только скрываются.
 const fn sidebar_close_tooltip(section: SidebarSection) -> &'static str {
     match section {
-        SidebarSection::Settings => "Отменить изменения и закрыть настройки",
-        SidebarSection::Playlist | SidebarSection::Url | SidebarSection::Info => "Закрыть панель",
+        SidebarSection::Settings => "Cancel changes and close Settings",
+        SidebarSection::Playlist | SidebarSection::Url | SidebarSection::Info => "Close panel",
     }
 }
 
@@ -513,7 +513,7 @@ mod tests {
             let active_item_id = populated_queue
                 .iter_playable_ids()
                 .nth(zero_based_position)
-                .expect("fixture должен содержать playable строку по заданной позиции");
+                .expect("fixture must contain a playable line for a given position");
             let active_model = playlist_model(&populated_queue, Some(active_item_id));
             let active_position = playlist_header_position(Some(&active_model))
                 .expect("active row in non-empty queue must be visible");
@@ -524,7 +524,7 @@ mod tests {
         let removed_active_item_id = populated_queue
             .iter_playable_ids()
             .nth(5)
-            .expect("fixture должен содержать удаляемую playable строку");
+            .expect("The fixture must contain a deleted playable string.");
         assert!(matches!(
             populated_queue.remove(playlist_core::PlaylistEntryId::Single(
                 removed_active_item_id,
@@ -602,7 +602,7 @@ mod tests {
             }
             // И heading, и счётчик используют яркий theme token.
             let strong_text_color = egui::Visuals::dark().strong_text_color();
-            assert_eq!(painted_text_color(&output, "Плейлист"), strong_text_color);
+            assert_eq!(painted_text_color(&output, "Playlist"), strong_text_color);
             assert_eq!(painted_text_color(&output, "6/30"), strong_text_color);
         }
     }

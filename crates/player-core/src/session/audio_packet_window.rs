@@ -190,36 +190,45 @@ impl fmt::Display for DecodedPcmPacketClipError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingPacketTimeBase => {
-                write!(formatter, "bounded audio packet не содержит raw time base")
+                write!(
+                    formatter,
+                    "The bounded audio packet does not contain the raw time base."
+                )
             }
             Self::TrackMismatch { .. } => {
                 write!(
                     formatter,
-                    "audio packet track не совпадает с presentation window"
+                    "The audio packet track does not match the presentation window"
                 )
             }
             Self::TimeBaseMismatch => {
                 write!(
                     formatter,
-                    "audio packet time base не совпадает с presentation window"
+                    "The audio packet time base does not match the presentation window"
                 )
             }
-            Self::ZeroSampleRate => write!(formatter, "decoded audio sample rate равен нулю"),
-            Self::ZeroChannels => write!(formatter, "decoded audio channel count равен нулю"),
+            Self::ZeroSampleRate => write!(formatter, "The decoded audio sample rate is zero."),
+            Self::ZeroChannels => write!(formatter, "The decoded audio channel count is zero."),
             Self::NonInterleavedSampleCount { .. } => {
-                write!(formatter, "decoded audio samples не образуют полные frames")
+                write!(
+                    formatter,
+                    "Decoded audio samples do not form complete frames"
+                )
             }
             Self::ArithmeticOverflow { .. } => {
-                write!(formatter, "exact audio packet clipping переполнил i128")
+                write!(
+                    formatter,
+                    "exact audio packet clipping overflowed with i128"
+                )
             }
             Self::ChannelCountDoesNotFitPlatform { .. } => {
-                write!(formatter, "audio channel count не помещается в usize")
+                write!(formatter, "Audio channel count does not fit in usize")
             }
             Self::SampleIndexOverflow { .. } => {
-                write!(formatter, "PCM frame-to-sample index переполнен")
+                write!(formatter, "PCM frame-to-sample index is full")
             }
             Self::SampleRangeOutOfBounds { .. } => {
-                write!(formatter, "PCM sample range вышел за decoded block")
+                write!(formatter, "PCM sample range is out of decoded block")
             }
         }
     }
@@ -466,7 +475,7 @@ mod tests {
     fn retained_range(outcome: DecodedPcmPacketClipOutcome) -> DecodedPcmFrameRange {
         match outcome {
             DecodedPcmPacketClipOutcome::Retained(range) => range,
-            unexpected => panic!("ожидался retained range, получено {unexpected:?}"),
+            unexpected => panic!("expected retained range, got {unexpected:?}"),
         }
     }
 
@@ -475,7 +484,7 @@ mod tests {
         let samples = [0.25, -0.5, 0.75];
         let outcome = DecodedPcmPacketBoundary::new(&samples, PacketPresentationWindow::Unbounded)
             .plan_clip(TrackId::new(2), AudioPacketTiming::unknown(), 0, 0)
-            .expect("unbounded не требует новых metadata");
+            .expect("Unbounded does not require new metadata");
 
         assert_eq!(outcome, DecodedPcmPacketClipOutcome::Unbounded);
     }
@@ -508,7 +517,7 @@ mod tests {
         let outcome =
             DecodedPcmPacketBoundary::new(&samples, bounded_window(TrackId::new(2), 1, 5, 2, 3))
                 .plan_clip(TrackId::new(2), timing(-2, 2, 3), 5, 1)
-                .expect("negative PTS остаётся exact signed");
+                .expect("Negative PTS is strictly signed");
 
         assert_eq!(
             retained_range(outcome),
@@ -624,7 +633,7 @@ mod tests {
         let window = bounded_window(TrackId::new(2), i64::MAX - 1, i64::MAX, u32::MAX, 1);
         let error = DecodedPcmPacketBoundary::new(&samples, window)
             .plan_clip(TrackId::new(2), timing(i64::MIN, u32::MAX, 1), u32::MAX, 1)
-            .expect_err("exact product не помещается в i128");
+            .expect_err("The exact product does not fit in the i128");
 
         assert!(matches!(
             error,

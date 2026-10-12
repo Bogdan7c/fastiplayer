@@ -100,7 +100,7 @@ pub(crate) fn join_finished_thread(join_handle: &mut Option<JoinHandle<()>>) -> 
     )]
     let handle = join_handle
         .take()
-        .expect("проверенный JoinHandle должен оставаться в owner slot");
+        .expect("JoinHandle must remain in the owner slot.");
     if handle.join().is_ok() {
         FinishedThreadJoin::Joined
     } else {
@@ -153,7 +153,7 @@ mod tests {
             ),
             FinishedThreadJoin::StillRunning
         );
-        assert!(handle.is_some(), "timeout обязан сохранить join authority");
+        assert!(handle.is_some(), "timeout retain join authority");
 
         release.store(true, Ordering::Release);
         assert_eq!(

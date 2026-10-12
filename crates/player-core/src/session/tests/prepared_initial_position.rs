@@ -62,10 +62,10 @@ fn prepared_initial_position_adopts_exact_generation_without_second_demux_seek()
                 actual_track_timestamp: None,
             },
         })
-        .expect("valid prepared initial receipt должен пройти boundary validation");
+        .expect("Valid prepared initial receipt must pass boundary validation");
 
     let request_id = MediaInstallRequestId::from_non_zero(
-        NonZeroU64::new(35_500).expect("request id должен быть non-zero"),
+        NonZeroU64::new(35_500).expect("request id must be non-zero"),
     );
     let (install_receipt, install_port) = MediaInstallReceipt::new(request_id);
     let mut session = PlayerSession::new();
@@ -90,9 +90,9 @@ fn prepared_initial_position_adopts_exact_generation_without_second_demux_seek()
         media_instance_id, ..
     } = install_receipt
         .try_take_completion()
-        .expect("prepared initial candidate должен установиться")
+        .expect("The prepared initial candidate must be established.")
     else {
-        panic!("valid prepared initial candidate не должен завершиться failure/cancellation");
+        panic!("A valid prepared initial candidate must not be completed failure/cancellation");
     };
 
     assert!(session.seek_commit().is_some());
@@ -108,7 +108,7 @@ fn prepared_initial_position_adopts_exact_generation_without_second_demux_seek()
     // Stale request/instance и wrong-target restore не отбирают receipt у exact owner-а.
     let stale_request_id = MediaInstallRequestId::from_non_zero(
         NonZeroU64::new(request_id.get().saturating_add(1))
-            .expect("stale request id должен быть non-zero"),
+            .expect("stale request id must be non-zero"),
     );
     assert_eq!(
         restore_position(
@@ -118,17 +118,17 @@ fn prepared_initial_position_adopts_exact_generation_without_second_demux_seek()
             target_position
         )
         .recv()
-        .expect("stale request restore обязан получить owner outcome"),
+        .expect("Stale Request Recovery Requires Owner to Receive Outcome"),
         InstalledMediaStateRestoreOutcome::UnknownOrSupersededRequest
     );
     let stale_instance_id = MediaInstanceId::from_non_zero(
         NonZeroU64::new(media_instance_id.get().saturating_add(1))
-            .expect("stale instance id должен быть non-zero"),
+            .expect("stale instance id should be non-zero"),
     );
     assert_eq!(
         restore_position(&mut session, request_id, stale_instance_id, target_position)
             .recv()
-            .expect("stale restore обязан получить owner outcome"),
+            .expect("Stale Recovery Must Receive Owner’s Outcome"),
         InstalledMediaStateRestoreOutcome::StaleInstance
     );
     let wrong_target_outcome = restore_position(
@@ -138,7 +138,7 @@ fn prepared_initial_position_adopts_exact_generation_without_second_demux_seek()
         target_position + Duration::from_secs(1),
     )
     .recv()
-    .expect("wrong-target restore обязан завершиться typed failure");
+    .expect("wrong-target restore must end with typed failure");
     assert!(matches!(
         wrong_target_outcome,
         InstalledMediaStateRestoreOutcome::Failed {
@@ -180,7 +180,7 @@ fn prepared_initial_position_adopts_exact_generation_without_second_demux_seek()
     assert_eq!(
         restore_rx
             .recv()
-            .expect("presentation+audio должны завершить exact restore"),
+            .expect("Presentation+audio to be completed with exact restore"),
         InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
     );
     assert!(prepared_seek_port.commands().is_empty());
@@ -257,10 +257,10 @@ fn prepared_initial_position_start_paused_commits_without_audio_resume_or_second
                     actual_track_timestamp: None,
                 },
             })
-            .expect("valid paused initial receipt должен пройти boundary validation");
+            .expect("Valid pause initial receipt must pass boundary validation");
 
     let request_id = MediaInstallRequestId::from_non_zero(
-        NonZeroU64::new(35_501).expect("request id должен быть non-zero"),
+        NonZeroU64::new(35_501).expect("request id must be non-zero"),
     );
     let (install_receipt, install_port) = MediaInstallReceipt::new(request_id);
     let mut session = PlayerSession::new();
@@ -285,9 +285,9 @@ fn prepared_initial_position_start_paused_commits_without_audio_resume_or_second
         media_instance_id, ..
     } = install_receipt
         .try_take_completion()
-        .expect("paused prepared initial candidate должен установиться")
+        .expect("The paused prepared initial candidate must be installed.")
     else {
-        panic!("valid paused candidate не должен завершаться failure/cancellation");
+        panic!("The valid suspension candidate must not be completed failure/cancellation");
     };
 
     assert_eq!(session.playback_state(), PlaybackState::Seeking);
@@ -335,7 +335,7 @@ fn prepared_initial_position_start_paused_commits_without_audio_resume_or_second
     assert_eq!(
         restore_rx
             .recv()
-            .expect("target presentation должна завершить paused exact restore"),
+            .expect("target presentation to complete paused exact restore"),
         InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
     );
     assert!(prepared_seek_port.commands().is_empty());
@@ -397,7 +397,7 @@ fn prepared_initial_position_rejects_anchor_after_target() {
             },
         })
         .err()
-        .expect("anchor after target должен быть отклонён");
+        .expect("anchor after target must be rejected");
     assert_eq!(
         error,
         PreparedInitialPositionError::ActualPositionAfterTarget {
@@ -429,7 +429,7 @@ fn prepared_post_target_position_rejects_anchor_before_target() {
                 },
             })
             .err()
-            .expect("anchor before target должен быть отклонён post-target contract-ом");
+            .expect("anchor before target must be rejected by post-target contract");
     assert_eq!(
         error,
         PreparedInitialPositionError::ActualPositionBeforeTarget {
@@ -461,7 +461,7 @@ fn prepared_initial_position_rejects_requested_target_mismatch() {
                 },
             })
             .err()
-            .expect("receipt другого target-а должен быть отклонён");
+            .expect("Receipt of the other target must be rejected");
     assert_eq!(
         error,
         PreparedInitialPositionError::RequestedPositionMismatch {
@@ -490,9 +490,9 @@ fn prepared_initial_position_rejects_stale_seek_generation() {
                 actual_track_timestamp: None,
             },
         })
-        .expect("exact target/anchor должен быть valid");
+        .expect("Exact target/anchor must be valid");
     let request_id = MediaInstallRequestId::from_non_zero(
-        NonZeroU64::new(5_005).expect("request id должен быть non-zero"),
+        NonZeroU64::new(5_005).expect("request id must be non-zero"),
     );
     let (install_receipt, install_port) = MediaInstallReceipt::new(request_id);
     let mut session = PlayerSession::new();
@@ -517,21 +517,21 @@ fn prepared_initial_position_rejects_stale_seek_generation() {
         media_instance_id, ..
     } = install_receipt
         .try_take_completion()
-        .expect("candidate должен установиться до generation check")
+        .expect("Candidate must be installed before generation check")
     else {
-        panic!("candidate не должен завершаться failure/cancellation");
+        panic!("Candidate must not complete failure/cancellation");
     };
 
     let prepared_generation = session
         .seek_commit()
-        .expect("prepared position должна начать decoder landing")
+        .expect("Prepared position to start decoder landing")
         .generation;
     let superseding_generation = session.pipeline.begin_seek_generation();
     assert_ne!(superseding_generation, prepared_generation);
 
     let outcome = restore_position(&mut session, request_id, media_instance_id, target_position)
         .recv()
-        .expect("stale generation должна завершиться typed failure");
+        .expect("The stale generation should end with typed failure.");
     assert!(matches!(
         outcome,
         InstalledMediaStateRestoreOutcome::Failed {
@@ -582,5 +582,5 @@ fn event_index(events: &[PlayerEvent], predicate: impl Fn(&PlayerEvent) -> bool)
     events
         .iter()
         .position(predicate)
-        .unwrap_or_else(|| panic!("ожидаемый lifecycle event отсутствует: {events:#?}"))
+        .unwrap_or_else(|| panic!("Expected lifecycle event missing: {events:#?}"))
 }

@@ -76,9 +76,8 @@ pub enum ExactMediaTransportReceiptError {
 impl fmt::Display for ExactMediaTransportReceiptError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingOwnerOutcome => {
-                formatter.write_str("player owner завершился без exact media transport outcome")
-            }
+            Self::MissingOwnerOutcome => formatter
+                .write_str("Player owner finished without an exact media transport outcome"),
         }
     }
 }

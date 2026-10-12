@@ -30,13 +30,13 @@ use super::model::{YtDlpCandidateSnapshot, YtDlpNormalizedCandidate, YtDlpVideoC
 #[derive(Debug, Error)]
 pub enum YtDlpPlanningSnapshotError {
     /// Legacy row-level ошибка: candidate не выразилась через runtime vocabulary.
-    #[error("accepted YtDlp candidate не имеет полного runtime requirement")]
+    #[error("accepted YtDlp candidate does not have a complete runtime requirement")]
     RuntimeRequirement,
     /// Legacy row-level ошибка: planner отверг descriptor/runtime pair.
-    #[error("YtDlp candidate нарушает planning contract")]
+    #[error("YtDlp candidate violates planning contract")]
     Candidate(#[source] PlanningCandidateBuildError),
     /// Итоговый snapshot нарушает source/generation/identity contract.
-    #[error("YtDlp planning snapshot нарушает identity contract")]
+    #[error("YtDlp planning snapshot violates identity contract")]
     Snapshot(#[source] PlanningSnapshotBuildError),
 }
 
@@ -44,10 +44,10 @@ pub enum YtDlpPlanningSnapshotError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum YtDlpPlanningCandidateRejectionReason {
     /// Accepted S19 candidate не удалось выразить через runtime vocabulary.
-    #[error("accepted YtDlp candidate не имеет полного runtime requirement")]
+    #[error("accepted YtDlp candidate does not have a complete runtime requirement")]
     RuntimeRequirement,
     /// Neutral planner отверг несогласованный descriptor/runtime pair.
-    #[error("YtDlp candidate нарушает planning contract")]
+    #[error("YtDlp candidate violates planning contract")]
     Candidate(#[source] PlanningCandidateBuildError),
 }
 
@@ -129,19 +129,19 @@ impl YtDlpPlanningProjection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum YtDlpPlanningSnapshotAlignmentError {
     /// Planner snapshot принадлежит другой source lineage.
-    #[error("planner snapshot принадлежит другой source lineage")]
+    #[error("planner snapshot other source lineage")]
     SourceMismatch,
     /// Planner snapshot принадлежит другой extraction generation.
-    #[error("planner snapshot принадлежит другой extraction generation")]
+    #[error("planner snapshot other extraction generation")]
     GenerationMismatch,
     /// Полный exact+semantic candidate set не совпадает с canonical service view.
-    #[error("planner snapshot не соответствует canonical service candidate set")]
+    #[error("planner snapshot doesn't fit canonical service candidate set")]
     CandidateIdentityMismatch,
     /// Planner row сохранил identity, но изменил service-owned projection.
-    #[error("planner snapshot изменил canonical service candidate projection")]
+    #[error("planner snapshot changed canonical service candidate projection")]
     CandidateProjectionMismatch,
     /// Canonical service candidate неожиданно перестал проецироваться в planner vocabulary.
-    #[error("canonical service candidate не удалось спроецировать в planner snapshot")]
+    #[error("canonical service candidate failed to project in planner snapshot")]
     ServiceProjectionFailed,
 }
 

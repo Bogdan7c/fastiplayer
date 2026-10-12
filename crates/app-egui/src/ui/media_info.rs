@@ -5,16 +5,16 @@ use player_core::PlayerSnapshot;
 
 pub(crate) fn show(ui: &mut Ui, snapshot: &PlayerSnapshot) {
     let Some(info) = snapshot.media_info.as_ref() else {
-        ui.label("Медиафайл не открыт");
+        ui.label("No media file is open");
         return;
     };
 
-    row(ui, "Источник", &info.source.display_location);
+    row(ui, "Source", &info.source.display_location);
     if let Some(size_bytes) = info.source.size_bytes {
         row(
             ui,
-            "Размер",
-            &format!("{size_bytes} байт ({})", format_iec_size(size_bytes)),
+            "Size",
+            &format!("{size_bytes} bytes ({})", format_iec_size(size_bytes)),
         );
     }
     if let Some(container) = info
@@ -23,27 +23,27 @@ pub(crate) fn show(ui: &mut Ui, snapshot: &PlayerSnapshot) {
         .and_then(|metadata| metadata.container.as_ref())
         .and_then(|container| container.format_name.as_deref())
     {
-        row(ui, "Контейнер", container);
+        row(ui, "Container", container);
     }
     if let Some(duration) = info.duration {
-        row(ui, "Длительность", &format_duration(duration));
+        row(ui, "Duration", &format_duration(duration));
     }
     row(
         ui,
-        "Перемотка",
+        "Seeking",
         if info.seekable {
-            "доступна"
+            "available"
         } else {
-            "недоступна"
+            "unavailable"
         },
     );
 
     if let Some(tags) = info.metadata.as_ref().map(|metadata| &metadata.tags) {
-        optional_row(ui, "Название", tags.title.as_deref());
+        optional_row(ui, "Title", tags.title.as_deref());
         if !tags.artists.is_empty() {
-            row(ui, "Исполнители", &tags.artists.join(", "));
+            row(ui, "Artists", &tags.artists.join(", "));
         }
-        optional_row(ui, "Альбом", tags.album.as_deref());
+        optional_row(ui, "Album", tags.album.as_deref());
     }
 
     for track in &snapshot.tracks {
@@ -55,30 +55,30 @@ pub(crate) fn show(ui: &mut Ui, snapshot: &PlayerSnapshot) {
                 "{:?} {}{}",
                 track.kind,
                 track.id.get(),
-                if selected { " • выбран" } else { "" }
+                if selected { " • selected" } else { "" }
             ))
             .strong(),
         );
-        row(ui, "Кодек", &track.codec_id);
+        row(ui, "Codec", &track.codec_id);
         if let Some(duration) = track.duration {
-            row(ui, "Длительность трека", &format_duration(duration));
+            row(ui, "Track duration", &format_duration(duration));
         }
         if let Some(rate) = track.sample_rate {
-            row(ui, "Частота", &format!("{rate} Гц"));
+            row(ui, "Sample rate", &format!("{rate} Hz"));
         }
         if let Some(channels) = track.channels {
-            row(ui, "Каналы", &channels.to_string());
+            row(ui, "Channels", &channels.to_string());
         }
         if let Some(video) = track.video.as_ref() {
             if let (Some(width), Some(height)) = (video.coded_width, video.coded_height) {
-                row(ui, "Разрешение", &format!("{width}×{height}"));
+                row(ui, "Resolution", &format!("{width}×{height}"));
             }
-            optional_debug_row(ui, "Профиль", video.profile.as_ref());
-            optional_debug_row(ui, "Глубина", video.bit_depth.as_ref());
-            optional_debug_row(ui, "Цветность", video.chroma.as_ref());
-            row(ui, "Ориентация", &format!("{:?}", video.orientation));
+            optional_debug_row(ui, "Profile", video.profile.as_ref());
+            optional_debug_row(ui, "Bit depth", video.bit_depth.as_ref());
+            optional_debug_row(ui, "Chroma", video.chroma.as_ref());
+            row(ui, "Orientation", &format!("{:?}", video.orientation));
             if let Some(color) = video.color.as_ref() {
-                row(ui, "Цвет", &format!("{color:?}"));
+                row(ui, "Color", &format!("{color:?}"));
             }
         }
     }
@@ -112,7 +112,7 @@ fn format_duration(duration: std::time::Duration) -> String {
 }
 
 fn format_iec_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["Б", "КиБ", "МиБ", "ГиБ", "ТиБ"];
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
     let mut unit = 0;
     while value >= 1024.0 && unit + 1 < UNITS.len() {
@@ -127,7 +127,7 @@ mod tests {
     use super::*;
     #[test]
     fn iec_size_is_stable() {
-        assert_eq!(format_iec_size(1_048_576), "1.0 МиБ");
+        assert_eq!(format_iec_size(1_048_576), "1.0 MiB");
     }
     #[test]
     fn duration_is_zero_padded() {

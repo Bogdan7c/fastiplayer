@@ -22,7 +22,7 @@ use crate::playlist_runtime::identity::TransportActionOrigin;
 use crate::playlist_runtime::{PlaylistController, PlaylistRuntime, PlaylistRuntimeBinding};
 
 const FAILED_PLAYBACK_WITHOUT_DETAILS: &str =
-    "Воспроизведение завершилось с ошибкой без дополнительных сведений";
+    "Reproduction ended with an error without further information";
 
 /// Event-driven action slot: readiness выбирает intent, а не коммитит queue/media.
 pub(crate) enum PlaylistDiscoveryNavigationAction {

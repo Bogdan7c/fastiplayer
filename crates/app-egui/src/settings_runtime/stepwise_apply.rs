@@ -171,7 +171,7 @@ where
             let _cancelled_report = self.route_appliers.finish_pending_route(
                 pending,
                 AppRouteApplyResult::Failed {
-                    message: "применение настроек прервано".to_owned(),
+                    message: "settings application interrupted".to_owned(),
                 },
                 self.runtime_adapter,
             );
@@ -184,10 +184,10 @@ where
 /// Текст статуса, пока пересборка media идёт в фоне.
 fn apply_in_progress_status() -> SettingsUiStatus {
     SettingsUiStatus {
-        summary: Some("Применяем настройки…".to_string()),
+        summary: Some("Applying settings…".to_string()),
         details: vec![
-            "Пересобираем источник с новыми настройками; окно продолжает работать.".to_string(),
-            "В файл настройки запишутся только после успешного применения.".to_string(),
+            "Rebuilding the source with new settings; the window remains responsive.".to_string(),
+            "Settings will be saved only after successful application.".to_string(),
         ],
     }
 }
@@ -213,7 +213,7 @@ impl SettingsRuntime {
                     BeginApply::Pending => (None, audio_level_before_apply),
                     BeginApply::Busy => {
                         // Невозможно при одном владельце `pending_apply`; сообщаем, а не молчим.
-                        tracing::error!("Controller занят чужой транзакцией настроек");
+                        tracing::error!("Controller is busy with another settings transaction");
                         self.report_apply_still_running();
                         (None, audio_level_before_apply)
                     }
@@ -225,7 +225,7 @@ impl SettingsRuntime {
                 PollApply::Completed(report) => (Some(report), audio_level_before_apply),
                 PollApply::Pending => (None, audio_level_before_apply),
                 PollApply::Idle => {
-                    tracing::error!("Транзакция настроек потерялась в controller-е");
+                    tracing::error!("Settings transaction was lost in the controller");
                     (None, audio_level_before_apply)
                 }
             },
@@ -265,7 +265,7 @@ impl SettingsRuntime {
         let mut status = apply_in_progress_status();
         status.details.insert(
             0,
-            "Предыдущее применение ещё идёт: подождите его завершения.".to_string(),
+            "The previous application is still in progress; wait for it to finish.".to_string(),
         );
         self.status = status;
         self.invalidate_ui_model();
@@ -355,7 +355,7 @@ impl SettingsRuntime {
         if let Some(report) = report {
             tracing::info!(
                 final_state = ?report.final_state,
-                "Применение настроек прервано на границе жизненного цикла"
+                "Settings application interrupted at a lifecycle boundary"
             );
             self.latest_apply_report = Some(report.clone());
             self.status = status_from_apply_report(&self.setting_labels(), &report);

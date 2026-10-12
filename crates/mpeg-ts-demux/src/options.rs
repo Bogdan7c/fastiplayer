@@ -57,7 +57,7 @@ impl MpegTsDemuxOptions {
         let packet_budget = byte_budget.get().div_ceil(MPEG_TS_PACKET_BYTES);
         self.initial_probe_packets = MpegTsLimit(
             NonZeroUsize::new(packet_budget)
-                .expect("non-zero byte budget даёт хотя бы один packet"),
+                .expect("The non-zero byte budget provides at least one packet."),
         );
         self
     }

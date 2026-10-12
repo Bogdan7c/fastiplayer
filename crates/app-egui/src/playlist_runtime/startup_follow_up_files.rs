@@ -83,7 +83,7 @@ impl PlaylistRuntime {
                 StartupFollowUpFilesOutcome::InstallInProgress
             }
             Err(error) => {
-                tracing::warn!(?error, "Остальные файлы командной строки не добавлены");
+                tracing::warn!(?error, "Other command line files not added");
                 StartupFollowUpFilesOutcome::Rejected
             }
         };

@@ -37,7 +37,7 @@ fn suspend_and_terminal_exit_force_flush_pending_sidebar_resize_and_volume() {
     assert_eq!(
         shell_source.matches(&flush_call).count(),
         2,
-        "suspend и terminal shutdown должны flush-ить resize до уничтожения AppState"
+        "suspend and terminal shutdown must flush resize before destruction of AppState"
     );
 
     let suspend_start = shell_source

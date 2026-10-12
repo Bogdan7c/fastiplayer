@@ -84,7 +84,7 @@ fn render_field_header(ui: &mut Ui, field: &SettingsUiField, actions: &mut Vec<S
 
         ui.label(RichText::new(label).strong());
 
-        if reset_field_enabled(field) && ui.small_button("Сброс").clicked() {
+        if reset_field_enabled(field) && ui.small_button("Reset").clicked() {
             actions.push(SettingsUiAction::ResetField {
                 setting_id: field.descriptor.id.clone(),
             });
@@ -215,7 +215,7 @@ fn render_select(
 
     if display_options.is_empty() {
         ui.horizontal(|ui| {
-            ui.label("Опции недоступны");
+            ui.label("Options unavailable");
             if let Some(provider_id) = dynamic_provider_id {
                 render_refresh_options_button(ui, provider_id, actions);
             }
@@ -265,7 +265,7 @@ fn render_refresh_options_button(
     provider_id: &OptionProviderId,
     actions: &mut Vec<SettingsUiAction>,
 ) {
-    if ui.small_button("Обновить").clicked() {
+    if ui.small_button("Refresh").clicked() {
         actions.push(SettingsUiAction::RefreshOptions {
             provider_id: provider_id.clone(),
         });
@@ -463,7 +463,7 @@ fn render_vector(
 /// Рисует один компонент numeric vector-а.
 fn render_vector_component(ui: &mut Ui, value: &mut f64, descriptor: &NumericDescriptor) -> bool {
     let NumericRange::Float { min, max } = descriptor.range else {
-        ui.label("Vector editor поддерживает только float range");
+        ui.label("Vector editor supports only float ranges");
         return false;
     };
 
@@ -496,7 +496,7 @@ fn render_field_messages(ui: &mut Ui, field: &SettingsUiField) {
 fn render_type_mismatch(ui: &mut Ui) {
     ui.colored_label(
         ui.visuals().error_fg_color,
-        "Тип draft-значения не совпадает с descriptor-ом",
+        "Draft value type does not match the descriptor",
     );
 }
 
@@ -568,11 +568,11 @@ fn render_options_status(ui: &mut Ui, dynamic_options: Option<&SettingOptions>) 
 
     match &options_snapshot.status {
         SettingOptionsStatus::Loading => {
-            ui.label("Список опций загружается");
+            ui.label("Loading options");
         }
         SettingOptionsStatus::Ready => {}
         SettingOptionsStatus::Stale => {
-            ui.label("Список опций устарел");
+            ui.label("Options are outdated");
         }
         SettingOptionsStatus::Unavailable { message } => {
             ui.label(message);

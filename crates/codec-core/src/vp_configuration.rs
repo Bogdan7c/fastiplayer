@@ -117,9 +117,9 @@ impl VpCodecConfiguration {
                 1 => Vp9Profile::Profile1,
                 2 => Vp9Profile::Profile2,
                 3 => Vp9Profile::Profile3,
-                _ => unreachable!("profile проверен constructor-ом"),
+                _ => unreachable!("profile verified by constructor"),
             }),
-            _ => unreachable!("codec проверен constructor-ом"),
+            _ => unreachable!("codec is verified by constructor"),
         }
     }
 

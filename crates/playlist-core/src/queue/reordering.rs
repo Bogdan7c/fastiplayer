@@ -66,50 +66,50 @@ pub enum MoveItemsOutcome {
 impl fmt::Display for MoveItemsOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoItemsRequested => formatter.write_str("не переданы строки для перемещения"),
+            Self::NoItemsRequested => formatter.write_str("not transmitted lines to move"),
             Self::DuplicateEntryId { entry_id } => {
-                write!(formatter, "Entry ID {entry_id:?} передан повторно")
+                write!(formatter, "Entry ID {entry_id:?} re-transmitted")
             }
             Self::EntryNotFound { entry_id } => {
-                write!(formatter, "Entry ID {entry_id:?} не найден")
+                write!(formatter, "Entry ID {entry_id:?} not found")
             }
             Self::CompoundPartTarget {
                 part_item_id,
                 compound_entry_id,
             } => write!(
                 formatter,
-                "{part_item_id} является частью {compound_entry_id:?}; требуется compound target"
+                "{part_item_id} is part of {compound_entry_id:?}; compound target is required"
             ),
             Self::AnchorNotFound { anchor_entry_id } => {
-                write!(formatter, "anchor {anchor_entry_id:?} не найден")
+                write!(formatter, "anchor {anchor_entry_id:?} not found")
             }
             Self::CompoundPartAnchor {
                 part_item_id,
                 compound_entry_id,
             } => write!(
                 formatter,
-                "anchor {part_item_id} является частью {compound_entry_id:?}"
+                "anchor {part_item_id} is part of {compound_entry_id:?}"
             ),
             Self::AnchorSelected { anchor_entry_id } => {
                 write!(
                     formatter,
-                    "anchor {anchor_entry_id:?} входит в перемещаемую группу"
+                    "anchor {anchor_entry_id:?} is included in the moving group."
                 )
             }
             Self::AlreadyInPlace { item_count } => {
                 write!(
                     formatter,
-                    "{item_count} строк уже находятся на requested месте"
+                    "{item_count} The lines are already on requested place"
                 )
             }
             Self::Moved { item_count } => {
-                write!(formatter, "{item_count} строк перемещены одним блоком")
+                write!(formatter, "{item_count} lines moved by one block")
             }
             Self::InstallCommitLinearizing => {
-                formatter.write_str("install commit временно блокирует group move")
+                formatter.write_str("install commit block out group move")
             }
             Self::StructuralRevisionExhausted => {
-                formatter.write_str("structural revision исчерпана")
+                formatter.write_str("structural revision exhausted")
             }
         }
     }

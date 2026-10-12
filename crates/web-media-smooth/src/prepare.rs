@@ -678,7 +678,7 @@ mod tests {
             )
             .with_fetched_manifest(fetched_manifest),
         )
-        .expect_err("foreign fetched generation должна fail closed");
+        .expect_err("foreign fetched generation must fail closed");
 
         assert!(matches!(
             error,
@@ -738,7 +738,7 @@ mod tests {
             )
             .with_fetched_manifest(fetched_manifest),
         )
-        .expect_err("foreign fetched target должен fail closed");
+        .expect_err("foreign fetched target must fail closed");
 
         assert!(matches!(
             error,

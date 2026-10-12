@@ -237,10 +237,10 @@ impl ForwardedRequestDelivery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ForwardedRequestSinkError {
     /// Ящик переполнен: UI-поток давно не разбирал запросы.
-    #[error("почтовый ящик пересланных запросов переполнен")]
+    #[error("mailbox of forwarded requests is full")]
     Full,
     /// Приложение завершается и больше не принимает запросы.
-    #[error("приложение больше не принимает пересланные запросы")]
+    #[error("Application no longer accepts forwarded requests")]
     Closed,
 }
 
@@ -289,16 +289,16 @@ impl InstanceForwardingService {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum InstanceForwardingServiceError {
     /// Нет сессионной шины (запуск вне графического сеанса).
-    #[error("сессионная шина D-Bus недоступна: {0}")]
+    #[error("D-Bus session bus not available: {0}")]
     SessionBusUnavailable(String),
     /// Имя приложения на шине уже занято другим процессом.
-    #[error("имя приложения на сессионной шине уже занято")]
+    #[error("The name of the application on the session bus is already taken")]
     BusNameUnavailable,
     /// Прочая ошибка транспорта.
-    #[error("ошибка транспорта службы пересылки: {0}")]
+    #[error("Transfer service transport error: {0}")]
     Transport(String),
     /// На этой платформе транспорт пересылки не реализован.
-    #[error("пересылка запросов между экземплярами не поддерживается на этой платформе")]
+    #[error("Transfer of requests between instances is not supported on this platform.")]
     UnsupportedPlatform,
 }
 
@@ -340,31 +340,31 @@ pub struct InstanceForwardingClientConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum InstanceForwardingError {
     /// Нет сессионной шины.
-    #[error("сессионная шина D-Bus недоступна: {0}")]
+    #[error("D-Bus session bus not available: {0}")]
     SessionBusUnavailable(String),
     /// Первый экземпляр так и не начал принимать запросы за время ожидания.
-    #[error("запущенный экземпляр не принимает запросы")]
+    #[error("run copy does not accept requests")]
     InstanceNotListening,
     /// Первый экземпляр принимает запросы, но не ответил вовремя (завис).
-    #[error("запущенный экземпляр не отвечает")]
+    #[error("The running copy does not respond")]
     InstanceNotResponding,
     /// Первый экземпляр завершается и запрос не принял.
-    #[error("запущенный экземпляр завершается")]
+    #[error("run-up copy completes")]
     InstanceShuttingDown,
     /// Имя на шине принадлежит процессу другого пользователя.
-    #[error("имя приложения на шине принадлежит другому пользователю")]
+    #[error("The name of the application on the bus belongs to another user.")]
     ForeignInstanceOwner,
     /// Первый экземпляр отклонил запрос как некорректный.
-    #[error("запущенный экземпляр отклонил запрос: {detail}")]
+    #[error("The launched copy rejected the request: {detail}")]
     Rejected {
         /// Техническая причина для лога.
         detail: String,
     },
     /// Прочая ошибка транспорта.
-    #[error("ошибка транспорта пересылки: {0}")]
+    #[error("Forwarding transport error: {0}")]
     Transport(String),
     /// На этой платформе транспорт пересылки не реализован.
-    #[error("пересылка запросов между экземплярами не поддерживается на этой платформе")]
+    #[error("Transfer of requests between instances is not supported on this platform.")]
     UnsupportedPlatform,
 }
 

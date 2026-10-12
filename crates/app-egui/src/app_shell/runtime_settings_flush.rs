@@ -29,7 +29,7 @@ impl AppShell {
                     .is_some()
             {
                 tracing::error!(
-                    "Отложенные настройки дошли до lifecycle boundary без активного AppState"
+                    "Deferred settings reached a lifecycle boundary without an active AppState"
                 );
             }
             return;
@@ -62,14 +62,12 @@ impl AppShell {
         );
 
         if let Err(error) = sidebar_result {
-            self.settings_runtime.report_runtime_error(
-                "Не удалось сохранить ширину sidebar перед suspend/exit",
-                error,
-            );
+            self.settings_runtime
+                .report_runtime_error("Could not save sidebar width before suspend/exit", error);
         }
         if let Err(error) = audio_result {
             self.settings_runtime
-                .report_runtime_error("Не удалось сохранить громкость перед suspend/exit", error);
+                .report_runtime_error("Could not save volume before suspend/exit", error);
         }
     }
 }

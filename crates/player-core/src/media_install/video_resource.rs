@@ -121,7 +121,7 @@ impl video_backend_api::DetachedVideoBackendResourcePort for MediaInstallVideoRe
                 *request.request_id(),
                 video_backend_api::DetachedVideoBackendResourceError::Unavailable {
                     reason: format!(
-                        "Backend `{}` запрещён request-scoped media install policy",
+                        "Backend `{}` forbidden request-scoped media install policy",
                         request.selection().expected_backend_id()
                     ),
                 },

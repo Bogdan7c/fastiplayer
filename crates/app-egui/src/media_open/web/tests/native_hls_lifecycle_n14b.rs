@@ -62,18 +62,18 @@ impl PersistentHlsConsumer {
             .iter()
             .find(|track| track.kind == TrackKind::Video)
             .cloned()
-            .expect("HLS live должен публиковать video track");
+            .expect("HLS live should publish a video track");
         let audio_track = demuxer
             .tracks()
             .iter()
             .find(|track| track.kind == TrackKind::Audio)
             .cloned()
-            .expect("HLS live должен публиковать audio track");
+            .expect("HLS live should publish audio track");
         let (video_decoder, renderer_provider) =
             open_decoder(&video_track, wgpu_harness.queue(), DecodeVideoCodec::H264);
         let audio_decoder = ProductionAudioDecoderFactory::default()
             .create_decoder(decoder_config_from_track(&audio_track))
-            .expect("production AAC decoder должен принять HLS live track");
+            .expect("Production AAC decoder to accept HLS live track");
         Self {
             video_track,
             audio_track,
@@ -87,10 +87,10 @@ impl PersistentHlsConsumer {
     pub(super) fn flush_for_seek(&mut self) {
         self.video_decoder
             .flush()
-            .expect("production video decoder flush должен пройти");
+            .expect("Video decoder flush production must be completed.");
         self.audio_decoder
             .reset()
-            .expect("production audio decoder reset должен пройти");
+            .expect("Production of audio decoder reset must be completed");
     }
 
     /// Требует один новый submitted frame и один новый nonzero PCM batch.
@@ -108,7 +108,7 @@ impl PersistentHlsConsumer {
         let mut decoded_video_frame = None;
         let mut decoded_audio = false;
         while decoded_video_frame.is_none() || !decoded_audio {
-            match demuxer.next_event().expect("читать HLS live demux event") {
+            match demuxer.next_event().expect("HLS live demux event") {
                 DemuxReadEvent::Packet(packet) if packet.track_id == self.video_track.id => {
                     for frame in decode_packet(self.video_decoder.as_ref(), packet) {
                         if decoded_video_frame.is_none() {
@@ -127,7 +127,7 @@ impl PersistentHlsConsumer {
                     let decoded_samples = self
                         .audio_decoder
                         .decode(&encoded_packet)
-                        .expect("production AAC decoder должен декодировать HLS live packet");
+                        .expect("Production AAC decoder must decode HLS live packet");
                     if !decoded_samples.is_empty() {
                         assert_pcm_advances_clock(
                             &decoded_samples,
@@ -147,7 +147,7 @@ impl PersistentHlsConsumer {
                     panic!("HLS live consumer readiness timeout: {hint:?}");
                 }
                 DemuxReadEvent::EndOfStream => {
-                    panic!("active HLS live не должен публиковать queue-driving EOF")
+                    panic!("Active HLS live should not publish queue-driving EOF")
                 }
             }
             assert!(
@@ -159,7 +159,7 @@ impl PersistentHlsConsumer {
         assert!(wgpu_harness.submit_and_release(
             &materializer,
             &self.renderer_provider,
-            decoded_video_frame.expect("loop требует decoded frame"),
+            decoded_video_frame.expect("loop requires decode frame"),
         ));
     }
 }
@@ -172,14 +172,14 @@ fn queue_for_stable_root(root_url: &str) -> (PlaylistQueue, Vec<playlist_core::P
         .map(|label| {
             PlaylistItemDraft::url(
                 SecretUrlLocator::from_reopenable_url(root_url)
-                    .expect("HLS fixture root обязан быть reopenable"),
+                    .expect("HLS fixture root must be reopenable"),
                 CachedPlaylistMetadata::new(label, PlaylistMediaKind::Video),
             )
         })
         .collect();
     let AddItemsOutcome::Added(item_ids) = queue.append_batch(drafts).expect("append HLS rows")
     else {
-        panic!("две HLS rows не могут дать empty append");
+        panic!("Two HLS rows can't give an empty append");
     };
     let item_ids = item_ids.into_vec();
     assert!(matches!(
@@ -197,7 +197,7 @@ fn expect_manual_target(
     expected_item_id: playlist_core::PlaylistItemId,
 ) -> ManualNavigationPreview {
     let ManualNavigationOutcome::OpenItem { item_id, preview } = outcome else {
-        panic!("manual navigation должна вернуть concrete target");
+        panic!("manual navigation will return the specific target.");
     };
     assert_eq!(item_id, expected_item_id);
     preview
@@ -211,7 +211,7 @@ fn commit_navigation_after_consumer(
 ) {
     let token = queue
         .prepare_manual_navigation(preview)
-        .expect("consumer-successful navigation должна пройти queue preflight");
+        .expect("Consumer-successful navigation must be queue preflight");
     assert_eq!(token.target_item_id(), expected_item_id);
     let commit = queue.commit_manual_navigation(token);
     assert_eq!(commit.traversal_current().item_id(), expected_item_id);
@@ -228,16 +228,13 @@ fn assert_receipted_seek_reaches_consumers(
     prepared
         .seek_port
         .enqueue_seek(request_id, DemuxSeekRequest::accurate(requested_position))
-        .expect("native HLS VOD seek должен войти в worker");
+        .expect("The native HLS VOD seek must be included in the worker.");
     let deadline = Instant::now() + LIFECYCLE_DEADLINE;
     loop {
         if let Some(receipt) = prepared.seek_port.poll_seek_receipt() {
             assert_eq!(receipt.request_id, request_id);
             let PreparedDemuxSeekOutcome::Succeeded(result) = receipt.outcome else {
-                panic!(
-                    "native HLS VOD seek завершился неуспешно: {:?}",
-                    receipt.outcome
-                );
+                panic!("Native HLS VOD seek fails: {:?}", receipt.outcome);
             };
             assert_eq!(result.requested_position.as_duration(), requested_position);
             break;
@@ -263,7 +260,7 @@ fn stale_component_action(
         },
     ) = configuration.component_variant_projection()
     else {
-        panic!("HLS lifecycle требует installed coupled catalog");
+        panic!("HLS lifecycle requires installed coupled catalog");
     };
     ComponentVariantSelectionAction {
         parent_generation: configuration.generation(),
@@ -303,8 +300,8 @@ fn n14b_lifecycle_hls_vod_seek_switch_queue_restart_restore_and_stale_fence() {
 
     let (initial_index, alternate_index, alternate_selection) =
         alternate_component_selection(&initial.source_state);
-    assert_eq!(initial_index, 1, "provider default должна быть fMP4 row");
-    assert_eq!(alternate_index, 0, "switch должен выбрать TS row");
+    assert_eq!(initial_index, 1, "provider default must have fMP4 row");
+    assert_eq!(alternate_index, 0, "switch must choose TS row");
     let old_component_action = stale_component_action(&initial, alternate_index);
     let expected_ts_selection = alternate_selection.clone();
     let next_preview = expect_manual_target(
@@ -326,7 +323,7 @@ fn n14b_lifecycle_hls_vod_seek_switch_queue_restart_restore_and_stale_fence() {
             settings.clone(),
         )
     else {
-        panic!("fresh component action обязан запустить same-item switch");
+        panic!("Fresh component action must start the same-item switch.");
     };
     let (switch_source, switch_selection, switch_settings) = native_request_parts(switch_request);
     let mut switched = prepare_native(
@@ -351,7 +348,7 @@ fn n14b_lifecycle_hls_vod_seek_switch_queue_restart_restore_and_stale_fence() {
     let web_media_core::WebMediaSelectionShape::Components(switched_components) =
         switched.source_state.neutral_selection().shape()
     else {
-        panic!("switched selection должна сохранить component shape");
+        panic!("Switched selection should retain the component shape");
     };
     assert_eq!(
         switched_components.semantic_rematch_request(),
@@ -379,7 +376,7 @@ fn n14b_lifecycle_hls_vod_seek_switch_queue_restart_restore_and_stale_fence() {
             switch_settings.demux_config,
             Some(switch_settings.clone()),
         )
-        .expect("native controlled reopen требует semantic rematch");
+        .expect("Native controlled reopen requires semantic rematch");
     drop(demuxer);
     drop(seek_port);
     drop(lifecycle);
@@ -409,7 +406,7 @@ fn n14b_lifecycle_hls_vod_seek_switch_queue_restart_restore_and_stale_fence() {
     let web_media_core::WebMediaSelectionShape::Components(reopened_components) =
         reopened.source_state.neutral_selection().shape()
     else {
-        panic!("reopened selection должна сохранить component shape");
+        panic!("Reopened selection should retain the component shape.");
     };
     assert_eq!(
         reopened_components.semantic_rematch_request(),
@@ -427,6 +424,6 @@ fn n14b_lifecycle_hls_vod_seek_switch_queue_restart_restore_and_stale_fence() {
     assert_eq!(
         process_spy.invocation_count(),
         0,
-        "seek/switch/queue/restart/restore/stale transitions не запускают extractor"
+        "seek/switch/queue/restart/restore/stale transitions do not start the extractor."
     );
 }

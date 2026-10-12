@@ -24,29 +24,31 @@ use crate::{DemuxError, SymphoniaDemuxer};
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OrderedSegmentLifecycleError {
     /// Этот finite adapter не умеет безопасно пересоздать Symphonia format state.
-    #[error("ordered media discontinuity перед segment {sequence} требует adaptive session reset")]
+    #[error(
+        "ordered media discontinuity beforehand segment {sequence} demand adaptive session reset"
+    )]
     DiscontinuityRequiresSessionReset {
         /// Первый segment новой timeline generation.
         sequence: u64,
     },
     /// Source завершился до обязательного initialization segment-а.
-    #[error("ordered media source завершился до initialization segment")]
+    #[error("ordered media source finished before initialization segment")]
     MissingInitializationSegment,
     /// Media segment нельзя интерпретировать без первого initialization segment-а.
-    #[error("ordered media segment {sequence} получен до initialization segment")]
+    #[error("ordered media segment {sequence} received initialization segment")]
     MediaBeforeInitialization {
         /// Transport-owned sequence ошибочного media segment-а.
         sequence: u64,
     },
     /// Finite profile не поддерживает смену initialization state/discontinuity.
-    #[error("ordered media source повторно получил initialization segment {sequence}")]
+    #[error("ordered media source re-initialization segment {sequence}")]
     RepeatedInitializationSegment {
         /// Transport-owned sequence повторного initialization segment-а.
         sequence: u64,
     },
     /// Media sequence обязан строго возрастать; gaps допустимы, duplicate/decrease — нет.
     #[error(
-        "ordered media sequence не возрастает: previous={previous_sequence}, current={current_sequence}"
+        "ordered media sequence is not increasing: previous={previous_sequence}, current={current_sequence}"
     )]
     NonIncreasingSequence {
         /// Последний принятый init/media sequence.
@@ -55,7 +57,7 @@ pub enum OrderedSegmentLifecycleError {
         current_sequence: u64,
     },
     /// Пустой segment не является initialization либо media segment profile-а.
-    #[error("ordered media segment {sequence} с ролью {kind:?} не содержит bytes")]
+    #[error("ordered media segment {sequence} with {kind:?} does not contain bytes")]
     EmptySegment {
         /// Transport-owned sequence пустого segment-а.
         sequence: u64,
@@ -181,14 +183,14 @@ impl Demuxer for OrderedSegmentDemuxer {
 
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
         Err(DemuxError::SeekUnavailable(
-            "finite ordered media input не поддерживает seek".to_owned(),
+            "finite ordered media input does not support seek".to_owned(),
         )
         .into())
     }
 
     fn seek_with_request(&mut self, _request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
         Err(DemuxError::SeekUnavailable(
-            "finite ordered media input не поддерживает seek".to_owned(),
+            "finite ordered media input does not support seek".to_owned(),
         )
         .into())
     }
@@ -327,7 +329,7 @@ impl OrderedSegmentReaderState {
             }
             (OrderedSegmentLifecycle::Finished, _) => {
                 return Err(io::Error::other(
-                    "ordered media reader получил segment после terminal EOF",
+                    "ordered media reader received segment afterward terminal EOF",
                 ));
             }
         };

@@ -58,7 +58,7 @@ impl HlsComponentDemuxer {
             .get(epoch_index)
             .and_then(|epoch| epoch.restart_tail(restart_segment))
             .ok_or_else(|| {
-                anyhow::anyhow!("HLS interrupted restart отсутствует в immutable plan")
+                anyhow::anyhow!("HLS interrupted restart is not available in the immutable plan")
             })?;
         let media_spans = SharedHlsMediaSpanIndex::default();
         let active_read_lifecycle = self.active_read_control.new_epoch_lifecycle(&epoch);

@@ -404,11 +404,11 @@ mod tests {
             .select_exact(ComponentVariantSelectionRequest::VideoOnly {
                 video: component_exact,
             })
-            .expect("валидный component должен выбираться");
+            .expect("Valid component must be selected");
         // Web selection принимает component shape только от того же parent.
         let component_selection =
             WebMediaSelection::with_components(component_parent, selected_components)
-                .expect("component selection должна принадлежать parent");
+                .expect("The selection component must be owned by the parent");
         // Публичный borrowed shape обязан сохранить проверенный component selection.
         assert!(matches!(
             component_selection.shape(),
@@ -442,7 +442,7 @@ mod tests {
                         component: ComponentKind::Video,
                     },
                 ),
-                "component rematch failed: semantic Video variant отсутствует в catalog",
+                "component rematch failed: The semantic Video variant is missing from the catalog.",
             ),
         ];
         // Display остаётся точным и не сваливает разные причины в общий bool/status.

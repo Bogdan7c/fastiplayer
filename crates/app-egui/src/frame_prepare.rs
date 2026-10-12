@@ -386,7 +386,7 @@ fn apply_window_chrome_actions(window: &Window, actions: Vec<WindowChromeAction>
             WindowChromeAction::Close => close_requested = true,
             WindowChromeAction::StartDrag => {
                 if let Err(error) = window.drag_window() {
-                    warn!(error = %error, "Не удалось начать перетаскивание окна");
+                    warn!(error = %error, "Could not start dragging the window");
                 }
             }
             WindowChromeAction::BeginResize(direction) => {
@@ -394,7 +394,7 @@ fn apply_window_chrome_actions(window: &Window, actions: Vec<WindowChromeAction>
                     warn!(
                         error = %error,
                         ?direction,
-                        "Не удалось начать resize окна"
+                        "Could not start resizing the window"
                     );
                 }
             }
@@ -921,8 +921,7 @@ pub(crate) fn render_frame(
         {
             Ok(requested_repaint) => requested_repaint,
             Err(error) => {
-                settings_runtime
-                    .report_runtime_error("Не удалось обработать действие settings UI", error);
+                settings_runtime.report_runtime_error("Could not handle Settings UI action", error);
                 true
             }
         };
@@ -948,7 +947,7 @@ pub(crate) fn render_frame(
             if let Err(error) =
                 app_state.apply_url_sidebar_action(action, playlist_runtime, renderer)
             {
-                tracing::warn!(error = %error, "URL same-item switch intent отклонён");
+                tracing::warn!(error = %error, "URL same-item switch intent rejected");
             }
             true
         }
@@ -994,7 +993,7 @@ pub(crate) fn render_frame(
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
         Ok(tick) => tick,
         Err(error) => {
-            settings_runtime.report_runtime_error("Не удалось применить live preview", error);
+            settings_runtime.report_runtime_error("Could not apply live preview", error);
             crate::settings_runtime::SettingsPreviewTick::default()
         }
     };

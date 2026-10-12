@@ -270,7 +270,9 @@ pub(crate) enum StrongMediaOpenError {
     MissingTerminal,
     #[error("prepared initial-position contract rejected: {0}")]
     PreparedPositionContract(#[from] PreparedPositionRestoreContractError),
-    #[error("пошаговая strong media-open транзакция потеряла текущую фазу между poll-вызовами")]
+    #[error(
+        "The turn-based strong media-open transaction lost its current phase between poll calls."
+    )]
     PendingPhaseStateLost,
     #[error("exact post-Installed playback intent restore was rejected: {0:?}")]
     PlaybackIntent(player_core::PlaybackIntentUpdateOutcome),
@@ -688,7 +690,7 @@ impl AppState {
                             .record_successful_item_open_metadata(item_id, &installed.descriptor);
                         tracing::debug!(
                             ?cache_outcome,
-                            "Exact Installed обновил last-known playlist metadata cache"
+                            "Exact Installed refreshed last-known playlist metadata cache"
                         );
                     }
                     return Ok(installed);

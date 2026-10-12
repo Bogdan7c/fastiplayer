@@ -42,8 +42,8 @@ Scenario                       Required selected file properties
 h264-avcc                      ISO BMFF H.264 with avcC SPS/PPS.
 h264-keyframes                 H.264 stream containing key and inter frames.
 h264-bframes-pts-dts           ISO BMFF H.264 B-frames with distinct PTS/DTS.
-h264-ts-pts-only-ffmpeg        MPEG-TS H.264 без B-frames, минимум три PES с PTS и без DTS.
-h264-ts-seek-wgpu-ffmpeg       MPEG-TS H.264 160x90/5fps: FFmpeg decode + WGPU submit до/после seek 2s.
+h264-ts-pts-only-ffmpeg        MPEG-TS H.264 without B-frames; at least three PES packets with PTS and no DTS.
+h264-ts-seek-wgpu-ffmpeg       MPEG-TS H.264 160x90/5fps: FFmpeg decode + WGPU submit before/after a seek to 2s.
 h264-signed-ctts               ISO BMFF H.264 signed-ctts regression near startup.
 h264-startup-decode-point      H.264 stream with a startup decode point near zero.
 h264-mkv-cue                   Matroska H.264 with usable nearby cues, at least 10 s.
@@ -51,7 +51,7 @@ h265-mov-sync-sample           ISO BMFF H.265 with a sync sample before 8 s.
 h265-hvcc                      ISO BMFF H.265 with hvcC codec private data.
 h265-mkv-cue                   Matroska H.265 with usable nearby cues, at least 10 s.
 vp9-decode-point               WebM/Matroska VP9 with a keyframe near 66.93 s.
-av1-mp4-vaapi-global-motion    MP4 AV1 Main 8-bit с global motion, ≥40 s: VA-API AV1 decode до/после seek.
+av1-mp4-vaapi-global-motion    MP4 AV1 Main 8-bit with global motion, ≥40s: VA-API AV1 decode before/after seek.
 audio-decode-seek              Decodable audio with duration for a middle accurate seek.
 audio-eof-replay               Decodable audio short enough to drain to EOF.
 audio-unseekable-eof-seek      Decodable audio with an extension that can be opened as a stream.

@@ -92,7 +92,7 @@ impl VideoPipelinePlan {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub(crate) enum PlayerSelectedVideoPipelineError {
     /// Backend и transfer contract не образуют поддерживаемую production pair.
-    #[error("player selection `{backend_id}` несовместим с transfer path {transfer_path:?}")]
+    #[error("player selection '{backend_id}' incompatible with transfer path {transfer_path:?}")]
     UnsupportedOrMismatchedSelection {
         /// Canonical backend ID из player plan-а.
         backend_id: String,
@@ -106,18 +106,18 @@ pub(crate) enum PlayerSelectedVideoPipelineError {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub(crate) enum VideoPipelineSelectionError {
     /// Shell ещё не передал capability snapshot в app state.
-    #[error("capability snapshot ещё недоступен для выбора video pipeline")]
+    #[error("Capability snapshot is not yet available for video pipeline selection")]
     MissingCapabilities,
 
     /// Запрошен native hardware path, но playable hardware output отсутствует.
     #[error(
-        "video.preferred_backend=hardware: нет playable native hardware output после renderer intersection"
+        "video.preferred_backend=hardware: no playable native hardware output after renderer intersection"
     )]
     MissingHardwareOutput,
 
     /// Native hardware output есть, но он не обслуживает текущий stream requirement.
     #[error(
-        "video.preferred_backend=hardware: native hardware output не поддерживает {requirement}; software fallback запрещён preference"
+        "video.preferred_backend=hardware: native hardware output does not support {requirement}; software fallback is prohibited preference"
     )]
     HardwareOutputDoesNotServeStream {
         /// Человекочитаемое описание stream requirement из player-core.
@@ -125,12 +125,12 @@ pub(crate) enum VideoPipelineSelectionError {
     },
 
     /// Запрошен FFmpeg software path, но playable software output/provider пока отсутствует.
-    #[error("video.preferred_backend=software: FFmpeg software decode backend сейчас недоступен")]
+    #[error("video.preferred_backend=software: FFmpeg software decode backend is not available")]
     MissingSoftwareOutput,
 
     /// Capability policy нашла playable output, но app composition ещё не умеет стартовать этот backend.
     #[error(
-        "video.preferred_backend={preference}: playable backend '{backend_id}' пока не поддержан app composition"
+        "video.preferred_backend={preference}: playable backend '{backend_id}' is not yet supported by app composition"
     )]
     UnsupportedCompositionBackend {
         /// Значение public config, из которого пришёл запрос.

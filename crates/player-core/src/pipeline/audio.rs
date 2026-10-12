@@ -179,7 +179,7 @@ impl PlaybackPipeline {
         debug_assert_eq!(
             segment.segment_id().get(),
             self.next_audio_tempo_segment_id,
-            "commit должен соответствовать последнему предложенному tempo segment"
+            "commit must be in accordance with the last proposed tempo segment"
         );
         self.next_audio_tempo_segment_id = self.next_audio_tempo_segment_id.saturating_add(1);
     }
@@ -619,7 +619,7 @@ impl PlaybackPipeline {
             let pending_rate = PlaybackRate::new(pending_span.segment().ratio().as_f64() as f32)
                 .map_err(|error| {
                     anyhow::anyhow!(
-                        "tempo report содержит playback rate вне player boundary: {error}"
+                        "Tempo report contains a playback rate outside the player boundary: {error}"
                     )
                 })?;
             planned_spans.push(PlannedAudioOutputSpan::new(

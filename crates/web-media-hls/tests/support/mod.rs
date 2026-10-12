@@ -652,7 +652,7 @@ pub fn muxed_avc3_fmp4() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     assert_eq!(
         avc1_offsets.len(),
         1,
-        "сгенерированный fixture должен содержать ровно один H.264 sample entry"
+        "The generated fixture must contain exactly one H.264 sample entry."
     );
     let sample_entry_offset = avc1_offsets[0];
     initialization[sample_entry_offset..sample_entry_offset + 4].copy_from_slice(b"avc3");

@@ -248,7 +248,7 @@ fn dropped_playlist_intent_follows_setting_and_drop_target() {
         assert_eq!(
             host.calls,
             vec![format!("import:{expected_intent}:{}", playlist.display())],
-            "{action:?} на {target:?}"
+            "{action:?} by {target:?}"
         );
     }
 }
@@ -271,7 +271,7 @@ fn several_playlists_import_only_the_first_with_notice() {
         host.calls,
         vec![
             format!("import:AppendToQueue:{}", first.display()),
-            "info:Плейлисты импортируются по одному".to_owned(),
+            "info:Import Playlists one at a time".to_owned(),
         ]
     );
 }
@@ -318,10 +318,7 @@ fn several_urls_use_only_the_first_and_notify() {
     );
     assert_eq!(
         host.calls,
-        vec![
-            "add-url:https://one.test",
-            "info:Ссылки добавляются по одной"
-        ]
+        vec!["add-url:https://one.test", "info:Add links one at a time"]
     );
 }
 
@@ -345,7 +342,7 @@ fn url_mixed_with_a_file_is_skipped_while_the_file_is_handled() {
         host.calls,
         vec![
             format!("open:{}", file.display()),
-            "info:Ссылки перетаскивайте отдельно".to_owned(),
+            "info:Drag links separately".to_owned(),
         ]
     );
 }
@@ -368,5 +365,5 @@ fn busy_host_rejects_a_url_drop_without_starting_anything() {
 fn empty_drop_tells_the_user_there_is_nothing_to_open() {
     let mut host = RecordingHost::default();
     dispatch_external_open_request(&mut host, request_with_files(DropTarget::Video, &[]));
-    assert_eq!(host.calls, vec!["info:Здесь нечего открывать"]);
+    assert_eq!(host.calls, vec!["info:There is nothing to open here"]);
 }

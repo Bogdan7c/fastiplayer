@@ -176,19 +176,21 @@ pub(crate) fn apply_transport_action(
                 .record_startup_shuffle_enabled(enabled)
                 .is_err()
             {
-                playlist_runtime.set_playlist_safe_feedback("Не удалось изменить перемешивание");
+                playlist_runtime.set_playlist_safe_feedback("Failed to change the mixing");
             }
         }
         TransportControlAction::SetRepeatMode { mode } => {
             if playlist_runtime.record_startup_repeat_mode(mode).is_err() {
-                playlist_runtime.set_playlist_safe_feedback("Не удалось изменить режим повтора");
+                playlist_runtime.set_playlist_safe_feedback(
+                    "It was not possible to change the mode of repetition",
+                );
             }
         }
         TransportControlAction::CancelNavigation => {
             let outcome = playlist_runtime.cancel_global_playlist_navigation_wait();
             tracing::debug!(
                 ?outcome,
-                "Global playlist wait Cancel обработан runtime owner-ом"
+                "Global playlist wait Cancel handled by runtime owner"
             );
         }
     }
@@ -211,7 +213,7 @@ pub(crate) fn apply_discovery_navigation_action(
         }
         PlaylistDiscoveryNavigationAction::ScopeCancelled => {}
         PlaylistDiscoveryNavigationAction::ScopeFatal => {
-            warn!("Playlist discovery navigation scope завершился fatal outcome");
+            warn!("Playlist discovery navigation scope ends in fatal outcome");
         }
     }
 }
@@ -389,13 +391,13 @@ pub(crate) fn apply_desktop_commands(
                 };
                 match playlist_runtime.record_startup_repeat_mode(repeat_mode) {
                     Ok(changed) => visible_change |= changed,
-                    Err(error) => warn!(?error, "MPRIS LoopStatus mutation отклонена"),
+                    Err(error) => warn!(?error, "MPRIS LoopStatus mutation rejected"),
                 }
             }
             DesktopTransportAction::SetShuffle(enabled) => {
                 match playlist_runtime.record_startup_shuffle_enabled(enabled) {
                     Ok(changed) => visible_change |= changed,
-                    Err(error) => warn!(?error, "MPRIS Shuffle mutation отклонена"),
+                    Err(error) => warn!(?error, "MPRIS Shuffle mutation rejected"),
                 }
             }
             DesktopTransportAction::SetVolume(volume) => {
@@ -405,7 +407,7 @@ pub(crate) fn apply_desktop_commands(
                         .player_command_sender()
                         .try_send(PlayerCommand::SetVolume(volume.as_player()))
                     {
-                        warn!(error = %error, "MPRIS Volume не принят active player binding");
+                        warn!(error = %error, "MPRIS Volume not accepted by active player binding");
                     }
                 }
             }
@@ -601,10 +603,10 @@ pub(crate) fn apply_manual_navigation_outcome(
         // Исходы без немедленного действия UI фиксируются в debug-логе, чтобы
         // «нажал Next — ничего не произошло» было видно при диагностике.
         ControllerManualNavigationOutcome::PreviewInvalidated(invalidation) => {
-            tracing::debug!(?invalidation, "manual navigation preview инвалидирован");
+            tracing::debug!(?invalidation, "manual navigation preview disabled");
         }
         ControllerManualNavigationOutcome::NoItem(no_item) => {
-            tracing::debug!(?no_item, "manual navigation не нашла target");
+            tracing::debug!(?no_item, "Manual navigation found no target");
         }
         ControllerManualNavigationOutcome::Guarded(guard) => {
             let current_position = app_state.last_known_player_position();
@@ -627,7 +629,7 @@ fn send_legacy_toggle(app_state: &mut AppState) {
         .player_worker
         .try_send_command(PlayerCommand::TogglePlayback)
     {
-        warn!(error = %error, "Не удалось переключить playback");
+        warn!(error = %error, "Could not toggle playback");
     } else {
         app_state.mark_pending_worker_redraw();
     }

@@ -26,15 +26,15 @@ pub struct CriticalDesktopNotification<'text> {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum DesktopNotificationError {
     /// Не удалось подключиться к сессионной шине D-Bus (нет графического сеанса).
-    #[error("сессионная шина D-Bus недоступна: {0}")]
+    #[error("D-Bus session bus not available: {0}")]
     SessionBusUnavailable(String),
 
     /// Шина доступна, но службы уведомлений нет или она отклонила вызов.
-    #[error("служба уведомлений не приняла уведомление: {0}")]
+    #[error("Notification service did not accept notification: {0}")]
     NotificationServiceRejected(String),
 
     /// На этой платформе доставка уведомлений не реализована.
-    #[error("уведомления рабочего стола не поддерживаются на этой платформе")]
+    #[error("Desktop notifications are not supported on this platform.")]
     UnsupportedPlatform,
 }
 

@@ -7,16 +7,16 @@ use super::*;
 fn select_first_video_and_audio(catalog: &ComponentVariantCatalog) -> ComponentVariantSelection {
     let videos = catalog
         .required_video_variants()
-        .expect("test catalog должен содержать video axis");
+        .expect("The test catalog should contain video axis.");
     let audios = catalog
         .required_audio_variants()
-        .expect("test catalog должен содержать audio axis");
+        .expect("The test catalog should contain audio axis.");
     catalog
         .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
             video: videos[0].exact_identity().clone(),
             audio: audios[0].exact_identity().clone(),
         })
-        .expect("test exact selection должна быть valid")
+        .expect("test exact selection must have valid")
 }
 
 /// Создаёт fresh VideoAndAudio catalog с теми же semantic keys.
@@ -49,7 +49,7 @@ fn fresh_video_and_audio_catalog() -> ComponentVariantCatalog {
             ],
         },
     )
-    .expect("fresh test catalog должен быть valid")
+    .expect("fresh test catalog must have valid")
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn installed_selection_produces_semantic_only_layout_shaped_request() {
             assert_eq!(video.parent(), catalog.identity().parent().semantic());
             assert_eq!(audio.parent(), catalog.identity().parent().semantic());
         }
-        _ => panic!("semantic request должна сохранить VideoAndAudio shape"),
+        _ => panic!("semantic request must be preserved VideoAndAudio shape"),
     }
 }
 
@@ -83,7 +83,7 @@ fn fresh_parent_and_catalog_generations_produce_fresh_exact_selection() {
 
     let fresh_selection = fresh_catalog
         .rematch_semantic(semantic_request)
-        .expect("semantic identities должны rematch-иться в fresh catalog");
+        .expect("semantic identities must rematch-flow in fresh catalog");
 
     assert_ne!(old_catalog.identity(), fresh_catalog.identity());
     assert_ne!(
@@ -111,7 +111,7 @@ fn fresh_parent_and_catalog_generations_produce_fresh_exact_selection() {
                 fresh_catalog.required_audio_variants().unwrap()[0].exact_identity()
             );
         }
-        _ => panic!("fresh selection должна сохранить VideoAndAudio shape"),
+        _ => panic!("fresh selection must be preserved VideoAndAudio shape"),
     }
 }
 
@@ -125,12 +125,12 @@ fn video_and_audio_semantics_rematch_independently_without_pair_inventory() {
             video: old_videos[1].exact_identity().clone(),
             audio: old_audios[0].exact_identity().clone(),
         })
-        .expect("old selection должна быть valid");
+        .expect("old selection must have valid");
     let fresh_catalog = fresh_video_and_audio_catalog();
 
     let rematched = fresh_catalog
         .rematch_semantic(old_selection.semantic_rematch_request())
-        .expect("оба независимых axis должны rematch-иться");
+        .expect("Both independent axis must rematch.");
 
     assert_eq!(fresh_catalog.stored_variant_count(), 4);
     match rematched {
@@ -144,7 +144,7 @@ fn video_and_audio_semantics_rematch_independently_without_pair_inventory() {
                 fresh_catalog.required_audio_variants().unwrap()[0].exact_identity()
             );
         }
-        _ => panic!("rematched selection должна сохранить VideoAndAudio shape"),
+        _ => panic!("rematched selection must be preserved VideoAndAudio shape"),
     }
 }
 
@@ -161,12 +161,12 @@ fn missing_video_and_audio_semantics_remain_component_typed() {
     let missing_video = ComponentVariantSemanticIdentity::new(
         parent_semantic.clone(),
         ComponentKind::Video,
-        ComponentVariantSemanticKey::new("missing-video").expect("key должен быть valid"),
+        ComponentVariantSemanticKey::new("missing-video").expect("The key must be valid."),
     );
     let missing_audio = ComponentVariantSemanticIdentity::new(
         parent_semantic,
         ComponentKind::Audio,
-        ComponentVariantSemanticKey::new("missing-audio").expect("key должен быть valid"),
+        ComponentVariantSemanticKey::new("missing-audio").expect("The key must be valid."),
     );
 
     assert_eq!(
@@ -198,7 +198,7 @@ fn semantic_rematch_rejects_cross_source_parent_axis_and_layout() {
     let other_source = parent(2, "other-source-parent", "parent-semantic");
     let other_parent = parent(1, "other-parent", "other-parent-semantic");
     let semantic_key =
-        ComponentVariantSemanticKey::new("video-semantic-720").expect("key должен быть valid");
+        ComponentVariantSemanticKey::new("video-semantic-720").expect("The key must be valid.");
 
     for (video, expected_error) in [
         (
@@ -353,7 +353,7 @@ fn failed_semantic_rematch_does_not_mutate_old_selection() {
         *video = ComponentVariantSemanticIdentity::new(
             video.parent().clone(),
             ComponentKind::Video,
-            ComponentVariantSemanticKey::new("missing").expect("key должен быть valid"),
+            ComponentVariantSemanticKey::new("missing").expect("The key must be valid."),
         );
     }
 

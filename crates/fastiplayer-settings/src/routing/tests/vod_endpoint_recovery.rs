@@ -10,16 +10,15 @@ fn changes_form_one_exact_media_service_route() {
     previous.network.connect_timeout_ms += 1_234;
     previous.yt_dlp.enabled = false;
     previous.web_media.hdr_selection = WebMediaHdrSelection::PreferHdrWhenAvailable;
-    previous.web_media.preferred_video_height = Some(
-        PreferredVideoHeight::new(1_440).expect("sentinel preferred height должна быть valid"),
-    );
+    previous.web_media.preferred_video_height =
+        Some(PreferredVideoHeight::new(1_440).expect("Sentinel preferred height should be valid."));
     previous.yt_dlp.resolve_timeout_ms += 1_111;
     previous.yt_dlp.single_item_stdout_limit_bytes += 4_096;
     previous.yt_dlp.single_item_stderr_limit_bytes += 2_048;
     previous.yt_dlp.single_item_json_node_limit += 17;
     previous
         .validate()
-        .expect("non-default sentinel snapshot должен оставаться valid");
+        .expect("Non-default sentinel snapshot should remain valid.");
     assert_ne!(previous.network, defaults.network);
     assert_ne!(previous.web_media, defaults.web_media);
     assert_ne!(previous.yt_dlp, defaults.yt_dlp);
@@ -61,7 +60,7 @@ fn changes_form_one_exact_media_service_route() {
     let RuntimeCommittedUpdate::MediaService(media_update) =
         &recovery_plan.committed_routes[0].update
     else {
-        panic!("VOD recovery должен создавать MediaService payload");
+        panic!("VOD Recovery should create MediaService Payload");
     };
     assert_eq!(media_update.network, previous.network);
     assert_eq!(media_update.web_media, recovery_policy.web_media);

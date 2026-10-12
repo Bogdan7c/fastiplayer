@@ -62,11 +62,11 @@ fn exact_parent(source: u64, extraction: u64) -> ExactSelectionIdentity {
         source,
         web_media_core::ExtractionGeneration::new(extraction),
         web_media_core::CandidateFormatIdentity::new("active-parent")
-            .expect("fixture exact identity валидна"),
+            .expect("Fixture exact identity valid"),
     );
     let semantic = web_media_core::SemanticIdentity::new(source, "semantic-parent")
-        .expect("fixture semantic identity валидна");
-    ExactSelectionIdentity::new(exact, semantic).expect("fixture source lineage совпадает")
+        .expect("fixture semantic identity valid");
+    ExactSelectionIdentity::new(exact, semantic).expect("fixture source lineage is the same as")
 }
 
 fn binding(scope: UrlSidebarItemScope) -> UrlSidebarItemBinding {
@@ -94,7 +94,7 @@ fn direct_media_state_does_not_invent_format_choices() {
     let model =
         UrlSidebarController::default().model(Some(&source), &PlayerSnapshot::empty(), None);
     let UrlSidebarModel::DirectMedia { source_label, .. } = model else {
-        panic!("direct source должен иметь отдельную модель без candidate inventory");
+        panic!("Direct source should have a separate model without candidate inventory.");
     };
     assert!(source_label.contains("example.test"));
     assert!(!source_label.contains("password"));
@@ -140,7 +140,7 @@ fn stale_generation_hides_pending_candidate_and_safe_error() {
         ..
     } = model
     else {
-        panic!("ожидалась YtDlp model");
+        panic!("Expected YtDlp model");
     };
     assert_eq!(pending_selection, None);
     assert_eq!(safe_error, None);
@@ -178,7 +178,7 @@ fn current_generation_exposes_pending_candidate_and_bounded_failure() {
         ..
     } = model
     else {
-        panic!("ожидалась YtDlp model");
+        panic!("Expected YtDlp model");
     };
     assert!(matches!(
         pending_selection.as_deref(),
@@ -238,7 +238,7 @@ fn detached_installed_switch_publishes_runtime_override_for_fresh_generation() {
     };
     controller
         .record_switch_started(pending_selection)
-        .expect("selector должен стать pending");
+        .expect("Selector should be a pending");
 
     controller.record_candidate_switch_installed(installed_generation, None, Some(1440));
     let model = controller.model_from_source(
@@ -427,7 +427,7 @@ fn installed_snapshot(mode: TimelineMode) -> PlayerSnapshot {
 fn direct_stream_kind(snapshot: &PlayerSnapshot) -> UrlSidebarStreamKind {
     let model = UrlSidebarController::default().model(Some(&direct_web_source()), snapshot, None);
     let UrlSidebarModel::DirectMedia { status, .. } = model else {
-        panic!("direct source должен давать DirectMedia");
+        panic!("Direct source should be provided by DirectMedia.");
     };
     status.stream_kind
 }
@@ -460,7 +460,7 @@ fn snapshot_without_installed_media_has_unknown_stream_kind() {
 fn direct_seek_availability(snapshot: &PlayerSnapshot) -> UrlSidebarSeekAvailability {
     let model = UrlSidebarController::default().model(Some(&direct_web_source()), snapshot, None);
     let UrlSidebarModel::DirectMedia { status, .. } = model else {
-        panic!("direct source должен давать DirectMedia");
+        panic!("Direct source should be provided by DirectMedia.");
     };
     status.seek
 }

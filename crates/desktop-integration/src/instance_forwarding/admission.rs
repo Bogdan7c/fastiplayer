@@ -30,43 +30,45 @@ pub const MAX_ACTIVATION_TOKEN_BYTES: usize = 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ForwardedRequestRejection {
     /// URI больше, чем [`MAX_FORWARDED_URIS`].
-    #[error("слишком много URI в запросе: {count} (лимит {MAX_FORWARDED_URIS})")]
+    #[error("Too many URIs in the request: {count} (limit {MAX_FORWARDED_URIS})")]
     TooManyUris {
         /// Сколько URI пришло.
         count: usize,
     },
     /// Один URI длиннее [`MAX_FORWARDED_URI_BYTES`].
-    #[error("URI №{position} длиннее лимита {MAX_FORWARDED_URI_BYTES} байт")]
+    #[error("URI {position} is longer than the limit of {MAX_FORWARDED_URI_BYTES} bytes")]
     UriTooLong {
         /// Номер URI в запросе (с единицы).
         position: usize,
     },
     /// Суммарный размер больше [`MAX_TOTAL_FORWARDED_URI_BYTES`].
-    #[error("суммарный размер URI больше лимита {MAX_TOTAL_FORWARDED_URI_BYTES} байт")]
+    #[error(
+        "The total size of the URI is greater than the limit of {MAX_TOTAL_FORWARDED_URI_BYTES} bytes"
+    )]
     TotalTooLarge,
     /// Строка не является URI со схемой (`file:`, `https:` …).
-    #[error("элемент №{position} не является URI со схемой")]
+    #[error("Element {position} is not a URI with a diagram")]
     UriWithoutScheme {
         /// Номер URI в запросе (с единицы).
         position: usize,
     },
     /// В URI есть управляющие символы (перевод строки, NUL и т.п.).
-    #[error("URI №{position} содержит управляющие символы")]
+    #[error("URI #{position} contains control characters")]
     UriWithControlCharacter {
         /// Номер URI в запросе (с единицы).
         position: usize,
     },
     /// Запрос пришёл от процесса другого пользователя.
-    #[error("запрос от процесса другого пользователя (uid {peer_uid})")]
+    #[error("request from another user's process (uid {peer_uid})")]
     ForeignUser {
         /// uid отправителя по данным шины.
         peer_uid: u32,
     },
     /// Отправителя не удалось опознать (шина не сообщила uid).
-    #[error("не удалось определить отправителя запроса")]
+    #[error("It was not possible to determine the sender of the request")]
     UnidentifiedPeer,
     /// Запрошено действие, которое протокол не исполняет (`ActivateAction`).
-    #[error("действие не поддерживается")]
+    #[error("action not supported")]
     UnsupportedAction,
 }
 

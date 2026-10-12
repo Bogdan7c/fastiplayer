@@ -25,7 +25,7 @@ use timestamp::{globalize_packet_timestamp, globalize_seek_result, timestamp_map
 
 /// Candidate fragment завершился без decode-safe video/audio anchor-а.
 #[derive(Debug, thiserror::Error)]
-#[error("DASH fragment sequence завершилась до decode-safe anchor")]
+#[error("DASH fragment sequence ends with decode-safe anchor")]
 struct DashDecodeAnchorUnavailableError;
 
 /// Initial demux topology не соответствует advertised Representation kind.
@@ -315,7 +315,7 @@ impl DashComponentDemuxer {
         let period = plan
             .periods
             .get(period_index)
-            .ok_or_else(|| anyhow::anyhow!("DASH Period отсутствует в immutable plan"))?;
+            .ok_or_else(|| anyhow::anyhow!("DASH Period is missing from the immutable plan"))?;
         let (current_timeline_start, current_timestamp_origin) =
             timestamp_mapping_for_open(period, first_media_index)?;
         let current = open_period(
@@ -443,10 +443,10 @@ impl DashComponentDemuxer {
         inspected_bytes: usize,
     ) -> Result<()> {
         if inspected_events > self.factory.policy.maximum_seek_scan_events.get() {
-            anyhow::bail!("DASH decode-anchor scan превысил event budget");
+            anyhow::bail!("DASH decode-anchor scan exceeds event budget");
         }
         if inspected_bytes > self.factory.policy.maximum_seek_scan_bytes.get() {
-            anyhow::bail!("DASH decode-anchor scan превысил encoded-byte budget");
+            anyhow::bail!("DASH decode-anchor scan exceeds encoded-byte budget");
         }
         Ok(())
     }
@@ -502,7 +502,7 @@ impl DashComponentDemuxer {
                 .zip(&self.public_tracks)
                 .any(|(inner, public)| inner.kind != public.kind)
         {
-            anyhow::bail!("DASH Period изменил required component track topology");
+            anyhow::bail!("DASH Period changes required component track topology");
         }
         self.track_mapping.clear();
         let mut refreshed = Vec::with_capacity(inner_tracks.len());
@@ -523,7 +523,7 @@ impl DashComponentDemuxer {
             .track_mapping
             .iter()
             .find_map(|(inner, public)| (*inner == packet.track_id).then_some(*public))
-            .ok_or_else(|| anyhow::anyhow!("DASH packet имеет неизвестный track id"))?;
+            .ok_or_else(|| anyhow::anyhow!("DASH packet has an unknown track id"))?;
         let origin = *self
             .current_timestamp_origin
             .get_or_insert_with(|| packet.dts.map_or(packet.pts, |dts| packet.pts.min(dts)));
@@ -551,7 +551,7 @@ impl DashComponentDemuxer {
             DemuxReadEvent::EndOfStream if self.open_next_period()? => self
                 .replay_events
                 .pop_front()
-                .ok_or_else(|| anyhow::anyhow!("DASH Period transition readiness отсутствует")),
+                .ok_or_else(|| anyhow::anyhow!("DASH Period transition readiness is missing")),
             DemuxReadEvent::EndOfStream => Ok(DemuxReadEvent::EndOfStream),
             DemuxReadEvent::TracksChanged(update) => {
                 self.refresh_track_mapping(&update.tracks)?;
@@ -720,7 +720,7 @@ fn locate_period(plan: &DashComponentPlan, target: Duration) -> Result<(usize, D
         .rev()
         .find(|(_, period)| period.timeline_start <= bounded_target)
         .map(|(index, _)| index)
-        .ok_or_else(|| anyhow::anyhow!("DASH seek target не принадлежит ни одному Period"))?;
+        .ok_or_else(|| anyhow::anyhow!("DASH seek target does not belong to any Period"))?;
     let period = &plan.periods[period_index];
     Ok((
         period_index,

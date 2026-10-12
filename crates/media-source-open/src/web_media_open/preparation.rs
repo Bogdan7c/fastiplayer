@@ -18,9 +18,9 @@ pub fn next_dynamic_timeline_port_generation() -> Result<DynamicMediaTimelinePor
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
-        .map_err(|_| anyhow!("dynamic timeline port generation space исчерпан"))?;
+        .map_err(|_| anyhow!("dynamic timeline port generation space exhausted"))?;
     let generation_value = NonZeroU64::new(generation_value)
-        .ok_or_else(|| anyhow!("dynamic timeline port generation не может быть нулевым"))?;
+        .ok_or_else(|| anyhow!("dynamic timeline port generation cannot be zero"))?;
     Ok(DynamicMediaTimelinePortGeneration::new(generation_value))
 }
 
@@ -38,9 +38,9 @@ pub(super) fn allocate_component_variant_catalog_generation(
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
-        .map_err(|_| anyhow!("component variant catalog generation space исчерпан"))?;
+        .map_err(|_| anyhow!("component variant catalog generation space exhausted"))?;
     if generation_value == 0 {
-        bail!("component variant catalog generation не может быть нулевой");
+        bail!("The component variant catalog generation cannot be zero.");
     }
     Ok(web_media_core::ComponentVariantCatalogGeneration::new(
         generation_value,
@@ -81,7 +81,7 @@ pub(super) fn resolve_candidate_snapshot(
                 .generation()
                 .value()
                 .checked_add(1)
-                .ok_or_else(|| anyhow!("YtDlp extraction generation space исчерпан"))?;
+                .ok_or_else(|| anyhow!("YtDlp extraction generation space has been exhausted."))?;
             let snapshot = extractor_adapter.resolve_candidate_snapshot_with_cancellation(
                 locator,
                 source,
@@ -92,12 +92,12 @@ pub(super) fn resolve_candidate_snapshot(
             )?;
             let matched = snapshot
                 .rematch_exact(previous)
-                .context("Fresh YtDlp snapshot не содержит semantic match exact selection")?;
+                .context("Fresh YtDlp snapshot does not include semantic match exact selection")?;
             let exact = ExactSelectionIdentity::new(
                 matched.candidate().descriptor().identity().clone(),
                 matched.candidate().descriptor().semantic_identity().clone(),
             )
-            .context("Rematched YtDlp identities нарушают source lineage")?;
+            .context("Rematched YtDlp identities violate source lineage")?;
             Ok((
                 snapshot,
                 ResolvedCandidateIntent::Planner(SelectionRequest::Exact(exact)),
@@ -106,7 +106,7 @@ pub(super) fn resolve_candidate_snapshot(
         YtDlpCandidateOpenIntent::Composed(composed) => {
             if composed.parent_preference() != composed.selection().video_parent_selection() {
                 return Err(anyhow!(
-                    "Composed YtDlp intent содержит несогласованный video parent selection"
+                    "Composed YtDlp intention contains unconsistent video parent selection"
                 ));
             }
             let source = composed.selection().descriptor().identity().source();
@@ -117,7 +117,7 @@ pub(super) fn resolve_candidate_snapshot(
                 .generation()
                 .value()
                 .checked_add(1)
-                .ok_or_else(|| anyhow!("YtDlp extraction generation space исчерпан"))?;
+                .ok_or_else(|| anyhow!("YtDlp extraction generation space has been exhausted."))?;
             let snapshot = extractor_adapter.resolve_candidate_snapshot_with_cancellation(
                 locator,
                 source,
@@ -128,7 +128,7 @@ pub(super) fn resolve_candidate_snapshot(
             )?;
             let (_, selection, candidate) = snapshot
                 .rematch_composed(composed.selection())
-                .context("Fresh YtDlp snapshot не содержит composed semantic match")?;
+                .context("Fresh YtDlp snapshot does not contain composed semantic match")?;
             let parent_preference = Box::new(selection.video_parent_selection().clone());
             Ok((
                 snapshot,

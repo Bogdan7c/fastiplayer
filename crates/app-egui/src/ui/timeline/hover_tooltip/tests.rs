@@ -113,7 +113,7 @@ fn hovering_the_timeline_paints_the_time_under_the_cursor() {
 
     assert!(
         texts.iter().any(|text| text == "00:50"),
-        "ожидалась подсказка 00:50, нарисовано {texts:?}"
+        "Expected tip 00:50, drawn {texts:?}"
     );
 }
 
@@ -124,5 +124,5 @@ fn hovering_a_live_timeline_paints_no_time_tooltip() {
 
     let texts = texts_with_pointer_over_timeline(&live, 0.5);
 
-    assert!(texts.is_empty(), "у live нет подсказки времени: {texts:?}");
+    assert!(texts.is_empty(), "at live no timeline: {texts:?}");
 }

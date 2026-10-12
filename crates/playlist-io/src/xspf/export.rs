@@ -71,16 +71,16 @@ impl fmt::Display for XspfExportIneligible {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnrepresentableNativePath => {
-                formatter.write_str("native path нельзя обратимо представить в XSPF URI")
+                formatter.write_str("The native path cannot be reversibly represented in XSPF URI.")
             }
             Self::ForeignPlatformPath => {
-                formatter.write_str("foreign platform path не представим в XSPF URI")
+                formatter.write_str("foreign platform path cannot be represented as an XSPF URI")
             }
             Self::MalformedDurableUrl => {
-                formatter.write_str("durable URL нельзя представить в XSPF")
+                formatter.write_str("A durable URL cannot be represented in XSPF.")
             }
             Self::ServiceOwnerPreflightRequired => {
-                formatter.write_str("service locator требует portable export preflight")
+                formatter.write_str("service locator requires portable export preflight")
             }
         }
     }

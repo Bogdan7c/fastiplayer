@@ -16,17 +16,17 @@ fn commit_timeout_pauses_and_reports_recoverable_seek_error() {
         )))
         .unwrap();
     let retry_hint = media_core::DemuxRetryHint::new(Duration::from_secs(1))
-        .expect("seek timeout fixture использует допустимый bounded retry");
+        .expect("Seek timeout fixture uses bounded retry");
     session.schedule_installed_demux_retry(Instant::now(), retry_hint);
     assert!(session.installed_demux_read_is_blocked(Instant::now()));
     let timeout_now = session
         .seek_commit()
-        .expect("final seek должен быть активен до timeout")
+        .expect("The final seek must be active until timeout.")
         .started_at
         + Duration::from_secs(11);
     let timeout_diagnostics = session
         .active_seek_diagnostics(timeout_now, &PlayerTickConfig::default())
-        .expect("active seek diagnostics должны быть доступны до timeout");
+        .expect("Active seek diagnostics should be available before timeout");
 
     assert_eq!(
         timeout_diagnostics.blocker,
@@ -54,7 +54,7 @@ fn commit_timeout_pauses_and_reports_recoverable_seek_error() {
         .snapshot()
         .last_error
         .as_ref()
-        .expect("timeout должен записать recoverable error");
+        .expect("Timeout should record the recoverable error.");
     assert!(
         timeout_error
             .message
@@ -79,7 +79,7 @@ fn final_seek_timeout_keeps_old_present_frame_stale() {
         .unwrap();
     let active_seek = session
         .seek_commit()
-        .expect("final seek должен быть активен до timeout");
+        .expect("The final seek must be active until timeout.");
     assert_eq!(active_seek.target_position, MediaTime::from_millis(96_784));
     let timeout_now = active_seek.started_at + Duration::from_secs(11);
 
@@ -131,13 +131,13 @@ fn final_ready_gates_after_budget_commit_instead_of_timeout() {
         )))
         .unwrap();
     let retry_hint = media_core::DemuxRetryHint::new(Duration::from_secs(1))
-        .expect("seek recovery fixture использует допустимый bounded retry");
+        .expect("Seek recovery fixture uses bounded retry");
     session.schedule_installed_demux_retry(Instant::now(), retry_hint);
     assert!(session.installed_demux_read_is_blocked(Instant::now()));
     present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
     let seek_commit = session
         .seek_commit()
-        .expect("final seek должен быть активен до late tick");
+        .expect("The final seek must be active until late tick.");
     let late_tick_now = seek_commit.started_at + Duration::from_secs(11);
 
     assert_eq!(

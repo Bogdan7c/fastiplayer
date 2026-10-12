@@ -9,34 +9,34 @@ use web_media_core::{ComponentKind, ComponentVariantError};
 #[derive(thiserror::Error)]
 pub enum SmoothFragmentSourceBuildError {
     /// Retained или caller-owned preparation token уже отменён.
-    #[error("построение Smooth fragment sources отменено")]
+    #[error("Construction of Smooth fragment sources cancelled")]
     Cancelled,
     /// C3 selection не принадлежит retained catalog или нарушает exact scope.
-    #[error("Smooth component selection не принадлежит prepared catalog")]
+    #[error("Smooth component selection is not prepared catalog")]
     Selection(#[source] ComponentVariantError),
     /// P3B требует ровно VideoAndAudio selection.
-    #[error("Smooth fragment sources требуют VideoAndAudio selection")]
+    #[error("Smooth fragment sources require VideoAndAudio selection")]
     SelectionLayout,
     /// Exact C3 row отсутствует в приватном runtime seed.
-    #[error("selected Smooth runtime row отсутствует для оси {component:?}")]
+    #[error("selected Smooth runtime row is missing for axis {component:?}")]
     RuntimeRowMissing { component: ComponentKind },
     /// Exact C3 row неоднозначно повторяется в приватном runtime seed.
-    #[error("selected Smooth runtime row повторяется для оси {component:?}")]
+    #[error("selected Smooth runtime row is duplicated for axis {component:?}")]
     RuntimeRowDuplicate { component: ComponentKind },
     /// Sealed manifest selection больше не remap-ится через F2.
-    #[error("selected Smooth track не прошёл повторный F2 mapping")]
+    #[error("selected Smooth track failed repeated F2 mapping")]
     Mapping(#[source] SmoothTrackMappingError),
     /// Retained init и remapped track описывают разные identities.
-    #[error("retained Smooth initialization identity не совпадает с remapped track")]
+    #[error("retained Smooth initialization identity does not match the remapped track")]
     InitializationIdentityMismatch,
     /// Runtime row указывает за пределы sealed manifest.
-    #[error("selected Smooth runtime stream отсутствует в sealed manifest")]
+    #[error("selected Smooth runtime stream is missing from the sealed manifest")]
     RuntimeStreamMissing,
     /// Runtime row оказался на другой media axis.
-    #[error("selected Smooth runtime row имеет неверную media axis")]
+    #[error("selected Smooth runtime row has the wrong media axis")]
     RuntimeTrackKindMismatch,
     /// Seek replacement указал fragment за пределами validated timeline.
-    #[error("Smooth fragment replacement index находится за пределами timeline")]
+    #[error("The Smooth fragment replacement index is located outside the timeline.")]
     FragmentIndexOutOfRange,
 }
 

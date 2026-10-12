@@ -7,23 +7,25 @@ fn dynamic_options_preserve_unavailable_current_value() {
     let mut config = custom_config_for_test();
     config.audio.output_device = "cpal-0.15-name:Missing%20DAC".to_string();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     replace_audio_option_provider(
         &mut runtime,
         ScriptedOptionProvider::new(vec![Ok(ready_audio_options(None, Vec::new()))]),
     );
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
-        .expect("open должен запустить refresh provider-а без hard error");
+        .expect("Open should run the refresh provider without hard error");
     runtime.wait_for_options_refresh_for_test();
 
     let field = audio_output_field(&mut runtime);
-    let options = field.options.expect("dynamic options должны быть в model");
+    let options = field
+        .options
+        .expect("Dynamic options should be in the model.");
     let SettingOptionCurrentValue::UnavailableCurrent { id, .. } = options.current else {
-        panic!("saved unavailable current должен сохраниться в snapshot");
+        panic!("Save unavailable current should be saved in snapshot");
     };
 
     assert_eq!(id.as_str(), "cpal-0.15-name:Missing%20DAC");
@@ -38,7 +40,7 @@ fn dynamic_options_preserve_unavailable_current_value() {
 fn provider_error_is_reported_without_breaking_settings_window() {
     let config = custom_config_for_test();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     replace_audio_option_provider(
         &mut runtime,
         ScriptedOptionProvider::new(vec![Err(SettingOptionsError::Failed {
@@ -47,11 +49,11 @@ fn provider_error_is_reported_without_breaking_settings_window() {
         })]),
     );
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
-        .expect("provider error должен стать cached status, а не hard error");
+        .expect("The error provider should be a cached status, not a hard error.");
     runtime.wait_for_options_refresh_for_test();
 
     let model = runtime.ui_model();
@@ -60,8 +62,10 @@ fn provider_error_is_reported_without_breaking_settings_window() {
         .iter()
         .find(|field| field.descriptor.id == SettingId::from("audio.output_device"))
         .cloned()
-        .expect("settings window должен продолжать строить fields");
-    let options = field.options.expect("error snapshot должен быть в model");
+        .expect("Settings window should continue to build fields");
+    let options = field
+        .options
+        .expect("Snapshot error should be in the model");
 
     assert!(runtime.is_settings_window_open());
     assert!(matches!(
@@ -77,20 +81,20 @@ fn missing_provider_does_not_invalidate_saved_current_value() {
     let mut config = custom_config_for_test();
     config.audio.output_device = "cpal-0.15-name:Offline".to_string();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     runtime.option_providers.remove(&audio_output_provider_id());
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
-        .expect("missing provider должен стать cached status");
+        .expect("The missing provider must be cached status");
     runtime.wait_for_options_refresh_for_test();
 
     let field = audio_output_field(&mut runtime);
     let options = field
         .options
-        .expect("missing provider snapshot должен быть");
+        .expect("The missing provider snapshot should be");
 
     assert!(matches!(
         options.status,
@@ -112,14 +116,14 @@ fn missing_provider_does_not_invalidate_saved_current_value() {
 fn toggle_open_opens_closed_settings_and_cancels_open_settings() {
     let config = custom_config_for_test();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     // Закрыто -> toggle открывает (fresh draft transaction).
     runtime
         .handle_ui_actions(vec![SettingsUiAction::ToggleOpen], &mut render_adapter)
-        .expect("toggle на закрытой панели должен открыть настройки");
+        .expect("Toggle on a closed panel should open the settings");
     assert!(runtime.is_settings_window_open());
 
     // Меняем draft-значение, чтобы проверить discard при toggle-закрытии.
@@ -131,13 +135,13 @@ fn toggle_open_opens_closed_settings_and_cancels_open_settings() {
             }],
             &mut render_adapter,
         )
-        .expect("draft change должен пройти");
+        .expect("The draft change must be passed");
     assert_ne!(runtime.controller.draft(), runtime.committed_config());
 
     // Открыто -> toggle закрывает и отбрасывает draft, как `Отмена`.
     runtime
         .handle_ui_actions(vec![SettingsUiAction::ToggleOpen], &mut render_adapter)
-        .expect("toggle на открытой панели должен закрыть настройки");
+        .expect("Toggle on the open panel should close the settings");
     assert!(!runtime.is_settings_window_open());
     assert_eq!(runtime.controller.draft(), runtime.committed_config());
 }
@@ -148,20 +152,20 @@ fn toggle_open_opens_closed_settings_and_cancels_open_settings() {
 fn open_starts_background_options_refresh_and_poll_applies_result() {
     let config = custom_config_for_test();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     replace_audio_option_provider(
         &mut runtime,
         ScriptedOptionProvider::new(vec![Ok(ready_audio_options(None, Vec::new()))]),
     );
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
-        .expect("open должен пройти мгновенно");
+        .expect("Open should be done instantly.");
     assert!(
         runtime.has_pending_options_refresh(),
-        "после Open refresh должен быть фоновым pending job-ом, а не синхронным вызовом"
+        "Open refresh should be a background pending job, not a synchronized call"
     );
 
     // Фоновый поток быстрый, но не мгновенный: poll-им с дедлайном.
@@ -169,7 +173,7 @@ fn open_starts_background_options_refresh_and_poll_applies_result() {
     while !runtime.poll_dynamic_options_refresh() {
         assert!(
             Instant::now() < deadline,
-            "фоновый refresh должен завершиться в разумное время"
+            "background refresh should be completed in a reasonable time"
         );
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -178,7 +182,7 @@ fn open_starts_background_options_refresh_and_poll_applies_result() {
     let field = audio_output_field(&mut runtime);
     assert!(
         field.options.is_some(),
-        "после poll-а options snapshot должен попасть в model"
+        "After the poll and options snapshot should be included in the model"
     );
 }
 
@@ -186,7 +190,7 @@ fn open_starts_background_options_refresh_and_poll_applies_result() {
 fn manual_refresh_updates_cached_dynamic_options() {
     let config = custom_config_for_test();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     replace_audio_option_provider(
         &mut runtime,
         ScriptedOptionProvider::new(vec![
@@ -201,16 +205,16 @@ fn manual_refresh_updates_cached_dynamic_options() {
         ]),
     );
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
-        .expect("open должен запустить initial refresh");
+        .expect("Open should start the initial refresh.");
     runtime.wait_for_options_refresh_for_test();
     assert_eq!(
         audio_output_field(&mut runtime)
             .options
-            .expect("initial options должны быть")
+            .expect("Initial options should be")
             .options
             .len(),
         1
@@ -223,12 +227,12 @@ fn manual_refresh_updates_cached_dynamic_options() {
             }],
             &mut render_adapter,
         )
-        .expect("manual refresh должен обновить cache");
+        .expect("manual refresh should update the cache");
     runtime.wait_for_options_refresh_for_test();
 
     let options = audio_output_field(&mut runtime)
         .options
-        .expect("refreshed options должны быть");
+        .expect("Refreshed options should be");
     assert!(
         options
             .options
@@ -241,7 +245,7 @@ fn manual_refresh_updates_cached_dynamic_options() {
 fn dynamic_options_replacement_is_bounded_and_shutdown_retains_timed_out_handles() {
     let config = custom_config_for_test();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let started_calls = Arc::new(AtomicUsize::new(0));
     let release = Arc::new(AtomicBool::new(false));
     runtime.option_providers.insert(
@@ -253,11 +257,11 @@ fn dynamic_options_replacement_is_bounded_and_shutdown_retains_timed_out_handles
         }),
     );
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
-        .expect("open должен запустить первый refresh");
+        .expect("Open should start the first refresh.");
     while started_calls.load(Ordering::Acquire) < 1 {
         std::thread::yield_now();
     }
@@ -269,7 +273,7 @@ fn dynamic_options_replacement_is_bounded_and_shutdown_retains_timed_out_handles
             }],
             &mut render_adapter,
         )
-        .expect("первый replacement должен занять active и retired slots");
+        .expect("The first replacement must be active and retired slots.");
     while started_calls.load(Ordering::Acquire) < 2 {
         std::thread::yield_now();
     }
@@ -282,12 +286,12 @@ fn dynamic_options_replacement_is_bounded_and_shutdown_retains_timed_out_handles
                 }],
                 &mut render_adapter,
             )
-            .expect("replacement refresh должен сохранять bounded latest semantics");
+            .expect("Replacement refresh should be bound to latest semantics");
     }
     assert_eq!(
         runtime.dynamic_options_owned_thread_count(),
         2,
-        "синхронизированный fixture должен удерживать active+retired handles"
+        "The synchronized fixture must hold active+retired handles."
     );
 
     assert!(matches!(
@@ -312,7 +316,7 @@ fn dynamic_options_replacement_is_bounded_and_shutdown_retains_timed_out_handles
 fn idle_dynamic_options_shutdown_is_completed_and_idempotent() {
     let config = custom_config_for_test();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
 
     assert_eq!(runtime.dynamic_options_owned_thread_count(), 0);
     assert_eq!(

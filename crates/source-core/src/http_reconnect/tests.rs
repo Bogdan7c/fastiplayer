@@ -10,7 +10,7 @@ use crate::{CancellationToken, HttpRetryAfter, SourceError};
 fn retry_after(decision: HttpReconnectDecision) -> Duration {
     match decision {
         HttpReconnectDecision::RetryAfter(delay) => delay,
-        HttpReconnectDecision::GiveUp => panic!("ожидался повтор, а расписание сдалось"),
+        HttpReconnectDecision::GiveUp => panic!("A repeat was expected and the schedule was up."),
     }
 }
 
@@ -49,7 +49,7 @@ fn budget_counts_from_first_failure_and_trims_last_delay() {
     assert_eq!(
         schedule.record_failure(second_failure, HttpRetryAfter::Unavailable),
         HttpReconnectDecision::RetryAfter(Duration::from_millis(500)),
-        "пауза 1 с обрезана до остатка бюджета 0,5 с"
+        "pause 1 s cut to budget balance 0.5 s"
     );
     assert_eq!(
         schedule.record_failure(start + Duration::from_secs(3), HttpRetryAfter::Unavailable),
@@ -82,7 +82,7 @@ fn server_retry_after_wins_but_is_capped() {
     assert_eq!(
         generous.record_failure(start, HttpRetryAfter::Delay(Duration::from_secs(3_600))),
         HttpReconnectDecision::RetryAfter(Duration::from_secs(60)),
-        "server hint ограничен 60 с"
+        "server hint is limited to 60 s"
     );
 
     let mut short =
@@ -90,7 +90,7 @@ fn server_retry_after_wins_but_is_capped() {
     assert_eq!(
         short.record_failure(start, HttpRetryAfter::Delay(Duration::from_secs(30))),
         HttpReconnectDecision::RetryAfter(Duration::from_secs(2)),
-        "server hint не выводит ожидание за бюджет"
+        "server hint does not display expectations over budget"
     );
 }
 
@@ -122,7 +122,7 @@ fn cancellation_interrupts_wait_promptly() {
     assert!(matches!(result, Err(SourceError::Cancelled)));
     assert!(
         started.elapsed() < Duration::from_secs(2),
-        "ожидание должно оборваться по отмене, а не через 30 с"
+        "The wait should be terminated by cancellation, not after 30 seconds."
     );
     cancel_thread.join().expect("cancel thread");
 }
@@ -133,7 +133,7 @@ fn wait_without_cancellation_lasts_full_delay() {
     let started = Instant::now();
 
     wait_before_reconnect(Duration::from_millis(40), &CancellationToken::new())
-        .expect("ожидание без отмены завершается успешно");
+        .expect("Unstoppable waiting is completed successfully");
 
     assert!(started.elapsed() >= Duration::from_millis(40));
 }

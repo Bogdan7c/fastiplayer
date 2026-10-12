@@ -62,11 +62,11 @@ fn source_section_between<'source>(
 ) -> &'source str {
     let section_start = source_code
         .find(start_marker)
-        .unwrap_or_else(|| panic!("Не найден начальный source marker: {start_marker}"));
+        .unwrap_or_else(|| panic!("No source marker found: {start_marker}"));
     let section_after_start = &source_code[section_start..];
     let section_end = section_after_start
         .find(end_marker)
-        .unwrap_or_else(|| panic!("Не найден конечный source marker: {end_marker}"));
+        .unwrap_or_else(|| panic!("No final source marker found: {end_marker}"));
 
     &section_after_start[..section_end]
 }
@@ -558,18 +558,18 @@ fn video_pipeline_rebuild_stops_before_vaapi_startup_when_selector_rejects() {
     );
     let selector_error_return = rebuild_section
         .find("video pipeline selection failed: {error}")
-        .expect("rebuild должен возвращать selection error через ? до backend startup");
+        .expect("Recovery must return selection error through ? to backend startup");
     let vaapi_factory_start = rebuild_section
         .find("VaapiVideoBackendFactory::new_with_decoder_config")
-        .expect("rebuild должен сохранять текущий VAAPI startup plan после selector");
+        .expect("Recovery must save the current VAAPI startup plan after selector");
 
     assert!(
         selector_error_return < vaapi_factory_start,
-        "VAAPI startup должен быть недостижим, когда selector вернул ошибку"
+        "VAAPI startup should be unattainable when selector returns error"
     );
     assert!(
         !rebuild_section.contains("or_else"),
-        "rebuild не должен добавлять fallback startup после ошибки selector"
+        "rebuild don't add fallback startup posterity selector"
     );
 }
 
@@ -584,11 +584,11 @@ fn app_layout_uses_sidebar_instead_of_floating_settings_window() {
 
     assert!(
         render_ui_section.contains("sidebar::show"),
-        "AppState::render_ui должен рисовать настройки через app sidebar"
+        "AppState::render_ui should draw settings via app sidebar"
     );
     assert!(
         !render_ui_section.contains("settings_window::show"),
-        "AppState::render_ui не должен возвращать floating settings window"
+        "AppState::render_ui should not return floating settings window"
     );
 }
 
@@ -603,15 +603,15 @@ fn app_layout_shrinks_video_viewport_by_sidebar_without_exclusion_rects() {
 
     assert!(
         render_ui_section.contains("video_viewport_rect = ui.max_rect();"),
-        "video underlay должен начинаться с полного egui root rect"
+        "video underlay must begin with the full egui root rect"
     );
     assert!(
         render_ui_section.contains("video_viewport_rect.min.x = sidebar_output"),
-        "sidebar должен вытеснять видео: viewport начинается от правого края панели"
+        "sidebar should displace the video: viewport starts at the right edge of the panel"
     );
     assert!(
         !render_ui_section.contains("video_exclusion_rects.push("),
-        "sidebar больше не должен становиться exclusion rect: он сжимает viewport"
+        "sidebar no longer has to be an exclusion rect: it compresses viewport"
     );
 }
 
@@ -632,16 +632,16 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
 
     assert!(
         !state_source.contains(removed_getter_signature),
-        "AppState не должен возвращать player snapshot через mutable getter-like API"
+        "AppState must not return player snapshot via mutable getter-like API"
     );
     assert!(
         state_source.contains(refresh_signature),
-        "AppState должен явно читать worker snapshot через refresh_player_snapshot()"
+        "AppState must explicitly read worker snapshot through refresh_player_snapshot()"
     );
     assert!(
         !state_source.contains("desktop_integration: Option<DesktopIntegration>")
             && !state_source.contains("DesktopIntegration::spawn"),
-        "renderer-lifetime AppState не должен владеть desktop integration"
+        "renderer-lifetime AppState should not own desktop integration"
     );
 
     let refresh_section = source_section_between(
@@ -651,35 +651,35 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
     );
     assert!(
         !refresh_section.contains("publish_desktop_snapshot"),
-        "refresh_player_snapshot() не должен публиковать desktop state"
+        "refresh_player_snapshot() must not publish the desktop state"
     );
     assert!(
         !refresh_section.contains("desktop_integration"),
-        "refresh_player_snapshot() не должен напрямую трогать desktop integration"
+        "refresh_player_snapshot() must not directly touch desktop integration."
     );
 
     assert!(
         desktop_owner_source.contains(publish_signature),
-        "process-lifetime PlaylistRuntime должен явно публиковать desktop snapshot"
+        "process-lifetime PlaylistRuntime should explicitly publish desktop snapshot"
     );
     assert!(
         !desktop_owner_source.contains("PlayerCommand"),
-        "desktop owner не должен создавать direct player command bypass"
+        "desktop owner must not create direct player command bypass"
     );
 
     let input_prepare_position = frame_prepare_source
         .find("prepare_frame_input(telemetry, window, renderer, app_state, &mut frame_sequence)")
-        .expect("render_frame должен делегировать input snapshot отдельному adapter-у");
+        .expect("render_frame must delegate input snapshot to a separate adapter.");
     let publish_position = frame_prepare_source
         .find("playlist_runtime.publish_desktop_snapshot(frame_context.player_snapshot());")
-        .expect("frame adapter должен передать уже зафиксированный snapshot process owner-у");
+        .expect("The frame adapter must transfer the snapshot process to the owner.");
     let ui_prepare_position = frame_prepare_source
         .find("let mut prepared_ui_frame = prepare_ui_frame(")
-        .expect("render_frame должен готовить UI через тот же AppFrameContext");
+        .expect("render_frame should be used to prepare UI via AppFrameContext.");
 
     assert!(
         input_prepare_position < publish_position && publish_position < ui_prepare_position,
-        "process owner должен публиковать тот же AppFrameContext до UI/render подготовки"
+        "process owner should publish the same AppFrameContext before UI/render preparation"
     );
 }
 
@@ -696,23 +696,23 @@ fn render_frame_routes_player_snapshot_into_playlist_automatic_lifecycle() {
 
     let explicit_transport_position = render_frame_section
         .find("crate::transport_runtime::apply_transport_actions(")
-        .expect("render frame должен сначала применить explicit transport intents");
+        .expect("The render frame must first apply explicit transport intentions.");
     let automatic_snapshot_position = render_frame_section
         .find("crate::transport_runtime::apply_playlist_automatic_snapshot(")
-        .expect("render frame должен передать player snapshot automatic lifecycle owner-у");
+        .expect("Player snapshot automatic lifecycle owner");
     let deferred_action_position = render_frame_section
         .find("crate::transport_runtime::apply_discovery_navigation_action(")
-        .expect("render frame должен затем исполнить deferred discovery action");
+        .expect("render frame must then perform deferred discovery action");
 
     assert!(
         explicit_transport_position < automatic_snapshot_position
             && automatic_snapshot_position < deferred_action_position,
-        "explicit intent должен иметь приоритет, а EOF observation — предшествовать deferred drain"
+        "explicit intent must be prioritized, ? EOF observation — precede deferred drain"
     );
     assert!(
         render_frame_section[automatic_snapshot_position..deferred_action_position]
             .contains("frame_context.player_snapshot()"),
-        "automatic lifecycle должен получить тот же immutable snapshot текущего frame-а"
+        "automatic lifecycle should get the same immutable snapshot current frame-?"
     );
 }
 
@@ -728,7 +728,7 @@ fn live_settings_rebuild_passes_active_stream_requirement() {
     // AppState кэширует requirement активного стрима и отдаёт его по boundary-методу.
     assert!(
         state_source.contains("active_video_stream_requirement: Option<VideoDecodeRequirement>"),
-        "AppState должен хранить requirement активного video-стрима для live-rebuild"
+        "AppState must store the requirement of an active video stream for live-rebuild"
     );
     assert!(
         state_source.contains(concat!(
@@ -736,7 +736,7 @@ fn live_settings_rebuild_passes_active_stream_requirement() {
             "active_video_stream_requirement",
             "(&self) -> Option<&VideoDecodeRequirement>"
         )),
-        "AppState должен отдавать requirement активного стрима через boundary-метод"
+        "AppState must give the requirement of active streaming through the boundary method"
     );
 
     // Live-путь применения runtime-настроек обязан прокинуть этот requirement в rebuild.
@@ -747,11 +747,11 @@ fn live_settings_rebuild_passes_active_stream_requirement() {
     );
     assert!(
         apply_section.contains("self.app_state.active_video_stream_requirement()"),
-        "live-rebuild должен брать requirement активного стрима, а не выбирать backend вслепую"
+        "live rebuild must use the active stream requirement instead of selecting a backend blindly"
     );
     assert!(
             !apply_section.contains("rebuild_video_pipeline_with_decoder_config(\n                decoder_thread_config,\n                None,"),
-            "live-rebuild не должен передавать None как stream_requirement"
+            "live-rebuild don't transmit None how stream_requirement"
         );
 }
 
@@ -771,21 +771,21 @@ fn app_runtime_reconfigure_boundary_checks_pre_player_media_lifecycle_first() {
 
     let strong_open_check = boundary_section
         .find("self.has_pending_prepared_media_strong()")
-        .expect("settings boundary должен проверять app-owned strong media open");
+        .expect("boundary settings should be checked by app-owned strong media open");
     let suspended_resume_check = boundary_section
         .find("self.has_pending_suspended_media_resume()")
-        .expect("settings boundary должен проверять app-owned suspended resume");
+        .expect("boundary settings must be checked by app-owned suspended resume");
     let worker_query = boundary_section
         .find("self.player_worker.runtime_reconfigure_boundary_activity()")
-        .expect("после app-owned gate boundary должен спросить worker owner-а");
+        .expect("App-owned gate border should ask employee owner");
 
     assert!(
         strong_open_check < worker_query && suspended_resume_check < worker_query,
-        "pre-player app owners должны закрывать boundary до worker query"
+        "pre-player app owners should be closed boundary before worker query"
     );
     assert!(
         boundary_section.contains("PlayerRuntimeBoundaryActivity::PipelineLifecycle"),
-        "app-owned media lifecycle должен возвращать typed PipelineLifecycle activity"
+        "app-owned media lifecycle must return typed PipelineLifecycle activity"
     );
 }
 
@@ -800,15 +800,15 @@ fn playlist_transport_routes_only_pre_barrier_failure_through_navigation_owner()
 
     assert!(
         failed_branch.contains(".allows_navigation_failure_recovery()"),
-        "automatic continuation разрешён только до barrier-а либо после exact compensation"
+        "automatic continuation allowed only up to barrier-after exact compensation"
     );
     assert!(
         failed_branch.contains("report_playlist_target_failure("),
-        "terminal playlist failure должен вернуться controller-owned navigation owner-у"
+        "terminal playlist failure must return to controller-owned navigation owner"
     );
     assert!(
         failed_branch.contains("if let Some(install) = automatic_continuation"),
-        "controller-owned automatic continuation должен запускать следующий strong install"
+        "controller-owned automatic continuation should start the next one strong install"
     );
 }
 

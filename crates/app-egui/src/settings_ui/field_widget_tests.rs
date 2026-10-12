@@ -93,7 +93,7 @@ fn render_idle_frames(field: &SettingsUiField, frames: usize) -> Vec<SettingsUiA
 fn integer_slider_off_grid_value_is_not_changed_by_rendering() {
     let actions = render_idle_frames(&off_grid_integer_field(), 5);
 
-    assert_eq!(actions, Vec::new(), "отрисовка не должна менять значение");
+    assert_eq!(actions, Vec::new(), "drawing should not change the meaning");
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn integer_slider_out_of_range_value_is_not_changed_by_rendering() {
     assert_eq!(
         actions,
         Vec::new(),
-        "значение вне диапазона трогает только валидация"
+        "Validation outside the range only affects validation"
     );
 }
 
@@ -114,7 +114,7 @@ fn integer_slider_out_of_range_value_is_not_changed_by_rendering() {
 fn float_slider_off_grid_value_is_not_changed_by_rendering() {
     let actions = render_idle_frames(&off_grid_float_field(), 5);
 
-    assert_eq!(actions, Vec::new(), "отрисовка не должна менять значение");
+    assert_eq!(actions, Vec::new(), "drawing should not change the meaning");
 }
 
 /// Кликает в правую часть слайдера и возвращает действия за все кадры клика.
@@ -143,17 +143,17 @@ fn integer_slider_user_click_emits_snapped_set_value() {
     let actions = click_near_right_edge(&off_grid_integer_field());
 
     let Some(SettingsUiAction::SetValue { setting_id, value }) = actions.last() else {
-        panic!("клик по слайдеру обязан выдать SetValue, получено {actions:?}");
+        panic!("Click on the slider must give SetValue, received {actions:?}");
     };
     assert_eq!(setting_id.as_str(), "playlist.dropped_folder_max_files");
     let SettingValue::Integer(edited) = value else {
-        panic!("ожидался Integer, получено {value:?}");
+        panic!("expected Integer, got {value:?}");
     };
-    assert_ne!(*edited, 2000, "значение должно измениться кликом");
+    assert_ne!(*edited, 2000, "The meaning has to change by click");
     assert_eq!(
         (edited - 1) % 100,
         0,
-        "правка пользователя привязана к сетке шага"
+        "user editing is tied to the step grid"
     );
     assert!((1..=10_000).contains(edited));
 }
@@ -163,10 +163,10 @@ fn float_slider_user_click_emits_set_value() {
     let actions = click_near_right_edge(&off_grid_float_field());
 
     let Some(SettingsUiAction::SetValue { value, .. }) = actions.last() else {
-        panic!("клик по слайдеру обязан выдать SetValue, получено {actions:?}");
+        panic!("Click on the slider must give SetValue, received {actions:?}");
     };
     let SettingValue::Float(edited) = value else {
-        panic!("ожидался Float, получено {value:?}");
+        panic!("expected Float, got {value:?}");
     };
     assert_ne!(*edited, 1.0);
     assert!((0.1..=5.0).contains(edited));

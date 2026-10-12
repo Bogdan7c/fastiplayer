@@ -70,13 +70,13 @@ impl CapabilityScanner {
 
         for provider in &self.providers {
             let backend_id = provider.backend_id();
-            debug!(backend = %backend_id, "Запуск capability probe");
+            debug!(backend = %backend_id, "Launching capability probe");
             let mut capabilities = provider.probe();
             if capabilities.backend_id != backend_id {
                 warn!(
                     expected = %backend_id,
                     actual = %capabilities.backend_id,
-                    "Capability provider вернул другой backend id"
+                    "Capability provider returned a different backend ID"
                 );
             }
             playable_video_outputs.extend(playable_outputs_for_backend(
@@ -246,7 +246,7 @@ impl SystemCapabilities {
     #[must_use]
     pub fn summary_text(&self) -> String {
         if self.video_backends.is_empty() && self.render_backends.is_empty() {
-            return "Capability probe: backend-ы не зарегистрированы".to_string();
+            return "Capability probe: backends not registered".to_string();
         }
 
         let available_backends = self
@@ -258,7 +258,7 @@ impl SystemCapabilities {
         let raw_outputs = self.raw_video_outputs().count();
 
         format!(
-            "Capability probe: {available_backends}/{} video backend доступно, {playable_outputs}/{raw_outputs} video outputs playable, {} render backend",
+            "Capability probe: {available_backends}/{} video backend readily available, {playable_outputs}/{raw_outputs} video outputs playable, {} render backend",
             self.video_backends.len(),
             self.render_backends.len()
         )
@@ -284,7 +284,7 @@ impl SystemCapabilities {
             }
             if backend.raw_supported_outputs.len() > 12 {
                 lines.push(format!(
-                    "  - ... ещё {} outputs",
+                    "  - ... still {} outputs",
                     backend.raw_supported_outputs.len() - 12
                 ));
             }
@@ -363,7 +363,7 @@ impl BackendCapabilities {
 
         match &self.status {
             BackendProbeStatus::Available => format!(
-                "{}: доступен, {} raw outputs, transfer: {}{}",
+                "{}: available, {} raw outputs, transfer: {}{}",
                 self.display_name,
                 self.raw_supported_outputs.len(),
                 transfer_summary,
@@ -374,7 +374,7 @@ impl BackendCapabilities {
                     .unwrap_or_default()
             ),
             BackendProbeStatus::Unavailable { reason } => {
-                format!("{}: недоступен ({reason})", self.display_name)
+                format!("{}: unavailable ({reason})", self.display_name)
             }
         }
     }
@@ -383,7 +383,7 @@ impl BackendCapabilities {
 /// Формирует backend-level transfer summary без отдельного source-of-truth списка.
 fn summarize_output_transfer_paths(outputs: &[SupportedVideoOutput]) -> String {
     if outputs.is_empty() {
-        return "нет output transfer paths".to_string();
+        return "No output transfer paths".to_string();
     }
 
     let mut labels = outputs

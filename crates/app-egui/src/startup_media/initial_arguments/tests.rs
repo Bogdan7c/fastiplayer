@@ -19,7 +19,7 @@ fn resolve_to_single(values: &[&str]) -> (Option<SingleStartupTarget>, Option<St
         resolve_initial_media_arguments(arguments(values), &AppConfig::default());
     let single = initial_media.map(|initial_media| match initial_media {
         InitialMedia::Several(several) => several.into_single_target(),
-        other => panic!("ожидался набор из нескольких аргументов, получено {other:?}"),
+        other => panic!("A set of several arguments was expected, got {other:?}"),
     });
     (single, startup_error)
 }
@@ -64,14 +64,14 @@ fn single_argument_takes_exactly_the_previous_single_path() {
     assert!(
         rejected_error
             .as_deref()
-            .is_some_and(|error| error == "Такой тип ссылок не поддерживается")
+            .is_some_and(|error| error == "This type of link is not supported.")
     );
 }
 
 #[test]
 fn several_local_files_open_in_given_order_without_notice() {
     let (single, startup_error) = resolve_to_single(&["/v/c.mkv", "/v/a.mkv", "/v/b.mkv"]);
-    let single = single.expect("набор файлов открывается");
+    let single = single.expect("file set opens");
 
     assert!(startup_error.is_none());
     assert!(matches!(single.target, InitialMedia::File(path) if path == Path::new("/v/c.mkv")));
@@ -88,7 +88,7 @@ fn mixed_list_opens_only_local_files_and_counts_skipped_playlists_and_links() {
         "/v/b.mp3",
         "rtsp://192.0.2.10/v.mp4",
     ]);
-    let single = single.expect("локальные файлы побеждают");
+    let single = single.expect("Local files win out");
 
     // Неподдерживаемая ссылка среди пропущенных не превращается в ошибку запуска.
     assert!(startup_error.is_none());
@@ -96,20 +96,20 @@ fn mixed_list_opens_only_local_files_and_counts_skipped_playlists_and_links() {
     assert_eq!(single.follow_up_files, paths(&["/v/b.mp3"]));
     assert_eq!(
         single.skipped_notice.as_deref(),
-        Some("Открыты только видео- и аудиофайлы, пропущено: 1 плейлист и 2 ссылки.")
+        Some("Only video and audio files were opened; skipped: 1 Playlist and 2 links.")
     );
 }
 
 #[test]
 fn exactly_one_local_file_among_others_opens_as_single_file_with_notice() {
     let (single, _) = resolve_to_single(&["https://youtu.be/video-id", "/v/only.mkv"]);
-    let single = single.expect("один локальный файл");
+    let single = single.expect("locale");
 
     assert!(matches!(single.target, InitialMedia::File(path) if path == Path::new("/v/only.mkv")));
     assert!(single.follow_up_files.is_empty());
     assert_eq!(
         single.skipped_notice.as_deref(),
-        Some("Открыты только видео- и аудиофайлы, пропущено: 1 ссылка.")
+        Some("Only video and audio files were opened; skipped: 1 link.")
     );
 }
 
@@ -117,7 +117,7 @@ fn exactly_one_local_file_among_others_opens_as_single_file_with_notice() {
 fn without_local_files_first_playlist_wins_and_rest_are_skipped() {
     let (single, startup_error) =
         resolve_to_single(&["https://youtu.be/video-id", "/v/one.xspf", "/v/two.m3u8"]);
-    let single = single.expect("первый плейлист");
+    let single = single.expect("playlist");
 
     assert!(startup_error.is_none());
     assert!(
@@ -126,7 +126,7 @@ fn without_local_files_first_playlist_wins_and_rest_are_skipped() {
     assert!(single.follow_up_files.is_empty());
     assert_eq!(
         single.skipped_notice.as_deref(),
-        Some("Открыт только первый плейлист, пропущено: 1 плейлист и 1 ссылка.")
+        Some("Only the first Playlist was opened; skipped: 1 Playlist and 1 link.")
     );
 }
 
@@ -137,7 +137,7 @@ fn links_only_open_the_first_link() {
         "https://cdn.example.test/video.mp4",
         "https://youtu.be/third-id",
     ]);
-    let single = single.expect("первая ссылка");
+    let single = single.expect("first-line");
 
     assert!(startup_error.is_none());
     assert!(
@@ -145,7 +145,7 @@ fn links_only_open_the_first_link() {
     );
     assert_eq!(
         single.skipped_notice.as_deref(),
-        Some("Открыта только первая ссылка, пропущено: 2 ссылки.")
+        Some("Only the first link was opened; skipped: 2 links.")
     );
 }
 
@@ -160,7 +160,7 @@ fn unsupported_first_link_keeps_the_existing_safe_error_path() {
     assert!(
         startup_error
             .as_deref()
-            .is_some_and(|error| error == "Такой тип ссылок не поддерживается")
+            .is_some_and(|error| error == "This type of link is not supported.")
     );
 }
 
@@ -174,7 +174,7 @@ fn several_non_utf8_paths_stay_exact_native_paths() {
     let (initial_media, _) =
         resolve_initial_media_arguments(vec![first.clone(), second.clone()], &AppConfig::default());
     let Some(InitialMedia::Several(several)) = initial_media else {
-        panic!("ожидался набор файлов");
+        panic!("file set expected");
     };
     let single = several.into_single_target();
 
@@ -191,7 +191,7 @@ fn local_files_beyond_queue_capacity_are_not_opened_and_reported() {
 
     let (initial_media, startup_error) = select_among_several(classified, 2);
     let Some(InitialMedia::Several(several)) = initial_media else {
-        panic!("ожидался набор файлов");
+        panic!("file set expected");
     };
     let single = several.into_single_target();
 
@@ -200,7 +200,7 @@ fn local_files_beyond_queue_capacity_are_not_opened_and_reported() {
     assert_eq!(single.follow_up_files, paths(&["/v/2.mkv"]));
     assert_eq!(
         single.skipped_notice.as_deref(),
-        Some("В очередь помещается не больше 2 файлов, остальные 2 не открыты.")
+        Some("The queue holds at most 2 files; the remaining 2 were not opened.")
     );
 }
 

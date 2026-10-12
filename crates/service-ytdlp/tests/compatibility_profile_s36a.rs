@@ -24,10 +24,10 @@ fn load_profile() -> Value {
     let profile_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PROFILE_PATH);
     // Ошибка чтения содержит только checked-in путь и не раскрывает fixture payload.
     let profile_bytes = fs::read(&profile_path)
-        .unwrap_or_else(|error| panic!("не удалось прочитать {profile_path:?}: {error}"));
+        .unwrap_or_else(|error| panic!("failed to read {profile_path:?}: {error}"));
     // Malformed checked-in JSON является немедленной ошибкой traceability.
     serde_json::from_slice(&profile_bytes)
-        .unwrap_or_else(|error| panic!("не удалось разобрать {profile_path:?}: {error}"))
+        .unwrap_or_else(|error| panic!("I couldn't make out {profile_path:?}: {error}"))
 }
 
 /// Возвращает обязательную строку либо завершает тест точной schema-ошибкой.
@@ -36,7 +36,7 @@ fn required_string<'value>(value: &'value Value, field: &str) -> &'value str {
     value
         .get(field)
         .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("обязательное строковое поле `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("No mandatory string field {field}"))
 }
 
 /// Возвращает обязательный JSON array либо завершает тест точной schema-ошибкой.
@@ -46,7 +46,7 @@ fn required_array<'value>(value: &'value Value, field: &str) -> &'value [Value] 
         .get(field)
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .unwrap_or_else(|| panic!("обязательное array-поле `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("Obligatory array field {field} is missing"))
 }
 
 /// S36A сужает aggregate ISM promise до exact base/VOD H.264/AAC evidence.
@@ -60,14 +60,14 @@ fn manifest_splits_ism_base_profile_without_live_promotion() {
     let ism_video_profile = codec_profiles
         .iter()
         .find(|codec_profile| required_string(codec_profile, "id") == "ism-base-video-h264")
-        .unwrap_or_else(|| panic!("exact ISM H.264 codec profile отсутствует"));
+        .unwrap_or_else(|| panic!("exact ISM H.264 codec profile absent"));
     // Fixture доказывает H.264 и не разрешает соседние video families.
     assert_eq!(required_array(ism_video_profile, "families"), ["h264"]);
     // Находим узкий audio profile для единственной approved ISM Target row.
     let ism_audio_profile = codec_profiles
         .iter()
         .find(|codec_profile| required_string(codec_profile, "id") == "ism-base-audio-aac")
-        .unwrap_or_else(|| panic!("exact ISM AAC codec profile отсутствует"));
+        .unwrap_or_else(|| panic!("exact ISM AAC codec profile absent"));
     // Fixture доказывает AAC и не разрешает соседние audio families.
     assert_eq!(required_array(ism_audio_profile, "families"), ["aac"]);
     // Находим explicit provisional set остальных существующих video families.
@@ -76,7 +76,7 @@ fn manifest_splits_ism_base_profile_without_live_promotion() {
         .find(|codec_profile| {
             required_string(codec_profile, "id") == "ism-provisional-other-existing-video"
         })
-        .unwrap_or_else(|| panic!("provisional ISM video codec profile отсутствует"));
+        .unwrap_or_else(|| panic!("The provisional ISM video codec profile is missing."));
     // Set является exact complement H.264 внутри existing major-web-video profile.
     assert_eq!(
         required_array(provisional_video_profile, "families"),
@@ -88,7 +88,7 @@ fn manifest_splits_ism_base_profile_without_live_promotion() {
         .find(|codec_profile| {
             required_string(codec_profile, "id") == "ism-provisional-other-existing-audio"
         })
-        .unwrap_or_else(|| panic!("provisional ISM audio codec profile отсутствует"));
+        .unwrap_or_else(|| panic!("The provisional ISM audio codec profile is missing."));
     // Set является exact complement AAC внутри existing proven-native-audio profile.
     assert_eq!(
         required_array(provisional_audio_profile, "families"),
@@ -126,7 +126,7 @@ fn manifest_splits_ism_base_profile_without_live_promotion() {
         required_array(&profile, "target_rows")
             .iter()
             .all(|target_row| required_string(target_row, "id") != "ism-mss-fmp4"),
-        "старый aggregate ISM Target остался после exact split"
+        "old-school aggregate ISM Target left behind exact split"
     );
 
     // Excluded rows фиксируют gaps отдельно от approved namespace.
@@ -146,7 +146,7 @@ fn manifest_splits_ism_base_profile_without_live_promotion() {
         let excluded_row = excluded_rows
             .iter()
             .find(|row| required_string(row, "id") == excluded_row_id)
-            .unwrap_or_else(|| panic!("exact provisional ISM codec exclusion отсутствует"));
+            .unwrap_or_else(|| panic!("exact provisional ISM codec exclusion absent"));
         // Provisional status допускает promotion только с будущим evidence.
         assert_eq!(
             required_string(excluded_row, "status"),
@@ -162,7 +162,7 @@ fn manifest_splits_ism_base_profile_without_live_promotion() {
     let live_exclusion = excluded_rows
         .iter()
         .find(|row| required_string(row, "id") == "ism-mss-live-dvr")
-        .unwrap_or_else(|| panic!("provisional ISM live/DVR exclusion отсутствует"));
+        .unwrap_or_else(|| panic!("provisional ISM live/DVR exclusion absent"));
     // Отсутствие approved live fixture не превращается в молчаливый Target.
     assert_eq!(
         required_string(live_exclusion, "status"),
@@ -179,6 +179,6 @@ fn manifest_splits_ism_base_profile_without_live_promotion() {
             .iter()
             .filter(|row| row.get("transport").and_then(Value::as_str) == Some("ism"))
             .all(|row| !ism_target_ids.contains(required_string(row, "id"))),
-        "ISM row одновременно Target и provisional exclusion"
+        "ISM row simultaneously Target and provisional exclusion"
     );
 }

@@ -161,7 +161,9 @@ impl HlsComponentDemuxer {
                     let timeline_start = plan
                         .epochs
                         .first()
-                        .ok_or_else(|| anyhow::anyhow!("HLS initial epoch отсутствует в plan"))?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("HLS initial epoch is missing from the plan")
+                        })?
                         .timeline_start;
                     let mut component = Self::from_opened_epoch(
                         plan,
@@ -216,7 +218,7 @@ impl HlsComponentDemuxer {
         initial_source: HlsInitialRestoreSource,
     ) -> Result<Self> {
         if target.as_duration() > plan.duration {
-            anyhow::bail!("HLS initial restore target находится за VOD duration");
+            anyhow::bail!("HLS initial restore target is beyond the VOD duration");
         }
         let post_target_point = match policy.seek_landing_policy {
             HlsVodSeekLandingPolicy::DecodeFromOrBeforeTarget => None,
@@ -241,7 +243,7 @@ impl HlsComponentDemuxer {
             });
         }
         if candidates.is_empty() {
-            anyhow::bail!("HLS initial restore не нашёл manifest candidate");
+            anyhow::bail!("HLS initial restore did not find a manifest candidate");
         }
 
         let try_fresh_candidates =
@@ -267,7 +269,7 @@ impl HlsComponentDemuxer {
                         return Ok(Self::with_initial_position_result(positioned, result));
                     }
                 }
-                anyhow::bail!("HLS initial restore candidates не доказали decode anchor")
+                anyhow::bail!("HLS initial restore candidates did not prove a decode anchor")
             };
 
         match initial_source {
@@ -279,7 +281,9 @@ impl HlsComponentDemuxer {
                 active_read_lifecycle,
             } => {
                 if candidates.first().map(|candidate| candidate.point) != Some(point) {
-                    anyhow::bail!("HLS probed restore source не совпадает с containing candidate");
+                    anyhow::bail!(
+                        "HLS probed restore source does not match the containing candidate"
+                    );
                 }
                 let component = Self::from_opened_epoch(
                     plan.clone(),
@@ -371,7 +375,9 @@ impl HlsComponentDemuxer {
             .seek_index
             .lock()
             .initial_anchor(has_video)
-            .ok_or_else(|| anyhow::anyhow!("HLS initial open не сохранил packet-derived anchor"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("HLS initial open does not save packet-derived anchor")
+            })?;
         let component_role = HlsManifestComponentRole::from_tracks(&self.public_tracks)?;
         self.stage_committed_selection_marker(HlsManifestSegmentSeekMarker::new(
             HlsManifestSeekDiagnosticPhase::InitialOpen,
@@ -390,9 +396,11 @@ impl HlsComponentDemuxer {
             Some(DemuxReadEvent::TracksChanged(_)) => Ok(()),
             Some(unexpected) => {
                 self.replay_events.push_front(unexpected);
-                anyhow::bail!("HLS initial restore replay не началcя с TracksChanged")
+                anyhow::bail!("HLS initial restore replay does not start with TracksChanged")
             }
-            None => anyhow::bail!("HLS initial restore не содержит positioned replay lifecycle"),
+            None => {
+                anyhow::bail!("HLS initial restore does not include positioned replay lifecycle")
+            }
         }
     }
 }

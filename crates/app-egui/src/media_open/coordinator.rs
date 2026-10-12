@@ -672,7 +672,7 @@ impl MediaOpenCoordinator {
         // инварианта сохраняется в логе, а не теряется.
         tracing::error!(
             ?violation,
-            "media-open coordinator перешёл в fatal invariant"
+            "media-open coordinator switched to fatal invariant"
         );
         if let Some(current) = self.current.as_mut() {
             current.phase = MediaOpenPhase::Failed;
@@ -720,7 +720,7 @@ impl MediaOpenCoordinator {
             tracing::error!(
                 ?error,
                 ?cause,
-                "Lifecycle cancel не получил authoritative coordinator resolution"
+                "Lifecycle cancel didn't get it authoritative coordinator resolution"
             );
             self.publish_fatal(MediaOpenInvariantViolation::LifecycleCancellationDispatchFailed);
         }

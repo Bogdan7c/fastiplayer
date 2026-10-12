@@ -32,7 +32,7 @@ fn planned_install() -> crate::playlist_runtime::PlannedPlaylistInstall {
     let ControllerPlayItemOutcome::StartInstall { install, .. } =
         controller.play_item(item_id, TransportActionOrigin::Ui)
     else {
-        panic!("строка стартует install");
+        panic!("line starts install");
     };
     install
 }
@@ -68,7 +68,7 @@ fn missing_file_before_admission_returns_plan_with_error() {
     );
 
     let PlaylistStrongMediaOpenPoll::TargetFailedBeforeAdmission(unstaged) = poll else {
-        panic!("план очереди должен вернуться владельцу");
+        panic!("The queue plan must return to the owner.");
     };
     assert_eq!(unstaged.install.item_id, expected_item_id);
     assert_eq!(
@@ -161,7 +161,7 @@ fn player_install_failure_returns_plan_with_reason() {
     let poll = return_unadmitted_playlist_plan(failed, planned_admission());
 
     let PlaylistStrongMediaOpenPoll::TargetFailedBeforeAdmission(unstaged) = poll else {
-        panic!("план очереди должен вернуться владельцу");
+        panic!("The queue plan must return to the owner.");
     };
     assert_eq!(unstaged.install.item_id, expected_item_id);
     assert_eq!(

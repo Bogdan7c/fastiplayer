@@ -166,7 +166,7 @@ impl RedirectAuthorization {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RedirectHopLimitError {
     /// Hop limit превышает hard safety cap.
-    #[error("redirect hop limit превышает допустимый budget")]
+    #[error("redirect hop limit exceeds the permissible budget")]
     TooLarge,
 }
 
@@ -174,12 +174,12 @@ pub enum RedirectHopLimitError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RedirectPolicyError {
     /// Chain исчерпал разрешённое число переходов.
-    #[error("redirect chain превысил hop limit")]
+    #[error("redirect chain exceeded hop limit")]
     HopLimitExceeded,
     /// Policy запрещает смену security origin.
-    #[error("cross-origin redirect запрещён policy")]
+    #[error("cross-origin redirect is forbidden by policy")]
     CrossOriginRejected,
     /// Policy запрещает HTTPS → HTTP downgrade.
-    #[error("secure redirect downgrade запрещён policy")]
+    #[error("secure redirect downgrade is forbidden by policy")]
     SecureDowngradeRejected,
 }

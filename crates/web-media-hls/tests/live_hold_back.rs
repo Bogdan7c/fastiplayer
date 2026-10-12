@@ -130,6 +130,6 @@ fn live_open_joins_three_target_durations_before_the_edge() {
     let first_pts = first_packet.pts;
     assert!(
         first_pts >= Duration::from_secs(3) && first_pts < Duration::from_secs(4),
-        "первый пакет {first_pts:?} должен лежать в сегменте d.ts [3 с, 4 с)"
+        "the first packet {first_pts:?} must be in the segment d.ts [3 s, 4 s]"
     );
 }

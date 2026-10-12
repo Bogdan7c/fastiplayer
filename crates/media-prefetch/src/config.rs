@@ -120,16 +120,16 @@ impl Default for PrefetchConfig {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PrefetchConfigError {
     /// Нулевой initial chunk не даёт worker-у опубликовать первый байт после open/seek.
-    #[error("размер начального prefetch chunk должен быть больше нуля")]
+    #[error("The size of the initial prefetch chunk should be greater than zero.")]
     ZeroInitialChunk,
 
     /// Нулевой chunk не даёт prefetch-слою продвинуть source cursor.
-    #[error("размер prefetch chunk должен быть больше нуля")]
+    #[error("size prefetch chunk should be more than zero")]
     ZeroChunk,
 
     /// Начальный chunk не может быть больше потолка обычного chunk-а.
     #[error(
-        "размер начального prefetch chunk ({initial_chunk_bytes} bytes) больше размера chunk ({chunk_bytes} bytes)"
+        "The size of the initial prefetch chunk ({initial_chunk_bytes} bytes) is larger than the size of the chunk ({chunk_bytes} bytes)"
     )]
     InitialChunkLargerThanChunk {
         /// Запрошенный размер первого chunk-а.
@@ -140,16 +140,14 @@ pub enum PrefetchConfigError {
     },
 
     /// Chunk аллоцируется в памяти целиком, поэтому должен помещаться в `usize`.
-    #[error("размер prefetch chunk ({chunk_bytes} bytes) не помещается в адресное пространство")]
+    #[error("The prefetch chunk size ({chunk_bytes} bytes) does not fit into the address space.")]
     ChunkExceedsAddressSpace {
         /// Запрошенный размер chunk-а.
         chunk_bytes: u64,
     },
 
     /// Окно меньше чанка делает нормальное чтение одного чанка невозможным.
-    #[error(
-        "размер prefetch window ({window_bytes} bytes) меньше размера chunk ({chunk_bytes} bytes)"
-    )]
+    #[error("size prefetch window ({window_bytes} bytes) smaller chunk ({chunk_bytes} bytes)")]
     WindowSmallerThanChunk {
         /// Запрошенный размер chunk-а.
         chunk_bytes: u64,
@@ -175,14 +173,14 @@ mod tests {
     #[test]
     fn new_rejects_zero_initial_chunk() {
         let error =
-            PrefetchConfig::new(0, 1024, 2048).expect_err("zero initial chunk должен быть ошибкой");
+            PrefetchConfig::new(0, 1024, 2048).expect_err("zero initial chunk must be a mistake");
 
         assert_eq!(error, PrefetchConfigError::ZeroInitialChunk);
     }
 
     #[test]
     fn new_rejects_zero_chunk() {
-        let error = PrefetchConfig::new(1, 0, 1024).expect_err("zero chunk должен быть ошибкой");
+        let error = PrefetchConfig::new(1, 0, 1024).expect_err("zero chunk must be a mistake");
 
         assert_eq!(error, PrefetchConfigError::ZeroChunk);
     }
@@ -190,7 +188,7 @@ mod tests {
     #[test]
     fn new_rejects_initial_chunk_larger_than_chunk() {
         let error = PrefetchConfig::new(4096, 2048, 8192)
-            .expect_err("initial больше chunk должен быть ошибкой");
+            .expect_err("The initial chunk must be a mistake.");
 
         assert_eq!(
             error,
@@ -203,8 +201,8 @@ mod tests {
 
     #[test]
     fn new_rejects_window_smaller_than_chunk() {
-        let error = PrefetchConfig::new(1024, 4096, 2048)
-            .expect_err("window меньше chunk должен быть ошибкой");
+        let error =
+            PrefetchConfig::new(1024, 4096, 2048).expect_err("window less chunk must be a mistake");
 
         assert_eq!(
             error,
@@ -218,7 +216,7 @@ mod tests {
     #[test]
     fn new_accepts_valid_values() {
         let config = PrefetchConfig::new(1024, 4096, 8192)
-            .expect("валидный prefetch config должен создаваться");
+            .expect("A valid prefetch config must be created.");
 
         assert_eq!(config.initial_chunk_bytes(), 1024);
         assert_eq!(config.chunk_bytes(), 4096);

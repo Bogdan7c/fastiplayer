@@ -357,7 +357,7 @@ fn index_adjustment(bits_per_code: usize, magnitude: usize) -> i8 {
         3 => INDEX_3[magnitude],
         4 => INDEX_4[magnitude],
         5 => INDEX_5[magnitude],
-        _ => unreachable!("двухбитный prefix допускает только 2..=5 bits"),
+        _ => unreachable!("Two-bit prefix allows only 2..=5 bits"),
     }
 }
 

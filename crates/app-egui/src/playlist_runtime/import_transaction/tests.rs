@@ -205,7 +205,7 @@ fn append_import_publishes_committed_snapshot_to_persistence_owner() {
             .playlist_persistence_view()
             .latest_committed_revision
             .is_some(),
-        "импорт должен опубликовать snapshot очереди writer-у"
+        "Import should publish snapshot queue writers"
     );
 }
 
@@ -572,7 +572,7 @@ fn confirmed_import_failure_reaches_user_feedback_like_direct_continue() {
     let feedback = runtime
         .ui_interaction
         .safe_feedback()
-        .expect("отказ импорта после подтверждения виден пользователю");
+        .expect("Import refusal after confirmation is visible to the user");
     assert_eq!(
         Some(feedback.message.as_ref()),
         PlaylistImportContinueOutcome::Stale.failure_feedback()

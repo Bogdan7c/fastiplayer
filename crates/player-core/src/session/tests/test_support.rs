@@ -440,11 +440,11 @@ impl ScriptedAudioClock {
         *self
             .now
             .lock()
-            .expect("fake clock mutex не должен ломаться") = audible_output_position;
+            .expect("The fake clock mutex should not break.") = audible_output_position;
         *self
             .submitted_output_end_position
             .lock()
-            .expect("fake submitted position mutex не должен ломаться") =
+            .expect("Fake submitted position mutex must not be broken") =
             submitted_output_end_position;
     }
 
@@ -454,7 +454,7 @@ impl ScriptedAudioClock {
         *self
             .frozen_output_timing
             .lock()
-            .expect("fake frozen timing mutex не должен ломаться") = Some(output_timing);
+            .expect("Fake frozen timing mutex should not break") = Some(output_timing);
         output_timing
     }
 
@@ -463,7 +463,7 @@ impl ScriptedAudioClock {
         let frozen_output_timing = self
             .frozen_output_timing
             .lock()
-            .expect("fake frozen timing mutex не должен ломаться")
+            .expect("Fake frozen timing mutex should not break")
             .take();
         if let Some(output_timing) = frozen_output_timing {
             self.set_output_timing(
@@ -478,11 +478,11 @@ impl ScriptedAudioClock {
         let audible_output_position = *self
             .now
             .lock()
-            .expect("fake clock mutex не должен ломаться");
+            .expect("The fake clock mutex should not break.");
         let submitted_output_end_position = *self
             .submitted_output_end_position
             .lock()
-            .expect("fake submitted position mutex не должен ломаться");
+            .expect("Fake submitted position mutex must not be broken");
         AudioOutputClockTiming::new(audible_output_position, submitted_output_end_position)
     }
 
@@ -505,7 +505,7 @@ impl PlayerAudioClock for ScriptedAudioClock {
         if let Some(output_timing) = *self
             .frozen_output_timing
             .lock()
-            .expect("fake frozen timing mutex не должен ломаться")
+            .expect("Fake frozen timing mutex should not break")
         {
             return output_timing;
         }
@@ -518,15 +518,15 @@ impl PlayerAudioClock for ScriptedAudioClock {
         *self
             .now
             .lock()
-            .expect("fake clock mutex не должен ломаться") = Duration::ZERO;
+            .expect("The fake clock mutex should not break.") = Duration::ZERO;
         *self
             .submitted_output_end_position
             .lock()
-            .expect("fake submitted position mutex не должен ломаться") = Duration::ZERO;
+            .expect("Fake submitted position mutex must not be broken") = Duration::ZERO;
         let mut frozen_output_timing = self
             .frozen_output_timing
             .lock()
-            .expect("fake frozen timing mutex не должен ломаться");
+            .expect("Fake frozen timing mutex should not break");
         if frozen_output_timing.is_some() {
             *frozen_output_timing =
                 Some(AudioOutputClockTiming::new(Duration::ZERO, Duration::ZERO));
@@ -599,7 +599,7 @@ impl ScriptedAudioOutputHandle {
     pub(super) fn last_applied_volume(&self) -> Option<f32> {
         self.applied_volumes
             .lock()
-            .expect("volume mutex не должен ломаться")
+            .expect("Volume mutex should not be broken.")
             .last()
             .copied()
     }
@@ -827,7 +827,7 @@ impl PlayerAudioOutput for ScriptedAudioOutput {
         self.handle
             .applied_volumes
             .lock()
-            .expect("volume mutex не должен ломаться")
+            .expect("Volume mutex should not be broken.")
             .push(volume);
     }
 
@@ -907,7 +907,7 @@ impl ScriptedAudioOutputFactoryHandle {
     pub(super) fn created_specs(&self) -> Vec<AudioOutputSpec> {
         self.created_specs
             .lock()
-            .expect("factory specs mutex не должен ломаться")
+            .expect("Factory specs mutex should not break down.")
             .clone()
     }
 
@@ -915,7 +915,7 @@ impl ScriptedAudioOutputFactoryHandle {
     pub(super) fn device_requests(&self) -> Vec<AudioOutputDeviceRequest> {
         self.device_requests
             .lock()
-            .expect("factory requests mutex не должен ломаться")
+            .expect("Factory requests mutex should not be broken")
             .clone()
     }
 
@@ -924,14 +924,14 @@ impl ScriptedAudioOutputFactoryHandle {
         *self
             .devices
             .lock()
-            .expect("factory devices mutex не должен ломаться") = devices;
+            .expect("Factory devices mutex should not break down.") = devices;
     }
 
     /// Возвращает handle последнего output-а, если factory создала output.
     pub(super) fn last_output_handle(&self) -> Option<ScriptedAudioOutputHandle> {
         self.last_output_handle
             .lock()
-            .expect("factory output mutex не должен ломаться")
+            .expect("Factory output mutex should not break down.")
             .clone()
     }
 }
@@ -994,12 +994,12 @@ impl AudioOutputFactory for ScriptedAudioOutputFactory {
         self.handle
             .created_specs
             .lock()
-            .expect("factory specs mutex не должен ломаться")
+            .expect("Factory specs mutex should not break down.")
             .push(spec);
         self.handle
             .device_requests
             .lock()
-            .expect("factory requests mutex не должен ломаться")
+            .expect("Factory requests mutex should not be broken")
             .push(device_request);
 
         if let Some(error) = self.creation_error {
@@ -1010,7 +1010,7 @@ impl AudioOutputFactory for ScriptedAudioOutputFactory {
             .handle
             .devices
             .lock()
-            .expect("factory devices mutex не должен ломаться");
+            .expect("Factory devices mutex should not break down.");
         let route = scripted_device_route(devices, device_request)?;
 
         let output = ScriptedAudioOutput::new(self.buffer_level_ms, self.play_error)
@@ -1020,7 +1020,7 @@ impl AudioOutputFactory for ScriptedAudioOutputFactory {
             .handle
             .last_output_handle
             .lock()
-            .expect("factory output mutex не должен ломаться") = Some(output_handle);
+            .expect("Factory output mutex should not break down.") = Some(output_handle);
 
         Ok(CreatedAudioOutput::new(output, route))
     }
@@ -1791,8 +1791,8 @@ pub(super) fn install_fake_media_with_seekability(
         .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
     if tracks.iter().any(|track| track.kind == TrackKind::Video) {
         session
-            .select_default_video_track(&tracks, "fake media не содержит video track")
-            .expect("fake video track должен получить fresh decode requirement");
+            .select_default_video_track(&tracks, "fake media lacking video track")
+            .expect("Fake Video Track: Fresh Decode Requirement");
     }
     if let Some(audio_track_id) = tracks
         .iter()
@@ -1823,8 +1823,8 @@ pub(super) fn install_fake_media_with_seek_request_log(
         .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
     if tracks.iter().any(|track| track.kind == TrackKind::Video) {
         session
-            .select_default_video_track(&tracks, "fake media не содержит video track")
-            .expect("fake video track должен получить fresh decode requirement");
+            .select_default_video_track(&tracks, "fake media lacking video track")
+            .expect("Fake Video Track: Fresh Decode Requirement");
     }
     if let Some(audio_track_id) = tracks
         .iter()
@@ -1997,7 +1997,7 @@ impl SeekRegressionHarness {
         let seek_request_log = demuxer
             .seek_request_log
             .as_ref()
-            .expect("seek regression demuxer должен писать full request log")
+            .expect("Seek regression demuxer should write full request log")
             .clone();
 
         session
@@ -2005,11 +2005,8 @@ impl SeekRegressionHarness {
             .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
         if tracks.iter().any(|track| track.kind == TrackKind::Video) {
             session
-                .select_default_video_track(
-                    &tracks,
-                    "seek regression media не содержит video track",
-                )
-                .expect("seek regression video track должен получить fresh decode requirement");
+                .select_default_video_track(&tracks, "seek regression media lacking video track")
+                .expect("Seek regression video track to get fresh decode requirement");
             session.pipeline.set_video_decoder_thread(decoder.clone());
         }
         if let Some(audio_track_id) = tracks
@@ -2054,7 +2051,7 @@ impl SeekRegressionHarness {
     pub(super) fn start_final_seek(&mut self, target: MediaTime) {
         self.session
             .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(target)))
-            .expect("final seek command должен пройти session boundary");
+            .expect("The final seek command must pass through the boundary session.");
     }
 
     /// Публикует decoded frame текущего packet generation и optionally закрывает in-flight packet.
@@ -2075,7 +2072,7 @@ impl SeekRegressionHarness {
         let seek_commit = self
             .session
             .seek_commit()
-            .expect("regression scenario должен иметь active seek commit");
+            .expect("The regression scenario must be an active seek commit");
         assert_eq!(
             seek_commit.generation,
             self.session.pipeline.seek_generation()

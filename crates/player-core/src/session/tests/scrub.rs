@@ -161,7 +161,7 @@ fn scrub_dispatch_tracing_pairs_exact_monotonic_ids_without_consuming_non_scrub_
     assert_eq!(
         scrub_rows.len(),
         12,
-        "шесть real scrub commands обязаны дать две INFO forms под default filter: {trace}"
+        "Six real scrub commands must give two INFO forms under default filter: {trace}"
     );
 
     for command_id in 1..=6 {
@@ -174,7 +174,7 @@ fn scrub_dispatch_tracing_pairs_exact_monotonic_ids_without_consuming_non_scrub_
         assert_eq!(
             identity_rows.len(),
             2,
-            "каждый ID обязан встретиться ровно в двух forms: {trace}"
+            "Each ID must meet in exactly two forms: {trace}"
         );
         assert!(identity_rows.iter().any(|line| {
             line.contains("level=INFO") && line.contains("scrub_command_form=dispatch")
@@ -196,7 +196,7 @@ fn scrub_dispatch_tracing_pairs_exact_monotonic_ids_without_consuming_non_scrub_
         .count();
     assert_eq!(
         identical_preview_rows, 4,
-        "две одинаковые preview commands обязаны сохранить два разных exact ID"
+        "Two identical preview commands must keep two different exact IDs."
     );
     assert_eq!(
         scrub_rows
@@ -208,11 +208,11 @@ fn scrub_dispatch_tracing_pairs_exact_monotonic_ids_without_consuming_non_scrub_
             })
             .count(),
         2,
-        "relative target identity должна совпадать в двух INFO forms"
+        "relative target identity must coincide INFO forms"
     );
     assert!(
         trace.lines().all(|line| !line.contains("level=DEBUG")),
-        "INFO subscriber не должен захватывать full DEBUG command: {trace}"
+        "INFO subscriber must not capture full DEBUG command: {trace}"
     );
 }
 
@@ -229,7 +229,7 @@ fn inactive_end_scrub_public_dispatch_emits_exact_info_pair_and_outcome() {
         .dispatch_command(PlayerCommand::end_scrub(
             ScrubCommitPolicy::CommitLatestTarget,
         ))
-        .expect("inactive EndScrub должен вернуть typed public outcome");
+        .expect("Inactive EndScrub will return typed public outcome");
 
     assert_eq!(
         outcome,
@@ -266,12 +266,12 @@ fn failed_scrub_public_dispatch_emits_pairs_without_reusing_command_id() {
     let mut session = PlayerSession::new();
     session
         .dispatch_command(PlayerCommand::Shutdown)
-        .expect("fixture shutdown должен примениться");
+        .expect("Fixture shutdown should be applied");
 
     for _attempt in 0..2 {
         let error = session
             .dispatch_command(PlayerCommand::begin_scrub())
-            .expect_err("scrub command после shutdown должна вернуть typed error");
+            .expect_err("scrub command afterward shutdown return typed error");
         assert_eq!(error.kind, PlayerErrorKind::InvalidCommand);
     }
 
@@ -283,7 +283,7 @@ fn failed_scrub_public_dispatch_emits_pairs_without_reusing_command_id() {
     assert_eq!(
         correlation_rows.len(),
         4,
-        "две failed commands обязаны сохранить две exact INFO pairs: {trace}"
+        "two-way failed commands We must keep two exact INFO pairs: {trace}"
     );
     for command_id in 1..=2 {
         let identity = format!("scrub_command_id={command_id}");
@@ -654,7 +654,7 @@ fn default_release_after_update_commits_latest_target_without_visible_preview() 
     assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
     let seek_commit = session
         .seek_commit()
-        .expect("EndScrub должен открыть one-shot SeekLanding fallback");
+        .expect("EndScrub to open one-shot SeekLanding Fallback");
     assert_eq!(seek_commit.target_position, MediaTime::from_secs(7));
     assert!(session.should_drop_decoded_frame_for_seek(Duration::from_millis(6_900)));
     assert!(session.snapshot().timeline.scrubbing);
@@ -898,7 +898,7 @@ fn end_scrub_missing_visible_preview_falls_back_without_second_demux_seek() {
     assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
     let seek_commit = session
         .seek_commit()
-        .expect("live preview target должен остаться active commit до gates");
+        .expect("live preview target must remain active commit to gates");
     assert_eq!(seek_commit.target_position, MediaTime::from_secs(9));
     let events = session.take_events();
     assert!(
@@ -997,7 +997,7 @@ fn simple_scrub_reports_policy_specific_resolution() {
         assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
         let seek_commit = session
             .seek_commit()
-            .expect("policy resolution должен открыть exact final seek");
+            .expect("The policy resolution opens the exact final seek");
         assert_eq!(seek_commit.target_position, MediaTime::from_secs(6));
         let _events = session.take_events();
     }
@@ -1232,7 +1232,7 @@ fn commit_visible_preview_and_latest_target_produce_different_exact_targets() {
     let visible_identity = visible_harness
         .session
         .current_present_frame_identity()
-        .expect("scheduler уже показал stable live-scrub frame");
+        .expect("The scheduler has already shown a stable live-scrub frame.");
     let visible_outcome = visible_harness
         .session
         .dispatch_command(PlayerCommand::end_scrub(
@@ -1252,7 +1252,7 @@ fn commit_visible_preview_and_latest_target_produce_different_exact_targets() {
         visible_harness
             .session
             .seek_commit()
-            .expect("visible preview должен открыть exact SeekLanding")
+            .expect("Visible preview should open exact SeekLanding")
             .target_position,
         MediaTime::from_millis(7_900)
     );
@@ -1281,7 +1281,7 @@ fn commit_visible_preview_and_latest_target_produce_different_exact_targets() {
         latest_harness
             .session
             .seek_commit()
-            .expect("latest policy должен открыть exact SeekLanding")
+            .expect("The latest policy should open exact SeekLanding")
             .target_position,
         latest_target
     );
@@ -1396,7 +1396,7 @@ fn stale_visible_preview_generation_falls_back_to_latest_target() {
         harness
             .session
             .seek_commit()
-            .expect("stale preview fallback должен сохранить active exact latest route")
+            .expect("The stale preview fallback is an active exact latest route.")
             .target_position,
         latest_target
     );
@@ -1421,16 +1421,16 @@ fn visible_preview_rejects_source_backend_and_track_switches() {
         let seek_commit = harness
             .session
             .seek_commit()
-            .expect("live scrub должен держать active commit");
+            .expect("Live Scrub should be able to keep active commit");
         let current_context = harness
             .session
             .active_seek_landing_context(seek_commit)
-            .expect("live scrub должен иметь active context");
+            .expect("Live Scrub must have an active context.");
         let visible_preview = harness
             .session
             .seek_runtime
             .visible_scrub_preview()
-            .expect("scheduler должен сохранить visible preview");
+            .expect("The scheduler should keep the visible preview");
 
         let (source_revision, backend_revision, track_selection) = match mutation {
             GuardMutation::Source => (
@@ -1476,7 +1476,7 @@ fn visible_preview_rejects_source_backend_and_track_switches() {
             ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget { target, reason },
         ) = outcome
         else {
-            panic!("{mutation:?} должен вернуть typed latest-target fallback: {outcome:?}");
+            panic!("{mutation:?} returns typed latest-target fallback: {outcome:?}");
         };
         assert_eq!(target, MediaTime::from_secs(8));
         match mutation {
@@ -1501,7 +1501,7 @@ fn visible_preview_rejects_source_backend_and_track_switches() {
             harness
                 .session
                 .seek_commit()
-                .expect("guard fallback должен сохранить exact latest route")
+                .expect("Guard Fallback: The exact latest route")
                 .target_position,
             MediaTime::from_secs(8)
         );

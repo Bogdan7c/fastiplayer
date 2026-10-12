@@ -382,12 +382,12 @@ fn letterbox_wide_video_uses_viewport_size_for_top_bottom_bars() {
     // Масштаб > 1 и отрицательное смещение => шейдер уводит края за [0, 1] и красит чёрным.
     assert!(
         uv_scale[1] > 1.0,
-        "ожидали scale_y > 1, получили {}",
+        "expected scale_y > 1, received {}",
         uv_scale[1]
     );
     assert!(
         uv_offset[1] < 0.0,
-        "ожидали offset_y < 0, получили {}",
+        "Expected offset_y < 0, received {}",
         uv_offset[1]
     );
     // Видимая по вертикали доля = viewport_aspect / video_aspect = 1.0 / 1.778.
@@ -407,12 +407,12 @@ fn letterbox_portrait_video_uses_wide_viewport_size_for_left_right_bars() {
     assert_eq!(uv_offset[1], 0.0);
     assert!(
         uv_scale[0] > 1.0,
-        "ожидали scale_x > 1, получили {}",
+        "expected scale_x > 1, received {}",
         uv_scale[0]
     );
     assert!(
         uv_offset[0] < 0.0,
-        "ожидали offset_x < 0, получили {}",
+        "Expected offset_x < 0, received {}",
         uv_offset[0]
     );
     let video_aspect = 1080.0_f32 / 1920.0;

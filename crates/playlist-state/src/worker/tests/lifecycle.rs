@@ -7,31 +7,31 @@ fn public_debounce_reschedule_starts_exact_dirty_snapshot_before_old_deadline() 
     let writer = Arc::new(BlockingWriter::new());
     let wake_port = Arc::new(CountingWakePort::default());
     let worker = SaveWorker::start_with_dependencies(
-        SaveDebounce::new(SaveDebounce::MAXIMUM).expect("maximum debounce валиден"),
+        SaveDebounce::new(SaveDebounce::MAXIMUM).expect("maximum debounce validated"),
         wake_port.clone(),
         writer.clone(),
     )
-    .expect("real save worker должен запуститься");
+    .expect("The real save worker should start.");
     let submitted_revision = revision(7);
     let submitted_snapshot = captured_snapshot(submitted_revision, 2);
     let expected_json: serde_json::Value = serde_json::from_slice(
         &submitted_snapshot
             .serialize_json()
-            .expect("expected snapshot сериализуется"),
+            .expect("Expected snapshot serialized"),
     )
-    .expect("expected snapshot является JSON");
+    .expect("The expected snapshot is JSON.");
 
     assert_eq!(
         worker
             .submit_snapshot(submitted_snapshot)
-            .expect("dirty snapshot принимается"),
+            .expect("dirty snapshot accepted."),
         SubmitSnapshotOutcome::Accepted
     );
     worker
         .reschedule_debounce(
-            SaveDebounce::new(SaveDebounce::MINIMUM).expect("minimum debounce валиден"),
+            SaveDebounce::new(SaveDebounce::MINIMUM).expect("minimum debounce valid"),
         )
-        .expect("public debounce reschedule принимается");
+        .expect("public debounce reschedule accepted");
 
     // Condvar ограничивает ожидание двумя секундами: старый 30 s deadline сюда не подходит.
     writer.wait_until_entered(1);
@@ -70,8 +70,8 @@ fn public_shutdown_reports_command_admission_timeout_while_queue_is_full() {
     let worker = started_test_worker(writer.clone(), wake_port);
     worker
         .submit_snapshot(captured_snapshot(revision(1), 1))
-        .expect("revision 1 принимается");
-    worker.retry_now().expect("write запускается немедленно");
+        .expect("revision 1 adopted");
+    worker.retry_now().expect("Write starts immediately.");
     writer.wait_until_entered(1);
 
     // Заблокированный writer не позволяет receiver-у освободить ни один command slot.
@@ -93,7 +93,7 @@ fn public_shutdown_reports_command_admission_timeout_while_queue_is_full() {
     );
     let backpressured_snapshot = match backpressured_admission {
         Err(SubmitSnapshotError::Backpressure(snapshot)) => snapshot,
-        other => panic!("ожидался typed backpressure, получено {other:?}"),
+        other => panic!("Typed backpressure received {other:?}"),
     };
     assert_eq!(backpressured_snapshot.revision(), revision(10));
     assert_eq!(

@@ -15,11 +15,11 @@ fn pre_submit_full_reclaim_queue_backpressures_before_packet_submit() {
         &mut frame_pool,
         reclaim_capacity_for_tests(1),
     )
-    .expect("pre-submit reclaim должен оставить busy handle queued");
+    .expect("pre-submit reclaim should leave busy handle queued");
 
     assert!(
         !sync_called.get(),
-        "pre-submit full check не должен делать forced sync"
+        "pre-submit full check don't forced sync"
     );
     assert_eq!(report.current_depth, 1);
     assert_eq!(report.max_suppressed_reclaim_frames, 1);
@@ -29,15 +29,15 @@ fn pre_submit_full_reclaim_queue_backpressures_before_packet_submit() {
             report.current_depth,
             report.max_suppressed_reclaim_frames,
         ),
-        "full queue после cheap reclaim должна дать OutputBackpressured до adapter submit"
+        "full queue afterward cheap reclaim give up OutputBackpressured before adapter submit"
     );
     assert!(
         !is_suppressed_reclaim_queue_full(1, 2),
-        "queue с запасом не должна блокировать submit"
+        "queue stockpile-free submit"
     );
     assert!(
         is_suppressed_reclaim_queue_full(1, 0),
-        "нулевой bound нормализуется до 1 и не создаёт unbounded queue"
+        "Zero bound normalizes to 1 and does not create unbounded queue."
     );
 }
 
@@ -56,7 +56,7 @@ fn pre_submit_reclaim_that_frees_ready_handles_allows_packet_submit() {
         &mut frame_pool,
         reclaim_capacity_for_tests(1),
     )
-    .expect("pre-submit reclaim должен освободить ready handle");
+    .expect("pre-submit reclaim free ready handle");
 
     assert_eq!(report.current_depth, 0);
     assert_eq!(report.max_suppressed_reclaim_frames, 1);
@@ -66,11 +66,11 @@ fn pre_submit_reclaim_that_frees_ready_handles_allows_packet_submit() {
             report.current_depth,
             report.max_suppressed_reclaim_frames,
         ),
-        "после reclaim submit снова разрешён"
+        "after reclaim submit is allowed again"
     );
     assert!(
         !sync_called.get(),
-        "pre-submit reclaim остаётся non-blocking"
+        "pre-submit reclaim remains non-blocking"
     );
 }
 
@@ -96,17 +96,17 @@ fn ready_suppressed_handle_reclaimed_by_nonblocking_pass() {
         &mut frame_pool,
         reclaim_capacity_for_tests(4),
     )
-    .expect("ready reclaim pass должен пройти");
+    .expect("ready reclaim pass must pass");
 
     assert_eq!(suppressed_reclaim_queue.len(), 0);
     assert_eq!(
         frame_pool.num_free(),
         initial_free_frames + 1,
-        "ready handle должен вернуться в frame pool"
+        "ready handle should be back frame pool"
     );
     assert!(
         !sync_called.get(),
-        "non-blocking reclaim pass не должен вызывать sync"
+        "non-blocking reclaim pass should not cause sync"
     );
     assert_eq!(report.current_depth, 0);
     assert_eq!(report.reclaimed_this_pass, 1);
@@ -129,14 +129,11 @@ fn not_ready_suppressed_handle_stays_queued() {
         &mut frame_pool,
         reclaim_capacity_for_tests(4),
     )
-    .expect("busy reclaim pass должен пройти без blocking sync");
+    .expect("The busy reclaim pass will pass without blocking sync.");
 
     assert_eq!(suppressed_reclaim_queue.len(), 1);
     assert_eq!(frame_pool.num_free(), initial_free_frames);
-    assert!(
-        !sync_called.get(),
-        "busy reclaim pass не должен вызывать sync"
-    );
+    assert!(!sync_called.get(), "busy reclaim pass does not cause sync");
     assert_eq!(report.current_depth, 1);
     assert_eq!(report.reclaimed_this_pass, 0);
     assert_eq!(suppressed_reclaim_counters.total_reclaimed, 0);
@@ -159,14 +156,11 @@ fn query_error_keeps_suppressed_handle_queued() {
         &mut frame_pool,
         reclaim_capacity_for_tests(4),
     )
-    .expect("query error должен остаться счетчиком, а не Result error");
+    .expect("query error must remain the meter, not Result error");
 
     assert_eq!(suppressed_reclaim_queue.len(), 1);
     assert_eq!(frame_pool.num_free(), initial_free_frames);
-    assert!(
-        !sync_called.get(),
-        "query error path не должен делать blocking sync"
-    );
+    assert!(!sync_called.get(), "query error path don't blocking sync");
     assert_eq!(report.current_depth, 1);
     assert_eq!(report.query_errors_this_pass, 1);
     assert_eq!(suppressed_reclaim_counters.query_errors, 1);
@@ -206,7 +200,7 @@ fn suppressed_reclaim_queue_respects_bound() {
                 generation,
             },
         )
-        .expect("bounded enqueue должен пройти");
+        .expect("bounded enqueue must pass through");
     }
 
     assert_eq!(suppressed_reclaim_queue.len(), 2);
@@ -223,7 +217,7 @@ fn surface_lifecycle_sync_error_is_fatal_decoder_error() {
 
     assert!(
         is_fatal_decoder_error(&error),
-        "surface lifecycle errors нельзя продолжать как non-fatal decode warning"
+        "surface lifecycle errors can't go on non-fatal decode warning"
     );
 }
 
@@ -247,7 +241,7 @@ fn flush_force_drain_leaves_suppressed_reclaim_queue_empty() {
         "flush",
         reclaim_capacity_for_tests(4),
     )
-    .expect("flush force-drain должен очистить queue");
+    .expect("flush force-drain must be cleaned queue");
 
     assert!(suppressed_reclaim_queue.is_empty());
     assert!(first_sync_called.get());

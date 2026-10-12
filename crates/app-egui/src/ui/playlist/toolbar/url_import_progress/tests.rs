@@ -88,8 +88,8 @@ fn indicator_names_domain_and_cancel_click_publishes_cancel_action() {
         first_frame
             .painted_texts
             .iter()
-            .any(|text| text == "Получаем данные по ссылке (youtube.com)…"),
-        "индикатор показывает домен: {:?}",
+            .any(|text| text == "Fetching URL information (youtube.com)…"),
+        "The indicator shows the domain: {:?}",
         first_frame.painted_texts
     );
     // Сам по себе индикатор ничего не отменяет.
@@ -97,7 +97,7 @@ fn indicator_names_domain_and_cancel_click_publishes_cancel_action() {
 
     let button_center = first_frame
         .cancel_button_rect
-        .expect("кнопка «Отменить» есть в дереве доступности")
+        .expect("The \"Cancel\" button is in the accessibility tree")
         .center();
     let _hover = render(
         &context,
@@ -129,7 +129,7 @@ fn indicator_without_domain_does_not_invent_one() {
         frame
             .painted_texts
             .iter()
-            .any(|text| text == "Получаем данные по ссылке…"),
+            .any(|text| text == "Fetching URL information…"),
         "{:?}",
         frame.painted_texts
     );

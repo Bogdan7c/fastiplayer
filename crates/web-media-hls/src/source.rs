@@ -121,7 +121,7 @@ impl SharedHlsResourceAttemptFailure {
                     HlsTransientBodyFailureCategory::UnexpectedEof,
                 )
             }
-            value => unreachable!("недопустимая HLS resource attempt failure category: {value}"),
+            value => unreachable!("HLS resource attempt failure category: {value}"),
         }
     }
 }

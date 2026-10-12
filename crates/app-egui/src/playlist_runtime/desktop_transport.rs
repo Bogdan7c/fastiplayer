@@ -128,10 +128,10 @@ impl DesktopTransportOwner {
         match DesktopIntegration::spawn(self.command_sink.clone(), self.last_snapshot.clone()) {
             Ok(integration) => self.integration = Some(integration),
             Err(DesktopIntegrationError::MprisBusNameUnavailable) => {
-                warn!("MPRIS base bus уже занят; backend отключён без fallback/retry")
+                warn!("MPRIS base bus is already busy; backend is disabled without fallback/retry")
             }
             Err(error) => {
-                warn!(error = %error, "MPRIS backend отключён; playback/UI продолжают работу")
+                warn!(error = %error, "MPRIS backend is disabled; playback/UI continues to work")
             }
         }
     }
@@ -309,7 +309,7 @@ impl DesktopTransportOwner {
         self.last_snapshot = view.clone();
         if let Some(integration) = &self.integration {
             if let Err(error) = integration.publish_snapshot(view) {
-                warn!(error = %error, "Не удалось опубликовать committed desktop snapshot");
+                warn!(error = %error, "Unable to publish committed desktop snapshot");
             }
             for event in integration.drain_events() {
                 debug!(?event, "Desktop integration event");

@@ -381,7 +381,7 @@ mod tests {
                 " \thttps://media.example.test/video2.mp4\r\n",
                 &fastiplayer_config::YtDlpConfig::default(),
             )
-            .expect("пробелы вокруг ссылки не должны ломать добавление");
+            .expect("spaces around the link should not break the addendum");
         assert_eq!(outcome, UrlAppendActionOutcome::Appended { item_count: 1 });
         assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);
     }
@@ -395,14 +395,15 @@ mod tests {
         let config = fastiplayer_config::YtDlpConfig::default();
         let ftp = runtime
             .append_playlist_url("ftp://media.example.test/clip.mp4", &config)
-            .expect("ftp direct media поддерживается");
+            .expect("ftp direct media is supported");
         assert_eq!(ftp, UrlAppendActionOutcome::Appended { item_count: 1 });
 
         let rtmp = runtime.append_playlist_url("rtmp://media.example.test/live", &config);
         assert_eq!(
             rtmp,
             Err(UrlAppendValidationError::Unsupported {
-                safe_error: "Ссылки `rtmp` исключены из поддерживаемых в этой версии".to_owned()
+                safe_error: "'rtmp' links are excluded from those supported in this version"
+                    .to_owned()
             })
         );
         assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);

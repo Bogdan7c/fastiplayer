@@ -145,7 +145,7 @@ fn respond_byte_range(stream: &mut TcpStream, body: &[u8], request: &str) {
     let Some((range_start, requested_end)) = request.lines().find_map(parse_range_header) else {
         return;
     };
-    assert!(range_start < body.len(), "S28C range start вне fixture");
+    assert!(range_start < body.len(), "S28C range start outside fixture");
     let range_end = requested_end.min(body.len() - 1);
     let response_body = &body[range_start..=range_end];
     let headers = format!(
@@ -239,10 +239,10 @@ fn open_fixture(
             DemuxInput::streaming_source(source, cancellation.clone())
         }
         (OriginMode::ByteRanges, TransportInput::Streaming(_)) => {
-            panic!("S28C Range origin должен дать seekable input")
+            panic!("S28C Range origin must provide seekable input")
         }
         (OriginMode::FullBody, TransportInput::Seekable(_)) => {
-            panic!("S28C full-body origin должен дать streaming input")
+            panic!("S28C full-body origin must provide streaming input")
         }
     };
     let mut demux_registry = DemuxRegistry::new();
@@ -306,7 +306,7 @@ fn next_packet(demuxer: &mut dyn Demuxer, progressive: bool) -> Packet {
         match event {
             DemuxReadEvent::Packet(packet) => return packet,
             DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
-            DemuxReadEvent::EndOfStream => panic!("S28C HTTP fixture должен содержать packet"),
+            DemuxReadEvent::EndOfStream => panic!("S28C HTTP fixture includes packet"),
             DemuxReadEvent::TemporarilyUnavailable(_) => panic!("S28C readiness deadline"),
         }
     }
@@ -395,7 +395,7 @@ fn non_range_audio_containers_reject_seek_then_continue_progressive_playback() {
         let seek_error = opened
             .demuxer
             .seek_with_request(DemuxSeekRequest::accurate(Duration::ZERO))
-            .expect_err("S28C non-Range seek должен fail-нуться");
+            .expect_err("S28C non-Range seek must fail");
         assert!(matches!(
             seek_error.downcast_ref::<MediaDemuxError>(),
             Some(MediaDemuxError::SeekUnavailable { .. })

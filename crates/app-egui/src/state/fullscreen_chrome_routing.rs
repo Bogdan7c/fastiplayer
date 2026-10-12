@@ -56,7 +56,7 @@ impl AppState {
         let monitor = window.current_monitor();
         if monitor.is_none() {
             warn!(
-                "Текущий монитор окна неизвестен; фуллскрин запрошен на мониторе по выбору системы"
+                "Current window monitor unknown; full screen requested on monitor at system choice"
             );
         }
         window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));

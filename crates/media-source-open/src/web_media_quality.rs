@@ -31,7 +31,7 @@ pub fn preferred_height_policy(
             )]
             let startup_height =
                 WebPreferredVideoHeight::new(AUTOMATIC_STARTUP_VIDEO_HEIGHT_PIXELS)
-                    .expect("automatic startup height входит в neutral bounds");
+                    .expect("Automatic startup height is included in neutral bounds.");
             PreferredHeightPolicy::Prefer(startup_height)
         }
         Some(preferred_height) => {
@@ -40,7 +40,7 @@ pub fn preferred_height_policy(
                 reason = "инвариант: compile-time synchronized bounds гарантируют infallible mapping"
             )]
             let neutral_height = WebPreferredVideoHeight::new(preferred_height.pixels())
-                .expect("compile-time synchronized bounds гарантируют infallible mapping");
+                .expect("Compile-time synchronized bounds guarantee infallible mapping");
             PreferredHeightPolicy::Prefer(neutral_height)
         }
     }
@@ -53,7 +53,7 @@ mod tests {
     #[test]
     fn none_uses_latency_first_automatic_startup_height() {
         let PreferredHeightPolicy::Prefer(startup_height) = preferred_height_policy(None) else {
-            panic!("automatic mode должен иметь bounded startup ступень");
+            panic!("Automatic mode must have a bounded startup stage.");
         };
         assert_eq!(
             startup_height.height().pixels(),
@@ -63,11 +63,11 @@ mod tests {
 
     #[test]
     fn validated_config_height_maps_to_same_neutral_pixels() {
-        let config_height = ConfigPreferredVideoHeight::new(2160).expect("2160 валидно");
+        let config_height = ConfigPreferredVideoHeight::new(2160).expect("2160 valid.");
         let PreferredHeightPolicy::Prefer(neutral_height) =
             preferred_height_policy(Some(config_height))
         else {
-            panic!("configured height должна включить preferred-height policy");
+            panic!("Configured height should include preferred-height policy");
         };
         assert_eq!(neutral_height.height().pixels(), 2160);
     }

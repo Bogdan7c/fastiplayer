@@ -82,7 +82,7 @@ impl StagedVideoProbeBudget {
             return Err(PlayerError::new(
                 PlayerErrorKind::DemuxError,
                 format!(
-                    "Video preflight превысил безопасный replay budget: {} events, {} bytes",
+                    "Video preflight exceeded safe replay budget: {} events, {} bytes",
                     self.observed_events, self.observed_encoded_bytes
                 ),
             ));
@@ -183,7 +183,7 @@ impl StagedVideoPacketProbeReader {
         let codec = VideoCodec::from_container_codec_id(&track.codec_id).ok_or_else(|| {
             PlayerError::new(
                 PlayerErrorKind::UnsupportedVideoCodec,
-                format!("Неизвестный video codec `{}`", track.codec_id),
+                format!("Unknown video codec '{}'", track.codec_id),
             )
         })?;
         while let Some(packet_bytes) = self
@@ -208,7 +208,7 @@ impl StagedVideoPacketProbeReader {
                 .map_err(|error| {
                     PlayerError::new(
                         PlayerErrorKind::DemuxError,
-                        format!("Не удалось прочитать video header candidate-а: {error}"),
+                        format!("Could not read the candidate video header: {error}"),
                     )
                 })?;
             if !matches!(event, DemuxReadEvent::TemporarilyUnavailable(_)) {
@@ -239,7 +239,7 @@ impl StagedVideoPacketProbeReader {
                 DemuxReadEvent::TracksChanged(_) => {
                     return Err(PlayerError::new(
                         PlayerErrorKind::DemuxError,
-                        "Список tracks изменился во время staged video preflight",
+                        "The tracks list changed during staged video preflight",
                     ));
                 }
                 DemuxReadEvent::EndOfStream => {
@@ -250,12 +250,12 @@ impl StagedVideoPacketProbeReader {
 
         let uncertainty_suffix = last_uncertainty
             .as_ref()
-            .map(|uncertainty| format!(" Последний codec probe: {uncertainty:?}."))
+            .map(|uncertainty| format!(" Last codec probe: {uncertainty:?}."))
             .unwrap_or_default();
         Err(PlayerError::new(
             PlayerErrorKind::UnsupportedVideoCodec,
             format!(
-                "До конца stream-а не найден header с точным форматом {}.{uncertainty_suffix}",
+                "Until the end of the stream-and not found header with the exact format {}.{uncertainty_suffix}",
                 codec.display_name()
             ),
         ))
@@ -285,7 +285,7 @@ fn select_staged_video_output(
             PlayerError::new(
                 PlayerErrorKind::RequiredVideoBackendUnavailable,
                 format!(
-                    "Backend `{required_backend_id}` не имеет playable output для candidate video stream"
+                    "Backend '{required_backend_id}' not playable output for candidate video stream"
                 ),
             )
         })
@@ -312,7 +312,7 @@ impl PlayerSession {
                 planner.last_rejection = Some(PlayerError::new(
                     PlayerErrorKind::UnsupportedVideoCodec,
                     format!(
-                        "Video codec `{}` не поддерживается candidate capability model",
+                        "Video codec '{}' is not supported by candidate capability model",
                         track.codec_id
                     ),
                 ));
@@ -374,7 +374,7 @@ impl PlayerSession {
                 None => {
                     return Err(PlayerError::new(
                         PlayerErrorKind::HardwareDecoderUnavailable,
-                        "Strong media install не получил system capability snapshot",
+                        "Strong media install didn't get it system capability snapshot",
                     ));
                 }
             };

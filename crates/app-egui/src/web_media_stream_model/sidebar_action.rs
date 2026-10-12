@@ -104,7 +104,7 @@ mod tests {
             let forbidden_type = forbidden_type_parts.concat();
             assert!(
                 !source.contains(&forbidden_type),
-                "action boundary не должен содержать {forbidden_type}"
+                "action boundary must not contain {forbidden_type}"
             );
         }
     }

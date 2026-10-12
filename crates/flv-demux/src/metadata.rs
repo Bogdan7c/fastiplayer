@@ -53,10 +53,10 @@ pub(crate) fn parse_on_metadata(
     }
     let root = reader.read_value(0)?;
     if reader.cursor != bytes.len() {
-        return Err(malformed("script tag содержит trailing AMF bytes"));
+        return Err(malformed("script tag containing trailing AMF bytes"));
     }
     let AmfValue::Object(entries) = root else {
-        return Err(malformed("onMetaData value должен быть object/ECMA array"));
+        return Err(malformed("onMetaData value should be object/ECMA array"));
     };
     let duration = object_number(&entries, "duration").and_then(duration_from_amf_seconds);
     let title = object_string(&entries, "title").map(ToOwned::to_owned);
@@ -143,7 +143,7 @@ fn object_string<'a>(entries: &'a [(String, AmfValue)], key: &str) -> Option<&'a
 impl AmfReader<'_> {
     fn read_value(&mut self, depth: usize) -> Result<AmfValue, FlvDemuxError> {
         if depth >= self.options.metadata_depth.get() {
-            return Err(malformed("AMF nesting depth превышен"));
+            return Err(malformed("AMF nesting depth exceeded"));
         }
         let marker = self.read_u8()?;
         match marker {
@@ -160,20 +160,20 @@ impl AmfReader<'_> {
                 if usize::try_from(declared).unwrap_or(usize::MAX)
                     > self.options.metadata_entries.get()
                 {
-                    return Err(malformed("AMF ECMA array declared count превышен"));
+                    return Err(malformed("AMF ECMA array declared count exceeded"));
                 }
                 Ok(AmfValue::Object(self.read_object(depth + 1)?))
             }
             10 => {
                 let count = usize::try_from(self.read_u32()?)
-                    .map_err(|_| malformed("AMF array count не помещается в usize"))?;
+                    .map_err(|_| malformed("AMF array count does not fit in usize"))?;
                 if count > self.options.metadata_entries.get() {
-                    return Err(malformed("AMF strict array count превышен"));
+                    return Err(malformed("AMF strict array count exceeded"));
                 }
                 let mut values = Vec::new();
                 values
                     .try_reserve_exact(count)
-                    .map_err(|_| malformed("AMF array allocation отклонена"))?;
+                    .map_err(|_| malformed("AMF array allocation rejected"))?;
                 for _ in 0..count {
                     values.push(self.read_value(depth + 1)?);
                 }
@@ -186,7 +186,7 @@ impl AmfReader<'_> {
             }
             12 => Ok(AmfValue::String(self.read_long_string()?)),
             unsupported => Err(malformed(format!(
-                "AMF marker {unsupported} не поддерживается"
+                "AMF marker {unsupported} is not supported"
             ))),
         }
     }
@@ -201,7 +201,7 @@ impl AmfReader<'_> {
             }
             self.entries += 1;
             if self.entries > self.options.metadata_entries.get() {
-                return Err(malformed("AMF object entry limit превышен"));
+                return Err(malformed("AMF object entry limit exceeded"));
             }
             let name = self.read_short_string()?;
             let value = self.read_value(depth)?;
@@ -216,18 +216,18 @@ impl AmfReader<'_> {
 
     fn read_long_string(&mut self) -> Result<String, FlvDemuxError> {
         let length = usize::try_from(self.read_u32()?)
-            .map_err(|_| malformed("AMF string length не помещается в usize"))?;
+            .map_err(|_| malformed("AMF string length does not fit in usize"))?;
         self.read_string_bytes(length)
     }
 
     fn read_string_bytes(&mut self, length: usize) -> Result<String, FlvDemuxError> {
         if length > self.options.metadata_string_bytes.get() {
-            return Err(malformed("AMF string byte limit превышен"));
+            return Err(malformed("AMF string byte limit exceeded"));
         }
         let bytes = self.take(length)?;
         std::str::from_utf8(bytes)
             .map(ToOwned::to_owned)
-            .map_err(|_| malformed("AMF string не UTF-8"))
+            .map_err(|_| malformed("AMF string not UTF-8"))
     }
 
     fn peek_u16(&self) -> Result<u16, FlvDemuxError> {
@@ -235,7 +235,7 @@ impl AmfReader<'_> {
             .bytes
             .get(self.cursor..)
             .and_then(<[u8]>::first_chunk::<2>)
-            .ok_or_else(|| malformed("AMF object key обрезан"))?;
+            .ok_or_else(|| malformed("AMF object key trimmed"))?;
         Ok(u16::from_be_bytes(*bytes))
     }
 
@@ -261,7 +261,7 @@ impl AmfReader<'_> {
             .bytes
             .get(self.cursor..)
             .and_then(<[u8]>::first_chunk::<N>)
-            .ok_or_else(|| malformed("AMF payload обрезан"))?;
+            .ok_or_else(|| malformed("AMF payload trimmed"))?;
         // cursor + N <= bytes.len(), иначе first_chunk вернул бы None.
         self.cursor += N;
         Ok(array)
@@ -275,7 +275,7 @@ impl AmfReader<'_> {
         let bytes = self
             .bytes
             .get(self.cursor..end)
-            .ok_or_else(|| malformed("AMF payload обрезан"))?;
+            .ok_or_else(|| malformed("AMF payload trimmed"))?;
         self.cursor = end;
         Ok(bytes)
     }

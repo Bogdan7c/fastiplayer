@@ -22,14 +22,14 @@ fn accepted_placeholder_spellings_render_exact_relative_paths() {
 
     for (template, expected) in spellings {
         let compiled = SmoothFragmentUrlTemplate::parse(template, &configured_limits)
-            .expect("standard spelling должен пройти");
+            .expect("standard spelling must pass");
         let rendered = compiled
             .render_fragment_path(SmoothFragmentUrlRenderContext::new(
                 128_000,
                 42,
                 SmoothCustomAttributesRender::Unavailable,
             ))
-            .expect("template без CustomAttributes должен render-иться");
+            .expect("template without CustomAttributes must render-flow");
         assert_eq!(rendered, expected);
     }
 }
@@ -40,23 +40,22 @@ fn standard_custom_attributes_use_typed_bounded_render_input() {
     let attributes = SmoothCustomAttributeSet::new(
         vec![
             SmoothCustomAttribute::new(
-                SmoothCustomAttributeName::new("lang", &configured_limits).expect("name валидно"),
-                SmoothCustomAttributeValue::new("en-US", &configured_limits)
-                    .expect("value валидно"),
+                SmoothCustomAttributeName::new("lang", &configured_limits).expect("name valid"),
+                SmoothCustomAttributeValue::new("en-US", &configured_limits).expect("value valid"),
             ),
             SmoothCustomAttribute::new(
-                SmoothCustomAttributeName::new("role", &configured_limits).expect("name валидно"),
-                SmoothCustomAttributeValue::new("main", &configured_limits).expect("value валидно"),
+                SmoothCustomAttributeName::new("role", &configured_limits).expect("name valid"),
+                SmoothCustomAttributeValue::new("main", &configured_limits).expect("value valid"),
             ),
         ],
         &configured_limits,
     )
-    .expect("attribute set валиден");
+    .expect("attribute set by is valid");
     let compiled = SmoothFragmentUrlTemplate::parse(
         "QualityLevels({bitrate},{CustomAttributes})/Fragments(audio={start time})",
         &configured_limits,
     )
-    .expect("CustomAttributes placeholder валиден");
+    .expect("CustomAttributes placeholder is valid");
 
     assert_eq!(
         compiled
@@ -65,7 +64,7 @@ fn standard_custom_attributes_use_typed_bounded_render_input() {
                 7,
                 SmoothCustomAttributesRender::Values(&attributes),
             ))
-            .expect("typed attributes render-ятся"),
+            .expect("typed attributes render-"),
         "QualityLevels(96000,lang=en-US,role=main)/Fragments(audio=7)"
     );
     assert_template_error(
@@ -163,7 +162,7 @@ fn template_and_rendered_path_budgets_are_both_enforced() {
     let configured_limits = limits_builder()
         .maximum_template_bytes(40)
         .build()
-        .expect("test limits валидны");
+        .expect("test limits valid");
     assert_template_error(
         SmoothFragmentUrlTemplate::parse(
             "this-template-is-too-long/{bitrate}/{start time}",
@@ -173,7 +172,7 @@ fn template_and_rendered_path_budgets_are_both_enforced() {
     );
 
     let compiled = SmoothFragmentUrlTemplate::parse("x/{bitrate}/{start time}", &configured_limits)
-        .expect("короткий template валиден");
+        .expect("short template valid");
     assert_template_error(
         compiled.render_fragment_path(SmoothFragmentUrlRenderContext::new(
             u64::MAX,
@@ -192,14 +191,14 @@ fn template_debug_and_errors_never_echo_secret_input() {
         &format!("{secret}/{{bitrate}}/{{start time}}"),
         &configured_limits,
     )
-    .expect("relative template валиден");
+    .expect("relative template validated");
     assert!(!format!("{compiled:?}").contains(secret));
 
     let error = SmoothFragmentUrlTemplate::parse(
         &format!("{secret}?token=do-not-log/{{bitrate}}/{{start time}}"),
         &configured_limits,
     )
-    .expect_err("query должен быть отклонён");
+    .expect_err("query must be rejected");
     assert!(!format!("{error:?}").contains(secret));
     assert!(!error.to_string().contains(secret));
 }
@@ -209,7 +208,7 @@ fn assert_template_error<T: std::fmt::Debug>(
     expected: SmoothUrlTemplateError,
 ) {
     assert_eq!(
-        result.expect_err("template fixture должна завершиться ошибкой"),
+        result.expect_err("template fixture must end in error"),
         SmoothManifestError::InvalidUrlTemplate { reason: expected }
     );
 }

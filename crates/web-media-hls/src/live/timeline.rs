@@ -171,7 +171,7 @@ impl HlsLiveTimelineCoordinator {
         state
             .audio_evidence
             .as_mut()
-            .context("HLS live audio evidence отсутствует")?
+            .context("HLS live audio evidence is missing")?
             .observe_packet(identity, packet);
         publish_latest(&mut state)
     }
@@ -186,7 +186,7 @@ impl HlsLiveTimelineCoordinator {
             state
                 .audio_evidence
                 .as_mut()
-                .context("HLS live audio evidence отсутствует")?
+                .context("HLS live audio evidence is missing")?
                 .expire(identity);
         } else {
             state.main_evidence.expire(identity);

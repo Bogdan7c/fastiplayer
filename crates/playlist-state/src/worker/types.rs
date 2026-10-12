@@ -50,7 +50,7 @@ impl fmt::Display for SaveDebounceValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "playlist-state debounce {:?} вне диапазона {:?}..={:?}",
+            "playlist-state debounce {:?} outside the range {:?}..={:?}",
             self.duration,
             SaveDebounce::MINIMUM,
             SaveDebounce::MAXIMUM
@@ -115,7 +115,7 @@ impl fmt::Display for SaveWorkerStartError {
             Self::ThreadSpawn(error_kind) => {
                 write!(
                     formatter,
-                    "не удалось запустить playlist-state worker: {error_kind:?}"
+                    "failed to launch playlist-state worker: {error_kind:?}"
                 )
             }
         }

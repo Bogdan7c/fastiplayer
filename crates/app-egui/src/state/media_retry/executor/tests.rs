@@ -80,7 +80,7 @@ fn queue_item_resume_and_reopen_targets_use_the_queue_play_path() {
             RetryCall::ClearFailure,
             RetryCall::ReopenFailedPlayback(ReopenPosition::At(Duration::from_secs(83))),
         ],
-        "позиция обрыва доходит до пути открытия без искажений"
+        "The cliff position reaches the opening path without distortion"
     );
 }
 
@@ -90,7 +90,7 @@ fn queue_item_resume_and_reopen_targets_use_the_queue_play_path() {
 fn busy_open_slot_keeps_the_failure_and_reports_still_opening() {
     let mut center = NotificationCenter::default();
     center.show_media_failure_planned(
-        "Не удалось открыть ссылку: нет соединения с сервером — проверьте интернет",
+        "Could not open the link: cannot connect to the server; check your internet connection",
         crate::state::notifications::MediaFailureOrigin::MediaOpen,
         RetryPlan::Offered(MediaRetryTarget::WebUrl(url())),
     );
@@ -108,7 +108,7 @@ fn busy_open_slot_keeps_the_failure_and_reports_still_opening() {
     );
     assert!(
         frame.center.is_some(),
-        "ошибка не потеряна: её можно повторить позже"
+        "The error is not lost; it can be repeated later."
     );
 }
 

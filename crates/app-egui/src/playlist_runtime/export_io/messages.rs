@@ -14,20 +14,19 @@ pub(super) fn written_feedback(
 ) -> Option<String> {
     let mut sentences = Vec::new();
     if durability == PlaylistExportDurability::ReplacedDurabilityUnconfirmed {
-        sentences.push(
-            "Файл заменён, но файловая система не подтвердила долговечность записи".to_owned(),
-        );
+        sentences
+            .push("File replaced, but the file system did not confirm durable storage".to_owned());
     }
     if report.skipped.total() > 0 {
         sentences.push(format!(
-            "Экспортировано {}, пропущено {}: {}",
+            "Exported {}, skipped {}: {}",
             report.exported_tracks,
             report.skipped.total(),
             skip_reasons_text(report.skipped)
         ));
     }
     if report.flattened_compound_groups {
-        sentences.push("Составные группы записаны отдельными строками".to_owned());
+        sentences.push("Compound groups were written as separate rows".to_owned());
     }
     (!sentences.is_empty()).then(|| sentences.join(". "))
 }
@@ -36,38 +35,34 @@ pub(super) fn written_feedback(
 pub(super) fn failure_feedback(error: PlaylistExportJobError) -> String {
     match error {
         PlaylistExportJobError::InvalidTarget => {
-            "Выбранный путь нельзя использовать для экспорта".to_owned()
+            "The selected path cannot be used for export".to_owned()
         }
         PlaylistExportJobError::LocatorIneligible => {
-            "Плейлист содержит источник, который нельзя безопасно экспортировать".to_owned()
+            "Playlist contains a source that cannot be exported safely".to_owned()
         }
         PlaylistExportJobError::NothingToExport(skipped) => format!(
-            "Нечего экспортировать: ни одна из {} записей не подходит для этого формата ({})",
+            "Nothing to export: none of the {} entries is suitable for this format ({})",
             skipped.total(),
             skip_reasons_text(skipped)
         ),
         PlaylistExportJobError::WriteFailed(failure) => write_failure_text(failure).to_owned(),
-        PlaylistExportJobError::WorkerPanicked => {
-            "Фоновый экспорт плейлиста аварийно завершился".to_owned()
-        }
+        PlaylistExportJobError::WorkerPanicked => "Background Playlist export crashed".to_owned(),
     }
 }
 
 fn write_failure_text(failure: PlaylistExportWriteFailure) -> &'static str {
     match failure {
         PlaylistExportWriteFailure::PermissionDenied => {
-            "Не удалось сохранить плейлист: нет прав на запись в выбранную папку"
+            "Could not save Playlist: no permission to write to the selected folder"
         }
         PlaylistExportWriteFailure::ReadOnlyFilesystem => {
-            "Не удалось сохранить плейлист: выбранная папка доступна только для чтения"
+            "Could not save Playlist: the selected folder is read-only"
         }
-        PlaylistExportWriteFailure::DiskFull => {
-            "Не удалось сохранить плейлист: на диске не хватает места"
-        }
+        PlaylistExportWriteFailure::DiskFull => "Could not save Playlist: not enough disk space",
         PlaylistExportWriteFailure::DirectoryMissing => {
-            "Не удалось сохранить плейлист: выбранной папки не существует"
+            "Could not save Playlist: the selected folder does not exist"
         }
-        PlaylistExportWriteFailure::Other => "Не удалось сохранить файл плейлиста",
+        PlaylistExportWriteFailure::Other => "Could not save the Playlist file",
     }
 }
 
@@ -76,15 +71,15 @@ fn skip_reasons_text(skipped: PlaylistExportSkipCounts) -> String {
     let categories = [
         (
             skipped.no_stable_web_link,
-            "у ссылки нет стабильного адреса",
-            "ссылки без стабильного адреса",
+            "link has no stable address",
+            "links without stable addresses",
         ),
         (
             skipped.local_path_not_representable,
-            "путь к локальному файлу нельзя записать",
-            "файлы с неподходящим путём",
+            "local file path cannot be written",
+            "files with unsuitable paths",
         ),
-        (skipped.other, "формат не поддерживает запись", "прочее"),
+        (skipped.other, "format does not support this entry", "other"),
     ];
     let present: Vec<_> = categories.iter().filter(|(count, ..)| *count > 0).collect();
     match present.as_slice() {

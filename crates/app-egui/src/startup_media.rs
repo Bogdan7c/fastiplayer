@@ -133,7 +133,7 @@ impl YtDlpStartupJob {
             .spawn(move || {
                 let resolve_result = if worker_cancellation_requested.load(Ordering::Acquire) {
                     Err(StartupWebPreparationFailure::unclassified(
-                        "YtDlp startup preparation отменена shutdown lifecycle",
+                        "YtDlp startup preparation cancelled shutdown lifecycle",
                     ))
                 } else {
                     resolve_yt_dlp_startup_media(
@@ -154,21 +154,19 @@ impl YtDlpStartupJob {
 
                 match result_publisher.publish_completion(resolve_result) {
                     Ok(WakeDelivery::EventLoopClosed) => {
-                        debug!("Event loop закрыт; YtDlp terminal оставлен без wake retry");
+                        debug!("Event loop closed; YtDlp terminal left without wake retry");
                     }
                     Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
                     Err(CompletionPublishError::AlreadyPublished) => {
-                        warn!(
-                            "YtDlp startup resolver попытался опубликовать второй terminal result"
-                        );
+                        warn!("YtDlp startup resolver publishes second terminal result");
                     }
                 }
             })
-            .map_err(|error| format!("Не удалось запустить YtDlp startup resolver: {error}"))?;
+            .map_err(|error| format!("Failed to launch YtDlp startup resolver: {error}"))?;
 
         Ok(Self {
             source_locator,
-            pending_message: "Подготовка YtDlp stream...".to_string(),
+            pending_message: "Preparation of YtDlp stream...".to_string(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -194,7 +192,7 @@ impl YtDlpStartupJob {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
                         Err(StartupWebPreparationFailure::unclassified(
-                            "YtDlp startup resolver завершился без результата",
+                            "YtDlp startup resolver ended without result",
                         ))
                     })
                 })
@@ -202,7 +200,7 @@ impl YtDlpStartupJob {
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
                 Some(Err(StartupWebPreparationFailure::unclassified(
-                    "YtDlp startup resolver завершился panic",
+                    "YtDlp startup resolver finished panic",
                 )))
             }
             FinishedThreadJoin::StillRunning => None,
@@ -249,7 +247,7 @@ impl DirectMediaStartupJob {
             .spawn(move || {
                 let open_result = if worker_cancellation_requested.load(Ordering::Acquire) {
                     Err(StartupWebPreparationFailure::unclassified(
-                        "Direct media startup preparation отменена shutdown lifecycle",
+                        "Direct media startup preparation cancelled shutdown lifecycle",
                     ))
                 } else {
                     resolve_direct_media_startup_media(
@@ -267,23 +265,19 @@ impl DirectMediaStartupJob {
 
                 match result_publisher.publish_completion(open_result) {
                     Ok(WakeDelivery::EventLoopClosed) => {
-                        debug!("Event loop закрыт; direct-media terminal оставлен без wake retry");
+                        debug!("Event loop sealed; direct-media terminal left out wake retry");
                     }
                     Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
                     Err(CompletionPublishError::AlreadyPublished) => {
-                        warn!(
-                            "Direct media startup opener попытался опубликовать второй terminal result"
-                        );
+                        warn!("Direct media startup opener publishes second terminal result");
                     }
                 }
             })
-            .map_err(|error| {
-                format!("Не удалось запустить direct media startup opener: {error}")
-            })?;
+            .map_err(|error| format!("Failed to launch direct media startup opener: {error}"))?;
 
         Ok(Self {
             source_locator,
-            pending_message: "Подготовка direct media URL...".to_string(),
+            pending_message: "Preparation of direct media URL...".to_string(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -308,7 +302,7 @@ impl DirectMediaStartupJob {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
                         Err(StartupWebPreparationFailure::unclassified(
-                            "Direct media startup opener завершился без результата",
+                            "Direct media startup opener ends without results",
                         ))
                     })
                 })
@@ -316,7 +310,7 @@ impl DirectMediaStartupJob {
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
                 Some(Err(StartupWebPreparationFailure::unclassified(
-                    "Direct media startup opener завершился panic",
+                    "Direct media startup opener ends with panic",
                 )))
             }
             FinishedThreadJoin::StillRunning => None,
@@ -452,11 +446,11 @@ impl StartupMediaController {
             .or_else(|| {
                 self.local_startup_job
                     .as_ref()
-                    .map(|_| "Подготовка local media...")
+                    .map(|_| "Preparation of local media...")
             })
             .or_else(|| {
                 self.startup_playlist_pending
-                    .then_some("Импорт startup playlist...")
+                    .then_some("Import startup playlist...")
             })
     }
 
@@ -513,12 +507,12 @@ impl StartupMediaController {
             match playlist_runtime.start_startup_playlist_import(path.clone()) {
                 Ok(true) => {
                     self.startup_playlist_pending = true;
-                    app_state.set_startup_pending("Импорт startup playlist...".to_owned());
+                    app_state.set_startup_pending("Import startup playlist...".to_owned());
                 }
                 Ok(false) => {
                     self.orchestration.preparation_failed();
                     app_state.set_startup_error(
-                        "Startup playlist import уже занят другим заданием".to_owned(),
+                        "Startup playlist import already busy with another assignment".to_owned(),
                     );
                 }
                 Err(error) => {
@@ -541,7 +535,7 @@ impl StartupMediaController {
                     Err(error) => {
                         self.orchestration.preparation_failed();
                         app_state.set_startup_error(format!(
-                            "Не удалось сохранить reopenable CLI URL identity: {error}"
+                            "Failure to maintain reopenable CLI URL identity: {error}"
                         ));
                         return;
                     }
@@ -561,7 +555,8 @@ impl StartupMediaController {
             InitialMedia::Several(_) => {
                 // Набор уже развёрнут `accept_several_initial_arguments`; не падаем.
                 self.orchestration.preparation_failed();
-                app_state.set_startup_error("Внутренняя ошибка разбора аргументов".to_owned());
+                app_state
+                    .set_startup_error("Internal error in the analysis of arguments".to_owned());
                 return;
             }
         };
@@ -570,10 +565,8 @@ impl StartupMediaController {
                 Ok(admitted) => admitted,
                 Err(error) => {
                     self.orchestration.preparation_failed();
-                    warn!(error = %error, "Trusted startup media admission отклонён");
-                    app_state.set_startup_error(format!(
-                        "Не удалось начать стартовое открытие media: {error}"
-                    ));
+                    warn!(error = %error, "Trusted startup media admission rejected");
+                    app_state.set_startup_error(format!("Failed to start opening media: {error}"));
                     return;
                 }
             };
@@ -581,7 +574,7 @@ impl StartupMediaController {
         match admitted {
             crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFile(local_open) => {
                 // Имя файла в лог не пишем (решение владельца: имя — только в тексте UI).
-                info!("Автозагрузка файла из CLI");
+                info!("Autoloading a file from CLI");
                 match crate::local_file_open::LocalFileOpenJob::spawn_preparation(
                     local_open.into_path(),
                     app_config.player.demux,
@@ -599,16 +592,14 @@ impl StartupMediaController {
                 // Набор файлов приходит только из drag & drop; trusted startup intent его
                 // создать не может. Ветка нужна для полноты match и честно сообщает об ошибке.
                 self.orchestration.preparation_failed();
-                warn!(
-                    "Trusted startup admission вернул набор файлов, которого CLI создать не может"
-                );
+                warn!("Trusted startup admission returned a set of files that CLI can’t create");
                 app_state.set_startup_error(
-                    "Внутренняя ошибка: стартовое открытие вернуло набор файлов".to_string(),
+                    "Internal Error: Starting Opening Returns File Set".to_string(),
                 );
             }
             crate::playlist_runtime::AdmittedQueueReplacementIntent::ServiceUrl(url_open) => {
                 let locator = url_open.into_locator();
-                info!(source = %locator.safe_label(), "Автозагрузка service URL из CLI");
+                info!(source = %locator.safe_label(), "Autoboot service URL from CLI");
                 locator.start(self, app_state, app_config, system_capabilities);
             }
         }
@@ -638,7 +629,7 @@ impl StartupMediaController {
             app_state.set_startup_error(error);
             return;
         }
-        app_state.set_startup_pending("Подготовка YtDlp stream...".to_string());
+        app_state.set_startup_pending("Preparation of YtDlp stream...".to_string());
         match YtDlpStartupJob::spawn(
             source_locator,
             app_config.clone(),
@@ -652,10 +643,9 @@ impl StartupMediaController {
             }
             Err(error) => {
                 self.orchestration.preparation_failed();
-                warn!(error = %error, "Не удалось запустить YtDlp startup resolver");
+                warn!(error = %error, "Failed to launch YtDlp startup resolver");
                 let startup_error =
-                    "Не удалось запустить загрузку ссылки через yt-dlp — попробуйте ещё раз"
-                        .to_owned();
+                    "Failed to start downloading links via yt-dlp – try again".to_owned();
                 self.startup_error = Some(startup_error.clone());
                 app_state.set_startup_error(startup_error);
             }
@@ -675,7 +665,7 @@ impl StartupMediaController {
             app_state.set_startup_error(error);
             return;
         }
-        app_state.set_startup_pending("Подготовка direct media URL...".to_string());
+        app_state.set_startup_pending("Preparation of direct media URL...".to_string());
         match DirectMediaStartupJob::spawn(
             source_locator,
             app_config.clone(),
@@ -687,10 +677,9 @@ impl StartupMediaController {
             }
             Err(error) => {
                 self.orchestration.preparation_failed();
-                warn!(error = %error, "Не удалось запустить direct media startup opener");
+                warn!(error = %error, "I failed to launch a direct media startup opener.");
                 let startup_error =
-                    "Не удалось запустить открытие прямой ссылки на файл — попробуйте ещё раз"
-                        .to_owned();
+                    "Failed to open a direct link to the file - try again".to_owned();
                 self.startup_error = Some(startup_error.clone());
                 app_state.set_startup_error(startup_error);
             }
@@ -724,7 +713,7 @@ pub(crate) fn resolve_yt_dlp_startup_media(
         cancellation,
         is_cancelled,
     )
-    .context("Не удалось подготовить YtDlp media через candidate transport path")?;
+    .context("YtDlp media failed to prepare via candidate transport path")?;
 
     Ok(PreparedYtDlpStartupMedia {
         demuxer: prepared.demuxer,
@@ -752,7 +741,7 @@ pub(crate) fn resolve_direct_media_startup_media(
         demux_config,
         cancellation,
     )
-    .context("Не удалось открыть direct media URL")
+    .context("I was unable to open the direct media URL.")
 }
 
 /// Распознаёт только утверждённые local playlist extensions без lossy path conversion.

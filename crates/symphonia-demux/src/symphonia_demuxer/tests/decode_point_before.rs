@@ -14,16 +14,16 @@ fn decode_point_before_seek_rejects_coarse_after_target_position() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
     let target = Duration::from_millis(100);
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(target))
-        .expect("decode-point seek должен завершиться без ошибки");
+        .expect("decode-point seek must be completed without error");
 
     assert!(
         seek_result.actual_position.as_duration() <= target,
-        "DecodePointBefore не должен принимать backend-позицию после target"
+        "DecodePointBefore should not accept backend position after target"
     );
 }
 
@@ -43,16 +43,16 @@ fn decode_point_before_seek_retries_when_first_video_packet_overshoots_target() 
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
     let target = Duration::from_secs(10);
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(target))
-        .expect("decode-point seek должен retry-нуться до packet перед target");
+        .expect("decode-point seek must retry-lean up packet beforehand target");
 
     assert!(
         seek_result.actual_position.as_duration() <= target,
-        "retry должен вернуть packet-level actual position не позже target"
+        "retry returns packet-level actual position no later than target"
     );
     assert_eq!(
         seek_mode_log
@@ -81,12 +81,12 @@ fn decode_point_before_after_target_retry_expands_existing_preroll() {
         Duration::from_secs(5),
         Duration::from_secs(10),
     )
-    .expect("after-target packet должен дать retry timestamp");
+    .expect("after-target packet must provide a retry timestamp");
 
     assert_eq!(
         retry_timestamp,
         Duration::from_millis(19_225),
-        "retry должен расширить pre-roll, а не отступить только на маленький overshoot"
+        "retry should expand pre-roll, Don't just back off on the small one overshoot"
     );
 }
 
@@ -108,12 +108,12 @@ fn decode_point_before_too_far_rescue_targets_accepted_preroll_window() {
         Duration::from_secs(5),
         Duration::from_secs(10),
     )
-    .expect("too-far packet должен дать rescue retry timestamp");
+    .expect("too-far packet must provide a rescue retry timestamp");
 
     assert_eq!(
         retry_timestamp,
         Duration::from_millis(56_932),
-        "rescue должен прыгать к началу допустимого окна, а не в сам target"
+        "rescue You must jump to the beginning of the acceptable window, rather than target"
     );
 }
 
@@ -127,11 +127,11 @@ fn decode_point_before_initial_seek_targets_requested_not_far_preroll() {
 
     assert!(
         initial < requested,
-        "initial seek должен оставаться не позже target: {initial:?} < {requested:?}"
+        "The initial seek must remain at the latest target: {initial:?} < {requested:?}"
     );
     assert!(
         requested.saturating_sub(initial) <= Duration::from_millis(2),
-        "initial seek должен быть почти в target, а не на целый pre-roll раньше: {:?}",
+        "The initial seek should be almost in target, rather than the entire pre-roll before: {:?}",
         requested.saturating_sub(initial)
     );
 }
@@ -149,7 +149,7 @@ fn decode_point_before_matroska_cue_index_overrides_initial_backend_target() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
     demuxer.matroska_cue_index = MatroskaCueIndex::from_track_cues_for_tests(
         TrackId::new(1),
         [Duration::from_secs(2), Duration::from_secs(8)],
@@ -159,7 +159,7 @@ fn decode_point_before_matroska_cue_index_overrides_initial_backend_target() {
         .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
             10,
         )))
-        .expect("cue-backed DecodePointBefore должен принять keyframe перед target");
+        .expect("cue-backed DecodePointBefore must accept keyframe beforehand target");
 
     assert_eq!(
         seek_timestamp_log
@@ -167,17 +167,17 @@ fn decode_point_before_matroska_cue_index_overrides_initial_backend_target() {
             .expect("seek timestamp log lock")
             .as_slice(),
         &[8_000],
-        "первый backend seek должен идти к ближайшему Matroska cue, а не к target-1ms"
+        "The first backend seek should go to the nearest Matroska cue, not the target-1ms."
     );
     assert_eq!(
         seek_result.actual_position.as_duration(),
         Duration::from_secs(8),
-        "actual остаётся verified decode anchor, public target хранится отдельно"
+        "actual remains verified decode anchor, public target is stored separately"
     );
     assert_eq!(
         seek_result.requested_position.as_duration(),
         Duration::from_secs(10),
-        "requested_position не должен превращаться в keyframe-before target"
+        "requested_position should not be converted into a keyframe-before target"
     );
 }
 
@@ -200,7 +200,7 @@ fn decode_point_before_matroska_retry_uses_previous_cue_before_backoff() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
     demuxer.matroska_cue_index = MatroskaCueIndex::from_track_cues_for_tests(
         TrackId::new(1),
         [Duration::from_millis(37), Duration::from_millis(2_039)],
@@ -210,7 +210,7 @@ fn decode_point_before_matroska_retry_uses_previous_cue_before_backoff() {
         .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
             3,
         )))
-        .expect("previous cue retry должен найти keyframe перед target");
+        .expect("previous cue retry should find keyframe beforehand target");
 
     assert_eq!(
         seek_timestamp_log
@@ -218,12 +218,12 @@ fn decode_point_before_matroska_retry_uses_previous_cue_before_backoff() {
             .expect("seek timestamp log lock")
             .as_slice(),
         &[2_039, 37],
-        "rejected nearest cue должен перейти к предыдущему cue, а не к 5s backoff"
+        "rejected nearest cue should proceed to the preceding cue, not 5s backoff"
     );
     assert_eq!(
         seek_result.actual_position.as_duration(),
         Duration::from_millis(2_039),
-        "actual должен стать verified packet из previous-cue attempt"
+        "The actual must be verified packet from a previous-cue attempt"
     );
 }
 
@@ -246,7 +246,7 @@ fn decode_point_before_matroska_too_far_uses_rescue_not_previous_cue() {
         DemuxSeekability::Seekable,
         options,
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
     demuxer.matroska_cue_index = MatroskaCueIndex::from_track_cues_for_tests(
         TrackId::new(1),
         [Duration::from_secs(2), Duration::from_secs(8)],
@@ -256,7 +256,7 @@ fn decode_point_before_matroska_too_far_uses_rescue_not_previous_cue() {
         .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
             10,
         )))
-        .expect("too-far cue anchor должен перейти в rescue retry ближе к target");
+        .expect("too-far cue anchor should move on rescue retry nearer target");
 
     assert_eq!(
         seek_timestamp_log
@@ -264,12 +264,12 @@ fn decode_point_before_matroska_too_far_uses_rescue_not_previous_cue() {
             .expect("seek timestamp log lock")
             .as_slice(),
         &[8_000, 9_000],
-        "too-far ошибка должна использовать rescue window, а не предыдущий Matroska cue"
+        "The too-far error should use the rescue window, not the previous Matroska cue."
     );
     assert_eq!(
         seek_result.actual_position.as_duration(),
         Duration::from_millis(9_500),
-        "rescue retry должен принять keyframe внутри разрешённого pre-roll окна"
+        "rescue retry must accept keyframe inside pre-roll window"
     );
 }
 
@@ -289,16 +289,16 @@ fn decode_point_before_seek_fails_when_actual_is_before_but_video_packet_is_afte
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let error = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(10_000),
         ))
-        .expect_err("video packet после target должен отклонить DecodePointBefore");
+        .expect_err("video packet afterward target should reject DecodePointBefore");
     let demux_error = error
         .downcast_ref::<DemuxError>()
-        .expect("verification failure должен быть typed DemuxError");
+        .expect("verification failure must have typed DemuxError");
 
     assert!(matches!(
         demux_error,
@@ -327,18 +327,18 @@ fn decode_point_before_seek_success_prebuffers_verified_video_packet() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(500),
         ))
-        .expect("keyframe packet до target должен принять DecodePointBefore");
+        .expect("keyframe packet before target must accept DecodePointBefore");
     let packet_event = demuxer
         .next_event()
-        .expect("prebuffered packet должен читаться без ошибки");
+        .expect("prebuffered packet should be read without error");
     let DemuxReadEvent::Packet(packet) = packet_event else {
-        panic!("verification должна сохранить packet, получено {packet_event:?}");
+        panic!("verification must keep the packet, received {packet_event:?}");
     };
 
     assert_eq!(
@@ -348,7 +348,7 @@ fn decode_point_before_seek_success_prebuffers_verified_video_packet() {
     assert_eq!(
         seek_result
             .actual_track_timestamp
-            .expect("video packet raw timestamp должен обновить actual")
+            .expect("video packet raw timestamp need to update actual")
             .track_id,
         TrackId::new(1)
     );
@@ -368,16 +368,16 @@ fn decode_point_before_seek_accepts_startup_keyframe_after_zero() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::ZERO))
-        .expect("стартовый keyframe сразу после zero seek должен приниматься");
+        .expect("The starting keyframe should be accepted immediately after zero seek.");
     let packet_event = demuxer
         .next_event()
-        .expect("startup packet должен остаться в prebuffer");
+        .expect("startup packet should stay prebuffer");
     let DemuxReadEvent::Packet(packet) = packet_event else {
-        panic!("verification должна сохранить startup packet, получено {packet_event:?}");
+        panic!("verification must save startup packet received {packet_event:?}");
     };
 
     assert_eq!(
@@ -400,17 +400,17 @@ fn decode_point_before_seek_accepts_startup_keyframe_after_near_zero_restore() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
     let restored_position = Duration::from_nanos(10_417);
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(restored_position))
-        .expect("микросекундный restore drift должен остаться стартом media");
+        .expect("The microsecond restore drift should remain the start of media.");
     let packet_event = demuxer
         .next_event()
-        .expect("принятый startup packet должен дойти до playback pipeline");
+        .expect("accepted startup packet should reach playback pipeline");
     let DemuxReadEvent::Packet(packet) = packet_event else {
-        panic!("verification должна сохранить startup packet, получено {packet_event:?}");
+        panic!("verification must save startup packet received {packet_event:?}");
     };
 
     assert_eq!(
@@ -436,16 +436,16 @@ fn decode_point_before_seek_does_not_treat_regular_early_seek_as_startup_drift()
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let error = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(2),
         ))
-        .expect_err("обычный seek не должен принимать keyframe после target");
+        .expect_err("A regular seek will not accept a keyframe after the target");
     let demux_error = error
         .downcast_ref::<DemuxError>()
-        .expect("verification failure должен быть typed DemuxError");
+        .expect("verification failure must have typed DemuxError");
 
     assert!(matches!(
         demux_error,
@@ -467,14 +467,14 @@ fn decode_point_before_seek_rejects_startup_keyframe_beyond_lead_window() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let error = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::ZERO))
-        .expect_err("слишком поздний startup keyframe не должен считаться началом");
+        .expect_err("Too late startup keyframe should not be considered the beginning.");
     let demux_error = error
         .downcast_ref::<DemuxError>()
-        .expect("verification failure должен быть typed DemuxError");
+        .expect("verification failure must have typed DemuxError");
 
     assert!(matches!(
         demux_error,
@@ -505,20 +505,20 @@ fn decode_point_before_returns_verification_events_in_read_order() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(500),
         ))
-        .expect("verification должен принять selected video packet");
+        .expect("verification must accept selected video packet");
 
     let first_event = demuxer
         .next_event()
-        .expect("первый buffered event должен читаться");
+        .expect("The first buffered event should read");
     let second_event = demuxer
         .next_event()
-        .expect("второй buffered event должен читаться");
+        .expect("second buffered event should read");
 
     match first_event {
         DemuxReadEvent::Packet(packet) => {
@@ -526,7 +526,7 @@ fn decode_point_before_returns_verification_events_in_read_order() {
             assert_eq!(packet.kind, TrackKind::Audio);
             assert_eq!(packet.pts, Duration::from_millis(100));
         }
-        unexpected_event => panic!("ожидали audio packet, получили {unexpected_event:?}"),
+        unexpected_event => panic!("expected audio packet, received {unexpected_event:?}"),
     }
     match second_event {
         DemuxReadEvent::Packet(packet) => {
@@ -534,7 +534,7 @@ fn decode_point_before_returns_verification_events_in_read_order() {
             assert_eq!(packet.kind, TrackKind::Video);
             assert_eq!(packet.pts, Duration::from_millis(400));
         }
-        unexpected_event => panic!("ожидали video packet, получили {unexpected_event:?}"),
+        unexpected_event => panic!("expected video packet, received {unexpected_event:?}"),
     }
 }
 
@@ -552,13 +552,13 @@ fn decode_point_before_verifies_selected_video_track_not_any_video_track() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(500),
         ))
-        .expect("unselected video packet не должен решать verification selected track-а");
+        .expect("unselected video packet does not have to solve verification selected track");
 
     assert_eq!(
         seek_result.actual_position,
@@ -567,7 +567,7 @@ fn decode_point_before_verifies_selected_video_track_not_any_video_track() {
     assert_eq!(
         seek_result
             .actual_track_timestamp
-            .expect("verified actual должен быть timestamp selected video track-а")
+            .expect("verified actual must have timestamp selected video track-?")
             .track_id,
         TrackId::new(1)
     );
@@ -584,18 +584,18 @@ fn decode_point_before_seek_accepts_unknown_keyframe_before_target() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(500),
         ))
-        .expect("unknown keyframe до target не должен блокировать seek полностью");
+        .expect("unknown keyframe before target should not be blocked seek fully");
     let packet_event = demuxer
         .next_event()
-        .expect("prebuffered packet должен читаться");
+        .expect("The prebuffered packet should read");
     let DemuxReadEvent::Packet(packet) = packet_event else {
-        panic!("packet должен вернуться pipeline, получено {packet_event:?}");
+        panic!("Packet to return pipeline, received {packet_event:?}");
     };
 
     assert_eq!(
@@ -620,24 +620,24 @@ fn reset_required_after_preview_seek_is_returned_as_tracks_changed_event() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     demuxer
         .seek_with_request(DemuxSeekRequest::preview(Duration::from_millis(500)))
-        .expect("preview-mode seek должен завершиться до post-seek read");
+        .expect("preview-mode seek must be completed before post-seek read");
 
     let reset_event = demuxer
         .next_event()
-        .expect("ResetRequired после seek должен стать lifecycle event");
+        .expect("ResetRequired after seek should be lifecycle event");
     let packet_event = demuxer
         .next_event()
-        .expect("packet после TracksChanged должен остаться доступным");
+        .expect("packet afterward TracksChanged should remain available");
 
     match reset_event {
         DemuxReadEvent::TracksChanged(track_update) => {
             assert_eq!(track_update.tracks[0].id, TrackId::new(4));
         }
-        unexpected_event => panic!("ожидали TracksChanged, получили {unexpected_event:?}"),
+        unexpected_event => panic!("expected TracksChanged, received {unexpected_event:?}"),
     }
     match packet_event {
         DemuxReadEvent::Packet(packet) => {
@@ -645,7 +645,7 @@ fn reset_required_after_preview_seek_is_returned_as_tracks_changed_event() {
             assert_eq!(packet.pts, Duration::from_millis(600));
         }
         unexpected_event => {
-            panic!("ожидали packet нового track-а, получили {unexpected_event:?}")
+            panic!("Expected packet new track, received {unexpected_event:?}")
         }
     }
 }
@@ -665,24 +665,24 @@ fn reset_required_during_decode_point_verification_is_buffered_before_packet() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(500),
         ))
-        .expect("verification должен пережить ResetRequired и принять новый video track");
+        .expect("verification must survive ResetRequired and accept a new video track");
     let reset_event = demuxer
         .next_event()
-        .expect("TracksChanged должен вернуться перед verified packet-ом");
+        .expect("TracksChanged must return before verified packet");
     let packet_event = demuxer
         .next_event()
-        .expect("verified packet должен вернуться после TracksChanged");
+        .expect("verified packet should come back after TracksChanged");
 
     assert_eq!(
         seek_result
             .actual_track_timestamp
-            .expect("verified actual должен принадлежать новому video track-у")
+            .expect("The verified actual must belong to the new video track.")
             .track_id,
         TrackId::new(4)
     );
@@ -692,7 +692,7 @@ fn reset_required_during_decode_point_verification_is_buffered_before_packet() {
             assert_eq!(packet.track_id, TrackId::new(4));
             assert_eq!(packet.pts, Duration::from_millis(400));
         }
-        unexpected_event => panic!("ожидали verified packet, получили {unexpected_event:?}"),
+        unexpected_event => panic!("expected verified packet, received {unexpected_event:?}"),
     }
 }
 
@@ -719,19 +719,19 @@ fn tracks_changed_from_failed_decode_point_verification_survives_retry() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(10_000),
         ))
-        .expect("retry должен найти keyframe после ResetRequired");
+        .expect("retry should find keyframe afterward ResetRequired");
     let reset_event = demuxer
         .next_event()
-        .expect("TracksChanged из rejected attempt должен сохраниться");
+        .expect("TracksChanged from rejected attempt should be retained");
     let packet_event = demuxer
         .next_event()
-        .expect("verified packet успешной retry-попытки должен остаться доступен");
+        .expect("The verified packet of a successful retry attempt must remain available.");
 
     match reset_event {
         DemuxReadEvent::TracksChanged(track_update) => {
@@ -742,7 +742,7 @@ fn tracks_changed_from_failed_decode_point_verification_survives_retry() {
                     .any(|track| track.kind == TrackKind::Video && track.id == TrackId::new(4))
             );
         }
-        unexpected_event => panic!("ожидали TracksChanged, получили {unexpected_event:?}"),
+        unexpected_event => panic!("expected TracksChanged, received {unexpected_event:?}"),
     }
     match packet_event {
         DemuxReadEvent::Packet(packet) => {
@@ -750,7 +750,7 @@ fn tracks_changed_from_failed_decode_point_verification_survives_retry() {
             assert_eq!(packet.pts, Duration::from_millis(300));
             assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
         }
-        unexpected_event => panic!("ожидали verified packet, получили {unexpected_event:?}"),
+        unexpected_event => panic!("expected verified packet, received {unexpected_event:?}"),
     }
     assert_eq!(
         seek_result.actual_position,
@@ -781,13 +781,13 @@ fn decode_point_before_seek_retries_when_first_video_packet_is_not_keyframe() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(10_000),
         ))
-        .expect("retry должен найти keyframe до target");
+        .expect("retry should find keyframe before target");
 
     assert_eq!(
         seek_result.actual_position,
@@ -818,26 +818,24 @@ fn decode_point_before_accepts_keyframe_after_initial_inter_frame_in_prefix() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(116_449),
         ))
-        .expect("verification должен принять keyframe внутри bounded prefix-а");
+        .expect("verification must accept keyframe inside bounded prefix-?");
     let first_event = demuxer
         .next_event()
-        .expect("prebuffered inter-frame должен читаться");
+        .expect("prebuffered inter-frame should read");
     let DemuxReadEvent::Packet(first_packet) = first_event else {
-        panic!("verification prefix должен сохранить первый packet, получено {first_event:?}");
+        panic!("verification prefix should keep the first packet, got {first_event:?}");
     };
     let accepted_event = demuxer
         .next_event()
-        .expect("prebuffered keyframe должен читаться");
+        .expect("The prebuffered keyframe should read");
     let DemuxReadEvent::Packet(accepted_packet) = accepted_event else {
-        panic!(
-            "verification prefix должен сохранить accepted keyframe, получено {accepted_event:?}"
-        );
+        panic!("verification prefix should be preserved accepted keyframe, got {accepted_event:?}");
     };
 
     assert_eq!(
@@ -876,13 +874,13 @@ fn decode_point_before_default_prefix_limit_reaches_later_keyframe() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(69_143),
         ))
-        .expect("default verification limit должен дойти до keyframe текущего GOP");
+        .expect("default verification limit should reach keyframe current GOP");
 
     assert_eq!(
         seek_result.actual_position,
@@ -916,13 +914,13 @@ fn decode_point_before_retries_when_prefix_reaches_target_before_keyframe() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(10_000),
         ))
-        .expect("after-target packet до keyframe должен вызвать retry");
+        .expect("after-target packet before keyframe must be called retry");
 
     assert_eq!(
         seek_result.actual_position,
@@ -953,13 +951,13 @@ fn decode_point_before_retries_when_first_video_packet_is_too_far_before_target(
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(96_784),
         ))
-        .expect("too-far decode point должен retry-нуться ближе к target");
+        .expect("too-far decode point must retry-lean in target");
 
     assert_eq!(
         seek_result.actual_position,
@@ -988,16 +986,16 @@ fn decode_point_before_fails_instead_of_accepting_start_of_file_for_middle_seek(
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let error = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(96_784),
         ))
-        .expect_err("seek в середину файла не должен принимать packet с начала файла");
+        .expect_err("A seek in the middle of a file must not accept a packet from the beginning of the file.");
     let demux_error = error
         .downcast_ref::<DemuxError>()
-        .expect("too-far verification failure должен быть typed DemuxError");
+        .expect("too-far verification failure must have typed DemuxError");
 
     assert!(matches!(
         demux_error,
@@ -1033,16 +1031,16 @@ fn decode_point_before_uses_video_packet_when_audio_actual_is_earlier() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let error = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(10_000),
         ))
-        .expect_err("ранний audio actual не должен маскировать video packet после target");
+        .expect_err("Early audio actual should not mask video packet after target");
     let demux_error = error
         .downcast_ref::<DemuxError>()
-        .expect("video verification failure должен быть typed DemuxError");
+        .expect("video verification failure must have typed DemuxError");
 
     assert!(matches!(
         demux_error,

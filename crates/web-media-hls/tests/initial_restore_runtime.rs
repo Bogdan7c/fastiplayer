@@ -505,7 +505,7 @@ fn fmp4_uses_one_bounded_ts_probe_then_one_finite_fallback() {
     assert_eq!(request_count(&server, "/segment.m4s"), 1);
     assert!(
         first_attempt_body_bytes.load(Ordering::Acquire) < padded_initialization.len(),
-        "TS-first NoMatch должен оборвать bounded prefix вместо полного fMP4 body"
+        "TS-first NoMatch should break bounded prefix instead of full fMP4 body"
     );
 }
 
@@ -588,7 +588,7 @@ fn stale_checkpoint_falls_back_on_same_manifest_plan_and_one_beginning_segment()
     assert_eq!(
         seek_handle.poll_receipt(),
         None,
-        "manifest fallback не должен фабриковать worker seek receipt"
+        "manifest fallback don't fabricate worker seek receipt"
     );
     assert_eq!(request_count(&server, "/stale-checkpoint.m3u8"), 1);
     assert_eq!(request_count(&server, "/beginning.ts"), 1);

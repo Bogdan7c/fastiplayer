@@ -34,10 +34,10 @@ impl AppState {
     ) {
         match completion {
             DroppedCollectionWalkCompletion::Cancelled => {
-                debug!("Обход брошенных папок отменён: результат отброшен");
+                debug!("Dropped folder traversal canceled; result discarded");
             }
             DroppedCollectionWalkCompletion::WorkerFailed => {
-                warn!("Поток обхода брошенных папок завершился аварийно");
+                warn!("Dropped folder traversal thread crashed");
                 self.notify_info(DropNotice::FolderUnreadable.text());
             }
             DroppedCollectionWalkCompletion::Collected(collected) => {
@@ -58,7 +58,7 @@ impl AppState {
             file_count = collected.files.len(),
             unreadable = collected.unreadable_count,
             truncation = ?collected.truncation,
-            "Обход брошенных папок завершён"
+            "Abandoned folder bypass complete"
         );
         if collected.files.is_empty() {
             self.notify_info(empty_result_notice(collected.unreadable_count).text());
@@ -143,8 +143,11 @@ mod tests {
 
     #[test]
     fn empty_result_says_no_media_or_unreadable_depending_on_errors() {
-        assert_eq!(empty_result_notice(0).text(), "В папке нет медиафайлов");
-        assert_eq!(empty_result_notice(2).text(), "Не удалось прочитать папку");
+        assert_eq!(
+            empty_result_notice(0).text(),
+            "The folder contains no media files"
+        );
+        assert_eq!(empty_result_notice(2).text(), "Could not read the folder");
     }
 
     #[test]
@@ -158,7 +161,7 @@ mod tests {
                 2000
             ),
             None,
-            "замена может быть отменена в Confirm: уведомлять рано"
+            "Replacement may be cancelled at Confirm: Notify early"
         );
         assert_eq!(
             truncation_notice_before_commit(
@@ -167,7 +170,7 @@ mod tests {
                 2000
             )
             .map(DropNotice::text),
-            Some("Добавлены первые 2000 файлов из папки".to_owned())
+            Some("Added the first 2000 files from the folder".to_owned())
         );
     }
 
@@ -177,12 +180,12 @@ mod tests {
         assert_eq!(
             truncation_notice(Some(DroppedCollectionTruncation::FileLimit), 2000)
                 .map(DropNotice::text),
-            Some("Добавлены первые 2000 файлов из папки".to_owned())
+            Some("Added the first 2000 files from the folder".to_owned())
         );
         assert_eq!(
             truncation_notice(Some(DroppedCollectionTruncation::DepthLimit), 5)
                 .map(DropNotice::text),
-            Some("Часть вложенных папок пропущена: они расположены слишком глубоко".to_owned())
+            Some("Some nested folders were skipped because they are too deep".to_owned())
         );
     }
 }

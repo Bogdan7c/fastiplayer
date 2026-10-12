@@ -81,17 +81,17 @@ impl NativeDashStartupJob {
                 }
                 match result_publisher.publish_completion(result) {
                     Ok(WakeDelivery::EventLoopClosed) => tracing::debug!(
-                        "Event loop закрыт; native DASH terminal оставлен без wake retry"
+                        "Event loop closed; native DASH terminal left without wake retry"
                     ),
                     Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
                     Err(CompletionPublishError::AlreadyPublished) => tracing::warn!(
-                        "Native DASH startup opener попытался опубликовать второй terminal"
+                        "Native DASH startup opener tries to publish second terminal"
                     ),
                 }
             })
-            .map_err(|error| format!("Не удалось запустить native DASH startup opener: {error}"))?;
+            .map_err(|error| format!("Failed to launch native DASH startup opener: {error}"))?;
         Ok(Self {
-            pending_message: "Проверка native DASH...".to_owned(),
+            pending_message: "Checking the native DASH...".to_owned(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -116,7 +116,7 @@ impl NativeDashStartupJob {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
                         Err(StartupWebPreparationFailure::unclassified(
-                            "Native DASH startup opener завершился без результата",
+                            "Native DASH startup opener ends without results",
                         ))
                     })
                 })
@@ -124,7 +124,7 @@ impl NativeDashStartupJob {
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
                 Some(Err(StartupWebPreparationFailure::unclassified(
-                    "Native DASH startup opener завершился panic",
+                    "Native DASH startup opener ends with panic",
                 )))
             }
             FinishedThreadJoin::StillRunning => None,
@@ -173,7 +173,7 @@ fn resolve_native_dash_startup_media(
             }
             tracing::info!(
                 ?invocation_reason,
-                "CLI native DASH admission передан единственному YtDlp fallback"
+                "CLI native DASH admission transferred to single YtDlp fallback"
             );
             let prepared = super::resolve_yt_dlp_startup_media(
                 &fallback_locator,
@@ -208,7 +208,7 @@ impl super::StartupMediaController {
             app_state.set_startup_error(error);
             return;
         }
-        app_state.set_startup_pending("Проверка native DASH...".to_owned());
+        app_state.set_startup_pending("Checking the native DASH...".to_owned());
         match NativeDashStartupJob::spawn(
             source,
             fallback_locator,
@@ -223,7 +223,7 @@ impl super::StartupMediaController {
             }
             Err(error) => {
                 self.orchestration.preparation_failed();
-                tracing::warn!(error = %error, "Не удалось запустить native DASH startup opener");
+                tracing::warn!(error = %error, "Could not start the native DASH startup opener");
                 self.startup_error = Some(error.clone());
                 app_state.set_startup_error(error);
             }

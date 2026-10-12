@@ -543,7 +543,7 @@ impl AppState {
                 .record_successful_item_open_metadata(item_id, &installed.descriptor);
             tracing::debug!(
                 ?cache_outcome,
-                "Exact Installed обновил last-known playlist metadata cache"
+                "Exact Installed refreshed last-known playlist metadata cache"
             );
         }
         StrongMediaOpenPoll::completed(Ok(InstalledSingleMediaOpen {

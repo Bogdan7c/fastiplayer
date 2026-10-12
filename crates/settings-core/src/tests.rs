@@ -344,7 +344,7 @@ fn descriptor_text_ids_and_fallback_text_are_represented() {
         descriptor.text.label.text_id.as_str(),
         "settings.render.brightness.label"
     );
-    assert_eq!(descriptor.text.label.fallback_ru, "Яркость");
+    assert_eq!(descriptor.text.label.fallback_ru, "Brightness");
 
     let description = descriptor
         .text
@@ -355,7 +355,10 @@ fn descriptor_text_ids_and_fallback_text_are_represented() {
         description.text_id.as_str(),
         "settings.render.brightness.description"
     );
-    assert_eq!(description.fallback_ru, "Регулирует яркость изображения.");
+    assert_eq!(
+        description.fallback_ru,
+        "It regulates the brightness of the image."
+    );
 
     let help = descriptor
         .text
@@ -365,7 +368,7 @@ fn descriptor_text_ids_and_fallback_text_are_represented() {
     assert_eq!(help.text_id.as_str(), "settings.render.brightness.help");
     assert_eq!(
         help.fallback_ru,
-        "Значение 0.5 соответствует нейтральной яркости."
+        "The value of 0.5 corresponds to neutral brightness."
     );
 }
 
@@ -516,8 +519,8 @@ fn auto_fixed_positive_integer_validation_accepts_only_auto_or_positive_fixed() 
             .with_group_default_open(false),
         value_type: SettingValueType::Text,
         editor: SettingEditor::AutoFixedPositiveInteger(AutoFixedPositiveIntegerDescriptor::new(
-            SettingText::new("settings.frame_server.budget.auto", "Авто"),
-            SettingText::new("settings.frame_server.budget.fixed", "Фиксированно"),
+            SettingText::new("settings.frame_server.budget.auto", "Automatic"),
+            SettingText::new("settings.frame_server.budget.fixed", "Fixed"),
             None,
         )),
         access: SettingAccess::ReadWrite,
@@ -558,13 +561,13 @@ fn dynamic_unavailable_current_value_is_explicit() {
         "audio.output_device",
         vec![SettingOption::new(
             "default",
-            SettingText::new("settings.audio.output.default", "Системное устройство"),
+            SettingText::new("settings.audio.output.default", "System default device"),
         )],
         SettingOptionCurrentValue::UnavailableCurrent {
             id: SettingOptionId::from("usb-dac-42"),
             label: SettingText::new(
                 "settings.audio.output.unavailable_current",
-                "USB DAC 42 (сейчас недоступно)",
+                "USB DAC 42 (currently unavailable)",
             ),
         },
     );
@@ -574,7 +577,7 @@ fn dynamic_unavailable_current_value_is_explicit() {
         panic!("current value should be explicitly unavailable");
     };
     assert_eq!(id.as_str(), "usb-dac-42");
-    assert_eq!(label.fallback_ru, "USB DAC 42 (сейчас недоступно)");
+    assert_eq!(label.fallback_ru, "USB DAC 42 (currently unavailable)");
 }
 
 #[test]
@@ -805,7 +808,7 @@ fn controller_persist_failure_compensates_runtime_apply() {
     controller
         .set_value(
             SettingId::from("ui.title"),
-            SettingValue::Text("Не сохранено".to_owned()),
+            SettingValue::Text("Not preserved.".to_owned()),
         )
         .expect("draft edit should succeed");
     let mut delegate = RecordingApplyDelegate {
@@ -823,7 +826,7 @@ fn controller_persist_failure_compensates_runtime_apply() {
     );
     assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
     assert_eq!(controller.committed().title, "Исходное имя");
-    assert_eq!(controller.draft().title, "Не сохранено");
+    assert_eq!(controller.draft().title, "Not preserved.");
 }
 
 #[test]
@@ -833,7 +836,7 @@ fn controller_runtime_partial_failure_rolls_back_without_persistence() {
     controller
         .set_value(
             SettingId::from("ui.title"),
-            SettingValue::Text("Сохранено частично".to_owned()),
+            SettingValue::Text("Partially preserved".to_owned()),
         )
         .expect("draft edit should succeed");
     let mut delegate = RecordingApplyDelegate {
@@ -851,7 +854,7 @@ fn controller_runtime_partial_failure_rolls_back_without_persistence() {
 
     assert_eq!(report.final_state, ApplyFinalState::RuntimeApplyFailed);
     assert_eq!(controller.committed().title, "Исходное имя");
-    assert_eq!(controller.draft().title, "Сохранено частично");
+    assert_eq!(controller.draft().title, "Partially preserved");
     assert!(report.persistence.is_none());
     assert_eq!(report.rollback.len(), 1);
     assert!(matches!(
@@ -867,7 +870,7 @@ fn controller_runtime_failure_preserves_same_draft_for_retry() {
     controller
         .set_value(
             SettingId::from("ui.title"),
-            SettingValue::Text("Нужно применить повторно".to_owned()),
+            SettingValue::Text("We need to re-apply.".to_owned()),
         )
         .expect("draft edit should succeed");
     let mut first_delegate = RecordingApplyDelegate {
@@ -899,7 +902,7 @@ fn controller_runtime_failure_preserves_same_draft_for_retry() {
             .outcome,
         crate::PersistOutcome::Persisted
     );
-    assert_eq!(controller.committed().title, "Нужно применить повторно");
+    assert_eq!(controller.committed().title, "We need to re-apply.");
 }
 
 #[test]
@@ -950,7 +953,7 @@ fn controller_route_generation_conflict_blocks_last_writer_wins() {
     controller
         .set_value(
             SettingId::from("ui.title"),
-            SettingValue::Text("Локальный черновик".to_owned()),
+            SettingValue::Text("Local draft".to_owned()),
         )
         .expect("draft edit should capture route generation baseline");
     controller.set_route_generation(ui_route.clone(), RouteGeneration::new(1));
@@ -966,7 +969,7 @@ fn controller_route_generation_conflict_blocks_last_writer_wins() {
     assert_eq!(report.conflicts[0].baseline, RouteGeneration::new(0));
     assert_eq!(report.conflicts[0].current, RouteGeneration::new(1));
     assert_eq!(controller.committed().title, "Исходное имя");
-    assert_eq!(controller.draft().title, "Локальный черновик");
+    assert_eq!(controller.draft().title, "Local draft");
 }
 
 #[test]
@@ -1021,7 +1024,7 @@ fn controller_runtime_busy_preflight_does_not_mutate_or_queue_transaction() {
     controller
         .set_value(
             SettingId::from("ui.title"),
-            SettingValue::Text("Черновик для retry".to_owned()),
+            SettingValue::Text("Draft for retry".to_owned()),
         )
         .expect("draft edit should succeed");
     let mut delegate = RecordingApplyDelegate {
@@ -1045,7 +1048,7 @@ fn controller_runtime_busy_preflight_does_not_mutate_or_queue_transaction() {
     assert!(report.persistence.is_none());
     assert!(report.rollback.is_empty());
     assert_eq!(controller.committed().title, "Исходное имя");
-    assert_eq!(controller.draft().title, "Черновик для retry");
+    assert_eq!(controller.draft().title, "Draft for retry");
 }
 
 /// Проверяет reverse-order compensation после failure второй owner group.
@@ -1151,7 +1154,7 @@ fn controller_repeated_apply_after_success_is_noop() {
     controller
         .set_value(
             SettingId::from("ui.title"),
-            SettingValue::Text("Стабильный заголовок".to_owned()),
+            SettingValue::Text("Stable headline".to_owned()),
         )
         .expect("draft edit should succeed");
     let mut first_delegate = RecordingApplyDelegate::default();
@@ -1182,7 +1185,7 @@ fn controller_runtime_setting_commit_preserves_neighbor_draft_preview_and_rebase
     controller
         .set_value(
             SettingId::from("ui.title"),
-            SettingValue::Text("Незавершённый заголовок".to_owned()),
+            SettingValue::Text("Unfinished headline".to_owned()),
         )
         .expect("neighbor UI draft edit should succeed");
     controller
@@ -1219,7 +1222,7 @@ fn controller_runtime_setting_commit_preserves_neighbor_draft_preview_and_rebase
     assert_eq!(controller.committed().sidebar_width, 480);
     assert_eq!(controller.committed().title, "Исходное имя");
     assert_eq!(controller.draft().sidebar_width, 480);
-    assert_eq!(controller.draft().title, "Незавершённый заголовок");
+    assert_eq!(controller.draft().title, "Unfinished headline");
     assert_eq!(controller.draft().brightness, 0.8);
     let pending_render = controller
         .preview()
@@ -1235,7 +1238,7 @@ fn controller_runtime_setting_commit_preserves_neighbor_draft_preview_and_rebase
         .expect("neighbor draft apply should remain valid");
     assert_eq!(user_report.final_state, ApplyFinalState::FullyApplied);
     assert!(user_report.conflicts.is_empty());
-    assert_eq!(controller.committed().title, "Незавершённый заголовок");
+    assert_eq!(controller.committed().title, "Unfinished headline");
     assert_eq!(controller.committed().sidebar_width, 480);
 }
 
@@ -1280,7 +1283,7 @@ fn controller_runtime_setting_persistence_failure_restores_committed_draft_and_p
     controller
         .set_value(
             SettingId::from("ui.title"),
-            SettingValue::Text("Черновик переживает ошибку".to_owned()),
+            SettingValue::Text("The drafter is going through a mistake".to_owned()),
         )
         .expect("draft edit should succeed");
     controller
@@ -1304,7 +1307,10 @@ fn controller_runtime_setting_persistence_failure_restores_committed_draft_and_p
     assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
     assert_eq!(controller.committed().sidebar_width, 420);
     assert_eq!(controller.draft().sidebar_width, 420);
-    assert_eq!(controller.draft().title, "Черновик переживает ошибку");
+    assert_eq!(
+        controller.draft().title,
+        "The drafter is going through a mistake"
+    );
     assert_eq!(controller.draft().brightness, 0.7);
     let pending_render = controller
         .preview()
@@ -1321,7 +1327,7 @@ fn controller_runtime_noop_still_replaces_only_same_unfinished_draft_value() {
     controller
         .set_value(
             SettingId::from("ui.title"),
-            SettingValue::Text("Соседнее изменение".to_owned()),
+            SettingValue::Text("Neighbouring change".to_owned()),
         )
         .expect("neighbor draft edit should succeed");
     controller
@@ -1342,7 +1348,7 @@ fn controller_runtime_noop_still_replaces_only_same_unfinished_draft_value() {
     assert_eq!(report.final_state, ApplyFinalState::NoChanges);
     assert!(delegate.calls.is_empty());
     assert_eq!(controller.draft().sidebar_width, 420);
-    assert_eq!(controller.draft().title, "Соседнее изменение");
+    assert_eq!(controller.draft().title, "Neighbouring change");
 
     let mut apply_delegate = RecordingApplyDelegate::default();
     let apply_report = controller
@@ -1369,7 +1375,7 @@ fn sidebar_width_descriptor() -> SettingDescriptor {
         path: "ui.sidebar.width_points".into(),
         text: SettingDescriptorText::new(SettingText::new(
             "settings.ui.sidebar.width_points.label",
-            "Ширина сайдбара",
+            "Sidebar width",
         )),
         placement: SettingPlacement::new("ui", "sidebar", "main-settings-window"),
         value_type: SettingValueType::Integer,
@@ -1391,15 +1397,15 @@ fn brightness_descriptor() -> SettingDescriptor {
         path: "render.brightness".into(),
         text: SettingDescriptorText::new(SettingText::new(
             "settings.render.brightness.label",
-            "Яркость",
+            "Brightness",
         ))
         .with_description(SettingText::new(
             "settings.render.brightness.description",
-            "Регулирует яркость изображения.",
+            "It regulates the brightness of the image.",
         ))
         .with_help(SettingText::new(
             "settings.render.brightness.help",
-            "Значение 0.5 соответствует нейтральной яркости.",
+            "The value of 0.5 corresponds to neutral brightness.",
         )),
         placement: SettingPlacement::new("render", "color", "main-settings-window"),
         value_type: SettingValueType::Float,
@@ -1421,7 +1427,7 @@ fn schema_descriptor() -> SettingDescriptor {
         path: "schema_version".into(),
         text: SettingDescriptorText::new(SettingText::new(
             "settings.system.schema_version.label",
-            "Версия схемы",
+            "Schematic version",
         )),
         placement: SettingPlacement::new("system", "metadata", "main-settings-window"),
         value_type: SettingValueType::Integer,
@@ -1465,9 +1471,9 @@ fn rgb_descriptor() -> SettingDescriptor {
                 None,
             ),
             vec![
-                SettingText::new("settings.render.rgb.red", "Красный"),
-                SettingText::new("settings.render.rgb.green", "Зелёный"),
-                SettingText::new("settings.render.rgb.blue", "Синий"),
+                SettingText::new("settings.render.rgb.red", "Red"),
+                SettingText::new("settings.render.rgb.green", "Green"),
+                SettingText::new("settings.render.rgb.blue", "Blue"),
             ],
             3,
         )),
@@ -1484,7 +1490,7 @@ fn codec_order_descriptor() -> SettingDescriptor {
         path: "player.preferred_video_codec_order".into(),
         text: SettingDescriptorText::new(SettingText::new(
             "settings.player.preferred_video_codec_order.label",
-            "Приоритет видеокодеков",
+            "Video codec priority",
         )),
         placement: SettingPlacement::new("player", "codec", "main-settings-window"),
         value_type: SettingValueType::SelectList,

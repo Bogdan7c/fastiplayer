@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(
             factory
                 .selected_output_device_id()
-                .expect("factory должен читать stable id без CPAL type leakage"),
+                .expect("The factory must read stable id without CPAL type leakage."),
             "cpal-0.15-name:USB%20DAC"
         );
     }
@@ -177,11 +177,11 @@ mod tests {
         let manifest = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
         )
-        .expect("audio Cargo.toml должен читаться");
+        .expect("audio Cargo.toml should be read");
 
         assert!(
             !manifest.contains("app-egui") && !manifest.contains("app_egui"),
-            "audio crate не должен зависеть от app-egui"
+            "audio crate should not depend on app-egui"
         );
     }
 }

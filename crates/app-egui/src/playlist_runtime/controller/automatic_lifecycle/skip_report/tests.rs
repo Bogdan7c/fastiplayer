@@ -32,14 +32,14 @@ fn installed_item_after_skip_reports_skipped_names_once() {
 
     let notices = report.drain_notices();
     let [AutomaticQueueNotice::SkippedFailedItems { skipped }] = notices.as_slice() else {
-        panic!("ожидалась одна сводка пропусков, получено {notices:?}");
+        panic!("Expected one summary of passes, received {notices:?}");
     };
     assert_eq!(skipped.total(), 1);
     assert_eq!(named(skipped), ["b.mkv"]);
     assert_eq!(skipped.unnamed_count(), 0);
     assert!(
         report.drain_notices().is_empty(),
-        "итог отдаётся ровно один раз"
+        "The result is given exactly once."
     );
 }
 
@@ -73,7 +73,7 @@ fn summary_names_first_three_and_counts_the_rest() {
 
     let notices = report.drain_notices();
     let [AutomaticQueueNotice::SkippedFailedItems { skipped }] = notices.as_slice() else {
-        panic!("ожидалась одна сводка пропусков, получено {notices:?}");
+        panic!("Expected one summary of passes, received {notices:?}");
     };
     assert_eq!(skipped.total(), 5);
     assert_eq!(named(skipped).len(), MAX_NAMED_SKIPPED_ITEMS);
@@ -187,7 +187,7 @@ fn new_chain_starts_from_zero() {
 
     let notices = report.drain_notices();
     let [AutomaticQueueNotice::SkippedFailedItems { skipped }] = notices.as_slice() else {
-        panic!("ожидалась одна сводка пропусков, получено {notices:?}");
+        panic!("Expected one summary of passes, received {notices:?}");
     };
     assert_eq!(named(skipped), ["new.mkv"]);
     assert_eq!(skipped.total(), 1);

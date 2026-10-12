@@ -21,7 +21,7 @@ fn missing_first_start_is_zero_and_later_missing_start_uses_previous_end() {
             SmoothChunkRepeat::ImplicitSingle,
         ),
     ];
-    let timeline = build(&entries, SmoothManifestVersion::V2_0).expect("timeline валиден");
+    let timeline = build(&entries, SmoothManifestVersion::V2_0).expect("timeline is valid");
 
     assert_eq!(timeline.first_start().ticks(), 0);
     assert_eq!(
@@ -45,7 +45,7 @@ fn missing_duration_is_inferred_only_from_adjacent_explicit_start() {
             SmoothChunkRepeat::ImplicitSingle,
         ),
     ];
-    let timeline = build(&entries, SmoothManifestVersion::V2_2).expect("timeline валиден");
+    let timeline = build(&entries, SmoothManifestVersion::V2_2).expect("timeline is valid");
 
     assert_eq!(timeline.fragment_count(), 4);
     assert_eq!(
@@ -115,7 +115,7 @@ fn repeat_is_one_based_total_count_and_only_version_22_accepts_it() {
         SmoothChunkDuration::Explicit(10),
         SmoothChunkRepeat::Declared(3),
     )];
-    let timeline = build(&repeated, SmoothManifestVersion::V2_2).expect("r=3 валиден");
+    let timeline = build(&repeated, SmoothManifestVersion::V2_2).expect("r=3 valided");
     assert_eq!(timeline.fragment_count(), 3);
     assert_eq!(timeline.last_end().ticks(), 30);
 
@@ -172,7 +172,7 @@ fn zero_duration_backward_overlap_and_discontinuity_are_distinct() {
 #[test]
 fn cancellation_is_polled_inside_timeline_normalization_before_repeat_accounting() {
     let configured_limits = limits();
-    let timescale = SmoothTimescale::new(10).expect("timescale валиден");
+    let timescale = SmoothTimescale::new(10).expect("timescale valid");
     let entries = [entry(
         SmoothChunkStart::Inferred,
         SmoothChunkDuration::Explicit(10),
@@ -216,11 +216,11 @@ fn declared_count_mismatch_is_not_collapsed_into_timeline_text() {
     let error = budget
         .build_stream_timeline(
             SmoothManifestVersion::V2_0,
-            SmoothTimescale::new(10_000_000).expect("timescale валиден"),
+            SmoothTimescale::new(10_000_000).expect("timescale valid"),
             &[explicit_entry(0, 10)],
             SmoothDeclaredFragmentCount::Exact(2),
         )
-        .expect_err("declared count должен совпасть");
+        .expect_err("The declared count must coincide");
 
     assert_eq!(
         error,
@@ -238,7 +238,7 @@ fn per_stream_and_total_limits_apply_before_budget_commit() {
         .maximum_fragments_per_stream(3)
         .maximum_total_fragments(4)
         .build()
-        .expect("test limits валидны");
+        .expect("test limits valid");
     let mut budget = SmoothManifestTimelineBudget::new(&configured_limits);
     let three = [entry(
         SmoothChunkStart::Inferred,
@@ -248,19 +248,19 @@ fn per_stream_and_total_limits_apply_before_budget_commit() {
     budget
         .build_stream_timeline(
             SmoothManifestVersion::V2_2,
-            SmoothTimescale::new(1).expect("timescale валиден"),
+            SmoothTimescale::new(1).expect("timescale valid"),
             &three,
             SmoothDeclaredFragmentCount::Unspecified,
         )
-        .expect("первые три fragments проходят");
+        .expect("The first three fragments pass through.");
     let total_error = budget
         .build_stream_timeline(
             SmoothManifestVersion::V2_0,
-            SmoothTimescale::new(1).expect("timescale валиден"),
+            SmoothTimescale::new(1).expect("timescale valid"),
             &[explicit_entry(0, 1), explicit_entry(1, 1)],
             SmoothDeclaredFragmentCount::Unspecified,
         )
-        .expect_err("total budget должен сработать");
+        .expect_err("The total budget should work.");
     assert_eq!(
         total_error,
         SmoothManifestError::LimitExceeded {
@@ -274,7 +274,7 @@ fn per_stream_and_total_limits_apply_before_budget_commit() {
     let per_stream_error = budget
         .build_stream_timeline(
             SmoothManifestVersion::V2_2,
-            SmoothTimescale::new(1).expect("timescale валиден"),
+            SmoothTimescale::new(1).expect("timescale valid"),
             &[entry(
                 SmoothChunkStart::Inferred,
                 SmoothChunkDuration::Explicit(1),
@@ -282,7 +282,7 @@ fn per_stream_and_total_limits_apply_before_budget_commit() {
             )],
             SmoothDeclaredFragmentCount::Unspecified,
         )
-        .expect_err("per-stream budget должен сработать");
+        .expect_err("The per-stream budget should work.");
     assert_eq!(
         per_stream_error,
         SmoothManifestError::LimitExceeded {
@@ -299,16 +299,16 @@ fn raw_timeline_entry_limits_are_per_stream_total_and_transactional() {
         .maximum_timeline_entries_per_stream(1)
         .maximum_total_timeline_entries(1)
         .build()
-        .expect("test limits валидны");
+        .expect("test limits valid");
     let mut budget = SmoothManifestTimelineBudget::new(&configured_limits);
     let per_stream_error = budget
         .build_stream_timeline(
             SmoothManifestVersion::V2_0,
-            SmoothTimescale::new(1).expect("timescale валиден"),
+            SmoothTimescale::new(1).expect("timescale valid"),
             &[explicit_entry(0, 1), explicit_entry(1, 1)],
             SmoothDeclaredFragmentCount::Unspecified,
         )
-        .expect_err("raw per-stream entry budget должен сработать");
+        .expect_err("The raw per-stream entry budget should work.");
     assert_eq!(
         per_stream_error,
         SmoothManifestError::LimitExceeded {
@@ -321,19 +321,19 @@ fn raw_timeline_entry_limits_are_per_stream_total_and_transactional() {
     budget
         .build_stream_timeline(
             SmoothManifestVersion::V2_0,
-            SmoothTimescale::new(1).expect("timescale валиден"),
+            SmoothTimescale::new(1).expect("timescale valid"),
             &[explicit_entry(0, 1)],
             SmoothDeclaredFragmentCount::Unspecified,
         )
-        .expect("первая timeline проходит");
+        .expect("The first timeline is");
     let total_error = budget
         .build_stream_timeline(
             SmoothManifestVersion::V2_0,
-            SmoothTimescale::new(1).expect("timescale валиден"),
+            SmoothTimescale::new(1).expect("timescale valid"),
             &[explicit_entry(0, 1)],
             SmoothDeclaredFragmentCount::Unspecified,
         )
-        .expect_err("raw total entry budget должен сработать");
+        .expect_err("The raw entry total budget should work.");
     assert_eq!(
         total_error,
         SmoothManifestError::LimitExceeded {
@@ -351,11 +351,11 @@ fn large_allowed_repeat_stays_one_run_and_supports_random_access() {
         SmoothChunkDuration::Explicit(2),
         SmoothChunkRepeat::Declared(1_000_000),
     )];
-    let timeline = build(&entries, SmoothManifestVersion::V2_2).expect("large repeat валиден");
+    let timeline = build(&entries, SmoothManifestVersion::V2_2).expect("large repeat validation");
 
     assert_eq!(timeline.run_count(), 1);
     assert_eq!(timeline.fragment_count(), 1_000_000);
-    let last = timeline.fragment_at(999_999).expect("последний fragment");
+    let last = timeline.fragment_at(999_999).expect("last fragment");
     assert_eq!(last.start().ticks(), 1_999_998);
     assert_eq!(timeline.last_end().ticks(), 2_000_000);
 }
@@ -370,7 +370,7 @@ fn iterator_and_random_access_preserve_exact_fragment_sequence() {
             SmoothChunkRepeat::Declared(2),
         ),
     ];
-    let timeline = build(&entries, SmoothManifestVersion::V2_2).expect("timeline валиден");
+    let timeline = build(&entries, SmoothManifestVersion::V2_2).expect("timeline is valid");
     let starts = timeline
         .iter_fragments()
         .map(|fragment| fragment.start().ticks())
@@ -391,7 +391,7 @@ fn build(
     let mut budget = SmoothManifestTimelineBudget::new(&configured_limits);
     budget.build_stream_timeline(
         version,
-        SmoothTimescale::new(10_000_000).expect("timescale валиден"),
+        SmoothTimescale::new(10_000_000).expect("timescale valid"),
         entries,
         SmoothDeclaredFragmentCount::Unspecified,
     )
@@ -418,7 +418,7 @@ fn assert_timeline_error<T: std::fmt::Debug>(
     expected: SmoothTimelineError,
 ) {
     assert_eq!(
-        result.expect_err("timeline fixture должна завершиться ошибкой"),
+        result.expect_err("timeline fixture must end in error"),
         SmoothManifestError::InvalidTimeline { reason: expected }
     );
 }

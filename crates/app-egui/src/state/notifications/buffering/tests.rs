@@ -48,7 +48,7 @@ fn waiting_longer_than_delay_shows_spinner_and_shorter_wait_never_does() {
             PlaybackState::Buffering,
             started_at + Duration::from_millis(step_ms),
         );
-        assert_eq!(frame.buffering, BufferingIndicator::Hidden, "{step_ms} мс");
+        assert_eq!(frame.buffering, BufferingIndicator::Hidden, "{step_ms} ms.");
         assert!(!frame.shows_buffering_indicator());
     }
     let resumed = frame_at(
@@ -167,10 +167,7 @@ fn center_error_or_open_progress_wins_over_spinner() {
 
     // Новый файл не открылся, а старый ещё буферизуется: в центре ошибка, не спиннер.
     let mut center = NotificationCenter::default();
-    center.show_media_failure(
-        "Не удалось открыть «clip.mkv»",
-        MediaFailureOrigin::MediaOpen,
-    );
+    center.show_media_failure("I failed to open clip.mkv.", MediaFailureOrigin::MediaOpen);
     frame_at(&mut center, PlaybackState::Buffering, started_at);
     let failed = frame_at(&mut center, PlaybackState::Buffering, long_after);
     assert!(matches!(failed.center, Some(CenterNotice::MediaFailure(_))));
@@ -217,7 +214,7 @@ fn wake_deadline_brings_spinner_on_time_and_stops_after_it_appeared() {
     assert_eq!(center.next_wake_deadline(), Some(appear_at));
 
     // Toast, который истекает позже, не откладывает появление спиннера.
-    center.notify_transient("Перемотка недоступна", started_at);
+    center.notify_transient("Seeking unavailable", started_at);
     assert_eq!(center.next_wake_deadline(), Some(appear_at));
 
     // Спиннер показан: дальше будильник ведёт только toast, прошедший срок не возвращается.
@@ -242,10 +239,7 @@ fn wake_deadline_brings_spinner_on_time_and_stops_after_it_appeared() {
 fn deadline_passed_under_center_message_does_not_keep_waking_the_window() {
     let started_at = Instant::now();
     let mut center = NotificationCenter::default();
-    center.show_media_failure(
-        "Не удалось открыть «clip.mkv»",
-        MediaFailureOrigin::MediaOpen,
-    );
+    center.show_media_failure("I failed to open clip.mkv.", MediaFailureOrigin::MediaOpen);
     frame_at(&mut center, PlaybackState::Buffering, started_at);
     let hidden = frame_at(
         &mut center,
@@ -258,7 +252,7 @@ fn deadline_passed_under_center_message_does_not_keep_waking_the_window() {
     // Ошибку закрыли ×: спиннер появляется сразу, без новой задержки.
     let failure_id = match hidden.center {
         Some(CenterNotice::MediaFailure(failure)) => failure.id,
-        other => panic!("в центре должна быть ошибка: {other:?}"),
+        other => panic!("There must be an error in the center: {other:?}"),
     };
     center.dismiss(failure_id);
     let after_dismiss = frame_at(
@@ -273,11 +267,8 @@ fn deadline_passed_under_center_message_does_not_keep_waking_the_window() {
 fn waiting_observation_does_not_touch_messages_it_does_not_own() {
     let started_at = Instant::now();
     let mut center = NotificationCenter::default();
-    center.notify_info("Звук переключён на системное устройство", started_at);
-    center.show_media_failure(
-        "Не удалось открыть «clip.mkv»",
-        MediaFailureOrigin::MediaOpen,
-    );
+    center.notify_info("Sound switched to system device", started_at);
+    center.show_media_failure("I failed to open clip.mkv.", MediaFailureOrigin::MediaOpen);
     let before = center.frame(OpenProgress::Idle, UiMotion::Standard, started_at);
 
     for (offset_ms, state) in [

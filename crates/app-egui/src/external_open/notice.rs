@@ -1,4 +1,4 @@
-//! Тексты уведомлений внешнего открытия (всё по-русски, без путей и технического жаргона).
+//! Тексты уведомлений внешнего открытия (всё по-английски, без путей и технического жаргона).
 
 /// Короткое сообщение пользователю о том, что сделано (или не сделано) с броском.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,25 +41,25 @@ impl DropNotice {
     /// Текст для показа в toast.
     pub(crate) fn text(self) -> String {
         match self {
-            Self::PlaylistsSeparately => "Плейлисты перетаскивайте отдельно".to_owned(),
-            Self::NothingToOpen => "Здесь нечего открывать".to_owned(),
-            Self::FilesNotFound { count: 1 } => "Файл не найден".to_owned(),
-            Self::FilesNotFound { count } => format!("Не найдено файлов: {count}"),
-            Self::UnsupportedLink => "Такие ссылки не поддерживаются".to_owned(),
-            Self::PlaylistsOneAtATime => "Плейлисты импортируются по одному".to_owned(),
-            Self::FolderHasNoMedia => "В папке нет медиафайлов".to_owned(),
-            Self::FolderUnreadable => "Не удалось прочитать папку".to_owned(),
+            Self::PlaylistsSeparately => "Drag Playlists separately".to_owned(),
+            Self::NothingToOpen => "There is nothing to open here".to_owned(),
+            Self::FilesNotFound { count: 1 } => "File not found".to_owned(),
+            Self::FilesNotFound { count } => format!("Files not found: {count}"),
+            Self::UnsupportedLink => "These links are unsupported".to_owned(),
+            Self::PlaylistsOneAtATime => "Import Playlists one at a time".to_owned(),
+            Self::FolderHasNoMedia => "The folder contains no media files".to_owned(),
+            Self::FolderUnreadable => "Could not read the folder".to_owned(),
             Self::FolderFileLimitReached { taken } => {
-                format!("Добавлены первые {taken} файлов из папки")
+                format!("Added the first {taken} files from the folder")
             }
             Self::FolderDepthLimitReached => {
-                "Часть вложенных папок пропущена: они расположены слишком глубоко".to_owned()
+                "Some nested folders were skipped because they are too deep".to_owned()
             }
-            Self::LinksOneAtATime => "Ссылки добавляются по одной".to_owned(),
-            Self::LinksSeparately => "Ссылки перетаскивайте отдельно".to_owned(),
-            Self::TooManyFiles => "Слишком много файлов для одного плейлиста".to_owned(),
+            Self::LinksOneAtATime => "Add links one at a time".to_owned(),
+            Self::LinksSeparately => "Drag links separately".to_owned(),
+            Self::TooManyFiles => "Too many files for one Playlist".to_owned(),
             Self::PlaylistStillLoading => {
-                "Плейлист ещё загружается, попробуйте через секунду".to_owned()
+                "Playlist is still loading; try again in a second".to_owned()
             }
         }
     }

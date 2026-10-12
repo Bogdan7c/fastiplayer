@@ -44,7 +44,7 @@ impl Demuxer for SyncSeekRefusingDemuxer {
 
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<media_core::DemuxSeekResult> {
         Err(MediaDemuxError::SeekUnavailable {
-            reason: "progressive HTTP source не поддерживает byte seek".to_owned(),
+            reason: "progressive HTTP source supportive byte seek".to_owned(),
         }
         .into())
     }
@@ -55,7 +55,7 @@ impl Demuxer for SyncSeekRefusingDemuxer {
     ) -> anyhow::Result<media_core::DemuxSeekResult> {
         *self.seek_attempts.lock().expect("seek attempts lock") += 1;
         Err(MediaDemuxError::SeekUnavailable {
-            reason: "progressive HTTP source не поддерживает byte seek".to_owned(),
+            reason: "progressive HTTP source supportive byte seek".to_owned(),
         }
         .into())
     }
@@ -80,8 +80,8 @@ fn session_with_sync_seek_refusing_demuxer(
         tracks.clone(),
     );
     session
-        .select_default_video_track(&tracks, "fake media не содержит video track")
-        .expect("fake video track должен получить decode requirement");
+        .select_default_video_track(&tracks, "fake media lacking video track")
+        .expect("Fake Video Track should be required to receive a decode requirement.");
     session.set_snapshot_duration(Some(Duration::from_secs(30)));
     session.apply_demux_seekability(seekability);
     session.set_playback_state(PlaybackState::Playing);
@@ -138,11 +138,11 @@ fn timeline_click_on_progressive_source_publishes_no_seek_error_and_seeks() {
     assert_eq!(
         *seek_attempts.lock().expect("seek attempts lock"),
         1,
-        "preview действительно упёрся в demuxer без sync seek-а (иначе тест ничего не доказывает)"
+        "preview really stuck with demuxer without sync seek (otherwise the test proves nothing)"
     );
     let commands = port.commands();
     let [(request_id, request)] = commands.as_slice() else {
-        panic!("финальный seek должен уйти worker-у ровно одним запросом: {commands:?}");
+        panic!("The final search must go to the worker with exactly one request: {commands:?}.");
     };
     assert_eq!(request.timestamp, Duration::from_secs(22));
     port.complete(
@@ -158,7 +158,7 @@ fn timeline_click_on_progressive_source_publishes_no_seek_error_and_seeks() {
     assert_eq!(
         session
             .seek_commit()
-            .expect("receipt должен запустить landing")
+            .expect("Launching landing receipt")
             .target_position,
         MediaTime::from_secs(22)
     );
@@ -166,7 +166,7 @@ fn timeline_click_on_progressive_source_publishes_no_seek_error_and_seeks() {
     let errors = recoverable_errors(session.take_events());
     assert!(
         errors.is_empty(),
-        "ложный отказ preview всплыл бы тостом: {errors:?}"
+        "false refusal preview pop up: {errors:?}"
     );
 }
 
@@ -187,6 +187,6 @@ fn timeline_click_on_not_seekable_source_still_publishes_seek_unavailable() {
         errors
             .iter()
             .any(|error| error.kind == PlayerErrorKind::SeekUnavailable),
-        "для неперематываемого источника отказ обязан дойти до пользователя: {errors:?}"
+        "for non-reversible source, the failure must reach the user: {errors:?}"
     );
 }

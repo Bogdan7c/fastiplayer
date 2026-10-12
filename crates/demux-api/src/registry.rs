@@ -136,22 +136,22 @@ impl DemuxFactoryDescriptor {
 #[derive(Debug, thiserror::Error)]
 pub enum DemuxFactoryOpenError {
     /// Caller отменил open.
-    #[error("demux open отменён")]
+    #[error("demux open canceled")]
     Cancelled,
     /// Runtime input shape не поддерживается выбранным factory.
-    #[error("demux factory не поддерживает input capability {capability:?}")]
+    #[error("demux factory does not support input capability {capability:?}")]
     UnsupportedInput {
         /// Exact unsupported input shape.
         capability: DemuxInputCapability,
     },
     /// Factory подтвердил container, но не поддерживает конкретный open contract.
-    #[error("demux open отклонён: {reason}")]
+    #[error("demux open rejected: {reason}")]
     Rejected {
         /// Bounded secret-safe причина.
         reason: String,
     },
     /// Concrete backend open error с сохранённой downcast chain.
-    #[error("concrete demux backend не смог открыть input")]
+    #[error("concrete demux backend failed to open input")]
     Backend(#[source] anyhow::Error),
 }
 
@@ -187,13 +187,13 @@ pub trait DemuxFactory: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DemuxRegistryError {
     /// Factory ID уже занят и не может менять meaning по порядку регистрации.
-    #[error("demux factory `{factory_id}` уже зарегистрирован")]
+    #[error("demux factory `{factory_id}` already registered")]
     DuplicateFactory {
         /// Exact duplicate factory identity.
         factory_id: DemuxFactoryId,
     },
     /// Один canonical container не может иметь двух неявных owners.
-    #[error("demux container `{container}` уже принадлежит factory `{existing_factory_id}`")]
+    #[error("demux container `{container}` already owned factory `{existing_factory_id}`")]
     DuplicateContainer {
         /// Exact duplicate container identity.
         container: DemuxContainerId,
@@ -202,7 +202,7 @@ pub enum DemuxRegistryError {
     },
     /// Container row без input capability никогда не может быть выбран честно.
     #[error(
-        "demux factory `{factory_id}` не объявил input capabilities для container `{container}`"
+        "demux factory `{factory_id}` did not declare input capabilities for container `{container}`"
     )]
     MissingInputCapabilities {
         /// Invalid factory identity.
@@ -211,13 +211,13 @@ pub enum DemuxRegistryError {
         container: DemuxContainerId,
     },
     /// Factory без container registration не имеет typed selection evidence.
-    #[error("demux factory `{factory_id}` не объявил containers")]
+    #[error("demux factory `{factory_id}` did not declare containers")]
     MissingContainers {
         /// Invalid factory identity.
         factory_id: DemuxFactoryId,
     },
     /// Fixture IDs обязательны как regression evidence registration-а.
-    #[error("demux factory `{factory_id}` не объявил fixture IDs")]
+    #[error("demux factory `{factory_id}` did not declare fixture IDs")]
     MissingFixtureIds {
         /// Invalid factory identity.
         factory_id: DemuxFactoryId,
@@ -257,19 +257,19 @@ impl DemuxProbedOpen {
 #[derive(Debug, thiserror::Error)]
 pub enum DemuxOpenError {
     /// Registry не нашёл ни одного content/hint match-а.
-    #[error("ни один зарегистрированный demux factory не распознал input")]
+    #[error("No registered demux factory has recognized input.")]
     NoMatch,
     /// Несколько factory дали одинаково сильное evidence.
-    #[error("demux probe неоднозначен между factory {factory_ids:?}")]
+    #[error("demux probe mixed-up factory {factory_ids:?}")]
     AmbiguousMatch {
         /// Stable identities всех tied winners.
         factory_ids: Vec<DemuxFactoryId>,
     },
     /// Probe узнал input, но terminal typed rejection запрещает open.
-    #[error("demux probe отклонён")]
+    #[error("demux probe rejected")]
     ProbeRejected(#[source] DemuxProbeRejection),
     /// Content sniff доказал другой container, чем требовал concrete manifest owner.
-    #[error("demux content container не совпадает с required container")]
+    #[error("The demux content container does not match the required container.")]
     UnexpectedContainer {
         /// Required intent после manifest/profile validation.
         expected: DemuxContainerId,
@@ -277,7 +277,7 @@ pub enum DemuxOpenError {
         matched: DemuxContainerId,
     },
     /// Выбранный factory не смог открыть восстановленный input.
-    #[error("demux factory `{factory_id}` отклонил open")]
+    #[error("demux factory `{factory_id}` flattened open")]
     FactoryRejected {
         /// Stable selected factory identity.
         factory_id: DemuxFactoryId,
@@ -535,7 +535,7 @@ impl DemuxRegistry {
                             strongest_rejection = choose_probe_rejection(
                                 strongest_rejection,
                                 DemuxProbeRejection::Malformed {
-                                    reason: "demux factory matched незарегистрированный container"
+                                    reason: "demux factory matched unregistered container"
                                         .to_owned(),
                                 },
                             );

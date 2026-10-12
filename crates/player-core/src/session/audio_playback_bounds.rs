@@ -76,7 +76,7 @@ mod tests {
             DecodedAudioPlaybackFrameRange::PreserveOriginalSamples => samples,
             DecodedAudioPlaybackFrameRange::Frames(frames) => frames
                 .slice_interleaved(samples, channels)
-                .expect("global range должен принадлежать decoded block"),
+                .expect("The global range must be decoded block."),
         }
     }
 

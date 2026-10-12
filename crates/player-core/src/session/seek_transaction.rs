@@ -83,7 +83,7 @@ impl PlayerSession {
             clock_base_ms = clock_base.as_millis(),
             generation = seek_commit.generation,
             pipeline_generation = self.pipeline.seek_generation(),
-            "Seek media clock перепривязан после accepted demux point"
+            "Seek media clock re-tied after accepted demux point"
         );
     }
 
@@ -317,7 +317,7 @@ impl PlayerSession {
                 kind = "seek",
                 generation = seek_commit.generation,
                 target_ms = seek_commit.target_position.as_duration().as_millis(),
-                "Live scrub прокат: decoder output floor пропущен"
+                "Live scrub rental: decoder output floor skipped"
             );
             return Ok(());
         }
@@ -620,7 +620,7 @@ impl PlayerSession {
             target_ms = seek_commit.target_position.as_duration().as_millis(),
             frame_pts_ms = frame_pts.as_millis(),
             generation = seek_commit.generation,
-            "Seek transaction увидел presented frame"
+            "Seek transaction see presented frame"
         );
 
         self.seek_runtime.clear_eof_fallback_video_position();

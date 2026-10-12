@@ -99,7 +99,7 @@ fn classify_local_path(path: PathBuf) -> ClassifiedItem {
         // Нет прав и прочие сбои: файл существует, пусть обычный путь открытия назовёт
         // точную причину («нет доступа к файлу»), а не мы гадаем здесь.
         Err(error) => {
-            tracing::debug!(kind = ?error.kind(), "Метаданные брошенного файла недоступны");
+            tracing::debug!(kind = ?error.kind(), "Dropped file metadata is unavailable");
             ClassifiedItem::MediaFile(path)
         }
     }

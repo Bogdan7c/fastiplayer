@@ -94,7 +94,7 @@ impl PlayerSession {
             debug!(
                 restored_staged_video_packets = recovery_report.restored_staged_packets,
                 pending_video_packets = self.pipeline.pending_video_packet_len(),
-                "EOF восстановил незавершённый video recovery continuation"
+                "EOF restores unfinished video recovery continuation"
             );
         }
         debug!(
@@ -144,7 +144,7 @@ impl PlayerSession {
 
         if let Some(play_result) = self.play_audio_output_with_resume_event() {
             if let Err(error) = play_result {
-                warn!(error = %error, "Не удалось запустить audio tail после EOF");
+                warn!(error = %error, "Failed to start audio tail after EOF");
                 self.set_runtime_error(format!("Audio EOF drain play error: {error}"));
                 self.pipeline.clear_audio_output();
                 return;
@@ -173,7 +173,7 @@ impl PlayerSession {
         }
 
         if let Err(error) = self.flush_audio_tempo_processor_for_eof() {
-            warn!(error = %error, "Не удалось дренировать audio tempo tail после EOF");
+            warn!(error = %error, "Failed to drain audio tempo tail after EOF");
             // После committed tempo processing backend уже нельзя откатить к
             // direct PCM. Потеря EOF tail-а — fatal session failure, а не
             // разрешение молча завершить оставшееся видео без audio.
@@ -237,7 +237,7 @@ impl PlayerSession {
     /// лишних callback-ов; причина остаётся в логе.
     fn park_audio_output_after_eof(&mut self) {
         if let Some(Err(error)) = self.pipeline.pause_audio_output_and_capture_clock() {
-            warn!(error = %error, "Не удалось поставить audio output на паузу после EOF");
+            warn!(error = %error, "Could not pause audio output after EOF");
         }
     }
 
@@ -343,7 +343,7 @@ impl PlayerSession {
         if !self.pipeline.has_demuxer() {
             let error = PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
-                "Replay невозможен: media pipeline уже закрыт",
+                "Replay is not possible: the media pipeline is closed.",
             );
             self.record_recoverable_error(error);
             return Ok(());
@@ -357,7 +357,7 @@ impl PlayerSession {
                 .unwrap_or(TimelineNotSeekableReason::UnknownTimeline);
             let error = PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
-                format!("Replay невозможен: timeline не seekable ({reason:?})"),
+                format!("Replay impossible: timeline not seekable ({reason:?})"),
             );
             self.record_recoverable_error(error);
             return Ok(());

@@ -25,7 +25,7 @@ pub(super) fn save_validated(path: &Path, config: &AppConfig) -> ConfigResult<()
     let toml_text = prepare_validated_toml_for_save(path, config)?;
     create_parent_dir_if_needed(path)?;
     replace_config_file(path, &toml_text)?;
-    info!(path = %path.display(), "Сохранён config fastiplayer через atomic rename");
+    info!(path = %path.display(), "Fastiplayer configuration saved through atomic rename");
     Ok(())
 }
 
@@ -68,15 +68,15 @@ pub(super) fn remove_stale_save_temp_files(path: &Path) {
             if report.removed_count > 0 {
                 info!(
                     removed_count = report.removed_count,
-                    "Удалены брошенные временные файлы config"
+                    "Removed temporary config files"
                 );
             }
             for failure_kind in report.removal_failures {
-                warn!(error_kind = ?failure_kind, "Не удалось удалить брошенный временный файл config");
+                warn!(error_kind = ?failure_kind, "Could not remove the abandoned temporary configuration file");
             }
         }
         Err(scan_error) => {
-            warn!(error = ?scan_error, "Не удалось просмотреть каталог config для уборки временных файлов")
+            warn!(error = ?scan_error, "Cannot view the config directory to clean temporary files")
         }
     }
     remove_legacy_save_temp_files(path);
@@ -89,7 +89,7 @@ fn replace_config_file(path: &Path, toml_text: &str) -> ConfigResult<()> {
         // Файл уже заменён и читается; не подтверждена только устойчивость записи
         // каталога к выключению питания. Это предупреждение, а не провал save.
         AtomicFileWriteOutcome::ReplacedDurabilityUnconfirmed(sync_error) => {
-            warn!(path = %path.display(), error = ?sync_error, "Config записан, но sync каталога не подтверждён");
+            warn!(path = %path.display(), error = ?sync_error, "Config recorded, but directory sync not confirmed");
             Ok(())
         }
         AtomicFileWriteOutcome::NotReplaced(failure) => Err(ConfigError::ReplaceConfigFile {
@@ -134,7 +134,7 @@ fn remove_legacy_save_temp_files(path: &Path) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return,
         Err(error) => {
-            warn!(error = %error, "Не удалось просмотреть каталог config для уборки старых временных файлов");
+            warn!(error = %error, "Cannot view the config directory to clean up old temporary files");
             return;
         }
     };
@@ -150,10 +150,10 @@ fn remove_legacy_save_temp_files(path: &Path) {
             continue;
         }
         match fs::remove_file(directory_entry.path()) {
-            Ok(()) => info!("Удалён брошенный временный файл config старого формата"),
+            Ok(()) => info!("Old format config file deleted"),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
-                warn!(error = %error, "Не удалось удалить брошенный временный файл config старого формата")
+                warn!(error = %error, "Could not remove the abandoned temporary configuration file in the old format")
             }
         }
     }

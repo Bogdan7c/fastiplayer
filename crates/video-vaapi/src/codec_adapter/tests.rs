@@ -65,13 +65,10 @@ fn surface_ready_returns_true() {
     let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(true));
 
     assert!(
-        handle.surface_ready().expect("ready query должен пройти"),
-        "ready surface должна вернуться как true"
+        handle.surface_ready().expect("ready query must pass"),
+        "ready surface I have to go back true"
     );
-    assert!(
-        !sync_called.get(),
-        "surface_ready не должен вызывать sync()"
-    );
+    assert!(!sync_called.get(), "surface_ready should not cause sync()");
 }
 
 /// Проверяет, что busy surface остаётся `false`, а не освобождается как ready.
@@ -80,13 +77,10 @@ fn surface_ready_returns_false() {
     let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
 
     assert!(
-        !handle.surface_ready().expect("busy query должен пройти"),
-        "busy surface должна вернуться как false"
+        !handle.surface_ready().expect("busy query must pass"),
+        "The busy surface will return as a false surface."
     );
-    assert!(
-        !sync_called.get(),
-        "surface_ready не должен вызывать sync()"
-    );
+    assert!(!sync_called.get(), "surface_ready should not cause sync()");
 }
 
 /// Проверяет, что query error пробрасывается наружу и не превращается в `true`.
@@ -97,16 +91,13 @@ fn surface_ready_propagates_query_error() {
 
     let error = handle
         .surface_ready()
-        .expect_err("query error должен остаться Err");
+        .expect_err("query error must remain Err");
 
     assert!(
         error.to_string().contains("synthetic query failure"),
-        "surface_ready должен сохранить текст ошибки query"
+        "surface_ready should save the query error text"
     );
-    assert!(
-        !sync_called.get(),
-        "surface_ready не должен вызывать sync()"
-    );
+    assert!(!sync_called.get(), "surface_ready should not cause sync()");
 }
 
 /// Собирает stream config с production zero-copy memory contract.
@@ -298,7 +289,7 @@ fn h265_stream_config_with_parameter_sets() -> H265VaapiStreamConfig {
     );
 
     H265VaapiStreamConfig::from_decode_config(&config)
-        .expect("valid test hvcC должен проходить H.265 configure boundary")
+        .expect("valid test hvcC must pass H.265 configure boundary")
 }
 
 /// Проверяет безопасную default reuse policy для config-sensitive adapters.
@@ -441,7 +432,7 @@ fn h264_decode_config(profile: H264Profile) -> VideoStreamDecodeConfig {
 fn h264_stream_config() -> H264VaapiStreamConfig {
     let config = h264_decode_config(H264Profile::High);
     H264VaapiStreamConfig::from_decode_config(&config)
-        .expect("valid test avcC должен проходить H.264 configure boundary")
+        .expect("A valid test avcC must pass H.264 configure boundary")
 }
 
 /// Собирает AVCC access unit с 4-byte NAL lengths.
@@ -462,7 +453,7 @@ fn recycle_fully_consumed_access_unit(
 ) {
     let accepted_len = pending_access_unit
         .feed_until_blocked(|remaining_bytes| Ok(remaining_bytes.len()))
-        .expect("test AU должен полностью consume-иться");
+        .expect("test AU fully consume-flow");
     assert_eq!(accepted_len, Some(pending_access_unit.source_packet_len));
     preparer.recycle_completed_access_unit(pending_access_unit);
 }
@@ -474,7 +465,7 @@ fn recycle_fully_consumed_h265_access_unit(
 ) {
     let accepted_len = pending_access_unit
         .feed_until_blocked(|remaining_bytes| Ok(remaining_bytes.len()))
-        .expect("test H.265 AU должен полностью consume-иться");
+        .expect("test H.265 AU must be fully consumed");
     assert_eq!(accepted_len, Some(pending_access_unit.source_packet_len));
     preparer.recycle_completed_access_unit(pending_access_unit);
 }
@@ -540,7 +531,7 @@ fn h265_incomplete_hvcc_accepts_in_band_parameter_sets() {
 
     assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
     let stream_config = H265VaapiStreamConfig::from_decode_config(&config)
-        .expect("incomplete hvcC должен проходить configure boundary");
+        .expect("incomplete hvcC must pass configure boundary");
     let mut preparer = H265AccessUnitPreparer::new(stream_config);
     let video_parameter_set = h265_vps();
     let sequence_parameter_set = h265_sps();
@@ -555,7 +546,7 @@ fn h265_incomplete_hvcc_accepts_in_band_parameter_sets() {
 
     let first_pending = preparer
         .prepare_pending_access_unit(&first_access_unit, VaapiPacketDecodeHints::default())
-        .expect("first H.265 AU с in-band parameter sets должен собираться");
+        .expect("first H.265 AU with in-band parameter sets must be assembled");
 
     assert_eq!(preparer.stream_config.video_parameter_sets.len(), 1);
     assert_eq!(preparer.stream_config.sequence_parameter_sets.len(), 1);
@@ -580,7 +571,7 @@ fn h265_incomplete_hvcc_accepts_in_band_parameter_sets() {
                 inject_parameter_sets: true,
             },
         )
-        .expect("known in-band parameter sets должны inject-иться на следующем AU");
+        .expect("known in-band parameter sets must inject-follow up AU");
 
     assert_eq!(
         second_pending.annex_b_bytes,
@@ -603,7 +594,7 @@ fn h265_hev1_style_in_band_parameter_sets_are_accepted() {
         None,
     );
     let stream_config = H265VaapiStreamConfig::from_decode_config(&config)
-        .expect("hev1-style config без hvcC должен проходить при доказанной packetization");
+        .expect("hev1-style config without hvcC must pass under proven packetization");
     let mut preparer = H265AccessUnitPreparer::new(stream_config);
     let video_parameter_set = h265_vps();
     let sequence_parameter_set = h265_sps();
@@ -689,7 +680,7 @@ fn h265_keyframe_access_unit_injects_parameter_sets() {
                 inject_parameter_sets: true,
             },
         )
-        .expect("H.265 AU должен собираться с VPS/SPS/PPS injection");
+        .expect("H.265 AU must be collected with VPS/SPS/PPS injection");
 
     assert_eq!(
         pending_access_unit.annex_b_bytes,
@@ -713,7 +704,7 @@ fn h265_first_access_unit_after_flush_injects_parameter_sets() {
     let first_access_unit = h265_hvcc_access_unit(&[&first_slice]);
     let first_pending = preparer
         .prepare_pending_access_unit(&first_access_unit, VaapiPacketDecodeHints::default())
-        .expect("first H.265 AU должен получить lifecycle injection");
+        .expect("first H.265 AU must receive lifecycle injection");
     recycle_fully_consumed_h265_access_unit(&mut preparer, first_pending);
 
     preparer.reset_after_flush();
@@ -721,7 +712,7 @@ fn h265_first_access_unit_after_flush_injects_parameter_sets() {
     let second_access_unit = h265_hvcc_access_unit(&[&second_slice]);
     let second_pending = preparer
         .prepare_pending_access_unit(&second_access_unit, VaapiPacketDecodeHints::default())
-        .expect("first H.265 AU after flush должен получить lifecycle injection");
+        .expect("first H.265 AU after flush must receive lifecycle injection");
 
     assert_eq!(
         second_pending.annex_b_bytes,
@@ -747,7 +738,7 @@ fn h265_output_backpressure_preserves_pending_bytes_until_complete_consume() {
                 inject_parameter_sets: true,
             },
         )
-        .expect("first H.265 AU должен собираться");
+        .expect("first H.265 AU shall be collected.");
     let first_capacity = first_pending.annex_b_bytes.capacity();
     recycle_fully_consumed_h265_access_unit(&mut preparer, first_pending);
     assert_eq!(preparer.annex_b_scratch.capacity(), first_capacity);
@@ -756,7 +747,7 @@ fn h265_output_backpressure_preserves_pending_bytes_until_complete_consume() {
     let retry_access_unit = h265_hvcc_access_unit(&[&retry_slice]);
     let mut pending_access_unit = preparer
         .prepare_pending_access_unit(&retry_access_unit, VaapiPacketDecodeHints::default())
-        .expect("retry H.265 AU должен собираться");
+        .expect("retry H.265 AU must be collected");
     let pending_bytes_before_backpressure = pending_access_unit.annex_b_bytes.clone();
     let pending_capacity = pending_access_unit.annex_b_bytes.capacity();
     assert_eq!(preparer.annex_b_scratch.capacity(), 0);
@@ -781,7 +772,7 @@ fn h265_output_backpressure_preserves_pending_bytes_until_complete_consume() {
 
     let accepted_len = pending_access_unit
         .feed_until_blocked(|remaining_bytes| Ok(remaining_bytes.len()))
-        .expect("pending H.265 AU должен завершиться после retry");
+        .expect("pending H.265 AU shall be completed after retry");
     assert_eq!(accepted_len, Some(retry_access_unit.len()));
 
     preparer.recycle_completed_access_unit(pending_access_unit);
@@ -836,7 +827,7 @@ fn factory_and_adapter_accept_h264_annex_b_with_in_band_parameter_sets() {
     assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
 
     let stream_config = H264VaapiStreamConfig::from_decode_config(&config)
-        .expect("Annex-B H.264 config должен принимать in-band parameter sets");
+        .expect("Annex-B H.264 config should receive in-band parameter sets");
     let mut preparer = H264AccessUnitPreparer::new(stream_config);
     let source_access_unit = annex_b_access_unit(&[&[0x67, 0x64], &[0x68], &[0x65, 0x88]]);
     let pending_access_unit = preparer
@@ -846,7 +837,7 @@ fn factory_and_adapter_accept_h264_annex_b_with_in_band_parameter_sets() {
                 inject_parameter_sets: true,
             },
         )
-        .expect("Annex-B AU должен дойти до VA-API feeder boundary");
+        .expect("Annex-B AU must reach VA-API feeder boundary");
 
     assert_eq!(pending_access_unit.annex_b_bytes, source_access_unit);
     assert_eq!(
@@ -871,7 +862,7 @@ fn factory_and_adapter_accept_avc3_with_in_band_parameter_sets() {
     assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
 
     let stream_config = H264VaapiStreamConfig::from_decode_config(&config)
-        .expect("avc3 config без out-of-band SPS/PPS должен быть валиден");
+        .expect("avc3 config without out-of-band SPS/PPS must be valid");
 
     let sequence_parameter_set = [0x67, 0x4d, 0x40, 0x1f];
     let picture_parameter_set = [0x68];
@@ -886,7 +877,7 @@ fn factory_and_adapter_accept_avc3_with_in_band_parameter_sets() {
                 inject_parameter_sets: true,
             },
         )
-        .expect("avc3 sample должен дойти до VA-API Annex-B feeder boundary");
+        .expect("avc3 sample must reach VA-API Annex-B feeder boundary");
 
     assert_eq!(
         pending_access_unit.annex_b_bytes,
@@ -926,7 +917,7 @@ fn factory_accepts_each_implemented_h264_profile() {
 
         assert!(
             VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none(),
-            "implemented H.264 profile должен приниматься: {profile:?}"
+            "implemented H.264 profile to be accepted: {profile:?}"
         );
     }
 }
@@ -962,13 +953,13 @@ fn h264_non_keyframe_access_unit_after_start_uses_no_parameter_set_injection() {
                 inject_parameter_sets: true,
             },
         )
-        .expect("first H.264 AU должен собираться");
+        .expect("first H.264 AU shall be collected.");
     recycle_fully_consumed_access_unit(&mut preparer, first_pending);
 
     let non_keyframe_access_unit = avcc_access_unit(&[&[0x41, 0x9a]]);
     let pending_access_unit = preparer
         .prepare_pending_access_unit(&non_keyframe_access_unit, VaapiPacketDecodeHints::default())
-        .expect("non-keyframe H.264 AU должен собираться");
+        .expect("non-keyframe H.264 AU must be collected");
 
     assert_eq!(
         pending_access_unit.annex_b_bytes,
@@ -983,7 +974,7 @@ fn h264_keyframe_access_unit_injects_parameter_sets() {
     let first_access_unit = avcc_access_unit(&[&[0x41, 0x9a]]);
     let first_pending = preparer
         .prepare_pending_access_unit(&first_access_unit, VaapiPacketDecodeHints::default())
-        .expect("first H.264 AU должен собираться");
+        .expect("first H.264 AU shall be collected.");
     recycle_fully_consumed_access_unit(&mut preparer, first_pending);
 
     let keyframe_access_unit = avcc_access_unit(&[&[0x65, 0x88]]);
@@ -994,7 +985,7 @@ fn h264_keyframe_access_unit_injects_parameter_sets() {
                 inject_parameter_sets: true,
             },
         )
-        .expect("keyframe H.264 AU должен собираться");
+        .expect("keyframe H.264 AU should be");
 
     assert_eq!(
         pending_access_unit.annex_b_bytes,
@@ -1014,14 +1005,14 @@ fn h264_first_access_unit_after_flush_injects_parameter_sets() {
                 inject_parameter_sets: true,
             },
         )
-        .expect("first H.264 AU должен собираться");
+        .expect("first H.264 AU shall be collected.");
     recycle_fully_consumed_access_unit(&mut preparer, first_pending);
 
     preparer.reset_after_flush();
     let post_flush_access_unit = avcc_access_unit(&[&[0x41, 0x9a]]);
     let pending_access_unit = preparer
         .prepare_pending_access_unit(&post_flush_access_unit, VaapiPacketDecodeHints::default())
-        .expect("post-flush H.264 AU должен собираться");
+        .expect("post-flush H.264 AU must be collected");
 
     assert_eq!(
         pending_access_unit.annex_b_bytes,
@@ -1041,7 +1032,7 @@ fn h264_output_backpressure_preserves_pending_bytes_until_complete_consume() {
                 inject_parameter_sets: true,
             },
         )
-        .expect("first H.264 AU должен собираться");
+        .expect("first H.264 AU shall be collected.");
     let first_capacity = first_pending.annex_b_bytes.capacity();
     recycle_fully_consumed_access_unit(&mut preparer, first_pending);
     assert_eq!(preparer.annex_b_scratch.capacity(), first_capacity);
@@ -1049,7 +1040,7 @@ fn h264_output_backpressure_preserves_pending_bytes_until_complete_consume() {
     let retry_access_unit = avcc_access_unit(&[&[0x41, 0x9a]]);
     let mut pending_access_unit = preparer
         .prepare_pending_access_unit(&retry_access_unit, VaapiPacketDecodeHints::default())
-        .expect("retry H.264 AU должен собираться");
+        .expect("retry H.264 AU must be collected");
     let pending_bytes_before_backpressure = pending_access_unit.annex_b_bytes.clone();
     let pending_capacity = pending_access_unit.annex_b_bytes.capacity();
     assert_eq!(preparer.annex_b_scratch.capacity(), 0);
@@ -1074,7 +1065,7 @@ fn h264_output_backpressure_preserves_pending_bytes_until_complete_consume() {
 
     let accepted_len = pending_access_unit
         .feed_until_blocked(|remaining_bytes| Ok(remaining_bytes.len()))
-        .expect("pending AU должен завершиться после retry");
+        .expect("The pending AU must be terminated after retry.");
     assert_eq!(accepted_len, Some(retry_access_unit.len()));
 
     preparer.recycle_completed_access_unit(pending_access_unit);

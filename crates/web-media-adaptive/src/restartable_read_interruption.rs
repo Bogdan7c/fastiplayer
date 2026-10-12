@@ -183,7 +183,7 @@ impl AdaptiveRestartableReadInterruption {
                         return AdaptiveRestartableReadInterruptionRequest::InterruptionRequested;
                     }
                 }
-                _ => unreachable!("phase mask допускает только три owner-defined состояния"),
+                _ => unreachable!("phase mask allows only three owner-defined states"),
             }
         }
     }
@@ -268,7 +268,7 @@ impl AdaptiveRestartableReadAttempt {
                 ATTEMPT_PHASE_READING | ATTEMPT_PHASE_INTERRUPTED => {
                     return AdaptiveRestartableReadStart::InterruptedOrSuperseded;
                 }
-                _ => unreachable!("phase mask допускает только три owner-defined состояния"),
+                _ => unreachable!("phase mask allows only three owner-defined states"),
             }
         }
     }
@@ -417,7 +417,7 @@ mod tests {
         );
         let first_guard = match first.begin_network_read() {
             AdaptiveRestartableReadStart::Armed(guard) => guard,
-            _ => panic!("current attempt должен занять read slot"),
+            _ => panic!("The current attempt is to read slot"),
         };
         assert_eq!(
             controller.request_active_read_interruption(),
@@ -439,7 +439,7 @@ mod tests {
         );
         let replacement_guard = match replacement.begin_network_read() {
             AdaptiveRestartableReadStart::Armed(guard) => guard,
-            _ => panic!("replacement commit должен re-arm controller"),
+            _ => panic!("replacement commit must re-arm controller"),
         };
         assert_eq!(
             replacement_guard.finish(),
@@ -457,7 +457,7 @@ mod tests {
         );
         let guard = match attempt.begin_network_read() {
             AdaptiveRestartableReadStart::Armed(guard) => guard,
-            _ => panic!("current attempt должен занять read slot"),
+            _ => panic!("The current attempt is to read slot"),
         };
         let wake_counter = Arc::new(WakeCounter {
             wake_count: AtomicUsize::new(0),

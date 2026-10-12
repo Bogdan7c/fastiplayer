@@ -11,7 +11,7 @@ use tokio::runtime::{Builder, Runtime};
 
 /// Ошибка создания current-thread async executor-а.
 #[derive(Debug, thiserror::Error)]
-#[error("не удалось создать current-thread async executor")]
+#[error("Can't create current-thread async executor")]
 pub struct CurrentThreadAsyncExecutorBuildError {
     /// Системная причина, сохранённая без раскрытия concrete runtime consumer-у.
     #[source]

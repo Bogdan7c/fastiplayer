@@ -42,7 +42,7 @@ fn parse_traf(children: &[u8]) -> Result<TrafAtom, AtomError> {
 fn assert_decode_error(result: Result<TrafAtom, AtomError>, expected: &'static str) {
     match result {
         Err(AtomError::Other(Error::DecodeError(actual))) => assert_eq!(actual, expected),
-        _ => panic!("ожидался exact traf decode error"),
+        _ => panic!("expected exact traf decode error"),
     }
 }
 
@@ -67,7 +67,7 @@ fn keeps_nonzero_base_decode_time() {
 
     let traf = match parse_traf(&children) {
         Ok(traf) => traf,
-        Err(_) => panic!("valid traf должен парситься"),
+        Err(_) => panic!("A valid traf must be pared"),
     };
     assert_eq!(traf.tfdt.base_media_decode_time, 4_096);
 }

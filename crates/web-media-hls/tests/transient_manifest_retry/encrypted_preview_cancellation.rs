@@ -82,7 +82,7 @@ fn prove_target_and_finish(demuxer: &mut dyn Demuxer) {
             DemuxReadEvent::TemporarilyUnavailable(_) => unreachable!(),
         }
     }
-    assert!(saw_target_video, "initial playback обязан доказать target RAP");
+    assert!(saw_target_video, "initial playback must prove target RAP");
 }
 
 #[test]
@@ -195,11 +195,11 @@ fn final_receipt_cancels_partial_rotated_key_without_caching_stale_key() {
     disconnected_receiver.recv_timeout(TEST_TIMEOUT).expect("key TCP close");
     final_receiver.recv_timeout(TEST_TIMEOUT).expect("final starts before key release");
     assert_successful_final(&seek_handle, fence, &mut *demuxer);
-    assert_eq!(key_b_attempts.load(Ordering::Acquire), 2, "partial key нельзя cache-ить");
+    assert_eq!(key_b_attempts.load(Ordering::Acquire), 2, "The partial key cannot be cache-");
     assert_eq!(
         target_attempts.load(Ordering::Acquire),
         2,
-        "cancelled key phase не должна повторно рестартовать уже дочитанный ciphertext"
+        "cancelled key phase You should not re-start what has been read ciphertext"
     );
 }
 

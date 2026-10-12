@@ -179,7 +179,7 @@ fn read_bounded_resource_stream(
             OrderedResourceReadOutcome::Begin(metadata) => {
                 if resource_open {
                     return Err(resource_protocol_to_probe(
-                        "Begin получен до EndResource текущего resource",
+                        "Begin received EndResource current resource",
                     ));
                 }
                 begun_resources = begun_resources.saturating_add(1);
@@ -189,17 +189,17 @@ fn read_bounded_resource_stream(
             OrderedResourceReadOutcome::Data(bytes) => {
                 if !resource_open {
                     return Err(resource_protocol_to_probe(
-                        "Data получен вне Begin/EndResource lifecycle",
+                        "Data received Begin/EndResource lifecycle",
                     ));
                 }
                 if bytes.is_empty() {
                     return Err(resource_protocol_to_probe(
-                        "пустой Data запрещён ordered resource contract-ом",
+                        "Empty Data is prohibited by ordered resource contract",
                     ));
                 }
                 if bytes.len() > maximum_chunk_bytes.get() {
                     return Err(resource_protocol_to_probe(
-                        "Data превысил caller-provided maximum_chunk_bytes",
+                        "Data exceeds caller-provided maximum_chunk_bytes",
                     ));
                 }
                 sniffed_bytes.extend_from_slice(&bytes);
@@ -208,7 +208,7 @@ fn read_bounded_resource_stream(
             OrderedResourceReadOutcome::EndResource => {
                 if !resource_open {
                     return Err(resource_protocol_to_probe(
-                        "EndResource получен без активного resource",
+                        "EndResources are available without active resource",
                     ));
                 }
                 resource_open = false;
@@ -217,7 +217,7 @@ fn read_bounded_resource_stream(
             OrderedResourceReadOutcome::EndOfInput => {
                 if resource_open {
                     return Err(resource_protocol_to_probe(
-                        "EndOfInput получен без EndResource текущего resource",
+                        "EndOfInput received without EndResource for the current resource",
                     ));
                 }
                 replay_events.push_back(OrderedResourceReadOutcome::EndOfInput);

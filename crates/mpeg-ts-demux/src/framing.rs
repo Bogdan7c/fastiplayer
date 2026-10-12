@@ -220,7 +220,7 @@ impl TransportPacketReader {
         self.fill_until(TS_PACKET_BYTES)?;
         if self.buffered_bytes.len() < TS_PACKET_BYTES {
             return Err(MpegTsDemuxError::Malformed {
-                reason: "оборван последний 188-byte transport packet".to_owned(),
+                reason: "The latest 188-byte transport packet".to_owned(),
             });
         }
         let packet_offset = self.stream_position;
@@ -415,7 +415,7 @@ impl TransportPacketReader {
                         OrderedResourceReadOutcome::Begin(metadata) => {
                             if self.active_ordered_resource.is_some() {
                                 return Err(stream_protocol_error(
-                                    "Begin получен до EndResource текущего resource",
+                                    "Begin received EndResource current resource",
                                 ));
                             }
                             let marker_offset = self
@@ -432,17 +432,17 @@ impl TransportPacketReader {
                         OrderedResourceReadOutcome::Data(bytes) => {
                             if self.active_ordered_resource.is_none() {
                                 return Err(stream_protocol_error(
-                                    "Data получен вне Begin/EndResource lifecycle",
+                                    "Data received Begin/EndResource lifecycle",
                                 ));
                             }
                             if bytes.is_empty() {
                                 return Err(stream_protocol_error(
-                                    "пустой Data запрещён ordered resource contract-ом",
+                                    "Empty Data is prohibited by ordered resource contract",
                                 ));
                             }
                             if bytes.len() > maximum_chunk_bytes.get() {
                                 return Err(stream_protocol_error(
-                                    "Data превысил caller-provided maximum_chunk_bytes",
+                                    "Data exceeds caller-provided maximum_chunk_bytes",
                                 ));
                             }
                             let count = bytes.len();
@@ -452,7 +452,7 @@ impl TransportPacketReader {
                         OrderedResourceReadOutcome::EndResource => {
                             let Some(metadata) = self.active_ordered_resource.take() else {
                                 return Err(stream_protocol_error(
-                                    "EndResource получен без активного resource",
+                                    "EndResources are available without active resource",
                                 ));
                             };
                             self.pending_input_boundary =
@@ -462,7 +462,7 @@ impl TransportPacketReader {
                         OrderedResourceReadOutcome::EndOfInput => {
                             if self.active_ordered_resource.is_some() {
                                 return Err(stream_protocol_error(
-                                    "EndOfInput получен без EndResource текущего resource",
+                                    "EndOfInput received without EndResource for the current resource",
                                 ));
                             }
                             self.pending_input_boundary = Some(PendingInputBoundary::EndOfInput);
@@ -494,7 +494,7 @@ fn parse_transport_packet(
 ) -> Result<TransportPacket, MpegTsDemuxError> {
     if bytes.first() != Some(&0x47) {
         return Err(MpegTsDemuxError::Malformed {
-            reason: "transport packet не начинается sync byte 0x47".to_owned(),
+            reason: "transport packet does not start sync byte 0x47".to_owned(),
         });
     }
     let transport_error = bytes[1] & 0x80 != 0;
@@ -505,7 +505,7 @@ fn parse_transport_packet(
     let continuity_counter = bytes[3] & 0x0f;
     if adaptation_control == 0 {
         return Err(MpegTsDemuxError::Malformed {
-            reason: format!("reserved adaptation_field_control на PID {pid}"),
+            reason: format!("reserved adaptation_field_control on PID {pid}"),
         });
     }
     let mut payload_start = 4_usize;
@@ -515,7 +515,7 @@ fn parse_transport_packet(
         let adaptation_length = usize::from(bytes[4]);
         if adaptation_length > 183 || 5 + adaptation_length > TS_PACKET_BYTES {
             return Err(MpegTsDemuxError::Malformed {
-                reason: format!("adaptation field выходит за packet на PID {pid}"),
+                reason: format!("adaptation field goes out packet on PID {pid}"),
             });
         }
         payload_start = 5 + adaptation_length;
@@ -525,7 +525,7 @@ fn parse_transport_packet(
             if flags & 0x10 != 0 {
                 if adaptation_length < 7 {
                     return Err(MpegTsDemuxError::Malformed {
-                        reason: format!("оборван PCR на PID {pid}"),
+                        reason: format!("PCR torn to PID {pid}"),
                     });
                 }
                 pcr_base = Some(

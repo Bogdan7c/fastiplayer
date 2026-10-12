@@ -23,10 +23,10 @@ fn disconnected_wake_endpoint_stops_worker_without_spin() {
 
     exited_rx
         .recv_timeout(Duration::from_secs(2))
-        .expect("disconnected wake endpoint должен остановить worker без spin");
+        .expect("Disconnected wake endpoint stops worker without spin");
     join_handle
         .join()
-        .expect("resume disconnect regression worker не должен panic");
+        .expect("Disconnected regression worker does not have to panic");
 
     // Второй вызов выполняет тот же production loop в test-owner thread: это делает exact
     // disconnected exit наблюдаемым без зависимости от thread-local coverage flush timing.
@@ -42,7 +42,7 @@ fn disconnected_wake_endpoint_stops_worker_without_spin() {
     // Один wake без pending snapshot детерминированно проверяет возврат production loop к ожиданию.
     direct_wake_tx
         .try_send(())
-        .expect("stale wake должен поместиться в пустой bounded channel");
+        .expect("The stale wake should fit in an empty bound channel.");
     // Disconnect после stale wake обязан завершить worker без fake shutdown completion.
     drop(direct_wake_tx);
 
@@ -57,6 +57,6 @@ fn disconnected_wake_endpoint_stops_worker_without_spin() {
     assert_eq!(
         direct_completion_rx.try_recv(),
         Err(mpsc::TryRecvError::Disconnected),
-        "wake disconnect не должен маскироваться под shutdown completion",
+        "wake disconnect should not be disguised shutdown completion",
     );
 }

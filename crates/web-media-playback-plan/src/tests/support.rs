@@ -43,19 +43,19 @@ pub(super) fn candidate_descriptor(
         CandidateIdentity::new(
             TEST_SOURCE,
             TEST_GENERATION,
-            CandidateFormatIdentity::new(format_id).expect("test format identity валидна"),
+            CandidateFormatIdentity::new(format_id).expect("test format identity valid"),
         ),
-        SemanticIdentity::new(TEST_SOURCE, semantic_key).expect("test semantic identity валидна"),
+        SemanticIdentity::new(TEST_SOURCE, semantic_key).expect("test semantic identity valid"),
         layout,
         Vec::new(),
     )
-    .expect("test candidate descriptor валиден")
+    .expect("test candidate descriptor")
 }
 
 /// Строит normalized transport из exact S00 identity.
 pub(super) fn transport(raw: &str) -> NormalizedTransport {
     NormalizedTransport::parse(
-        RawTransportIdentity::new(raw).expect("test transport identity валидна"),
+        RawTransportIdentity::new(raw).expect("test transport identity valid"),
     )
 }
 
@@ -63,7 +63,7 @@ pub(super) fn transport(raw: &str) -> NormalizedTransport {
 pub(super) fn container(raw: &str) -> ContainerIdentity {
     ContainerIdentity::parse(
         None,
-        Some(RawContainerIdentity::new(raw).expect("test container identity валидна")),
+        Some(RawContainerIdentity::new(raw).expect("test container identity valid")),
     )
 }
 
@@ -75,12 +75,12 @@ pub(super) fn video_track(
 ) -> VideoTrackDescriptor {
     VideoTrackDescriptor::new(
         NormalizedCodec::parse(
-            RawCodecIdentity::new(codec).expect("test video codec identity валидна"),
+            RawCodecIdentity::new(codec).expect("test video codec identity valid"),
         ),
-        Some(VideoWidth::new(1920).expect("test width валидна")),
-        Some(VideoHeight::new(height).expect("test height валидна")),
+        Some(VideoWidth::new(1920).expect("test width valid")),
+        Some(VideoHeight::new(height).expect("test height valid")),
         None,
-        Some(Bitrate::new(4_000_000).expect("test video bitrate валиден")),
+        Some(Bitrate::new(4_000_000).expect("test video bitrate validated")),
         dynamic_range,
     )
 }
@@ -94,11 +94,11 @@ pub(super) fn audio_track() -> AudioTrackDescriptor {
 pub(super) fn audio_track_for(codec_raw: &str) -> AudioTrackDescriptor {
     AudioTrackDescriptor::new(
         NormalizedCodec::parse(
-            RawCodecIdentity::new(codec_raw).expect("test audio codec identity валидна"),
+            RawCodecIdentity::new(codec_raw).expect("test audio codec identity valid"),
         ),
-        Some(SampleRate::new(48_000).expect("test sample rate валиден")),
-        Some(ChannelCount::new(2).expect("test channel count валиден")),
-        Some(Bitrate::new(160_000).expect("test audio bitrate валиден")),
+        Some(SampleRate::new(48_000).expect("test sample rate validated")),
+        Some(ChannelCount::new(2).expect("test channel count validated")),
+        Some(Bitrate::new(160_000).expect("test audio bitrate validated")),
         None,
     )
 }
@@ -109,7 +109,7 @@ pub(super) fn sdr_requirement(codec: VideoCodec, height: u32) -> VideoDecodeRequ
         VideoCodec::Av1 => VideoProfile::Av1(Av1Profile::Main),
         VideoCodec::Vp9 => VideoProfile::Vp9(Vp9Profile::Profile0),
         VideoCodec::H264 => VideoProfile::H264(H264Profile::High),
-        _ => panic!("focused tests используют только AV1/VP9/H.264"),
+        _ => panic!("focused tests use only AV1/VP9/H.264"),
     };
 
     VideoDecodeRequirement::new(codec)
@@ -176,7 +176,7 @@ pub(super) fn video_only_candidate(spec: VideoCandidateSpec<'_>) -> PlanningCand
         },
         CandidateQualityScore::new(spec.quality_score),
     )
-    .expect("test video-only candidate проходит admission")
+    .expect("test video-only candidate passing admission")
 }
 
 /// Строит audio-only planning candidate.
@@ -190,7 +190,7 @@ pub(super) fn audio_only_candidate(format_id: &str, semantic_key: &str) -> Plann
         },
         CandidateQualityScore::new(10),
     )
-    .expect("test audio-only candidate проходит admission")
+    .expect("test audio-only candidate passing admission")
 }
 
 /// Named параметры не дают S42 matrix перепутать transport, container и codec.
@@ -227,7 +227,7 @@ pub(super) fn audio_only_candidate_for(spec: AudioCandidateSpec<'_>) -> Planning
         },
         CandidateQualityScore::new(10),
     )
-    .expect("S42 audio-only candidate проходит admission")
+    .expect("S42 audio-only candidate passing admission")
 }
 
 /// Named параметры удерживают muxed S42 fixture shape самодокументируемым.
@@ -270,7 +270,7 @@ pub(super) fn muxed_candidate_for(spec: MuxedCandidateSpec<'_>) -> PlanningCandi
         },
         CandidateQualityScore::new(10),
     )
-    .expect("S42 muxed candidate проходит admission")
+    .expect("S42 muxed candidate passing admission")
 }
 
 /// Строит muxed planning candidate.
@@ -289,7 +289,7 @@ pub(super) fn muxed_candidate(format_id: &str, semantic_key: &str) -> PlanningCa
         },
         CandidateQualityScore::new(10),
     )
-    .expect("test muxed candidate проходит admission")
+    .expect("test muxed candidate passing admission")
 }
 
 /// Строит deferred HLS muxed candidate без static codec evidence.
@@ -302,13 +302,13 @@ pub(super) fn hls_deferred_candidate(
     let component = HlsMuxedCodecDeferredDescriptor::new(
         transport("m3u8_native"),
         container("mp4"),
-        VideoHeight::new(height).expect("test deferred height валидна"),
+        VideoHeight::new(height).expect("test deferred height valid"),
         None,
         None,
         None,
         DynamicRange::Sdr,
     )
-    .expect("test deferred HLS descriptor валиден");
+    .expect("test deferred HLS descriptor is valid");
     PlanningCandidate::new(
         candidate_descriptor(
             format_id,
@@ -318,7 +318,7 @@ pub(super) fn hls_deferred_candidate(
         CandidateRuntimeRequirements::HlsMuxedCodecDeferred,
         CandidateQualityScore::new(quality_score),
     )
-    .expect("test deferred HLS candidate проходит admission")
+    .expect("test deferred HLS candidate passing admission")
 }
 
 /// Строит progressive Ogg candidate с authoritative runtime content proof.
@@ -351,7 +351,7 @@ pub(super) fn content_probed_ogg_candidate_with_hints(
             dynamic_range,
         ),
     )
-    .expect("test content-probed descriptor валиден");
+    .expect("test content-probed descriptor is valid");
     PlanningCandidate::new(
         candidate_descriptor(
             format_id,
@@ -364,7 +364,7 @@ pub(super) fn content_probed_ogg_candidate_with_hints(
         },
         CandidateQualityScore::new(quality_score),
     )
-    .expect("test content-probed candidate проходит admission")
+    .expect("test content-probed candidate passing admission")
 }
 
 /// Строит HDS/F4F candidate с обеими объявленными A/V дорожками.
@@ -382,14 +382,14 @@ pub(super) fn content_probed_hds_declared_av_candidate(
         ContentProbedTrackEvidence::Declared(video),
         ContentProbedTrackEvidence::Declared(audio),
         ContentProbedVideoHints::new(
-            Some(VideoWidth::new(1920).expect("test width валидна")),
-            Some(VideoHeight::new(720).expect("test height валидна")),
+            Some(VideoWidth::new(1920).expect("test width valid")),
+            Some(VideoHeight::new(720).expect("test height valid")),
             None,
             None,
             DynamicRange::Sdr,
         ),
     )
-    .expect("test HDS content-probed descriptor валиден");
+    .expect("test HDS content-probed descriptor is valid");
     PlanningCandidate::new(
         candidate_descriptor(
             format_id,
@@ -402,7 +402,7 @@ pub(super) fn content_probed_hds_declared_av_candidate(
         },
         CandidateQualityScore::new(quality_score),
     )
-    .expect("test declared-A/V HDS candidate проходит admission")
+    .expect("test declared-A/V HDS candidate passing admission")
 }
 
 /// Строит separate A/V planning candidate.
@@ -425,13 +425,13 @@ pub(super) fn separate_candidate(format_id: &str, semantic_key: &str) -> Plannin
         },
         CandidateQualityScore::new(10),
     )
-    .expect("test separate candidate проходит admission")
+    .expect("test separate candidate passing admission")
 }
 
 /// Собирает immutable candidate snapshot.
 pub(super) fn candidate_snapshot(candidates: Vec<PlanningCandidate>) -> PlanningCandidateSnapshot {
     PlanningCandidateSnapshot::new(TEST_SOURCE, TEST_GENERATION, candidates)
-        .expect("test candidate snapshot валиден")
+        .expect("test candidate snapshot validated")
 }
 
 /// Строит coherent video capability snapshot для указанных decode formats.
@@ -490,7 +490,7 @@ pub(super) fn supported_video_format(codec: VideoCodec, hdr: bool) -> SupportedV
         (VideoCodec::Vp9, false) => VideoProfile::Vp9(Vp9Profile::Profile0),
         (VideoCodec::Vp9, true) => VideoProfile::Vp9(Vp9Profile::Profile2),
         (VideoCodec::H264, false) => VideoProfile::H264(H264Profile::High),
-        _ => panic!("focused test format не поддержан helper-ом"),
+        _ => panic!("focused test format flattened helper-ome"),
     };
     SupportedVideoDecodeFormat {
         codec,
@@ -514,13 +514,13 @@ pub(super) fn full_resource_capabilities() -> (TransportCapabilitySnapshot, Demu
             TransportFamily::ProgressiveHttp(HttpScheme::Https),
             transport_outputs,
         )
-        .expect("test transport registration валидна"),
+        .expect("test transport registration valid"),
     ]);
     let demux = DemuxCapabilitySnapshot::new(vec![
         DemuxCapabilityRegistration::new(ContainerFamily::WebM, transport_outputs)
-            .expect("WebM demux registration валидна"),
+            .expect("WebM demux registration valid"),
         DemuxCapabilityRegistration::new(ContainerFamily::Matroska, transport_outputs)
-            .expect("Matroska demux registration валидна"),
+            .expect("Matroska demux registration valid"),
     ]);
     (transport, demux)
 }
@@ -539,47 +539,47 @@ pub(super) fn s42_resource_capabilities() -> (TransportCapabilitySnapshot, Demux
             TransportFamily::ProgressiveHttp(HttpScheme::Http),
             progressive,
         )
-        .expect("HTTP capability валидна"),
+        .expect("HTTP capability valid"),
         TransportCapabilityRegistration::new(
             TransportFamily::ProgressiveHttp(HttpScheme::Https),
             progressive,
         )
-        .expect("HTTPS capability валидна"),
+        .expect("HTTPS capability valid"),
         TransportCapabilityRegistration::new(
             TransportFamily::ProgressiveFtp(FtpScheme::Ftp),
             progressive,
         )
-        .expect("FTP capability валидна"),
+        .expect("FTP capability valid"),
         TransportCapabilityRegistration::new(
             TransportFamily::ProgressiveFtp(FtpScheme::Ftps),
             progressive,
         )
-        .expect("FTPS capability валидна"),
+        .expect("FTPS capability valid"),
         TransportCapabilityRegistration::new(TransportFamily::Hls, ordered)
-            .expect("HLS capability валидна"),
+            .expect("HLS capability valid"),
         TransportCapabilityRegistration::new(TransportFamily::Dash, ordered_and_seekable)
-            .expect("DASH capability валидна"),
+            .expect("DASH capability valid"),
         TransportCapabilityRegistration::new(TransportFamily::SmoothStreaming, ordered)
-            .expect("Smooth capability валидна"),
+            .expect("Smooth capability valid"),
         TransportCapabilityRegistration::new(TransportFamily::Hds, ordered)
-            .expect("HDS capability валидна"),
+            .expect("HDS capability valid"),
     ]);
     let demux = DemuxCapabilitySnapshot::new(vec![
         DemuxCapabilityRegistration::new(ContainerFamily::IsoBmff, progressive)
-            .expect("ISO BMFF demux capability валидна"),
+            .expect("ISO BMFF demux capability valid"),
         DemuxCapabilityRegistration::new(ContainerFamily::FragmentedIsoBmff, ordered_and_seekable)
-            .expect("fMP4 demux capability валидна"),
+            .expect("fMP4 demux capability valid"),
         DemuxCapabilityRegistration::new(ContainerFamily::WebM, all_input_shapes)
-            .expect("WebM demux capability валидна"),
+            .expect("WebM demux capability valid"),
         DemuxCapabilityRegistration::new(ContainerFamily::Ogg, progressive)
-            .expect("Ogg demux capability валидна"),
+            .expect("Ogg demux capability valid"),
         DemuxCapabilityRegistration::new(
             ContainerFamily::MpegTs,
             ordered.with(DemuxInputCapability::StreamingBytes),
         )
-        .expect("MPEG-TS demux capability валидна"),
+        .expect("MPEG-TS demux capability valid"),
         DemuxCapabilityRegistration::new(ContainerFamily::F4f, ordered)
-            .expect("F4F demux capability валидна"),
+            .expect("F4F demux capability valid"),
     ]);
     (transport, demux)
 }
@@ -592,7 +592,7 @@ pub(super) fn selection_policy(
     containers: Vec<ContainerFamily>,
 ) -> PlaybackSelectionPolicy {
     PlaybackSelectionPolicy::new(hdr, codecs, preferred_height, containers)
-        .expect("test selection policy валидна")
+        .expect("test selection policy valid")
 }
 
 /// Проверяет Exact request для candidate-а из текущего snapshot-а.
@@ -602,6 +602,6 @@ pub(super) fn exact_request(candidate: &PlanningCandidate) -> SelectionRequest {
             candidate.descriptor().identity().clone(),
             candidate.descriptor().semantic_identity().clone(),
         )
-        .expect("test exact selection identity валидна"),
+        .expect("test exact selection identity valid"),
     )
 }

@@ -182,7 +182,7 @@ where
         } else {
             PreviewApplyResult::Unsupported {
                 message: format!(
-                    "Preview route `{}` не поддержан settings runtime",
+                    "Preview route `{}` is unsupported by the Settings runtime",
                     request.update.route
                 ),
             }

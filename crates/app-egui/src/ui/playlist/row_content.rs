@@ -108,9 +108,9 @@ pub(super) fn render_badges(ui: &mut egui::Ui, row: &PlaylistVisibleRow) {
 /// Русское accessible-имя типа не зависит от конкретного glyph.
 pub(super) const fn media_kind_text(media_kind: PlaylistMediaKind) -> &'static str {
     match media_kind {
-        PlaylistMediaKind::Unknown => "Медиа",
-        PlaylistMediaKind::Audio => "Аудио",
-        PlaylistMediaKind::Video => "Видео",
+        PlaylistMediaKind::Unknown => "Media",
+        PlaylistMediaKind::Audio => "Audio",
+        PlaylistMediaKind::Video => "Video",
     }
 }
 
@@ -133,37 +133,35 @@ pub(super) fn format_duration(duration: Option<media_core::MediaDuration>) -> St
 /// Обычная строка сообщает active/selection/pending/error без зависимости от paint geometry.
 pub(super) fn accessibility_text(row_index: usize, row: &PlaylistVisibleRow) -> String {
     let mut text = format!(
-        "Элемент {}. {}. Тип: {}. Длительность: {}.",
+        "Item {}. {}. Type: {}. Duration: {}.",
         row_index + 1,
         row.display_title(),
         media_kind_text(row.media_kind()),
         format_duration(row.duration())
     );
     if row.display_title() != row.fallback_display_name() {
-        text.push_str(" Имя файла: ");
+        text.push_str(" File name: ");
         text.push_str(row.fallback_display_name());
         text.push('.');
     }
     if row.is_active() {
-        text.push_str(" Сейчас играет.");
+        text.push_str(" Currently playing.");
     }
     if row.is_selected() {
-        text.push_str(" Выбрано.");
+        text.push_str(" Selected.");
     }
     match (row.runtime_error(), row.is_pending()) {
         (Some(error), true) => {
-            text.push_str(
-                " Предыдущая попытка завершилась ошибкой; выполняется повторная попытка. Ошибка: ",
-            );
+            text.push_str(" The previous attempt failed; retrying. Error: ");
             text.push_str(error.safe_summary());
             text.push('.');
         }
         (Some(error), false) => {
-            text.push_str(" Ошибка: ");
+            text.push_str(" Error: ");
             text.push_str(error.safe_summary());
             text.push('.');
         }
-        (None, true) => text.push_str(" Выполняется открытие."),
+        (None, true) => text.push_str(" Opening."),
         (None, false) => {}
     }
     text

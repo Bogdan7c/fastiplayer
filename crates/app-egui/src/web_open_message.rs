@@ -2,7 +2,7 @@
 //!
 //! Единственный владелец формулировок web-причин. Причину определяет
 //! `media_source_open::web_open_failure` (классификация живёт рядом с ошибками
-//! владельцев), здесь — только превращение причины в русский текст с подсказкой.
+//! владельцев), здесь — только превращение причины в английский текст с подсказкой.
 //!
 //! Бейдж строки плейлиста строится общей функцией
 //! `local_open_message::local_open_failure_row_summary`: она диспетчеризует сюда через
@@ -26,8 +26,8 @@ pub(crate) fn web_open_failure_message(
 ) -> String {
     let phrase = crate::local_open_message::failure_reason_phrase(reason.into());
     match display_host {
-        Some(host) => format!("Не удалось открыть ссылку ({host}): {phrase}"),
-        None => format!("Не удалось открыть ссылку: {phrase}"),
+        Some(host) => format!("Could not open the link ({host}): {phrase}"),
+        None => format!("Could not open the link: {phrase}"),
     }
 }
 
@@ -42,16 +42,16 @@ pub(crate) fn url_import_failure_message(
 ) -> String {
     let phrase = web_open_failure_phrase(reason);
     match display_host {
-        Some(host) => format!("Не удалось добавить ссылку ({host}): {phrase}"),
-        None => format!("Не удалось добавить ссылку: {phrase}"),
+        Some(host) => format!("Could not add the link ({host}): {phrase}"),
+        None => format!("Could not add the link: {phrase}"),
     }
 }
 
 /// Внутренний сбой приложения при добавлении ссылки (не причина со стороны сайта).
 pub(crate) fn url_import_internal_failure_message(display_host: Option<&str>) -> String {
     match display_host {
-        Some(host) => format!("Не удалось добавить ссылку ({host}) — попробуйте ещё раз"),
-        None => "Не удалось добавить ссылку — попробуйте ещё раз".to_owned(),
+        Some(host) => format!("Could not add the link ({host}); try again"),
+        None => "Could not add the link; try again".to_owned(),
     }
 }
 
@@ -62,54 +62,54 @@ pub(crate) fn url_import_internal_failure_message(display_host: Option<&str>) ->
 pub(crate) const fn web_open_failure_phrase(reason: WebOpenFailureReason) -> &'static str {
     match reason {
         WebOpenFailureReason::ExtractorNotInstalled => {
-            "не найдена программа yt-dlp — установите пакет yt-dlp"
+            "yt-dlp was not found; install the yt-dlp package"
         }
         WebOpenFailureReason::ExtractorDisabled => {
-            "загрузка с сайтов через yt-dlp отключена в настройках"
+            "website downloads through yt-dlp are disabled in Settings"
         }
         WebOpenFailureReason::ExtractorTimedOut => {
-            "yt-dlp слишком долго не отвечает — попробуйте ещё раз"
+            "yt-dlp is taking too long to respond; try again"
         }
-        WebOpenFailureReason::ExtractorFailed => {
-            "yt-dlp завершился с ошибкой — попробуйте обновить yt-dlp"
-        }
-        WebOpenFailureReason::SitePrivateMedia => "видео приватное",
+        WebOpenFailureReason::ExtractorFailed => "yt-dlp failed; try updating yt-dlp",
+        WebOpenFailureReason::SitePrivateMedia => "the video is private",
         WebOpenFailureReason::SiteLoginRequired => {
-            "сайт требует войти в аккаунт (возрастное ограничение или проверка)"
+            "the website requires signing in (age restriction or verification)"
         }
-        WebOpenFailureReason::SiteGeoRestricted => "видео недоступно в вашем регионе",
-        WebOpenFailureReason::SiteMediaUnavailable => "видео удалено или не существует",
-        WebOpenFailureReason::SiteUnsupported => "этот сайт не поддерживается yt-dlp",
+        WebOpenFailureReason::SiteGeoRestricted => "the video is unavailable in your region",
+        WebOpenFailureReason::SiteMediaUnavailable => "the video was deleted or does not exist",
+        WebOpenFailureReason::SiteUnsupported => "yt-dlp does not support this website",
         WebOpenFailureReason::SiteRejected => {
-            "сайт не отдал видео: возможно, оно приватное, удалено, требует входа или недоступно в вашем регионе"
+            "the website did not provide the video: it may be private, deleted, require signing in, or be unavailable in your region"
         }
-        WebOpenFailureReason::CollectionLink => "ссылка ведёт на подборку, а не на одно видео",
+        WebOpenFailureReason::CollectionLink => {
+            "the link points to a collection, not a single video"
+        }
         WebOpenFailureReason::CollectionTooLarge => {
-            "в подборке слишком много видео, чтобы добавить её целиком"
+            "the collection has too many videos to add in full"
         }
-        WebOpenFailureReason::NoPlayableFormat => {
-            "у видео нет формата, который плеер умеет воспроизводить"
+        WebOpenFailureReason::NoPlayableFormat => "the video has no format the player can play",
+        WebOpenFailureReason::NotFound => "page not found (error 404); check the link",
+        WebOpenFailureReason::Gone => "the link has expired; get a new one",
+        WebOpenFailureReason::AuthenticationRequired => {
+            "the server requires signing in (username and password)"
         }
-        WebOpenFailureReason::NotFound => "страница не найдена (ошибка 404) — проверьте ссылку",
-        WebOpenFailureReason::Gone => "ссылка устарела — получите новую",
-        WebOpenFailureReason::AuthenticationRequired => "сервер требует вход (логин и пароль)",
-        WebOpenFailureReason::AccessDenied => "сервер запретил доступ (ошибка 403)",
+        WebOpenFailureReason::AccessDenied => "the server denied access (error 403)",
         WebOpenFailureReason::RateLimited => {
-            "сервер просит подождать: слишком много запросов — попробуйте позже"
+            "the server asks you to wait: too many requests; try again later"
         }
-        WebOpenFailureReason::ServerError => "ошибка на стороне сервера — попробуйте позже",
-        WebOpenFailureReason::NoConnection => "нет соединения с сервером — проверьте интернет",
-        WebOpenFailureReason::TimedOut => "сервер слишком долго не отвечает",
-        WebOpenFailureReason::ConnectionInterrupted => "соединение оборвалось — попробуйте ещё раз",
-        WebOpenFailureReason::InvalidServerResponse => "сервер ответил некорректно",
+        WebOpenFailureReason::ServerError => "server error; try again later",
+        WebOpenFailureReason::NoConnection => {
+            "cannot connect to the server; check your internet connection"
+        }
+        WebOpenFailureReason::TimedOut => "the server is taking too long to respond",
+        WebOpenFailureReason::ConnectionInterrupted => "the connection was interrupted; try again",
+        WebOpenFailureReason::InvalidServerResponse => "the server returned an invalid response",
         WebOpenFailureReason::UnrecognizedFormat => {
-            "по ссылке нет видео или звука, которые плеер узнаёт"
+            "the link contains no video or audio the player recognizes"
         }
-        WebOpenFailureReason::UnsupportedLink => "такой тип ссылки не поддерживается",
-        WebOpenFailureReason::UnsupportedLiveProfile => {
-            "формат прямой трансляции не поддерживается"
-        }
-        WebOpenFailureReason::Unclassified => "не удалось получить видео по ссылке",
+        WebOpenFailureReason::UnsupportedLink => "this link type is unsupported",
+        WebOpenFailureReason::UnsupportedLiveProfile => "this live stream format is unsupported",
+        WebOpenFailureReason::Unclassified => "could not retrieve video from the link",
     }
 }
 

@@ -49,11 +49,11 @@ impl NavigationDirection {
         }
     }
 
-    /// Возвращает русское имя custom widget для tooltip и accessibility.
+    /// Возвращает английское имя custom widget для tooltip и accessibility.
     const fn accessible_label(self) -> &'static str {
         match self {
-            Self::Previous => "Предыдущий",
-            Self::Next => "Следующий",
+            Self::Previous => "Previous",
+            Self::Next => "Next",
         }
     }
 
@@ -226,7 +226,7 @@ pub(super) fn render_global_status(
     ui.horizontal_wrapped(|ui| {
         if let Some(status) = model.global_status {
             ui.label(status.label());
-            if status.can_cancel() && ui.button("Отменить ожидание").clicked() {
+            if status.can_cancel() && ui.button("Cancel waiting").clicked() {
                 actions.push(ControlAction::Transport(
                     TransportControlAction::CancelNavigation,
                 ));
@@ -244,10 +244,7 @@ mod tests {
 
     #[test]
     fn navigation_directions_preserve_labels_glyphs_and_actions() {
-        assert_eq!(
-            NavigationDirection::Previous.accessible_label(),
-            "Предыдущий"
-        );
+        assert_eq!(NavigationDirection::Previous.accessible_label(), "Previous");
         assert_eq!(
             NavigationDirection::Previous.glyph(),
             TransportGlyph::Previous
@@ -256,7 +253,7 @@ mod tests {
             NavigationDirection::Previous.action(),
             TransportControlAction::Previous
         );
-        assert_eq!(NavigationDirection::Next.accessible_label(), "Следующий");
+        assert_eq!(NavigationDirection::Next.accessible_label(), "Next");
         assert_eq!(NavigationDirection::Next.glyph(), TransportGlyph::Next);
         assert_eq!(
             NavigationDirection::Next.action(),

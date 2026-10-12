@@ -211,10 +211,16 @@ impl std::fmt::Display for CapabilitySnapshotBuildError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmptyTransportOutputs { family } => {
-                write!(formatter, "transport {family:?} не объявил output shapes")
+                write!(
+                    formatter,
+                    "transport {family:?} did not declare output shapes"
+                )
             }
             Self::EmptyDemuxInputs { container } => {
-                write!(formatter, "demux {container:?} не объявил input shapes")
+                write!(
+                    formatter,
+                    "demux {container:?} did not declare input shapes"
+                )
             }
         }
     }

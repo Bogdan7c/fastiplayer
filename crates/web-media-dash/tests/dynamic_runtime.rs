@@ -118,8 +118,7 @@ fn parse(document: &str) -> dash_mpd_core::DashDynamicMpd {
 
 /// Извлекает direct UTC только из fixtures, которые явно объявляют этот scheme.
 fn direct_utc(mpd: &dash_mpd_core::DashDynamicMpd) -> DashUtcTimestamp {
-    mpd.direct_utc_time()
-        .expect("test fixture использует direct UTC")
+    mpd.direct_utc_time().expect("test fixture uses direct UTC")
 }
 
 /// Exact selected component evidence.

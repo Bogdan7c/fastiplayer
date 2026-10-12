@@ -22,9 +22,9 @@ fn missing_type_is_video_and_ephemeral_format_url_is_not_retained() {
         serde_json::to_string(&payload).unwrap().as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect("video fixture должна пройти");
+    .expect("video fixture must pass");
 
-    let video = topology.as_video().expect("ожидался video");
+    let video = topology.as_video().expect("video expected");
     assert_eq!(video.identity().extractor_id(), Some("video-id"));
     assert_eq!(video.summary().title(), Some("Video title"));
     assert!(!format!("{topology:?}").contains("secret"));
@@ -51,8 +51,8 @@ fn rich_description_does_not_participate_in_playable_topology_summary() {
         serde_json::to_string(&payload).unwrap().as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect("rich description не должна блокировать topology");
-    let video = topology.as_video().expect("ожидался playable video root");
+    .expect("rich description should not be blocked topology");
+    let video = topology.as_video().expect("expected playable video root");
 
     assert_eq!(video.summary().title(), Some("Playable title"));
     assert_eq!(
@@ -80,10 +80,10 @@ fn malformed_optional_summary_fields_are_typed_and_non_fatal() {
         serde_json::to_string(&payload).unwrap().as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect("необязательные summary fields не должны блокировать topology");
+    .expect("Optional summary fields should not block topology");
     let summary = topology
         .as_video()
-        .expect("ожидался playable video root")
+        .expect("expected playable video root")
         .summary();
 
     assert_eq!(summary.title(), None);
@@ -125,14 +125,14 @@ fn playlist_retains_unavailable_and_missing_identity_entries() {
         serde_json::to_string(&payload).unwrap().as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect("playlist fixture должна пройти");
+    .expect("playlist fixture must pass");
 
-    let playlist = topology.as_playlist().expect("ожидался playlist");
+    let playlist = topology.as_playlist().expect("playlist expected");
     let reasons = playlist
         .iter_entries()
         .map(|entry| match entry {
             YtDlpTopologyEntry::Unavailable(unavailable) => unavailable.reason(),
-            other => panic!("ожидалась unavailable entry, получена {other:?}"),
+            other => panic!("expected unavailable entry, received {other:?}"),
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -163,11 +163,11 @@ fn multi_video_requires_root_video_fields_and_entries() {
         serde_json::to_string(&valid_payload).unwrap().as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect("valid multi_video должен пройти");
+    .expect("A valid multi_video must pass through");
     assert_eq!(
         valid_topology
             .as_multi_video()
-            .expect("ожидался multi_video")
+            .expect("expected multi_video")
             .entry_count(),
         1
     );
@@ -182,7 +182,7 @@ fn multi_video_requires_root_video_fields_and_entries() {
         serde_json::to_string(&invalid_payload).unwrap().as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect_err("multi_video без video source fields должен быть rejected");
+    .expect_err("multi_video without video source fields must be rejected");
     assert!(matches!(
         error,
         YtDlpTopologyError::InvalidExtractorResponse {
@@ -212,19 +212,19 @@ fn url_and_url_transparent_use_distinct_merge_policies() {
         serde_json::to_string(&plain_payload).unwrap().as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect("plain delegation должна пройти");
+    .expect("The plain delegation should be");
     let transparent = parse_topology_root(
         serde_json::to_string(&transparent_payload)
             .unwrap()
             .as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect("transparent delegation должна пройти");
+    .expect("transparent delegation must pass");
 
-    let plain = plain.as_delegation().expect("ожидалась delegation");
+    let plain = plain.as_delegation().expect("expected delegation");
     let transparent = transparent
         .as_delegation()
-        .expect("ожидалась transparent delegation");
+        .expect("A transparent delegation was expected.");
     assert_eq!(
         plain.merge_resolved_summary(&resolved).title(),
         Some("Resolved title")
@@ -247,9 +247,9 @@ fn transparent_wrapper_preserves_resolved_summary_failure_when_it_has_no_fallbac
         serde_json::to_string(&wrapper_payload).unwrap().as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect("transparent wrapper должен пройти")
+    .expect("The transparent wrapper should be")
     .as_delegation()
-    .expect("ожидалась delegation")
+    .expect("expected delegation")
     .clone();
     let resolved = YtDlpTopologySummary::new(
         YtDlpTopologySummaryFieldValue::Unavailable(
@@ -279,7 +279,7 @@ fn nested_cycle_depth_and_entry_budgets_are_typed() {
         serde_json::to_string(&cycle).unwrap().as_bytes(),
         YtDlpTopologyBudgets::default(),
     )
-    .expect_err("active-stack cycle должен быть rejected");
+    .expect_err("active-stack cycle must have rejected");
     assert!(matches!(
         cycle_error,
         YtDlpTopologyError::InvalidExtractorResponse {
@@ -299,7 +299,7 @@ fn nested_cycle_depth_and_entry_budgets_are_typed() {
             ..YtDlpTopologyBudgets::default()
         },
     )
-    .expect_err("nested topology должен превысить depth budget");
+    .expect_err("nested topology must exceed depth budget");
     assert!(matches!(
         depth_error,
         YtDlpTopologyError::TopologyDepthExceeded
@@ -313,7 +313,7 @@ fn nested_cycle_depth_and_entry_budgets_are_typed() {
             ..YtDlpTopologyBudgets::default()
         },
     )
-    .expect_err("entry budget должен быть enforced");
+    .expect_err("entry budget must be enforced");
     assert!(matches!(
         entry_error,
         YtDlpTopologyError::EntryBudgetExceeded
@@ -323,9 +323,9 @@ fn nested_cycle_depth_and_entry_budgets_are_typed() {
 #[test]
 fn json_depth_scanner_ignores_brackets_inside_strings() {
     validate_json_depth(br#"{"title":"[[[{{{","entries":[]}"#, 2)
-        .expect("скобки внутри строки не меняют JSON depth");
+        .expect("Brackets inside the line do not change JSON depth.");
     let error = validate_json_depth(br#"{"entries":[{"id":"x"}]}"#, 2)
-        .expect_err("третья structural nesting должна быть rejected");
+        .expect_err("third structural nesting must have rejected");
     assert!(matches!(error, YtDlpTopologyError::JsonDepthExceeded));
 }
 
@@ -335,22 +335,20 @@ fn pinned_s00_topology_fixtures_are_all_supported() {
         "../../../compatibility/2026.07.04/fixtures/official-synthetic/result-topologies.json"
     );
     let fixture_document: Value =
-        serde_json::from_str(fixture_text).expect("S00 fixture JSON должен парситься");
+        serde_json::from_str(fixture_text).expect("S00 fixture JSON must be parsed");
     let fixtures = fixture_document
         .get("fixtures")
         .and_then(Value::as_array)
-        .expect("S00 fixtures должны быть array");
+        .expect("S00 fixtures must be array");
     let observed_kinds = fixtures
         .iter()
         .map(|fixture| {
-            let payload = fixture
-                .get("payload")
-                .expect("fixture должен иметь payload");
+            let payload = fixture.get("payload").expect("fixture must have a payload");
             parse_topology_root(
                 serde_json::to_string(payload).unwrap().as_bytes(),
                 YtDlpTopologyBudgets::default(),
             )
-            .expect("S00 topology fixture должна пройти")
+            .expect("S00 topology fixture must be completed")
             .kind()
         })
         .collect::<Vec<_>>();

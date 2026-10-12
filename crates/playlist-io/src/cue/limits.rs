@@ -113,14 +113,14 @@ pub enum CueParserLimitsError {
 impl fmt::Display for CueParserLimitsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let explanation = match self {
-            Self::ZeroDocumentBytes => "лимит CUE document bytes не может быть нулевым",
-            Self::ZeroLineBytes => "лимит CUE line bytes не может быть нулевым",
-            Self::ZeroFiles => "лимит CUE FILE-секций не может быть нулевым",
+            Self::ZeroDocumentBytes => "The CUE document bytes limit cannot be zero.",
+            Self::ZeroLineBytes => "The CUE line bytes limit cannot be zero.",
+            Self::ZeroFiles => "The limit of CUE FILE sections cannot be zero.",
             Self::ZeroUnknownCommands => {
-                "лимит retained unknown CUE commands не может быть нулевым"
+                "The limit of retained unknown CUE commands cannot be zero."
             }
             Self::ZeroRetainedTextBytes => {
-                "лимит retained CUE metadata bytes не может быть нулевым"
+                "The limit of retained CUE metadata bytes cannot be zero."
             }
         };
         formatter.write_str(explanation)

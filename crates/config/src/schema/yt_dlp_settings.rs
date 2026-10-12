@@ -33,7 +33,7 @@ impl SettingsSchema for YtDlpConfig {
             descriptor(
                 "yt_dlp.enabled",
                 "YtDlp adapter",
-                "Разрешает запуск YtDlp extractor adapter-а.",
+                "Allow launching the yt-dlp extractor adapter.",
                 SettingValueType::Bool,
                 SettingEditor::Toggle,
             ),
@@ -44,7 +44,7 @@ impl SettingsSchema for YtDlpConfig {
             IntegerSettingDescriptor {
                 id: "yt_dlp.resolve_timeout_ms",
                 label_ru: "YtDlp resolve timeout",
-                description_ru: "Максимальное время работы системного yt-dlp для одного resolve.",
+                description_ru: "Maximum system yt-dlp runtime for a single resolution.",
                 maximum: crate::validation::MAX_YT_DLP_RESOLVE_TIMEOUT_MS,
                 step: 100,
                 unit: "ms",
@@ -55,8 +55,8 @@ impl SettingsSchema for YtDlpConfig {
             &mut registry,
             IntegerSettingDescriptor {
                 id: "yt_dlp.single_item_stdout_limit_bytes",
-                label_ru: "Лимит stdout YtDlp",
-                description_ru: "Максимальный размер JSON stdout одного media item до немедленного завершения yt-dlp.",
+                label_ru: "YtDlp stdout limit",
+                description_ru: "Maximum JSON stdout size for one media item before immediately terminating yt-dlp.",
                 maximum: crate::validation::MAX_YT_DLP_SINGLE_ITEM_STDOUT_BYTES,
                 step: 1024 * 1024,
                 unit: "bytes",
@@ -67,8 +67,8 @@ impl SettingsSchema for YtDlpConfig {
             &mut registry,
             IntegerSettingDescriptor {
                 id: "yt_dlp.single_item_stderr_limit_bytes",
-                label_ru: "Лимит stderr YtDlp",
-                description_ru: "Максимальный diagnostic stderr одного media item; содержимое stderr не сохраняется.",
+                label_ru: "YtDlp stderr limit",
+                description_ru: "Maximum diagnostic stderr size for one media item; stderr content is not saved.",
                 maximum: crate::validation::MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES,
                 step: 1024 * 1024,
                 unit: "bytes",
@@ -79,8 +79,8 @@ impl SettingsSchema for YtDlpConfig {
             &mut registry,
             IntegerSettingDescriptor {
                 id: "yt_dlp.single_item_json_node_limit",
-                label_ru: "Лимит структуры JSON YtDlp",
-                description_ru: "Максимальное число JSON values одного media item до построения metadata DOM.",
+                label_ru: "YtDlp JSON structure limit",
+                description_ru: "Maximum JSON values for one media item before constructing the metadata DOM.",
                 maximum: crate::validation::MAX_YT_DLP_SINGLE_ITEM_JSON_NODES,
                 step: 10_000,
                 unit: "nodes",
@@ -252,7 +252,7 @@ fn descriptor(
 fn integer_value(number: u64, field_name: &'static str) -> SettingValue {
     SettingValue::Integer(
         i64::try_from(number)
-            .unwrap_or_else(|_| panic!("validated {field_name} всегда помещается в i64")),
+            .unwrap_or_else(|_| panic!("validated {field_name} always fits in i64")),
     )
 }
 
@@ -261,7 +261,7 @@ fn bool_value(setting_path: &'static str, value: SettingValue) -> SettingsResult
     match value {
         SettingValue::Bool(enabled) => Ok(enabled),
         _ => Err(SettingsError::access_failed(format!(
-            "{setting_path} ожидает bool"
+            "{setting_path} expects a boolean"
         ))),
     }
 }
@@ -270,10 +270,9 @@ fn bool_value(setting_path: &'static str, value: SettingValue) -> SettingsResult
 fn u64_value(setting_path: &'static str, value: SettingValue) -> SettingsResult<u64> {
     let SettingValue::Integer(number) = value else {
         return Err(SettingsError::access_failed(format!(
-            "{setting_path} ожидает integer value"
+            "{setting_path} expects an integer value"
         )));
     };
-    u64::try_from(number).map_err(|_| {
-        SettingsError::access_failed(format!("{setting_path} не может быть отрицательным"))
-    })
+    u64::try_from(number)
+        .map_err(|_| SettingsError::access_failed(format!("{setting_path} cannot be negative")))
 }

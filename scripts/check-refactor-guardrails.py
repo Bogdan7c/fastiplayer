@@ -645,37 +645,37 @@ DIRECT_FFMPEG_TYPE_PATTERNS = (
         re.compile(
             r"\bAV(?:Frame|Packet|Codec|CodecContext|PixelFormat|Rational|Dictionary|BufferRef)\b"
         ),
-        "raw FFmpeg/libav types должны оставаться внутри video-ffmpeg",
+        "raw FFmpeg/libav types should be inside the video ffmpeg",
     ),
     (
         re.compile(r"\bAVERROR\b"),
-        "raw FFmpeg/libav error macros должны оставаться внутри video-ffmpeg",
+        "raw FFmpeg/libav error macros You have to stay inside video-ffmpeg",
     ),
     (
         re.compile(r"\bffmpeg_sys_next::|\bffmpeg_next::|\brsmpeg::"),
-        "raw FFmpeg Rust bindings должны использоваться только внутри video-ffmpeg",
+        "raw FFmpeg Rust bindings should only be used inside video-ffmpeg",
     ),
 )
 
 CPU_RGB_CONVERSION_PATTERNS = (
     (
         re.compile(r"\bsws_scale\b|\bsws_getContext\b|\bSwsContext\b"),
-        "swscale CPU conversion запрещён в playback/source tree",
+        "swscale CPU conversion forbidden playback/source tree",
     ),
     (
         re.compile(r"\blibswscale\b|\bav_image_convert\b|\bavpicture_"),
-        "CPU RGB/YUV conversion helpers запрещены в playback/source tree",
+        "CPU RGB/YUV conversion helpers banned in playback/source tree",
     ),
 )
 
 FFMPEG_HARDWARE_DECODE_PATTERNS = (
     (
         re.compile(r"\bav_hwdevice_|\bav_hwframe_|\bAVHW(?:Device|Frames)"),
-        "FFmpeg hardware decode/device API запрещён: native hardware path живёт вне FFmpeg",
+        "FFmpeg hardware decode/device API banned: native hardware path lives outside FFmpeg",
     ),
     (
         re.compile(r"\bhwaccel\b|\bhw_frames\b"),
-        "FFmpeg hwaccel path запрещён: video-ffmpeg остаётся software-decode-only",
+        "FFmpeg hwaccel path prohibited: video-ffmpeg remains software-decode-only",
     ),
 )
 
@@ -688,15 +688,15 @@ DIRECT_VAAPI_DISPLAY_ALLOWED_ROOTS = (
 DIRECT_VAAPI_DISPLAY_PATTERNS = (
     (
         re.compile(r"\b(?:cros_codecs::libva|libva)::Display::open(?:_drm_display)?\b"),
-        "VA display/session открывается только внутри video-vaapi owner boundary",
+        "VA display/session opens only inside video-vaapi boundary owner",
     ),
     (
         re.compile(r"\bopen_drm_display\s*\("),
-        "DRM VA display/session открывается только внутри video-vaapi owner boundary",
+        "DRM VA display/session opens only inside video-vaapi boundary owner",
     ),
     (
         re.compile(r"\bVADisplay\b|\bvaGetDisplay\b|\bvaInitialize\b"),
-        "raw VA display handle/API не должен выходить за video-vaapi boundary",
+        "raw VA display handle/API should not be beyond the video-vaapi boundary",
     ),
 )
 
@@ -710,13 +710,13 @@ MAIN_VIDEO_SECOND_SESSION_PATTERNS = (
         re.compile(
             r"\b(PlayerSession::new|PlayerWorker::new|VideoBackendFactory|StartedVideoBackend)\b"
         ),
-        "main-video SeekLanding/LiveScrub должен reuse playback session/decoder, а не стартовать вторую session/backend",
+        "main-video SeekLanding/LiveScrub should reuse playback session/decoder, not start the second session/backend",
     ),
     (
         re.compile(
             r"\b(VaapiVideoBackendFactory|FfmpegSoftwareVideoBackendFactory)::new"
         ),
-        "main-video scrub/prepared seek не должен создавать второй decoder backend",
+        "main-video scrub/prepared seek should not create a second decoder backend",
     ),
 )
 
@@ -728,7 +728,7 @@ PREPARED_BRANCH_PROMOTION_ALLOWED_ROOTS = (
 PREPARED_BRANCH_PROMOTION_PATTERNS = (
     (
         re.compile(r"\bpromote_prepared_frame\s*\("),
-        "prepared branch promotion разрешён только frame-server-core boundary и S17 player-core owner-у",
+        "prepared branch promotion only permitted frame-server-core boundary and S17 player-core owner-at",
     ),
 )
 
@@ -737,27 +737,27 @@ PLAYLIST_TOPOLOGY_SOURCE_ANCHORS = (
     (
         Path("crates/playlist-state/src/dto/v2.rs"),
         ("iter_top_level_entries()",),
-        "playlist-state v2 обязан сохранять canonical top-level entry order",
+        "playlist-state v2 must retain canonical top-level entry order",
     ),
     (
         Path("crates/playlist-io/src/export/snapshot.rs"),
         ("iter_top_level_entries()",),
-        "playlist export обязан снимать canonical top-level entry snapshot",
+        "playlist export must take off canonical top-level entry snapshot",
     ),
     (
         Path("crates/app-egui/src/playlist_runtime/view.rs"),
         ("iter_top_level_entries()",),
-        "Playlist UI read model обязан строиться из canonical top-level entries",
+        "Playlist UI read model must be built from canonical top-level entries",
     ),
     (
         Path("crates/app-egui/src/playlist_runtime/compound_view.rs"),
         ("iter_top_level_entries()",),
-        "compound view обязан выводить child rows из canonical top-level entries",
+        "compound view must-be child rows from canonical top-level entries",
     ),
     (
         Path("crates/app-egui/src/playlist_runtime/external_projection.rs"),
         ("top_level_entry(entry_id)",),
-        "external projection обязан разрешать compound context через canonical top-level entry",
+        "external projection must permit compound context through canonical top-level entry",
     ),
 )
 
@@ -765,11 +765,11 @@ PLAYLIST_TOPOLOGY_SOURCE_ANCHORS = (
 PLAYLIST_TOPOLOGY_DERIVED_READ_PATTERNS = (
     (
         re.compile(r"\biter_playable_(?:items|ids)\s*\("),
-        "persistence/UI/external structural consumer не должен flatten canonical top-level entries",
+        "persistence/UI/external structural consumer shouldn't flatten canonical top-level entries",
     ),
     (
         re.compile(r"\bowned_playable_items_snapshot\s*\("),
-        "persistence/UI/external structural consumer не должен хранить derived playable snapshot как canonical state",
+        "persistence/UI/external structural consumer keep out derived playable snapshot how canonical state",
     ),
 )
 
@@ -784,7 +784,7 @@ PLAYLIST_SECRET_PRESENTATION_PATHS = (
 PLAYLIST_SECRET_PRESENTATION_PATTERNS = (
     (
         re.compile(r"\bexpose_(?:secret|payload)_for_(?:open|persistence)\s*\("),
-        "Playlist UI/external projection не должны раскрывать secret-bearing identity",
+        "Playlist UI/external projection must not disclose secret-bearing identity",
     ),
 )
 
@@ -793,32 +793,32 @@ PROGRESSIVE_WEB_SOURCE_ANCHORS = (
     (
         Path("crates/app-egui/src/startup_media.rs"),
         ("crate::web_media_open::prepare_yt_dlp_web_media(",),
-        "CLI startup обязан использовать единый progressive web-open composition path",
+        "CLI startup must use a single progressive web-open composition path.",
     ),
     (
         Path("crates/app-egui/src/media_open/preparation.rs"),
         ("crate::web_media_open::prepare_yt_dlp_web_media(",),
-        "queue media-open обязан использовать единый progressive web-open composition path",
+        "queue media-open must use a single progressive web-open composition path",
     ),
     (
         Path("crates/app-egui/src/state/settings_media_rebuild/prepare.rs"),
         ("cancel.prepare(MediaOpenSourceRequest::Web(",),
-        "settings rebuild обязан использовать единый provider-neutral media-open preparation path",
+        "settings rebuild must use a single provider-neutral media-open preparation path",
     ),
     (
         Path("crates/service-ytdlp/src/candidate/tests.rs"),
         ("public_surface_and_manifest_have_no_legacy_webm_opener",),
-        "service-ytdlp обязан сохранять focused proof удаления legacy WebM opener-а",
+        "service-ytdlp must retain focused proof of deletion of legacy WebM opener",
     ),
     (
         Path("scripts/progressive-web-smoke.sh"),
         ("--url", "redact_runtime_log", "MANUAL REVIEW REQUIRED"),
-        "manual progressive runner обязан принимать explicit URL и писать только redacted report",
+        "manual progressive runner must accept explicit URL and write redacted report only.",
     ),
     (
         Path("scripts/tests/progressive-web-smoke-self-test.sh"),
         ("<redacted-url>", "<redacted-secret-line>"),
-        "manual progressive runner обязан иметь focused redaction self-test",
+        "manual progressive runner must focused redaction self-test",
     ),
 )
 
@@ -842,7 +842,7 @@ PROGRESSIVE_WEB_LEGACY_PATTERNS = (
             r"YtDlpStreamingMedia|YtDlpSelectedStreamIdentity|"
             r"selected_webm_(?:opens|falls_back|live))"
         ),
-        "legacy service-owned WebM opener/runtime scenario запрещён после S27",
+        "legacy service-owned WebM opener/runtime scenario banned after S27",
     ),
 )
 
@@ -868,7 +868,7 @@ PROGRESSIVE_WEB_TRANSIENT_SECRET_PATTERNS = (
             r"\b(?:HttpRequestTarget|ScopedHttpCookieJar|SecretRequestContext|"
             r"TransportOpenRequest|YtDlpRequestMaterial)\b"
         ),
-        "durable state/config/URL UI не должны зависеть от transient transport secrets",
+        "durable state/config/URL UI should not depend on transient transport secrets",
     ),
 )
 
@@ -885,22 +885,22 @@ EXISTING_DEMUX_SOURCE_ANCHORS = (
             "symphonia/generated-matroska-ordered-s28b",
             "symphonia/s28c-mpeg-layer-3",
         ),
-        "S28G factory descriptor обязан сохранять exact S28A/B/C fixture inventory",
+        "S28G factory descriptor must retain exact S28A/B/C fixture inventory",
     ),
     (
         Path("crates/symphonia-demux/src/factory/tests.rs"),
         ("descriptor_lists_exact_s28_foundation_fixture_ids",),
-        "S28G fixture inventory обязан иметь focused exact regression test",
+        "S28G fixture inventory must be focused exact regression test",
     ),
     (
         Path("crates/symphonia-demux/src/factory/tests/matroska.rs"),
         ("exact_matroska_doctype_opens_local_and_ordered_inputs",),
-        "Matroska registration нельзя доказывать только WebM DocType fixture-ом",
+        "Matroska registration can not be proved only by WebM DocType fixture",
     ),
     (
         Path("crates/symphonia-demux/src/matroska_metadata.rs"),
         ("cluster_payload_is_opaque_to_bounded_metadata_and_cue_indexer",),
-        "bounded Matroska metadata/cue indexer обязан сохранять opaque Cluster proof",
+        "bounded Matroska metadata/cue indexer must-be opaque Cluster proof",
     ),
     (
         Path("docs/existing-demux-s28g.md"),
@@ -910,7 +910,7 @@ EXISTING_DEMUX_SOURCE_ANCHORS = (
             "symphonia/generated-matroska-ordered-s28b",
             "Known coverage limitation",
         ),
-        "S28G aggregate evidence artifact обязан оставаться полным и честным",
+        "S28G aggregate evidence artifact must be complete and honest",
     ),
 )
 
@@ -923,7 +923,7 @@ EXISTING_DEMUX_PACKET_PARSER_DECLARATION_PATTERNS = (
             r"(?:ID_)?(?:CLUSTER|SIMPLE_BLOCK|BLOCK_GROUP|BLOCK|CODEC_STATE)\b",
             re.IGNORECASE,
         ),
-        "Matroska packet element IDs принадлежат exact symphonia-format-mkv patch",
+        "Matroska packet element IDs are exactly symphonia-format-mkv patch",
     ),
     (
         re.compile(
@@ -932,7 +932,7 @@ EXISTING_DEMUX_PACKET_PARSER_DECLARATION_PATTERNS = (
             r"\w*\s*\(",
             re.IGNORECASE,
         ),
-        "Matroska Cluster/Block/lacing parsing принадлежит exact symphonia-format-mkv patch",
+        "Matroska Cluster/Block/lacing parsing belongs to exact symphonia-format-mkv patch",
     ),
 )
 
@@ -1000,13 +1000,13 @@ def load_cargo_metadata(repo_root: Path) -> dict[str, Any]:
     try:
         metadata = json.loads(completed_process.stdout)
     except json.JSONDecodeError as error:
-        raise GuardrailError(f"cargo metadata вернул невалидный JSON: {error}") from error
+        raise GuardrailError(f"cargo metadata returned invalid JSON: {error}") from error
 
     if not isinstance(metadata, dict):
-        raise GuardrailError("cargo metadata должен вернуть JSON object верхнего уровня")
+        raise GuardrailError("The cargo metadata must return the top-level JSON object.")
 
     if metadata.get("version") != 1:
-        raise GuardrailError("cargo metadata вернул format-version, отличный от ожидаемого 1")
+        raise GuardrailError("cargo metadata returns format-version other than expected 1")
 
     return metadata
 
@@ -1017,7 +1017,7 @@ def format_failed_command(completed_process: subprocess.CompletedProcess[str]) -
     command_text = " ".join(METADATA_COMMAND)
     stdout_text = completed_process.stdout.strip()
     stderr_text = completed_process.stderr.strip()
-    details = [f"команда `{command_text}` завершилась с кодом {completed_process.returncode}"]
+    details = [f"command `{command_text}` exited with code {completed_process.returncode}"]
     if stdout_text:
         details.append(f"stdout:\n{stdout_text}")
     if stderr_text:
@@ -1031,21 +1031,21 @@ def workspace_packages(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
     packages = metadata.get("packages")
     workspace_members = metadata.get("workspace_members")
     if not isinstance(packages, list):
-        raise GuardrailError("cargo metadata не содержит массив packages")
+        raise GuardrailError("cargo metadata lacking packages")
     if not isinstance(workspace_members, list):
-        raise GuardrailError("cargo metadata не содержит массив workspace_members")
+        raise GuardrailError("cargo metadata does not contain an array of workspace_members")
 
     packages_by_id = collect_packages_by_id(packages)
     package_names: dict[str, dict[str, Any]] = {}
     for package_id in workspace_members:
         if not isinstance(package_id, str):
-            raise GuardrailError("workspace_members должен содержать строковые package id")
+            raise GuardrailError("workspace_members must contain a string package id")
         package = packages_by_id.get(package_id)
         if package is None:
-            raise GuardrailError(f"workspace member `{package_id}` отсутствует в packages")
+            raise GuardrailError(f"workspace member `{package_id}` is missing from packages")
         package_name = read_string_field(package, "name", f"package `{package_id}`")
         if package_name in package_names:
-            raise GuardrailError(f"workspace содержит duplicate package name `{package_name}`")
+            raise GuardrailError(f"workspace contains duplicate package name `{package_name}`")
         package_names[package_name] = package
 
     return package_names
@@ -1057,10 +1057,10 @@ def collect_packages_by_id(packages: list[Any]) -> dict[str, dict[str, Any]]:
     packages_by_id: dict[str, dict[str, Any]] = {}
     for package in packages:
         if not isinstance(package, dict):
-            raise GuardrailError("каждый элемент packages должен быть JSON object")
+            raise GuardrailError("element packages must have JSON object")
         package_id = read_string_field(package, "id", "package")
         if package_id in packages_by_id:
-            raise GuardrailError(f"cargo metadata содержит duplicate package id `{package_id}`")
+            raise GuardrailError(f"cargo metadata contains duplicate package id `{package_id}`")
         packages_by_id[package_id] = package
     return packages_by_id
 
@@ -1070,7 +1070,7 @@ def read_string_field(source: dict[str, Any], field_name: str, context: str) -> 
 
     value = source.get(field_name)
     if not isinstance(value, str):
-        raise GuardrailError(f"{context} должен содержать строковое поле `{field_name}`")
+        raise GuardrailError(f"{context} must contain string field `{field_name}`")
     return value
 
 
@@ -1099,7 +1099,7 @@ def direct_dependencies(
     for package_name, package in packages.items():
         dependencies = package.get("dependencies")
         if not isinstance(dependencies, list):
-            raise GuardrailError(f"package `{package_name}` не содержит массив dependencies")
+            raise GuardrailError(f"package `{package_name}` does not contain a dependencies array")
 
         direct_dependency_names = {
             read_string_field(dependency, "name", f"dependency package `{package_name}`")
@@ -1118,17 +1118,17 @@ def workspace_dependency_names(repo_root: Path) -> frozenset[str]:
     try:
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as error:
-        raise GuardrailError(f"`{manifest_path}` содержит невалидный TOML: {error}") from error
+        raise GuardrailError(f"`{manifest_path}` contains invalid TOML: {error}") from error
     except OSError as error:
-        raise GuardrailError(f"`{manifest_path}` нельзя прочитать: {error}") from error
+        raise GuardrailError(f"`{manifest_path}` could not be read: {error}") from error
 
     workspace = manifest.get("workspace", {})
     if not isinstance(workspace, dict):
-        raise GuardrailError("root Cargo.toml `[workspace]` должен быть TOML table")
+        raise GuardrailError("root Cargo.toml `[workspace]' should be a TOML table")
 
     dependencies = workspace.get("dependencies", {})
     if not isinstance(dependencies, dict):
-        raise GuardrailError("root Cargo.toml `[workspace.dependencies]` должен быть TOML table")
+        raise GuardrailError("root Cargo.toml '[workspace.dependencies]' should be a TOML table")
 
     return frozenset(dependencies)
 
@@ -1137,7 +1137,7 @@ def is_normal_dependency(dependency: Any, package_name: str) -> bool:
     """Отличает normal dependency от dev/build dependency."""
 
     if not isinstance(dependency, dict):
-        raise GuardrailError(f"dependency package `{package_name}` должен быть JSON object")
+        raise GuardrailError(f"dependency package `{package_name}` must be a JSON object")
     return dependency.get("kind") is None
 
 
@@ -1166,7 +1166,7 @@ def find_dependency_violations(
             DependencyViolation(
                 owner="workspace.dependencies",
                 dependency=dependency,
-                rule="FFmpeg/libav crates не должны быть общими workspace dependencies",
+                rule="FFmpeg/libav crates should not be common workspace dependencies",
             )
         )
     for dependency in sorted(
@@ -1176,7 +1176,7 @@ def find_dependency_violations(
             DependencyViolation(
                 owner="workspace.dependencies",
                 dependency=dependency,
-                rule="tempo backend crates не должны быть общими workspace dependencies до concrete adapter boundary",
+                rule="tempo backend crates should not be common workspace dependencies before concrete adapter boundary",
             )
         )
     violations.extend(
@@ -1184,7 +1184,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"video-frame-contract"}),
             VIDEO_FRAME_CONTRACT_ALLOWED_DEPENDENCIES,
-            "video-frame-contract остаётся leaf contract crate и зависит только от serde",
+            "video-frame-contract remains leaf contract crate It depends only on serde",
         )
     )
     violations.extend(
@@ -1192,7 +1192,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"video-present-core"}),
             VIDEO_PRESENT_CORE_ALLOWED_DEPENDENCIES,
-            "video-present-core normal-deps остаются нейтральным present boundary без player/render/backend/UI deps",
+            "video-present-core normal-deps remain neutral present boundary without player/render/backend/UI deps",
         )
     )
     violations.extend(
@@ -1200,7 +1200,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"frame-server-core"}),
             FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES,
-            "frame-server-core остаётся нейтральным frame-server boundary без player/app/render/backend/service deps",
+            "Frame-server-core is a neutral frame-server boundary without player/app/render/backend/service deps.",
         )
     )
     violations.extend(
@@ -1208,7 +1208,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"natural-sort-key"}),
             NATURAL_SORT_KEY_ALLOWED_DEPENDENCIES,
-            "natural-sort-key остаётся std-only neutral comparator",
+            "natural-sort-key remains std-only neutral comparator",
         )
     )
     violations.extend(
@@ -1216,7 +1216,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"atomic-file-store"}),
             ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES,
-            "atomic-file-store остаётся std-only neutral durability boundary",
+            "atomic-file-store remains std-only neutral durability boundary",
         )
     )
     violations.extend(
@@ -1224,7 +1224,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"bounded-xml-reader"}),
             BOUNDED_XML_READER_ALLOWED_DEPENDENCIES,
-            "bounded-xml-reader не получает filesystem/network/domain dependencies",
+            "bounded-xml-reader does not receive filesystem/network/domain dependencies",
         )
     )
     violations.extend(
@@ -1232,7 +1232,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"web-media-core"}),
             WEB_MEDIA_CORE_ALLOWED_DEPENDENCIES,
-            "web-media-core остаётся std-only neutral value contract",
+            "web-media-core remains std-only neutral value contract",
         )
     )
     violations.extend(
@@ -1240,7 +1240,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"web-media-playback-plan"}),
             WEB_MEDIA_PLAYBACK_PLAN_ALLOWED_DEPENDENCIES,
-            "web-media-playback-plan остаётся pure neutral capability planner",
+            "web-media-playback-plan remains pure neutral capability planner",
         )
     )
     violations.extend(
@@ -1248,7 +1248,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"web-media-transport-api"}),
             WEB_MEDIA_TRANSPORT_API_ALLOWED_DEPENDENCIES,
-            "web-media-transport-api остаётся neutral provider/secret/network boundary",
+            "web-media-transport-api remains neutral provider/secret/network boundary",
         )
     )
     violations.extend(
@@ -1256,7 +1256,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"web-media-http"}),
             WEB_MEDIA_HTTP_ALLOWED_DEPENDENCIES,
-            "web-media-http переиспользует только neutral transport API, source-core и media-prefetch",
+            "web-media-http reuses neutral transport API, source-core and media-prefetch",
         )
     )
     violations.extend(
@@ -1264,7 +1264,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"web-media-ftp"}),
             WEB_MEDIA_FTP_ALLOWED_DEPENDENCIES,
-            "web-media-ftp переиспользует только neutral transport API и source-core",
+            "web-media-ftp reuses neutral transport API and source-core",
         )
     )
     violations.extend(
@@ -1272,7 +1272,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"web-media-adaptive"}),
             WEB_MEDIA_ADAPTIVE_ALLOWED_DEPENDENCIES,
-            "web-media-adaptive остаётся shared manifest/segment lifecycle без concrete parser/player/UI/reqwest",
+            "web-media-adaptive remains shared manifest/segment lifecycle without concrete parser/player/UI/reqwest",
         )
     )
     violations.extend(
@@ -1280,7 +1280,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"hls-playlist-core"}),
             HLS_PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
-            "hls-playlist-core остаётся pure RFC parser/model без runtime owners",
+            "hls-playlist-core remains pure RFC parser/model without runtime owners.",
         )
     )
     violations.extend(
@@ -1288,7 +1288,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"dash-mpd-core"}),
             DASH_MPD_CORE_ALLOWED_DEPENDENCIES,
-            "dash-mpd-core остаётся pure MPD schema/timing model без HTTP/demux/app/yt-dlp",
+            "dash-mpd-core remains pure MPD schema/timing model without HTTP/demux/app/yt-dlp",
         )
     )
     violations.extend(
@@ -1296,7 +1296,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"smooth-streaming-manifest-core"}),
             SMOOTH_STREAMING_MANIFEST_CORE_ALLOWED_DEPENDENCIES,
-            "smooth-streaming-manifest-core остаётся pure MS-SSTR schema/timing model без runtime owners",
+            "smooth-streaming-manifest-core remains pure MS-SSTR schema/timing model without runtime owners",
         )
     )
     violations.extend(
@@ -1304,7 +1304,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"smooth-streaming-fmp4"}),
             SMOOTH_STREAMING_FMP4_ALLOWED_DEPENDENCIES,
-            "smooth-streaming-fmp4 остаётся pure manifest-to-ISO-BMFF adapter без transport/demux/player owners",
+            "smooth-streaming-fmp4 remains pure manifest-to-ISO-BMFF adapter without transport/demux/player owners",
         )
     )
     violations.extend(
@@ -1312,7 +1312,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"web-media-hls"}),
             WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES,
-            "web-media-hls ограничен HLS policy и neutral transport/demux contracts без concrete demux backends",
+            "web-media-hls limited to HLS policy and neutral transport/demux contracts without concrete demux backends",
         )
     )
     violations.extend(
@@ -1320,7 +1320,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"web-media-dash"}),
             WEB_MEDIA_DASH_ALLOWED_DEPENDENCIES,
-            "web-media-dash ограничен static DASH policy и neutral transport/demux contracts",
+            "web-media-dash limited static DASH policy and neutral transport/demux contracts",
         )
     )
     violations.extend(
@@ -1328,7 +1328,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"web-media-smooth"}),
             WEB_MEDIA_SMOOTH_ALLOWED_DEPENDENCIES,
-            "web-media-smooth ограничен Smooth VOD preparation и neutral transport/C3/demux contracts",
+            "web-media-smooth limited Smooth VOD preparation and neutral transport/C3/demux contracts",
         )
     )
     violations.extend(
@@ -1336,7 +1336,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"service-ytdlp"}),
             SERVICE_YTDLP_FORBIDDEN_DEPENDENCIES,
-            "service-ytdlp не владеет concrete HTTP/cache/demux/player playback stack",
+            "service-ytdlp doesn't have a concrete HTTP/cache/demux/player playback stack",
         )
     )
     violations.extend(
@@ -1344,7 +1344,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"service-direct-media"}),
             SERVICE_DIRECT_MEDIA_ALLOWED_DEPENDENCIES,
-            "service-direct-media остаётся classification/locator boundary без transport/demux runtime owners",
+            "service-direct-media remains classification/locator boundary without transport/demux runtime owners",
         )
     )
     violations.extend(
@@ -1352,7 +1352,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"demux-api"}),
             DEMUX_API_ALLOWED_DEPENDENCIES,
-            "demux-api остаётся neutral registry/composition boundary без concrete backend/player/service/UI deps",
+            "demux-api remains neutral registry/composition boundary without concrete backend/player/service/UI deps",
         )
     )
     violations.extend(
@@ -1360,7 +1360,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"mpeg-ts-demux"}),
             MPEG_TS_DEMUX_ALLOWED_DEPENDENCIES,
-            "mpeg-ts-demux остаётся reusable container owner без HLS/network/player/UI/FFmpeg deps",
+            "mpeg-ts-demux remains a reusable container owner without HLS/network/player/UI/FFmpeg deps.",
         )
     )
     violations.extend(
@@ -1368,7 +1368,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"flv-demux"}),
             FLV_DEMUX_ALLOWED_DEPENDENCIES,
-            "flv-demux остаётся reusable FLV/F4F owner без HDS/RTMP network/player/UI/FFmpeg deps",
+            "flv-demux remains reusable FLV/F4F owner without HDS/RTMP network/player/UI/FFmpeg deps",
         )
     )
     violations.extend(
@@ -1376,7 +1376,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"symphonia-demux"}),
             SYMPHONIA_DEMUX_FORBIDDEN_ALTERNATIVE_PARSER_DEPENDENCIES,
-            "symphonia-demux переиспользует exact Symphonia format patches и не добавляет второй container parser",
+            "symphonia-demux reuses exact Symphonia format patches and does not add a second container parser",
         )
     )
     violations.extend(
@@ -1384,7 +1384,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"playlist-core"}),
             PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
-            "playlist-core зависит только от neutral metadata/natural-key contracts и rand",
+            "playlist-core depends only neutral metadata/natural-key contracts and rand",
         )
     )
     violations.extend(
@@ -1392,7 +1392,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"playlist-io"}),
             PLAYLIST_IO_ALLOWED_DEPENDENCIES,
-            "playlist-io остаётся neutral parser boundary без filesystem/network/app/player/service deps",
+            "playlist-io is neutral parser boundary without filesystem/network/app/player/service deps",
         )
     )
     violations.extend(
@@ -1400,7 +1400,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"playlist-discovery"}),
             PLAYLIST_DISCOVERY_ALLOWED_DEPENDENCIES,
-            "playlist-discovery остаётся UI/player/config-neutral local probe owner",
+            "playlist-discovery remains UI/player/config-neutral local probe owner",
         )
     )
     violations.extend(
@@ -1408,7 +1408,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"playlist-state"}),
             PLAYLIST_STATE_ALLOWED_DEPENDENCIES,
-            "playlist-state остаётся отдельным JSON/I/O owner без app/player/UI/service dependencies",
+            "playlist-state remain separate JSON/I/O owner without app/player/UI/service dependencies",
         )
     )
     violations.extend(
@@ -1416,7 +1416,7 @@ def find_dependency_violations(
             all_dependency_map,
             frozenset(all_dependency_map).difference({"video-ffmpeg"}),
             FFMPEG_FORBIDDEN_DEPENDENCIES,
-            "FFmpeg/libav crates разрешены только внутри video-ffmpeg",
+            "FFmpeg/libav crates are only allowed inside video-ffmpeg",
         )
     )
     violations.extend(
@@ -1424,7 +1424,7 @@ def find_dependency_violations(
             all_dependency_map,
             TEMPO_NEUTRAL_CRATES,
             TEMPO_NEUTRAL_FORBIDDEN_DEPENDENCIES,
-            "audio-core/player-core видят только neutral tempo boundary, без direct concrete tempo dependency",
+            "audio-core/player-core sees only neutral tempo boundary, without direct concrete tempo dependency",
         )
     )
     violations.extend(
@@ -1432,7 +1432,7 @@ def find_dependency_violations(
             dependency_map,
             CONTRACT_CRATES,
             CONTRACT_FORBIDDEN_DEPENDENCIES,
-            "contract crates не зависят от shell/backend/player/UI crates",
+            "contract crates are not dependent on shell/backend/player/UI crates",
         )
     )
     violations.extend(
@@ -1440,7 +1440,7 @@ def find_dependency_violations(
             dependency_map,
             LOW_LEVEL_CRATES,
             LOW_LEVEL_FORBIDDEN_DEPENDENCIES,
-            "media/codec/audio/demux слой не зависит от GPU/video backend crates",
+            "media/codec/audio/demux layer is independent of GPU/video backend crates",
         )
     )
     violations.extend(
@@ -1448,7 +1448,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"player-core"}),
             PLAYER_CORE_FORBIDDEN_DEPENDENCIES,
-            "player-core не добавляет direct dependency на shell/service/demux/video backend/GPU crates",
+            "player-core adds direct dependency on shell/service/demux/video backend/GPU crates",
         )
     )
     violations.extend(
@@ -1456,7 +1456,7 @@ def find_dependency_violations(
             dependency_map,
             VIDEO_BACKEND_CRATES,
             VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES,
-            "concrete video backend crates используют video-backend-api и не владеют renderer/GPU import crates",
+            "concrete video backend crates use video-backend-api do not own renderer/GPU import crates",
         )
     )
     violations.extend(
@@ -1464,7 +1464,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"render-wgpu-shell"}),
             RENDER_WGPU_SHELL_FORBIDDEN_DEPENDENCIES,
-            "render-wgpu-shell не зависит от demux/source/audio/player/service/concrete video backend crates",
+            "render-wgpu-shell regardless demux/source/audio/player/service/concrete video backend crates",
         )
     )
     violations.extend(
@@ -1472,7 +1472,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"render-wgpu-video"}),
             RENDER_WGPU_VIDEO_FORBIDDEN_DEPENDENCIES,
-            "render-wgpu-video не зависит от shell/UI/app/player/service/concrete video backend crates",
+            "render-wgpu-video does not depend on shell/UI/app/player/service/concrete video backend crates",
         )
     )
     violations.extend(
@@ -1480,7 +1480,7 @@ def find_dependency_violations(
             dependency_map,
             MEDIA_PREFETCH_CRATES,
             MEDIA_PREFETCH_ALLOWED_DEPENDENCIES,
-            "media-prefetch зависит только от source-core плюс tracing/thiserror",
+            "media-prefetch depends only source-core plus tracing/thiserror",
         )
     )
     violations.extend(
@@ -1488,7 +1488,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"media-source-open"}),
             MEDIA_SOURCE_OPEN_FORBIDDEN_DEPENDENCIES,
-            "media-source-open не зависит от UI/окна/GPU/render crates и от app-egui",
+            "media-source-open does not depend on UI/window/GPU/render crates or app-egui",
         )
     )
     return sorted(violations, key=lambda violation: (violation.owner, violation.dependency))
@@ -1682,7 +1682,7 @@ def find_app_egui_custom_paint_violations(repo_root: Path) -> list[SourcePolicyV
                     SourcePolicyViolation(
                         path=relative_path,
                         line_number=line_number,
-                        rule="custom-рисовка app-egui должна проходить через ui-artwork-egui",
+                        rule="custom-drawing app-egui must pass through ui-artwork-egui",
                         matched_text=line.strip(),
                     )
                 )
@@ -1704,7 +1704,7 @@ def find_public_video_backend_option_violations(repo_root: Path) -> list[SourceP
                     SourcePolicyViolation(
                         path=relative_path,
                         line_number=line_index,
-                        rule="ffmpeg_sw не должен появляться как public config/UI option",
+                        rule="ffmpeg_sw does not appear as a public config/UI option",
                         matched_text=stripped_line,
                     )
                 )
@@ -1717,7 +1717,7 @@ def find_public_video_backend_option_violations(repo_root: Path) -> list[SourceP
                     SourcePolicyViolation(
                         path=relative_path,
                         line_number=line_index,
-                        rule='video.preferred_backend = "vulkan" не должен быть public config value',
+                        rule='video.preferred_backend = "vulkan" shall not be public config value',
                         matched_text=stripped_line,
                     )
                 )
@@ -1727,7 +1727,7 @@ def find_public_video_backend_option_violations(repo_root: Path) -> list[SourceP
                     SourcePolicyViolation(
                         path=relative_path,
                         line_number=line_index,
-                        rule="VideoBackendPreference не должен возвращать Vulkan video backend variant",
+                        rule="VideoBackendPreference should not return Vulkan video backend variant",
                         matched_text=stripped_line,
                     )
                 )
@@ -1737,7 +1737,7 @@ def find_public_video_backend_option_violations(repo_root: Path) -> list[SourceP
                     SourcePolicyViolation(
                         path=relative_path,
                         line_number=line_index,
-                        rule="settings registry/UI не должен публиковать Vulkan video backend option",
+                        rule="settings registry/UI should not publish Vulkan video backend option",
                         matched_text=stripped_line,
                     )
                 )
@@ -1757,7 +1757,7 @@ def is_allowed_removed_vulkan_video_backend_reference(
         return False
     return (
         'REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE: &str = "vulkan"' in stripped_line
-        or 'video.preferred_backend = "vulkan" удал' in stripped_line
+        or 'video.preferred_backend = "vulkan" has gone' in stripped_line
         or "REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE => Err" in stripped_line
     )
 
@@ -1953,7 +1953,7 @@ def iter_files_with_suffixes(
     for relative_root in relative_roots:
         root = repo_root / relative_root
         if not root.exists():
-            raise GuardrailError(f"source root `{relative_root}` отсутствует")
+            raise GuardrailError(f"source root `{relative_root}` is missing")
         for path in root.rglob("*"):
             if path.is_file() and path.suffix in suffixes:
                 text_files.append(path.relative_to(repo_root))
@@ -1971,7 +1971,7 @@ def iter_paths_with_suffixes(
     for relative_path in relative_paths:
         path = repo_root / relative_path
         if not path.exists():
-            raise GuardrailError(f"source path `{relative_path}` отсутствует")
+            raise GuardrailError(f"source path `{relative_path}` is missing")
         if path.is_file():
             if path.suffix in suffixes:
                 source_files.add(relative_path)
@@ -1981,7 +1981,7 @@ def iter_paths_with_suffixes(
                 if child_path.is_file() and child_path.suffix in suffixes:
                     source_files.add(child_path.relative_to(repo_root))
             continue
-        raise GuardrailError(f"source path `{relative_path}` не файл и не директория")
+        raise GuardrailError(f"source path `{relative_path}` is neither a file nor a directory")
     return sorted(source_files)
 
 
@@ -2000,7 +2000,7 @@ def read_text_lossy(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
-        raise GuardrailError(f"`{path}` не является UTF-8 текстом: {error}") from error
+        raise GuardrailError(f"`{path}` is not UTF-8 text: {error}") from error
 
 
 def find_forbidden_dependencies(

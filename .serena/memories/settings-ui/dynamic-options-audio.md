@@ -20,3 +20,7 @@ Focused tests cover:
 - manual refresh updates cached dynamic options;
 - selected available device is passed through the audio owner boundary;
 - `audio` crate has no `app-egui` dependency.
+
+## Язык текущих подписей (2026-10-12)
+
+Системный default и собственные unavailable/loading/refresh сообщения английские независимо от ui.language; реальные имена устройств сохраняются буквально. Историческое поле fallback_ru содержит английскую строку. Stable device ids и provider/cache/refresh/error semantics не менялись. Общий контракт: `mem:app-egui/user-facing-language`.

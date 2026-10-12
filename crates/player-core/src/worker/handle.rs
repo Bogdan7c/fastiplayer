@@ -52,7 +52,7 @@ impl PlayerWorker {
                 if let Err(error) =
                     session.dispatch_command(PlayerCommand::SetVolume(config.default_volume))
                 {
-                    warn!(error = %error, "Не удалось применить worker default volume при старте");
+                    warn!(error = %error, "Failed to apply worker default volume at start");
                     session.mark_fatal_error(error);
                 }
 

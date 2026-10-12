@@ -46,7 +46,7 @@ fn custom_attributes_reject_duplicates_unsafe_atoms_and_count_overflow() {
     let configured_limits = limits_builder()
         .maximum_custom_attributes_per_quality(1)
         .build()
-        .expect("test limits валидны");
+        .expect("test limits valid");
     let first = custom_attribute("lang", "en-US", &configured_limits);
     let duplicate = custom_attribute("lang", "uk-UA", &configured_limits);
     assert_eq!(
@@ -79,8 +79,8 @@ fn stream_rejects_mixed_quality_axis_timescale_and_declared_count_mismatch() {
     let configured_limits = limits();
     let video = SmoothQualityLevel::Video(video_quality(&configured_limits));
     let audio = SmoothQualityLevel::Audio(audio_quality(&configured_limits));
-    let video_clock = SmoothTimescale::new(10_000_000).expect("timescale валиден");
-    let audio_clock = SmoothTimescale::new(48_000).expect("timescale валиден");
+    let video_clock = SmoothTimescale::new(10_000_000).expect("timescale valid");
+    let audio_clock = SmoothTimescale::new(48_000).expect("timescale valid");
 
     let mixed_error = SmoothStream::new(
         SmoothStreamConstruction {
@@ -94,7 +94,7 @@ fn stream_rejects_mixed_quality_axis_timescale_and_declared_count_mismatch() {
         },
         &configured_limits,
     )
-    .expect_err("mixed axes должны быть невозможны");
+    .expect_err("mixed axes must be impossible");
     assert_eq!(
         mixed_error,
         SmoothManifestError::ProfileIncompatible {
@@ -114,7 +114,7 @@ fn stream_rejects_mixed_quality_axis_timescale_and_declared_count_mismatch() {
         },
         &configured_limits,
     )
-    .expect_err("stream и timeline clocks должны совпасть");
+    .expect_err("stream and timeline clocks should coincide");
     assert_eq!(
         timescale_error,
         SmoothManifestError::MalformedSchema {
@@ -134,7 +134,7 @@ fn stream_rejects_mixed_quality_axis_timescale_and_declared_count_mismatch() {
         },
         &configured_limits,
     )
-    .expect_err("declared QualityLevels обязан совпасть");
+    .expect_err("declared QualityLevels must coincide");
     assert_eq!(
         count_error,
         SmoothManifestError::DeclaredCountMismatch {
@@ -148,7 +148,7 @@ fn stream_rejects_mixed_quality_axis_timescale_and_declared_count_mismatch() {
 #[test]
 fn manifest_prevents_empty_streams_total_quality_overflow_and_count_mismatch() {
     let configured_limits = limits();
-    let duration_clock = SmoothTimescale::new(10_000_000).expect("timescale валиден");
+    let duration_clock = SmoothTimescale::new(10_000_000).expect("timescale valid");
     let duration = SmoothTime::new(20_000_000, duration_clock);
     assert_eq!(
         SmoothManifest::new_vod(
@@ -171,7 +171,7 @@ fn manifest_prevents_empty_streams_total_quality_overflow_and_count_mismatch() {
         SmoothDeclaredStreamCount::Exact(2),
         &configured_limits,
     )
-    .expect_err("declared StreamIndex count обязан совпасть");
+    .expect_err("declared StreamIndex count must coincide");
     assert_eq!(
         count_error,
         SmoothManifestError::DeclaredCountMismatch {
@@ -185,7 +185,7 @@ fn manifest_prevents_empty_streams_total_quality_overflow_and_count_mismatch() {
         .maximum_qualities_per_stream(2)
         .maximum_total_qualities(2)
         .build()
-        .expect("test limits валидны");
+        .expect("test limits valid");
     let total_error = SmoothManifest::new_vod(
         SmoothManifestVersion::V2_0,
         duration,
@@ -197,7 +197,7 @@ fn manifest_prevents_empty_streams_total_quality_overflow_and_count_mismatch() {
         SmoothDeclaredStreamCount::Unspecified,
         &tight_limits,
     )
-    .expect_err("total quality budget должен примениться");
+    .expect_err("total quality budget must apply");
     assert_eq!(
         total_error,
         SmoothManifestError::LimitExceeded {
@@ -218,7 +218,7 @@ fn model_and_error_debug_are_secret_safe() {
 }
 
 fn video_stream(limits: &crate::SmoothManifestLimits) -> SmoothStream {
-    let timescale = SmoothTimescale::new(10_000_000).expect("timescale валиден");
+    let timescale = SmoothTimescale::new(10_000_000).expect("timescale valid");
     SmoothStream::new(
         SmoothStreamConstruction {
             kind: SmoothStreamKind::Video,
@@ -231,7 +231,7 @@ fn video_stream(limits: &crate::SmoothManifestLimits) -> SmoothStream {
         },
         limits,
     )
-    .expect("video stream валиден")
+    .expect("video stream valid")
 }
 
 fn video_quality(limits: &crate::SmoothManifestLimits) -> SmoothVideoQuality {
@@ -240,14 +240,14 @@ fn video_quality(limits: &crate::SmoothManifestLimits) -> SmoothVideoQuality {
         1_500_000,
         1_920,
         1_080,
-        SmoothCodecFourCc::new_validated("H264", limits).expect("FourCC валиден"),
+        SmoothCodecFourCc::new_validated("H264", limits).expect("FourCC is valid"),
         SmoothCodecConfiguration::from_validated(
             Box::<[u8]>::from([0, 0, 0, 1, 0x67, 0, 0, 0, 1, 0x68]),
             SmoothCodecConfigurationOrigin::H264SequenceAndPictureParameterSets,
         ),
-        SmoothCustomAttributeSet::new(Vec::new(), limits).expect("empty attrs валидны"),
+        SmoothCustomAttributeSet::new(Vec::new(), limits).expect("empty attrs valid"),
     )
-    .expect("video quality валидна")
+    .expect("video quality valid")
 }
 
 fn audio_quality(limits: &crate::SmoothManifestLimits) -> SmoothAudioQuality {
@@ -259,14 +259,14 @@ fn audio_quality(limits: &crate::SmoothManifestLimits) -> SmoothAudioQuality {
         16,
         4,
         255,
-        SmoothCodecFourCc::new_validated("AACL", limits).expect("FourCC валиден"),
+        SmoothCodecFourCc::new_validated("AACL", limits).expect("FourCC is valid"),
         SmoothCodecConfiguration::from_validated(
             Box::<[u8]>::from([0x11, 0x90]),
             SmoothCodecConfigurationOrigin::AacAudioSpecificConfig,
         ),
-        SmoothCustomAttributeSet::new(Vec::new(), limits).expect("empty attrs валидны"),
+        SmoothCustomAttributeSet::new(Vec::new(), limits).expect("empty attrs valid"),
     )
-    .expect("audio quality валидна")
+    .expect("audio quality valid")
 }
 
 fn template(limits: &crate::SmoothManifestLimits) -> SmoothFragmentUrlTemplate {
@@ -274,7 +274,7 @@ fn template(limits: &crate::SmoothManifestLimits) -> SmoothFragmentUrlTemplate {
         "QualityLevels({bitrate})/Fragments(video={start time})",
         limits,
     )
-    .expect("template валиден")
+    .expect("template")
 }
 
 fn timeline(
@@ -293,7 +293,7 @@ fn timeline(
             )],
             SmoothDeclaredFragmentCount::Exact(1),
         )
-        .expect("timeline валиден")
+        .expect("timeline is valid")
 }
 
 fn custom_attribute(
@@ -302,7 +302,7 @@ fn custom_attribute(
     limits: &crate::SmoothManifestLimits,
 ) -> SmoothCustomAttribute {
     SmoothCustomAttribute::new(
-        SmoothCustomAttributeName::new(name, limits).expect("name валидно"),
-        SmoothCustomAttributeValue::new(value, limits).expect("value валидно"),
+        SmoothCustomAttributeName::new(name, limits).expect("name valid"),
+        SmoothCustomAttributeValue::new(value, limits).expect("value valid"),
     )
 }

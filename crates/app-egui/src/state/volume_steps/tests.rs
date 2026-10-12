@@ -35,12 +35,12 @@ fn volume_is_clamped_and_boundary_presses_send_nothing() {
     assert_eq!(
         volume_command_from_steps(&snapshot(1.0, false), FALLBACK, 1),
         None,
-        "на максимуме команда не уходит в очередь worker-а"
+        "At the maximum, the command does not leave the queue of the worker."
     );
     assert_eq!(
         volume_command_from_steps(&snapshot(0.03, false), FALLBACK, -1),
         Some(PlayerCommand::SetVolume(0.0)),
-        "спуск до нуля = mute, как у слайдера"
+        "Descent to zero = mute, like a slider"
     );
     assert_eq!(
         volume_command_from_steps(&snapshot(0.5, false), FALLBACK, 0),
@@ -55,7 +55,7 @@ fn muted_player_unmutes_on_step_up_and_ignores_step_down() {
         Some(PlayerCommand::ToggleMute {
             fallback_volume: FALLBACK
         }),
-        "возврат громкости «до mute» принадлежит player-у, как у значка"
+        "The volume return \"up to mute\" belongs to the player, as the icon"
     );
     assert_eq!(
         volume_command_from_steps(&snapshot(0.0, true), FALLBACK, -1),
@@ -71,13 +71,13 @@ fn stepped_volume_becomes_the_users_persisted_level_like_the_slider() {
     let Some(PlayerCommand::SetVolume(target)) =
         volume_command_from_steps(&snapshot(0.5, false), FALLBACK, 1)
     else {
-        panic!("шаг вверх должен дать SetVolume");
+        panic!("A step up should give SetVolume");
     };
 
     let after = before.after_player_observation(PlayerAudioObservation::new(target, false));
 
     assert_eq!(after.audible_volume(), VolumePermille::from_ratio(0.55));
-    assert_ne!(after, before, "изменение уровня даёт намерение сохранить");
+    assert_ne!(after, before, "The change in the level is intended to");
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn stepping_down_to_zero_is_persisted_as_mute_keeping_previous_audible_volume() 
     let Some(PlayerCommand::SetVolume(target)) =
         volume_command_from_steps(&snapshot(0.05, false), FALLBACK, -1)
     else {
-        panic!("шаг вниз должен дать SetVolume");
+        panic!("A step down should give SetVolume");
     };
 
     let after = before.after_player_observation(PlayerAudioObservation::new(target, true));

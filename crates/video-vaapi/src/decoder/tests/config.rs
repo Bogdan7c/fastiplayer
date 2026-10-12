@@ -18,7 +18,7 @@ fn suppressed_reclaim_default_bound_uses_surface_accounting() {
     );
     assert!(
         default_bound > 12,
-        "default pool 24 не должен снова закреплять bound в диапазоне 8..12 без замеров"
+        "default pool 24 must not fix the bound again in the range 8..12 without measurement."
     );
 
     let capacity = SuppressedReclaimCapacity::new(
@@ -29,7 +29,7 @@ fn suppressed_reclaim_default_bound_uses_surface_accounting() {
     assert_eq!(
         capacity.approximate_available_reclaim_slots(0),
         default_bound,
-        "диагностика должна показывать стартовую ёмкость reclaim queue"
+        "Diagnostics should show the starting capacity reclaim queue"
     );
     assert_eq!(
         capacity.approximate_reserved_surface_headroom_frames(),
@@ -37,6 +37,6 @@ fn suppressed_reclaim_default_bound_uses_surface_accounting() {
             + SUPPRESSED_RECLAIM_RENDER_HELD_HEADROOM_FRAMES
             + SUPPRESSED_RECLAIM_READY_PUBLISH_HEADROOM_FRAMES
             + SUPPRESSED_RECLAIM_MARGIN_FRAMES,
-        "диагностика должна показывать surface headroom вне reclaim queue"
+        "The screen must show the surface headroom outside of reclaim queue."
     );
 }

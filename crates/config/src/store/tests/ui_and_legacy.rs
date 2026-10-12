@@ -115,11 +115,11 @@ fn sidebar_slide_duration_validation_accepts_zero_and_rejects_above_max() {
 
     let mut config = AppConfig::default();
     config.ui.animations.sidebar_slide_duration_ms = 0;
-    save_validated_atomic_at(&config_path, &config).expect("0 = «без анимации» валиден");
+    save_validated_atomic_at(&config_path, &config).expect("0 = \"no animation\" is valid");
 
     config.ui.animations.sidebar_slide_duration_ms = 5001;
     let error = save_validated_atomic_at(&config_path, &config)
-        .expect_err("слишком долгая анимация отклоняется");
+        .expect_err("too long animation is rejected");
     assert!(
         error
             .to_string()
@@ -308,7 +308,7 @@ operator = "reinhard"
 
     let error = load_from_path(&config_path).expect_err("invalid operator rejected");
 
-    assert!(error.to_string().contains("TOML-схеме"));
+    assert!(error.to_string().contains("TOML schema"));
 }
 
 /// Проверяет, что удалённый Vulkan video backend preference получает понятную подсказку.
@@ -333,8 +333,8 @@ fn removed_vulkan_video_backend_preference_has_suggested_fix() {
     assert!(message.contains("\"vulkan\""));
     assert!(message.contains("\"auto\""));
     assert!(message.contains("\"hardware\""));
-    assert!(message.contains("удал"));
-    assert!(message.contains("замените"));
+    assert!(message.contains("removed"));
+    assert!(message.contains("replace"));
 }
 
 /// Проверяет migration boundary: v2 `vaapi` становится v3 `hardware`.
@@ -412,11 +412,11 @@ preferred_backend = "cuda"
     let error = load_from_path(&config_path).expect_err("unknown backend rejected");
     let message = error.to_string();
 
-    assert!(message.contains("TOML-схеме"));
+    assert!(message.contains("TOML schema"));
     assert!(message.contains("cuda"));
     assert!(message.contains("auto"));
     assert!(message.contains("hardware"));
     assert!(message.contains("software"));
-    assert!(!message.contains("удал"));
-    assert!(!message.contains("замените"));
+    assert!(!message.contains("removed"));
+    assert!(!message.contains("replace"));
 }

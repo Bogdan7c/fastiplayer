@@ -27,7 +27,7 @@ fn bounded_timeout_retains_handle_closes_admission_and_later_joins_without_doubl
     let join_handle = std::thread::spawn(move || {
         release_rx
             .recv()
-            .expect("test owner должен явно разрешить завершение потока");
+            .expect("The test owner must expressly terminate the flow");
     });
     let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
     let (shutdown_tx, shutdown_rx) = bounded(1);
@@ -50,7 +50,7 @@ fn bounded_timeout_retains_handle_closes_admission_and_later_joins_without_doubl
 
     release_tx
         .send(())
-        .expect("release channel должен оставаться подключённым");
+        .expect("The release channel must remain connected.");
     let completed =
         worker.shutdown_before(PlayerWorkerShutdownDeadline::after(Duration::from_secs(1)));
     assert_eq!(
@@ -93,7 +93,7 @@ fn command_disconnect_uses_typed_cancellation_fallback() {
     let join_handle = std::thread::spawn(move || {
         shutdown_rx
             .recv()
-            .expect("cancellation fallback должен разбудить тестовый owner");
+            .expect("cancellation fallback should wake up the test owner");
     });
     let mut worker = worker_with_terminal_thread_for_tests(command_tx, shutdown_tx, join_handle);
 
@@ -116,7 +116,7 @@ fn cancellation_disconnect_is_typed_while_command_is_accepted() {
     let join_handle = std::thread::spawn(move || {
         release_rx
             .recv()
-            .expect("test owner должен явно разрешить завершение потока");
+            .expect("The test owner must expressly terminate the flow");
     });
     let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
     let (shutdown_tx, shutdown_rx) = bounded(1);
@@ -132,7 +132,7 @@ fn cancellation_disconnect_is_typed_while_command_is_accepted() {
     );
     release_tx
         .send(())
-        .expect("release channel должен оставаться подключённым");
+        .expect("The release channel must remain connected.");
     assert_eq!(
         worker.shutdown_before(PlayerWorkerShutdownDeadline::after(Duration::from_secs(1))),
         PlayerWorkerShutdownOutcome::Completed { request }
@@ -145,7 +145,7 @@ fn command_and_cancellation_failures_remain_typed_across_retry() {
     let join_handle = std::thread::spawn(move || {
         release_rx
             .recv()
-            .expect("test owner должен явно разрешить завершение потока");
+            .expect("The test owner must expressly terminate the flow");
     });
     let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
     drop(command_rx);
@@ -166,7 +166,7 @@ fn command_and_cancellation_failures_remain_typed_across_retry() {
 
     release_tx
         .send(())
-        .expect("release channel должен оставаться подключённым");
+        .expect("The release channel must remain connected.");
     assert_eq!(
         worker.shutdown_before(PlayerWorkerShutdownDeadline::after(Duration::from_secs(1))),
         PlayerWorkerShutdownOutcome::Completed {
@@ -182,10 +182,10 @@ fn drop_after_typed_timeout_does_not_repeat_unbounded_join() {
     let join_handle = std::thread::spawn(move || {
         release_rx
             .recv()
-            .expect("test owner должен явно разрешить завершение потока");
+            .expect("The test owner must expressly terminate the flow");
         worker_finished_tx
             .send(())
-            .expect("test observer должен дождаться реального завершения");
+            .expect("The test observer must wait until the actual completion");
     });
     let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
     let (shutdown_tx, _shutdown_rx) = bounded(1);
@@ -199,19 +199,19 @@ fn drop_after_typed_timeout_does_not_repeat_unbounded_join() {
         drop(worker);
         drop_completed_tx
             .send(())
-            .expect("drop observer должен оставаться подключённым");
+            .expect("Drop observer should remain connected.");
     });
 
     drop_completed_rx
         .recv_timeout(Duration::from_secs(1))
-        .expect("Drop после typed timeout не должен повторять unbounded join");
+        .expect("Drop after typed timeout does not repeat unbounded join");
     release_tx
         .send(())
-        .expect("release channel должен оставаться подключённым");
+        .expect("The release channel must remain connected.");
     worker_finished_rx
         .recv_timeout(Duration::from_secs(1))
-        .expect("retained process-lifetime thread должен штатно завершиться после release");
+        .expect("Continued process-lifetime thread must be completed after release");
     drop_thread
         .join()
-        .expect("test drop observer не должен panic-овать");
+        .expect("Test drop observer should not be panic-free.");
 }

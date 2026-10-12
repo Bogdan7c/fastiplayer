@@ -43,14 +43,14 @@ pub(super) fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
     if language.chars().count() < MIN_UI_LANGUAGE_LEN {
         return Err(invalid_value(
             "ui.language",
-            "язык UI не должен быть пустым".to_string(),
+            "The UI language should not be empty".to_string(),
         ));
     }
 
     if language.chars().count() > MAX_UI_LANGUAGE_LEN {
         return Err(invalid_value(
             "ui.language",
-            "язык UI должен быть коротким кодом, например `ru` или `en`".to_string(),
+            "The UI language must be a short code, such as ru or en.".to_string(),
         ));
     }
 
@@ -58,7 +58,7 @@ pub(super) fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
         return Err(invalid_value(
             "ui.skin",
             format!(
-                "неизвестный skin `{}`; поддерживается только `{DEFAULT_UI_SKIN}`",
+                "unknown skin '{}'; supported only '{DEFAULT_UI_SKIN}'",
                 config.ui.skin
             ),
         ));

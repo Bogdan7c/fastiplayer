@@ -30,23 +30,23 @@ fn metadata_revisions_precede_packets_without_changing_packet_order() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let first_metadata = demuxer
         .next_event()
-        .expect("первая metadata revision должна читаться");
+        .expect("The first metadata revision should read");
     let first_packet = demuxer
         .next_event()
-        .expect("первый packet должен сохраниться после metadata event");
+        .expect("The first packet must be saved after the metadata event.");
     let second_metadata = demuxer
         .next_event()
-        .expect("вторая metadata revision должна читаться");
+        .expect("The second metadata revision should read");
     let second_packet = demuxer
         .next_event()
-        .expect("второй packet должен сохранить исходный порядок");
+        .expect("The second packet must maintain the original order.");
 
     let DemuxReadEvent::MediaMetadataChanged(first_metadata) = first_metadata else {
-        panic!("ожидалась первая metadata revision");
+        panic!("The first metadata revision was expected.");
     };
     assert_eq!(first_metadata.tags.title.as_deref(), Some("Episode title"));
     assert_eq!(
@@ -59,12 +59,12 @@ fn metadata_revisions_precede_packets_without_changing_packet_order() {
     );
 
     let DemuxReadEvent::Packet(first_packet) = first_packet else {
-        panic!("ожидался первый packet после первой metadata revision");
+        panic!("The first packet after the first metadata revision");
     };
     assert_eq!(first_packet.pts, Duration::from_millis(10));
 
     let DemuxReadEvent::MediaMetadataChanged(second_metadata) = second_metadata else {
-        panic!("ожидалась вторая metadata revision");
+        panic!("The second metadata revision was expected.");
     };
     assert_eq!(second_metadata.tags.title.as_deref(), Some("Episode title"));
     assert_eq!(
@@ -89,7 +89,7 @@ fn metadata_revisions_precede_packets_without_changing_packet_order() {
     );
 
     let DemuxReadEvent::Packet(second_packet) = second_packet else {
-        panic!("ожидался второй packet после второй metadata revision");
+        panic!("A second packet was expected after the second metadata revision.");
     };
     assert_eq!(second_packet.pts, Duration::from_millis(20));
 }
@@ -101,7 +101,7 @@ fn normal_eof_returns_terminal_event_without_error() {
 
     let event = demuxer
         .next_event()
-        .expect("normal EOF не должен быть ошибкой");
+        .expect("normal EOF shouldn't be a mistake");
 
     assert_eq!(event, DemuxReadEvent::EndOfStream);
 }
@@ -140,7 +140,7 @@ fn unknown_track_does_not_break_open() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("unknown track не должен ломать open");
+    .expect("unknown track must not break open");
 
     assert!(demuxer.tracks().is_empty());
 }
@@ -158,11 +158,11 @@ fn subtitle_packets_are_skipped_without_unknown_track_error() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("subtitle track не должен ломать open");
+    .expect("The subtitle track should not break open.");
 
     let event = demuxer
         .next_event()
-        .expect("subtitle packet должен быть пропущен без fatal ошибки");
+        .expect("subtitle packet must be missed without fatal errors");
 
     assert_eq!(event, DemuxReadEvent::EndOfStream);
 }
@@ -180,7 +180,7 @@ fn unexpected_eof_error_is_kept_as_defensive_eof_fallback() {
 
     let event = demuxer
         .next_event()
-        .expect("defensive UnexpectedEof fallback должен остаться EOF");
+        .expect("defensive UnexpectedEof fallback must remain EOF");
 
     assert_eq!(event, DemuxReadEvent::EndOfStream);
 }
@@ -188,7 +188,7 @@ fn unexpected_eof_error_is_kept_as_defensive_eof_fallback() {
 #[test]
 fn decode_error_from_format_reader_is_parse_error_without_retry() {
     let options =
-        DemuxerOptions::from_max_consecutive_corrupted_packets(2).expect("test limit ненулевой");
+        DemuxerOptions::from_max_consecutive_corrupted_packets(2).expect("test limit non-zero");
     let next_packet_call_count = Arc::new(Mutex::new(0));
     let reader = FakeFormatReader::new(
         vec![vp9_video_track(1)],
@@ -205,20 +205,20 @@ fn decode_error_from_format_reader_is_parse_error_without_retry() {
         DemuxSeekability::Seekable,
         options,
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let error = demuxer
         .next_event()
-        .expect_err("structural DecodeError из next_event должен быть fatal");
+        .expect_err("structural DecodeError from next_event must have fatal");
     let demux_error = error
         .downcast_ref::<DemuxError>()
-        .expect("fatal должен остаться typed DemuxError");
+        .expect("fatal must remain typed DemuxError");
 
     match demux_error {
         DemuxError::Parse(SymphoniaError::DecodeError(reason)) => {
             assert_eq!(*reason, "isomp4: no atom pending read");
         }
-        unexpected_error => panic!("ожидали Parse(DecodeError), получили {unexpected_error:?}"),
+        unexpected_error => panic!("expected Parse(DecodeError), received {unexpected_error:?}"),
     }
 
     assert_eq!(
@@ -239,10 +239,10 @@ fn packet_for_unknown_track_is_fatal() {
 
     let error = demuxer
         .next_event()
-        .expect_err("unknown track должен быть fatal");
+        .expect_err("unknown track must have fatal");
     let demux_error = error
         .downcast_ref::<DemuxError>()
-        .expect("fatal должен быть typed DemuxError");
+        .expect("fatal must have typed DemuxError");
 
     assert!(matches!(
         demux_error,
@@ -271,15 +271,15 @@ fn uncertain_vp9_keyframe_probe_is_returned_without_demux_error() {
 
     let first_event = demuxer
         .next_event()
-        .expect("неуверенная keyframe-проба не должна становиться fatal corruption");
+        .expect("An uncertain keyframe sample should not become fatal corruption.");
     let DemuxReadEvent::Packet(first_packet) = first_event else {
-        panic!("packet с неизвестным keyframe должен быть возвращён: {first_event:?}");
+        panic!("packet unknown keyframe must be returned: {first_event:?}");
     };
     let second_event = demuxer
         .next_event()
-        .expect("повторная неуверенная keyframe-проба не должна копить corruption counter");
+        .expect("Repeated unsure keyframe should not accumulate corruption counter");
     let DemuxReadEvent::Packet(second_packet) = second_event else {
-        panic!("второй packet с неизвестным keyframe должен быть возвращён: {second_event:?}");
+        panic!("Second packet with unknown keyframe must be returned: {second_event:?}");
     };
 
     assert_eq!(first_packet.pts, Duration::ZERO);

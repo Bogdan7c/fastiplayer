@@ -102,7 +102,7 @@ fn release_exclusion_families_match_canonical_profile() {
         let profile_exclusion = excluded_rows
             .get(*row_id)
             // Missing canonical exclusion сделал бы S42 self-invented.
-            .unwrap_or_else(|| panic!("S00 exclusion `{row_id}` отсутствует"));
+            .unwrap_or_else(|| panic!("S00 exclusion '{row_id}' missing"));
         // Canonical status также обязан оставаться hard exclusion.
         assert_eq!(
             required_string(profile_exclusion, "status"),
@@ -134,7 +134,7 @@ fn release_exclusion_payloads_are_exact() {
             release_exclusions
                 .get("rtsp-rtp-mms")
                 // Exact row set проверяет соседний focused test.
-                .expect("RTSP/RTP/MMS exclusion обязана существовать"),
+                .expect("RTSP/RTP/MMS exclusion must exist"),
             "exact_schemes"
         )
         .into_iter()
@@ -145,7 +145,7 @@ fn release_exclusion_payloads_are_exact() {
     let private_live = release_exclusions
         .get("private-live-downloaders")
         // Exact row set проверяет соседний focused test.
-        .expect("private-live exclusion обязана существовать");
+        .expect("private-live exclusion must exist");
     // Typed production reason не сводится к fixture-only claim.
     assert_eq!(
         required_string(private_live, "production_rejection"),
@@ -155,7 +155,7 @@ fn release_exclusion_payloads_are_exact() {
     let drm = release_exclusions
         .get("drm")
         // Exact row set проверяет соседний focused test.
-        .expect("DRM exclusion обязана существовать");
+        .expect("DRM exclusion must exist.");
     // DRM trigger остаётся exact upstream field.
     assert_eq!(required_string(drm, "trigger_field"), "has_drm");
     // DRM evidence обязано закрывать yt-dlp поле и protocol parser boundaries.
@@ -241,7 +241,7 @@ fn ism_live_remains_canonical_provisional_exclusion() {
     let ism_live = extended_absences
         .get("ism-mss-live-dvr")
         // Missing row означала бы approved extended gap.
-        .expect("ISM live absence обязана существовать");
+        .expect("ISM live absence must exist.");
     // Release не обещает ISM live provider.
     assert_eq!(required_string(ism_live, "status"), "ProfileExcluded");
     // Canonical profile identity хранится явно.
@@ -260,7 +260,7 @@ fn ism_live_remains_canonical_provisional_exclusion() {
             excluded_rows
                 .get("ism-mss-live-dvr")
                 // Missing row означает stale S42 assertion.
-                .expect("canonical ISM live exclusion обязана существовать"),
+                .expect("canonical ISM live exclusion must exist"),
             "status"
         ),
         "ProfileExcludedProvisional"
@@ -283,7 +283,7 @@ fn hds_and_special_provider_expansions_have_no_approved_rows() {
         let absence = extended_absences
             .get(row_id)
             // Failure называет отсутствующую decision row.
-            .unwrap_or_else(|| panic!("S42 absence `{row_id}` отсутствует"));
+            .unwrap_or_else(|| panic!("S42 absence '{row_id}' missing"));
         // NoApprovedRow запрещает fake Implemented provider.
         assert_eq!(required_string(absence, "status"), "NoApprovedRow");
         // Explicit null фиксирует отсутствие canonical identity.
@@ -312,7 +312,7 @@ fn extended_absence_payloads_match_profile_vocabulary() {
     let hds_live = extended_absences
         .get("hds-live-dvr")
         // Missing row означала бы extended acceptance gap.
-        .expect("HDS live absence обязана существовать");
+        .expect("HDS live absence must exist.");
     // Exact intent list не позволяет забыть post-live либо incompatible state.
     assert_eq!(
         required_string_array(hds_live, "rejected_live_intents"),
@@ -323,7 +323,7 @@ fn extended_absence_payloads_match_profile_vocabulary() {
     let special_absence = extended_absences
         .get("approved-special-providers")
         // Missing row означала бы special-provider evidence gap.
-        .expect("special provider absence обязана существовать");
+        .expect("special provider absence must exist");
     // Canonical alias owner остаётся immutable profile.
     let special_alias_family = required_row_by_string_field(
         required_array(&documents.profile, "protocol_aliases"),

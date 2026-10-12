@@ -94,7 +94,7 @@ fn confirm(
 ) -> PlaylistConfirmationApplyOutcome {
     let model = runtime
         .pending_playlist_confirmation()
-        .expect("подтверждение должно ждать ответа");
+        .expect("Confirmation should wait for a response");
     runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
         intent_id: model.intent_id(),
         decision,
@@ -106,7 +106,7 @@ fn admit(
     url: &str,
 ) -> Result<InAppQueueReplacementAdmission, crate::playlist_runtime::QueueReplacementAdmissionError>
 {
-    let intent = classify_dropped_web_url(url).expect("ссылка должна поддерживаться");
+    let intent = classify_dropped_web_url(url).expect("reference should be supported");
     runtime.admit_in_app_queue_replacement(intent)
 }
 
@@ -127,7 +127,7 @@ fn video_drop_on_nonempty_queue_waits_for_confirm_then_replaces_queue_and_starts
     for secret in ["hunter2", "token", "abc", "clips", "movie"] {
         assert!(
             !model.safe_label().contains(secret),
-            "подпись подтверждения раскрыла {secret}: {}",
+            "Confirmation signature disclosed {secret}: {}",
             model.safe_label()
         );
     }
@@ -138,24 +138,24 @@ fn video_drop_on_nonempty_queue_waits_for_confirm_then_replaces_queue_and_starts
         AdmittedQueueReplacementIntent::ServiceUrl(url_open),
     ) = outcome
     else {
-        panic!("Confirm должен вернуть допущенную ссылку, got {outcome:?}");
+        panic!("Confirm must return the accepted link, got {outcome:?}");
     };
     assert_eq!(
         queue_rows(&runtime),
         ["local:old-0.mkv", "local:old-1.mkv"],
-        "Confirm сам очередь не меняет"
+        "Confirm doesn't change the queue"
     );
 
     let locator = url_open.into_locator();
     let ServiceUrlReplacementOutcome::Replaced { item } =
         runtime.replace_queue_with_service_url(&locator)
     else {
-        panic!("замена должна пройти");
+        panic!("The replacement must pass");
     };
     assert_eq!(
         queue_rows(&runtime),
         [format!("url:{SECRET_DIRECT_URL}")],
-        "очередь — ровно одна строка с точным адресом"
+        "queue - exactly one line with the exact address"
     );
     assert!(matches!(
         runtime.play_playlist_row(item),
@@ -188,7 +188,7 @@ fn video_drop_on_empty_queue_with_plain_url_starts_immediately() {
         url_open,
     )) = admission
     else {
-        panic!("пустая очередь и обычная ссылка — без вопросов, got {admission:?}");
+        panic!("Empty queue and usual link - no questions asked, got {admission:?}");
     };
     assert!(runtime.pending_playlist_confirmation().is_none());
     assert!(matches!(
@@ -209,7 +209,7 @@ fn replacement_before_load_decision_is_reported_and_creates_no_queue() {
         url_open,
     ))) = admitted
     else {
-        panic!("до load decision admission допускает старт, got {admitted:?}");
+        panic!("before load decision admission allows start, got {admitted:?}");
     };
     let locator = url_open.into_locator();
 
@@ -224,7 +224,7 @@ fn replacement_before_load_decision_is_reported_and_creates_no_queue() {
 fn unrecognized_text_is_refused_with_safe_message_and_never_echoes_input() {
     let refusal = classify_dropped_web_url("https://user:hunter2@ exa mple");
     let Err(message) = refusal else {
-        panic!("мусор не должен стать ссылкой");
+        panic!("Garbage should not be a reference.");
     };
     assert!(!message.is_empty());
     assert!(!message.contains("hunter2"));
@@ -257,13 +257,13 @@ fn panel_drop_of_sensitive_url_waits_for_persistence_confirmation_like_add_url()
     assert_eq!(
         queue_rows(&runtime),
         ["local:old-0.mkv"],
-        "до подтверждения очередь не меняется"
+        "queue does not change until confirmed"
     );
     let model = runtime.pending_playlist_confirmation().expect("pending");
     assert!(model.reasons().sensitive_url_persistence());
     assert!(
         !model.reasons().queue_replacement(),
-        "Add URL не заменяет очередь"
+        "Add URL does not replace a queue"
     );
     assert!(!model.safe_label().contains("hunter2"));
 
@@ -290,7 +290,7 @@ fn panel_drop_of_garbage_is_refused_without_touching_queue() {
     );
 
     let DroppedWebUrlAppendOutcome::Refused { user_message } = outcome else {
-        panic!("ожидался отказ");
+        panic!("waiver");
     };
     assert!(!user_message.contains("hunter2"));
     assert_eq!(queue_rows(&runtime), ["local:old-0.mkv"]);

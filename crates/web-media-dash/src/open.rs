@@ -54,7 +54,7 @@ impl DashVodOpenResult {
     pub fn async_seek_handle(&self) -> ProgressiveAsyncSeekHandle {
         self.demuxer
             .async_seek_handle()
-            .expect("DASH runtime всегда создаётся с receipt capability")
+            .expect("DASH runtime is always created with receipt capability.")
     }
 
     /// Передаёт runtime staged app composition owner-у.

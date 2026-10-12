@@ -12,7 +12,7 @@ fn generation_token(playback: u64, scrub: u64) -> ScrubGenerationToken {
 }
 
 fn target_for_tests(track_id: TrackId, millis: u64) -> ScrubTarget {
-    let time_base = TimeBase::new(1, 1_000).expect("валидная test timebase");
+    let time_base = TimeBase::new(1, 1_000).expect("validation");
     ScrubTarget::new(
         MediaTime::from_millis(millis),
         TrackTimestamp::new(track_id, millis as i64, time_base),

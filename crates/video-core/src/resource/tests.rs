@@ -808,7 +808,7 @@ fn dma_buf_frame_contract_validation_returns_typed_layout_and_size_rejections() 
         1080,
         &descriptor,
     )
-    .expect_err("несовпадающий DMA-BUF layout должен быть отклонён");
+    .expect_err("DMA-BUF layout must be rejected.");
     assert_eq!(
         layout_rejection,
         DmaBufDescriptorRejection::ImageLayoutMismatch {
@@ -828,7 +828,7 @@ fn dma_buf_frame_contract_validation_returns_typed_layout_and_size_rejections() 
         720,
         &descriptor,
     )
-    .expect_err("несовпадающий coded size должен быть отклонён");
+    .expect_err("Non-matching coded size must be rejected.");
     assert_eq!(
         size_rejection,
         DmaBufDescriptorRejection::CodedSizeMismatch {
@@ -851,7 +851,7 @@ fn dma_buf_frame_contract_validation_rejects_wrong_transfer_path_and_zero_size()
         1080,
         &descriptor,
     )
-    .expect_err("host-upload contract не должен принимать DMA-BUF descriptor");
+    .expect_err("host-upload contract does not accept DMA-BUF descriptor");
     assert_eq!(
         transfer_rejection,
         DmaBufDescriptorRejection::FrameContractRequiresHostUpload
@@ -868,7 +868,7 @@ fn dma_buf_frame_contract_validation_rejects_wrong_transfer_path_and_zero_size()
         1080,
         &descriptor,
     )
-    .expect_err("нулевой coded size должен быть отклонён до импорта");
+    .expect_err("Zero coded size must be rejected before import");
     assert_eq!(
         size_rejection,
         DmaBufDescriptorRejection::InvalidCodedSize {

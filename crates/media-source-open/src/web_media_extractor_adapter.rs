@@ -28,12 +28,12 @@ impl ExtractorCatalogProjection {
     pub fn from_snapshot(snapshot: &YtDlpCandidateSnapshot) -> Result<Self> {
         let planning_projection = snapshot
             .planning_projection()
-            .context("Не удалось выразить extractor candidates через neutral planner")?;
+            .context("Unable to express extractor candidates via neutral planner")?;
         let planning_rejection_count = planning_projection.rejections().len();
         let catalog = planning_projection.into_snapshot();
         snapshot
             .validate_planning_snapshot_alignment(&catalog)
-            .context("Extractor service/catalog projections не соответствуют друг другу")?;
+            .context("Extractor service/catalog projections do not correspond to each other.")?;
 
         Ok(Self {
             catalog,
@@ -65,10 +65,10 @@ impl ExtractorCatalogProjection {
                 && candidate.descriptor().semantic_identity() == semantic_identity
         });
         if !belongs_to_catalog {
-            bail!("Active extractor selection отсутствует в neutral catalog");
+            bail!("Active extractor selection is not available in neutral catalog");
         }
         let parent = ExactSelectionIdentity::new(exact_identity.clone(), semantic_identity.clone())
-            .context("Active extractor selection нарушает source lineage")?;
+            .context("Active extractor selection violated source lineage")?;
 
         Ok(ExtractorAdapterProjection {
             catalog: self.catalog,
@@ -105,7 +105,7 @@ impl ExtractorAdapterProjection {
     /// Заменяет parent-only selection на canonical installed component selection.
     pub fn with_neutral_selection(mut self, selection: WebMediaSelection) -> Result<Self> {
         if selection.parent() != self.selection.parent() {
-            bail!("Final neutral selection относится к другому extractor parent");
+            bail!("Final neutral selection belongs to another extractor parent");
         }
         self.selection = selection;
         Ok(self)
@@ -129,10 +129,10 @@ fn presentation_from_live_intent(live_intent: YtDlpLiveIntent) -> Result<WebMedi
             Ok(WebMediaPresentationKind::Vod)
         }
         YtDlpLiveIntent::Live => Ok(WebMediaPresentationKind::Live),
-        YtDlpLiveIntent::Upcoming => Err(anyhow!("Upcoming extractor media ещё не playable")),
-        YtDlpLiveIntent::PostLive => Err(anyhow!("Post-live extractor media ещё не стало VOD")),
+        YtDlpLiveIntent::Upcoming => Err(anyhow!("Upcoming extractor media is not yet playable.")),
+        YtDlpLiveIntent::PostLive => Err(anyhow!("Post-live extractor media is not yet VOD.")),
         YtDlpLiveIntent::Incompatible => Err(anyhow!(
-            "Extractor live fields не образуют совместимый presentation intent"
+            "Extractor live fields do not form a compatible presentation intent."
         )),
     }
 }

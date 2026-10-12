@@ -121,7 +121,7 @@ impl NativeSmoothSourceState {
         let web_media_core::WebMediaSelectionShape::Components(component_selection) =
             neutral_selection.shape()
         else {
-            anyhow::bail!("native Smooth catalog потерял component selection");
+            anyhow::bail!("Native Smooth catalog lost component selection");
         };
         let stream_configuration =
             crate::web_media_stream_model::WebMediaStreamConfiguration::from_native_manifest(

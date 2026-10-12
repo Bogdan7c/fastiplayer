@@ -193,7 +193,7 @@ fn sidebar_resize_persistence_failure_rolls_back_live_width_and_preserves_draft(
             .status
             .summary
             .as_deref()
-            .is_some_and(|summary| summary.contains("сохран"))
+            .is_some_and(|summary| summary.contains("save"))
     );
     fs::remove_dir_all(&path).expect("test target directory should be removed");
 }
@@ -205,15 +205,15 @@ fn app_shell_and_app_state_do_not_keep_duplicate_mutable_app_config_owner() {
 
     assert!(
         !app_shell_source.contains("app_config: AppConfig"),
-        "AppShell должен владеть SettingsRuntime, а не отдельным AppConfig"
+        "AppShell should own SettingsRuntime, not a separate AppConfig"
     );
     assert!(
         !app_state_source.contains("app_config: AppConfig"),
-        "AppState должен хранить controlled snapshot, а не второй AppConfig owner"
+        "AppState should store a controlled snapshot, not a second AppConfig owner"
     );
     assert!(
         !app_state_source.contains("pub app_config"),
-        "AppState не должен открывать mutable config storage наружу"
+        "AppState does not open mutable config storage outside"
     );
 }
 

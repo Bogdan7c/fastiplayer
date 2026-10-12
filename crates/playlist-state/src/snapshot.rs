@@ -31,7 +31,7 @@ pub struct SaveRevisionExhausted;
 
 impl fmt::Display for SaveRevisionExhausted {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("исчерпана монотонная revision playlist-state")
+        formatter.write_str("Exhausted monotonous revision playlist-state")
     }
 }
 

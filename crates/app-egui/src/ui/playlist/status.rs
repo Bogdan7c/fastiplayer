@@ -51,7 +51,7 @@ enum PlaylistStatusRenderAccess<'a> {
 }
 
 pub(super) fn show_unavailable(ui: &mut Ui) {
-    ui.label("Плейлист ещё подключается…");
+    ui.label("Connecting Playlist…");
 }
 
 /// Рисует один верхний separator и анимируемый status owner под ним.

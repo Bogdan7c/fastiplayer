@@ -24,10 +24,10 @@ impl WebMediaCatalogAttachment {
         active: WebMediaSelectionTarget,
     ) -> anyhow::Result<Self> {
         if !choices.iter().any(|choice| choice.target == active) {
-            anyhow::bail!("active choice отсутствует в declared web-media catalog");
+            anyhow::bail!("active choice is missing from the declared web-media catalog");
         }
         if !active_matches_parent(&active, &parent) {
-            anyhow::bail!("active choice не принадлежит parent identity declared catalog-а");
+            anyhow::bail!("active choice does not belong to the parent identity declared catalog");
         }
         Ok(Self {
             id: NEXT_ATTACHMENT_ID.fetch_add(1, Ordering::Relaxed),

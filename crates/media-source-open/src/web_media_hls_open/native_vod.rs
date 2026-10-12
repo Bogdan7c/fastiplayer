@@ -14,13 +14,13 @@ pub struct PreparedNativeHlsVod {
 pub enum PrepareNativeHlsVodError {
     #[error("native HLS VOD runtime open failed: {0}")]
     Open(#[source] web_media_hls::HlsVodOpenError),
-    #[error("native HLS VOD runtime потерял receipted seek handle")]
+    #[error("native HLS VOD runtime lost receipted seek handle")]
     MissingSeekHandle,
-    #[error("native HLS VOD runtime не достиг install-ready topology: {0}")]
+    #[error("native HLS VOD runtime failed install-ready topology: {0}")]
     InitialTopology(#[source] anyhow::Error),
-    #[error("native HLS VOD initial-position proof нарушил requested start contract: {0:?}")]
+    #[error("native HLS VOD initial-position proof breach requested start contract: {0:?}")]
     InitialPositionProof(HlsInitialPositionProofTakeOutcome),
-    #[error("native HLS VOD initial-position capability не совпал с start intent")]
+    #[error("native HLS VOD initial-position capability didn't match start intent")]
     InitialPositionCapabilityMismatch,
 }
 
@@ -144,7 +144,7 @@ pub fn discover_native_hls_catalog(
         },
         &mut capability_probe,
     )
-    .context("native HLS catalog discovery завершился ошибкой")
+    .context("native HLS catalog discovery ended in error")
 }
 
 /// Переносит уже доказанный native HLS runtime через единственный player preparation boundary.

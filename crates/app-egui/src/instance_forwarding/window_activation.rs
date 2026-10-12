@@ -49,7 +49,7 @@ fn activate_with_token(window: &Window, activation_token: WindowActivationToken)
     match window.activate_with_token(ActivationToken::from_raw(activation_token.into_string())) {
         Ok(()) => true,
         Err(error) => {
-            tracing::warn!(%error, "Композитор не поддерживает активацию окна по билету");
+            tracing::warn!(%error, "The compositor does not support window activation tokens");
             false
         }
     }

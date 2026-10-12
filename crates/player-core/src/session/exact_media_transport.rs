@@ -138,13 +138,13 @@ impl PlayerSession {
                 .unwrap_or(media_core::TimelineNotSeekableReason::UnknownTimeline);
             return Err(PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
-                format!("Exact seek-to-zero невозможен: timeline не seekable ({reason:?})"),
+                format!("Exact seek-to-zero impossible: timeline not seekable ({reason:?})"),
             ));
         }
         if !self.pipeline.has_demuxer() {
             return Err(PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
-                "Exact seek-to-zero невозможен: media pipeline не открыт",
+                "Exact seek-to-zero is not possible: media pipeline is not open",
             ));
         }
         self.seek(SeekRequest::absolute(std::time::Duration::ZERO.into()))?;
@@ -153,7 +153,7 @@ impl PlayerSession {
         }
         Err(PlayerError::new(
             PlayerErrorKind::SeekUnavailable,
-            "Exact seek-to-zero не был принят player seek transaction",
+            "Exact seek-to-zero not accepted by player seek transaction",
         ))
     }
 }

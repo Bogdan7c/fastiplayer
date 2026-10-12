@@ -86,7 +86,7 @@ pub fn create_audio_decoder(config: AudioDecoderConfig) -> Result<AudioDecoderHa
         Err(error) if should_use_opus_fallback(&config, &error) => {
             info!(
                 codec_id = %config.codec_id(),
-                "Symphonia не предоставила Opus decoder; используется Opus fallback adapter"
+                "Symphonia does not provide Opus decoder; uses Opus fallback adapter"
             );
             Ok(Box::new(OpusFallbackDecoder::new(&config)?) as AudioDecoderHandle)
         }
@@ -143,7 +143,7 @@ impl SymphoniaAudioDecoder {
             codec_id = %config.codec_id(),
             sample_rate = ?config.sample_rate(),
             channels = ?config.channels(),
-            "Symphonia audio decoder создан"
+            "Symphonia audio decoder created"
         );
 
         let channel_layout = config
@@ -428,7 +428,7 @@ mod tests {
                 .expect("missing mapping must keep typed config error"),
             &AudioDecoderError::InvalidConfig {
                 codec_id: "A_OPUS".to_string(),
-                reason: "multichannel Opus с 6 каналами требует валидный OpusHead с channel mapping table".to_string(),
+                reason: "multichannel Opus with 6 channels requires a valid OpusHead with a channel mapping table".to_string(),
             }
         );
     }

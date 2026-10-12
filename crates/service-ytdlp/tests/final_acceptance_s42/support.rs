@@ -27,11 +27,11 @@ pub(super) fn workspace_root() -> PathBuf {
         // Первый parent поднимает путь из crate в `crates`.
         .parent()
         // Отсутствие parent означает сломанный repository layout.
-        .expect("service-ytdlp должен находиться внутри workspace crates")
+        .expect("service-ytdlp must be inside the workspace crates")
         // Второй parent поднимает путь в workspace root.
         .parent()
         // Этот parent также обязателен.
-        .expect("workspace root должен быть parent каталога crates")
+        .expect("workspace root must have parent catalogue crates")
         // Owned path не удерживает borrow временного значения.
         .to_path_buf()
 }
@@ -41,12 +41,11 @@ pub(super) fn load_json_document(crate_relative_path: &str) -> Value {
     // Artifact path не зависит от cwd test runner-а.
     let document_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(crate_relative_path);
     // Missing artifact является infrastructure failure.
-    let document_bytes = fs::read(&document_path).unwrap_or_else(|error| {
-        panic!("не удалось прочитать {}: {error}", document_path.display())
-    });
+    let document_bytes = fs::read(&document_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", document_path.display()));
     // Невалидный JSON немедленно останавливает gate.
     serde_json::from_slice(&document_bytes)
-        .unwrap_or_else(|error| panic!("не удалось разобрать {}: {error}", document_path.display()))
+        .unwrap_or_else(|error| panic!("I couldn't make out {}: {error}", document_path.display()))
 }
 
 /// Возвращает обязательный JSON object field.
@@ -60,7 +59,7 @@ pub(super) fn required_object<'value>(
         // Exact JSON type обязателен.
         .and_then(Value::as_object)
         // Failure называет точное поле.
-        .unwrap_or_else(|| panic!("обязательный object `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("Mandatory object {field} is not available"))
 }
 
 /// Возвращает обязательный JSON array field.
@@ -73,7 +72,7 @@ pub(super) fn required_array<'value>(value: &'value Value, field: &str) -> &'val
         // Borrowed slice удобен для read-only gate.
         .map(Vec::as_slice)
         // Missing array является schema failure.
-        .unwrap_or_else(|| panic!("обязательный array `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("Mandatory array '{field}' not available"))
 }
 
 /// Возвращает обязательный JSON string field.
@@ -84,7 +83,7 @@ pub(super) fn required_string<'value>(value: &'value Value, field: &str) -> &'va
         // Неверный тип не игнорируется.
         .and_then(Value::as_str)
         // Diagnostics называют concrete field.
-        .unwrap_or_else(|| panic!("обязательная строка `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("The mandatory line {field} is missing"))
 }
 
 /// Возвращает обязательный nullable string field.
@@ -96,14 +95,14 @@ pub(super) fn required_nullable_string<'value>(
     match value
         .get(field)
         // Missing nullable field всё равно является schema drift.
-        .unwrap_or_else(|| panic!("обязательное nullable поле `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("The obligatory nullable field {field} is absent."))
     {
         // Null фиксирует доказанное отсутствие identity.
         Value::Null => None,
         // String сохраняется exact.
         Value::String(text) => Some(text),
         // Другие JSON types запрещены.
-        _ => panic!("nullable поле `{field}` обязано быть строкой либо null"),
+        _ => panic!("The nullable field {field} must be either a string or a null."),
     }
 }
 
@@ -115,7 +114,7 @@ pub(super) fn required_bool(value: &Value, field: &str) -> bool {
         // Exact type обязателен.
         .and_then(Value::as_bool)
         // Missing flag является schema failure.
-        .unwrap_or_else(|| panic!("обязательный bool `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("Mandatory bool '{field}' is missing"))
 }
 
 /// Возвращает обязательное non-negative JSON integer field.
@@ -126,11 +125,11 @@ pub(super) fn required_usize(value: &Value, field: &str) -> usize {
         // Negative/floating-point значения не допускаются.
         .and_then(Value::as_u64)
         // Missing number является schema failure.
-        .unwrap_or_else(|| panic!("обязательное целое `{field}` отсутствует"));
+        .unwrap_or_else(|| panic!("The obligatory whole {field} is absent."));
     // Conversion остаётся checked на 32-bit targets.
     usize::try_from(raw_value)
         // Oversized count не может описывать repository inventory.
-        .unwrap_or_else(|_| panic!("`{field}` не помещается в usize"))
+        .unwrap_or_else(|_| panic!("'{field}' does not fit in usize"))
 }
 
 /// Возвращает обязательный string array без silent filtering.
@@ -143,7 +142,7 @@ pub(super) fn required_string_array<'value>(value: &'value Value, field: &str) -
             entry
                 .as_str()
                 // Failure указывает owner field.
-                .unwrap_or_else(|| panic!("`{field}` содержит нестроковый element"))
+                .unwrap_or_else(|| panic!("{field} contains a non-linear element"))
         })
         // Owned vector удобен для ordered и set assertions.
         .collect()
@@ -163,7 +162,7 @@ pub(super) fn required_unique_string_set<'value>(
     assert_eq!(
         unique_values.len(),
         string_values.len(),
-        "{context} содержит duplicate `{field}` identity"
+        "{context} contains a duplicate '{field}' identity"
     );
     // Borrowed set сохраняет связь с manifest document.
     unique_values
@@ -183,7 +182,7 @@ pub(super) fn rows_by_id<'value>(
         // Duplicate identity разрушает one-to-one traceability.
         assert!(
             indexed_rows.insert(row_id, row).is_none(),
-            "{owner} содержит duplicate row `{row_id}`"
+            "{owner} contains a duplicate row {row_id}"
         );
     }
     // Map остаётся read-only у вызывающего gate.
@@ -208,7 +207,7 @@ pub(super) fn required_row_by_string_field<'value>(
     assert_eq!(
         matching_rows.len(),
         1,
-        "{owner} должен содержать ровно одну row `{field}={expected_identity}`"
+        "{owner} should contain exactly one row '{field} = {expected_identity}'"
     );
     // Cardinality assertion гарантирует безопасный первый element.
     matching_rows[0]
@@ -228,7 +227,7 @@ pub(super) fn required_evidence_ids<'value>(
     assert_eq!(
         unique_ids.len(),
         evidence_ids.len(),
-        "{context} содержит duplicate `{field}` reference"
+        "{context} contains duplicate '{field}' reference"
     );
     // Exact source order сохраняется.
     evidence_ids
@@ -249,14 +248,14 @@ pub(super) fn collect_referenced_evidence_ids(
                 let evidence_values = nested_value
                     .as_array()
                     // Неверный type не маскируется пустым list.
-                    .unwrap_or_else(|| panic!("`{field}` обязан быть array"));
+                    .unwrap_or_else(|| panic!("'{field}' must be array"));
                 // Каждый reference проверяется отдельно.
                 for evidence_value in evidence_values {
                     // Exact ID обязан быть string.
                     let evidence_id = evidence_value
                         .as_str()
                         // Неверный element type является schema failure.
-                        .unwrap_or_else(|| panic!("`{field}` содержит нестроковый element"));
+                        .unwrap_or_else(|| panic!("{field} contains a non-linear element"));
                     // Один catalog item может обслуживать несколько rows.
                     referenced_ids.insert(evidence_id.to_owned());
                 }
@@ -286,9 +285,9 @@ pub(super) fn assert_no_planned_status(value: &Value, context: &str) {
                 let status = nested_value
                     .as_str()
                     // Неверный type не может пройти profile-traceability gate.
-                    .unwrap_or_else(|| panic!("{context}: status обязан быть строкой"));
+                    .unwrap_or_else(|| panic!("{context}: status must be a line"));
                 // S42 не допускает unresolved roadmap state.
-                assert_ne!(status, "Planned", "{context} содержит Planned status");
+                assert_ne!(status, "Planned", "{context} containing Planned status");
             } else {
                 // Остальные fields проверяются рекурсивно.
                 assert_no_planned_status(nested_value, context);
@@ -312,7 +311,7 @@ pub(super) fn assert_typed_evidence(evidence_id: &str, evidence: &Value) {
     // Empty role не может участвовать в typed traceability.
     assert!(
         !evidence_role.is_empty(),
-        "evidence `{evidence_id}` содержит пустую role"
+        "Evidence '{evidence_id}' contains an empty role"
     );
     // Kind discriminator не допускает structural guessing.
     match required_string(evidence, "kind") {
@@ -327,7 +326,7 @@ pub(super) fn assert_typed_evidence(evidence_id: &str, evidence: &Value) {
             assert_eq!(
                 evidence
                     .as_object()
-                    .expect("typed evidence обязан быть object")
+                    .expect("typed evidence must object")
                     .keys()
                     .map(String::as_str)
                     .collect::<BTreeSet<_>>(),
@@ -355,7 +354,7 @@ pub(super) fn assert_typed_evidence(evidence_id: &str, evidence: &Value) {
             assert_eq!(
                 evidence
                     .as_object()
-                    .expect("typed evidence обязан быть object")
+                    .expect("typed evidence must object")
                     .keys()
                     .map(String::as_str)
                     .collect::<BTreeSet<_>>(),
@@ -369,7 +368,7 @@ pub(super) fn assert_typed_evidence(evidence_id: &str, evidence: &Value) {
                     required_string(evidence, "polarity"),
                     "Positive" | "Negative"
                 ),
-                "test evidence `{evidence_id}` имеет unknown polarity"
+                "test evidence `{evidence_id}` has unknown polarity"
             );
             // Package и Cargo target должны существовать реально.
             assert_test_package_and_target(evidence_id, evidence);
@@ -382,7 +381,7 @@ pub(super) fn assert_typed_evidence(evidence_id: &str, evidence: &Value) {
             assert_eq!(
                 evidence
                     .as_object()
-                    .expect("typed evidence обязан быть object")
+                    .expect("typed evidence must object")
                     .keys()
                     .map(String::as_str)
                     .collect::<BTreeSet<_>>(),
@@ -393,7 +392,7 @@ pub(super) fn assert_typed_evidence(evidence_id: &str, evidence: &Value) {
         }
         // Любой новый kind требует schema bump.
         unexpected_kind => {
-            panic!("evidence `{evidence_id}` содержит unknown kind `{unexpected_kind}`")
+            panic!("evidence '{evidence_id}' contains unknown kind '{unexpected_kind}'")
         }
     }
 }
@@ -408,7 +407,7 @@ pub(super) fn assert_evidence_role(
     // Пустой reference list не может доказать role либо exclusion.
     assert!(
         !evidence_ids.is_empty(),
-        "{context} содержит пустое evidence"
+        "{context} contains empty evidence."
     );
     // Каждый reference проверяется independently.
     for evidence_id in evidence_ids {
@@ -416,12 +415,12 @@ pub(super) fn assert_evidence_role(
         let evidence = evidence_catalog
             .get(*evidence_id)
             // Missing catalog entry является stale manifest.
-            .unwrap_or_else(|| panic!("{context} ссылается на unknown evidence `{evidence_id}`"));
+            .unwrap_or_else(|| panic!("{context} refers to unknown evidence '{evidence_id}'"));
         // Catalog role должна совпасть с claim owner-ом.
         assert_eq!(
             required_string(evidence, "role"),
             expected_role,
-            "{context}: evidence `{evidence_id}` имеет incompatible role"
+            "{context}: evidence '{evidence_id}' has an incompatible role"
         );
     }
 }
@@ -501,13 +500,13 @@ pub(super) fn assert_vaapi_profile_arm_sets(hardware_exception: &Value) {
     let arm_sets = hardware_exception
         .get("vaapi_profile_arm_sets")
         // Missing sets не доказывают unchanged hardware inventory.
-        .unwrap_or_else(|| panic!("VA-API profile arm sets отсутствуют"));
+        .unwrap_or_else(|| panic!("VA-API profile arm sets are not available"));
     // Arm-set object содержит только baseline/current и approved delta fields.
     assert_eq!(
         arm_sets
             .as_object()
             // Scalar не может описывать versioned inventories.
-            .expect("VA-API profile arm sets обязаны быть object")
+            .expect("VA-API profile arm sets must be object")
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
@@ -572,19 +571,19 @@ pub(super) fn current_vaapi_profile_match_arms() -> BTreeSet<String> {
     // Source читается через workspace-owned path.
     let source = fs::read_to_string(workspace_root().join(probe_path))
         // Missing production file является hard failure.
-        .unwrap_or_else(|error| panic!("не удалось прочитать `{probe_path}`: {error}"));
+        .unwrap_or_else(|error| panic!("failed to read `{probe_path}`: {error}"));
     // Начало exact function отделяет production arms от tests.
     let function_start = source
         .find("fn formats_for_va_profile(")
         // Missing function означает boundary rename без manifest update.
-        .unwrap_or_else(|| panic!("`formats_for_va_profile` boundary отсутствует"));
+        .unwrap_or_else(|| panic!("`formats_for_va_profile' boundary missing"));
     // Retain line находится после match и завершает arm inventory.
     let function_tail = &source[function_start..];
     // End marker исключает profile mentions из comments/tests ниже.
     let match_end = function_tail
         .find("formats.retain(")
         // Missing retain меняет capability semantics.
-        .unwrap_or_else(|| panic!("`formats_for_va_profile` retain boundary отсутствует"));
+        .unwrap_or_else(|| panic!("'formats_for_va_profile' retain boundary missing"));
     // Только match section участвует в extraction.
     let match_source = &function_tail[..match_end];
     // Ordered set защищает exact arm identity без source-order coupling.

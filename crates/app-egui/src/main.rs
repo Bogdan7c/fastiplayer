@@ -114,7 +114,7 @@ fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalSt
         process_elapsed_ms = process_started_at.elapsed().as_secs_f64() * 1_000.0,
         "=== fastiplayer ==="
     );
-    info!("Запуск приложения");
+    info!("Starting application");
 
     info!(
         process_elapsed_ms = process_started_at.elapsed().as_secs_f64() * 1_000.0,
@@ -138,7 +138,7 @@ fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalSt
     event_loop.set_control_flow(ControlFlow::Wait);
 
     if matches!(initial_media, Some(InitialMedia::File(_))) {
-        info!("CLI аргумент: локальный файл для воспроизведения");
+        info!("CLI argument: local file for playback");
     }
 
     let mut app = AppShell::new(
@@ -151,7 +151,10 @@ fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalSt
         instance_lease,
     )
     .map_err(|error| {
-        FatalStartupError::internal_failure("Не удалось создать settings runtime app shell", &error)
+        FatalStartupError::internal_failure(
+            "Could not create the Settings runtime app shell",
+            &error,
+        )
     })?;
     let event_loop_result = event_loop.run_app(&mut app);
     // `exiting` обычно уже выполнил этот path; явный idempotent вызов также
@@ -165,10 +168,9 @@ fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalSt
     if let Some(fatal_error) = fatal_error_inside_event_loop {
         return Err(fatal_error);
     }
-    event_loop_result.map_err(|error| {
-        FatalStartupError::internal_failure("Event loop завершился ошибкой", &error)
-    })?;
+    event_loop_result
+        .map_err(|error| FatalStartupError::internal_failure("Event loop failed", &error))?;
 
-    info!("Приложение завершено");
+    info!("Application exited");
     Ok(())
 }

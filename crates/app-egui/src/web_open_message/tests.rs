@@ -37,13 +37,12 @@ const ALL_REASONS: [WebOpenFailureReason; 27] = [
     WebOpenFailureReason::Unclassified,
 ];
 
-/// Тексты — русские, со строчной буквы, без имён Rust-типов и технического жаргона.
+/// Тексты — английские, со строчной буквы, без имён Rust-типов и технического жаргона.
 #[test]
-fn every_reason_has_readable_russian_phrase() {
+fn every_reason_has_readable_english_phrase() {
     let forbidden_fragments = [
         "{",
         "Error",
-        "error",
         "Network",
         "provider",
         "extractor",
@@ -57,21 +56,21 @@ fn every_reason_has_readable_russian_phrase() {
         assert!(
             phrase
                 .chars()
-                .any(|character| ('а'..='я').contains(&character)),
-            "{debug_name}: текст должен быть по-русски: {phrase}"
+                .any(|character| character.is_ascii_alphabetic()),
+            "{debug_name}: message must be readable English: {phrase}"
         );
         assert!(
             phrase.chars().next().is_some_and(char::is_lowercase),
-            "{debug_name}: фраза идёт после двоеточия и начинается со строчной: {phrase}"
+            "{debug_name}: The phrase comes after the colon and begins with the lowercase: {phrase}"
         );
         assert!(
             !phrase.contains(&debug_name),
-            "{debug_name}: имя типа в тексте"
+            "{debug_name}: Type name in the text"
         );
         for fragment in forbidden_fragments {
             assert!(
                 !phrase.contains(fragment),
-                "{debug_name}: «{fragment}» в «{phrase}»"
+                "{debug_name}: \"{fragment}\" in \"{phrase}\""
             );
         }
     }
@@ -95,22 +94,22 @@ fn every_reason_has_distinct_phrase() {
 fn window_message_names_host_and_actionable_reason() {
     assert_eq!(
         web_open_failure_message(Some("example.test"), WebOpenFailureReason::NotFound),
-        "Не удалось открыть ссылку (example.test): страница не найдена (ошибка 404) — проверьте ссылку"
+        "Could not open the link (example.test): page not found (error 404); check the link"
     );
     assert_eq!(
         web_open_failure_message(
             Some("youtube.com"),
             WebOpenFailureReason::ExtractorNotInstalled
         ),
-        "Не удалось открыть ссылку (youtube.com): не найдена программа yt-dlp — установите пакет yt-dlp"
+        "Could not open the link (youtube.com): yt-dlp was not found; install the yt-dlp package"
     );
     assert_eq!(
         web_open_failure_message(Some("youtube.com"), WebOpenFailureReason::SitePrivateMedia),
-        "Не удалось открыть ссылку (youtube.com): видео приватное"
+        "Could not open the link (youtube.com): the video is private"
     );
     assert_eq!(
         web_open_failure_message(None, WebOpenFailureReason::NoConnection),
-        "Не удалось открыть ссылку: нет соединения с сервером — проверьте интернет"
+        "Could not open the link: cannot connect to the server; check your internet connection"
     );
 }
 
@@ -122,7 +121,7 @@ fn player_failure_for_link_uses_same_template() {
             Some("example.test"),
             PlayerInstallFailureReason::UnsupportedVideoFormat
         ),
-        "Не удалось открыть ссылку (example.test): формат видео не поддерживается"
+        "Could not open the link (example.test): unsupported video format"
     );
 }
 
@@ -131,11 +130,11 @@ fn player_failure_for_link_uses_same_template() {
 fn row_summary_is_capitalized_phrase_without_host() {
     assert_eq!(
         local_open_failure_row_summary(WebOpenFailureReason::SiteGeoRestricted),
-        "Видео недоступно в вашем регионе"
+        "The video is unavailable in your region"
     );
     assert_eq!(
         local_open_failure_row_summary(WebOpenFailureReason::NotFound),
-        "Страница не найдена (ошибка 404) — проверьте ссылку"
+        "Page not found (error 404); check the link"
     );
 }
 
@@ -145,18 +144,18 @@ fn row_summary_is_capitalized_phrase_without_host() {
 fn url_import_failure_texts_name_domain_and_reason_without_inventing_site_cause() {
     assert_eq!(
         url_import_failure_message(Some("youtube.com"), WebOpenFailureReason::SitePrivateMedia),
-        "Не удалось добавить ссылку (youtube.com): видео приватное"
+        "Could not add the link (youtube.com): the video is private"
     );
     assert_eq!(
         url_import_failure_message(None, WebOpenFailureReason::ExtractorNotInstalled),
-        "Не удалось добавить ссылку: не найдена программа yt-dlp — установите пакет yt-dlp"
+        "Could not add the link: yt-dlp was not found; install the yt-dlp package"
     );
     assert_eq!(
         url_import_internal_failure_message(Some("youtube.com")),
-        "Не удалось добавить ссылку (youtube.com) — попробуйте ещё раз"
+        "Could not add the link (youtube.com); try again"
     );
     assert_eq!(
         url_import_internal_failure_message(None),
-        "Не удалось добавить ссылку — попробуйте ещё раз"
+        "Could not add the link; try again"
     );
 }

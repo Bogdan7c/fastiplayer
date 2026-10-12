@@ -147,7 +147,7 @@ impl PlayerSession {
             public_to_commit_ms,
             receipt_to_commit_ms,
             resume_intent = ?seek_commit.resume_intent,
-            "Final seek commit завершён"
+            "Final seek commit completed"
         );
         self.seek_runtime.clear_active_commit();
         self.clear_prepared_seek_landing_with_diagnostics();
@@ -218,7 +218,7 @@ impl PlayerSession {
         let Some(play_result) = self.play_audio_output_with_resume_event() else {
             return Err(PlayerError::new(
                 PlayerErrorKind::AudioDeviceUnavailable,
-                "Selected audio output отсутствует перед final seek commit",
+                "Selected audio output is not available before final seek commit",
             ));
         };
         play_result.map_err(|error| {
@@ -286,7 +286,7 @@ impl PlayerSession {
             target_ms = seek_commit.target_position.as_duration().as_millis(),
             actual_ms = seek_commit.actual_position.as_duration().as_millis(),
             generation = seek_commit.generation,
-            "Final seek commit отклонён: audio output не возобновился"
+            "Final seek commit rejected: audio output did not resume"
         );
         self.fail_pending_seek_receipts(error.clone());
         self.record_recoverable_error(error);
@@ -346,7 +346,7 @@ impl PlayerSession {
             generation = seek_commit.generation,
             blocker = timeout_blocker.metric_name(),
             blocker_kind = ?timeout_blocker,
-            "Final seek commit остановлен по timeout"
+            "Final seek commit stopped on timeout"
         );
 
         let error = PlayerError::new(

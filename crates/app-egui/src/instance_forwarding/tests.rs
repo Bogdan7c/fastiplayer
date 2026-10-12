@@ -38,7 +38,7 @@ fn inbox_with_captured_sink() -> (InstanceForwardingInbox, Arc<dyn ForwardedRequ
         .lock()
         .expect("lock")
         .take()
-        .expect("служба получила приёмник");
+        .expect("service got a receiver");
     (inbox, sink)
 }
 
@@ -58,7 +58,7 @@ fn counted_delivery(
 
 fn open_request(uris: &[&str]) -> ForwardedInstanceRequest {
     ForwardedInstanceRequest::open(uris.iter().map(|uri| (*uri).to_owned()).collect(), None)
-        .expect("корректный запрос")
+        .expect("correct request")
 }
 
 #[test]
@@ -70,16 +70,16 @@ fn delivery_is_acknowledged_only_when_ui_drains_and_runs_in_arrival_order() {
         open_request(&["file:///a.mkv"]),
         &acknowledged,
     ))
-    .expect("ящик принял");
+    .expect("drawer");
     sink.deliver(counted_delivery(
         ForwardedInstanceRequest::activate(None),
         &acknowledged,
     ))
-    .expect("ящик принял");
+    .expect("drawer");
     assert_eq!(
         acknowledged.load(Ordering::SeqCst),
         0,
-        "до разбора UI-потоком отправитель не должен получить подтверждение"
+        "Before the UI stream is parsed, the sender does not need to receive confirmation."
     );
 
     assert_eq!(inbox.drain_deliveries(), 2);
@@ -104,7 +104,7 @@ fn full_mailbox_is_refused_as_full_without_losing_accepted_deliveries() {
             ForwardedInstanceRequest::activate(None),
             &acknowledged,
         ))
-        .expect("в пределах ёмкости");
+        .expect("within the container");
     }
 
     let overflow = sink.deliver(counted_delivery(
@@ -128,18 +128,18 @@ fn shutdown_refuses_new_deliveries_and_never_acknowledges_undrained_ones() {
         ForwardedInstanceRequest::activate(None),
         &acknowledged,
     ))
-    .expect("ящик принял");
+    .expect("drawer");
     sink.deliver(counted_delivery(
         ForwardedInstanceRequest::activate(None),
         &acknowledged,
     ))
-    .expect("ящик принял");
+    .expect("drawer");
     assert_eq!(inbox.drain_deliveries(), 2);
     sink.deliver(counted_delivery(
         ForwardedInstanceRequest::activate(None),
         &acknowledged,
     ))
-    .expect("ящик принял");
+    .expect("drawer");
 
     inbox.shutdown();
     inbox.shutdown();
@@ -154,10 +154,10 @@ fn shutdown_refuses_new_deliveries_and_never_acknowledges_undrained_ones() {
     assert_eq!(
         acknowledged.load(Ordering::SeqCst),
         2,
-        "неразобранная доставка уничтожена без подтверждения"
+        "undisassembled delivery destroyed without confirmation"
     );
     assert_eq!(inbox.drain_deliveries(), 0);
-    assert_eq!(inbox.take_next_pending_request(), None, "очередь очищена");
+    assert_eq!(inbox.take_next_pending_request(), None, "line cleared");
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn pending_requests_waiting_for_window_keep_only_the_newest() {
             open_request(&[&format!("file:///{index}.mkv")]),
             &acknowledged,
         ))
-        .expect("ящик принял");
+        .expect("drawer");
         // Окна ещё нет: UI-поток разбирает ящик, но ничего не исполняет.
         inbox.drain_deliveries();
     }
@@ -183,7 +183,7 @@ fn pending_requests_waiting_for_window_keep_only_the_newest() {
     assert_eq!(
         kept[0],
         open_request(&["file:///2.mkv"]),
-        "самые старые отброшены"
+        "most ancient discarded"
     );
     assert_eq!(
         kept.last(),
@@ -192,7 +192,7 @@ fn pending_requests_waiting_for_window_keep_only_the_newest() {
     assert_eq!(
         acknowledged.load(Ordering::SeqCst),
         total,
-        "каждый отправитель получил ответ"
+        "Every sender got a response."
     );
 }
 
@@ -208,7 +208,7 @@ fn forwarded_uris_become_a_video_drop_with_exact_paths() {
 
     let request = open_request(&["file:///tmp/%FFclip.mkv", "https://example.org/v"]);
     let (action, _token) = request.into_parts();
-    let open = external_open_request_for(action).expect("есть что открыть");
+    let open = external_open_request_for(action).expect("There's something to open.");
 
     assert_eq!(open.target, DropTarget::Video);
     assert_eq!(
@@ -264,14 +264,14 @@ fn second_launch_reaches_first(
         },
         &transport,
     )
-    .expect("второй запуск завершается с кодом 0");
+    .expect("The second launch ends with code 0.");
 
     let request = inbox
         .borrow_mut()
         .take_next_pending_request()
-        .expect("первый экземпляр получил запрос");
+        .expect("The first copy received the request");
     let (action, _token) = request.into_parts();
-    let open = external_open_request_for(action).expect("есть что открыть");
+    let open = external_open_request_for(action).expect("There's something to open.");
     let mut host = RecordingHost::default();
     dispatch_external_open_request(&mut host, open);
     host.calls
@@ -279,9 +279,9 @@ fn second_launch_reaches_first(
 
 #[test]
 fn second_launch_with_one_file_opens_it_in_first_like_the_open_button() {
-    let folder = tempfile::tempdir().expect("временная папка");
+    let folder = tempfile::tempdir().expect("time-folder");
     let file = folder.path().join("фильм 1.mkv");
-    std::fs::write(&file, b"media").expect("файл");
+    std::fs::write(&file, b"media").expect("file");
 
     // Второй процесс запущен в этой папке с относительным путём.
     let calls = second_launch_reaches_first(&[OsString::from("фильм 1.mkv")], folder.path());
@@ -291,11 +291,11 @@ fn second_launch_with_one_file_opens_it_in_first_like_the_open_button() {
 
 #[test]
 fn second_launch_with_several_files_asks_first_to_replace_queue_in_given_order() {
-    let folder = tempfile::tempdir().expect("временная папка");
+    let folder = tempfile::tempdir().expect("time-folder");
     let second = folder.path().join("b.mkv");
     let first = folder.path().join("a.mkv");
-    std::fs::write(&second, b"media").expect("файл");
-    std::fs::write(&first, b"media").expect("файл");
+    std::fs::write(&second, b"media").expect("file");
+    std::fs::write(&first, b"media").expect("file");
 
     let calls = second_launch_reaches_first(
         &[

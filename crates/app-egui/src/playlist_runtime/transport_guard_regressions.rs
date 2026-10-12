@@ -208,12 +208,12 @@ fn row_play_during_awaiting_ready_releases_old_request_and_installs_target() {
     assert_eq!(install.item_id, b);
 
     install_fully(&mut runtime, binding, install, 12);
-    assert_eq!(active_item(&runtime), Some(b), "B доходит до Installed");
+    assert_eq!(active_item(&runtime), Some(b), "B reaches Installed");
     assert!(
         runtime
             .take_terminal_transport_execution(Duration::ZERO)
             .is_none(),
-        "команда исполнена ровно один раз"
+        "command executed exactly once"
     );
 }
 
@@ -270,20 +270,16 @@ fn row_play_during_in_flight_runs_once_after_installed() {
         runtime
             .take_terminal_transport_execution(Duration::ZERO)
             .is_none(),
-        "до terminal исполнять нечего"
+        "There is nothing to do before the terminal."
     );
 
     report_installed(&mut runtime, binding, 31);
-    assert_eq!(
-        active_item(&runtime),
-        Some(a),
-        "A остаётся playlist-строкой"
-    );
+    assert_eq!(active_item(&runtime), Some(a), "A remains a playlist line.");
     let Some(DeferredTransportExecutionOutcome::PlayItem(
         ControllerPlayItemOutcome::StartInstall { install, .. },
     )) = runtime.take_terminal_transport_execution(Duration::ZERO)
     else {
-        panic!("отложенный Play row B исполняется после Installed A");
+        panic!("Play row B is played after Installed A.");
     };
     assert_eq!(install.item_id, b);
     assert!(
@@ -317,9 +313,12 @@ fn next_during_in_flight_runs_relative_to_new_active() {
         ControllerManualNavigationOutcome::StartInstall { install },
     )) = runtime.take_terminal_transport_execution(Duration::ZERO)
     else {
-        panic!("отложенный Next исполняется после Installed A");
+        panic!("Next PostNext Postponed After Installed A");
     };
-    assert_eq!(install.item_id, b, "Next считается от нового active A");
+    assert_eq!(
+        install.item_id, b,
+        "Next is considered to be a new active A"
+    );
 }
 
 #[test]
@@ -340,7 +339,7 @@ fn mpris_stop_during_in_flight_stops_installed_instance() {
     let Some(DeferredTransportExecutionOutcome::NeutralStop(Some(Ok(request)))) =
         runtime.take_terminal_transport_execution(Duration::ZERO)
     else {
-        panic!("отложенный Stop адресует только что установленный instance");
+        panic!("Delayed Stop addresses just installed instance");
     };
     assert_eq!(request.media_instance_id, media_instance_id(51));
     assert_eq!(request.action, ExactMediaTransportAction::NeutralStop);
@@ -356,41 +355,41 @@ fn mpris_stop_during_awaiting_ready_cancels_item_open_without_advancing_queue() 
     assert_eq!(phase(&runtime), Some(ControllerInstallPhase::AwaitingReady));
 
     let Some(Err(guard)) = runtime.request_desktop_stop() else {
-        panic!("Stop во время подготовки элемента очереди идёт через guard");
+        panic!("Stop during the preparation of the queue element goes through the guard");
     };
     let GuardedTransportFollowUp::ExecuteAfterRelease {
         released,
         executed: DeferredTransportExecutionOutcome::NeutralStop(stop_request),
     } = runtime.resolve_transport_guard(guard, Duration::ZERO)
     else {
-        panic!("Stop должен освободить pending request и выполниться сразу");
+        panic!("Stop must release a pending request and execute immediately.");
     };
 
     assert_eq!(
         released.request_id,
         request_id(71),
-        "отменён именно этот request"
+        "This request has been cancelled."
     );
     assert_eq!(
         released.cause,
         MediaInstallCancellationCause::TransportStop,
-        "причина — тихая отмена C5, а не supersede и не ошибка"
+        "The reason is a quiet C5 cancellation, not a supersede or a mistake."
     );
     assert!(
         stop_request.is_none(),
-        "останавливать нечего: ничего не играет"
+        "There is nothing to stop: nothing is playing."
     );
+    assert_eq!(phase(&runtime), None, "install sealed, queue didn't move B");
     assert_eq!(
-        phase(&runtime),
+        active_item(&runtime),
         None,
-        "install закрыт, очередь не перешла к B"
+        "Neither A nor B became active."
     );
-    assert_eq!(active_item(&runtime), None, "ни A, ни B не стали активными");
     assert!(
         runtime
             .take_terminal_transport_execution(Duration::ZERO)
             .is_none(),
-        "после Stop не остаётся отложенной команды открыть что-то ещё"
+        "After Stop, there is no longer a delayed command to open something else."
     );
 
     // Play строки после Stop открывает заново (не no-op).
@@ -398,7 +397,7 @@ fn mpris_stop_during_awaiting_ready_cancels_item_open_without_advancing_queue() 
         install, ..
     }) = runtime.play_playlist_row(a)
     else {
-        panic!("Play после Stop обязан начать новое открытие той же строки");
+        panic!("Play after Stop is required to reopen the same line");
     };
     assert_eq!(install.item_id, a);
     assert_ne!(install.item_id, b);
@@ -453,5 +452,9 @@ fn fatal_guard_is_reported_without_execution() {
         runtime.resolve_transport_guard(TransportGuardOutcome::Fatal(violation), Duration::ZERO),
         GuardedTransportFollowUp::Fatal(reported) if reported == violation
     ));
-    assert_eq!(phase(&runtime), None, "fatal guard ничего не запускает");
+    assert_eq!(
+        phase(&runtime),
+        None,
+        "The fatal guard doesn't run anything."
+    );
 }

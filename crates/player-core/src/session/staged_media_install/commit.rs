@@ -188,7 +188,7 @@ impl PlayerSession {
         };
         if let Err(error) = apply_result {
             self.set_runtime_error(format!(
-                "Exact playback intent для media instance {media_instance_id} не применён: {error}"
+                "Exact playback intent for media instance {media_instance_id} not applied: {error}"
             ));
         }
         true

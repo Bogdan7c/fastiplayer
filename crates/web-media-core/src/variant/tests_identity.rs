@@ -15,12 +15,12 @@ fn semantic_identity_survives_parent_reextraction_while_exact_identity_changes()
     let old_exact = ComponentVariantExactIdentity::new(
         old_catalog.clone(),
         ComponentKind::Video,
-        ComponentVariantExactKey::new("old-exact").expect("old exact key должен быть valid"),
+        ComponentVariantExactKey::new("old-exact").expect("old exact key must have valid"),
     );
     let fresh_exact = ComponentVariantExactIdentity::new(
         fresh_catalog.clone(),
         ComponentKind::Video,
-        ComponentVariantExactKey::new("fresh-exact").expect("fresh exact key должен быть valid"),
+        ComponentVariantExactKey::new("fresh-exact").expect("fresh exact key must have valid"),
     );
     assert_ne!(old_exact, fresh_exact);
 
@@ -28,13 +28,13 @@ fn semantic_identity_survives_parent_reextraction_while_exact_identity_changes()
         old_catalog.parent().semantic().clone(),
         ComponentKind::Video,
         ComponentVariantSemanticKey::new("stable-variant")
-            .expect("old semantic key должен быть valid"),
+            .expect("old semantic key must have valid"),
     );
     let fresh_semantic = ComponentVariantSemanticIdentity::new(
         fresh_catalog.parent().semantic().clone(),
         ComponentKind::Video,
         ComponentVariantSemanticKey::new("stable-variant")
-            .expect("fresh semantic key должен быть valid"),
+            .expect("fresh semantic key must have valid"),
     );
     assert_eq!(old_semantic, fresh_semantic);
 
@@ -74,8 +74,8 @@ fn keys_reject_empty_control_and_byte_overflow_without_debug_disclosure() {
     );
 
     let secret = "signed-provider-variant-secret";
-    let exact = ComponentVariantExactKey::new(secret).expect("key должен быть valid");
-    let semantic = ComponentVariantSemanticKey::new(secret).expect("key должен быть valid");
+    let exact = ComponentVariantExactKey::new(secret).expect("The key must be valid.");
+    let semantic = ComponentVariantSemanticKey::new(secret).expect("The key must be valid.");
     assert!(!format!("{exact:?}").contains(secret));
     assert!(!format!("{semantic:?}").contains(secret));
 }

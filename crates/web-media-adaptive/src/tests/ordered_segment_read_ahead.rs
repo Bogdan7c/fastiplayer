@@ -14,7 +14,7 @@ fn activation_fills_bounded_successor_fifo_without_eagerly_draining_snapshot() {
             1 => b"second-segment".as_slice(),
             2 => b"third-segment".as_slice(),
             3 => b"fourth-segment".as_slice(),
-            _ => panic!("read-ahead вышел за bounded four-segment snapshot"),
+            _ => panic!("read-ahead came out bounded four-segment snapshot"),
         };
         response("200 OK", &[], response_body)
     });
@@ -66,7 +66,7 @@ fn activation_fills_bounded_successor_fifo_without_eagerly_draining_snapshot() {
     assert_eq!(
         server.request_count(),
         1,
-        "suspended catalog probe не должен читать второй segment"
+        "The suspended catalog probe does not read the second segment."
     );
 
     read_ahead.activate().expect("read-ahead activation");
@@ -75,7 +75,7 @@ fn activation_fills_bounded_successor_fifo_without_eagerly_draining_snapshot() {
     assert_eq!(
         server.request_count(),
         3,
-        "двухсегментный FIFO не должен заранее осушать весь snapshot"
+        "Two-segment FIFO does not have to dry the entire snapshot in advance."
     );
 
     read_ahead.suspend().expect("read-ahead suspension");
@@ -88,7 +88,7 @@ fn activation_fills_bounded_successor_fifo_without_eagerly_draining_snapshot() {
     assert_eq!(
         server.request_count(),
         3,
-        "suspended pump не должен восполнять освобождённый FIFO slot"
+        "The suspended pump cannot replace the released FIFO slot."
     );
     read_ahead.activate().expect("read-ahead resume");
     wait_for_request_count(&server, 4);
@@ -108,7 +108,7 @@ fn activation_fills_bounded_successor_fifo_without_eagerly_draining_snapshot() {
             .next_segment(&cancellation)
             .expect("terminal read succeeds")
             .is_none(),
-        "snapshot должен завершиться typed EOF после четвёртого segment-а"
+        "snapshot must be completed typed EOF after the fourth segment-?"
     );
 }
 
@@ -150,7 +150,7 @@ fn activation_observes_cancellation_before_first_network_request() {
     assert_eq!(
         server.request_count(),
         0,
-        "cancelled activation не должна отправлять HTTP request"
+        "cancelled activation don't send HTTP request"
     );
 }
 
@@ -161,7 +161,7 @@ fn successor_failure_is_reported_after_already_delivered_segment() {
     let server = LocalServer::start(|request_index, _| match request_index {
         0 => response("200 OK", &[], b"delivered-segment"),
         1 => response("404 Not Found", &[], b"missing-successor"),
-        _ => panic!("failure regression должен выполнить ровно два request-а"),
+        _ => panic!("failure regression I have to do exactly two request-?"),
     });
     let first_target = server.target("/available");
     let missing_target = server.target("/missing");
@@ -221,7 +221,7 @@ fn failed_fetch_does_not_skip_same_sequence_from_new_generation() {
     let server = LocalServer::start(|request_index, _| match request_index {
         0 => response("404 Not Found", &[], b"temporarily-missing"),
         1 => response("200 OK", &[], b"recovered-segment"),
-        _ => panic!("recovery regression должен выполнить ровно два request-а"),
+        _ => panic!("recovery regression I have to do exactly two request-?"),
     });
     let target = server.target("/recoverable");
     let mut source = AdaptiveOrderedSegmentSource::new(context(
@@ -254,7 +254,7 @@ fn failed_fetch_does_not_skip_same_sequence_from_new_generation() {
         .expect("replacement snapshot retains failed sequence");
 
     let SegmentPoll::Segment(recovered) = poll_segment(&mut source) else {
-        panic!("replacement generation должна повторно доставить failed sequence");
+        panic!("replacement generation should be delivered again failed sequence");
     };
     assert_eq!(recovered.sequence, OrderedSegmentSequence::new(1));
     assert_eq!(recovered.bytes.as_ref(), b"recovered-segment");

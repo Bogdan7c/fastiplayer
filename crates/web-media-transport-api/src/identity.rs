@@ -64,13 +64,13 @@ impl fmt::Display for TransportProviderId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TransportProviderIdError {
     /// Identity не может быть пустой.
-    #[error("transport provider identity пуста")]
+    #[error("transport provider identity is empty")]
     Empty,
     /// Identity превышает фиксированный API budget.
-    #[error("transport provider identity превышает допустимую длину")]
+    #[error("transport provider identity exceeds the permissible length")]
     TooLong,
     /// Identity нарушает lowercase ASCII grammar.
-    #[error("transport provider identity имеет некорректный формат")]
+    #[error("transport provider identity has an invalid format")]
     InvalidGrammar,
 }
 
@@ -154,7 +154,7 @@ impl fmt::Debug for MediaComponentIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum MediaComponentIdentityError {
     /// Exact и semantic identities принадлежат разным sources.
-    #[error("exact и semantic component identities принадлежат разным sources")]
+    #[error("exact and semantic component identities belong to different sources")]
     SourceMismatch,
 }
 
@@ -188,6 +188,6 @@ impl SourceGeneration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SourceGenerationError {
     /// `u64` generation space исчерпан.
-    #[error("source generation space исчерпан")]
+    #[error("source generation space is exhausted")]
     Exhausted,
 }

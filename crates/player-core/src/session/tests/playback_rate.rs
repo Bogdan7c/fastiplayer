@@ -170,7 +170,7 @@ fn playing_playback_rate_change_reanchors_audio_clock_mapping_without_seek_trans
     assert_eq!(
         audio_clock.output_timing_read_count(),
         timing_reads_before_command + 1,
-        "rate transaction должна использовать один timing snapshot для current media и tail"
+        "rate transaction should use one timing snapshot for current media and tail"
     );
     audio_clock.record_played(96_000);
 
@@ -279,7 +279,7 @@ fn pause_backend_error_does_not_publish_paused_snapshot() {
 
     let pause_error = session
         .dispatch_command(PlayerCommand::Pause)
-        .expect_err("real backend pause error должна выйти из session transaction");
+        .expect_err("The real backend pause error should come out of the session transaction.");
 
     assert_eq!(pause_error.kind, PlayerErrorKind::RuntimeError);
     assert_eq!(session.playback_state(), PlaybackState::Playing);

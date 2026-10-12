@@ -37,7 +37,7 @@ fn cross_source_queue(
         .map(|(label, root_url)| {
             PlaylistItemDraft::url(
                 SecretUrlLocator::from_reopenable_url(*root_url)
-                    .expect("каждый fixture root обязан быть reopenable"),
+                    .expect("Every fixture root must be reopenable."),
                 CachedPlaylistMetadata::new(*label, PlaylistMediaKind::Video),
             )
         })
@@ -46,7 +46,7 @@ fn cross_source_queue(
         .append_batch(drafts)
         .expect("append cross-source playlist rows")
     else {
-        panic!("непустой cross-source playlist не может дать empty append");
+        panic!("A non-empty cross-source playlist cannot give an empty append");
     };
     let item_ids = item_ids.into_vec();
     assert!(matches!(
@@ -64,7 +64,7 @@ fn expect_navigation_target(
     expected_item_id: playlist_core::PlaylistItemId,
 ) -> ManualNavigationPreview {
     let ManualNavigationOutcome::OpenItem { item_id, preview } = outcome else {
-        panic!("cross-source navigation должна вернуть concrete queue target");
+        panic!("Cross-source navigation returns concrete queue target");
     };
     assert_eq!(item_id, expected_item_id);
     preview
@@ -78,7 +78,7 @@ fn commit_after_consumer(
 ) {
     let token = queue
         .prepare_manual_navigation(preview)
-        .expect("consumer-successful cross-source navigation должна пройти preflight");
+        .expect("Consumer-successful cross-source navigation should be preflight");
     assert_eq!(token.target_item_id(), expected_item_id);
     let commit = queue.commit_manual_navigation(token);
     assert_eq!(commit.traversal_current().item_id(), expected_item_id);
@@ -179,6 +179,6 @@ fn n14b_cross_source_playlist_reaches_consumers_before_each_queue_commit() {
     assert_eq!(
         process_spy.invocation_count(),
         0,
-        "cross-source playlist transitions не имеют права запускать extractor"
+        "cross-source playlist transitions have no right to launch extractor"
     );
 }

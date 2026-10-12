@@ -10,12 +10,12 @@ use super::*;
 fn bounded_packet_window_reaches_pending_audio_queue_unchanged() {
     let mut session = PlayerSession::new();
     let track_id = TrackId::new(2);
-    let time_base = TimeBase::new(1, 48_000).expect("test time base должна быть валидной");
+    let time_base = TimeBase::new(1, 48_000).expect("The test time base must be valid.");
     let exact_window = ExactPresentationWindow::new(
         TrackTimestamp::new(track_id, 480, time_base),
         TrackTimestamp::new(track_id, 1_440, time_base),
     )
-    .expect("test presentation window должно быть валидным");
+    .expect("The test presentation window must be valid.");
     let packet = Packet::new_unbounded(
         track_id,
         TrackKind::Audio,
@@ -26,7 +26,7 @@ fn bounded_packet_window_reaches_pending_audio_queue_unchanged() {
     )
     .with_track_timestamps(Some(TrackTimestamp::new(track_id, 480, time_base)), None)
     .try_with_bounded_presentation_window(exact_window)
-    .expect("packet и exact window должны иметь один presentation clock");
+    .expect("The packet and the exact window must have one presentation clock.");
 
     assert_eq!(
         route_demuxed_packet(&mut session, packet),
@@ -36,7 +36,7 @@ fn bounded_packet_window_reaches_pending_audio_queue_unchanged() {
     let pending_packet = session
         .pipeline
         .pop_pending_audio_packet_front()
-        .expect("audio packet должен попасть в pending queue");
+        .expect("The audio packet must be in pending queue.");
     assert_eq!(
         pending_packet.presentation_window(),
         PacketPresentationWindow::Bounded(exact_window)

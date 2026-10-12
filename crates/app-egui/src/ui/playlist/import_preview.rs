@@ -40,7 +40,7 @@ fn render_preview(ui: &mut egui::Ui, preview: &PlaylistImportPreview) -> ImportP
 
         let accepted = preview.accepted();
         ui.label(format!(
-            "Будет добавлено: {} элементов, включая {} групп ({} медиа).",
+            "To be added: {} entries, including {} groups ({} media items).",
             accepted.singles().saturating_add(accepted.groups()),
             accepted.groups(),
             accepted.retained_items(),
@@ -50,7 +50,7 @@ fn render_preview(ui: &mut egui::Ui, preview: &PlaylistImportPreview) -> ImportP
             ui.add_space(8.0);
             ui.colored_label(
                 egui::Color32::YELLOW,
-                "Файл импортируется частично. Проверьте ограничения перед продолжением.",
+                "Only part of the file will be imported. Review the limits before continuing.",
             );
             render_issue_summary(ui, preview);
         }
@@ -58,7 +58,7 @@ fn render_preview(ui: &mut egui::Ui, preview: &PlaylistImportPreview) -> ImportP
         if preview.sensitive_durable_locator_count() > 0 {
             ui.add_space(6.0);
             ui.label(format!(
-                "Чувствительных адресов для сохранения: {}. Следующим шагом потребуется подтверждение.",
+                "Sensitive addresses to save: {}. Confirmation will be required next.",
                 preview.sensitive_durable_locator_count(),
             ));
         }
@@ -66,21 +66,21 @@ fn render_preview(ui: &mut egui::Ui, preview: &PlaylistImportPreview) -> ImportP
         if preview.intent() == PlaylistImportIntent::ReplaceQueue {
             ui.add_space(6.0);
             ui.label(
-                "Текущий плейлист будет заменён только после отдельного подтверждения; воспроизведение продолжится.",
+                "The current Playlist will be replaced after a separate confirmation; playback will continue.",
             );
         }
 
         ui.add_space(14.0);
         ui.horizontal(|ui| {
-            let response = ui.button("Отмена");
+            let response = ui.button("Cancel");
             if response.clicked() {
                 action = Some(PlaylistAction::CancelImport(preview.preview_id()));
             }
             cancel_response = Some(response);
             let response = ui.button(if preview.requires_partial_decision() {
-                "Продолжить частичный импорт"
+                "Continue partial import"
             } else {
-                "Импортировать"
+                "Import"
             });
             if response.clicked() {
                 action = Some(PlaylistAction::ContinueImport(preview.preview_id()));
@@ -92,12 +92,12 @@ fn render_preview(ui: &mut egui::Ui, preview: &PlaylistImportPreview) -> ImportP
         clippy::expect_used,
         reason = "инвариант: preview всегда рисует Cancel"
     )]
-    let cancel_response = cancel_response.expect("preview всегда рисует Cancel");
+    let cancel_response = cancel_response.expect("Preview always draws Cancel.");
     #[expect(
         clippy::expect_used,
         reason = "инвариант: preview всегда рисует Continue"
     )]
-    let continue_response = continue_response.expect("preview всегда рисует Continue");
+    let continue_response = continue_response.expect("Preview always draws Continue");
     #[cfg(not(test))]
     let _ = (&cancel_response, &continue_response);
     ImportPreviewRenderResult {
@@ -116,9 +116,9 @@ fn render_preview(ui: &mut egui::Ui, preview: &PlaylistImportPreview) -> ImportP
 /// Heading повторяет explicit menu intent и не скрывает replace semantics.
 const fn import_heading(intent: PlaylistImportIntent) -> &'static str {
     match intent {
-        PlaylistImportIntent::AppendToQueue => "Добавить к плейлисту",
-        PlaylistImportIntent::ReplaceQueue => "Открыть как новый плейлист",
-        PlaylistImportIntent::StartupReplace => "Открыть плейлист",
+        PlaylistImportIntent::AppendToQueue => "Add to the playlist",
+        PlaylistImportIntent::ReplaceQueue => "Open as new Playlist",
+        PlaylistImportIntent::StartupReplace => "Open Playlist",
     }
 }
 
@@ -136,12 +136,12 @@ fn render_issue_summary(ui: &mut egui::Ui, preview: &PlaylistImportPreview) {
         .count();
     if rejected_sources > 0 {
         ui.label(format!(
-            "Отклонённых или нераскрытых записей: {rejected_sources}."
+            "Rejected or unexpanded entries: {rejected_sources}."
         ));
     }
     if unsupported_locators > 0 {
         ui.label(format!(
-            "Записей с неподдерживаемым адресом: {unsupported_locators}."
+            "Entries with unsupported addresses: {unsupported_locators}."
         ));
     }
     if preview.omitted_issue_count() > 0
@@ -151,21 +151,21 @@ fn render_issue_summary(ui: &mut egui::Ui, preview: &PlaylistImportPreview) {
             .any(|issue| issue.kind() == PlaylistImportIssueKind::DiagnosticPrefixTruncated)
     {
         ui.label(format!(
-            "Дополнительных диагностик вне краткого списка: не менее {}.",
+            "Additional diagnostics beyond this short list: at least {}.",
             preview.omitted_issue_count(),
         ));
     }
     if let Some(source_truncation) = preview.source_truncation() {
         let text = match source_truncation.rejected_entries() {
             PlaylistImportRejectedCount::AtLeast(count) => {
-                format!("Источник не отдал как минимум {count} запись из-за ограничений.")
+                format!("The source omitted at least {count} entry due to limits.")
             }
         };
         ui.label(text);
     }
     if let Some(capacity) = preview.capacity_truncation() {
         ui.label(format!(
-            "Лимит очереди исключил {} целых элементов ({} медиа); группы не разрезались.",
+            "The queue limit excluded {} whole entries ({} media items); groups were kept intact.",
             capacity.rejected_entries(),
             capacity.rejected_items(),
         ));
@@ -274,11 +274,8 @@ mod tests {
         assert_eq!(partial.capacity_truncation().unwrap().rejected_items(), 3);
         assert_eq!(replace.intent(), PlaylistImportIntent::ReplaceQueue);
         assert_eq!(replace.sensitive_durable_locator_count(), 1);
-        assert_eq!(import_heading(clean.intent()), "Добавить к плейлисту");
-        assert_eq!(
-            import_heading(replace.intent()),
-            "Открыть как новый плейлист"
-        );
+        assert_eq!(import_heading(clean.intent()), "Add to the playlist");
+        assert_eq!(import_heading(replace.intent()), "Open as new Playlist");
     }
 
     #[test]

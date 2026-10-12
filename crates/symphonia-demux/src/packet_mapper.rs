@@ -63,7 +63,7 @@ pub(crate) fn convert_packet_with_source_offset(
         )]
         let unsupported_kind = track_entry
             .unsupported_kind()
-            .expect("unsupported TrackEntry kind должен иметь причину");
+            .expect("unsupported TrackEntry kind must have a cause");
         return Err(PacketConvertError::UnsupportedTrack {
             track_id: TrackId::new(packet_track_id),
             reason: unsupported_kind.diagnostic_reason(),
@@ -408,7 +408,7 @@ mod tests {
         let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
 
         let packet = convert_packet(packet(7, 48_000, b"opus"), &track_map)
-            .expect("audio packet должен конвертироваться");
+            .expect("audio packet must be converted");
 
         assert_eq!(packet.track_id, TrackId::new(7));
         assert_eq!(packet.kind, TrackKind::Audio);
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(
             packet
                 .track_pts
-                .expect("raw PTS должен сохраняться")
+                .expect("The raw PTS must be retained.")
                 .units
                 .get(),
             48_000
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(
             packet
                 .track_dts
-                .expect("Symphonia raw DTS должен сохраняться даже при DTS == PTS")
+                .expect("Symphonia raw DTS must persist even at DTS == PTS")
                 .units
                 .get(),
             48_000
@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(
             packet
                 .track_duration
-                .expect("raw duration должен сохраняться")
+                .expect("The raw duration must be maintained.")
                 .units
                 .get(),
             1
@@ -450,7 +450,7 @@ mod tests {
 
         let packet =
             convert_packet_with_source_offset(packet(7, 48_000, b"opus"), &track_map, Some(12_345))
-                .expect("source-positioned packet должен конвертироваться");
+                .expect("source-positioned packet must be converted");
 
         assert_eq!(packet.byte_offset, Some(12_345));
         assert_eq!(&packet.data[..], b"opus");
@@ -461,7 +461,7 @@ mod tests {
         let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
 
         let packet = convert_packet(packet(7, 96_000, b"opus"), &track_map)
-            .expect("packet PTS должен стать media-core PTS");
+            .expect("PTS packet should become PTS media core");
 
         assert_eq!(packet.pts, Duration::from_secs(2));
     }
@@ -471,13 +471,13 @@ mod tests {
         let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
 
         let packet = convert_packet(packet(7, 96_000, b"opus"), &track_map)
-            .expect("packet duration должен стать media-core duration");
+            .expect("packet duration should media-core duration");
 
         assert_eq!(packet.duration, Some(Duration::from_nanos(20_833)));
         assert_eq!(
             packet
                 .track_duration
-                .expect("raw duration должен остаться в container units")
+                .expect("The raw duration must remain in the container units.")
                 .units
                 .get(),
             1
@@ -489,14 +489,14 @@ mod tests {
         let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
 
         let packet = convert_packet(packet_with_dts(7, 96_000, 48_000, b"opus"), &track_map)
-            .expect("packet DTS должен стать media-core DTS");
+            .expect("DTS packet should become DTS media core");
 
         assert_eq!(packet.pts, Duration::from_secs(2));
         assert_eq!(packet.dts, Some(Duration::from_secs(1)));
         assert_eq!(
             packet
                 .track_dts
-                .expect("raw DTS должен сохранять container units")
+                .expect("The raw DTS should retain the container units.")
                 .units
                 .get(),
             48_000
@@ -508,12 +508,12 @@ mod tests {
         let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
 
         let packet = convert_packet(packet(7, -24_000, b"opus"), &track_map)
-            .expect("negative PTS должен нормализоваться без ошибки");
+            .expect("negative PTS It should be normalized without error");
 
         assert_eq!(packet.pts, Duration::ZERO);
         let raw_pts = packet
             .track_pts
-            .expect("negative raw PTS должен сохраниться");
+            .expect("negative raw PTS must be preserved");
         assert_eq!(raw_pts.units.get(), -24_000);
         assert!(raw_pts.units.is_negative());
         assert_eq!(packet.dts, None);
@@ -525,7 +525,7 @@ mod tests {
             HashMap::from([(7, track_entry_without_time_base(TrackKind::Audio, "A_OPUS"))]);
 
         let packet = convert_packet(packet(7, 48_000, b"opus"), &track_map)
-            .expect("packet без time base должен оставаться readable");
+            .expect("packet without time base must remain readable");
 
         assert_eq!(packet.pts, Duration::ZERO);
         assert_eq!(packet.track_pts, None);
@@ -539,7 +539,7 @@ mod tests {
         let track_map = HashMap::new();
 
         let error = convert_packet(packet(99, 0, b"data"), &track_map)
-            .expect_err("unknown track должен быть fatal");
+            .expect_err("unknown track must have fatal");
 
         assert_eq!(error, PacketConvertError::UnknownTrack { track_id: 99 });
     }
@@ -552,7 +552,7 @@ mod tests {
         )]);
 
         let error = convert_packet(packet(9, 0, b"subtitle"), &track_map)
-            .expect_err("unsupported track packet должен быть skip signal");
+            .expect_err("unsupported track packet must have skip signal");
 
         assert_eq!(
             error,
@@ -568,7 +568,7 @@ mod tests {
         let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_VP9"))]);
 
         let packet = convert_packet(packet(1, 0, b"\x00"), &track_map)
-            .expect("неуверенная keyframe-проба не должна ломать demux-конвертацию");
+            .expect("An uncertain keyframe sample should not break the demux conversion");
 
         assert_eq!(packet.keyframe, PacketKeyframe::Unknown);
     }
@@ -578,7 +578,7 @@ mod tests {
         let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_AV1"))]);
 
         let packet = convert_packet(packet(1, 0, b"av1"), &track_map)
-            .expect("packet без keyframe adapter-а не должен молча становиться non-keyframe");
+            .expect("A packet without a keyframe adapter should not become a non-keyframe.");
 
         assert_eq!(packet.keyframe, PacketKeyframe::Unknown);
     }
@@ -589,7 +589,7 @@ mod tests {
         let track_map = HashMap::from([(1, track_entry(TrackKind::Video, codec_id))]);
 
         let packet = convert_packet(packet(1, 0, b"opaque video packet"), &track_map)
-            .expect("codec без keyframe adapter-а не должен блокировать bootstrap");
+            .expect("codec without keyframe adapter should not block bootstrap");
 
         assert_eq!(packet.keyframe, PacketKeyframe::Unknown);
     }
@@ -599,7 +599,7 @@ mod tests {
         let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_VP9"))]);
 
         let packet = convert_packet(owned_packet(1, 0, build_vp9_keyframe()), &track_map)
-            .expect("валидный VP9 keyframe должен конвертироваться");
+            .expect("The VP9 keyframe must be converted");
 
         assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
     }
@@ -609,7 +609,7 @@ mod tests {
         let track_map = HashMap::from([(1, track_entry(TrackKind::Video, "V_VP9"))]);
 
         let packet = convert_packet(owned_packet(1, 0, build_vp9_inter_frame()), &track_map)
-            .expect("валидный VP9 inter-frame должен конвертироваться");
+            .expect("VP9 inter-frame must be converted.");
 
         assert_eq!(packet.keyframe, PacketKeyframe::NotKeyframe);
     }
@@ -629,7 +629,7 @@ mod tests {
         )]);
 
         let packet = convert_packet(owned_packet(1, 0, access_unit), &track_map)
-            .expect("валидный HEVC IRAP packet должен конвертироваться");
+            .expect("A valid HEVC IRAP packet must be converted.");
 
         assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
     }
@@ -644,7 +644,7 @@ mod tests {
         )]);
 
         let packet = convert_packet(owned_packet(1, 0, access_unit), &track_map)
-            .expect("валидный HEVC inter packet должен конвертироваться");
+            .expect("A valid HEVC inter packet must be converted.");
 
         assert_eq!(packet.keyframe, PacketKeyframe::NotKeyframe);
     }

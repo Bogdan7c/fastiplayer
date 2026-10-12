@@ -42,18 +42,18 @@ fn generate_current_config(config_path: PathBuf, backend: &str) -> Result<(), St
     config.video.preferred_backend = backend_preference;
     // Production writer валидирует и атомарно сохраняет полный generated TOML.
     save_validated_atomic_at(&config_path, &config)
-        .map_err(|error| format!("не удалось записать current config: {error}"))
+        .map_err(|error| format!("The current config was not recorded: {error}."))
 }
 
 /// Проверяет, что файл читается production loader-ом без legacy migration.
 fn parse_current_config(config_path: PathBuf) -> Result<(), String> {
     // Production loader выполняет strict serde, migration dispatch и validation.
     let loaded = load_from_path(&config_path)
-        .map_err(|error| format!("current config не прошёл production parse: {error}"))?;
+        .map_err(|error| format!("Current configuration failed production parsing: {error}"))?;
     // Current smoke не должен незаметно войти в legacy migration path.
     if loaded.config.schema_version != fastiplayer_config::CURRENT_SCHEMA_VERSION {
         return Err(format!(
-            "ожидалась schema version {}, получена {}",
+            "schema version {}, received {}",
             fastiplayer_config::CURRENT_SCHEMA_VERSION,
             loaded.config.schema_version
         ));
@@ -74,7 +74,7 @@ fn parse_backend_preference(backend: &str) -> Result<VideoBackendPreference, Str
         "hardware" => Ok(VideoBackendPreference::Hardware),
         "software" => Ok(VideoBackendPreference::Software),
         unsupported => Err(format!(
-            "неподдерживаемый backend `{unsupported}`; ожидался auto, hardware или software"
+            "unsupported backend '{unsupported}'; expected auto, hardware or software"
         )),
     }
 }
@@ -85,7 +85,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Ошибка: {error}");
+            eprintln!("Error: {error}");
             ExitCode::FAILURE
         }
     }

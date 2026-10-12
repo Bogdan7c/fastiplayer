@@ -32,7 +32,7 @@ impl AppState {
         self.playlist_transport.active_request_id = None;
         self.playlist_transport.active_item_id = None;
         if let Some(queued) = self.playlist_transport.queued_install.take() {
-            debug!(error = %error, "Ошибка target-а до admission вытеснена новым playlist plan-ом");
+            debug!(error = %error, "Pre-admission target error superseded by a new Playlist plan");
             self.begin_planned_playlist_install(
                 playlist_runtime,
                 renderer,
@@ -42,10 +42,10 @@ impl AppState {
             return;
         }
         if self.take_guard_released_terminal(failed_request_id) {
-            debug!(error = %error, "Playlist request до admission завершён отменой по guard");
+            debug!(error = %error, "Playlist request canceled by the guard before admission");
             return;
         }
-        warn!(error = %error, "Файл очереди не подготовился до admission");
+        warn!(error = %error, "The queue file was not prepared before admission");
         let continuation = playlist_runtime.report_playlist_target_failure_before_admission(
             failed_request_id,
             *install,

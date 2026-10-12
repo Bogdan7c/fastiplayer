@@ -144,7 +144,7 @@ impl ForwardedRequestSink for RecordingSink {
                 self.held.lock().expect("sink lock").push(acknowledgement);
             }
             SinkBehaviour::DropAcknowledgement => drop(acknowledgement),
-            SinkBehaviour::Refuse(_) => unreachable!("обработано выше"),
+            SinkBehaviour::Refuse(_) => unreachable!("handled above"),
         }
         Ok(())
     }
@@ -160,7 +160,7 @@ fn start_service(bus: &PrivateSessionBus, sink: Arc<RecordingSink>) -> ServiceBa
         },
         sink,
     )
-    .expect("служба пересылки должна запуститься на частной шине")
+    .expect("Transfer service should start on a private bus")
 }
 
 fn client_config(listener_wait: Duration) -> InstanceForwardingClientConfig {
@@ -185,7 +185,7 @@ fn forward(
 }
 
 fn token(raw: &str) -> WindowActivationToken {
-    WindowActivationToken::from_raw(raw.to_owned()).expect("валидный билет")
+    WindowActivationToken::from_raw(raw.to_owned()).expect("validation")
 }
 
 #[test]
@@ -199,14 +199,14 @@ fn second_instance_open_reaches_first_with_same_uris_and_activation_token() {
         "https://example.org/watch?v=1".to_owned(),
     ];
     let request = ForwardedInstanceRequest::open(uris.clone(), Some(token("kwin-token-1")))
-        .expect("корректный запрос");
+        .expect("correct request");
 
     assert_eq!(forward(&bus, &request, Duration::from_secs(1)), Ok(()));
 
     let received = sink.received();
     assert_eq!(received.len(), 1);
     let ForwardedInstanceAction::Open(received_uris) = received[0].action() else {
-        panic!("ожидалось Open");
+        panic!("expected");
     };
     let received_texts: Vec<&str> = received_uris.iter().map(|uri| uri.as_str()).collect();
     assert_eq!(received_texts, uris);
@@ -276,14 +276,14 @@ impl SilentApplicationEndpoint {
 #[test]
 fn completely_frozen_first_instance_is_reported_by_call_timeout() {
     let bus = PrivateSessionBus::spawn();
-    let frozen_owner = bus.connect().expect("соединение");
+    let frozen_owner = bus.connect().expect("linkage");
     frozen_owner
         .object_server()
         .at(APPLICATION_OBJECT_PATH, SilentApplicationEndpoint)
-        .expect("объект");
+        .expect("facility");
     frozen_owner
         .request_name(FASTIPLAYER_APPLICATION_ID)
-        .expect("имя свободно");
+        .expect("nameless");
 
     let config = InstanceForwardingClientConfig {
         listener_wait: Duration::from_secs(1),
@@ -368,7 +368,7 @@ fn second_instance_waits_for_first_that_is_still_starting() {
         &ForwardedInstanceRequest::activate(None),
         Duration::from_secs(5),
     );
-    let _service = late_start.join().expect("поток службы");
+    let _service = late_start.join().expect("stream");
 
     assert_eq!(outcome, Ok(()));
     assert_eq!(sink.received().len(), 1);
@@ -442,18 +442,18 @@ fn oversized_and_garbage_requests_are_rejected_and_first_stays_alive() {
     let no_platform_data: HashMap<&str, Value<'_>> = HashMap::new();
 
     let too_many = vec!["file:///a"; MAX_FORWARDED_URIS + 1];
-    let error = raw_call(&bus, "Open", &(too_many, &no_platform_data)).expect_err("лимит");
+    let error = raw_call(&bus, "Open", &(too_many, &no_platform_data)).expect_err("limit");
     assert_eq!(method_error_name(&error), Some(REJECTED_ERROR_NAME));
 
     let garbage = vec!["not a uri at all"];
-    let error = raw_call(&bus, "Open", &(garbage, &no_platform_data)).expect_err("мусор");
+    let error = raw_call(&bus, "Open", &(garbage, &no_platform_data)).expect_err("rubbish");
     assert_eq!(method_error_name(&error), Some(REJECTED_ERROR_NAME));
 
     // Неверная сигнатура отвергается разбором аргументов zbus до кода службы.
-    let error = raw_call(&bus, "Open", &(42_u32,)).expect_err("неверная сигнатура");
+    let error = raw_call(&bus, "Open", &(42_u32,)).expect_err("false-signature");
     assert!(
         method_error_name(&error).is_some(),
-        "ожидался ответ-ошибка, получено {error:?}"
+        "Expected error response received {error:?}"
     );
 
     let error = raw_call(
@@ -461,12 +461,12 @@ fn oversized_and_garbage_requests_are_rejected_and_first_stays_alive() {
         "ActivateAction",
         &("quit", Vec::<Value<'_>>::new(), &no_platform_data),
     )
-    .expect_err("действия не поддерживаются");
+    .expect_err("Actions not supported");
     assert_eq!(method_error_name(&error), Some(REJECTED_ERROR_NAME));
 
     assert!(
         sink.received().is_empty(),
-        "ни один плохой запрос не дошёл до приложения"
+        "Not a single bad request reached the app."
     );
     assert_eq!(
         forward(
@@ -475,7 +475,7 @@ fn oversized_and_garbage_requests_are_rejected_and_first_stays_alive() {
             Duration::from_secs(1)
         ),
         Ok(()),
-        "после мусора служба продолжает принимать нормальные запросы"
+        "After garbage, the service continues to accept normal requests."
     );
     assert_eq!(sink.received().len(), 1);
 }
@@ -487,7 +487,7 @@ fn invalid_activation_token_is_ignored_but_request_is_delivered() {
     let _service = start_service(&bus, sink.clone());
     let platform_data = HashMap::from([("activation-token", Value::from("bad token\n"))]);
 
-    raw_call(&bus, "Activate", &(&platform_data,)).expect("запрос принят");
+    raw_call(&bus, "Activate", &(&platform_data,)).expect("request");
 
     let received = sink.received();
     assert_eq!(received.len(), 1);
@@ -502,7 +502,7 @@ fn x11_desktop_startup_id_is_accepted_as_activation_token() {
     let platform_data =
         HashMap::from([("desktop-startup-id", Value::from("dolphin-1234_TIME5678"))]);
 
-    raw_call(&bus, "Activate", &(&platform_data,)).expect("запрос принят");
+    raw_call(&bus, "Activate", &(&platform_data,)).expect("request");
 
     assert_eq!(
         sink.received()[0]

@@ -122,8 +122,8 @@ mod tests {
     #[test]
     fn title_normalization_preserves_content_and_rejects_blank_value() {
         assert_eq!(
-            normalized_title(Some("  Настоящее название  ".to_string())),
-            Some("Настоящее название".to_string())
+            normalized_title(Some(" Present title ".to_string())),
+            Some("Present title".to_string())
         );
         assert_eq!(normalized_title(Some(" \n\t ".to_string())), None);
         assert_eq!(normalized_title(None), None);

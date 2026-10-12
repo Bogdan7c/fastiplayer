@@ -100,7 +100,7 @@ pub(crate) fn run_topology_process_with_invocation(
 ) -> Result<TopologyProcessOutput, YtDlpTopologyError> {
     if timeout.is_zero() {
         return Err(YtDlpTopologyError::process(anyhow::anyhow!(
-            "process timeout должен быть положительным"
+            "process timeout should be positive"
         )));
     }
     if is_cancelled() {
@@ -141,14 +141,15 @@ pub(crate) fn run_topology_process_with_invocation(
     let stdout = match process.take_stdout() {
         Some(stdout) => stdout,
         None => {
-            let primary = YtDlpTopologyError::process(anyhow::anyhow!("stdout pipe недоступен"));
+            let primary =
+                YtDlpTopologyError::process(anyhow::anyhow!("stdout pipe is not available"));
             return Err(finish_topology_process_after_error(&mut process, primary));
         }
     };
     let stderr = match process.take_stderr() {
         Some(stderr) => stderr,
         None => {
-            let primary = YtDlpTopologyError::process(anyhow::anyhow!("stderr pipe недоступен"));
+            let primary = YtDlpTopologyError::process(anyhow::anyhow!("stderr pipe not available"));
             return Err(finish_topology_process_after_error(&mut process, primary));
         }
     };
@@ -632,7 +633,7 @@ printf '%s\n' \
             YtDlpTopologyBudgets::default(),
             &|| false,
         )
-        .expect("exact argv fake process должен завершиться");
+        .expect("The exact argv fake process must be completed.");
 
         assert!(output.status.success());
         assert_eq!(output.stdout_lines.len(), 2);
@@ -664,7 +665,7 @@ printf '%s\n' '{"_type":"video","id":"ftp-audio"}'
             YtDlpTopologyBudgets::default(),
             &|| false,
         )
-        .expect("FTP topology argv fake process должен завершиться");
+        .expect("FTP topology argv fake process must be completed");
 
         assert!(output.status.success());
         assert_eq!(output.stdout_lines.len(), 1);
@@ -682,10 +683,10 @@ printf '%s\n' '{"_type":"video","id":"ftp-audio"}'
             YtDlpTopologyBudgets::default(),
             &|| false,
         )
-        .expect_err("slow child должен получить timeout");
+        .expect_err("slow child must time out");
         assert!(
             matches!(timeout_error, YtDlpTopologyError::Timeout),
-            "ожидался Timeout, получено: {timeout_error:?}"
+            "expected Timeout, got: {timeout_error:?}"
         );
         remove_script(timeout_script);
 
@@ -699,10 +700,10 @@ printf '%s\n' '{"_type":"video","id":"ftp-audio"}'
             YtDlpTopologyBudgets::default(),
             &|| cancellation_checks.fetch_add(1, Ordering::Relaxed) > 1,
         )
-        .expect_err("cancelled child должен быть остановлен");
+        .expect_err("The cancelled child must be stopped.");
         assert!(
             matches!(cancellation_error, YtDlpTopologyError::Cancellation),
-            "ожидался Cancellation, получено: {cancellation_error:?}"
+            "Expected Cancellation, received: {cancellation_error:?}"
         );
         remove_script(cancel_script);
     }
@@ -719,7 +720,7 @@ printf '%s\n' '{"_type":"video","id":"ftp-audio"}'
             YtDlpTopologyBudgets::default(),
             &|| false,
         )
-        .expect("process layer возвращает status вызывающему");
+        .expect("process layer returns status to the caller");
         assert!(!output.status.success());
         assert_eq!(output.stderr.observed_bytes, 20);
         assert!(!format!("{output:?}").contains("very-secret"));
@@ -739,7 +740,7 @@ printf '%s\n' '{"_type":"video","id":"ftp-audio"}'
             },
             &|| false,
         )
-        .expect_err("huge stdout должен быть bounded");
+        .expect_err("huge stdout must have bounded");
         assert!(matches!(
             budget_error,
             YtDlpTopologyError::StdoutBudgetExceeded | YtDlpTopologyError::JsonLineBudgetExceeded
@@ -753,16 +754,16 @@ printf '%s\n' '{"_type":"video","id":"ftp-audio"}'
             "fastiplayer-ytdlp-topology-{}-{sequence}.sh",
             std::process::id()
         ));
-        fs::write(&path, body).expect("test script должен записаться");
+        fs::write(&path, body).expect("The test script must be written down.");
         let mut permissions = fs::metadata(&path)
-            .expect("test script metadata должна читаться")
+            .expect("test script metadata should read")
             .permissions();
         permissions.set_mode(0o700);
-        fs::set_permissions(&path, permissions).expect("test script должен стать executable");
+        fs::set_permissions(&path, permissions).expect("The test script should be executable.");
         path
     }
 
     fn remove_script(path: PathBuf) {
-        fs::remove_file(path).expect("test script должен удалиться");
+        fs::remove_file(path).expect("The test script must be removed.");
     }
 }

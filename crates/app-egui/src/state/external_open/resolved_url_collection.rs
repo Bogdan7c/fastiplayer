@@ -22,7 +22,7 @@ use crate::playlist_runtime::{
 };
 
 /// Текст, когда структура ссылки разобрана, но проигрываемых роликов в ней нет.
-const NO_CLIPS_IN_LINK_MESSAGE: &str = "По ссылке не нашлось роликов";
+const NO_CLIPS_IN_LINK_MESSAGE: &str = "There were no videos on the link.";
 
 impl AppState {
     /// Применяет разобранную коллекцию; вызывается UI-потоком по wake владельца.
@@ -35,7 +35,7 @@ impl AppState {
         // В логе только число: сама ссылка и адреса роликов приватны.
         info!(
             item_count = collection.item_count(),
-            "Структура брошенной ссылки получена"
+            "Dropped URL topology received"
         );
         if collection.is_empty() {
             self.notify_info(NO_CLIPS_IN_LINK_MESSAGE.to_string());
@@ -62,7 +62,9 @@ impl AppState {
             outcome,
             crate::playlist_runtime::ServiceUrlReplacementOutcome::Rejected
         ) {
-            warn!("Замена очереди коллекцией по ссылке отклонена владельцем очереди");
+            warn!(
+                "Replacement of the queue with a collection by reference rejected by the queue owner"
+            );
         }
         self.finish_dropped_url_queue_replacement(outcome, playlist_runtime, renderer);
     }

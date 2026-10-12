@@ -149,7 +149,7 @@ mod tests {
             let edge = snapshot.manifest_live_edge;
             assert!(
                 edge - join >= Duration::from_secs(3 * segment_secs),
-                "target {segment_secs} s: join {join:?} слишком близко к краю {edge:?}"
+                "target {segment_secs} s: join {join:?} too close to edge {edge:?}"
             );
             // Не отодвигаемся дальше необходимого: ровно три сегмента от края.
             assert_eq!(edge - join, Duration::from_secs(3 * segment_secs));
@@ -240,11 +240,11 @@ mod tests {
         assert_eq!(
             min_runway_at_edge,
             Duration::ZERO,
-            "модель должна ловить старый баг"
+            "The model should catch the old bug"
         );
         assert!(
             min_runway_with_hold_back >= Duration::from_secs(2 * SEGMENT_SECS),
-            "запас {min_runway_with_hold_back:?} меньше двух сегментов"
+            "{min_runway_with_hold_back:?} less than two segments"
         );
     }
 }

@@ -95,7 +95,7 @@ impl OwnedProcess {
         let child = self
             .child
             .as_mut()
-            .ok_or_else(|| io::Error::other("owned process уже завершён"))?;
+            .ok_or_else(|| io::Error::other("The owned process is now complete."))?;
 
         #[cfg(unix)]
         {
@@ -124,7 +124,7 @@ impl OwnedProcess {
         }
         let Some(mut child) = self.child.take() else {
             return Err(io::Error::other(
-                "owned process не содержит child или сохранённый exit status",
+                "owned process has neither a child nor a saved exit status",
             ));
         };
 
@@ -158,7 +158,7 @@ impl Drop for OwnedProcess {
     fn drop(&mut self) {
         if let Err(error) = self.finish() {
             // Drop не может вернуть ошибку, но silent cleanup failure здесь недопустим.
-            eprintln!("fastiplayer: аварийная очистка owned process завершилась ошибкой: {error}");
+            eprintln!("fastiplayer: emergency cleanup of the owned process failed: {error}");
         }
     }
 }
@@ -184,64 +184,64 @@ impl OwnedProcessCleanupFailure {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OwnedPipeStopError {
     /// Reader успел получить настоящий IO failure до/во время stop.
-    #[error("pipe reader завершился IO failure")]
+    #[error("pipe reader ended with an I/O failure")]
     Reader {
         #[source]
         source: io::Error,
     },
 
     /// Worker завершился без передачи результата, например из-за panic.
-    #[error("pipe reader worker завершился без результата")]
+    #[error("pipe reader worker ended without a result")]
     WorkerTerminated,
 
     /// Stop token не завершил worker в обязательный bounded budget.
-    #[error("pipe reader worker не подтвердил bounded stop")]
+    #[error("pipe reader worker did not confirm bounded stop")]
     StopTimedOut,
 }
 
 /// Ошибка bounded drain с отдельной семантикой cancellation/operation deadline.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OwnedPipeDrainError {
-    #[error("pipe drain отменён владельцем операции")]
+    #[error("pipe drain was canceled by the operation owner")]
     Cancellation,
 
-    #[error("pipe drain cancellation не смогла bounded остановить worker")]
+    #[error("pipe drain cancellation could not stop the worker within the bound")]
     CancellationCleanup {
         #[source]
         source: OwnedPipeStopError,
     },
 
-    #[error("pipe drain исчерпал исходный operation timeout")]
+    #[error("pipe drain exhausted the original operation timeout")]
     OperationTimedOut,
 
-    #[error("pipe drain timeout не смог bounded остановить worker")]
+    #[error("pipe drain timeout could not stop the worker within the bound")]
     OperationTimeoutCleanup {
         #[source]
         source: OwnedPipeStopError,
     },
 
-    #[error("pipe не достиг EOF в bounded drain grace после root exit")]
+    #[error("pipe did not reach EOF within the bounded drain grace after root exit")]
     DrainTimedOut,
 
-    #[error("pipe drain grace исчерпана, а worker не подтвердил bounded stop")]
+    #[error("pipe drain grace was exhausted and the worker did not confirm bounded stop")]
     DrainTimeoutCleanup {
         #[source]
         source: OwnedPipeStopError,
     },
 
-    #[error("pipe reader завершился IO failure")]
+    #[error("pipe reader ended with an I/O failure")]
     Reader {
         #[source]
         source: io::Error,
     },
 
-    #[error("pipe reader worker завершился без результата")]
+    #[error("pipe reader worker ended without a result")]
     WorkerTerminated,
 }
 
 /// Private sentinel: в отличие от `Interrupted`, std `read_to_end` не retry-ит его.
 #[derive(Debug, thiserror::Error)]
-#[error("pipe reader остановлен process owner-ом")]
+#[error("pipe reader stopped process owner")]
 struct PipeReaderStopped;
 
 /// Bounded completion owner для одного stdout/stderr reader worker-а.
@@ -527,7 +527,7 @@ fn poll_unix_root_exit_without_reap(child: &Child) -> io::Result<OwnedProcessRoo
     let process_id = libc::id_t::try_from(child.id()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "child PID не помещается в waitid identity",
+            "child PID does not fit the waitid identity",
         )
     })?;
 
@@ -562,7 +562,7 @@ fn poll_unix_root_exit_without_reap(child: &Child) -> io::Result<OwnedProcessRoo
         }
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "waitid вернул событие другого root process",
+            "waitid returned an event for another root process",
         ));
     }
 }
@@ -599,7 +599,7 @@ fn terminate_unix_process_group(
     let process_group_id = libc::pid_t::try_from(child.id()).map_err(|_| {
         OwnedProcessTerminationFailure::unreaped(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "child PID не помещается в Unix process-group identity",
+            "child PID does not fit the Unix process-group identity",
         ))
     })?;
 

@@ -71,14 +71,12 @@ fn position_restore_applies_only_after_generic_seek_commit() {
     let seek_commit = session
         .seek_runtime
         .active_commit()
-        .expect("position restore должен оставить active seek commit");
+        .expect("Position restore must leave active seek commit");
 
     session.complete_seek_commit(seek_commit);
 
     assert_eq!(
-        outcome_rx
-            .recv()
-            .expect("seek commit должен закрыть restore"),
+        outcome_rx.recv().expect("Seek commit to close restore"),
         InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
     );
     assert_eq!(session.playback_state(), PlaybackState::Paused);
@@ -102,7 +100,7 @@ fn backend_replacement_preserves_in_flight_position_restore_generation() {
     let restore_seek_commit = session
         .seek_runtime
         .active_commit()
-        .expect("position restore должен ждать final seek commit");
+        .expect("Position restore waits for final seek commit");
 
     // App shell может заменить compatibility backend сразу после Installed.
     session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
@@ -119,14 +117,14 @@ fn backend_replacement_preserves_in_flight_position_restore_generation() {
     let active_seek_commit = session
         .seek_runtime
         .active_commit()
-        .expect("backend replacement должен сохранить active seek commit");
+        .expect("Backend Replacement: Active seek commit");
     session.complete_seek_commit(active_seek_commit);
 
     // Startup сможет перейти к StartPaused только после authoritative matching commit.
     assert_eq!(
         outcome_rx
             .recv()
-            .expect("matching seek commit должен закрыть position restore"),
+            .expect("Match seek commit to close position restore"),
         InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
     );
 }
@@ -148,7 +146,7 @@ fn track_list_rebase_preserves_in_flight_position_restore_receipt() {
     let generation_before_track_update = session
         .seek_runtime
         .active_commit()
-        .expect("position restore должен ждать video landing")
+        .expect("Position restore is waiting for the video landing")
         .generation;
 
     // HLS demux может подтвердить track list повторно уже после принятого seek anchor-а.
@@ -161,7 +159,7 @@ fn track_list_rebase_preserves_in_flight_position_restore_receipt() {
     let rebased_seek_commit = session
         .seek_runtime
         .active_commit()
-        .expect("TracksChanged должен сохранить active position restore seek");
+        .expect("TracksChanged will keep active position restore seek");
     assert_ne!(
         rebased_seek_commit.generation,
         generation_before_track_update
@@ -172,7 +170,7 @@ fn track_list_rebase_preserves_in_flight_position_restore_receipt() {
     assert_eq!(
         outcome_rx
             .recv()
-            .expect("rebased seek commit должен закрыть position restore"),
+            .expect("Rebased seek commit to close position restore"),
         InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
     );
 }
@@ -190,17 +188,17 @@ fn cancelled_video_seek_never_publishes_false_restore_applied() {
     assert_eq!(outcome_rx.try_recv(), Err(TryRecvError::Empty));
     assert!(
         session.seek_runtime.seek_landing_active(),
-        "video restore должен ждать codec-neutral SeekLanding terminal"
+        "video restore wait codec-neutral SeekLanding terminal"
     );
 
     session
         .dispatch_command(PlayerCommand::Pause)
-        .expect("pause должна безопасно отменить незавершённый video seek");
+        .expect("Delays must be safely cancelled for an incomplete video search");
 
     assert!(matches!(
         outcome_rx
             .recv()
-            .expect("cancelled restore обязан получить terminal failure"),
+            .expect("Received Recovery from Terminal Failure"),
         InstalledMediaStateRestoreOutcome::Failed {
             stage: InstalledMediaRestoreFailureStage::Position,
             error,
@@ -222,7 +220,7 @@ fn fatal_seek_error_is_forwarded_to_pending_restore_receipt() {
     assert_eq!(
         outcome_rx
             .recv()
-            .expect("fatal seek failure должен закрыть restore receipt"),
+            .expect("Fatal Seek Failure to Close Return Receipt"),
         InstalledMediaStateRestoreOutcome::Failed {
             stage: InstalledMediaRestoreFailureStage::Position,
             error: expected_error,
@@ -243,7 +241,7 @@ fn media_replacement_makes_pending_restore_stale() {
     assert_eq!(
         outcome_rx
             .recv()
-            .expect("stale restore должен получить terminal outcome"),
+            .expect("Stale Recovery: The Terminal Outcome"),
         InstalledMediaStateRestoreOutcome::StaleInstance
     );
 }

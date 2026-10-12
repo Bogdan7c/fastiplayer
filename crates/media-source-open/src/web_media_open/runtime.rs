@@ -76,39 +76,39 @@ impl WebOpenRuntime {
         demux_config: &PlayerDemuxConfig,
     ) -> Result<Self> {
         let source_config = SourceRuntimeConfig::from_network_config(network_config)
-            .context("Network config нельзя преобразовать в source runtime policy")?;
+            .context("Network config cannot be converted to source runtime policy.")?;
         let prefetch_config = prefetch_config(network_config)?;
         let provider = WebMediaHttpProvider::new(source_config.clone(), prefetch_config)
-            .context("Не удалось создать progressive HTTP provider")?;
+            .context("Could not create the progressive HTTP provider")?;
         let provider_id = provider.descriptor().provider_id().clone();
         let ftp_provider = WebMediaFtpProvider::new(source_config.clone())
-            .context("Не удалось создать progressive FTP provider")?;
+            .context("Could not create the progressive FTP provider")?;
         let ftp_provider_id = ftp_provider.descriptor().provider_id().clone();
         let mut transport_registry = TransportRegistry::new();
         transport_registry
             .register(Box::new(provider))
-            .context("Не удалось зарегистрировать progressive HTTP provider")?;
+            .context("Failed to register a progressive HTTP provider")?;
         transport_registry
             .register(Box::new(ftp_provider))
-            .context("Не удалось зарегистрировать progressive FTP provider")?;
+            .context("Could not register the progressive FTP provider")?;
 
         let demuxer_options = DemuxerOptions::from_max_consecutive_corrupted_packets(
             demux_config.max_consecutive_corrupted_packets,
         )
-        .context("Player demux config нарушает validated runtime bounds")?;
+        .context("Player demux config violates validated runtime bounds")?;
         let demux_composition =
             crate::web_media_demux_registry::WebDemuxComposition::new(demuxer_options)
-                .context("Не удалось собрать web demux registry")?;
+                .context("Could not build the web demux registry")?;
         let hls_transport_limits =
             crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
-                .context("Network config нельзя преобразовать в HLS transport limits")?;
+                .context("Network config cannot be converted to HLS transport limits.")?;
         let hls_mpeg_ts_options = mpeg_ts_demux::MpegTsDemuxOptions::default()
             .with_initial_probe_byte_budget(hls_transport_limits.maximum_segment_bytes);
         let hls_demux_composition = crate::web_media_demux_registry::WebDemuxComposition::new_hls(
             demuxer_options,
             hls_mpeg_ts_options,
         )
-        .context("Не удалось собрать HLS demux registry")?;
+        .context("Could not build the HLS demux registry")?;
         let demux_capabilities = DemuxCapabilitySnapshot::new(
             demux_composition
                 .capabilities
@@ -200,7 +200,7 @@ impl WebOpenRuntime {
             let StreamLayout::ContentProbed(content_probe_descriptor) =
                 candidate.descriptor().layout()
             else {
-                return Err(anyhow!("HDS candidate потерял ContentProbed descriptor").into());
+                return Err(anyhow!("HDS candidate loses ContentProbed descriptor").into());
             };
             let hds_capability_probe = content_probe::ContentProbedHdsCapabilityProbe::new(
                 catalog_capability_probe,
@@ -300,7 +300,7 @@ impl WebOpenRuntime {
             YtDlpLiveIntent::Unspecified | YtDlpLiveIntent::NotLive
         ) {
             return Err(anyhow!(
-                "live yt-dlp candidate не имеет совместимого HLS transport profile"
+                "live yt-dlp candidate does not have a compatible HLS transport profile"
             )
             .into());
         }
@@ -312,7 +312,7 @@ impl WebOpenRuntime {
         );
         let components = candidate
             .progressive_transport_components(&request_context)
-            .context("YtDlp request material нельзя выразить через progressive transport")?;
+            .context("YtDlp request material cannot be expressed through progressive transport")?;
         let mut opened_components = Vec::with_capacity(components.len());
         let mut has_seekable_component = false;
         for component in components {
@@ -326,7 +326,7 @@ impl WebOpenRuntime {
             let opened_transport = self
                 .transport_registry
                 .open(transport_request)
-                .context("Progressive provider не открыл YtDlp component")?;
+                .context("Progressive provider does not open YtDlp component")?;
             let transport_seekability = opened_transport.seekability();
             has_seekable_component |= transport_seekability == TransportSeekability::Seekable;
             let demux_input = match opened_transport.into_input() {
@@ -397,28 +397,26 @@ impl WebOpenRuntime {
         let sniff_bytes = usize::try_from(self.prefetch_config.initial_chunk_bytes())
             .ok()
             .and_then(NonZeroUsize::new)
-            .ok_or_else(|| {
-                anyhow!("prefetch initial chunk нельзя использовать как sniff budget")
-            })?;
+            .ok_or_else(|| anyhow!("prefetch initial chunk cannot be used as sniff budget"))?;
         let sniff_budget = DemuxSniffBudget::new(
             sniff_bytes,
             NonZeroUsize::MIN,
             self.source_config.read_timeout(),
         )
-        .context("Source read timeout нельзя использовать как demux sniff deadline")?;
+        .context("Source read timeout cannot be used as demux sniff deadline.")?;
         let demuxer = self
             .demux_registry
             .open(input, hints, sniff_budget, cancellation.clone())
-            .context("Demux registry не открыл YtDlp component")?;
+            .context("Demux registry did not open the YtDlp component")?;
         match seekability {
             TransportSeekability::Seekable => Ok(demuxer),
             TransportSeekability::Streaming => {
                 let limits = progressive_limits(self.prefetch_config)?;
                 let retry_hint = DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER)
-                    .context("Minimum demux retry hint нарушает media-core bounds")?;
+                    .context("Minimum demux retry hint violates media-core bounds")?;
                 let progressive =
                     ProgressiveDemuxer::new(demuxer, cancellation, limits, retry_hint)
-                        .context("Не удалось запустить progressive demux worker")?;
+                        .context("The progressive demux worker was not launched.")?;
                 Ok(Box::new(progressive))
             }
         }
@@ -481,7 +479,7 @@ fn demux_hints(family: ContainerFamily) -> Result<DemuxHints> {
         ContainerFamily::MpegAudio => ("mpeg-audio", "mp3"),
         ContainerFamily::Flv => ("flv", "flv"),
         ContainerFamily::F4f => ("f4f", "f4f"),
-        _ => bail!("Selected YtDlp container не зарегистрирован в web demux registry"),
+        _ => bail!("Selected YtDlp container is not registered with the web demux registry"),
     };
     Ok(DemuxHints::none()
         .with_extension(DemuxSourceExtension::new(extension)?)
@@ -516,11 +514,11 @@ fn progressive_limits(
     let event_capacity = usize::try_from(event_capacity)
         .ok()
         .and_then(NonZeroUsize::new)
-        .ok_or_else(|| anyhow!("prefetch window нельзя преобразовать в event capacity"))?;
+        .ok_or_else(|| anyhow!("prefetch window cannot be converted into event capacity"))?;
     let encoded_byte_capacity = usize::try_from(prefetch_config.window_bytes())
         .ok()
         .and_then(NonZeroUsize::new)
-        .ok_or_else(|| anyhow!("prefetch window нельзя преобразовать в byte capacity"))?;
+        .ok_or_else(|| anyhow!("prefetch window cannot be converted into byte capacity"))?;
     Ok(ProgressiveDemuxBufferLimits::new(
         event_capacity,
         encoded_byte_capacity,
@@ -554,7 +552,7 @@ mod tests {
                 .demux()
                 .input_capabilities_for(ContainerFamily::WebM)
                 .contains(DemuxInputCapability::StreamingBytes),
-            "зарегистрированный progressive demux должен принимать streaming WebM"
+            "Registered progressive demux must accept streaming WebM"
         );
     }
 }

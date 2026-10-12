@@ -178,7 +178,7 @@ mod tests {
             assert_eq!(
                 civil_date_from_days_since_epoch(days_since_epoch),
                 expected_date,
-                "день {days_since_epoch}"
+                "day {days_since_epoch}"
             );
         }
     }
@@ -196,7 +196,7 @@ mod tests {
             assert_eq!(
                 civil_date_from_days_since_epoch(days_since_epoch),
                 expected_date,
-                "день {days_since_epoch}"
+                "day {days_since_epoch}"
             );
             expected_date = next_day(expected_date);
             days_since_epoch += 1;

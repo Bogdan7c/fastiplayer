@@ -6,7 +6,7 @@ use super::*;
 fn startup_config_snapshot_parity() {
     let config = custom_config_for_test();
     let runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен принять валидированный startup config");
+        .expect("Runtime settings must accept a validated startup config");
 
     assert_eq!(runtime.committed_config(), &config);
     assert_eq!(
@@ -20,7 +20,7 @@ fn startup_config_snapshot_parity() {
             .registry()
             .descriptor(&SettingId::from("ui.show_telemetry"))
             .is_some(),
-        "settings runtime должен владеть registry view для будущего UI"
+        "settings runtime must possess registry view future UI"
     );
 }
 
@@ -30,16 +30,16 @@ fn startup_config_snapshot_parity() {
 fn visual_hold_keeps_fields_built_only_while_closing_animation_runs() {
     let config = custom_config_for_test();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(
             vec![SettingsUiAction::Open, SettingsUiAction::Cancel],
             &mut render_adapter,
         )
-        .expect("open + cancel должны пройти без ошибок");
+        .expect("Open + cancel will be free of errors.");
     assert!(!runtime.is_settings_window_open());
 
     // Панель ещё видна (анимация закрытия): поля собраны, open-state не врёт.
@@ -48,7 +48,7 @@ fn visual_hold_keeps_fields_built_only_while_closing_animation_runs() {
     assert!(!held_model.is_open);
     assert!(
         !held_model.fields.is_empty(),
-        "во время visual hold уезжающая панель должна показывать поля"
+        "During visual hold, the leaving panel should show the fields."
     );
 
     // Анимация закончилась: закрытая панель снова не строит field list.
@@ -57,7 +57,7 @@ fn visual_hold_keeps_fields_built_only_while_closing_animation_runs() {
     assert!(!closed_model.is_open);
     assert!(
         closed_model.fields.is_empty(),
-        "устойчиво закрытая панель не должна строить поля (perf-инвариант)"
+        "A permanently closed panel should not build fields (perf-invariant)"
     );
 }
 
@@ -216,15 +216,16 @@ fn local_open_snapshot_uses_current_committed_config() {
 fn render_initial_settings_are_unchanged() {
     let config = custom_config_for_test();
     let runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
 
     let initial_settings = runtime
         .initial_render_settings()
-        .expect("render settings должны мапиться как раньше");
+        .expect("render settings should be as old as before");
 
     assert_eq!(
         initial_settings.color_pipeline,
-        color_pipeline_settings_from_config(&config).expect("old render mapping должен пройти")
+        color_pipeline_settings_from_config(&config)
+            .expect("Old render mapping must be completed.")
     );
     assert_eq!(
         initial_settings.hdr_to_sdr,
@@ -236,7 +237,7 @@ fn render_initial_settings_are_unchanged() {
 fn player_default_volume_route_updates_policy_snapshot_only() {
     let config = custom_config_for_test();
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-        .expect("route appliers должны принять валидированный config");
+        .expect("route appliers must accept validated config");
     let route = RuntimeCommittedRoute {
         route: AppRuntimeRoute::Player,
         source_routes: vec![SettingRouteId::from("audio")],
@@ -257,7 +258,7 @@ fn player_default_volume_route_updates_policy_snapshot_only() {
 
     let report = appliers
         .apply_committed_route(route)
-        .expect("default volume route должен построить report");
+        .expect("Default Volume Route: Report");
 
     assert_eq!(appliers.player.default_volume, 0.25);
     assert_eq!(report.result, AppRouteApplyResult::Applied);
@@ -268,7 +269,7 @@ fn player_default_volume_route_updates_policy_snapshot_only() {
 fn selected_available_audio_device_is_passed_to_audio_owner() {
     let config = custom_config_for_test();
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-        .expect("route appliers должны принять валидированный config");
+        .expect("route appliers must accept validated config");
     let selected_device_id = "cpal-0.15-name:USB%20DAC".to_string();
     let route = RuntimeCommittedRoute {
         route: AppRuntimeRoute::Player,
@@ -289,13 +290,13 @@ fn selected_available_audio_device_is_passed_to_audio_owner() {
 
     let report = appliers
         .apply_committed_route(route)
-        .expect("audio device route должен построить report");
+        .expect("Audio Device Route to Create a Report");
 
     assert_eq!(
         appliers
             .audio_output_device_controller
             .selected_device_id()
-            .expect("audio owner должен вернуть selected id"),
+            .expect("The audio owner must return the selected id."),
         selected_device_id
     );
     assert_eq!(report.result, AppRouteApplyResult::Applied);
@@ -306,9 +307,9 @@ fn selected_available_audio_device_is_passed_to_audio_owner() {
 fn player_decoder_route_uses_live_pipeline_rebuild() {
     let config = custom_config_for_test();
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-        .expect("route appliers должны принять валидированный config");
+        .expect("route appliers must accept validated config");
     let mut runtime_adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     let requested_decoder_config = player_core::PlayerVideoDecoderThreadConfig {
         packet_channel_frames: 64,
         ..player_core::PlayerVideoDecoderThreadConfig::default()
@@ -339,7 +340,7 @@ fn player_decoder_route_uses_live_pipeline_rebuild() {
             SettingsRouteTargetPolicy::from_config(&config),
             &mut runtime_adapter,
         )
-        .expect("decoder route должен построить report");
+        .expect("The decoder route should be a report.");
 
     assert_eq!(runtime_adapter.player_updates.len(), 1);
     assert_eq!(report.result, AppRouteApplyResult::Applied);
@@ -381,9 +382,9 @@ fn render_recreation_commits_snapshot_only_after_owner_success() {
     next.vulkan.max_frame_latency += 1;
     let route = render_recreation_route(next.clone());
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-        .expect("route appliers должны принять валидированный config");
+        .expect("route appliers must accept validated config");
     let mut runtime_adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     let first_report = appliers
         .apply_committed_route_with_render_adapter(
@@ -391,14 +392,14 @@ fn render_recreation_commits_snapshot_only_after_owner_success() {
             SettingsRouteTargetPolicy::from_config(&config),
             &mut runtime_adapter,
         )
-        .expect("renderer route должен примениться");
+        .expect("renderer route should apply");
     let second_report = appliers
         .apply_committed_route_with_render_adapter(
             route,
             SettingsRouteTargetPolicy::from_config(&config),
             &mut runtime_adapter,
         )
-        .expect("повторный renderer route должен быть noop");
+        .expect("The second renderer route must be a noop.");
 
     assert_eq!(first_report.result, AppRouteApplyResult::Applied);
     assert_eq!(first_report.mechanism, ApplyMechanism::RendererRecreate);
@@ -415,9 +416,9 @@ fn render_recreation_failure_keeps_old_snapshot_for_same_draft_retry() {
     next.vulkan.max_frame_latency += 1;
     let route = render_recreation_route(next.clone());
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-        .expect("route appliers должны принять валидированный config");
+        .expect("route appliers must accept validated config");
     let mut runtime_adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     runtime_adapter.renderer_recreation_result = AppRouteApplyResult::RendererRecreationFailed {
         failure: SettingsApplyFailure::ApplyFailed {
             owner: SettingStateOwner::RendererLifecycle,
@@ -434,7 +435,7 @@ fn render_recreation_failure_keeps_old_snapshot_for_same_draft_retry() {
             SettingsRouteTargetPolicy::from_config(&config),
             &mut runtime_adapter,
         )
-        .expect("renderer failure должен остаться typed report-ом");
+        .expect("renderer failure should remain typed report");
     runtime_adapter.renderer_recreation_result = AppRouteApplyResult::Applied;
     let retry_report = appliers
         .apply_committed_route_with_render_adapter(
@@ -442,7 +443,7 @@ fn render_recreation_failure_keeps_old_snapshot_for_same_draft_retry() {
             SettingsRouteTargetPolicy::from_config(&config),
             &mut runtime_adapter,
         )
-        .expect("тот же renderer draft должен повторно примениться");
+        .expect("The same renderer draft must be re-applyed.");
 
     assert!(matches!(
         failed_report.result,
@@ -458,9 +459,9 @@ fn render_recreation_failure_keeps_old_snapshot_for_same_draft_retry() {
 fn media_service_route_uses_live_app_owner() {
     let config = custom_config_for_test();
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-        .expect("route appliers должны принять валидированный config");
+        .expect("route appliers must accept validated config");
     let mut runtime_adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     let mut next_network = config.network.clone();
     next_network.read_ahead_mb += 1;
     let route = RuntimeCommittedRoute {
@@ -484,7 +485,7 @@ fn media_service_route_uses_live_app_owner() {
             SettingsRouteTargetPolicy::from_config(&config),
             &mut runtime_adapter,
         )
-        .expect("media route должен построить report");
+        .expect("The media route should be a report");
 
     assert_eq!(runtime_adapter.media_updates, 1);
     assert_eq!(report.result, AppRouteApplyResult::Applied);
@@ -497,9 +498,9 @@ fn media_service_route_keeps_snapshot_when_owner_rebuild_fails() {
     let config = custom_config_for_test();
     let original_snapshot = super::super::MediaServiceRuntimeSnapshot::from_config(&config);
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-        .expect("route appliers должны принять валидированный config");
+        .expect("route appliers must accept validated config");
     let mut runtime_adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     runtime_adapter.fail_media = true;
     let mut next_network = config.network.clone();
     next_network.read_ahead_mb += 1;
@@ -524,7 +525,7 @@ fn media_service_route_keeps_snapshot_when_owner_rebuild_fails() {
             SettingsRouteTargetPolicy::from_config(&config),
             &mut runtime_adapter,
         )
-        .expect("media route должен построить failure report");
+        .expect("The media route must be a failure report.");
 
     assert_eq!(runtime_adapter.media_updates, 1);
     assert_eq!(
@@ -542,9 +543,9 @@ fn media_service_route_keeps_snapshot_when_owner_rebuild_fails() {
 fn frame_server_route_applies_player_policy_and_commits_snapshot() {
     let config = custom_config_for_test();
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-        .expect("route appliers должны принять валидированный config");
+        .expect("route appliers must accept validated config");
     let mut runtime_adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     let mut next_frame_server = config.frame_server.clone();
     next_frame_server.live_scrub_max_hz = 120;
     let route = RuntimeCommittedRoute {
@@ -573,7 +574,7 @@ fn frame_server_route_applies_player_policy_and_commits_snapshot() {
             SettingsRouteTargetPolicy::from_config(&config),
             &mut runtime_adapter,
         )
-        .expect("frame_server route должен построить report");
+        .expect("frame_server route to build report");
 
     assert_eq!(runtime_adapter.player_updates.len(), 1);
     assert!(
@@ -592,9 +593,9 @@ fn frame_server_route_keeps_snapshot_when_player_policy_apply_fails() {
     let config = custom_config_for_test();
     let original_frame_server = config.frame_server.clone();
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
-        .expect("route appliers должны принять валидированный config");
+        .expect("route appliers must accept validated config");
     let mut runtime_adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     runtime_adapter.fail_player = true;
     let mut next_frame_server = config.frame_server.clone();
     next_frame_server.live_scrub_max_hz = 120;
@@ -624,7 +625,7 @@ fn frame_server_route_keeps_snapshot_when_player_policy_apply_fails() {
             SettingsRouteTargetPolicy::from_config(&config),
             &mut runtime_adapter,
         )
-        .expect("frame_server route должен построить failure report");
+        .expect("frame_server route to build failure report");
 
     assert_eq!(runtime_adapter.player_updates.len(), 1);
     assert!(matches!(

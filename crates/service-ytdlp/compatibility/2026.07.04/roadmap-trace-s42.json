@@ -503,7 +503,7 @@
       "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
       "package": "app-egui", "target": "lib",
       "path": "crates/app-egui/src/ui/playlist/toolbar/icon_bar.rs",
-      "symbol": "icon_only_controls_keep_explicit_russian_accessibility_names"
+      "symbol": "icon_only_controls_keep_explicit_english_accessibility_names"
     },
     "toolbar-artwork": {
       "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",

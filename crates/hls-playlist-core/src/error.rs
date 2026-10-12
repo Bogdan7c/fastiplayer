@@ -28,7 +28,7 @@ pub enum HlsParseErrorKind {
 
 /// Parser error намеренно не содержит manifest/reference text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("HLS manifest не прошёл bounded lexical/structural validation")]
+#[error("HLS manifest failed bounded lexical/structural validation")]
 pub struct HlsParseError {
     kind: HlsParseErrorKind,
 }
@@ -47,40 +47,40 @@ impl HlsParseError {
 /// Отклонение initial VOD compatibility profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HlsProfileError {
-    #[error("master playlist не является media VOD playlist")]
+    #[error("Master playlist is not a media VOD playlist")]
     MasterPlaylist,
-    #[error("media playlist не содержит EXT-X-ENDLIST")]
+    #[error("Media playlist contains no EXT-X-ENDLIST")]
     NonVod,
-    #[error("media playlist уже завершён и не является initial live snapshot")]
+    #[error("Media playlist has ended and is not an initial live snapshot")]
     EndedLivePlaylist,
-    #[error("EXT-X-PLAYLIST-TYPE:VOD несовместим с initial live profile")]
+    #[error("EXT-X-PLAYLIST-TYPE:VOD is incompatible with initial live profile")]
     LivePlaylistType,
-    #[error("HLS encryption method не входит в initial profile")]
+    #[error("HLS encryption method is not included in the initial profile.")]
     UnsupportedEncryptionMethod,
-    #[error("HLS key format не равен identity")]
+    #[error("HLS key format is not equal to identity.")]
     UnsupportedKeyFormat,
-    #[error("EXT-X-VERSION превышает RFC 8216 compatibility version 7")]
+    #[error("EXT-X-VERSION exceeds RFC 8216 compatibility version 7")]
     UnsupportedProtocolVersion,
-    #[error("LL-HLS semantics не входят в initial profile")]
+    #[error("LL-HLS semantics are not included in the initial profile")]
     LowLatencySemantics,
-    #[error("I-frame-only playlist не входит в initial profile")]
+    #[error("I-frame-only playlist is not included in the initial profile")]
     IFramesOnly,
-    #[error("I-frame variant не входит в initial profile")]
+    #[error("I-frame variant is not included in the initial profile")]
     IFrameVariant,
-    #[error("EXT-X-SESSION-KEY не имеет downstream owner в initial profile")]
+    #[error("EXT-X-SESSION-KEY does not have a downstream owner in the initial profile")]
     SessionKey,
-    #[error("alternate VIDEO rendition не входит в initial profile")]
+    #[error("Alternate VIDEO rendition is outside the initial profile")]
     VideoRendition,
-    #[error("closed-caption rendition/group не входит в initial profile")]
+    #[error("Closed-caption rendition/group is outside the initial profile")]
     ClosedCaptions,
-    #[error("EXT-X-START не входит в initial profile")]
+    #[error("EXT-X-START is not included in the initial profile.")]
     StartOffset,
-    #[error("variant требует неподдерживаемую output-protection semantics")]
+    #[error("variant requires unsupported output-protection semantics")]
     OutputProtection,
-    #[error("variable substitution не входит в initial profile")]
+    #[error("Variable substitution is outside the initial profile")]
     VariableSubstitution,
-    #[error("content steering не входит в initial profile")]
+    #[error("Content steering is outside the initial profile")]
     ContentSteering,
-    #[error("fMP4 media segment не имеет действующего EXT-X-MAP")]
+    #[error("fMP4 media segment does not have a valid EXT-X-MAP")]
     FragmentedMp4MapRequired,
 }

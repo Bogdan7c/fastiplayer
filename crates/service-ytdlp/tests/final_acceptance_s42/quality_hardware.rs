@@ -60,7 +60,7 @@ fn quality_evidence_and_hardware_exception_preserve_exact_acceptance_state() {
         assert_eq!(
             executable_polarities(evidence_catalog, &evidence_ids),
             expected_polarities,
-            "quality axis `{quality_axis}` имеет неверную polarity matrix"
+            "Quality axis {quality_axis} has an incorrect polarity matrix"
         );
     }
 
@@ -68,7 +68,7 @@ fn quality_evidence_and_hardware_exception_preserve_exact_acceptance_state() {
     let hardware_exception = s42_acceptance
         .get("hardware_capability_exception")
         // Missing decision нельзя трактовать как unchanged hardware.
-        .unwrap_or_else(|| panic!("S42 hardware capability exception отсутствует"));
+        .unwrap_or_else(|| panic!("S42 hardware capability exception"));
     // Stable ID связывает решение с S27 root-cause fix.
     assert_eq!(
         required_string(hardware_exception, "id"),
@@ -143,7 +143,7 @@ fn quality_evidence_and_hardware_exception_preserve_exact_acceptance_state() {
     let manual_rerun_value = hardware_exception
         .get("hardware_manual_rerun")
         // Object existence уже проверена выше.
-        .expect("manual rerun value обязан существовать");
+        .expect("manual rerun value must exist");
     // Текущий владелец честно не имеет второго VA-API устройства для rerun.
     assert_eq!(required_string(manual_rerun_value, "status"), "NotRun");
     // Exact reason фиксирует отсутствие compatible device без fake manual PASS.

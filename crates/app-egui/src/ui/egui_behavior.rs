@@ -132,7 +132,7 @@ mod tests {
 
         assert!(
             animated_value >= 0.99,
-            "анимация должна завершиться за 0.1 с, получено {animated_value}"
+            "animation should be completed in 0.1 s, received {animated_value}"
         );
     }
 
@@ -157,7 +157,7 @@ mod tests {
             .count();
         assert_eq!(
             sent_theme_commands, 0,
-            "egui не должен менять тему окна сам"
+            "egui must not change the window theme itself"
         );
     }
 
@@ -205,7 +205,7 @@ mod tests {
 
         assert!(
             scroll_offset_y >= DRAG_DISTANCE_POINTS * 0.5,
-            "перетаскивание мышью вверх должно прокрутить содержимое, offset = {scroll_offset_y}"
+            "Drag the mouse up should scroll the contents, offset = {scroll_offset_y}"
         );
     }
 
@@ -257,7 +257,7 @@ mod tests {
             .unwrap_or(false);
         assert!(
             !painted_underline,
-            "IME-композиция не должна рисоваться новым подчёркиванием egui 0.35"
+            "IME composition should not be drawn with the new emphasis egui 0.35"
         );
     }
 
@@ -317,7 +317,7 @@ mod tests {
 
         assert!(
             offenders.is_empty(),
-            "используйте ui::egui_behavior::vertical_scroll_area(): {offenders:?}"
+            "Use ui::egui_behavior::vertical_scroll_area(): {offenders:?}"
         );
         // Сканер действительно видит панели приложения (настройки x2, URL,
         // сайдбар, плейлист, телеметрия), а не прошёл по пустому каталогу.

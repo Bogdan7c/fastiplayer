@@ -23,7 +23,7 @@ require_output() {
     local output="$1"
     local expected_text="$2"
     if [[ "${output}" != *"${expected_text}"* ]]; then
-        printf 'FAIL: ожидалась строка `%s`\n%s\n' "${expected_text}" "${output}" >&2
+        printf 'FAIL: expected text: %s\n%s\n' "${expected_text}" "${output}" >&2
         exit 1
     fi
 }
@@ -33,7 +33,7 @@ require_absent() {
     local output="$1"
     local forbidden_text="$2"
     if [[ "${output}" == *"${forbidden_text}"* ]]; then
-        printf 'FAIL: обнаружена запрещённая строка `%s`\n' "${forbidden_text}" >&2
+        printf 'FAIL: found forbidden text: %s\n' "${forbidden_text}" >&2
         exit 1
     fi
 }
@@ -69,10 +69,10 @@ require_output "${hardware_workflow_source}" '--av1-hdr "${AV1_HDR_FIXTURE_PATH}
 
 # Неизвестный аргумент обязан завершиться ошибкой parser-а.
 if unknown_output="$(${PLAYBACK_SMOKE} --unknown-option 2>&1)"; then
-    printf 'FAIL: неизвестный аргумент завершился успешно\n' >&2
+    printf 'FAIL: Unknown Argument Completes Successfully \n' >&2
     exit 1
 fi
-require_output "${unknown_output}" "неизвестный аргумент"
+require_output "${unknown_output}" "Unknown argument:"
 
 # Пустые fixture-файлы достаточны: dry-run не читает media и не запускает GUI.
 touch \
@@ -103,11 +103,11 @@ missing_av1_profile_output="$(PATH="${vainfo_shim_directory}:${PATH}" \
 missing_av1_profile_status=$?
 set -e
 if [[ "${missing_av1_profile_status}" -ne 3 ]]; then
-    printf 'FAIL: ожидаемый AV1 profile SKIP exit code 3, получен %s\n' "${missing_av1_profile_status}" >&2
+    printf 'FAIL: expected AV1 profile SKIP exit code 3, obtained %s\n' "${missing_av1_profile_status}" >&2
     exit 1
 fi
 require_output "${missing_av1_profile_output}" \
-    "SKIP: vainfo не содержит exact VAProfileAV1Profile0 : VAEntrypointVLD"
+    "SKIP: vainfo does not contain exact VAProfileAV1Profile0: VAEntrypointVLD"
 
 # Full matrix без отдельного HDR fixture должна fail-closed отклонить incomplete selection.
 set +e
@@ -118,7 +118,7 @@ missing_av1_hdr_output="$(${PLAYBACK_SMOKE} --mode full --dry-run --duration 1 \
 missing_av1_hdr_status=$?
 set -e
 if [[ "${missing_av1_hdr_status}" -eq 0 ]]; then
-    printf 'FAIL: full matrix без --av1-hdr завершилась успешно\n' >&2
+    printf 'FAIL: full matrix without --av1-hdr completed successfully \n' >&2
     exit 1
 fi
 require_output "${missing_av1_hdr_output}" "NOT RUN: missing selection"
@@ -187,7 +187,7 @@ successful_probe_output="$(PATH="${cargo_shim_directory}:${PATH}" \
 require_output "${successful_probe_output}" "PASS: FFmpeg runtime probe acceptance"
 # Ровно две строки доказывают выполнение unit/fake и installed-runtime probe steps.
 if [[ "$(wc -l <"${successful_probe_cargo_log}")" -ne 2 ]]; then
-    printf 'FAIL: успешный probe-only должен вызвать Cargo ровно два раза\n' >&2
+    printf 'FAIL: A successful probe-only should call Cargo exactly two times \n' >&2
     exit 1
 fi
 # Второй Cargo-вызов обязан выбирать только installed-runtime test, а не все ignored regressions crate-а.
@@ -209,14 +209,14 @@ failing_probe_status=$?
 set -e
 # Runner не имеет права превращать ошибку Cargo в успешный exit code.
 if [[ "${failing_probe_status}" -ne 17 ]]; then
-    printf 'FAIL: ожидаемый probe failure exit code 17, получен %s\n' "${failing_probe_status}" >&2
+    printf 'FAIL: expected probe failure exit code 17, obtained %s\n' "${failing_probe_status}" >&2
     exit 1
 fi
 # Упавшая реальная команда не должна публиковать acceptance PASS.
 require_absent "${failing_probe_output}" "PASS: FFmpeg runtime probe acceptance"
 # Только первый probe step должен быть запущен до fail-fast остановки workflow.
 if [[ "$(wc -l <"${failing_probe_cargo_log}")" -ne 1 ]]; then
-    printf 'FAIL: падающий probe-only должен остановиться после первого Cargo-вызова\n' >&2
+    printf 'FAIL: Falling probe-only must stop after first Cargo call \n' >&2
     exit 1
 fi
 
@@ -256,10 +256,10 @@ missing_hdr_manifest_output="$("${REPO_ROOT}/scripts/runtime-acceptance.sh" \
 missing_hdr_manifest_status=$?
 set -e
 if [[ "${missing_hdr_manifest_status}" -ne 3 ]]; then
-    printf 'FAIL: ожидаемый --av1-hdr SKIP exit code 3, получен %s\n' "${missing_hdr_manifest_status}" >&2
+    printf 'FAIL: expected --av1-hdr SKIP exit code 3, obtained %s\n' "${missing_hdr_manifest_status}" >&2
     exit 1
 fi
-require_output "${missing_hdr_manifest_output}" "SKIP: не указан --av1-hdr local asset path"
+require_output "${missing_hdr_manifest_output}" "SKIP: --av1-hdr local asset path not included"
 
 # Выбранная runtime suite без fixture должна дать reasoned SKIP и специальный exit code.
 set +e
@@ -268,10 +268,10 @@ manifest_skip_output="$("${REPO_ROOT}/scripts/runtime-acceptance.sh" \
 manifest_skip_status=$?
 set -e
 if [[ "${manifest_skip_status}" -ne 3 ]]; then
-    printf 'FAIL: ожидаемый SKIP exit code 3, получен %s\n' "${manifest_skip_status}" >&2
+    printf 'FAIL: expected SKIP exit code 3, obtained %s\n' "${manifest_skip_status}" >&2
     exit 1
 fi
-require_output "${manifest_skip_output}" "SKIP: не указан --vp9 local asset path"
+require_output "${manifest_skip_output}" "SKIP: --vp9 local asset path not included"
 
 # Итоговый marker означает, что все неграфические assertions выполнены.
 printf 'PASS: playback smoke script self-tests\n'

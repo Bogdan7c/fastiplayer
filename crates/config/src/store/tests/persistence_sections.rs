@@ -80,7 +80,7 @@ fn save_validated_atomic_at_writes_roundtrippable_generated_toml() {
     save_validated_atomic_at(&config_path, &config).expect("valid config saved atomically");
 
     let saved_toml = fs::read_to_string(&config_path).expect("saved config readable");
-    assert!(!saved_toml.contains("Пользовательский комментарий"));
+    assert!(!saved_toml.contains("User comment"));
     assert!(saved_toml.contains("[ui.settings]"));
     assert!(saved_toml.contains("live_preview_max_hz = 144"));
     assert_no_save_temp_files(temp_dir.path());

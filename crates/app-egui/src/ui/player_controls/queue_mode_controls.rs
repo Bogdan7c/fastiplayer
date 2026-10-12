@@ -72,14 +72,12 @@ impl QueueModeControl {
     /// Русская accessibility-метка сообщает текущее состояние и следующее действие.
     const fn accessible_label(self, model: &PlaylistTransportUiModel) -> &'static str {
         match self {
-            Self::Shuffle if model.shuffle_enabled => {
-                "Перемешивание включено. Выключить перемешивание"
-            }
-            Self::Shuffle => "Перемешивание выключено. Включить перемешивание",
+            Self::Shuffle if model.shuffle_enabled => "Shuffle is on. Turn shuffle off",
+            Self::Shuffle => "Shuffle is off. Turn shuffle on",
             Self::Repeat => match model.repeat_mode {
-                RepeatMode::StopAtEnd => "Повтор выключен. Включить повтор очереди",
-                RepeatMode::RepeatQueue => "Повтор очереди включён. Включить повтор одного трека",
-                RepeatMode::RepeatOne => "Повтор одного трека включён. Выключить повтор",
+                RepeatMode::StopAtEnd => "Repeat is off. Repeat Playlist",
+                RepeatMode::RepeatQueue => "Repeat Playlist is on. Repeat one track",
+                RepeatMode::RepeatOne => "Repeat one track is on. Turn repeat off",
             },
         }
     }
@@ -228,7 +226,7 @@ fn render_control(
         // Glyph-only кнопка повторяет полную текущую/следующую accessibility формулировку.
         .on_hover_text(control.accessible_label(model))
         // Disabled tooltip объясняет именно временную недоступность mutation boundary.
-        .on_disabled_hover_text("Режим очереди сейчас нельзя изменить");
+        .on_disabled_hover_text("Queue mode cannot be changed right now");
 
     // Один authoritative snapshot порождает один exact intent; optimistic state не записывается.
     if response.clicked() {

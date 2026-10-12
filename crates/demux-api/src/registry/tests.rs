@@ -132,7 +132,7 @@ fn byte_source_input_and_complete_hints_keep_typed_diagnostics() {
 
     let input = DemuxInput::byte_source(Box::new(MemoryByteSource::new(b"TEST-source", true)));
     let DemuxInput::ByteSource(source) = &input else {
-        panic!("constructor должен сохранить byte-source shape");
+        panic!("The constructor should retain the byte-source shape.");
     };
     let source_diagnostics = format!("{source:?}");
     assert!(source_diagnostics.contains("seekability: Seekable"));
@@ -550,7 +550,7 @@ fn duplicate_registration_is_rejected() {
             "repeated-container",
             Arc::new(Mutex::new(Vec::new())),
         )))
-        .expect_err("duplicate container row внутри одного factory");
+        .expect_err("A duplicate container row inside a factory.");
     assert!(matches!(
         duplicate_inside_factory,
         DemuxRegistryError::DuplicateContainer { .. }
@@ -585,11 +585,11 @@ fn registry_validates_the_exact_container_and_input_pair() {
             .descriptor()
             .input_capabilities()
             .contains(DemuxInputCapability::OrderedSegments),
-        "aggregate нужен только для factory prefilter"
+        "The aggregate is required only for factory prefilter"
     );
     assert!(
         !factory.descriptor().containers[0].supports_input(DemuxInputCapability::OrderedSegments),
-        "neighbor capability не должна протечь в matched row"
+        "neighbor capability shall not leak into matched row"
     );
 
     let mut registry = DemuxRegistry::new();
@@ -603,7 +603,7 @@ fn registry_validates_the_exact_container_and_input_pair() {
             b"TEST",
             &CancellationToken::never_cancelled(),
         )
-        .expect("matched container поддерживает seekable input");
+        .expect("Matched Container Supports Seeked Input");
 
     let rejected = registry
         .probe_sample(
@@ -612,7 +612,7 @@ fn registry_validates_the_exact_container_and_input_pair() {
             b"TEST",
             &CancellationToken::never_cancelled(),
         )
-        .expect_err("matched container не поддерживает ordered input");
+        .expect_err("matched container supportive ordered input");
     assert!(matches!(
         rejected,
         DemuxOpenError::ProbeRejected(DemuxProbeRejection::UnsupportedInput {
@@ -884,7 +884,7 @@ fn ordered_resource_stream_factory_open_does_not_wait_for_body_eof() {
     assert_eq!(
         &*requested_chunk_bounds.lock().expect("chunk bounds"),
         &[8, 8],
-        "factory должен получить registry replay без следующего source pull"
+        "factory must receive registry replay without another source pull"
     );
 }
 

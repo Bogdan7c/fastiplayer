@@ -135,7 +135,7 @@ fn installed_missing_axis_is_honest_and_all_buttons_are_disabled() {
     let labels = accessible_labels(&projection, true);
     assert!(labels.iter().any(|label| label == VIDEO_HEADING));
     assert!(labels.iter().any(|label| label == AUDIO_HEADING));
-    assert!(labels.iter().any(|label| label == "Активный"));
+    assert!(labels.iter().any(|label| label == "Active"));
     assert!(labels.iter().any(|label| label == AUDIO_AXIS_MISSING_TEXT));
 
     let context = egui::Context::default();
@@ -195,7 +195,7 @@ fn audio_only_installed_projection_reports_missing_video_axis() {
             .iter()
             .any(|label| label == component_variants::VIDEO_AXIS_MISSING_TEXT)
     );
-    assert!(labels.iter().any(|label| label == "Активный"));
+    assert!(labels.iter().any(|label| label == "Active"));
     assert!(labels.iter().any(|label| label.contains("uk")));
 }
 
@@ -321,7 +321,7 @@ fn common_pending_disables_component_rows_and_marks_only_exact_component_row() {
     assert_eq!(
         labels
             .iter()
-            .filter(|label| label.as_str() == "Ожидает переключения")
+            .filter(|label| label.as_str() == "Waiting to switch")
             .count(),
         2
     );
@@ -383,7 +383,7 @@ fn coupled_projection_renders_one_atomic_av_axis_with_safe_metadata() {
     let labels = accessible_labels(&projection, false);
     assert!(labels.iter().any(|label| label == COUPLED_HEADING));
     assert!(labels.iter().any(|label| label.contains("1280×720")));
-    assert!(labels.iter().any(|label| label.contains("128 кбит/с")));
+    assert!(labels.iter().any(|label| label.contains("128 kbps")));
     assert!(labels.iter().all(|label| label != VIDEO_HEADING));
     assert!(labels.iter().all(|label| label != AUDIO_HEADING));
 }

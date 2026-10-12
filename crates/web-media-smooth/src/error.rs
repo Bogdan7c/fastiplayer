@@ -96,16 +96,16 @@ impl SmoothSiblingRejection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SmoothTransportProfileError {
     /// Этот finite preparation boundary не владеет live refresh.
-    #[error("Smooth preparation поддерживает только VOD presentation")]
+    #[error("Smooth preparation only supports VOD presentation.")]
     NonVodPresentation,
     /// Parent request обязан описывать presentation-level manifest resource.
-    #[error("Smooth preparation требует PresentationManifest component role")]
+    #[error("Smooth preparation requires a PresentationManifest component role")]
     NonPresentationManifestComponent,
     /// Exact и semantic identities presentation manifest-а принадлежат разным source lineages.
-    #[error("Smooth presentation manifest identity нарушает source lineage")]
+    #[error("Smooth presentation manifest identity violates source lineage")]
     InvalidComponentIdentity,
     /// Manifest fetch всегда full-body и не принимает media range policy.
-    #[error("Smooth manifest request не должен содержать HTTP range limit")]
+    #[error("Smooth manifest request must not contain an HTTP range limit")]
     UnexpectedRangeLimit,
 }
 
@@ -113,10 +113,10 @@ pub enum SmoothTransportProfileError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SmoothSemanticKeyError {
     /// `usize` длину поля нельзя losslessly представить в canonical `u64`.
-    #[error("длина semantic-key field не помещается в canonical u64 framing")]
+    #[error("The semantic-key field does not fit in canonical u64 framing.")]
     FieldLengthOutOfRange,
     /// Суммарная длина output key не представима текущей платформой.
-    #[error("длина semantic-key output переполнена")]
+    #[error("The semantic-key output is full.")]
     OutputLengthOverflow,
 }
 
@@ -124,28 +124,28 @@ pub enum SmoothSemanticKeyError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SmoothProfileError {
     /// Требуется ровно один video и один audio stream.
-    #[error("Smooth VOD должен содержать ровно один video и один audio stream без extras")]
+    #[error("Smooth VOD should contain exactly one video and one audio stream without extras.")]
     StreamShape,
     /// Каждая обязательная component axis должна иметь хотя бы одно качество.
-    #[error("Smooth component axis не содержит quality levels")]
+    #[error("Smooth component axis does not contain quality levels.")]
     EmptyQualityAxis,
     /// Timeline обязан начинаться точно в нуле.
-    #[error("Smooth component timeline начинается не в нуле")]
+    #[error("Smooth component timeline does not start at zero.")]
     NonZeroStart,
     /// Component timeline не может выходить за authoritative root duration.
-    #[error("Smooth component timeline выходит за root duration")]
+    #[error("Smooth component timeline goes beyond root duration")]
     ComponentExceedsRootDuration,
     /// Video обязан покрывать весь authoritative root duration без tolerance.
-    #[error("Smooth video timeline не совпадает с root duration")]
+    #[error("Smooth video timeline does not match root duration")]
     VideoDurationMismatch,
     /// Parsed quality shape не соответствует stream axis.
-    #[error("Smooth quality kind не соответствует component axis")]
+    #[error("Smooth quality kind does not match component axis")]
     QualityKindMismatch,
     /// Сумма initialization segments превысила caller budget.
-    #[error("aggregate Smooth initialization bytes превысили caller budget")]
+    #[error("aggregate Smooth initialization bytes exceeded the caller budget")]
     AggregateInitializationLimit,
     /// Neutral descriptor не смог представить validated manifest metadata.
-    #[error("Smooth metadata выходит за neutral descriptor bounds")]
+    #[error("Smooth metadata goes out neutral descriptor bounds")]
     DescriptorBounds,
 }
 
@@ -153,43 +153,43 @@ pub enum SmoothProfileError {
 #[derive(thiserror::Error)]
 pub enum SmoothPrepareError {
     /// Cancellation всех нижних слоёв схлопывается в один terminal outcome.
-    #[error("подготовка Smooth VOD отменена")]
+    #[error("Smooth VOD preparation cancelled")]
     Cancelled,
     /// Transport intent несовместим с finite muxed Smooth preparation.
     #[error(transparent)]
     TransportProfile(#[from] SmoothTransportProfileError),
     /// Единственный manifest fetch завершился ошибкой.
-    #[error("не удалось получить Smooth manifest")]
+    #[error("Could not fetch the Smooth manifest")]
     Fetch(#[source] AdaptiveTransportError),
     /// Fetched handoff принадлежит другой source generation.
-    #[error("fetched Smooth manifest generation не совпадает с transport intent")]
+    #[error("fetched Smooth manifest generation is not consistent with transport intent")]
     FetchedManifestGenerationMismatch,
     /// Fetched handoff был загружен не из выбранного transport root-а.
-    #[error("fetched Smooth manifest target не совпадает с transport intent")]
+    #[error("fetched Smooth manifest target is not consistent with transport intent")]
     FetchedManifestTargetMismatch,
     /// Fetched body превышает текущий caller-owned manifest budget.
-    #[error("fetched Smooth manifest превышает текущий byte budget")]
+    #[error("fetched Smooth manifest exceeds the current byte budget")]
     FetchedManifestTooLarge,
     /// Hardened XML/schema/profile parse завершился ошибкой.
-    #[error("не удалось разобрать Smooth manifest")]
+    #[error("Could not parse the Smooth manifest")]
     Manifest(#[source] SmoothManifestError),
     /// Дополнительный provider-level profile invariant нарушен.
     #[error(transparent)]
     Profile(#[from] SmoothProfileError),
     /// S36F2 mapping одного объявленного качества завершился ошибкой.
-    #[error("не удалось отобразить Smooth quality в fragmented MP4 contract")]
+    #[error("Smooth quality cannot be displayed in fragmented MP4 contract")]
     Mapping(#[source] SmoothTrackMappingError),
     /// F1 initialization одного объявленного качества завершился ошибкой.
-    #[error("не удалось построить Smooth initialization segment")]
+    #[error("failed to build Smooth initialization segment")]
     Initialization(#[source] SmoothInitializationError),
     /// Канонический opaque key нарушил C3 bounds.
-    #[error("не удалось построить bounded Smooth variant identity")]
+    #[error("Unable to build a bounded Smooth variant identity")]
     VariantKey(#[source] ComponentVariantKeyError),
     /// Versioned semantic key нельзя закодировать без потери длины.
-    #[error("не удалось канонически закодировать Smooth semantic key")]
+    #[error("Canonically, Smooth semantic key cannot be coded.")]
     SemanticKey(#[source] SmoothSemanticKeyError),
     /// Готовые rows нарушили C3 catalog invariants.
-    #[error("не удалось собрать Smooth component catalog")]
+    #[error("Could not build the Smooth component catalog")]
     Catalog(#[source] ComponentVariantError),
 }
 

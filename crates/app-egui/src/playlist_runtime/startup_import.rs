@@ -52,10 +52,12 @@ pub(crate) enum StartupPlaylistPlanError {
 impl std::fmt::Display for StartupPlaylistPlanError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ControllerUnavailable => formatter.write_str("playlist controller недоступен"),
-            Self::Superseded => formatter.write_str("startup playlist commit уже superseded"),
+            Self::ControllerUnavailable => {
+                formatter.write_str("Playlist controller is unavailable")
+            }
+            Self::Superseded => formatter.write_str("Startup Playlist commit was superseded"),
             Self::IntentRevisionExhausted => {
-                formatter.write_str("исчерпана revision startup playback intent")
+                formatter.write_str("Startup playback intent revision exhausted")
             }
         }
     }
@@ -128,7 +130,7 @@ impl PlaylistRuntime {
         root_path: PathBuf,
     ) -> Result<bool, String> {
         if !self.admission_open.load(Ordering::Acquire) {
-            return Err("Приложение уже завершает startup import".to_owned());
+            return Err("The application is already completing startup import".to_owned());
         }
         if self.import_io.is_open() {
             return Ok(false);
@@ -138,7 +140,7 @@ impl PlaylistRuntime {
             root_path
         } else {
             std::env::current_dir()
-                .map_err(|_| "Не удалось разрешить relative startup playlist path".to_owned())?
+                .map_err(|_| "Could not resolve the relative startup Playlist path".to_owned())?
                 .join(root_path)
         };
         self.supersede_playlist_import_flow();
@@ -216,7 +218,7 @@ impl PlaylistRuntime {
                 let Some(controller) = self.controller.as_ref() else {
                     self.startup_import
                         .finish(StartupPlaylistImportTerminal::Failed(
-                            "playlist controller исчез после startup commit".to_owned(),
+                            "Playlist controller disappeared after startup commit".to_owned(),
                         ));
                     return;
                 };

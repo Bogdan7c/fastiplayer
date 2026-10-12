@@ -225,37 +225,34 @@ fn empty_plan_says_there_is_nothing_to_open() {
 }
 
 #[test]
-fn notice_texts_are_human_russian_without_debug_noise() {
+fn notice_texts_are_human_english_without_debug_noise() {
     assert_eq!(
         DropNotice::FilesNotFound { count: 1 }.text(),
-        "Файл не найден"
+        "File not found"
     );
     assert_eq!(
         DropNotice::FilesNotFound { count: 3 }.text(),
-        "Не найдено файлов: 3"
+        "Files not found: 3"
     );
     assert_eq!(
         DropNotice::PlaylistsSeparately.text(),
-        "Плейлисты перетаскивайте отдельно"
+        "Drag Playlists separately"
     );
     assert_eq!(
         DropNotice::LinksOneAtATime.text(),
-        "Ссылки добавляются по одной"
+        "Add links one at a time"
     );
-    assert_eq!(
-        DropNotice::LinksSeparately.text(),
-        "Ссылки перетаскивайте отдельно"
-    );
+    assert_eq!(DropNotice::LinksSeparately.text(), "Drag links separately");
     assert_eq!(
         DropNotice::FolderHasNoMedia.text(),
-        "В папке нет медиафайлов"
+        "The folder contains no media files"
     );
     assert_eq!(
         DropNotice::FolderFileLimitReached { taken: 2000 }.text(),
-        "Добавлены первые 2000 файлов из папки"
+        "Added the first 2000 files from the folder"
     );
     assert_eq!(
         DropNotice::PlaylistsOneAtATime.text(),
-        "Плейлисты импортируются по одному"
+        "Import Playlists one at a time"
     );
 }

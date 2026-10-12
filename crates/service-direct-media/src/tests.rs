@@ -26,7 +26,7 @@ fn production_demux_extensions_classify_http_and_ftp_resources_directly() {
         "ftps://media.example.test/audio.OPUS",
     ] {
         let direct = parse_direct_media_url(locator, &registry)
-            .unwrap_or_else(|error| panic!("{locator} должен быть direct: {error}"));
+            .unwrap_or_else(|error| panic!("{locator} must be direct: {error}"));
         assert!(matches!(
             direct.request_target_for_open(),
             TransportRequestTarget::Http(_) | TransportRequestTarget::Ftp(_)
@@ -39,7 +39,7 @@ fn production_demux_extensions_classify_http_and_ftp_resources_directly() {
 fn extension_support_follows_registry_instead_of_service_allowlist() {
     let empty_registry = DemuxRegistry::new();
     let error = parse_direct_media_url("https://media.example.test/video.mp4", &empty_registry)
-        .expect_err("пустой registry не должен наследовать старый MP4 allowlist");
+        .expect_err("An empty registry must not inherit the old MP4 allowlist.");
     assert!(matches!(
         error,
         DirectMediaOpenError::UnsupportedUrl {
@@ -65,7 +65,7 @@ fn ftp_credentials_query_and_path_are_redacted_from_all_safe_projections() {
     for forbidden in ["user", "password", "private", "token", "secret"] {
         assert!(
             !safe.contains(forbidden),
-            "safe projection раскрыл {forbidden}"
+            "safe projection revealed {forbidden}"
         );
     }
 }
@@ -78,7 +78,7 @@ fn extension_is_read_only_from_url_path() {
         "https://media.example.test/audio.OGG?format=mp4#video.webm",
         &registry,
     )
-    .expect("path Ogg должен победить query/fragment");
+    .expect("path Ogg must win query/fragment");
     assert_eq!(direct.extension().as_extension_hint(), "ogg");
 }
 
@@ -87,7 +87,7 @@ fn extension_is_read_only_from_url_path() {
 fn manifest_and_unrelated_protocol_keep_distinct_rejections() {
     let registry = symphonia_registry();
     let manifest = parse_direct_media_url("https://media.example.test/live.m3u8", &registry)
-        .expect_err("manifest не является progressive resource");
+        .expect_err("manifest is not progressive resource");
     assert!(matches!(
         manifest,
         DirectMediaOpenError::UnsupportedUrl {
@@ -96,7 +96,7 @@ fn manifest_and_unrelated_protocol_keep_distinct_rejections() {
     ));
 
     let unrelated = parse_direct_media_url("rtsp://media.example.test/video.webm", &registry)
-        .expect_err("RTSP не принадлежит direct progressive ingress");
+        .expect_err("RTSP does not belong to direct progressive ingress");
     assert!(matches!(
         unrelated,
         DirectMediaOpenError::UnsupportedUrl {
@@ -113,12 +113,12 @@ fn invalid_ftp_target_error_is_secret_safe() {
         "ftp://user:password@media.example.test/private%0Acommand.ogg?token=secret",
         &registry,
     )
-    .expect_err("control character должен быть отклонён");
+    .expect_err("control character must be rejected");
     let report = format!("{error:#}");
     for forbidden in ["user", "password", "private", "token", "secret"] {
         assert!(
             !report.contains(forbidden),
-            "error report раскрыл {forbidden}"
+            "error report revealed {forbidden}"
         );
     }
 }

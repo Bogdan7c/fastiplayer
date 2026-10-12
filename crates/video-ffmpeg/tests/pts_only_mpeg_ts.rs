@@ -66,14 +66,14 @@ impl ScenarioEvidence {
 
 /// Открывает explicit local asset через production MPEG-TS demuxer.
 fn open_demuxer(asset_path: &Path) -> MpegTsDemuxer {
-    let local_source = LocalFileSource::open(asset_path).expect("открыть AUD-003 MPEG-TS asset");
+    let local_source = LocalFileSource::open(asset_path).expect("Open AUD-003 MPEG-TS asset");
 
     MpegTsDemuxer::open(
         DemuxInput::byte_source(Box::new(local_source)),
         CancellationToken::never_cancelled(),
         MpegTsDemuxOptions::default(),
     )
-    .expect("открыть production MPEG-TS demuxer")
+    .expect("Open production MPEG-TS demuxer")
 }
 
 /// Стартует только software FFmpeg и конфигурирует H.264 Annex-B stream.
@@ -82,7 +82,7 @@ fn open_software_decoder(
 ) -> Box<video_backend_api::VideoBackendDecoderThreadHandle> {
     let started_backend = FfmpegSoftwareVideoBackendFactory::new()
         .start_for_composition()
-        .expect("запустить software FFmpeg backend");
+        .expect("Launch the software FFmpeg backend");
     assert_eq!(started_backend.backend_id(), "ffmpeg-sw");
 
     let decoder = started_backend.into_decoder_thread();
@@ -132,7 +132,7 @@ fn wait_for_packet_completion(
             break;
         }
         if let Some(error) = decoder.try_recv_error() {
-            panic!("software FFmpeg decoder завершился с ошибкой: {error}");
+            panic!("software FFmpeg decoder ended in error: {error}");
         }
         assert!(Instant::now() < deadline, "decoder packet ACK timeout");
         thread::sleep(Duration::from_millis(1));
@@ -163,7 +163,7 @@ fn send_video_packet(
     match decoder.send_packet(decode_packet) {
         Ok(()) => {}
         Err(DecodeSendError::Backpressure(reason)) => {
-            panic!("неожиданный serial decode backpressure: {reason:?}");
+            panic!("Unexpected serial decode backpressure: {reason:?}");
         }
         Err(DecodeSendError::Fatal(error)) => panic!("fatal decoder send: {error}"),
     }
@@ -189,7 +189,7 @@ fn drain_decoder_to_eof(
                 }
             ) if started_generation == generation
         ),
-        "decoder должен принять EOF drain текущей generation, получено {begin_result:?}"
+        "decoder must accept EOF drain current generation, got {begin_result:?}"
     );
 
     let deadline = Instant::now() + DECODER_WAIT_TIMEOUT;
@@ -200,12 +200,12 @@ fn drain_decoder_to_eof(
                 generation: drained_generation,
             } if drained_generation == generation => break,
             VideoDecoderEndOfStreamDrainState::Fatal { error, .. } => {
-                panic!("software FFmpeg EOF drain завершился с ошибкой: {error}");
+                panic!("software FFmpeg EOF drain ended in error: {error}");
             }
             _ => {}
         }
         if let Some(error) = decoder.try_recv_error() {
-            panic!("software FFmpeg decoder завершился во время EOF: {error}");
+            panic!("software FFmpeg decoder ended during EOF: {error}");
         }
         assert!(Instant::now() < deadline, "decoder EOF drain timeout");
         thread::sleep(Duration::from_millis(1));
@@ -224,7 +224,10 @@ fn decode_demux_to_eof(
     let mut pts_only_packet_count = 0usize;
 
     loop {
-        match demuxer.next_event().expect("прочитать MPEG-TS demux event") {
+        match demuxer
+            .next_event()
+            .expect("Read more about MPEG-TS demux event")
+        {
             DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video => {
                 if packet.track_pts.is_some() && packet.track_dts.is_none() {
                     pts_only_packet_count = pts_only_packet_count.saturating_add(1);
@@ -247,11 +250,11 @@ fn decode_demux_to_eof(
 fn assert_first_three_pts_increase(evidence: &ScenarioEvidence, scenario_name: &str) {
     assert!(
         evidence.pts_only_packet_count >= 3,
-        "{scenario_name}: fixture должен содержать минимум три PTS-only video packet-а"
+        "{scenario_name}: fixture must contain at least three PTS-only video packets"
     );
     assert!(
         evidence.frames.len() >= 3,
-        "{scenario_name}: decoder должен materialize минимум три кадра"
+        "{scenario_name}: decoder must materialize at least three frames"
     );
 
     let first_three_pts = evidence
@@ -262,7 +265,7 @@ fn assert_first_three_pts_increase(evidence: &ScenarioEvidence, scenario_name: &
         .collect::<Vec<_>>();
     assert!(
         first_three_pts.windows(2).all(|pair| pair[0] < pair[1]),
-        "{scenario_name}: первые три PTS должны строго расти, получено {first_three_pts:?}"
+        "{scenario_name}: The first three PTSs must be strictly increased, obtained {first_three_pts:?}"
     );
 }
 
@@ -272,7 +275,7 @@ fn assert_first_three_pts_increase(evidence: &ScenarioEvidence, scenario_name: &
 fn pts_only_mpeg_ts_materializes_increasing_frames_after_start_and_seek() {
     let asset_path = std::env::var_os("FASTIPLAYER_MEDIA_PATH")
         .map(std::path::PathBuf::from)
-        .expect("FASTIPLAYER_MEDIA_PATH должен указывать на generated MPEG-TS");
+        .expect("FASTIPLAYER_MEDIA_PATH should indicate generated MPEG-TS");
 
     let mut start_demuxer = open_demuxer(&asset_path);
     let video_track_id = start_demuxer
@@ -280,7 +283,7 @@ fn pts_only_mpeg_ts_materializes_increasing_frames_after_start_and_seek() {
         .iter()
         .find(|track| track.kind == TrackKind::Video)
         .map(|track| track.id)
-        .expect("MPEG-TS должен содержать video track");
+        .expect("MPEG-TS should contain video track");
     let start_decoder = open_software_decoder(video_track_id);
     let start_evidence = decode_demux_to_eof(&mut start_demuxer, start_decoder.as_ref(), 1);
 
@@ -290,17 +293,17 @@ fn pts_only_mpeg_ts_materializes_increasing_frames_after_start_and_seek() {
             .frames
             .iter()
             .all(|frame| frame.generation == 1 && frame.resource_handle > 0),
-        "start: каждый кадр должен принадлежать current generation и реальному ресурсу"
+        "start: every frame must belong to current generation and the real resource"
     );
 
     let mut seek_demuxer = open_demuxer(&asset_path);
     let seek_target = Duration::from_secs(2);
     let seek_result = seek_demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(seek_target))
-        .expect("выполнить middle decode-safe seek");
+        .expect("Execute middle decode-safe seek");
     assert!(
         seek_result.actual_position.as_duration() <= seek_target,
-        "decode point должен находиться не позже requested target"
+        "decode point should be no later than requested target"
     );
 
     let seek_decoder = open_software_decoder(video_track_id);
@@ -310,18 +313,18 @@ fn pts_only_mpeg_ts_materializes_increasing_frames_after_start_and_seek() {
     let first_seek_frame = seek_evidence
         .frames
         .first()
-        .expect("middle seek должен materialize первый кадр");
+        .expect("middle seek must materialize first frame");
     assert_eq!(first_seek_frame.generation, 2);
     assert!(
         first_seek_frame.pts >= seek_target,
-        "первый показанный post-seek кадр должен быть не раньше target"
+        "The first post-seek frame shown should not be before the target"
     );
     assert!(
         seek_evidence
             .frames
             .iter()
             .all(|frame| frame.generation == 2 && frame.resource_handle > 0),
-        "middle seek: stale generation и пустые resource handles запрещены"
+        "middle seek: stale generation hollow resource handles forbidden"
     );
 
     eprintln!(

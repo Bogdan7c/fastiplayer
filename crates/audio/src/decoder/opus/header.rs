@@ -84,24 +84,24 @@ const OPUS_FAMILY_ONE_7_1: [AudioChannelPosition; 8] = [
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(super) enum OpusHeadError {
     /// Header короче обязательных 19 bytes.
-    #[error("OpusHead слишком короткий: ожидалось минимум {expected} bytes, получено {actual}")]
+    #[error("OpusHead is too short: expected at least {expected} bytes, received {actual}")]
     TooShort { expected: usize, actual: usize },
 
     /// Codec private не содержит сигнатуру Opus.
-    #[error("codec private не начинается с OpusHead magic")]
+    #[error("codec private does not begin with OpusHead magic")]
     InvalidMagic,
 
     /// Несовместимая major version не должна интерпретироваться как текущий header.
-    #[error("OpusHead version {version} несовместима с поддерживаемой major version 0")]
+    #[error("OpusHead version {version} is incompatible with major version 0")]
     UnsupportedVersion { version: u8 },
 
     /// Opus header никогда не может описывать ноль output channels.
-    #[error("OpusHead содержит нулевое количество каналов")]
+    #[error("OpusHead contains zero channels.")]
     ZeroChannels,
 
     /// Container metadata и codec private не должны расходиться.
     #[error(
-        "channel count в track metadata ({metadata_channels}) не совпадает с OpusHead ({header_channels})"
+        "channel count in track metadata ({metadata_channels}) does not match OpusHead ({header_channels})"
     )]
     ChannelCountMismatch {
         metadata_channels: u32,
@@ -109,36 +109,36 @@ pub(super) enum OpusHeadError {
     },
 
     /// Family 0 нормативно допускает только один или два канала.
-    #[error("Opus mapping family 0 допускает только mono/stereo, получено {channels} каналов")]
+    #[error("Opus mapping family 0 allows only mono/stereo, received {channels} channels")]
     InvalidFamilyZeroChannels { channels: u8 },
 
     /// Multichannel нельзя безопасно создать без codec-owned mapping table.
     #[error(
-        "multichannel Opus с {channels} каналами требует валидный OpusHead с channel mapping table"
+        "multichannel Opus with {channels} channels requires a valid OpusHead with a channel mapping table"
     )]
     MissingMultichannelMapping { channels: u32 },
 
     /// Family 1 имеет определённую speaker semantics только для 1..=8 каналов.
-    #[error("Opus mapping family 1 допускает от 1 до 8 каналов, получено {channels}")]
+    #[error("Opus mapping family 1 allows from 1 to 8 channels, obtained {channels}")]
     InvalidFamilyOneChannels { channels: u8 },
 
     /// Family 1 mapping table содержит stream count, coupled count и C mapping bytes.
     #[error(
-        "OpusHead mapping table обрезан: ожидалось минимум {expected} bytes, получено {actual}"
+        "OpusHead mapping table cropped: expected at least {expected} bytes, obtained {actual}"
     )]
     TruncatedMappingTable { expected: usize, actual: usize },
 
     /// Хотя бы один coded stream обязателен для multistream packet framing.
-    #[error("OpusHead содержит нулевой stream count")]
+    #[error("OpusHead has a zero stream count.")]
     ZeroStreams,
 
     /// Coupled stream является подмножеством всех streams.
-    #[error("OpusHead coupled stream count {coupled_streams} превышает stream count {streams}")]
+    #[error("OpusHead coupled stream count {coupled_streams} exceeds stream count {streams}")]
     CoupledStreamsExceedStreams { streams: u8, coupled_streams: u8 },
 
     /// Opus mapping byte не способен адресовать больше 255 decoded channels.
     #[error(
-        "OpusHead описывает {decoded_channels} decoded channels: максимум 255 (streams={streams}, coupled={coupled_streams})"
+        "OpusHead describes {decoded_channels} decoded channels: maximum 255 (streams={streams}, coupled={coupled_streams})"
     )]
     TooManyDecodedChannels {
         streams: u8,
@@ -148,7 +148,7 @@ pub(super) enum OpusHeadError {
 
     /// Mapping byte должен ссылаться на существующий decoded channel или special silence 255.
     #[error(
-        "OpusHead mapping[{channel_index}]={mapping_index} выходит за decoded channel count {decoded_channels}"
+        "OpusHead mapping[{channel_index}]={mapping_index} is out of decoded channel count {decoded_channels}"
     )]
     InvalidMappingIndex {
         channel_index: usize,
@@ -157,13 +157,11 @@ pub(super) enum OpusHeadError {
     },
 
     /// Family 255 не даёт speaker positions, а reserved families нельзя угадывать.
-    #[error(
-        "Opus channel mapping family {family} не имеет поддерживаемой speaker semantics для playback"
-    )]
+    #[error("Opus channel mapping family {family} does not have speaker semantics for playback")]
     UnsupportedMappingFamily { family: u8 },
 
     /// Внутренний neutral layout должен принять нормативный family 1 набор позиций.
-    #[error("не удалось построить neutral layout для Opus family 1: {reason}")]
+    #[error("No neutral layout for Opus family 1: {reason}")]
     InvalidNeutralLayout { reason: String },
 }
 

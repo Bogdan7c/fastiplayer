@@ -155,7 +155,7 @@ fn indicator_stays_until_result_then_rows_are_inserted_and_indicator_disappears(
     let preview_id = gated
         .runtime
         .pending_playlist_import_preview()
-        .expect("preview после результата")
+        .expect("preview after the result")
         .preview_id();
     assert!(matches!(
         gated.runtime.continue_playlist_import(preview_id),
@@ -231,7 +231,7 @@ fn every_rejection_reason_reaches_its_own_text_with_domain() {
         gated.release.store(true, Ordering::Release);
         wait_until(|| gated.runtime.drain_playlist_url_import_job());
 
-        let text = gated.feedback_text().expect("причина отказа видна");
+        let text = gated.feedback_text().expect("cause of failure is visible");
         assert_eq!(
             text,
             url_import_failure_message(Some("youtube.com"), reason)
@@ -247,7 +247,7 @@ fn every_rejection_reason_reaches_its_own_text_with_domain() {
     assert_eq!(
         seen_texts.len(),
         reasons.len(),
-        "у каждой причины свой текст"
+        "Every reason has its own text."
     );
 }
 
@@ -260,7 +260,7 @@ fn resolver_panic_is_internal_failure_not_a_site_reason() {
 
     assert_eq!(
         gated.feedback_text().as_deref(),
-        Some("Не удалось добавить ссылку (collection.example.test) — попробуйте ещё раз")
+        Some("Could not add the link (collection.example.test); try again")
     );
     assert_eq!(gated.indicator(), None);
 }
@@ -302,23 +302,19 @@ fn bare_domain_gets_https_hint_and_random_text_gets_generic_error() {
         // Ошибка формы не закрывает редактор и не запускает извлечение.
         assert!(model.url_editor_open);
         assert_eq!(model.url_import_progress, None);
-        model
-            .url_safe_error
-            .expect("ошибка формы")
-            .message()
-            .to_owned()
+        model.url_safe_error.expect("slippage").message().to_owned()
     };
 
     assert_eq!(
         submit_draft("youtube.com/watch?v=abc"),
-        "Похоже, в начале ссылки не хватает https:// — например, https://youtube.com/…"
+        "The link may be missing https:// at the beginning; for example, https://youtube.com/…"
     );
     assert_eq!(
         submit_draft("  www.youtube.com/watch?v=abc\n"),
-        "Похоже, в начале ссылки не хватает https:// — например, https://youtube.com/…"
+        "The link may be missing https:// at the beginning; for example, https://youtube.com/…"
     );
-    assert_eq!(submit_draft("привет"), "Введите корректный http(s) URL");
-    assert_eq!(submit_draft("hello"), "Введите корректный http(s) URL");
+    assert_eq!(submit_draft("hello"), "Enter correct http(s) URL");
+    assert_eq!(submit_draft("hello"), "Enter correct http(s) URL");
 }
 
 /// `Write`, который копит вывод subscriber-а в общий буфер теста.
@@ -372,7 +368,9 @@ fn topology_error_is_logged_with_reason_and_mapped_without_payload() {
     assert!(log_text.contains("private-media"), "{log_text}");
     // Отмена — не ошибка: в лог как отказ не пишется.
     assert_eq!(
-        log_text.matches("yt-dlp не получил структуру URL").count(),
+        log_text
+            .matches("yt-dlp did not return URL topology")
+            .count(),
         1
     );
 }

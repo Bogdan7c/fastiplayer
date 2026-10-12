@@ -36,7 +36,7 @@ impl TestDirectory {
             "fastiplayer-playlist-io-{test_name}-{}-{sequence}",
             std::process::id()
         ));
-        fs::create_dir(&path).expect("test directory должна создаваться");
+        fs::create_dir(&path).expect("Test directory should be created");
         Self { path }
     }
 
@@ -48,7 +48,7 @@ impl TestDirectory {
 
 impl Drop for TestDirectory {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.path).expect("test directory должна удаляться");
+        fs::remove_dir_all(&self.path).expect("Test directory should be removed.");
     }
 }
 
@@ -62,7 +62,7 @@ fn expand(root: &Path, limits: LocalPlaylistExpansionLimits) -> LocalPlaylistExp
         XspfParserLimits::default(),
         &cancellation,
     ))
-    .expect("root format/path должны быть valid")
+    .expect("root format/path must be valid")
 }
 
 /// Собирает exact local M3U leaf paths в deterministic DFS order.
@@ -73,9 +73,9 @@ fn collect_m3u_leaf_paths(document: &ExpandedLocalPlaylistDocument, output: &mut
                 let path = import_draft
                     .reopen_locator()
                     .expose_local_for_reopen()
-                    .expect("test leaf должен быть local")
+                    .expect("Test leaf should be local.")
                     .expose_native_path_for_open()
-                    .expect("test leaf должен быть native");
+                    .expect("Test leaf should be native.");
                 output.push(path.to_path_buf());
             }
             ExpandedLocalPlaylistEntry::XspfTrack(_)
@@ -124,7 +124,7 @@ fn two_document_cycle_is_cut_without_losing_prior_document_boundaries() {
     let ExpandedLocalPlaylistEntry::IncludedDocument(second_document) =
         &first_document.entries()[0]
     else {
-        panic!("A должен раскрыть B");
+        panic!("A should reveal B.");
     };
 
     assert!(matches!(
@@ -239,7 +239,7 @@ fn symlink_alias_participates_only_in_cycle_detection() {
     assert_eq!(
         root_document.source_path(),
         root,
-        "stored locator не заменяется canonical path-ом"
+        "The stored locator is not replaced by a canonical path."
     );
     assert_eq!(expansion.summary().cycle_rejections(), 1);
 }
@@ -305,7 +305,7 @@ fn non_utf_xspf_document_base_resolves_relative_location_reversibly() {
     let expansion = expand(&root, LocalPlaylistExpansionLimits::default());
     let root_document = expansion.root_document().expect("XSPF root parsed");
     let ExpandedLocalPlaylistEntry::XspfTrack(track) = &root_document.entries()[0] else {
-        panic!("relative media location должна остаться XSPF leaf");
+        panic!("Relative media location should remain XSPF leaf");
     };
     let resolved_location = track.location_candidates()[0].expose_uri_for_admission();
 
@@ -313,7 +313,7 @@ fn non_utf_xspf_document_base_resolves_relative_location_reversibly() {
     assert!(resolved_location.ends_with("/song.mp3"));
     assert!(
         resolved_location.contains("%FE"),
-        "non-UTF base component должен сохраниться percent-encoded"
+        "The non-UTF base component must be retained as percent-encoded."
     );
 }
 
@@ -397,7 +397,7 @@ fn per_format_document_cap_stops_read_before_large_aggregate_budget() {
     let expansion = expand_local_playlist(LocalPlaylistExpansionRequest::new(
         &root,
         LocalPlaylistExpansionLimits::new(8, 8, usize::MAX, 16, 16)
-            .expect("large aggregate limit остаётся valid"),
+            .expect("Large aggregate limit remains valid"),
         m3u_limits,
         XspfParserLimits::default(),
         &cancellation,

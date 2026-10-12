@@ -449,7 +449,7 @@ impl CueParseError {
 
 impl fmt::Display for CueParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "CUE document отклонён: {:?}", self.kind)
+        write!(formatter, "CUE document rejected: {:?}", self.kind)
     }
 }
 

@@ -394,9 +394,9 @@ mod tests {
     #[cfg(feature = "ffmpeg")]
     #[test]
     fn owned_packet_preserves_validated_time_base_and_timestamps() {
-        let mut packet = OwnedAvPacket::new([1_u8, 2, 3]).expect("создать FFmpeg packet");
+        let mut packet = OwnedAvPacket::new([1_u8, 2, 3]).expect("Create an FFmpeg packet");
         let time_base =
-            PacketTimeBase::from_track_time_base(1, 90_000).expect("валидная MPEG time base");
+            PacketTimeBase::from_track_time_base(1, 90_000).expect("valid MPEG time base");
 
         packet.set_time_base(time_base);
         packet.set_timestamps(PacketTimestamps {

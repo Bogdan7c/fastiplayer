@@ -266,7 +266,7 @@ mod tests {
 
     /// Создаёт bounded secret через тот же owner constructor, что production normalization.
     fn secret(exact: &str) -> SecretText {
-        SecretText::bounded(exact.to_owned(), 65_536).expect("test secret должен быть bounded")
+        SecretText::bounded(exact.to_owned(), 65_536).expect("test secret must have bounded")
     }
 
     /// Строит минимальный manifest material с явными target serializations.
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(
             request
                 .smooth_manifest_request_material()
-                .expect_err("foreign material должен fail closed"),
+                .expect_err("foreign material must fail closed"),
             YtDlpSmoothManifestRequestMaterialViolation::Unsupported(expected)
         );
     }
@@ -317,21 +317,21 @@ mod tests {
         assert_eq!(
             equal
                 .smooth_manifest_request_material()
-                .expect("equal targets должны быть совместимы")
+                .expect("equal targets must be compatible")
                 .manifest_target_for_fetch(),
             exact
         );
         assert_eq!(
             url_only
                 .smooth_manifest_request_material()
-                .expect("url-only target должен быть допустим")
+                .expect("The url-only target should be acceptable.")
                 .manifest_target_for_fetch(),
             exact
         );
         assert_eq!(
             manifest_only
                 .smooth_manifest_request_material()
-                .expect("manifest-only target должен быть допустим")
+                .expect("manifest-only target should be acceptable.")
                 .manifest_target_for_fetch(),
             exact
         );
@@ -353,7 +353,7 @@ mod tests {
 
         video
             .smooth_manifest_request_material()
-            .expect("same-presentation Smooth fragments должны быть избыточным evidence");
+            .expect("same-presentation Smooth fragments must be redundant evidence");
 
         let mut foreign = video.clone();
         v1_mut(&mut foreign).fragments[0].url = Some(secret(
@@ -512,13 +512,13 @@ mod tests {
         )));
         let projected = secret_request
             .smooth_manifest_request_material()
-            .expect("secret material должно быть допустимо");
+            .expect("The secret material should be allowed.");
         let incompatible_error = request(
             Some(target),
             Some("https://other:credential@media.invalid/Manifest?token=other-query-secret"),
         )
         .smooth_manifest_request_material()
-        .expect_err("different target serializations должны fail closed");
+        .expect_err("different target serializations must fail closed");
 
         let diagnostic =
             format!("{secret_request:?} {projected:?} {incompatible_error:?} {incompatible_error}");

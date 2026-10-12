@@ -177,7 +177,7 @@ fn exact_backend_lookup_returns_matching_playable_output() {
 
     let selected_output = capabilities
         .find_playable_video_output_for_backend(&vaapi_backend_id, &requirement)
-        .expect("exact playable VA-API output должен быть найден");
+        .expect("Exactly playable VA-API output must be found");
 
     assert_eq!(selected_output.backend, vaapi_backend_id);
     assert!(selected_output.satisfies(&requirement));
@@ -192,7 +192,7 @@ fn exact_backend_lookup_rejects_output_owned_by_another_backend() {
         ChromaSubsampling::Yuv420,
     );
     let software_backend_id =
-        DecodeBackendId::new("ffmpeg").expect("canonical software backend id должен быть валиден");
+        DecodeBackendId::new("ffmpeg").expect("Canonical software backend id must be valid");
 
     assert!(
         capabilities
@@ -282,8 +282,8 @@ fn unsupported_profile_is_reported_before_decode() {
         Some(VideoCapabilityRejection::UnsupportedProfile { .. })
     ));
     let message = error.user_message();
-    assert!(message.contains("profile VP9 Profile 2"));
-    assert!(message.contains("доступными video decode backend-ами"));
+    assert!(message.contains("Profile VP9 Profile 2"));
+    assert!(message.contains("available video decode backends"));
 }
 
 #[test]
@@ -736,7 +736,7 @@ fn missing_strict_hdr_metadata_rejects_stream_before_render() {
     assert!(matches!(
         error.rejections.first(),
         Some(VideoCapabilityRejection::InvalidHdrMetadata { reason })
-            if reason.contains("отсутствует resolved color metadata")
+            if reason.contains("No resolved color metadata")
     ));
 }
 
@@ -800,7 +800,7 @@ fn codec_neutral_p010_surface_without_renderer_support_is_rejected_before_decode
 }
 
 #[test]
-fn reason_formatter_produces_user_facing_russian_explanation() {
+fn reason_formatter_produces_user_facing_english_explanation() {
     let message = VideoCapabilityRejection::UnsupportedBitDepth {
         codec: VideoCodec::Vp9,
         bit_depth: BitDepth::Twelve,
@@ -808,5 +808,5 @@ fn reason_formatter_produces_user_facing_russian_explanation() {
     .user_message();
 
     assert!(message.contains("VP9 12-bit"));
-    assert!(message.contains("не поддерживается"));
+    assert!(message.contains("not supported"));
 }

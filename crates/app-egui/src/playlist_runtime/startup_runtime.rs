@@ -49,7 +49,7 @@ impl PlaylistRuntime {
         let controller = self.controller.as_mut()?;
         match controller.report_startup_restore_failure(failed, safe_summary) {
             super::StartupRestoreFailureOutcome::Stopped { cause } => {
-                tracing::warn!(?cause, "Startup restore остановлен typed error policy");
+                tracing::warn!(?cause, "Startup restore typed error policy");
                 None
             }
             super::StartupRestoreFailureOutcome::OpenItem { target } => Some(target),
@@ -84,7 +84,7 @@ impl PlaylistRuntime {
             .report_startup_restore_install_failure(request_id, safe_summary)?;
         match outcome {
             super::StartupRestoreFailureOutcome::Stopped { cause } => {
-                tracing::warn!(?cause, "Startup restore install failure остановил chain");
+                tracing::warn!(?cause, "Startup restore install failure stopped the chain");
                 None
             }
             super::StartupRestoreFailureOutcome::OpenItem { target } => Some(target),

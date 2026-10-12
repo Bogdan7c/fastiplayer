@@ -12,7 +12,7 @@ use std::path::Path;
 const SAFE_MEDIA_LABEL_MAX_CHARS: usize = 160;
 
 /// Метка для локального пути без последнего имени (`/`, `..`): путь целиком не показываем.
-const LOCAL_PATH_WITHOUT_FILENAME_LABEL: &str = "(без имени)";
+const LOCAL_PATH_WITHOUT_FILENAME_LABEL: &str = "(unnamed)";
 
 /// Bounded/redacted label, безопасный для UI, diagnostics и `Debug`.
 #[derive(Clone, PartialEq, Eq)]

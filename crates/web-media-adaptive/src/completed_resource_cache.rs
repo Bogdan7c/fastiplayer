@@ -178,7 +178,7 @@ impl CompletedResourceCache {
             self.committed_charge_bytes = self
                 .committed_charge_bytes
                 .checked_sub(evicted.charge_bytes)
-                .expect("committed cache charge обязан включать evicted entry");
+                .expect("committed cache charge must include evicted entry");
         }
 
         self.pending_charge_bytes = next_pending_charge_bytes;
@@ -195,7 +195,7 @@ impl CompletedResourceCache {
         self.pending_charge_bytes = self
             .pending_charge_bytes
             .checked_sub(reservation_charge_bytes)
-            .expect("pending cache reservation не может освобождаться дважды");
+            .expect("pending cache reservation Can't be released twice");
     }
 
     /// Возвращает shallow replay и переносит hit в MRU-хвост.
@@ -231,7 +231,7 @@ impl CompletedResourceCache {
         self.pending_charge_bytes = self
             .pending_charge_bytes
             .checked_sub(reservation_charge_bytes)
-            .expect("completed admission обязан владеть pending reservation");
+            .expect("completed admission must possess pending reservation");
 
         let replaced_entry = self
             .entries
@@ -242,13 +242,13 @@ impl CompletedResourceCache {
             self.committed_charge_bytes = self
                 .committed_charge_bytes
                 .checked_sub(existing.charge_bytes)
-                .expect("committed cache charge обязан включать replacement entry");
+                .expect("committed cache charge must include replacement entry");
         }
 
         self.committed_charge_bytes = self
             .committed_charge_bytes
             .checked_add(reservation_charge_bytes)
-            .expect("validated cache charge обязан помещаться в usize");
+            .expect("validated cache charge must be placed in usize");
         debug_assert!(self.total_accounted_charge_bytes() <= self.budget_bytes);
         self.entries.push_back(CompletedResourceEntry {
             key,

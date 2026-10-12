@@ -27,12 +27,11 @@ fn load_json_document(relative_path: &str) -> Value {
     // Берём crate root из compile-time Cargo contract.
     let document_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative_path);
     // Ошибка чтения является test infrastructure failure и не может стать пустым evidence.
-    let document_bytes = fs::read(&document_path).unwrap_or_else(|error| {
-        panic!("не удалось прочитать {}: {error}", document_path.display())
-    });
+    let document_bytes = fs::read(&document_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", document_path.display()));
     // Невалидный checked-in JSON обязан немедленно уронить gate.
     serde_json::from_slice(&document_bytes)
-        .unwrap_or_else(|error| panic!("не удалось разобрать {}: {error}", document_path.display()))
+        .unwrap_or_else(|error| panic!("I couldn't make out {}: {error}", document_path.display()))
 }
 
 /// Возвращает обязательное строковое поле evidence row.
@@ -41,7 +40,7 @@ fn required_string<'value>(value: &'value Value, field: &str) -> &'value str {
     value
         .get(field)
         .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("обязательное строковое поле `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("No mandatory string field {field}"))
 }
 
 /// Возвращает обязательный JSON array из evidence document.
@@ -51,7 +50,7 @@ fn required_array<'value>(value: &'value Value, field: &str) -> &'value [Value] 
         .get(field)
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .unwrap_or_else(|| panic!("обязательный array `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("Mandatory array '{field}' not available"))
 }
 
 /// Находит обязательную row по stable string identity.
@@ -64,7 +63,7 @@ fn required_row_by_field<'value>(
     rows.iter()
         .find(|row| required_string(row, identity_field) == expected_identity)
         .unwrap_or_else(|| {
-            panic!("обязательная row `{expected_identity}` по полю `{identity_field}` отсутствует")
+            panic!("mandatory row '{expected_identity}' on the field '{identity_field}' is missing")
         })
 }
 
@@ -76,10 +75,7 @@ fn special_provider_gate_has_no_approved_rows_or_cards() {
     // Target rows являются единственным approved future implementation inventory.
     let target_rows = required_array(&profile, "target_rows");
     // Пустой общий inventory сделал бы no-op proof тривиальным и недостоверным.
-    assert!(
-        !target_rows.is_empty(),
-        "S00 target inventory неожиданно пуст"
-    );
+    assert!(!target_rows.is_empty(), "S00 target inventory flattened");
 
     // Проверяем direct ownership каждой существующей target row.
     for target_row in target_rows {
@@ -88,20 +84,20 @@ fn special_provider_gate_has_no_approved_rows_or_cards() {
         // Empty ownership запрещён базовым S00 contract и здесь проверяется повторно.
         assert!(
             !future_sessions.is_empty(),
-            "target row не имеет concrete future owner"
+            "The target row does not have a concrete future owner"
         );
         // Ни одна текущая row не должна неявно создавать generic S40 provider.
         for future_session in future_sessions {
             // Session identity обязана быть строкой.
             let future_session = future_session
                 .as_str()
-                .unwrap_or_else(|| panic!("future session identity обязана быть строкой"));
+                .unwrap_or_else(|| panic!("The future session identity must be a line."));
             // S40 gate не является provider implementation owner-ом.
             assert_ne!(future_session, "S40");
             // Отдельная S40P card допустима только после новой exact S00 row.
             assert!(
                 !future_session.starts_with("S40P-"),
-                "S00 неожиданно содержит необсуждённую S40P card `{future_session}`"
+                "S00 unexpectedly contains undiscussed S40P card '{future_session}'"
             );
         }
     }
@@ -207,13 +203,13 @@ fn private_live_fixture_remains_secret_safe_and_non_reconstructible() {
     // Payload остаётся synthetic JSON object.
     let payload = private_live_fixture
         .get("payload")
-        .unwrap_or_else(|| panic!("private live fixture payload отсутствует"));
+        .unwrap_or_else(|| panic!("private live fixture payload absent"));
     // Exact protocol identity не превращается в generic websocket provider.
     assert_eq!(required_string(payload, "protocol"), "niconico_live");
     // Downloader options обязаны содержать только synthetic repr marker.
     let downloader_options = payload
         .get("downloader_options")
-        .unwrap_or_else(|| panic!("synthetic downloader_options отсутствует"));
+        .unwrap_or_else(|| panic!("synthetic downloader_options absent"));
     // Repr marker явно не является replayable WebSocket handle.
     assert_eq!(
         required_string(downloader_options, "ws"),

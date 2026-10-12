@@ -39,3 +39,5 @@
 - UX edge cases 2 / C3 (2026-10-11): пересоздание audio output-а (потеря устройства / смена в настройках) больше не опережает видео на ~200 мс — хвост старого буфера заменяется тишиной в новом output-е: `mem:player-core/audio-runtime` (C3).
 - UX edge cases 2 / D3 (2026-10-11): Stop отменяет подготовку источника до coordinator-request-а (CLI/restore job-ы, Open-job) — тихо, без fallback и без перебора очереди: `mem:app-egui/startup-orchestration-s17` (UX2 D3).
 - UX edge cases 2 / B6 (2026-10-10): строка-предупреждение в настройках при «Hardware» без VA-API — `mem:settings-ui/hardware-decode-warning-b6-2026-10-10`.
+
+- Пользовательские тексты и вывод инструментов — английские независимо от сохранённого ui.language (default ru остаётся); поля metadata *_ru и localization keys сохранены. Русские комментарии/документация и пользовательские Unicode-данные не переводятся. Текстовый контракт логов/анализаторов: `mem:app-egui/user-facing-language`; UI ошибки: `mem:app-egui/user-facing-error-texts`.

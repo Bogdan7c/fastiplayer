@@ -66,7 +66,7 @@ impl PlaylistStatusPresentation {
             self.rows.push(PlaylistStatusRow::new(
                 PlaylistStatusProblemIdentity::StartupWarning,
                 PlaylistStatusRetention::WhilePresent,
-                "Сохранённая очередь восстановлена с предупреждением",
+                "Saved queue restored with a warning",
                 StatusTone::Warning,
                 StatusRowKind::Normal,
                 None,
@@ -79,7 +79,7 @@ impl PlaylistStatusPresentation {
             self.rows.push(PlaylistStatusRow::new(
                 PlaylistStatusProblemIdentity::Probe(probe),
                 PlaylistStatusRetention::Event,
-                "Добавлена только доступная часть очереди; проверка завершилась с предупреждением",
+                "Only the available part of the queue was added; validation completed with a warning",
                 StatusTone::Warning,
                 StatusRowKind::Normal,
                 None,
@@ -291,8 +291,8 @@ pub(super) enum PlaylistStatusAction {
 impl PlaylistStatusAction {
     pub(super) const fn button_label(self) -> &'static str {
         match self {
-            Self::RetrySave => "Повторить",
-            Self::CancelNavigation { .. } => "Отменить переход",
+            Self::RetrySave => "Repeat.",
+            Self::CancelNavigation { .. } => "Cancel transition",
         }
     }
 
@@ -301,10 +301,10 @@ impl PlaylistStatusAction {
             Self::RetrySave => None,
             Self::CancelNavigation {
                 origin_already_ended: false,
-            } => Some("Отменить сохранённый переход и оставить текущее воспроизведение"),
+            } => Some("Cancel the saved transition and keep current playback"),
             Self::CancelNavigation {
                 origin_already_ended: true,
-            } => Some("Отменить сохранённый переход; завершившееся воспроизведение остановится"),
+            } => Some("Cancel the saved transition; completed playback will stop"),
         }
     }
 
@@ -319,30 +319,33 @@ impl PlaylistStatusAction {
 /// Частичный batch сохраняет bounded accounting и не раскрывает имена файлов.
 fn manual_add_warning_message(warning: &PlaylistManualAddWarning) -> String {
     if matches!(warning.kind, PlaylistManualAddWarningKind::Failed) {
-        return "Не удалось добавить выбранные файлы".to_owned();
+        return "Could not add the selected files".to_owned();
     }
 
     let mut reasons = Vec::with_capacity(4);
     if warning.unsupported_container > 0 {
         reasons.push(format!(
-            "неподдерживаемый контейнер: {}",
+            "unsupported container: {}",
             warning.unsupported_container
         ));
     }
     if warning.no_audio_video_tracks > 0 {
         reasons.push(format!(
-            "без аудио/видео дорожек: {}",
+            "no audio/video tracks: {}",
             warning.no_audio_video_tracks
         ));
     }
     if warning.probe_failed > 0 {
-        reasons.push(format!("ошибка проверки: {}", warning.probe_failed));
+        reasons.push(format!("validation error: {}", warning.probe_failed));
     }
     if warning.capacity_rejected > 0 {
-        reasons.push(format!("не поместилось: {}", warning.capacity_rejected));
+        reasons.push(format!(
+            "queue limit reached: {}",
+            warning.capacity_rejected
+        ));
     }
 
-    let summary = format!("Добавлено {} из {}", warning.added, warning.requested);
+    let summary = format!("Added {} of {}", warning.added, warning.requested);
     if reasons.is_empty() {
         summary
     } else {
@@ -370,7 +373,7 @@ fn save_problem(
         PlaylistSaveView::Idle | PlaylistSaveView::Saving => None,
         PlaylistSaveView::WarningRetryAvailable { attempt } => Some((
             format!(
-                "Не удалось сохранить очередь (попыток: {}). Повтор сохранения доступен",
+                "Could not save the queue (attempts: {}). Retry is available",
                 attempt.occurrence_count()
             ),
             StatusTone::Warning,
@@ -378,13 +381,13 @@ fn save_problem(
             Some(PlaylistStatusAction::RetrySave),
         )),
         PlaylistSaveView::Blocked => Some((
-            "Сохранение очереди заблокировано для защиты существующего файла".to_owned(),
+            "Queue saving is blocked to protect the existing file".to_owned(),
             StatusTone::Warning,
             StatusRowKind::Weak,
             None,
         )),
         PlaylistSaveView::Fault(_fault) => Some((
-            "Служба сохранения очереди недоступна".to_owned(),
+            "Queue saving service is unavailable".to_owned(),
             StatusTone::Error,
             StatusRowKind::Weak,
             None,
@@ -405,20 +408,21 @@ pub(in crate::ui::playlist) const fn navigation_message(
         PlaylistNavigationView::AwaitingUserAfterFailure { .. } => Some((
             match previous_playback {
                 PreviousPlayback::Playing => {
-                    "Не удалось открыть выбранный элемент. Предыдущий трек продолжает играть. Автопереход остановлен: нажмите «Следующий», «Предыдущий» или «Повторить»"
+                    "Could not open the selected item. The previous track is still playing. Automatic advance is stopped: click Next, Previous, or Retry"
                 }
                 PreviousPlayback::Paused => {
-                    "Не удалось открыть выбранный элемент. Предыдущий трек остался на паузе. Автопереход остановлен: нажмите «Следующий», «Предыдущий» или «Повторить»"
+                    "Could not open the selected item. The previous track is still paused. Automatic advance is stopped: click Next, Previous, or Retry"
                 }
                 PreviousPlayback::NothingPlaying => {
-                    "Не удалось открыть выбранный элемент. Автопереход остановлен: нажмите «Следующий», «Предыдущий» или «Повторить»"
+                    "Could not open the selected item. Automatic advance is stopped: click Next, Previous, or Retry"
                 }
             },
             StatusTone::Error,
         )),
-        PlaylistNavigationView::Fatal { .. } => {
-            Some(("Переход недоступен из-за ошибки службы", StatusTone::Error))
-        }
+        PlaylistNavigationView::Fatal { .. } => Some((
+            "Transition is unavailable due to a service error",
+            StatusTone::Error,
+        )),
     }
 }
 
@@ -509,8 +513,12 @@ mod tests {
         .expect("partial result is a warning");
 
         assert_eq!(presentation.rows().len(), 1);
-        assert!(presentation.rows()[0].text().contains("Добавлено 2 из 5"));
-        assert!(presentation.rows()[0].text().contains("ошибка проверки: 2"));
+        assert!(presentation.rows()[0].text().contains("Added 2 of 5"));
+        assert!(
+            presentation.rows()[0]
+                .text()
+                .contains("validation error: 2")
+        );
         assert_eq!(
             presentation.rows()[0].identity(),
             PlaylistStatusProblemIdentity::ManualAdd(PlaylistManualAddEventId(7))
@@ -539,7 +547,7 @@ mod tests {
         let interaction = PlaylistInteractionModel {
             safe_feedback: Some(PlaylistSafeFeedback {
                 generation: PlaylistSafeFeedbackGeneration(13),
-                message: "Не удалось изменить режим".into(),
+                message: "Could not change mode".into(),
             }),
             ..PlaylistInteractionModel::default()
         };
@@ -629,8 +637,8 @@ mod tests {
         let playing = row_for(PreviousPlayback::Playing);
         let idle = row_for(PreviousPlayback::NothingPlaying);
 
-        assert!(playing.text().contains("продолжает играть"));
-        assert!(!idle.text().contains("продолжает играть"));
+        assert!(playing.text().contains("still playing"));
+        assert!(!idle.text().contains("still playing"));
         // Смена состояния плеера меняет identity, поэтому устаревший текст не залипает.
         assert_ne!(playing.identity(), idle.identity());
     }

@@ -36,7 +36,7 @@ fn builds_init_for_every_quality_and_sorts_axes_deterministically() {
         policy: &policy,
         cancellation: &|| false,
     })
-    .expect("все качества обязаны материализоваться");
+    .expect("All qualities must materialize.");
 
     assert_eq!(built.video_rows.len(), 2);
     assert_eq!(built.audio_rows.len(), 2);
@@ -47,12 +47,12 @@ fn builds_init_for_every_quality_and_sorts_axes_deterministically() {
     assert_eq!(
         built.video_rows[0].selection.quality_index.get(),
         0,
-        "1080p row должна быть первой"
+        "The 1080p row should be the first"
     );
     assert_eq!(
         built.audio_rows[0].selection.quality_index.get(),
         0,
-        "128 kbps row должна быть первой"
+        "128 kbps row should be the first"
     );
     assert!(
         built
@@ -173,7 +173,7 @@ fn cancellation_at_final_publication_fence_drops_complete_catalog() {
     let total_successful_checks = successful_call_count.load(Ordering::SeqCst);
     let final_check_index = total_successful_checks
         .checked_sub(1)
-        .expect("catalog обязан иметь final publication fence");
+        .expect("catalog must final publication fence");
 
     let cancelled_call_count = AtomicUsize::new(0);
     let (identity, semantic) = catalog_identity();
@@ -192,6 +192,6 @@ fn cancellation_at_final_publication_fence_drops_complete_catalog() {
     assert_eq!(
         cancelled_call_count.load(Ordering::SeqCst),
         total_successful_checks,
-        "cancellation должна сработать только на последнем publication fence"
+        "The cancellation will only work on the last publication fence."
     );
 }

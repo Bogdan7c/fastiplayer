@@ -28,7 +28,7 @@ fn span(document: &CueDocument, track_index: usize) -> playlist_core::PlaylistPl
     document.tracks()[track_index]
         .import_draft()
         .playback_span()
-        .expect("каждый CUE AUDIO track обязан иметь span")
+        .expect("Every CUE Audio track must have a span.")
 }
 
 #[test]

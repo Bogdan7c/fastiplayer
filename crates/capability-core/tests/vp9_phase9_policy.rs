@@ -30,7 +30,7 @@ fn p010_boundary_without_hdr_renderer_does_not_enable_production_hdr() {
 
     let production_error = capabilities
         .check_video_requirement(&requirement)
-        .expect_err("Phase 9 не должен выбирать HDR stream в production path");
+        .expect_err("Phase 9 does not need to select the HDR stream in the production path");
 
     assert!(matches!(
         production_error.rejections.first(),

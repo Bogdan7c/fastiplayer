@@ -171,11 +171,11 @@ impl fmt::Debug for YtDlpHlsRequestMaterial<'_> {
 /// Недопустимый HLS-specific material отклоняется до любой runtime/player mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum YtDlpHlsRequestMaterialViolation {
-    #[error("selected HLS format не содержит url")]
+    #[error("selected HLS format does not contain a URL")]
     MissingSelectedUrl,
-    #[error("hls_aes.key не является exact 16-byte hexadecimal key")]
+    #[error("hls_aes.key is not exact 16-byte hexadecimal key")]
     InvalidAes128Key,
-    #[error("hls_aes.iv не является hexadecimal IV длиной не более 16 bytes")]
+    #[error("hls_aes.iv is not hexadecimal IV longer than 16 bytes.")]
     InvalidAes128Iv,
 }
 

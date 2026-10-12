@@ -1,7 +1,7 @@
 //! Тексты панели статуса настроек (окно настроек, строка под полями).
 //!
-//! Контракт: пользователь видит только русские фразы и человеческие названия настроек из
-//! registry. Внутренние id, имена route-ов, `Debug`-формы и английские message владельцев
+//! Контракт: пользователь видит понятные английские фразы и человеческие названия настроек из
+//! registry. Внутренние id, имена route-ов, `Debug`-формы и технические message владельцев
 //! (renderer, player, media services) в панель не попадают — они пишутся в `tracing`.
 //! Каждый вид результата перечислен явно (`match` без `_`).
 
@@ -19,7 +19,7 @@ pub(super) fn status_from_reset(
         Vec::new()
     } else {
         vec![format!(
-            "Изменены поля: {}",
+            "Changed fields: {}",
             labels.quoted_list(&report.affected_settings)
         )]
     };
@@ -43,7 +43,7 @@ pub(super) fn status_from_cancel(
             .map(|change| change.id.clone())
             .collect::<Vec<_>>();
         details.push(format!(
-            "Отброшены несохранённые изменения: {}",
+            "Discarded unsaved changes: {}",
             labels.quoted_list(&discarded_ids)
         ));
     }
@@ -55,7 +55,7 @@ pub(super) fn status_from_cancel(
     );
 
     SettingsUiStatus {
-        summary: Some("Изменения отменены".to_string()),
+        summary: Some("Changes canceled".to_string()),
         details,
     }
 }
@@ -75,11 +75,11 @@ pub(super) fn status_from_preview_reports(
         .iter()
         .any(|report| report.result == PreviewApplyResult::Backpressured);
     let summary = if has_error {
-        "Предпросмотр применён не полностью"
+        "Preview applied partially"
     } else if has_backpressure {
-        "Предпросмотр ждёт отрисовщик"
+        "Preview is waiting for the renderer"
     } else {
-        "Предпросмотр применён"
+        "Preview applied"
     };
     SettingsUiStatus {
         summary: Some(summary.to_string()),
@@ -113,15 +113,15 @@ pub(super) fn status_from_apply_report(
             route = conflict.route.as_str(),
             baseline_generation = conflict.baseline.value(),
             current_generation = conflict.current.value(),
-            "Применение настроек остановлено конфликтом поколений route-а"
+            "Settings application stopped by a route generation conflict"
         );
         details.push(format!(
-            "{}: значение изменилось в другом месте, пока вы редактировали",
+            "{}: the value changed elsewhere while you were editing",
             labels.quoted_list(&conflict.affected_settings)
         ));
     }
     for error in &report.errors {
-        tracing::warn!(%error, "Ошибка в отчёте применения настроек");
+        tracing::warn!(%error, "Error in settings application report");
         details.push(settings_error_text(labels, error));
     }
     if matches!(
@@ -129,7 +129,7 @@ pub(super) fn status_from_apply_report(
         ApplyFinalState::RuntimeBlocked | ApplyFinalState::BlockedByConflicts
     ) {
         details.push(
-            "Черновик сохранён. После завершения активной операции нажмите «Применить» ещё раз."
+            "Your draft is preserved. Click Apply again after the active operation finishes."
                 .to_string(),
         );
     }
@@ -153,33 +153,33 @@ pub(super) fn status_from_apply_report(
 /// Человекочитаемое резюме final state.
 fn apply_final_state_text(final_state: ApplyFinalState) -> &'static str {
     match final_state {
-        ApplyFinalState::NoChanges => "Нет изменений для применения",
-        ApplyFinalState::ValidationFailed => "Настройки не прошли проверку",
-        ApplyFinalState::PersistFailed => "Не удалось сохранить файл настроек; изменения отменены",
-        ApplyFinalState::BlockedByConflicts => {
-            "Применение остановлено: настройки изменились в другом месте"
-        }
-        ApplyFinalState::RuntimeBlocked => "Плеер сейчас занят; черновик сохранён",
-        ApplyFinalState::RuntimeApplyFailed => "Не удалось применить настройки; изменения отменены",
+        ApplyFinalState::NoChanges => "No changes to apply",
+        ApplyFinalState::ValidationFailed => "Settings failed validation",
+        ApplyFinalState::PersistFailed => "Could not save the settings file; changes rolled back",
+        ApplyFinalState::BlockedByConflicts => "Application stopped: settings changed elsewhere",
+        ApplyFinalState::RuntimeBlocked => "The player is busy; your draft is preserved",
+        ApplyFinalState::RuntimeApplyFailed => "Could not apply settings; changes rolled back",
         ApplyFinalState::RollbackFailed => {
-            "Не удалось полностью вернуть прежние настройки; если плеер ведёт себя странно, перезапустите приложение"
+            "Could not fully restore previous settings; restart the app if the player behaves unexpectedly"
         }
-        ApplyFinalState::FullyApplied => "Настройки сохранены и применены",
-        ApplyFinalState::Cancelled => "Применение настроек прервано; изменения отменены",
+        ApplyFinalState::FullyApplied => "Settings saved and applied",
+        ApplyFinalState::Cancelled => "Settings application interrupted; changes rolled back",
     }
 }
 
 /// Форматирует persistence outcome для status details.
 fn persist_report_text(report: &PersistReport) -> String {
     let outcome = match report.outcome {
-        PersistOutcome::Persisted => "Файл настроек записан",
-        PersistOutcome::SkippedNoChanges => "Файл настроек не менялся: сохранять нечего",
-        PersistOutcome::SkippedSessionOnly => "Файл настроек в этом запуске не изменяется",
+        PersistOutcome::Persisted => "Settings file saved",
+        PersistOutcome::SkippedNoChanges => "Settings file unchanged: nothing to save",
+        PersistOutcome::SkippedSessionOnly => {
+            "The settings file cannot be modified during this session"
+        }
     };
     match &report.durability_warning {
         Some(warning) => {
-            tracing::warn!(%warning, "Настройки записаны, но надёжность записи на диск не подтверждена");
-            format!("{outcome}, но система не подтвердила надёжную запись на диск")
+            tracing::warn!(%warning, "Settings written, but durable storage could not be confirmed");
+            format!("{outcome}, but the system did not confirm durable storage")
         }
         None => outcome.to_string(),
     }
@@ -189,15 +189,15 @@ fn persist_report_text(report: &PersistReport) -> String {
 fn rollback_report_text(labels: &SettingLabels<'_>, report: &RollbackReport) -> Option<String> {
     let settings = labels.quoted_list(&report.affected_settings);
     match &report.result {
-        RollbackResult::RolledBack => Some(format!("{settings}: прежнее значение возвращено")),
+        RollbackResult::RolledBack => Some(format!("{settings}: previous value restored")),
         RollbackResult::Noop => None,
         RollbackResult::Failed { message } => {
             tracing::warn!(
                 route = report.route.as_str(),
                 %message,
-                "Не удалось откатить route настроек"
+                "Could not roll back the settings route"
             );
-            Some(format!("{settings}: не удалось вернуть прежнее значение"))
+            Some(format!("{settings}: could not restore the previous value"))
         }
     }
 }
@@ -209,31 +209,31 @@ fn route_report_text(labels: &SettingLabels<'_>, report: &ApplyRouteReport) -> S
         ApplyRouteResult::Applied | ApplyRouteResult::PreviewPromoted => {
             applied_route_text(report.mechanism)
         }
-        ApplyRouteResult::Noop => "уже было в таком состоянии",
+        ApplyRouteResult::Noop => "already in this state",
         ApplyRouteResult::PartialFailure { message } => {
             log_route_failure(report, message);
-            "применено только частично"
+            "applied partially"
         }
         ApplyRouteResult::Failed { message } => {
             log_route_failure(report, message);
-            "не удалось применить"
+            "could not apply"
         }
         ApplyRouteResult::RuntimeBusy { activity } => {
             tracing::info!(
                 route = report.route.as_str(),
                 %activity,
-                "Route настроек не применён: runtime занят"
+                "Settings route not applied: runtime is busy"
             );
-            "плеер занят перемоткой или сменой источника, изменение не применено"
+            "the player is busy seeking or switching sources; the change was not applied"
         }
         ApplyRouteResult::Conflict { baseline, current } => {
             tracing::warn!(
                 route = report.route.as_str(),
                 baseline_generation = baseline.value(),
                 current_generation = current.value(),
-                "Конфликт поколений route-а настроек"
+                "Settings route generation conflict"
             );
-            "значение изменилось в другом месте, пока вы редактировали"
+            "the value changed elsewhere while you were editing"
         }
     };
     format!("{settings}: {outcome}")
@@ -244,9 +244,9 @@ fn applied_route_text(mechanism: ApplyMechanism) -> &'static str {
     match mechanism {
         ApplyMechanism::InPlace
         | ApplyMechanism::WorkerReconfigure
-        | ApplyMechanism::PreviewPromoted => "применено",
+        | ApplyMechanism::PreviewPromoted => "applied",
         ApplyMechanism::PipelineRebuild | ApplyMechanism::RendererRecreate => {
-            "применено; воспроизведение могло ненадолго прерваться"
+            "applied; playback may have been briefly interrupted"
         }
     }
 }
@@ -257,7 +257,7 @@ fn log_route_failure(report: &ApplyRouteReport, message: &str) {
         route = report.route.as_str(),
         mechanism = ?report.mechanism,
         %message,
-        "Route настроек не применён"
+        "Settings route not applied"
     );
 }
 
@@ -265,16 +265,16 @@ fn log_route_failure(report: &ApplyRouteReport, message: &str) {
 fn preview_report_text(labels: &SettingLabels<'_>, report: &PreviewApplyReport) -> String {
     let settings = labels.quoted_list(&report.affected_settings);
     let outcome = match &report.result {
-        PreviewApplyResult::Applied => "показано в предпросмотре",
-        PreviewApplyResult::Noop => "без изменений",
-        PreviewApplyResult::Backpressured => "ждёт отрисовщик, применится чуть позже",
+        PreviewApplyResult::Applied => "shown in preview",
+        PreviewApplyResult::Noop => "unchanged",
+        PreviewApplyResult::Backpressured => "waiting for the renderer; will apply shortly",
         PreviewApplyResult::Unsupported { message } => {
             log_preview_failure(report, message);
-            "для этой настройки предпросмотр недоступен"
+            "preview is unavailable for this setting"
         }
         PreviewApplyResult::Fatal { message } => {
             log_preview_failure(report, message);
-            "не удалось показать предпросмотр"
+            "could not show preview"
         }
     };
     format!("{settings}: {outcome}")
@@ -282,7 +282,7 @@ fn preview_report_text(labels: &SettingLabels<'_>, report: &PreviewApplyReport) 
 
 /// Технические детали сбоя preview — только в лог.
 fn log_preview_failure(report: &PreviewApplyReport, message: &str) {
-    tracing::warn!(route = report.route.as_str(), %message, "Preview настроек не применён");
+    tracing::warn!(route = report.route.as_str(), %message, "Settings preview not applied");
 }
 
 /// Строит per-group reports, не теряя affected setting ids.

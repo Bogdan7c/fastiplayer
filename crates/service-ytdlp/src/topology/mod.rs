@@ -198,14 +198,14 @@ mod tests {
     #[test]
     fn disabled_adapter_and_invalid_budgets_fail_before_process_spawn() {
         let locator = parse_yt_dlp_media_locator("https://input.invalid/root")
-            .expect("test locator должен быть valid");
+            .expect("test locator must have valid");
         let disabled_config = YtDlpConfig {
             enabled: false,
             ..YtDlpConfig::default()
         };
         let disabled_error =
             extract_yt_dlp_topology_with_config(&locator, &disabled_config, || false)
-                .expect_err("disabled adapter должен быть rejected");
+                .expect_err("disabled adapter must have rejected");
         assert!(matches!(
             disabled_error,
             YtDlpTopologyError::AdapterDisabled
@@ -220,7 +220,7 @@ mod tests {
             },
             || false,
         )
-        .expect_err("zero stdout budget должен быть rejected");
+        .expect_err("The zero stdout budget must be rejected.");
         assert!(matches!(
             budget_error,
             YtDlpTopologyError::InvalidBudgets {
@@ -242,7 +242,7 @@ mod tests {
             },
             YtDlpTopologyBudgets::default(),
         )
-        .expect_err("nonzero status должен быть extractor rejection");
+        .expect_err("nonzero status must have extractor rejection");
         // Причина из stderr доходит до ошибки, а не теряется на non-zero exit.
         assert!(matches!(
             nonzero_error,
@@ -263,7 +263,7 @@ mod tests {
             },
             YtDlpTopologyBudgets::default(),
         )
-        .expect_err("malformed root JSON должен быть rejected");
+        .expect_err("malformed root JSON must have rejected");
         assert!(matches!(
             malformed_error,
             YtDlpTopologyError::InvalidExtractorResponse {

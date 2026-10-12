@@ -27,16 +27,16 @@ impl TestDirectory {
             "fastiplayer-folder-walk-{label}-{}-{sequence}",
             std::process::id()
         ));
-        fs::create_dir(&path).expect("тестовая папка создаётся");
+        fs::create_dir(&path).expect("test folder is created");
         Self { path }
     }
 
     fn file(&self, relative: &str) -> PathBuf {
         let path = self.path.join(relative);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("родитель файла создаётся");
+            fs::create_dir_all(parent).expect("file-parent");
         }
-        fs::write(&path, []).expect("файл создаётся");
+        fs::write(&path, []).expect("file is created");
         path
     }
 }
@@ -49,7 +49,7 @@ impl Drop for TestDirectory {
 
 fn limits(max_files: usize, max_depth: usize) -> FolderWalkLimits {
     FolderWalkLimits::new(
-        NonZeroUsize::new(max_files).expect("лимит файлов ненулевой"),
+        NonZeroUsize::new(max_files).expect("non-zero-file limit"),
         max_depth,
     )
 }
@@ -66,7 +66,7 @@ fn walk(root: &Path, limits: FolderWalkLimits) -> FolderWalkOutcome {
         &CancellationToken::new(),
         accept_non_text,
     ))
-    .expect("обход успешен")
+    .expect("round-off")
 }
 
 /// Пути результата относительно корня — удобно сравнивать порядок.
@@ -74,7 +74,7 @@ fn relative(root: &Path, outcome: &FolderWalkOutcome) -> Vec<PathBuf> {
     outcome
         .files
         .iter()
-        .map(|path| path.strip_prefix(root).expect("внутри корня").to_path_buf())
+        .map(|path| path.strip_prefix(root).expect("root").to_path_buf())
         .collect()
 }
 
@@ -197,7 +197,7 @@ fn spaces_and_non_utf8_names_are_preserved_exactly() {
     dir.file("with space.mkv");
     let raw_name = OsString::from_vec(vec![b'b', 0xFF, 0xFE, b'.', b'm', b'k', b'v']);
     let raw_path = dir.path.join(&raw_name);
-    fs::write(&raw_path, []).expect("файл с не-UTF-8 именем создаётся");
+    fs::write(&raw_path, []).expect("A file with a non-UTF-8 name is created");
 
     let outcome = walk(&dir.path, limits(100, 8));
 
@@ -212,10 +212,9 @@ fn spaces_and_non_utf8_names_are_preserved_exactly() {
 fn symlinked_directories_are_not_followed_but_file_links_are() {
     let dir = TestDirectory::new("symlink");
     let real_file = dir.file("real/movie.mkv");
-    std::os::unix::fs::symlink(&dir.path, dir.path.join("real/loop"))
-        .expect("ссылка-цикл создаётся");
+    std::os::unix::fs::symlink(&dir.path, dir.path.join("real/loop")).expect("link-cycle");
     std::os::unix::fs::symlink(&real_file, dir.path.join("link.mkv"))
-        .expect("ссылка на файл создаётся");
+        .expect("file reference is created");
 
     let outcome = walk(&dir.path, limits(100, 32));
 
@@ -236,15 +235,15 @@ fn unreadable_subfolder_is_skipped_and_counted() {
     dir.file("a.mkv");
     dir.file("locked/inside.mkv");
     let locked = dir.path.join("locked");
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("права сняты");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("entitlement");
     // Под root права не действуют: тогда сценарий неприменим.
     if fs::read_dir(&locked).is_ok() {
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("права возвращены");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("rights returned");
         return;
     }
 
     let outcome = walk(&dir.path, limits(100, 8));
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("права возвращены");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("rights returned");
 
     assert_eq!(relative(&dir.path, &outcome), paths(&["a.mkv"]));
     assert_eq!(outcome.unreadable_directories, 1);

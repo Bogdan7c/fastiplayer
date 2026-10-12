@@ -54,34 +54,34 @@ pub enum PresentationWindowOrderedTrackField {
 #[derive(Debug, Error)]
 pub enum PresentationWindowOrderedIsoMp4Error {
     /// Shared cancellation остановила lifecycle.
-    #[error("window-aware ordered ISO-BMFF demux отменён")]
+    #[error("window-aware ordered ISO-BMFF demux canceled")]
     Cancelled,
     /// Source завершился operational error-ом.
-    #[error("window-aware ordered source завершился ошибкой")]
+    #[error("window-aware ordered source ended in error")]
     Source(#[source] OrderedSegmentReadError),
     /// Начальные init/media ещё не готовы для synchronous open.
-    #[error("начальные window-aware ordered segments временно недоступны")]
+    #[error("starting-point window-aware ordered segments temporarily unavailable")]
     InitialSegmentsTemporarilyUnavailable {
         /// Source-owned retry policy не теряется на границе synchronous open.
         retry_hint: DemuxRetryHint,
     },
     /// Source завершился до initialization segment-а.
-    #[error("window-aware ordered source завершился без initialization segment")]
+    #[error("window-aware ordered source finished off initialization segment")]
     MissingInitialization,
     /// Source завершился после init, но до первого media fragment-а.
-    #[error("window-aware ordered source завершился без media fragment")]
+    #[error("window-aware ordered source finished off media fragment")]
     MissingMedia,
     /// Media пришёл раньше init.
-    #[error("media fragment пришёл до initialization segment")]
+    #[error("media fragment came initialization segment")]
     MediaBeforeInitialization,
     /// Повторный init запрещён.
-    #[error("повторный initialization segment запрещён")]
+    #[error("Repeated initialization segment is prohibited.")]
     DuplicateInitialization,
     /// Segment bytes пусты.
-    #[error("window-aware ordered segment пуст")]
+    #[error("window-aware ordered segment hollow")]
     EmptySegment,
     /// Sequence не строго возрастает.
-    #[error("window-aware ordered sequence не возрастает строго")]
+    #[error("window-aware ordered sequence non-increase")]
     NonMonotonicSequence {
         /// Последний принятый sequence.
         previous: OrderedSegmentSequence,
@@ -89,31 +89,31 @@ pub enum PresentationWindowOrderedIsoMp4Error {
         next: OrderedSegmentSequence,
     },
     /// Новый timeline требует decoder/session reset, которым adapter не владеет.
-    #[error("window-aware ordered discontinuity требует session reset")]
+    #[error("window-aware ordered discontinuity demand session reset")]
     DiscontinuityRequiresSessionReset,
     /// Static ISO container identity нельзя построить.
-    #[error("не удалось построить ISO-BMFF registry identity")]
+    #[error("failed to build ISO-BMFF registry identity")]
     RegistryIdentity,
     /// Symphonia factory нельзя зарегистрировать.
-    #[error("не удалось зарегистрировать ISO-BMFF factory")]
+    #[error("Failure to register ISO-BMFF factory")]
     Registry(#[source] DemuxRegistryError),
     /// Isolated `init + media` не открылся как exact ISO-BMFF.
-    #[error("не удалось открыть isolated ISO-BMFF fragment")]
+    #[error("Unable to open an isolated ISO-BMFF fragment")]
     InnerOpen(#[source] DemuxOpenError),
     /// Inner demux read завершился backend error-ом.
-    #[error("ошибка чтения isolated ISO-BMFF fragment")]
+    #[error("Reading error isolated ISO-BMFF fragment")]
     InnerRead(#[source] anyhow::Error),
     /// Fragment изменил decoder-facing track snapshot.
-    #[error("isolated ISO-BMFF fragment изменил stable track snapshot: {field:?}")]
+    #[error("isolated ISO-BMFF fragment changed stable track snapshot: {field:?}")]
     IncompatibleTrack {
         /// Первое несовместимое поле.
         field: PresentationWindowOrderedTrackField,
     },
     /// Inner demux потребовал decoder reset.
-    #[error("isolated ISO-BMFF fragment опубликовал TracksChanged")]
+    #[error("isolated ISO-BMFF fragment published by TracksChanged")]
     TracksChanged,
     /// Bounded window не согласуется с packet track clock.
-    #[error("presentation window не согласуется с packet track clock")]
+    #[error("presentation window inconsistent packet track clock")]
     PresentationWindowAssignment(#[source] PacketPresentationWindowAssignmentError),
 }
 
@@ -402,7 +402,7 @@ impl Demuxer for PresentationWindowOrderedIsoMp4Demuxer {
     /// Seek всегда typed rejected.
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
         Err(MediaDemuxError::SeekUnavailable {
-            reason: "window-aware ordered ISO-BMFF source не поддерживает seek".to_owned(),
+            reason: "window-aware ordered ISO-BMFF source supportive seek".to_owned(),
         }
         .into())
     }

@@ -71,7 +71,7 @@ fn every_message_is_human_text_without_debug_names() {
         for forbidden in ["{", "}", "::", "Error", "Some(", "None"] {
             assert!(
                 !notice.message.contains(forbidden),
-                "{reason:?}: «{forbidden}» в «{}»",
+                "{reason:?}: \"{forbidden}\" in \"{}\"",
                 notice.message
             );
         }
@@ -97,7 +97,7 @@ fn every_reason_has_its_own_message() {
     for (index, message) in messages.iter().enumerate() {
         assert!(
             !messages[index + 1..].contains(message),
-            "одинаковый текст у разных причин: {message}"
+            "The same text for different reasons: {message}"
         );
     }
 }
@@ -115,7 +115,7 @@ fn owner_problem_names_folder_and_gives_copyable_fix_command() {
     assert!(
         notice
             .message
-            .contains("Папка настроек ~/.config/fastiplayer")
+            .contains("The settings folder ~/.config/fastiplayer")
     );
     assert!(notice.message.contains("sudo"));
     assert!(
@@ -140,7 +140,7 @@ fn lock_file_problem_names_the_file_to_delete() {
     );
 
     assert!(notice.message.contains("instance.lock"));
-    assert!(notice.message.contains("Удалите его"));
+    assert!(notice.message.contains("Delete it"));
 }
 
 #[test]
@@ -151,13 +151,9 @@ fn runtime_recreation_graphics_failure_speaks_about_resume_without_startup_or_vu
     );
 
     assert_eq!(notice.title, FATAL_RUNTIME_TITLE);
-    assert!(
-        notice.message.contains("выхода из сна"),
-        "{}",
-        notice.message
-    );
-    assert!(notice.message.contains("Запустите его снова"));
-    for forbidden in ["Vulkan", "запустить вывод", "не запустился"] {
+    assert!(notice.message.contains("after sleep"), "{}", notice.message);
+    assert!(notice.message.contains("Start it again"));
+    for forbidden in ["Vulkan", "start video output", "could not start"] {
         assert!(!notice.message.contains(forbidden), "{}", notice.message);
         assert!(!notice.title.contains(forbidden), "{}", notice.title);
     }
@@ -175,9 +171,9 @@ fn runtime_recreation_internal_failure_differs_from_startup_text() {
     );
 
     assert_ne!(startup.message, runtime.message);
-    assert!(startup.message.contains("Во время запуска"));
-    assert!(!runtime.message.contains("запуска"), "{}", runtime.message);
-    assert!(runtime.message.contains("выхода из сна"));
+    assert!(startup.message.contains("during startup"));
+    assert!(!runtime.message.contains("startup"), "{}", runtime.message);
+    assert!(runtime.message.contains("after sleep"));
 }
 
 #[test]
@@ -188,5 +184,5 @@ fn startup_graphics_failure_keeps_the_original_vulkan_text() {
     );
 
     assert_eq!(notice.title, FATAL_STARTUP_TITLE);
-    assert!(notice.message.contains("видеокарта с поддержкой Vulkan"));
+    assert!(notice.message.contains("graphics card with Vulkan support"));
 }

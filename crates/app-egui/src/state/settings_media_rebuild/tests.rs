@@ -25,7 +25,7 @@ fn owner_module_never_calls_blocking_install_prepare_or_waits() {
     for call in FORBIDDEN_BLOCKING_CALLS {
         assert!(
             !production_part.contains(call),
-            "владелец пересборки не должен вызывать блокирующее `{call}`"
+            "the owner of the reassembly must not cause a blocking \"{call}\""
         );
     }
 }
@@ -42,13 +42,12 @@ fn stepwise_branch_of_the_adapter_does_not_prepare_or_install_on_the_ui_thread()
     for call in FORBIDDEN_BLOCKING_CALLS {
         assert!(
             !reconfigure_section.contains(call),
-            "`reconfigure_active_media` не должен напрямую вызывать `{call}`: \
-             блокирующая работа живёт только в `rebuild_active_media_blocking` (откат)"
+            "'reconfigure_active_media' should not directly cause '{call}': blocking work lives only in 'rebuild_active_media_blocking' (rollback)"
         );
     }
     assert!(
         reconfigure_section.contains("begin_settings_media_rebuild("),
-        "stepwise-ветка обязана запускать пересборку через владельца в AppState"
+        "stepwise branch must run reassembly through the owner in AppState"
     );
 }
 
@@ -56,10 +55,10 @@ fn stepwise_branch_of_the_adapter_does_not_prepare_or_install_on_the_ui_thread()
 fn source_between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let start_index = source
         .find(start)
-        .unwrap_or_else(|| panic!("маркер `{start}` не найден"));
+        .unwrap_or_else(|| panic!("{start} marker not found"));
     let tail = &source[start_index..];
     let end_index = tail
         .find(end)
-        .unwrap_or_else(|| panic!("маркер `{end}` не найден"));
+        .unwrap_or_else(|| panic!("{end} marker not found"));
     &tail[..end_index]
 }

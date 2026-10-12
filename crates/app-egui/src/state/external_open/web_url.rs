@@ -95,7 +95,7 @@ impl AppState {
                     renderer,
                     row_play,
                 ) {
-                    self.set_startup_error("Не удалось начать воспроизведение ссылки".to_string());
+                    self.set_startup_error("Failed to start reproducing the link".to_string());
                 }
                 self.mark_pending_worker_redraw();
             }
@@ -104,8 +104,8 @@ impl AppState {
             }
             ServiceUrlReplacementOutcome::InstallInProgress => self.notify_open_still_in_progress(),
             ServiceUrlReplacementOutcome::Rejected => {
-                warn!("Замена очереди брошенной ссылкой отклонена владельцем очереди");
-                self.notify_info("Не удалось открыть ссылку".to_string());
+                warn!("Queue replacement with a dropped link rejected by the queue owner");
+                self.notify_info("Could not open the link".to_string());
             }
         }
     }

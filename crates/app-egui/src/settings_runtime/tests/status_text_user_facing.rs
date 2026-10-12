@@ -1,5 +1,5 @@
-//! Панель статуса настроек: пользователь видит человеческий русский текст и названия настроек,
-//! а не внутренние id, `Debug`-формы и английские сообщения владельцев.
+//! Панель статуса настроек: пользователь видит понятный английский текст и названия настроек,
+//! а не внутренние id, `Debug`-формы и сырые технические сообщения владельцев.
 
 use settings_core::{
     ApplyReport, ApplyRouteReport, PersistReport, PreviewApplyReport, PreviewApplyResult,
@@ -20,7 +20,6 @@ const FORBIDDEN_FRAGMENTS: &[&str] = &[
     "Rollback",
     "rollback",
     "Failed",
-    "failed",
     "PartialFailure",
     "Conflict",
     "baseline",
@@ -43,13 +42,13 @@ const FORBIDDEN_FRAGMENTS: &[&str] = &[
 const OWNER_MESSAGE: &str = "candidate renderer creation failed: device lost";
 
 fn registry() -> settings_core::SettingsRegistry<AppConfig> {
-    fastiplayer_settings::app_config_registry().expect("registry должен собраться")
+    fastiplayer_settings::app_config_registry().expect("Registration should be assembled")
 }
 
 fn label_of(registry: &settings_core::SettingsRegistry<AppConfig>, id: &str) -> String {
     registry
         .descriptor(&SettingId::from(id))
-        .expect("setting должен быть в registry")
+        .expect("Setting must be in the registry")
         .text
         .label
         .fallback_ru
@@ -70,12 +69,12 @@ fn assert_user_facing(status: &SettingsUiStatus) {
     for fragment in FORBIDDEN_FRAGMENTS {
         assert!(
             !text.contains(fragment),
-            "в тексте статуса остался технический фрагмент `{fragment}`: {text}"
+            "In the text of the status remained the technical fragment {fragment}: {text}"
         );
     }
     assert!(
         !text.contains(OWNER_MESSAGE),
-        "сообщение владельца просочилось: {text}"
+        "Owner's message leaked: {text}"
     );
 
     let mut without_labels = String::new();
@@ -88,13 +87,15 @@ fn assert_user_facing(status: &SettingsUiStatus) {
             _ => {}
         }
     }
-    let english: String = without_labels
-        .chars()
-        .filter(char::is_ascii_alphabetic)
-        .collect();
     assert!(
-        english.is_empty(),
-        "в статусе есть английские буквы `{english}`: {text}"
+        !without_labels
+            .chars()
+            .any(|ch| matches!(ch, 'А'..='я' | 'Ё' | 'ё')),
+        "Status contains untranslated text: {text}"
+    );
+    assert!(
+        without_labels.chars().any(|ch| ch.is_ascii_alphabetic()),
+        "Status must contain a readable message: {text}"
     );
 }
 
@@ -138,13 +139,11 @@ fn successful_apply_names_setting_and_hides_route_id() {
     assert_user_facing(&status);
     assert_eq!(
         status.summary.as_deref(),
-        Some("Настройки сохранены и применены")
+        Some("Settings saved and applied")
     );
     let read_ahead = label_of(&registry, "network.read_ahead_mb");
     assert!(
-        status
-            .details
-            .contains(&format!("«{read_ahead}»: применено")),
+        status.details.contains(&format!("«{read_ahead}»: applied")),
         "{:?}",
         status.details
     );
@@ -165,7 +164,7 @@ fn rebuild_mechanism_warns_about_short_playback_interruption() {
     let status = status_from_apply_report(&labels, &report);
 
     assert_user_facing(&status);
-    assert!(visible_text(&status).contains("могло ненадолго прерваться"));
+    assert!(visible_text(&status).contains("may have been briefly interrupted"));
 }
 
 #[test]
@@ -185,7 +184,7 @@ fn partial_failure_hides_owner_message_and_says_partially() {
     let status = status_from_apply_report(&labels, &report);
 
     assert_user_facing(&status);
-    assert!(visible_text(&status).contains("применено только частично"));
+    assert!(visible_text(&status).contains("applied partially"));
 }
 
 #[test]
@@ -211,12 +210,12 @@ fn failed_route_with_failed_rollback_asks_to_restart() {
 
     assert_user_facing(&status);
     let text = visible_text(&status);
-    assert!(text.contains("не удалось применить"), "{text}");
+    assert!(text.contains("could not apply"), "{text}");
     assert!(
-        text.contains("не удалось вернуть прежнее значение"),
+        text.contains("could not restore the previous value"),
         "{text}"
     );
-    assert!(text.contains("перезапустите приложение"), "{text}");
+    assert!(text.contains("restart the app"), "{text}");
 }
 
 #[test]
@@ -243,10 +242,10 @@ fn busy_runtime_and_conflict_are_explained_without_generation_numbers() {
 
     assert_user_facing(&status);
     let text = visible_text(&status);
-    assert!(text.contains("плеер занят"), "{text}");
+    assert!(text.contains("the player is busy"), "{text}");
     assert!(!text.contains("PipelineLifecycle"), "{text}");
     assert!(!text.contains("41") && !text.contains("42"), "{text}");
-    assert!(text.contains("нажмите «Применить» ещё раз"), "{text}");
+    assert!(text.contains("Click Apply again"), "{text}");
 }
 
 #[test]
@@ -264,7 +263,7 @@ fn settings_error_in_report_is_mapped_to_label_phrase() {
     let read_ahead = label_of(&registry, "network.read_ahead_mb");
     assert_eq!(
         status.details,
-        vec![format!("«{read_ahead}» нельзя изменить")]
+        vec![format!("«{read_ahead}» cannot be changed")]
     );
 }
 
@@ -298,21 +297,18 @@ fn preview_statuses_cover_applied_backpressure_and_failures() {
     for status in [&applied, &waiting, &failed] {
         assert_user_facing(status);
     }
-    assert_eq!(applied.summary.as_deref(), Some("Предпросмотр применён"));
+    assert_eq!(applied.summary.as_deref(), Some("Preview applied"));
     assert_eq!(
         waiting.summary.as_deref(),
-        Some("Предпросмотр ждёт отрисовщик")
+        Some("Preview is waiting for the renderer")
     );
-    assert_eq!(
-        failed.summary.as_deref(),
-        Some("Предпросмотр применён не полностью")
-    );
+    assert_eq!(failed.summary.as_deref(), Some("Preview applied partially"));
     let volume = label_of(&registry, "audio.volume");
     assert_eq!(
         failed.details,
         vec![
-            format!("«{volume}»: для этой настройки предпросмотр недоступен"),
-            format!("«{volume}»: не удалось показать предпросмотр"),
+            format!("«{volume}»: preview is unavailable for this setting"),
+            format!("«{volume}»: could not show preview"),
         ]
     );
 }
@@ -341,12 +337,12 @@ fn cancel_status_names_discarded_settings_and_reports_rollback_failure() {
 
     assert_user_facing(&status);
     let volume = label_of(&registry, "audio.volume");
-    assert_eq!(status.summary.as_deref(), Some("Изменения отменены"));
+    assert_eq!(status.summary.as_deref(), Some("Changes canceled"));
     assert_eq!(
         status.details,
         vec![
-            format!("Отброшены несохранённые изменения: «{volume}»"),
-            format!("«{volume}»: не удалось вернуть прежнее значение"),
+            format!("Discarded unsaved changes: «{volume}»"),
+            format!("«{volume}»: could not restore the previous value"),
         ]
     );
 }
@@ -362,11 +358,11 @@ fn reset_status_lists_labels_not_ids() {
         preview_routes: Vec::new(),
     };
 
-    let status = status_from_reset(&labels, "Все настройки сброшены", &report);
+    let status = status_from_reset(&labels, "All settings reset", &report);
 
     assert_user_facing(&status);
     let volume = label_of(&registry, "audio.volume");
-    assert_eq!(status.details, vec![format!("Изменены поля: «{volume}»")]);
+    assert_eq!(status.details, vec![format!("Changed fields: «{volume}»")]);
 }
 
 #[test]
@@ -376,7 +372,7 @@ fn unknown_setting_id_is_never_shown() {
 
     let text = labels.quoted(&SettingId::from("internal.secret_id"));
 
-    assert_eq!(text, "«неизвестная настройка»");
+    assert_eq!(text, "«unknown setting»");
 }
 
 /// Сквозной сценарий: реальный сбой media-owner-а и сбой отката в живом `SettingsRuntime`.
@@ -389,9 +385,9 @@ fn live_apply_failure_shows_human_status_in_ui_model() {
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     adapter.fail_media = true;
     adapter.render.fail_rollback = true;
 
@@ -414,21 +410,21 @@ fn live_apply_failure_shows_human_status_in_ui_model() {
     let read_ahead = label_of(&registry(), "network.read_ahead_mb");
     let text = visible_text(&status);
     assert!(
-        text.contains(&format!("«{read_ahead}»: не удалось применить")),
+        text.contains(&format!("«{read_ahead}»: could not apply")),
         "{text}"
     );
-    assert!(text.contains("перезапустите приложение"), "{text}");
+    assert!(text.contains("restart the app"), "{text}");
     remove_file_if_exists(&path);
 }
 
-/// Недопустимое значение поля: подсказка под полем и статус без id и английского.
+/// Недопустимое значение поля: подсказка под полем и статус без внутренних id и технических причин.
 #[test]
-fn invalid_field_value_status_uses_label_and_russian_reason() {
+fn invalid_field_value_status_uses_label_and_english_reason() {
     let config = AppConfig::default();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(
@@ -441,7 +437,7 @@ fn invalid_field_value_status_uses_label_and_russian_reason() {
             ],
             &mut render_adapter,
         )
-        .expect("actions должны пройти");
+        .expect("Actions must pass through");
 
     let model = runtime.ui_model().clone();
     assert_user_facing(&model.status);
@@ -450,9 +446,9 @@ fn invalid_field_value_status_uses_label_and_russian_reason() {
         .iter()
         .find(|field| field.descriptor.id == SettingId::from("audio.volume"))
         .and_then(|field| field.validation_error.clone())
-        .expect("у поля должна быть ошибка проверки");
+        .expect("The field must have a check error.");
     assert!(
-        field_error.starts_with("Значение должно быть от"),
+        field_error.starts_with("Value must be between"),
         "{field_error}"
     );
     assert!(!field_error.contains("range violation"));

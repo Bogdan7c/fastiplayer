@@ -206,13 +206,14 @@ impl fmt::Display for SettingValueType {
     }
 }
 
-/// Stable text id plus Russian fallback visible in v1 UI.
+/// Стабильный ключ локализации и текст, видимый в текущем UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingText {
     /// Stable localization key.
     pub text_id: SettingTextId,
 
-    /// Russian fallback text used until a full localization catalog exists.
+    /// Историческое имя поля сохранено для будущей локализации.
+    /// Сейчас fallback содержит английский текст независимо от ui.language.
     pub fallback_ru: String,
 }
 
@@ -353,7 +354,7 @@ pub struct SettingDescriptor {
     /// Stable document path used for diagnostics.
     pub path: SettingPath,
 
-    /// Text metadata with localization ids and Russian fallbacks.
+    /// Метаданные текста с ключами локализации и временными английскими fallback-строками.
     pub text: SettingDescriptorText,
 
     /// Visual placement metadata.

@@ -23,10 +23,7 @@ fn evidence_catalog_has_no_stale_path_symbol_or_dead_reference() {
     // Каждый catalog entry проверяется по kind/role/filesystem semantics.
     for (evidence_id, evidence) in evidence_catalog {
         // Object type обязателен даже если helper читает fields через Value.
-        assert!(
-            evidence.is_object(),
-            "evidence `{evidence_id}` обязан быть object"
-        );
+        assert!(evidence.is_object(), "proof '{evidence_id}' must be object");
         // Production boundary, executable test и owner decision валидируются раздельно.
         assert_typed_evidence(evidence_id, evidence);
     }
@@ -40,7 +37,7 @@ fn evidence_catalog_has_no_stale_path_symbol_or_dead_reference() {
         // Missing catalog entry является stale manifest.
         assert!(
             evidence_catalog.contains_key(evidence_id),
-            "неизвестный evidence reference `{evidence_id}`"
+            "Unknown evidence reference '{evidence_id}'"
         );
     }
     // Dead catalog item создавал бы ложное ощущение дополнительного coverage.

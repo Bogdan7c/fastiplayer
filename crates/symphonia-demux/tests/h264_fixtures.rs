@@ -262,7 +262,7 @@ fn collect_video_packets(
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::TemporarilyUnavailable(hint) => anyhow::bail!(
-                "finite H.264 fixture неожиданно вернула temporary readiness: {hint:?}"
+                "finite H.264 fixture unexpectedly returns temporary readiness: {hint:?}"
             ),
             DemuxReadEvent::EndOfStream => break,
         }

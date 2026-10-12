@@ -85,6 +85,8 @@ pub(super) enum FieldConfig {
 }
 
 #[derive(Default)]
+/// Имена *_ru сохранены как совместимый контракт атрибутов локализации.
+/// Текущие пользовательские fallback-строки в этих полях английские.
 pub(super) struct FieldMetadata {
     pub(super) id: Option<LitStr>,
     pub(super) path: Option<LitStr>,

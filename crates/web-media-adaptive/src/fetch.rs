@@ -509,7 +509,7 @@ pub enum AdaptiveTransportError {
         received: SourceGeneration,
     },
     /// Caller попытался обойти общий configured bound конкретного resource класса.
-    #[error("adaptive resource request превышает configured {purpose:?} bound")]
+    #[error("adaptive resource request exceed configured {purpose:?} bound")]
     ResourceBoundExceeded {
         /// Resource class без locator или secret material.
         purpose: AdaptiveResourcePurpose,

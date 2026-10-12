@@ -839,7 +839,7 @@ mod tests {
             .with_chroma(ChromaSubsampling::Yuv420);
         let contract = VideoFrameContract::host_yuv420_planar8();
         let plan = plan_ffmpeg_software_decode(&requirement, contract)
-            .expect("FFmpeg software path должен принимать H.264 Baseline 8-bit 4:2:0");
+            .expect("FFmpeg software path must accept H.264 Baseline 8-bit 4:2:0");
 
         assert_eq!(plan.decoder_id(), FfmpegDecoderId::H264);
         assert_eq!(plan.frame_contract(), contract);

@@ -961,7 +961,7 @@ pub fn parse_hevc_decoder_configuration_record(
     let nal_length_size =
         H265NalLengthSize::new(nal_length_size_minus_one + 1).map_err(|error| {
             let H265PacketizationError::UnsupportedNalLengthSize { nal_length_size } = error else {
-                unreachable!("H265NalLengthSize::new возвращает только UnsupportedNalLengthSize");
+                unreachable!("H265NalLengthSize::new returns only UnsupportedNalLengthSize");
             };
             HevcDecoderConfigurationRecordError::UnsupportedNalLengthSize { nal_length_size }
         })?;
@@ -1395,7 +1395,7 @@ fn read_hvcc_nal_size(
             packet_bytes[cursor + 2],
             packet_bytes[cursor + 3],
         ]) as usize,
-        _ => unreachable!("H265NalLengthSize содержит только 1/2/4"),
+        _ => unreachable!("H265NalLengthSize contains only 1/2/4"),
     }
 }
 

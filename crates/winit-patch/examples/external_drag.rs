@@ -66,7 +66,7 @@ impl Application {
     /// Создаёт окно и поверхность отрисовки.
     fn create_window(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
         let attributes = Window::default_attributes()
-            .with_title("external_drag: бросьте сюда файл или ссылку")
+            .with_title("external_drag: Drop a File or Link Here")
             .with_inner_size(LogicalSize::new(640.0, 360.0));
         let window = Arc::new(event_loop.create_window(attributes)?);
 
@@ -85,7 +85,7 @@ impl ApplicationHandler for Application {
             return;
         }
         if let Err(error) = self.create_window(event_loop) {
-            ::tracing::error!("не удалось создать окно: {error}");
+            ::tracing::error!("could not create the window: {error}");
             event_loop.exit();
         }
     }
@@ -99,7 +99,7 @@ impl ApplicationHandler for Application {
             WindowEvent::RedrawRequested => {
                 if let Some(drag_window) = self.window.as_mut() {
                     if let Err(error) = Self::redraw(drag_window) {
-                        ::tracing::error!("ошибка отрисовки: {error}");
+                        ::tracing::error!("Drawing error: {error}");
                     }
                 }
             },

@@ -187,7 +187,7 @@ impl PreparationExecutor {
     }
 
     fn new_with_worker_count(wake_port: AppWakePort, worker_count: usize) -> Arc<Self> {
-        debug_assert!(worker_count > 0, "preparation executor обязан иметь worker");
+        debug_assert!(worker_count > 0, "preparation executor must worker");
         Arc::new(Self {
             shared: Arc::new(PreparationExecutorShared {
                 state: Mutex::new(PreparationExecutorState {
@@ -295,7 +295,7 @@ impl PreparationExecutor {
             match join_thread_until(&mut worker_slot, deadline) {
                 FinishedThreadJoin::AlreadyJoined | FinishedThreadJoin::Joined => {}
                 FinishedThreadJoin::StillRunning => pending_workers
-                    .push(worker_slot.expect("still-running worker сохраняет exact join handle")),
+                    .push(worker_slot.expect("still-running worker accurately join handle")),
                 FinishedThreadJoin::Panicked => panicked_threads += 1,
             }
         }
@@ -529,7 +529,7 @@ mod shutdown_tests {
                     Err(MediaPreparationFailureKind::Cancelled)
                 },
             ))
-            .expect("test work должен стартовать");
+            .expect("The test should start.");
         started_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("worker starts before shutdown test");

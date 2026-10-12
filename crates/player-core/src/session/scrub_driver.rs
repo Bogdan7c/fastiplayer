@@ -398,7 +398,7 @@ impl ScrubTransactionLifecycle for PlayerSession {
                 } else {
                     tracing::debug!(
                         error = %error,
-                        "Live-scrub preview не поддержан demuxer-ом источника; отказ не публикуется"
+                        "Live-scrub preview not supported by source demuxer; opt-out not published"
                     );
                 }
                 return Err(lifecycle_error);

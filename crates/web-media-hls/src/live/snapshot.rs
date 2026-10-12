@@ -367,25 +367,25 @@ impl HlsLiveTimelineEvidence {
 /// Typed refresh rejection; ни один variant не содержит manifest URI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum HlsLiveRefreshError {
-    #[error("HLS live sequence уменьшился")]
+    #[error("HLS live sequence has decreased")]
     SequenceRegressed,
-    #[error("retained HLS media sequence изменила URI/range/duration")]
+    #[error("retained HLS media sequence changed URI/range/duration")]
     RetainedSegmentMutated,
-    #[error("HLS refresh не содержит temporal overlap")]
+    #[error("HLS refresh does not contain temporal overlap")]
     RefreshGap,
-    #[error("overlap segments дают противоречивую temporal mapping")]
+    #[error("overlapping segments give a contradictory temporal mapping")]
     TemporalOverlapMismatch,
-    #[error("HLS live timeline переполнился")]
+    #[error("HLS live timeline is overflowing")]
     TimelineOverflow,
-    #[error("HLS live timeline потребовал отрицательный origin")]
+    #[error("HLS live timeline required a negative origin")]
     TimelineUnderflow,
-    #[error("segment-scoped plan не совпал с manifest segments")]
+    #[error("Segment-scoped plan does not coincide with manifest segments")]
     SegmentScopedPlanMismatch,
-    #[error("HLS live snapshot содержит duplicate segment identity")]
+    #[error("HLS live snapshot contains duplicate segment identity.")]
     DuplicateSegmentIdentity,
-    #[error("segment-scoped plan duration не совпала с manifest")]
+    #[error("segment-scoped plan duration does not match the manifest")]
     ManifestDurationMismatch,
-    #[error("HLS duration нарушила parser invariant")]
+    #[error("HLS duration violated parser invariant")]
     InvalidDuration,
 }
 

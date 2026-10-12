@@ -116,10 +116,10 @@ impl fmt::Display for PlaylistDocumentSourceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidNetworkUri => {
-                formatter.write_str("playlist source не является absolute network URI")
+                formatter.write_str("playlist source is not absolute network URI")
             }
             Self::FileUriIsNotNetworkSource => {
-                formatter.write_str("file URI не является network playlist source")
+                formatter.write_str("file URI is not network playlist source")
             }
         }
     }

@@ -181,7 +181,7 @@ impl Demuxer for EventDemuxer {
 
     /// Seek для fake inner не участвует в тестовом сценарии.
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
-        Err(anyhow::anyhow!("fake inner не поддерживает seek"))
+        Err(anyhow::anyhow!("fake inner supportive seek"))
     }
 }
 
@@ -198,8 +198,8 @@ fn sniff_budget() -> DemuxSniffBudget {
 /// Детерминированно строит generic AAC init через единственного ISO owner-а.
 fn audio_initialization() -> Bytes {
     let sample_rate =
-        FragmentAacSampleRate::try_new(48_000).expect("48 kHz помещается в init contract");
-    let channels = FragmentAacChannelCount::try_new(2).expect("stereo помещается");
+        FragmentAacSampleRate::try_new(48_000).expect("48 kHz is placed in an init contract.");
+    let channels = FragmentAacChannelCount::try_new(2).expect("stereo fits");
     let asc = FragmentAacAudioSpecificConfig::try_new(&[0x11, 0x90]).expect("AAC-LC ASC");
     let codec =
         FragmentAacLcConfiguration::try_new(sample_rate, channels, asc).expect("AAC config");
@@ -235,8 +235,8 @@ fn canonical_audio_fragment() -> Bytes {
         .max_sample_table_bytes(64 * 1024)
         .max_box_payload_bytes(256 * 1024)
         .build()
-        .expect("полные inspection budgets");
-    let write_limits = FragmentWriteLimits::try_new(512 * 1024).expect("ненулевой output budget");
+        .expect("full inspection budgets");
+    let write_limits = FragmentWriteLimits::try_new(512 * 1024).expect("non-zero output budget");
     let track_intent = FragmentTrackReconstructionIntent::new(
         FragmentTrackId::new(NonZeroU32::MIN),
         FragmentBaseDecodeTime::new(0),
@@ -328,7 +328,7 @@ fn expect_open_error(
     context: &str,
 ) -> PresentationWindowOrderedIsoMp4Error {
     match result {
-        Ok(_) => panic!("{context}: ожидалась ошибка"),
+        Ok(_) => panic!("{context}: Expected error"),
         Err(error) => error,
     }
 }
@@ -645,7 +645,7 @@ fn tracks_changed_fails_closed() {
     for attempt in 0..2 {
         let error = demuxer
             .next_event()
-            .expect_err("TracksChanged должен закрыть adapter");
+            .expect_err("TracksChanged should shut down the adapter");
         assert!(
             error
                 .downcast_ref::<PresentationWindowOrderedIsoMp4Error>()
@@ -653,7 +653,7 @@ fn tracks_changed_fails_closed() {
                     typed,
                     PresentationWindowOrderedIsoMp4Error::TracksChanged
                 )),
-            "attempt {attempt} должен вернуть тот же fail-closed contract"
+            "try {attempt} will return the same failed-closed contract."
         );
     }
 }
@@ -696,7 +696,7 @@ fn cancellation_fences_packet_publication() {
 
     let error = demuxer
         .next_event()
-        .expect_err("publication fence должна увидеть cancellation");
+        .expect_err("The publication fence should see the cancellation");
     assert!(
         error
             .downcast_ref::<PresentationWindowOrderedIsoMp4Error>()

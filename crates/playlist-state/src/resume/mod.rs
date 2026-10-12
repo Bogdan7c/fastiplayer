@@ -116,7 +116,7 @@ pub enum ResumeCheckpointBuildError {
 
 impl fmt::Display for ResumeCheckpointBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("exact native path encoding недоступен для locator fingerprint")
+        formatter.write_str("exact native path encoding is not available for locator fingerprint")
     }
 }
 

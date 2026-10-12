@@ -68,9 +68,9 @@ fn main() -> Result<()> {
         )?;
     }
 
-    println!("\nдампы: /tmp/ts-shootout/*.f32");
+    println!("\ndamps: /tmp/ts-shootout/*.f32");
     println!(
-        "слушать: ffplay -f f32le -ar {} -ch_layout stereo <file>",
+        "Listen to: ffplay -f f32le -ar {} -ch_layout stereo <file>",
         sample.sample_rate
     );
     Ok(())
@@ -215,7 +215,7 @@ fn report(
     let peak = output.iter().fold(0.0f32, |m, s| m.max(s.abs()));
     let throughput = input_secs / elapsed.max(1e-9);
     println!(
-        "  {name:>16}: frames={frames} (ожид. ~{expected_frames:.0}) clicks={clicks} peak={peak:.3} throughput={throughput:.1}x rt"
+        " {name:>16}: frames={frames} (expected. ~{expected_frames:.0}) clicks={clicks} peak={peak:.3} throughput={throughput:.1}x rt"
     );
 
     let dump = out_dir.join(format!("{name}_{playback_rate}x.f32"));
@@ -292,7 +292,7 @@ fn decode(path: &Path) -> Result<Sample> {
     }
 
     if samples.is_empty() {
-        bail!("нет декодированных samples");
+        bail!("No decoded samples");
     }
     Ok(Sample {
         samples,

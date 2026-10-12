@@ -31,13 +31,13 @@ impl PlayerSession {
         let position = self.snapshot.current_position;
         debug!(
             position_ms = position.as_millis(),
-            "Пауза без кадра на экране: запрашиваем кадр-постер через seek на текущую позицию"
+            "Pause without a frame on the screen: request a frame poster through a seek to the current position"
         );
         if let Err(error) = self.seek(SeekRequest::absolute(position.into())) {
             warn!(
                 error = %error,
                 position_ms = position.as_millis(),
-                "Не удалось запросить кадр-постер на паузе"
+                "Failed to request a frame poster on pause"
             );
         }
     }

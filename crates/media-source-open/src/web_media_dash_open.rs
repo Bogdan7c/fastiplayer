@@ -187,7 +187,7 @@ pub fn prepare_dash_candidate(
     let request_context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let service_components = candidate
         .dash_transport_components(&request_context)
-        .context("Не удалось спроецировать yt-dlp DASH request material")?;
+        .context("You cannot project yt-dlp DASH request material")?;
     let limits = crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
     let projected_components = service_components
         .into_iter()
@@ -204,13 +204,13 @@ pub fn prepare_dash_candidate(
     let (http, input) = presentation_input(projected_components)?;
     if live_intent == YtDlpLiveIntent::Live {
         let DashVodHttpContext::Manifest(http) = http else {
-            bail!("serialized dynamic DASH fragments исключены S35 profile");
+            bail!("serialized dynamic DASH fragments deleted S35 profile");
         };
         let DashVodInput::Manifest(manifest) = input else {
-            bail!("serialized dynamic DASH fragments исключены S35 profile");
+            bail!("serialized dynamic DASH fragments deleted S35 profile");
         };
         let endpoint_refresh = endpoint_refresh
-            .ok_or_else(|| anyhow!("DASH live candidate потерял app endpoint refresh port"))?;
+            .ok_or_else(|| anyhow!("DASH live candidate loses app endpoint refresh port"))?;
         let request = DashLiveOpenRequest {
             http,
             generation,
@@ -225,7 +225,7 @@ pub fn prepare_dash_candidate(
         };
         let (opened, component_variants) = match component_selection_intent {
             crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
-                prepare_dash_live(request).context("DASH live preflight завершился ошибкой")?,
+                prepare_dash_live(request).context("DASH live preflight ended in error")?,
                 crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
             ),
             crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
@@ -250,7 +250,7 @@ pub fn prepare_dash_candidate(
         let (demuxer, seek_handle, timeline_port) = opened.into_parts();
         let seek_port =
             prepared_dash_seek_port(seek_handle.ok_or_else(|| {
-                anyhow!("DASH live runtime не опубликовал receipted seek handle")
+                anyhow!("DASH live runtime has not released receipted seek handle")
             })?);
         return Ok(PreparedDashCandidate {
             demuxer: Box::new(demuxer),
@@ -270,7 +270,7 @@ pub fn prepare_dash_candidate(
     };
     let (opened, component_variants) = match component_selection_intent {
         crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
-            prepare_dash_vod(request).context("DASH VOD preflight завершился ошибкой")?,
+            prepare_dash_vod(request).context("DASH VOD preflight ended in error")?,
             crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
         ),
         crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
@@ -324,7 +324,7 @@ fn project_component<'candidate>(
         )
         .context("DASH retry policy invalid")?,
     )
-    .context("Не удалось создать DASH adaptive HTTP context")?;
+    .context("Could not create the DASH adaptive HTTP context")?;
     Ok(ProjectedDashComponent {
         role,
         container,
@@ -354,7 +354,7 @@ pub(crate) fn project_dash_live_runtime_material(
         (DashVodHttpContext::Manifest(http), DashVodInput::Manifest(manifest)) => {
             Ok((http, manifest))
         }
-        _ => bail!("fresh DASH live candidate не является manifest-backed"),
+        _ => bail!("fresh DASH live candidate is not manifest-backed"),
     }
 }
 
@@ -384,7 +384,7 @@ fn presentation_input(
                         .material
                         .shares_manifest_runtime_context(&audio.material)
                     {
-                        bail!("separate DASH Representation имеют разные MPD/request contexts");
+                        bail!("Separate DASH Representations have different MPD/request contexts");
                     }
                     Ok((
                         DashVodHttpContext::Manifest(Box::new(video.http.clone())),
@@ -401,10 +401,10 @@ fn presentation_input(
                         audio: serialized_component(audio)?,
                     }),
                 )),
-                _ => bail!("separate DASH components используют разные authoritative input paths"),
+                _ => bail!("Separate DASH components use different authoritative input paths"),
             }
         }
-        _ => bail!("DASH candidate component roles не совпадают с layout"),
+        _ => bail!("DASH candidate component roles do not match layout"),
     }
 }
 
@@ -423,10 +423,10 @@ fn manifest_input(material: &YtDlpDashRequestMaterial<'_>) -> Result<DashVodInpu
     let manifest = material
         .input()
         .manifest_url_for_fetch()
-        .ok_or_else(|| anyhow!("DASH manifest type-state потерял endpoint"))?;
+        .ok_or_else(|| anyhow!("DASH manifest type-state loses endpoint"))?;
     Ok(DashVodInput::Manifest(DashManifestInput {
         target: HttpRequestTarget::parse_exact(manifest)
-            .context("DASH manifest endpoint нарушил HTTP target boundary")?,
+            .context("DASH manifest endpoint breaches HTTP target boundary")?,
         xml_budgets: dash_xml_budgets()?,
         mpd_limits: dash_mpd_limits(),
     }))
@@ -440,7 +440,7 @@ fn ensure_static_dash_intent(live_intent: YtDlpLiveIntent) -> Result<()> {
     ) {
         return Ok(());
     }
-    bail!("dynamic DASH относится к S35 и не входит в static S34 profile")
+    bail!("Dynamic DASH belongs to S35 and is outside the static S34 profile")
 }
 
 /// Сохраняет независимое ownership двух serialized component contexts.
@@ -513,15 +513,15 @@ fn serialized_component_from_fragments(
             let target = match fragment.locator_kind() {
                 YtDlpDashFragmentLocatorKind::AbsoluteUrl => DashResourceReference::absolute(
                     HttpRequestTarget::parse_exact(fragment.locator_for_transport())
-                        .context("absolute DASH fragment нарушил HTTP target boundary")?,
+                        .context("Absolute DASH fragment violated the HTTP target boundary")?,
                 ),
                 YtDlpDashFragmentLocatorKind::RelativePath => {
                     let base = fragment
                         .base_url_for_relative_resolution()
-                        .ok_or_else(|| anyhow!("relative DASH fragment потерял validated base"))?;
+                        .ok_or_else(|| anyhow!("Relative DASH fragment lost its validated base"))?;
                     DashResourceReference::relative(
                         HttpRequestTarget::parse_exact(base)
-                            .context("DASH fragment base нарушил HTTP target boundary")?,
+                            .context("DASH fragment base breaches HTTP target boundary")?,
                         fragment.locator_for_transport(),
                     )
                 }
@@ -530,7 +530,7 @@ fn serialized_component_from_fragments(
                 .duration_seconds()
                 .map(Duration::try_from_secs_f64)
                 .transpose()
-                .context("DASH fragment duration нельзя выразить точно")?;
+                .context("DASH fragment duration cannot be accurately expressed")?;
             Ok(DashSerializedFragment {
                 kind: match fragment.role() {
                     YtDlpDashFragmentRole::Initialization => {
@@ -591,11 +591,11 @@ fn presentation_selection(layout: &StreamLayout) -> Result<DashPresentationSelec
             )?,
         }),
         StreamLayout::HlsMuxedCodecDeferred(_) => {
-            Err(anyhow!("DASH open не поддерживает deferred HLS layout"))
+            Err(anyhow!("DASH open does not support deferred HLS layout"))
         }
-        StreamLayout::ContentProbed(_) => Err(anyhow!(
-            "DASH open пока не поддерживает content-probed layout"
-        )),
+        StreamLayout::ContentProbed(_) => {
+            Err(anyhow!("DASH open does not support content-probed layout"))
+        }
     }
 }
 
@@ -628,12 +628,12 @@ fn video_evidence(
             height: height.pixels(),
         }),
         (None, None) => None,
-        _ => bail!("DASH video dimensions evidence неполна"),
+        _ => bail!("DASH video dimensions evidence incomplete"),
     };
     Ok(DashRepresentationEvidence {
         media_kind: DashMediaKind::Video,
         container: dash_container(
-            container.ok_or_else(|| anyhow!("DASH container evidence отсутствует"))?,
+            container.ok_or_else(|| anyhow!("DASH container evidence is not available."))?,
         )?,
         representation_id: None,
         codecs: Some(track.codec().raw().as_str().to_owned()),
@@ -650,7 +650,7 @@ fn audio_evidence(
     Ok(DashRepresentationEvidence {
         media_kind: DashMediaKind::Audio,
         container: dash_container(
-            container.ok_or_else(|| anyhow!("DASH container evidence отсутствует"))?,
+            container.ok_or_else(|| anyhow!("DASH container evidence is not available."))?,
         )?,
         representation_id: None,
         codecs: Some(track.codec().raw().as_str().to_owned()),
@@ -664,7 +664,7 @@ fn dash_container(container: ContainerFamily) -> Result<DashContainer> {
     match container {
         ContainerFamily::IsoBmff | ContainerFamily::FragmentedIsoBmff => Ok(DashContainer::IsoBmff),
         ContainerFamily::WebM => Ok(DashContainer::WebM),
-        other => bail!("DASH container {other:?} не входит в fMP4/WebM profile"),
+        other => bail!("DASH container {other:?} is not included in fMP4/WebM profile"),
     }
 }
 
@@ -674,12 +674,12 @@ fn dash_media_kind(role: MediaComponentRole) -> Result<DashMediaKind> {
         MediaComponentRole::Muxed => Ok(DashMediaKind::Muxed),
         MediaComponentRole::Video => Ok(DashMediaKind::Video),
         MediaComponentRole::Audio => Ok(DashMediaKind::Audio),
-        MediaComponentRole::Subtitle => bail!("DASH subtitles playback не входит в S34"),
+        MediaComponentRole::Subtitle => bail!("DASH subtitles playback not included in S34"),
         MediaComponentRole::ContentProbed => {
-            bail!("DASH content-probed component требует отдельного representation proof")
+            bail!("DASH content-probed component requires separate representation proof")
         }
         MediaComponentRole::PresentationManifest => {
-            bail!("DASH Representation component не может быть presentation manifest-ом")
+            bail!("DASH Representation component cannot be a presentation manifest")
         }
     }
 }

@@ -98,16 +98,16 @@ enum InstalledEndpointRecoveryRoute {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 enum VodEndpointRecoverySourceError {
     /// Attachment оказался привязан не к web source.
-    #[error("installed recovery attachment не принадлежит web source")]
+    #[error("installed recovery attachment does not belong to web source")]
     NotWebSource,
     /// Временный endpoint не имеет reconstructible owner-а.
-    #[error("temporary endpoint не имеет reconstructible recovery owner")]
+    #[error("temporary endpoint none reconstructible recovery owner")]
     TerminalUnreconstructibleEndpoint,
     /// Adaptive reopen требует отсутствующий capability snapshot.
-    #[error("system capabilities snapshot отсутствует")]
+    #[error("system capabilities snapshot absent")]
     MissingSystemCapabilities,
     /// Source owner не смог построить controlled reopen request.
-    #[error("refreshable web source controlled reopen settings отсутствуют")]
+    #[error("refreshable web source controlled reopen settings are not available")]
     ControlledReopenUnavailable,
 }
 
@@ -205,7 +205,7 @@ impl InstalledVodEndpointRecoveryClaimAdmission {
                 enabled = policy.enabled,
                 consecutive_attempts,
                 max_consecutive_attempts = policy.max_consecutive_attempts,
-                "VOD endpoint recovery budget исчерпан; публикуем исходную transport ошибку"
+                "VOD endpoint recovery budget exhausted; publishing the original transport error"
             );
             self.attachment.mark_recovery_failed();
             return VodEndpointExpiryAdmissionOutcome::Rejected;
@@ -217,8 +217,8 @@ impl InstalledVodEndpointRecoveryClaimAdmission {
             clippy::expect_used,
             reason = "инвариант: identity fence допускает admission только с exact active identity"
         )]
-        let expected_active = expected_active
-            .expect("identity fence допускает admission только с exact active identity");
+        let expected_active =
+            expected_active.expect("Fencer ID allows admission only to an active identity.");
         let restore_position = player_snapshot
             .timeline
             .target_position
@@ -422,7 +422,7 @@ impl AppState {
             {
                 debug!(
                     source_generation = pending.claim.source_generation.value(),
-                    "VOD endpoint recovery отменён exact identity/generation fence-ом"
+                    "VOD endpoint recovery was canceled by the exact identity/generation fence"
                 );
                 pending.claim.attachment.mark_recovery_failed();
                 return;
@@ -438,7 +438,7 @@ impl AppState {
             let source_request = match self.vod_recovery_source_request(&pending.source) {
                 Ok(source_request) => source_request,
                 Err(reason) => {
-                    warn!(?reason, "Не удалось построить exact VOD recovery request");
+                    warn!(?reason, "The exact VOD recovery request was not completed.");
                     pending.claim.attachment.mark_recovery_failed();
                     return;
                 }
@@ -454,7 +454,7 @@ impl AppState {
                 warn!(
                     error = %error,
                     source_generation = pending.claim.source_generation.value(),
-                    "Не удалось запустить VOD endpoint recovery"
+                    "Could not start VOD endpoint recovery"
                 );
                 pending.claim.attachment.mark_recovery_failed();
                 return;
@@ -471,7 +471,7 @@ impl AppState {
                         .pending
                         .as_ref()
                         .map_or(0, |pending| pending.claim.next_consecutive_attempts),
-                    "VOD endpoint recovery установил fresh candidate той же lineage"
+                    "VOD endpoint recovery installed fresh candidate in lineage"
                 );
                 // Exact strong commit уже вызвал `record_installed_media` и привязал новый gate.
                 drop(installed);
@@ -497,11 +497,11 @@ impl AppState {
                         error = %error,
                         next_consecutive_attempt = pending.claim.next_consecutive_attempts,
                         retry_backoff_ms = retry_backoff.as_millis(),
-                        "VOD endpoint recovery pre-barrier failure будет повторён"
+                        "VOD endpoint recovery pre-barrier failure will be repeated"
                     );
                     self.vod_endpoint_recovery.pending = Some(pending);
                 } else {
-                    warn!(error = %error, "VOD endpoint recovery завершился terminal failure");
+                    warn!(error = %error, "VOD endpoint recovery finished terminal failure");
                     pending.claim.attachment.mark_recovery_failed();
                 }
             }

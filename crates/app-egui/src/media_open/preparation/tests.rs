@@ -53,7 +53,7 @@ impl player_core::PreparedDemuxSeekPort for FakePreparedDemuxSeekPort {
         _request: media_core::DemuxSeekRequest,
     ) -> Result<(), player_core::PreparedDemuxSeekEnqueueError> {
         // Вызов означал бы, что preparation незаконно исполняет post-install lifecycle.
-        panic!("prepare boundary не должен выполнять demux seek")
+        panic!("Prepare boundary does not need to perform demux seek")
     }
 
     /// До player install fake receipt отсутствует.
@@ -108,7 +108,7 @@ fn typed_component_failure_survives_anyhow_context_without_string_parsing() {
     ];
 
     for typed_failure in typed_failures {
-        let error = anyhow::Error::new(typed_failure).context("наружный YtDlp preparation context");
+        let error = anyhow::Error::new(typed_failure).context("External YtDlp preparation context");
         assert_eq!(
             classify_yt_dlp_preparation_failure(&error),
             MediaPreparationFailureKind::ComponentCatalogUnavailable
@@ -121,7 +121,7 @@ fn typed_dash_profile_and_schema_failures_survive_anyhow_context() {
     let profile_error = anyhow::Error::new(dash_mpd_core::DashDynamicMpdError::ProfileExcluded(
         dash_mpd_core::DashDynamicProfileExclusion::UnsupportedDeclaredProfile,
     ))
-    .context("наружный DASH live preparation context");
+    .context("External DASH live preparation context");
     assert_eq!(
         classify_yt_dlp_preparation_failure(&profile_error),
         MediaPreparationFailureKind::DashLiveProfileExcluded
@@ -151,9 +151,9 @@ fn typed_dash_profile_and_schema_failures_survive_anyhow_context() {
             maximum_schema_string_bytes: 256,
         },
     })
-    .expect_err("invalid root должен дать schema error");
+    .expect_err("invalid root must produce a schema error");
     let schema_error =
-        anyhow::Error::new(schema_error).context("наружный DASH live preparation context");
+        anyhow::Error::new(schema_error).context("External DASH live preparation context");
     assert_eq!(
         classify_yt_dlp_preparation_failure(&schema_error),
         MediaPreparationFailureKind::DashLiveSchemaRejected
@@ -162,7 +162,7 @@ fn typed_dash_profile_and_schema_failures_survive_anyhow_context() {
 
 #[test]
 fn unrelated_ytdlp_failure_keeps_generic_classification() {
-    let error = anyhow::anyhow!("обычная provider ошибка");
+    let error = anyhow::anyhow!("commonplace provider error");
 
     assert_eq!(
         classify_yt_dlp_preparation_failure(&error),
@@ -180,7 +180,7 @@ fn typed_ytdlp_rejection_reaches_preparation_kind_and_user_reason() {
         stderr_bytes: 120,
         reason: service_ytdlp::YtDlpRejectionReason::GeoRestricted,
     })
-    .context("Не удалось подготовить exact YtDlp candidate snapshot");
+    .context("Couldn't get ready exact YtDlp candidate snapshot");
 
     let kind = classify_yt_dlp_preparation_failure(&error);
 
@@ -206,7 +206,7 @@ fn cancelled_web_request_stops_before_adapter_dispatch() {
     let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://unreachable.example.test/cancelled-before-io.mp4",
     )
-    .expect("direct fixture locator валиден");
+    .expect("Direct fixture locator is valid");
     let request = crate::media_open::MediaOpenSourceRequest::Web(
         crate::media_open::WebMediaOpenRequest::direct(
             locator,
@@ -265,7 +265,7 @@ fn static_seek_and_playback_window_share_one_pre_barrier_prepared_media_path() {
         Duration::from_secs(5).into(),
         Some(Duration::from_secs(12).into()),
     )
-    .expect("static test window валидно");
+    .expect("static test window validated");
     // Общий helper прикрепляет все static intents до strong-install barrier-а.
     let prepared = compose_prepared_web_media(
         "static segmented",
@@ -278,7 +278,7 @@ fn static_seek_and_playback_window_share_one_pre_barrier_prepared_media_path() {
             ..PreparedWebMediaAttachments::default()
         },
     )
-    .expect("static attachments совместимы");
+    .expect("Static attachments are compatible");
     // Static source не должен случайно получить live timeline mode.
     assert!(matches!(
         prepared.timeline_mode(),
@@ -307,7 +307,7 @@ fn live_timeline_and_static_window_conflict_fails_before_strong_install_barrier(
         Duration::from_secs(5).into(),
         Some(Duration::from_secs(12).into()),
     )
-    .expect("static test window валидно");
+    .expect("static test window validated");
     // Конфликт обязан terminal-resolve как recoverable preparation error.
     let result = compose_prepared_web_media(
         "invalid mixed timeline",

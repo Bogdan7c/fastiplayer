@@ -234,7 +234,7 @@ fn live_profile_distinguishes_initial_refresh_end_and_ll_hls() {
     .expect("valid EVENT media");
     assert!(
         validate_live_profile(&event, Some(MediaContainerIntent::TransportStream)).is_ok(),
-        "EVENT остаётся append-only live profile"
+        "EVENT remains append-only live profile"
     );
 
     let false_vod = parse(
@@ -540,7 +540,7 @@ fn start_offset_is_precise_vod_profile_rejection_and_finished_event_is_vod() {
     assert_eq!(
         validate_live_profile(&event, None),
         Err(HlsProfileError::EndedLivePlaylist),
-        "завершённый EVENT не должен одновременно считаться live"
+        "Completed EVENT must not be considered live at the same time."
     );
 
     // EVENT без ENDLIST остаётся live: VOD-профиль его по-прежнему не принимает.
@@ -595,6 +595,6 @@ fn parser_limits_reject_zero_budget_in_every_position() {
         )
         .expect_err("zero budget must be rejected");
         assert_eq!(error, hls_playlist_core::HlsParserLimitsError::ZeroBudget);
-        assert_eq!(error.to_string(), "HLS parser budget равен нулю");
+        assert_eq!(error.to_string(), "The HLS parser budget is zero.");
     }
 }

@@ -109,6 +109,6 @@ pub(super) fn smooth_ticks_to_duration(ticks: u64, timescale_ticks_per_second: u
     let nanoseconds = u128::from(remainder_ticks) * 1_000_000_000 / u128::from(timescale);
     Duration::new(
         seconds,
-        u32::try_from(nanoseconds).expect("fractional nanoseconds меньше одной секунды"),
+        u32::try_from(nanoseconds).expect("fractional nanoseconds less than one second"),
     )
 }

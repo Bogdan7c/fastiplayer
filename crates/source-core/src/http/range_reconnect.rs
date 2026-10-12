@@ -46,7 +46,7 @@ impl HttpRangeSource {
                             source = %self.url,
                             offset,
                             reconnect_attempts = schedule.failed_attempts(),
-                            "HTTP Range чтение восстановилось после обрыва связи"
+                            "HTTP Range Reading Recovered After Communication Breakdown"
                         );
                     }
                     return Ok(filled_bytes.saturating_add(bytes_read));
@@ -68,7 +68,7 @@ impl HttpRangeSource {
                         reconnect_attempts = schedule.failed_attempts(),
                         reconnect_budget_ms = self.reconnect_policy.budget().as_millis(),
                         error = %error,
-                        "HTTP Range чтение: связь не восстановилась за бюджет ожидания"
+                        "HTTP Range Reading: Communications Not Recovered Over Waiting Budget"
                     );
                     return Err(error);
                 }
@@ -81,7 +81,7 @@ impl HttpRangeSource {
                         reconnect_attempt = schedule.failed_attempts(),
                         delay_ms = delay.as_millis(),
                         error = %error,
-                        "HTTP Range чтение оборвалось; повтор с того же байта после паузы"
+                        "HTTP Range reading stopped; repeat from the same byte after pause"
                     );
                     wait_before_reconnect(delay, cancellation)?;
                 }

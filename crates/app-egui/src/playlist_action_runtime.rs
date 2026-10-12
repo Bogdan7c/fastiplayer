@@ -37,7 +37,7 @@ pub(crate) fn apply_playlist_actions(
                         UpdateSelectionOutcome::Updated | UpdateSelectionOutcome::NoChange
                     )
                 ) {
-                    runtime.set_playlist_safe_feedback("Не удалось обновить выделение плейлиста");
+                    runtime.set_playlist_safe_feedback("Could not update Playlist selection");
                     changed = true;
                 }
             }
@@ -47,7 +47,7 @@ pub(crate) fn apply_playlist_actions(
                     app_state, runtime, renderer, outcome,
                 );
                 if !applied {
-                    runtime.set_playlist_safe_feedback("Не удалось запустить выбранный элемент");
+                    runtime.set_playlist_safe_feedback("Could not play the selected item");
                 }
                 changed = true;
             }
@@ -59,15 +59,14 @@ pub(crate) fn apply_playlist_actions(
                         )
                     }
                     RuntimeCompoundHeaderPlayOutcome::Rejected(reason) => {
-                        tracing::debug!(?reason, "Compound header Play отклонён typed boundary");
+                        tracing::debug!(?reason, "Compound header Play rejected by typed boundary");
                         false
                     }
                     RuntimeCompoundHeaderPlayOutcome::LoadDecisionPending => false,
                 };
                 if !applied {
-                    runtime.set_playlist_safe_feedback(
-                        "Не удалось запустить выбранную составную запись",
-                    );
+                    runtime
+                        .set_playlist_safe_feedback("Could not play the selected compound entry");
                 }
                 changed = true;
             }
@@ -79,14 +78,14 @@ pub(crate) fn apply_playlist_actions(
                         )
                     }
                     RuntimeCompoundPartPlayOutcome::Rejected(reason) => {
-                        tracing::debug!(?reason, "Compound part Play отклонён typed boundary");
+                        tracing::debug!(?reason, "Compound part Play rejected by typed boundary");
                         false
                     }
                     RuntimeCompoundPartPlayOutcome::LoadDecisionPending => false,
                 };
                 if !applied {
                     runtime.set_playlist_safe_feedback(
-                        "Не удалось запустить выбранную часть составной записи",
+                        "Could not play the selected part of the compound entry",
                     );
                 }
                 changed = true;
@@ -101,7 +100,7 @@ pub(crate) fn apply_playlist_actions(
                     )
                 ) {
                     runtime.set_playlist_safe_feedback(
-                        "Не удалось изменить раскрытие составной записи",
+                        "Could not expand or collapse the compound entry",
                     );
                 }
                 changed = true;
@@ -113,12 +112,8 @@ pub(crate) fn apply_playlist_actions(
                     structural_revision,
                     Instant::now(),
                 );
-                changed |= apply_removal_outcome(
-                    app_state,
-                    runtime,
-                    outcome,
-                    "удалить выбранные элементы",
-                );
+                changed |=
+                    apply_removal_outcome(app_state, runtime, outcome, "remove selected elements");
             }
             PlaylistAction::RemoveUnselected(action) => {
                 let (entry_ids, structural_revision) = action.into_parts();
@@ -127,12 +122,8 @@ pub(crate) fn apply_playlist_actions(
                     structural_revision,
                     Instant::now(),
                 );
-                changed |= apply_removal_outcome(
-                    app_state,
-                    runtime,
-                    outcome,
-                    "удалить невыбранные элементы",
-                );
+                changed |=
+                    apply_removal_outcome(app_state, runtime, outcome, "remove unselected items");
             }
             PlaylistAction::MoveItems(action) => {
                 let (entry_ids, intent, structural_revision) = action.into_parts();
@@ -148,7 +139,7 @@ pub(crate) fn apply_playlist_actions(
                             | ControllerMoveItemsOutcome::AlreadyInPlace { .. }
                     )
                 ) {
-                    runtime.set_playlist_safe_feedback("Не удалось изменить порядок плейлиста");
+                    runtime.set_playlist_safe_feedback("Could not change Playlist order");
                     changed = true;
                 }
             }
@@ -209,13 +200,13 @@ pub(crate) fn apply_playlist_actions(
                         | RuntimeRemovalOutcome::DeadlineOverflow
                         | RuntimeRemovalOutcome::LoadDecisionPending
                 ) {
-                    runtime.set_playlist_safe_feedback("Не удалось очистить плейлист");
+                    runtime.set_playlist_safe_feedback("Could not clear Playlist");
                     changed = true;
                 }
             }
             PlaylistAction::Sort(intent) => {
                 if runtime.start_metadata_sort(intent).is_err() {
-                    runtime.set_playlist_safe_feedback("Не удалось начать сортировку");
+                    runtime.set_playlist_safe_feedback("Could not start sorting");
                 }
                 changed = true;
             }
@@ -224,7 +215,7 @@ pub(crate) fn apply_playlist_actions(
             }
             PlaylistAction::RetrySave => {
                 if runtime.retry_playlist_state_save().is_err() {
-                    runtime.set_playlist_safe_feedback("Повторное сохранение сейчас недоступно");
+                    runtime.set_playlist_safe_feedback("Retry saving is currently unavailable");
                 }
                 changed = true;
             }
@@ -246,7 +237,7 @@ pub(crate) fn apply_playlist_actions(
                     );
                     if !started {
                         runtime.set_playlist_safe_feedback(
-                            "Плейлист восстановлен, но воспроизведение вернуть не удалось",
+                            "Playlist restored, but playback could not be restored",
                         );
                     }
                 }
@@ -259,7 +250,7 @@ pub(crate) fn apply_playlist_actions(
                         }
                         tracing::debug!(
                             ?outcome,
-                            "Playlist toolbar Undo успешно обработан runtime owner-ом"
+                            "Playlist toolbar Undo successfully handled by runtime owner"
                         );
                     }
                     UndoRemovalUiEffect::Rejected { safe_message } => {
@@ -269,12 +260,12 @@ pub(crate) fn apply_playlist_actions(
                         if matches!(outcome, RemovalUndoOutcome::Controller(_)) {
                             tracing::warn!(
                                 ?outcome,
-                                "Playlist toolbar Undo отклонён controller boundary"
+                                "Playlist toolbar Undo rejected by boundary controller"
                             );
                         } else {
                             tracing::debug!(
                                 ?outcome,
-                                "Playlist toolbar Undo больше не authoritative"
+                                "Playlist toolbar Undo is no longer authoritative"
                             );
                         }
                     }
@@ -307,16 +298,16 @@ fn undo_removal_ui_effect(outcome: RemovalUndoOutcome) -> UndoRemovalUiEffect {
             selected_entry_id, ..
         } => UndoRemovalUiEffect::Restored { selected_entry_id },
         RemovalUndoOutcome::Unavailable => UndoRemovalUiEffect::Rejected {
-            safe_message: "Отмена удаления уже недоступна",
+            safe_message: "Undo removal is no longer available",
         },
         RemovalUndoOutcome::Expired => UndoRemovalUiEffect::Rejected {
-            safe_message: "Время для отмены удаления истекло",
+            safe_message: "Undo removal time expired",
         },
         RemovalUndoOutcome::Invalidated => UndoRemovalUiEffect::Rejected {
-            safe_message: "Отмена удаления недоступна после изменения плейлиста",
+            safe_message: "Undo removal is unavailable after Playlist changes",
         },
         RemovalUndoOutcome::Controller(_) => UndoRemovalUiEffect::Rejected {
-            safe_message: "Не удалось отменить удаление из плейлиста",
+            safe_message: "Could not undo removal from Playlist",
         },
     }
 }
@@ -340,7 +331,7 @@ fn apply_removal_outcome(
         outcome,
         RuntimeRemovalOutcome::NotFound { .. } | RuntimeRemovalOutcome::NoChange
     ) {
-        runtime.set_playlist_safe_feedback(format!("Не удалось {action_label}"));
+        runtime.set_playlist_safe_feedback(format!("Could not {action_label}"));
         return true;
     }
     false
@@ -356,7 +347,7 @@ mod tests {
     #[test]
     fn successful_undo_preserves_exact_restored_focus_target() {
         let selected_item_id =
-            PlaylistItemId::from_persistence_value(41).expect("test ItemId должен быть ненулевым");
+            PlaylistItemId::from_persistence_value(41).expect("Test ItemId must be non-zero.");
         let selected_entry_id = PlaylistEntryId::Single(selected_item_id);
         let outcome = RemovalUndoOutcome::Restored {
             selected_entry_id: Some(selected_entry_id),
@@ -376,15 +367,12 @@ mod tests {
         let cases = [
             (
                 RemovalUndoOutcome::Unavailable,
-                "Отмена удаления уже недоступна",
+                "Undo removal is no longer available",
             ),
-            (
-                RemovalUndoOutcome::Expired,
-                "Время для отмены удаления истекло",
-            ),
+            (RemovalUndoOutcome::Expired, "Undo removal time expired"),
             (
                 RemovalUndoOutcome::Invalidated,
-                "Отмена удаления недоступна после изменения плейлиста",
+                "Undo removal is unavailable after Playlist changes",
             ),
         ];
 
@@ -406,7 +394,7 @@ mod tests {
         assert_eq!(
             undo_removal_ui_effect(typed_outcome),
             UndoRemovalUiEffect::Rejected {
-                safe_message: "Не удалось отменить удаление из плейлиста"
+                safe_message: "Could not undo removal from Playlist"
             }
         );
         assert!(matches!(

@@ -35,7 +35,11 @@ fn conclude_with_fake(error: FatalStartupError) -> (ProcessConclusion, Recording
 
 fn single_shown_message(presenter: &RecordingPresenter) -> String {
     let shown = presenter.shown_notices();
-    assert_eq!(shown.len(), 1, "ожидался ровно один показ: {shown:?}");
+    assert_eq!(
+        shown.len(),
+        1,
+        "It was expected to be exactly one show: {shown:?}"
+    );
     shown[0].notice.message.clone()
 }
 
@@ -55,20 +59,20 @@ fn normal_run_completes_with_zero_exit_code_and_shows_nothing() {
 fn missing_gpu_adapter_is_shown_as_vulkan_problem_with_nonzero_exit() {
     // Тот же текст, что `render-wgpu-shell` кладёт в контекст при отсутствии адаптера.
     let renderer_error = anyhow::anyhow!("adapter request failed: no suitable adapter")
-        .context("Не удалось получить GPU адаптер. Проверьте драйверы Vulkan");
+        .context("Couldn't get a GPU adapter. Check Vulkan drivers");
 
     let error = FatalStartupError::graphics_unavailable(&renderer_error);
     let (conclusion, presenter) = conclude_with_fake(error.clone());
 
     assert_eq!(conclusion, ProcessConclusion::FailedToStart);
     assert_eq!(conclusion.exit_code(), ExitCode::from(1));
-    assert!(single_shown_message(&presenter).contains("видеокарта с поддержкой Vulkan"));
+    assert!(single_shown_message(&presenter).contains("graphics card with Vulkan support"));
     // Вся цепочка причин сохраняется для лога, а не только верхний контекст.
     assert!(error.technical_detail().contains("no suitable adapter"));
     assert!(
         presenter
             .text_output()
-            .contains("Fastiplayer не запустился.")
+            .contains("Fastiplayer could not start.")
     );
 }
 
@@ -78,7 +82,7 @@ fn window_creation_failure_is_shown_with_nonzero_exit() {
     let (conclusion, presenter) = conclude_with_fake(error);
 
     assert_eq!(conclusion, ProcessConclusion::FailedToStart);
-    assert!(single_shown_message(&presenter).contains("Не удалось создать окно плеера"));
+    assert!(single_shown_message(&presenter).contains("Could not create the player window"));
 }
 
 #[test]
@@ -88,7 +92,7 @@ fn missing_graphical_session_is_shown_with_nonzero_exit() {
     let (conclusion, presenter) = conclude_with_fake(error);
 
     assert_eq!(conclusion, ProcessConclusion::FailedToStart);
-    assert!(single_shown_message(&presenter).contains("графическому сеансу"));
+    assert!(single_shown_message(&presenter).contains("graphical session"));
 }
 
 #[test]
@@ -100,7 +104,7 @@ fn config_directory_owned_by_root_shows_folder_and_fix_command() {
 
     let message = single_shown_message(&presenter);
     assert_eq!(conclusion, ProcessConclusion::FailedToStart);
-    assert!(message.contains("/srv/test-root/fastiplayer принадлежит другому пользователю"));
+    assert!(message.contains("/srv/test-root/fastiplayer belongs to another user"));
     assert!(message.contains("sudo chown -R \"$USER\": /srv/test-root/fastiplayer"));
     assert!(!message.contains("OwnerMismatch"));
 }
@@ -113,14 +117,14 @@ fn bad_command_line_is_shown_with_nonzero_exit() {
     let (conclusion, presenter) = conclude_with_fake(error);
 
     assert_eq!(conclusion, ProcessConclusion::FailedToStart);
-    assert!(single_shown_message(&presenter).contains("неизвестным параметром"));
+    assert!(single_shown_message(&presenter).contains("unknown option"));
 }
 
 #[test]
 fn already_running_is_shown_as_plain_fact() {
     let (_, presenter) = conclude_with_fake(lease_failure(AppInstanceLeaseError::AlreadyRunning));
 
-    assert!(single_shown_message(&presenter).starts_with("Fastiplayer уже запущен."));
+    assert!(single_shown_message(&presenter).starts_with("Fastiplayer is already running."));
 }
 
 #[test]
@@ -225,7 +229,7 @@ fn config_load_and_path_discovery_failures_keep_technical_detail_for_log() {
     assert!(
         load_error
             .technical_detail()
-            .contains("не удалось загрузить config")
+            .contains("could not load fastiplayer configuration")
     );
     assert_eq!(
         discover_error.reason(),
@@ -250,7 +254,7 @@ fn slot_keeps_first_error_and_is_empty_after_take() {
 fn graphics_failure_during_runtime_recreation_is_not_shown_as_startup_error() {
     // Технический текст, как его кладёт renderer при провале после resume.
     let renderer_error = anyhow::anyhow!("surface lost: device lost after suspend")
-        .context("Не удалось получить GPU адаптер");
+        .context("Failed to get a GPU adapter");
     let error = FatalStartupError::graphics_unavailable(&renderer_error)
         .in_phase(FatalErrorPhase::RuntimeRecreation);
     let (conclusion, presenter) = conclude_with_fake(error.clone());
@@ -259,10 +263,10 @@ fn graphics_failure_during_runtime_recreation_is_not_shown_as_startup_error() {
     assert_eq!(conclusion.exit_code(), ExitCode::from(1));
     let shown = presenter.shown_notices();
     assert_eq!(shown.len(), 1);
-    assert_eq!(shown[0].notice.title, "Fastiplayer остановлен");
+    assert_eq!(shown[0].notice.title, "Fastiplayer stopped");
     let message = &shown[0].notice.message;
-    assert!(message.contains("выхода из сна"), "{message}");
-    for forbidden in ["Vulkan", "запустить вывод", "не запустился"] {
+    assert!(message.contains("after sleep"), "{message}");
+    for forbidden in ["Vulkan", "start video output", "could not start"] {
         assert!(!message.contains(forbidden), "{message}");
     }
     // Техническая причина не потеряна: она в ошибке (идёт в лог) и не в окне.
@@ -273,7 +277,7 @@ fn graphics_failure_during_runtime_recreation_is_not_shown_as_startup_error() {
     );
     assert_eq!(error.phase(), FatalErrorPhase::RuntimeRecreation);
     assert!(!message.contains("device lost"));
-    assert!(!presenter.text_output().contains("не запустился"));
+    assert!(!presenter.text_output().contains("could not start"));
 }
 
 #[test]
@@ -284,7 +288,7 @@ fn startup_phase_is_the_default_and_keeps_the_startup_title() {
 
     assert_eq!(
         presenter.shown_notices()[0].notice.title,
-        "Fastiplayer не запустился"
+        "Fastiplayer could not start"
     );
 }
 
@@ -297,7 +301,7 @@ fn slot_keeps_phase_of_the_first_recorded_error() {
     );
     slot.record(FatalStartupError::window_creation_failed(&"позже"));
 
-    let taken = slot.take().expect("первая ошибка сохранена");
+    let taken = slot.take().expect("first error saved");
     assert_eq!(taken.phase(), FatalErrorPhase::RuntimeRecreation);
     assert_eq!(*taken.reason(), FatalStartupReason::InternalFailure);
 }

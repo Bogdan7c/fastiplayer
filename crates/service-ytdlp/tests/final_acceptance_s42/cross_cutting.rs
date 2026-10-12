@@ -179,7 +179,7 @@ fn required_catalog_entry<'catalog>(
 ) -> &'catalog Value {
     catalog
         .get(evidence_id)
-        .unwrap_or_else(|| panic!("отсутствует exact evidence catalog ID `{evidence_id}`"))
+        .unwrap_or_else(|| panic!("No exact evidence catalog ID '{evidence_id}'"))
 }
 
 /// Собирает exact множество ID из одного статического requirement specification.
@@ -236,12 +236,12 @@ fn cross_cutting_requirements_bind_exact_executable_tests() {
     for (requirement, expected_evidence) in CROSS_CUTTING_GROUPS {
         let requirement_value = cross_cutting
             .get(*requirement)
-            .unwrap_or_else(|| panic!("отсутствует cross-cutting requirement `{requirement}`"));
+            .unwrap_or_else(|| panic!("No cross-cutting requirement '{requirement}'"));
         // Requirement object допускает только explicit evidence_ids.
         assert_eq!(
             requirement_value
                 .as_object()
-                .expect("cross-cutting requirement обязан быть object")
+                .expect("cross-cutting requirement must object")
                 .keys()
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>(),
@@ -257,13 +257,13 @@ fn cross_cutting_requirements_bind_exact_executable_tests() {
         let expected_ids = expected_evidence_ids(expected_evidence);
         assert_eq!(
             declared_ids, expected_ids,
-            "cross-cutting requirement `{requirement}` изменил exact evidence set"
+            "cross-cutting requirement `{requirement}` changed exact evidence set"
         );
 
         for expected in *expected_evidence {
             assert!(
                 all_expected_ids.insert(expected.id),
-                "evidence ID `{}` повторно используется между requirement groups",
+                "evidence ID `{}` reused between requirement groups",
                 expected.id
             );
             assert_exact_executable_evidence(catalog, *expected);

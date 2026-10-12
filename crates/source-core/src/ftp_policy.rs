@@ -226,25 +226,25 @@ impl fmt::Display for FtpRequestTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FtpRequestTargetError {
     /// Locator не является syntactically valid absolute URL.
-    #[error("некорректный absolute FTP request target")]
+    #[error("Incorrect absolute FTP request target")]
     InvalidSyntax,
     /// Scheme не входит в exact FTP(S) vocabulary.
-    #[error("FTP request target использует неподдерживаемую схему")]
+    #[error("FTP request target uses an unsupported scheme")]
     UnsupportedScheme,
     /// Opaque URL нельзя использовать как hierarchical network target.
-    #[error("FTP request target не является hierarchical URL")]
+    #[error("FTP request target is not hierarchical URL")]
     NonHierarchical,
     /// Network target обязан иметь host.
-    #[error("FTP request target не содержит host")]
+    #[error("FTP request target does not include host")]
     MissingHost,
     /// Progressive FTP path обязан указывать remote file.
-    #[error("FTP request target не содержит remote path")]
+    #[error("FTP request target does not include remote path")]
     MissingPath,
     /// Percent-decoded command value обязан быть корректным UTF-8.
-    #[error("FTP request target содержит не-UTF-8 command value")]
+    #[error("FTP request target contains non-UTF-8 command value")]
     InvalidCommandUtf8,
     /// FTP command arguments не должны содержать control characters.
-    #[error("FTP request target содержит небезопасный command value")]
+    #[error("FTP request target contains unsafe command value")]
     UnsafeCommandText,
 }
 

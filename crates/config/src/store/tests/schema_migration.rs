@@ -552,7 +552,7 @@ resolve_timeout_ms = 30000
 /// Preferred height roundtrip сохраняет scalar, а bounds проверяются при parse.
 #[test]
 fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
-    let valid_height = PreferredVideoHeight::new(2160).expect("2160 валидно");
+    let valid_height = PreferredVideoHeight::new(2160).expect("2160 valid.");
     let mut config = AppConfig::default();
     config.web_media.preferred_video_height = Some(valid_height);
     let serialized = config.to_pretty_toml().expect("config serializes");
@@ -583,7 +583,7 @@ fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
         )
         .expect("invalid preferred height fixture written");
         let error = load_from_path(&config_path).expect_err("invalid height rejected");
-        assert!(error.to_string().contains("предпочитаемая высота видео"));
+        assert!(error.to_string().contains("preferred video height"));
     }
 
     fs::write(

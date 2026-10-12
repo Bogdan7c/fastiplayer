@@ -49,7 +49,7 @@ impl Demuxer for CancellablePreviewThenReceiptDemuxer {
     ) -> anyhow::Result<DemuxSeekResult> {
         self.preview_started
             .send(())
-            .expect("test preview observer должен жить");
+            .expect("Test preview observer should live");
         cancellation.wait_cancelled();
         let _obsolete_result = Self::seek_result(request);
         Err(MediaDemuxError::SeekCancelled.into())
@@ -62,7 +62,7 @@ impl Demuxer for CancellablePreviewThenReceiptDemuxer {
     ) -> anyhow::Result<DemuxSeekResult> {
         self.receipt_started
             .send(())
-            .expect("test receipt observer должен жить");
+            .expect("The test receipt observer must live");
         Ok(Self::seek_result(request))
     }
 }
@@ -84,27 +84,25 @@ fn final_receipted_seek_cancels_in_flight_preview_without_manual_release() {
         limits(4, 16),
         retry_hint(),
         ProgressiveRuntimeGeneration::new(7),
-        ProgressiveAsyncSeekLimits::new(
-            NonZeroUsize::new(2).expect("test receipt bound ненулевой"),
-        ),
+        ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("test receipt bound non-zero")),
     )
-    .expect("deferred receipted worker запускается");
+    .expect("Deferred Receiving Worker Launches");
     let handle = progressive
         .async_seek_handle()
-        .expect("receipt capability опубликована");
+        .expect("Receipt capability published");
 
     assert!(matches!(
-        poll_until_event(&mut progressive).expect("initial tracks опубликованы"),
+        poll_until_event(&mut progressive).expect("Initial tracks published"),
         DemuxReadEvent::TracksChanged(_)
     ));
     let preview = progressive
         .seek_with_request(DemuxSeekRequest::accurate(Duration::from_secs(2)))
-        .expect("preview публикует exact anchor без ожидания worker-а");
+        .expect("Preview publishes exact anchor without waiting for a worker");
     assert_eq!(preview.actual_position, MediaTime::from_secs(2));
     assert_eq!(
         preview_started_receiver.recv_timeout(Duration::from_secs(1)),
         Ok(()),
-        "worker должен войти в cancellable preview"
+        "worker should enter cancellable preview"
     );
 
     let final_fence = receipt_fence(7, 1);
@@ -117,7 +115,7 @@ fn final_receipted_seek_cancels_in_flight_preview_without_manual_release() {
     assert_eq!(
         receipt_started_receiver.recv_timeout(Duration::from_secs(1)),
         Ok(()),
-        "final seek обязан стартовать после token cancellation без ручного release preview"
+        "final seek I have to start after token cancellation handless release preview"
     );
 
     let receipt = poll_until_receipt(&handle);
@@ -131,8 +129,8 @@ fn final_receipted_seek_cancels_in_flight_preview_without_manual_release() {
         })
     );
     assert_eq!(
-        poll_until_event(&mut progressive).expect("current generation EOF доступен"),
+        poll_until_event(&mut progressive).expect("The current generation EOF is available"),
         DemuxReadEvent::EndOfStream,
-        "stale preview cancellation не должна публиковаться как current failure"
+        "stale preview cancellation should not be published as current failure"
     );
 }

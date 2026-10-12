@@ -65,9 +65,7 @@ fn explicit_ffmpeg_prefix() -> Result<Option<PathBuf>, String> {
     if let Some(project_prefix) = env::var_os(FASTIPLAYER_PREFIX_ENV) {
         let project_prefix = PathBuf::from(project_prefix);
         return Err(format!(
-            "FFmpeg feature включён, но задан только {FASTIPLAYER_PREFIX_ENV}={}. \
-             `ffmpeg-sys-next` читает {FFMPEG_SYS_PREFIX_ENV}, поэтому выставь \
-             {FFMPEG_SYS_PREFIX_ENV}={} или добавь prefix pkg-config directory в PKG_CONFIG_PATH.",
+            "FFmpeg feature is enabled, but only {FASTIPLAYER_PREFIX_ENV}={} is set. `ffmpeg-sys-next` reads {FFMPEG_SYS_PREFIX_ENV}; set {FFMPEG_SYS_PREFIX_ENV}={} or add the prefix pkg-config directory to PKG_CONFIG_PATH.",
             project_prefix.display(),
             project_prefix.display()
         ));
@@ -80,7 +78,7 @@ fn explicit_ffmpeg_prefix() -> Result<Option<PathBuf>, String> {
 fn verify_explicit_prefix(prefix: &Path) -> Result<(), String> {
     if !prefix.exists() {
         return Err(format!(
-            "FFmpeg feature включён, но {FFMPEG_SYS_PREFIX_ENV}={} не существует.",
+            "FFmpeg feature is included, but {FFMPEG_SYS_PREFIX_ENV}={} does not exist.",
             prefix.display()
         ));
     }
@@ -90,8 +88,7 @@ fn verify_explicit_prefix(prefix: &Path) -> Result<(), String> {
         let header_path = include_dir.join(required_header);
         if !header_path.is_file() {
             return Err(format!(
-                "FFmpeg feature включён, но header `{}` не найден. \
-                 Ожидался путь: {}",
+                "FFmpeg feature on, but header '{}' not found. Track expected: {}",
                 required_header,
                 header_path.display()
             ));
@@ -100,8 +97,7 @@ fn verify_explicit_prefix(prefix: &Path) -> Result<(), String> {
 
     let library_dir = find_dynamic_library_dir(prefix).ok_or_else(|| {
         format!(
-            "FFmpeg feature включён, но dynamic lib directory не найден под {}. \
-             Ожидался один из каталогов: lib, lib64 или lib/arm64.",
+            "FFmpeg feature is enabled, but no dynamic library directory was found under {}. Expected one of: lib, lib64, or lib/arm64.",
             prefix.display()
         )
     })?;
@@ -109,7 +105,7 @@ fn verify_explicit_prefix(prefix: &Path) -> Result<(), String> {
     for required_library in REQUIRED_DYNAMIC_LIBS {
         if !contains_dynamic_library(&library_dir, required_library) {
             return Err(format!(
-                "FFmpeg feature включён, но dynamic library `{}` не найдена в {}.",
+                "FFmpeg feature is included, but dynamic library '{}' is not found in {}.",
                 required_library,
                 library_dir.display()
             ));
@@ -162,12 +158,6 @@ fn verify_pkg_config_inputs() -> Result<(), String> {
 /// Форматирует ошибку так, чтобы пользователь понимал, как включить feature.
 fn format_pkg_config_error(library_name: &str, error: pkg_config::Error) -> String {
     format!(
-        "FFmpeg feature включён, но pkg-config не нашёл `{library_name}`: {error}\n\
-         Установи FFmpeg development package или собери локальный dynamic LGPL FFmpeg через \
-         scripts/tooling/build-ffmpeg-lgpl.sh, затем выставь один из вариантов:\n\
-         - {FFMPEG_SYS_PREFIX_ENV}=/path/to/ffmpeg-prefix\n\
-         - PKG_CONFIG_PATH=/path/to/ffmpeg-prefix/lib/pkgconfig:$PKG_CONFIG_PATH\n\
-         Default workspace build не требует FFmpeg: не включай feature `ffmpeg`, если \
-         headers/libs недоступны."
+        "FFmpeg feature is enabled, but pkg-config could not find `{library_name}`: {error}\nInstall the FFmpeg development package or build a local dynamic LGPL FFmpeg with scripts/tooling/build-ffmpeg-lgpl.sh, then set one of:\n- {FFMPEG_SYS_PREFIX_ENV}=/path/to/ffmpeg-prefix\n- PKG_CONFIG_PATH=/path/to/ffmpeg-prefix/lib/pkgconfig:$PKG_CONFIG_PATH\nThe default workspace build does not require FFmpeg: leave feature `ffmpeg` disabled when headers/libraries are unavailable."
     )
 }

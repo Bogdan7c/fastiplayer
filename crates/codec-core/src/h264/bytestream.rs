@@ -512,7 +512,7 @@ fn read_avcc_nal_size(
             packet_bytes[cursor + 2],
             packet_bytes[cursor + 3],
         ]) as usize,
-        _ => unreachable!("H264NalLengthSize содержит только 1/2/4"),
+        _ => unreachable!("H264NalLengthSize contains only 1/2/4"),
     }
 }
 

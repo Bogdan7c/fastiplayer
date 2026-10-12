@@ -312,10 +312,7 @@ pub enum PlanningComponent {
 
 impl std::fmt::Display for PlanningCandidateBuildError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "candidate не прошёл planning admission: {self:?}"
-        )
+        write!(formatter, "candidate failed planning admission: {self:?}")
     }
 }
 
@@ -334,7 +331,7 @@ pub enum PlanningSnapshotBuildError {
 
 impl std::fmt::Display for PlanningSnapshotBuildError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "candidate snapshot недействителен: {self:?}")
+        write!(formatter, "candidate snapshot invalid: {self:?}")
     }
 }
 

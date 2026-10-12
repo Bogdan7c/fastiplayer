@@ -11,7 +11,7 @@ use super::{
 fn persistence_identity(locator: &super::StartupUrlLocator) -> String {
     locator
         .to_playlist_locator()
-        .expect("service locator должен создавать непустую domain identity")
+        .expect("Service locator must create a non-empty domain identity.")
         .expose_secret_for_persistence()
         .to_string()
 }
@@ -21,7 +21,7 @@ fn registry_keeps_exact_generic_identity_in_service_owner() {
     let exact_url = "https://youtu.be/video-id?v=keep&si=preserve&unknown=preserve";
     let classified = classify_startup_url(exact_url);
     let StartupUrlClassification::Supported(locator) = classified else {
-        panic!("generic yt-dlp service должен принять HTTP(S) URL");
+        panic!("generic yt-dlp service must accept HTTP(S) URL");
     };
 
     assert_eq!(persistence_identity(&locator), exact_url);
@@ -32,7 +32,7 @@ fn direct_signed_url_keeps_exact_identity() {
     let secret = "https://cdn.example.test/video.mp4?signature=a%2Bb&part=1+2";
     let classified = classify_startup_url(secret);
     let StartupUrlClassification::Supported(locator) = classified else {
-        panic!("generic direct service должен принять signed media URL");
+        panic!("Generic direct service must accept signed media URL");
     };
 
     assert_eq!(persistence_identity(&locator), secret);
@@ -42,7 +42,7 @@ fn direct_signed_url_keeps_exact_identity() {
 fn m3u8_hint_builds_native_admission_with_one_typed_fallback() {
     let exact_url = "https://cdn.example.test/master.m3u8?signature=native-secret";
     let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
-        panic!("m3u8 hint должен выбрать native admission adapter");
+        panic!("m3u8 hint selects native admission adapter");
     };
     assert_eq!(persistence_identity(&locator), exact_url);
 
@@ -63,7 +63,7 @@ fn m3u8_hint_builds_native_admission_with_one_typed_fallback() {
 fn mpd_hint_builds_content_probed_native_admission_when_extractor_is_disabled() {
     let exact_url = "https://cdn.example.test/video.mpd?signature=native-secret";
     let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
-        panic!("mpd hint должен выбрать native DASH admission adapter");
+        panic!("mpd hint must select native DASH admission adapter");
     };
     assert_eq!(persistence_identity(&locator), exact_url);
 
@@ -71,7 +71,7 @@ fn mpd_hint_builds_content_probed_native_admission_when_extractor_is_disabled() 
     app_config.yt_dlp.enabled = false;
     locator
         .validate_config(&app_config)
-        .expect("native DASH classification не зависит от extractor availability");
+        .expect("Native DASH classification is not dependent on extractor availability");
     let request = locator
         .into_media_open_source_request(
             &app_config,
@@ -89,7 +89,7 @@ fn mpd_hint_builds_content_probed_native_admission_when_extractor_is_disabled() 
 fn manifest_path_hint_builds_native_smooth_admission_when_extractor_is_disabled() {
     let exact_url = "https://cdn.example.test/vod/Manifest?signature=native-secret";
     let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
-        panic!("/Manifest hint должен выбрать native Smooth admission adapter");
+        panic!("/Manifest hint must select the native Smooth admission adapter");
     };
     assert_eq!(persistence_identity(&locator), exact_url);
 
@@ -97,7 +97,7 @@ fn manifest_path_hint_builds_native_smooth_admission_when_extractor_is_disabled(
     app_config.yt_dlp.enabled = false;
     locator
         .validate_config(&app_config)
-        .expect("native Smooth classification не зависит от extractor availability");
+        .expect("Native Smooth classification is not dependent on extractor availability.");
     let request = locator
         .into_media_open_source_request(
             &app_config,
@@ -115,7 +115,7 @@ fn manifest_path_hint_builds_native_smooth_admission_when_extractor_is_disabled(
 fn f4m_path_hint_builds_native_hds_admission_when_extractor_is_disabled() {
     let exact_url = "https://cdn.example.test/vod/ROOT.F4M?signature=native-secret";
     let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
-        panic!(".f4m hint должен выбрать native HDS admission adapter");
+        panic!(".f4m hint must select native HDS admission adapter");
     };
     assert_eq!(persistence_identity(&locator), exact_url);
 
@@ -123,7 +123,7 @@ fn f4m_path_hint_builds_native_hds_admission_when_extractor_is_disabled() {
     app_config.yt_dlp.enabled = false;
     locator
         .validate_config(&app_config)
-        .expect("native HDS classification не зависит от extractor availability");
+        .expect("Native HDS classification does not depend on extractor availability");
     let request = locator
         .into_media_open_source_request(
             &app_config,
@@ -147,7 +147,7 @@ fn f4m_hint_uses_only_the_final_path_segment_not_query_or_fragment() {
         let classification = classify_native_hds_startup_url(url);
         assert!(
             matches!(classification, ServiceClassifierResult::NotUrl),
-            "foreign hint не должен быть claimed: {url}"
+            "foreign hint shouldn't claimed: {url}"
         );
     }
 }
@@ -157,7 +157,7 @@ fn manifest_text_outside_final_path_segment_remains_generic() {
     let StartupUrlClassification::Supported(locator) =
         classify_startup_url("https://example.test/watch?next=/vod/Manifest")
     else {
-        panic!("generic HTTP URL должен остаться поддержан");
+        panic!("The generic HTTP URL should remain supported.");
     };
     let request = locator
         .into_media_open_source_request(
@@ -167,7 +167,7 @@ fn manifest_text_outside_final_path_segment_remains_generic() {
         )
         .expect("generic extractor request");
     let crate::media_open::MediaOpenSourceRequest::Web(_) = request else {
-        panic!("generic URL должен остаться web request-ом");
+        panic!("Generic URLs must remain a web request.");
     };
 }
 
@@ -176,7 +176,7 @@ fn m3u8_text_outside_url_path_remains_generic() {
     let StartupUrlClassification::Supported(locator) =
         classify_startup_url("https://example.test/watch?next=movie.m3u8")
     else {
-        panic!("generic HTTP URL должен остаться поддержан");
+        panic!("The generic HTTP URL should remain supported.");
     };
     let request = locator
         .into_media_open_source_request(
@@ -195,11 +195,11 @@ fn m3u8_text_outside_url_path_remains_generic() {
 fn playlist_locator_reopens_through_same_service_registry() {
     let domain_locator =
         SecretUrlLocator::from_reopenable_url("https://youtu.be/video-id?si=drop&future=preserve")
-            .expect("domain URL identity должна быть непустой");
+            .expect("Domain URL identity should not be empty.");
     let StartupUrlClassification::Supported(service_locator) =
         classify_playlist_url(&domain_locator)
     else {
-        panic!("persisted locator должен быть принят service registry");
+        panic!("Persistent locator must be accepted by the service registry");
     };
 
     assert_eq!(
@@ -212,7 +212,7 @@ fn playlist_locator_reopens_through_same_service_registry() {
 fn unsupported_error_does_not_reflect_secret_input() {
     let classified = classify_startup_url("https://user:password@[invalid-host]?token=secret");
     let StartupUrlClassification::Unsupported { reason } = classified else {
-        panic!("синтаксически невалидный URL должен быть rejected");
+        panic!("A syntactically invalid URL must be rejected");
     };
 
     assert_eq!(reason, StartupUrlUnsupportedReason::InvalidSyntax);
@@ -227,7 +227,7 @@ fn registry_prioritizes_direct_media_and_freezes_chosen_adapter_without_open_fal
     let StartupUrlClassification::Supported(direct_locator) =
         classify_startup_url("https://cdn.example.test/video.mp4?token=direct")
     else {
-        panic!("direct media URL должен быть принят");
+        panic!("Direct media URL must be accepted");
     };
     let direct_request = direct_locator
         .into_media_open_source_request(
@@ -246,12 +246,12 @@ fn registry_prioritizes_direct_media_and_freezes_chosen_adapter_without_open_fal
     let StartupUrlClassification::Supported(generic_locator) =
         classify_startup_url(exact_generic_url)
     else {
-        panic!("оставшийся HTTP(S) URL должен попасть в yt-dlp fallback");
+        panic!("The remaining HTTP(S) URL must go to yt-dlp fallback");
     };
     assert_eq!(persistence_identity(&generic_locator), exact_generic_url);
     assert!(
         generic_locator.requires_sensitive_persistence_acknowledgement(),
-        "exact query/userinfo обязаны пройти aggregated durable-locator acknowledgement"
+        "exact query/userinfo must pass aggregated durable-locator acknowledgement"
     );
     let generic_request = generic_locator
         .into_media_open_source_request(
@@ -278,11 +278,11 @@ fn direct_progressive_extensions_route_to_native_adapter_when_ytdlp_is_disabled(
         "ftp://media.example.test/audio.ogg",
     ] {
         let StartupUrlClassification::Supported(locator) = classify_startup_url(raw_locator) else {
-            panic!("{raw_locator} должен быть принят direct classifier-ом");
+            panic!("{raw_locator} must be accepted by direct classifier");
         };
         assert!(
             locator.safe_label().starts_with("direct media "),
-            "startup registry должен зафиксировать direct service adapter"
+            "startup registry must be fixed direct service adapter"
         );
         let request = locator
             .into_media_open_source_request(
@@ -290,9 +290,9 @@ fn direct_progressive_extensions_route_to_native_adapter_when_ytdlp_is_disabled(
                 &SystemCapabilities::empty(1),
                 audio::AudioDecodeCapabilitySnapshot::empty(),
             )
-            .expect("disabled yt-dlp не должен блокировать direct request");
+            .expect("Disabled yt-dlp must not block direct request");
         let crate::media_open::MediaOpenSourceRequest::Web(_) = request else {
-            panic!("direct progressive locator должен построить neutral web request");
+            panic!("Direct Progressive locator: Neutral Web Request");
         };
     }
 }
@@ -304,7 +304,7 @@ fn extended_s00_schemes_follow_implemented_or_excluded_profile_disposition() {
         "ftps://media.example.test/video.webm",
     ] {
         let StartupUrlClassification::Supported(locator) = classify_startup_url(raw_locator) else {
-            panic!("production registry должен включать S37 FTP provider");
+            panic!("Production registry includes S37 FTP provider");
         };
         assert_eq!(persistence_identity(&locator), raw_locator);
 
@@ -314,7 +314,7 @@ fn extended_s00_schemes_follow_implemented_or_excluded_profile_disposition() {
         let StartupUrlClassification::Supported(native_without_extractor) =
             missing_registry.classify(raw_locator)
         else {
-            panic!("direct FTP не должен зависеть от extractor provider capabilities");
+            panic!("Direct FTP does not depend on extractor provider capabilities.");
         };
         assert_eq!(persistence_identity(&native_without_extractor), raw_locator);
 
@@ -327,7 +327,7 @@ fn extended_s00_schemes_follow_implemented_or_excluded_profile_disposition() {
         let StartupUrlClassification::Supported(active_locator) =
             active_registry.classify(raw_locator)
         else {
-            panic!("extractor capability не должна менять direct FTP classification");
+            panic!("Extractability does not change direct FTP classification");
         };
         assert_eq!(persistence_identity(&active_locator), raw_locator);
     }
@@ -344,7 +344,7 @@ fn extended_s00_schemes_follow_implemented_or_excluded_profile_disposition() {
     ] {
         let StartupUrlClassification::Unsupported { reason } = classify_startup_url(raw_locator)
         else {
-            panic!("production registry не должен включать исключённый S39 RTMP provider");
+            panic!("The production registry must not include an excluded S39 RTMP provider.");
         };
         assert_eq!(
             reason,
@@ -360,13 +360,13 @@ fn extended_s00_schemes_follow_implemented_or_excluded_profile_disposition() {
             reason: active_reason,
         } = active_registry.classify(raw_locator)
         else {
-            panic!("registration capability не должна обходить profile exclusion");
+            panic!("Registration capability should not bypass the Profile Exclusion");
         };
         assert_eq!(
             active_reason,
             StartupUrlUnsupportedReason::ProfileExcludedInputScheme { input_scheme }
         );
-        assert!(active_reason.safe_error().contains("исключены"));
+        assert!(active_reason.safe_error().contains("excluded"));
     }
 }
 
@@ -392,7 +392,7 @@ fn profile_exclusion_does_not_normalize_unapproved_rtmp_aliases() {
     ] {
         let StartupUrlClassification::Unsupported { reason } = classify_startup_url(raw_locator)
         else {
-            panic!("неутверждённый alias не должен наследовать RTMP profile identity");
+            panic!("An unapproved alias must not inherit an RTMP profile identity");
         };
         assert_eq!(reason, expected_reason);
     }
@@ -406,7 +406,7 @@ fn profile_exclusion_does_not_normalize_unapproved_rtmp_aliases() {
     let StartupUrlClassification::Unsupported { reason } =
         rtmp_only_registry.classify("rtmpe://media.example.test/live")
     else {
-        panic!("RTMP capability не должна автоматически включать RTMPE");
+        panic!("RTMP capability does not automatically activate RTMPE");
     };
     assert_eq!(
         reason,
@@ -427,7 +427,7 @@ fn excluded_and_unknown_schemes_are_typed_rejected() {
     ] {
         let StartupUrlClassification::Unsupported { reason } = classify_startup_url(raw_locator)
         else {
-            panic!("scheme вне profile должна быть rejected");
+            panic!("The scheme outside the profile must be rejected.");
         };
         assert_eq!(reason, StartupUrlUnsupportedReason::UnsupportedScheme);
         let safe_error = reason.safe_error();
@@ -446,10 +446,10 @@ fn active_extended_locator_redacts_credentials_and_requires_acknowledgement() {
     let raw_locator = "ftp://user:password@media.example.test/private/video.webm?token=secret";
     let StartupUrlClassification::Supported(production_locator) = classify_startup_url(raw_locator)
     else {
-        panic!("S37 production registry должен принять FTP");
+        panic!("S37 Production Registry to Accept FTP");
     };
     let StartupUrlClassification::Supported(locator) = active_registry.classify(raw_locator) else {
-        panic!("active FTP capability должна принять exact locator");
+        panic!("Active FTP Capacity to Accept the exact location");
     };
 
     assert_eq!(persistence_identity(&production_locator), raw_locator);
@@ -479,7 +479,7 @@ fn display_host_shows_only_domain_without_secrets() {
     ];
     for (exact_url, expected_host) in cases {
         let StartupUrlClassification::Supported(locator) = classify_startup_url(exact_url) else {
-            panic!("тестовая ссылка должна поддерживаться: {expected_host}");
+            panic!("Test reference must be supported: {expected_host}");
         };
 
         let display_host = locator.display_host();
@@ -491,7 +491,7 @@ fn display_host_shows_only_domain_without_secrets() {
         ] {
             assert!(
                 !shown.contains(secret),
-                "домен «{shown}» раскрыл «{secret}»"
+                "The domain \"{shown}\" revealed \"{secret}\""
             );
         }
     }
@@ -503,18 +503,18 @@ fn disabled_extractor_cli_link_explains_setting_in_plain_words() {
     let StartupUrlClassification::Supported(locator) =
         classify_startup_url("https://www.video.example.test/watch?v=secret")
     else {
-        panic!("generic ссылка должна поддерживаться yt-dlp adapter-ом");
+        panic!("Generic link should be supported by yt-dlp adapter");
     };
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
 
     let error = locator
         .validate_config(&app_config)
-        .expect_err("выключенный yt-dlp запрещает открытие");
+        .expect_err("switched off yt-dlp prohibits opening");
 
     assert_eq!(
         error,
-        "Не удалось открыть ссылку (video.example.test): загрузка с сайтов через yt-dlp отключена в настройках"
+        "Could not open the link (video.example.test): website downloads through yt-dlp are disabled in Settings"
     );
 }
 
@@ -525,7 +525,7 @@ const SURROUNDING_WHITESPACE: [&str; 6] = [" ", "\n", "\r\n", "\t", "\u{00A0}", 
 fn surrounding_whitespace_does_not_change_classified_identity() {
     let exact_url = "https://example.com/a.mp4";
     let StartupUrlClassification::Supported(reference) = classify_startup_url(exact_url) else {
-        panic!("прямой media URL должен приниматься");
+        panic!("Direct media URL must be accepted.");
     };
     let reference_identity = persistence_identity(&reference);
     assert_eq!(reference_identity, exact_url);
@@ -533,7 +533,7 @@ fn surrounding_whitespace_does_not_change_classified_identity() {
     for padding in SURROUNDING_WHITESPACE {
         let padded = format!("{padding}{exact_url}{padding}");
         let StartupUrlClassification::Supported(locator) = classify_startup_url(&padded) else {
-            panic!("ссылка с пробелами вокруг должна приниматься: {padding:?}");
+            panic!("A reference with spaces around must be accepted: {padding:?}");
         };
         assert_eq!(
             persistence_identity(&locator),
@@ -556,31 +556,31 @@ fn whitespace_only_input_is_not_a_url_instead_of_panicking() {
     }
 }
 
-/// A10: пользователь видит человеческий русский текст, без имени Rust-вида ошибки
+/// A10: пользователь видит человеческий английский текст, без имени Rust-вида ошибки
 /// (`NetworkError:`) и без внутренних терминов («media services», «provider», «profile»).
 #[test]
-fn unsupported_url_messages_are_plain_russian_without_internal_jargon() {
+fn unsupported_url_messages_are_plain_english_without_internal_jargon() {
     let ftp = service_ytdlp::YtDlpInputScheme::Ftp;
     let cases = [
         (
             StartupUrlUnsupportedReason::InvalidSyntax,
-            "Некорректная ссылка",
+            "Incorrect reference",
         ),
         (
             StartupUrlUnsupportedReason::UnsupportedScheme,
-            "Такой тип ссылок не поддерживается",
+            "This type of link is not supported.",
         ),
         (
             StartupUrlUnsupportedReason::ImplementedProviderUnavailable { input_scheme: ftp },
-            "Ссылки `ftp` пока не поддерживаются",
+            "'ftp' links are not yet supported",
         ),
         (
             StartupUrlUnsupportedReason::ProfileExcludedInputScheme { input_scheme: ftp },
-            "Ссылки `ftp` исключены из поддерживаемых в этой версии",
+            "'ftp' links are excluded from those supported in this version",
         ),
         (
             StartupUrlUnsupportedReason::NoRegisteredService,
-            "Эта ссылка не поддерживается",
+            "This link is not supported",
         ),
     ];
     for (reason, expected) in cases {

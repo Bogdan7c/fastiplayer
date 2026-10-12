@@ -5,7 +5,7 @@
 //! плейлиста, поэтому пользователь видел «SeekUnavailable: …» с английским текстом нижнего
 //! слоя. `Display` и `Debug` остаются как есть (на них опираются логи и тесты player-core),
 //! а в интерфейс текст идёт только через [`player_error_user_message`]: это единственная
-//! таблица «вид ошибки -> русская фраза». Сырой `message` нижнего слоя в текст не попадает —
+//! таблица «вид ошибки -> английская фраза». Сырой `message` нижнего слоя в текст не попадает —
 //! он может содержать пути, адреса и английский жаргон; он пишется в лог через `tracing`.
 
 use player_core::{PlayerError, PlayerErrorKind};
@@ -16,8 +16,7 @@ use crate::audio_output_message::AUDIO_OUTPUT_UNAVAILABLE_MESSAGE;
 ///
 /// К этому моменту плеер уже ждал возвращения связи весь бюджет
 /// `network.reconnect_wait_ms` с повторами и показывал буферизацию.
-pub(crate) const NETWORK_LOST_DURING_PLAYBACK_MESSAGE: &str = "Нет связи с сервером: \
-    воспроизведение остановлено. Проверьте подключение к сети и откройте видео снова.";
+pub(crate) const NETWORK_LOST_DURING_PLAYBACK_MESSAGE: &str = "Cannot connect to the server: playback stopped. Check your network connection and open the video again.";
 
 /// Человеческая формулировка вида ошибки player-а.
 ///
@@ -25,37 +24,36 @@ pub(crate) const NETWORK_LOST_DURING_PLAYBACK_MESSAGE: &str = "Нет связи
 /// его текст выбрал человек, а не утёк в интерфейс через общий запасной вариант.
 pub(crate) const fn player_error_kind_phrase(kind: &PlayerErrorKind) -> &'static str {
     match kind {
-        PlayerErrorKind::UnsupportedVideoCodec => "Формат видео не поддерживается",
-        PlayerErrorKind::UnsupportedVideoProfile => {
-            "Профиль видео не поддерживается на этом компьютере"
-        }
-        PlayerErrorKind::UnsupportedVideoBitDepth => "Глубина цвета видео не поддерживается",
-        PlayerErrorKind::UnsupportedVideoChroma => "Цветовой формат видео не поддерживается",
-        PlayerErrorKind::UnsupportedHdrMode => "HDR-видео пока нельзя показать правильно",
-        PlayerErrorKind::UnsupportedAudioCodec => "Формат звука не поддерживается",
+        PlayerErrorKind::UnsupportedVideoCodec => "Unsupported video format",
+        PlayerErrorKind::UnsupportedVideoProfile => "Video profile is unsupported on this computer",
+        PlayerErrorKind::UnsupportedVideoBitDepth => "Video color depth is unsupported",
+        PlayerErrorKind::UnsupportedVideoChroma => "Video color format is unsupported",
+        PlayerErrorKind::UnsupportedHdrMode => "HDR video cannot be displayed correctly yet",
+        PlayerErrorKind::UnsupportedAudioCodec => "Unsupported audio format",
         PlayerErrorKind::UnsupportedRenderFormat => {
-            "Видеокарта не может показать кадры этого видео"
+            "The graphics card cannot display frames from this video"
         }
-        PlayerErrorKind::HardwareDecoderUnavailable => "Аппаратное декодирование видео недоступно",
+        PlayerErrorKind::HardwareDecoderUnavailable => "Hardware video decoding is unavailable",
         PlayerErrorKind::RequiredVideoBackendUnavailable => {
-            "Выбранный в настройках режим декодирования не подходит для этого видео или недоступен \
-             на этом компьютере. Выберите режим «Авто» в настройках"
+            "The decoder mode selected in Settings is unsuitable for this video or unavailable on this computer. Select Automatic in Settings"
         }
         PlayerErrorKind::DemuxError => {
-            "Не удалось прочитать данные: файл повреждён или передача прервалась"
+            "Could not read media: the file is corrupted or the transfer was interrupted"
         }
-        PlayerErrorKind::SeekUnavailable => "Перемотка для этого видео недоступна",
-        PlayerErrorKind::SeekTimeout => "Перемотка не успела выполниться — попробуйте ещё раз",
+        PlayerErrorKind::SeekUnavailable => "Seeking is unavailable for this video",
+        PlayerErrorKind::SeekTimeout => "Seeking timed out; try again",
         PlayerErrorKind::SeekTargetExpired => {
-            "Эта часть прямого эфира уже недоступна — перемотайте ближе к текущему моменту"
+            "This part of the live stream is no longer available; seek closer to the live edge"
         }
-        PlayerErrorKind::DecoderFlushFailed => "Не удалось перемотать видео — попробуйте ещё раз",
+        PlayerErrorKind::DecoderFlushFailed => "Could not seek the video; try again",
         PlayerErrorKind::NetworkError => NETWORK_LOST_DURING_PLAYBACK_MESSAGE,
         PlayerErrorKind::AudioDeviceUnavailable => AUDIO_OUTPUT_UNAVAILABLE_MESSAGE,
-        PlayerErrorKind::RenderDeviceLost => "Видеокарта перестала отвечать — откройте видео снова",
-        PlayerErrorKind::ConfigError => "Настройки плеера некорректны",
-        PlayerErrorKind::RuntimeError => "Внутренняя ошибка плеера — откройте видео снова",
-        PlayerErrorKind::InvalidCommand => "Это действие сейчас недоступно",
+        PlayerErrorKind::RenderDeviceLost => {
+            "The graphics card stopped responding; open the video again"
+        }
+        PlayerErrorKind::ConfigError => "Player settings are invalid",
+        PlayerErrorKind::RuntimeError => "Internal player error; open the video again",
+        PlayerErrorKind::InvalidCommand => "This action is currently unavailable",
     }
 }
 
@@ -66,10 +64,7 @@ pub(crate) fn player_error_user_message(error: &PlayerError) -> String {
 
 /// Короткий текст для бейджа строки плейлиста: «Ошибка воспроизведения: перемотка …».
 pub(crate) fn player_error_row_summary(error: &PlayerError) -> String {
-    format!(
-        "Ошибка воспроизведения: {}",
-        player_error_kind_phrase(&error.kind)
-    )
+    format!("Playback error: {}", player_error_kind_phrase(&error.kind))
 }
 
 #[cfg(test)]
@@ -112,13 +107,14 @@ mod tests {
                 !message.contains(&format!("{kind:?}")),
                 "{kind:?}: {message}"
             );
-            assert!(!message.contains("seek"), "{kind:?}: {message}");
+            assert!(
+                !message.contains("Live stream does not support"),
+                "{kind:?}: {message}"
+            );
             assert!(!message.contains("/tmp"), "{kind:?}: {message}");
             assert!(
-                message
-                    .chars()
-                    .any(|ch| ('а'..='я').contains(&ch.to_lowercase().next().unwrap_or(' '))),
-                "{kind:?} без русского текста: {message}"
+                message.chars().any(|ch| ch.is_ascii_alphabetic()),
+                "{kind:?} has no readable English message: {message}"
             );
         }
     }
@@ -128,12 +124,12 @@ mod tests {
         // Режим «Hardware» без VA-API (или «Software» без FFmpeg-пути) приходит именно так.
         let error = PlayerError::new(
             PlayerErrorKind::RequiredVideoBackendUnavailable,
-            "Backend `vaapi` не имеет playable output для candidate video stream",
+            "Backend 'vaapi' doesn't have playable output for candidate video stream",
         );
         let message = player_error_user_message(&error);
 
-        assert!(message.contains("режим декодирования"), "{message}");
-        assert!(message.contains("«Авто»"), "{message}");
+        assert!(message.contains("decoder mode"), "{message}");
+        assert!(message.contains("Automatic"), "{message}");
         assert!(!message.contains("vaapi"), "{message}");
     }
 
@@ -150,7 +146,7 @@ mod tests {
 
         assert_eq!(
             player_error_user_message(&error),
-            "Перемотка для этого видео недоступна"
+            "Seeking is unavailable for this video"
         );
     }
 
@@ -159,7 +155,7 @@ mod tests {
         let error = PlayerError::new(PlayerErrorKind::DemuxError, "bad atom");
         let summary = player_error_row_summary(&error);
 
-        assert!(summary.starts_with("Ошибка воспроизведения: "), "{summary}");
+        assert!(summary.starts_with("Playback error: "), "{summary}");
         assert!(!summary.contains("DemuxError"), "{summary}");
         assert!(!summary.contains("bad atom"), "{summary}");
     }

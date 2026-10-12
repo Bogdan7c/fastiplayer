@@ -151,7 +151,7 @@ impl fmt::Display for PlaylistEntriesMutationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InstallCommitLinearizing => {
-                formatter.write_str("queue mutation заблокирована active install commit")
+                formatter.write_str("queue mutation blocked by active install commit")
             }
             Self::CapacityExceeded {
                 current_retained_items,
@@ -159,27 +159,27 @@ impl fmt::Display for PlaylistEntriesMutationError {
                 maximum,
             } => write!(
                 formatter,
-                "capacity превышена: retained {current_retained_items}, requested {requested_retained_items}, maximum {maximum}"
+                "capacity exceeded: retained {current_retained_items}, requested {requested_retained_items}, maximum {maximum}"
             ),
             Self::ItemIdArithmeticExhausted => {
-                formatter.write_str("пространство PlaylistItemId исчерпано")
+                formatter.write_str("PlaylistItemId space is exhausted")
             }
             Self::ItemIdCollision { item_id } => {
-                write!(formatter, "будущий PlaylistItemId конфликтует: {item_id}")
+                write!(formatter, "PlaylistItemId conflict: {item_id}")
             }
             Self::CompoundGroupIdArithmeticExhausted => {
-                formatter.write_str("пространство PlaylistCompoundGroupId исчерпано")
+                formatter.write_str("PlaylistCompoundGroupId space is exhausted")
             }
             Self::CompoundGroupIdCollision { group_id } => {
                 write!(
                     formatter,
-                    "будущий PlaylistCompoundGroupId конфликтует: {group_id}"
+                    "PlaylistCompoundGroupId is in conflict: {group_id}"
                 )
             }
             Self::StructuralRevisionExhausted => {
-                formatter.write_str("structural revision исчерпана")
+                formatter.write_str("structural revision exhausted")
             }
-            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision исчерпана"),
+            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision exhausted"),
         }
     }
 }

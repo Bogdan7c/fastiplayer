@@ -85,13 +85,13 @@ impl CompositeAvPublicTrackIds {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CompositeAvDemuxerError {
     /// Explicit compatibility remap обязан оставаться collision-free.
-    #[error("public video/audio track IDs сталкиваются на {track_id:?}")]
+    #[error("public video/audio track IDs encounter {track_id:?}")]
     PublicTrackIdCollision {
         /// Duplicate public ID.
         track_id: TrackId,
     },
     /// Explicit selected track отсутствует в component snapshot-е.
-    #[error("{component:?} component не содержит selected track {track_id:?}")]
+    #[error("{component:?} component is not selected track {track_id:?}")]
     SelectedTrackMissing {
         /// Component, чей snapshot нарушил selection contract.
         component: CompositeComponent,
@@ -100,7 +100,7 @@ pub enum CompositeAvDemuxerError {
     },
     /// Selected track имеет неверный media kind.
     #[error(
-        "{component:?} selected track {track_id:?} имеет kind {actual_kind:?}, ожидался {expected_kind:?}"
+        "{component:?} selected track {track_id:?} has a kind {actual_kind:?}, expected {expected_kind:?}"
     )]
     SelectedTrackKindMismatch {
         /// Component, чей selected track проверяется.
@@ -128,7 +128,7 @@ pub struct CompositeComponentReadError {
 /// Typed safety failure не позволяет удержать oversized packet в pending state.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "{component:?} component packet size {packet_bytes} превышает composite pending limit {maximum_bytes}"
+    "{component:?} component packet size {packet_bytes} exceeds the composite pending limit {maximum_bytes}"
 )]
 pub struct CompositePendingPacketTooLargeError {
     /// Component, который вернул oversized selected packet.
@@ -496,7 +496,7 @@ impl CompositeAvDemuxer {
                 video_actual_ms = video_seek.actual_position.as_duration().as_millis(),
                 audio_actual_ms = audio_seek.actual_position.as_duration().as_millis(),
                 composite_actual_ms = composite_seek.actual_position.as_duration().as_millis(),
-                "Composite A/V seek вернул разные component positions"
+                "Composite A/V seek returns component positions"
             );
         }
         DemuxSeekResult {

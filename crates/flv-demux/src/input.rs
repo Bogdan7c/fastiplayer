@@ -262,7 +262,7 @@ impl RawFlvInput {
         let extra_header_bytes = header.data_offset - fixed.len();
         if extra_header_bytes > self.options.tag_bytes.get() {
             return Err(FlvDemuxError::InvalidHeader {
-                reason: "extended header превышает tag byte limit".to_owned(),
+                reason: "extended header exceed tag byte limit".to_owned(),
             });
         }
         let mut extension = vec![0_u8; extra_header_bytes];
@@ -352,7 +352,7 @@ impl RawFlvInput {
                 }
                 return Err(FlvDemuxError::Source {
                     reason: format!(
-                        "short read: ожидалось {required_bytes} bytes, получено {}",
+                        "short read: expected {required_bytes} bytes, got {}",
                         candidate.len() - initial_length
                     ),
                 });
@@ -399,10 +399,7 @@ impl RawFlvInput {
                     self.replay_bytes.push_front(*byte);
                 }
                 return Err(FlvDemuxError::Source {
-                    reason: format!(
-                        "short read: ожидалось {} bytes, получено {filled}",
-                        output.len()
-                    ),
+                    reason: format!("short read: expected {} bytes, got {filled}", output.len()),
                 });
             }
             filled += count;
@@ -430,7 +427,7 @@ impl F4fInput {
                     let previous = payload.get(previous_start..previous_end).ok_or_else(|| {
                         FlvDemuxError::MalformedF4f {
                             sequence: self.expected_sequence.unwrap_or(0),
-                            reason: "mdat FLV PreviousTagSize обрезан".to_owned(),
+                            reason: "mdat FLV PreviousTagSize cropped".to_owned(),
                         }
                     })?;
                     validate_previous_tag_size(previous, tag_size, offset + tag_size as u64)?;

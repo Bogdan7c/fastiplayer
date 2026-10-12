@@ -23,7 +23,7 @@ fn color_pipeline_uniform_binding_size() -> NonZeroU64 {
     // Инвариант защищён layout test-ом `color_pipeline_uniforms_match_wgsl_uniform_layout`.
     const {
         NonZeroU64::new(COLOR_PIPELINE_UNIFORM_SIZE)
-            .expect("размер color pipeline uniform buffer должен быть non-zero")
+            .expect("Color pipeline uniform buffer must be non-zero.")
     }
 }
 
@@ -271,11 +271,11 @@ mod tests {
 
         assert!(
             shader_source.contains("let sampled_u = sampled_uv.r;"),
-            "NV12 в Rg8Unorm должен читать U из .r"
+            "NV12 in Rg8Unorm should read U from .r"
         );
         assert!(
             shader_source.contains("let sampled_v = sampled_uv.g;"),
-            "NV12 в Rg8Unorm должен читать V из .g"
+            "NV12 in Rg8Unorm should read V from .g"
         );
     }
 
@@ -286,11 +286,11 @@ mod tests {
 
         assert!(
             !shader_source.contains("fn nv12_to_rgb"),
-            "YUV->RGB conversion должен идти через generic uniform-driven helper"
+            "YUV->RGB conversion should go through generic uniform-driven helper"
         );
         assert!(
             shader_source.contains("yuv_to_rgb_row0"),
-            "Shader должен читать matrix coefficients из uniforms"
+            "Shader should read matrix coefficients from uniforms"
         );
     }
 }

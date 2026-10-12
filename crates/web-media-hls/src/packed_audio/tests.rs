@@ -74,7 +74,7 @@ fn id3_v23_with_timestamp(timestamp: u64) -> Vec<u8> {
 
 /// Склеивает payload-ы всех TS-пакетов заданного PID (без заголовков и stuffing-а).
 fn pid_payload(ts: &[u8], wanted_pid: u16) -> Vec<u8> {
-    assert_eq!(ts.len() % 188, 0, "TS должен состоять из целых пакетов");
+    assert_eq!(ts.len() % 188, 0, "TS should consist of entire packages.");
     let mut payload = Vec::new();
     for packet in ts.chunks(188) {
         assert_eq!(packet[0], 0x47, "sync byte");
@@ -100,7 +100,7 @@ fn pmt_stream_type(ts: &[u8]) -> u8 {
 /// Достаёт из TS-вывода PTS первого аудио-PES и склеенный elementary payload.
 fn audio_pes_pts_and_payload(ts: &[u8]) -> (u64, Vec<u8>) {
     let pes = pid_payload(ts, 0x0100);
-    assert_eq!(&pes[..4], &[0, 0, 1, 0xc0], "аудио-PES со stream_id 0xC0");
+    assert_eq!(&pes[..4], &[0, 0, 1, 0xc0], "audio PES with stream_id 0xC0");
     let pts = (u64::from((pes[9] >> 1) & 0x07) << 30)
         | (u64::from(pes[10]) << 22)
         | (u64::from(pes[11] >> 1) << 15)
@@ -115,11 +115,14 @@ fn id3_priv_timestamp_becomes_pes_pts_and_audio_survives_unchanged() {
     let segment = [id3_v24_with_timestamp(900_000), audio.clone()].concat();
 
     let ts = normalize_to_transport_stream(&segment, SegmentTimestampFallback::Zero)
-        .expect("packed AAC с ID3 нормализуется");
+        .expect("packed AAC with ID3 is normalized");
 
     let (pts, payload) = audio_pes_pts_and_payload(&ts);
-    assert_eq!(pts, 900_000, "PTS берётся из ID3 PRIV, а не из fallback");
-    assert_eq!(payload, audio, "ADTS-кадры доходят без изменений и без ID3");
+    assert_eq!(pts, 900_000, "PTS is derived from ID3 PRIV, not fallback.");
+    assert_eq!(
+        payload, audio,
+        "ADTS-The staff arrives without change and without ID3"
+    );
 }
 
 #[test]
@@ -129,7 +132,7 @@ fn id3v23_priv_and_33_bit_wrap_are_supported() {
     let segment = [id3_v23_with_timestamp(timestamp), adts_frame(10)].concat();
 
     let ts = normalize_to_transport_stream(&segment, SegmentTimestampFallback::Zero)
-        .expect("ID3v2.3 тоже разбирается");
+        .expect("ID3v2.3 I know too");
 
     assert_eq!(audio_pes_pts_and_payload(&ts).0, 5);
 }
@@ -142,7 +145,7 @@ fn missing_priv_uses_manifest_timeline_start_in_ticks() {
         &segment,
         SegmentTimestampFallback::ManifestTimelineStart(Duration::from_millis(12_500)),
     )
-    .expect("сегмент без ID3 тоже нормализуется");
+    .expect("The segment without ID3 is also normalized.");
 
     assert_eq!(audio_pes_pts_and_payload(&ts).0, 12_500 * 90);
 }
@@ -166,7 +169,7 @@ fn foreign_priv_owner_is_ignored_and_fallback_is_used() {
         &segment,
         SegmentTimestampFallback::ManifestTimelineStart(Duration::from_secs(2)),
     )
-    .expect("чужой PRIV не ломает сегмент");
+    .expect("Other people's PRIV doesn't break the segment");
 
     assert_eq!(audio_pes_pts_and_payload(&ts).0, 2 * 90_000);
 }
@@ -180,11 +183,11 @@ fn consecutive_id3_tags_are_all_skipped() {
     ]
     .concat();
 
-    let ts = normalize_to_transport_stream(&segment, SegmentTimestampFallback::Zero)
-        .expect("несколько тегов подряд");
+    let ts =
+        normalize_to_transport_stream(&segment, SegmentTimestampFallback::Zero).expect("tag-tag");
 
     let (pts, payload) = audio_pes_pts_and_payload(&ts);
-    assert_eq!(pts, 4_500, "берётся первая метка");
+    assert_eq!(pts, 4_500, "first-marker");
     assert_eq!(payload, adts_frame(10));
 }
 
@@ -242,7 +245,7 @@ fn sniffing_separates_packed_audio_from_ts_and_fmp4() {
         !looks_like_packed_audio(&[0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p']),
         "fMP4"
     );
-    assert!(!looks_like_packed_audio(&[0xff, 0x01]), "короткий префикс");
+    assert!(!looks_like_packed_audio(&[0xff, 0x01]), "prefix");
 }
 
 #[test]
@@ -252,7 +255,7 @@ fn large_segment_keeps_every_byte_across_ts_packets() {
     segment.extend_from_slice(&audio);
 
     let ts = normalize_to_transport_stream(&segment, SegmentTimestampFallback::Zero)
-        .expect("большой сегмент");
+        .expect("large-scale");
 
     assert_eq!(audio_pes_pts_and_payload(&ts).1, segment);
 }

@@ -41,7 +41,7 @@ use crate::url_service_adapter::{StartupUrlClassification, classify_startup_url}
 
 /// Текст, когда коллекция не поместилась в лимит очереди и часть записей отброшена.
 const COLLECTION_TRUNCATED_MESSAGE: &str =
-    "Все ролики по ссылке не поместились в плейлист: добавлены первые";
+    "All videos on the link did not fit into the playlist: the first ones were added";
 
 /// Разобранная структура ссылки, ожидающая замены очереди.
 ///
@@ -215,7 +215,7 @@ impl PlaylistRuntime {
             Err(error) => {
                 tracing::warn!(
                     ?error,
-                    "Коллекция по ссылке не превратилась в строки очереди"
+                    "The collection on the link did not turn into lines of queue"
                 );
                 return ServiceUrlReplacementOutcome::Rejected;
             }

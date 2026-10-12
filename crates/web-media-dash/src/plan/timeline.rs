@@ -562,7 +562,7 @@ mod tests {
             std::num::NonZeroUsize::new(8).expect("non-zero"),
             DashTimelinePlanningIntent::DynamicSnapshot,
         )
-        .expect("bounded explicit snapshot должен планироваться для open Period");
+        .expect("bounded explicit snapshot should be planned for open Period");
 
         assert_eq!(planned.segments.len(), 3);
         assert_eq!(
@@ -595,7 +595,7 @@ mod tests {
             std::num::NonZeroUsize::new(8).expect("non-zero"),
             DashTimelinePlanningIntent::DynamicSnapshot,
         )
-        .expect("AAC sample-clock timeline должен детерминированно quantize-иться");
+        .expect("AAC sample-clock timeline must be deterministically quantized.");
 
         for adjacent_segments in planned.segments.windows(2) {
             assert_eq!(

@@ -81,19 +81,17 @@ impl NativeSmoothStartupJob {
                 }
                 match result_publisher.publish_completion(result) {
                     Ok(WakeDelivery::EventLoopClosed) => tracing::debug!(
-                        "Event loop закрыт; native Smooth terminal оставлен без wake retry"
+                        "Event loop closed; native Smooth terminal left without wake retry"
                     ),
                     Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
                     Err(CompletionPublishError::AlreadyPublished) => tracing::warn!(
-                        "Native Smooth startup opener попытался опубликовать второй terminal"
+                        "Native Smooth startup opener tried to publish a second terminal"
                     ),
                 }
             })
-            .map_err(|error| {
-                format!("Не удалось запустить native Smooth startup opener: {error}")
-            })?;
+            .map_err(|error| format!("Failed to launch native Smooth startup opener: {error}"))?;
         Ok(Self {
-            pending_message: "Проверка native Smooth...".to_owned(),
+            pending_message: "Checking the native Smooth...".to_owned(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -118,7 +116,7 @@ impl NativeSmoothStartupJob {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
                         Err(StartupWebPreparationFailure::unclassified(
-                            "Native Smooth startup opener завершился без результата",
+                            "Native Smooth startup opener ends without results",
                         ))
                     })
                 })
@@ -126,7 +124,7 @@ impl NativeSmoothStartupJob {
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
                 Some(Err(StartupWebPreparationFailure::unclassified(
-                    "Native Smooth startup opener завершился panic",
+                    "Native Smooth startup opener finished panic",
                 )))
             }
             FinishedThreadJoin::StillRunning => None,
@@ -175,7 +173,7 @@ fn resolve_native_smooth_startup_media(
             }
             tracing::info!(
                 ?invocation_reason,
-                "CLI native Smooth admission передан единственному YtDlp fallback"
+                "CLI native Smooth admission transferred to single YtDlp fallback"
             );
             let prepared = super::resolve_yt_dlp_startup_media(
                 &fallback_locator,
@@ -210,7 +208,7 @@ impl super::StartupMediaController {
             app_state.set_startup_error(error);
             return;
         }
-        app_state.set_startup_pending("Проверка native Smooth...".to_owned());
+        app_state.set_startup_pending("Checking the native Smooth...".to_owned());
         match NativeSmoothStartupJob::spawn(
             source,
             fallback_locator,
@@ -225,7 +223,7 @@ impl super::StartupMediaController {
             }
             Err(error) => {
                 self.orchestration.preparation_failed();
-                tracing::warn!(error = %error, "Не удалось запустить native Smooth startup opener");
+                tracing::warn!(error = %error, "The native Smooth startup opener failed to launch.");
                 self.startup_error = Some(error.clone());
                 app_state.set_startup_error(error);
             }

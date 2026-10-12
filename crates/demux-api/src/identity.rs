@@ -7,14 +7,14 @@ const MAX_DEMUX_IDENTITY_BYTES: usize = 128;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DemuxIdentityError {
     /// Пустое значение не может однозначно идентифицировать registration или hint.
-    #[error("{kind} не может быть пустым")]
+    #[error("{kind} can't be empty")]
     Empty {
         /// Человекочитаемое имя проверяемого типа.
         kind: &'static str,
     },
 
     /// Значение превышает общий безопасный diagnostic bound.
-    #[error("{kind} превышает лимит {max_bytes} bytes")]
+    #[error("{kind} exceeds the limit of {max_bytes} bytes")]
     TooLong {
         /// Человекочитаемое имя проверяемого типа.
         kind: &'static str,
@@ -23,7 +23,7 @@ pub enum DemuxIdentityError {
     },
 
     /// Значение содержит символы вне стабильной registry grammar.
-    #[error("{kind} содержит недопустимый символ `{character}`")]
+    #[error("{kind} contains the inadmissible symbol {character}")]
     InvalidCharacter {
         /// Человекочитаемое имя проверяемого типа.
         kind: &'static str,
@@ -110,27 +110,27 @@ macro_rules! define_demux_identity {
 define_demux_identity!(
     DemuxFactoryId,
     "demux factory ID",
-    "Stable process-local identity конкретного demux factory."
+    "Stable process-local identity of a particular demux factory."
 );
 define_demux_identity!(
     DemuxContainerId,
     "demux container ID",
-    "Neutral canonical container identity, например `iso-bmff` или `matroska`."
+    "Neutral canonical container identity, such as `iso-bmff' or `matroska'."
 );
 define_demux_identity!(
     DemuxFixtureId,
     "demux fixture ID",
-    "Stable evidence identity, которым registration ссылается на focused fixture."
+    "Stable evidence identity, by which registration refers to a focused fixture."
 );
 define_demux_identity!(
     DemuxSourceExtension,
     "demux source extension",
-    "Extension hint без ведущей точки; hint никогда не заменяет content sniff."
+    "Extension hint without a lead point; hint never replaces content sniff."
 );
 define_demux_identity!(
     DemuxMimeType,
     "demux MIME type",
-    "Canonical MIME hint в lowercase ASCII форме."
+    "Canonical MIME hint in lowercase ASCII form."
 );
 
 #[cfg(test)]

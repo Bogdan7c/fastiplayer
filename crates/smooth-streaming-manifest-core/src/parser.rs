@@ -491,7 +491,7 @@ fn parse_stream_metadata(
 )]
 fn default_root_timescale() -> SmoothTimescale {
     SmoothTimescale::new(SMOOTH_STREAMING_DEFAULT_TIMESCALE_TICKS_PER_SECOND)
-        .expect("MS-SSTR default timescale ненулевой")
+        .expect("MS-SSTR default timescale is non-zero")
 }
 
 /// Парсит raw `<c>` intent, сохраняя absent и distinct negative repeat.

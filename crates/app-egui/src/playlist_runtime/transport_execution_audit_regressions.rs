@@ -120,7 +120,7 @@ fn unstaged_automatic_failure_preserves_fixed_continuation_to_c() {
         install: continuation,
     } = runtime.report_unstaged_planned_playlist_navigation_failure(failed_b_install)
     else {
-        panic!("Skip продолжает fixed traversal после unstaged B");
+        panic!("Skip continues fixed traversal after unstaged B");
     };
 
     // Продолжение адресует C и не создаёт manual failed-anchor.

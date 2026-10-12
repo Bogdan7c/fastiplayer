@@ -92,7 +92,7 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
         }
         thread::sleep(Duration::from_millis(2));
     }
-    panic!("condition должна выполниться до test deadline");
+    panic!("The condition must be met before the test deadline");
 }
 
 /// Immediate fake сохраняет sensitive count, который вычислил production classifier.
@@ -240,7 +240,7 @@ fn rapid_submit_cancels_running_and_delivers_only_exact_latest_generation() {
     let PlaylistUrlImportCompletion::Resolved(draft) =
         completion.expect("latest completion").completion
     else {
-        panic!("latest request должен завершиться успешно");
+        panic!("The latest request must be completed successfully.");
     };
     assert_eq!(draft.test_summary(), (1, 0, false, 1));
     assert!(owner.drain().is_none());

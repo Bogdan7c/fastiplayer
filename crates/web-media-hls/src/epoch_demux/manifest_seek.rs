@@ -285,7 +285,7 @@ impl HlsComponentDemuxer {
         resource_attempt_observer: HlsResourceAttemptObserver,
     ) -> Result<Self> {
         let epoch = plan.manifest_restart_tail(point).ok_or_else(|| {
-            anyhow::anyhow!("HLS manifest seek point отсутствует в immutable plan")
+            anyhow::anyhow!("HLS manifest seek point is not available in the immutable plan.")
         })?;
         Self::open_from_epoch_plan(
             plan,

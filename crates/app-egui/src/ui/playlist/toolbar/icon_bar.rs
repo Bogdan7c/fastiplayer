@@ -82,13 +82,13 @@ impl ToolbarControl {
     /// Короткое имя используется AccessKit и не зависит от tooltip-подробностей.
     const fn accessible_label(self) -> &'static str {
         match self {
-            Self::AddFiles => "Добавить файлы",
-            Self::AddUrl => "Добавить URL",
-            Self::Sort => "Сортировать плейлист",
-            Self::CurrentItem => "Перейти к текущему медиа",
-            Self::Import => "Импортировать плейлист",
-            Self::Export => "Экспортировать плейлист",
-            Self::Clear => "Очистить очередь",
+            Self::AddFiles => "Add files",
+            Self::AddUrl => "Add URL",
+            Self::Sort => "Sort Playlist",
+            Self::CurrentItem => "Go to current media",
+            Self::Import => "Import Playlist",
+            Self::Export => "Export Playlist",
+            Self::Clear => "Clear queue",
         }
     }
 
@@ -103,19 +103,19 @@ impl ToolbarControl {
                         model.structural_action_availability,
                     )
                 },
-                tooltip: "Добавить несколько файлов в конец плейлиста",
+                tooltip: "Add multiple files to the end of Playlist",
                 disabled_tooltip: if model.file_dialog_open {
-                    "Диалог выбора файлов уже открыт"
+                    "The file picker is already open"
                 } else {
-                    "Сейчас нельзя изменять состав плейлиста"
+                    "Playlist entries cannot be changed right now"
                 },
             },
             Self::AddUrl => ToolbarPresentation {
                 availability: ToolbarControlAvailability::from_structural(
                     model.structural_action_availability,
                 ),
-                tooltip: "Добавить медиа по URL в конец плейлиста",
-                disabled_tooltip: "Сейчас нельзя изменять состав плейлиста",
+                tooltip: "Add media by URL to the end of Playlist",
+                disabled_tooltip: "Playlist entries cannot be changed right now",
             },
             Self::Sort => ToolbarPresentation {
                 availability: if model.item_count <= 1 || model.active_operation.is_some() {
@@ -125,7 +125,7 @@ impl ToolbarControl {
                         model.structural_action_availability,
                     )
                 },
-                tooltip: "Однократно изменить порядок плейлиста",
+                tooltip: "Reorder Playlist once",
                 disabled_tooltip: sort_disabled_tooltip(model),
             },
             Self::CurrentItem => ToolbarPresentation {
@@ -135,7 +135,7 @@ impl ToolbarControl {
                     ToolbarControlAvailability::Disabled
                 },
                 tooltip: current_item_tooltip(model.go_current_target),
-                disabled_tooltip: "Сейчас нет активного медиа",
+                disabled_tooltip: "No media is active",
             },
             Self::Import => ToolbarPresentation {
                 availability: if model.import_dialog_open {
@@ -145,11 +145,11 @@ impl ToolbarControl {
                         model.structural_action_availability,
                     )
                 },
-                tooltip: "Импортировать M3U, M3U8 или XSPF",
+                tooltip: "Import M3U, M3U8, or XSPF",
                 disabled_tooltip: if model.import_dialog_open {
-                    "Диалог импорта уже открыт"
+                    "The import dialog is already open"
                 } else {
-                    "Сейчас нельзя изменять состав плейлиста"
+                    "Playlist entries cannot be changed right now"
                 },
             },
             Self::Export => ToolbarPresentation {
@@ -158,11 +158,11 @@ impl ToolbarControl {
                 } else {
                     ToolbarControlAvailability::Enabled
                 },
-                tooltip: "Экспортировать весь плейлист или выбранные элементы",
+                tooltip: "Export the entire Playlist or selected items",
                 disabled_tooltip: if model.item_count == 0 {
-                    "Очередь пуста"
+                    "The queue is empty"
                 } else {
-                    "Диалог экспорта уже открыт"
+                    "The export dialog is already open"
                 },
             },
             Self::Clear => ToolbarPresentation {
@@ -173,11 +173,11 @@ impl ToolbarControl {
                         model.structural_action_availability,
                     )
                 },
-                tooltip: "Очистить очередь; текущее воспроизведение продолжится",
+                tooltip: "Clear the queue; current playback will continue",
                 disabled_tooltip: if model.item_count == 0 {
-                    "Очередь уже пуста"
+                    "The queue is already empty"
                 } else {
-                    "Сейчас нельзя изменять состав плейлиста"
+                    "Playlist entries cannot be changed right now"
                 },
             },
         }
@@ -517,14 +517,14 @@ fn show_sort_menu(
     Popup::menu(response).show(|ui| {
         for (key, label) in SORT_KEYS {
             ui.menu_button(label, |ui| {
-                if ui.button("По возрастанию ↑").clicked() {
+                if ui.button("Ascending ↑").clicked() {
                     output.push_action(PlaylistAction::Sort(SortCanonicalQueue::new(
                         key,
                         SortDirection::Ascending,
                     )));
                     ui.close();
                 }
-                if ui.button("По убыванию ↓").clicked() {
+                if ui.button("Descending ↓").clicked() {
                     output.push_action(PlaylistAction::Sort(SortCanonicalQueue::new(
                         key,
                         SortDirection::Descending,
@@ -539,22 +539,20 @@ fn show_sort_menu(
 /// Tooltip сохраняет различие между неподходящей очередью, mutation gate и активной работой.
 fn sort_disabled_tooltip(model: &PlaylistInteractionModel) -> &'static str {
     if !model.structural_action_availability.allows_interaction() {
-        "Сейчас нельзя изменять порядок плейлиста"
+        "Playlist order cannot be changed right now"
     } else if model.item_count <= 1 {
-        "Для сортировки нужны хотя бы два элемента"
+        "At least two items are required to sort"
     } else {
-        "Дождитесь завершения текущей операции"
+        "Wait for the current operation to finish"
     }
 }
 
 /// Текущий row и detached tombstone имеют разные пользовательские последствия.
 const fn current_item_tooltip(target: Option<PlaylistGoCurrentTarget>) -> &'static str {
     match target {
-        Some(PlaylistGoCurrentTarget::Row(_)) => "Сфокусировать и показать текущую строку",
-        Some(PlaylistGoCurrentTarget::Tombstone) => {
-            "Показать продолжающее воспроизводиться удалённое медиа"
-        }
-        None => "Сейчас нет активного медиа",
+        Some(PlaylistGoCurrentTarget::Row(_)) => "Focus and show the current row",
+        Some(PlaylistGoCurrentTarget::Tombstone) => "Show removed media that is still playing",
+        None => "No media is active",
     }
 }
 
@@ -917,11 +915,11 @@ mod tests {
             assert_eq!(
                 control_paint_shapes(&transient_model, control),
                 control_paint_shapes(&available_model, control),
-                "{control:?} должен сохранить обычный paint во время commit-guard"
+                "{control:?} must retain the usual paint during the commit guard"
             );
             assert!(
                 click_control(&Context::default(), &transient_model, control).is_empty(),
-                "{control:?} не должен публиковать structural action во время commit-guard"
+                "{control:?} must not post structural action during commit-guard"
             );
         }
 
@@ -1057,34 +1055,22 @@ mod tests {
     }
 
     #[test]
-    fn icon_only_controls_keep_explicit_russian_accessibility_names() {
-        assert_eq!(
-            ToolbarControl::AddFiles.accessible_label(),
-            "Добавить файлы"
-        );
-        assert_eq!(ToolbarControl::AddUrl.accessible_label(), "Добавить URL");
-        assert_eq!(
-            ToolbarControl::Sort.accessible_label(),
-            "Сортировать плейлист"
-        );
+    fn icon_only_controls_keep_explicit_english_accessibility_names() {
+        assert_eq!(ToolbarControl::AddFiles.accessible_label(), "Add files");
+        assert_eq!(ToolbarControl::AddUrl.accessible_label(), "Add URL");
+        assert_eq!(ToolbarControl::Sort.accessible_label(), "Sort Playlist");
         assert_eq!(
             ToolbarControl::CurrentItem.accessible_label(),
-            "Перейти к текущему медиа"
+            "Go to current media"
         );
-        assert_eq!(
-            ToolbarControl::Import.accessible_label(),
-            "Импортировать плейлист"
-        );
+        assert_eq!(ToolbarControl::Import.accessible_label(), "Import Playlist");
         assert_eq!(
             ToolbarControl::Import
                 .presentation(&PlaylistInteractionModel::default())
                 .tooltip,
-            "Импортировать M3U, M3U8 или XSPF"
+            "Import M3U, M3U8, or XSPF"
         );
-        assert_eq!(
-            ToolbarControl::Export.accessible_label(),
-            "Экспортировать плейлист"
-        );
+        assert_eq!(ToolbarControl::Export.accessible_label(), "Export Playlist");
         assert_eq!(
             ToolbarControl::Export
                 .presentation(&PlaylistInteractionModel {
@@ -1092,8 +1078,8 @@ mod tests {
                     ..PlaylistInteractionModel::default()
                 })
                 .tooltip,
-            "Экспортировать весь плейлист или выбранные элементы"
+            "Export the entire Playlist or selected items"
         );
-        assert_eq!(ToolbarControl::Clear.accessible_label(), "Очистить очередь");
+        assert_eq!(ToolbarControl::Clear.accessible_label(), "Clear queue");
     }
 }

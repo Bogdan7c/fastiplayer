@@ -147,7 +147,7 @@ fn constrained_xml_budgets(
         .maximum_namespace_bytes(4 * 1024)
         .maximum_text_bytes(maximum_text_bytes)
         .build()
-        .expect("test задаёт complete XML budget")
+        .expect("The full XML budget is defined")
 }
 
 /// Test-only schema caps.
@@ -194,7 +194,7 @@ fn segment_template_timeline_and_base_url_inheritance_shape_are_preserved() {
             </Period>
           </MPD>"#,
     )
-    .expect("поддерживаемый static template MPD");
+    .expect("Supported static template MPD");
 
     assert_eq!(
         mpd.media_presentation_duration,
@@ -220,7 +220,7 @@ fn segment_template_timeline_and_base_url_inheritance_shape_are_preserved() {
     assert_eq!(representation.width, Some(1_920));
     assert_eq!(representation.height, Some(1_080));
     let DashAddressing::Template(template) = &representation.addressing else {
-        panic!("ожидался inherited template");
+        panic!("Expected inherited template");
     };
     let expanded = template
         .media
@@ -258,7 +258,7 @@ fn segment_list_and_segment_base_initialization_are_modelled() {
     assert_eq!(representation.container, DashContainer::WebM);
     assert_eq!(representation.media_kind, DashMediaKind::Audio);
     let DashAddressing::List(segment_list) = &representation.addressing else {
-        panic!("ожидался SegmentList");
+        panic!("Expected SegmentList");
     };
     assert_eq!(segment_list.segments.len(), 2);
     assert_eq!(
@@ -281,7 +281,7 @@ fn segment_list_and_segment_base_initialization_are_modelled() {
     let DashAddressing::Base(segment_base) =
         &base.periods[0].adaptation_sets[0].representations[0].addressing
     else {
-        panic!("ожидался SegmentBase");
+        panic!("expected by SegmentBase");
     };
     assert_eq!(segment_base.index_range.expect("index").start(), 100);
     assert_eq!(
@@ -318,7 +318,7 @@ fn known_non_playback_text_adaptation_does_not_hide_or_mutate_av_catalog() {
           </Period>
         </MPD>"#,
     )
-    .expect("known subtitle row рядом с playable A/V catalog");
+    .expect("known subtitle row next to playable A/V catalog");
 
     assert_eq!(parsed.periods[0].adaptation_sets.len(), 1);
     let retained = &parsed.periods[0].adaptation_sets[0].representations[0];
@@ -410,7 +410,7 @@ fn exact_namespace_dynamic_drm_base_cardinality_and_media_mismatch_fail_closed()
     ];
     for (document, expected) in cases {
         assert_eq!(
-            parse(document).expect_err("должен быть reject").kind(),
+            parse(document).expect_err("must be rejected").kind(),
             expected
         );
     }
@@ -434,7 +434,7 @@ fn declared_profiles_are_exactly_allowlisted_and_do_not_expand_the_syntax_profil
              </AdaptationSet></Period>
            </MPD>"#
     );
-    parse(&supported_document).expect("каждый доказанный profile разрешён");
+    parse(&supported_document).expect("Every Proven Profile Is Allowed");
 
     let rejected_profiles = [
         "",
@@ -457,7 +457,7 @@ fn declared_profiles_are_exactly_allowlisted_and_do_not_expand_the_syntax_profil
         );
         assert_eq!(
             parse(&document)
-                .expect_err("неизвестный или пустой profile запрещён")
+                .expect_err("Unknown or empty profile is prohibited")
                 .kind(),
             DashMpdErrorKind::UnsupportedProfile
         );
@@ -487,7 +487,7 @@ fn multi_period_must_be_exactly_contiguous_and_finite() {
             <Representation id="a1"/></AdaptationSet></Period>
         </MPD>"#,
     )
-    .expect_err("gap запрещён");
+    .expect_err("gap prohibited");
     assert_eq!(error.kind(), DashMpdErrorKind::InvalidPeriodTimeline);
 }
 
@@ -529,9 +529,7 @@ fn hardened_xml_budget_and_doctype_rejections_are_preserved() {
         limits: limits(),
     };
     assert_eq!(
-        parse_dash_mpd(request)
-            .expect_err("DOCTYPE запрещён")
-            .kind(),
+        parse_dash_mpd(request).expect_err("DOCTYPE banned").kind(),
         DashMpdErrorKind::Xml
     );
 
@@ -600,7 +598,7 @@ fn entity_depth_attribute_text_and_truncation_fail_at_hardened_xml_boundary() {
             xml_budgets: budgets,
             limits: limits(),
         })
-        .expect_err("hardened XML fixture должен быть отвергнут");
+        .expect_err("hardened XML fixture must be rejected");
         assert_eq!(error.kind(), DashMpdErrorKind::Xml);
     }
 }

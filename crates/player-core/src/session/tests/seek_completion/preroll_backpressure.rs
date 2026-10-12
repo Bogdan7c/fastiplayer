@@ -223,7 +223,7 @@ fn active_accurate_seek_demux_reads_target_video_through_audio_preroll_backpress
     assert_eq!(
         tick_result.demuxed_packets.len(),
         2,
-        "accurate seek preroll должен читать target video в том же tick-е, а не останавливаться на audio packet"
+        "The accurate seek preroll should read the target video in the same tick rather than stop at the audio packet."
     );
     assert_eq!(harness.sent_packets().len(), 1);
     assert_eq!(harness.sent_packets()[0].pts, target_position);
@@ -277,11 +277,11 @@ fn active_accurate_seek_demux_budget_ignores_dropped_audio_preroll() {
     assert_eq!(
         tick_result.demuxed_packets.len(),
         1,
-        "полностью отброшенный audio preroll не должен создавать unbounded per-packet telemetry"
+        "A completely discarded audio preroll should not create unbounded per-packet telemetry."
     );
     assert_eq!(
         tick_result.dropped_seek_audio_preroll_packets, 32,
-        "полностью отброшенный audio preroll учитывается aggregate counter-ом"
+        "Fully discarded audio preroll is accounted for by aggregate counter"
     );
     assert_eq!(harness.sent_packets().len(), 1);
     assert_eq!(harness.sent_packets()[0].pts, target_position);
@@ -290,7 +290,7 @@ fn active_accurate_seek_demux_budget_ignores_dropped_audio_preroll() {
     let diagnostics = harness
         .session
         .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
-        .expect("active accurate seek должен иметь diagnostics до target frame");
+        .expect("Active accurate seek must have diagnostics to target frame");
     assert_eq!(diagnostics.seek_mode, SeekMode::Accurate);
     assert!(diagnostics.accurate_preroll.active);
     assert_eq!(
@@ -395,11 +395,11 @@ fn active_accurate_seek_interleaves_demux_and_decoder_io_during_fast_preroll() {
     assert_eq!(
         tick_result.demuxed_packets.len(),
         3,
-        "fast-preroll loop должен записывать per-packet telemetry только для queued video packets"
+        "fast-preroll loop should per-packet telemetry only queued video packets"
     );
     assert_eq!(
         tick_result.dropped_seek_audio_preroll_packets, 3,
-        "pre-target audio preroll должен оставаться aggregate diagnostics"
+        "Pre-target audio preroll should remain aggregate diagnostics."
     );
     assert_eq!(
         harness
@@ -412,7 +412,7 @@ fn active_accurate_seek_interleaves_demux_and_decoder_io_during_fast_preroll() {
             Duration::from_millis(100),
             target_position
         ],
-        "active accurate seek должен отправлять каждый найденный GOP packet в том же tick-е"
+        "active accurate seek You have to send every one you find GOP packet similarly tick-her"
     );
     assert!(harness.session.pipeline.pending_video_packet_is_empty());
     assert!(harness.session.pipeline.pending_audio_packet_is_empty());
@@ -460,7 +460,7 @@ fn active_accurate_seek_without_catch_up_deadline_keeps_dropped_audio_scan_bound
     assert_eq!(
         tick_result.demuxed_packets.len(),
         1,
-        "без catch-up deadline dropped audio preroll должен оставаться bounded обычным demux budget"
+        "without catch-up deadline dropped audio preroll, bounded by normal demux budget"
     );
     assert!(harness.sent_packets().is_empty());
     assert!(harness.session.pipeline.pending_audio_packet_is_empty());
@@ -531,7 +531,7 @@ fn active_accurate_seek_sends_pre_target_video_packets_in_burst() {
     assert_eq!(
         harness.sent_packets().len(),
         11,
-        "active accurate seek должен быстро прокачать pre-target GOP до decoder-а"
+        "active accurate seek must be pumped quickly pre-target GOP before decoder-?"
     );
     assert_eq!(tick_result.demuxed_packets.len(), 0);
     assert!(harness.session.seek_commit().is_some());
@@ -540,7 +540,7 @@ fn active_accurate_seek_sends_pre_target_video_packets_in_burst() {
     let diagnostics = harness
         .session
         .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
-        .expect("active accurate seek должен оставаться открыт без decoded target frame");
+        .expect("Active accurate seek must be open without decoded target frame");
     assert_eq!(
         diagnostics
             .accurate_preroll
@@ -627,13 +627,13 @@ fn active_accurate_seek_bypasses_audio_decode_ahead_for_target_reorder_tail() {
             Duration::from_millis(2_800),
             Duration::from_millis(3_000),
         ],
-        "active Accurate seek должен докачивать reorder tail после target без audio-clock pacing"
+        "active Accurate seek need to pump up reorder tail afterward target without audio-clock pacing"
     );
 
     let diagnostics = harness
         .session
         .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
-        .expect("seek должен ждать decoded landing frame");
+        .expect("Seek to wait for decoded landing frame");
     assert_eq!(
         diagnostics
             .accurate_preroll

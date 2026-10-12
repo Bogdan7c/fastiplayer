@@ -16,7 +16,7 @@ use playlist_io::{
 fn generic_preview(document: M3uDocument) -> playlist_io::GenericM3uPreview {
     match document {
         M3uDocument::Generic(preview) => preview,
-        other => panic!("ожидался generic preview: {other:?}"),
+        other => panic!("Generic preview: {other:?}"),
     }
 }
 

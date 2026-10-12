@@ -130,7 +130,7 @@ fn encode_size(length: usize) -> Vec<u8> {
     } else {
         assert!(
             length <= 16_382,
-            "test element превышает bounded two-byte VINT"
+            "test element exceed bounded two-byte VINT"
         );
         vec![0x40 | ((length >> 8) as u8), length as u8]
     }
@@ -458,7 +458,7 @@ fn read_all(
                 return (packets, track_changes, packet_counts_at_track_change, true);
             }
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                panic!("finite Matroska/WebM не должен публиковать temporary readiness")
+                panic!("finite Matroska/WebM should not publish temporary readiness")
             }
         }
     }
@@ -488,7 +488,7 @@ fn exact_matroska_doctype_opens_local_and_ordered_inputs() {
     ] {
         assert!(
             registration.input_capabilities().contains(capability),
-            "Matroska registration должна сохранять capability {capability:?}"
+            "Matroska registration must be preserved capability {capability:?}"
         );
     }
     assert!(
@@ -577,12 +577,12 @@ fn local_webm_proves_lacing_audio_timing_duration_and_codec_state_order() {
     assert_eq!(
         track_changes.len(),
         1,
-        "CodecState должен дать ровно один lifecycle reset"
+        "CodecState will give you exactly one lifecycle reset."
     );
     assert_eq!(
         packet_counts_at_track_change,
         vec![8],
-        "TracksChanged обязан предшествовать первому packet-у нового CodecState"
+        "TracksChanged must precede the first packet of the new CodecState"
     );
     let changed_video = track_changes[0]
         .iter()
@@ -630,11 +630,11 @@ fn ordered_webm_init_and_multiple_media_rows_preserve_packets_and_cancellation()
         .tracks()
         .iter()
         .find(|track| track.kind == TrackKind::Video)
-        .expect("ordered wrapper должен обновить public video track snapshot");
+        .expect("ordered wrapper need to update public video track snapshot");
     assert_eq!(
         current_video_track.codec_private.as_deref(),
         Some(&[0x31, 0x32][..]),
-        "tracks() обязан отражать уже опубликованный CodecState"
+        "tracks() must reflect already published CodecState"
     );
 
     let cancelled = open_ordered(
@@ -655,7 +655,7 @@ fn ordered_webm_init_and_multiple_media_rows_preserve_packets_and_cancellation()
     );
     assert!(
         cancelled.is_err(),
-        "ordered WebM cancellation не должна теряться"
+        "ordered WebM cancellation don't get lost"
     );
 }
 
@@ -683,7 +683,7 @@ fn vp8_vp9_av1_and_cues_no_cues_decode_point_before_are_proven() {
             .seek_with_request(DemuxSeekRequest::decode_point_before(
                 Duration::from_millis(650),
             ))
-            .expect("DecodePointBefore должен найти decode-safe packet");
+            .expect("DecodePointBefore to find decode-safe packet");
         assert_eq!(
             seek.requested_position.as_duration(),
             Duration::from_millis(650)
@@ -705,7 +705,7 @@ fn malformed_lacing_and_declared_payload_truncation_are_not_clean_eof() {
     let (_file, mut demuxer) = open_local(&malformed);
     let malformed_error = loop {
         match demuxer.next_event() {
-            Ok(DemuxReadEvent::EndOfStream) => panic!("malformed lacing не является clean EOF"),
+            Ok(DemuxReadEvent::EndOfStream) => panic!("malformed lacing is not clean EOF"),
             Ok(_) => {}
             Err(error) => break error,
         }
@@ -721,7 +721,7 @@ fn malformed_lacing_and_declared_payload_truncation_are_not_clean_eof() {
     let (_file, mut demuxer) = open_local(&truncated);
     let truncation_error = loop {
         match demuxer.next_event() {
-            Ok(DemuxReadEvent::EndOfStream) => panic!("declared payload truncation не clean EOF"),
+            Ok(DemuxReadEvent::EndOfStream) => panic!("declared payload truncation not clean EOF"),
             Ok(_) => {}
             Err(error) => break error,
         }
@@ -755,10 +755,10 @@ fn malformed_lacing_and_declared_payload_truncation_are_not_clean_eof() {
         CancellationToken::new(),
         None,
     )
-    .expect("ordered truncation проявляется при чтении declared payload");
+    .expect("ordered truncation manifests itself in reading declared payload");
     let ordered_truncation_error = loop {
         match ordered_demuxer.next_event() {
-            Ok(DemuxReadEvent::EndOfStream) => panic!("ordered payload truncation не clean EOF"),
+            Ok(DemuxReadEvent::EndOfStream) => panic!("ordered payload truncation not clean EOF"),
             Ok(_) => {}
             Err(error) => break error,
         }

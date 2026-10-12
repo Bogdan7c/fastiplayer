@@ -139,7 +139,7 @@ pub(super) fn choose_supported_output_config(
     let default_config = match device.default_output_config() {
         Ok(config) => Some(config),
         Err(error) => {
-            warn!(error = %error, "CPAL default output config недоступен, пробуем supported list");
+            warn!(error = %error, "CPAL default output config not available, try supported list");
             None
         }
     };
@@ -164,7 +164,7 @@ pub(super) fn choose_supported_output_config(
                 decoder_rate,
                 channels = config.channels(),
                 format = ?config.sample_format(),
-                "Output stream открыт на частоте декодера без ресемплера"
+                "Output stream opens on decoder frequency without resembler"
             );
             return Ok(config);
         }
@@ -180,13 +180,13 @@ pub(super) fn choose_supported_output_config(
     let preferred_sample_rate = default_config.as_ref().map(|config| config.sample_rate());
     let supported_ranges = device
         .supported_output_configs()
-        .context("Не удалось получить supported output configs")?;
+        .context("Cannot get supported output configs")?;
     let fallback_error_context = match default_config.as_ref() {
         Some(config) => format!(
-            "Default CPAL output format {:?} не поддерживается AudioOutput, fallback не найден",
+            "Default CPAL output format {:?} not supported by AudioOutput, fallback not found",
             config.sample_format()
         ),
-        None => "CPAL не вернул ни одного поддерживаемого output config".to_string(),
+        None => "CPAL has not returned any supported output config.".to_string(),
     };
     let fallback_config = select_supported_output_config(supported_ranges, preferred_sample_rate)
         .context(fallback_error_context)?;
@@ -197,14 +197,14 @@ pub(super) fn choose_supported_output_config(
             fallback_format = ?fallback_config.sample_format(),
             fallback_rate = fallback_config.sample_rate().0,
             fallback_channels = fallback_config.channels(),
-            "Default CPAL output config заменён supported fallback"
+            "Default CPAL output config replaced by supported fallback"
         );
     } else {
         info!(
             format = ?fallback_config.sample_format(),
             rate = fallback_config.sample_rate().0,
             channels = fallback_config.channels(),
-            "Выбран CPAL output config из supported list"
+            "Selected CPAL output config from supported list"
         );
     }
 

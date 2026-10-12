@@ -64,7 +64,7 @@ impl DemuxFactory for MpegTsDemuxFactory {
         }
         if has_m2ts_signature(request.sniffed_bytes) {
             return DemuxProbeDecision::Rejected(DemuxProbeRejection::Malformed {
-                reason: "192-byte M2TS не входит в подтверждённый S29 profile".to_owned(),
+                reason: "192-byte M2TS is not included in the confirmed S29 profile".to_owned(),
             });
         }
         match find_188_sync(request.sniffed_bytes, self.options.resync_bytes.get()) {

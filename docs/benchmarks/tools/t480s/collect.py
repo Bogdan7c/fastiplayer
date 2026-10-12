@@ -59,9 +59,9 @@ def playback_log_proofs(log_path):
     """Публикуем признаки известных этапов, не строки с локальными media URI."""
     runtime = log_path.read_text(errors='replace')
     markers = {
-        'rust_demux_opened': 'Symphonia media source открыт',
-        'rust_audio_decoder_created': 'Symphonia audio decoder создан',
-        'rust_audio_output_created': 'Audio output создан после первого decoded AudioSpec',
+        'rust_demux_opened': 'Symphonia media source is open',
+        'rust_audio_decoder_created': 'Symphonia audio decoder created',
+        'rust_audio_output_created': 'Audio output created after the first decoded AudioSpec',
         'rust_audio_resumed': 'Startup audio playback resumed',
         'rust_first_surface_presented': 'First startup video frame presented',
         'rust_h264_vaapi_configured': 'configured for stream backend_name="VA-API H.264"',

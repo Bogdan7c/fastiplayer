@@ -258,7 +258,7 @@ fn exactly_one_track(tracks: &[TrackInfo], kind: TrackKind, label: &str) -> Resu
     match matches.as_slice() {
         [track_id] => Ok(*track_id),
         _ => Err(anyhow!(
-            "DASH {label} component требует ровно один {kind:?} track"
+            "DASH {label} component requires exactly one {kind:?} track"
         )),
     }
 }

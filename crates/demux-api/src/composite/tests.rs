@@ -158,7 +158,7 @@ fn packet(id: u32, kind: TrackKind, pts_ms: u64, marker: &'static [u8]) -> Packe
 /// Строит validated retry hint без повторения bounds boilerplate в сценариях.
 fn retry_hint(retry_after_ms: u64) -> DemuxRetryHint {
     DemuxRetryHint::new(Duration::from_millis(retry_after_ms))
-        .expect("focused retry delay должен быть допустим")
+        .expect("A focused retry delay should be allowed.")
 }
 
 fn lead_policy() -> CompositeComponentLeadPolicy {
@@ -532,7 +532,7 @@ fn both_unavailable_components_return_minimum_earliest_retry() {
 
     let event = composite
         .next_event()
-        .expect("temporary readiness не должна становиться error");
+        .expect("Temporary readiness does not become an error.");
 
     assert_eq!(
         event,
@@ -570,7 +570,7 @@ fn bootstrap_starvation_reaches_cap_and_recovers_in_event_order() {
 
     let first_video = composite
         .next_event()
-        .expect("один bootstrap packet разрешён policy");
+        .expect("One bootstrap packet allowed policy");
     assert!(matches!(
         first_video,
         DemuxReadEvent::Packet(ref packet) if packet.data.as_ref() == b"v0"
@@ -578,10 +578,10 @@ fn bootstrap_starvation_reaches_cap_and_recovers_in_event_order() {
 
     let first_capped_retry = composite
         .next_event()
-        .expect("достижение cap должно быть readiness, а не error");
+        .expect("Cap must be preparedness, not error.");
     let second_capped_retry = composite
         .next_event()
-        .expect("долгая starvation должна сохранять readiness");
+        .expect("Long-term starvation must be prepared");
     assert_eq!(
         first_capped_retry,
         DemuxReadEvent::TemporarilyUnavailable(retry_hint(10))
@@ -600,15 +600,15 @@ fn bootstrap_starvation_reaches_cap_and_recovers_in_event_order() {
     loop {
         match composite
             .next_event()
-            .expect("recovery должна сохранить packet/event order")
+            .expect("Recovery should save packet/event orders")
         {
             DemuxReadEvent::Packet(packet) => recovered_markers.push(packet.data),
             DemuxReadEvent::EndOfStream => break,
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                panic!("scripted component уже восстановился")
+                panic!("The scripted component has already been restored.")
             }
             DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {
-                panic!("fixture не содержит lifecycle events")
+                panic!("Fixture does not include lifecycle events")
             }
         }
     }
@@ -660,7 +660,7 @@ fn timestamp_lead_holds_one_packet_until_lagging_component_recovers() {
     assert!(matches!(
         composite
             .next_event()
-            .expect("ready side может идти внутри timestamp lead"),
+            .expect("Ready side goes inside timestamp lead"),
         DemuxReadEvent::Packet(ref packet) if packet.data.as_ref() == b"v4000"
     ));
     assert_eq!(
@@ -727,10 +727,10 @@ fn oversized_pending_packet_fails_before_composite_retains_it() {
 
     let error = composite
         .next_event()
-        .expect_err("oversized pending packet должен нарушить memory invariant");
+        .expect_err("oversized pending packet should break memory invariant");
     let typed_error = error
         .downcast_ref::<CompositePendingPacketTooLargeError>()
-        .expect("ошибка должна сохранять typed composite safety context");
+        .expect("The error should be typed composite safety context.");
 
     assert_eq!(typed_error.component, CompositeComponent::Video);
     assert_eq!(typed_error.packet_bytes, b"oversized".len());

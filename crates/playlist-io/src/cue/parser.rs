@@ -590,7 +590,7 @@ fn build_track_import_draft(
     let fallback_title = track
         .title
         .clone()
-        .unwrap_or_else(|| format!("Трек {:02}", track.number));
+        .unwrap_or_else(|| format!("Track {:02}", track.number));
     let mut metadata = CachedPlaylistMetadata::new(fallback_title, PlaylistMediaKind::Audio)
         .with_title(track.title.clone())
         .with_album(parser.title.clone())

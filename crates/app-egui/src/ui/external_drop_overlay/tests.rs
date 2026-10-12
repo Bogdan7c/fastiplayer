@@ -50,11 +50,11 @@ fn playlist_target_draws_add_hint_inside_panel_rect() {
 
     let hint = texts
         .iter()
-        .find(|(text, _)| text == "Отпустите, чтобы добавить в плейлист")
-        .expect("подсказка панели нарисована");
+        .find(|(text, _)| text == "Drop to add to Playlist")
+        .expect("panel hint drawn");
     assert!(
         panel.contains_rect(hint.1),
-        "подсказка внутри панели: {:?} vs {panel:?}",
+        "hint: {:?} vs {panel:?}",
         hint.1
     );
 }
@@ -66,12 +66,8 @@ fn video_target_draws_open_hint_and_no_overlay_draws_nothing() {
         target: DropTarget::Video,
         rect: video,
     }));
-    assert!(
-        texts
-            .iter()
-            .any(|(text, _)| text == "Отпустите, чтобы открыть")
-    );
-    assert!(!texts.iter().any(|(text, _)| text.contains("плейлист")));
+    assert!(texts.iter().any(|(text, _)| text == "Drop to open"));
+    assert!(!texts.iter().any(|(text, _)| text.contains("playlist")));
 
-    assert!(painted_texts(None).is_empty(), "без жеста подсветки нет");
+    assert!(painted_texts(None).is_empty(), "no lighting gesture");
 }

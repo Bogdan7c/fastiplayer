@@ -120,7 +120,7 @@ def check_root_manifest(repository_root: Path) -> tuple[PolicyViolation, ...]:
         violations.append(
             PolicyViolation(
                 "Cargo.toml [workspace.package]",
-                f'`rust-version` должен быть ровно "{APPROVED_MSRV}"',
+                f'`rust-version` must be exactly "{APPROVED_MSRV}"',
             )
         )
 
@@ -129,7 +129,7 @@ def check_root_manifest(repository_root: Path) -> tuple[PolicyViolation, ...]:
         violations.append(
             PolicyViolation(
                 "Cargo.toml [workspace.package]",
-                f'`edition` должна быть ровно "{APPROVED_EDITION}"',
+                f'`edition` must be exactly "{APPROVED_EDITION}"',
             )
         )
 
@@ -138,7 +138,7 @@ def check_root_manifest(repository_root: Path) -> tuple[PolicyViolation, ...]:
         violations.append(
             PolicyViolation(
                 "Cargo.toml [workspace.package]",
-                f'`license` должна быть ровно "{APPROVED_LICENSE}"',
+                f'`license` must be exactly "{APPROVED_LICENSE}"',
             )
         )
 
@@ -163,7 +163,7 @@ def check_toolchain_file(repository_root: Path) -> tuple[PolicyViolation, ...]:
         violations.append(
             PolicyViolation(
                 "rust-toolchain.toml [toolchain]",
-                f'`channel` должен быть ровно "{APPROVED_PRIMARY_TOOLCHAIN}"',
+                f'`channel` must be exactly "{APPROVED_PRIMARY_TOOLCHAIN}"',
             )
         )
 
@@ -185,7 +185,7 @@ def check_toolchain_file(repository_root: Path) -> tuple[PolicyViolation, ...]:
         violations.append(
             PolicyViolation(
                 "rust-toolchain.toml [toolchain]",
-                "отсутствуют обязательные components: "
+                "There are no mandatory components: "
                 + ", ".join(sorted(missing_components)),
             )
         )
@@ -195,7 +195,7 @@ def check_toolchain_file(repository_root: Path) -> tuple[PolicyViolation, ...]:
         violations.append(
             PolicyViolation(
                 "rust-toolchain.toml [toolchain]",
-                '`profile` должен быть ровно "minimal"',
+                "`profile` must be exactly 'minimal'",
             )
         )
 
@@ -222,7 +222,7 @@ def check_workspace_members(
             violations.append(
                 PolicyViolation(
                     "cargo metadata",
-                    f"не найден package для workspace ID `{package_id}`",
+                    f"no package found for workspace ID `{package_id}`",
                 )
             )
             continue
@@ -237,7 +237,7 @@ def check_workspace_members(
         package_table = manifest.get("package", {})
         if not isinstance(package_table, Mapping):
             violations.append(
-                PolicyViolation(relative_manifest_path, "отсутствует корректная таблица `[package]`")
+                PolicyViolation(relative_manifest_path, "There is no correct table '[package]'")
             )
             continue
 
@@ -247,7 +247,7 @@ def check_workspace_members(
                 violations.append(
                     PolicyViolation(
                         relative_manifest_path,
-                        f'`package.{inherited_field}` должен быть `{inherited_field}.workspace = true`',
+                        f'`package.{inherited_field}` must be `{inherited_field}.workspace = true`',
                     )
                 )
 
@@ -256,7 +256,7 @@ def check_workspace_members(
             violations.append(
                 PolicyViolation(
                     relative_manifest_path,
-                    f'Cargo metadata edition должна быть "{APPROVED_EDITION}"',
+                    f'Cargo metadata edition must be "{APPROVED_EDITION}"',
                 )
             )
         # Exact comparison не является semver parser и не допускает MSRV range/downgrade.
@@ -264,7 +264,7 @@ def check_workspace_members(
             violations.append(
                 PolicyViolation(
                     relative_manifest_path,
-                    f'Cargo metadata rust_version должен быть "{APPROVED_MSRV}"',
+                    f'Cargo metadata rust_version must be "{APPROVED_MSRV}"',
                 )
             )
 
@@ -273,7 +273,7 @@ def check_workspace_members(
             violations.append(
                 PolicyViolation(
                     relative_manifest_path,
-                    f'Cargo metadata license должна быть "{APPROVED_LICENSE}"',
+                    f'Cargo metadata license must be "{APPROVED_LICENSE}"',
                 )
             )
 
@@ -299,7 +299,7 @@ def check_metadata_workspace_root(
     return (
         PolicyViolation(
             "cargo metadata",
-            f"workspace_root должен быть `{repository_root.resolve()}`",
+            f"workspace_root must be `{repository_root.resolve()}`",
         ),
     )
 
@@ -331,7 +331,7 @@ def main(arguments: Sequence[str]) -> int:
 
     # Аргументы пока не поддерживаются, чтобы policy не получила неявных режимов.
     if len(arguments) != 0:
-        print("Ошибка: check-toolchain-policy.py не принимает аргументы.", file=sys.stderr)
+        print("Mistake: check-toolchain-policy.py non-argument.", file=sys.stderr)
         return 2
 
     # Root вычисляется один раз и передаётся всем functions явно.
@@ -343,7 +343,7 @@ def main(arguments: Sequence[str]) -> int:
         violations = validate_policy(repository_root, metadata)
     except subprocess.CalledProcessError as error:
         # stderr Cargo содержит первопричину, поэтому показываем его, а не только exit code.
-        print(f"Ошибка запуска toolchain policy: {error}", file=sys.stderr)
+        print(f"Failed to run toolchain policy: {error}", file=sys.stderr)
         if error.stderr:
             print(error.stderr.strip(), file=sys.stderr)
         return 2
@@ -354,12 +354,12 @@ def main(arguments: Sequence[str]) -> int:
         tomllib.TOMLDecodeError,
     ) as error:
         # Ошибка инфраструктуры не маскируется как успешная policy validation.
-        print(f"Ошибка запуска toolchain policy: {error}", file=sys.stderr)
+        print(f"Failed to run toolchain policy: {error}", file=sys.stderr)
         return 2
 
     # Policy drift печатается после complete scan, чтобы исправления были пакетными.
     if violations:
-        print("Toolchain policy нарушена:", file=sys.stderr)
+        print("Toolchain policy violated:", file=sys.stderr)
         for violation in violations:
             print(f"- {violation.render()}", file=sys.stderr)
         return 1

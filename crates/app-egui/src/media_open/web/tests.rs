@@ -23,7 +23,7 @@ fn direct_envelope_keeps_optional_attachments_absent() {
     let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://cdn.example.test/movie.mp4?token=descriptor-secret",
     )
-    .expect("direct fixture locator валиден");
+    .expect("Direct fixture locator is valid");
     let source = WebMediaSourceIntent::direct(locator);
     let envelope = PreparedWebMediaEnvelope::new(
         Vec::new(),
@@ -51,7 +51,7 @@ fn controlled_reopen_preserves_stable_direct_selection() {
     let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://cdn.example.test/movie.mp4?token=reopen-secret",
     )
-    .expect("direct fixture locator валиден");
+    .expect("Direct fixture locator is valid");
     let source = WebMediaSourceIntent::direct(locator.clone());
 
     let request = source
@@ -60,7 +60,7 @@ fn controlled_reopen_preserves_stable_direct_selection() {
             fastiplayer_config::PlayerDemuxConfig::default(),
             None,
         )
-        .expect("direct reopen не требует adaptive capabilities");
+        .expect("Direct reopen requires adaptive capabilities.");
 
     assert_eq!(request.safe_label().as_str(), locator.safe_label());
     let WebMediaOpenAdapterView::Direct {
@@ -68,7 +68,7 @@ fn controlled_reopen_preserves_stable_direct_selection() {
         ..
     } = request.into_adapter()
     else {
-        panic!("neutral request должен сохранить direct adapter intent");
+        panic!("Neutral request should be retained by direct adapter intent");
     };
     assert_eq!(reopened_locator, locator);
 }
@@ -97,7 +97,7 @@ fn extractor_request_preserves_explicit_native_fallback_reason() {
         invocation_reason, ..
     } = request.into_adapter()
     else {
-        panic!("native fallback request должен остаться extractor adapter-ом");
+        panic!("native fallback request must remain extractor adapter");
     };
     assert_eq!(
         invocation_reason,
@@ -111,7 +111,7 @@ fn active_web_source_debug_redacts_raw_locator_and_temporary_material() {
     let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://user:password@cdn.example.test/movie.mp4?token=debug-secret",
     )
-    .expect("direct fixture locator валиден");
+    .expect("Direct fixture locator is valid");
     let source = WebMediaSourceIntent::direct(locator);
 
     let debug = format!("{:?}", crate::media_open::ActiveMediaSource::Web(source));
@@ -192,7 +192,7 @@ fn installed_only_action_and_unchanged_direct_settings_are_inert() {
         media_source_open::direct_progressive_open::classify_direct_media_url(
             "https://cdn.example.test/movie.mp4?token=direct-secret",
         )
-        .expect("direct fixture locator валиден"),
+        .expect("Direct fixture locator is valid"),
     );
     let app_config = fastiplayer_config::AppConfig::default();
     let settings = WebMediaOpenSettings::from_app_config(
@@ -235,7 +235,7 @@ fn installed_only_action_and_unchanged_direct_settings_are_inert() {
         app_config.player.demux,
         settings,
     ) else {
-        panic!("explicit direct rebuild обязан вернуть neutral reopen request");
+        panic!("Explicitly direct rebuild must return the neutral reopen request.");
     };
     let label = request.safe_label().to_string();
     assert!(label.contains("cdn.example.test"));

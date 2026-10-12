@@ -16,10 +16,10 @@ const MAX_BOOTSTRAP_BYTE_LIMIT: usize = 64 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CompositeComponentLeadPolicyError {
     /// Нулевой lead превращает любую разницу timestamps в невозможный progress.
-    #[error("composite timestamp lead должен быть больше нуля")]
+    #[error("The composite timestamp lead should be more than zero.")]
     ZeroTimestampLead,
     /// Слишком большой lead разрушает bounded pending-state invariant.
-    #[error("composite timestamp lead {requested:?} превышает максимум {maximum:?}")]
+    #[error("composite timestamp lead {requested:?} exceeds maximum {maximum:?}")]
     TimestampLeadTooLarge {
         /// Запрошенный caller-ом lead.
         requested: Duration,
@@ -27,7 +27,7 @@ pub enum CompositeComponentLeadPolicyError {
         maximum: Duration,
     },
     /// Packet cap превышает safety ceiling.
-    #[error("composite bootstrap packet limit {requested} превышает максимум {maximum}")]
+    #[error("Composite bootstrap packet limit {requested} exceeds maximum {maximum}")]
     PacketLimitTooLarge {
         /// Запрошенный packet count.
         requested: usize,
@@ -35,7 +35,7 @@ pub enum CompositeComponentLeadPolicyError {
         maximum: usize,
     },
     /// Byte cap превышает safety ceiling.
-    #[error("composite bootstrap byte limit {requested} превышает максимум {maximum}")]
+    #[error("Composite bootstrap byte limit {requested} exceeds maximum {maximum}")]
     ByteLimitTooLarge {
         /// Запрошенный payload byte count.
         requested: usize,

@@ -16,8 +16,8 @@ fn pending_message_reports_existing_yt_dlp_job() {
             source_locator: service_ytdlp::parse_yt_dlp_media_locator(
                 "https://www.youtube.com/watch?v=test",
             )
-            .expect("test locator должен проходить service parse"),
-            pending_message: "Подготовка YtDlp stream...".to_string(),
+            .expect("The test location must be service parse."),
+            pending_message: "Preparation of YtDlp stream...".to_string(),
             result_receiver,
             join_handle: None,
             pending_result: None,
@@ -45,11 +45,11 @@ fn pending_message_reports_existing_yt_dlp_job() {
     assert!(controller.has_pending_startup_job());
     assert_eq!(
         controller.pending_message(),
-        Some("Подготовка YtDlp stream...")
+        Some("Preparation of YtDlp stream...")
     );
     assert!(
         controller.startup_job_admission_error().is_some(),
-        "single-startup-job boundary должен отвергать replacement"
+        "single-startup-job boundary must reject replacement"
     );
 }
 
@@ -64,8 +64,8 @@ fn controller_with_test_yt_dlp_thread(join_handle: JoinHandle<()>) -> StartupMed
             source_locator: service_ytdlp::parse_yt_dlp_media_locator(
                 "https://www.youtube.com/watch?v=test",
             )
-            .expect("test locator должен проходить service parse"),
-            pending_message: "Подготовка YtDlp stream...".to_string(),
+            .expect("The test location must be service parse."),
+            pending_message: "Preparation of YtDlp stream...".to_string(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -110,10 +110,10 @@ fn startup_shutdown_timeout_retains_handle_and_later_reaps_it() {
         controller
             .yt_dlp_startup_job
             .as_ref()
-            .expect("timed-out job сохраняет ownership")
+            .expect("Timed-out job retains ownership")
             .source_cancellation
             .is_cancelled(),
-        "startup shutdown должен прервать transport token до bounded join"
+        "startup shutdown must interrupt transport token before bounded join"
     );
 
     release.store(true, Ordering::Release);
@@ -200,12 +200,12 @@ fn cli_route_trims_whitespace_around_url_argument() {
 
     assert!(startup_error.is_none());
     let Some(InitialMedia::Url(locator)) = initial_media else {
-        panic!("ссылка с пробелами вокруг должна открываться как ссылка, а не как путь");
+        panic!("A link with spaces around it should open as a link, not as a path.");
     };
     assert_eq!(
         locator
             .to_playlist_locator()
-            .expect("locator должен иметь identity")
+            .expect("The location must have an identity.")
             .expose_secret_for_persistence(),
         "https://media.example.test/video.mp4"
     );
@@ -289,6 +289,6 @@ fn cli_route_rejects_unsupported_media_protocol() {
     assert!(
         startup_error
             .as_deref()
-            .is_some_and(|error| error == "Такой тип ссылок не поддерживается")
+            .is_some_and(|error| error == "This type of link is not supported.")
     );
 }

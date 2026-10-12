@@ -124,7 +124,7 @@ fn bootstrap_calls_discover_lease_load_and_prepare_in_exact_order() {
             let calls = calls.clone();
             move |_, _, _| calls.borrow_mut().push("prepare-media")
         },
-        |_| panic!("lease получен: пересылки быть не должно"),
+        |_| panic!("Lease Received: Transfers Should Not Be"),
     );
 
     assert!(result.is_ok());
@@ -158,7 +158,7 @@ fn invalid_args_stop_before_path_discovery() {
         &platform,
         |_| Ok(()),
         |_, _, _| (),
-        |_| panic!("пересылки быть не должно"),
+        |_| panic!("There should be no forwarding."),
     );
 
     assert!(matches!(
@@ -198,7 +198,7 @@ fn unsupported_platform_stops_before_post_lease_side_effects() {
             let calls = calls.clone();
             move |_, _, _| calls.borrow_mut().push("prepare-media")
         },
-        |_| panic!("lease получен: пересылки быть не должно"),
+        |_| panic!("Lease Received: Transfers Should Not Be"),
     );
 
     assert!(matches!(
@@ -216,11 +216,7 @@ fn unsupported_platform_stops_before_post_lease_side_effects() {
 #[test]
 fn bootstrap_failures_reach_user_as_human_text_with_nonzero_exit() {
     let cases: [(Vec<OsString>, Result<(), AppInstanceLeaseError>, &str); 3] = [
-        (
-            vec![OsString::from("--unknown")],
-            Ok(()),
-            "неизвестным параметром",
-        ),
+        (vec![OsString::from("--unknown")], Ok(()), "unknown option"),
         (
             Vec::new(),
             Err(AppInstanceLeaseError::UnsafeArtifact {
@@ -231,7 +227,7 @@ fn bootstrap_failures_reach_user_as_human_text_with_nonzero_exit() {
         (
             Vec::new(),
             Err(AppInstanceLeaseError::AlreadyRunning),
-            "Fastiplayer уже запущен.",
+            "Fastiplayer is already running.",
         ),
     ];
 
@@ -309,7 +305,7 @@ fn fake_platform_errors_keep_shared_typed_mapping() {
             &platform,
             |_| Ok(()),
             |_, _, _| (),
-            |_| panic!("пересылки быть не должно"),
+            |_| panic!("There should be no forwarding."),
         );
 
         assert!(matches!(
@@ -361,7 +357,7 @@ fn already_running_forwards_untouched_arguments_and_never_loads_config() {
             }
         },
     )
-    .expect("пересылка удалась");
+    .expect("forwarding");
 
     assert!(matches!(
         outcome,
@@ -387,7 +383,7 @@ fn second_launch_exits_cleanly_on_success_and_explains_a_hung_first_instance() {
             outcome: Err(AppInstanceLeaseError::AlreadyRunning),
         },
         |_| -> Result<(), fastiplayer_config::ConfigError> {
-            panic!("config второго процесса не читается")
+            panic!("Config of the second process is not readable")
         },
         |_, _, _| (),
         |_| Ok(()),
@@ -410,7 +406,7 @@ fn second_launch_exits_cleanly_on_success_and_explains_a_hung_first_instance() {
             outcome: Err(AppInstanceLeaseError::AlreadyRunning),
         },
         |_| -> Result<(), fastiplayer_config::ConfigError> {
-            panic!("config второго процесса не читается")
+            panic!("Config of the second process is not readable")
         },
         |_, _, _| (),
         |_| {
@@ -423,7 +419,7 @@ fn second_launch_exits_cleanly_on_success_and_explains_a_hung_first_instance() {
         },
     )
     .err()
-    .expect("пересылка не удалась");
+    .expect("forwarding failed");
     let conclusion = conclude_process(
         Err(FatalStartupError::from_bootstrap_error(&hung)),
         &presenter,
@@ -436,7 +432,7 @@ fn second_launch_exits_cleanly_on_success_and_explains_a_hung_first_instance() {
         shown[0]
             .notice
             .message
-            .starts_with("Fastiplayer уже запущен, но не отвечает."),
+            .starts_with("Fastiplayer is already running but is not responding."),
         "{}",
         shown[0].notice.message
     );

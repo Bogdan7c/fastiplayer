@@ -196,7 +196,7 @@ impl PlayerSession {
                         };
 
                     if let Err(error) = self.ensure_audio_output_for_decoded_spec(output_spec) {
-                        warn!(error = %error, "Не удалось подготовить audio output");
+                        warn!(error = %error, "Could not prepare audio output");
                         if error.kind == PlayerErrorKind::AudioDeviceUnavailable {
                             self.disable_selected_audio_path();
                             self.record_recoverable_error(error);
@@ -239,7 +239,7 @@ impl PlayerSession {
                     if let Err(error) =
                         self.write_decoded_audio_samples_at_current_rate(samples, output_spec)
                     {
-                        warn!(error = %error, "Ошибка audio tempo/output path");
+                        warn!(error = %error, "Error audio tempo/output path");
                         // После успешного rate commit PCM уже мог попасть в output;
                         // rollback невозможен, поэтому запрещён video-only fallback.
                         self.mark_fatal_error(error);
@@ -247,7 +247,7 @@ impl PlayerSession {
                 }
                 Ok(DecodedAudioPacket::Empty) => {}
                 Err(error) => {
-                    warn!(error = %error, "Ошибка декодирования audio packet");
+                    warn!(error = %error, "Error of decoding audio packet");
                     self.set_runtime_error(format!("Audio decode error: {error}"));
                 }
             }
@@ -275,7 +275,7 @@ impl PlayerSession {
                 info!(
                     track_id = %track_id,
                     codec_id = %codec_id,
-                    "Deferred audio decoder создан по первому packet-у"
+                    "Deferred audio decoder is based on the first packet."
                 );
                 Ok(true)
             }
@@ -284,7 +284,7 @@ impl PlayerSession {
                 warn!(
                     error = %player_error,
                     codec_id = %codec_id,
-                    "Не удалось создать deferred audio decoder"
+                    "It was not possible to create deferred audio decoder."
                 );
                 self.disable_selected_audio_path();
                 Err(player_error)
@@ -372,7 +372,7 @@ impl PlayerSession {
             sample_rate,
             channels,
             channel_layout = %output_spec.channel_layout,
-            "Audio output создан после первого decoded AudioSpec"
+            "Audio output created after the first decoded AudioSpec"
         );
 
         Ok(())
@@ -420,7 +420,7 @@ impl PlayerSession {
             info!(
                 silence_frames,
                 unplayed_tail_ms = unplayed_tail.as_secs_f64() * 1_000.0,
-                "Хвост старого вывода звука заменён тишиной, чтобы не потерять синхрон A/V"
+                "The tail of the old sound output is replaced with silence, so as not to lose synchrony A/V"
             );
         }
 
@@ -551,7 +551,7 @@ impl PlayerSession {
         let init_spec = match audio_decoder_init_spec_from_tracks(tracks) {
             Ok(Some(init_spec)) => init_spec,
             Ok(None) => {
-                info!("Audio track не найден — playback без звука");
+                info!("Audio track not found - playback without sound");
                 return;
             }
             Err(error) => {
@@ -566,7 +566,7 @@ impl PlayerSession {
             codec_id = %init_spec.codec_id,
             sample_rate = ?init_spec.initial_sample_rate,
             channels = ?init_spec.initial_channels,
-            "Audio track выбран; decoder/output будут созданы лениво"
+            "Audio track selected; decoder/output to be created lazily"
         );
 
         let decoder_config = audio_core::AudioDecoderConfig::from_track_metadata(
@@ -585,7 +585,7 @@ impl PlayerSession {
 
         info!(
             track_id = %init_spec.track_id,
-            "Audio pipeline подготовлен к lazy init"
+            "Audio pipeline prepared for lazy initialization"
         );
     }
 }
@@ -697,7 +697,7 @@ fn audio_decoder_init_spec_from_track(track: &TrackInfo) -> PlayerResult<AudioDe
         return Err(PlayerError::new(
             PlayerErrorKind::RuntimeError,
             format!(
-                "Audio track `{}` содержит нулевой sample_rate для decoder init",
+                "Audio track '{}' contains zero sample_rate for decoder init",
                 track.id
             ),
         ));
@@ -707,7 +707,7 @@ fn audio_decoder_init_spec_from_track(track: &TrackInfo) -> PlayerResult<AudioDe
         return Err(PlayerError::new(
             PlayerErrorKind::RuntimeError,
             format!(
-                "Audio track `{}` содержит нулевой channel count для decoder init",
+                "Audio track '{}' contains zero channel count for decoder init",
                 track.id
             ),
         ));

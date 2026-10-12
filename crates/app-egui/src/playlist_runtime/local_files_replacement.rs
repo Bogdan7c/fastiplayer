@@ -98,7 +98,7 @@ impl PlaylistRuntime {
                 LocalFilesReplacementOutcome::InstallInProgress
             }
             Err(error) => {
-                tracing::warn!(?error, "Замена очереди брошенными файлами отклонена");
+                tracing::warn!(?error, "Queue replacement with dropped files rejected");
                 LocalFilesReplacementOutcome::Rejected
             }
         };

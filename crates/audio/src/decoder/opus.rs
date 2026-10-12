@@ -145,7 +145,7 @@ impl AudioDecoder for OpusFallbackDecoder {
                     .context("Opus fallback decoded sample count overflow")?;
                 let decoded_samples = self.i16_buffer.get(..total_samples).ok_or_else(|| {
                     anyhow::anyhow!(
-                        "Opus fallback backend вернул {} samples при capacity {}",
+                        "Opus fallback backend returned {} samples with capacity {}",
                         total_samples,
                         self.i16_buffer.len()
                     )
@@ -255,7 +255,7 @@ fn create_backend(sample_rate: u32, config: &OpusBackendConfig) -> Result<OpusDe
     match config {
         OpusBackendConfig::SingleStream { channels } => {
             let decoder = opus::Decoder::new(sample_rate, *channels).context(
-                "Не удалось создать Opus fallback decoder. Убедитесь что libopus установлен",
+                "Failed to create Opus fallback decoder. Make sure libopus is installed",
             )?;
             Ok(OpusDecoderBackend::SingleStream(decoder))
         }
@@ -271,7 +271,7 @@ fn create_backend(sample_rate: u32, config: &OpusBackendConfig) -> Result<OpusDe
                 canonical_mapping,
             )
             .context(
-                "Не удалось создать Opus multistream fallback decoder. Убедитесь что libopus установлен",
+                "It failed to create Opus multistream fallback decoder. Make sure libopus fixed",
             )?;
             Ok(OpusDecoderBackend::Multistream(decoder))
         }

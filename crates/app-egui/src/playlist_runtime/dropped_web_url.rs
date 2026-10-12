@@ -29,7 +29,7 @@ use super::url_draft_message::url_append_error_message;
 use crate::url_service_adapter::StartupUrlLocator;
 
 /// Текст, когда плейлист не принял ссылку из-за лимита числа строк.
-const PLAYLIST_FULL_MESSAGE: &str = "Плейлист заполнен";
+const PLAYLIST_FULL_MESSAGE: &str = "Playlist's full.";
 
 /// Итог добавления брошенной на панель ссылки.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,7 +86,7 @@ impl PlaylistRuntime {
         locator: &StartupUrlLocator,
     ) -> ServiceUrlReplacementOutcome {
         let Ok(playlist_locator) = locator.to_playlist_locator() else {
-            tracing::warn!("Ссылка не превратилась в адрес строки очереди");
+            tracing::warn!("The link did not turn into the address of the queue line");
             return ServiceUrlReplacementOutcome::Rejected;
         };
         let draft = PlaylistEntryDraft::from(PlaylistItemDraft::url(
@@ -138,7 +138,7 @@ impl PlaylistRuntime {
                 ServiceUrlReplacementOutcome::InstallInProgress
             }
             Err(error) => {
-                tracing::warn!(?error, "Замена очереди брошенной ссылкой отклонена");
+                tracing::warn!(?error, "Queue replacement with a dropped link rejected");
                 ServiceUrlReplacementOutcome::Rejected
             }
         };

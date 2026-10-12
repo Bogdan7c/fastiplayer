@@ -191,7 +191,7 @@ impl VodEndpointRecoveryDemuxer {
             reason = "инвариант: minimum demux retry hint обязан быть валиден"
         )]
         let retry_hint = DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER)
-            .expect("minimum demux retry hint обязан быть валиден");
+            .expect("Minimum demux retry hint must be valid");
         DemuxReadEvent::TemporarilyUnavailable(retry_hint)
     }
 }

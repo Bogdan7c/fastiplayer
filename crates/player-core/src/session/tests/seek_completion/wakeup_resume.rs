@@ -93,7 +93,7 @@ fn final_seek_with_frozen_audio_clock_waits_for_audio_runtime_after_target_frame
     );
     let seek_commit = session
         .seek_commit()
-        .expect("video+audio final seek должен ждать audio runtime после target frame");
+        .expect("Video+audio final seek waits for audio runtime after target frame");
     assert_eq!(
         session.seek_audio_gate_status(seek_commit, 50.0),
         SeekAudioGateStatus::WaitingForDecoder
@@ -519,7 +519,7 @@ fn playing_video_seek_with_audio_waits_for_audio_runtime_after_target_frame() {
 
     let before_audio_gate_timeout = session
         .seek_commit()
-        .expect("seek должен быть активен до проверки audio gate")
+        .expect("Request must be active before the audio gate is checked.")
         .started_at
         + Duration::from_millis(249);
     session.finish_seek_commit_if_ready_for_tests(
@@ -532,7 +532,7 @@ fn playing_video_seek_with_audio_waits_for_audio_runtime_after_target_frame() {
 
     let seek_commit = session
         .seek_commit()
-        .expect("video+audio final seek должен остаться открытым без audio runtime");
+        .expect("Video+audio final seek should be open without audio runtime");
     assert_eq!(
         session.seek_audio_gate_status(seek_commit, 50.0),
         SeekAudioGateStatus::WaitingForDecoder
@@ -564,7 +564,7 @@ fn playing_final_seek_commits_after_target_frame_and_ready_audio() {
     present_frame_for_current_seek_generation(&mut session, Duration::from_millis(6_016), 42);
     let seek_commit = session
         .seek_commit()
-        .expect("seek должен быть активен до ready audio commit");
+        .expect("You must be active until the audio commits.");
 
     assert_eq!(
         session.seek_audio_gate_status(seek_commit, 50.0),
@@ -599,7 +599,7 @@ fn playing_final_seek_commits_after_target_frame_and_ready_audio() {
                         && presentation.frame_pts == Duration::from_millis(6_016)
             )
         },
-        "target frame event должен быть опубликован",
+        "target frame event should be published",
     );
     let commit_event_index = event_index(
         &events,
@@ -612,7 +612,7 @@ fn playing_final_seek_commits_after_target_frame_and_ready_audio() {
                         && commit.resume_intent == PlaybackResumeIntent::Play
             )
         },
-        "seek commit event должен быть опубликован",
+        "seek commit event should be published",
     );
     let audio_resume_event_index = event_index(
         &events,
@@ -623,7 +623,7 @@ fn playing_final_seek_commits_after_target_frame_and_ready_audio() {
                     if info.target_position == Duration::from_secs(6)
             )
         },
-        "audio resume event должен быть опубликован после успешного play",
+        "audio resume event It should be published after a successful play",
     );
 
     assert!(target_frame_event_index < audio_resume_event_index);
@@ -653,7 +653,7 @@ fn final_seek_audio_play_error_closes_seek_and_reports_visible_error() {
     present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
     let seek_commit = session
         .seek_commit()
-        .expect("seek должен быть активен до audio play error");
+        .expect("The search must be active before audio play error.");
 
     session.finish_seek_commit_if_ready_for_tests(
         seek_commit.started_at,
@@ -716,7 +716,7 @@ fn audio_only_final_seek_commits_when_audio_ready_without_video_gate() {
         .unwrap();
     let seek_commit = session
         .seek_commit()
-        .expect("audio-only seek должен быть активен до audio gate");
+        .expect("Audio-only seek must be active until the audio gate");
 
     assert!(session.seek_video_gate_ready(seek_commit, 3));
     assert_eq!(
@@ -777,7 +777,7 @@ fn final_play_seek_with_audio_requires_only_presented_target_video_frame() {
 
     let seek_commit = session
         .seek_commit()
-        .expect("accepted seek должен открыть commit");
+        .expect("Accepted seek must open commit");
 
     assert_eq!(
         session.required_seek_resume_video_ready_frames(seek_commit, 3),

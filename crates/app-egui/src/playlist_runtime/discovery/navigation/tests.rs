@@ -96,7 +96,7 @@ fn runtime_snapshot_boundary_routes_clean_eof_to_next_item_exactly_once() {
     player_snapshot.playback_state = PlaybackState::Ended;
     player_snapshot.last_error = Some(PlayerError::new(
         PlayerErrorKind::RuntimeError,
-        "устаревшая ошибка прошлого состояния",
+        "past-state error",
     ));
 
     let first_outcome = runtime
@@ -144,11 +144,7 @@ fn runtime_snapshot_boundary_treats_failed_state_as_error_not_clean_eof() {
         .runtime_errors
         .get(&item_ids[0])
         .expect("failed active item receives a runtime badge");
-    assert!(
-        runtime_error
-            .safe_summary()
-            .starts_with("Ошибка воспроизведения: ")
-    );
+    assert!(runtime_error.safe_summary().starts_with("Playback error: "));
     assert!(!runtime_error.safe_summary().contains("DemuxError"));
     assert!(!runtime_error.safe_summary().contains("secret"));
     assert!(!runtime_error.safe_summary().contains("private.mkv"));
@@ -168,7 +164,7 @@ fn runtime_snapshot_boundary_stops_queue_on_network_loss_instead_of_skipping() {
     player_snapshot.playback_state = PlaybackState::Failed;
     player_snapshot.last_error = Some(PlayerError::new(
         PlayerErrorKind::NetworkError,
-        "Ошибка чтения packet: connection refused",
+        "Reading error packet: connection refused",
     ));
 
     let outcome = runtime
@@ -184,14 +180,14 @@ fn runtime_snapshot_boundary_stops_queue_on_network_loss_instead_of_skipping() {
     ));
     assert!(
         !runtime.controller.runtime_errors.contains_key(&item_ids[0]),
-        "элемент с пропавшей сетью не помечается битым"
+        "The missing network element is not marked as broken"
     );
     assert!(
         runtime
             .controller
             .drain_automatic_queue_notices()
             .is_empty(),
-        "никакого «пропущен»/«остановлено на файле» при пропаже сети"
+        "No \"missing\"/\"stopped on file\" if the network is lost"
     );
     assert_eq!(
         runtime
@@ -199,6 +195,6 @@ fn runtime_snapshot_boundary_stops_queue_on_network_loss_instead_of_skipping() {
             .active_media
             .and_then(|media| media.item_id()),
         Some(item_ids[0]),
-        "очередь не перешла к следующему элементу"
+        "The line did not move to the next element."
     );
 }

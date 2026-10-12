@@ -79,10 +79,10 @@ impl UnsupportedVideoRequirement {
             .rejections
             .first()
             .map(VideoCapabilityRejection::user_message)
-            .unwrap_or_else(|| "не найден подходящий аппаратный decoder".to_string());
+            .unwrap_or_else(|| "No suitable hardware decoder has been found.".to_string());
 
         format!(
-            "Не найден аппаратно поддерживаемый видеопоток.\nПричина: {reason}.\nВидео требует: {}.\nСистема поддерживает: {}.\nSoftware fallback для видео отключен политикой fastiplayer.",
+            "No hardware-supported video stream found.\nReason: {reason}.\nVideo demands: {}.\nThe system supports: {}.\nSoftware fallback Videos disabled by policy fastiplayer.",
             self.requirement.describe(),
             self.supported_formats_summary
         )
@@ -220,33 +220,33 @@ impl VideoCapabilityRejection {
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            Self::NoAvailableBackend => "video decode backend недоступен".to_string(),
-            Self::NoAvailableRenderer => "renderer backend недоступен".to_string(),
-            Self::UnsupportedCodec { codec } => format!("codec {codec} не поддерживается"),
+            Self::NoAvailableBackend => "video decode backend unavailable".to_string(),
+            Self::NoAvailableRenderer => "renderer backend is not available".to_string(),
+            Self::UnsupportedCodec { codec } => format!("Codec {codec} is not supported"),
             Self::UnsupportedProfile { codec: _, profile } => {
-                format!("profile {profile} не поддерживается доступными video decode backend-ами")
+                format!("Profile {profile} is not supported by available video decode backends")
             }
             Self::UnsupportedBitDepth { codec, bit_depth } => format!(
-                "{codec} {bit_depth} не поддерживается: для этой bit depth нет production decode/render path"
+                "{codec} {bit_depth} not supported: no production decode/render path for this bit depth"
             ),
-            Self::UnsupportedChroma { codec, chroma } => format!(
-                "{codec} chroma {chroma} не поддерживается: production path принимает только 4:2:0"
-            ),
+            Self::UnsupportedChroma { codec, chroma } => {
+                format!("{codec} chroma {chroma} not supported: production path accepts only 4:2:0")
+            }
             Self::UnsupportedDecodeFormat { codec } => format!(
-                "для codec {codec} нет decode format, совпадающего с profile/bit depth/chroma/resolution stream-а"
+                "for codec {codec} there is no decode format matching profile/bit depth/chroma/resolution stream"
             ),
             Self::UnsupportedBackendFrameTransfer {
                 backend,
                 required_frame_contract,
             } => format!(
-                "backend {backend} может декодировать stream, но не объявил output transfer/layout {}",
+                "Backend {backend} can decode the stream, but did not declare output transfer/layout {}",
                 required_frame_contract.diagnostic_label()
             ),
             Self::UnsupportedRenderFrameFormat { frame_format } => {
-                format!("renderer не поддерживает input format {frame_format}")
+                format!("renderer does not support input format {frame_format}")
             }
             Self::UnsupportedRenderFrameTransfer { frame_contract } => format!(
-                "renderer не поддерживает transfer contract {}",
+                "renderer does not support transfer contract {}",
                 frame_contract.diagnostic_label()
             ),
             Self::RenderTextureSizeExceeded {
@@ -261,32 +261,32 @@ impl VideoCapabilityRejection {
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 format!(
-                    "renderer texture limit {max_texture_size} меньше coded размера stream-а {width}x{height}"
+                    "renderer texture limit {max_texture_size} is smaller than the coded stream size and {width}x{height}"
                 )
             }
             Self::P010NotRenderable { readiness } => format!(
-                "P010 zero-copy boundary имеет состояние `{readiness}`, но production P010 renderer ещё недоступен"
+                "P010 zero-copy boundary has a state of '{readiness}', but production P010 renderer is not yet available"
             ),
             Self::UnsupportedDmaBufImageLayout {
                 backend,
                 storage_layout,
                 required_wgpu_feature,
             } => format!(
-                "backend {backend} экспортирует P010 как {storage_layout}, но renderer не подтвердил required import feature {required_wgpu_feature}"
+                "Backend {backend} exports P010 as {storage_layout}, but renderer has not confirmed required import feature {required_wgpu_feature}"
             ),
             Self::UnsupportedHdrRenderer { frame_format } => {
                 let frame_format = frame_format
                     .map(|format| format.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 format!(
-                    "HDR stream нельзя выбрать: HDR-to-SDR renderer для {frame_format} пока недоступен"
+                    "HDR stream cannot be selected: HDR-to-SDR renderer for {frame_format} is not yet available"
                 )
             }
             Self::InvalidHdrMetadata { reason } => {
-                format!("HDR stream отклонён: {reason}")
+                format!("HDR stream rejected: {reason}")
             }
             Self::InsufficientStreamMetadata { codec } => format!(
-                "metadata stream-а для codec {codec} недостаточно точна для безопасного выбора"
+                "metadata stream-for codec {codec} It is not accurate enough to make safe choices"
             ),
         }
     }
@@ -670,7 +670,7 @@ fn summarize_system_support(
 /// Формирует компактный список поддерживаемых outputs для ошибки.
 fn summarize_supported_outputs(outputs: &[&SupportedVideoOutput]) -> String {
     if outputs.is_empty() {
-        return "нет доступных video outputs".to_string();
+        return "No video outputs available".to_string();
     }
 
     let mut descriptions = outputs
@@ -681,7 +681,7 @@ fn summarize_supported_outputs(outputs: &[&SupportedVideoOutput]) -> String {
 
     if outputs.len() > descriptions.len() {
         descriptions.push(format!(
-            "ещё {} outputs",
+            "still {} outputs",
             outputs.len() - descriptions.len()
         ));
     }
@@ -692,7 +692,7 @@ fn summarize_supported_outputs(outputs: &[&SupportedVideoOutput]) -> String {
 /// Формирует компактный список renderer capabilities.
 fn summarize_render_capabilities(render_backends: &[RenderCapabilities]) -> String {
     if render_backends.is_empty() {
-        return "renderer capabilities не зарегистрированы".to_string();
+        return "renderer capabilities not registered".to_string();
     }
 
     render_backends
@@ -751,66 +751,66 @@ fn strict_hdr_metadata_rejection(
 
     if frame_format != VideoFramePixelLayout::P010 {
         return Some(invalid_hdr_metadata(
-            "Phase 10 HDR-to-SDR принимает только P010 10-bit 4:2:0 input",
+            "Phase 10 HDR-to-SDR accepts only P010 10-bit 4:2:0 input",
         ));
     }
 
     if requirement.bit_depth != Some(BitDepth::Ten) {
         return Some(invalid_hdr_metadata(
-            "strict HDR metadata должна явно указывать 10-bit input",
+            "strict HDR metadata should clearly indicate 10-bit input",
         ));
     }
 
     if requirement.chroma != Some(ChromaSubsampling::Yuv420) {
         return Some(invalid_hdr_metadata(
-            "strict HDR metadata должна явно указывать YUV 4:2:0 chroma",
+            "strict HDR metadata should clearly indicate YUV 4:2:0 chroma",
         ));
     }
 
     let Some(color) = requirement.color.as_ref() else {
         return Some(invalid_hdr_metadata(
-            "отсутствует resolved color metadata для HDR stream-а",
+            "No resolved color metadata for HDR stream",
         ));
     };
 
     if !matches!(color.transfer, TransferFunction::Pq | TransferFunction::Hlg) {
         return Some(invalid_hdr_metadata(format!(
-            "transfer должен быть PQ или HLG, получено {:?}",
+            "transfer must be PQ or HLG, received {:?}",
             color.transfer
         )));
     }
 
     if color.primaries != ColorPrimaries::Bt2020 {
         return Some(invalid_hdr_metadata(format!(
-            "primaries должны быть BT.2020, получено {:?}",
+            "primaries must have BT.2020, got {:?}",
             color.primaries
         )));
     }
 
     if color.matrix != MatrixCoefficients::Bt2020 {
         return Some(invalid_hdr_metadata(format!(
-            "matrix должна быть BT.2020, получено {:?}",
+            "matrix must have BT.2020, got {:?}",
             color.matrix
         )));
     }
 
     if !matches!(color.range, ColorRange::Limited | ColorRange::Full) {
         return Some(invalid_hdr_metadata(
-            "range должен быть explicit limited или full",
+            "range must have explicit limited or full",
         ));
     }
 
     if let Some(hdr_metadata) = &color.hdr_metadata {
         if hdr_metadata.color_primaries != color.primaries {
             return Some(invalid_hdr_metadata(format!(
-                "HDR side metadata primaries {:?} не совпадают с core primaries {:?}",
+                "HDR side metadata primaries {:?} does not match core primaries {:?}",
                 hdr_metadata.color_primaries, color.primaries
             )));
         }
 
         if hdr_metadata.transfer_function != color.transfer {
             return Some(invalid_hdr_metadata(format!(
-                "HDR side metadata transfer {:?} не совпадает с core transfer {:?}",
+                "HDR side metadata transfer {:?} does not match core transfer {:?}",
                 hdr_metadata.transfer_function, color.transfer
             )));
         }

@@ -72,7 +72,7 @@ impl StrongOpenSlotPort for SlowPlayerSlot {
         match self.terminal.take() {
             Some(FakeTerminal::Installed(media)) => StrongOpenSlotPoll::Installed(media),
             Some(FakeTerminal::Failed(error)) => StrongOpenSlotPoll::Failed(error),
-            None => panic!("terminal fake-слота забран второй раз"),
+            None => panic!("Fake terminal slots taken away for the second time"),
         }
     }
 }
@@ -88,12 +88,15 @@ fn poll_until_finished(
         let progress = owner.poll(slot);
         assert!(
             poll_started.elapsed() < NONBLOCKING_POLL_BUDGET,
-            "опрос установки ждал player-а на UI-потоке"
+            "Survey of installation waited for player-a on the UI-stream"
         );
         if !matches!(progress, LocalOpenInstallProgress::Pending) {
             return progress;
         }
-        assert!(Instant::now() < deadline, "установка так и не завершилась");
+        assert!(
+            Instant::now() < deadline,
+            "The installation has never been completed."
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -142,7 +145,7 @@ fn slow_player_does_not_block_and_installed_is_delivered_exactly_once() {
     let LocalOpenInstallProgress::Installed { installed, target } =
         poll_until_finished(&mut owner, &mut slot)
     else {
-        panic!("медленный player обязан дойти до Installed");
+        panic!("Slow player must go to Installed");
     };
     assert!(first_poll_started.elapsed() >= SLOW_PLAYER_DELAY);
     assert_eq!(installed, "clip.mkv installed");
@@ -178,14 +181,14 @@ fn unsupported_codec_reaches_user_with_session_03_text() {
     let LocalOpenInstallProgress::Failed { error, target } =
         poll_until_finished(&mut owner, &mut slot)
     else {
-        panic!("отказ player-а обязан дойти до владельца Open");
+        panic!("The player's refusal must go to the owner of the Open");
     };
     let StrongMediaOpenUserOutcome::Failed(reason) = error.user_outcome() else {
-        panic!("отказ по кодеку — ошибка для пользователя");
+        panic!("Codec failure is a mistake for the user");
     };
     assert_eq!(
         local_open_failure_message(&target.path, reason),
-        "Не удалось открыть «clip.mkv»: формат видео не поддерживается"
+        "Could not open “clip.mkv”: unsupported video format"
     );
     assert!(!owner.is_installing());
 }
@@ -201,7 +204,7 @@ fn transport_cancel_and_busy_stay_distinct_from_failure() {
         SlowPlayerSlot::holding(request(13), Duration::ZERO, FakeTerminal::Failed(cancelled));
     owner.track(request(13), clip_target());
     let LocalOpenInstallProgress::Failed { error, .. } = owner.poll(&mut slot) else {
-        panic!("отмена тоже terminal");
+        panic!("Cancellation is also terminal.");
     };
     assert_eq!(error.user_outcome(), StrongMediaOpenUserOutcome::Cancelled);
 
@@ -233,7 +236,9 @@ fn foreign_request_in_slot_is_never_polled_by_open_owner() {
     owner.track(request(20), clip_target());
 
     let LocalOpenInstallProgress::OwnershipLost { target } = owner.poll(&mut playlist_slot) else {
-        panic!("чужой request в слоте — потеря владения, а не установка Open");
+        panic!(
+            "Another person’s request in the slot – loss of ownership, not installation of Open"
+        );
     };
     assert_eq!(target, clip_target());
     assert_eq!(playlist_slot.poll_count, 0);
@@ -265,14 +270,14 @@ fn open_path_uses_only_stepwise_strong_install_boundary() {
     // receipt законно), поэтому проверяется только участок Open: опрос job-а и его итог.
     let open_path_start = media_jobs_source
         .find("pub fn poll_local_file_open_job(")
-        .expect("опрос Open живёт в media_jobs.rs");
+        .expect("Open poll lives in media_jobs.rs");
     let open_path_end = media_jobs_source
         .find("pub(crate) fn open_selected_local_file(")
-        .expect("за итогом job-а идёт выбор файла");
+        .expect("After the job, you choose the file.");
     let media_jobs_open_path = &media_jobs_source[open_path_start..open_path_end];
     for (file, source) in [
         ("local_open_install.rs", owner_source),
-        ("media_jobs.rs (путь Open)", media_jobs_open_path),
+        ("media_jobs.rs (The Open Way)", media_jobs_open_path),
     ] {
         for blocking_call in [
             "install_prepared_media_strong(",
@@ -283,7 +288,7 @@ fn open_path_uses_only_stepwise_strong_install_boundary() {
             let production = source.split("#[cfg(test)]").next().unwrap_or(source);
             assert!(
                 !production.contains(blocking_call),
-                "{file} снова вызывает блокирующий {blocking_call}"
+                "{file} again causes blocking {blocking_call}"
             );
         }
     }
@@ -298,9 +303,9 @@ fn transport_guard_routes_open_install_before_startup_fallback() {
     let guard_source = include_str!("../playlist_transport/guarded_transport.rs");
     let open_check = guard_source
         .find("self.local_open_install_owns_request(request_id)")
-        .expect("guard обязан спрашивать владельца Open");
+        .expect("The guard must ask the owner of the open");
     let startup_fallback = guard_source
         .find("self.foreign_request_is_pending(request_id) {\n            SupersededRequestOwner::StartupOrchestration")
-        .expect("guard сохраняет ветку старта");
+        .expect("guard retains the start line");
     assert!(open_check < startup_fallback);
 }

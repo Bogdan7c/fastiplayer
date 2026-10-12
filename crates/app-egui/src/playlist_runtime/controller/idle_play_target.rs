@@ -56,7 +56,7 @@ mod tests {
         let ControllerAppendOutcome::Added { item_ids, .. } =
             controller.append(drafts).expect("append")
         else {
-            panic!("очередь не пустая");
+            panic!("queue");
         };
         (controller, item_ids)
     }
@@ -76,10 +76,10 @@ mod tests {
         let ControllerPlayItemOutcome::StartInstall { install, .. } =
             controller.play_item(item_ids[1], TransportActionOrigin::Ui)
         else {
-            panic!("B стартует install");
+            panic!("B starts install");
         };
         install_planned(&mut controller, install, 10);
-        assert_eq!(controller.idle_play_target(), None, "media установлено");
+        assert_eq!(controller.idle_play_target(), None, "media set up");
 
         controller.active_media = None;
 

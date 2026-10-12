@@ -13,11 +13,11 @@ use super::{
 #[test]
 fn real_filesystem_replaces_complete_payload() {
     // TempDir изолирует focused filesystem side effects.
-    let directory = tempfile::tempdir().expect("temp directory доступен");
+    let directory = tempfile::tempdir().expect("Temp directory is available");
     // Caller передаёт точный target, не filesystem policy.
     let target_path = directory.path().join("state.json");
     // Старый target позволяет доказать именно replace.
-    fs::write(&target_path, b"old").expect("старый target создан");
+    fs::write(&target_path, b"old").expect("Old target setup");
 
     // Neutral boundary получает только готовые bytes.
     let outcome = replace_file_atomically(&target_path, b"{\"revision\":2}");
@@ -26,7 +26,7 @@ fn real_filesystem_replaces_complete_payload() {
     assert_eq!(outcome, AtomicFileWriteOutcome::Durable);
     // Target содержит только полный новый payload.
     assert_eq!(
-        fs::read(&target_path).expect("новый target читается"),
+        fs::read(&target_path).expect("new target reads"),
         b"{\"revision\":2}"
     );
 }
@@ -36,7 +36,7 @@ fn real_filesystem_replaces_complete_payload() {
 #[test]
 fn real_filesystem_creates_user_only_target_permissions() {
     // Unix metadata test использует отдельный каталог.
-    let directory = tempfile::tempdir().expect("temp directory доступен");
+    let directory = tempfile::tempdir().expect("Temp directory is available");
     // Target до попытки не существует.
     let target_path = directory.path().join("private.json");
 
@@ -49,7 +49,7 @@ fn real_filesystem_creates_user_only_target_permissions() {
     use std::os::unix::fs::PermissionsExt;
     // Mask исключает unrelated file-type bits.
     let mode = fs::metadata(&target_path)
-        .expect("target metadata доступна")
+        .expect("target metadata available")
         .permissions()
         .mode()
         & 0o777;
@@ -263,7 +263,7 @@ impl FaultPoint {
             Self::SyncTemp => AtomicFileWriteStage::SyncTempFile,
             Self::Rename => AtomicFileWriteStage::RenameTempFile,
             Self::SyncDirectory => {
-                panic!("post-rename fault не имеет NotReplaced stage")
+                panic!("Post-rename fault does not have a NotReplaced stage.")
             }
         }
     }

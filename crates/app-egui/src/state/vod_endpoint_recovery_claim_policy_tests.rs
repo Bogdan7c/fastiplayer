@@ -17,7 +17,7 @@ use crate::app_wake::{AppWakeOwner, AppWakePort};
 use crate::media_open::MediaOpenRequestId;
 
 fn non_zero(value: u64) -> NonZeroU64 {
-    NonZeroU64::new(value).expect("test identity должна быть non-zero")
+    NonZeroU64::new(value).expect("Test identity must be non-zero.")
 }
 
 fn expiry_signal(generation: u64) -> EndpointExpirySignal {
@@ -27,13 +27,13 @@ fn expiry_signal(generation: u64) -> EndpointExpirySignal {
                 SourceIdentity::new(71),
                 ExtractionGeneration::new(generation),
                 CandidateFormatIdentity::new("recovery-policy-fixture")
-                    .expect("format identity должна быть valid"),
+                    .expect("The format must be valid."),
             ),
             SemanticIdentity::new(SourceIdentity::new(71), "recovery-policy-semantic")
-                .expect("semantic identity должна быть valid"),
+                .expect("A semantic identity must be valid."),
             MediaComponentRole::Muxed,
         )
-        .expect("component и semantic identity должны принадлежать одной source lineage"),
+        .expect("Component and semantic identity must belong to the same source lineage."),
         SourceGeneration::new(generation),
         EndpointExpiryResourceKind::MediaSegment,
         EndpointExpiryReason::AuthorizationExpired,
@@ -50,12 +50,12 @@ fn playlist_runtime_with_installed_media(value: u64) -> (PlaylistRuntime, Active
     playlist_runtime.resolve_missing_state_for_test();
     let binding = playlist_runtime
         .bind_resumed_app_state()
-        .expect("test runtime принимает resumed AppState binding");
+        .expect("testtime accepts resumed applicationstate binding");
     let direct_source = ActiveMediaSource::Web(crate::media_open::WebMediaSourceIntent::direct(
         media_source_open::direct_progressive_open::classify_direct_media_url(&format!(
             "https://media.example.test/recovery-identity-{value}.mp4"
         ))
-        .expect("direct identity fixture должна быть valid"),
+        .expect("Direct identity fixture must be valid"),
     ));
     let active_media = playlist_runtime
         .register_successful_strong_install(
@@ -66,7 +66,7 @@ fn playlist_runtime_with_installed_media(value: u64) -> (PlaylistRuntime, Active
             direct_source,
             PlaybackIntent::StartPlaying,
         )
-        .expect("production playlist owner должен зарегистрировать strong install");
+        .expect("Production Playlist Owner Must Register Strong Install");
     (playlist_runtime, active_media)
 }
 
@@ -114,7 +114,7 @@ fn requested_config() -> WebMediaConfig {
 
 fn admitted_plan(outcome: VodEndpointExpiryAdmissionOutcome) -> VodEndpointRecoveryClaimPlan {
     let VodEndpointExpiryAdmissionOutcome::Admitted(plan) = outcome else {
-        panic!("matching runtime facts должны создать admitted recovery plan");
+        panic!("Matching Runtime Facts: Admitted Recovery Plan");
     };
     plan
 }
@@ -346,71 +346,71 @@ fn app_claim_source_order_preserves_fast_gate_atomic_source_attach_and_claimed_o
     let source = include_str!("vod_endpoint_recovery.rs");
     let app_claim_start = source
         .find("fn claim_vod_endpoint_expiry")
-        .expect("AppState claim function должна существовать");
+        .expect("Appstate claim function should exist.");
     let app_claim_end = source[app_claim_start..]
         .find("/// Запускает exact re-extraction")
         .map(|offset| app_claim_start + offset)
-        .expect("следующий recovery method ограничивает function body");
+        .expect("Next PostNext Recovery Method Limits Body Function");
     let app_claim = &source[app_claim_start..app_claim_end];
     let gate = app_claim
         .find("has_pending_expiry_signal")
-        .expect("no-signal gate должен существовать");
+        .expect("A no-sign gate must exist.");
     let config = app_claim
         .find("committed_app_config")
-        .expect("committed config read должен существовать");
+        .expect("committed config read must exist.");
     let player = app_claim
         .find("refresh_player_snapshot")
-        .expect("player snapshot read должен существовать");
+        .expect("Player snapshot read should exist.");
     let playlist = app_claim
         .find("playlist_view_snapshot")
-        .expect("playlist identity read должен существовать");
+        .expect("Playlist identity read must exist");
     let owner_claim = app_claim
         .find("claim_pending_expiry_from_runtime_facts")
-        .expect("owner claim должен существовать");
+        .expect("The owner of the claim must exist.");
     let claimed_redraw = app_claim
         .find("if outcome == VodEndpointExpiryClaimOutcome::Claimed")
-        .expect("redraw должен быть fenced typed Claimed outcome-ом");
+        .expect("redraw must be fenced typed Claimed outcome");
     assert!(gate < config && config < player && player < playlist && playlist < owner_claim);
     assert!(owner_claim < claimed_redraw);
 
     let owner_claim_start = source
         .find("fn claim_pending_expiry_from_runtime_facts")
-        .expect("runtime owner claim function должна существовать");
+        .expect("Runtime Owner Claim Function:");
     let owner_claim_end = source[owner_claim_start..]
         .find("impl AppState")
         .map(|offset| owner_claim_start + offset)
-        .expect("AppState impl ограничивает owner claim body");
+        .expect("AppState implease limits owner claim body");
     let owner_claim = &source[owner_claim_start..owner_claim_end];
     let source_clone = owner_claim
         .find("let source = binding.source.clone()")
-        .expect("real Installed source должен клонироваться до signal consume");
+        .expect("Real Installed Source should be cloned to Signal Consume");
     let admission = owner_claim
         .find("admit_claim_from_runtime_facts")
-        .expect("source-neutral admission должен вызываться owner-ом");
+        .expect("source-neutral admission must be called by the owner.");
     let pending_commit = owner_claim
         .find("self.pending = Some(PendingVodEndpointRecoveryAttempt")
-        .expect("admitted plan должен атомарно публиковаться как pending");
+        .expect("Adopted plan must be published as pending");
     assert!(source_clone < admission && admission < pending_commit);
     assert!(owner_claim.contains("source,"));
     assert!(owner_claim.contains("claim,"));
 
     let poll_start = source
         .find("pub(crate) fn poll_vod_endpoint_recovery")
-        .expect("production recovery poll должен существовать");
+        .expect("Production Recovery Policies Should Exist");
     let poll_end = source[poll_start..]
         .find("/// Redraw scheduler")
         .map(|offset| poll_start + offset)
-        .expect("следующий method ограничивает recovery poll body");
+        .expect("This method limits the recovery of the body");
     let poll = &source[poll_start..poll_end];
     let pending_gate = poll
         .find("self.vod_endpoint_recovery.pending.is_some()")
-        .expect("pending attempt должен иметь приоритет над новым claim");
+        .expect("Continuous attempt must take precedence over new claim");
     let poll_pending = poll
         .find("self.poll_claimed_vod_endpoint_recovery")
-        .expect("pending attempt должен продолжаться через owned policy");
+        .expect("The pending attempt must continue with the owned policy.");
     let next_claim = poll
         .find("self.claim_vod_endpoint_expiry")
-        .expect("natural expiry claim должен оставаться fallback path-ом");
+        .expect("The natural expiry claim must remain a fallback path.");
     assert!(pending_gate < poll_pending && poll_pending < next_claim);
     assert!(poll[poll_pending..next_claim].contains("return;"));
 }

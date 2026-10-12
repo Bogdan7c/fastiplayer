@@ -378,12 +378,12 @@ mod tests {
         assert_eq!(
             controller.observe(lower_runtime, start + Duration::from_secs(5)),
             None,
-            "failed 1080p нельзя повторно пробовать до retry deadline"
+            "failed 1080p must not be retried before the retry deadline"
         );
         assert_eq!(
             controller.observe(lower_runtime, start + Duration::from_secs(12)),
             Some(AutomaticWebMediaQualityDecision::Higher),
-            "после retry deadline улучшившуюся сеть можно проверить снова"
+            "After the retry deadline, the improved network can be checked again."
         );
     }
 
@@ -413,7 +413,7 @@ mod tests {
         assert_eq!(
             controller.observe(buffering, start + Duration::from_secs(1)),
             Some(AutomaticWebMediaQualityDecision::Lower),
-            "первый runtime реагирует по buffering grace без искусственного startup hold"
+            "First runtime responds to buffering grace without artificial startup hold"
         );
 
         let mut reinstalled = observation(2, PlaybackState::Playing, 720, true, None);
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(
             controller.observe(reinstalled, start + Duration::from_secs(2)),
             None,
-            "reinstalled runtime обязан удерживать ступень внутри anti-flap окна"
+            "reinstalled runtime must hold a step inside an anti-flap window"
         );
     }
 }

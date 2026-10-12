@@ -240,7 +240,7 @@ impl SymphoniaDemuxer {
                     source = %self.source_label,
                     accepted_retry_ms = accepted_timestamp.as_millis(),
                     error = %error,
-                    "Принятый fallback seek Symphonia не удалось повторить после уточнения"
+                    "Accepted fallback seek Symphonia It was not possible to repeat after clarification"
                 );
                 Err(symphonia_seek_error_to_demux_error(error))
             }
@@ -267,7 +267,7 @@ impl SymphoniaDemuxer {
             retry_index,
             demux_mode = ?backend_request.mode,
             seek_track_id = ?seek_track_id,
-            "Цель seek внутри public duration, но вне выбранного Symphonia stream; пробуем раньше"
+            "Seek target is within the public duration but outside the selected Symphonia stream; trying earlier"
         );
 
         let retry_request = DemuxSeekRequest {

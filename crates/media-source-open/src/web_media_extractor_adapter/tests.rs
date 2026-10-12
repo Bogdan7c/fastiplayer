@@ -168,20 +168,19 @@ fn native_direct_fixture_cannot_reach_extractor_launcher() {
     let direct_owner_source = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/direct_progressive_open.rs"),
     )
-    .expect("direct progressive owner source должен читаться");
+    .expect("Direct progressive owner source should be read");
     for forbidden_reference in ["service_ytdlp", "yt_dlp", "YtDlp", "Extractor"] {
         assert!(
             !direct_owner_source.contains(forbidden_reference),
-            "direct progressive owner не должен ссылаться на {forbidden_reference}"
+            "direct progressive owner should not refer to {forbidden_reference}"
         );
     }
 }
 
 /// Собирает Rust sources рекурсивно без нового test-only dependency.
 fn collect_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
-    for entry in fs::read_dir(directory).expect("crate source directory должна читаться")
-    {
-        let path = entry.expect("crate source entry должна читаться").path();
+    for entry in fs::read_dir(directory).expect("The crate source directory should read") {
+        let path = entry.expect("The crate source entry should read").path();
         if path.is_dir() {
             collect_rust_sources(&path, sources);
         } else if path.extension().is_some_and(|extension| extension == "rs") {
@@ -249,14 +248,14 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
         .filter_map(|source_path| {
             let relative_path = source_path
                 .strip_prefix(&source_root)
-                .expect("collected source обязан быть внутри crate src")
+                .expect("The collected source must be inside the crate src")
                 .to_string_lossy()
                 .replace('\\', "/");
             if is_test_source(&relative_path) {
                 return None;
             }
             let source =
-                fs::read_to_string(&source_path).expect("crate Rust source должен читаться");
+                fs::read_to_string(&source_path).expect("crate Rust source should be read");
             PROVIDER_DTO_MARKERS
                 .iter()
                 .any(|marker| source.contains(marker))

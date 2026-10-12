@@ -211,7 +211,7 @@ fn video_backlog_recovery_keyframe_atomically_replaces_backlog_and_is_queued() {
     ));
     pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+        .expect("Proof keyframe should simulate the already sent decoder packet");
     for packet_index in 1..=3u64 {
         pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
             selected_track_id,
@@ -252,7 +252,7 @@ fn video_backlog_recovery_keyframe_atomically_replaces_backlog_and_is_queued() {
     let recovery_track_dts = Some(media_core::TrackTimestamp::new(
         selected_track_id,
         9_500,
-        media_core::TimeBase::new(1, 100_000).expect("test time base должен быть валиден"),
+        media_core::TimeBase::new(1, 100_000).expect("Test time base should be valid"),
     ));
     let recovery_payload = Bytes::from_static(b"recovery-keyframe");
     assert_eq!(
@@ -323,7 +323,7 @@ fn video_backlog_recovery_scan_limit_restores_continuation_and_rearms_after_drai
     ));
     pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+        .expect("Proof keyframe should simulate the already sent decoder packet");
     for pending_pts_ms in [10, 20] {
         pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
             selected_track_id,
@@ -384,7 +384,7 @@ fn video_backlog_recovery_scan_limit_restores_continuation_and_rearms_after_drai
         .map(|_| {
             pipeline
                 .pop_pending_video_packet_front()
-                .expect("restored continuation должен сохранить FIFO")
+                .expect("Restored Continuity to Retain FIFO")
                 .pts
         })
         .collect::<Vec<_>>();
@@ -422,7 +422,7 @@ fn video_backlog_recovery_byte_limit_restores_continuation_without_retained_payl
     ));
     pipeline
         .pop_pending_video_packet_front()
-        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+        .expect("Proof keyframe should simulate the already sent decoder packet");
     pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
         selected_track_id,
         Duration::from_millis(10),
@@ -476,7 +476,7 @@ fn video_backlog_recovery_byte_limit_restores_continuation_without_retained_payl
         .map(|_| {
             pipeline
                 .pop_pending_video_packet_front()
-                .expect("byte-limit rollback должен сохранить полный FIFO")
+                .expect("byte-limit rollback should retain full FIFO")
                 .encoded_bytes
         })
         .collect::<Vec<_>>();

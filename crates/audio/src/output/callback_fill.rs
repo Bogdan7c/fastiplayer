@@ -192,7 +192,7 @@ mod tests {
                 played_samples: 8,
                 silence_samples: 0
             },
-            "хвост не должен обрезаться"
+            "tail should not be cut off"
         );
         assert_eq!(data, [0.5; 8]);
 

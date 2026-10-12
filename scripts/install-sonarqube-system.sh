@@ -73,7 +73,7 @@ print_error() {
     local error_message="$1"
 
     # Единый префикс делает ошибки заметными в длинном логе установки.
-    printf 'Ошибка: %s\n' "${error_message}" >&2
+    printf 'Error: %s\n' "${error_message}" >&2
 }
 
 # Функция завершает установку с понятной причиной.
@@ -93,7 +93,7 @@ require_root() {
     # EUID равен нулю только у root-процесса.
     if [[ "${EUID}" -ne 0 ]]; then
         # Установка пишет в /opt, /var и /etc/systemd/system, поэтому без root продолжать нельзя.
-        fail_installation "запустите скрипт через sudo: sudo scripts/install-sonarqube-system.sh"
+        fail_installation "Run the script through sudo: sudo scripts/install-sonarqube-system.sh"
     fi
 }
 
@@ -102,14 +102,14 @@ require_arch_like_system() {
     # pacman-команды ниже корректны только для Arch-like систем.
     if ! grep -Eq '^(ID|ID_LIKE)=.*(arch|cachyos)' /etc/os-release; then
         # Сообщение объясняет, почему установка остановлена до package manager.
-        fail_installation "этот installer ожидает Arch/CachyOS с pacman"
+        fail_installation "This installer expects Arch/CachyOS with a pacman"
     fi
 }
 
 # Функция ставит системные зависимости через pacman.
 install_system_packages() {
     # Сообщение фиксирует начало потенциально долгой операции.
-    print_info "Устанавливаю системные зависимости: jdk21-openjdk unzip curl"
+    print_info "System dependencies: jdk21-openjdk unzip curl"
 
     # --needed не переустанавливает уже установленные пакеты.
     pacman -S --needed --noconfirm jdk21-openjdk unzip curl
@@ -120,14 +120,14 @@ ensure_sonarqube_group() {
     # Если группа уже существует, повторно создавать ее не нужно.
     if getent group "${SONARQUBE_GROUP}" >/dev/null 2>&1; then
         # Сообщение полезно при повторном запуске installer.
-        print_info "Группа ${SONARQUBE_GROUP} уже существует"
+        print_info "The ${SONARQUBE_GROUP} group already exists."
 
         # Возвращаемся без изменения существующей группы.
         return
     fi
 
     # Сообщение фиксирует создание изолированной группы.
-    print_info "Создаю системную группу ${SONARQUBE_GROUP}"
+    print_info "Create a system group ${SONARQUBE_GROUP}"
 
     # --system создает системную группу с корректным диапазоном GID.
     groupadd --system "${SONARQUBE_GROUP}"
@@ -138,14 +138,14 @@ ensure_sonarqube_user() {
     # Если пользователь уже существует, повторно создавать его не нужно.
     if id -u "${SONARQUBE_USER}" >/dev/null 2>&1; then
         # Сообщение полезно при повторном запуске installer.
-        print_info "Пользователь ${SONARQUBE_USER} уже существует"
+        print_info "The user ${SONARQUBE_USER} already exists."
 
         # Возвращаемся без изменения существующей учетной записи.
         return
     fi
 
     # Сообщение фиксирует создание изолированного пользователя.
-    print_info "Создаю системного пользователя ${SONARQUBE_USER}"
+    print_info "Create a system user ${SONARQUBE_USER}"
 
     # --system создает системную учетную запись без интерактивного shell.
     useradd --system --gid "${SONARQUBE_GROUP}" --home-dir /var/lib/sonarqube --shell /usr/bin/nologin --create-home "${SONARQUBE_USER}"
@@ -168,14 +168,14 @@ download_if_missing() {
     # Существующий непустой файл переиспользуется для идемпотентности.
     if [[ -s "${destination_path}" ]]; then
         # Сообщение показывает, что сеть не используется повторно.
-        print_info "Архив уже скачан: ${destination_path}"
+        print_info "The archive is already downloaded: ${destination_path}"
 
         # Возвращаемся к следующему шагу.
         return
     fi
 
     # Сообщение показывает официальный URL без скрытой логики.
-    print_info "Скачиваю ${source_url}"
+    print_info "Downloading ${source_url}"
 
     # curl падает на HTTP-ошибках и сохраняет файл только по указанному пути.
     curl --fail --location --show-error --output "${destination_path}" "${source_url}"
@@ -187,7 +187,7 @@ verify_zip_archive() {
     local zip_path="$1"
 
     # Сообщение фиксирует проверяемый архив.
-    print_info "Проверяю ZIP: ${zip_path}"
+    print_info "Checking ZIP: ${zip_path}"
 
     # unzip -t читает архив и возвращает ошибку при повреждении.
     unzip -t "${zip_path}" >/dev/null
@@ -198,7 +198,7 @@ install_sonarqube_files() {
     # Повторный запуск не должен перезаписывать уже установленную версию.
     if [[ -d "${SONARQUBE_INSTALL_DIR}" ]]; then
         # Сообщение показывает, какой каталог переиспользуется.
-        print_info "SonarQube уже распакован: ${SONARQUBE_INSTALL_DIR}"
+        print_info "SonarQube has been unpacked: ${SONARQUBE_INSTALL_DIR}"
     else
         # Временный каталог распаковки удаляется перед использованием.
         rm -rf "${INSTALL_WORK_DIR}/sonarqube-extract"
@@ -207,7 +207,7 @@ install_sonarqube_files() {
         mkdir -p "${INSTALL_WORK_DIR}/sonarqube-extract"
 
         # Сообщение фиксирует начало распаковки большого архива.
-        print_info "Распаковываю SonarQube ${SONARQUBE_VERSION}"
+        print_info "Unpacking SonarQube ${SONARQUBE_VERSION}"
 
         # Архив содержит корневой каталог sonarqube-<version>.
         unzip -q "${SONARQUBE_ZIP_PATH}" -d "${INSTALL_WORK_DIR}/sonarqube-extract"
@@ -228,7 +228,7 @@ install_sonar_scanner_files() {
     # Повторный запуск не должен перезаписывать уже установленную версию scanner.
     if [[ -d "${SONAR_SCANNER_INSTALL_DIR}" ]]; then
         # Сообщение показывает, какой каталог переиспользуется.
-        print_info "SonarScanner уже распакован: ${SONAR_SCANNER_INSTALL_DIR}"
+        print_info "SonarScanner has been unpacked: ${SONAR_SCANNER_INSTALL_DIR}"
     else
         # Временный каталог распаковки удаляется перед использованием.
         rm -rf "${INSTALL_WORK_DIR}/sonar-scanner-extract"
@@ -237,7 +237,7 @@ install_sonar_scanner_files() {
         mkdir -p "${INSTALL_WORK_DIR}/sonar-scanner-extract"
 
         # Сообщение фиксирует начало распаковки scanner.
-        print_info "Распаковываю SonarScanner CLI ${SONAR_SCANNER_VERSION}"
+        print_info "Unpacking SonarScanner CLI ${SONAR_SCANNER_VERSION}"
 
         # Архив содержит корневой каталог sonar-scanner-<version>-linux-x64.
         unzip -q "${SONAR_SCANNER_ZIP_PATH}" -d "${INSTALL_WORK_DIR}/sonar-scanner-extract"
@@ -304,7 +304,7 @@ configure_sonarqube_properties() {
     local sonar_properties_path="${SONARQUBE_HOME_LINK}/conf/sonar.properties"
 
     # Сообщение показывает, какой файл меняется.
-    print_info "Настраиваю ${sonar_properties_path}"
+    print_info "Set up ${sonar_properties_path}."
 
     # Удаляем прежнюю активную настройку host, если installer запускается повторно.
     remove_active_property "sonar.web.host"
@@ -322,7 +322,7 @@ configure_sonarqube_properties() {
     remove_active_property "sonar.path.temp"
 
     # Отделяем локальный блок от штатных настроек SonarQube.
-    printf '\n# Локальная системная установка Fastiplayer.\n' >>"${sonar_properties_path}"
+    printf '\n# Local system installation Fastiplayer.\n' >>"${sonar_properties_path}"
 
     # Веб-интерфейс слушает только loopback, чтобы локальная оценка не открывала порт в сеть.
     append_property "sonar.web.host" "127.0.0.1"
@@ -346,7 +346,7 @@ configure_sonarqube_properties() {
 # Функция ставит systemd unit для SonarQube.
 install_systemd_service() {
     # Сообщение показывает путь unit-файла.
-    print_info "Пишу ${SONARQUBE_SERVICE_PATH}"
+    print_info "Write ${SONARQUBE_SERVICE_PATH}"
 
     # heredoc создает unit целиком, чтобы не собирать systemd-конфиг по кускам.
     cat >"${SONARQUBE_SERVICE_PATH}" <<UNIT
@@ -396,7 +396,7 @@ check_runtime_limits() {
     # Значение ниже 524288 часто ломает запуск SonarQube.
     if [[ "${vm_max_map_count}" -lt 524288 ]]; then
         # Останавливаемся с причиной, а не маскируем будущий сбой systemd.
-        fail_installation "vm.max_map_count=${vm_max_map_count}; поднимите значение минимум до 524288"
+        fail_installation "vm.max_map_count = ${vm_max_map_count}; raise the value to a minimum of 524288"
     fi
 }
 
@@ -475,7 +475,7 @@ main() {
     print_installed_versions
 
     # Финальное сообщение показывает URL локального интерфейса.
-    print_info "SonarQube будет доступен на http://127.0.0.1:9000 после завершения старта"
+    print_info "SonarQube will be available on http://127.0.0.1:9000 after launch"
 }
 
 # Запускаем главную функцию с исходными аргументами.

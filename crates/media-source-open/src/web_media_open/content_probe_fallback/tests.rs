@@ -50,7 +50,7 @@ fn best_playable_retries_only_typed_content_rejection() {
             Ok("opened")
         }
     })
-    .expect("second planner-ranked candidate должен открыться");
+    .expect("Second Planner-Ranked Candidate must open");
 
     assert_eq!(*selected, 20);
     assert_eq!(opened, "opened");
@@ -68,13 +68,13 @@ fn best_playable_uses_one_alternate_after_network_unavailable() {
                 anyhow::Error::new(TransportOpenError::Transport(
                     TransportFailure::NetworkUnavailable,
                 ))
-                .context("provider добавил безопасный пользовательский контекст"),
+                .context("provider Added a secure user context"),
             ))
         } else {
             Ok("opened")
         }
     })
-    .expect("второй planner-ranked candidate должен открыть тот же BestPlayable intent");
+    .expect("The second planner-ranked candidate must open the same BestPlayable intention.");
 
     assert_eq!(*selected, 20);
     assert_eq!(opened, "opened");
@@ -91,10 +91,10 @@ fn best_playable_network_fallback_is_bounded_to_one_alternate() {
             TransportOpenError::Transport(TransportFailure::NetworkUnavailable),
         )))
     })
-    .expect_err("две недоступные identities должны исчерпать bounded fallback");
+    .expect_err("two inaccessible identities must be exhausted bounded fallback");
 
     assert_eq!(attempts, [10, 20]);
-    assert!(error.to_string().contains("network fallback исчерпан"));
+    assert!(error.to_string().contains("network fallback is exhausted"));
 }
 
 /// 404/410/429/5xx получили свои варианты ради понятного текста, но право
@@ -116,17 +116,17 @@ fn best_playable_http_status_failures_keep_one_alternate_and_exact_reason() {
                 TransportOpenError::Transport(failure),
             )))
         })
-        .expect_err("недоступные identities должны исчерпать bounded fallback");
+        .expect_err("Inaccessible identities must exhaust bounded fallback");
 
         assert_eq!(
             attempts,
             [10, 20],
-            "{failure:?} должен дать ровно один alternate"
+            "{failure:?} will give you exactly one alternate."
         );
         assert_eq!(
             error.downcast_ref::<TransportOpenError>(),
             Some(&TransportOpenError::Transport(failure)),
-            "{failure:?} должен дойти до вызывающего без подмены на NetworkUnavailable"
+            "{failure:?} must reach the caller without substituting for NetworkUnavailable"
         );
     }
 }
@@ -141,7 +141,7 @@ fn best_playable_timeout_remains_terminal_without_alternate_attempt() {
             TransportOpenError::Transport(TransportFailure::Timeout),
         )))
     })
-    .expect_err("timeout не должен умножаться на размер candidate inventory");
+    .expect_err("timeout should not be multiplied by size candidate inventory");
 
     assert_eq!(attempts, 1);
     assert!(matches!(
@@ -162,7 +162,7 @@ fn best_playable_exhaustion_preserves_most_recent_retryable_error() {
             )))
         }
     })
-    .expect_err("exhaustion должен сохранить последнюю фактическую причину");
+    .expect_err("exhaustion The last factual cause must be retained");
 
     assert!(matches!(
         error.downcast_ref::<TransportOpenError>(),
@@ -181,7 +181,7 @@ fn exact_content_rejection_does_not_try_another_candidate() {
         attempts += 1;
         Err::<(), _>(ContentProbeRejection::UnsupportedVideo.into())
     })
-    .expect_err("Exact content rejection должен остаться terminal");
+    .expect_err("Exact content rejection should remain terminal.");
 
     assert_eq!(attempts, 1);
     assert_eq!(
@@ -200,7 +200,7 @@ fn fatal_best_playable_failure_is_not_masked_by_neighbor() {
             "terminal provider failure"
         )))
     })
-    .expect_err("terminal failure не должен запускать fallback");
+    .expect_err("terminal failure shouldn't start fallback");
 
     assert_eq!(attempts, 1);
     assert!(error.to_string().contains("terminal provider failure"));
@@ -407,11 +407,7 @@ fn assert_child_service_snapshot_fallback() {
     .expect("create app playback policy");
     let ranked = ranked_best_playable_candidates(&snapshot, &planning, capabilities, &policy)
         .expect("rank real service candidates");
-    assert_eq!(
-        ranked.len(),
-        2,
-        "fixture должна дать две playable alternatives"
-    );
+    assert_eq!(ranked.len(), 2, "fixture give two playable alternatives");
     let first_descriptor = ranked[0].descriptor();
     let duplicate_rank = [
         (
@@ -425,7 +421,7 @@ fn assert_child_service_snapshot_fallback() {
     ];
     assert!(
         map_ranked_service_candidates(&snapshot, duplicate_rank.into_iter()).is_err(),
-        "duplicate planner identity должна fail-closed"
+        "The duplicate planner identity must fail-closed."
     );
     let missing_exact_identity = CandidateIdentity::new(
         snapshot.source(),
@@ -439,7 +435,7 @@ fn assert_child_service_snapshot_fallback() {
     )];
     assert!(
         map_ranked_service_candidates(&snapshot, missing_rank.into_iter()).is_err(),
-        "missing planner identity должна fail-closed"
+        "missing planner identity must fail-closed"
     );
     let first_selection = snapshot
         .selection_for(ranked[0])
@@ -465,13 +461,13 @@ fn assert_child_service_snapshot_fallback() {
             },
         )
         .is_err(),
-        "catalog должен отвергнуть mispaired planning snapshot"
+        "catalog must reject mispaired planning snapshot"
     );
 
     let neutral_projection =
         crate::web_media_extractor_adapter::ExtractorCatalogProjection::from_snapshot(&snapshot)
             .and_then(|projection| projection.with_active_selection(&first_selection))
-            .expect("extractor adapter должен построить neutral active selection");
+            .expect("Extractor adapter builds neutral active selection");
     let stream_configuration =
         crate::web_media_stream_model::WebMediaStreamConfiguration::from_neutral_catalog(
             &planning,
@@ -480,11 +476,11 @@ fn assert_child_service_snapshot_fallback() {
             neutral_projection.selection(),
             crate::web_media_stream_model::WebMediaSelectionPreference::GlobalBestPlayable,
         )
-        .expect("canonical real snapshot должен построить URL stream model");
+        .expect("Canonical real snapshot builds a URL stream model");
     assert_eq!(
         stream_configuration.candidates().len(),
         2,
-        "selected + formats duplicate не должен создавать третью URL option"
+        "selected + formats duplicate should not create a third URL option"
     );
 
     let catalog_choice_count = super::super::catalog::projected_parent_choice_count(
@@ -497,10 +493,10 @@ fn assert_child_service_snapshot_fallback() {
             active_composed: None,
         },
     )
-    .expect("canonical real snapshot должен построить URL catalog");
+    .expect("Canonical real snapshot builds up a URL catalog");
     assert_eq!(
         catalog_choice_count, 2,
-        "selected + formats duplicate не должен создавать третью catalog choice"
+        "selected + formats duplicate should not create a third catalog choice"
     );
 
     let mut best_attempts = 0_usize;

@@ -43,20 +43,20 @@ impl CueExportScopeIneligibility {
     /// Короткая privacy-safe причина для disabled UI.
     pub const fn safe_reason_ru(self) -> &'static str {
         match self {
-            Self::EmptyScope => "В выбранной области нет треков",
-            Self::CompoundEntry => "CUE поддерживает только отдельные CUE-треки",
-            Self::MissingCueSemantics => "Треки не имеют точной CUE-разметки",
-            Self::MixedSourceDocuments => "Треки относятся к разным CUE-файлам",
+            Self::EmptyScope => "There are no tracks in the selected area",
+            Self::CompoundEntry => "CUE supports only individual CUE tracks.",
+            Self::MissingCueSemantics => "Tracks do not have exact CUE markup",
+            Self::MixedSourceDocuments => "Tracks refer to different CUE files",
             Self::SourceDocumentIneligible => {
-                "Исходный CUE содержит команды или индексы без точного экспорта"
+                "The original CUE contains commands or indexes without exact export."
             }
-            Self::NonSequentialTracks => "Порядок треков больше не образует CUE-последовательность",
+            Self::NonSequentialTracks => "Track order no longer forms CUE sequence",
             Self::UnrepresentablePlaybackBoundary => {
-                "Границы выбранных треков нельзя точно выразить в CUE"
+                "The boundaries of the selected tracks cannot be accurately expressed in CUE."
             }
-            Self::NonLocalOrNonUtf8File => "CUE export требует локальные UTF-8 пути",
-            Self::UnrepresentableText => "Путь или metadata нельзя безопасно записать в CUE",
-            Self::InconsistentMetadata => "Metadata выбранных CUE-треков несовместима",
+            Self::NonLocalOrNonUtf8File => "CUE export requires local UTF-8 pathways",
+            Self::UnrepresentableText => "The path or metadata cannot be safely written in CUE.",
+            Self::InconsistentMetadata => "Metadata selected CUE tracks incompatible",
         }
     }
 }
@@ -361,9 +361,11 @@ mod tests {
 
     #[test]
     fn metadata_representability_is_fail_closed_for_cue_delimiters() {
-        assert!(cue_metadata_representable("Обычное название"));
-        assert!(!cue_metadata_representable("Название с \"кавычкой\""));
-        assert!(!cue_metadata_representable(" строка с внешним пробелом"));
-        assert!(!cue_metadata_representable("первая\nвторая"));
+        assert!(cue_metadata_representable("Common name"));
+        assert!(!cue_metadata_representable(
+            "Name with \" quotation marks \""
+        ));
+        assert!(!cue_metadata_representable(" space-line"));
+        assert!(!cue_metadata_representable("first \n second"));
     }
 }

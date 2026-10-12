@@ -31,7 +31,7 @@ pub(crate) fn parse(document: &str) -> SmoothManifest {
         xml_budgets: xml_budgets(),
         limits: manifest_limits(),
     })
-    .expect("test Smooth manifest должен быть valid")
+    .expect("test Smooth manifest must have valid")
 }
 
 pub(crate) fn policy(aggregate_bytes: usize) -> SmoothPreparationPolicy {

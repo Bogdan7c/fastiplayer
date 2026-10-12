@@ -37,13 +37,13 @@ pub(super) fn resume_queue_from_idle(
         && let Some(outcome) = playlist_runtime.play_queue_blocked_item()
     {
         if !apply_playlist_row_play(app_state, playlist_runtime, renderer, outcome) {
-            warn!("Play не смог продолжить очередь с остановленного элемента");
+            warn!("Play failed to continue the queue with the stopped element");
         }
         return true;
     }
     if let Some(outcome) = playlist_runtime.play_idle_queue_target() {
         if !apply_playlist_row_play(app_state, playlist_runtime, renderer, outcome) {
-            warn!("Play не смог открыть элемент очереди");
+            warn!("Play failed to open the queue element");
         }
         return true;
     }

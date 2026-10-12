@@ -51,7 +51,7 @@ fn request_id(seed: u64) -> MediaOpenRequestId {
 
 fn item_fault() -> PlaylistTargetFailure {
     PlaylistTargetFailure::ItemFault(PlaylistTargetFailureSummary::Specific(Arc::from(
-        "Файл не найден",
+        "File not found",
     )))
 }
 
@@ -65,7 +65,7 @@ fn manual_row_play_failure_is_published_once_for_the_center() {
         install, ..
     }) = runtime.play_playlist_row(item_ids[1])
     else {
-        panic!("Play строки B начинает install");
+        panic!("Play Line B starts installing");
     };
 
     let continuation = runtime.report_playlist_target_failure_before_admission(
@@ -74,12 +74,15 @@ fn manual_row_play_failure_is_published_once_for_the_center() {
         item_fault(),
     );
 
-    assert!(continuation.is_none(), "ручной отказ очередь не продолжает");
+    assert!(
+        continuation.is_none(),
+        "manual refusal queue does not continue"
+    );
     assert_eq!(runtime.take_manual_open_failure(), Some(item_ids[1]));
     assert_eq!(
         runtime.take_manual_open_failure(),
         None,
-        "событие отдаётся один раз"
+        "event is given once"
     );
 }
 
@@ -92,7 +95,7 @@ fn manual_row_play_without_network_is_published_for_the_center() {
         install, ..
     }) = runtime.play_playlist_row(item_ids[1])
     else {
-        panic!("Play строки B начинает install");
+        panic!("Play Line B starts installing");
     };
 
     runtime.report_playlist_target_failure_before_admission(
@@ -118,7 +121,7 @@ fn automatic_skip_step_is_not_a_manual_failure() {
         item_fault(),
     );
 
-    assert!(continuation.is_some(), "skip продолжает очередь");
+    assert!(continuation.is_some(), "skip continues its turn");
     assert_eq!(runtime.take_manual_open_failure(), None);
 }
 
@@ -151,7 +154,7 @@ fn reopen_after_playback_failure_installs_same_item_at_failure_position() {
         ..
     })) = runtime.reopen_failed_active_item_from(Duration::from_secs(83))
     else {
-        panic!("переоткрытие начинает новый install");
+        panic!("Reopening starts a new install");
     };
 
     assert_eq!(install.item_id, item_ids[0]);
@@ -159,13 +162,13 @@ fn reopen_after_playback_failure_installs_same_item_at_failure_position() {
     assert_eq!(
         install.start_position,
         StartupPosition::RestoreExact(Duration::from_secs(83)),
-        "позиция обрыва применяется как есть, без отката «у конца — с начала»"
+        "the position of the cliff is applied as is, without rollback \"at the end - from the beginning\""
     );
     // Контроль: обычный Play той же строки не делает install, а рестартует мёртвое media.
     let RuntimeRowPlayOutcome::Controller(ControllerPlayItemOutcome::RestartActive { .. }) =
         runtime.play_playlist_row(item_ids[0])
     else {
-        panic!("обычный Play играющей строки — RestartActive");
+        panic!("The usual play string - RestartActive");
     };
 }
 
@@ -179,7 +182,7 @@ fn reopen_without_known_position_starts_from_the_beginning() {
         ..
     })) = runtime.reopen_failed_active_item_from(Duration::ZERO)
     else {
-        panic!("переоткрытие начинает новый install");
+        panic!("Reopening starts a new install");
     };
 
     assert_eq!(install.start_position, StartupPosition::KeepStart);
@@ -233,10 +236,10 @@ impl MediaRetryPort for RuntimeBackedPort<'_> {
     fn report_still_opening(&mut self) {}
     fn clear_failure(&mut self) {}
     fn open_local_file(&mut self, _path: std::path::PathBuf) {
-        panic!("в этом сценарии файл не открывается");
+        panic!("In this scenario, the file does not open.");
     }
     fn open_web_url(&mut self, _url: &crate::external_open::request::DroppedWebUrl) {
-        panic!("в этом сценарии ссылка не открывается");
+        panic!("In this scenario, the link does not open.");
     }
     fn play_queue_item(&mut self, item_id: PlaylistItemId) -> RetryStart {
         let outcome = self.runtime.play_playlist_row(item_id);
@@ -248,7 +251,7 @@ impl MediaRetryPort for RuntimeBackedPort<'_> {
     }
     fn reopen_failed_playback(&mut self, position: ReopenPosition) -> RetryStart {
         let ReopenPosition::At(position) = position else {
-            panic!("в этом сценарии позиция известна");
+            panic!("In this scenario, the position is known");
         };
         let outcome = self.runtime.reopen_failed_active_item_from(position);
         self.record(outcome)
@@ -274,7 +277,7 @@ fn retry_on_blocked_queue_opens_the_blocked_item() {
     };
     execute_media_retry(&mut port, MediaRetryTarget::ResumeBlockedQueue);
 
-    assert_eq!(port.started_items, [item_ids[1]], "открывается B, а не A");
+    assert_eq!(port.started_items, [item_ids[1]], "opens B, not A");
 }
 
 /// Блок уже снят (например, пользователь сам выбрал другой элемент): повторять нечего.

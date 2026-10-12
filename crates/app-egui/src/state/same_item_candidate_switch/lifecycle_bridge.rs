@@ -251,7 +251,7 @@ impl SameItemSwitchAppPath {
                 tracing::warn!(
                     request_id = ?pending.request_id,
                     error = %error,
-                    "Same-item media switch завершился ошибкой"
+                    "Same-item media switch ended in error"
                 );
                 SameItemSwitchAppPoll::Failed(safe_error)
             }
@@ -263,7 +263,7 @@ impl SameItemSwitchAppPath {
                 );
                 tracing::error!(
                     request_id = ?pending.request_id,
-                    "Same-item media switch потерял matching strong request"
+                    "Same-item media switch loses matching strong request"
                 );
                 SameItemSwitchAppPoll::Failed(UrlSidebarSafeError::SameItemSwitchStale)
             }
@@ -355,7 +355,7 @@ impl SameItemSwitchAppPath {
         tracing::error!(
             request_id = ?pending.request_id,
             invariant,
-            "Same-item media switch получил invalid Installed evidence"
+            "Same-item media switch received invalid Installed evidence"
         );
         SameItemSwitchAppPoll::Failed(UrlSidebarSafeError::SameItemSwitchStale)
     }

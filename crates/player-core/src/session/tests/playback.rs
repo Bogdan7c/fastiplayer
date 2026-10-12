@@ -300,7 +300,7 @@ fn audio_only_autoplay_waits_for_decoder_output_and_buffer() {
         !session
             .take_events()
             .contains(&PlayerEvent::AudioPlaybackResumed),
-        "повторный Play уже запущенного output-а не должен дублировать one-shot resume"
+        "Play a replay of an already running output-and should not duplicate one-shot resume"
     );
 }
 

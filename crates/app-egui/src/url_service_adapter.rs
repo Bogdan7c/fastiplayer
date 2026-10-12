@@ -543,16 +543,16 @@ impl StartupUrlUnsupportedReason {
     /// Формирует bounded message только из typed/static данных.
     pub(crate) fn safe_error(self) -> String {
         match self {
-            Self::InvalidSyntax => "Некорректная ссылка".to_string(),
-            Self::UnsupportedScheme => "Такой тип ссылок не поддерживается".to_string(),
+            Self::InvalidSyntax => "Incorrect reference".to_string(),
+            Self::UnsupportedScheme => "This type of link is not supported.".to_string(),
             Self::ImplementedProviderUnavailable { input_scheme } => {
-                format!("Ссылки `{}` пока не поддерживаются", input_scheme.as_str())
+                format!("'{}' links are not yet supported", input_scheme.as_str())
             }
             Self::ProfileExcludedInputScheme { input_scheme } => format!(
-                "Ссылки `{}` исключены из поддерживаемых в этой версии",
+                "'{}' links are excluded from those supported in this version",
                 input_scheme.as_str()
             ),
-            Self::NoRegisteredService => "Эта ссылка не поддерживается".to_string(),
+            Self::NoRegisteredService => "This link is not supported".to_string(),
         }
     }
 }

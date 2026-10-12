@@ -106,7 +106,7 @@ pub enum HlsParserLimitsError {
 
 impl fmt::Display for HlsParserLimitsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("HLS parser budget равен нулю")
+        formatter.write_str("The HLS parser budget is zero.")
     }
 }
 

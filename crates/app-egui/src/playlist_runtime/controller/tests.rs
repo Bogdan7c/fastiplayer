@@ -406,7 +406,7 @@ fn newer_user_intent_revision_wins_over_late_install_completion() {
     assert_eq!(
         controller.stable_playback_intent(),
         StablePlaybackIntent::Paused,
-        "late startup autoplay не должен перетирать более новую Pause"
+        "late startup autoplay should not be replaced by a new one Pause"
     );
 }
 

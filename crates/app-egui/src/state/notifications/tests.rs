@@ -46,7 +46,7 @@ fn center_failure_id(frame: &NotificationsFrame) -> Option<NotificationId> {
 fn transient_toast_disappears_exactly_after_its_lifetime() {
     let started_at = Instant::now();
     let mut center = NotificationCenter::default();
-    center.notify_transient("Перемотка недоступна", started_at);
+    center.notify_transient("Seeking unavailable", started_at);
 
     // Будильник указывает ровно на момент исчезновения — на паузе окно проснётся вовремя.
     assert_eq!(
@@ -56,7 +56,7 @@ fn transient_toast_disappears_exactly_after_its_lifetime() {
     let just_before = started_at + TRANSIENT_NOTIFICATION_LIFETIME - Duration::from_millis(1);
     assert_eq!(
         toast_messages(&idle_frame(&mut center, just_before)),
-        ["Перемотка недоступна"]
+        ["Seeking unavailable"]
     );
 
     let expired = idle_frame(&mut center, started_at + TRANSIENT_NOTIFICATION_LIFETIME);
@@ -69,12 +69,12 @@ fn transient_toast_disappears_exactly_after_its_lifetime() {
 fn info_toast_lives_longer_than_transient() {
     let started_at = Instant::now();
     let mut center = NotificationCenter::default();
-    center.notify_info("Позиция недоступна", started_at);
+    center.notify_info("Position unavailable", started_at);
 
     let after_transient_lifetime = started_at + TRANSIENT_NOTIFICATION_LIFETIME;
     assert_eq!(
         toast_messages(&idle_frame(&mut center, after_transient_lifetime)),
-        ["Позиция недоступна"]
+        ["Position unavailable"]
     );
     let frame = idle_frame(&mut center, started_at + INFO_NOTIFICATION_LIFETIME);
     assert!(frame.toasts.is_empty());
@@ -84,17 +84,15 @@ fn info_toast_lives_longer_than_transient() {
 fn media_failure_never_expires_but_closes_by_dismiss() {
     let started_at = Instant::now();
     let mut center = NotificationCenter::default();
-    let failure_id = center.show_media_failure(
-        "Не удалось открыть «clip.mkv»",
-        MediaFailureOrigin::MediaOpen,
-    );
+    let failure_id =
+        center.show_media_failure("I failed to open clip.mkv.", MediaFailureOrigin::MediaOpen);
 
     // Через час ошибка на месте: таймера у фатальной ошибки нет, будильник не нужен.
     let much_later = started_at + Duration::from_secs(3600);
     let frame = idle_frame(&mut center, much_later);
     assert_eq!(
         center_failure_message(&frame).as_deref(),
-        Some("Не удалось открыть «clip.mkv»")
+        Some("I failed to open clip.mkv.")
     );
     assert_eq!(center_failure_id(&frame), Some(failure_id));
     assert_eq!(center.next_wake_deadline(), None);
@@ -115,10 +113,10 @@ fn media_failure_never_expires_but_closes_by_dismiss() {
 fn successful_or_new_open_resolves_media_failure() {
     let now = Instant::now();
     let mut center =
-        NotificationCenter::with_startup_messages(Some("Файл не найден".to_string()), None, now);
+        NotificationCenter::with_startup_messages(Some("File not found".to_string()), None, now);
     assert_eq!(
         center_failure_message(&idle_frame(&mut center, now)).as_deref(),
-        Some("Файл не найден")
+        Some("File not found")
     );
 
     center.resolve_media_failure();
@@ -132,13 +130,13 @@ fn open_progress_is_not_hidden_by_old_failure() {
     center.show_media_failure("Старая ошибка", MediaFailureOrigin::MediaOpen);
 
     let frame = center.frame(
-        OpenProgress::InProgress("Открываем «next.mkv»…"),
+        OpenProgress::InProgress("Opening “next.mkv”…"),
         UiMotion::Standard,
         now,
     );
     assert_eq!(
         frame.center,
-        Some(CenterNotice::Progress(Arc::from("Открываем «next.mkv»…")))
+        Some(CenterNotice::Progress(Arc::from("Opening “next.mkv”…")))
     );
     // Прогресс закончился (например, открытие отменили) — старая ошибка снова видна.
     assert_eq!(
@@ -151,13 +149,13 @@ fn open_progress_is_not_hidden_by_old_failure() {
 fn repeated_message_extends_single_toast_instead_of_duplicating() {
     let started_at = Instant::now();
     let mut center = NotificationCenter::default();
-    let first_id = center.notify_transient("Перемотка недоступна", started_at);
+    let first_id = center.notify_transient("Seeking unavailable", started_at);
     let repeated_at = started_at + Duration::from_secs(3);
-    let repeated_id = center.notify_transient("Перемотка недоступна", repeated_at);
+    let repeated_id = center.notify_transient("Seeking unavailable", repeated_at);
 
     assert_eq!(first_id, repeated_id);
     let frame = idle_frame(&mut center, repeated_at);
-    assert_eq!(toast_messages(&frame), ["Перемотка недоступна"]);
+    assert_eq!(toast_messages(&frame), ["Seeking unavailable"]);
     // Возраст считается от первого появления: плашка не мигает повторным проявлением.
     assert_eq!(frame.toasts[0].age, Duration::from_secs(3));
 
@@ -194,14 +192,14 @@ fn same_text_of_different_kind_is_separate_toast() {
 fn toast_stack_keeps_three_newest_first() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
-    for message in ["первое", "второе", "третье", "четвёртое"] {
+    for message in ["первое", "second", "третье", "четвёртое"] {
         center.notify_transient(message, now);
     }
 
     assert_eq!(MAX_VISIBLE_TOASTS, 3);
     assert_eq!(
         toast_messages(&idle_frame(&mut center, now)),
-        ["четвёртое", "третье", "второе"]
+        ["четвёртое", "третье", "second"]
     );
 }
 
@@ -209,17 +207,17 @@ fn toast_stack_keeps_three_newest_first() {
 fn dismissing_one_toast_keeps_others_and_failure() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
-    center.show_media_failure("Фатальная", MediaFailureOrigin::MediaOpen);
+    center.show_media_failure("Fatal.", MediaFailureOrigin::MediaOpen);
     let first_id = center.notify_transient("первое", now);
-    center.notify_transient("второе", now);
+    center.notify_transient("second", now);
 
     assert_eq!(
         center.dismiss(first_id),
         NotificationDismissOutcome::Dismissed
     );
     let frame = idle_frame(&mut center, now);
-    assert_eq!(toast_messages(&frame), ["второе"]);
-    assert_eq!(center_failure_message(&frame).as_deref(), Some("Фатальная"));
+    assert_eq!(toast_messages(&frame), ["second"]);
+    assert_eq!(center_failure_message(&frame).as_deref(), Some("Fatal."));
 }
 
 /// Сквозной сценарий: настоящий player отклоняет seek без seekable timeline.
@@ -241,7 +239,7 @@ fn real_player_seek_rejection_becomes_transient_toast_and_overlay_clears() {
             .as_ref()
             .map(|error| &error.kind),
         Some(&PlayerErrorKind::SeekUnavailable),
-        "player обязан сам отклонить seek, иначе сценарий ничего не проверяет"
+        "The player must reject the seek himself, otherwise the script does not check anything."
     );
     assert_ne!(session.snapshot().playback_state, PlaybackState::Failed);
 
@@ -258,7 +256,7 @@ fn real_player_seek_rejection_becomes_transient_toast_and_overlay_clears() {
     assert!(
         frame.toasts[0]
             .message
-            .contains("Перемотка для этого видео недоступна"),
+            .contains("Seeking is unavailable for this video"),
         "{:?}",
         frame.toasts[0].message
     );
@@ -291,12 +289,13 @@ fn real_player_fatal_failure_stays_until_dismissed_and_is_not_resurrected() {
     center.observe_player_snapshot(session.snapshot());
 
     let frame = idle_frame(&mut center, now + Duration::from_secs(3600));
-    let message = center_failure_message(&frame).expect("Failed должен показать ошибку в центре");
-    assert!(message.contains("файл повреждён"), "{message}");
+    let message =
+        center_failure_message(&frame).expect("Failed should show the error in the center");
+    assert!(message.contains("the file is corrupted"), "{message}");
     // Фатальная ошибка не дублируется временным toast-ом.
     assert!(frame.toasts.is_empty());
 
-    let failure_id = center_failure_id(&frame).expect("ошибка в центре имеет id");
+    let failure_id = center_failure_id(&frame).expect("The error in the center has an id");
     assert_eq!(
         center.dismiss(failure_id),
         NotificationDismissOutcome::Dismissed
@@ -315,14 +314,14 @@ fn network_failure_during_playback_shows_human_reason() {
     let mut session = PlayerSession::new();
     session.mark_fatal_error(PlayerError::new(
         PlayerErrorKind::NetworkError,
-        "Ошибка чтения packet: HTTP request `range-read` не удался: Connection refused",
+        "Reading error packet: HTTP request `range-read` failed: Connection refused",
     ));
     let now = Instant::now();
     let mut center = NotificationCenter::default();
     center.observe_player_snapshot(session.snapshot());
 
     let message = center_failure_message(&idle_frame(&mut center, now))
-        .expect("Failed по сети показывает ошибку в центре");
+        .expect("Failed over the network shows an error in the center");
 
     assert_eq!(
         message,
@@ -349,7 +348,7 @@ fn network_failure_during_playback_offers_reopen_from_failure_position() {
 
     let Some(CenterNotice::MediaFailure(view)) = idle_frame(&mut center, Instant::now()).center
     else {
-        panic!("Failed по сети показывает ошибку в центре");
+        panic!("Failed over the network shows an error in the center");
     };
     assert_eq!(view.retry, RetryOffer::Available);
     assert_eq!(
@@ -379,7 +378,7 @@ fn network_failure_at_zero_position_reopens_from_start() {
     center.observe_player_snapshot(&snapshot);
     let Some(CenterNotice::MediaFailure(view)) = idle_frame(&mut center, Instant::now()).center
     else {
-        panic!("ошибка в центре");
+        panic!("lapse");
     };
 
     center.request_retry(view.id);
@@ -409,7 +408,7 @@ fn non_network_playback_failure_has_no_retry() {
         center.observe_player_snapshot(&snapshot);
         let Some(CenterNotice::MediaFailure(view)) = idle_frame(&mut center, Instant::now()).center
         else {
-            panic!("{kind:?}: ошибка в центре");
+            panic!("{kind:?}: The error in the center");
         };
         assert_eq!(view.retry, RetryOffer::Unavailable, "{kind:?}");
     }
@@ -437,14 +436,14 @@ fn player_recovery_clears_player_failure_but_keeps_open_failure() {
 
     // Не удалось открыть новый файл, пока играет старый: старый играет, ошибка остаётся.
     center.show_media_failure(
-        "Не удалось открыть «broken.mkv»",
+        "I failed to open broken.mkv.",
         MediaFailureOrigin::MediaOpen,
     );
     center.observe_player_snapshot(&playing);
     center.observe_player_snapshot(&playing);
     assert_eq!(
         center_failure_message(&idle_frame(&mut center, now)).as_deref(),
-        Some("Не удалось открыть «broken.mkv»")
+        Some("I failed to open broken.mkv.")
     );
 }
 
@@ -480,7 +479,7 @@ fn startup_config_warning_stays_until_dismissed() {
     let now = Instant::now();
     let mut center = NotificationCenter::with_startup_messages(
         None,
-        Some("Файл настроек был повреждён".to_string()),
+        Some("The settings file was corrupted.".to_string()),
         now,
     );
 
@@ -488,7 +487,7 @@ fn startup_config_warning_stays_until_dismissed() {
     assert_eq!(first_frame.center, None);
     assert_eq!(
         toast_messages(&first_frame),
-        vec!["Файл настроек был повреждён"]
+        vec!["The settings file was corrupted."]
     );
     assert_eq!(first_frame.toasts[0].kind, ToastKind::Warning);
     // Без таймера окну незачем просыпаться ради этой плашки.
@@ -499,7 +498,7 @@ fn startup_config_warning_stays_until_dismissed() {
     let later_frame = idle_frame(&mut center, much_later);
     assert_eq!(
         toast_messages(&later_frame),
-        vec!["Файл настроек был повреждён"]
+        vec!["The settings file was corrupted."]
     );
 
     let warning_id = later_frame.toasts[0].id;
@@ -515,8 +514,8 @@ fn startup_config_warning_stays_until_dismissed() {
 fn startup_messages_keep_failure_in_center_and_warning_in_corner() {
     let now = Instant::now();
     let mut center = NotificationCenter::with_startup_messages(
-        Some("Файл не найден".to_string()),
-        Some("Файл настроек был повреждён".to_string()),
+        Some("File not found".to_string()),
+        Some("The settings file was corrupted.".to_string()),
         now,
     );
 
@@ -524,9 +523,12 @@ fn startup_messages_keep_failure_in_center_and_warning_in_corner() {
 
     assert_eq!(
         center_failure_message(&frame).as_deref(),
-        Some("Файл не найден")
+        Some("File not found")
     );
-    assert_eq!(toast_messages(&frame), vec!["Файл настроек был повреждён"]);
+    assert_eq!(
+        toast_messages(&frame),
+        vec!["The settings file was corrupted."]
+    );
 }
 
 /// Поток временных toast-ов не вытесняет предупреждение до ×: уходят временные.
@@ -534,9 +536,9 @@ fn startup_messages_keep_failure_in_center_and_warning_in_corner() {
 fn transient_burst_does_not_evict_warning_until_dismissed() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
-    center.notify_until_dismissed("Файл настроек был повреждён", now);
+    center.notify_until_dismissed("The settings file was corrupted.", now);
     for index in 0..5 {
-        center.notify_transient(format!("Временное {index}"), now);
+        center.notify_transient(format!("Temporary {index}"), now);
     }
 
     let frame = idle_frame(&mut center, now);
@@ -544,13 +546,17 @@ fn transient_burst_does_not_evict_warning_until_dismissed() {
     assert_eq!(frame.toasts.len(), MAX_VISIBLE_TOASTS);
     assert_eq!(
         toast_messages(&frame),
-        vec!["Временное 4", "Временное 3", "Файл настроек был повреждён"]
+        vec![
+            "Temporary 4",
+            "Temporary 3",
+            "The settings file was corrupted."
+        ]
     );
     // Временные истекают, предупреждение остаётся.
     let after_expiry = now + TRANSIENT_NOTIFICATION_LIFETIME + Duration::from_millis(1);
     assert_eq!(
         toast_messages(&idle_frame(&mut center, after_expiry)),
-        vec!["Файл настроек был повреждён"]
+        vec!["The settings file was corrupted."]
     );
 }
 
@@ -560,13 +566,13 @@ fn oldest_warning_is_evicted_when_only_warnings_overflow() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
     for index in 0..=MAX_VISIBLE_TOASTS {
-        center.notify_until_dismissed(format!("Предупреждение {index}"), now);
+        center.notify_until_dismissed(format!("Warning {index}"), now);
     }
 
     let frame = idle_frame(&mut center, now);
 
     assert_eq!(
         toast_messages(&frame),
-        vec!["Предупреждение 3", "Предупреждение 2", "Предупреждение 1"]
+        vec!["Warning 3", "Warning 2", "Warning 1"]
     );
 }

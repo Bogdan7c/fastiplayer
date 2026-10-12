@@ -43,23 +43,23 @@ impl DirectMediaExtension {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum DirectMediaUrlUnsupportedReason {
     /// Direct progressive ingress принимает только HTTP(S) и FTP(S).
-    #[error("protocol не поддерживается; direct media принимает http(s) и ftp(s)")]
+    #[error("protocol not supported; direct media accepts http(s) and ftp(s)")]
     UnsupportedProtocol,
 
     /// Authority-style URL обязан содержать host.
-    #[error("direct media URL не содержит host")]
+    #[error("direct media URL does not contain a host")]
     MissingHost,
 
     /// URL path обязан содержать явный extension.
-    #[error("URL path не содержит media extension")]
+    #[error("The URL path does not contain the media extension.")]
     MissingExtension,
 
     /// Manifest extensions принадлежат отдельному native manifest ingress.
-    #[error("manifest URL не открывается как progressive resource")]
+    #[error("A manifest URL does not open as a progressive resource.")]
     ManifestUnsupported,
 
     /// Extension не зарегистрирован для seekable и streaming byte input.
-    #[error("URL extension не поддерживается production demux registry")]
+    #[error("URL extension is not supported by production demux registry")]
     UnsupportedExtension,
 }
 
@@ -67,7 +67,7 @@ pub enum DirectMediaUrlUnsupportedReason {
 #[derive(Debug, Error)]
 pub enum DirectMediaOpenError {
     /// URL parser не смог разобрать аргумент как absolute URL.
-    #[error("некорректный direct media URL")]
+    #[error("flawed direct media URL")]
     InvalidUrl {
         /// Ошибка `url` crate не публикует исходную secret строку.
         #[source]
@@ -82,7 +82,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Registry extension identity нарушила canonical demux grammar.
-    #[error("direct media extension capability имеет некорректную identity")]
+    #[error("direct media extension capability flawed identity")]
     DemuxCapabilityIdentity {
         /// Neutral identity error не содержит locator payload.
         #[source]
@@ -90,7 +90,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// HTTP(S) locator нарушил checked request-target policy.
-    #[error("direct HTTP media target не прошёл request policy")]
+    #[error("direct HTTP media target failed request policy")]
     HttpTarget {
         /// Secret-safe typed target error.
         #[source]
@@ -98,7 +98,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// FTP(S) locator нарушил checked request-target policy.
-    #[error("direct FTP media target не прошёл request policy")]
+    #[error("direct FTP media target failed request policy")]
     FtpTarget {
         /// Secret-safe typed target error.
         #[source]
@@ -156,7 +156,7 @@ fn direct_media_url_from_parsed(
         "ftp" | "ftps" => source_core::FtpRequestTarget::parse_exact(original_argument)
             .map(TransportRequestTarget::from_ftp)
             .map_err(|source| DirectMediaOpenError::FtpTarget { source })?,
-        _ => unreachable!("scheme был проверен до target parsing"),
+        _ => unreachable!("The scheme has been checked before the target parsing"),
     };
 
     Ok(DirectMediaUrl::new(

@@ -19,7 +19,7 @@ fn single_axis_catalogs_preserve_layout_without_inventing_a_missing_axis() {
         generous_limit(),
         ComponentVariantCatalogEntries::VideoOnly { video: videos },
     )
-    .expect("VideoOnly catalog должен пройти admission");
+    .expect("VideoOnly catalog must pass admission");
 
     assert_eq!(video_catalog.stored_variant_count(), 2);
     assert!(video_catalog.compatibility().is_none());
@@ -28,17 +28,17 @@ fn single_axis_catalogs_preserve_layout_without_inventing_a_missing_axis() {
     assert!(!video_catalog.is_audio_only_selectable(unrelated_audio.exact_identity()));
     let missing_audio = video_catalog
         .required_audio_variants()
-        .expect_err("VideoOnly catalog не должен придумывать audio axis");
+        .expect_err("VideoOnly catalog should not invent audio axis");
     assert_eq!(
         missing_audio.to_string(),
-        "required Audio axis пуста или отсутствует"
+        "required Audio axis is empty or absent"
     );
     assert_eq!(
         video_catalog
             .preferred_video_variant(PreferredHeightPolicy::Prefer(
-                PreferredVideoHeight::new(720).expect("preferred height должна быть valid"),
+                PreferredVideoHeight::new(720).expect("The preferred height should be valid."),
             ))
-            .expect("preferred video должна существовать")
+            .expect("preferred video must exist")
             .exact_identity(),
         &selected_video_exact
     );
@@ -47,7 +47,7 @@ fn single_axis_catalogs_preserve_layout_without_inventing_a_missing_axis() {
             .select_exact(ComponentVariantSelectionRequest::VideoOnly {
                 video: selected_video_exact,
             })
-            .expect("exact VideoOnly selection должна быть valid"),
+            .expect("exact VideoOnly selection must have valid"),
         ComponentVariantSelection::VideoOnly { .. }
     ));
     assert!(matches!(
@@ -55,7 +55,7 @@ fn single_axis_catalogs_preserve_layout_without_inventing_a_missing_axis() {
             .rematch_semantic(ComponentVariantSemanticSelectionRequest::VideoOnly {
                 video: selected_video_semantic,
             })
-            .expect("semantic VideoOnly rematch должен быть valid"),
+            .expect("semantic VideoOnly rematch must have valid"),
         ComponentVariantSelection::VideoOnly { .. }
     ));
 
@@ -69,7 +69,7 @@ fn single_axis_catalogs_preserve_layout_without_inventing_a_missing_axis() {
         generous_limit(),
         ComponentVariantCatalogEntries::AudioOnly { audio: vec![audio] },
     )
-    .expect("AudioOnly catalog должен пройти admission");
+    .expect("AudioOnly catalog must pass admission");
 
     assert_eq!(audio_catalog.stored_variant_count(), 1);
     assert!(audio_catalog.compatibility().is_none());
@@ -78,15 +78,15 @@ fn single_axis_catalogs_preserve_layout_without_inventing_a_missing_axis() {
     assert!(!audio_catalog.is_video_only_selectable(unrelated_video.exact_identity()));
     let missing_video = audio_catalog
         .required_video_variants()
-        .expect_err("AudioOnly catalog не должен придумывать video axis");
+        .expect_err("AudioOnly catalog does not have to invent video axis");
     assert_eq!(
         missing_video.to_string(),
-        "required Video axis пуста или отсутствует"
+        "required Video axis is empty or absent"
     );
     assert!(matches!(
         audio_catalog
             .select_exact(ComponentVariantSelectionRequest::AudioOnly { audio: audio_exact })
-            .expect("exact AudioOnly selection должна быть valid"),
+            .expect("exact AudioOnly selection must have valid"),
         ComponentVariantSelection::AudioOnly { .. }
     ));
     assert!(matches!(
@@ -94,7 +94,7 @@ fn single_axis_catalogs_preserve_layout_without_inventing_a_missing_axis() {
             .rematch_semantic(ComponentVariantSemanticSelectionRequest::AudioOnly {
                 audio: audio_semantic,
             })
-            .expect("semantic AudioOnly rematch должен быть valid"),
+            .expect("semantic AudioOnly rematch must have valid"),
         ComponentVariantSelection::AudioOnly { .. }
     ));
 }
@@ -135,13 +135,13 @@ fn topology_standalone_rows_are_selectable_exactly_and_after_semantic_reopen() {
             audio_only: vec![audio_allowed_exact.clone()],
         },
     )
-    .expect("standalone topology должна пройти admission");
+    .expect("standalone topology must pass admission");
 
     assert_eq!(catalog.stored_variant_count(), 4);
     assert_eq!(
         catalog
             .compatibility()
-            .expect("Topology должна публиковать relation")
+            .expect("Topology should publish a relation")
             .logical_edge_count(),
         0
     );
@@ -155,7 +155,7 @@ fn topology_standalone_rows_are_selectable_exactly_and_after_semantic_reopen() {
             .select_exact(ComponentVariantSelectionRequest::VideoOnly {
                 video: video_allowed_exact,
             })
-            .expect("published video-only row должна выбираться"),
+            .expect("published video-only row should get out"),
         ComponentVariantSelection::VideoOnly { .. }
     ));
     assert_eq!(
@@ -169,7 +169,7 @@ fn topology_standalone_rows_are_selectable_exactly_and_after_semantic_reopen() {
             .select_exact(ComponentVariantSelectionRequest::AudioOnly {
                 audio: audio_allowed_exact,
             })
-            .expect("published audio-only row должна выбираться"),
+            .expect("published audio-only row should get out"),
         ComponentVariantSelection::AudioOnly { .. }
     ));
     assert_eq!(
@@ -184,7 +184,7 @@ fn topology_standalone_rows_are_selectable_exactly_and_after_semantic_reopen() {
             .rematch_semantic(ComponentVariantSemanticSelectionRequest::VideoOnly {
                 video: video_allowed_semantic,
             })
-            .expect("published semantic video row должна rematch-иться"),
+            .expect("published semantic video row must rematch-flow"),
         ComponentVariantSelection::VideoOnly { .. }
     ));
     assert_eq!(
@@ -198,17 +198,17 @@ fn topology_standalone_rows_are_selectable_exactly_and_after_semantic_reopen() {
             .rematch_semantic(ComponentVariantSemanticSelectionRequest::AudioOnly {
                 audio: audio_allowed_semantic,
             })
-            .expect("published semantic audio row должна rematch-иться"),
+            .expect("published semantic audio row must rematch-flow"),
         ComponentVariantSelection::AudioOnly { .. }
     ));
     let denied = catalog
         .rematch_semantic(ComponentVariantSemanticSelectionRequest::AudioOnly {
             audio: audio_denied_semantic,
         })
-        .expect_err("неопубликованная standalone row должна остаться incompatible");
+        .expect_err("Unpublished standalone row should remain incompatible");
     assert_eq!(
         denied.to_string(),
-        "video/audio component pair не разрешена catalog relation"
+        "video/audio component pair not allowed catalog relation"
     );
 }
 
@@ -250,19 +250,19 @@ fn sparse_topology_semantic_rematch_preserves_only_proven_component_pairs() {
             audio_only: vec![],
         },
     )
-    .expect("sparse topology с одной доказанной парой должна пройти admission");
+    .expect("sparse topology with one proven pair must pass through admission");
 
     let installed = catalog
         .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
             video: allowed_video_exact.clone(),
             audio: allowed_audio_exact.clone(),
         })
-        .expect("доказанная exact pair должна устанавливаться");
+        .expect("Proven exact pair must be installed");
     let rematched = catalog
         .rematch_semantic(installed.semantic_rematch_request())
-        .expect("semantic rematch должен сохранить доказанную pair");
+        .expect("semantic rematch must preserve the proven pair");
     let ComponentVariantSelection::VideoAndAudio { video, audio } = rematched else {
-        panic!("semantic rematch не должен менять layout доказанной pair");
+        panic!("semantic rematch must not change the layout of the proven pair");
     };
     assert_eq!(video.exact_identity(), &allowed_video_exact);
     assert_eq!(audio.exact_identity(), &allowed_audio_exact);
@@ -273,7 +273,7 @@ fn sparse_topology_semantic_rematch_preserves_only_proven_component_pairs() {
             audio: incompatible_audio_semantic,
         }),
         Err(ComponentVariantError::IncompatibleComponentPair),
-        "существование обеих rows не доказывает их Cartesian compatibility"
+        "The existence of both rows does not prove their Cartesian compatibility."
     );
 }
 
@@ -292,16 +292,16 @@ fn catalog_admission_diagnostics_explain_empty_topology_limits_and_duplicates() 
             audio_only: vec![],
         },
     )
-    .expect_err("Topology без selectable presentation должна быть отклонена");
+    .expect_err("Topology without selectable presentation should be rejected");
     assert_eq!(
         empty_error.to_string(),
-        "catalog не содержит selectable presentation"
+        "The catalog does not contain a selectable presentation."
     );
 
     let limited_identity = catalog_identity(parent(45, "limited-parent", "limited-semantic"), 7);
     let limit_error = ComponentVariantCatalog::new(
         limited_identity.clone(),
-        ComponentVariantCatalogLimit::new(1).expect("test limit должна быть valid"),
+        ComponentVariantCatalogLimit::new(1).expect("The test limit must be valid."),
         ComponentVariantCatalogEntries::VideoAndAudio {
             video: vec![video_variant(
                 &limited_identity,
@@ -317,10 +317,10 @@ fn catalog_admission_diagnostics_explain_empty_topology_limits_and_duplicates() 
             )],
         },
     )
-    .expect_err("catalog выше caller budget должен быть отклонён");
+    .expect_err("The catalog above the caller budget must be rejected.");
     assert_eq!(
         limit_error.to_string(),
-        "catalog содержит 2 rows при лимите 1"
+        "catalog contains 2 rows; the limit is 1"
     );
 
     let duplicate_identity =
@@ -345,10 +345,10 @@ fn catalog_admission_diagnostics_explain_empty_topology_limits_and_duplicates() 
             ],
         },
     )
-    .expect_err("duplicate exact identity должна быть отклонена");
+    .expect_err("duplicate exact identity must be rejected.");
     assert_eq!(
         duplicate_error.to_string(),
-        "catalog содержит duplicate exact Video identity"
+        "catalog contains a duplicate exact Video identity"
     );
 
     let ambiguous_identity =
@@ -373,10 +373,10 @@ fn catalog_admission_diagnostics_explain_empty_topology_limits_and_duplicates() 
             ],
         },
     )
-    .expect_err("ambiguous semantic identity должна быть отклонена");
+    .expect_err("ambiguous semantic identity should be rejected");
     assert_eq!(
         ambiguous_error.to_string(),
-        "catalog содержит ambiguous semantic Video identity"
+        "catalog contains an ambiguous semantic Video identity"
     );
 }
 
@@ -389,37 +389,37 @@ fn selection_diagnostics_distinguish_missing_exact_semantic_and_layout_failures(
         generous_limit(),
         ComponentVariantCatalogEntries::VideoOnly { video: vec![video] },
     )
-    .expect("selection diagnostic catalog должен быть valid");
+    .expect("The selection diagnostic catalog should be valid");
 
     let missing_exact = ComponentVariantExactIdentity::new(
         identity.clone(),
         ComponentKind::Video,
-        ComponentVariantExactKey::new("missing-exact").expect("exact key должна быть valid"),
+        ComponentVariantExactKey::new("missing-exact").expect("The exact key must be valid."),
     );
     let exact_error = catalog
         .select_exact(ComponentVariantSelectionRequest::VideoOnly {
             video: missing_exact,
         })
-        .expect_err("missing exact row должна быть typed failure");
+        .expect_err("missing exact row must have typed failure");
     assert_eq!(
         exact_error.to_string(),
-        "exact Video variant отсутствует в catalog"
+        "exact Video variant is not available in the catalog"
     );
 
     let missing_semantic = ComponentVariantSemanticIdentity::new(
         identity.parent().semantic().clone(),
         ComponentKind::Video,
         ComponentVariantSemanticKey::new("missing-semantic")
-            .expect("semantic key должна быть valid"),
+            .expect("The semantic key should be valid."),
     );
     let semantic_error = catalog
         .rematch_semantic(ComponentVariantSemanticSelectionRequest::VideoOnly {
             video: missing_semantic,
         })
-        .expect_err("missing semantic row должна быть typed failure");
+        .expect_err("The missing semantic row must be typed failure");
     assert_eq!(
         semantic_error.to_string(),
-        "semantic Video variant отсутствует в catalog"
+        "The semantic Video variant is missing from the catalog."
     );
 
     let audio = audio_variant(&identity, "wrong-layout-audio", "wrong-layout-audio", 2);
@@ -427,9 +427,9 @@ fn selection_diagnostics_distinguish_missing_exact_semantic_and_layout_failures(
         .select_exact(ComponentVariantSelectionRequest::AudioOnly {
             audio: audio.exact_identity().clone(),
         })
-        .expect_err("wrong selection shape должна быть typed failure");
+        .expect_err("wrong selection shape must have typed failure");
     assert_eq!(
         layout_error.to_string(),
-        "component selection shape не совпадает с catalog layout"
+        "component selection shape is not consistent with catalog layout"
     );
 }

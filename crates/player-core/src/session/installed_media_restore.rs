@@ -175,7 +175,7 @@ impl PlayerSession {
 
         self.fail_pending_installed_position_restore(PlayerError::new(
             PlayerErrorKind::SeekUnavailable,
-            "installed position restore заменён новым matching restore",
+            "installed position restore replaced matching restore",
         ));
         self.restore_video_track(restore.video_track)?;
         self.restore_audio_track(restore.audio_track)?;
@@ -324,7 +324,7 @@ impl PlayerSession {
                 .unwrap_or_else(|| {
                     PlayerError::new(
                         PlayerErrorKind::SeekUnavailable,
-                        "position restore не был принят seek transaction",
+                        "position restore not accepted seek transaction",
                     )
                 });
             return Err(InstalledMediaStateRestoreOutcome::Failed {
@@ -525,7 +525,7 @@ impl PlayerSession {
                 stage: InstalledMediaRestoreFailureStage::Position,
                 error: PlayerError::new(
                     PlayerErrorKind::SeekUnavailable,
-                    "position restore получил commit от другого seek generation",
+                    "position restore received commit apart seek generation",
                 ),
             }
         } else {

@@ -118,7 +118,7 @@ fn wait_for_shifted_window(
     let deadline = Instant::now() + LIVE_VERTICAL_DEADLINE;
     loop {
         let PreparedNativeHlsLifecycle::Live { timeline_port } = &prepared.lifecycle else {
-            panic!("supported sliding manifest обязан создать live timeline port");
+            panic!("Supported sliding manifest must create a live timeline port");
         };
         if let Some(range) = timeline_port.observe().snapshot.state.availability_range()
             && range.start > initial_start
@@ -131,7 +131,9 @@ fn wait_for_shifted_window(
             | Ok(DemuxReadEvent::Packet(_))
             | Ok(DemuxReadEvent::TracksChanged(_))
             | Ok(DemuxReadEvent::MediaMetadataChanged(_)) => {}
-            Ok(DemuxReadEvent::EndOfStream) => panic!("active live завершился до window shift"),
+            Ok(DemuxReadEvent::EndOfStream) => {
+                panic!("Active Live is completed before Windows Shift")
+            }
             Err(error) => panic!("live demux failed before window shift: {error}"),
         }
         assert!(Instant::now() < deadline, "live window shift timeout");
@@ -153,7 +155,7 @@ fn wait_for_native_endpoint_recovery(
             | Ok(DemuxReadEvent::TracksChanged(_))
             | Ok(DemuxReadEvent::MediaMetadataChanged(_)) => {}
             Ok(DemuxReadEvent::EndOfStream) => {
-                panic!("native endpoint recovery завершил active live")
+                panic!("Local Endpoint Recovery: Active Live")
             }
             Err(error) => panic!("native endpoint recovery failed: {error}"),
         }
@@ -168,14 +170,14 @@ fn wait_for_native_endpoint_recovery(
 /// Worker-receipted seek внутри retained DVR обязан succeed до проверки expired old target-а.
 fn assert_retained_dvr_seek(prepared: &crate::startup_media::native_hls::PreparedNativeHlsMedia) {
     let PreparedNativeHlsLifecycle::Live { timeline_port } = &prepared.lifecycle else {
-        panic!("retained DVR seek требует live timeline");
+        panic!("retained DVR seek requires live timeline");
     };
     let retained_target = timeline_port
         .observe()
         .snapshot
         .state
         .seekable_range()
-        .expect("consumer packets должны доказать seekable DVR range")
+        .expect("Consumer packets must be able to demonstrate the DVR range.")
         .start
         .as_duration();
     let request_id = player_core::PreparedDemuxSeekRequestId::new(1);
@@ -185,7 +187,7 @@ fn assert_retained_dvr_seek(prepared: &crate::startup_media::native_hls::Prepare
             request_id,
             media_core::DemuxSeekRequest::accurate(retained_target),
         )
-        .expect("retained DVR seek должен войти в worker");
+        .expect("retained DVR seek must be included in the worker");
     let deadline = Instant::now() + LIVE_VERTICAL_DEADLINE;
     loop {
         if let Some(receipt) = prepared.seek_port.poll_seek_receipt() {
@@ -250,15 +252,11 @@ fn n14b_lifecycle_hls_live_dvr_expiry_recovery_switch_has_no_false_eof() {
     assert_eq!(
         server.request_count("/master.m3u8"),
         0,
-        "syntactic live-HLS classifier не должен fetch-ить root до open"
+        "syntactic live-HLS classifier shouldn't fetch-ooze root before open"
     );
     let mut prepared = prepare_native(&source, None, &settings, HlsVodStartIntent::Beginning);
     assert_eq!(server.request_count("/master.m3u8"), 1);
-    assert_eq!(
-        prepared.duration(),
-        None,
-        "live duration обязана остаться unknown"
-    );
+    assert_eq!(prepared.duration(), None, "live duration must stay unknown");
 
     let mut wgpu_harness = OffscreenWgpuHarness::new();
     let mut persistent_consumer =
@@ -271,9 +269,9 @@ fn n14b_lifecycle_hls_live_dvr_expiry_recovery_switch_has_no_false_eof() {
             .snapshot
             .state
             .availability_range()
-            .expect("consumer packets должны доказать initial availability"),
+            .expect("Consumer packages must be able to prove initial availability"),
         PreparedNativeHlsLifecycle::Vod { .. } => {
-            panic!("sliding manifest ошибочно открыт как VOD")
+            panic!("Sliding manifest is mistakenly opened as VOD.")
         }
     };
     assert_retained_dvr_seek(&prepared);
@@ -286,11 +284,11 @@ fn n14b_lifecycle_hls_live_dvr_expiry_recovery_switch_has_no_false_eof() {
     assert_eq!(
         server.request_count("/master.m3u8"),
         2,
-        "endpoint expiry должен сделать один bounded stable-root refresh"
+        "endpoint expiry should do one bounded stable-root refresh"
     );
     assert!(
         prepared.demuxer.seek(Duration::ZERO).is_err(),
-        "expired DVR target нельзя clamp-ить либо принимать после window shift"
+        "expired DVR target can not be clamp or taken after window shift"
     );
 
     let (_, _, alternate_selection) = alternate_component_selection(&prepared.source_state);
@@ -309,7 +307,7 @@ fn n14b_lifecycle_hls_live_dvr_expiry_recovery_switch_has_no_false_eof() {
             settings.clone(),
         )
     else {
-        panic!("native live component switch обязан создать same-item reopen request");
+        panic!("Local Live Component Switch: Same-item Reopen Request");
     };
     let (switch_source, switch_selection, switch_settings) = native_request_parts(switch_request);
     let mut switched = prepare_native(
@@ -326,11 +324,11 @@ fn n14b_lifecycle_hls_live_dvr_expiry_recovery_switch_has_no_false_eof() {
     assert_eq!(
         server.request_count("/master.m3u8"),
         3,
-        "initial + endpoint recovery + semantic switch делают по одному root GET"
+        "initial + endpoint recovery + semantic switch one-on-one root GET"
     );
     assert_eq!(
         process_spy.invocation_count(),
         0,
-        "supported native live open/refresh/DVR/switch не запускают extractor"
+        "supported native live open/refresh/DVR/switch let off extractor"
     );
 }

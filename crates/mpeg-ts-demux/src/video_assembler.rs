@@ -60,7 +60,7 @@ impl VideoAccessUnitAssembler {
             });
         if state.is_h265 != is_h265 {
             return Err(MpegTsDemuxError::Malformed {
-                reason: format!("video codec изменился без topology reset на PID {pid}"),
+                reason: format!("video codec changed topology reset on PID {pid}"),
             });
         }
         if state.bytes.len().saturating_add(payload.len()) > self.limit_bytes {

@@ -27,7 +27,7 @@ fn cp1251(text: &str) -> Vec<u8> {
     let (bytes, _, had_unmappable) = WINDOWS_1251.encode(text);
     assert!(
         !had_unmappable,
-        "фикстура должна целиком помещаться в cp1251"
+        "The fixture must be placed entirely in cp1251."
     );
     bytes.into_owned()
 }
@@ -43,7 +43,7 @@ fn parse_m3u(
         M3uParserLimits::default(),
     )) {
         Ok(M3uDocument::Generic(preview)) => Ok(preview),
-        Ok(other) => panic!("ожидался generic M3U, получено {other:?}"),
+        Ok(other) => panic!("Expected generic M3U, received {other:?}"),
         Err(error) => Err(error.kind()),
     }
 }

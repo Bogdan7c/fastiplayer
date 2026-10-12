@@ -24,7 +24,7 @@ pub(crate) fn choose_alpha_mode(
     preference: SurfaceAlphaPreference,
 ) -> Result<(wgpu::CompositeAlphaMode, Option<SurfaceAlphaEncoding>)> {
     if alpha_modes.is_empty() {
-        anyhow::bail!("Surface capabilities не вернул ни одного alpha mode");
+        anyhow::bail!("Surface capabilities have not returned any alpha mode.");
     }
     let first_supported = |choices: &[wgpu::CompositeAlphaMode]| {
         choices
@@ -39,7 +39,7 @@ pub(crate) fn choose_alpha_mode(
                 wgpu::CompositeAlphaMode::Inherit,
                 wgpu::CompositeAlphaMode::Auto,
             ])
-            .context("Surface не поддерживает ни одного непрозрачного alpha mode")?;
+            .context("Surface does not support any opaque alpha mode.")?;
             Ok((mode, None))
         }
         SurfaceAlphaPreference::TransparentPreferred => {
@@ -59,9 +59,9 @@ pub(crate) fn choose_alpha_mode(
                 wgpu::CompositeAlphaMode::Opaque,
                 wgpu::CompositeAlphaMode::Inherit,
             ])
-            .context("Surface не поддерживает пригодный alpha fallback")?;
+            .context("Surface does not support alpha fallback")?;
             if !TRANSPARENCY_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
-                tracing::warn!(available = ?alpha_modes, selected = ?fallback, "Surface не поддерживает прозрачную композицию; скругление окна отключено");
+                tracing::warn!(available = ?alpha_modes, selected = ?fallback, "Surface does not support transparent composition; window rounding is disabled");
             }
             Ok((fallback, None))
         }
@@ -79,7 +79,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("Surface capabilities не вернул ни одного alpha mode")
+                .contains("Surface capabilities have not returned any alpha mode.")
         );
     }
 

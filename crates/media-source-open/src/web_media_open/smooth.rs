@@ -118,7 +118,7 @@ impl SmoothIsoBmffDemuxFactory for AppSmoothIsoBmffDemuxFactory {
                 parts.cancellation,
                 self.required_container.clone(),
             )
-            .context("Smooth video ISO-BMFF adapter не открыл reconstructed fragments")
+            .context("Smooth video ISO-BMFF adapter fails to open reconstructed fragments")
     }
 
     /// Открывает audio-ось через provenance-aware F3A adapter.
@@ -130,7 +130,7 @@ impl SmoothIsoBmffDemuxFactory for AppSmoothIsoBmffDemuxFactory {
             parts.sniff_budget,
             Arc::clone(&self.registry),
         )
-        .context("Smooth audio ISO-BMFF presentation-window adapter не открыл fragments")?;
+        .context("Smooth audio ISO-BMFF presentation-window adapter fails to open fragments")?;
         Ok(Box::new(demuxer))
     }
 }
@@ -215,12 +215,12 @@ pub(super) fn prepare_smooth_candidate(
         live_intent,
         YtDlpLiveIntent::Unspecified | YtDlpLiveIntent::NotLive
     ) {
-        bail!("Smooth live/DVR не входит в approved S36 profile");
+        bail!("Smooth live/DVR not included in approved S36 profile");
     }
 
     let adaptive_limits =
         crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
-            .context("Не удалось собрать Smooth adaptive transport limits")?;
+            .context("Could not build Smooth adaptive transport limits")?;
     let request_context = YtDlpTransportRequestContext::new(
         provider_id,
         crate::web_media_adaptive_config::initial_adaptive_source_generation(),
@@ -228,7 +228,7 @@ pub(super) fn prepare_smooth_candidate(
     );
     let mut transport = candidate
         .smooth_manifest_transport_request(&request_context)
-        .context("YtDlp ISM material нельзя выразить как Smooth manifest request")?;
+        .context("YtDlp ISM material cannot be expressed as Smooth manifest request.")?;
     if let Some(observer) = endpoint_expiry_observer {
         transport = transport.with_endpoint_expiry_observer(observer);
     }
@@ -291,7 +291,7 @@ pub fn prepare_native_smooth_candidate(
 ) -> Result<PreparedNativeSmoothCandidate> {
     let adaptive_limits =
         crate::web_media_adaptive_config::adaptive_transport_limits(request.network_config)
-            .context("Не удалось собрать native Smooth adaptive transport limits")?;
+            .context("Could not build native Smooth adaptive transport limits")?;
     let preparation = SmoothPrepareRequest::new(
         request.transport,
         request.source_config,
@@ -320,10 +320,10 @@ pub fn prepare_native_smooth_candidate(
             request.fresh_parent,
             discovered.provider_default_selection().clone(),
         )
-        .context("native Smooth provider default нарушил catalog parent identity")?,
+        .context("Native Smooth provider default violated catalog parent identity")?,
     };
     let WebMediaSelectionShape::Components(selected) = neutral_selection.shape() else {
-        bail!("native Smooth selection потерял component catalog shape");
+        bail!("Native Smooth selection lost component catalog shape");
     };
     let opened = discovered
         .open_exact(

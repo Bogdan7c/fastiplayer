@@ -46,7 +46,7 @@ fn latest_pending_reset_retries_full_and_disconnect_is_terminal() {
             .safe_feedback
             .as_ref()
             .map(|feedback| feedback.message.as_ref()),
-        Some("Очередь очищена, но воспроизведение не удалось сбросить")
+        Some("The queue was cleared, but playback could not be reset")
     );
 }
 
@@ -143,6 +143,6 @@ fn terminal_reset_failure_keeps_cleared_queue_and_reports_exact_safe_message() {
             .safe_feedback
             .as_ref()
             .map(|feedback| feedback.message.as_ref()),
-        Some("Очередь очищена, но воспроизведение не удалось сбросить")
+        Some("The queue was cleared, but playback could not be reset")
     );
 }

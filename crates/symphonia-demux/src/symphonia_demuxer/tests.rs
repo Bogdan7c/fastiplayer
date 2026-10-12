@@ -326,7 +326,7 @@ impl FormatReader for FakeFormatReader {
     where
         Self: 'source,
     {
-        unreachable!("tests не возвращают MediaSourceStream из FakeFormatReader");
+        unreachable!("tests never return MediaSourceStream from FakeFormatReader");
     }
 }
 
@@ -510,7 +510,7 @@ fn fake_demuxer_with_options(
         DemuxSeekability::Seekable,
         options,
     )
-    .expect("fake demuxer должен открыться")
+    .expect("The fake demuxer must open.")
 }
 
 fn fake_demuxer_with_seek_mode_log() -> (SymphoniaDemuxer, Arc<Mutex<Vec<SeekMode>>>) {
@@ -525,7 +525,7 @@ fn fake_demuxer_with_seek_mode_log() -> (SymphoniaDemuxer, Arc<Mutex<Vec<SeekMod
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     (demuxer, seek_mode_log)
 }
@@ -535,7 +535,7 @@ fn assert_symphonia_seek_mode(request: DemuxSeekRequest, expected_mode: SeekMode
 
     demuxer
         .seek_with_request(request)
-        .expect("fake seek должен завершиться без ошибки");
+        .expect("fake seek must be completed without error");
 
     assert_eq!(
         seek_mode_log

@@ -90,7 +90,7 @@ fn malformed_drm_private_and_live_are_exact_inspection_causes() {
 fn mandatory_output_limit_and_preinspection_cancellation_are_typed() {
     assert!(FragmentWriteLimits::try_new(0).is_err());
     let limits = inspection_limits();
-    let tiny_output = FragmentWriteLimits::try_new(16).expect("ненулевой tiny budget");
+    let tiny_output = FragmentWriteLimits::try_new(16).expect("non-zero tiny budget");
     assert!(matches!(
         reconstruct_with(
             VIDEO_HIGH_FIRST,

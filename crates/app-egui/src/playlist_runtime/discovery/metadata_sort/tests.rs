@@ -543,8 +543,8 @@ fn probe_batch_published_with_terminal_is_never_lost_across_many_jobs() {
         let MetadataSortTerminal::Prepared { patches, .. } =
             drain_terminal(&mut owner, &cpu_executor, structural_revision)
         else {
-            panic!("job {job_index}: успешный probe обязан дать Prepared terminal");
+            panic!("{job_index}: a successful probe must give a prepared terminal");
         };
-        assert_eq!(patches.len(), 1, "job {job_index}: patch потерян");
+        assert_eq!(patches.len(), 1, "job {job_index}: patch lost");
     }
 }

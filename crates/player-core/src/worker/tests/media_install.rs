@@ -33,7 +33,7 @@ fn worker_starts_accepts_commands_publishes_snapshot_and_shutdowns() {
                 ..
             })
         )),
-        "Play без media не должен публиковать Playing"
+        "Play without media don't publish Playing"
     );
     worker.shutdown().unwrap();
 }

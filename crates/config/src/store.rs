@@ -105,7 +105,7 @@ fn create_default_config(path: PathBuf) -> ConfigResult<LoadedConfig> {
     let toml_text = config.to_pretty_toml()?;
 
     atomic::write_initial_config(&path, &toml_text)?;
-    info!(path = %path.display(), "Создан default config fastiplayer");
+    info!(path = %path.display(), "Created default config fastiplayer");
     Ok(LoadedConfig {
         config,
         path,

@@ -571,7 +571,7 @@ mod tests {
         assert_eq!(layout.video_height(), None);
         assert_eq!(layout.video_height_hint(), None);
         let StreamLayout::ContentProbed(descriptor) = layout else {
-            panic!("layout остаётся content-probed");
+            panic!("layout remains content-probed");
         };
         assert_eq!(descriptor.video_hints(), ContentProbedVideoHints::none());
     }

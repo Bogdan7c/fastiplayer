@@ -54,7 +54,7 @@ fn audio_only_demuxer_opens_and_uses_track_duration_metadata() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("audio-only demuxer должен открыться без video track-а");
+    .expect("audio-only demuxer must open without video track.");
 
     assert_eq!(demuxer.tracks().len(), 1);
     assert_eq!(demuxer.tracks()[0].kind, TrackKind::Audio);
@@ -77,7 +77,7 @@ fn demuxer_uses_media_info_duration_when_tracks_do_not_have_duration() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться с container-level duration");
+    .expect("fake demuxer should open with container-level duration");
 
     assert_eq!(demuxer.tracks().len(), 1);
     assert_eq!(demuxer.tracks()[0].kind, TrackKind::Video);
@@ -105,7 +105,7 @@ fn demuxer_maps_per_track_display_orientation_metadata() {
             DemuxSeekability::Seekable,
             DemuxerOptions::default(),
         )
-        .expect("fake demuxer должен открыть video track с orientation metadata");
+        .expect("fake demuxer should open video track on orientation metadata");
         let video_metadata = demuxer.tracks()[0].video.as_ref();
         if orientation == VideoDisplayOrientation::Identity {
             // Identity без других display overrides не создаёт лишнюю metadata.
@@ -113,7 +113,7 @@ fn demuxer_maps_per_track_display_orientation_metadata() {
         } else {
             assert_eq!(
                 video_metadata
-                    .expect("rotation должна создать video metadata")
+                    .expect("rotation should create a video metadata.")
                     .orientation,
                 orientation
             );
@@ -133,12 +133,12 @@ fn demuxer_maps_mp4_per_track_hdr_color_metadata() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыть video track с MP4 color metadata");
+    .expect("fake demuxer should open video track on MP4 color metadata");
     let color = demuxer.tracks()[0]
         .video
         .as_ref()
         .and_then(|metadata| metadata.color.as_ref())
-        .expect("MP4 HDR color metadata должна попасть в VideoTrackMetadata.color");
+        .expect("MP4 HDR color metadata should hit VideoTrackMetadata.color");
 
     assert_eq!(color.range, ColorRange::Full);
     assert_eq!(color.matrix, MatrixCoefficients::Bt2020);
@@ -178,7 +178,7 @@ fn demuxer_prefers_track_duration_over_media_info_duration() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен сохранить track-level duration");
+    .expect("fake demuxer should be preserved track-level duration");
 
     assert_eq!(demuxer.duration(), Some(Duration::from_secs(30)));
     assert_eq!(demuxer.tracks()[0].duration, Some(Duration::from_secs(30)));
@@ -204,11 +204,11 @@ fn reset_required_refreshes_track_list_as_lifecycle_event() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let event = demuxer
         .next_event()
-        .expect("ResetRequired должен стать lifecycle event");
+        .expect("ResetRequired should be a lifecycle event");
 
     match event {
         DemuxReadEvent::TracksChanged(track_update) => {
@@ -216,7 +216,7 @@ fn reset_required_refreshes_track_list_as_lifecycle_event() {
             assert_eq!(track_update.tracks[0].id, TrackId::new(3));
             assert_eq!(track_update.duration, Some(Duration::from_secs(42)));
         }
-        unexpected_event => panic!("ожидали TracksChanged, получили {unexpected_event:?}"),
+        unexpected_event => panic!("expected TracksChanged, received {unexpected_event:?}"),
     }
     assert_eq!(demuxer.tracks()[0].id, TrackId::new(3));
     assert_eq!(demuxer.duration(), Some(Duration::from_secs(42)));
@@ -237,11 +237,11 @@ fn reset_required_keeps_media_info_duration_when_tracks_do_not_have_duration() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться с container-level duration");
+    .expect("fake demuxer should open with container-level duration");
 
     let event = demuxer
         .next_event()
-        .expect("ResetRequired должен обновить track list без потери media duration");
+        .expect("ResetRequired updates track list without losing media duration");
 
     match event {
         DemuxReadEvent::TracksChanged(track_update) => {
@@ -249,7 +249,7 @@ fn reset_required_keeps_media_info_duration_when_tracks_do_not_have_duration() {
             assert_eq!(track_update.tracks[0].id, TrackId::new(4));
             assert_eq!(track_update.duration, Some(Duration::from_secs(18)));
         }
-        unexpected_event => panic!("ожидали TracksChanged, получили {unexpected_event:?}"),
+        unexpected_event => panic!("expected TracksChanged, received {unexpected_event:?}"),
     }
     assert_eq!(demuxer.tracks()[0].id, TrackId::new(4));
     assert_eq!(demuxer.tracks()[0].duration, None);
@@ -279,16 +279,16 @@ fn next_event_exposes_reset_lifecycle_before_following_packet() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let track_event = demuxer
         .next_event()
-        .expect("ResetRequired должен стать lifecycle event");
+        .expect("ResetRequired should be a lifecycle event");
     let packet_event = demuxer
         .next_event()
-        .expect("следующий packet нового track-а должен быть доступен");
+        .expect("The next packet of the new track should be available.");
     let DemuxReadEvent::Packet(packet) = packet_event else {
-        panic!("после TracksChanged ожидался packet, получено {packet_event:?}");
+        panic!("After TracksChanged was expected packet, received {packet_event:?}");
     };
 
     assert!(matches!(track_event, DemuxReadEvent::TracksChanged(_)));

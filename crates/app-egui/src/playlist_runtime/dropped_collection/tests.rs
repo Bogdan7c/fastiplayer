@@ -67,7 +67,7 @@ fn folders_expand_in_place_between_dropped_files_in_drop_order() {
     assert_eq!(
         collected.files,
         vec![first_file, track1, track2, nested, last_file],
-        "файл, затем папка на своём месте (natural, файлы раньше подпапок, без cover/hidden), затем файл"
+        "file, then folder in place (natural, files before subfolders, without cover/hidden), then file in place"
     );
     assert_eq!(collected.truncation, None);
     assert_eq!(
@@ -216,7 +216,10 @@ fn wait_for_walk(runtime: &mut PlaylistRuntime) -> DroppedCollectionWalkCompleti
         if let Some(completion) = runtime.take_dropped_collection_walk_completion() {
             return completion;
         }
-        assert!(Instant::now() < deadline, "обход не завершился за 5 секунд");
+        assert!(
+            Instant::now() < deadline,
+            "The round was not completed in 5 seconds."
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -224,7 +227,7 @@ fn wait_for_walk(runtime: &mut PlaylistRuntime) -> DroppedCollectionWalkCompleti
 fn collected_from(completion: DroppedCollectionWalkCompletion) -> CollectedDroppedFiles {
     match completion {
         DroppedCollectionWalkCompletion::Collected(collected) => collected,
-        other => panic!("ожидался собранный результат, получено {other:?}"),
+        other => panic!("The result is expected to be collected, received {other:?}"),
     }
 }
 
@@ -265,7 +268,7 @@ fn background_walk_runs_off_caller_and_busy_until_result_is_taken() {
     assert!(!runtime.has_dropped_collection_walk_in_flight());
     assert!(
         runtime.take_dropped_collection_walk_completion().is_none(),
-        "результат отдаётся ровно один раз"
+        "The result is given exactly once"
     );
 }
 
@@ -299,12 +302,12 @@ fn folder_walk_then_confirmation_shows_count_and_changes_queue_only_after_confir
     assert_eq!(
         queue_paths(&runtime),
         vec![PathBuf::from("/old/one.mkv"), PathBuf::from("/old/two.mkv")],
-        "очередь не меняется до Confirm"
+        "queue does not change to Confirm"
     );
     let model = runtime
         .pending_playlist_confirmation()
         .expect("pending confirmation");
-    assert_eq!(model.safe_label(), "3 файла из папки „Музыка“");
+    assert_eq!(model.safe_label(), "3 files from folder “Музыка”");
 
     let outcome = runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
         intent_id: model.intent_id(),
@@ -314,12 +317,12 @@ fn folder_walk_then_confirmation_shows_count_and_changes_queue_only_after_confir
         AdmittedQueueReplacementIntent::LocalFiles(files),
     ) = outcome
     else {
-        panic!("Confirm должен вернуть набор файлов, получено {outcome:?}");
+        panic!("Confirm Must return a set of files, got {outcome:?}");
     };
     let LocalFilesReplacementOutcome::Replaced { first_item, .. } =
         runtime.replace_queue_with_local_files(files.into_paths())
     else {
-        panic!("замена после Confirm должна пройти");
+        panic!("Replacement after Confirm must be completed");
     };
     assert_eq!(queue_paths(&runtime), expected);
     assert!(matches!(
@@ -410,13 +413,13 @@ fn explicit_open_boundaries() -> Vec<(&'static str, ExplicitOpenBoundary)> {
         ("Row Play", |runtime| {
             runtime.supersede_queue_replacement_confirmation_for_row_play();
         }),
-        ("главный Open / новый файл", |runtime| {
+        ("Main Open/New File", |runtime| {
             let intent = InAppQueueReplacementIntent::local_files(vec![PathBuf::from("/new.mkv")]);
             runtime
                 .admit_in_app_queue_replacement(intent)
                 .expect("admission");
         }),
-        ("структурная замена / Clear", |runtime| {
+        ("Structural Replacement / Clear", |runtime| {
             runtime.cancel_queue_replacement_confirmation_for_structural_replacement();
         }),
     ]
@@ -442,13 +445,13 @@ fn explicit_open_boundary_discards_in_flight_folder_walk_without_confirmation() 
                 wait_for_walk(&mut runtime),
                 DroppedCollectionWalkCompletion::Cancelled
             ),
-            "{boundary_name}: устаревший обход должен быть отброшен"
+            "{boundary_name}: Outdated bypass must be discarded"
         );
         assert!(!runtime.has_dropped_collection_walk_in_flight());
         assert_eq!(
             queue_paths(&runtime),
             vec![PathBuf::from("/old.mkv")],
-            "{boundary_name}: очередь не тронута"
+            "{boundary_name}: queue untouched"
         );
     }
 }
@@ -476,7 +479,7 @@ fn truncation_reaches_commit_immediately_for_empty_queue() {
     let InAppQueueReplacementAdmission::StartNow(AdmittedQueueReplacementIntent::LocalFiles(files)) =
         admission
     else {
-        panic!("пустая очередь заменяется сразу, получено {admission:?}");
+        panic!("Empty line replaced immediately, received {admission:?}");
     };
     assert_eq!(
         files.truncation(),
@@ -515,7 +518,7 @@ fn truncation_is_delivered_only_with_confirm_and_never_after_cancel() {
         AdmittedQueueReplacementIntent::LocalFiles(files),
     ) = outcome
     else {
-        panic!("Confirm должен вернуть набор файлов, получено {outcome:?}");
+        panic!("Confirm Must return a set of files, got {outcome:?}");
     };
     assert_eq!(
         files.truncation(),

@@ -423,7 +423,7 @@ fn insert_default_config_comment(toml_text: &mut String, needle: &str, comment: 
     // Поэтому тесты обнаруживают stale documentation при удалении/переименовании поля,
     // но пользовательское значение не обязано совпадать с default literal.
     let documented_line = documented_line.unwrap_or_else(|| {
-        panic!("default config documentation target отсутствует в current schema: {needle}")
+        panic!("default config documentation target not available in current schema: {needle}")
     });
     *toml_text = toml_text.replacen(documented_line, &format!("{comment}\n{documented_line}"), 1);
 }

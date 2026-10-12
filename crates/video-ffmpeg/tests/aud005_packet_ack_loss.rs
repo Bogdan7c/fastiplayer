@@ -43,7 +43,7 @@ const SEEK_TARGET: Duration = Duration::from_secs(2);
 /// Открывает explicit MPEG-TS fixture через production demux boundary.
 fn open_demuxer(asset_path: &Path) -> MpegTsDemuxer {
     // LocalFileSource сохраняет тот же seekable byte-source contract, что и player.
-    let local_source = LocalFileSource::open(asset_path).expect("открыть AUD-005 MPEG-TS fixture");
+    let local_source = LocalFileSource::open(asset_path).expect("Open AUD-005 MPEG-TS fixture");
 
     // Production MPEG-TS parser формирует реальные H.264 Annex-B access units.
     MpegTsDemuxer::open(
@@ -51,7 +51,7 @@ fn open_demuxer(asset_path: &Path) -> MpegTsDemuxer {
         CancellationToken::never_cancelled(),
         MpegTsDemuxOptions::default(),
     )
-    .expect("открыть production MPEG-TS demuxer для AUD-005")
+    .expect("Open production MPEG-TS demuxer for AUD-005")
 }
 
 /// Выполняет decode-safe seek и возвращает ограниченный post-seek packet burst.
@@ -65,17 +65,17 @@ fn collect_post_seek_video_packets(asset_path: &Path) -> (TrackId, Duration, Vec
         .iter()
         .find(|track| track.kind == TrackKind::Video)
         .map(|track| track.id)
-        .expect("AUD-005 fixture должен содержать video track");
+        .expect("AUD-005 fixture includes video track");
 
     // Decode-point-before соответствует player preroll: декодирование стартует с keyframe.
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(SEEK_TARGET))
-        .expect("выполнить AUD-005 decode-safe seek");
+        .expect("AUD-005 decode-safe seek");
 
     // Decode point обязан находиться не позже accurate target, чтобы preroll был осмысленным.
     assert!(
         seek_result.actual_position.as_duration() <= SEEK_TARGET,
-        "decode-safe seek не должен перескочить target: actual={:?}, target={SEEK_TARGET:?}",
+        "decode-safe seek mustn't leap target: actual={:?}, target={SEEK_TARGET:?}",
         seek_result.actual_position.as_duration(),
     );
 
@@ -85,10 +85,7 @@ fn collect_post_seek_video_packets(asset_path: &Path) -> (TrackId, Duration, Vec
     // Читаем до нужного числа video packets либо реального container EOF.
     while post_seek_packets.len() < POST_SEEK_PACKET_BURST {
         // Каждый event приходит из production demux state machine.
-        match demuxer
-            .next_event()
-            .expect("прочитать post-seek MPEG-TS event")
-        {
+        match demuxer.next_event().expect("read post-seek MPEG-TS event") {
             // Audio/metadata события не относятся к video completion accounting.
             DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video => {
                 post_seek_packets.push(packet);
@@ -103,7 +100,7 @@ fn collect_post_seek_video_packets(asset_path: &Path) -> (TrackId, Duration, Vec
     // Тест обязан действительно создать переполнение ACK channel, а не проверить capacity=1 одним packet-ом.
     assert!(
         post_seek_packets.len() > MIN_PACKET_CHANNEL_CAPACITY,
-        "post-seek burst должен быть больше прежней ACK capacity: packets={}, capacity={MIN_PACKET_CHANNEL_CAPACITY}",
+        "post-seek burst must be greater than the previous ACK capacity: packets={}, capacity={MIN_PACKET_CHANNEL_CAPACITY}",
         post_seek_packets.len(),
     );
 
@@ -131,7 +128,7 @@ fn open_decoder(
     let started_backend =
         FfmpegSoftwareVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
             .start_for_composition()
-            .expect("запустить production software FFmpeg backend для AUD-005");
+            .expect("Launch production software FFmpeg backend for AUD-005");
 
     // Проверяем, что тест не был незаметно перенаправлен в другой backend.
     assert_eq!(started_backend.backend_id(), "ffmpeg-sw");
@@ -207,7 +204,7 @@ fn send_and_wait_without_draining_ack(
     // Доступный FFmpeg notifier обязан публиковать монотонный epoch.
     let observed_epoch = activity_snapshot
         .captured_epoch()
-        .expect("production FFmpeg decoder должен иметь activity notifier");
+        .expect("production FFmpeg decoder must have activity notifier");
 
     // Реальный completion даёт один pulse внутри send/receive loop и один после
     // worker publication; Deferred branch до retry даёт только внешний pulse.
@@ -217,10 +214,10 @@ fn send_and_wait_without_draining_ack(
     match decoder.send_packet(packet) {
         Ok(()) => {}
         Err(DecodeSendError::Backpressure(reason)) => {
-            panic!("serial AUD-005 feed неожиданно получил packet backpressure: {reason:?}");
+            panic!("serial AUD-005 feed unexpectedly packet backpressure: {reason:?}");
         }
         Err(DecodeSendError::Fatal(error)) => {
-            panic!("AUD-005 decoder send завершился fatal: {error}");
+            panic!("AUD-005 decoder send ended fatal: {error}");
         }
     }
 
@@ -242,7 +239,7 @@ fn send_and_wait_without_draining_ack(
         let current_epoch = decoder
             .decoder_activity_snapshot()
             .captured_epoch()
-            .expect("production FFmpeg decoder activity не должен исчезать");
+            .expect("production FFmpeg decoder activity must not disappear");
 
         // Два шага после исходного snapshot доказывают, что packet принят codec-ом.
         if current_epoch.get() >= completion_epoch_value {
@@ -264,18 +261,18 @@ fn send_and_wait_without_draining_ack(
                 latest_epoch = current_epoch;
                 assert!(
                     Instant::now() < activity_deadline,
-                    "worker не завершил packet после stale activity pulse",
+                    "worker finished packet afterward stale activity pulse",
                 );
             }
             other_outcome => {
-                panic!("worker не завершил packet до deadline: {other_outcome:?}");
+                panic!("worker fails to complete packet before deadline: {other_outcome:?}");
             }
         }
     }
 
     // Fatal error после activity нельзя принять за корректное completion.
     if let Some(error) = decoder.try_recv_error() {
-        panic!("AUD-005 worker завершил packet с fatal error: {error}");
+        panic!("AUD-005 worker finished packet on fatal error: {error}");
     }
 
     // Completion accumulator принципиально остаётся нетронутым до terminal EOF.
@@ -302,7 +299,7 @@ fn drain_decoder_to_terminal_eof(
                 }
             ) if started_generation == generation
         ),
-        "FFmpeg worker должен принять AUD-005 EOF drain: {begin_result:?}",
+        "FFmpeg worker must take AUD-005 EOF drain: {begin_result:?}",
     );
 
     // Deadline не позволяет ошибочно назвать зависание подтверждённой потерей ACK.
@@ -323,14 +320,14 @@ fn drain_decoder_to_terminal_eof(
                 generation: drained_generation,
             } if drained_generation == generation => break,
             VideoDecoderEndOfStreamDrainState::Fatal { error, .. } => {
-                panic!("AUD-005 EOF drain завершился fatal: {error}");
+                panic!("AUD-005 EOF drain ended fatal: {error}");
             }
             _ => {}
         }
 
         // Асинхронная fatal очередь проверяется отдельно от shared drain state.
         if let Some(error) = decoder.try_recv_error() {
-            panic!("AUD-005 decoder сообщил fatal во время EOF: {error}");
+            panic!("AUD-005 decoder reported fatal during EOF: {error}");
         }
 
         // Timeout означает неподтверждённую сессию, а не accounting evidence.
@@ -351,7 +348,7 @@ fn accurate_seek_eof_preserves_all_packet_completions() {
     // Fixture задаётся явно и не попадает в hermetic default test suite.
     let asset_path = std::env::var_os("FASTIPLAYER_MEDIA_PATH")
         .map(std::path::PathBuf::from)
-        .expect("FASTIPLAYER_MEDIA_PATH должен указывать на generated AUD-005 MPEG-TS");
+        .expect("FASTIPLAYER_MEDIA_PATH should indicate generated AUD-005 MPEG-TS");
 
     // Production demux выполняет seek и формирует реальный post-seek preroll burst.
     let (video_track_id, actual_seek_position, post_seek_packets) =
@@ -399,7 +396,7 @@ fn accurate_seek_eof_preserves_all_packet_completions() {
     // Сценарий закрепляет именно быстрые no-output completions из seek preroll-а.
     assert!(
         no_output_packets > MIN_PACKET_CHANNEL_CAPACITY,
-        "нужно больше no-output completions, чем прежних ACK slots: no_output={no_output_packets}, capacity={MIN_PACKET_CHANNEL_CAPACITY}",
+        "You need more no-output completions than previous ACK slots: no_output={no_output_packets}, capacity={MIN_PACKET_CHANNEL_CAPACITY}",
     );
 
     // Реальный decoder work и DPB tail должны завершиться независимо от ACK consumer-а.
@@ -414,13 +411,13 @@ fn accurate_seek_eof_preserves_all_packet_completions() {
     // Каждый accepted packet обязан дать ровно один completion даже после задержки consumer-а.
     assert_eq!(
         delivered_completions, accepted_packets,
-        "completion accounting потерял accepted packet: accepted={accepted_packets}, delivered={delivered_completions}",
+        "completion accounting lost accepted packet: accepted={accepted_packets}, delivered={delivered_completions}",
     );
 
     // После terminal decoder EOF ложный VideoDecodeInFlight blocker отсутствует.
     assert_eq!(
         terminal_in_flight_packets, 0,
-        "после реального decoder completion player-style in-flight должен стать нулевым",
+        "After the actual decoder completion, the player-style in-flight should be zero.",
     );
 
     // Повторный drain доказывает exactly-once передачу уже учтённых completions.

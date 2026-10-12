@@ -32,11 +32,11 @@ fn finalize_native_hls_live(
 ) -> Result<PreparedNativeHlsLive> {
     let seek_handle = opened
         .async_seek_handle()
-        .ok_or_else(|| anyhow!("native HLS live runtime потерял receipted seek handle"))?;
+        .ok_or_else(|| anyhow!("Native HLS live runtime lost its receipted seek handle"))?;
     let initial_readiness = opened.initial_readiness();
     let (mut demuxer, timeline_port, _) = opened.into_parts();
     wait_for_initial_hls_tracks(demuxer.as_mut(), &initial_readiness)
-        .context("native HLS live не достиг install-ready track состояния")?;
+        .context("Native HLS live did not reach an install-ready track state")?;
     Ok(PreparedNativeHlsLive {
         demuxer,
         seek_port: Arc::new(HlsPreparedDemuxSeekPort {

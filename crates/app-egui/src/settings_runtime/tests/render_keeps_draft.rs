@@ -18,12 +18,15 @@ fn rendering_all_default_settings_fields_does_not_modify_draft() {
     ))
     .expect("settings runtime should build");
     let mut adapter = RecordingRuntimeAdapter::from_config(&config).expect("adapter should build");
-    runtime.open_settings().expect("settings должны открыться");
+    runtime.open_settings().expect("settings should open");
 
     let ctx = Context::default();
     for _ in 0..IDLE_FRAMES {
         let fields = runtime.ui_model().fields.clone();
-        assert!(!fields.is_empty(), "модель настроек не должна быть пустой");
+        assert!(
+            !fields.is_empty(),
+            "The model of settings should not be empty."
+        );
         let mut actions: Vec<SettingsUiAction> = Vec::new();
         let raw_input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 40_000.0))),
@@ -36,7 +39,7 @@ fn rendering_all_default_settings_fields_does_not_modify_draft() {
         });
         output.textures_delta.clear();
 
-        assert_eq!(actions, Vec::new(), "отрисовка не должна выдавать действия");
+        assert_eq!(actions, Vec::new(), "rendering should not give action");
         run_runtime_actions(&mut runtime, actions, &mut adapter);
     }
 
@@ -47,9 +50,5 @@ fn rendering_all_default_settings_fields_does_not_modify_draft() {
         .filter(|field| field.is_dirty)
         .map(|field| field.descriptor.id.clone())
         .collect();
-    assert_eq!(
-        modified,
-        Vec::new(),
-        "ни одно поле не должно стать изменённым"
-    );
+    assert_eq!(modified, Vec::new(), "No field should be changed.");
 }

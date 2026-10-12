@@ -83,7 +83,9 @@ impl fmt::Display for AddItemsOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Added(ids) => fmt::Display::fmt(ids, formatter),
-            Self::NoItemsProvided => formatter.write_str("append batch пуст; очередь не изменена"),
+            Self::NoItemsProvided => {
+                formatter.write_str("append batch is empty; queue is not changed")
+            }
         }
     }
 }
@@ -138,17 +140,19 @@ impl fmt::Display for AddItemsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InstallCommitLinearizing => {
-                formatter.write_str("install commit временно блокирует изменение очереди")
+                formatter.write_str("install commit temporarily blocks queue change")
             }
             Self::CapacityExceeded { maximum, .. } => {
-                write!(formatter, "append превысил лимит очереди {maximum}")
+                write!(formatter, "append exceeded the queue limit {maximum}")
             }
-            Self::ItemIdExhausted => formatter.write_str("диапазон PlaylistItemId исчерпан"),
+            Self::ItemIdExhausted => {
+                formatter.write_str("The range of PlaylistItemId is exhausted")
+            }
             Self::ItemIdCollision { .. } => {
-                formatter.write_str("allocator предложил уже существующий PlaylistItemId")
+                formatter.write_str("allocator proposed an existing PlaylistItemId")
             }
             Self::StructuralRevisionExhausted => {
-                formatter.write_str("structural revision исчерпана")
+                formatter.write_str("structural revision exhausted")
             }
         }
     }
@@ -177,8 +181,8 @@ impl fmt::Debug for TraversalCurrentEffect {
 impl fmt::Display for TraversalCurrentEffect {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Preserved => formatter.write_str("traversal current сохранён"),
-            Self::Cleared => formatter.write_str("traversal current очищен"),
+            Self::Preserved => formatter.write_str("traversal current saved"),
+            Self::Cleared => formatter.write_str("traversal current cleaned"),
         }
     }
 }
@@ -233,11 +237,11 @@ impl fmt::Display for ReplaceQueueOutcome {
         match self {
             Self::Replaced {
                 allocated_item_ids, ..
-            } => write!(formatter, "очередь заменена: {allocated_item_ids}"),
+            } => write!(formatter, "queue replaced: {allocated_item_ids}"),
             Self::Cleared {
                 removed_item_count, ..
-            } => write!(formatter, "очередь очищена: удалено {removed_item_count}"),
-            Self::AlreadyEmpty => formatter.write_str("очередь уже пуста"),
+            } => write!(formatter, "queue cleared: {removed_item_count} deleted"),
+            Self::AlreadyEmpty => formatter.write_str("queue is empty."),
         }
     }
 }
@@ -283,19 +287,21 @@ impl fmt::Display for ReplaceQueueError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InstallCommitLinearizing => {
-                formatter.write_str("install commit временно блокирует replacement")
+                formatter.write_str("install commit temporarily blocks replacement")
             }
             Self::CapacityExceeded { maximum, .. } => {
-                write!(formatter, "replacement превысил лимит очереди {maximum}")
+                write!(formatter, "replacement exceeded the queue limit {maximum}")
             }
-            Self::ItemIdExhausted => formatter.write_str("диапазон PlaylistItemId исчерпан"),
+            Self::ItemIdExhausted => {
+                formatter.write_str("The range of PlaylistItemId is exhausted")
+            }
             Self::ItemIdCollision { .. } => {
-                formatter.write_str("allocator предложил уже существующий PlaylistItemId")
+                formatter.write_str("allocator proposed an existing PlaylistItemId")
             }
             Self::StructuralRevisionExhausted => {
-                formatter.write_str("structural revision исчерпана")
+                formatter.write_str("structural revision exhausted")
             }
-            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision исчерпана"),
+            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision exhausted"),
         }
     }
 }
@@ -366,22 +372,22 @@ impl fmt::Debug for RemoveItemOutcome {
 impl fmt::Display for RemoveItemOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Removed { entry_id, .. } => write!(formatter, "удалён {entry_id:?}"),
-            Self::NotFound { entry_id } => write!(formatter, "{entry_id:?} не найден"),
+            Self::Removed { entry_id, .. } => write!(formatter, "deleted {entry_id:?}"),
+            Self::NotFound { entry_id } => write!(formatter, "{entry_id:?} not found"),
             Self::CompoundPartTarget {
                 part_item_id,
                 compound_entry_id,
             } => write!(
                 formatter,
-                "{part_item_id} является частью {compound_entry_id:?}; требуется compound target"
+                "{part_item_id} is part of {compound_entry_id:?}; compound target is required"
             ),
             Self::InstallCommitLinearizing => {
-                formatter.write_str("install commit временно блокирует remove")
+                formatter.write_str("install commit temporarily blocks removal")
             }
             Self::StructuralRevisionExhausted => {
-                formatter.write_str("structural revision исчерпана")
+                formatter.write_str("structural revision exhausted")
             }
-            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision исчерпана"),
+            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision exhausted"),
         }
     }
 }
@@ -429,10 +435,10 @@ impl fmt::Debug for MoveItemIntent {
 impl fmt::Display for MoveItemIntent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ToFront => formatter.write_str("переместить в начало"),
-            Self::ToBack => formatter.write_str("переместить в конец"),
-            Self::Before(entry_id) => write!(formatter, "переместить перед {entry_id:?}"),
-            Self::After(entry_id) => write!(formatter, "переместить после {entry_id:?}"),
+            Self::ToFront => formatter.write_str("move in"),
+            Self::ToBack => formatter.write_str("end up"),
+            Self::Before(entry_id) => write!(formatter, "move ahead of {entry_id:?}"),
+            Self::After(entry_id) => write!(formatter, "move after {entry_id:?}"),
         }
     }
 }
@@ -508,20 +514,20 @@ impl fmt::Debug for MoveItemOutcome {
 impl fmt::Display for MoveItemOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Moved { entry_id } => write!(formatter, "{entry_id:?} перемещён"),
+            Self::Moved { entry_id } => write!(formatter, "{entry_id:?} moved"),
             Self::AlreadyInPlace { entry_id } => {
-                write!(formatter, "{entry_id:?} уже на месте")
+                write!(formatter, "{entry_id:?} already in place")
             }
-            Self::EntryNotFound { entry_id } => write!(formatter, "{entry_id:?} не найден"),
+            Self::EntryNotFound { entry_id } => write!(formatter, "{entry_id:?} not found"),
             Self::CompoundPartTarget {
                 part_item_id,
                 compound_entry_id,
             } => write!(
                 formatter,
-                "{part_item_id} является частью {compound_entry_id:?}; требуется compound target"
+                "{part_item_id} is part of {compound_entry_id:?}; compound target is required"
             ),
             Self::AnchorNotFound { anchor_entry_id } => {
-                write!(formatter, "anchor {anchor_entry_id:?} не найден")
+                write!(formatter, "anchor {anchor_entry_id:?} not found")
             }
             Self::CompoundPartAnchor {
                 part_item_id,
@@ -529,14 +535,14 @@ impl fmt::Display for MoveItemOutcome {
             } => {
                 write!(
                     formatter,
-                    "anchor {part_item_id} является частью {compound_entry_id:?}"
+                    "anchor {part_item_id} is part of {compound_entry_id:?}"
                 )
             }
             Self::InstallCommitLinearizing => {
-                formatter.write_str("install commit временно блокирует move")
+                formatter.write_str("install commit temporarily blocks movement")
             }
             Self::StructuralRevisionExhausted => {
-                formatter.write_str("structural revision исчерпана")
+                formatter.write_str("structural revision exhausted")
             }
         }
     }
@@ -587,15 +593,15 @@ impl fmt::Display for ClearQueueOutcome {
         match self {
             Self::Cleared {
                 removed_item_count, ..
-            } => write!(formatter, "очередь очищена: удалено {removed_item_count}"),
-            Self::AlreadyEmpty => formatter.write_str("очередь уже пуста"),
+            } => write!(formatter, "queue cleared: {removed_item_count} deleted"),
+            Self::AlreadyEmpty => formatter.write_str("queue is empty."),
             Self::InstallCommitLinearizing => {
-                formatter.write_str("install commit временно блокирует clear")
+                formatter.write_str("install commit temporarily blocks clearing")
             }
             Self::StructuralRevisionExhausted => {
-                formatter.write_str("structural revision исчерпана")
+                formatter.write_str("structural revision exhausted")
             }
-            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision исчерпана"),
+            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision exhausted"),
         }
     }
 }
@@ -622,7 +628,7 @@ impl fmt::Display for TraversalCurrentValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ItemNotCommitted { item_id } => {
-                write!(formatter, "{item_id} не принадлежит committed queue")
+                write!(formatter, "{item_id} does not belong to committed queue")
             }
         }
     }
@@ -660,10 +666,10 @@ impl fmt::Debug for TraversalCurrentMutationOutcome {
 impl fmt::Display for TraversalCurrentMutationOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Set(current) => write!(formatter, "current установлен на {current}"),
-            Self::Cleared => formatter.write_str("current очищен"),
-            Self::AlreadyCurrent(current) => write!(formatter, "{current} уже current"),
-            Self::AlreadyAbsent => formatter.write_str("current уже отсутствует"),
+            Self::Set(current) => write!(formatter, "current installed at {current}"),
+            Self::Cleared => formatter.write_str("current"),
+            Self::AlreadyCurrent(current) => write!(formatter, "{current} is now"),
+            Self::AlreadyAbsent => formatter.write_str("current is not already available."),
         }
     }
 }
@@ -696,12 +702,12 @@ impl fmt::Display for TraversalCurrentMutationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InstallCommitLinearizing => {
-                formatter.write_str("install commit временно блокирует смену current")
+                formatter.write_str("install commit temporarily blocks changing the current item")
             }
             Self::ItemNotCommitted { item_id } => {
-                write!(formatter, "{item_id} не принадлежит committed queue")
+                write!(formatter, "{item_id} does not belong to committed queue")
             }
-            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision исчерпана"),
+            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision exhausted"),
         }
     }
 }
@@ -765,25 +771,30 @@ impl fmt::Display for PrepareReservedMutationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InstallCommitLinearizing => {
-                formatter.write_str("другой install commit уже линеаризуется")
+                formatter.write_str("The other install commit is already linearized.")
             }
             Self::RevisionMismatch { .. } => {
-                formatter.write_str("queue precondition revisions изменились")
+                formatter.write_str("queue precondition revisions changed")
             }
             Self::ItemNotCommitted { item_id } => {
-                write!(formatter, "target {item_id} отсутствует в committed queue")
+                write!(
+                    formatter,
+                    "target {item_id} is missing from the committed queue"
+                )
             }
             Self::CapacityExceeded { maximum, .. } => {
-                write!(formatter, "candidate превышает лимит очереди {maximum}")
+                write!(formatter, "candidate exceeds the queue limit of {maximum}")
             }
-            Self::ItemIdExhausted => formatter.write_str("диапазон PlaylistItemId исчерпан"),
+            Self::ItemIdExhausted => {
+                formatter.write_str("The range of PlaylistItemId is exhausted")
+            }
             Self::ItemIdCollision { .. } => {
-                formatter.write_str("allocator предложил уже существующий PlaylistItemId")
+                formatter.write_str("allocator proposed an existing PlaylistItemId")
             }
             Self::StructuralRevisionExhausted => {
-                formatter.write_str("structural revision исчерпана")
+                formatter.write_str("structural revision exhausted")
             }
-            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision исчерпана"),
+            Self::TraversalRevisionExhausted => formatter.write_str("traversal revision exhausted"),
         }
     }
 }

@@ -10,7 +10,7 @@ fn descriptors_have_the_exact_media_open_policy_contract() {
         "web_media.vod_endpoint_recovery_stable_reset_ms",
     ] {
         let contract = setting_application_contract(&SettingId::from(setting_id))
-            .expect("VOD endpoint recovery contract должен существовать");
+            .expect("VOD Endpoint Recovery Contracts Should Exist");
 
         assert_eq!(
             contract,

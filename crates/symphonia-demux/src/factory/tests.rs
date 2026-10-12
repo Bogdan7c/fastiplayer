@@ -80,12 +80,12 @@ fn descriptor_declares_ordered_segments_only_for_proven_fragmented_containers() 
         let capabilities = registration.input_capabilities();
         assert!(
             capabilities.contains(DemuxInputCapability::SeekableBytes),
-            "{} должен сохранить seekable input",
+            "{} should be retained by the seekable input",
             registration.container
         );
         assert!(
             capabilities.contains(DemuxInputCapability::StreamingBytes),
-            "{} должен сохранить streaming input",
+            "{} should be kept streaming input",
             registration.container
         );
         assert_eq!(
@@ -94,7 +94,7 @@ fn descriptor_declares_ordered_segments_only_for_proven_fragmented_containers() 
                 registration.container.as_str(),
                 "iso-bmff" | "matroska" | "webm"
             ),
-            "ordered input разрешён только ISO BMFF и Matroska/WebM"
+            "ordered input only permitted ISO BMFF and Matroska/WebM"
         );
     }
     assert!(!descriptor.fixture_ids.is_empty());

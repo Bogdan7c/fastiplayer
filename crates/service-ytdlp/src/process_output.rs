@@ -66,22 +66,22 @@ impl YtDlpProcessOutputBudgets {
     ) -> Result<Self, YtDlpServiceError> {
         if stdout_bytes == 0 {
             return Err(YtDlpServiceError::process(anyhow::anyhow!(
-                "yt_dlp.single_item_stdout_limit_bytes должен быть положительным"
+                "yt_dlp.single_item_stdout_limit_bytes should be positive."
             )));
         }
         if stderr_bytes == 0 {
             return Err(YtDlpServiceError::process(anyhow::anyhow!(
-                "yt_dlp.single_item_stderr_limit_bytes должен быть положительным"
+                "yt_dlp.single_item_stderr_limit_bytes should be positive."
             )));
         }
         if json_nodes == 0 {
             return Err(YtDlpServiceError::process(anyhow::anyhow!(
-                "yt_dlp.single_item_json_node_limit должен быть положительным"
+                "yt_dlp.single_item_json_node_limit should be positive."
             )));
         }
         let json_nodes = usize::try_from(json_nodes).map_err(|_| {
             YtDlpServiceError::process(anyhow::anyhow!(
-                "yt_dlp.single_item_json_node_limit не помещается в usize"
+                "yt_dlp.single_item_json_node_limit does not fit in usize"
             ))
         })?;
 
@@ -166,7 +166,7 @@ impl ProcessOutputBudgetSignal {
             OUTPUT_BUDGET_WITHIN_LIMIT => None,
             STDOUT_BUDGET_EXCEEDED => Some(ProcessOutputStream::Stdout),
             STDERR_BUDGET_EXCEEDED => Some(ProcessOutputStream::Stderr),
-            _ => unreachable!("process output budget signal хранит только известные коды"),
+            _ => unreachable!("process output budget signal Stores only known codes"),
         }
     }
 }
@@ -335,7 +335,7 @@ impl<'de> Visitor<'de> for JsonNodeVisitor<'_> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("один JSON value в пределах configured node budget")
+        formatter.write_str("One JSON value within the configured node budget")
     }
 
     fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
@@ -423,7 +423,7 @@ mod tests {
         let budgets = YtDlpProcessOutputBudgets::new(1024, 1024, 4).expect("valid budgets");
 
         validate_json_node_budget(br#"{"items":[1,2]}"#, budgets)
-            .expect("root object, array и два числа равны четырём nodes");
+            .expect("root object, array and two numbers are equal to four nodes");
     }
 
     #[test]
@@ -431,7 +431,7 @@ mod tests {
         let budgets = YtDlpProcessOutputBudgets::new(1024, 1024, 3).expect("valid budgets");
 
         let error = validate_json_node_budget(br#"{"items":[1,2]}"#, budgets)
-            .expect_err("четвёртый node должен пересечь budget три");
+            .expect_err("The fourth node must cross budget three.");
 
         assert!(matches!(
             error,
@@ -444,7 +444,7 @@ mod tests {
         let budgets = YtDlpProcessOutputBudgets::new(1024, 1024, 32).expect("valid budgets");
 
         let error = validate_json_node_budget(br#"{"items":[1,}"#, budgets)
-            .expect_err("syntax error не должен превращаться в resource overflow");
+            .expect_err("syntax error must not be transformed into resource overflow");
 
         assert!(matches!(
             error,

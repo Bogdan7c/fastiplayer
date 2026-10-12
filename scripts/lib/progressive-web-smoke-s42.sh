@@ -3,7 +3,7 @@
 
 # Этот файл разрешено только source-ить из fail-closed runner-а.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-    printf 'Ошибка: S42 manual library не является самостоятельной командой\n' >&2
+    printf 'Error: The S42 manual library is not a standalone command\n' >&2
     exit 2
 fi
 
@@ -108,7 +108,7 @@ validate_case_id() {
     local candidate_case_id="$1"
     # Unknown labels запрещены.
     if ! is_required_s42_case_id "${candidate_case_id}"; then
-        print_error "--case не входит в утверждённую S42 manual matrix"
+        print_error "The case is not included in the approved S42 manual matrix"
         exit "${USAGE_EXIT_CODE}"
     fi
 }
@@ -119,12 +119,12 @@ validate_explicit_url() {
     local candidate_url="$1"
     # Control characters могли бы подделать report.
     if [[ "${candidate_url}" =~ [[:cntrl:]] ]]; then
-        print_error "--url не должен содержать управляющие символы"
+        print_error "--url must not contain control characters"
         exit "${USAGE_EXIT_CODE}"
     fi
     # RTMP и excluded schemes fail closed.
     if [[ ! "${candidate_url}" =~ ^(https?|ftps?)://[^/[:space:]]+(/[^[:space:]]*)?$ ]]; then
-        print_error "--url должен быть explicit absolute HTTP/HTTPS/FTP/FTPS URL"
+        print_error "--url must be an explicit absolute HTTP/HTTPS/FTP/FTPS URL"
         exit "${USAGE_EXIT_CODE}"
     fi
 }
@@ -135,12 +135,12 @@ validate_explicit_fixture() {
     local candidate_fixture="$1"
     # Empty path не является selection.
     if [[ -z "${candidate_fixture}" ]]; then
-        print_error "--fixture не должен быть пустым"
+        print_error "--fixture should not be empty"
         exit "${USAGE_EXIT_CODE}"
     fi
     # Control characters запрещены.
     if [[ "${candidate_fixture}" =~ [[:cntrl:]] ]]; then
-        print_error "--fixture не должен содержать управляющие символы"
+        print_error "--fixture must not contain control characters"
         exit "${USAGE_EXIT_CODE}"
     fi
 }
@@ -159,17 +159,17 @@ validate_case_input() {
     expected_input_kind="$(case_input_kind "${candidate_case_id}")"
     # Kind mismatch блокируется до arrays mutation.
     if [[ "${candidate_input_kind}" != "${expected_input_kind}" ]]; then
-        print_error "--case получил неподходящий тип --url/--fixture"
+        print_error "--case received the wrong --url/--fixture input type"
         exit "${USAGE_EXIT_CODE}"
     fi
     # FTP row требует exact FTP/FTPS family.
     if [[ "${candidate_case_id}" == "ftp-ftps-progressive" && ! "${candidate_input}" =~ ^ftps?:// ]]; then
-        print_error "ftp-ftps-progressive требует explicit FTP/FTPS URL"
+        print_error "ftp-ftps-progressive requires an explicit FTP/FTPS URL"
         exit "${USAGE_EXIT_CODE}"
     fi
     # Остальные URL cases требуют HTTP/HTTPS.
     if [[ "${candidate_input_kind}" == "url" && "${candidate_case_id}" != "ftp-ftps-progressive" && ! "${candidate_input}" =~ ^https?:// ]]; then
-        print_error "этот --case требует explicit HTTP/HTTPS URL"
+        print_error "This case requires an explicit HTTP/HTTPS URL"
         exit "${USAGE_EXIT_CODE}"
     fi
 }
@@ -184,7 +184,7 @@ ensure_unique_case_id() {
     for existing_case_id in "${scenario_case_ids[@]}"; do
         # Exact duplicate запрещён.
         if [[ "${candidate_case_id}" == "${existing_case_id}" ]]; then
-            print_error "--case нельзя указывать повторно"
+            print_error "A case may only be specified once"
             exit "${USAGE_EXIT_CODE}"
         fi
     done
@@ -251,7 +251,7 @@ validate_real_fixture_inputs() {
         fi
         # Missing/unreadable fixture блокирует evidence.
         if [[ ! -f "${scenario_inputs[scenario_offset]}" || ! -r "${scenario_inputs[scenario_offset]}" ]]; then
-            print_error "explicit --fixture не найден либо недоступен для чтения"
+            print_error "explicit --fixture was not found or is not readable"
             exit "${FAILURE_EXIT_CODE}"
         fi
         # Canonical path вычисляется до смены cwd и никогда не печатается.
@@ -260,12 +260,12 @@ validate_real_fixture_inputs() {
         if ! canonical_fixture_path="$(
             realpath --canonicalize-existing -- "${scenario_inputs[scenario_offset]}" 2>/dev/null
         )"; then
-            print_error "explicit --fixture не удалось безопасно нормализовать"
+            print_error "explicit --fixture could not be safely normalized"
             exit "${FAILURE_EXIT_CODE}"
         fi
         # Absolute canonical identity исключает повторную интерпретацию relative path приложением.
         if [[ "${canonical_fixture_path}" != /* ]]; then
-            print_error "explicit --fixture не разрешился в absolute path"
+            print_error "explicit --fixture did not resolve to an absolute path"
             exit "${FAILURE_EXIT_CODE}"
         fi
         # Runtime и redactor получают ровно одну нормализованную identity.
@@ -281,36 +281,36 @@ verify_ytdlp_provenance() {
     ytdlp_executable="$(command -v yt-dlp)"
     # Version probe изолирован от trusted config/plugins.
     if ! observed_ytdlp_version="$("${ytdlp_executable}" --ignore-config --no-plugin-dirs --version 2>/dev/null)"; then
-        print_error "не удалось проверить exact system yt-dlp provenance"
+        print_error "Could not verify the exact system yt-dlp provenance"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # Mismatch блокирует profile acceptance.
     if [[ "${observed_ytdlp_version}" != "${EXPECTED_YTDLP_VERSION}" ]]; then
-        print_error "system yt-dlp version не совпадает с утверждённым 2026.07.04 profile"
+        print_error "system yt-dlp version does not match the approved 2026.07.04 profile"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # SHA utility читает executable bytes.
     local sha256_output
     # Failure не создаёт неполный report.
     if ! sha256_output="$(sha256sum -- "${ytdlp_executable}")"; then
-        print_error "не удалось вычислить SHA-256 system yt-dlp"
+        print_error "Could not determine the system yt-dlp SHA-256"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # Первый field является digest.
     observed_ytdlp_sha256="${sha256_output%% *}"
     # Malformed digest запрещён.
     if [[ ! "${observed_ytdlp_sha256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        print_error "SHA-256 system yt-dlp имеет некорректный формат"
+        print_error "system yt-dlp SHA-256 has an invalid format"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # Workspace commit нужен для reproducibility.
     if ! workspace_commit="$(git -C "${REPO_ROOT}" rev-parse --verify HEAD 2>/dev/null)"; then
-        print_error "не удалось определить workspace commit для manual report"
+        print_error "failed to determine workspace commit for manual report"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # Object ID format остаётся bounded.
     if [[ ! "${workspace_commit}" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
-        print_error "workspace commit имеет некорректный формат"
+        print_error "workspace commit has an invalid format"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # Status payload нужен только для clean/dirty classification и не попадает в report.
@@ -319,7 +319,7 @@ verify_ytdlp_provenance() {
     if ! workspace_status="$(
         git -C "${REPO_ROOT}" status --porcelain=v1 --untracked-files=normal 2>/dev/null
     )"; then
-        print_error "не удалось определить состояние workspace для manual report"
+        print_error "Unable to determine workspace status for manual report"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # Пустой porcelain означает exact clean HEAD; любой path/change делает state dirty.
@@ -517,7 +517,7 @@ write_report_header() {
         } >"${report_path}"
     ) 2>/dev/null; then
         # Generic diagnostics не раскрывает выбранный report path.
-        print_error "не удалось atomically создать новый --report; existing artifact не перезаписан"
+        print_error "Unable to atomically create a new --report; existing artifact not overwritten"
         exit "${FAILURE_EXIT_CODE}"
     fi
 }

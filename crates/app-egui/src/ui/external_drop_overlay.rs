@@ -21,8 +21,8 @@ const OVERLAY_HINT_FONT_SIZE: f32 = 20.0;
 /// Подсказка для места назначения.
 pub(crate) fn drop_hint_text(target: DropTarget) -> &'static str {
     match target {
-        DropTarget::Playlist => "Отпустите, чтобы добавить в плейлист",
-        DropTarget::Video => "Отпустите, чтобы открыть",
+        DropTarget::Playlist => "Drop to add to Playlist",
+        DropTarget::Video => "Drop to open",
     }
 }
 

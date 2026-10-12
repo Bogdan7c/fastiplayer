@@ -452,7 +452,7 @@ impl PlaylistRuntime {
             debug!(
                 target: "rustiplayer::removal_undo",
                 lineage = ?installed.lineage_id(),
-                "Undo удаления сброшен: новая lineage и Undo не переживает смену текущего"
+                "Undo removal discarded: new lineage; Undo does not survive a current item change"
             );
             self.removal_undo = None;
         }

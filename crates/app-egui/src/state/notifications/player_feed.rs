@@ -39,7 +39,7 @@ impl NotificationCenter {
                 self.notify_info(AUDIO_OUTPUT_UNAVAILABLE_MESSAGE, now);
             }
             PlayerEvent::RecoverableError(error) => {
-                // Технический `Display` ошибки остаётся для логов; пользователь видит русскую
+                // Технический `Display` ошибки остаётся для логов; пользователь видит английскую
                 // фразу по виду ошибки (A10). Toast уходит сам, а не висит до следующего файла.
                 self.notify_transient(player_error_user_message(error), now);
             }

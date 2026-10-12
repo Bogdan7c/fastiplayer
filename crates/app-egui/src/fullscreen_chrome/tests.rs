@@ -73,19 +73,19 @@ fn fullscreen_without_input_hides_panels_and_cursor_after_delay() {
     let before_delay = harness.idle_for(DELAY - Duration::from_millis(100));
     assert!(
         fully_visible(before_delay),
-        "до задержки всё видно: {before_delay:?}"
+        "You can see everything before the delay: {before_delay:?}"
     );
     assert_eq!(
         harness.controller.next_wake_deadline(),
         Some(started_at + DELAY),
-        "event loop должен проснуться ровно к моменту скрытия"
+        "The event loop should wake up exactly by the time it is hidden."
     );
 
     let right_after_delay = harness.idle_for(Duration::from_millis(150));
     assert_eq!(right_after_delay.cursor, CursorVisibility::Hidden);
     assert!(
         right_after_delay.hidden_fraction > 0.0 && right_after_delay.hidden_fraction < 1.0,
-        "панели уезжают плавно, а не исчезают: {right_after_delay:?}"
+        "The panels go away smoothly, They don't disappear: {right_after_delay:?}"
     );
     assert!(harness.controller.is_animating());
     assert_eq!(harness.controller.next_wake_deadline(), None);
@@ -105,7 +105,7 @@ fn mouse_movement_brings_chrome_back_and_restarts_delay() {
     assert_eq!(after_move.cursor, CursorVisibility::Visible);
     assert!(
         after_move.hidden_fraction < 1.0,
-        "панели начали возвращаться"
+        "The panels started coming back."
     );
     assert_eq!(
         harness.controller.next_wake_deadline(),
@@ -139,7 +139,7 @@ fn every_hold_reason_keeps_chrome_visible_without_wake_deadline() {
         assert_eq!(
             harness.controller.next_wake_deadline(),
             None,
-            "{reason:?}: удержание не должно будить event loop"
+            "{reason:?}: Holding should not wake up event loop"
         );
     }
 }
@@ -342,7 +342,7 @@ fn observation_reports_each_hold_reason_from_real_egui_frame() {
     assert_eq!(
         controller.holds,
         ChromeHolds::default().with(ChromeHoldReason::SidebarOpen),
-        "буферизация не держит панели, сайдбар держит"
+        "buffering does not hold the panels, the sidebar holds"
     );
 
     finish_real_frame(

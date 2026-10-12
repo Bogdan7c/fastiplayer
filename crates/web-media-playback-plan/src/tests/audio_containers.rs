@@ -90,7 +90,7 @@ fn audio_rows() -> [AudioPlanningRow; 8] {
 fn candidate(row: &AudioPlanningRow) -> PlanningCandidate {
     let audio_track = AudioTrackDescriptor::new(
         NormalizedCodec::parse(
-            RawCodecIdentity::new(row.codec_raw).expect("S28C raw codec identity валидна"),
+            RawCodecIdentity::new(row.codec_raw).expect("S28C raw codec identity valid"),
         ),
         None,
         None,
@@ -113,7 +113,7 @@ fn candidate(row: &AudioPlanningRow) -> PlanningCandidate {
         },
         CandidateQualityScore::new(1),
     )
-    .expect("S28C candidate descriptor/runtime family согласованы")
+    .expect("S28C candidate descriptor/runtime family agreed")
 }
 
 /// Строит exact progressive transport/demux capability для одной container family.
@@ -127,11 +127,11 @@ fn resource_capabilities(
             TransportFamily::ProgressiveHttp(web_media_core::HttpScheme::Https),
             byte_inputs,
         )
-        .expect("S28C transport registration валидна"),
+        .expect("S28C transport registration valid"),
     ]);
     let demux = DemuxCapabilitySnapshot::new(vec![
         DemuxCapabilityRegistration::new(container_family, byte_inputs)
-            .expect("S28C demux registration валидна"),
+            .expect("S28C demux registration valid"),
     ]);
     (transport, demux)
 }
@@ -163,7 +163,7 @@ fn current_audio_container_rows_require_exact_available_s20_family() {
             &request,
             &policy(row.container_family),
         )
-        .expect("exact S28C family должна пройти capability intersection");
+        .expect("exact S28C family must pass capability intersection");
         assert_eq!(
             outcome.selected().layout(),
             web_media_core::StreamLayoutKind::AudioOnly
@@ -192,8 +192,8 @@ fn unavailable_s28c_audio_family_is_rejected_before_io() {
             &request,
             &policy(row.container_family),
         )
-        .expect_err("missing exact S20 family должна отклонить candidate") else {
-            panic!("ожидался exact typed audio rejection");
+        .expect_err("missing exact S20 family should reject candidate") else {
+            panic!("It is expected to be exact typed audio rejection.");
         };
         assert!(rejection.reasons().iter().any(|reason| matches!(
             reason,

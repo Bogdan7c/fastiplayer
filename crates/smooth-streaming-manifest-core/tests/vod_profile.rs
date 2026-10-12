@@ -58,7 +58,7 @@ fn xml_budgets() -> XmlBudgets {
         .maximum_namespace_bytes(4 * 1024)
         .maximum_text_bytes(32 * 1024)
         .build()
-        .expect("test XML budgets полны")
+        .expect("XML test budgets are complete")
 }
 
 /// Test-only schema limits соответствуют малому VOD manifest-у.
@@ -84,12 +84,12 @@ fn manifest_limits_with_total_custom_attributes(maximum: usize) -> SmoothManifes
         .maximum_custom_attribute_name_bytes(64)
         .maximum_custom_attribute_value_bytes(128)
         .build()
-        .expect("test schema limits полны")
+        .expect("test schema limits full")
 }
 
 #[test]
 fn explicit_h264_aac_fixture_preserves_shape_clocks_and_codec_proofs() {
-    let manifest = parse(VALID_V20).expect("valid v2.0 fixture принимается");
+    let manifest = parse(VALID_V20).expect("valid v2.0 fixture is accepted");
     assert_eq!(manifest.version(), SmoothManifestVersion::V2_0);
     assert_eq!(manifest.duration().ticks(), 20_000_000);
     assert_eq!(manifest.streams().len(), 2);
@@ -99,7 +99,7 @@ fn explicit_h264_aac_fixture_preserves_shape_clocks_and_codec_proofs() {
     assert_eq!(video.timescale().get(), 10_000_000);
     assert_eq!(video.timeline().fragment_count(), 2);
     let SmoothQualityLevel::Video(video_quality) = &video.qualities()[0] else {
-        panic!("первый stream обязан остаться video");
+        panic!("The first stream must remain a video.");
     };
     assert_eq!(video_quality.codec().as_str(), "H264");
     assert_eq!(
@@ -113,7 +113,7 @@ fn explicit_h264_aac_fixture_preserves_shape_clocks_and_codec_proofs() {
     assert_eq!(audio.timescale().get(), 48_000);
     assert_eq!(audio.timeline().last_end().ticks(), 96_000);
     let SmoothQualityLevel::Audio(audio_quality) = &audio.qualities()[0] else {
-        panic!("второй stream обязан остаться audio");
+        panic!("The second stream must remain audio.");
     };
     assert_eq!(
         audio_quality.codec_configuration().origin(),
@@ -123,7 +123,7 @@ fn explicit_h264_aac_fixture_preserves_shape_clocks_and_codec_proofs() {
 
 #[test]
 fn version_22_repeat_is_total_two_and_stream_inherits_root_timescale() {
-    let manifest = parse(VALID_V22_REPEAT).expect("valid v2.2 repeat fixture принимается");
+    let manifest = parse(VALID_V22_REPEAT).expect("valid v2.2 repeat fixture");
     let stream = &manifest.streams()[0];
     assert_eq!(stream.timescale().get(), 10);
     assert_eq!(stream.timeline().fragment_count(), 2);
@@ -136,7 +136,7 @@ fn version_22_repeat_is_total_two_and_stream_inherits_root_timescale() {
 
 #[test]
 fn default_root_clock_and_cross_timescale_alignment_are_exact() {
-    let manifest = parse(DIFFERING_AV_TIMESCALES).expect("aligned A/V fixture валиден");
+    let manifest = parse(DIFFERING_AV_TIMESCALES).expect("aligned A/V fixture validated");
     assert_eq!(
         manifest.duration().timescale().get(),
         SMOOTH_STREAMING_DEFAULT_TIMESCALE_TICKS_PER_SECOND
@@ -150,7 +150,7 @@ fn default_root_clock_and_cross_timescale_alignment_are_exact() {
 
     let inline_document = valid_video_document("", "").replace(r#" TimeScale="10""#, "");
     let inline_without_root_timescale =
-        parse(&inline_document).expect("inline default clock fixture валиден");
+        parse(&inline_document).expect("inline default clock fixture validated");
     assert_eq!(
         inline_without_root_timescale.duration().timescale().get(),
         SMOOTH_STREAMING_DEFAULT_TIMESCALE_TICKS_PER_SECOND
@@ -189,7 +189,7 @@ fn required_stream_attributes_and_quality_identity_fail_closed() {
         ),
     ] {
         let error = parse(&VALID_V22_REPEAT.replacen(removed, "", 1))
-            .expect_err("обязательное Smooth-поле не должно исчезать молча");
+            .expect_err("The mandatory Smooth field should not disappear silently.");
         assert_eq!(error, SmoothManifestError::MalformedSchema { field });
         assert_eq!(format!("{error:?}"), expected_debug);
     }
@@ -222,7 +222,7 @@ fn custom_attributes_disambiguate_bitrate_and_obey_manifest_total_budget() {
         Some(("role", "main")),
         Some(("role", "alternate")),
     );
-    parse(&distinct_attributes).expect("разные typed attributes disambiguate одинаковый bitrate");
+    parse(&distinct_attributes).expect("differential typed attributes disambiguate equal bitrate");
 
     let identical_attributes = two_quality_document(
         "q({bitrate},{CustomAttributes})/v({start time})",
@@ -243,7 +243,7 @@ fn custom_attributes_disambiguate_bitrate_and_obey_manifest_total_budget() {
         xml_budgets: xml_budgets(),
         limits: manifest_limits_with_total_custom_attributes(1),
     })
-    .expect_err("manifest-wide attributes budget обязан примениться до publication");
+    .expect_err("manifest-wide attributes budget must be applied before publication");
     assert_eq!(
         error,
         SmoothManifestError::LimitExceeded {
@@ -284,7 +284,7 @@ fn presentation_duration_and_common_interval_use_exact_cross_products() {
 
 #[test]
 fn inferred_start_duration_and_audio_without_asc_are_explicitly_modelled() {
-    let manifest = parse(TIMELINE_INFERENCE).expect("adjacent explicit t выводит d");
+    let manifest = parse(TIMELINE_INFERENCE).expect("adjacent explicit t lead out d");
     assert_eq!(
         manifest.duration().timescale().get(),
         SMOOTH_STREAMING_DEFAULT_TIMESCALE_TICKS_PER_SECOND
@@ -322,9 +322,9 @@ fn hardened_xml_rejections_preserve_exact_source() {
             r#"<x:SmoothStreamingMedia MajorVersion="2" MinorVersion="0" TimeScale="1" Duration="1"/>"#,
         ),
     ] {
-        let error = parse(document).expect_err("malformed/security XML обязан остаться XML error");
+        let error = parse(document).expect_err("malformed/security XML must remain an XML error");
         let SmoothManifestError::Xml { source } = error else {
-            panic!("{case}: XML rejection не должен превращаться в schema error: {error:?}");
+            panic!("{case}: XML rejection should not turn into schema error: {error:?}");
         };
         assert!(matches!(
             source,
@@ -339,13 +339,13 @@ fn hardened_xml_rejections_preserve_exact_source() {
 #[test]
 fn well_formed_foreign_document_is_not_a_malformed_smooth_manifest() {
     let error = parse("<html><body>provider page</body></html>")
-        .expect_err("foreign XML root не должен проходить authoritative Smooth admission");
+        .expect_err("foreign XML root don't pass authoritative Smooth admission");
 
     assert_eq!(error, SmoothManifestError::InvalidRoot);
     assert_eq!(format!("{error:?}"), "InvalidRoot");
     assert_eq!(
         error.to_string(),
-        "document root не является SmoothStreamingMedia"
+        "document root is not SmoothStreamingMedia"
     );
 }
 
@@ -600,7 +600,7 @@ fn cancellation_is_observed_at_start_events_hex_and_final_timeline_validation() 
         total_polls += 1;
         false
     })
-    .expect("baseline считает polls");
+    .expect("baseline considers polls");
     let mut final_polls = 0usize;
     let mut before_publication = || {
         final_polls += 1;

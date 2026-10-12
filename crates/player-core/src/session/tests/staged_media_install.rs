@@ -78,7 +78,7 @@ fn pending_vp9_prepared_media(label: &str) -> PreparedMedia {
     let mut video_track = fake_track(1, TrackKind::Video);
     video_track.video = Some(VideoTrackMetadata::empty());
     let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(25))
-        .expect("focused staged retry hint должен быть допустим");
+        .expect("Focused staged retry hint should be allowed.");
     let mut demuxer = FakeDemuxer::new(
         vec![video_track],
         Some(Duration::from_secs(42)),
@@ -104,7 +104,7 @@ fn assert_settings_backend_reconfigure_is_pipeline_lifecycle_busy(session: &mut 
         Err(crate::PlayerRuntimeApplyError::RuntimeBusy(
             crate::PlayerRuntimeBoundaryActivity::PipelineLifecycle,
         )),
-        "settings backend replacement не должен обгонять staged media install"
+        "settings backend replacement must not overtake staged media install"
     );
 }
 
@@ -859,7 +859,7 @@ fn vp9_hdr_packet_preflight_selects_p010_and_replays_interleaved_audio() {
     let configured_streams = decoder.configured_streams();
     let configured_stream = configured_streams
         .last()
-        .expect("detached decoder должен быть настроен до ReadyToCommit");
+        .expect("Detached decoder must be configured before ReadyToCommit");
     assert_eq!(
         configured_stream.profile,
         Some(VideoProfile::Vp9(Vp9Profile::Profile2))
@@ -881,16 +881,16 @@ fn vp9_hdr_packet_preflight_selects_p010_and_replays_interleaved_audio() {
         session
             .pipeline
             .demux_next_event()
-            .expect("installed demuxer должен существовать")
-            .expect("prefetched audio event должен читаться без ошибки"),
+            .expect("Installed Demuxer must exist.")
+            .expect("Prefetched audio event should be read without error"),
         DemuxReadEvent::Packet(audio_packet)
     );
     assert_eq!(
         session
             .pipeline
             .demux_next_event()
-            .expect("installed demuxer должен существовать")
-            .expect("prefetched video event должен читаться без ошибки"),
+            .expect("Installed Demuxer must exist.")
+            .expect("Prefetched video event should be read without error"),
         DemuxReadEvent::Packet(video_packet)
     );
 }
@@ -922,7 +922,7 @@ fn staged_video_preflight_resumes_without_replaying_temporary_readiness() {
         vp9_profile2_10bit_bt2020_keyframe(3_840, 2_160),
     );
     let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(25))
-        .expect("focused staged retry hint должен быть допустим");
+        .expect("Focused staged retry hint should be allowed.");
     let event_read_count = Arc::new(AtomicUsize::new(0));
     let mut demuxer = FakeDemuxer::new(
         vec![video_track, audio_track],
@@ -953,7 +953,7 @@ fn staged_video_preflight_resumes_without_replaying_temporary_readiness() {
     assert_eq!(
         session.runtime_reconfigure_boundary_activity(),
         Some(crate::PlayerRuntimeBoundaryActivity::PipelineLifecycle),
-        "pending preflight должен удерживать settings lifecycle boundary"
+        "pending preflight must hold settings lifecycle boundary"
     );
     assert_settings_backend_reconfigure_is_pipeline_lifecycle_busy(&mut session);
     assert_eq!(event_read_count.load(Ordering::Relaxed), 1);
@@ -1005,16 +1005,16 @@ fn staged_video_preflight_resumes_without_replaying_temporary_readiness() {
         session
             .pipeline
             .demux_next_event()
-            .expect("installed demuxer должен существовать")
-            .expect("prefetched audio event должен сохраниться"),
+            .expect("Installed Demuxer must exist.")
+            .expect("Prefetched audio event should be retained"),
         DemuxReadEvent::Packet(audio_packet)
     );
     assert_eq!(
         session
             .pipeline
             .demux_next_event()
-            .expect("installed demuxer должен существовать")
-            .expect("prefetched video event должен сохраниться"),
+            .expect("Installed Demuxer must exist.")
+            .expect("The prefetched video event must be preserved."),
         DemuxReadEvent::Packet(video_packet)
     );
 }
@@ -1028,7 +1028,7 @@ fn staged_video_preflight_timeout_is_typed_and_exactly_once() {
     let mut video_track = fake_track(1, TrackKind::Video);
     video_track.video = Some(VideoTrackMetadata::empty());
     let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(25))
-        .expect("focused staged retry hint должен быть допустим");
+        .expect("Focused staged retry hint should be allowed.");
     let mut demuxer = FakeDemuxer::new(
         vec![video_track],
         Some(Duration::from_secs(42)),
@@ -1128,7 +1128,7 @@ fn pending_staged_preflight_terminal_resolves_each_request_exactly_once() {
     ));
     session
         .dispatch_command(PlayerCommand::Shutdown)
-        .expect("shutdown должен terminal-resolve pending preflight");
+        .expect("Shutdown: Terminal-resolve pending preflight");
     assert!(matches!(
         receipts[2].try_take_completion(),
         Some(MediaInstallCompletion::Cancelled {
@@ -1178,7 +1178,7 @@ fn ready_to_commit_preserves_old_playing_until_atomic_authorization_switch() {
     assert_eq!(
         session.runtime_reconfigure_boundary_activity(),
         Some(crate::PlayerRuntimeBoundaryActivity::PipelineLifecycle),
-        "ReadyToCommit candidate должен удерживать boundary до terminal control"
+        "ReadyToCommit candidate must hold boundary to terminal control"
     );
     assert_settings_backend_reconfigure_is_pipeline_lifecycle_busy(&mut session);
     assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
@@ -1237,7 +1237,7 @@ fn ready_to_commit_preserves_old_playing_until_atomic_authorization_switch() {
     assert_eq!(
         session.runtime_reconfigure_boundary_activity(),
         None,
-        "Installed terminal должен освободить settings lifecycle boundary"
+        "Installed terminal must release settings lifecycle boundary"
     );
 }
 
@@ -1330,13 +1330,13 @@ fn resource_and_configuration_failures_are_pre_ready_and_preserve_old_playing() 
     assert!(resource_receipt.try_take_ready_to_commit().is_none());
     let resource_completion = resource_receipt
         .try_take_completion()
-        .expect("resource failure должен terminal-завершить install");
+        .expect("Resource Failure must complete the installation terminal");
     let MediaInstallCompletion::Failed {
         failure: resource_failure,
         ..
     } = resource_completion
     else {
-        panic!("resource failure должен вернуть typed Failed terminal");
+        panic!("Resource failure returns typed failed terminal");
     };
     assert_eq!(
         resource_failure.stage,
@@ -1345,7 +1345,7 @@ fn resource_and_configuration_failures_are_pre_ready_and_preserve_old_playing() 
     assert_eq!(
         resource_failure.error.kind,
         PlayerErrorKind::HardwareDecoderUnavailable,
-        "legacy AnyPlayable resource failure должен сохранить hardware diagnostic"
+        "legacy AnyPlayable resource failure should be preserved hardware diagnostic"
     );
     assert_eq!(
         resource_failure.error.message,

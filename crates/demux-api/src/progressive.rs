@@ -73,13 +73,13 @@ impl ProgressiveDemuxBufferLimits {
 #[derive(Debug, thiserror::Error)]
 pub enum ProgressiveDemuxStartupError {
     /// Seekable source должен оставаться на обычном synchronous demux path-е.
-    #[error("progressive demux worker принимает только non-seekable input")]
+    #[error("progressive demux worker accepts non-seekable input")]
     SeekableInput,
     /// Seekable constructor требует честно seekable inner contract.
-    #[error("seekable progressive demux worker получил non-seekable input")]
+    #[error("Seekable progressive demux worker receives non-seekable input")]
     SeekableInputRequired,
     /// OS не смог создать отдельный demux worker.
-    #[error("не удалось создать progressive demux worker: {source}")]
+    #[error("failed to create progressive demux worker: {source}")]
     WorkerSpawn {
         /// Исходная ошибка thread builder-а.
         #[source]
@@ -90,7 +90,7 @@ pub enum ProgressiveDemuxStartupError {
 /// Runtime packet превысил caller-owned bounded queue budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "progressive demux packet ({packet_bytes} bytes) превышает queue budget ({budget_bytes} bytes)"
+    "progressive demux packet ({packet_bytes} bytes) exceed queue budget ({budget_bytes} bytes)"
 )]
 pub struct ProgressiveDemuxPacketTooLargeError {
     /// Размер concrete encoded packet-а.
@@ -101,7 +101,7 @@ pub struct ProgressiveDemuxPacketTooLargeError {
 
 /// Worker завершился без terminal event/error message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("progressive demux worker завершился без terminal outcome")]
+#[error("progressive demux worker ended without a terminal outcome")]
 pub struct ProgressiveDemuxWorkerStoppedError;
 
 /// Provider-neutral nonblocking preview seek-а, выполняемого blocking worker-ом позже.
@@ -174,7 +174,7 @@ impl std::fmt::Debug for ProgressiveSeekController {
 
 /// Worker воспроизвёл иной anchor, чем controller уже отдал player-у.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("progressive seek worker вернул anchor {worker_actual:?}, ожидался {preview_actual:?}")]
+#[error("progressive seek worker returned anchor {worker_actual:?}, expected {preview_actual:?}")]
 pub struct ProgressiveSeekAnchorMismatchError {
     /// Доказанный preview, по которому player начал preroll.
     pub preview_actual: media_core::MediaTime,
@@ -721,7 +721,7 @@ impl Demuxer for ProgressiveDemuxer {
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
         let Some(controller) = &self.seek_controller else {
             return Err(MediaDemuxError::SeekUnavailable {
-                reason: "progressive HTTP source не поддерживает byte seek".to_owned(),
+                reason: "progressive HTTP source supportive byte seek".to_owned(),
             }
             .into());
         };

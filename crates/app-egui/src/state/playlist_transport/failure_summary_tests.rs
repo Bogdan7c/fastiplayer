@@ -20,7 +20,7 @@ fn player_install_failure_puts_specific_reason_on_queue_row() {
 
     assert_eq!(
         playlist_target_failure_summary(&error),
-        PlaylistTargetFailureSummary::Specific(Arc::from("Формат видео не поддерживается"))
+        PlaylistTargetFailureSummary::Specific(Arc::from("Unsupported video format"))
     );
 }
 
@@ -46,7 +46,9 @@ fn web_preparation_failure_puts_specific_reason_on_queue_row() {
 
     assert_eq!(
         playlist_target_failure_summary(&error),
-        PlaylistTargetFailureSummary::Specific(Arc::from("Видео недоступно в вашем регионе"))
+        PlaylistTargetFailureSummary::Specific(Arc::from(
+            "The video is unavailable in your region"
+        ))
     );
 }
 
@@ -99,15 +101,15 @@ fn link_specific_web_failures_stay_item_faults_with_row_badge() {
     for (reason, expected_badge) in [
         (
             Reason::NotFound,
-            "Страница не найдена (ошибка 404) — проверьте ссылку",
+            "Page not found (error 404); check the link",
         ),
         (
             Reason::SiteLoginRequired,
-            "Сайт требует войти в аккаунт (возрастное ограничение или проверка)",
+            "The website requires signing in (age restriction or verification)",
         ),
         (
             Reason::SiteMediaUnavailable,
-            "Видео удалено или не существует",
+            "The video was deleted or does not exist",
         ),
     ] {
         let failure = target_failure_class::playlist_target_failure(&preparation_failure(
@@ -116,7 +118,7 @@ fn link_specific_web_failures_stay_item_faults_with_row_badge() {
         let PlaylistTargetFailure::ItemFault(PlaylistTargetFailureSummary::Specific(badge)) =
             failure
         else {
-            panic!("{reason:?} должен остаться отказом элемента: {failure:?}");
+            panic!("{reason:?} must remain a failure of the element: {failure:?}");
         };
         assert_eq!(&*badge, expected_badge);
     }

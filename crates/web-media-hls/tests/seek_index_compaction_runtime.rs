@@ -83,11 +83,11 @@ fn next_ready_event(demuxer: &mut dyn Demuxer) -> anyhow::Result<DemuxReadEvent>
             DemuxReadEvent::TemporarilyUnavailable(_) => {
                 assert!(
                     call_started.elapsed() < Duration::from_millis(50),
-                    "player-owner poll должен оставаться nonblocking"
+                    "player-owner poll must remain nonblocking"
                 );
                 assert!(
                     Instant::now() < deadline,
-                    "HLS worker превысил test deadline"
+                    "HLS worker exceeds test deadline"
                 );
                 std::thread::sleep(Duration::from_millis(2));
             }
@@ -104,7 +104,7 @@ fn track_signature(tracks: &[TrackInfo]) -> Vec<(TrackId, TrackKind)> {
 /// Извлекает initial authoritative topology publication.
 fn initial_track_signature(event: DemuxReadEvent) -> Vec<(TrackId, TrackKind)> {
     let DemuxReadEvent::TracksChanged(update) = event else {
-        panic!("ожидался initial TracksChanged");
+        panic!("expected initial TracksChanged");
     };
     track_signature(&update.tracks)
 }
@@ -121,9 +121,9 @@ fn next_landing_packet(
             }
             DemuxReadEvent::Packet(packet) => return packet,
             DemuxReadEvent::MediaMetadataChanged(_) => {}
-            DemuxReadEvent::EndOfStream => panic!("seek достиг EOS до landing packet"),
+            DemuxReadEvent::EndOfStream => panic!("seek reach EOS before landing packet"),
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                unreachable!("next_ready_event уже фильтрует temporary readiness")
+                unreachable!("next_ready_event is already filtering temporary readiness.")
             }
         }
     }
@@ -194,7 +194,7 @@ fn late_seek_after_tiny_index_compaction_restarts_directly_from_latest_segment()
             DemuxReadEvent::TracksChanged(update) => {
                 assert_eq!(track_signature(&update.tracks), stable_tracks);
             }
-            DemuxReadEvent::EndOfStream => panic!("VOD закончился до segment-5 evidence"),
+            DemuxReadEvent::EndOfStream => panic!("VOD ended before segment-5 evidence"),
             DemuxReadEvent::TemporarilyUnavailable(_) => unreachable!(),
         }
     }
@@ -219,12 +219,12 @@ fn late_seek_after_tiny_index_compaction_restarts_directly_from_latest_segment()
         .collect::<Vec<_>>();
     assert!(
         media_requests.len() <= 1,
-        "seek не должен повторно открывать exact tail: {media_requests:?}"
+        "seek should not be reopened exact tail: {media_requests:?}"
     );
     assert!(
         media_requests
             .iter()
             .all(|request_line| request_line.contains("/segment-5.ts")),
-        "seek не должен читать промежуточные segments: {media_requests:?}"
+        "seek should not read the intermediate segments: {media_requests:?}"
     );
 }

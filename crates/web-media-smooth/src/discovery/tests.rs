@@ -153,7 +153,7 @@ fn discovery_isolates_content_and_capability_failures_before_atomic_all_pairs_pu
     assert_eq!(
         origin.request_count(),
         8,
-        "Manifest и первый fragment каждой из семи sibling rows должны fetch-иться ровно один раз"
+        "Manifest and the first fragment of each of the seven sibling rows must fetch exactly once."
     );
 }
 

@@ -13,7 +13,7 @@ use crate::{
 use super::PlayerSession;
 
 impl PlayerSession {
-    /// Переключает playback между пользовательскими смыслами "сейчас слышно/идёт" и "пауза".
+    /// Переключает playback между пользовательскими смыслами "сейчас слышно/идёт" and "пауза".
     pub fn toggle_playback(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
@@ -33,7 +33,7 @@ impl PlayerSession {
             // Инвариант: `Playing` бывает только у установленного media. Play без источника
             // (пустой player, остановленный/сброшенный) — безвредный no-op: иначе UI рисует
             // «Playing» и тикающий таймер, а играть нечему.
-            debug!("Play проигнорирован: media не установлено");
+            debug!("Play ignored: media not installed");
             return Ok(());
         }
         self.begin_playback()
@@ -67,7 +67,7 @@ impl PlayerSession {
 
         if let Some(play_result) = self.play_audio_output_with_resume_event() {
             if let Err(error) = play_result {
-                warn!(error = %error, "Не удалось запустить audio");
+                warn!(error = %error, "Failed to launch audio");
                 self.set_runtime_error(format!("Audio play error: {error}"));
             }
             let observed_at = Instant::now();
@@ -138,7 +138,7 @@ impl PlayerSession {
                 let repeats_current_error =
                     self.snapshot.last_error.as_ref() == Some(&player_error);
                 if !repeats_current_error {
-                    warn!(error = %error, "Не удалось запустить audio после preroll");
+                    warn!(error = %error, "I couldn’t start audio after preroll.");
                     self.record_recoverable_error(player_error);
                 }
                 return Ok(false);
@@ -187,7 +187,7 @@ impl PlayerSession {
         let frozen_media_position = match audio_pause_result {
             Some(Ok(captured_clock)) => captured_clock.media_position(),
             Some(Err(error)) => {
-                warn!(error = %error, "Не удалось заморозить audio для demux buffering");
+                warn!(error = %error, "Failed to freeze audio for demux buffering");
                 return Err(PlayerError::new(
                     PlayerErrorKind::RuntimeError,
                     format!("Audio pause for demux buffering error: {error}"),
@@ -217,7 +217,7 @@ impl PlayerSession {
         let paused_media_position = match audio_pause_result {
             Some(Ok(captured_clock)) => captured_clock.media_position(),
             Some(Err(error)) => {
-                warn!(error = %error, "Не удалось остановить audio");
+                warn!(error = %error, "It was not possible to stop the audio.");
                 return Err(PlayerError::new(
                     PlayerErrorKind::RuntimeError,
                     format!("Audio pause error: {error}"),

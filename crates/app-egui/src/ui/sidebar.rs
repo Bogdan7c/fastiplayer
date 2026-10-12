@@ -141,7 +141,7 @@ fn sidebar_host_outer_rect(egui_ctx: &egui::Context, content_rect: egui::Rect) -
     let panel_state = egui::containers::panel::PanelState::load(egui_ctx, sidebar_panel_id());
     debug_assert!(
         panel_state.is_some(),
-        "egui Panel::show должен сохранить PanelState sidebar"
+        "egui Panel::show should retain PanelState sidebar"
     );
     // Без состояния (нарушенный инвариант egui) лучше чуть уже, чем без sidebar.
     panel_state.map_or(content_rect, |state| state.outer_rect)

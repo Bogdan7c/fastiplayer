@@ -375,13 +375,13 @@ pub(crate) enum MediaOpenStartOutcome {
 /// Admission rejection не смешивается с terminal preparation/player failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum MediaOpenStartError {
-    #[error("media-open coordinator уже владеет другим request-ом")]
+    #[error("The media-open coordinator already owns another request")]
     Busy,
-    #[error("media-open coordinator закрыт")]
+    #[error("media-open coordinator sealed")]
     ShuttingDown,
-    #[error("не удалось запустить media-open worker")]
+    #[error("It was not possible to launch a media-open worker.")]
     WorkerStartup,
-    #[error("media-open executor потерял доверенный internal state")]
+    #[error("The media-open executor has lost its trusted internal state")]
     ExecutorInvariant,
 }
 
@@ -443,15 +443,15 @@ pub(crate) enum PlayerDispatchRejection {
 /// и фактической transport-проблемы downstream player owner-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum MediaOpenCommandError {
-    #[error("media-open coordinator не владеет active request-ом")]
+    #[error("media-open coordinator does not own an active request")]
     NoCurrentRequest,
-    #[error("media-open command адресована stale request-у")]
+    #[error("media-open command addressed to stale request")]
     StaleRequest,
-    #[error("media-open command недопустима в фазе {actual:?}")]
+    #[error("media-open command phaseless {actual:?}")]
     InvalidPhase { actual: MediaOpenPhase },
-    #[error("renderer-bound player owner сейчас не привязан")]
+    #[error("renderer-bound player owner is not currently tied")]
     MissingPlayerBinding,
-    #[error("player owner отклонил command до enqueue: {0:?}")]
+    #[error("player owner flattened command before enqueue: {0:?}")]
     PlayerDispatch(PlayerDispatchRejection),
 }
 
@@ -462,10 +462,10 @@ pub(crate) enum MediaOpenCompletionDriveError {
     #[error(transparent)]
     Command(#[from] MediaOpenCommandError),
     /// Request-owned preparation result был потерян.
-    #[error("request-owned media preparation result потерян")]
+    #[error("request-owned media preparation result lost")]
     MissingPreparationResolution,
     /// Player staging/control owner исчез без required outcome-а.
-    #[error("request-owned player completion resolution потерян")]
+    #[error("request-owned player completion resolution lost")]
     MissingPlayerResolution,
 }
 

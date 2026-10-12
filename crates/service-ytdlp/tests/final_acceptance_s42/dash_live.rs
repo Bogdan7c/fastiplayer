@@ -30,13 +30,13 @@ fn dash_live_row_reaches_public_provider_demux_and_packet_fixture() {
     let dash_live_row = rows
         .get(DASH_LIVE_ROW_ID)
         .copied()
-        .expect("S42 обязан содержать canonical dash-live-dvr row");
+        .expect("S42 must contain canonical dash-live-dvr row");
     let roles = required_object(dash_live_row, "roles");
 
     for (evidence_id, role) in DASH_LIVE_EXECUTABLE_EVIDENCE {
         let evidence = evidence_catalog
             .get(evidence_id)
-            .unwrap_or_else(|| panic!("DASH live evidence `{evidence_id}` отсутствует"));
+            .unwrap_or_else(|| panic!("DASH live evidence '{evidence_id}' missing"));
         assert_typed_evidence(evidence_id, evidence);
         assert_eq!(required_string(evidence, "kind"), "ExecutableTest");
         assert_eq!(required_string(evidence, "role"), role);
@@ -48,12 +48,12 @@ fn dash_live_row_reaches_public_provider_demux_and_packet_fixture() {
 
         let role_value = roles
             .get(role)
-            .unwrap_or_else(|| panic!("DASH live role `{role}` отсутствует"));
+            .unwrap_or_else(|| panic!("DASH live role '{role}' missing"));
         let role_evidence =
             required_evidence_ids(role_value, "evidence_ids", "DASH live executable role");
         assert!(
             role_evidence.contains(&evidence_id),
-            "DASH live role `{role}` не ссылается на `{evidence_id}`"
+            "DASH live role '{role}' does not refer to '{evidence_id}'"
         );
     }
 }

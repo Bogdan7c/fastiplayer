@@ -9,7 +9,7 @@ use crate::{DemuxContainerId, DemuxInputCapability, DemuxMimeType, DemuxSourceEx
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DemuxSniffBudgetError {
     /// Deadline обязан позволять хотя бы одну cooperative boundary check.
-    #[error("demux sniff deadline должен быть больше нуля")]
+    #[error("demux sniff deadline should be more than zero")]
     ZeroDeadline,
 }
 
@@ -147,17 +147,17 @@ pub struct DemuxProbeMatch {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DemuxProbeRejection {
     /// Caller отменил probe до terminal selection.
-    #[error("demux probe отменён")]
+    #[error("demux probe cancelled")]
     Cancelled,
     /// Input capability отсутствует у factory registration.
-    #[error("demux factory не поддерживает input capability {capability:?}")]
+    #[error("demux factory does not support input capability {capability:?}")]
     UnsupportedInput {
         /// Exact runtime input shape.
         capability: DemuxInputCapability,
     },
     /// Prefix похож на известный container, но header оборван.
     #[error(
-        "container header оборван: доступно {available_bytes}, требуется минимум {required_bytes} bytes"
+        "container header ragged: readily available {available_bytes}, minimum {required_bytes} bytes"
     )]
     Truncated {
         /// Число bytes, реально доступных probe.
@@ -166,7 +166,7 @@ pub enum DemuxProbeRejection {
         required_bytes: usize,
     },
     /// Sniff I/O превысил явный wall-clock bound.
-    #[error("demux sniff превысил deadline {max_duration:?}")]
+    #[error("demux sniff exceeded deadline {max_duration:?}")]
     DeadlineExceeded {
         /// Configured cooperative deadline.
         max_duration: Duration,

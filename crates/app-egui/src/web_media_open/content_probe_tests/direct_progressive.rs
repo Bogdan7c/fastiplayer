@@ -48,7 +48,7 @@ impl ExtractorProcessLauncher for ZeroProcessSpy {
     ) -> io::Result<Child> {
         self.invocation_count.fetch_add(1, Ordering::SeqCst);
         Err(io::Error::other(
-            "hermetic media test запрещает extractor process spawn",
+            "hermetic media test forbidding extractor process spawn",
         ))
     }
 }
@@ -75,14 +75,14 @@ fn open_direct(
     app_config: &AppConfig,
 ) -> media_source_open::direct_progressive_open::DirectProgressiveOpenResult {
     let classified = media_source_open::direct_progressive_open::classify_direct_media_url(locator)
-        .expect("fixture locator должен классифицироваться direct");
+        .expect("Fixture locator should be classified directly");
     media_source_open::direct_progressive_open::open_direct_media(
         &classified,
         &app_config.network,
         &app_config.player.demux,
         CancellationToken::new(),
     )
-    .expect("direct progressive runtime должен открыть fixture")
+    .expect("Direct progressive runtime opens fixture")
 }
 
 /// Читает production Ogg/Vorbis packets до первого непустого PCM buffer-а.
@@ -92,7 +92,7 @@ fn assert_nonzero_vorbis_pcm(demuxer: &mut dyn Demuxer) {
         .iter()
         .find(|track| track.kind == TrackKind::Audio)
         .cloned()
-        .expect("direct demuxer должен обнаружить audio track");
+        .expect("Direct Demuxer should detect audio track");
     assert_eq!(audio_track.codec_id, "A_VORBIS");
 
     let audio_decoder_factory = ProductionAudioDecoderFactory::default();
@@ -149,11 +149,11 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
     app_config.yt_dlp.enabled = false;
     let locator = origin.media_url();
     media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
-        .expect("HTTP Ogg classifier должен принять fixture");
+        .expect("HTTP Ogg Classifier to Accept Fixture");
     assert_eq!(
         origin.request_count(),
         0,
-        "direct HTTP classifier не должен fetch-ить root до open"
+        "direct HTTP classifier must not fetch the root before opening"
     );
 
     let first_open = open_direct(&locator, &app_config);
@@ -161,13 +161,13 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
     let mut first_demuxer = first_parts.demuxer;
     let first_seek_port = first_parts
         .demux_seek_port
-        .expect("seekable direct Ogg отдаёт seek port");
+        .expect("Seekable Direct Ogg offers a search port");
     assert_eq!(first_demuxer.seekability(), DemuxSeekability::Seekable);
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     assert_eq!(
         origin.request_count(),
         3,
-        "initial open должен выполнить exact 3 Range requests"
+        "initial open must be fulfilled exact 3 Range requests"
     );
 
     seek_through_port(first_seek_port.as_ref(), 1, Duration::from_millis(100));
@@ -175,7 +175,7 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
     assert_eq!(
         origin.request_count(),
         3,
-        "seek внутри downloaded source не должен повторно разрешать/open-ить root"
+        "seeking within a downloaded source must not resolve or open the root again"
     );
 
     seek_through_port(first_seek_port.as_ref(), 2, Duration::ZERO);
@@ -183,7 +183,7 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
     assert_eq!(
         origin.request_count(),
         3,
-        "обратный seek внутри downloaded source также не должен reopen-ить root"
+        "backward seeking within a downloaded source must not reopen the root either"
     );
 
     drop(first_demuxer);
@@ -195,12 +195,12 @@ fn n14b_lifecycle_http_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extr
     assert_eq!(
         origin.request_count(),
         6,
-        "explicit reopen создаёт ровно один новый open cohort"
+        "explicit reopen It creates exactly one new one open cohort"
     );
     endpoint_recovery.observe_endpoint_expiry(direct_expiry_signal());
     assert!(
         endpoint_recovery.claim_pending_signal().is_some(),
-        "полностью открытый direct source обязан arm-ить stable-resource recovery"
+        "Fully open direct source must arm stable-resource recovery"
     );
 }
 
@@ -216,7 +216,7 @@ fn n14a_consumer_http_ogg_reaches_pcm_clock_with_exact_accounting() {
     app_config.yt_dlp.enabled = false;
     let locator = origin.media_url();
     media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
-        .expect("HTTP Ogg classifier должен принять N14A fixture");
+        .expect("HTTP Ogg classifier to accept N14A fixture");
     assert_eq!(origin.request_count(), 0);
     assert_eq!(origin.response_body_bytes(), 0);
 
@@ -266,14 +266,14 @@ fn seek_through_port(seek_port: &dyn PreparedDemuxSeekPort, request_id: u64, pos
     let request_id = PreparedDemuxSeekRequestId::new(request_id);
     seek_port
         .enqueue_seek(request_id, DemuxSeekRequest::accurate(position))
-        .expect("seekable direct runtime принимает seek в worker");
+        .expect("Seekable Direct Runtime Accepts Seek from Worker");
     let deadline = Instant::now() + SEEK_RECEIPT_DEADLINE;
     loop {
         if let Some(receipt) = seek_port.poll_seek_receipt() {
             assert_eq!(receipt.request_id, request_id);
             assert!(
                 matches!(receipt.outcome, PreparedDemuxSeekOutcome::Succeeded(_)),
-                "seek должен завершиться успехом: {:?}",
+                "seek must end in success: {:?}",
                 receipt.outcome
             );
             return;
@@ -299,12 +299,12 @@ fn forward_only_http_ogg_reuses_initial_body_and_rejects_seek() {
     ));
     demuxer
         .seek(Duration::from_millis(100))
-        .expect_err("forward-only direct source не должен обещать seek");
+        .expect_err("forward-only direct source don't promise seek");
     assert_nonzero_vorbis_pcm(&mut *demuxer);
     assert_eq!(
         origin.request_count(),
         1,
-        "classification + probe обязаны передать initial 200 body без второго GET"
+        "classification and probing must pass the initial 200 response body without a second GET"
     );
 }
 
@@ -316,11 +316,11 @@ fn n14b_lifecycle_ftp_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extra
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
-        .expect("FTP Ogg classifier должен принять fixture");
+        .expect("FTP Ogg Classifier to Accept Fixture");
     assert_eq!(
         origin.retrieval_count(),
         0,
-        "direct FTP classifier не должен выполнять RETR до open"
+        "direct FTP classifier don't RETR before open"
     );
 
     let first_open = open_direct(&locator, &app_config);
@@ -328,7 +328,7 @@ fn n14b_lifecycle_ftp_ogg_seek_forward_back_and_reopen_reaches_pcm_without_extra
     let mut first_demuxer = first_parts.demuxer;
     let first_seek_port = first_parts
         .demux_seek_port
-        .expect("REST-backed FTP Ogg отдаёт seek port");
+        .expect("REST-backed FTP Ogg gives you a search port");
     assert_eq!(first_demuxer.seekability(), DemuxSeekability::Seekable);
     assert_nonzero_vorbis_pcm(&mut *first_demuxer);
     let retrievals_after_open = origin.retrieval_count();
@@ -359,7 +359,7 @@ fn n14a_consumer_ftp_ogg_reaches_pcm_clock_with_exact_accounting() {
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
-        .expect("FTP Ogg classifier должен принять N14A fixture");
+        .expect("FTP Ogg classifier to accept N14A fixture");
     assert_eq!(origin.retrieval_count(), 0);
     assert_eq!(origin.transferred_body_bytes(), 0);
 

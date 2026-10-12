@@ -79,7 +79,7 @@ fn volume_change_is_written_after_quiet_period_and_restored_after_restart() {
             .expect("early flush stays pending"),
         super::super::UserAudioLevelFlushOutcome::NoPending
     );
-    assert!(!path.exists(), "до конца паузы config не пишется");
+    assert!(!path.exists(), "pause config spellless");
 
     assert_eq!(
         runtime
@@ -148,7 +148,7 @@ fn hundred_slider_moves_produce_single_config_write() {
     }
     assert!(
         !path.exists(),
-        "пока слайдер двигается, запись не происходит"
+        "While the slider is moving, the recording does not occur."
     );
 
     let quiet_until = frame_at + PERSIST_DEBOUNCE;
@@ -159,7 +159,7 @@ fn hundred_slider_moves_produce_single_config_write() {
         .flush_due_user_audio_level(quiet_until + PERSIST_DEBOUNCE, &mut adapter)
         .expect("second quiet flush is no-op");
 
-    assert_eq!(adapter.committed_snapshots.len(), 1, "ровно одна запись");
+    assert_eq!(adapter.committed_snapshots.len(), 1, "exactly");
     let persisted = load_from_path(&path).expect("config reloads");
     assert_eq!(persisted.config.audio.volume, 0.5);
     remove_file_if_exists(&path);

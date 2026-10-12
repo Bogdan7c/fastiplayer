@@ -47,7 +47,7 @@ impl PlaylistRuntime {
             Ok(true) => PlaylistPathImportStart::Started,
             Ok(false) => PlaylistPathImportStart::ImportAlreadyRunning,
             Err(error) => {
-                tracing::warn!(%error, "Не удалось запустить импорт плейлиста по пути");
+                tracing::warn!(%error, "Could not start Playlist import by path");
                 PlaylistPathImportStart::SpawnFailed
             }
         }

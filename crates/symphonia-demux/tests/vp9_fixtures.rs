@@ -93,7 +93,7 @@ fn collect_verified_anchor_packet(
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::TemporarilyUnavailable(hint) => {
-                anyhow::bail!("finite VP9 fixture неожиданно вернула temporary readiness: {hint:?}")
+                anyhow::bail!("finite VP9 fixture unexpectedly temporary readiness: {hint:?}")
             }
             DemuxReadEvent::EndOfStream => break,
         }

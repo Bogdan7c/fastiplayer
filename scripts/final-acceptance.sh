@@ -19,8 +19,8 @@ Usage: scripts/final-acceptance.sh
 Runs:
   scripts/ci-checks.sh all
 
-Manual opt-in acceptance намеренно не запускается без явно переданных
-пользователем URL/fixtures и после automated gate остаётся NOT RUN.
+Manual opt-in acceptance requires explicitly supplied
+URLs/fixtures and remains NOT RUN after the automated gate.
 EOF
 }
 
@@ -36,7 +36,7 @@ main() {
     # Любой аргумент мог бы ошибочно выглядеть как разрешение на manual URL run.
     if (($# != 0)); then
         # Диагностика объясняет, почему launcher не принимает URL/fixtures.
-        printf 'Ошибка: S42 automated launcher не принимает аргументы.\n' >&2
+        printf 'Mistake: S42 automated launcher non-argument.\n' >&2
         # Справка показывает отдельный manual opt-in контракт.
         print_help >&2
         # Код 2 отличает CLI misuse от failed acceptance check.

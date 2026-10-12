@@ -41,7 +41,7 @@ fn master_hls_returns_adaptive_reference_and_never_segment_rows() {
                 Some("https://example.invalid/live/master.m3u8?token=secret")
             );
         }
-        other => panic!("master HLS не должен стать rows: {other:?}"),
+        other => panic!("Master HLS should not become rows: {other:?}"),
     }
 }
 
@@ -62,7 +62,7 @@ fn media_hls_returns_adaptive_reference_and_never_segment_rows() {
         M3uDocument::AdaptiveManifestReference(reference) => {
             assert_eq!(reference.topology(), HlsManifestTopology::Media);
         }
-        other => panic!("media HLS segment URI не должен стать rows: {other:?}"),
+        other => panic!("Media HLS segment URI should not become rows: {other:?}"),
     }
 }
 
@@ -87,7 +87,7 @@ fn valid_local_hls_returns_typed_unsupported_outcome() {
                 &std::path::PathBuf::from("/media/local.m3u8")
             );
         }
-        other => panic!("ожидался typed local-HLS outcome: {other:?}"),
+        other => panic!("Typed local-HLS outcome expected: {other:?}"),
     }
 }
 
@@ -95,7 +95,7 @@ fn valid_local_hls_returns_typed_unsupported_outcome() {
 fn bom_is_rejected_for_hls_even_though_generic_dialect_warns() {
     let error =
         parse_network_hls("\u{feff}#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5,\nsegment.ts\n")
-            .expect_err("HLS BOM запрещён");
+            .expect_err("HLS BOM banned");
 
     assert_eq!(error.kind(), M3uParseErrorKind::HlsBomNotAllowed);
 }
@@ -229,7 +229,7 @@ fn empty_media_playlist_with_required_target_duration_is_classified() {
         M3uDocument::AdaptiveManifestReference(reference) => {
             assert_eq!(reference.topology(), HlsManifestTopology::Media);
         }
-        other => panic!("empty media HLS не должен стать generic rows: {other:?}"),
+        other => panic!("Empty media HLS should not become generic rows: {other:?}"),
     }
 }
 

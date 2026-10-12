@@ -366,7 +366,7 @@ impl AppState {
         if let Err(error) = player_worker.try_send_command(PlayerCommand::SetVolume(
             committed_config_snapshot.remembered_audible_volume(),
         )) {
-            warn!(error = %error, "Не удалось применить начальную громкость из config");
+            warn!(error = %error, "Failed to apply the initial volume from config");
         }
         let sidebar_host_state =
             SidebarHostState::from_committed(committed_config_snapshot.sidebar_width_points());
@@ -436,7 +436,7 @@ impl AppState {
                 .audio_decode_capability_snapshot()
                 .available_families()
                 .count(),
-            "Composition сохранила immutable audio decode capability snapshot"
+            "Composition retains immutable audio decode capability snapshot"
         );
 
         Ok(app_state)

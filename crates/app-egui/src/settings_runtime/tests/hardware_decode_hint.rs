@@ -76,12 +76,12 @@ fn open_runtime(preference: VideoBackendPreference) -> SettingsRuntime {
     let mut config = custom_config_for_test();
     config.video.preferred_backend = preference;
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
     runtime
         .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
-        .expect("окно настроек должно открыться");
+        .expect("The settings window should open.");
     runtime.wait_for_options_refresh_for_test();
     runtime
 }
@@ -93,7 +93,7 @@ fn backend_field(runtime: &mut SettingsRuntime) -> crate::settings_ui::SettingsU
         .iter()
         .find(|field| field.descriptor.id == SettingId::from(BACKEND_FIELD_ID))
         .cloned()
-        .expect("video.preferred_backend должен быть в visual model")
+        .expect("video.preferred_backend should be in the visual model.")
 }
 
 /// Тексты, которые окно настроек реально нарисует для поля.
@@ -155,7 +155,7 @@ fn hardware_selected_and_vaapi_unavailable_shows_warning_in_window() {
         painted_texts_of(&field)
             .iter()
             .any(|text| text == HARDWARE_UNAVAILABLE_WARNING),
-        "строка предупреждения должна быть нарисована в окне"
+        "The warning line should be drawn in the window."
     );
 }
 
@@ -196,11 +196,11 @@ fn probe_not_ready_yet_has_no_warning() {
 fn warning_follows_the_draft_choice_and_late_probe_result() {
     let mut runtime = open_runtime(VideoBackendPreference::Auto);
     let mut render_adapter = RecordingRenderAdapter::from_config(&custom_config_for_test())
-        .expect("adapter должен стартовать");
+        .expect("The adapter should start.");
     // Результат probe пришёл уже при открытом окне: модель обязана пересобраться.
     assert_eq!(backend_field(&mut runtime).status, None);
     runtime.set_hardware_decode_availability(HardwareDecodeAvailability::Unavailable);
-    assert_eq!(backend_field(&mut runtime).status, None, "Auto: нет строки");
+    assert_eq!(backend_field(&mut runtime).status, None, "Auto: no line");
 
     runtime
         .handle_ui_actions(
@@ -210,11 +210,11 @@ fn warning_follows_the_draft_choice_and_late_probe_result() {
             }],
             &mut render_adapter,
         )
-        .expect("смена режима в черновике должна пройти");
+        .expect("regime change in the draft must pass");
     assert_eq!(
         backend_field(&mut runtime).status.as_deref(),
         Some(HARDWARE_UNAVAILABLE_WARNING),
-        "выбрали Hardware в черновике: строка появилась без Apply"
+        "Selected Hardware in the draft: the line appeared without Apply"
     );
 
     runtime
@@ -225,6 +225,6 @@ fn warning_follows_the_draft_choice_and_late_probe_result() {
             }],
             &mut render_adapter,
         )
-        .expect("возврат на Авто должен пройти");
+        .expect("The return of the car must pass.");
     assert_eq!(backend_field(&mut runtime).status, None);
 }

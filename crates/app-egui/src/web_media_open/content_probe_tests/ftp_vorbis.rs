@@ -141,7 +141,7 @@ fn ftp_ogg_with_ambient_http_headers_reaches_production_pcm() {
     assert_child_succeeded("FTP Ogg/Vorbis playback", &child_output);
     assert!(
         origin.retrieval_count() > 0,
-        "production FTP provider обязан выполнить хотя бы один RETR"
+        "production FTP provider It is necessary to perform at least one RETR"
     );
 }
 

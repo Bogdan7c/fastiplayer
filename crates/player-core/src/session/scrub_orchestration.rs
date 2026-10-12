@@ -338,7 +338,7 @@ impl PlayerSession {
                 debug!(
                     kind = "seek",
                     target_ms = latest_target.as_duration().as_millis(),
-                    "EndScrub: exact latest-target commit запущен"
+                    "EndScrub: exact latest-target commit launched"
                 );
                 Ok(ScrubCommitOutcome::LatestTarget {
                     target: latest_target,
@@ -362,7 +362,7 @@ impl PlayerSession {
                             visible_pts = ?visible_preview.timing.pts,
                             latest_target_ms = latest_target.as_duration().as_millis(),
                             frame_identity = ?visible_preview.frame_identity,
-                            "EndScrub: exact visible-preview commit запущен"
+                            "EndScrub: exact visible-preview commit launched"
                         );
                         Ok(ScrubCommitOutcome::VisiblePreview {
                             timing: visible_preview.timing,
@@ -380,7 +380,7 @@ impl PlayerSession {
                             kind = "seek",
                             target_ms = latest_target.as_duration().as_millis(),
                             reason = ?reason,
-                            "EndScrub: visible preview недоступен, запущен exact latest-target fallback"
+                            "EndScrub: visible preview unavailable, launched exact latest-target fallback"
                         );
                         Ok(
                             ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget {
@@ -535,7 +535,7 @@ impl PlayerSession {
 
         self.fail_pending_seek_receipts(PlayerError::new(
             PlayerErrorKind::SeekUnavailable,
-            format!("SeekLanding отменён внешней командой: {reason:?}"),
+            format!("SeekLanding cancelled by external command: {reason:?}"),
         ));
         self.invalidate_in_flight_scrub_outputs_after_exit("seek landing external command cancel");
         self.seek_runtime.clear_active_commit();
@@ -591,7 +591,7 @@ impl PlayerSession {
     fn resume_audio_and_clock_after_simple_scrub(&mut self) {
         if let Some(play_result) = self.play_audio_output_with_resume_event() {
             if let Err(error) = play_result {
-                warn!(error = %error, "Не удалось запустить audio после scrub");
+                warn!(error = %error, "Unable to start audio after scrub");
                 self.set_runtime_error(format!("Audio play after scrub error: {error}"));
             }
             let observed_at = Instant::now();

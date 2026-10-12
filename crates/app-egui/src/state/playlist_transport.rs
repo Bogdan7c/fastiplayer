@@ -147,7 +147,7 @@ impl AppState {
                 active_request_id,
                 MediaInstallCancellationCause::Superseded,
             ) {
-                warn!(error = %error, "Не удалось supersede playlist preparation");
+                warn!(error = %error, "Could not supersede playlist preparation");
             }
             self.mark_pending_worker_redraw();
             return;
@@ -179,7 +179,7 @@ impl AppState {
                     Err(unstaged) => {
                         warn!(
                             error = %unstaged.error,
-                            "Prepared next-item ingress отклонён; используется обычный cold-open"
+                            "Prepared next-item ingress rejected; normal cold-open used"
                         );
                         next_install = *unstaged.install;
                         next_supersedes = None;
@@ -201,7 +201,7 @@ impl AppState {
                             None => playlist_runtime
                                 .report_unstaged_planned_playlist_navigation_failure(next_install),
                         };
-                    warn!(error = %error, "Playlist transport target не прошёл source boundary");
+                    warn!(error = %error, "Playlist transport target does not pass source boundary");
                     let UnstagedPlannedTargetFailureOutcome::OpenItem { install } = failure_outcome
                     else {
                         return;
@@ -228,7 +228,7 @@ impl AppState {
                 Err(unstaged) => {
                     let failure_outcome = playlist_runtime
                         .report_unstaged_planned_playlist_navigation_failure(*unstaged.install);
-                    warn!(error = %unstaged.error, "Не удалось начать playlist navigation install");
+                    warn!(error = %unstaged.error, "I didn’t get to playlist navigation install.");
                     let UnstagedPlannedTargetFailureOutcome::OpenItem { install } = failure_outcome
                     else {
                         return;
@@ -256,7 +256,7 @@ impl AppState {
             && let Err(error) =
                 playlist_runtime.cancel_media_open_lossless(expected_request_id, cause)
         {
-            warn!(error = %error, "Не удалось отменить superseded playlist request");
+            warn!(error = %error, "Cancellation of superseded playlist request");
         }
         self.mark_pending_worker_redraw();
     }
@@ -274,7 +274,7 @@ impl AppState {
             supersedes: None,
         });
         if let Err(error) = playlist_runtime.cancel_media_open_lossless(request_id, cause) {
-            warn!(error = %error, "Не удалось завершить aborted playlist request");
+            warn!(error = %error, "Unable to complete aborted playlist request");
         }
         self.mark_pending_worker_redraw();
     }
@@ -300,7 +300,7 @@ impl AppState {
                 self.mark_pending_worker_redraw();
             }
             Err(error) => {
-                warn!(error = %error, "Exact playlist transport не принят player worker-ом")
+                warn!(error = %error, "Exact playlist transport not accepted by player worker")
             }
         }
     }
@@ -312,7 +312,9 @@ impl AppState {
                 self.playlist_transport.timeline_seek_receipts.push(receipt);
                 self.mark_pending_worker_redraw();
             }
-            Err(error) => warn!(error = %error, "Exact timeline seek не принят player worker-ом"),
+            Err(error) => {
+                warn!(error = %error, "Exact timeline seek not accepted by player worker")
+            }
         }
     }
 
@@ -333,7 +335,7 @@ impl AppState {
                     self.playlist_transport.intent_receipts.push(receipt);
                 }
                 Ok(None) => {}
-                Err(error) => warn!(error = %error, "D52 playlist intent update отклонён"),
+                Err(error) => warn!(error = %error, "D52 playlist intent update rejected"),
             }
         }
         if let Some(request) = dispatch.exact_current {
@@ -359,14 +361,14 @@ impl AppState {
                     debug!(
                         request_id = navigation.request_id.get(),
                         media_instance_id = ?navigation.media_instance_id,
-                        "Повторный matching BeyondEnd coalesced в один Next за poll"
+                        "Repeated matching BeyondEnd coalesced single-handedly Next behind poll"
                     );
                 } else {
                     debug!(
                         request_id = navigation.request_id.get(),
                         outcome_media_instance_id = ?navigation.media_instance_id,
                         routed_media_instance_id = ?routed_media_instance_id,
-                        "Stale BeyondEnd после matching outcome не двигает очередь повторно"
+                        "Stale BeyondEnd after matching outcome does not move the queue again"
                     );
                 }
                 continue;
@@ -392,14 +394,14 @@ impl AppState {
                         request_id = navigation.request_id.get(),
                         outcome_media_instance_id = ?outcome_media_instance_id,
                         current_media_instance_id = ?current_media_instance_id,
-                        "Stale relative BeyondEnd не двигает очередь текущего media"
+                        "Stale relative BeyondEnd does not move the queue of the current media"
                     );
                 }
                 RelativeBeyondEndNavigationOutcome::Unavailable => {
                     debug!(
                         request_id = navigation.request_id.get(),
                         media_instance_id = ?navigation.media_instance_id,
-                        "Matching relative BeyondEnd не породил queue action"
+                        "Matching relative BeyondEnd didn't spawn queue action"
                     );
                 }
             }
@@ -461,7 +463,7 @@ impl AppState {
                     );
                 } else if self.take_guard_released_terminal(failed_request_id) {
                     // Пользователь сам заменил/остановил этот install — D55/skip не нужен.
-                    debug!(error = %error, "Playlist request завершён отменой по transport guard");
+                    debug!(error = %error, "Playlist request terminated by transport guard");
                 } else {
                     let automatic_continuation = error
                         .allows_navigation_failure_recovery()
@@ -473,7 +475,7 @@ impl AppState {
                             )
                         })
                         .flatten();
-                    warn!(error = %error, "Playlist navigation install завершился ошибкой");
+                    warn!(error = %error, "Playlist navigation install ended with an error");
                     // B9: ручной отказ виден и в центре (с «Повторить», если повтор осмыслен).
                     self.show_manual_open_failure(playlist_runtime, &error);
                     if let Some(install) = automatic_continuation {
@@ -603,13 +605,13 @@ impl AppState {
             Ok(source_request) => source_request,
             Err(error) => {
                 playlist_runtime.mark_next_item_preload_failed(target);
-                debug!(error, "Next-item preload пропущен на source boundary");
+                debug!(error, "Next-item preload is skipped to source boundary");
                 return;
             }
         };
         if let Err(error) = playlist_runtime.start_next_item_preload(target, source_request) {
             playlist_runtime.mark_next_item_preload_failed(target);
-            debug!(error = %error, "Next-item preload executor отклонил request");
+            debug!(error = %error, "Next-item preload executor rejects request");
             return;
         }
         self.mark_pending_worker_redraw();
@@ -633,10 +635,10 @@ impl AppState {
                     Ok(ExactMediaTransportOutcome::Applied { .. }) => {}
                     Ok(outcome) => warn!(
                         ?outcome,
-                        "Exact playlist transport завершился typed failure/stale outcome"
+                        "Exact playlist transport completed typed failure/stale outcome"
                     ),
                     Err(error) => {
-                        warn!(error = %error, "Exact playlist transport потерял owner outcome");
+                        warn!(error = %error, "Exact playlist transport lost owner outcome");
                     }
                 },
                 ExactTransportReceiptPurpose::NeutralStop => match terminal {
@@ -645,10 +647,10 @@ impl AppState {
                     }
                     Ok(outcome) => warn!(
                         ?outcome,
-                        "Exact playlist Stop завершился typed failure/stale outcome"
+                        "Exact playlist Stop finished typed failure/stale outcome"
                     ),
                     Err(error) => {
-                        warn!(error = %error, "Exact playlist Stop потерял owner outcome");
+                        warn!(error = %error, "Exact playlist Stop lost owner outcome");
                     }
                 },
                 ExactTransportReceiptPurpose::ClearMediaReset {
@@ -667,7 +669,7 @@ impl AppState {
                         == Some(super::media_jobs::ExactMediaResetCleanup::SupersededByNewSnapshot)
                     {
                         debug!(
-                            "App media reset cleanup пропущен: новый player snapshot уже победил"
+                            "App media reset cleanup skipped: new player snapshot has already won"
                         );
                     }
                 }
@@ -691,7 +693,7 @@ impl AppState {
                 Some(outcome) => {
                     warn!(
                         ?outcome,
-                        "D52 playlist intent получил stale/rejected outcome"
+                        "D52 playlist intent received stale/rejected outcome"
                     );
                     false
                 }
@@ -716,7 +718,7 @@ impl AppState {
                     }
                 }
                 Err(error) => {
-                    warn!(error = %error, "Exact timeline seek потерял owner outcome");
+                    warn!(error = %error, "Exact timeline seek lost owner outcome");
                 }
             }
         }

@@ -714,7 +714,7 @@ impl StartupReadinessTracker {
         let completed_attempt = self
             .active_attempt
             .take()
-            .expect("готовность проверена для существующего startup attempt-а");
+            .expect("Readiness tested for existing startup attempt");
         if completed_attempt.expectation.audio == StartupAudioExpectation::NotPresent {
             tracing::info!(
                 startup_attempt_id = completed_attempt.attempt_id,

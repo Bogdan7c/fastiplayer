@@ -126,7 +126,7 @@ where
                 kind = "native_hls_fallback",
                 ?trigger,
                 ?reason,
-                "Native HLS admission передаёт source единственному extractor fallback"
+                "Native HLS admission transmitter source singular extractor fallback"
             );
             fallback(reason)
                 .map(NativeHlsResolution::YtDlpFallback)
@@ -143,7 +143,7 @@ pub(crate) enum NativeHlsResolutionError<NativeError, FallbackError> {
     Native(NativeError),
     #[error("native HLS extractor fallback failed: {0}")]
     Fallback(FallbackError),
-    #[error("native HLS extractor fallback отклонён общим policy gate-ом")]
+    #[error("native HLS extractor fallback rejected by general policy gate")]
     PolicyRejected,
 }
 
@@ -415,7 +415,7 @@ mod tests {
                     web_media_transport_api::SecretRequestPurpose::Manifest,
                 )
                 .is_some(),
-            "public context должен дать adaptive HTTP scope proof для exact top manifest",
+            "The public context must provide an adaptive HTTP scope of proof for the exact top manifest",
         );
     }
 

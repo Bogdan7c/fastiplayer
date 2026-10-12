@@ -27,10 +27,10 @@ impl NavigationControlAvailability {
 
     pub(crate) const fn explanation(self) -> &'static str {
         match self {
-            Self::Ready => "Переход готов",
-            Self::PotentialWait => "Можно дождаться подходящего файла из текущего поиска",
-            Self::Pending => "Повтор изменит только последний ожидающий переход",
-            Self::Disabled => "Подходящего элемента нет",
+            Self::Ready => "Transition ready",
+            Self::PotentialWait => "You can wait for a suitable file from the current search",
+            Self::Pending => "Retry changes only the latest pending transition",
+            Self::Disabled => "No suitable item",
         }
     }
 }
@@ -49,7 +49,7 @@ impl From<ControllerManualNavigationAvailability> for NavigationControlAvailabil
 /// Read-only представление одного authoritative Undo без controller snapshot-а в UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RemovalUndoUiModel {
-    /// Грамматически готовое название отменяемой операции для русской подписи.
+    /// Грамматически готовое название отменяемой операции для английской подписи.
     pub(crate) kind_label: &'static str,
     /// Целое число секунд, округлённое вверх runtime owner-ом.
     pub(crate) seconds_remaining: u64,
@@ -58,10 +58,7 @@ pub(crate) struct RemovalUndoUiModel {
 impl RemovalUndoUiModel {
     /// Формирует единое имя для tooltip и AccessKit без расхождения строк.
     pub(crate) fn action_label(self) -> String {
-        format!(
-            "Отменить {} ({} с)",
-            self.kind_label, self.seconds_remaining
-        )
+        format!("Undo {} ({} s)", self.kind_label, self.seconds_remaining)
     }
 }
 
@@ -92,15 +89,15 @@ impl PlaylistGlobalTransportStatus {
         match self {
             Self::WaitingManual {
                 direction: ManualNavigationDirection::Previous,
-            } => "Ожидание предыдущего элемента…",
+            } => "Waiting for the previous item…",
             Self::WaitingManual {
                 direction: ManualNavigationDirection::Next,
-            } => "Ожидание следующего элемента…",
-            Self::WaitingAutomatic => "Ожидание следующего элемента для автоперехода…",
-            Self::TargetReady => "Следующий элемент готовится…",
-            Self::Exhausted => "Подходящих элементов больше нет",
-            Self::Cancelled => "Ожидание перехода отменено",
-            Self::Fatal => "Поиск следующего элемента завершился ошибкой",
+            } => "Waiting for the next item…",
+            Self::WaitingAutomatic => "Waiting for the next item to advance automatically…",
+            Self::TargetReady => "Preparing the next item…",
+            Self::Exhausted => "No more suitable items",
+            Self::Cancelled => "Transition wait canceled",
+            Self::Fatal => "Search for the next item failed",
         }
     }
 
@@ -213,11 +210,11 @@ impl PlaylistRuntime {
         // UI получает только грамматическую подпись и countdown, а не snapshot очереди.
         let undo = undo_status.map(|status| RemovalUndoUiModel {
             kind_label: match status.kind {
-                ControllerRemovalKind::Remove => "удаление элемента",
-                ControllerRemovalKind::Clear => "очистку плейлиста",
-                ControllerRemovalKind::RemoveOthers => "удаление остальных элементов",
-                ControllerRemovalKind::RemoveSelected => "удаление выбранных элементов",
-                ControllerRemovalKind::RemoveUnselected => "удаление невыбранных элементов",
+                ControllerRemovalKind::Remove => "removing item",
+                ControllerRemovalKind::Clear => "clearing Playlist",
+                ControllerRemovalKind::RemoveOthers => "removing other items",
+                ControllerRemovalKind::RemoveSelected => "removing selected items",
+                ControllerRemovalKind::RemoveUnselected => "removing unselected items",
             },
             seconds_remaining: status.seconds_remaining,
         });

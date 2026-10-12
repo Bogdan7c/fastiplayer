@@ -41,10 +41,10 @@ pub fn has_supported_local_media_extension(path: &Path) -> bool {
 #[derive(Debug, thiserror::Error)]
 pub enum LocalDemuxOpenError {
     /// Ошибка static registry/factory composition, не зависящая от media bytes.
-    #[error("не удалось собрать local demux registry")]
+    #[error("The local demux registry was not available.")]
     RegistrySetup(#[source] anyhow::Error),
     /// Typed probe/open outcome конкретного уже открытого source-а.
-    #[error("local demux registry не открыл media source")]
+    #[error("local demux registry failed media source")]
     Open(#[source] DemuxOpenError),
 }
 
@@ -202,7 +202,7 @@ mod tests {
 
         assert!(
             !SUPPORTED_LOCAL_MEDIA_EXTENSIONS.contains(&"*"),
-            "wildcard должен оставаться только в UI filter, а не в списке supported hints"
+            "wildcard must remain only in UI filter, Not on the list supported hints"
         );
     }
 

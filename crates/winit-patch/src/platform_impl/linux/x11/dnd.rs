@@ -217,7 +217,7 @@ impl Dnd {
                 f64::from(root_y - i32::from(origin.dst_y)),
             )),
             Err(error) => {
-                warn!("drag & drop: не удалось перевести координаты в окно: {error}");
+                warn!("drag & drop: failed to translate coordinates into window: {error}");
                 None
             },
         }
@@ -234,7 +234,7 @@ impl Dnd {
         };
         if bytes.len() > MAX_DROP_PAYLOAD_BYTES {
             warn!(
-                "drag & drop: данные ({} байт) превысили лимит {MAX_DROP_PAYLOAD_BYTES} байт, отброшены",
+                "drag & drop: data ({} bytes) exceeded the limit of {MAX_DROP_PAYLOAD_BYTES} bytes, discarded",
                 bytes.len()
             );
             self.gesture.mark_payload_unavailable();
@@ -444,9 +444,9 @@ mod tests {
                 assert_eq!(position, PhysicalPosition::new(30.0, 40.0));
                 assert_eq!(payload.uris(), ["file:///a"]);
             },
-            other => panic!("ожидался Dropped, получено {other:?}"),
+            other => panic!("expected Dropped, got {other:?}"),
         }
-        assert!(!gesture.has_payload(), "содержимое отдаётся один раз");
+        assert!(!gesture.has_payload(), "contents are given once");
     }
 
     #[test]

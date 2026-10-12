@@ -181,7 +181,7 @@ impl fmt::Display for InstalledMediaStateRestoreReceiptError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingOwnerOutcome => {
-                formatter.write_str("player owner завершился без installed media restore outcome")
+                formatter.write_str("player owner ended without an installed media restore outcome")
             }
         }
     }

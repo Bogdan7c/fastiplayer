@@ -52,13 +52,13 @@ pub enum VideoHeightError {
 impl fmt::Display for VideoHeightError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Zero => formatter.write_str("высота видео должна быть больше нуля"),
+            Self::Zero => formatter.write_str("Video height should be above zero"),
             Self::TooLarge {
                 provided_pixels,
                 maximum_pixels,
             } => write!(
                 formatter,
-                "высота {provided_pixels}px превышает лимит {maximum_pixels}px"
+                "{provided_pixels}px exceeds the limit of {maximum_pixels}px"
             ),
         }
     }
@@ -184,7 +184,7 @@ pub enum ExactSelectionIdentityError {
 
 impl fmt::Display for ExactSelectionIdentityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("exact и semantic identities принадлежат разным sources")
+        formatter.write_str("exact and semantic identities belong to different sources")
     }
 }
 
@@ -208,8 +208,8 @@ mod tests {
     #[test]
     fn preferred_height_order_is_deterministic() {
         let policy =
-            PreferredHeightPolicy::Prefer(PreferredVideoHeight::new(2160).expect("2160 валидно"));
-        let height = |pixels| Some(VideoHeight::new(pixels).expect("test height валидна"));
+            PreferredHeightPolicy::Prefer(PreferredVideoHeight::new(2160).expect("2160 valid."));
+        let height = |pixels| Some(VideoHeight::new(pixels).expect("test height valid"));
         let mut candidates = [
             height(4320),
             None,
@@ -242,10 +242,10 @@ mod tests {
         let exact = CandidateIdentity::new(
             SourceIdentity::new(1),
             ExtractionGeneration::new(1),
-            CandidateFormatIdentity::new("format-1").expect("format identity валидна"),
+            CandidateFormatIdentity::new("format-1").expect("format identity valid"),
         );
         let semantic =
-            SemanticIdentity::new(SourceIdentity::new(2), "semantic-1").expect("semantic валидна");
+            SemanticIdentity::new(SourceIdentity::new(2), "semantic-1").expect("semantic valid");
 
         assert_eq!(
             ExactSelectionIdentity::new(exact, semantic),
@@ -257,8 +257,8 @@ mod tests {
     #[test]
     fn no_preference_leaves_all_heights_unranked() {
         let policy = PreferredHeightPolicy::NoPreference;
-        let low = Some(VideoHeight::new(360).expect("height валидна"));
-        let high = Some(VideoHeight::new(4320).expect("height валидна"));
+        let low = Some(VideoHeight::new(360).expect("height valid"));
+        let high = Some(VideoHeight::new(4320).expect("height valid"));
 
         assert_eq!(policy.compare(low, high), Ordering::Equal);
         assert_eq!(policy.rank(None), PreferredHeightRank::Unranked);

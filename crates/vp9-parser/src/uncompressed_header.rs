@@ -329,26 +329,26 @@ mod tests {
         let keyframe_data = build_vp9_keyframe(0, 8, 64, 64);
 
         let result =
-            parse_uncompressed_header(&keyframe_data).expect("парсинг keyframe должен succeed");
+            parse_uncompressed_header(&keyframe_data).expect("parsing keyframe must succeed");
 
-        assert!(result.keyframe, "должен быть keyframe");
+        assert!(result.keyframe, "should be the keyframe");
         assert_eq!(
             result.refresh_frame_flags, 0xFF,
-            "refresh_frame_flags должен быть 0xFF"
+            "refresh_frame_flags should be 0xFF"
         );
         assert_eq!(
             result.ref_frame_idx, [0; 3],
-            "ref_frame_idx для keyframe должен быть [0;3]"
+            "ref_frame_idx for the keyframe should be [0;3]"
         );
         assert_eq!(
             result.ref_frame_sign_bias, [0; 4],
-            "ref_frame_sign_bias для keyframe должен быть [0;4]"
+            "ref_frame_sign_bias for the keyframe should be [0;4]"
         );
-        assert_eq!(result.width, 64, "width должен быть 64");
-        assert_eq!(result.height, 64, "height должен быть 64");
-        assert_eq!(result.render_width, 64, "render_width должен быть 64");
-        assert_eq!(result.render_height, 64, "render_height должен быть 64");
-        assert_eq!(result.bit_depth, Some(8), "bit depth должен быть 8");
+        assert_eq!(result.width, 64, "width should be 64.");
+        assert_eq!(result.height, 64, "It should be 64 heights.");
+        assert_eq!(result.render_width, 64, "render_width must be 64");
+        assert_eq!(result.render_height, 64, "render_height must be 64");
+        assert_eq!(result.bit_depth, Some(8), "bit depth must be 8");
         assert_eq!(result.subsampling_x, Some(true));
         assert_eq!(result.subsampling_y, Some(true));
         assert_eq!(result.color_space, Some(1));
@@ -363,22 +363,22 @@ mod tests {
         let inter_data = build_inter_frame_without_refs();
 
         let result =
-            parse_uncompressed_header(&inter_data).expect("парсинг inter-frame должен succeed");
+            parse_uncompressed_header(&inter_data).expect("parsing inter-frame must succeed");
 
-        assert!(!result.keyframe, "должен быть inter-frame");
+        assert!(!result.keyframe, "must be inter-frame");
         assert_eq!(
             result.refresh_frame_flags, 0x01,
-            "refresh_frame_flags должен быть 0x01"
+            "refresh_frame_flags should be 0x01"
         );
         assert_eq!(
             result.ref_frame_sign_bias,
             [0, 1, 0, 1],
-            "ref_frame_sign_bias должен быть [0,1,0,1]"
+            "ref_frame_sign_bias should be [0.1.0.1]"
         );
         assert_eq!(
             result.ref_frame_idx,
             [1, 2, 3],
-            "ref_frame_idx должен быть [1,2,3]"
+            "ref_frame_idx should be [1,2,3]"
         );
     }
 
@@ -386,8 +386,8 @@ mod tests {
     fn test_profile2_keyframe_parse() {
         let keyframe_data = build_vp9_keyframe(2, 10, 128, 72);
 
-        let result =
-            parse_uncompressed_header(&keyframe_data).expect("profile2 keyframe должен парситься");
+        let result = parse_uncompressed_header(&keyframe_data)
+            .expect("profile2 keyframe must parse successfully");
 
         assert_eq!(result.profile, 2);
         assert_eq!(result.bit_depth, Some(10));

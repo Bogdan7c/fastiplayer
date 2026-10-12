@@ -54,7 +54,7 @@ impl DvrWindow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum DvrWindowError {
     /// Window обязан иметь положительную ширину.
-    #[error("DVR window пуст или имеет обратный порядок")]
+    #[error("DVR window is empty or in reverse order")]
     EmptyOrReversed,
 }
 

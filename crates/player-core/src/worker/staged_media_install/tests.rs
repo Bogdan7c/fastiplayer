@@ -132,7 +132,7 @@ fn wait_until<T>(mut poll: impl FnMut() -> Option<T>) -> T {
         }
         assert!(
             Instant::now() < deadline,
-            "player worker не опубликовал staged install outcome до deadline"
+            "player worker published staged install outcome before deadline"
         );
         std::thread::yield_now();
     }
@@ -147,8 +147,8 @@ fn intent_revision(raw: u64) -> PlaybackIntentRevision {
 
 #[test]
 fn public_worker_api_separates_enqueue_ready_authorization_and_installed() {
-    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
-        .expect("player worker должен запуститься");
+    let mut worker =
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("Player worker should start up");
     let request_id = MediaInstallRequestId::from_non_zero(
         NonZeroU64::new(700).expect("test request id is non-zero"),
     );
@@ -162,16 +162,16 @@ fn public_worker_api_separates_enqueue_ready_authorization_and_installed() {
             PlaybackIntentRevision::INITIAL,
             MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
-        .expect("staged command должна войти в пустую worker queue");
+        .expect("Staged command should be included in the empty worker queue.");
 
     wait_until(|| receipt.try_take_ready_to_commit());
     assert!(receipt.try_take_completion().is_none());
     let control_receipt = worker
         .authorize_install_commit(AuthorizeInstallCommit { request_id })
-        .expect("authorization должна войти в worker queue");
+        .expect("Permission must be included in the worker queue");
     let control_outcome = wait_until(|| match control_receipt.try_take_outcome() {
         Ok(outcome) => outcome,
-        Err(error) => panic!("accepted authorization потеряла owner outcome: {error}"),
+        Err(error) => panic!("accepted authorization lost owner outcome: {error}"),
     });
     assert_eq!(
         control_outcome,
@@ -186,13 +186,13 @@ fn public_worker_api_separates_enqueue_ready_authorization_and_installed() {
     ));
     worker
         .shutdown()
-        .expect("worker shutdown должен завершиться");
+        .expect("Worker shutdown must be completed");
 }
 
 #[test]
 fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_installed() {
-    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
-        .expect("player worker должен запуститься");
+    let mut worker =
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("Player worker should start up");
     let request_id = MediaInstallRequestId::from_non_zero(
         NonZeroU64::new(760).expect("test request id is non-zero"),
     );
@@ -206,7 +206,7 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             PlaybackIntentRevision::INITIAL,
             MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
-        .expect("stage command должна быть принята");
+        .expect("Stage command must be accepted.");
     wait_until(|| receipt.try_take_ready_to_commit());
 
     let precommit_restore = worker
@@ -219,32 +219,32 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::KeepStart,
         })
-        .expect("restore transport должен принять command");
+        .expect("Recovery transport must take command.");
     assert_eq!(
         precommit_restore
             .wait_for_outcome()
-            .expect("precommit restore должен получить owner outcome"),
+            .expect("precommitt restore must have the owner’s outcome"),
         InstalledMediaStateRestoreOutcome::NotInstalledYet
     );
 
     let authorization = worker
         .authorize_install_commit(AuthorizeInstallCommit { request_id })
-        .expect("authorization должна быть enqueued");
+        .expect("Authorization must be enqueued");
     assert_eq!(
         authorization
             .wait_for_outcome()
-            .expect("authorization owner outcome обязателен"),
+            .expect("Owner’s Permission Outcome is Mandatory"),
         MediaInstallControlOutcome::AuthorizationAccepted
     );
     let installed_instance = match receipt
         .wait_for_signal()
-        .expect("Installed terminal обязателен после authorization")
+        .expect("Installed terminal is required after authorization")
     {
         MediaInstallReceiptSignal::Terminal(MediaInstallCompletion::Installed {
             media_instance_id,
             ..
         }) => media_instance_id,
-        unexpected => panic!("ожидался Installed terminal, получено {unexpected:?}"),
+        unexpected => panic!("Installed terminal received {unexpected:?}"),
     };
 
     let exact_restore = worker
@@ -257,11 +257,11 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             volume: crate::InstalledVolumeRestore::Set(0.37),
             position: InstalledPositionRestore::SeekTo(Duration::from_secs(2)),
         })
-        .expect("exact restore transport должен принять command");
+        .expect("exact restore transport must take command.");
     assert_eq!(
         exact_restore
             .wait_for_outcome()
-            .expect("exact restore owner outcome обязателен"),
+            .expect("Exactly restore owner outcome is mandatory"),
         InstalledMediaStateRestoreOutcome::Applied {
             media_instance_id: installed_instance,
         }
@@ -286,11 +286,11 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             volume: crate::InstalledVolumeRestore::Set(f32::NAN),
             position: InstalledPositionRestore::KeepStart,
         })
-        .expect("volume restore transport должен принять command");
+        .expect("Volume Recovery Transportation to Take Command");
     assert!(matches!(
         failed_volume_restore
             .wait_for_outcome()
-            .expect("volume failure должен быть authoritative owner outcome"),
+            .expect("Volume failure must be an authoritative owner resulting"),
         InstalledMediaStateRestoreOutcome::Failed {
             stage: crate::InstalledMediaRestoreFailureStage::Volume,
             ..
@@ -307,11 +307,11 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::KeepStart,
         })
-        .expect("track restore transport должен принять command");
+        .expect("Track Recovery Transportation to Take Command");
     assert!(matches!(
         failed_track_restore
             .wait_for_outcome()
-            .expect("track restore failure должен быть authoritative owner outcome"),
+            .expect("track restore failure must be an authoritative owner outcome"),
         InstalledMediaStateRestoreOutcome::Failed {
             stage: crate::InstalledMediaRestoreFailureStage::VideoTrack,
             ..
@@ -323,11 +323,11 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             request_id,
             media_instance_id: placeholder_instance,
         })
-        .expect("stale exact release transport должен быть принят");
+        .expect("Stale exact release transport must be accepted");
     assert_eq!(
         stale_release
             .wait_for_outcome()
-            .expect("stale release должен получить owner outcome"),
+            .expect("The stale release must have the owner’s outcome."),
         InstalledMediaReleaseOutcome::StaleInstance
     );
 
@@ -336,11 +336,11 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             request_id,
             media_instance_id: installed_instance,
         })
-        .expect("exact release transport должен быть принят");
+        .expect("The exact release transport must be accepted.");
     assert_eq!(
         exact_release
             .wait_for_outcome()
-            .expect("exact release owner outcome обязателен"),
+            .expect("Exact release of owner outcome is mandatory"),
         InstalledMediaReleaseOutcome::Applied {
             media_instance_id: installed_instance,
         }
@@ -364,28 +364,28 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             PlaybackIntentRevision::INITIAL,
             MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
-        .expect("newer stage command должна быть принята");
+        .expect("Newer stage command must be accepted.");
     assert!(matches!(
         newer_receipt
             .wait_for_signal()
-            .expect("newer candidate должен достичь ReadyToCommit"),
+            .expect("The newer candidate must reach ReadyToCommittee."),
         MediaInstallReceiptSignal::ReadyToCommit(_)
     ));
     let newer_authorization = worker
         .authorize_install_commit(AuthorizeInstallCommit {
             request_id: newer_request_id,
         })
-        .expect("newer authorization должна быть enqueued");
+        .expect("Newer authorization must be enqueued");
     assert_eq!(
         newer_authorization
             .wait_for_outcome()
-            .expect("newer authorization owner outcome обязателен"),
+            .expect("Newer Authorization Owner Outcome Required"),
         MediaInstallControlOutcome::AuthorizationAccepted
     );
     assert!(matches!(
         newer_receipt
             .wait_for_signal()
-            .expect("newer Installed terminal обязателен"),
+            .expect("Newer Installed Terminal is a must"),
         MediaInstallReceiptSignal::Terminal(MediaInstallCompletion::Installed {
             request_id: completion_request_id,
             ..
@@ -402,23 +402,23 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::KeepStart,
         })
-        .expect("stale restore transport всё ещё может быть принят");
+        .expect("Stale restore transport can still be accepted");
     assert_eq!(
         stale_restore
             .wait_for_outcome()
-            .expect("stale restore должен получить typed owner outcome"),
+            .expect("Stale Recovery: Typed Owner Results"),
         InstalledMediaStateRestoreOutcome::StaleInstance
     );
 
     worker
         .shutdown()
-        .expect("worker shutdown должен завершиться");
+        .expect("Worker shutdown must be completed");
 }
 
 #[test]
 fn exact_restore_reports_typed_position_unavailable_for_non_seekable_source() {
-    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
-        .expect("player worker должен запуститься");
+    let mut worker =
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("Player worker should start up");
     let request_id = MediaInstallRequestId::from_non_zero(
         NonZeroU64::new(762).expect("test request id is non-zero"),
     );
@@ -430,26 +430,26 @@ fn exact_restore_reports_typed_position_unavailable_for_non_seekable_source() {
             PlaybackIntentRevision::INITIAL,
             MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
-        .expect("stage command должна быть принята");
+        .expect("Stage command must be accepted.");
     wait_until(|| receipt.try_take_ready_to_commit());
     let authorization = worker
         .authorize_install_commit(AuthorizeInstallCommit { request_id })
-        .expect("authorization должна быть принята");
+        .expect("Permission must be accepted");
     assert_eq!(
         authorization
             .wait_for_outcome()
-            .expect("authorization owner outcome обязателен"),
+            .expect("Owner’s Permission Outcome is Mandatory"),
         MediaInstallControlOutcome::AuthorizationAccepted
     );
     let installed_instance = match receipt
         .wait_for_signal()
-        .expect("Installed terminal обязателен")
+        .expect("Installed terminal is required")
     {
         MediaInstallReceiptSignal::Terminal(MediaInstallCompletion::Installed {
             media_instance_id,
             ..
         }) => media_instance_id,
-        unexpected => panic!("ожидался Installed terminal, получено {unexpected:?}"),
+        unexpected => panic!("Installed terminal received {unexpected:?}"),
     };
     let installed_snapshot = wait_until(|| {
         let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
@@ -467,10 +467,10 @@ fn exact_restore_reports_typed_position_unavailable_for_non_seekable_source() {
             volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::SeekTo(requested_position),
         })
-        .expect("restore command должна быть принята");
+        .expect("Restore command must be accepted.");
     let restore_outcome = restore
         .wait_for_outcome()
-        .expect("position unavailable outcome обязателен");
+        .expect("position unavailable outcome is mandatory");
     assert!(
         matches!(
             restore_outcome,
@@ -488,7 +488,7 @@ fn exact_restore_reports_typed_position_unavailable_for_non_seekable_source() {
             .latest_snapshot(crate::FrameCounters::default())
             .playback_state,
         PlaybackState::Paused,
-        "non-seekable outcome не может кратковременно включить Playing до post-seek intent"
+        "non-seekable outcome can't turn on for a short time Playing before post-seek intent"
     );
     worker.shutdown().expect("worker shutdown");
 }
@@ -508,12 +508,12 @@ fn intent_update_before_ready_ignores_full_ordinary_queue() {
             intent_revision(1),
             MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
-        .expect("stage command должна занять первый ordinary queue slot");
+        .expect("Stage command takes the first ordinary queue slot.");
 
     for _ in 1..COMMAND_CHANNEL_CAPACITY {
         command_tx
             .try_send(WorkerCommand::Player(PlayerCommand::Pause))
-            .expect("test должен заполнить ordinary command queue");
+            .expect("The test must be filled with ordinary command queue.");
     }
 
     let update_receipt = sender
@@ -522,7 +522,7 @@ fn intent_update_before_ready_ignores_full_ordinary_queue() {
             revision: intent_revision(2),
             intent: PlaybackIntent::StartPaused,
         })
-        .expect("D52 update не зависит от full ordinary queue");
+        .expect("D52 Update does not depend on full ordinary queue");
 
     assert_eq!(
         update_receipt.try_outcome(),
@@ -533,14 +533,14 @@ fn intent_update_before_ready_ignores_full_ordinary_queue() {
 
 #[test]
 fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
-    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
-        .expect("player worker должен запуститься");
+    let mut worker =
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("Player worker should start up");
     let old_receipt = worker
         .load_prepared_media(
             PreparedMedia::from_external_label("old current", Box::new(EmptyDemuxer)),
             false,
         )
-        .expect("old compatibility install должен быть принят");
+        .expect("Old compatibility install must be accepted");
     wait_until(|| old_receipt.try_take_completion());
     wait_until(|| {
         let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
@@ -558,7 +558,7 @@ fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
             intent_revision(1),
             MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
-        .expect("candidate stage должен быть принят");
+        .expect("The candidate stage must be accepted.");
     wait_until(|| candidate_receipt.try_take_ready_to_commit());
 
     let pause_receipt = worker
@@ -567,7 +567,7 @@ fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
             revision: intent_revision(2),
             intent: PlaybackIntent::StartPaused,
         })
-        .expect("staged pause должен быть принят");
+        .expect("staged pause must be accepted");
     assert_eq!(
         pause_receipt.try_outcome(),
         Some(PlaybackIntentUpdateOutcome::AppliedToStaged)
@@ -582,11 +582,11 @@ fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
             request_id,
             cause: MediaInstallCancellationCause::UserCancelled,
         })
-        .expect("pre-barrier cancel должен быть принят");
+        .expect("Pre-barrier cancel must be accepted.");
     assert_eq!(
         wait_until(|| match cancel_receipt.try_take_outcome() {
             Ok(outcome) => outcome,
-            Err(error) => panic!("cancel потерял owner outcome: {error}"),
+            Err(error) => panic!("cancel lost owner outcome: {error}"),
         }),
         MediaInstallControlOutcome::CancellationAccepted
     );
@@ -599,13 +599,13 @@ fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
 
     worker
         .shutdown()
-        .expect("worker shutdown должен завершиться");
+        .expect("Worker shutdown must be completed");
 }
 
 #[test]
 fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact() {
-    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
-        .expect("player worker должен запуститься");
+    let mut worker =
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("Player worker should start up");
     let first_request_id = MediaInstallRequestId::from_non_zero(
         NonZeroU64::new(705).expect("test request id is non-zero"),
     );
@@ -620,7 +620,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
             intent_revision(1),
             MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
-        .expect("first staged request должен быть принят");
+        .expect("The first staged request must be accepted");
     wait_until(|| first_receipt.try_take_ready_to_commit());
 
     let staged_update = worker
@@ -629,7 +629,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
             revision: intent_revision(3),
             intent: PlaybackIntent::StartPaused,
         })
-        .expect("pre-authorization update должен быть принят");
+        .expect("Pre-authorization update must be accepted");
     assert_eq!(
         staged_update.try_outcome(),
         Some(PlaybackIntentUpdateOutcome::AppliedToStaged)
@@ -639,10 +639,10 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
         .authorize_install_commit(AuthorizeInstallCommit {
             request_id: first_request_id,
         })
-        .expect("authorization должна войти в ordinary queue");
+        .expect("Authorization must be included in ordinary queue.");
     let authorization_outcome = wait_until(|| match authorization.try_take_outcome() {
         Ok(outcome) => outcome,
-        Err(error) => panic!("authorization потеряла owner outcome: {error}"),
+        Err(error) => panic!("Authorization Loses Owner Outcome: {error}"),
     });
     assert_eq!(
         authorization_outcome,
@@ -656,7 +656,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
     });
     let first_instance_id = paused_snapshot
         .media_instance_id
-        .expect("paused installed snapshot обязан нести exact instance");
+        .expect("Restoration of installed snapshot must be exact instance");
     assert_eq!(paused_snapshot.playback_state, PlaybackState::Paused);
 
     let post_barrier_update = worker
@@ -665,7 +665,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
             revision: intent_revision(4),
             intent: PlaybackIntent::StartPlaying,
         })
-        .expect("post-barrier exact update должен использовать отдельный control path");
+        .expect("Post-barrier exact update should use a separate control path");
     assert_eq!(
         wait_until(|| post_barrier_update.try_outcome()),
         PlaybackIntentUpdateOutcome::AppliedToInstalled {
@@ -675,7 +675,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
 
     let installed_completion = first_receipt
         .try_take_completion()
-        .expect("Installed terminal всё ещё обязан ждать explicit drain");
+        .expect("Installed terminal still has to wait for explicit drain");
     let MediaInstallCompletion::Installed {
         media_instance_id: completed_instance_id,
         applied_intent_revision,
@@ -683,7 +683,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
         ..
     } = installed_completion
     else {
-        panic!("authorization должна завершиться Installed");
+        panic!("Authorization must be completed by Installed");
     };
     assert_eq!(completed_instance_id, first_instance_id);
     assert_eq!(applied_intent_revision, intent_revision(3));
@@ -703,16 +703,16 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
             intent_revision(1),
             MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
-        .expect("second staged request должен быть принят");
+        .expect("Second staged request must be accepted");
     wait_until(|| second_receipt.try_take_ready_to_commit());
     let second_authorization = worker
         .authorize_install_commit(AuthorizeInstallCommit {
             request_id: second_request_id,
         })
-        .expect("second authorization должна быть принята");
+        .expect("Second Authorization must be accepted");
     wait_until(|| match second_authorization.try_take_outcome() {
         Ok(outcome) => outcome,
-        Err(error) => panic!("second authorization потеряла outcome: {error}"),
+        Err(error) => panic!("Second Authorization Loses Outcome: {error}"),
     });
 
     let stale_update = worker
@@ -721,7 +721,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
             revision: intent_revision(5),
             intent: PlaybackIntent::StartPaused,
         })
-        .expect("stale exact update получает typed owner outcome");
+        .expect("stale exact update gets typed owner result");
     assert_eq!(
         stale_update.try_outcome(),
         Some(PlaybackIntentUpdateOutcome::StaleInstance)
@@ -729,7 +729,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
 
     worker
         .shutdown()
-        .expect("worker shutdown должен завершиться");
+        .expect("Worker shutdown must be completed");
 }
 
 #[test]
@@ -739,7 +739,7 @@ fn authorization_queue_backpressure_returns_command_without_false_acceptance() {
     for _ in 0..COMMAND_CHANNEL_CAPACITY {
         command_tx
             .try_send(WorkerCommand::Player(PlayerCommand::Pause))
-            .expect("test queue должна принять fill command");
+            .expect("Test queue must accept fill command");
     }
     let request_id = MediaInstallRequestId::from_non_zero(
         NonZeroU64::new(701).expect("test request id is non-zero"),
@@ -747,7 +747,7 @@ fn authorization_queue_backpressure_returns_command_without_false_acceptance() {
 
     let error = sender
         .authorize_install_commit(AuthorizeInstallCommit { request_id })
-        .expect_err("full queue должна отвергнуть authorization delivery");
+        .expect_err("full queue must be rejected authorization delivery");
     assert_eq!(error, PlayerWorkerSendError::Full);
 }
 
@@ -762,7 +762,7 @@ fn authorization_disconnect_is_transport_failure_not_install_rejection() {
 
     let error = sender
         .authorize_install_commit(AuthorizeInstallCommit { request_id })
-        .expect_err("disconnected queue не может принять authorization");
+        .expect_err("disconnected queue cannot accept authorization");
     assert_eq!(error, PlayerWorkerSendError::Disconnected);
 }
 

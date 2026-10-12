@@ -198,7 +198,7 @@ impl ImportDraftMaterializer {
         let provenance = document_provenance(document, source_index);
         let root_admission = admit_first_xspf_location(
             std::slice::from_ref(group.root_location()),
-            CachedPlaylistMetadata::new("Группа XSPF", PlaylistMediaKind::Unknown),
+            CachedPlaylistMetadata::new("XSPF group", PlaylistMediaKind::Unknown),
             provenance.clone(),
         );
         self.note_xspf_admission_issues(root_admission.issues());
@@ -214,7 +214,7 @@ impl ImportDraftMaterializer {
         ) {
             Ok(compound) => Some(compound),
             Err(error) => {
-                tracing::warn!(?error, "XSPF group не прошёл neutral compound boundary");
+                tracing::warn!(?error, "XSPF group failed the neutral compound boundary");
                 self.issues.push(PlaylistImportIssue::new(
                     PlaylistImportIssueKind::SourceRejectedEntry,
                 ));
@@ -257,7 +257,7 @@ impl ImportDraftMaterializer {
     reason = "инвариант: один XSPF creator не превышает bounded artists limit"
 )]
 fn xspf_track_metadata(track: &XspfTrack) -> CachedPlaylistMetadata {
-    let fallback = track.title().unwrap_or("Элемент XSPF").to_owned();
+    let fallback = track.title().unwrap_or("XSPF item").to_owned();
     let metadata = CachedPlaylistMetadata::new(fallback, PlaylistMediaKind::Unknown)
         .with_duration(track.duration_hint())
         .with_title(track.title().map(ToOwned::to_owned))
@@ -266,7 +266,7 @@ fn xspf_track_metadata(track: &XspfTrack) -> CachedPlaylistMetadata {
     match track.creator() {
         Some(creator) => metadata
             .with_artists(vec![creator.to_owned()])
-            .expect("один XSPF creator не превышает bounded artists limit"),
+            .expect("XSPF creator does not exceed bounded artists limit"),
         None => metadata,
     }
 }

@@ -53,7 +53,7 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
-        .expect("service-ytdlp обязан находиться внутри workspace/crates")
+        .expect("service-ytdlp must be inside workspace/crates")
         .to_path_buf()
 }
 
@@ -62,12 +62,11 @@ fn load_json_document(crate_relative_path: &str) -> Value {
     // Profile artifacts принадлежат текущему crate и не зависят от cwd.
     let document_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(crate_relative_path);
     // Missing evidence является infrastructure failure, а не пустым coverage.
-    let document_bytes = fs::read(&document_path).unwrap_or_else(|error| {
-        panic!("не удалось прочитать {}: {error}", document_path.display())
-    });
+    let document_bytes = fs::read(&document_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", document_path.display()));
     // Невалидный JSON обязан немедленно уронить hermetic gate.
     serde_json::from_slice(&document_bytes)
-        .unwrap_or_else(|error| panic!("не удалось разобрать {}: {error}", document_path.display()))
+        .unwrap_or_else(|error| panic!("I couldn't make out {}: {error}", document_path.display()))
 }
 
 /// Возвращает обязательный JSON object.
@@ -79,7 +78,7 @@ fn required_object<'value>(
     value
         .get(field)
         .and_then(Value::as_object)
-        .unwrap_or_else(|| panic!("обязательный object `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("Mandatory object {field} is not available"))
 }
 
 /// Возвращает обязательный JSON array.
@@ -89,7 +88,7 @@ fn required_array<'value>(value: &'value Value, field: &str) -> &'value [Value] 
         .get(field)
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .unwrap_or_else(|| panic!("обязательный array `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("Mandatory array '{field}' not available"))
 }
 
 /// Возвращает обязательное строковое поле.
@@ -98,7 +97,7 @@ fn required_string<'value>(value: &'value Value, field: &str) -> &'value str {
     value
         .get(field)
         .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("обязательное строковое поле `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("No mandatory string field {field}"))
 }
 
 /// Преобразует строковый JSON array в exact ordered vector.
@@ -109,7 +108,7 @@ fn required_string_array<'value>(value: &'value Value, field: &str) -> Vec<&'val
         .map(|entry| {
             entry
                 .as_str()
-                .unwrap_or_else(|| panic!("`{field}` обязан содержать только строки"))
+                .unwrap_or_else(|| panic!("{field} must contain only lines."))
         })
         .collect()
 }
@@ -125,7 +124,7 @@ fn rows_by_id<'value>(rows: &'value [Value], owner: &str) -> BTreeMap<&'value st
         // Duplicate identity запрещает доказать one-to-one coverage.
         assert!(
             indexed_rows.insert(row_id, row).is_none(),
-            "{owner} содержит duplicate row `{row_id}`"
+            "{owner} contains a duplicate row {row_id}"
         );
     }
     // Готовый map используется только read-only assertions.
@@ -154,14 +153,14 @@ fn assert_source_evidence(evidence: &Value, context: &str) {
     // Missing file означает stale либо выдуманное traceability evidence.
     let source = fs::read_to_string(&absolute_path).unwrap_or_else(|error| {
         panic!(
-            "{context}: не удалось прочитать evidence {}: {error}",
+            "{context}: Failed to read evidence {}: {error}",
             absolute_path.display()
         )
     });
     // Exact symbol обязан оставаться в declared owner file.
     assert!(
         source.contains(evidence_symbol),
-        "{context}: symbol `{evidence_symbol}` отсутствует в `{physical_evidence_path}`"
+        "{context}: symbol '{evidence_symbol}' missing from '{physical_evidence_path}'"
     );
 }
 
@@ -202,17 +201,17 @@ fn runtime_coverage_resolves_every_s00_target_without_planned_or_guessed_provide
         // Matching canonical row уже доказана exact set comparison выше.
         let profile_row = profile_rows
             .get(row_id)
-            .expect("matching S00 row обязана существовать");
+            .expect("matching S00 row must exist");
         // S41 не переписывает dependency ownership предыдущих sessions.
         assert_eq!(
             required_string_array(coverage_row, "owner_sessions"),
             required_string_array(profile_row, "future_sessions"),
-            "owner sessions расходятся для `{row_id}`"
+            "owner sessions diverge `{row_id}`"
         );
         // Provider family обязана быть явной и непустой.
         assert!(
             !required_string(coverage_row, "provider_family").is_empty(),
-            "provider family пуста для `{row_id}`"
+            "family provider is empty for '{row_id}'"
         );
         // Runtime status не допускает незавершённый Planned внутри закрытого S41.
         match required_string(coverage_row, "status") {
@@ -230,13 +229,13 @@ fn runtime_coverage_resolves_every_s00_target_without_planned_or_guessed_provide
             }
             // Любой новый status требует отдельного schema/architecture решения.
             unexpected_status => {
-                panic!("недопустимый S41 runtime status `{unexpected_status}` для `{row_id}`")
+                panic!("S41 runtime status '{unexpected_status}' for '{row_id}'")
             }
         }
         // Каждая disposition row обязана иметь хотя бы одно focused evidence.
         let evidence_rows = required_array(coverage_row, "evidence");
         // Empty array не доказывает provider либо exclusion.
-        assert!(!evidence_rows.is_empty(), "нет evidence для `{row_id}`");
+        assert!(!evidence_rows.is_empty(), "No evidence for '{row_id}'");
         // Все declared tests проверяются как реальные workspace symbols.
         for evidence in evidence_rows {
             // Context делает failure actionable без раскрытия media locator-а.
@@ -319,14 +318,14 @@ fn rtmp_live_supplements_and_special_providers_remain_explicit_non_playback_scop
                 required_string(row, "status"),
                 "ProfileExcluded" | "NoApprovedRow"
             ),
-            "conditional owner не может быть playback-enabled"
+            "conditional owner cannot playback-enabled"
         );
         // Evidence artifact обязан существовать даже для no-op.
         let evidence_path = required_string(row, "evidence_path");
         // Exact workspace-relative path проверяется без исполнения provider-а.
         assert!(
             workspace_root().join(evidence_path).is_file(),
-            "conditional evidence `{evidence_path}` отсутствует"
+            "conditional evidence '{evidence_path}' missing"
         );
     }
 

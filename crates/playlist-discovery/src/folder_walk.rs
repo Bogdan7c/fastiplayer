@@ -111,10 +111,10 @@ pub struct FolderWalkOutcome {
 #[derive(Debug, thiserror::Error)]
 pub enum FolderWalkError {
     /// Корневую папку не удалось прочитать (нет прав, исчезла, не папка).
-    #[error("не удалось прочитать корневую папку: {0:?}")]
+    #[error("Failed to read the root folder: {0:?}")]
     ReadRoot(io::ErrorKind),
     /// Владелец отменил обход; частичный результат не возвращается.
-    #[error("обход папки отменён")]
+    #[error("Folder traversal canceled")]
     Cancelled,
 }
 

@@ -51,7 +51,7 @@ impl HttpRangeRequestLimit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HttpRangeRequestLimitError {
     /// Нулевой предел не может породить корректный byte range.
-    #[error("HTTP Range request limit должен быть больше нуля")]
+    #[error("HTTP Range request limit should be more than zero")]
     Zero,
 }
 
@@ -307,10 +307,10 @@ impl fmt::Debug for TransportOpenRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TransportOpenRequestError {
     /// Non-empty context не покрывает initial HTTP request target.
-    #[error("initial target находится вне secret request scope")]
+    #[error("The initial target is outside the secret request scope.")]
     InitialTargetOutsideSecretScope,
     /// FTP request не принимает HTTP headers/cookies/body/query material.
-    #[error("FTP transport request не допускает HTTP secret material")]
+    #[error("FTP transport request does not allow HTTP secret material")]
     HttpSecretsNotAllowedForFtp,
 }
 
@@ -380,15 +380,15 @@ impl fmt::Debug for TransportRefreshRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TransportRefreshRequestError {
     /// Refresh не может молча сменить concrete provider-а.
-    #[error("refresh replacement меняет transport provider")]
+    #[error("refresh replacement changes the transport provider")]
     ProviderChanged,
     /// Refresh обязан сохранить semantic identity.
-    #[error("refresh replacement меняет semantic component identity")]
+    #[error("refresh replacement changes the semantic component identity")]
     SemanticIdentityChanged,
     /// Refresh обязан сохранить component role.
-    #[error("refresh replacement меняет component role")]
+    #[error("refresh replacement changes the component role")]
     ComponentRoleChanged,
     /// Replacement generation обязана быть строго новее.
-    #[error("refresh source generation не новее предыдущей")]
+    #[error("refresh source generation is not newer than the previous generation")]
     GenerationNotNewer,
 }

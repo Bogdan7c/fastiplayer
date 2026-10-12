@@ -84,10 +84,10 @@ impl ProviderDescriptor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderDescriptorError {
     /// Provider без scheme capability никогда не может быть выбран.
-    #[error("transport provider не объявил transport schemes")]
+    #[error("Transport provider does not announce transport schemes")]
     MissingSchemes,
     /// Scheme rows должны быть unique.
-    #[error("transport provider повторно объявил transport scheme")]
+    #[error("The transport provider has reopened the transport scheme")]
     DuplicateScheme,
 }
 
@@ -95,16 +95,16 @@ pub enum ProviderDescriptorError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum UnsupportedTransportReason {
     /// Provider не поддерживает target scheme.
-    #[error("target scheme не поддерживается provider-ом")]
+    #[error("The target scheme is not supported by the provider")]
     Scheme,
     /// Provider не поддерживает VOD/live presentation.
-    #[error("media presentation не поддерживается provider-ом")]
+    #[error("media presentation is not supported by the provider")]
     Presentation,
     /// Provider не может дать требуемую seekability shape.
-    #[error("требуемая seekability не поддерживается provider-ом")]
+    #[error("required seekability is not supported by the provider")]
     Seekability,
     /// Request material требует неподдерживаемую declarative operation.
-    #[error("request material не поддерживается provider-ом")]
+    #[error("request material is not supported by the provider")]
     RequestMaterial,
 }
 
@@ -112,16 +112,16 @@ pub enum UnsupportedTransportReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AuthenticationFailure {
     /// Требуемые credentials отсутствуют.
-    #[error("transport authentication credentials отсутствуют")]
+    #[error("transport authentication credentials are missing")]
     CredentialsMissing,
     /// Server отверг переданные credentials.
-    #[error("transport authentication credentials отклонены")]
+    #[error("transport authentication credentials rejected")]
     CredentialsRejected,
     /// Secret scope не разрешает forwarding к нужному target-у.
-    #[error("transport authentication material находится вне разрешённого scope")]
+    #[error("transport authentication material is outside the permitted scope")]
     SecretScopeRejected,
     /// Ephemeral credentials истекли.
-    #[error("transport authentication credentials истекли")]
+    #[error("transport authentication credentials expired")]
     CredentialsExpired,
 }
 
@@ -129,37 +129,37 @@ pub enum AuthenticationFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TransportFailure {
     /// Network временно/постоянно недоступна.
-    #[error("transport network недоступна")]
+    #[error("transport network unavailable")]
     NetworkUnavailable,
     /// Remote endpoint отказал в доступе без доказанного authentication challenge.
-    #[error("transport remote endpoint отказал в доступе")]
+    #[error("transport remote endpoint denied access")]
     AccessDenied,
     /// Operation превысила bounded deadline.
-    #[error("transport operation превысила deadline")]
+    #[error("transport operation exceeds the deadline")]
     Timeout,
     /// Redirect chain отклонена validated policy.
-    #[error("transport redirect отклонён policy")]
+    #[error("transport redirect is rejected by policy")]
     RedirectRejected,
     /// HTTP response нарушает provider contract.
-    #[error("transport получил некорректный response")]
+    #[error("transport received an invalid response")]
     InvalidResponse,
     /// Source оборвался после частичного progress.
-    #[error("transport source был прерван")]
+    #[error("transport source interrupted")]
     Interrupted,
     /// Сервер ответил, что ресурса нет (HTTP 404).
     ///
     /// Отдельно от `NetworkUnavailable`: мёртвая ссылка — это не «нет сети»,
     /// и пользователю нужна другая подсказка (проверить ссылку, а не интернет).
-    #[error("transport remote endpoint не нашёл ресурс")]
+    #[error("transport remote endpoint did not find the resource")]
     NotFound,
     /// Сервер ответил, что ресурс удалён навсегда (HTTP 410) — ссылка устарела.
-    #[error("transport remote endpoint сообщил, что ресурс удалён")]
+    #[error("transport remote endpoint reported that the resource was removed")]
     Gone,
     /// Сервер ограничил частоту запросов (HTTP 429).
-    #[error("transport remote endpoint ограничил частоту запросов")]
+    #[error("transport remote endpoint limited the request rate")]
     RateLimited,
     /// Ошибка на стороне сервера (HTTP 5xx).
-    #[error("transport remote endpoint вернул серверную ошибку")]
+    #[error("transport remote endpoint returned a server error")]
     ServerError,
 }
 
@@ -190,16 +190,16 @@ impl TransportFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RefreshFailure {
     /// Provider descriptor не обещает refresh.
-    #[error("transport provider не поддерживает refresh")]
+    #[error("transport provider does not support refresh")]
     ProviderDoesNotSupportRefresh,
     /// Provider больше не может сопоставить semantic identity.
-    #[error("transport refresh не нашёл semantic component")]
+    #[error("transport refresh did not find the semantic component")]
     SemanticIdentityUnavailable,
     /// Refresh material уже протух до открытия.
-    #[error("transport refresh material уже истёк")]
+    #[error("transport refresh material has already expired")]
     ReplacementExpired,
     /// Provider отклонил exact refresh contract.
-    #[error("transport provider отклонил refresh contract")]
+    #[error("transport provider rejected the refresh contract")]
     ProviderRejected,
 }
 

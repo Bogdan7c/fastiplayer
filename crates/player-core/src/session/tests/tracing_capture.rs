@@ -41,14 +41,14 @@ pub(super) fn isolate_tracing_capture_test(exact_test_name: &str) -> IsolatedTra
         assert_eq!(
             marked_test_name.as_ref(),
             exact_test_name,
-            "isolated tracing child получил marker другого exact test-а"
+            "The isolated tracing child received the marker of another exact test"
         );
         println!("{ISOLATED_TRACING_TEST_EXECUTION_MARKER}{exact_test_name}");
         return IsolatedTracingTestProcess::ChildRunsBody;
     }
 
     let test_binary = env::current_exe().unwrap_or_else(|error| {
-        panic!("не удалось определить текущий libtest executable: {error}")
+        panic!("The current libtest executable cannot be determined: {error}")
     });
     let child_output = Command::new(&test_binary)
         .arg("--exact")
@@ -59,7 +59,7 @@ pub(super) fn isolate_tracing_capture_test(exact_test_name: &str) -> IsolatedTra
         .output()
         .unwrap_or_else(|error| {
             panic!(
-                "не удалось запустить isolated tracing test `{exact_test_name}` через `{}`: {error}",
+                "failed to run isolated tracing test '{exact_test_name}' via '{}': {error}",
                 test_binary.display()
             )
         });
@@ -68,7 +68,7 @@ pub(super) fn isolate_tracing_capture_test(exact_test_name: &str) -> IsolatedTra
     let child_stderr = String::from_utf8_lossy(&child_output.stderr);
     assert!(
         child_output.status.success(),
-        "isolated tracing test `{exact_test_name}` завершился с `{}`\nstdout:\n{}\nstderr:\n{}",
+        "isolated tracing test `{exact_test_name}` finished with `{}`\nstdout:\n{}\nstderr:\n{}",
         child_output.status,
         child_stdout,
         child_stderr
@@ -78,7 +78,7 @@ pub(super) fn isolate_tracing_capture_test(exact_test_name: &str) -> IsolatedTra
         format!("{ISOLATED_TRACING_TEST_EXECUTION_MARKER}{exact_test_name}");
     assert!(
         child_stdout.contains(&expected_execution_marker),
-        "isolated tracing child завершился успешно, но exact test `{exact_test_name}` не выполнился\nstdout:\n{child_stdout}\nstderr:\n{child_stderr}"
+        "isolated tracing child completed successfully, but exact test `{exact_test_name}` failed\nstdout:\n{child_stdout}\nstderr:\n{child_stderr}"
     );
 
     IsolatedTracingTestProcess::ParentCompleted
@@ -95,7 +95,7 @@ impl CapturedTracing {
     pub(super) fn contents(&self) -> String {
         self.events
             .lock()
-            .expect("tracing capture mutex не должен быть poisoned")
+            .expect("Tracing capture mutex should not be poisoned")
             .join("\n")
     }
 }
@@ -177,7 +177,7 @@ impl Subscriber for CapturingSubscriber {
         );
         self.events
             .lock()
-            .expect("tracing capture mutex не должен быть poisoned")
+            .expect("Tracing capture mutex should not be poisoned")
             .push(captured_event);
     }
 

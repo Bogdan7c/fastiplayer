@@ -104,13 +104,13 @@ fn bounded_audio_window_in_clock(
     numer: u32,
     denom: u32,
 ) -> PacketPresentationWindow {
-    let time_base = TimeBase::new(numer, denom).expect("test time base должна быть валидной");
+    let time_base = TimeBase::new(numer, denom).expect("The test time base must be valid.");
     PacketPresentationWindow::Bounded(
         ExactPresentationWindow::new(
             TrackTimestamp::new(track_id, start, time_base),
             TrackTimestamp::new(track_id, end_exclusive, time_base),
         )
-        .expect("test presentation window должно быть валидным"),
+        .expect("The test presentation window must be valid."),
     )
 }
 
@@ -160,7 +160,7 @@ fn run_audio_window_transport(
 
     let output_handle = output_factory_handle
         .last_output_handle()
-        .expect("decoded PCM должен создать audio output");
+        .expect("Decoded PCM should create audio output");
     let recorded_inputs = decoded_inputs
         .lock()
         .expect("decoded input log lock")
@@ -245,7 +245,7 @@ fn partial_bounded_packet_writes_and_accounts_only_retained_frames() {
 
     let output_handle = output_factory_handle
         .last_output_handle()
-        .expect("retained PCM должен создать output");
+        .expect("Preserve PCM to create output");
     assert_eq!(output_handle.written_samples(), vec![2.0, 3.0, 4.0, 5.0]);
     assert_eq!(
         output_handle.written_intents(),
@@ -340,7 +340,7 @@ fn invalid_bounded_metadata_is_fatal_before_output_creation() {
         .snapshot
         .last_error
         .as_ref()
-        .expect("invalid bounded metadata должна быть fatal");
+        .expect("Unusual bounded metadata must be fatal.");
     assert_eq!(error.kind, PlayerErrorKind::RuntimeError);
     assert!(error.message.contains("Exact audio packet clipping failed"));
     assert_eq!(

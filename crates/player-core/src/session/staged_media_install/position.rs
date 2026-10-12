@@ -627,7 +627,7 @@ impl PlayerSession {
                 let outcome = staged_install
                     .protocol
                     .apply_control(MediaInstallControl::Cancel(cancellation), || {
-                        unreachable!("cancel control не вызывает media commit closure")
+                        unreachable!("cancel control fails media commit closure")
                     });
                 self.playback_intent_control
                     .forget_staged_request(staged_install.request_id);
@@ -653,7 +653,7 @@ impl PlayerSession {
                     tracing::warn!(
                         request_id = staged_install.request_id.get(),
                         %error,
-                        "player terminal опубликован, но app candidate cancellation status не доставлен"
+                        "player terminal published, but app candidate cancellation status not delivered"
                     );
                 }
                 self.staged_media_install.last_terminal_request_id =

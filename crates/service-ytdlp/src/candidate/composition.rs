@@ -48,18 +48,18 @@ pub enum YtDlpCompositionError {
 impl fmt::Display for YtDlpCompositionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::ForeignSource => "component selection принадлежит другому source",
+            Self::ForeignSource => "The selection component is from another source",
             Self::ForeignGenerationOrInventory => {
-                "component selection не принадлежит authoritative fresh inventory"
+                "The selection component does not include authoritative fresh inventory"
             }
-            Self::VideoComponentRequired => "composition требует atomic video-only selection",
-            Self::AudioComponentRequired => "composition требует atomic audio-only selection",
-            Self::MissingVideoComponent => "fresh video component отсутствует",
-            Self::MissingAudioComponent => "fresh audio component отсутствует",
-            Self::AmbiguousVideoComponent => "fresh video component неоднозначен",
-            Self::AmbiguousAudioComponent => "fresh audio component неоднозначен",
-            Self::MissingComponentRequest => "component request material отсутствует",
-            Self::IdentityConstruction => "bounded composed identity не построена",
+            Self::VideoComponentRequired => "composition requires an atomic video-only selection",
+            Self::AudioComponentRequired => "composition requires an atomic audio-only selection",
+            Self::MissingVideoComponent => "fresh video component is missing",
+            Self::MissingAudioComponent => "fresh audio component is missing",
+            Self::AmbiguousVideoComponent => "fresh video component is ambiguous",
+            Self::AmbiguousAudioComponent => "fresh audio component is ambiguous",
+            Self::MissingComponentRequest => "component request material is missing",
+            Self::IdentityConstruction => "bounded composed identity was not built",
         })
     }
 }

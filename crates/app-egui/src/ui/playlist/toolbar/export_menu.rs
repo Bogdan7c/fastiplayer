@@ -33,13 +33,13 @@ pub(super) fn show(
     Popup::menu(response).show(|ui| {
         show_scope_branch(
             ui,
-            "Весь плейлист",
+            "Entire Playlist",
             PlaylistExportScopeIntent::FullPlaylist,
             scope_enabled(model, PlaylistExportScopeIntent::FullPlaylist),
             model.cue_full_export_availability,
             output,
         );
-        let selected_label = format!("Выбранные ({})", model.selected_item_count);
+        let selected_label = format!("Selected ({})", model.selected_item_count);
         show_scope_branch(
             ui,
             &selected_label,

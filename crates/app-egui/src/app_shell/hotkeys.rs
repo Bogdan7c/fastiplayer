@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(
             play_button.click_with_mouse(),
             1,
-            "клик переключает playback"
+            "Click to switch playback"
         );
 
         let keyboard_owner = keyboard_focus_owner(play_button.egui_ctx());
@@ -307,7 +307,7 @@ mod tests {
             assert_eq!(
                 pressed(code, keyboard_owner),
                 Some(ShellHotkeyAction::Legacy(code)),
-                "{code:?} после клика по play"
+                "{code:?} after clicking on play"
             );
         }
         assert_eq!(
@@ -359,14 +359,14 @@ mod tests {
         for code in LETTER_HOTKEYS {
             assert!(
                 pressed(code, KeyboardFocusOwner::Widget).is_some(),
-                "{code:?} должен работать при фокусе на виджете"
+                "{code:?} should work when focusing on the widget"
             );
         }
         for code in WIDGET_OWNED_KEYS {
             assert_eq!(
                 pressed(code, KeyboardFocusOwner::Widget),
                 None,
-                "{code:?} принадлежит сфокусированному виджету"
+                "{code:?} belongs to a focused widget."
             );
         }
     }

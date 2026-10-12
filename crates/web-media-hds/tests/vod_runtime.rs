@@ -280,13 +280,13 @@ fn live_presentation_is_rejected_before_any_manifest_fetch() {
     };
 
     let error = match prepare_hds_vod(request) {
-        Ok(_) => panic!("VOD-only HDS runtime не должен принимать live presentation"),
+        Ok(_) => panic!("VOD-only HDS runtime does not accept live presentation"),
         Err(error) => error,
     };
     assert!(error.to_string().contains("accepts only VOD"));
     assert!(
         server.requested_paths().is_empty(),
-        "presentation contract должен быть проверен до network side effects"
+        "presentation contract must be checked before network side effects"
     );
 }
 
@@ -416,7 +416,7 @@ fn capability_rejection_prevents_truthless_catalog_publication() {
         typed_error
             .to_string()
             .contains("no probed playable rendition"),
-        "terminal fallback diagnostic должен называть отсутствие playable rendition"
+        "terminal fallback diagnostics: no playable rendition"
     );
 }
 
@@ -440,7 +440,7 @@ fn malformed_siblings_are_reported_without_hiding_a_playable_rendition() {
         capability_probe: &capabilities,
         preferred_height: PreferredHeightPolicy::NoPreference,
     })
-    .expect("валидная HDS row должна пережить malformed siblings");
+    .expect("A valid HDS row must survive malformed siblings");
 
     assert_eq!(discovered.catalog().coupled_presentations().len(), 1);
     let rejection_reasons = discovered
@@ -554,7 +554,7 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
     assert_eq!(
         server.maximum_concurrent_media_requests(),
         2,
-        "selected runtime должен перекрыть latency двух successor fetch-ов"
+        "selected runtime should be closed latency two-way successor fetch-owls"
     );
     assert_eq!(
         server
@@ -563,7 +563,7 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
             .filter(|path| path.as_str() == "/media/maximumSeg1-Frag2")
             .count(),
         1,
-        "selected runtime должен начать ровно один successor fetch до packet consumption"
+        "selected runtime should start exactly one successor fetch before packet consumption"
     );
     assert_eq!(
         server
@@ -572,7 +572,7 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
             .filter(|path| path.as_str() == "/media/maximumSeg1-Frag3")
             .count(),
         1,
-        "selected runtime должен запросить второй FIFO successor ровно один раз"
+        "The selected runtime must request a second FIFO successor exactly once."
     );
     let mut packet_seen = false;
     for _ in 0..16 {
@@ -615,12 +615,12 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
     assert_eq!(
         seek_result.actual_position.as_duration(),
         Duration::from_secs(1),
-        "seek должен подтвердить preceding fragment anchor"
+        "seek muster preceding fragment anchor"
     );
     assert_eq!(
         server.maximum_concurrent_media_requests(),
         2,
-        "seek replacement должен одновременно готовить anchor и successor"
+        "seek replacement should be prepared simultaneously anchor and successor"
     );
     assert_eq!(
         server
@@ -629,7 +629,7 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
             .filter(|path| path.as_str() == "/media/maximumSeg1-Frag2")
             .count(),
         2,
-        "seek должен повторно запросить anchor ровно один раз"
+        "seek should be re-requested anchor once"
     );
     assert_eq!(
         server
@@ -638,7 +638,7 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
             .filter(|path| path.as_str() == "/media/maximumSeg1-Frag3")
             .count(),
         2,
-        "seek должен повторно запросить successor ровно один раз"
+        "seek should be re-requested successor once"
     );
 
     let mut post_seek_packet_seen = false;

@@ -46,16 +46,16 @@ pub enum ComponentVariantKeyError {
 impl fmt::Display for ComponentVariantKeyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty => formatter.write_str("component variant key пуст"),
+            Self::Empty => formatter.write_str("component variant key is empty"),
             Self::ContainsControlCharacter => {
-                formatter.write_str("component variant key содержит control character")
+                formatter.write_str("component variant key contains a control character")
             }
             Self::TooLong {
                 provided_bytes,
                 maximum_bytes,
             } => write!(
                 formatter,
-                "component variant key занимает {provided_bytes} UTF-8 байт при лимите {maximum_bytes}"
+                "The component variant key occupies {provided_bytes} UTF-8 bytes at a limit of {maximum_bytes}"
             ),
         }
     }
@@ -381,13 +381,13 @@ pub enum ComponentVariantCatalogLimitError {
 impl fmt::Display for ComponentVariantCatalogLimitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Zero => formatter.write_str("component variant catalog limit равен нулю"),
+            Self::Zero => formatter.write_str("The component variant catalog limit is zero."),
             Self::AboveMaximum {
                 provided_entries,
                 maximum_entries,
             } => write!(
                 formatter,
-                "component variant catalog limit {provided_entries} превышает максимум {maximum_entries}"
+                "component variant catalog limit {provided_entries} exceeds maximum {maximum_entries}"
             ),
         }
     }

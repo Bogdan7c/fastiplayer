@@ -2,17 +2,17 @@
 //!
 //! Раньше сюда попадали строки вида `"web media rebuild failed: {error:?}"` — Debug-вывод
 //! Rust-типа и английский текст. Теперь технические детали уходят в лог у места сбоя, а
-//! пользователь получает русскую фразу; причину для web берём из той же таблицы, что и при
+//! пользователь получает английскую фразу; причину для web берём из той же таблицы, что и при
 //! обычном открытии ссылки (`web_open_message`).
 
 use crate::media_open::WebOpenFailureReason;
 
 /// Начало фразы для любого сбоя пересборки текущего media при смене настроек.
-const REBUILD_FAILED_PREFIX: &str = "Не удалось применить настройки к текущему видео";
+const REBUILD_FAILED_PREFIX: &str = "Could not apply settings to the current video";
 
 /// Локальный файл не удалось подготовить заново (причина — в логе).
 pub(crate) fn local_rebuild_failed_message() -> String {
-    format!("{REBUILD_FAILED_PREFIX}: не удалось заново открыть файл")
+    format!("{REBUILD_FAILED_PREFIX}: could not reopen the file")
 }
 
 /// Web-источник не удалось подготовить заново: причина берётся из таблицы открытия ссылок.
@@ -24,13 +24,13 @@ pub(crate) fn web_rebuild_failed_message(reason: Option<WebOpenFailureReason>) -
             "{REBUILD_FAILED_PREFIX}: {}",
             crate::web_open_message::web_open_failure_phrase(reason)
         ),
-        None => format!("{REBUILD_FAILED_PREFIX}: не удалось заново открыть ссылку"),
+        None => format!("{REBUILD_FAILED_PREFIX}: could not reopen the link"),
     }
 }
 
 /// Player не принял пересобранное media (strong install не завершился успешно).
 pub(crate) fn install_rebuild_failed_message() -> String {
-    format!("{REBUILD_FAILED_PREFIX}: не удалось перезапустить воспроизведение")
+    format!("{REBUILD_FAILED_PREFIX}: could not restart playback")
 }
 
 #[cfg(test)]
@@ -43,7 +43,7 @@ mod tests {
 
         assert_eq!(
             message,
-            "Не удалось применить настройки к текущему видео: видео приватное"
+            "Could not apply settings to the current video: the video is private"
         );
     }
 
@@ -51,10 +51,7 @@ mod tests {
     fn unclassified_web_failure_is_still_human() {
         let message = web_rebuild_failed_message(None);
 
-        assert!(
-            message.contains("не удалось заново открыть ссылку"),
-            "{message}"
-        );
+        assert!(message.contains("could not reopen the link"), "{message}");
         assert!(!message.contains("rebuild"), "{message}");
     }
 
@@ -64,10 +61,7 @@ mod tests {
             local_rebuild_failed_message(),
             install_rebuild_failed_message(),
         ] {
-            assert!(
-                message.starts_with("Не удалось применить настройки"),
-                "{message}"
-            );
+            assert!(message.starts_with("Could not apply settings"), "{message}");
             assert!(!message.contains("rebuild"), "{message}");
             assert!(!message.contains('{'), "{message}");
         }

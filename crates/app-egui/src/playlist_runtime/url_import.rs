@@ -140,7 +140,7 @@ impl PlaylistUrlTopologyResolver for ServicePlaylistUrlTopologyResolver {
         let preview =
             map_yt_dlp_topology_to_playlist_drafts(locator, &topology).map_err(|error| {
                 // Root locator уже прошёл classification: отказ здесь — дефект приложения.
-                tracing::error!(?error, "URL topology не превратилась в черновик очереди");
+                tracing::error!(?error, "URL topology has not turned into a draft queue");
                 PlaylistUrlImportFailure::Internal
             })?;
         // Source-neutral S08 preview пока показывает topology diagnostics общей категорией.
@@ -173,7 +173,7 @@ fn topology_extraction_failure(
 ) -> PlaylistUrlImportFailure {
     match media_source_open::web_open_failure::classify_yt_dlp_topology_error(error) {
         Some(reason) => {
-            tracing::warn!(?reason, %error, "yt-dlp не получил структуру URL");
+            tracing::warn!(?reason, %error, "yt-dlp did not return URL topology");
             PlaylistUrlImportFailure::Rejected(reason)
         }
         None => PlaylistUrlImportFailure::Cancelled,
@@ -260,7 +260,7 @@ impl PlaylistUrlImportOwner {
             .name("playlist-url-topology".to_owned())
             .spawn(move || url_import_worker_loop(worker_state, worker_generation, wake_port))
             .map_err(|error| {
-                tracing::error!(%error, "Не удалось запустить worker импорта URL topology");
+                tracing::error!(%error, "Failed to start worker import of URL topology");
                 error
             })
             .ok();
@@ -336,7 +336,9 @@ impl PlaylistUrlImportOwner {
         };
         let Ok(mut shared_state) = lock_worker_state(&self.shared_state) else {
             self.state_poisoned = true;
-            tracing::error!("URL topology owner обнаружил poisoned worker state при отмене");
+            tracing::error!(
+                "URL topology owner detected poisoned worker state during cancellation"
+            );
             return outcome;
         };
         shared_state.pending_request = None;
@@ -363,7 +365,7 @@ impl PlaylistUrlImportOwner {
         }
         let Ok(mut shared_state) = lock_worker_state(&self.shared_state) else {
             self.state_poisoned = true;
-            tracing::error!("URL topology owner обнаружил poisoned worker state при drain");
+            tracing::error!("URL topology owner detected poisoned worker state during drain");
             return self.fail_active_request_after_poison();
         };
         let tagged = shared_state.completion.take()?;
@@ -421,7 +423,9 @@ impl PlaylistUrlImportOwner {
             }
             Err(_) => {
                 self.state_poisoned = true;
-                tracing::error!("URL topology owner обнаружил poisoned worker state при shutdown");
+                tracing::error!(
+                    "URL topology owner detected poisoned worker state during shutdown"
+                );
             }
         }
         worker.thread().unpark();
@@ -494,7 +498,7 @@ impl PlaylistRuntime {
     /// отмена молчит — это не ошибка для пользователя.
     pub(crate) fn cancel_playlist_url_import_by_user(&mut self) -> PlaylistUrlImportCancelOutcome {
         let outcome = self.url_import.cancel_active();
-        tracing::debug!(?outcome, "Пользователь отменил получение структуры URL");
+        tracing::debug!(?outcome, "The user has cancelled the URL structure");
         outcome
     }
 
@@ -526,9 +530,9 @@ impl PlaylistRuntime {
                 if let Err(error) =
                     self.stage_playlist_import(PlaylistImportIntent::AppendToQueue, draft)
                 {
-                    tracing::warn!(?error, "URL topology preview не прошёл S08 staging");
+                    tracing::warn!(?error, "URL topology preview failed S08 staging");
                     self.set_playlist_safe_feedback(
-                        "Импорт URL устарел или сейчас недоступен; добавьте URL ещё раз",
+                        "URL import is outdated or currently unavailable; add the URL again",
                     );
                 }
             }
@@ -582,7 +586,7 @@ fn url_import_worker_loop(
     loop {
         let request = {
             let Ok(mut worker_state) = lock_worker_state(&shared_state) else {
-                tracing::error!("URL topology worker остановлен из-за poisoned state");
+                tracing::error!("URL topology worker stopped-behind poisoned state");
                 return;
             };
             if worker_state.shutdown_requested {
@@ -610,12 +614,12 @@ fn url_import_worker_loop(
             Ok(Ok(draft)) => PlaylistUrlImportCompletion::Resolved(draft),
             Ok(Err(failure)) => PlaylistUrlImportCompletion::Failed(failure),
             Err(_) => {
-                tracing::error!("URL topology resolver завершился panic без раскрытия locator-а");
+                tracing::error!("URL topology resolver finished panic revealingly locator-?");
                 PlaylistUrlImportCompletion::Failed(PlaylistUrlImportFailure::Internal)
             }
         };
         let Ok(mut worker_state) = lock_worker_state(&shared_state) else {
-            tracing::error!("URL topology worker остановлен из-за poisoned completion state");
+            tracing::error!("URL topology worker stopped-behind poisoned completion state");
             return;
         };
         if worker_state.shutdown_requested

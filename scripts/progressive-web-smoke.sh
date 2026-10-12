@@ -24,7 +24,7 @@ readonly REPO_ROOT="${repo_root}"
 readonly S42_MANUAL_LIBRARY="${script_directory}/lib/progressive-web-smoke-s42.sh"
 # Missing/unreadable owner module блокирует runner до любого media input.
 if [[ ! -f "${S42_MANUAL_LIBRARY}" || ! -r "${S42_MANUAL_LIBRARY}" ]]; then
-    printf 'Ошибка: S42 manual owner module недоступен\n' >&2
+    printf 'Error: S42 manual owner module not available \n' >&2
     exit "${FAILURE_EXIT_CODE}"
 fi
 # shellcheck source=lib/progressive-web-smoke-s42.sh
@@ -72,7 +72,7 @@ print_error() {
     # Caller передаёт только заранее сформулированную safe причину.
     local error_message="$1"
     # stderr отделяет runner diagnostics от будущего report content.
-    printf 'Ошибка: %s\n' "${error_message}" >&2
+    printf 'Error: %s\n' "${error_message}" >&2
 }
 
 # Пустой selection является явным NOT RUN, а не ложным acceptance pass.
@@ -125,7 +125,7 @@ validate_duration_seconds() {
     local candidate_duration="$1"
     # Ноль, знак и дробная часть не имеют корректной timeout semantics.
     if [[ ! "${candidate_duration}" =~ ^[1-9][0-9]*$ ]]; then
-        print_error "--duration должен быть положительным целым числом секунд"
+        print_error "--duration must be a positive whole number of seconds"
         exit "${USAGE_EXIT_CODE}"
     fi
 }
@@ -149,12 +149,12 @@ parse_arguments() {
             --case)
                 # Option без safe ID является bounded parser failure.
                 if (($# < 2)); then
-                    print_error "--case требует значение"
+                    print_error "--case requires a value"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Новый case нельзя начать до input предыдущего.
                 if [[ -n "${pending_case_id}" ]]; then
-                    print_error "предыдущий --case не получил --url или --fixture"
+                    print_error "Previous --case has no --url or --fixture"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Allowlist проверяется до сохранения pending state.
@@ -166,7 +166,7 @@ parse_arguments() {
             --url)
                 # Option без значения получает bounded parser error.
                 if (($# < 2)); then
-                    print_error "--url требует значение"
+                    print_error "--url requires a value"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Проверка выполняется до сохранения selection.
@@ -188,12 +188,12 @@ parse_arguments() {
             --fixture)
                 # Fixture без path является bounded parser failure.
                 if (($# < 2)); then
-                    print_error "--fixture требует путь"
+                    print_error "--fixture requires a path"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Fixture всегда требует explicit named role.
                 if [[ -z "${pending_case_id}" ]]; then
-                    print_error "--fixture требует предшествующий --case"
+                    print_error "--fixture requires the preceding --case"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Safe path validation не читает filesystem в dry-run.
@@ -209,12 +209,12 @@ parse_arguments() {
             --report)
                 # Report target не может быть неявным или отсутствующим.
                 if (($# < 2)); then
-                    print_error "--report требует путь"
+                    print_error "--report requires a path"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Повтор option-а мог бы скрыть ошибочно выбранный первый target.
                 if [[ -n "${report_path}" ]]; then
-                    print_error "--report можно указать только один раз"
+                    print_error "--report may only be specified once"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Exact path сохраняется до safe validation parent directory.
@@ -224,7 +224,7 @@ parse_arguments() {
             --duration)
                 # Duration без значения является parser failure.
                 if (($# < 2)); then
-                    print_error "--duration требует значение"
+                    print_error "--duration requires a value"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Validation выполняется до mutation текущего duration.
@@ -236,12 +236,12 @@ parse_arguments() {
             --binary)
                 # Explicit binary path нужен ровно один и не является media input.
                 if (($# < 2)); then
-                    print_error "--binary требует путь"
+                    print_error "--binary requires a path"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Повтор binary option-а запрещён как неоднозначный execution owner.
                 if [[ -n "${selected_binary}" ]]; then
-                    print_error "--binary можно указать только один раз"
+                    print_error "--binary may only be specified once"
                     exit "${USAGE_EXIT_CODE}"
                 fi
                 # Path валидируется после dry-run selection validation.
@@ -250,14 +250,14 @@ parse_arguments() {
                 ;;
             *)
                 # Positional input запрещён: user intent обязан быть explicit option.
-                print_error "неизвестный аргумент; input передаётся только через --url/--fixture"
+                print_error "Unknown argument; input is transmitted only through --url/--fixture"
                 exit "${USAGE_EXIT_CODE}"
                 ;;
         esac
     done
     # Dangling case не является explicit input selection.
     if [[ -n "${pending_case_id}" ]]; then
-        print_error "--case требует следующий --url или --fixture"
+        print_error "A case requires the following --url or --fixture"
         exit "${USAGE_EXIT_CODE}"
     fi
 }
@@ -293,7 +293,7 @@ validate_report_target() {
     report_directory="$(dirname -- "${report_path}")"
     # Не существующий parent требует явного решения пользователя вне runner-а.
     if [[ ! -d "${report_directory}" ]]; then
-        print_error "parent directory для --report не существует"
+        print_error "parent directory for --report does not exist"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # Canonical parent исключает различия cwd в последующих file checks.
@@ -302,7 +302,7 @@ validate_report_target() {
     report_path="${report_directory}/$(basename -- "${report_path}")"
     # Existing file, directory или dangling symlink никогда не перезаписывается.
     if [[ -e "${report_path}" || -L "${report_path}" ]]; then
-        print_error "--report уже существует; runner не перезаписывает artifacts"
+        print_error "--report already exists; runner does not overwrite artifacts"
         exit "${FAILURE_EXIT_CODE}"
     fi
 }
@@ -313,7 +313,7 @@ require_command() {
     local required_command="$1"
     # command -v не запускает tool и не меняет внешнее состояние.
     if ! command -v "${required_command}" >/dev/null 2>&1; then
-        print_error "обязательная команда недоступна"
+        print_error "Required command is unavailable"
         exit "${FAILURE_EXIT_CODE}"
     fi
 }
@@ -324,14 +324,14 @@ record_selected_binary_provenance() {
     local sha256_output
     # Нечитаемый либо изменившийся executable блокирует неполный provenance.
     if ! sha256_output="$(sha256sum -- "${selected_binary}")"; then
-        print_error "не удалось вычислить SHA-256 Fastiplayer binary"
+        print_error "failed to calculate the SHA-256 of the Fastiplayer binary"
         exit "${FAILURE_EXIT_CODE}"
     fi
     # Первый whitespace-delimited field является exact digest.
     selected_binary_sha256="${sha256_output%% *}"
     # Malformed output нельзя выдавать за executable identity.
     if [[ ! "${selected_binary_sha256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        print_error "SHA-256 Fastiplayer binary имеет некорректный формат"
+        print_error "Fastiplayer binary SHA-256 has an invalid format"
         exit "${FAILURE_EXIT_CODE}"
     fi
 }
@@ -342,7 +342,7 @@ prepare_binary() {
     if [[ -n "${selected_binary}" ]]; then
         # File должен существовать и иметь execute permission.
         if [[ ! -f "${selected_binary}" || ! -x "${selected_binary}" ]]; then
-            print_error "--binary должен указывать на executable regular file"
+            print_error "--binary must indicate an executable regular file"
             exit "${FAILURE_EXIT_CODE}"
         fi
         # Canonical path делает дальнейший exec независимым от cwd.
@@ -358,7 +358,7 @@ prepare_binary() {
         cargo +1.99.0 build --release -p app-egui --locked
         # Build обязан создать canonical executable до network/GUI запуска.
         if [[ ! -x "${DEFAULT_FASTIPLAYER_BINARY}" ]]; then
-            print_error "release build не создал executable fastiplayer"
+            print_error "The release build did not create an executable fastiplayer"
             exit "${FAILURE_EXIT_CODE}"
         fi
         # Последующие scenarios используют один и тот же проверенный binary.
@@ -426,7 +426,7 @@ run_explicit_scenario() {
             ;;
         *)
             # Status 137 означает SIGKILL/kill-after и потому не является bounded shutdown PASS.
-            print_error "web-media runtime завершился неожиданным status; см. redacted report"
+            print_error "web-media runtime exited with an unexpected status; see the redacted report"
             return "${FAILURE_EXIT_CODE}"
             ;;
     esac

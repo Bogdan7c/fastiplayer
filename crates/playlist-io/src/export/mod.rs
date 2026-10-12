@@ -189,7 +189,7 @@ impl fmt::Display for PlaylistExportPreflightError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "playlist export preflight отклонён для {}: {}",
+            "playlist export preflight rejected {}: {}",
             self.subject, self.reason
         )
     }

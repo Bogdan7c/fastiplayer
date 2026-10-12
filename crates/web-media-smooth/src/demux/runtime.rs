@@ -79,7 +79,7 @@ impl SmoothVodOpenResult {
     pub fn async_seek_handle(&self) -> ProgressiveAsyncSeekHandle {
         self.demuxer
             .async_seek_handle()
-            .expect("Smooth VOD runtime всегда создаётся с receipt capability")
+            .expect("Smooth VOD runtime is always created with receipt capability.")
     }
 
     /// Передаёт player composition только neutral demuxer.

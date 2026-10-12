@@ -76,7 +76,7 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
     harness
         .session
         .dispatch_command(PlayerCommand::Play)
-        .expect("A/V regression должна стартовать в playing intent");
+        .expect("A/V regression should start in playing intent");
     let _events_before_seek = harness.session.take_events();
     harness.start_final_seek(MediaTime::from_duration(target_position));
     let artificial_public_accepted_at = Instant::now() - Duration::from_millis(1_500);
@@ -86,7 +86,7 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
         .set_pending_public_accepted_at_for_tests(artificial_public_accepted_at);
     let commands = port.commands();
     let [(request_id, _request)] = commands.as_slice() else {
-        panic!("A/V seek должен создать один worker request");
+        panic!("A/V seek to create one worker request");
     };
     port.complete(
         *request_id,
@@ -101,22 +101,22 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
     let seek_generation = harness
         .session
         .seek_commit()
-        .expect("receipt должна открыть final seek")
+        .expect("Receipt must open the final request")
         .generation;
     let seek_commit = harness
         .session
         .seek_commit()
-        .expect("receipt должна сохранить оба monotonic origin-а");
+        .expect("Receipt must contain both monotonic origins.");
     assert_eq!(
         seek_commit.public_accepted_at, artificial_public_accepted_at,
-        "public origin обязан пережить worker round-trip"
+        "public origin must endure worker round-trip"
     );
     assert!(
         seek_commit
             .started_at
             .saturating_duration_since(seek_commit.public_accepted_at)
             >= Duration::from_millis(1_500),
-        "receipt origin не должен заменять artificial public origin"
+        "receipt origin should not artificial public origin"
     );
     let timeout_config = PlayerTickConfig {
         seek_commit_timeout: Duration::from_secs(1),
@@ -128,7 +128,7 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
     );
     assert!(
         harness.session.seek_commit().is_some(),
-        "public age > timeout не должен преждевременно запускать receipt timeout"
+        "public age > timeout should not start receipt timeout"
     );
     let pause_count_before_update = audio_output.pause_count.load(Ordering::Relaxed);
     let clear_count_before_update = audio_output.clear_count.load(Ordering::Relaxed);
@@ -165,12 +165,12 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
             .present_video_frame()
             .map(|frame| frame.pts),
         Some(landing_position),
-        "decode anchor до target не должен стать presented frame"
+        "decode anchor before target shouldn't presented frame"
     );
     assert_eq!(
         audio_output.play_count.load(Ordering::Relaxed),
         2,
-        "audio play вызывается при исходном Play и перед seek commit"
+        "audio play is called at the original Play and before seek commit"
     );
     assert_eq!(
         harness.session.snapshot().playback_state,
@@ -189,21 +189,21 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
                         && presentation.frame_pts == landing_position
             )
         })
-        .expect("target frame event должен дойти до player presentation");
+        .expect("The target frame event must be up to the player presentation");
     let audio_resume_index = events
         .iter()
         .position(|event| matches!(event, PlayerEvent::AudioResumedAfterSeek(_)))
-        .expect("audio play acceptance должен быть видимым");
+        .expect("Audio Play Acceptance must be visible");
     let position_index = events
         .iter()
         .position(|event| {
             matches!(event, PlayerEvent::PositionChanged(position) if *position == target_position)
         })
-        .expect("position публикуется после audio play");
+        .expect("position is published after audio play");
     let commit_index = events
         .iter()
         .position(|event| matches!(event, PlayerEvent::SeekCommitted(_)))
-        .expect("A/V seek должен завершиться commit-ом");
+        .expect("A/V seek must be completed with a commitment");
     let playing_index = events
         .iter()
         .rposition(|event| {
@@ -212,7 +212,7 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
                 PlayerEvent::PlaybackStateChanged(PlaybackState::Playing)
             )
         })
-        .expect("Playing публикуется после commit-а");
+        .expect("Playing is published after commit-a");
     assert!(target_frame_index < audio_resume_index);
     assert!(audio_resume_index < position_index);
     assert!(position_index < commit_index);
@@ -229,28 +229,28 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
     ));
     assert!(
         harness.session.snapshot().current_position > committed_position,
-        "после A/V commit позиция должна продолжить движение по audio clock"
+        "After A/V commit, the position will continue to move through the audio clock."
     );
 
     let trace = captured_tracing.contents();
     let demux_marker = trace
         .find("Demux seek transaction accepted")
-        .expect("authoritative demux accept обязан публиковаться");
+        .expect("authoritative demux accept must be published");
     let decoded_marker = trace
         .find("First post-seek decoded frame observed")
-        .expect("target decode обязан публиковаться до presentation");
+        .expect("Target decode must be published prior to presentation");
     let presented_marker = trace
         .find("First post-seek presented frame observed")
-        .expect("functional seek обязан публиковать target presentation marker");
+        .expect("Functional seek must publish target presentation marker");
     let audio_marker = trace
         .find("Audio play accepted before final seek commit")
-        .expect("selected audio обязан публиковать accepted play marker");
+        .expect("Selected audio must publish accepted play marker");
     let commit_marker = trace
-        .find("Final seek commit завершён")
-        .expect("commit marker обязан следовать после presentation/audio");
+        .find("Final seek commit completed")
+        .expect("commit marker must follow after presentation/audio");
     let progress_marker = trace
         .find("Post-seek position progress observed")
-        .expect("первый положительный clock delta обязан дать one-shot marker");
+        .expect("The first positive clock delta must give a one-shot marker.");
     assert!(demux_marker < decoded_marker);
     assert!(decoded_marker < presented_marker);
     assert!(presented_marker < audio_marker);
@@ -263,10 +263,10 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
     let decoded_event = trace
         .lines()
         .find(|line| line.contains("First post-seek decoded frame observed"))
-        .expect("decoded acceptance event обязан существовать");
+        .expect("Decoded acceptance event must exist.");
     assert!(
         decoded_event.starts_with("level=INFO "),
-        "decoded acceptance proof обязан переживать production INFO filter: {decoded_event}"
+        "Decoded acceptance proof must survive production INFO filter: {decoded_event}"
     );
     let public_to_presented_ms = marker_u128_field(
         &trace,
@@ -302,14 +302,14 @@ fn worker_receipted_av_seek_preserves_exact_topology_and_commits_after_audio_pla
             "Post-seek position progress observed",
             "progress_delta_us",
         ) > 0,
-        "progress marker обязан сохранять положительный sub-ms delta без округления в ноль"
+        "progress marker Required to keep the positive sub-ms delta zero-round"
     );
     assert_eq!(
         trace
             .matches("Post-seek position progress observed")
             .count(),
         1,
-        "progress telemetry не должна спамить на каждом tick"
+        "progress telemetry You don't have to spam on everyone tick"
     );
 }
 
@@ -318,14 +318,14 @@ fn marker_u128_field(trace: &str, marker: &str, field_name: &str) -> u128 {
     let marker_line = trace
         .lines()
         .find(|line| line.contains(marker))
-        .unwrap_or_else(|| panic!("marker `{marker}` отсутствует в captured tracing"));
+        .unwrap_or_else(|| panic!("Marker '{marker}' not available in captured tracing"));
     let field_prefix = format!("{field_name}=");
     marker_line
         .split_whitespace()
         .find_map(|field| field.strip_prefix(&field_prefix))
-        .unwrap_or_else(|| panic!("field `{field_name}` отсутствует в marker `{marker}`"))
+        .unwrap_or_else(|| panic!("field `{field_name}' is missing from marker `{marker}'"))
         .parse()
-        .unwrap_or_else(|_| panic!("field `{field_name}` не является u128"))
+        .unwrap_or_else(|_| panic!("field `{field_name}' is not u128"))
 }
 
 /// Keyframe-before может законно показать container landing до public target, но acceptance
@@ -365,7 +365,7 @@ fn presented_pre_target_violation_never_publishes_zero_target_proof() {
     harness
         .session
         .dispatch_command(PlayerCommand::Play)
-        .expect("video-only regression должна стартовать в playing intent");
+        .expect("Video-only regression should start in playing intent");
     let _events_before_seek = harness.session.take_events();
     harness
         .session
@@ -373,10 +373,10 @@ fn presented_pre_target_violation_never_publishes_zero_target_proof() {
             target: SeekTarget::Absolute(MediaTime::from_duration(target_position)),
             mode: SeekMode::KeyframeBefore,
         }))
-        .expect("public keyframe-before seek должен пройти session boundary");
+        .expect("public keyframe-before seek must pass the boundary session");
     let commands = port.commands();
     let [(request_id, _request)] = commands.as_slice() else {
-        panic!("keyframe-before seek должен создать один worker request");
+        panic!("Keyframe-before seek should create one worker request");
     };
     port.complete(
         *request_id,
@@ -402,10 +402,10 @@ fn presented_pre_target_violation_never_publishes_zero_target_proof() {
             .present_video_frame()
             .map(|frame| frame.pts),
         Some(actual_position),
-        "fixture должен действительно представить pre-target landing"
+        "fixture I really need to imagine pre-target landing"
     );
     let trace = captured_tracing.contents();
-    assert!(trace.contains("Final seek commit завершён"));
+    assert!(trace.contains("Final seek commit completed"));
     assert!(trace.contains("presented_pre_target_frames=1"));
     assert!(!trace.contains("First post-seek presented frame observed"));
     assert!(!trace.contains("presented_pre_target_frames=0"));
@@ -421,7 +421,7 @@ fn worker_receipted_changed_topology_keeps_full_generation_reset() {
         .expect("worker seek command");
     let commands = port.commands();
     let [(request_id, _request)] = commands.as_slice() else {
-        panic!("worker seek должен создать один request");
+        panic!("The employee seeker must create one request.");
     };
     port.complete(
         *request_id,

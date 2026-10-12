@@ -219,7 +219,7 @@ impl AppState {
         if self.local_open_install.is_installing() {
             // Обычно сюда не дойти: Open и внешние открытия во время установки отклоняются
             // до выбора файла. Строка прогресса возвращается к файлу, который реально ставится.
-            info!("Установка из Open уже идёт; новый файл не устанавливается");
+            info!("Installation from Open is already underway; no new file is installed");
             if let Some(installing_path) = self.local_open_install.installing_path() {
                 let progress_message = local_open_preparing_message(installing_path);
                 self.set_startup_pending(progress_message);
@@ -232,7 +232,7 @@ impl AppState {
                 Ok(target_draft) => target_draft,
                 Err(error) => {
                     self.set_startup_error(format!(
-                        "Не удалось подготовить metadata очереди для target: {error}"
+                        "Failed to prepare metadata queues for target: {error}"
                     ));
                     return;
                 }
@@ -261,7 +261,9 @@ impl AppState {
         }
         let Some(request_id) = self.pending_prepared_media_strong_request_id() else {
             // begin при успехе всегда кладёт транзакцию в слот; без неё опрашивать нечего.
-            error!("Stepwise strong-open начат, но слот пуст: установка из Open потеряна");
+            error!(
+                "Stepwise strong-open started, but slot is empty: installation from Open is lost"
+            );
             self.set_startup_error(local_open_failure_message(
                 &path,
                 PlayerInstallFailureReason::InternalError,
@@ -269,7 +271,9 @@ impl AppState {
             return;
         };
         if self.local_open_install.track(request_id, target).is_some() {
-            error!("Установка из Open заменила прежнюю отметку: прежний terminal не наш");
+            error!(
+                "The Open installation replaced the previous mark: the previous terminal is not ours."
+            );
         }
     }
 
@@ -296,7 +300,7 @@ impl AppState {
                 true
             }
             LocalOpenInstallProgress::OwnershipLost { target } => {
-                error!("Установка из Open потеряла свой request в общем strong-open слоте");
+                error!("Open installation lost its request in the overall strong-open slot");
                 self.set_startup_error(local_open_failure_message(
                     &target.path,
                     PlayerInstallFailureReason::InternalError,
@@ -330,7 +334,7 @@ impl AppState {
             target.media_kind,
             target.desired_intent,
         ) {
-            warn!(error = %error, "Target установлен, но sibling discovery не запущен");
+            warn!(error = %error, "Target is installed, but sibling discovery is not running");
         }
     }
 
@@ -347,17 +351,17 @@ impl AppState {
         // Имя файла — только в тексте для пользователя, в лог его не пишем.
         match error.user_outcome() {
             StrongMediaOpenUserOutcome::Cancelled => {
-                info!(error = %error, "Установка локального файла отменена");
+                info!(error = %error, "Installation of local file cancelled");
                 // Например, Next/Stop во время открытия: строка «Открываем…» больше не нужна.
                 self.finish_local_open_progress();
             }
             StrongMediaOpenUserOutcome::Busy => {
-                info!(error = %error, "Coordinator занят другим открытием");
+                info!(error = %error, "Coordinator is busy with another discovery");
                 self.finish_local_open_progress();
                 self.notify_open_still_in_progress();
             }
             StrongMediaOpenUserOutcome::Failed(reason) => {
-                warn!(error = %error, ?reason, "Не удалось установить подготовленный файл");
+                warn!(error = %error, ?reason, "It was not possible to install the prepared file");
                 self.report_local_open_failure(path, reason);
             }
         }

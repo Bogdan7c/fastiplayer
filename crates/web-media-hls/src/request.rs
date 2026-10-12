@@ -373,9 +373,9 @@ pub struct HlsEndpointRefreshReply {
 pub enum HlsEndpointRefreshError {
     #[error("HLS endpoint refresh cancelled")]
     Cancelled,
-    #[error("fresh extraction не содержит semantic candidate match")]
+    #[error("fresh extraction does not include semantic candidate match")]
     SemanticRematchFailed,
-    #[error("fresh candidate больше не является compatible public HLS live")]
+    #[error("fresh candidate is no longer compatible public HLS live")]
     IncompatibleLiveCandidate,
     #[error("HLS endpoint refresh owner disconnected")]
     OwnerDisconnected,

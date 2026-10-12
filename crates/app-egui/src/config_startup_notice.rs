@@ -3,7 +3,7 @@
 //! Решение о файле настроек принимает config-хранилище (`fastiplayer_config::
 //! load_or_recover_at`): переименовать повреждённый файл в копию, работать без записи и
 //! т. п. Этот модуль только переводит готовый typed итог в:
-//! - текст предупреждения для окна (по-русски, без путей к каталогам и имён Rust-типов);
+//! - текст предупреждения для окна (по-английски, без путей к каталогам и имён Rust-типов);
 //! - одну строку лога с техническими деталями.
 //!
 //! Ввод-вывод и решения здесь не выполняются: функции чистые и тестируются без диска.
@@ -17,11 +17,11 @@ use fastiplayer_config::{
 use tracing::{info, warn};
 
 /// Текст временного уведомления, когда настройку применили, но в файл не записали.
-pub(crate) const SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE: &str = "Настройки применены, но не сохранятся после выхода: файл настроек в этом запуске не изменяется";
+pub(crate) const SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE: &str = "Settings applied for this session only: the settings file cannot be modified during this session";
 
 /// Хвост сообщений о работе без записи — одинаковый, чтобы пользователь узнавал смысл.
 const CHANGES_WILL_NOT_BE_SAVED: &str =
-    "Используются настройки по умолчанию; изменения в этом запуске не сохранятся.";
+    "Using default settings; changes made during this session will not be saved.";
 
 /// Текст предупреждения для окна, если об итоге загрузки нужно сказать пользователю.
 ///
@@ -37,15 +37,13 @@ pub(crate) fn config_startup_warning(loaded_config: &LoadedConfig) -> Option<Str
             Some(recovered_message(recovery))
         }
         (ConfigLoadOrigin::RecoveredFromBroken(recovery), Some(_)) => Some(format!(
-            "{} Новый файл настроек записать не удалось — изменения в этом запуске не сохранятся.",
+            "{} Could not write a new settings file; changes made during this session will not be saved.",
             recovered_message(recovery)
         )),
         (_, Some(reason)) => Some(session_only_message(reason)),
         // Defaults в памяти всегда идут с запретом записи; без него это ошибка загрузчика,
         // но молчать о defaults всё равно нельзя.
-        (ConfigLoadOrigin::DefaultsInMemory, None) => {
-            Some("Используются настройки по умолчанию.".to_string())
-        }
+        (ConfigLoadOrigin::DefaultsInMemory, None) => Some("Using default settings.".to_string()),
     }
 }
 
@@ -53,16 +51,16 @@ pub(crate) fn config_startup_warning(loaded_config: &LoadedConfig) -> Option<Str
 pub(crate) fn log_config_load_outcome(loaded_config: &LoadedConfig) {
     match (&loaded_config.origin, &loaded_config.save_policy) {
         (ConfigLoadOrigin::LoadedExisting, ConfigSavePolicy::WriteToFile) => {
-            info!("Config fastiplayer загружен");
+            info!("Fastiplayer configuration loaded");
         }
         (ConfigLoadOrigin::CreatedDefault, ConfigSavePolicy::WriteToFile) => {
-            info!("Config fastiplayer создан с настройками по умолчанию");
+            info!("Fastiplayer configuration created with default settings");
         }
         (origin, save_policy) => {
             warn!(
                 origin = ?origin,
                 save_policy = ?save_policy,
-                "Config fastiplayer не загружен штатно; работаем на настройках по умолчанию"
+                "Fastiplayer configuration could not be loaded normally; using default settings"
             );
         }
     }
@@ -71,7 +69,7 @@ pub(crate) fn log_config_load_outcome(loaded_config: &LoadedConfig) {
 /// «Файл был повреждён, сохранена копия …».
 fn recovered_message(recovery: &BrokenConfigRecovery) -> String {
     format!(
-        "Файл настроек был повреждён ({}). Сохранена копия {}, используются настройки по умолчанию.",
+        "The settings file was corrupted ({}). A backup was saved as {}; using default settings.",
         broken_problem_text(&recovery.problem),
         recovery.backup_file_name
     )
@@ -80,10 +78,10 @@ fn recovered_message(recovery: &BrokenConfigRecovery) -> String {
 /// Короткое человеческое объяснение поломки.
 fn broken_problem_text(problem: &BrokenConfigProblem) -> String {
     match problem {
-        BrokenConfigProblem::InvalidTomlSyntax => "ошибка в тексте файла".to_string(),
-        BrokenConfigProblem::SchemaMismatch => "неизвестный или неверный параметр".to_string(),
+        BrokenConfigProblem::InvalidTomlSyntax => "file syntax error".to_string(),
+        BrokenConfigProblem::SchemaMismatch => "unknown or invalid setting".to_string(),
         BrokenConfigProblem::InvalidValue { field } => {
-            format!("недопустимое значение параметра {field}")
+            format!("invalid value for setting {field}")
         }
     }
 }
@@ -92,22 +90,22 @@ fn broken_problem_text(problem: &BrokenConfigProblem) -> String {
 fn session_only_message(reason: &ConfigSessionOnlyReason) -> String {
     let cause = match reason {
         ConfigSessionOnlyReason::NewerSchemaVersion { .. } => {
-            "Файл настроек создан более новой версией Fastiplayer и оставлен без изменений."
+            "The settings file was created by a newer version of Fastiplayer and was left unchanged."
                 .to_string()
         }
         ConfigSessionOnlyReason::ConfigFileUnreadable { error_kind } => format!(
-            "Не удалось прочитать файл настроек ({}).",
+            "Could not read the settings file ({}).",
             io_error_kind_text(*error_kind)
         ),
         ConfigSessionOnlyReason::ConfigPathIsNotFile => {
-            "На месте файла настроек находится папка или другой объект, а не файл.".to_string()
+            "The settings file path points to a folder or another non-file object.".to_string()
         }
         ConfigSessionOnlyReason::BackupFailed { error_kind } => format!(
-            "Файл настроек повреждён, но сохранить его копию не удалось ({}); файл оставлен без изменений.",
+            "The settings file is corrupted, and a backup could not be saved ({}); the file was left unchanged.",
             io_error_kind_text(*error_kind)
         ),
         ConfigSessionOnlyReason::DefaultConfigNotWritten(problem) => format!(
-            "Не удалось создать файл настроек ({}).",
+            "Could not create the settings file ({}).",
             write_problem_text(*problem)
         ),
     };
@@ -119,7 +117,7 @@ fn write_problem_text(problem: ConfigWriteProblem) -> String {
     match problem {
         ConfigWriteProblem::CreateDirectory(error_kind) => {
             format!(
-                "папка настроек не создана: {}",
+                "settings folder could not be created: {}",
                 io_error_kind_text(error_kind)
             )
         }
@@ -127,13 +125,15 @@ fn write_problem_text(problem: ConfigWriteProblem) -> String {
     }
 }
 
-/// Частые классы I/O ошибок по-русски; остальные — стандартный текст ОС.
+/// Частые классы I/O ошибок по-английски; остальные — стандартный текст ОС.
 fn io_error_kind_text(error_kind: io::ErrorKind) -> String {
     match error_kind {
-        io::ErrorKind::PermissionDenied => "нет доступа".to_string(),
-        io::ErrorKind::ReadOnlyFilesystem => "диск только для чтения".to_string(),
-        io::ErrorKind::StorageFull => "диск заполнен".to_string(),
-        io::ErrorKind::NotADirectory => "часть пути — файл, а не папка".to_string(),
+        io::ErrorKind::PermissionDenied => "access denied".to_string(),
+        io::ErrorKind::ReadOnlyFilesystem => "read-only disk".to_string(),
+        io::ErrorKind::StorageFull => "disk full".to_string(),
+        io::ErrorKind::NotADirectory => {
+            "part of the path is a file instead of a folder".to_string()
+        }
         other => io::Error::from(other).to_string(),
     }
 }
@@ -180,12 +180,11 @@ mod tests {
             }),
             ConfigSavePolicy::WriteToFile,
         ))
-        .expect("о восстановлении предупреждаем");
+        .expect("Recovery Warning");
 
         assert_eq!(
             warning,
-            "Файл настроек был повреждён (ошибка в тексте файла). Сохранена копия \
-             config.toml.broken-2026-10-05_14-30-12.bak, используются настройки по умолчанию."
+            "The settings file was corrupted (file syntax error). A backup was saved as config.toml.broken-2026-10-05_14-30-12.bak; using default settings."
         );
         assert!(!warning.contains("/private/home"));
     }
@@ -199,14 +198,14 @@ mod tests {
                 found: 99,
             }),
         ))
-        .expect("о новой версии предупреждаем");
+        .expect("The new version is being warned");
 
-        assert!(warning.contains("более новой версией"));
-        assert!(warning.contains("оставлен без изменений"));
-        assert!(warning.contains("изменения в этом запуске не сохранятся"));
+        assert!(warning.contains("a newer version"));
+        assert!(warning.contains("left unchanged"));
+        assert!(warning.contains("changes made during this session will not be saved"));
     }
 
-    /// Нечитаемый файл: причина по-русски, без имён Rust-типов.
+    /// Нечитаемый файл: причина по-английски, без имён Rust-типов.
     #[test]
     fn unreadable_warning_uses_human_reason() {
         let warning = config_startup_warning(&loaded(
@@ -215,9 +214,9 @@ mod tests {
                 error_kind: io::ErrorKind::PermissionDenied,
             }),
         ))
-        .expect("о нечитаемом файле предупреждаем");
+        .expect("Unreadable File Warning");
 
-        assert!(warning.contains("Не удалось прочитать файл настроек (нет доступа)"));
+        assert!(warning.contains("Could not read the settings file (access denied)"));
         assert!(!warning.contains("PermissionDenied"));
     }
 
@@ -235,10 +234,10 @@ mod tests {
                 ConfigWriteProblem::CreateDirectory(io::ErrorKind::PermissionDenied),
             )),
         ))
-        .expect("предупреждаем");
+        .expect("warned");
 
-        assert!(warning.contains("Сохранена копия config.toml.broken-x.bak"));
+        assert!(warning.contains("A backup was saved as config.toml.broken-x.bak"));
         assert!(warning.contains("ui.sidebar.width_points"));
-        assert!(warning.contains("изменения в этом запуске не сохранятся"));
+        assert!(warning.contains("changes made during this session will not be saved"));
     }
 }

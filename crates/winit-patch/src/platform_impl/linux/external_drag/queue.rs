@@ -79,7 +79,7 @@ mod tests {
         );
         assert_eq!(first.window_id, window(1));
         assert_eq!(second.event, ExternalDragEvent::Left);
-        assert!(take_next().is_none(), "очередь должна опустеть");
+        assert!(take_next().is_none(), "queue should be empty");
     }
 
     #[test]
@@ -90,7 +90,7 @@ mod tests {
         let other_thread_sees_event =
             std::thread::spawn(|| take_next().is_some()).join().expect("thread joined");
 
-        assert!(!other_thread_sees_event, "другой поток не должен видеть чужие события");
-        assert!(take_next().is_some(), "событие остаётся у владельца потока");
+        assert!(!other_thread_sees_event, "The other stream should not see other people's events.");
+        assert!(take_next().is_some(), "The event remains with the stream owner");
     }
 }

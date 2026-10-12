@@ -339,7 +339,7 @@ impl HlsSeekIndex {
             .copied()
             .ok_or_else(|| {
                 anyhow!(
-                    "HLS seek index не содержит доказанный {required_kind:?} anchor до {:?}",
+                    "HLS seek index does not contain a proven {required_kind:?} anchor before {:?}",
                     target
                 )
             })
@@ -357,7 +357,7 @@ impl HlsSeekIndex {
             .copied()
             .ok_or_else(|| {
                 anyhow!(
-                    "HLS seek index не содержит доказанный {required_kind:?} anchor после {:?}",
+                    "HLS seek index does not contain {required_kind:?} anchor after {:?}",
                     target
                 )
             })
@@ -506,11 +506,11 @@ mod tests {
         let request = DemuxSeekRequest::decode_point_before(Duration::from_secs(5));
         assert!(
             index.anchor_for(request).is_err(),
-            "видео ожидается: аудио не якорь"
+            "Video expected: audio is not anchored"
         );
 
         index.declare_video_absent();
-        let anchor = index.anchor_for(request).expect("аудио-якорь без видео");
+        let anchor = index.anchor_for(request).expect("audio-anchor");
         assert_eq!(anchor.kind, HlsSeekAnchorKind::AudioPacket);
         assert_eq!(anchor.position.as_duration(), Duration::from_secs(2));
     }
@@ -608,7 +608,7 @@ mod tests {
             positions
                 .windows(2)
                 .all(|pair| pair[1].saturating_sub(pair[0]) <= Duration::from_secs(30)),
-            "compaction должен сохранять полезные промежуточные точки: {positions:?}"
+            "The compaction should retain useful intermediate points: {positions:?}"
         );
     }
 

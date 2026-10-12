@@ -118,7 +118,7 @@ def find_required_adapter_path_violations(
     return [
         F4fParserViolation(
             location=str(F4F_ISO_ENVELOPE_ADAPTER_PATH),
-            rule="exact F4F ISO-envelope adapter path отсутствует",
+            rule="exact F4F ISO-envelope adapter path missing",
             evidence=str(F4F_ISO_ENVELOPE_ADAPTER_PATH),
         )
     ]
@@ -140,7 +140,7 @@ def find_f4f_fmp4_source_violations(
         relative_path,
         source_text,
         F4F_ISO_ENVELOPE_PATTERNS,
-        "F4F ISO-envelope adapter разрешён только в exact flv-demux path",
+        "F4F ISO-envelope adapter is only allowed in the exact flv-demux path",
     )
     # Generic fMP4 parser declarations остаются у standalone ISO-BMFF patch.
     violations.extend(
@@ -148,7 +148,7 @@ def find_f4f_fmp4_source_violations(
             relative_path,
             source_text,
             FMP4_PATTERNS,
-            "generic fMP4 parsing принадлежит symphonia-format-isomp4 patch",
+            "generic fMP4 parsing belong symphonia-format-isomp4 patch",
         )
     )
     # Stable rule/evidence order делает CI output воспроизводимым.
@@ -202,7 +202,7 @@ def _find_adapter_symbol_violations(source_text: str) -> list[F4fParserViolation
         violations.append(
             F4fParserViolation(
                 location=str(F4F_ISO_ENVELOPE_ADAPTER_PATH),
-                rule="exact F4F ISO-envelope symbol inventory изменён",
+                rule="exact F4F ISO-envelope symbol inventory modified",
                 evidence=(
                     f"{change_kind} {diagnostic_kind} `{symbol_name}`{count_suffix}"
                 ),

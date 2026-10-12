@@ -256,7 +256,7 @@ fn drain_demuxer_to_real_eof(
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::TemporarilyUnavailable(hint) => bail!(
-                "{}: finite fixture неожиданно вернула temporary readiness {hint:?}",
+                "{}: finite fixture unexpectedly returns temporary readiness {hint:?}",
                 path.display()
             ),
             DemuxReadEvent::EndOfStream => {
@@ -293,7 +293,7 @@ fn first_selected_audio_packet_after_replay(
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::TemporarilyUnavailable(hint) => bail!(
-                "{}: finite replay неожиданно вернул temporary readiness {hint:?}",
+                "{}: finite replay unexpectedly returns temporary readiness to {hint:?}",
                 path.display()
             ),
             DemuxReadEvent::EndOfStream => bail!(
@@ -334,7 +334,7 @@ fn first_selected_audio_packet_covering_target(
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::TemporarilyUnavailable(hint) => bail!(
-                "{}: finite seek неожиданно вернул temporary readiness {hint:?}",
+                "{}: finite seek unexpectedly returns temporary readiness to {hint:?}",
                 path.display()
             ),
             DemuxReadEvent::EndOfStream => {
@@ -412,7 +412,7 @@ fn decode_next_audio_samples(
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::TemporarilyUnavailable(hint) => {
-                bail!("finite decode fixture неожиданно вернула temporary readiness {hint:?}")
+                bail!("finite decode fixture brings back temporary readiness {hint:?}")
             }
             DemuxReadEvent::EndOfStream => {
                 bail!("EOF arrived before decoded audio samples {phase}")

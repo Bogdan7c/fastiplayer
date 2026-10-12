@@ -264,7 +264,7 @@ impl PlayerSession {
             cause: MediaInstallCancellationCause::Superseded,
         };
         let outcome = protocol.apply_control(MediaInstallControl::Cancel(cancellation), || {
-            unreachable!("superseded pre-owner command не может commit-иться")
+            unreachable!("superseded pre-owner command cannot commit")
         });
         debug_assert_eq!(outcome, MediaInstallControlOutcome::CancellationAccepted);
         if let Err(error) = video_resource_port.publish_candidate_status(
@@ -276,7 +276,7 @@ impl PlayerSession {
             tracing::warn!(
                 request_id = request_id.get(),
                 %error,
-                "superseded pre-owner candidate cancellation status не доставлен"
+                "superseded pre-owner candidate cancellation status not delivered"
             );
         }
         self.staged_media_install.last_terminal_request_id = Some(request_id);
@@ -437,7 +437,7 @@ impl PlayerSession {
                 MediaInstallFailureStage::OpenTransition,
                 PlayerError::new(
                     PlayerErrorKind::InvalidCommand,
-                    "Player session уже завершает shutdown",
+                    "Player session is now closing shutdown",
                 ),
             ));
             self.playback_intent_control
@@ -520,7 +520,7 @@ fn prepare_detached_video_backend(
                 MediaInstallFailureStage::CandidateVideoBackendMatching,
                 PlayerError::new(
                     PlayerErrorKind::HardwareDecoderUnavailable,
-                    "Strong media install не получил exact video backend plan",
+                    "Strong media install didn't get it exact video backend plan",
                 ),
             ));
         }
@@ -541,7 +541,7 @@ fn prepare_detached_video_backend(
             MediaInstallFailureStage::CandidateVideoBackendMatching,
             PlayerError::new(
                 PlayerErrorKind::InvalidCommand,
-                "Detached backend reply принадлежит другому media install request",
+                "Detached backend reply to another media install request",
             ),
         ));
     }
@@ -560,7 +560,7 @@ fn prepare_detached_video_backend(
             PlayerError::new(
                 PlayerErrorKind::UnsupportedRenderFormat,
                 format!(
-                    "Candidate backend `{}` не совпал с planned backend `{expected_backend_id}`",
+                    "Candidate backend '{}' did not match planned backend '{expected_backend_id}'",
                     detached_backend.backend_id()
                 ),
             ),
@@ -645,7 +645,7 @@ fn media_install_port_failure(
         MediaInstallFailureStage::CandidateVideoResourceAcquisition,
         PlayerError::new(
             PlayerErrorKind::RuntimeError,
-            format!("{operation} не доставлен: {error}"),
+            format!("{operation} not delivered: {error}"),
         ),
     )
 }
@@ -656,10 +656,10 @@ fn media_install_status_failure(
     configuration_error: Option<&str>,
 ) -> MediaInstallFailure {
     let context = configuration_error.map_or_else(
-        || "candidate status не доставлен".to_owned(),
+        || "candidate status not delivered".to_owned(),
         |configuration_error| {
             format!(
-                "candidate status не доставлен после configuration failure `{configuration_error}`"
+                "candidate status not delivered after configuration failure '{configuration_error}'"
             )
         },
     );

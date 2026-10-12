@@ -369,7 +369,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         match crate::user_audio_level::send_user_audio_level_to_player(&sender, level) {
             Ok(()) => crate::settings_runtime::PlaybackAudioLevelDelivery::Sent,
             Err(error) => {
-                tracing::warn!(%error, "Player worker не принял громкость из настроек");
+                tracing::warn!(%error, "Player worker rejected volume from settings");
                 crate::settings_runtime::PlaybackAudioLevelDelivery::NotDelivered
             }
         }
@@ -414,7 +414,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         ) {
             PlayerApplyStart::Finished(result) => result,
             PlayerApplyStart::AwaitingMediaRebuild(_) => Err(PlayerRuntimeApplyError::Fatal(
-                "блокирующий режим не должен возвращать ожидание пересборки".to_owned(),
+                "Blocking mode must not return a pending rebuild".to_owned(),
             )),
         }
     }
@@ -449,7 +449,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         ) {
             MediaRebuildProgress::Finished(result) => result,
             MediaRebuildProgress::Pending => AppRouteApplyResult::Failed {
-                message: "блокирующий режим не должен возвращать ожидание пересборки".to_owned(),
+                message: "Blocking mode must not return a pending rebuild".to_owned(),
             },
         }
     }
@@ -492,7 +492,8 @@ impl FrameSettingsRuntimeAdapter<'_> {
     ) -> PlayerApplyStart {
         let Some(target_backend_preference) = target_policy.video_backend_preference() else {
             return PlayerApplyStart::Finished(Err(PlayerRuntimeApplyError::Fatal(
-                "player settings route не получил exact destination backend policy".to_owned(),
+                "Player settings route did not receive the exact destination backend policy"
+                    .to_owned(),
             )));
         };
         let mut report = PlayerRuntimeApplyReport::empty();
@@ -718,8 +719,9 @@ impl FrameSettingsRuntimeAdapter<'_> {
         }
         let Some(target_backend_preference) = target_policy.video_backend_preference() else {
             return MediaRebuildProgress::Finished(AppRouteApplyResult::Failed {
-                message: "media settings route не получил exact destination backend policy"
-                    .to_owned(),
+                message:
+                    "Media settings route did not receive the exact destination backend policy"
+                        .to_owned(),
             });
         };
 

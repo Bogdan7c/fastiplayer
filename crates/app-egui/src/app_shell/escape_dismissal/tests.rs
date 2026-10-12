@@ -26,7 +26,7 @@ fn runtime_with_queued_item() -> PlaylistRuntime {
             "https://media.example.test/queued.mp4",
             &fastiplayer_config::YtDlpConfig::default(),
         )
-        .expect("тестовый URL добавляется в очередь");
+        .expect("The test URL is added to the queue");
     assert!(matches!(
         appended,
         UrlAppendActionOutcome::Appended { item_count: 1 }
@@ -40,7 +40,7 @@ fn open_replacement_confirmation(runtime: &mut PlaylistRuntime) {
         .admit_in_app_queue_replacement(InAppQueueReplacementIntent::local_file(
             "replacement.mp4".into(),
         ))
-        .expect("runtime принимает замену очереди");
+        .expect("Runtime replaces the queue");
     assert!(matches!(
         admission,
         InAppQueueReplacementAdmission::AwaitingConfirmation
@@ -65,13 +65,13 @@ fn open_import_preview_with_intent(
         PlaylistImportProvenance::new(locator, PlaylistImportSourceKind::M3u, None),
         PlaylistImportAvailability::Available,
     )
-    .expect("валидная запись импорта");
+    .expect("validation");
     let preview = runtime
         .stage_playlist_import(
             intent,
             PlaylistImportDraft::new(vec![entry.into()], Vec::new(), None, 0),
         )
-        .expect("preview импорта публикуется");
+        .expect("Import preview published");
     preview.preview_id()
 }
 
@@ -104,12 +104,12 @@ fn escape_cancels_queue_replacement_confirmation_before_fullscreen() {
     open_replacement_confirmation(&mut runtime);
     let pending = runtime
         .pending_playlist_confirmation()
-        .expect("диалог подтверждения открыт");
+        .expect("Confirmation dialogue opens");
 
     let target = resolve_escape_target(&collect(&runtime, WindowPresentation::Fullscreen));
 
     let EscapeTarget::PlaylistConfirmation(cancel_action) = target else {
-        panic!("Esc должен отменять подтверждение, получено {target:?}");
+        panic!("Esc must cancel confirmation received {target:?}");
     };
     assert_eq!(cancel_action.intent_id, pending.intent_id());
     assert_eq!(
@@ -153,12 +153,12 @@ fn confirmation_has_priority_over_import_preview() {
     let _continued = runtime.continue_playlist_import(preview_id);
     assert!(
         runtime.pending_playlist_confirmation().is_some(),
-        "предусловие: подтверждение замены открыто"
+        "Precondition: Confirmation of replacement is open"
     );
     let context = collect(&runtime, WindowPresentation::Windowed);
     assert!(
         context.playlist_import_preview.is_some(),
-        "предусловие: preview импорта тоже открыт"
+        "Preview: Import preview is also open."
     );
 
     let target = resolve_escape_target(&context);
@@ -226,7 +226,7 @@ fn escape_with_open_egui_popup_is_left_to_egui_which_closes_it() {
     run_combo_box_frame(&egui_ctx, Vec::new());
     assert!(
         egui::Popup::is_any_open(&egui_ctx),
-        "предусловие: popup открыт"
+        "precondition: popup open-ended"
     );
 
     let context = EscapeContext::collect(&egui_ctx, &runtime, WindowPresentation::Fullscreen);

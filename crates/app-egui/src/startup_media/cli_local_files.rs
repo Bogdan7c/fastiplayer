@@ -79,7 +79,7 @@ impl StartupMediaController {
             | StartupFollowUpFilesOutcome::Rejected) => {
                 warn!(
                     ?outcome,
-                    "Остальные CLI-файлы не встали в очередь после первого"
+                    "The rest of the CLI files did not queue after the first one."
                 );
                 app_state.notify_info(FOLLOW_UP_FILES_NOT_QUEUED_MESSAGE);
             }

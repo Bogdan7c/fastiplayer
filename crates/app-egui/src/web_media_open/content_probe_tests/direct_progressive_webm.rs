@@ -73,7 +73,7 @@ impl OffscreenWgpuHarness {
             force_fallback_adapter: false,
             apply_limit_buckets: false,
         }))
-        .expect("получить Vulkan adapter для direct WebM acceptance");
+        .expect("Get Vulkan adapter for direct WebM acceptance");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("N06 direct WebM offscreen device"),
             required_features: wgpu::Features::empty(),
@@ -82,7 +82,7 @@ impl OffscreenWgpuHarness {
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
-        .expect("создать WGPU device для direct WebM acceptance");
+        .expect("Create a WGPU device for direct WebM acceptance");
         let target_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("N06 direct WebM target"),
             size: wgpu::Extent3d {
@@ -143,16 +143,16 @@ impl OffscreenWgpuHarness {
         let uploaded_views = match materializer.wait_host_planar_texture_view_ready(&frame) {
             HostPlanarWgpuTextureViewLookup::Ready { views, .. } => views,
             HostPlanarWgpuTextureViewLookup::Busy { .. } => {
-                panic!("HostPlanar materializer неожиданно занят")
+                panic!("HostPlanar materializer is unexpectedly busy.")
             }
             HostPlanarWgpuTextureViewLookup::Missing { .. } => {
-                panic!("decoded VP9 resource отсутствует")
+                panic!("Decoded VP9 resource is not available.")
             }
             HostPlanarWgpuTextureViewLookup::Unsupported { reason, .. } => {
-                panic!("HostPlanar materializer отклонил VP9 frame: {reason:?}")
+                panic!("HostPlanar materializer rejects VP9 frame: {reason:?}")
             }
             HostPlanarWgpuTextureViewLookup::Error { .. } => {
-                panic!("HostPlanar materializer завершился ошибкой")
+                panic!("HostPlanar materializer ended up with an error")
             }
         };
         let renderable_frame = WgpuRenderableFrame::from_decoded_host_yuv(
@@ -161,7 +161,7 @@ impl OffscreenWgpuHarness {
             &uploaded_views.u_view,
             &uploaded_views.v_view,
         )
-        .expect("собрать WGPU renderable direct WebM frame");
+        .expect("WGPU renderable direct WebM frame");
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -183,10 +183,10 @@ impl OffscreenWgpuHarness {
                 device: &self.device,
                 queue: &self.queue,
             })
-            .expect("WGPU renderer должен принять direct WebM frame");
+            .expect("WGPU renderer must accept direct WebM frame");
         assert!(
             drew_video,
-            "direct WebM frame не должен стать clear-only pass-ом"
+            "direct WebM frame must not become a clear-only pass"
         );
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -216,21 +216,21 @@ impl OffscreenWgpuHarness {
         readback_slice.map_async(wgpu::MapMode::Read, move |mapping_result| {
             mapping_sender
                 .send(mapping_result)
-                .expect("передать direct WebM readback result");
+                .expect("Direct WebM readback result");
         });
         self.device
             .poll(wgpu::PollType::Wait {
                 submission_index: Some(submission_index),
                 timeout: Some(ACCEPTANCE_TIMEOUT),
             })
-            .expect("дождаться direct WebM WGPU submit");
+            .expect("Wait for direct WebM WGPU submit");
         mapping_receiver
             .recv_timeout(ACCEPTANCE_TIMEOUT)
-            .expect("получить direct WebM map callback")
+            .expect("Direct WebM map callback")
             .expect("map direct WebM readback buffer");
         let mapped_bytes = readback_slice
             .get_mapped_range()
-            .expect("получить mapped range direct WebM readback");
+            .expect("Mapped Range Direct WebM readback");
         let visible_row_bytes = usize::try_from(TARGET_WIDTH * 4).expect("visible row bytes");
         let padded_row_bytes =
             usize::try_from(self.padded_bytes_per_row).expect("padded row bytes");
@@ -262,7 +262,7 @@ pub(crate) fn open_decoder(
 ) {
     let started_backend = FfmpegSoftwareVideoBackendFactory::new()
         .start_for_composition()
-        .expect("запустить software FFmpeg backend");
+        .expect("Launch the software FFmpeg backend");
     let (wrapped_backend, renderer_provider, _submission_queue_binding) =
         wrap_video_backend_for_wgpu_submission(started_backend, queue);
     let decoder = wrapped_backend.into_decoder_thread();
@@ -360,7 +360,7 @@ pub(crate) fn drain_decoder(decoder: &VideoBackendDecoderThreadHandle) -> Decode
         }
         match decoder.end_of_stream_drain_state() {
             VideoDecoderEndOfStreamDrainState::Drained { .. } => {
-                return first_frame.expect("VP9 EOF drain должен выдать decoded frame");
+                return first_frame.expect("VP9 EOF drain must be decoded frame");
             }
             VideoDecoderEndOfStreamDrainState::Fatal { error, .. } => {
                 panic!("VP9 EOF drain failed: {error}")
@@ -410,11 +410,11 @@ fn n14a_consumer_http_webm_reaches_submitted_readback_with_exact_accounting() {
     let locator = origin.media_url_with_extension("webm");
     let classified =
         media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
-            .expect("WebM должен классифицироваться direct");
+            .expect("WebM should be classified directly.");
     assert_eq!(
         origin.request_count(),
         0,
-        "syntactic classifier не имеет права загружать root resource"
+        "syntactic classifier is not authorized to download root resource"
     );
     let mut app_config = fastiplayer_config::AppConfig::default();
     app_config.yt_dlp.enabled = false;
@@ -431,7 +431,7 @@ fn n14a_consumer_http_webm_reaches_submitted_readback_with_exact_accounting() {
         .iter()
         .find(|track| track.kind == TrackKind::Video)
         .cloned()
-        .expect("direct WebM должен иметь video track");
+        .expect("Direct WebM should have a video track");
 
     let mut wgpu_harness = OffscreenWgpuHarness::new();
     let (decoder, renderer_provider) =
@@ -447,12 +447,12 @@ fn n14a_consumer_http_webm_reaches_submitted_readback_with_exact_accounting() {
     assert_eq!(
         origin.request_count(),
         2,
-        "direct WebM open использует exact probe/read cohort без classifier fetch-а"
+        "direct WebM open uses exact probe/read cohort without classifier fetch-?"
     );
     assert_eq!(
         origin.response_body_bytes(),
         N14A_HTTP_WEBM_INITIAL_BODY_BYTES,
-        "две bounded Range responses обязаны вернуть exact WebM fixture bytes"
+        "Two bounded Range responses must return exact WebM fixture bytes"
     );
 }
 
@@ -467,7 +467,7 @@ fn n14b_lifecycle_http_webm_close_restart_reaches_submitted_readback_without_ext
     let locator = origin.media_url_with_extension("webm");
     let classified =
         media_source_open::direct_progressive_open::classify_direct_media_url(&locator)
-            .expect("WebM должен классифицироваться direct");
+            .expect("WebM should be classified directly.");
     let mut app_config = fastiplayer_config::AppConfig::default();
     app_config.yt_dlp.enabled = false;
     let mut wgpu_harness = OffscreenWgpuHarness::new();
@@ -488,7 +488,7 @@ fn n14b_lifecycle_http_webm_close_restart_reaches_submitted_readback_without_ext
             .iter()
             .find(|track| track.kind == TrackKind::Video)
             .cloned()
-            .expect("direct WebM должен иметь video track");
+            .expect("Direct WebM should have a video track");
         let (decoder, renderer_provider) =
             open_decoder(&video_track, &wgpu_harness.queue, VideoCodec::Vp9);
         let materializer = HostPlanarWgpuFrameMaterializer::new(
@@ -508,12 +508,12 @@ fn n14b_lifecycle_http_webm_close_restart_reaches_submitted_readback_without_ext
     assert_eq!(
         origin.request_count(),
         4,
-        "cold open и restart должны выполнить по одному exact probe/read cohort"
+        "cold open and restart must perform one exact probe/read cohort"
     );
     assert_eq!(
         origin.response_body_bytes(),
         N14A_HTTP_WEBM_INITIAL_BODY_BYTES * 2,
-        "restart должен повторить только exact WebM body cohort"
+        "restart I have to repeat exact WebM body cohort"
     );
 }
 

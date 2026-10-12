@@ -24,7 +24,7 @@ impl AudioOutput {
         if self.backend_stream_state == BackendStreamState::Paused {
             self.stream
                 .play()
-                .context("Не удалось запустить audio stream")?;
+                .context("Could not start the audio stream")?;
             self.backend_stream_state = BackendStreamState::Running;
         }
         let consumer = self
@@ -70,7 +70,7 @@ impl AudioOutput {
         match pause_outcome {
             Some(PauseStreamOutcome::Paused) => info!("Audio stream paused"),
             Some(PauseStreamOutcome::UnsupportedByBackend) => warn!(
-                "CPAL backend не поддерживает pause; callback переведён в logical silence gate"
+                "CPAL backend does not support pause; callback translates to logical silence gate"
             ),
             None => {}
         }
@@ -145,6 +145,6 @@ pub(super) fn pause_stream_with_policy(stream: &cpal::Stream) -> Result<PauseStr
         {
             Ok(PauseStreamOutcome::UnsupportedByBackend)
         }
-        Err(error) => Err(error).context("Не удалось остановить audio stream"),
+        Err(error) => Err(error).context("Could not stop the audio stream"),
     }
 }

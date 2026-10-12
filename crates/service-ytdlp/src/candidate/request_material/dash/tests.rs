@@ -218,7 +218,7 @@ fn relative_fragment_requires_base_and_empty_input_uses_manifest_precedence() {
     );
     root_relative
         .dash_request_material()
-        .expect("root-relative reference сохраняет origin base URL");
+        .expect("root-relative reference: origin base URL");
 
     for unsafe_path in [
         "//evil.invalid/network-path.m4s",

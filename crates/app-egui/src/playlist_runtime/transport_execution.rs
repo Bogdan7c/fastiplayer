@@ -24,7 +24,7 @@ use crate::media_open::MediaOpenRequestId;
 
 /// Общий текст бейджа, когда причина отказа автоперехода неизвестна (прежнее поведение).
 const GENERIC_AUTOMATIC_TARGET_FAILURE_SUMMARY: &str =
-    "Не удалось подготовить следующий элемент очереди";
+    "Could not prepare the next element of the queue";
 
 /// Что показать в строке очереди, когда подготовка элемента не удалась.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,7 +293,7 @@ impl PlaylistRuntime {
                         if recorded != RuntimeErrorCorrelationOutcome::Recorded {
                             tracing::debug!(
                                 outcome = ?recorded,
-                                "Бейдж причины не поставлен: элемент уже не в очереди"
+                                "Badge cause not put: the element is no longer in line"
                             );
                         }
                     }
@@ -423,7 +423,7 @@ impl PlaylistRuntime {
             return match outcome {
                 ManualNavigationCancelOutcome::NoManualNavigation => false,
                 ManualNavigationCancelOutcome::Fatal(_) => {
-                    self.set_playlist_safe_feedback("Не удалось отменить переход");
+                    self.set_playlist_safe_feedback("Failed to cancel the transition");
                     true
                 }
                 ManualNavigationCancelOutcome::Discarded(_)
@@ -572,7 +572,7 @@ mod tests {
                 .report_playlist_navigation_failure(
                     MediaOpenRequestId::from_non_zero(non_zero(390)),
                     item_ids[0],
-                    PlaylistTargetFailureSummary::Specific(Arc::from("Файл не найден")),
+                    PlaylistTargetFailureSummary::Specific(Arc::from("File not found")),
                 )
                 .is_none(),
             "explicit first-item failure must not start automatic skipping"
@@ -587,7 +587,7 @@ mod tests {
                 .runtime_errors
                 .get(&item_ids[0])
                 .map(|runtime_error| runtime_error.safe_summary().to_owned()),
-            Some("Файл не найден".to_owned())
+            Some("File not found".to_owned())
         );
         assert!(!controller.runtime_errors.contains_key(&item_ids[1]));
         assert!(

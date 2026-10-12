@@ -159,6 +159,16 @@ fn user_visible_metadata_has_text_and_placement() {
     let registry = registry();
 
     for descriptor in registry.descriptors() {
+        assert_english_fallback(&descriptor.text.label.fallback_ru, descriptor.id.as_str());
+        for text in [
+            descriptor.text.description.as_ref(),
+            descriptor.text.help.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert_english_fallback(&text.fallback_ru, descriptor.id.as_str());
+        }
         assert!(
             descriptor
                 .text
@@ -198,13 +208,13 @@ fn audio_volume_metadata_names_remembered_volume_and_separate_mute() {
     let registry = registry();
     let volume = descriptor(&registry, "audio.volume");
 
-    assert_eq!(volume.text.label.fallback_ru, "Громкость");
+    assert_eq!(volume.text.label.fallback_ru, "Volume");
     let description = volume
         .text
         .description
         .as_ref()
         .expect("audio.volume description must exist");
-    assert!(description.fallback_ru.contains("запоминает"));
+    assert!(description.fallback_ru.contains("saves it automatically"));
     let help = volume
         .text
         .help
@@ -212,11 +222,11 @@ fn audio_volume_metadata_names_remembered_volume_and_separate_mute() {
         .expect("audio.volume help must exist");
     assert!(
         help.fallback_ru
-            .contains("сразу меняет и текущую громкость")
+            .contains("also changes the current volume immediately")
     );
 
     let muted = descriptor(&registry, "audio.muted");
-    assert_eq!(muted.text.label.fallback_ru, "Звук выключен");
+    assert_eq!(muted.text.label.fallback_ru, "The sound's off.");
     assert_eq!(
         registry
             .get_value(&AppConfig::default(), &SettingId::from("audio.muted"))
@@ -725,19 +735,19 @@ fn frame_server_metadata_is_editable_and_metadata_ready() {
         assert!(!descriptor.placement.group_default_open);
         assert_eq!(descriptor.route.as_str(), "frame_server.apply");
         assert_eq!(descriptor.apply_mode, SettingApplyMode::CommittedApply);
-        assert_russian_fallback(&descriptor.text.label.fallback_ru, id);
+        assert_english_fallback(&descriptor.text.label.fallback_ru, id);
         let description = descriptor
             .text
             .description
             .as_ref()
             .unwrap_or_else(|| panic!("{id} description must explain frame_server behavior"));
-        assert_russian_fallback(&description.fallback_ru, id);
+        assert_english_fallback(&description.fallback_ru, id);
         let help = descriptor
             .text
             .help
             .as_ref()
             .unwrap_or_else(|| panic!("{id} help must explain S30B limitations"));
-        assert_russian_fallback(&help.fallback_ru, id);
+        assert_english_fallback(&help.fallback_ru, id);
     }
 
     let mut config = AppConfig::default();
@@ -840,7 +850,7 @@ fn preferred_height_settings_accessor_preserves_best_playable_and_validated_choi
         .expect("valid fixed height applies");
     assert_eq!(
         config.web_media.preferred_video_height,
-        Some(PreferredVideoHeight::new(2160).expect("2160 валидно"))
+        Some(PreferredVideoHeight::new(2160).expect("2160 valid."))
     );
 
     let invalid = registry.set_value(
@@ -851,7 +861,7 @@ fn preferred_height_settings_accessor_preserves_best_playable_and_validated_choi
     assert!(invalid.is_err());
     assert_eq!(
         config.web_media.preferred_video_height,
-        Some(PreferredVideoHeight::new(2160).expect("2160 валидно"))
+        Some(PreferredVideoHeight::new(2160).expect("2160 valid."))
     );
 
     registry
@@ -864,7 +874,7 @@ fn preferred_height_settings_accessor_preserves_best_playable_and_validated_choi
     assert_eq!(config.web_media.preferred_video_height, None);
 
     config.web_media.preferred_video_height =
-        Some(PreferredVideoHeight::new(1234).expect("custom height валидна"));
+        Some(PreferredVideoHeight::new(1234).expect("custom height valid"));
     assert_eq!(
         registry
             .get_value(&config, &setting_id)
@@ -912,11 +922,11 @@ fn web_media_settings_reject_invalid_neutral_values_without_mutating_config() {
         // Ошибка не должна менять даже то поле, к которому обращался caller.
         let value_before = registry
             .get_value(&config, &setting_id)
-            .expect("web-media setting должен читаться до rejected update");
+            .expect("Web-media setting must be read before rejected update");
         // Неверное значение обязано вернуться наружу как SettingsError.
         let error = registry
             .set_value(&mut config, &setting_id, invalid_value)
-            .expect_err("неверное neutral value не должно применяться");
+            .expect_err("Irregular neutral value should not be used");
 
         // Registry error обязан назвать rejected setting, даже если validation сработала до accessor-а.
         assert!(error.to_string().contains(setting_path));
@@ -924,7 +934,7 @@ fn web_media_settings_reject_invalid_neutral_values_without_mutating_config() {
         assert_eq!(
             registry
                 .get_value(&config, &setting_id)
-                .expect("web-media setting должен читаться после rejected update"),
+                .expect("Web-media setting should be read after rejected update"),
             value_before
         );
     }
@@ -945,7 +955,7 @@ fn web_media_metadata_is_provider_neutral_and_yt_dlp_registry_is_process_only() 
             .text
             .description
             .as_ref()
-            .expect("web-media descriptor должен объяснять policy")
+            .expect("The web-media descriptor should explain the policy")
             .fallback_ru
             .to_lowercase();
         assert!(!label.contains("yt-dlp") && !label.contains("ytdlp"));
@@ -1075,15 +1085,17 @@ fn assert_select_list_options(registry: &SettingsRegistry<AppConfig>, id: &str, 
     assert_eq!(option_ids(options), expected);
 }
 
-fn assert_russian_fallback(text: &str, id: &str) {
+fn assert_english_fallback(text: &str, id: &str) {
     assert!(
-        text.chars().any(|character| {
-            ('а'..='я').contains(&character)
-                || ('А'..='Я').contains(&character)
-                || character == 'ё'
-                || character == 'Ё'
-        }),
-        "{id} fallback must contain Russian text",
+        text.chars()
+            .any(|character| character.is_ascii_alphabetic()),
+        "{id} fallback must contain readable English text",
+    );
+    assert!(
+        !text
+            .chars()
+            .any(|character| matches!(character, 'А'..='я' | 'Ё' | 'ё')),
+        "{id} fallback must not contain Cyrillic: {text}",
     );
 }
 

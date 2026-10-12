@@ -120,29 +120,29 @@ fn static_manifest(webm_first: bool) -> Vec<u8> {
 fn split_webm_fixture() -> (Vec<u8>, Vec<u8>) {
     let mut webm = base64::engine::general_purpose::STANDARD
         .decode(MUXED_WEBM_BASE64)
-        .expect("N09 VP9/Opus fixture должен быть валидным base64");
+        .expect("N09 VP9/Opus fixture must be valid base64");
     let segment_offset = webm
         .windows(WEBM_SEGMENT_ID.len())
         .position(|window| window == WEBM_SEGMENT_ID)
-        .expect("generated WebM должен содержать Segment");
+        .expect("Created WebM should include Segment");
     let segment_size_offset = segment_offset + WEBM_SEGMENT_ID.len();
     webm[segment_size_offset..segment_size_offset + WEBM_UNKNOWN_SEGMENT_SIZE.len()]
         .copy_from_slice(&WEBM_UNKNOWN_SEGMENT_SIZE);
     let cluster_offset = webm
         .windows(WEBM_CLUSTER_ID.len())
         .position(|window| window == WEBM_CLUSTER_ID)
-        .expect("generated WebM должен содержать Cluster");
+        .expect("The generated WebM must contain a Cluster.");
     let opus_relative_timestamp_offset = webm[cluster_offset..]
         .windows(WEBM_FIRST_OPUS_BLOCK_HEADER.len())
         .position(|window| window == WEBM_FIRST_OPUS_BLOCK_HEADER)
         .map(|relative_offset| cluster_offset + relative_offset + 4)
-        .expect("generated WebM должен содержать первый Opus SimpleBlock");
+        .expect("The generated WebM should contain the first Opus SimpleBlock.");
     webm[opus_relative_timestamp_offset] = WEBM_OPUS_PREROLL_COMPENSATION_MS;
     let vp9_relative_timestamp_offset = webm[cluster_offset..]
         .windows(WEBM_FIRST_VP9_BLOCK_HEADER.len())
         .position(|window| window == WEBM_FIRST_VP9_BLOCK_HEADER)
         .map(|relative_offset| cluster_offset + relative_offset + 5)
-        .expect("generated WebM должен содержать первый VP9 SimpleBlock");
+        .expect("The generated WebM should contain the first VP9 SimpleBlock.");
     webm[vp9_relative_timestamp_offset] = WEBM_VP9_ORIGIN_COMPENSATION_MS;
     (
         webm[..cluster_offset].to_vec(),
@@ -186,7 +186,7 @@ pub(super) fn fixture_routes() -> HashMap<String, Vec<Vec<u8>>> {
 
 /// Один production-readable backend snapshot одновременно доказывает H.264 и VP9 rows.
 fn dash_system_capabilities() -> SystemCapabilities {
-    let backend_id = DecodeBackendId::new("nnine_sw").expect("валидный backend ID");
+    let backend_id = DecodeBackendId::new("nnine_sw").expect("valid backend ID");
     let output = |codec, profile| SupportedVideoOutput {
         backend: backend_id.clone(),
         decode_format: SupportedVideoDecodeFormat {
@@ -257,11 +257,11 @@ pub(super) fn prepare_native(
         audio_capabilities: settings.audio_capabilities,
         cancellation: CancellationToken::new(),
     })
-    .expect("native static DASH admission должен пройти")
+    .expect("Homeland static DASH admission must be completed")
     {
         NativeDashAttempt::Prepared(prepared) => prepared,
         NativeDashAttempt::RequiresExtractorFallback(trigger) => {
-            panic!("валидный static MPD не имеет права требовать extractor: {trigger:?}")
+            panic!("Valid static MPD does not require extractor: {trigger:?}")
         }
     }
 }
@@ -273,12 +273,12 @@ fn selected_video_codec(prepared: &PreparedNativeDashMedia) -> DecodeVideoCodec 
         .tracks()
         .iter()
         .find(|track| track.kind == TrackKind::Video)
-        .expect("native DASH row должна содержать video track")
+        .expect("The native DASH row must contain a video track.")
         .codec_id;
     match codec_id.as_str() {
         "V_MPEG4/ISO/AVC" => DecodeVideoCodec::H264,
         "V_VP9" => DecodeVideoCodec::Vp9,
-        unexpected => panic!("N09 получил неожиданный video codec: {unexpected}"),
+        unexpected => panic!("The N09 received an unexpected video codec: {unexpected}"),
     }
 }
 
@@ -294,12 +294,12 @@ fn alternate_component_selection(
         },
     ) = stream_configuration.component_variant_projection()
     else {
-        panic!("native DASH MPD должен публиковать coupled fMP4/WebM catalog");
+        panic!("native DASH MPD must publish coupled fMP4/WebM catalog");
     };
     assert_eq!(
         coupled.variants.len(),
         2,
-        "catalog не должен синтезировать fake Cartesian combinations"
+        "catalog should not be synthesized fake Cartesian combinations"
     );
     let alternate_index = usize::from(coupled.active_index == 0);
     let resolution = stream_configuration
@@ -309,9 +309,9 @@ fn alternate_component_selection(
             axis: WebMediaComponentVariantAxisKind::Coupled,
             variant_index: alternate_index,
         })
-        .expect("fresh DASH component action должен разрешиться");
+        .expect("fresh DASH component action must be allowed");
     let ComponentVariantActionResolution::SemanticReopen(selection) = resolution else {
-        panic!("alternate DASH row не должна разрешаться как NoChange");
+        panic!("Alternate DASH row cannot be resolved as NoChange.");
     };
     selection
 }
@@ -330,7 +330,7 @@ fn native_request_parts(
         settings,
     } = request.into_adapter()
     else {
-        panic!("native DASH action обязан сохранить native semantic request");
+        panic!("Native DASH action must retain native semantic request");
     };
     (source, selection, settings)
 }
@@ -370,7 +370,7 @@ fn n14a_consumer_dash_vod_fmp4_and_webm_reach_consumers_with_exact_accounting() 
             settings.clone(),
         )
     else {
-        panic!("N14A WebM row должна создать exact native selection request");
+        panic!("N14A WebM row to create exact native selection request");
     };
     let (webm_source, webm_selection, webm_settings) = native_request_parts(webm_request);
     let mut webm_media = prepare_native(&webm_source, Some(&webm_selection), &webm_settings);
@@ -398,14 +398,14 @@ fn assert_vod_seek(
     let request_id = PreparedDemuxSeekRequestId::new(request_id);
     seek_port
         .enqueue_seek(request_id, DemuxSeekRequest::accurate(requested_position))
-        .expect("native DASH VOD seek должен войти в worker");
+        .expect("Native DASH VOD seek must be included in the worker");
     let deadline = Instant::now() + DASH_VERTICAL_DEADLINE;
     loop {
         if let Some(receipt) = seek_port.poll_seek_receipt() {
             assert_eq!(receipt.request_id, request_id);
             let PreparedDemuxSeekOutcome::Succeeded(result) = receipt.outcome else {
                 panic!(
-                    "native DASH seek должен завершиться успехом: {:?}",
+                    "The native DASH seek should be successful: {:?}",
                     receipt.outcome
                 );
             };
@@ -435,7 +435,7 @@ fn n14b_lifecycle_dash_vod_seek_forward_back_switch_and_reopen_reaches_consumers
     assert_eq!(
         server.request_count("/manifest.mpd"),
         0,
-        "syntactic DASH classifier не должен fetch-ить root до open"
+        "syntactic DASH classifier shouldn't fetch-ooze root before open"
     );
     let stable_source_identity = source.source_identity();
     let mut wgpu_harness = OffscreenWgpuHarness::new();
@@ -474,7 +474,7 @@ fn n14b_lifecycle_dash_vod_seek_forward_back_switch_and_reopen_reaches_consumers
             settings.clone(),
         )
     else {
-        panic!("fresh DASH row action обязан запустить exact same-item switch");
+        panic!("Fresh DASH row action must run the exact same-item switch");
     };
     let (switch_source, switch_selection, switch_settings) = native_request_parts(switch_request);
     let mut switched = prepare_native(&switch_source, Some(&switch_selection), &switch_settings);
@@ -489,12 +489,12 @@ fn n14b_lifecycle_dash_vod_seek_forward_back_switch_and_reopen_reaches_consumers
     let web_media_core::WebMediaSelectionShape::Components(switched_components) =
         switched.source_state.neutral_selection().shape()
     else {
-        panic!("switched DASH selection должна сохранить component shape");
+        panic!("Switched DASH selection must retain the component shape");
     };
     assert_eq!(
         switched_components.semantic_rematch_request(),
         expected_alternate,
-        "row reorder не должен менять exact semantic selection"
+        "row reorder does not change the exact semantic selection"
     );
     assert_eq!(
         switched
@@ -504,7 +504,7 @@ fn n14b_lifecycle_dash_vod_seek_forward_back_switch_and_reopen_reaches_consumers
             .exact()
             .source(),
         stable_source_identity,
-        "switch обязан сохранить stable source lineage"
+        "switch retain stable source lineage"
     );
 
     let switched_intent = WebMediaSourceIntent::native_dash(
@@ -518,7 +518,7 @@ fn n14b_lifecycle_dash_vod_seek_forward_back_switch_and_reopen_reaches_consumers
             switch_settings.demux_config,
             Some(switch_settings.clone()),
         )
-        .expect("native DASH controlled reopen требует semantic rematch");
+        .expect("DASH controlled reopen requires semantic rematch");
     let (reopen_source, reopen_selection, reopen_settings) = native_request_parts(reopen_request);
     let mut reopened = prepare_native(&reopen_source, Some(&reopen_selection), &reopen_settings);
     assert_eq!(server.request_count("/manifest.mpd"), 3);
@@ -536,7 +536,7 @@ fn n14b_lifecycle_dash_vod_seek_forward_back_switch_and_reopen_reaches_consumers
         .stream_configuration()
         .component_variant_projection()
     else {
-        panic!("root refresh должен заново опубликовать coupled catalog");
+        panic!("root refresh should re-publish coupled catalog");
     };
     assert_eq!(coupled.variants.len(), 2);
     assert_eq!(
@@ -547,11 +547,11 @@ fn n14b_lifecycle_dash_vod_seek_forward_back_switch_and_reopen_reaches_consumers
             .exact()
             .source(),
         stable_source_identity,
-        "root refresh/rematch не должен менять stable source lineage"
+        "root refresh/rematch does not change the stable source lineage"
     );
     assert_eq!(
         process_spy.invocation_count(),
         0,
-        "valid DASH open, seek, switch и reopen не запускают extractor"
+        "valid DASH open, seek, switch and reopen let off extractor"
     );
 }

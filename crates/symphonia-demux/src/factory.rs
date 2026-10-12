@@ -109,7 +109,7 @@ impl DemuxFactory for SymphoniaDemuxFactory {
         };
         let Some(registration) = self.container_registration(detected_container) else {
             return DemuxProbeDecision::Rejected(DemuxProbeRejection::Malformed {
-                reason: "Symphonia detector вернул незарегистрированный container ID".to_owned(),
+                reason: "Symphonia detector returns unregistered container ID".to_owned(),
             });
         };
         if !registration.supports_input(request.input_capability) {

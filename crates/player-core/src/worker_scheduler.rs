@@ -156,7 +156,7 @@ mod tests {
                 Duration::from_millis(250),
                 |_, _, _, _| playback_plan(Some(playback_timeout)),
             )
-            .expect("playback wakeup должен быть выбран");
+            .expect("Playback wakeup must be selected");
 
         assert_eq!(wakeup.timeout(), playback_timeout);
         assert_eq!(
@@ -180,7 +180,7 @@ mod tests {
                 Duration::from_millis(250),
                 |_, _, _, _| playback_plan(Some(Duration::ZERO)),
             )
-            .expect("zero playback wakeup должен быть сохранён");
+            .expect("Zero playback wakeup should be saved.");
 
         assert_eq!(wakeup.timeout(), Duration::ZERO);
         assert!(matches!(

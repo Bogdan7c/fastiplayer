@@ -33,7 +33,7 @@ pub(crate) fn parse_f4f_segment(
     if kind != OrderedSegmentKind::Media {
         return Err(malformed(
             sequence,
-            "standalone initialization не является F4F media fragment",
+            "standalone initialization is not F4F media fragment",
         ));
     }
     if bytes.len() > options.fragment_bytes.get() {
@@ -51,7 +51,7 @@ pub(crate) fn parse_f4f_segment(
     {
         return Err(malformed(
             sequence,
-            "F4F fragment требует afra первым, обязательные moof/mdat и не более одного optional abst",
+            "F4F fragment requires afra first, mandatory moof/mdat and no more than one optional abst",
         ));
     }
     let find_unique = |box_type: [u8; 4]| {
@@ -69,7 +69,7 @@ pub(crate) fn parse_f4f_segment(
     let (Some(afra), Some(moof), Some(mdat)) = (afra, moof, mdat) else {
         return Err(malformed(
             sequence,
-            "F4F fragment требует ровно по одному afra, moof и mdat",
+            "F4F fragment requires exactly one afra, moof, and mdat.",
         ));
     };
 
@@ -79,7 +79,7 @@ pub(crate) fn parse_f4f_segment(
     if boxes.len() != expected_box_count {
         return Err(malformed(
             sequence,
-            "F4F fragment допускает только один optional abst поверх afra/moof/mdat",
+            "F4F fragment allows only one optional abst over afra/moof/mdat",
         ));
     }
 
@@ -89,7 +89,10 @@ pub(crate) fn parse_f4f_segment(
     }
     validate_moof(sequence, moof.payload, options, &mut box_budget)?;
     if mdat.payload.is_empty() {
-        return Err(malformed(sequence, "пустой mdat не содержит FLV tags"));
+        return Err(malformed(
+            sequence,
+            "An empty mdat does not contain FLV tags.",
+        ));
     }
 
     let payload_end = mdat
@@ -118,9 +121,12 @@ fn parse_boxes<'a>(
 }
 
 fn consume_box_budget(sequence: u64, box_budget: &mut usize) -> Result<(), FlvDemuxError> {
-    *box_budget = box_budget
-        .checked_sub(1)
-        .ok_or_else(|| malformed(sequence, "слишком много ISO boxes во всём fragment"))?;
+    *box_budget = box_budget.checked_sub(1).ok_or_else(|| {
+        malformed(
+            sequence,
+            "There are too many ISO boxes in the entire fragment.",
+        )
+    })?;
     Ok(())
 }
 
@@ -133,37 +139,34 @@ fn parse_box_at<'a>(
     let [s0, s1, s2, s3, t0, t1, t2, t3] = *bytes
         .get(cursor..)
         .and_then(<[u8]>::first_chunk::<BOX_HEADER_BYTES>)
-        .ok_or_else(|| malformed(sequence, "ISO box header обрезан"))?;
+        .ok_or_else(|| malformed(sequence, "ISO box header trimmed"))?;
     let size32 = u32::from_be_bytes([s0, s1, s2, s3]);
     let box_type = [t0, t1, t2, t3];
     let (box_size, header_size) = match size32 {
         0 => {
-            return Err(malformed(
-                sequence,
-                "box size=0 запрещён в bounded fragment",
-            ));
+            return Err(malformed(sequence, "box size=0 forbidden bounded fragment"));
         }
         1 => {
             let large_size_offset = cursor
                 .checked_add(BOX_HEADER_BYTES)
-                .ok_or_else(|| malformed(sequence, "large-size box header обрезан"))?;
+                .ok_or_else(|| malformed(sequence, "large-size box header cropped"))?;
             let large = bytes
                 .get(large_size_offset..)
                 .and_then(<[u8]>::first_chunk::<{ LARGE_BOX_HEADER_BYTES - BOX_HEADER_BYTES }>)
-                .ok_or_else(|| malformed(sequence, "large-size box header обрезан"))?;
+                .ok_or_else(|| malformed(sequence, "large-size box header cropped"))?;
             let size64 = u64::from_be_bytes(*large);
             let converted = usize::try_from(size64)
-                .map_err(|_| malformed(sequence, "64-bit box size не помещается в usize"))?;
+                .map_err(|_| malformed(sequence, "64-bit box size does not fit in usize"))?;
             (converted, LARGE_BOX_HEADER_BYTES)
         }
         value => (
             usize::try_from(value)
-                .map_err(|_| malformed(sequence, "32-bit box size не помещается в usize"))?,
+                .map_err(|_| malformed(sequence, "32-bit box size does not fit in usize"))?,
             BOX_HEADER_BYTES,
         ),
     };
     if box_size < header_size {
-        return Err(malformed(sequence, "box size меньше собственного header"));
+        return Err(malformed(sequence, "box size less of its own header"));
     }
     let box_end = cursor
         .checked_add(box_size)
@@ -171,7 +174,7 @@ fn parse_box_at<'a>(
     let payload_offset = cursor + header_size;
     let payload = bytes
         .get(payload_offset..box_end)
-        .ok_or_else(|| malformed(sequence, "box выходит за fragment boundary"))?;
+        .ok_or_else(|| malformed(sequence, "The box goes beyond fragment boundary"))?;
     Ok((
         IsoBox {
             box_type,
@@ -191,16 +194,13 @@ fn validate_afra(
     cursor.read_full_box(&[0, 1], 0)?;
     let shape = cursor.read_u8()?;
     if shape & 0x1f != 0 {
-        return Err(malformed(
-            sequence,
-            "afra reserved bits должны быть нулевыми",
-        ));
+        return Err(malformed(sequence, "afra reserved bits should be zero"));
     }
     let long_ids = shape & 0x80 != 0;
     let long_offsets = shape & 0x40 != 0;
     let has_global_entries = shape & 0x20 != 0;
     if cursor.read_u32()? == 0 {
-        return Err(malformed(sequence, "afra TimeScale не может быть нулём"));
+        return Err(malformed(sequence, "afra TimeScale cannot be zero"));
     }
     let local_count =
         cursor.read_bounded_count(options.index_entries.get(), "afra local entries")?;
@@ -227,16 +227,13 @@ fn validate_abst(
     cursor.skip(4)?;
     let presentation_flags = cursor.read_u8()?;
     if presentation_flags & 0x0f != 0 {
-        return Err(malformed(
-            sequence,
-            "abst reserved bits должны быть нулевыми",
-        ));
+        return Err(malformed(sequence, "abst reserved bits must be zero"));
     }
     if presentation_flags >> 6 > 1 {
-        return Err(malformed(sequence, "abst Profile зарезервирован"));
+        return Err(malformed(sequence, "abst Profile reserved"));
     }
     if cursor.read_u32()? == 0 {
-        return Err(malformed(sequence, "abst TimeScale не может быть нулём"));
+        return Err(malformed(sequence, "abst TimeScale cannot be zero"));
     }
     cursor.skip(16)?;
     cursor.read_string(options.metadata_string_bytes.get())?;
@@ -252,7 +249,7 @@ fn validate_abst(
     for _ in 0..segment_table_count {
         let table = cursor.read_box(box_budget)?;
         if table.box_type != *b"asrt" {
-            return Err(malformed(sequence, "abst ожидает asrt table"));
+            return Err(malformed(sequence, "abst expects asrt table"));
         }
         validate_asrt(sequence, table.payload, options)?;
     }
@@ -262,7 +259,7 @@ fn validate_abst(
     for _ in 0..fragment_table_count {
         let table = cursor.read_box(box_budget)?;
         if table.box_type != *b"afrt" {
-            return Err(malformed(sequence, "abst ожидает afrt table"));
+            return Err(malformed(sequence, "abst expects afrt table"));
         }
         validate_afrt(sequence, table.payload, options)?;
     }
@@ -278,7 +275,7 @@ fn validate_table_count(
     if count == 0 || count > options.fragment_boxes.get() {
         return Err(malformed(
             sequence,
-            format!("abst {name} table count вне bounded policy"),
+            format!("abst {name} table count outside bounded policy"),
         ));
     }
     Ok(())
@@ -295,7 +292,7 @@ fn validate_asrt(
     cursor.read_strings(quality_count, options.metadata_string_bytes.get())?;
     let entry_count = cursor.read_bounded_count(options.index_entries.get(), "asrt entries")?;
     if entry_count == 0 {
-        return Err(malformed(sequence, "asrt требует хотя бы одну run entry"));
+        return Err(malformed(sequence, "asrt requires at least one run entry"));
     }
     cursor.skip_repeated(entry_count, 8)?;
     cursor.finish()
@@ -309,13 +306,13 @@ fn validate_afrt(
     let mut cursor = PayloadCursor::new(sequence, "afrt", payload);
     cursor.read_full_box(&[0, 1], 1)?;
     if cursor.read_u32()? == 0 {
-        return Err(malformed(sequence, "afrt TimeScale не может быть нулём"));
+        return Err(malformed(sequence, "afrt TimeScale cannot be zero"));
     }
     let quality_count = usize::from(cursor.read_u8()?);
     cursor.read_strings(quality_count, options.metadata_string_bytes.get())?;
     let entry_count = cursor.read_bounded_count(options.index_entries.get(), "afrt entries")?;
     if entry_count == 0 {
-        return Err(malformed(sequence, "afrt требует хотя бы одну run entry"));
+        return Err(malformed(sequence, "afrt requires at least one run entry"));
     }
     for _ in 0..entry_count {
         cursor.skip(12)?;
@@ -334,17 +331,17 @@ fn validate_moof(
 ) -> Result<(), FlvDemuxError> {
     let children = parse_boxes(sequence, payload, box_budget)?;
     let Some((movie_header, tracks)) = children.split_first() else {
-        return Err(malformed(sequence, "moof не содержит mfhd"));
+        return Err(malformed(sequence, "moof does not contain mfhd"));
     };
     if movie_header.box_type != *b"mfhd" || tracks.is_empty() {
-        return Err(malformed(sequence, "moof требует mfhd и хотя бы один traf"));
+        return Err(malformed(sequence, "moof demand mfhd at least one traf"));
     }
     validate_fixed_full_box(sequence, "mfhd", movie_header.payload, &[0], 0, 4)?;
     for track in tracks {
         if track.box_type != *b"traf" {
             return Err(malformed(
                 sequence,
-                "после mfhd в moof разрешены только traf",
+                "After mfhd in moof only traf is allowed",
             ));
         }
         validate_traf(sequence, track.payload, options, box_budget)?;
@@ -360,16 +357,19 @@ fn validate_traf(
 ) -> Result<(), FlvDemuxError> {
     let children = parse_boxes(sequence, payload, box_budget)?;
     let Some(track_header) = children.first() else {
-        return Err(malformed(sequence, "traf не содержит tfhd"));
+        return Err(malformed(sequence, "traf does not contain tfhd"));
     };
     if track_header.box_type != *b"tfhd" {
-        return Err(malformed(sequence, "первым child в traf должен быть tfhd"));
+        return Err(malformed(
+            sequence,
+            "The first child in the traf must be tfhd.",
+        ));
     }
     validate_tfhd(sequence, track_header.payload)?;
     let mut saw_run = false;
     for child in &children[1..] {
         match &child.box_type {
-            b"tfhd" => return Err(malformed(sequence, "traf содержит повторный tfhd")),
+            b"tfhd" => return Err(malformed(sequence, "The traf contains repeated tfhd")),
             b"trun" => {
                 validate_trun(sequence, child.payload, options)?;
                 saw_run = true;
@@ -378,7 +378,7 @@ fn validate_traf(
         }
     }
     if !saw_run {
-        return Err(malformed(sequence, "traf не содержит trun"));
+        return Err(malformed(sequence, "traf does not contain trun"));
     }
     Ok(())
 }
@@ -389,7 +389,7 @@ fn validate_tfhd(sequence: u64, payload: &[u8]) -> Result<(), FlvDemuxError> {
     let mut cursor = PayloadCursor::new(sequence, "tfhd", payload);
     let flags = cursor.read_full_box(&[0], OPTIONAL_FIELD_FLAGS | SEMANTIC_FLAGS)?;
     if cursor.read_u32()? == 0 {
-        return Err(malformed(sequence, "tfhd TrackID не может быть нулём"));
+        return Err(malformed(sequence, "tfhd TrackID cannot be zero."));
     }
     let mut optional_bytes = 0_usize;
     for (flag, field_bytes) in [
@@ -473,7 +473,7 @@ impl<'a> PayloadCursor<'a> {
             return Err(malformed(
                 self.sequence,
                 format!(
-                    "{} full-box version {} не поддерживается",
+                    "{} full-box version {} is not supported",
                     self.name, header[0]
                 ),
             ));
@@ -482,7 +482,7 @@ impl<'a> PayloadCursor<'a> {
         if flags & !allowed_flags != 0 {
             return Err(malformed(
                 self.sequence,
-                format!("{} содержит неизвестные full-box flags", self.name),
+                format!("{} contains unknown full-box flags.", self.name),
             ));
         }
         Ok(flags)
@@ -497,7 +497,7 @@ impl<'a> PayloadCursor<'a> {
         let bytes = self.read(4)?.first_chunk::<4>().copied();
         bytes
             .map(u32::from_be_bytes)
-            .ok_or_else(|| malformed(self.sequence, "u32 field обрезан"))
+            .ok_or_else(|| malformed(self.sequence, "u32 field cut off"))
     }
 
     fn read_bounded_count(
@@ -510,7 +510,7 @@ impl<'a> PayloadCursor<'a> {
         if count > maximum {
             return Err(malformed(
                 self.sequence,
-                format!("{field} превышает bounded policy"),
+                format!("{field} exceeds bounded policy"),
             ));
         }
         Ok(count)
@@ -521,19 +521,19 @@ impl<'a> PayloadCursor<'a> {
         let Some(length) = remaining.iter().position(|byte| *byte == 0) else {
             return Err(malformed(
                 self.sequence,
-                format!("{} string не завершён нулём", self.name),
+                format!("{} string not completed with zero", self.name),
             ));
         };
         if length > maximum_bytes {
             return Err(malformed(
                 self.sequence,
-                format!("{} string превышает bounded policy", self.name),
+                format!("{} string exceeds bounded policy", self.name),
             ));
         }
         std::str::from_utf8(&remaining[..length]).map_err(|_| {
             malformed(
                 self.sequence,
-                format!("{} string содержит невалидный UTF-8", self.name),
+                format!("{} string contains invalid UTF-8", self.name),
             )
         })?;
         self.position += length + 1;
@@ -573,7 +573,7 @@ impl<'a> PayloadCursor<'a> {
         let output = self
             .bytes
             .get(self.position..end)
-            .ok_or_else(|| malformed(self.sequence, format!("{} payload обрезан", self.name)))?;
+            .ok_or_else(|| malformed(self.sequence, format!("{} payload cut off", self.name)))?;
         self.position = end;
         Ok(output)
     }
@@ -582,7 +582,7 @@ impl<'a> PayloadCursor<'a> {
         if self.position != self.bytes.len() {
             return Err(malformed(
                 self.sequence,
-                format!("{} payload содержит trailing bytes", self.name),
+                format!("{} payload contains trailing bytes", self.name),
             ));
         }
         Ok(())

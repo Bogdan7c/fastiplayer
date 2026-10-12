@@ -144,22 +144,22 @@ pub enum YtDlpTopologyInvalidResponseReason {
 #[derive(Debug, Error)]
 pub enum YtDlpTopologyError {
     /// Adapter disabled committed config-ом.
-    #[error("yt-dlp adapter отключён в настройках")]
+    #[error("yt-dlp adapter disabled in settings")]
     AdapterDisabled,
     /// Cancellation intent был замечен до/во время child process.
-    #[error("извлечение yt-dlp topology отменено")]
+    #[error("yt-dlp topology retrieval cancelled")]
     Cancellation,
     /// Child process превысил configured timeout.
-    #[error("истекло время ожидания yt-dlp topology")]
+    #[error("The waiting time for yt-dlp topology has expired")]
     Timeout,
     /// Программа `yt-dlp` не найдена в `PATH` (запуск вернул `NotFound`).
     ///
     /// Отдельный вариант (UX сессия 09): пользователю нужна подсказка «установите
     /// yt-dlp», а не общий «сбой процесса».
-    #[error("программа yt-dlp не найдена для topology")]
+    #[error("yt-dlp program not found for topology")]
     ExecutableNotFound,
     /// OS/process plumbing failure без locator/argv payload.
-    #[error("не удалось выполнить системный yt-dlp для topology")]
+    #[error("Failed to execute system yt-dlp for topology")]
     ProcessFailure {
         /// Safe OS/process source.
         #[source]
@@ -167,7 +167,7 @@ pub enum YtDlpTopologyError {
     },
     /// yt-dlp завершился non-zero.
     #[error(
-        "yt-dlp extractor отклонил topology URL (stderr скрыт, {stderr_bytes} bytes, причина: {reason})"
+        "yt-dlp extractor rejected topology URL (stderr hidden, {stderr_bytes} bytes, reason: {reason})"
     )]
     ExtractorRejection {
         /// Bounded observed byte count без stderr payload.
@@ -176,37 +176,37 @@ pub enum YtDlpTopologyError {
         reason: YtDlpRejectionReason,
     },
     /// Caller передал логически невалидный budget.
-    #[error("некорректный topology budget: {field:?}")]
+    #[error("Incorrect topology budget: {field:?}")]
     InvalidBudgets {
         /// Поле, нарушившее инвариант.
         field: YtDlpTopologyBudgetField,
     },
     /// Совокупный stdout превысил budget.
-    #[error("stdout yt-dlp topology превысил budget")]
+    #[error("stdout yt-dlp topology exceeded budget")]
     StdoutBudgetExceeded,
     /// Совокупный stderr превысил budget.
-    #[error("stderr yt-dlp topology превысил budget")]
+    #[error("stderr yt-dlp topology exceeds budget")]
     StderrBudgetExceeded,
     /// Одна JSON line превысила budget.
-    #[error("JSON line yt-dlp topology превысила budget")]
+    #[error("JSON line yt-dlp topology exceeds budget")]
     JsonLineBudgetExceeded,
     /// Число line-delimited либо retained entries превысило budget.
-    #[error("число yt-dlp topology entries превысило budget")]
+    #[error("The number of yt-dlp topology entries exceeded budget")]
     EntryBudgetExceeded,
     /// Structural topology глубже configured bound.
-    #[error("вложенность yt-dlp topology превысила budget")]
+    #[error("nesting yt-dlp topology exceeded budget")]
     TopologyDepthExceeded,
     /// JSON syntax глубже configured bound.
-    #[error("вложенность JSON yt-dlp topology превысила budget")]
+    #[error("JSON yt-dlp topology exceeds budget")]
     JsonDepthExceeded,
     /// Serializable extractor response нарушает S00/S15 contract.
-    #[error("yt-dlp вернул некорректный topology response: {reason:?}")]
+    #[error("yt-dlp returns incorrect topology response: {reason:?}")]
     InvalidExtractorResponse {
         /// Safe typed reason.
         reason: YtDlpTopologyInvalidResponseReason,
     },
     /// Internal locator parser error intentionally loses raw input.
-    #[error("yt-dlp delegation locator не прошёл admission")]
+    #[error("yt-dlp delegation locator fails to pass admission")]
     DelegationLocator {
         /// Secret-safe locator error.
         #[source]

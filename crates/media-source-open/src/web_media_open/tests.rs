@@ -7,8 +7,7 @@ use super::*;
 /// HTTP sniff chunk не должен становиться случайным лимитом encoded video packet-а.
 #[test]
 fn progressive_composite_packet_limit_is_independent_from_sniff_chunk() {
-    let lead_policy =
-        progressive_composite_lead_policy().expect("progressive composite policy валидна");
+    let lead_policy = progressive_composite_lead_policy().expect("Progressive composite policy");
 
     assert_eq!(
         lead_policy.bootstrap_byte_limit(),
@@ -39,7 +38,7 @@ fn media_open_reason_matrix_rejects_topology_and_preserves_page_recovery_reason(
             web_media_core::ExtractorInvocationReason::CollectionTopologyResolution,
         )
         .is_err(),
-        "collection/topology reason не должен достигать media-open extractor path"
+        "collection/topology reason must not reach the media-open extractor path"
     );
 }
 
@@ -66,10 +65,10 @@ fn cancellation_is_a_pre_barrier_failure() {
     );
     let error = match result {
         Err(error) => error,
-        Ok(_) => panic!("cancelled preparation не должна запускать yt-dlp"),
+        Ok(_) => panic!("Canceled preparation should not run yt-dlp"),
     };
     let diagnostic = format!("{error:#}");
-    assert!(diagnostic.contains("отменена"));
+    assert!(diagnostic.contains("cancelled"));
     assert!(!diagnostic.contains("secret"));
 }
 
@@ -111,7 +110,7 @@ fn demux_capability_snapshot_is_derived_from_registered_factory() {
         assert_eq!(
             capabilities.input_capabilities_for(family),
             expected_family_inputs,
-            "family {family:?} должна получить exact registered inputs"
+            "Family {family:?} should receive exact registered inputs"
         );
     }
 }
@@ -158,7 +157,7 @@ fn demux_capability_snapshot_preserves_per_container_input_sets() {
         !capabilities
             .input_capabilities_for(ContainerFamily::WebM)
             .contains(DemuxInputCapability::OrderedSegments),
-        "WebM не должен наследовать synthetic ISO ordered capability"
+        "WebM should not inherit synthetic ISO ordered capability."
     );
 }
 
@@ -183,7 +182,7 @@ fn component_variant_catalog_generation_is_monotonic_and_overflow_checked() {
     allocator.store(u64::MAX, Ordering::Relaxed);
     assert!(
         preparation::allocate_component_variant_catalog_generation(&allocator).is_err(),
-        "исчерпанный allocator не должен оборачивать catalog generation"
+        "Exhausted allocator should not wrap the catalog generation"
     );
 }
 
@@ -202,23 +201,23 @@ fn transport_capability_snapshot_advertises_dash_ordered_and_range_inputs() {
     assert_eq!(
         capabilities.output_inputs_for(TransportFamily::Hls),
         DemuxInputCapabilities::only(crate::web_media_hls_open::hls_transport_input()),
-        "DASH registration не должна менять соседний HLS provider"
+        "DASH registration should not change the neighboring HLS provider"
     );
     assert_eq!(
         capabilities.output_inputs_for(TransportFamily::SmoothStreaming),
         DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments),
-        "S36 Smooth runtime должен рекламировать только реально используемый ordered input"
+        "S36 Smooth runtime Advertisements should only be made for actual use ordered input"
     );
     let progressive_outputs = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
         .with(DemuxInputCapability::StreamingBytes);
     assert_eq!(
         capabilities.output_inputs_for(TransportFamily::ProgressiveFtp(FtpScheme::Ftp)),
         progressive_outputs,
-        "S37 FTP runtime должен рекламировать seekable и streaming byte inputs"
+        "S37 FTP runtime must advertise seekable and streaming byte inputs"
     );
     assert_eq!(
         capabilities.output_inputs_for(TransportFamily::ProgressiveFtp(FtpScheme::Ftps)),
         progressive_outputs,
-        "S37 FTPS runtime должен рекламировать seekable и streaming byte inputs"
+        "S37 FTPS runtime must advertise seekable and streaming byte inputs"
     );
 }

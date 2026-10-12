@@ -1076,7 +1076,7 @@ fn serialized_muxed_fmp4_is_ready_before_publish_and_seek_reopens_fragment() {
     };
     assert!(
         seek.actual_position.as_duration() <= Duration::from_millis(1_200),
-        "authoritative anchor не должен быть позже requested target"
+        "authoritative anchor shouldn't be later requested target"
     );
     loop {
         match demuxer.next_event().expect("runtime event") {

@@ -34,7 +34,7 @@ impl Demuxer for PendingSeekDemuxer {
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
         Ok(DemuxReadEvent::TemporarilyUnavailable(
             DemuxRetryHint::new(DemuxRetryHint::MAX_RETRY_AFTER)
-                .expect("maximum retry hint обязан быть валиден"),
+                .expect("The maximum retry hint must be valid"),
         ))
     }
 
@@ -79,7 +79,7 @@ impl ControlledPreparedSeekPort {
             }
             assert!(
                 Instant::now() < deadline,
-                "player worker не передал seek в prepared-media port до test deadline"
+                "player worker passed on seek into prepared-media port before test deadline"
             );
             std::thread::yield_now();
         }
@@ -130,8 +130,8 @@ fn installed_worker() -> (
     Arc<ControlledPreparedSeekPort>,
     MediaInstanceId,
 ) {
-    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
-        .expect("player worker должен стартовать");
+    let mut worker =
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("Player worker should start");
     let seek_port = Arc::new(ControlledPreparedSeekPort::default());
     let erased_port: Arc<dyn PreparedDemuxSeekPort> = seek_port.clone();
     let prepared_media =
@@ -139,7 +139,7 @@ fn installed_worker() -> (
             .with_worker_receipted_demux_seek(erased_port);
     let install_receipt = worker
         .load_prepared_media(prepared_media, false)
-        .expect("prepared media command должна быть принята");
+        .expect("The prepared media command must be accepted.");
     let installed_snapshot = wait_for_snapshot(&mut worker, |snapshot| {
         snapshot.source_label.as_deref() == Some("aud014-fixture")
             && snapshot.media_instance_id.is_some()
@@ -149,7 +149,7 @@ fn installed_worker() -> (
         media_instance_id, ..
     } = completion
     else {
-        panic!("prepared media должна завершить compatibility install");
+        panic!("Prepared media must complete the compatibility install");
     };
     assert_eq!(
         installed_snapshot.media_instance_id,
@@ -160,13 +160,13 @@ fn installed_worker() -> (
 
 /// Устанавливает тот же seekable media без async prepared port-а для happy-path barrier-а.
 fn installed_legacy_seek_worker() -> (PlayerWorker, MediaInstanceId) {
-    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
-        .expect("player worker должен стартовать");
+    let mut worker =
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("Player worker should start");
     let prepared_media =
         PreparedMedia::from_external_label("aud014-legacy-fixture", Box::new(PendingSeekDemuxer));
     let install_receipt = worker
         .load_prepared_media(prepared_media, false)
-        .expect("legacy prepared media command должна быть принята");
+        .expect("Legacy prepared media command must be accepted");
     let installed_snapshot = wait_for_snapshot(&mut worker, |snapshot| {
         snapshot.source_label.as_deref() == Some("aud014-legacy-fixture")
             && snapshot.media_instance_id.is_some()
@@ -176,7 +176,7 @@ fn installed_legacy_seek_worker() -> (PlayerWorker, MediaInstanceId) {
         media_instance_id, ..
     } = completion
     else {
-        panic!("legacy prepared media должна завершить compatibility install");
+        panic!("legacy prepared media completes compliance install");
     };
     assert_eq!(
         installed_snapshot.media_instance_id,
@@ -196,7 +196,7 @@ fn wait_for_install_completion(
         }
         assert!(
             Instant::now() < deadline,
-            "prepared media install не завершился до test deadline"
+            "prepared media install not finished before test deadline"
         );
         std::thread::yield_now();
     }
@@ -215,7 +215,7 @@ fn wait_for_snapshot(
         }
         assert!(
             Instant::now() < deadline,
-            "player snapshot не достиг ожидаемого состояния до test deadline"
+            "player snapshot has not reached the expected state before test deadline"
         );
         std::thread::yield_now();
     }
@@ -239,7 +239,7 @@ fn dispatch_admitted_seek(
             target: MediaTime::from_duration(target_position),
             kind: TimelineSeekKind::SetPosition,
         })
-        .expect("exact timeline seek command должна быть принята");
+        .expect("exact timeline seek command must be accepted");
     let (prepared_request_id, prepared_request) = seek_port.wait_for_command();
     assert_eq!(prepared_request.timestamp, target_position);
     (receipt, prepared_request_id)
@@ -259,7 +259,7 @@ fn dispatch_exact_seek(
             target: MediaTime::from_duration(target_position),
             kind: TimelineSeekKind::SetPosition,
         })
-        .expect("exact timeline seek command должна быть принята")
+        .expect("exact timeline seek command must be accepted")
 }
 
 /// Регистрирует тот же media instance в настоящем process-lifetime PlaylistRuntime.
@@ -279,7 +279,7 @@ fn runtime_with_installed_media(
             ActiveMediaSource::LocalFile("aud014-fixture.mp4".into()),
             player_core::PlaybackIntent::StartPaused,
         )
-        .expect("playlist runtime должен зарегистрировать worker media instance");
+        .expect("Playlist runtime must register worker media instance");
     (playlist_runtime, binding, active_media)
 }
 
@@ -296,14 +296,14 @@ fn restored_position_after_checkpoint(
             snapshot,
             checkpoint_position,
         )
-        .expect("settled suspend checkpoint должен быть захвачен");
+        .expect("Settled suspend checkpoint must be captured");
     playlist_runtime.suspend_app_state_binding();
     playlist_runtime
         .bind_resumed_app_state()
-        .expect("resume должен создать новый binding");
+        .expect("Create a new binding resume");
     playlist_runtime
         .begin_suspended_media_resume(false)
-        .expect("captured checkpoint должен создать automatic resume attempt")
+        .expect("Captured checkpoint creates automatic resume attempt")
         .position
 }
 
@@ -315,7 +315,7 @@ fn n14b_lifecycle_close_restart_restores_confirmed_receipted_seek_position() {
     assert!(matches!(
         initial_receipt
             .wait_for_outcome_until(Instant::now() + TEST_DEADLINE_BUDGET)
-            .expect("legacy initial seek должен завершиться"),
+            .expect("Legacy Initial Seeker must be completed."),
         ExactTimelineSeekOutcome::Applied { position, .. }
             if position == MediaTime::from_secs(10)
     ));
@@ -369,7 +369,7 @@ fn admitted_seek_timeout_restores_documented_pre_seek_position() {
     );
     let initial_outcome = initial_receipt
         .wait_for_outcome_until(Instant::now() + TEST_DEADLINE_BUDGET)
-        .expect("auto-completed initial seek должен завершиться до test deadline");
+        .expect("Auto-completed initial seek must be completed before the test deadline");
     assert!(matches!(
         initial_outcome,
         ExactTimelineSeekOutcome::Applied { .. }

@@ -95,7 +95,7 @@ fn ogg_vorbis_prefetch_scheduler_paths_are_bounded_and_reach_pcm() {
     let request_count = origin.request_count();
     assert!(
         (3..=MAXIMUM_BOUNDED_REQUESTS).contains(&request_count),
-        "open должен состоять из probe, initial Range и active-fetch либо bounded refetch path; получено {request_count} запросов"
+        "open must consist of probe, initial Range and active-fetch either bounded refetch path; got {request_count} request"
     );
 }
 
@@ -180,7 +180,7 @@ fn assert_vorbis_reaches_pcm_at_locator(
         .iter()
         .find(|track| track.kind == TrackKind::Audio)
         .cloned()
-        .expect("production demuxer должен обнаружить Vorbis audio track");
+        .expect("Production Demuxer Detects Vorbis Audio Track");
     assert_eq!(audio_track.codec_id, "A_VORBIS");
     match track_expectation {
         VorbisTrackExpectation::GeneratedMono8Khz => {

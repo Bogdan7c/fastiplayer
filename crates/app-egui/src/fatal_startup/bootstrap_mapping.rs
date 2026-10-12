@@ -130,5 +130,5 @@ fn lock_file_name(config_paths: &ConfigPaths) -> String {
         .map(|file_name| file_name.to_string_lossy().into_owned())
         // Путь всегда строится как `config_dir.join(имя)`, так что имя есть;
         // запасной текст лишь не даёт сообщению остаться с пустым местом.
-        .unwrap_or_else(|| "блокировки".to_owned())
+        .unwrap_or_else(|| "locking".to_owned())
 }

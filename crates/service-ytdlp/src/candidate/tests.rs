@@ -36,7 +36,7 @@ fn http_transport_target(request: &TransportOpenRequest) -> &HttpRequestTarget {
 /// Парсит synthetic JSON тем же DTO boundary, что production process output.
 fn snapshot(payload: Value, generation: u64) -> super::YtDlpCandidateSnapshot {
     let document: YtDlpCandidateDocument =
-        serde_json::from_value(payload).expect("synthetic candidate JSON валиден");
+        serde_json::from_value(payload).expect("synthetic candidate JSON validated");
     normalize_candidate_document(
         document,
         SourceIdentity::new(41),
@@ -51,7 +51,7 @@ fn accepted_inventory(
 ) -> &YtDlpNormalizedCandidate {
     snapshot.inventory()[ordinal]
         .accepted()
-        .expect("candidate должен быть accepted")
+        .expect("The candidate must be accepted")
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn rejected_inventory(
 ) -> &YtDlpCandidateNormalizationRejection {
     snapshot.inventory()[ordinal]
         .rejected()
-        .expect("candidate должен быть rejected")
+        .expect("candidate must have rejected")
         .reason()
 }
 
@@ -128,7 +128,7 @@ fn progressive_ftp_request_material_rejects_http_authorization_and_adaptive_extr
     );
     let error = candidate
         .ftp_transport_components(&context)
-        .expect_err("HTTP auth не должен проходить progressive FTP boundary");
+        .expect_err("HTTP auth does not have to pass progressive FTP boundary.");
     assert!(matches!(
         error,
         super::YtDlpTransportRequestError::FtpRequestMaterial(
@@ -143,7 +143,7 @@ fn progressive_ftp_request_material_rejects_http_authorization_and_adaptive_extr
     let candidate = accepted_inventory(&fragmented_snapshot, 0);
     let error = candidate
         .ftp_transport_components(&context)
-        .expect_err("fragmented FTP row не должен проходить progressive subset");
+        .expect_err("fragmented FTP row does not pass through progressive subset");
     assert!(matches!(
         error,
         super::YtDlpTransportRequestError::FtpRequestMaterial(
@@ -166,7 +166,7 @@ fn ftp_transport_components_project_empty_secret_progressive_request() {
     );
     let components = candidate
         .ftp_transport_components(&context)
-        .expect("public FTP component должен стать neutral request");
+        .expect("The public FTP component is a neutral request.");
     assert_eq!(components.len(), 1);
     let request = components
         .into_iter()
@@ -205,7 +205,7 @@ fn ftp_ogg_partial_codec_metadata_uses_content_probe_without_fake_codec() {
     );
     let candidate = accepted_inventory(&snapshot, 0);
     let StreamLayout::ContentProbed(descriptor) = candidate.descriptor().layout() else {
-        panic!("partial FTP codec metadata должна строить content-probed layout");
+        panic!("partial FTP codec metadata build-up content-probed layout");
     };
     assert!(matches!(
         descriptor.video(),
@@ -222,9 +222,9 @@ fn ftp_ogg_partial_codec_metadata_uses_content_probe_without_fake_codec() {
     );
     let [component] = candidate
         .ftp_transport_components(&context)
-        .expect("content-probed FTP Ogg должен проецироваться")
+        .expect("content-probed FTP Ogg must be projected")
         .try_into()
-        .expect("single FTP candidate содержит один component");
+        .expect("single FTP candidate contains component");
     assert_eq!(component.role(), MediaComponentRole::ContentProbed);
     assert_eq!(component.container(), ContainerFamily::Ogg);
 }
@@ -252,7 +252,7 @@ fn progressive_http_transport_rejects_ftp_primary_target() {
     );
     let error = candidate
         .transport_components(&context)
-        .expect_err("FTP target не должен проходить progressive HTTP boundary");
+        .expect_err("The FTP target does not have to pass progressive HTTP boundary.");
     assert!(matches!(
         error,
         super::YtDlpTransportRequestError::RequestMaterial(
@@ -306,7 +306,7 @@ fn target_ism_format() -> Value {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../compatibility/2026.07.04/fixtures/official-synthetic/format-inventory.json"
     ))
-    .expect("checked-in S00 fixture валиден");
+    .expect("checked-in S00 fixture validated");
     fixture["payload"]["formats"]
         .as_array()
         .expect("fixture formats array")
@@ -422,7 +422,7 @@ fn inventory_video_and_audio_compose_and_semantically_rematch_without_format_id_
             &old.selection_for(old_video).unwrap(),
             &old.selection_for(old_audio).unwrap(),
         )
-        .expect("fresh inventory components должны compose-иться");
+        .expect("fresh inventory components must compose-flow");
     assert_eq!(
         selection.descriptor().layout().kind(),
         StreamLayoutKind::Separate
@@ -445,7 +445,7 @@ fn inventory_video_and_audio_compose_and_semantically_rematch_without_format_id_
     );
     let (kind, fresh_selection, candidate) = fresh
         .rematch_composed(&selection)
-        .expect("обе semantic components должны независимо rematch-иться");
+        .expect("Both semantic components must independently rematch.");
     assert_eq!(kind, super::YtDlpCompositionMatchKind::SemanticRematch);
     assert_eq!(
         fresh_selection.descriptor().identity().generation(),
@@ -498,10 +498,10 @@ fn selected_inventory_duplicate_composes_with_selected_request_material() {
             &snapshot.selection_for(inventory_video).unwrap(),
             &snapshot.selection_for(inventory_audio).unwrap(),
         )
-        .expect("equivalent selected+inventory video должен быть composable");
+        .expect("equivalent selected+inventory video must have composable");
     let (kind, _, candidate) = snapshot
         .rematch_composed(&composed)
-        .expect("same-generation composition должна восстановить candidate");
+        .expect("same-generation composition should be restored candidate");
     assert_eq!(kind, super::YtDlpCompositionMatchKind::Exact);
     let request_summaries = candidate.component_request_summaries().collect::<Vec<_>>();
     assert_eq!(
@@ -510,7 +510,7 @@ fn selected_inventory_duplicate_composes_with_selected_request_material() {
     );
     assert_eq!(
         request_summaries[0].material.header_count, 1,
-        "video component обязан сохранить richer selected request material"
+        "video component retain richer selected request material"
     );
 }
 
@@ -531,7 +531,7 @@ fn composed_rematch_rejects_inventory_twin_shadowed_by_rejected_selected() {
             &old.selection_for(accepted_inventory(&old, 0)).unwrap(),
             &old.selection_for(accepted_inventory(&old, 1)).unwrap(),
         )
-        .expect("old inventory pair должна compose-иться");
+        .expect("The old inventory pair must be compose");
 
     let fresh_video = progressive_format("fresh-video", "webm", "webm", "vp9", "none");
     let fresh_audio = progressive_format("fresh-audio", "webm", "webm", "none", "opus");
@@ -610,7 +610,7 @@ fn audio_fallback_rank_uses_standard_hints_and_not_inventory_order() {
 #[test]
 fn disabled_candidate_snapshot_resolver_fails_before_process_spawn() {
     let locator = parse_yt_dlp_media_locator("https://media.invalid/watch")
-        .expect("synthetic locator валиден");
+        .expect("synthetic locator is valid");
     let config = YtDlpConfig {
         enabled: false,
         ..YtDlpConfig::default()
@@ -622,7 +622,7 @@ fn disabled_candidate_snapshot_resolver_fails_before_process_spawn() {
         ExtractionGeneration::new(1),
         &config,
     )
-    .expect_err("disabled adapter не должен запускать process");
+    .expect_err("disabled adapter shouldn't start process");
     assert!(matches!(error, YtDlpServiceError::AdapterDisabled));
 }
 
@@ -632,7 +632,7 @@ fn canonical_s00_target_rows_are_normalized_without_silent_drops() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../compatibility/2026.07.04/fixtures/official-synthetic/format-inventory.json"
     ))
-    .expect("checked-in S00 fixture валиден");
+    .expect("checked-in S00 fixture validated");
     let snapshot = snapshot(fixture["payload"].clone(), 1);
 
     let rejected_ordinals: Vec<_> = snapshot
@@ -671,7 +671,7 @@ fn selected_compound_uses_exact_components_without_cartesian_inventory() {
     assert_eq!(
         snapshot.inventory().len(),
         4,
-        "pair combinations не создаются"
+        "pair combinations are not created."
     );
     let selected = snapshot
         .selected()
@@ -740,7 +740,7 @@ fn mixed_http_ftp_compound_projects_component_wise_transport_requests() {
             | MediaComponentRole::ContentProbed
             | MediaComponentRole::Subtitle
             | MediaComponentRole::PresentationManifest => {
-                panic!("Separate candidate содержит недопустимую component role")
+                panic!("Separate candidate contains an inadmissible component role")
             }
         }
     }
@@ -875,7 +875,7 @@ fn hls_request_material_preserves_approved_shape_in_safe_summary() {
         "key_secret",
         "private.key",
     ] {
-        assert!(!diagnostic.contains(secret), "Debug раскрыл secret marker");
+        assert!(!diagnostic.contains(secret), "Debug reveals secret marker");
     }
 }
 
@@ -910,7 +910,7 @@ fn hds_transport_projection_preserves_manifest_scope_and_lifecycle() {
 
     let request = candidate
         .hds_transport_request(&context)
-        .expect("approved HDS row должен проецироваться");
+        .expect("The approved HDS row must be projected.");
 
     assert_eq!(request.provider(), &provider);
     assert_eq!(request.presentation(), MediaPresentation::Vod);
@@ -930,7 +930,7 @@ fn hds_transport_projection_preserves_manifest_scope_and_lifecycle() {
             http_transport_target(&request),
             SecretRequestPurpose::PrimaryResource,
         )
-        .expect("manifest target должен находиться в HDS scope");
+        .expect("The manifest target must be in the HDS scope.");
     assert_eq!(
         initial_material.headers_for_request()[0].value,
         "Bearer hds-header-secret"
@@ -993,7 +993,7 @@ fn hds_null_codecs_and_flv_output_hint_use_content_probed_f4f_contract() {
     );
     let candidate = accepted_inventory(&snapshot, 0);
     let StreamLayout::ContentProbed(descriptor) = candidate.descriptor().layout() else {
-        panic!("HDS null codecs должны сохранить content-probed descriptor");
+        panic!("HDS null codecs must retain content-probed descriptor");
     };
     assert_eq!(descriptor.probe_container(), ContainerFamily::F4f);
     let context = super::YtDlpTransportRequestContext::new(
@@ -1003,7 +1003,7 @@ fn hds_null_codecs_and_flv_output_hint_use_content_probed_f4f_contract() {
     );
     let request = candidate
         .hds_transport_request(&context)
-        .expect("content-probed HDS candidate должен открыть F4M hierarchy");
+        .expect("content-probed HDS candidate should open F4M hierarchy");
     assert_eq!(
         request.component().role(),
         MediaComponentRole::ContentProbed
@@ -1284,7 +1284,7 @@ fn youtube_http_chunk_size_becomes_neutral_range_request_limit() {
     );
     let request = candidate
         .transport_components(&context)
-        .expect("safe YouTube downloader hint должен пройти transport boundary")
+        .expect("safe YouTube downloader hint must pass transport boundary")
         .into_iter()
         .next()
         .expect("single YouTube component")
@@ -1378,7 +1378,7 @@ fn selected_inventory_duplicate_is_canonical_but_inventory_membership_remains_va
     let selected_candidate = snapshot
         .selected()
         .and_then(YtDlpCandidateEntry::accepted)
-        .expect("selected result должен быть accepted");
+        .expect("The selected result must be accepted.");
     let inventory_candidate = accepted_inventory(&snapshot, 0);
     let canonical = snapshot.accepted_candidates().collect::<Vec<_>>();
 
@@ -1386,15 +1386,15 @@ fn selected_inventory_duplicate_is_canonical_but_inventory_membership_remains_va
     assert!(std::ptr::eq(canonical[0], selected_candidate));
     let selected_token = snapshot
         .selection_for(selected_candidate)
-        .expect("canonical selected token должен строиться");
+        .expect("A selected canonical token should be built");
     let inventory_token = snapshot
         .selection_for(inventory_candidate)
-        .expect("эквивалентный shadowed inventory token должен canonicalize-иться");
+        .expect("The equivalent shadowed inventory token must be canonicalized");
     assert_eq!(inventory_token, selected_token);
     assert_eq!(
         snapshot
             .planning_snapshot()
-            .expect("canonical snapshot должен планироваться")
+            .expect("canonical snapshot should be planned")
             .candidates()
             .len(),
         1
@@ -1432,7 +1432,7 @@ fn shadowed_inventory_color_drift_is_not_a_selectable_canonical_candidate() {
     assert_eq!(
         snapshot
             .selection_for(inventory_candidate)
-            .expect_err("shadowed color drift не должен выдавать non-canonical token"),
+            .expect_err("shadowed color drift don't non-canonical token"),
         YtDlpCandidateSelectionError::CandidateNotInInventory
     );
 
@@ -1468,7 +1468,7 @@ fn rejected_selected_identity_cannot_fall_open_to_inventory_twin() {
     assert_eq!(
         snapshot
             .planning_snapshot()
-            .expect("shadowed rejection должен дать пустой, но валидный planner snapshot")
+            .expect("shadowed rejection should leave empty, valid planner snapshot")
             .candidates()
             .len(),
         0
@@ -1582,7 +1582,7 @@ fn planning_snapshot_alignment_rejects_altered_runtime_with_same_identity() {
     let original = &canonical.candidates()[0];
     let mut altered_runtime = original.runtime_requirements().clone();
     let CandidateRuntimeRequirements::Muxed { video, .. } = &mut altered_runtime else {
-        panic!("fixture должна строить muxed runtime requirements");
+        panic!("fixture build-up muxed runtime requirements");
     };
     video.fps = Some(240.0);
     let altered_candidate = PlanningCandidate::new(
@@ -1621,7 +1621,7 @@ fn fresh_rematch_treats_selected_inventory_duplicate_as_one_candidate() {
     );
     let original_selection = original
         .selection_for(accepted_inventory(&original, 0))
-        .expect("original candidate принадлежит snapshot-у");
+        .expect("original candidate belong snapshot-at");
 
     let fresh_inventory = progressive_format("fresh-format", "webm", "webm", "vp9", "opus");
     let mut fresh_selected = fresh_inventory.clone();
@@ -1630,7 +1630,7 @@ fn fresh_rematch_treats_selected_inventory_duplicate_as_one_candidate() {
 
     let matched = fresh
         .rematch_exact(&original_selection)
-        .expect("одна физическая alternative должна semantic-rematch-иться");
+        .expect("One physical alternative must be semantic-rematch.");
     assert_eq!(matched.kind(), YtDlpCandidateMatchKind::SemanticRematch);
     assert!(std::ptr::eq(
         matched.candidate(),
@@ -1677,7 +1677,7 @@ fn exact_selection_stales_locally_and_semantically_rematches_after_reextraction(
     );
     let selection = original
         .selection_for(accepted_inventory(&original, 0))
-        .expect("candidate принадлежит original inventory");
+        .expect("candidate belong original inventory");
 
     let stale_same_generation = snapshot(
         json!({"formats": [progressive_format("other-id", "webm", "webm", "vp9", "none")]}),
@@ -1686,7 +1686,7 @@ fn exact_selection_stales_locally_and_semantically_rematches_after_reextraction(
     assert_eq!(
         stale_same_generation
             .rematch_exact(&selection)
-            .expect_err("same-generation missing ID должен быть stale"),
+            .expect_err("The same-generation missing ID must be stale."),
         YtDlpCandidateRematchError::StaleExactIdentity
     );
 
@@ -1696,12 +1696,12 @@ fn exact_selection_stales_locally_and_semantically_rematches_after_reextraction(
     );
     let matched = refreshed
         .rematch_exact(&selection)
-        .expect("semantic attributes совпадают");
+        .expect("semantic attributes are the same.");
     assert_eq!(matched.kind(), YtDlpCandidateMatchKind::SemanticRematch);
     assert_eq!(
         original
             .selection_for(accepted_inventory(&refreshed, 0))
-            .expect_err("foreign generation нельзя превратить в local selection"),
+            .expect_err("foreign generation cannot be converted local selection"),
         YtDlpCandidateSelectionError::ForeignGeneration
     );
 
@@ -1711,7 +1711,7 @@ fn exact_selection_stales_locally_and_semantically_rematches_after_reextraction(
     assert_eq!(
         changed
             .rematch_exact(&selection)
-            .expect_err("изменённые semantic attributes не rematch-ятся"),
+            .expect_err("Modified semantic attributes are not rematched"),
         YtDlpCandidateRematchError::StaleExactIdentity
     );
 
@@ -1727,7 +1727,7 @@ fn exact_selection_stales_locally_and_semantically_rematches_after_reextraction(
     assert_eq!(
         ambiguous
             .rematch_exact(&selection)
-            .expect_err("semantic duplicate не должен выбираться по source order"),
+            .expect_err("The semantic duplicate should not be selected by source order."),
         YtDlpCandidateRematchError::AmbiguousSemanticIdentity
     );
 }
@@ -1810,9 +1810,9 @@ fn video_dynamic_range(candidate: &YtDlpNormalizedCandidate) -> DynamicRange {
             component.video_hints().dynamic_range()
         }
         StreamLayout::ContentProbed(_) => {
-            panic!("audio-only content-probed candidate не имеет dynamic range")
+            panic!("audio-only content-probed candidate does not have a dynamic range")
         }
-        StreamLayout::AudioOnly(_) => panic!("audio-only candidate не имеет dynamic range"),
+        StreamLayout::AudioOnly(_) => panic!("audio-only candidate none dynamic range"),
     }
 }
 
@@ -1834,7 +1834,7 @@ fn planning_and_transport_share_the_same_exact_candidate() {
     let candidate = accepted_inventory(&snapshot, 0);
     let planning = snapshot
         .planning_snapshot()
-        .expect("public progressive candidate должен планироваться");
+        .expect("public progressive candidate should be planned");
     assert_eq!(planning.candidates().len(), 1);
     assert_eq!(
         planning.candidates()[0].descriptor().identity(),
@@ -1849,7 +1849,7 @@ fn planning_and_transport_share_the_same_exact_candidate() {
     );
     let components = candidate
         .transport_components(&context)
-        .expect("public component должен стать neutral request");
+        .expect("public component should neutral request");
     assert_eq!(components.len(), 1);
     assert_eq!(
         components[0].role(),
@@ -1914,7 +1914,7 @@ fn transport_maps_authorized_material_with_origin_path_and_secure_scope() {
 
     let request = candidate
         .transport_components(&context)
-        .expect("serialized auth должен стать scoped request")
+        .expect("serialized auth should scoped request")
         .into_iter()
         .next()
         .expect("single protected component")
@@ -1925,7 +1925,7 @@ fn transport_maps_authorized_material_with_origin_path_and_secure_scope() {
             http_transport_target(&request),
             SecretRequestPurpose::PrimaryResource,
         )
-        .expect("initial target находится в собственном scope");
+        .expect("The initial target is located in its own scope.");
     assert_eq!(material.headers_for_request().len(), 1);
     assert_eq!(material.headers_for_request()[0].name, "Authorization");
     assert_eq!(material.headers_for_request()[0].value, "Bearer secret");
@@ -2032,7 +2032,7 @@ fn conflicting_cookie_serializations_are_typed_incompatible() {
 
     let error = candidate
         .transport_components(&context)
-        .expect_err("conflicting cookies должны fail closed");
+        .expect_err("conflicting cookies must fail closed");
     assert!(matches!(
         error,
         super::YtDlpTransportRequestError::RequestMaterial(
@@ -2060,7 +2060,7 @@ fn checked_in_ism_target_projects_one_scoped_vod_manifest_request() {
 
     let request = candidate
         .smooth_manifest_transport_request(&context)
-        .expect("approved ISM target должен проецироваться");
+        .expect("The approved ISM target must be projected.");
 
     assert_eq!(request.provider(), &provider);
     assert_eq!(request.presentation(), MediaPresentation::Vod);
@@ -2089,7 +2089,7 @@ fn checked_in_ism_target_projects_one_scoped_vod_manifest_request() {
             http_transport_target(&request),
             SecretRequestPurpose::PrimaryResource,
         )
-        .expect("initial manifest target должен находиться в собственном scope");
+        .expect("The initial manifest target must be in its own scope.");
     assert_eq!(initial_material.headers_for_request().len(), 1);
     assert_eq!(
         initial_material.headers_for_request()[0].name,
@@ -2129,7 +2129,7 @@ fn checked_in_ism_target_projects_one_scoped_vod_manifest_request() {
             &cross_origin,
             RedirectHopCount::none(),
         )
-        .expect("cross-origin CDN redirect разрешён без secrets");
+        .expect("cross-origin CDN redirect permitted secrets");
     assert!(!redirect_authorization.permits_secret_scope_check());
 
     let diagnostic = format!("{snapshot:?} {request:?}");
@@ -2247,7 +2247,7 @@ fn smooth_transport_accepts_avc1_aacl_and_ismv_aliases() {
 
     candidate
         .smooth_manifest_transport_request(&context)
-        .expect("реальные Smooth aliases должны сохранить FMP4 H.264/AAC request");
+        .expect("Real Smooth aliases should save FMP4 H.264/AAC request");
 }
 
 /// Реальный selected `ism+ism` shape проходит planner и становится одним presentation request-ом.
@@ -2257,12 +2257,12 @@ fn real_selected_ism_separate_components_reach_presentation_manifest_boundary() 
     let candidate = snapshot
         .selected()
         .and_then(YtDlpCandidateEntry::accepted)
-        .expect("реальный selected Smooth candidate должен нормализоваться");
+        .expect("real selected Smooth candidate should be normalized");
     let planning = snapshot
         .planning_snapshot()
-        .expect("bare AVC1 должен оставить профиль container preflight-у");
+        .expect("bare AVC1 should leave the profile container preflight-at");
     let [planned] = planning.candidates() else {
-        panic!("реальный Smooth selected result должен дать один planning candidate");
+        panic!("The Smooth selected result will give you one planning candidate.");
     };
     match planned.runtime_requirements() {
         CandidateRuntimeRequirements::Separate { video, audio } => {
@@ -2272,7 +2272,7 @@ fn real_selected_ism_separate_components_reach_presentation_manifest_boundary() 
             assert_eq!(video.chroma, None);
             assert_eq!(*audio, audio_core::AudioDecodeCodecFamily::Aac);
         }
-        unexpected => panic!("ожидался separate Smooth runtime, получен {unexpected:?}"),
+        unexpected => panic!("expected separate Smooth runtime, received {unexpected:?}"),
     }
 
     let context = super::YtDlpTransportRequestContext::new(
@@ -2282,7 +2282,7 @@ fn real_selected_ism_separate_components_reach_presentation_manifest_boundary() 
     );
     let request = candidate
         .smooth_manifest_transport_request(&context)
-        .expect("video+audio fragments того же Manifest должны проецироваться");
+        .expect("video+audio fragments equally Manifest must be projected");
 
     assert_eq!(
         request.component().role(),
@@ -2313,7 +2313,7 @@ fn separate_smooth_components_reject_different_target_and_authorization_context(
     let different_target = different_target
         .selected()
         .and_then(YtDlpCandidateEntry::accepted)
-        .expect("different-target candidate всё ещё имеет честный separate descriptor");
+        .expect("different-target candidate still has an honest separate descriptor");
     assert!(matches!(
         different_target.smooth_manifest_transport_request(&context),
         Err(super::YtDlpTransportRequestError::SmoothPresentationTargetMismatch)
@@ -2328,7 +2328,7 @@ fn separate_smooth_components_reject_different_target_and_authorization_context(
     let different_headers = different_headers
         .selected()
         .and_then(YtDlpCandidateEntry::accepted)
-        .expect("different-context candidate должен дойти до request projection");
+        .expect("different-context candidate should reach request projection");
     assert!(matches!(
         different_headers.smooth_manifest_transport_request(&context),
         Err(super::YtDlpTransportRequestError::SmoothPresentationRequestContextMismatch)
@@ -2379,7 +2379,7 @@ fn progressive_ogg_null_codecs_builds_content_probed_candidate() {
     );
     let candidate = accepted_inventory(&snapshot, 0);
     let StreamLayout::ContentProbed(descriptor) = candidate.descriptor().layout() else {
-        panic!("null codec metadata должна строить content-probed layout");
+        panic!("The null codec metadata must be built into the content-probed layout.");
     };
     assert_eq!(descriptor.probe_container(), ContainerFamily::Ogg);
     assert!(matches!(
@@ -2399,9 +2399,9 @@ fn progressive_ogg_null_codecs_builds_content_probed_candidate() {
     );
     let [component] = candidate
         .progressive_transport_components(&context)
-        .expect("content-probed Ogg должен проецироваться в progressive transport")
+        .expect("content-probed Ogg must be projected into progressive transport")
         .try_into()
-        .expect("single candidate содержит один physical resource");
+        .expect("A single candidate has one physical resource.");
     assert_eq!(component.role(), MediaComponentRole::ContentProbed);
     assert_eq!(component.container(), ContainerFamily::Ogg);
 }
@@ -2445,13 +2445,13 @@ fn public_surface_and_manifest_have_no_legacy_webm_opener() {
     for forbidden_symbol in forbidden_public_symbols {
         assert!(
             !public_surface.contains(forbidden_symbol),
-            "legacy playback symbol снова появился в public surface"
+            "legacy playback symbol appeared again public surface"
         );
     }
     for forbidden_dependency in ["reqwest", "symphonia-demux", "web-media-http"] {
         assert!(
             !service_manifest.contains(forbidden_dependency),
-            "service-ytdlp снова владеет transport/demux dependency"
+            "service-ytdlp again owns transport/demux dependency"
         );
     }
 }

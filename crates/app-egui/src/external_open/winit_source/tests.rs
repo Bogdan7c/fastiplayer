@@ -65,10 +65,7 @@ fn legacy_series_of_dropped_files_becomes_one_positionless_drop_in_order() {
             ],
         }
     );
-    assert!(
-        collector.take_completed_drop().is_none(),
-        "бросок выдаётся один раз"
-    );
+    assert!(collector.take_completed_drop().is_none(), "once-throw");
 }
 
 #[test]
@@ -77,7 +74,7 @@ fn legacy_cancel_ends_gesture_and_new_hover_starts_a_new_one() {
     assert_eq!(
         collector.on_window_event(&WindowEvent::HoveredFileCancelled),
         None,
-        "отмена без наведения ничего не значит"
+        "Cancellation without targeting means nothing."
     );
     collector.on_window_event(&WindowEvent::HoveredFile(PathBuf::from("/a.mkv")));
     assert_eq!(

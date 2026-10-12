@@ -66,13 +66,13 @@ impl ForwardedPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub(crate) enum RunningInstanceForwardingFailure {
     /// Относительный путь нельзя привязать: рабочая папка процесса недоступна.
-    #[error("рабочая папка процесса недоступна, относительный путь не переслать")]
+    #[error("The process working directory is unavailable; cannot forward a relative path")]
     CurrentDirectoryUnavailable,
     /// Запрос нарушает лимиты протокола (например, слишком много файлов).
-    #[error("запрос нельзя переслать: {0}")]
+    #[error("Cannot forward the request: {0}")]
     RequestNotForwardable(ForwardedRequestRejection),
     /// Транспорт не доставил запрос или получатель не принял его.
-    #[error("запрос не доставлен запущенному экземпляру: {0}")]
+    #[error("The request was not delivered to the running instance: {0}")]
     Delivery(InstanceForwardingError),
 }
 
@@ -140,7 +140,7 @@ pub(crate) fn forward_arguments_to_running_instance(
         .map_err(into_error)?;
     tracing::info!(
         forwarded_arguments = arguments.len(),
-        "Аргументы переданы уже запущенному экземпляру"
+        "Arguments forwarded to the running instance"
     );
     Ok(())
 }

@@ -100,7 +100,7 @@ impl DroppedCollectionSource {
             DroppedCollectionEntry::File(_) => None,
         })?;
         let first_folder_name = first_folder.file_name().map_or_else(
-            || "папка".to_owned(),
+            || "folder".to_owned(),
             |name| name.to_string_lossy().into_owned(),
         );
         Some(Self {
@@ -217,7 +217,7 @@ pub(crate) fn collect_dropped_files(
                     Err(FolderWalkError::Cancelled) => return Err(DroppedCollectionCancelled),
                     Err(FolderWalkError::ReadRoot(kind)) => {
                         // Путь в лог не пишем: только вид ошибки.
-                        tracing::debug!(?kind, "Брошенная папка не читается, пропущена");
+                        tracing::debug!(?kind, "Abandoned folder is not read, missed");
                         unreadable_count += 1;
                     }
                 }
@@ -320,11 +320,13 @@ impl DroppedCollectionWalkOwner {
                 if let Err(CompletionPublishError::AlreadyPublished) =
                     publisher.publish_completion(completion)
                 {
-                    tracing::error!("Обход брошенных папок опубликовал второй terminal result");
+                    tracing::error!(
+                        "Abandoned folders bypass published the second terminal result"
+                    );
                 }
             })
             .map_err(|error| {
-                tracing::warn!(%error, "Не удалось запустить поток обхода папок");
+                tracing::warn!(%error, "Failed to start the folder bypass flow");
                 DroppedCollectionWalkStartError::SpawnFailed
             })?;
         self.job = Some(DroppedCollectionWalkJob {

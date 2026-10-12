@@ -55,7 +55,7 @@ impl RecoveryTempDirectory {
         }
 
         Err(YtDlpServiceError::process(anyhow::anyhow!(
-            "не удалось выделить уникальный recovery-каталог"
+            "It was not possible to identify a unique recovery catalog"
         )))
     }
 

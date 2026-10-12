@@ -252,26 +252,26 @@ fn assert_owner_subprocess_succeeds() {
     assert_eq!(
         requested_path_count(&requested_paths, "/media/unavailableSeg1-Frag1"),
         1,
-        "unavailable sibling должен быть проверен один раз и не маскировать admitted rows"
+        "unavailable sibling It should be checked once and not masked admitted rows"
     );
     assert_eq!(
         requested_path_count(&requested_paths, "/media/unsupportedSeg1-Frag1"),
         1,
-        "discovery должен ровно один раз probe-ить unsupported sibling"
+        "discovery must probe an unsupported sibling exactly once"
     );
     assert_eq!(
         requested_path_count(&requested_paths, "/media/playable-lowSeg1-Frag1"),
         1,
-        "discovery должен ровно один раз проверить playable sibling"
+        "discovery You have to check it exactly once playable sibling"
     );
     assert_eq!(
         requested_path_count(&requested_paths, "/media/playable-highSeg1-Frag1"),
         1,
-        "выбранный discovery demux должен перейти в runtime без повторного fetch"
+        "The selected discovery demux must go to runtime without repeat fetch"
     );
     assert!(
         requested_path_count(&requested_paths, SELECTED_SECOND_FRAGMENT_PATH) >= 1,
-        "playback/seek должен открыть второй fragment выбранной rendition"
+        "playback/seek must open the second fragment of the selected rendition"
     );
 }
 
@@ -308,7 +308,7 @@ fn all_fragment_http_failures_are_terminal_not_content_probe_rejections() {
         assert_eq!(
             requested_path_count(&requested_paths, fragment_path),
             1,
-            "discovery должен boundedly проверить каждый unavailable sibling"
+            "discovery must boundedly check out unavailable sibling"
         );
     }
 }
@@ -339,7 +339,7 @@ fn external_bootstrap_http_failure_is_terminal_not_content_probe_rejection() {
     let requested_paths = origin.requested_paths();
     assert!(
         requested_path_count(&requested_paths, "/media/bootstrap.bin") >= 1,
-        "external bootstrap failure должен пройти bounded transport attempts"
+        "external bootstrap failure must pass bounded transport attempts"
     );
     for fragment_path in [
         "/media/unavailableSeg1-Frag1",
@@ -350,7 +350,7 @@ fn external_bootstrap_http_failure_is_terminal_not_content_probe_rejection() {
         assert_eq!(
             requested_path_count(&requested_paths, fragment_path),
             0,
-            "bootstrap failure должен завершить discovery до fragment fetch"
+            "bootstrap failure to complete discovery before fragment fetch"
         );
     }
 }
@@ -403,7 +403,7 @@ fn assert_child_hds_open() {
         CancellationToken::new(),
         || false,
     )
-    .expect("null-codec HDS ProviderDefault должен открыть playable rendition");
+    .expect("null-codec HDS ProviderDefault must open playable rendition");
 
     assert_eq!(
         prepared.stream_configuration().active_candidate().layout,
@@ -415,7 +415,7 @@ fn assert_child_hds_open() {
         .stream_configuration()
         .component_variant_projection()
     else {
-        panic!("HDS ProviderDefault должен публиковать coupled catalog");
+        panic!("HDS ProviderDefault publishes coupled catalog");
     };
     assert_eq!(coupled.variants.len(), 2);
     assert_eq!(coupled.active_index, 0);
@@ -428,7 +428,7 @@ fn assert_child_hds_open() {
 
     let playback_window = prepared
         .playback_window
-        .expect("HDS VOD должен публиковать bounded playback window");
+        .expect("HDS VOD should publish bounded playback window");
     assert_eq!(playback_window.start().as_duration(), Duration::ZERO);
     assert_eq!(
         playback_window.end_exclusive().map(|end| end.as_duration()),
@@ -439,21 +439,18 @@ fn assert_child_hds_open() {
         .demux_seek_port
         .as_ref()
         .cloned()
-        .expect("HDS VOD должен публиковать receipted seek port");
+        .expect("HDS VOD should publish receipted seek port");
     let request_id = PreparedDemuxSeekRequestId::new(1);
     seek_port
         .enqueue_seek(
             request_id,
             DemuxSeekRequest::accurate(Duration::from_millis(1_500)),
         )
-        .expect("HDS app seek должен быть принят worker-ом");
+        .expect("The HDS app seek must be accepted by the worker.");
     let receipt = wait_for_seek_receipt(seek_port.as_ref());
     assert_eq!(receipt.request_id, request_id);
     let PreparedDemuxSeekOutcome::Succeeded(result) = receipt.outcome else {
-        panic!(
-            "HDS app seek должен завершиться успехом: {:?}",
-            receipt.outcome
-        );
+        panic!("HDS App Seek to be Successful: {:?}", receipt.outcome);
     };
     assert_eq!(
         result.requested_position.as_duration(),
@@ -463,7 +460,7 @@ fn assert_child_hds_open() {
     let second_fragment_requests_after_seek = selected_second_fragment_request_count();
     assert!(
         second_fragment_requests_after_seek > second_fragment_requests_before_seek,
-        "receipted seek должен заново открыть выбранный target fragment"
+        "receipted seek must reopen the selected target fragment"
     );
 }
 
@@ -516,21 +513,21 @@ fn assert_child_hds_transport_failure_is_terminal() {
         CancellationToken::new(),
         || false,
     ) {
-        Ok(_) => panic!("all-unavailable HDS catalog не должен считаться playable"),
+        Ok(_) => panic!("All-unavailable HDS catalog is not considered playable."),
         Err(error) => error,
     };
     assert!(
         error
             .downcast_ref::<web_media_hds::HdsNoPlayableRendition>()
             .is_none(),
-        "transport failure не является content/profile rejection-ом"
+        "transport failure is not a content/profile rejection"
     );
     assert!(
         !matches!(
             error.downcast_ref::<ContentProbeRejection>(),
             Some(ContentProbeRejection::NoPlayableAdaptiveVariant)
         ),
-        "transport failure не должен открывать BestPlayable parent fallback"
+        "transport failure not open BestPlayable parent fallback"
     );
 }
 
@@ -571,16 +568,13 @@ fn assert_av_tracks_and_packets(demuxer: &mut dyn Demuxer) {
             break;
         }
     }
+    assert!(video_track_seen, "playable F4F must publish H.264 track");
+    assert!(audio_track_seen, "playable F4F must publish AAC track");
     assert!(
-        video_track_seen,
-        "playable F4F должен опубликовать H.264 track"
+        video_packet_seen,
+        "playable F4F must produce an H.264 packet"
     );
-    assert!(
-        audio_track_seen,
-        "playable F4F должен опубликовать AAC track"
-    );
-    assert!(video_packet_seen, "playable F4F должен выдать H.264 packet");
-    assert!(audio_packet_seen, "playable F4F должен выдать AAC packet");
+    assert!(audio_packet_seen, "playable F4F must produce an AAC packet");
 }
 
 /// Poll-ит nonblocking demux boundary до одного готового event-а.
@@ -592,7 +586,7 @@ fn next_ready_event(demuxer: &mut dyn Demuxer) -> DemuxReadEvent {
             DemuxReadEvent::TemporarilyUnavailable(_) => {
                 assert!(
                     call_started.elapsed() < Duration::from_millis(50),
-                    "HDS app owner poll должен оставаться nonblocking"
+                    "HDS app owner poll should remain nonblocking"
                 );
                 assert!(Instant::now() < deadline, "HDS app demux worker timed out");
                 thread::sleep(Duration::from_millis(2));

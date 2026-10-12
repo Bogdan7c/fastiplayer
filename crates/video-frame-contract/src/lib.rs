@@ -390,15 +390,15 @@ impl fmt::Display for VideoFrameContractValidationError {
         match self {
             Self::HostPlanarRequiresSoftwareUpload { pixel_layout } => write!(
                 formatter,
-                "{pixel_layout} должен идти через software host upload, а не hardware zero-copy"
+                "{pixel_layout} must be hosted through a software upload, not hardware zero-copy."
             ),
             Self::HardwareLayoutRequiresZeroCopy { pixel_layout } => write!(
                 formatter,
-                "{pixel_layout} должен идти через hardware zero-copy, а не software host upload"
+                "{pixel_layout} should go through hardware zero-copy, not software host upload"
             ),
             Self::ReservedLayoutWithoutTransferContract { pixel_layout } => write!(
                 formatter,
-                "{pixel_layout} зарезервирован и пока не имеет production transfer contract-а"
+                "{pixel_layout} is reserved and does not yet have a production transfer contract."
             ),
         }
     }

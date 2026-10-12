@@ -21,7 +21,7 @@ use crate::playlist_runtime::skip_notice_regressions::{
 };
 use crate::playlist_runtime::{AutomaticQueueNotice, PlaylistTargetFailureSummary};
 
-const NO_NETWORK_TEXT: &str = "Нет подключения к сети — очередь остановлена";
+const NO_NETWORK_TEXT: &str = "No network connection; queue stopped";
 
 /// Очередь из трёх web-ссылок; первая уже играет.
 fn web_queue_with_a_playing(
@@ -70,14 +70,14 @@ fn no_network_at_auto_advance_stops_queue_on_b_without_touching_c() {
             PlaylistTargetFailure::QueueBlocked(QueueBlockReason::NoNetwork),
         );
 
-        assert!(continuation.is_none(), "C не запрашивается ({behavior:?})");
+        assert!(continuation.is_none(), "C not requested ({behavior:?})");
         assert_eq!(active_item_id(&runtime), Some(item_ids[0]), "{behavior:?}");
-        assert_eq!(item_badge(&mut runtime, item_ids[1]), None, "B не битый");
-        assert_eq!(item_badge(&mut runtime, item_ids[2]), None, "C не тронут");
+        assert_eq!(item_badge(&mut runtime, item_ids[1]), None, "B not broken");
+        assert_eq!(item_badge(&mut runtime, item_ids[2]), None, "C untouched.");
         let blocked = runtime
             .playlist_controller()
             .and_then(|controller| controller.queue_blocked_target())
-            .expect("очередь помнит, где остановилась");
+            .expect("The line remembers where it stopped.");
         assert_eq!(blocked.item_id, item_ids[1]);
         assert_eq!(blocked.reason, QueueBlockReason::NoNetwork);
 
@@ -140,7 +140,7 @@ fn site_rate_limit_stops_queue_with_its_own_reason() {
     let (_toasts, center_error) = user_visible_messages(&runtime.drain_automatic_queue_notices());
     assert_eq!(
         center_error.as_deref(),
-        Some("Сайт ограничил запросы — очередь остановлена")
+        Some("Website limited requests - queue stopped")
     );
 }
 
@@ -156,21 +156,21 @@ fn item_fault_on_web_item_still_skips_to_c_with_badge() {
             request_id(63),
             b_install,
             PlaylistTargetFailure::ItemFault(PlaylistTargetFailureSummary::Specific(Arc::from(
-                "Страница не найдена (ошибка 404)",
+                "Page not found (Error 404)",
             ))),
         )
-        .expect("отказ самой ссылки пропускается");
+        .expect("Rejection of the link itself is omitted");
     assert_eq!(c_install.item_id, item_ids[2]);
     assert_eq!(
         item_badge(&mut runtime, item_ids[1]).as_deref(),
-        Some("Страница не найдена (ошибка 404)")
+        Some("Page not found (Error 404)")
     );
     assert!(
         runtime
             .playlist_controller()
             .and_then(|controller| controller.queue_blocked_target())
             .is_none(),
-        "обычный отказ очередь не блокирует"
+        "Normal failure does not block the line."
     );
 
     install_planned(controller_mut(&mut runtime), c_install, 70);
@@ -197,7 +197,7 @@ fn play_after_block_resumes_from_blocked_item() {
         ..
     })) = runtime.play_queue_blocked_item()
     else {
-        panic!("Play после остановки открывает остановленный элемент");
+        panic!("Play opens the stopped element after stopping");
     };
     assert_eq!(install.item_id, item_ids[1]);
     install_planned(controller_mut(&mut runtime), install, 80);
@@ -205,7 +205,7 @@ fn play_after_block_resumes_from_blocked_item() {
     assert_eq!(active_item_id(&runtime), Some(item_ids[1]));
     assert!(
         runtime.play_queue_blocked_item().is_none(),
-        "после успешной установки очередь больше не заблокирована"
+        "After successful installation, the queue is no longer blocked"
     );
 }
 
@@ -237,7 +237,7 @@ fn play_resume_is_absent_without_block_or_after_item_removal() {
             removal,
             crate::playlist_runtime::controller::ControllerDestructiveRemovalOutcome::NotFound { .. }
         ),
-        "B удалена из очереди"
+        "B removed from the queue"
     );
     assert!(blocked_runtime.play_queue_blocked_item().is_none());
 }
@@ -267,7 +267,7 @@ fn manual_navigation_without_network_does_not_stop_queue_or_mark_item() {
         item_ids[1],
         crate::playlist_runtime::identity::TransportActionOrigin::Ui,
     ) else {
-        panic!("ручной Play B стартует install");
+        panic!("Manual Play B starts installing");
     };
     let mut runtime = runtime_with(controller);
 
@@ -311,7 +311,7 @@ fn only_connection_and_rate_limit_block_the_queue() {
         assert_eq!(
             QueueBlockReason::from_web_open_failure(item_fault),
             None,
-            "{item_fault:?} остаётся отказом элемента"
+            "{item_fault:?} remains a failure element"
         );
     }
 }

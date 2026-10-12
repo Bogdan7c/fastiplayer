@@ -596,7 +596,7 @@ fn parse_avc_decoder_configuration_record_with_contract(
     let nal_length_size =
         H264NalLengthSize::new(nal_length_size_minus_one + 1).map_err(|error| {
             let H264PacketizationError::UnsupportedNalLengthSize { nal_length_size } = error else {
-                unreachable!("H264NalLengthSize::new возвращает только UnsupportedNalLengthSize");
+                unreachable!("H264NalLengthSize::new returns only UnsupportedNalLengthSize");
             };
             AvcDecoderConfigurationRecordError::UnsupportedNalLengthSize { nal_length_size }
         })?;

@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn temporary_replay_event_preserves_visible_snapshots_and_identity() {
         let retry_hint = DemuxRetryHint::new(Duration::from_millis(25))
-            .expect("focused retry delay должен быть допустим");
+            .expect("A focused retry delay should be allowed.");
         let temporary_event = DemuxReadEvent::TemporarilyUnavailable(retry_hint);
         let inner = FiniteInnerDemuxer {
             events: VecDeque::from([DemuxReadEvent::EndOfStream]),
@@ -178,7 +178,7 @@ mod tests {
 
         let replayed_event = demuxer
             .next_event()
-            .expect("temporary replay event не должен становиться error");
+            .expect("Temporary replay event should not become an error");
 
         assert_eq!(replayed_event, temporary_event);
         assert_eq!(demuxer.duration(), Some(Duration::from_secs(10)));
@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(
             demuxer
                 .next_event()
-                .expect("после replay wrapper должен продолжить inner source"),
+                .expect("After the replay wrapper, the inner source should continue."),
             DemuxReadEvent::EndOfStream
         );
     }

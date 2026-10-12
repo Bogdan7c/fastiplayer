@@ -21,7 +21,7 @@ fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame
 
 /// Создаёт пустой frame pool для reclaim tests без реального VA display.
 fn reclaim_frame_pool_for_tests() -> DmaFramePool {
-    DmaFramePool::new(16, 16, 0).expect("test frame pool должен создаваться")
+    DmaFramePool::new(16, 16, 0).expect("test frame pool must be created")
 }
 
 /// Создаёт diagnostics capacity для focused reclaim tests без runtime decoder-а.
@@ -53,21 +53,21 @@ fn assert_reclaim_enqueue_for_reason(reason: &'static str) {
             generation: 31,
         },
     )
-    .expect("enqueue suppressed handle должен пройти");
+    .expect("The enqueue suppressed handle should be");
 
     assert_eq!(
         suppressed_reclaim_queue.len(),
         1,
-        "drop path должен поставить handle в reclaim queue"
+        "drop path should be handled in reclaim queue"
     );
     assert_eq!(
         frame_pool.num_free(),
         initial_free_frames,
-        "enqueue не должен освобождать surface сразу"
+        "enqueue should not surface immediately"
     );
     assert!(
         !sync_called.get(),
-        "обычный enqueue не должен вызывать blocking sync"
+        "Normal enqueue does not cause blocking sync."
     );
     assert_eq!(suppressed_reclaim_counters.total_enqueued, 1);
     assert_eq!(suppressed_reclaim_counters.total_reclaimed, 0);
@@ -215,7 +215,7 @@ fn assert_lifecycle_force_drain_clears_candidate_and_queue(reason: &'static str)
         reason,
         retained_candidate.metadata,
     )
-    .expect("candidate enqueue перед lifecycle drain должен пройти");
+    .expect("candidate enqueue beforehand lifecycle drain must pass");
     force_drain_suppressed_surfaces_from_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
@@ -223,7 +223,7 @@ fn assert_lifecycle_force_drain_clears_candidate_and_queue(reason: &'static str)
         reason,
         reclaim_capacity_for_tests(4),
     )
-    .expect("lifecycle force-drain должен очистить suppressed state");
+    .expect("lifecycle force-drain must be cleaned suppressed state");
 
     assert!(candidate.is_none());
     assert!(suppressed_reclaim_queue.is_empty());

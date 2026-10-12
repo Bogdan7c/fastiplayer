@@ -28,9 +28,9 @@ pub struct UiConfig {
         group = "shell",
         surface = "main-settings-window",
         label_id = "settings.ui.show_telemetry.label",
-        label_ru = "Показывать telemetry",
+        label_ru = "Show telemetry",
         description_id = "settings.ui.show_telemetry.description",
-        description_ru = "Показывать диагностическую панель telemetry.",
+        description_ru = "Show the diagnostic telemetry panel.",
         editor = "toggle",
         apply = "ui.apply"
     )]
@@ -44,14 +44,16 @@ pub struct UiConfig {
         group = "shell",
         surface = "main-settings-window",
         label_id = "settings.ui.language.label",
-        label_ru = "Язык UI",
+        label_ru = "UI language",
         description_id = "settings.ui.language.description",
-        description_ru = "Короткий код языка UI, например `ru` или `en`.",
+        description_ru = "Reserved for future localization. The current interface uses English regardless of this setting. Language code, for example `ru` or `en`.",
         editor = "text",
         min_len = crate::validation::MIN_UI_LANGUAGE_LEN,
         max_len = crate::validation::MAX_UI_LANGUAGE_LEN,
         apply = "ui.apply"
     )]
+    // Настройка, default и маршрут сохранены для будущей локализации.
+    // Текущие пользовательские строки всегда английские, включая поля metadata *_ru.
     pub language: String,
 
     /// Идентификатор skin-а UI.
@@ -64,7 +66,7 @@ pub struct UiConfig {
         label_id = "settings.ui.skin.label",
         label_ru = "Skin UI",
         description_id = "settings.ui.skin.description",
-        description_ru = "Stable id UI skin; неизвестный id является config error.",
+        description_ru = "Stable UI skin ID; an unknown ID is a configuration error.",
         editor = "select",
         apply = "ui.apply",
         options(option(
@@ -97,7 +99,7 @@ pub struct UiConfig {
 }
 
 impl Default for UiConfig {
-    /// Возвращает русскоязычный UI по умолчанию.
+    /// Сохраняет исторический default языка для совместимости; UI пока всегда английский.
     fn default() -> Self {
         Self {
             // Диагностическая панель нужна разработчику, а не зрителю: по умолчанию
@@ -129,11 +131,11 @@ pub struct UiWindowConfig {
         group = "window",
         surface = "main-settings-window",
         label_id = "settings.ui.window.titlebar_height_px.label",
-        label_ru = "Высота заголовка окна",
+        label_ru = "Window titlebar height",
         description_id = "settings.ui.window.titlebar_height_px.description",
-        description_ru = "Высота кастомного titlebar Fastiplayer в логических UI pixels.",
+        description_ru = "Custom Fastiplayer titlebar height in logical UI pixels.",
         help_id = "settings.ui.window.titlebar_height_px.help",
-        help_ru = "Панель остаётся overlay поверх видео: viewport не сжимается и exclusion rect не добавляется.",
+        help_ru = "The panel overlays the video: it does not shrink the viewport or add an exclusion rectangle.",
         editor = "integer",
         min = crate::validation::MIN_TITLEBAR_HEIGHT_PX,
         max = crate::validation::MAX_TITLEBAR_HEIGHT_PX,
@@ -151,11 +153,11 @@ pub struct UiWindowConfig {
         group = "window",
         surface = "main-settings-window",
         label_id = "settings.ui.window.corner_radius_px.label",
-        label_ru = "Скругление окна",
+        label_ru = "Window corner radius",
         description_id = "settings.ui.window.corner_radius_px.description",
-        description_ru = "Радиус прозрачного скругления всего окна в логических UI pixels.",
+        description_ru = "Radius of transparent window corners in logical UI pixels.",
         help_id = "settings.ui.window.corner_radius_px.help",
-        help_ru = "0 отключает скругление. В maximized/fullscreen контур всегда квадратный; если compositor не поддерживает прозрачность, используется безопасный квадратный fallback.",
+        help_ru = "0 disables rounding. Maximized/fullscreen windows always have square corners; if the compositor does not support transparency, a safe square fallback is used.",
         editor = "integer",
         min = MIN_WINDOW_CORNER_RADIUS_PX,
         max = MAX_WINDOW_CORNER_RADIUS_PX,
@@ -176,11 +178,11 @@ pub struct UiWindowConfig {
         group = "window",
         surface = "main-settings-window",
         label_id = "settings.ui.window.fullscreen_autohide_delay_ms.label",
-        label_ru = "Скрывать панели в полноэкранном режиме через",
+        label_ru = "Fullscreen panel hide delay",
         description_id = "settings.ui.window.fullscreen_autohide_delay_ms.description",
-        description_ru = "Сколько ждать без движения мыши и нажатий клавиш, прежде чем спрятать заголовок, нижнюю панель и курсор, мс.",
+        description_ru = "Idle time without mouse movement or key presses before hiding the titlebar, bottom panel, and cursor, in milliseconds.",
         help_id = "settings.ui.window.fullscreen_autohide_delay_ms.help",
-        help_ru = "0 — никогда не прятать. Панели остаются на месте, пока видео на паузе, открыт сайдбар или меню, курсор над панелью или что-то перетаскивается. Панели уезжают с той же скоростью, что и сайдбар.",
+        help_ru = "0 means never hide. Panels remain visible while video is paused, a sidebar or menu is open, the cursor is over a panel, or a drag is in progress. Panels use the same animation speed as the sidebar.",
         editor = "integer",
         min = crate::validation::MIN_FULLSCREEN_AUTOHIDE_DELAY_MS,
         max = crate::validation::MAX_FULLSCREEN_AUTOHIDE_DELAY_MS,
@@ -217,11 +219,11 @@ pub struct UiSidebarConfig {
         group = "sidebar",
         surface = "main-settings-window",
         label_id = "settings.ui.sidebar.width_points.label",
-        label_ru = "Ширина сайдбара",
+        label_ru = "Sidebar width",
         description_id = "settings.ui.sidebar.width_points.description",
-        description_ru = "Общая ширина Playlist, Settings, URL и Info в логических UI-пунктах.",
+        description_ru = "Shared width of Playlist, Settings, URL, and Info in logical UI points.",
         help_id = "settings.ui.sidebar.width_points.help",
-        help_ru = "Ширину также можно менять мышью за правую границу открытой панели.",
+        help_ru = "You can also resize an open panel by dragging its right edge.",
         editor = "integer",
         min = crate::MIN_SIDEBAR_WIDTH_POINTS,
         max = crate::MAX_SIDEBAR_WIDTH_POINTS,
@@ -256,11 +258,11 @@ pub struct UiSettingsConfig {
         group = "settings_runtime",
         surface = "main-settings-window",
         label_id = "settings.ui.settings.live_preview_max_hz.label",
-        label_ru = "Частота live preview",
+        label_ru = "Live preview frequency",
         description_id = "settings.ui.settings.live_preview_max_hz.description",
-        description_ru = "Максимальная частота live preview updates после Apply.",
+        description_ru = "Maximum live preview update frequency after Apply.",
         help_id = "settings.ui.settings.live_preview_max_hz.help",
-        help_ru = "Это committed setting: открытая draft/preview transaction продолжает использовать последнее применённое значение.",
+        help_ru = "This is a committed setting: an open draft/preview transaction keeps using the last applied value.",
         editor = "integer",
         min = crate::validation::MIN_LIVE_PREVIEW_MAX_HZ,
         max = crate::validation::MAX_LIVE_PREVIEW_MAX_HZ,
@@ -295,11 +297,11 @@ pub struct UiAnimationsConfig {
         group = "animations",
         surface = "main-settings-window",
         label_id = "settings.ui.animations.reduced_motion.label",
-        label_ru = "Уменьшить движение",
+        label_ru = "Reduce motion",
         description_id = "settings.ui.animations.reduced_motion.description",
-        description_ru = "Показывать сайдбар и индикатор скорости без движения, а кнопки — без масштабирования.",
+        description_ru = "Show the sidebar and speed indicator without movement, and buttons without scaling.",
         help_id = "settings.ui.animations.reduced_motion.help",
-        help_ru = "Короткие переходы цвета сохраняются, чтобы состояние кнопок оставалось понятным.",
+        help_ru = "Short color transitions are preserved to keep button states clear.",
         editor = "toggle",
         apply = "ui.apply"
     )]
@@ -313,11 +315,11 @@ pub struct UiAnimationsConfig {
         group = "animations",
         surface = "main-settings-window",
         label_id = "settings.ui.animations.sidebar_slide_duration_ms.label",
-        label_ru = "Анимация сайдбара",
+        label_ru = "Sidebar animation",
         description_id = "settings.ui.animations.sidebar_slide_duration_ms.description",
-        description_ru = "Длительность выезда панели настроек и сжатия видео, мс.",
+        description_ru = "Settings panel slide and video resize animation duration, in milliseconds.",
         help_id = "settings.ui.animations.sidebar_slide_duration_ms.help",
-        help_ru = "0 отключает анимацию: панель появляется мгновенно.",
+        help_ru = "0 disables animation: the panel appears immediately.",
         editor = "integer",
         min = crate::validation::MIN_SIDEBAR_SLIDE_DURATION_MS,
         max = crate::validation::MAX_SIDEBAR_SLIDE_DURATION_MS,

@@ -17,8 +17,7 @@ use fastiplayer_config::VideoBackendPreference;
 pub(super) const VIDEO_BACKEND_SETTING_ID: &str = "video.preferred_backend";
 
 /// Текст предупреждения; названия режимов совпадают с подписями в окне настроек.
-pub(super) const HARDWARE_UNAVAILABLE_WARNING: &str = "На этом компьютере аппаратное \
-    декодирование (VA-API) недоступно — видео не откроется. Выберите режим «Авто».";
+pub(super) const HARDWARE_UNAVAILABLE_WARNING: &str = "Hardware decoding (VA-API) is unavailable on this computer; the video will not open. Select Automatic.";
 
 /// Что известно о VA-API на этой машине.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

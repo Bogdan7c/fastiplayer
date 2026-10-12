@@ -33,14 +33,14 @@ fn repeat_cycle_and_labels_cover_all_authoritative_states() {
     );
     assert_eq!(
         QueueModeControl::Repeat.accessible_label(&model),
-        "Повтор выключен. Включить повтор очереди"
+        "Repeat is off. Repeat Playlist"
     );
 
     model.repeat_mode = RepeatMode::RepeatQueue;
     assert_eq!(next_repeat_mode(model.repeat_mode), RepeatMode::RepeatOne);
     assert_eq!(
         QueueModeControl::Repeat.accessible_label(&model),
-        "Повтор очереди включён. Включить повтор одного трека"
+        "Repeat Playlist is on. Repeat one track"
     );
 
     model.repeat_mode = RepeatMode::RepeatOne;
@@ -51,7 +51,7 @@ fn repeat_cycle_and_labels_cover_all_authoritative_states() {
     );
     assert_eq!(
         QueueModeControl::Repeat.accessible_label(&model),
-        "Повтор одного трека включён. Выключить повтор"
+        "Repeat one track is on. Turn repeat off"
     );
 }
 

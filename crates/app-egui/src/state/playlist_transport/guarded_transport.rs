@@ -48,7 +48,7 @@ impl AppState {
                 if let Err(error) =
                     playlist_runtime.cancel_media_open_lossless(released.request_id, released.cause)
                 {
-                    warn!(error = %error, "Не удалось отменить playlist request, снятый guard-ом");
+                    warn!(error = %error, "Cannot cancel playlist request taken by guard");
                 }
             }
             SupersededRequestOwner::LocalOpenInstall => {
@@ -57,7 +57,7 @@ impl AppState {
                 if let Err(error) =
                     playlist_runtime.cancel_media_open_lossless(released.request_id, released.cause)
                 {
-                    warn!(error = %error, "Не удалось отменить установку из Open, снятую guard-ом");
+                    warn!(error = %error, "Failed to cancel the installation from the Open, removed guard");
                 }
                 self.playlist_transport.queued_behind_foreign_request = Some(released.request_id);
             }
@@ -69,7 +69,7 @@ impl AppState {
             SupersededRequestOwner::AlreadyFinished => {
                 debug!(
                     request_id = ?released.request_id,
-                    "Request, снятый guard-ом, уже завершён"
+                    "Request canceled by the guard is already complete"
                 );
             }
         }

@@ -57,10 +57,10 @@ impl fmt::Display for PlaylistExportDocumentTargetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TargetMustBeAbsolute => {
-                formatter.write_str("playlist export target обязан быть absolute")
+                formatter.write_str("playlist export target must absolute")
             }
             Self::TargetHasNoParent => {
-                formatter.write_str("playlist export target не имеет parent directory")
+                formatter.write_str("playlist export target none parent directory")
             }
         }
     }
@@ -161,7 +161,7 @@ pub enum PortablePlaylistExportUrlError {
 
 impl fmt::Display for PortablePlaylistExportUrlError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("portable export URL отклонён")
+        formatter.write_str("portable export URL rejected")
     }
 }
 
@@ -197,13 +197,13 @@ impl fmt::Display for PlaylistExportLocatorRejection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ServiceOwnerUnavailable => {
-                formatter.write_str("владелец URL service недоступен для export preflight")
+                formatter.write_str("URL service is not available for export preflight")
             }
             Self::NonPortableIdentity => {
-                formatter.write_str("durable service identity не имеет portable URL")
+                formatter.write_str("A durable service identity does not have a portable URL.")
             }
             Self::OwnerPolicyRejected => {
-                formatter.write_str("владелец service отклонил durable export identity")
+                formatter.write_str("possessor service flattened durable export identity")
             }
         }
     }
@@ -229,18 +229,15 @@ pub enum PlaylistExportIneligible {
 impl fmt::Display for PlaylistExportIneligible {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NonUtf8LocalPath => {
-                formatter.write_str("local path не представим как strict UTF-8")
-            }
-            Self::ForeignPlatformPath => {
-                formatter.write_str("foreign platform path не представим в export document")
-            }
+            Self::NonUtf8LocalPath => formatter.write_str("The local path is not a strict UTF-8."),
+            Self::ForeignPlatformPath => formatter
+                .write_str("The foreign platform path is not presented in the export document"),
             Self::RelativeLocalPath => {
-                formatter.write_str("relative local locator не имеет reversible export base")
+                formatter.write_str("relative local locator none reversible export base")
             }
-            Self::UnrepresentableNativePath => {
-                formatter.write_str("native path нельзя обратимо представить в export document")
-            }
+            Self::UnrepresentableNativePath => formatter.write_str(
+                "The native path cannot be reversibly represented in the export document.",
+            ),
             Self::LocatorPolicy(reason) => reason.fmt(formatter),
             Self::Cue(reason) => formatter.write_str(reason.safe_reason_ru()),
         }
@@ -321,7 +318,7 @@ fn preflight_durable_locator(
     )]
     let service_locator = locator
         .expose_service_payload_for_reopen()
-        .expect("DurableReopenLocator является closed non-empty enum");
+        .expect("DurableReopenLocator is a closed non-empty enum");
     policy
         .preflight_service(service_locator)
         .map(prepared_policy_url)

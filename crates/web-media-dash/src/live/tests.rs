@@ -78,7 +78,7 @@ fn endpoint_snapshot(availability_start_time: &str, publish_time: &str) -> super
     .expect("strict endpoint fixture");
     let direct_utc = mpd
         .direct_utc_time()
-        .expect("endpoint fixture использует direct UTC");
+        .expect("endpoint fixture uses direct UTC");
     let local: Arc<dyn DashWallClock> = Arc::new(FixedClock { now: direct_utc });
     let clock = DashSynchronizedClock::from_direct_utc(local, direct_utc, direct_utc, direct_utc)
         .expect("zero-offset endpoint clock");
@@ -265,7 +265,7 @@ fn logical_live_selection_survives_sibling_reorder_and_representation_id_rotatio
     });
     let direct_utc = current_mpd
         .direct_utc_time()
-        .expect("logical fixture использует direct UTC");
+        .expect("logical fixture uses direct UTC");
     let local: Arc<dyn DashWallClock> = Arc::new(FixedClock { now: direct_utc });
     let clock = DashSynchronizedClock::from_direct_utc(local, direct_utc, direct_utc, direct_utc)
         .expect("zero-offset logical clock");

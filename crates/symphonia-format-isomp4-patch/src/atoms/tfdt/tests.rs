@@ -32,7 +32,7 @@ fn parses_version_zero_base_decode_time() {
 
     let tfdt = match parse_tfdt(&payload) {
         Ok(tfdt) => tfdt,
-        Err(_) => panic!("valid tfdt v0 должен парситься"),
+        Err(_) => panic!("valid tfdt v0 must parse successfully"),
     };
 
     assert_eq!(tfdt.base_media_decode_time, 17);
@@ -45,7 +45,7 @@ fn parses_version_one_base_decode_time() {
 
     let tfdt = match parse_tfdt(&payload) {
         Ok(tfdt) => tfdt,
-        Err(_) => panic!("valid tfdt v1 должен парситься"),
+        Err(_) => panic!("valid tfdt v1 must parse successfully"),
     };
 
     assert_eq!(tfdt.base_media_decode_time, u64::from(u32::MAX) + 9);

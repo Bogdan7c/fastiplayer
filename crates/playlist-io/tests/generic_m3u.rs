@@ -19,7 +19,7 @@ use playlist_io::{
 fn generic_preview(document: M3uDocument) -> GenericM3uPreview {
     match document {
         M3uDocument::Generic(preview) => preview,
-        other => panic!("ожидался generic M3U preview, получено {other:?}"),
+        other => panic!("Expected generic M3U preview, received {other:?}"),
     }
 }
 
@@ -32,7 +32,7 @@ fn parse_local(document_text: &str) -> GenericM3uPreview {
             M3uDeclaredFormat::M3u,
             M3uParserLimits::default(),
         ))
-        .expect("generic M3U должен разбираться"),
+        .expect("Generic M3U must be understood."),
     )
 }
 
@@ -42,9 +42,9 @@ fn local_path(entry: &playlist_io::GenericM3uEntryDraft) -> &Path {
         .import_draft()
         .reopen_locator()
         .expose_local_for_reopen()
-        .expect("ожидался local locator")
+        .expect("Local locator expected")
         .expose_native_path_for_open()
-        .expect("ожидался native path")
+        .expect("The native path was expected.")
 }
 
 /// Возвращает exact URL из entry draft.
@@ -53,7 +53,7 @@ fn network_uri(entry: &playlist_io::GenericM3uEntryDraft) -> &str {
         .import_draft()
         .reopen_locator()
         .expose_url_for_reopen()
-        .expect("ожидался URL locator")
+        .expect("The locator URL was expected.")
         .expose_secret_for_open()
 }
 
@@ -83,7 +83,7 @@ fn lf_crlf_comments_optional_header_and_extinf_association_are_supported() {
     let entries = preview.entries().collect::<Vec<_>>();
 
     assert_eq!(entries.len(), 3);
-    let first_hint = entries[0].extinf_hint().expect("первый EXTINF");
+    let first_hint = entries[0].extinf_hint().expect("first Extinf");
     assert_eq!(first_hint.display_title(), Some("Первая запись"));
     assert!(matches!(first_hint.duration(), M3uDurationHint::Known(_)));
     assert_eq!(
@@ -100,11 +100,11 @@ fn lf_crlf_comments_optional_header_and_extinf_association_are_supported() {
         12.5
     );
 
-    let second_hint = entries[1].extinf_hint().expect("второй EXTINF");
+    let second_hint = entries[1].extinf_hint().expect("second Extinf");
     assert_eq!(
         second_hint.duration(),
         M3uDurationHint::Unknown,
-        "negative duration остаётся unknown metadata hint"
+        "negative duration remains unknown metadata hint"
     );
     assert_eq!(entries[2].extinf_hint(), None);
     assert_eq!(preview.issues().retained_issue_count(), 0);
@@ -313,7 +313,7 @@ fn generic_m3u8_provenance_is_distinct_and_bom_is_rejected() {
         M3uDeclaredFormat::M3u8,
         M3uParserLimits::default(),
     ))
-    .expect_err("generic M3U8 BOM запрещён");
+    .expect_err("generic M3U8 BOM forbidden");
     assert_eq!(
         error.kind(),
         playlist_io::M3uParseErrorKind::GenericM3u8BomNotAllowed

@@ -172,7 +172,7 @@ impl PlaylistRuntime {
                 (outcome.domain.applied_count(), false)
             }
             Err(error) => {
-                tracing::warn!(?error, "Metadata Sort salvage preflight отклонён");
+                tracing::warn!(?error, "Metadata Sort salvage preflight rejected");
                 (0, true)
             }
         };

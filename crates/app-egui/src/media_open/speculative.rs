@@ -99,7 +99,7 @@ impl SpeculativeMediaPreparation {
         let current = self
             .current
             .take()
-            .expect("result принадлежит существующему speculative request");
+            .expect("The result belongs to an existing speculative request.");
         match result {
             Ok(prepared_open) => SpeculativeMediaPreparationPoll::Ready {
                 prepared_open: Box::new(prepared_open),

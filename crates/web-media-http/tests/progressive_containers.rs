@@ -205,8 +205,8 @@ fn respond_byte_range(stream: &mut TcpStream, body: &[u8]) {
     let (range_start, requested_end) = request
         .lines()
         .find_map(parse_range_header)
-        .expect("HTTP provider должен прислать bounded Range header");
-    assert!(range_start < body.len(), "range start выходит за fixture");
+        .expect("HTTP provider must send bounded Range header");
+    assert!(range_start < body.len(), "range start goes out fixture");
     let range_end = requested_end.min(body.len() - 1);
     let response_body = &body[range_start..=range_end];
     let headers = format!(
@@ -296,10 +296,10 @@ fn open_component(
             DemuxInput::byte_source(source)
         }
         (FixtureOriginMode::FullBody, TransportInput::Seekable(_)) => {
-            panic!("full-body fixture не должен стать seekable")
+            panic!("full-body fixture shouldn't seekable")
         }
         (FixtureOriginMode::ByteRanges, TransportInput::Streaming(_)) => {
-            panic!("Range fixture должен стать seekable")
+            panic!("Range fixture should be a seekable fixture")
         }
     };
 
@@ -406,12 +406,12 @@ fn next_packet(demuxer: &mut dyn Demuxer) -> Packet {
             DemuxReadEvent::Packet(packet) => return packet,
             DemuxReadEvent::MediaMetadataChanged(_) | DemuxReadEvent::TracksChanged(_) => {}
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                panic!("concrete local/Range demuxer не должен публиковать readiness")
+                panic!("concrete local/Range demuxer don't publish readiness")
             }
-            DemuxReadEvent::EndOfStream => panic!("fixture должен содержать packet"),
+            DemuxReadEvent::EndOfStream => panic!("The fixture must contain the packet"),
         }
     }
-    panic!("слишком много lifecycle events до первого packet")
+    panic!("too much lifecycle events first packet")
 }
 
 /// Проверяет общий classic ISO BMFF contract без привязки к codec backend-у.
@@ -432,7 +432,7 @@ fn assert_classic_iso_bmff_contract(demuxer: &mut dyn Demuxer, track_kind: Track
             .codec_private
             .as_ref()
             .is_some_and(|codec_private| !codec_private.is_empty()),
-        "codec configuration должна остаться на track boundary"
+        "codec configuration should stay track boundary"
     );
     assert!(track.duration.is_some_and(|duration| !duration.is_zero()));
     let selected_track_id = track.id;

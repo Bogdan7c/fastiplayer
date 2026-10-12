@@ -52,50 +52,50 @@ Options:
 EOF
 }
 
-# Создаёт временный command `yt-dlp`, который изолирует только development check.
+# Creates a temporary one command `yt-dlp`, isolater development check.
 create_hermetic_yt_dlp_shim() {
-    # Mktemp атомарно создаёт owner-only directory вне repository tree.
+    # Mktemp atomically owner-only directory outside repository tree.
     compatibility_directory="$(mktemp -d -t fastiplayer-ytdlp-compatibility.XXXXXX)"
-    # Exact shim path должен называться `yt-dlp`, потому что production boundary ищет это имя в PATH.
+    # Exact shim path should be called `yt-dlp`, because production boundary looking for a name in PATH.
     local shim_path="${compatibility_directory}/yt-dlp"
-    # Quoted heredoc сохраняет runtime environment reference без преждевременной interpolation.
+    # Quoted heredoc retain runtime environment reference prematurely interpolation.
     cat >"${shim_path}" <<'EOF'
 #!/usr/bin/env bash
-# Strict mode запрещает продолжение после отсутствующего executable либо failed exec setup.
+# Strict mode Prohibits continuation after absence executable either failed exec setup.
 set -Eeuo pipefail
-# System executable передаётся owner runner-ом как exact absolute diagnostic path.
+# System executable transmitted owner runner-how exact absolute diagnostic path.
 readonly SYSTEM_YT_DLP_EXECUTABLE="${FASTIPLAYER_SYSTEM_YT_DLP_EXECUTABLE:?missing system yt-dlp executable}"
-# Exec сохраняет production arguments, добавляя только development isolation prefix.
+# Exec retain production arguments, add only development isolation prefix.
 exec "${SYSTEM_YT_DLP_EXECUTABLE}" --ignore-config --no-plugin-dirs "$@"
 EOF
-    # Executable bit делает shim первым exact `yt-dlp` command в Cargo child PATH.
+    # Executable bit maker shim first exact `yt-dlp` command into Cargo child PATH.
     chmod +x "${shim_path}"
 }
 
-# Единый error formatter сохраняет машинно-различимый FAILED marker.
+# One error formatter machine-hold-distinguishable FAILED marker.
 print_failed() {
-    # Причина не содержит пользовательский URL либо process stdout/stderr.
+    # The reason does not include user URL either process stdout/stderr.
     local reason="$1"
-    # Diagnostic отправляется в stderr, как и вывод Cargo test.
+    # Diagnostic fly off stderr, as inference Cargo test.
     printf 'FAILED: system yt-dlp compatibility; reason=%s\n' "${reason}" >&2
 }
 
-# Parser намеренно принимает только help: у проверки нет скрытых режимов или version allowlist.
+# Parser intentionally accepting help: There are no hidden modes of inspection or version allowlist.
 parse_arguments() {
-    # Каждый argument обрабатывается явно, чтобы typo не запустил другой сценарий.
+    # Every day argument processed explicitly, if typo He didn't run another script.
     while (($# > 0)); do
-        # Exact option matching сохраняет маленький публичный CLI скрипта.
+        # Exact option matching retains a small public CLI script.
         case "$1" in
-            # Help ничего не проверяет и завершается успешно.
+            # Help It does not check anything and is completed successfully.
             --help)
-                # Документация печатается в stdout.
+                # Documentation shall be printed in stdout.
                 print_help
-                # Явный success не может быть ошибочно принят за compatibility PASS marker.
+                # Clear success cannot be mistaken for compatibility PASS marker.
                 exit "${SUCCESS_EXIT_CODE}"
                 ;;
-            # Любой неизвестный argument является ошибкой пользователя.
+            # Any unknown argument This is a user error.
             *)
-                # Неизвестный token безопасно печатается как shell data.
+                # Unknown token printable shell data.
                 print_failed "unknown argument '$1'"
                 # Runner не запускает Cargo после parser failure.
                 exit "${FAILURE_EXIT_CODE}"
@@ -131,23 +131,23 @@ main() {
 
     # Empty либо multiline version output считается сломанным diagnostic command contract.
     detected_version="${detected_version%%$'\n'*}"
-    # Empty first line не даёт полезного provenance для failed compatibility report.
+    # Empty first line not useful provenance for failed compatibility report.
     if [[ -z "${detected_version}" ]]; then
-        # Отдельная причина не утверждает несовместимость JSON schema.
+        # A single reason does not claim incompatibility JSON schema.
         print_failed "yt-dlp --version returned an empty first line"
-        # Cargo process boundary ещё не запускался.
+        # Cargo process boundary hasn't started yet.
         exit "${FAILURE_EXIT_CODE}"
     fi
 
-    # RUN marker фиксирует exact executable и наблюдаемую, но не разрешаемую policy-ей версию.
+    # RUN marker fixation exact executable and observed, but not permitted policy-version.
     printf 'RUN: system yt-dlp compatibility; executable=%s; version=%s\n' \
         "${yt_dlp_executable}" "${detected_version}" >&2
-    # Cargo всегда запускается из workspace root с locked dependency graph.
+    # Cargo always running out workspace root on locked dependency graph.
     cd "${REPO_ROOT}"
-    # Temporary shim изолирует binary contract от user config/plugins только в development check.
+    # Temporary shim isolate binary contract from user config/plugins only development check.
     create_hermetic_yt_dlp_shim
 
-    # Ignored integration test является единственным владельцем локального fixture и assertions.
+    # Ignored integration test It is the sole owner of the local fixture and assertions.
     if ! env \
         "PATH=${compatibility_directory}:${PATH}" \
         "FASTIPLAYER_SYSTEM_YT_DLP_EXECUTABLE=${yt_dlp_executable}" \
@@ -160,13 +160,13 @@ main() {
         --ignored \
         --exact \
         --nocapture; then
-        # Shell boundary не подменяет typed Rust error своим парсингом output.
+        # Shell boundary non-replace typed Rust error parsing output.
         print_failed "candidate or topology production boundary rejected the executable"
-        # Ненулевой status пригоден для development gate и CI job.
+        # Non-zero status fit development gate and CI job.
         exit "${FAILURE_EXIT_CODE}"
     fi
 
-    # PASSED печатается только после реального system executable и обоих production APIs.
+    # PASSED It is published only after the actual system executable both production APIs.
     printf 'PASSED: system yt-dlp compatibility; executable=%s; version=%s\n' \
         "${yt_dlp_executable}" "${detected_version}" >&2
 }

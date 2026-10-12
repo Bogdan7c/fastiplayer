@@ -32,7 +32,7 @@ pub(super) fn persist_due_runtime_originated_settings(
         match settings_runtime.flush_due_sidebar_resize(now, runtime_adapter) {
             Ok(outcome) => outcome.needs_redraw(),
             Err(error) => {
-                settings_runtime.report_runtime_error("Не удалось сохранить ширину sidebar", error);
+                settings_runtime.report_runtime_error("Could not save sidebar width", error);
                 true
             }
         };
@@ -40,7 +40,7 @@ pub(super) fn persist_due_runtime_originated_settings(
         match settings_runtime.flush_due_user_audio_level(now, runtime_adapter) {
             Ok(outcome) => outcome.needs_redraw(),
             Err(error) => {
-                settings_runtime.report_runtime_error("Не удалось сохранить громкость", error);
+                settings_runtime.report_runtime_error("Could not save volume", error);
                 true
             }
         };

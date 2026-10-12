@@ -16,7 +16,7 @@ fn recovery_policy_contracts_report_in_place_application() {
 
     assert_eq!(
         media_service_apply_mechanism(&affected_settings)
-            .expect("recovery policy contracts должны иметь app-report mapping"),
+            .expect("Recovery policy contracts must have an app-report mapping"),
         ApplyMechanism::InPlace
     );
 }
@@ -32,12 +32,12 @@ fn preferred_height_alone_and_mixed_with_policy_report_pipeline_rebuild() {
 
     assert_eq!(
         media_service_apply_mechanism(&preferred_height)
-            .expect("preferred height contract должен иметь app-report mapping"),
+            .expect("Preferred High Contract must have App-report mapping"),
         ApplyMechanism::PipelineRebuild
     );
     assert_eq!(
         media_service_apply_mechanism(&mixed)
-            .expect("mixed MediaService contracts должны иметь app-report mapping"),
+            .expect("Mixed MediaService Contracts Must Have App-Report Mapping"),
         ApplyMechanism::PipelineRebuild
     );
 }

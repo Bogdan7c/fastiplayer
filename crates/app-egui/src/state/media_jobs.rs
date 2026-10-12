@@ -232,8 +232,8 @@ impl AppState {
                 self.report_local_open_failure(&path, reason);
             }
             LocalFileOpenResult::JobFailed { error } => {
-                warn!(error = %error, "Local file open job завершился ошибкой");
-                self.set_startup_error(format!("Ошибка открытия media-файла: {error}"));
+                warn!(error = %error, "Local file open job ended up with an error");
+                self.set_startup_error(format!("Opening the media file error: {error}"));
             }
         }
     }
@@ -260,7 +260,7 @@ impl AppState {
                 outcome,
             ) {
                 self.set_startup_error(
-                    "Не удалось открыть выбранный файл из текущей очереди".to_string(),
+                    "Cannot open the selected file from the current queue".to_string(),
                 );
             }
             return;
@@ -292,8 +292,8 @@ impl AppState {
                 self.mark_pending_worker_redraw();
             }
             Err(error) => {
-                warn!(error = %error, "Local open admission отклонён до preparation");
-                self.set_startup_error(format!("Не удалось начать открытие media: {error}"));
+                warn!(error = %error, "Local open admission inclined preparation");
+                self.set_startup_error(format!("Failed to open media: {error}"));
             }
         }
     }
@@ -353,9 +353,9 @@ impl AppState {
                 self.set_startup_pending(preparing_message);
             }
             Err(error) => {
-                warn!(error = %error, "Не удалось запустить local preparation");
+                warn!(error = %error, "Could not start local preparation");
                 self.set_startup_error(format!(
-                    "Ошибка открытия media-файла {safe_label}: {error}"
+                    "Opening error of media file {safe_label}: {error}"
                 ));
             }
         }
@@ -384,7 +384,7 @@ impl AppState {
                 self.mark_pending_worker_redraw();
             }
             crate::playlist_runtime::PlaylistConfirmationApplyOutcome::Stale => {
-                debug!("Stale playlist confirmation response проигнорирован");
+                debug!("Stale playlist confirmation response ignored");
             }
         }
     }

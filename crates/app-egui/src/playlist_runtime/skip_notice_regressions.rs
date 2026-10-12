@@ -133,13 +133,13 @@ pub(super) fn queue_with_a_playing_from(
     let ControllerAppendOutcome::Added { item_ids, .. } =
         controller.append(drafts).expect("append A, B, C")
     else {
-        panic!("очередь A, B, C не пустая");
+        panic!("queue A, B, C is not empty");
     };
     controller.set_error_behavior(behavior);
     let ControllerPlayItemOutcome::StartInstall { install, .. } =
         controller.play_item(item_ids[0], TransportActionOrigin::Ui)
     else {
-        panic!("A стартует install");
+        panic!("A starts install");
     };
     install_planned(&mut controller, install, 10);
     // Ручное открытие A не даёт никакого итога пропусков.
@@ -157,7 +157,7 @@ pub(super) fn clean_eof_plans_next(controller: &mut PlaylistController) -> Plann
         EndedSnapshotKind::Clean,
         AutomaticDeferredAvailability::Unavailable,
     ) else {
-        panic!("clean EOF A планирует автоматический переход");
+        panic!("Clean EOF A is planning an automatic transition");
     };
     install
 }
@@ -214,7 +214,7 @@ fn broken_middle_item_is_skipped_and_named_in_info_toast() {
     let UnstagedPlannedTargetFailureOutcome::OpenItem { install: c_install } =
         runtime.report_unstaged_planned_playlist_navigation_failure(b_install)
     else {
-        panic!("Skip продолжает очередь после битого B");
+        panic!("Skip continues queue after battered B");
     };
     assert_eq!(c_install.item_id, item_ids[2]);
     // Пока C не встал, итога нет: цепочка ещё идёт.
@@ -226,11 +226,11 @@ fn broken_middle_item_is_skipped_and_named_in_info_toast() {
     assert_eq!(active_item_id(&runtime), Some(item_ids[2]));
     let notices = runtime.drain_automatic_queue_notices();
     let (toasts, center_error) = user_visible_messages(&notices);
-    assert_eq!(toasts, ["Пропущен из-за ошибки 1 файл: b-broken.mkv"]);
+    assert_eq!(toasts, ["Skipped 1 file due to errors: b-broken.mkv"]);
     assert_eq!(center_error, None);
     assert!(
         toasts.iter().all(|text| !text.contains(PRIVATE_DIRECTORY)),
-        "в уведомлении только имя файла, без пути к папке"
+        "In the notification only the file name, no path to the folder"
     );
     // Итог отдаётся ровно один раз.
     assert!(runtime.drain_automatic_queue_notices().is_empty());
@@ -246,7 +246,7 @@ fn all_remaining_broken_after_playback_stops_once_with_end_of_queue_toast() {
     let UnstagedPlannedTargetFailureOutcome::OpenItem { install: c_install } =
         runtime.report_unstaged_planned_playlist_navigation_failure(b_install)
     else {
-        panic!("B failure продолжает на C");
+        panic!("B Failure Continues with C");
     };
     // C тоже битый: кандидатов больше нет, очередь останавливается, а не зацикливается.
     assert!(matches!(
@@ -257,11 +257,13 @@ fn all_remaining_broken_after_playback_stops_once_with_end_of_queue_toast() {
     // Active остаётся доигравший A: новых install-ов не было.
     assert_eq!(active_item_id(&runtime), Some(item_ids[0]));
     let notices = runtime.drain_automatic_queue_notices();
-    assert_eq!(notices.len(), 1, "ровно один итог: {notices:?}");
+    assert_eq!(notices.len(), 1, "single-point: {notices:?}");
     let (toasts, center_error) = user_visible_messages(&notices);
     assert_eq!(
         toasts,
-        ["Пропущено из-за ошибки 2 файла: b-broken.mkv, c-ok.mkv. Дальше в очереди ничего нет"]
+        [
+            "Skipped 2 files due to errors: b-broken.mkv, c-ok.mkv. There is nothing else in the queue"
+        ]
     );
     // A играл, поэтому это не «ни один файл очереди не открылся».
     assert_eq!(center_error, None);
@@ -282,7 +284,7 @@ fn explicit_stop_policy_keeps_old_behavior_and_shows_reason() {
     assert_eq!(active_item_id(&runtime), Some(item_ids[0]));
 
     let (toasts, center_error) = user_visible_messages(&runtime.drain_automatic_queue_notices());
-    assert_eq!(toasts, ["Очередь остановлена из-за ошибки: b-broken.mkv"]);
+    assert_eq!(toasts, ["Queue stopped due to an error: b-broken.mkv"]);
     assert_eq!(center_error, None);
 }
 
@@ -295,7 +297,7 @@ fn manual_row_play_during_skip_chain_discards_summary() {
     let UnstagedPlannedTargetFailureOutcome::OpenItem { .. } =
         runtime.report_unstaged_planned_playlist_navigation_failure(b_install)
     else {
-        panic!("B failure продолжает на C");
+        panic!("B Failure Continues with C");
     };
 
     // Автоматический план на C брошен: пользователь сам кликает по строке C.
@@ -303,7 +305,7 @@ fn manual_row_play_during_skip_chain_discards_summary() {
     let ControllerPlayItemOutcome::StartInstall { install, .. } =
         controller.play_item(item_ids[2], TransportActionOrigin::Ui)
     else {
-        panic!("ручной Play C стартует install");
+        panic!("Manual Play C starts installing");
     };
     install_planned(controller, install, 40);
 
@@ -323,7 +325,7 @@ fn manual_next_onto_broken_item_never_auto_skips() {
         PreviousRestartThreshold::from_milliseconds(0).expect("zero threshold"),
         DiscoveryManualWaitAvailability::Exhausted,
     ) else {
-        panic!("ручной Next с A стартует install B");
+        panic!("Manual Next with A starts install B");
     };
     assert_eq!(install.item_id, item_ids[1]);
     let mut runtime = runtime_with(controller);
@@ -344,7 +346,7 @@ fn persisted_state_store(file_names: &[&str]) -> (tempfile::TempDir, Arc<Playlis
         .append_batch(file_names.iter().map(|name| local_draft(name)).collect())
         .expect("append persisted queue")
     else {
-        panic!("сохранённая очередь не пустая");
+        panic!("queue not empty");
     };
     let item_ids = allocated_item_ids.into_vec();
     queue
@@ -386,7 +388,7 @@ fn restarted_runtime(store: Arc<PlaylistStateStore>) -> PlaylistRuntime {
     }
     assert!(
         ready,
-        "startup decision завершился за ограниченное число шагов"
+        "startup decision completed in a limited number of steps"
     );
     controller_mut(&mut runtime).set_error_behavior(PlaylistErrorBehavior::Skip);
     runtime
@@ -402,8 +404,8 @@ fn restore_with_moved_current_plays_next_and_names_skipped_file() {
         .startup_restored_current()
         .expect("restored current");
     let fallback = runtime
-        .report_startup_restore_failure(restored, Arc::from("Файл не найден"))
-        .expect("Skip переходит к следующему элементу");
+        .report_startup_restore_failure(restored, Arc::from("File not found"))
+        .expect("Skip moves on to the next element");
     let fallback_item_id = fallback.item_id();
     assert!(runtime.drain_automatic_queue_notices().is_empty());
 
@@ -421,7 +423,7 @@ fn restore_with_moved_current_plays_next_and_names_skipped_file() {
 
     assert_eq!(active_item_id(&runtime), Some(fallback_item_id));
     let (toasts, center_error) = user_visible_messages(&runtime.drain_automatic_queue_notices());
-    assert_eq!(toasts, ["Пропущен из-за ошибки 1 файл: moved-current.mkv"]);
+    assert_eq!(toasts, ["Skipped 1 file due to errors: moved-current.mkv"]);
     assert_eq!(center_error, None);
 }
 
@@ -435,25 +437,22 @@ fn restore_with_whole_queue_missing_shows_single_center_error() {
     let mut attempts = 0;
     while let Some(failed) = target.take() {
         attempts += 1;
-        assert!(
-            attempts <= 3,
-            "цепочка пропусков ограничена размером очереди"
-        );
-        target = runtime.report_startup_restore_failure(failed, Arc::from("Файл не найден"));
+        assert!(attempts <= 3, "Pass chain is limited by queue size");
+        target = runtime.report_startup_restore_failure(failed, Arc::from("File not found"));
     }
 
     assert_eq!(
         attempts, 3,
-        "каждый элемент очереди пробовали ровно один раз"
+        "Each element of the queue was tried exactly once."
     );
     assert_eq!(active_item_id(&runtime), None);
     let notices = runtime.drain_automatic_queue_notices();
-    assert_eq!(notices.len(), 1, "ровно один итог: {notices:?}");
+    assert_eq!(notices.len(), 1, "single-point: {notices:?}");
     let (toasts, center_error) = user_visible_messages(&notices);
     assert!(toasts.is_empty());
     assert_eq!(
         center_error.as_deref(),
-        Some("Ни один файл очереди не удалось открыть")
+        Some("Could not open any file in the queue")
     );
 }
 
@@ -472,22 +471,22 @@ fn async_preparation_failure_before_admission_continues_to_c() {
             MediaOpenRequestId::from_non_zero(non_zero(60)),
             b_install,
             PlaylistTargetFailure::ItemFault(PlaylistTargetFailureSummary::Specific(Arc::from(
-                "файл не найден",
+                "file not found",
             ))),
         )
-        .expect("Skip продолжает очередь после асинхронного провала B");
+        .expect("Skip continues queue after asynchronous B failure");
     assert_eq!(c_install.item_id, item_ids[2]);
     let b_badge = controller_mut(&mut runtime)
         .runtime_errors
         .get(&item_ids[1])
         .map(|runtime_error| runtime_error.safe_summary().to_owned());
-    assert_eq!(b_badge.as_deref(), Some("файл не найден"));
+    assert_eq!(b_badge.as_deref(), Some("file not found"));
 
     install_planned(controller_mut(&mut runtime), c_install, 70);
 
     assert_eq!(active_item_id(&runtime), Some(item_ids[2]));
     let (toasts, _center_error) = user_visible_messages(&runtime.drain_automatic_queue_notices());
-    assert_eq!(toasts, ["Пропущен из-за ошибки 1 файл: b-broken.mkv"]);
+    assert_eq!(toasts, ["Skipped 1 file due to errors: b-broken.mkv"]);
 }
 
 /// Ручной Next на файл, не подготовившийся до admission, — прежняя D55-семантика:
@@ -502,7 +501,7 @@ fn async_preparation_failure_of_manual_next_waits_for_user() {
         PreviousRestartThreshold::from_milliseconds(0).expect("zero threshold"),
         DiscoveryManualWaitAvailability::Exhausted,
     ) else {
-        panic!("ручной Next с A стартует install B");
+        panic!("Manual Next with A starts install B");
     };
     let mut runtime = runtime_with(controller);
 
@@ -510,13 +509,13 @@ fn async_preparation_failure_of_manual_next_waits_for_user() {
         MediaOpenRequestId::from_non_zero(non_zero(80)),
         install,
         PlaylistTargetFailure::ItemFault(PlaylistTargetFailureSummary::Specific(Arc::from(
-            "файл не найден",
+            "file not found",
         ))),
     );
 
     assert!(
         continuation.is_none(),
-        "ручной Next не пропускает автоматически"
+        "Manual Next does not automatically pass"
     );
     assert!(
         runtime

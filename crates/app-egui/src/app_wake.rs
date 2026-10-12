@@ -567,19 +567,19 @@ mod tests {
         });
         let (publisher, receiver) = owner_mailbox(test_port(emitter));
 
-        publisher.publish_progress("готово на 90%");
+        publisher.publish_progress("90% complete");
         assert_eq!(
-            publisher.publish_completion("готово"),
+            publisher.publish_completion("ready"),
             Ok(WakeDelivery::Coalesced)
         );
         assert_eq!(
-            publisher.publish_completion("нельзя перезаписать"),
+            publisher.publish_completion("can't be rewritten"),
             Err(CompletionPublishError::AlreadyPublished)
         );
 
         let drain = receiver.drain();
-        assert_eq!(drain.latest_progress, Some("готово на 90%"));
-        assert_eq!(drain.completion, Some("готово"));
+        assert_eq!(drain.latest_progress, Some("90% complete"));
+        assert_eq!(drain.completion, Some("ready"));
         assert!(receiver.drain().completion.is_none());
     }
 
@@ -594,17 +594,17 @@ mod tests {
 
         std::thread::scope(|scope| {
             scope.spawn(move || {
-                progress_publisher.publish_progress("последний progress");
+                progress_publisher.publish_progress("latest progress");
             });
             scope.spawn(move || {
                 publisher
                     .publish_completion("terminal")
-                    .expect("первый terminal должен быть принят");
+                    .expect("The first terminal must be accepted.");
             });
         });
 
         let drain = receiver.drain();
-        assert_eq!(drain.latest_progress, Some("последний progress"));
+        assert_eq!(drain.latest_progress, Some("latest progress"));
         assert_eq!(drain.completion, Some("terminal"));
         assert_eq!(emitter.emits.load(Ordering::Relaxed), 1);
     }

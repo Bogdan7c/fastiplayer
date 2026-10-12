@@ -161,7 +161,7 @@ impl PlaylistController {
             StartupRestoreTargetBuild::Ready(target) => Some(target),
             StartupRestoreTargetBuild::Missing => None,
             StartupRestoreTargetBuild::Refused { install, refusal } => {
-                tracing::warn!(error = %refusal, "Restored current нельзя открыть отдельно");
+                tracing::warn!(error = %refusal, "Restored current cannot be opened separately");
                 match self
                     .report_startup_restore_install_failed(install, Arc::from(refusal.to_string()))
                 {
@@ -231,7 +231,7 @@ impl PlaylistController {
                     };
                 }
                 StartupRestoreTargetBuild::Refused { install, refusal } => {
-                    tracing::warn!(error = %refusal, "Кандидат restore нельзя открыть отдельно");
+                    tracing::warn!(error = %refusal, "Candidate restore cannot be opened separately");
                     self.record_automatic_skip(install.item_id);
                     failed = install;
                     safe_summary = Arc::from(refusal.to_string());

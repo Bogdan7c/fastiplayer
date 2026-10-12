@@ -8,7 +8,7 @@
 use playlist_io::{CueTextEncoding, LocalPlaylistExpansionSummary};
 
 /// Человеческий текст уведомления: что именно сделало приложение, без технических деталей.
-pub(crate) const WINDOWS_1251_NOTICE_MESSAGE: &str = "Плейлист прочитан в кодировке Windows-1251";
+pub(crate) const WINDOWS_1251_NOTICE_MESSAGE: &str = "Playlist read using Windows-1251 encoding";
 
 /// Факт о чтении плейлиста, о котором стоит сказать пользователю.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -15,7 +15,7 @@ fn player_staging_completion_reason(
         MediaInstallCompletion::Installed { .. } | MediaInstallCompletion::Cancelled { .. } => {
             tracing::warn!(
                 ?completion,
-                "Player опубликовал не-Failed terminal до ReadyToCommit"
+                "Player published a non-Failed terminal before ReadyToCommit"
             );
             PlayerInstallFailureReason::InternalError
         }
@@ -35,7 +35,7 @@ pub(super) fn reported_player_failure_reason(
         kind = ?failure.error.kind,
         player_error = %failure.error.message,
         ?reason,
-        "Player отказался установить media"
+        "Player refused to install media"
     );
     reason
 }
@@ -118,7 +118,7 @@ impl MediaOpenCoordinator {
             Err(rejection) => {
                 // Различие «переполнено / поток завершился» остаётся в логе и в
                 // возвращаемой ошибке команды; пользователь видит «player не отвечает».
-                tracing::warn!(?rejection, "Player не принял команду установки media");
+                tracing::warn!(?rejection, "Player rejected the media installation command");
                 current.phase = MediaOpenPhase::Failed;
                 current.terminal = Some(MediaOpenTerminalOutcome::PlayerRejected {
                     request_id,

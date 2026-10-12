@@ -42,7 +42,7 @@ impl StalledBodyServer {
                 Ok(0) => disconnect_sender
                     .send(())
                     .expect("publish stalled body disconnect"),
-                Ok(_) => panic!("client не должен писать в HTTP response socket"),
+                Ok(_) => panic!("The client does not need to write HTTP response socket."),
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -53,7 +53,7 @@ impl StalledBodyServer {
                         .send(())
                         .expect("publish reset stalled body disconnect")
                 }
-                Err(error) => panic!("stalled body socket не был закрыт: {error}"),
+                Err(error) => panic!("stalled body socket not closed: {error}"),
             }
         });
         Self {
@@ -333,7 +333,7 @@ fn clock_request_is_manifest_bounded_and_cannot_inherit_source_secrets() {
             server.target("/clock?public=1"),
             clock_bound,
         ))
-        .expect("same-origin clock fetch без source secrets");
+        .expect("same-origin clock fetch without source secrets");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].request_line.contains("public=1"));
@@ -488,7 +488,7 @@ fn restartable_active_read_interruption_aborts_stalled_body_without_extra_reques
     assert_eq!(
         controller.request_active_read_interruption(),
         AdaptiveRestartableReadInterruptionRequest::AlreadyQuiescent,
-        "offside attempt не должен быть poisoned до commit"
+        "offside attempt shouldn't poisoned before commit"
     );
     assert_eq!(
         attempt.arm_as_current(),
@@ -518,12 +518,12 @@ fn restartable_active_read_interruption_aborts_stalled_body_without_extra_reques
             AdaptiveRestartableReadInterruptionRequest::AlreadyQuiescent => {
                 assert!(
                     Instant::now() < request_deadline,
-                    "body read должен занять active attempt slot"
+                    "body read must occupy the active attempt slot"
                 );
                 thread::yield_now();
             }
             AdaptiveRestartableReadInterruptionRequest::InterruptionAlreadyRequested => {
-                panic!("test посылает только один accepted active-read signal")
+                panic!("test sends only one accepted active-read signal")
             }
         }
     }
@@ -541,11 +541,11 @@ fn restartable_active_read_interruption_aborts_stalled_body_without_extra_reques
     ));
     assert_eq!(
         received_body_bytes, 0,
-        "stalled body не должен буферизоваться"
+        "stalled body should not be buffered"
     );
     assert!(
         !request_cancellation.is_cancelled(),
-        "active-read signal не должен отменять replacement request token"
+        "active-read signal mustn't replacement request token"
     );
     reader.join().expect("join restartable body reader");
     server

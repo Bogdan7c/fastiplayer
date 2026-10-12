@@ -681,7 +681,7 @@ fn color_pipeline_settings_from_config(
 fn rgb_triplet_from_config(field: &'static str, values: &[f32]) -> SettingsResult<[f32; 3]> {
     if values.len() != 3 {
         return Err(SettingsError::access_failed(format!(
-            "{field} должен содержать ровно 3 значения, получено {}",
+            "{field} must contain exactly 3 values; got {}",
             values.len()
         )));
     }
@@ -689,7 +689,7 @@ fn rgb_triplet_from_config(field: &'static str, values: &[f32]) -> SettingsResul
     for (channel_index, channel_value) in values.iter().copied().enumerate() {
         if !channel_value.is_finite() {
             return Err(SettingsError::access_failed(format!(
-                "{field}[{channel_index}] должен быть конечным числом, получено {channel_value}"
+                "{field}[{channel_index}] must be finite; got {channel_value}"
             )));
         }
     }
@@ -992,14 +992,14 @@ pub(crate) fn runtime_route_from_descriptor(
     )?;
     let contract = setting_application_contract(&descriptor.id).ok_or_else(|| {
         SettingsError::access_failed(format!(
-            "редактируемый setting `{}` не имеет checked live application contract",
+            "editable setting '{}' does not have a checked live application contract",
             descriptor.id.as_str()
         ))
     })?;
 
     if contract.route != metadata_route {
         return Err(SettingsError::access_failed(format!(
-            "setting `{}`: metadata route {:?} расходится с application contract route {:?}",
+            "setting `{}': metadata route {:?} diverges from application contract route {:?}",
             descriptor.id.as_str(),
             metadata_route,
             contract.route
@@ -1557,7 +1557,7 @@ mod tests {
             .find(|route| route.route == AppRuntimeRoute::Player)
             .expect("player route exists");
         let RuntimeCommittedUpdate::Player(update) = &player_route.update else {
-            panic!("audio.output_device должен попасть в player route update");
+            panic!("audio.output_device should be included in the player route update");
         };
 
         assert_eq!(
@@ -1591,7 +1591,7 @@ mod tests {
             .find(|route| route.route == AppRuntimeRoute::Player)
             .expect("player route exists");
         let RuntimeCommittedUpdate::Player(update) = &player_route.update else {
-            panic!("video.preferred_backend должен попасть в player route update");
+            panic!("video.preferred_backend should be included in the player route update");
         };
 
         assert_eq!(
@@ -1660,7 +1660,7 @@ mod tests {
             .find(|route| route.route == AppRuntimeRoute::Player)
             .expect("player route exists");
         let RuntimeCommittedUpdate::Player(update) = &player_route.update else {
-            panic!("decoder ready queue должен попасть в player route update");
+            panic!("Decoder ready queue must be included in the player route update");
         };
 
         assert_eq!(
@@ -1712,7 +1712,7 @@ mod tests {
             .find(|route| route.route == AppRuntimeRoute::Player)
             .expect("player route exists");
         let RuntimeCommittedUpdate::Player(update) = &player_route.update else {
-            panic!("software surface pool должен попасть в player route update");
+            panic!("The software surface pool must be included in the player route update");
         };
 
         // Software-пул применяется через ту же controlled rebuild группу, что и

@@ -87,7 +87,7 @@ fn replacing_with_files_gives_exact_queue_in_drop_order_and_first_row_starts_pla
         .expect("queue has first row");
     assert_eq!(
         first_item, first_in_queue,
-        "играть надо именно первый файл броска"
+        "You need to play the first file of the throw"
     );
 
     // Первый файл действительно запускает установку media обычным Row Play.
@@ -152,7 +152,7 @@ fn before_load_decision_replacement_is_refused_and_reported_as_pending() {
     assert_eq!(outcome, LocalFilesReplacementOutcome::LoadDecisionPending);
     assert!(
         runtime.queue_load_decision_is_pending(),
-        "отказ не создаёт очередь"
+        "Abandonment does not create a queue."
     );
 }
 
@@ -172,12 +172,12 @@ fn nonempty_queue_asks_confirmation_and_changes_only_after_confirm() {
     assert_eq!(
         queue_paths(&runtime),
         paths(&["/old.mkv"]),
-        "до ответа очередь не меняется"
+        "until the answer is changed."
     );
     let model = runtime
         .pending_playlist_confirmation()
         .expect("pending confirmation");
-    assert_eq!(model.safe_label(), "2 файла");
+    assert_eq!(model.safe_label(), "2 files");
     assert!(model.reasons().queue_replacement());
 
     let outcome = runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
@@ -193,7 +193,7 @@ fn nonempty_queue_asks_confirmation_and_changes_only_after_confirm() {
     assert_eq!(
         queue_paths(&runtime),
         paths(&["/old.mkv"]),
-        "Confirm сам очередь не меняет"
+        "Confirm doesn't change the queue"
     );
 
     assert!(matches!(

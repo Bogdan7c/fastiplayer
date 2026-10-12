@@ -81,7 +81,7 @@ fn deadline_is_inclusive_at_expiry_and_countdown_uses_monotonic_boundaries() {
             .undo
             .expect("authoritative Undo UI model")
             .action_label(),
-        "Отменить удаление элемента (8 с)"
+        "Undo removing item (8 s)"
     );
     assert_eq!(
         ui_snapshot.next_wake_deadline,

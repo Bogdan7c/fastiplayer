@@ -97,7 +97,7 @@ impl PlayerSession {
                     MediaInstallFailureStage::VideoStreamConfiguration,
                     PlayerError::new(
                         PlayerErrorKind::RuntimeError,
-                        "Staged preflight потерял exact request fence",
+                        "Staged preflight lost the exact request fence",
                     ),
                 ),
             );
@@ -110,7 +110,7 @@ impl PlayerSession {
                     MediaInstallFailureStage::VideoPreflightTimeout,
                     PlayerError::new(
                         PlayerErrorKind::DemuxError,
-                        "Staged video preflight превысил bounded wall-clock deadline",
+                        "Staged video preflight exceeds bounded wall-clock deadline",
                     ),
                 ),
             );
@@ -161,7 +161,7 @@ impl PlayerSession {
                     MediaInstallFailureStage::PlaybackWindowPreparation,
                     PlayerError::new(
                         PlayerErrorKind::SeekUnavailable,
-                        format!("Не удалось подготовить playback window: {error}"),
+                        format!("Could not prepare the playback window: {error}"),
                     ),
                 ),
             );

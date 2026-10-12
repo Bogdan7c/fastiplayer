@@ -315,7 +315,7 @@ fn superseded_valid_restore_keeps_allocator_watermark_without_restored_items() {
         .queue()
         .iter_playable_ids()
         .next()
-        .expect("startup append должен создать playable строку");
+        .expect("Startup Append should create a playable string");
     assert!(
         allocated_id > highest_id,
         "persisted watermark must not be reused"

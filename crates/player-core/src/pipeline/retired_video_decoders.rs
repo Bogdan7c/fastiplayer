@@ -25,7 +25,7 @@ impl PlaybackPipeline {
             Entry::Occupied(_) => {
                 tracing::error!(
                     render_generation,
-                    "duplicate retired video decoder generation нарушает ownership invariant"
+                    "Duplicate retired video decoder generation violated an ownership invariant"
                 );
             }
         }
@@ -43,7 +43,7 @@ impl PlaybackPipeline {
             tracing::error!(
                 render_generation,
                 resource_handle = resource_handle.0,
-                "deferred old-generation frame потерял decoder owner-а"
+                "Deferred old-generation frame lost its decoder owner"
             );
         }
         self.release_retired_video_decoder_if_idle(render_generation);

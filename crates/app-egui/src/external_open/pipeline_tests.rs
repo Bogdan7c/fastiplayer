@@ -150,7 +150,7 @@ fn single_file_on_video_opens_like_open_button_and_playlist_in_mix_is_skipped() 
         calls,
         vec![
             format!("open:{}", media.display()),
-            "info:Плейлисты перетаскивайте отдельно".to_owned(),
+            "info:Drag Playlists separately".to_owned(),
         ]
     );
 }

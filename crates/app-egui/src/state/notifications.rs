@@ -69,7 +69,7 @@ pub(crate) const INFO_NOTIFICATION_LIFETIME: Duration = Duration::from_secs(8);
 pub(crate) const MAX_VISIBLE_TOASTS: usize = 3;
 
 /// Текст временного уведомления о повторном Open, пока прошлое открытие не закончилось.
-pub(crate) const OPEN_STILL_IN_PROGRESS_MESSAGE: &str = "Файл ещё открывается";
+pub(crate) const OPEN_STILL_IN_PROGRESS_MESSAGE: &str = "File still opens.";
 
 /// Стабильный идентификатор уведомления: по нему UI сообщает, какую плашку закрыли.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -102,7 +102,7 @@ Usage: scripts/ci-checks.sh CHECK
 
 Checks:
   format-guardrails        Locked metadata, policy tests, guardrails and rustfmt.
-  dependency-patches       Проверить inventory и integration suite local patches.
+  dependency-patches       Check the inventory and local patch integration suite.
   dependencies             Advisories, licenses, sources and unused direct dependencies.
   clippy                   Strict workspace/all-targets/all-features Clippy.
   docs                     Strict workspace/all-features rustdoc.
@@ -121,7 +121,7 @@ require_command() {
     # command -v проверяет PATH, не запуская инструмент.
     if ! command -v "${required_command}" >/dev/null 2>&1; then
         # Диагностика явно называет отсутствующую системную зависимость runner-а.
-        printf 'Ошибка: команда `%s` не найдена в PATH\n' "${required_command}" >&2
+        printf 'Error: %s was not found in PATH\n' "${required_command}" >&2
         # Без обязательного инструмента заявленная проверка недостоверна.
         exit 1
     fi
@@ -139,7 +139,7 @@ require_exact_version() {
     local actual_version_output
     actual_version_output="$("$@")"
     if [[ "${actual_version_output}" != "${expected_version_output}" ]]; then
-        printf 'Ошибка: %s должен иметь версию `%s`, установлена `%s`\n' \
+        printf 'Error: %s must have version %s; found %s\n' \
             "${tool_name}" "${expected_version_output}" "${actual_version_output}" >&2
         exit 1
     fi
@@ -160,7 +160,7 @@ require_rust_release() {
     local actual_release="${release_and_build%% *}"
     # Несовпадение запрещает запуск release gate другим compiler release.
     if [[ "${actual_release}" != "${rust_toolchain}" ]]; then
-        printf 'Ошибка: %s должен использовать Rust %s, получено `%s`\n' \
+        printf 'Error: %s must use Rust %s; found %s\n' \
             "${toolchain_role}" "${rust_toolchain}" "${actual_version_output}" >&2
         exit 1
     fi
@@ -269,7 +269,7 @@ run_dependencies() {
     # публикует их diagnostics, но только первый status управляет security gate.
     if ! cargo +"${PRIMARY_RUST_TOOLCHAIN}" deny --locked \
         --config deny.warnings.toml check advisories; then
-        printf 'Примечание: non-blocking advisory report содержит findings; см. diagnostics выше.\n' >&2
+        printf 'Note: non-blocking advisory report contains findings; see diagnostics above \n' >&2
     fi
     # Один policy tool владеет license/source и duplicate visibility.
     local dependency_policy_status=0
@@ -414,7 +414,7 @@ main() {
             ;;
         *)
             # Неизвестное имя не должно превращаться в пропущенную проверку.
-            printf 'Ошибка: неизвестная проверка `%s`\n' "$1" >&2
+            printf 'Error: unknown check: %s\n' "$1" >&2
             # Справка сразу показывает допустимые значения.
             print_help >&2
             # Exit code 2 обозначает ошибку CLI-контракта.

@@ -40,7 +40,7 @@ use restore::{PendingPlaybackRestore, PlaybackRestorePoll};
 pub(crate) fn media_reconfigure_install_failure(
     error: StrongMediaOpenError,
 ) -> AppRouteApplyResult {
-    tracing::warn!(%error, "Пересборка media при смене настроек не дошла до установки в player");
+    tracing::warn!(%error, "Reassembly media when changing settings did not reach the installation in the player");
     let message = crate::settings_rebuild_message::install_rebuild_failed_message();
     if error.may_have_crossed_install_barrier() {
         AppRouteApplyResult::PartialFailure { message }
@@ -138,7 +138,7 @@ impl AppState {
         renderer: &Renderer,
     ) -> MediaRebuildProgress {
         let Some(mut active) = self.settings_media_rebuild.active.take() else {
-            tracing::error!("Опрос пересборки media без активной пересборки");
+            tracing::error!("Polled a media rebuild without an active rebuild");
             return MediaRebuildProgress::Finished(AppRouteApplyResult::Failed {
                 message: crate::settings_rebuild_message::install_rebuild_failed_message(),
             });
@@ -174,7 +174,7 @@ impl AppState {
             RebuildPhase::Preparing(mut job) => job.cancel(),
             RebuildPhase::Installing { .. } => {
                 if let Err(error) = self.supersede_pending_prepared_media_strong(playlist_runtime) {
-                    tracing::warn!(%error, "Не удалось отменить установку пересобранного media");
+                    tracing::warn!(%error, "Failed to cancel the installation of reassembled media");
                 }
             }
             RebuildPhase::RestoringState(_) => {}
@@ -239,7 +239,9 @@ impl AppState {
             Some(request_id) => RebuildStep::Continue(RebuildPhase::Installing { request_id }),
             None => {
                 // begin при успехе всегда кладёт транзакцию в слот; без неё опрашивать нечего.
-                tracing::error!("Stepwise strong-open начат, но слот пуст: пересборка потеряна");
+                tracing::error!(
+                    "Stepwise strong-open started, but the slot is empty: reassembly lost"
+                );
                 RebuildStep::Finished(AppRouteApplyResult::Failed {
                     message: crate::settings_rebuild_message::install_rebuild_failed_message(),
                 })
@@ -255,7 +257,7 @@ impl AppState {
         playlist_runtime: &mut PlaylistRuntime,
     ) -> RebuildStep {
         if self.pending_prepared_media_strong_request_id() != Some(request_id) {
-            tracing::error!("Пересборка media потеряла свой request в общем strong-open слоте");
+            tracing::error!("Rebuild media lost its request in the overall strong-open slot");
             return RebuildStep::Finished(AppRouteApplyResult::Failed {
                 message: crate::settings_rebuild_message::install_rebuild_failed_message(),
             });

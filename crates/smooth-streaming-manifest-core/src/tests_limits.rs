@@ -25,9 +25,9 @@ fn every_limit_is_mandatory_and_has_no_hidden_default() {
     for omitted in ALL_LIMITS {
         let error = configured_builder(Some(omitted), None)
             .build()
-            .expect_err("каждый budget должен быть обязательным");
+            .expect_err("Every budget should be mandatory.");
         let SmoothManifestLimitBuildError::Missing(missing) = error else {
-            panic!("ожидался missing budget, получено {error:?}");
+            panic!("Expected missing budget, received {error:?}");
         };
         assert_eq!(missing.field(), omitted);
     }
@@ -38,7 +38,7 @@ fn every_limit_rejects_zero() {
     for zeroed in ALL_LIMITS {
         let error = configured_builder(None, Some(zeroed))
             .build()
-            .expect_err("нулевой budget не должен проходить");
+            .expect_err("The zero budget should not be");
         assert_eq!(error, SmoothManifestLimitBuildError::Zero { field: zeroed });
     }
 }
@@ -67,7 +67,7 @@ fn each_per_stream_budget_must_fit_its_total_budget() {
     for (per_stream, total) in pairs {
         let error = builder_with_pair_violation(per_stream)
             .build()
-            .expect_err("per-stream budget не должен превышать total");
+            .expect_err("per-stream budget shall not exceed total");
         assert_eq!(
             error,
             SmoothManifestLimitBuildError::PerStreamExceedsTotal { per_stream, total }
@@ -79,7 +79,7 @@ fn each_per_stream_budget_must_fit_its_total_budget() {
 fn complete_builder_preserves_every_named_value() {
     let limits = configured_builder(None, None)
         .build()
-        .expect("полный budget валиден");
+        .expect("full budget valid");
 
     assert_eq!(limits.maximum_streams(), 8);
     assert_eq!(limits.maximum_qualities_per_stream(), 16);
@@ -189,6 +189,6 @@ fn builder_with_pair_violation(per_stream: SmoothManifestLimitKind) -> SmoothMan
         SmoothManifestLimitKind::CustomAttributesPerQuality => {
             builder.maximum_custom_attributes_per_quality(33)
         }
-        _ => unreachable!("fixture принимает только per-stream kinds"),
+        _ => unreachable!("fixture accepts per-stream kinds"),
     }
 }

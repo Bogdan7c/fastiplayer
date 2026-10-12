@@ -57,7 +57,7 @@ fn captured_401k_h264_init_is_exact_and_readable_by_production_reader() {
         &standard_limits(),
         &never_cancel,
     )
-    .expect("captured 401k initialization должен строиться");
+    .expect("captured 401k initialization must be built");
 
     assert_exact_initialization_profile(segment.as_bytes(), 1, 658);
     assert_video_track(
@@ -87,7 +87,7 @@ fn captured_1501k_h264_init_is_exact_and_readable_by_production_reader() {
         &standard_limits(),
         &never_cancel,
     )
-    .expect("captured 1501k initialization должен строиться");
+    .expect("captured 1501k initialization must be built");
 
     assert_exact_initialization_profile(segment.as_bytes(), 3, 664);
     assert_video_track(
@@ -107,16 +107,16 @@ fn captured_64008_aac_init_is_exact_and_readable_by_production_reader() {
     assert!(CAPTURED_MANIFEST.contains("CodecPrivateData=\"1190\""));
 
     let segment = build_audio_segment(2, &standard_limits(), &never_cancel)
-        .expect("captured AAC initialization должен строиться");
+        .expect("captured AAC initialization must be built");
 
     assert_exact_initialization_profile(segment.as_bytes(), 2, 583);
     let reader = parse_with_production_reader(segment.into_bytes());
-    let track = reader.tracks().first().expect("ровно один audio track");
+    let track = reader.tracks().first().expect("exactly one audio track");
     assert_eq!(reader.tracks().len(), 1);
     assert_eq!(track.id, 2);
     assert_time_base(track.time_base, 10_000_000);
     let Some(CodecParameters::Audio(parameters)) = track.codec_params.as_ref() else {
-        panic!("production reader должен вернуть audio codec parameters");
+        panic!("production reader should be returned audio codec parameters");
     };
     assert_eq!(parameters.codec, audio_codec::CODEC_ID_AAC);
     assert_eq!(parameters.sample_rate, Some(48_000));
@@ -145,7 +145,7 @@ fn identical_request_produces_deterministic_bytes() {
         &limits,
         &never_cancel,
     )
-    .expect("первый init");
+    .expect("first init");
     let second = build_video_segment(
         1,
         224,
@@ -155,7 +155,7 @@ fn identical_request_produces_deterministic_bytes() {
         &limits,
         &never_cancel,
     )
-    .expect("второй init");
+    .expect("second-init");
 
     assert_eq!(first, second);
 }
@@ -184,7 +184,7 @@ fn malformed_h264_parameter_sets_fail_closed() {
         }
     );
     assert_eq!(
-        FragmentH264PictureParameterSet::try_new(&[0x67]).expect_err("SPS вместо PPS"),
+        FragmentH264PictureParameterSet::try_new(&[0x67]).expect_err("SPS instead of PPS"),
         FragmentInitializationError::InvalidCodecConfiguration {
             codec: FragmentCodecKind::H264Avc1,
             issue: FragmentCodecConfigurationIssue::UnexpectedNalUnitType {
@@ -205,7 +205,7 @@ fn malformed_h264_parameter_sets_fail_closed() {
     concatenated_parameter_sets.extend_from_slice(&VIDEO_401K_PPS);
     assert_eq!(
         FragmentH264SequenceParameterSet::try_new(&concatenated_parameter_sets)
-            .expect_err("SPS slice с embedded PPS"),
+            .expect_err("SPS slice with embedded PPS"),
         FragmentInitializationError::InvalidCodecConfiguration {
             codec: FragmentCodecKind::H264Avc1,
             issue: FragmentCodecConfigurationIssue::AnnexBStartCode,
@@ -230,9 +230,9 @@ fn malformed_and_incompatible_aac_configs_fail_closed() {
         }
     );
     let asc = FragmentAacAudioSpecificConfig::try_new(&AUDIO_SPECIFIC_CONFIG_48K_STEREO)
-        .expect("валидный ASC");
-    let wrong_rate = FragmentAacSampleRate::try_new(44_100).expect("валидное typed field");
-    let stereo = FragmentAacChannelCount::try_new(2).expect("валидное typed field");
+        .expect("valid ASC");
+    let wrong_rate = FragmentAacSampleRate::try_new(44_100).expect("valid typed field");
+    let stereo = FragmentAacChannelCount::try_new(2).expect("valid typed field");
     assert_eq!(
         FragmentAacLcConfiguration::try_new(wrong_rate, stereo, asc)
             .expect_err("metadata mismatch"),
@@ -267,7 +267,7 @@ fn mandatory_limits_reject_missing_zero_codec_and_output_budgets() {
         .maximum_output_bytes(4_096)
         .maximum_codec_configuration_bytes(1)
         .build()
-        .expect("полные limits");
+        .expect("full limits");
     assert_eq!(
         build_video_segment(
             1,
@@ -290,7 +290,7 @@ fn mandatory_limits_reject_missing_zero_codec_and_output_budgets() {
         .maximum_output_bytes(64)
         .maximum_codec_configuration_bytes(128)
         .build()
-        .expect("полные limits");
+        .expect("full limits");
     let error = build_audio_segment(2, &output_limited, &never_cancel).expect_err("output limit");
     assert!(matches!(
         error,
@@ -382,7 +382,7 @@ fn build_video_segment<'policy>(
         FragmentH264PictureParameterSet::try_new(picture_parameter_set)?,
     );
     build_fragmented_initialization_segment(FragmentInitializationRequest::new(
-        FragmentTrackId::new(NonZeroU32::new(track_id).expect("test track id ненулевой")),
+        FragmentTrackId::new(NonZeroU32::new(track_id).expect("test track id nonzero")),
         timescale(),
         FragmentInitializationCodec::H264Avc1(configuration),
         limits,
@@ -396,7 +396,7 @@ fn build_audio_segment<'policy>(
     cancellation: &'policy dyn Fn() -> bool,
 ) -> Result<super::FragmentInitializationSegment, FragmentInitializationError> {
     build_fragmented_initialization_segment(FragmentInitializationRequest::new(
-        FragmentTrackId::new(NonZeroU32::new(track_id).expect("test track id ненулевой")),
+        FragmentTrackId::new(NonZeroU32::new(track_id).expect("test track id nonzero")),
         timescale(),
         FragmentInitializationCodec::AacLowComplexity(audio_codec_configuration()),
         limits,
@@ -406,12 +406,12 @@ fn build_audio_segment<'policy>(
 
 fn audio_codec_configuration() -> FragmentAacLcConfiguration<'static> {
     FragmentAacLcConfiguration::try_new(
-        FragmentAacSampleRate::try_new(48_000).expect("48 kHz представимы"),
-        FragmentAacChannelCount::try_new(2).expect("stereo представимо"),
+        FragmentAacSampleRate::try_new(48_000).expect("48 kHz is conceivable"),
+        FragmentAacChannelCount::try_new(2).expect("stereo is imaginable"),
         FragmentAacAudioSpecificConfig::try_new(&AUDIO_SPECIFIC_CONFIG_48K_STEREO)
-            .expect("captured ASC валиден"),
+            .expect("captured ASC is valid"),
     )
-    .expect("typed AAC metadata совпадает с captured ASC")
+    .expect("typed AAC metadata coincident captured ASC")
 }
 
 fn standard_limits() -> FragmentInitializationLimits {
@@ -419,11 +419,11 @@ fn standard_limits() -> FragmentInitializationLimits {
         .maximum_output_bytes(4_096)
         .maximum_codec_configuration_bytes(1_024)
         .build()
-        .expect("все mandatory budgets заданы")
+        .expect("All mandatory budgets are set")
 }
 
 fn timescale() -> FragmentTimescale {
-    FragmentTimescale::new(NonZeroU32::new(10_000_000).expect("ненулевой timescale"))
+    FragmentTimescale::new(NonZeroU32::new(10_000_000).expect("timescale"))
 }
 
 fn parse_with_production_reader(bytes: Vec<u8>) -> IsoMp4Reader<'static> {
@@ -431,9 +431,9 @@ fn parse_with_production_reader(bytes: Vec<u8>) -> IsoMp4Reader<'static> {
     let mut media_source_stream = MediaSourceStream::new(Box::new(source), Default::default());
     media_source_stream
         .read_quad_bytes()
-        .expect("production probe должен прочитать первые четыре bytes");
+        .expect("The production probe should read the first four bytes.");
     IsoMp4Reader::try_new(media_source_stream, FormatOptions::default())
-        .expect("production IsoMp4Reader должен открыть generated init")
+        .expect("production IsoMp4Reader should open generated init")
 }
 
 fn assert_video_track(
@@ -447,11 +447,11 @@ fn assert_video_track(
 ) {
     let reader = parse_with_production_reader(bytes);
     assert_eq!(reader.tracks().len(), 1);
-    let track = reader.tracks().first().expect("ровно один video track");
+    let track = reader.tracks().first().expect("exactly one video track");
     assert_eq!(track.id, expected_track_id);
     assert_time_base(track.time_base, expected_timescale);
     let Some(CodecParameters::Video(parameters)) = track.codec_params.as_ref() else {
-        panic!("production reader должен вернуть video codec parameters");
+        panic!("production reader should be returned video codec parameters");
     };
     assert_eq!(parameters.codec, video_codec::CODEC_ID_H264);
     assert_eq!(parameters.width, Some(expected_width));
@@ -459,7 +459,7 @@ fn assert_video_track(
     let codec_private = parameters
         .extra_data
         .first()
-        .expect("avcC codec private должен присутствовать");
+        .expect("avcC codec private must be present");
     assert_eq!(
         codec_private.data.as_ref(),
         expected_avcc(sequence_parameter_set, picture_parameter_set)
@@ -492,7 +492,7 @@ fn expected_avcc(sequence_parameter_set: &[u8], picture_parameter_set: &[u8]) ->
 }
 
 fn assert_time_base(time_base: Option<symphonia_core::units::TimeBase>, denominator: u32) {
-    let time_base = time_base.expect("track time base должен присутствовать");
+    let time_base = time_base.expect("The track time base must be present.");
     assert_eq!(time_base.numer.get(), 1);
     assert_eq!(time_base.denom.get(), denominator);
 }
@@ -563,7 +563,7 @@ fn find_box_type(bytes: &[u8], box_type: &[u8; 4]) -> usize {
     bytes
         .windows(4)
         .position(|window| window == box_type)
-        .unwrap_or_else(|| panic!("box {box_type:?} должен присутствовать"))
+        .unwrap_or_else(|| panic!("box {box_type:?} should be present."))
 }
 
 fn never_cancel() -> bool {

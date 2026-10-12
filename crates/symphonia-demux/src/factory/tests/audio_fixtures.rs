@@ -211,7 +211,7 @@ fn ogg_page(
 ) -> Vec<u8> {
     assert!(
         packet.len() < 255,
-        "S28C Ogg packet должен иметь один lacing segment"
+        "S28C Ogg packet should have one lacing segment"
     );
     let mut page = Vec::with_capacity(28 + packet.len());
     page.extend_from_slice(b"OggS");

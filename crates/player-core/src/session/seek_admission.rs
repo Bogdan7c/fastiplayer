@@ -45,7 +45,7 @@ impl PlayerSession {
                     .unwrap_or(TimelineNotSeekableReason::UnknownTimeline);
                 Some(PlayerError::new(
                     PlayerErrorKind::SeekUnavailable,
-                    format!("Seek невозможен: timeline не seekable ({reason:?})"),
+                    format!("Seek impossible: timeline not seekable ({reason:?})"),
                 ))
             }
             SeekTimelineAdmission::ExpiredLiveAvailability => {

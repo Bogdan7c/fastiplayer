@@ -28,7 +28,7 @@ def load_policy_module() -> ModuleType:
     )
     # Защитительная проверка не скрывает невозможную ошибку загрузки test fixture.
     if module_spec is None or module_spec.loader is None:
-        raise RuntimeError(f"не удалось создать import spec для `{POLICY_PATH}`")
+        raise RuntimeError(f"failed to create an import spec for `{POLICY_PATH}`")
     # dataclasses ищет namespace модуля в sys.modules во время decoration.
     policy_module = importlib.util.module_from_spec(module_spec)
     # Регистрация должна произойти до exec_module по контракту dataclasses.
@@ -130,7 +130,7 @@ class ToolchainPolicyTests(unittest.TestCase):
             metadata = write_policy_fixture(repository_root, workspace_msrv="1.85")
             # Rendered diagnostics проверяют user-actionable reason вместо implementation detail.
             messages = [violation.render() for violation in POLICY.validate_policy(repository_root, metadata)]
-            self.assertTrue(any('`rust-version` должен быть ровно "1.99"' in message for message in messages))
+            self.assertTrue(any( '`rust-version` must be exactly "1.99"'  in message for message in messages))
 
     def test_member_must_inherit_both_workspace_fields(self) -> None:
         """Literal member edition или rust-version не обходят root owner."""

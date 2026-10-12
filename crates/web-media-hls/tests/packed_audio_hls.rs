@@ -94,7 +94,7 @@ fn admit(playlist: &str, target: &HttpRequestTarget) -> NativeHlsCatalogAdmissio
         HlsParserLimits::default(),
         &policy(),
     )
-    .expect("packed audio media playlist должен пройти native admission")
+    .expect("packed audio media playlist must pass native admission")
 }
 
 fn open_request(
@@ -139,9 +139,9 @@ fn inline_vod_request(
 fn next_ready(demuxer: &mut dyn Demuxer) -> DemuxReadEvent {
     let deadline = Instant::now() + TEST_TIMEOUT;
     loop {
-        match demuxer.next_event().expect("HLS runtime читается") {
+        match demuxer.next_event().expect("HLS runtime reads") {
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                assert!(Instant::now() < deadline, "HLS worker не стал готов");
+                assert!(Instant::now() < deadline, "The HLS worker is not ready.");
                 std::thread::sleep(Duration::from_millis(2));
             }
             event => return event,
@@ -182,7 +182,7 @@ fn serve_segments(segments: [Vec<u8>; 3], extension: &'static str) -> TestServer
 
 /// Убирает ID3-тег (первые `10 + size` байт) - сегмент «без ID3 PRIV».
 fn strip_id3(segment: &[u8]) -> Vec<u8> {
-    assert_eq!(&segment[..3], b"ID3", "фикстура начинается с ID3");
+    assert_eq!(&segment[..3], b"ID3", "Fixture starts with ID3.");
     let size = segment[6..10]
         .iter()
         .fold(0_usize, |acc, byte| (acc << 7) | usize::from(byte & 0x7f));
@@ -201,30 +201,34 @@ fn assert_stitched_audio_stream(
     frames_per_segment: [usize; 3],
     frame: Duration,
 ) {
-    assert_eq!(track_kinds, [TrackKind::Audio], "видео быть не должно");
+    assert_eq!(track_kinds, [TrackKind::Audio], "The video shouldn't be");
     assert_eq!(
         packets.len(),
         frames_per_segment.iter().sum::<usize>(),
-        "каждый кадр каждого сегмента стал пакетом"
+        "Each frame of each segment became a package."
     );
     assert!(packets.iter().all(|packet| packet.kind == TrackKind::Audio));
-    assert_eq!(packets[0].pts, Duration::ZERO, "таймлайн начинается с нуля");
+    assert_eq!(
+        packets[0].pts,
+        Duration::ZERO,
+        "Timeline starts from scratch"
+    );
     let tolerance = Duration::from_millis(3);
     for pair in packets.windows(2) {
-        assert!(pair[1].pts > pair[0].pts, "PTS должны строго расти");
+        assert!(pair[1].pts > pair[0].pts, "PTS should be growing strongly.");
         let step = pair[1].pts - pair[0].pts;
         assert!(
             step <= frame + tolerance,
-            "между пакетами дыра больше кадра: {step:?} (на {:?})",
+            "Hole larger than frame between packets: {step:?} (by {:?})",
             pair[1].pts
         );
     }
-    let last = packets.last().expect("пакеты есть");
+    let last = packets.last().expect("packets are");
     let expected_last_start = frame * (frames_per_segment.iter().sum::<usize>() as u32 - 1);
     let drift = last.pts.abs_diff(expected_last_start);
     assert!(
         drift <= Duration::from_millis(20),
-        "последний кадр на {:?}, ожидалось около {expected_last_start:?}",
+        "last frame {:?}, expected {expected_last_start:?}",
         last.pts
     );
 }
@@ -237,7 +241,7 @@ fn packed_aac_vod_with_id3_priv_plays_all_frames_with_stitched_pts() {
         inline_vod_request(&server, AAC_VOD, &admission),
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("packed AAC VOD должен открыться");
+    .expect("packed AAC VOD should open");
     assert_eq!(opened.duration(), Duration::from_micros(6_037_188));
     let mut demuxer = opened.into_demuxer();
 
@@ -254,7 +258,7 @@ fn packed_mp3_vod_with_id3_priv_plays_all_frames_with_stitched_pts() {
         inline_vod_request(&server, MP3_VOD, &admission),
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("packed MP3 VOD должен открыться");
+    .expect("packed MP3 VOD should open");
     let mut demuxer = opened.into_demuxer();
 
     let (packets, track_kinds) = read_all_packets(demuxer.as_mut());
@@ -272,7 +276,7 @@ fn packed_aac_vod_without_id3_uses_extinf_timeline() {
         inline_vod_request(&server, AAC_VOD, &admission),
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("packed AAC без ID3 должен открыться");
+    .expect("packed AAC without ID3 must open");
     let mut demuxer = opened.into_demuxer();
 
     let (packets, track_kinds) = read_all_packets(demuxer.as_mut());
@@ -289,7 +293,7 @@ fn packed_aac_vod_seek_lands_in_target_segment() {
         inline_vod_request(&server, AAC_VOD, &admission),
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("packed AAC VOD должен открыться");
+    .expect("packed AAC VOD should open");
     let seek_handle = opened.async_seek_handle().expect("receipted seek handle");
     let mut demuxer = opened.into_demuxer();
     // Дочитываем до первого пакета, чтобы runtime был «играющим».
@@ -309,23 +313,23 @@ fn packed_aac_vod_seek_lands_in_target_segment() {
         if let Some(receipt) = seek_handle.poll_receipt() {
             break receipt;
         }
-        assert!(Instant::now() < deadline, "seek receipt не пришёл");
+        assert!(Instant::now() < deadline, "seek receipt He didn't come");
         std::thread::sleep(Duration::from_millis(2));
     };
     let demux_api::ProgressiveAsyncSeekOutcome::Succeeded(result) = receipt.outcome else {
-        panic!("seek packed AAC VOD должен удаться: {receipt:?}");
+        panic!("seek packed AAC VOD must succeed: {receipt:?}");
     };
     let landed = result.actual_position.as_duration();
     assert!(
         landed >= Duration::from_millis(2_043) && landed <= Duration::from_secs(3),
-        "seek должен сесть во второй сегмент не позже цели, получено {landed:?}"
+        "seek Sit down the second segment no later than the target, got {landed:?}"
     );
     loop {
         if let DemuxReadEvent::Packet(packet) = next_ready(demuxer.as_mut()) {
             assert_eq!(packet.kind, TrackKind::Audio);
             assert!(
                 packet.pts >= Duration::from_millis(2_043),
-                "после seek первый пакет не раньше начала второго сегмента: {:?}",
+                "after seek, the first packet is no earlier than the beginning of the second segment: {:?}",
                 packet.pts
             );
             break;
@@ -373,7 +377,7 @@ fn encrypted_packed_aac_vod_decrypts_then_plays() {
         inline_vod_request(&server, PLAYLIST, &admission),
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("зашифрованный packed AAC должен открыться");
+    .expect("Encrypted packed AAC must open");
     let mut demuxer = opened.into_demuxer();
 
     let (packets, track_kinds) = read_all_packets(demuxer.as_mut());
@@ -401,7 +405,7 @@ fn packed_ac3_is_refused_instead_of_silently_opening() {
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     );
 
-    assert!(result.is_err(), "AC-3 packed не должен открываться");
+    assert!(result.is_err(), "AC-3 packed should not be opened.");
 }
 
 struct NoRefresh;
@@ -461,7 +465,7 @@ fn packed_aac_live_sliding_window_advances_and_keeps_delivering_audio() {
         ),
         initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
     })
-    .expect("packed AAC live должен открыться");
+    .expect("packed AAC live should open");
     let (mut demuxer, timeline_port, _) = opened.into_parts();
     let track_kinds: Vec<TrackKind> = demuxer.tracks().iter().map(|track| track.kind).collect();
     assert_eq!(track_kinds, vec![TrackKind::Audio]);
@@ -479,13 +483,12 @@ fn packed_aac_live_sliding_window_advances_and_keeps_delivering_audio() {
         }
         assert!(
             Instant::now() < deadline,
-            "DVR-диапазон packed live не продвинулся: {:?}",
+            "DVR packed live band not advanced: {:?}",
             observed.snapshot.state.seekable_range()
         );
-        if let DemuxReadEvent::Packet(packet) = demuxer.next_event().expect("live читается")
-        {
+        if let DemuxReadEvent::Packet(packet) = demuxer.next_event().expect("live read") {
             assert_eq!(packet.kind, TrackKind::Audio);
-            assert!(packet.pts >= last_pts, "PTS live не идёт назад");
+            assert!(packet.pts >= last_pts, "PTS live doesn't go backwards.");
             last_pts = packet.pts;
             audio_packets += 1;
         }
@@ -494,7 +497,7 @@ fn packed_aac_live_sliding_window_advances_and_keeps_delivering_audio() {
     assert!(slid_range.end > slid_range.start);
     assert!(
         audio_packets > AAC_FRAMES[0],
-        "должны дойти кадры как минимум первого сегмента, получено {audio_packets}"
+        "must reach at least the first segment, received {audio_packets}"
     );
 }
 
@@ -506,7 +509,7 @@ impl HlsCatalogCapabilityProofPort for AudioOnlyCapabilities {
         &mut self,
         _track: &media_core::TrackInfo,
     ) -> Result<VideoTrackDescriptor, HlsCatalogCapabilityRejection> {
-        panic!("в audio-only child не должно быть видео-дорожки");
+        panic!("An audio-only child should not have a video track.");
     }
 
     fn prove_audio(
@@ -588,7 +591,7 @@ fn packed_aac_radio_master_is_discovered_and_plays_through_catalog() {
         },
         &mut AudioOnlyCapabilities,
     )
-    .expect("packed audio master должен пройти discovery");
+    .expect("packed audio master must pass discovery");
     let HlsCatalogDiscoveryOutcome::Installed(snapshot) = outcome else {
         panic!("master discovery must install a catalog");
     };
@@ -600,7 +603,7 @@ fn packed_aac_radio_master_is_discovered_and_plays_through_catalog() {
         reopen,
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("packed audio master child должен открыться");
+    .expect("packed audio master child should open");
     let mut demuxer = opened.into_demuxer();
 
     let (packets, track_kinds) = read_all_packets(demuxer.as_mut());

@@ -33,7 +33,7 @@ impl AppState {
         if outcome.cancelled_anything() {
             self.startup_pending = None;
             self.mark_pending_worker_redraw();
-            tracing::info!("Подготовка локального файла отменена по Stop");
+            tracing::info!("Preparation of the local file is canceled by Stop");
         }
         outcome
     }

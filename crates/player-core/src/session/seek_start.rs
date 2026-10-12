@@ -215,7 +215,7 @@ impl PlayerSession {
         if !self.pipeline.has_demuxer() {
             let error = PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
-                "Seek невозможен: media pipeline ещё не открыт",
+                "Seek is not possible: the media pipeline is not open yet",
             );
             self.record_recoverable_error(error);
             return Ok(());
@@ -426,7 +426,7 @@ impl PlayerSession {
         {
             self.record_recoverable_error(PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
-                "SeekLanding не смог стартовать reused-decoder scrub route",
+                "SeekLanding failed to start reused-decoder scrub route",
             ));
         }
         Ok(())
@@ -514,7 +514,7 @@ impl PlayerSession {
             old_target_ms = current_target.as_millis(),
             new_target_ms = new_target.as_millis(),
             generation = seek_commit.generation,
-            "Live scrub: цель расширена вперёд без нового cold seek"
+            "Live scrub: target extended forward without a new cold seek"
         );
         true
     }
@@ -574,7 +574,7 @@ impl PlayerSession {
         if !self.pipeline.has_demuxer() {
             let error = PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
-                "Seek невозможен: media pipeline ещё не открыт",
+                "Seek is not possible: the media pipeline is not open yet",
             );
             self.record_recoverable_error(error);
             return Ok(());
@@ -681,7 +681,7 @@ impl PlayerSession {
                     target_ms = target_duration.as_millis(),
                     demux_mode = ?demux_seek_request.mode,
                     generation,
-                    "Demux seek передан worker-receipted runtime-у"
+                    "Demux seek transferred to worker-receipted runtime"
                 );
                 return Ok(());
             }
@@ -782,7 +782,7 @@ impl PlayerSession {
     /// Останавливает audio stream для seek, не меняя high-level playback state.
     pub(super) fn pause_audio_output_for_seek(&mut self) {
         if let Some(Err(error)) = self.pipeline.pause_audio_output_and_capture_clock() {
-            warn!(error = %error, "Не удалось остановить audio перед seek");
+            warn!(error = %error, "Could not stop audio before seek");
             self.set_runtime_error(format!("Audio pause before seek error: {error}"));
         }
     }

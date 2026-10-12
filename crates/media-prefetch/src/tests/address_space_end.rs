@@ -73,10 +73,7 @@ fn bytes_beyond_u64_offsets_end_the_stream_as_clean_eof() {
     let first_read = source
         .read(&mut output, &token)
         .expect("addressable prefix must be readable");
-    assert_eq!(
-        first_read, 0,
-        "chunk за пределом u64 не публикуется частично"
-    );
+    assert_eq!(first_read, 0, "chunk outside u64 is not published in part");
     // Повторное чтение остаётся стабильным EOF, а не ошибкой или зависанием.
     assert_eq!(source.read(&mut output, &token).expect("EOF is stable"), 0);
     assert_eq!(source.position(), START_NEAR_ADDRESS_SPACE_END);

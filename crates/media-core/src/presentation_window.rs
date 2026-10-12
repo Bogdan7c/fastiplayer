@@ -89,7 +89,7 @@ impl ExactPresentationWindow {
 pub enum ExactPresentationWindowError {
     /// Границы принадлежат разным трекам.
     #[error(
-        "границы presentation window принадлежат разным трекам: start={start_track_id:?}, end={end_track_id:?}"
+        "The boundaries of the presentation window belong to different tracks: start={start_track_id:?}, end={end_track_id:?}"
     )]
     TrackMismatch {
         /// Track включённой левой границы.
@@ -101,7 +101,7 @@ pub enum ExactPresentationWindowError {
 
     /// Границы используют разные временные базы.
     #[error(
-        "границы presentation window используют разные time base: start={start_time_base:?}, end={end_time_base:?}"
+        "Presentation window boundaries use different time bases: start={start_time_base:?}, end={end_time_base:?}"
     )]
     TimeBaseMismatch {
         /// Временная база включённой левой границы.
@@ -112,23 +112,21 @@ pub enum ExactPresentationWindowError {
     },
 
     /// Левая граница находится раньше нулевой позиции трека.
-    #[error("начало presentation window отрицательное: {start:?}")]
+    #[error("Start of presentation window negative: {start:?}")]
     NegativeStart {
         /// Недопустимая левая граница.
         start: TrackTimestamp,
     },
 
     /// Обе границы совпадают и образуют пустой полуоткрытый диапазон.
-    #[error("presentation window пусто на границе {boundary:?}")]
+    #[error("Presentation window is empty at boundary {boundary:?}")]
     Empty {
         /// Совпавшая граница.
         boundary: TrackTimestamp,
     },
 
     /// Левая граница расположена после правой.
-    #[error(
-        "presentation window развёрнуто в обратном порядке: start={start:?}, end={end_exclusive:?}"
-    )]
+    #[error("window presentation is reversed: start={start:?}, end={end_exclusive:?}")]
     Reversed {
         /// Недопустимая левая граница.
         start: TrackTimestamp,
@@ -163,12 +161,12 @@ impl PacketPresentationWindow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum PacketPresentationWindowAssignmentError {
     /// Packet не несёт raw PTS, поэтому его presentation clock нельзя доказать.
-    #[error("packet не содержит обязательный raw presentation timestamp")]
+    #[error("packet does not include mandatory raw presentation timestamp")]
     MissingPacketPresentationTimestamp,
 
     /// Packet и окно принадлежат разным трекам.
     #[error(
-        "packet и presentation window принадлежат разным трекам: packet={packet_track_id:?}, window={window_track_id:?}"
+        "Packet and presentation window belong to different tracks: packet={packet_track_id:?}, window={window_track_id:?}"
     )]
     TrackMismatch {
         /// Track packet-а.
@@ -180,7 +178,7 @@ pub enum PacketPresentationWindowAssignmentError {
 
     /// Raw timing packet-а не принадлежит заявленному track id.
     #[error(
-        "raw timing packet-а принадлежит другому треку: packet={packet_track_id:?}, timing={timing_track_id:?}"
+        "raw timing packet belongs to another track: packet={packet_track_id:?}, timing={timing_track_id:?}"
     )]
     PacketTimingTrackMismatch {
         /// Track packet-а.
@@ -192,7 +190,7 @@ pub enum PacketPresentationWindowAssignmentError {
 
     /// Raw timing packet-а и окно используют разные временные базы.
     #[error(
-        "packet timing и presentation window используют разные time base: packet={packet_time_base:?}, window={window_time_base:?}"
+        "Packet timing and presentation window use different time base: packet={packet_time_base:?}, window={window_time_base:?}"
     )]
     TimeBaseMismatch {
         /// Временная база одного из raw timing-значений packet-а.
@@ -243,11 +241,11 @@ mod tests {
 
     #[test]
     fn exact_window_rejects_mismatched_track_ids() {
-        let time_base = TimeBase::new(1, 1_000).expect("test time base должна быть валидной");
+        let time_base = TimeBase::new(1, 1_000).expect("The test time base must be valid.");
 
         let error =
             ExactPresentationWindow::new(timestamp(1, 10, time_base), timestamp(2, 20, time_base))
-                .expect_err("разные track id должны быть отклонены");
+                .expect_err("Different track ids must be rejected");
 
         assert!(matches!(
             error,
@@ -258,15 +256,14 @@ mod tests {
     #[test]
     fn exact_window_rejects_mismatched_time_bases() {
         let millisecond_time_base =
-            TimeBase::new(1, 1_000).expect("test time base должна быть валидной");
-        let video_time_base =
-            TimeBase::new(1, 90_000).expect("test time base должна быть валидной");
+            TimeBase::new(1, 1_000).expect("The test time base must be valid.");
+        let video_time_base = TimeBase::new(1, 90_000).expect("The test time base must be valid.");
 
         let error = ExactPresentationWindow::new(
             timestamp(1, 10, millisecond_time_base),
             timestamp(1, 20, video_time_base),
         )
-        .expect_err("разные time base должны быть отклонены");
+        .expect_err("different time base must be rejected");
 
         assert!(matches!(
             error,
@@ -276,11 +273,11 @@ mod tests {
 
     #[test]
     fn exact_window_rejects_negative_start() {
-        let time_base = TimeBase::new(1, 1_000).expect("test time base должна быть валидной");
+        let time_base = TimeBase::new(1, 1_000).expect("The test time base must be valid.");
 
         let error =
             ExactPresentationWindow::new(timestamp(1, -1, time_base), timestamp(1, 20, time_base))
-                .expect_err("отрицательное начало должно быть отклонено");
+                .expect_err("The negative beginning must be rejected.");
 
         assert!(matches!(
             error,
@@ -290,22 +287,22 @@ mod tests {
 
     #[test]
     fn exact_window_rejects_empty_interval() {
-        let time_base = TimeBase::new(1, 1_000).expect("test time base должна быть валидной");
+        let time_base = TimeBase::new(1, 1_000).expect("The test time base must be valid.");
 
         let error =
             ExactPresentationWindow::new(timestamp(1, 10, time_base), timestamp(1, 10, time_base))
-                .expect_err("пустое окно должно быть отклонено");
+                .expect_err("The empty window must be rejected.");
 
         assert!(matches!(error, ExactPresentationWindowError::Empty { .. }));
     }
 
     #[test]
     fn exact_window_rejects_reversed_interval() {
-        let time_base = TimeBase::new(1, 1_000).expect("test time base должна быть валидной");
+        let time_base = TimeBase::new(1, 1_000).expect("The test time base must be valid.");
 
         let error =
             ExactPresentationWindow::new(timestamp(1, 20, time_base), timestamp(1, 10, time_base))
-                .expect_err("развёрнутое окно должно быть отклонено");
+                .expect_err("The extended window must be rejected.");
 
         assert!(matches!(
             error,

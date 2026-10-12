@@ -18,21 +18,21 @@ fn read_evidence_source(evidence_id: &str, evidence_path: &str) -> String {
     // Absolute path работал бы только на одной машине.
     assert!(
         relative_path.is_relative(),
-        "evidence `{evidence_id}` содержит absolute path"
+        "Evidence '{evidence_id}' contains absolute path"
     );
     // Parent/root components запрещают выход из workspace.
     assert!(
         relative_path
             .components()
             .all(|component| matches!(component, Component::Normal(_))),
-        "evidence `{evidence_id}` содержит небезопасный path `{evidence_path}`"
+        "evidence '{evidence_id}' contains unsafe path '{evidence_path}'"
     );
     // Exact workspace path строится только из checked-in data.
     let absolute_path = workspace_root().join(relative_path);
     // Missing file означает stale либо выдуманное evidence.
     fs::read_to_string(&absolute_path).unwrap_or_else(|error| {
         panic!(
-            "evidence `{evidence_id}` не удалось прочитать {}: {error}",
+            "Evidence '{evidence_id}' failed to read {}: {error}",
             absolute_path.display()
         )
     })
@@ -47,14 +47,14 @@ pub(super) fn source_with_exact_symbol(evidence_id: &str, evidence: &Value) -> S
     // Пустой symbol не может доказывать traceability.
     assert!(
         !evidence_symbol.is_empty(),
-        "evidence `{evidence_id}` содержит пустой symbol"
+        "evidence '{evidence_id}' contains an empty symbol"
     );
     // Source читается только после path validation.
     let source = read_evidence_source(evidence_id, evidence_path);
     // Exact symbol обязан оставаться в declared file.
     assert!(
         source.contains(evidence_symbol),
-        "evidence `{evidence_id}`: symbol `{evidence_symbol}` отсутствует в `{evidence_path}`"
+        "evidence `{evidence_id}': symbol `{evidence_symbol}' missing from `{evidence_path}'"
     );
     // Source нужен kind-specific validator-у.
     source
@@ -91,7 +91,7 @@ pub(super) fn assert_real_production_symbol(evidence_id: &str, evidence: &Value,
     // Missing и duplicate anchors одинаково делают production evidence неоднозначным.
     assert_eq!(
         matching_declaration_count, 1,
-        "evidence `{evidence_id}` должен иметь ровно одну production declaration `{expected_symbol}`"
+        "evidence '{evidence_id}' must have exactly one production declaration '{expected_symbol}'"
     );
 }
 
@@ -120,13 +120,13 @@ fn evidence_crate_directory<'path>(evidence_id: &str, evidence_path: &'path str)
     assert_eq!(
         components.next(),
         Some("crates"),
-        "test evidence `{evidence_id}` находится вне `crates/`"
+        "test evidence `{evidence_id}` outside `crates/`"
     );
     // Второй component является crate directory.
     components
         .next()
         // Missing crate component означает malformed path.
-        .unwrap_or_else(|| panic!("test evidence `{evidence_id}` не содержит crate directory"))
+        .unwrap_or_else(|| panic!("test evidence `{evidence_id}` lacking crate directory"))
 }
 
 /// Проверяет top-level либо exact path-registered nested integration test source.
@@ -148,13 +148,11 @@ fn assert_integration_target_ownership(
                 // `.rs` file обязательно имеет stem.
                 .and_then(|stem| stem.to_str())
                 // Non-UTF target нельзя сериализовать в manifest.
-                .unwrap_or_else(|| {
-                    panic!("test evidence `{evidence_id}` имеет invalid target path")
-                });
+                .unwrap_or_else(|| panic!("test evidence `{evidence_id}` has invalid target path"));
             // Exact target запрещает stale renamed integration test.
             assert_eq!(
                 target, expected_target,
-                "test evidence `{evidence_id}` содержит неверный integration target"
+                "test evidence `{evidence_id}` faulty integration target"
             );
         }
         // Modularized target допускает только `tests/<target>/<module>.rs`.
@@ -162,7 +160,7 @@ fn assert_integration_target_ownership(
             // Directory обязан совпасть с Cargo target byte-for-byte.
             assert_eq!(
                 target, *target_directory,
-                "test evidence `{evidence_id}` nested directory не совпадает с target"
+                "test evidence `{evidence_id}` nested directory is not consistent with target"
             );
             // Nested evidence остаётся Rust source, а не arbitrary fixture.
             assert_eq!(
@@ -170,7 +168,7 @@ fn assert_integration_target_ownership(
                     .extension()
                     .and_then(|extension| extension.to_str()),
                 Some("rs"),
-                "test evidence `{evidence_id}` nested module не является Rust source"
+                "test evidence '{evidence_id}' nested module not Rust source"
             );
             // Module stem используется в exact root declaration.
             let module_name = Path::new(module_file)
@@ -179,11 +177,11 @@ fn assert_integration_target_ownership(
                 .and_then(|stem| stem.to_str())
                 // Invalid stem делает registration недоказуемой.
                 .unwrap_or_else(|| {
-                    panic!("test evidence `{evidence_id}` имеет invalid nested module")
+                    panic!("test evidence `{evidence_id}` has invalid nested module")
                 });
             // Caller обязан прочитать реальный root `tests/<target>.rs`.
             let root_source = root_target_source.unwrap_or_else(|| {
-                panic!("test evidence `{evidence_id}` не имеет integration root source")
+                panic!("test evidence `{evidence_id}` none integration root source")
             });
             // Exact path attribute не позволяет принять convention-only hidden helper.
             let expected_path_attribute = format!("#[path = \"{target_relative_path}\"]");
@@ -203,12 +201,12 @@ fn assert_integration_target_ownership(
                 nonempty_lines.windows(2).any(|lines| {
                     lines[0] == expected_path_attribute && lines[1] == expected_module_declaration
                 }),
-                "test evidence `{evidence_id}` nested module не зарегистрирован exact path в root target"
+                "test evidence `{evidence_id}` nested module not registered exact path into root target"
             );
         }
         // Более глубокий helper не является самостоятельным executable evidence.
         _ => {
-            panic!("test evidence `{evidence_id}` указывает unsupported nested integration helper")
+            panic!("test evidence `{evidence_id}' indicates unsupported nested integration helper")
         }
     }
 }
@@ -231,7 +229,7 @@ pub(super) fn assert_test_package_and_target(evidence_id: &str, evidence: &Value
     // Missing Cargo manifest запрещает fake package identity.
     let cargo_manifest = fs::read_to_string(&cargo_manifest_path).unwrap_or_else(|error| {
         panic!(
-            "test evidence `{evidence_id}` не удалось прочитать {}: {error}",
+            "test evidence '{evidence_id}' failed to read {}: {error}",
             cargo_manifest_path.display()
         )
     });
@@ -242,7 +240,7 @@ pub(super) fn assert_test_package_and_target(evidence_id: &str, evidence: &Value
         cargo_manifest
             .lines()
             .any(|line| line.trim() == package_declaration),
-        "test evidence `{evidence_id}` package `{package}` не совпадает с Cargo.toml"
+        "test evidence '{evidence_id}' package '{package}' does not match Cargo.toml"
     );
 
     // Integration target определяется top-level `tests/<stem>.rs`.
@@ -260,7 +258,7 @@ pub(super) fn assert_test_package_and_target(evidence_id: &str, evidence: &Value
             // Missing root означает, что Cargo никогда не выполнит nested test.
             fs::read_to_string(&root_target_path).unwrap_or_else(|error| {
                 panic!(
-                    "test evidence `{evidence_id}` не удалось прочитать integration root {}: {error}",
+                    "test evidence '{evidence_id}' failed to read integration root {}: {error}",
                     root_target_path.display()
                 )
             })
@@ -276,7 +274,7 @@ pub(super) fn assert_test_package_and_target(evidence_id: &str, evidence: &Value
         // Tests внутри `src` выполняются Cargo lib target-ом.
         assert_eq!(
             target, "lib",
-            "test evidence `{evidence_id}` внутри src обязано иметь target `lib`"
+            "test evidence `{evidence_id}' inside src must have target `lib`"
         );
     }
 }
@@ -308,7 +306,7 @@ pub(super) fn assert_real_test_function(evidence_id: &str, evidence: &Value, sou
             assert_eq!(
                 previous_nonempty_line,
                 Some("#[test]"),
-                "evidence `{evidence_id}` symbol `{expected_symbol}` не является `#[test] fn`"
+                "evidence `{evidence_id}' symbol `{expected_symbol}' is not `#[test] fn'"
             );
             // Успешный exact match фиксируется один раз.
             found_test_function = true;
@@ -321,7 +319,7 @@ pub(super) fn assert_real_test_function(evidence_id: &str, evidence: &Value, sou
     // Простое упоминание symbol в строке не проходит этот assertion.
     assert!(
         found_test_function,
-        "evidence `{evidence_id}` не содержит real test function `{expected_symbol}`"
+        "evidence '{evidence_id}' does not contain the real test function '{expected_symbol}'"
     );
 }
 
@@ -357,7 +355,7 @@ mod tests {
 
     /// Comment/string упоминания не являются production boundary.
     #[test]
-    #[should_panic(expected = "ровно одну production declaration")]
+    #[should_panic(expected = "exactly one production declaration")]
     fn production_symbol_rejects_comment_and_string_mentions() {
         let evidence = json!({"symbol": "pub fn prepare_media"});
 

@@ -30,7 +30,7 @@ impl RecordingForwarder {
 
     fn single_sent(&self) -> ForwardedInstanceRequest {
         let sent = self.sent.borrow();
-        assert_eq!(sent.len(), 1, "ожидался ровно один запрос");
+        assert_eq!(sent.len(), 1, "I was expecting exactly one request.");
         sent[0].clone()
     }
 }
@@ -54,7 +54,7 @@ fn sent_uris(request: &ForwardedInstanceRequest) -> Vec<String> {
         ForwardedInstanceAction::Open(uris) => {
             uris.iter().map(|uri| uri.as_str().to_owned()).collect()
         }
-        ForwardedInstanceAction::Activate => panic!("ожидалось Open"),
+        ForwardedInstanceAction::Activate => panic!("expected"),
     }
 }
 
@@ -78,7 +78,7 @@ fn local_paths_arrive_at_receiver_as_the_same_absolute_paths() {
         environment_in("/home/u/Загрузки"),
         &forwarder,
     )
-    .expect("пересылка удалась");
+    .expect("forwarding");
 
     let received_paths: Vec<ExternalOpenItem> = sent_uris(&forwarder.single_sent())
         .iter()
@@ -103,7 +103,7 @@ fn links_are_forwarded_verbatim_and_keep_their_order_with_files() {
     let forwarder = RecordingForwarder::answering(Ok(()));
 
     forward_arguments_to_running_instance(&arguments, environment_in("/"), &forwarder)
-        .expect("пересылка удалась");
+        .expect("forwarding");
 
     let uris = sent_uris(&forwarder.single_sent());
     assert_eq!(uris[0], "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5");
@@ -113,7 +113,7 @@ fn links_are_forwarded_verbatim_and_keep_their_order_with_files() {
 #[test]
 fn launch_without_arguments_only_activates_the_window_with_the_desktop_token() {
     let forwarder = RecordingForwarder::answering(Ok(()));
-    let token = WindowActivationToken::from_raw("kwin-42".to_owned()).expect("билет");
+    let token = WindowActivationToken::from_raw("kwin-42".to_owned()).expect("ticket");
 
     forward_arguments_to_running_instance(
         &[],
@@ -123,7 +123,7 @@ fn launch_without_arguments_only_activates_the_window_with_the_desktop_token() {
         },
         &forwarder,
     )
-    .expect("пересылка удалась");
+    .expect("forwarding");
 
     let sent = forwarder.single_sent();
     assert_eq!(sent.action(), &ForwardedInstanceAction::Activate);
@@ -142,14 +142,14 @@ fn relative_path_without_working_directory_is_an_error_not_a_wrong_file() {
         },
         &forwarder,
     )
-    .expect_err("путь не к чему привязать");
+    .expect_err("pathless");
 
     assert_eq!(
         error.failure,
         RunningInstanceForwardingFailure::CurrentDirectoryUnavailable
     );
     assert_eq!(error.payload, ForwardedPayload::MediaArguments);
-    assert!(forwarder.sent.borrow().is_empty(), "ничего не отправлено");
+    assert!(forwarder.sent.borrow().is_empty(), "nothing sent");
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn too_many_files_are_refused_before_touching_the_bus() {
     let arguments = vec![OsString::from("/videos/a.mkv"); MAX_FORWARDED_URIS + 1];
 
     let error = forward_arguments_to_running_instance(&arguments, environment_in("/"), &forwarder)
-        .expect_err("лимит протокола");
+        .expect_err("limit");
 
     assert_eq!(
         error.failure,
@@ -185,7 +185,7 @@ fn transport_failure_keeps_its_reason_and_what_was_forwarded() {
 
         let error =
             forward_arguments_to_running_instance(&arguments, environment_in("/"), &forwarder)
-                .expect_err("транспорт отказал");
+                .expect_err("transport refused");
 
         assert_eq!(
             error.failure,

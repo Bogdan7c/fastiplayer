@@ -10,7 +10,7 @@ use crate::playlist_runtime::{AutomaticQueueNotice, SkippedItemsSummary};
 
 fn summary(total: usize, names: &[&str]) -> SkippedItemsSummary {
     SkippedItemsSummary::from_test_parts(
-        NonZeroUsize::new(total).expect("в сводке хотя бы один пропуск"),
+        NonZeroUsize::new(total).expect("at least one pass in the summary"),
         names,
     )
 }
@@ -24,7 +24,7 @@ fn single_skip_is_info_toast_with_file_name() {
 
     assert_eq!(
         playlist_queue_notice_delivery(&notice),
-        PlaylistQueueNoticeDelivery::InfoToast("Пропущен из-за ошибки 1 файл: b.mkv".to_owned())
+        PlaylistQueueNoticeDelivery::InfoToast("Skipped 1 file due to errors: b.mkv".to_owned())
     );
 }
 
@@ -38,22 +38,22 @@ fn many_skips_name_three_and_count_the_rest() {
     assert_eq!(
         playlist_queue_notice_delivery(&notice),
         PlaylistQueueNoticeDelivery::InfoToast(
-            "Пропущено из-за ошибки 5 файлов: a.mkv, b.mp4, c.avi и ещё 2".to_owned()
+            "Skipped 5 files due to errors: a.mkv, b.mp4, c.avi and 2 more".to_owned()
         )
     );
 }
 
-/// Русское согласование числа: 1 файл, 2–4 файла, 5–20 файлов, 21 файл, 11–14 файлов.
+/// Английское согласование: file только для 1, files для остальных чисел, включая 21 и 111.
 #[test]
-fn file_count_agrees_with_russian_grammar() {
+fn file_count_agrees_with_english_grammar() {
     let cases = [
-        (2, "Пропущено из-за ошибки 2 файла"),
-        (4, "Пропущено из-за ошибки 4 файла"),
-        (11, "Пропущено из-за ошибки 11 файлов"),
-        (14, "Пропущено из-за ошибки 14 файлов"),
-        (21, "Пропущен из-за ошибки 21 файл"),
-        (22, "Пропущено из-за ошибки 22 файла"),
-        (111, "Пропущено из-за ошибки 111 файлов"),
+        (2, "Skipped 2 files due to errors"),
+        (4, "Skipped 4 files due to errors"),
+        (11, "Skipped 11 files due to errors"),
+        (14, "Skipped 14 files due to errors"),
+        (21, "Skipped 21 files due to errors"),
+        (22, "Skipped 22 files due to errors"),
+        (111, "Skipped 111 files due to errors"),
     ];
     for (total, expected) in cases {
         // Без имён: элементы исчезли из очереди, остаётся только число.
@@ -78,7 +78,8 @@ fn end_of_queue_after_skips_is_info_toast() {
     assert_eq!(
         playlist_queue_notice_delivery(&notice),
         PlaylistQueueNoticeDelivery::InfoToast(
-            "Пропущено из-за ошибки 2 файла: b.mkv, c.mkv. Дальше в очереди ничего нет".to_owned()
+            "Skipped 2 files due to errors: b.mkv, c.mkv. There is nothing else in the queue"
+                .to_owned()
         )
     );
 }
@@ -107,14 +108,12 @@ fn stop_policy_is_transient_toast_with_reason() {
     assert_eq!(
         playlist_queue_notice_delivery(&named_stop),
         PlaylistQueueNoticeDelivery::TransientToast(
-            "Очередь остановлена из-за ошибки: b.mkv".to_owned()
+            "Queue stopped due to an error: b.mkv".to_owned()
         )
     );
     assert_eq!(
         playlist_queue_notice_delivery(&unnamed_stop),
-        PlaylistQueueNoticeDelivery::TransientToast(
-            "Очередь остановлена из-за ошибки файла".to_owned()
-        )
+        PlaylistQueueNoticeDelivery::TransientToast("Queue stopped due to a file error".to_owned())
     );
 }
 
@@ -129,7 +128,7 @@ fn queue_blocked_by_network_or_rate_limit_is_center_error_with_reason() {
             reason: QueueBlockReason::NoNetwork
         }),
         PlaylistQueueNoticeDelivery::ResumableMediaFailure(
-            "Нет подключения к сети — очередь остановлена".to_owned()
+            "No network connection; queue stopped".to_owned()
         )
     );
     assert_eq!(
@@ -137,7 +136,7 @@ fn queue_blocked_by_network_or_rate_limit_is_center_error_with_reason() {
             reason: QueueBlockReason::SiteRateLimited
         }),
         PlaylistQueueNoticeDelivery::ResumableMediaFailure(
-            "Сайт ограничил запросы — очередь остановлена".to_owned()
+            "Website limited requests - queue stopped".to_owned()
         )
     );
 }

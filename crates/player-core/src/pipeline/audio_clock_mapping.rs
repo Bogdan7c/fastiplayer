@@ -112,7 +112,7 @@ impl AudioClockMediaMapping {
     pub(super) fn open_playback_rate(&self) -> PlaybackRate {
         self.segments
             .last()
-            .expect("audio clock mapping всегда содержит открытый segment")
+            .expect("The audio clock mapping is always open segment.")
             .playback_rate
     }
 
@@ -153,7 +153,7 @@ impl AudioClockMediaMapping {
         let first_segment = self
             .segments
             .first()
-            .expect("audio clock mapping всегда содержит anchor segment");
+            .expect("Audio clock mapping is always an anchor segment.");
         let search_output_clock = current_output_clock.max(first_segment.output_clock_start);
         let active_segment_index = self.segment_index_at_output_clock(search_output_clock);
 
@@ -187,7 +187,7 @@ impl AudioClockMediaMapping {
         }
 
         // Последний segment открыт, поэтому цикл всегда должен найти deadline.
-        debug_assert!(false, "открытый audio clock segment не найден");
+        debug_assert!(false, "open-ended audio clock segment not found");
         Duration::MAX
     }
 
@@ -401,7 +401,7 @@ fn media_position_from_last_segment(
     segments
         .last()
         .copied()
-        .expect("пересобираемый mapping всегда содержит текущий anchor")
+        .expect("The reassembled mapping always contains the current anchor.")
         .media_position_at(output_clock_position)
 }
 
@@ -423,7 +423,7 @@ mod tests {
 
     /// Создаёт валидный rate и делает ошибку тестового fixture-а явной.
     fn playback_rate(multiplier: f32) -> PlaybackRate {
-        PlaybackRate::new(multiplier).expect("тестовый playback rate должен быть валиден")
+        PlaybackRate::new(multiplier).expect("The playback test rate must be valid")
     }
 
     #[test]

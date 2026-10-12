@@ -15,33 +15,33 @@ pub enum YtDlpServiceError {
     InvalidLocator(#[from] YtDlpLocatorParseError),
 
     /// Adapter отключён committed пользовательской конфигурацией.
-    #[error("yt-dlp adapter отключён в настройках")]
+    #[error("yt-dlp adapter disabled in settings")]
     AdapterDisabled,
 
     /// Владелец фоновой задачи отменил extraction/open.
-    #[error("операция yt-dlp отменена")]
+    #[error("yt-dlp operation canceled")]
     Cancellation,
 
     /// Внешний процесс не завершился за configured timeout.
-    #[error("истекло время ожидания yt-dlp")]
+    #[error("The waiting time has expired yt-dlp")]
     Timeout,
 
     /// Stdout single-item process-а пересёк configured byte budget.
-    #[error("stdout yt-dlp превысил лимит {limit_bytes} bytes")]
+    #[error("stdout yt-dlp exceeds {limit_bytes} bytes limit")]
     StdoutLimitExceeded {
         /// Точный configured предел без раскрытия output payload.
         limit_bytes: u64,
     },
 
     /// Stderr single-item process-а пересёк configured byte budget.
-    #[error("stderr yt-dlp превысил лимит {limit_bytes} bytes")]
+    #[error("stderr yt-dlp exceeds {limit_bytes} bytes limit")]
     StderrLimitExceeded {
         /// Точный configured предел без раскрытия diagnostic payload.
         limit_bytes: u64,
     },
 
     /// Валидный JSON пересёк configured structural node budget до построения DOM.
-    #[error("JSON yt-dlp превысил structural лимит {limit_nodes} nodes")]
+    #[error("JSON yt-dlp exceeds structural limit of {limit_nodes} nodes")]
     JsonNodeLimitExceeded {
         /// Точный configured предел числа JSON values.
         limit_nodes: u64,
@@ -50,11 +50,11 @@ pub enum YtDlpServiceError {
     /// Программа `yt-dlp` не найдена (запуск вернул `NotFound`): не установлена или
     /// отсутствует в `PATH`. Отдельно от `ProcessFailure`, потому что пользователю нужна
     /// конкретная подсказка — установить yt-dlp.
-    #[error("системный yt-dlp не найден")]
+    #[error("system yt-dlp not found")]
     ExecutableNotFound,
 
     /// OS/process plumbing не позволил выполнить или корректно дождаться `yt-dlp`.
-    #[error("не удалось выполнить системный yt-dlp")]
+    #[error("Failed to execute system yt-dlp")]
     ProcessFailure {
         /// Безопасная причина без locator/stderr payload.
         #[source]
@@ -62,9 +62,7 @@ pub enum YtDlpServiceError {
     },
 
     /// Extractor завершился с non-zero status и отверг URL/media.
-    #[error(
-        "yt-dlp extractor отклонил URL (причина: {reason}, stderr скрыт, {stderr_bytes} bytes)"
-    )]
+    #[error("yt-dlp extractor rejected URL (cause: {reason}, stderr hidden, {stderr_bytes} bytes)")]
     ExtractorRejection {
         /// Размер скрытого stderr нужен для диагностики без раскрытия payload.
         stderr_bytes: usize,
@@ -73,7 +71,7 @@ pub enum YtDlpServiceError {
     },
 
     /// `yt-dlp` завершился успешно, но вернул невалидный JSON/UTF-8 contract.
-    #[error("yt-dlp вернул некорректный metadata response")]
+    #[error("yt-dlp returned an incorrect metadata response.")]
     InvalidExtractorResponse {
         /// Parser/encoding error не содержит исходный locator.
         #[source]
@@ -81,7 +79,7 @@ pub enum YtDlpServiceError {
     },
 
     /// Single-item metadata resolver получил collection вместо одного media item.
-    #[error("URL описывает коллекцию, а не один media item")]
+    #[error("The URL describes a collection, not a single media item.")]
     CollectionUrl,
 }
 

@@ -55,7 +55,7 @@ fn external_circumstances_offer_retry() {
         assert_eq!(
             reason.retry_advice(),
             RetryAdvice::Offer,
-            "для {reason:?} повтор должен предлагаться"
+            "for {reason:?} a repeat must be offered"
         );
     }
 }
@@ -66,7 +66,7 @@ fn unfixable_failures_do_not_offer_retry() {
         assert_eq!(
             reason.retry_advice(),
             RetryAdvice::Withhold,
-            "для {reason:?} повтор бессмыслен"
+            "for {reason:?} play-off"
         );
     }
 }

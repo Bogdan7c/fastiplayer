@@ -258,13 +258,13 @@ fn same_lineage_rebind_preserves_queue_revisions_current_shuffle_and_lineage() {
     controller
         .queue
         .enable_shuffle()
-        .expect("shuffle fixture должен включиться");
+        .expect("Shuffle fixture should be activated");
     let revisions_before = controller.queue.revision_snapshot();
     let current_before = controller.queue.traversal_current();
     let shuffle_before = controller
         .queue
         .shuffle_traversal_snapshot()
-        .expect("enabled shuffle имеет snapshot");
+        .expect("enabled shuffle has snapshot");
 
     let outcome = controller.rebind_active_media_same_lineage(
         active_before,
@@ -272,7 +272,7 @@ fn same_lineage_rebind_preserves_queue_revisions_current_shuffle_and_lineage() {
         PlaylistBindingGeneration(194),
     );
     let ControllerActiveMediaRebindOutcome::Rebound { active_media } = outcome else {
-        panic!("matching same-lineage rebind должен завершиться успешно");
+        panic!("matching same-lineage rebind must be completed successfully");
     };
 
     assert_eq!(controller.queue.revision_snapshot(), revisions_before);
@@ -288,7 +288,7 @@ fn same_lineage_rebind_preserves_queue_revisions_current_shuffle_and_lineage() {
         controller
             .queue
             .shuffle_traversal_snapshot()
-            .expect("rebind не выключает shuffle"),
+            .expect("Rebind doesn't turn off the shuffle"),
         shuffle_before
     );
     assert_eq!(active_media.item_id(), active_before.item_id());

@@ -31,7 +31,7 @@ print_error() {
     local error_message="$1"
 
     # stderr нужен, чтобы ошибка не смешивалась с JSON-отчетом Clippy.
-    printf 'Ошибка: %s\n' "${error_message}" >&2
+    printf 'Error: %s\n' "${error_message}" >&2
 }
 
 # Функция проверяет, что обязательная переменная окружения задана.
@@ -39,7 +39,7 @@ require_sonar_token() {
     # Пустой токен невалиден и не должен приводить к анонимному анализу.
     if [[ -z "${SONAR_TOKEN:-}" ]]; then
         # Пользователь должен создать токен вручную в UI и передать его только через окружение.
-        print_error "задайте SONAR_TOKEN, например: SONAR_TOKEN=<token> $0"
+        print_error "Set SONAR_TOKEN, for example: SONAR_TOKEN=<token> $0"
 
         # Завершаем работу до любых сетевых запросов к SonarQube.
         exit 1
@@ -54,7 +54,7 @@ require_command() {
     # command -v надежно проверяет PATH без запуска команды.
     if ! command -v "${required_command}" >/dev/null 2>&1; then
         # Ошибка содержит конкретное имя отсутствующей команды.
-        print_error "команда '${required_command}' не найдена в PATH"
+        print_error "${required_command} not found in PATH"
 
         # Продолжать нельзя, потому что следующий шаг точно завершится неуспешно.
         exit 1
@@ -76,7 +76,7 @@ prepare_report_directory() {
 # Функция запускает Clippy и сохраняет JSON-события Cargo в файл для импорта SonarQube.
 run_clippy_report() {
     # Информационное сообщение идет в stderr, чтобы stdout оставался свободным для машинных данных.
-    printf 'Готовлю Clippy JSON: %s\n' "${clippy_report_path}" >&2
+    printf 'Clippy JSON: %s\n' "${clippy_report_path}" >&2
 
     # Cargo пишет JSON-события в stdout, поэтому перенаправляем stdout прямо в отчет.
     cargo clippy --workspace --all-targets --message-format=json >"${clippy_report_path}"
@@ -85,7 +85,7 @@ run_clippy_report() {
 # Функция запускает SonarScanner с токеном и URL из окружения.
 run_sonar_scanner() {
     # Информационное сообщение не содержит токен и показывает только адрес сервера.
-    printf 'Запускаю SonarScanner для %s\n' "${sonar_host_url}" >&2
+    printf 'Launch SonarScanner for %s\n' "${sonar_host_url}" >&2
 
     # export передает настройки scanner без записи секрета в репозиторий.
     export SONAR_HOST_URL="${sonar_host_url}"

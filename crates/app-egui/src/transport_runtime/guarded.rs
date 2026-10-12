@@ -43,16 +43,16 @@ pub(crate) fn apply_guarded_transport(
         GuardedTransportFollowUp::AwaitTerminal { request_id } => {
             debug!(
                 ?request_id,
-                "Transport-команда сохранена до terminal текущего install-а"
+                "Transport command saved to terminal of current install"
             );
         }
         GuardedTransportFollowUp::ControllerUnavailable => {
-            debug!("Transport-команда пропущена: playlist controller ещё не загружен");
+            debug!("Transport command skipped: Playlist controller is not loaded yet");
         }
         GuardedTransportFollowUp::Fatal(violation) => {
             warn!(
                 ?violation,
-                "Transport-команда не исполнена: playlist controller в fatal state"
+                "Transport command not executed: Playlist controller is in a fatal state"
             );
         }
     }
@@ -116,7 +116,7 @@ fn apply_deferred_transport_execution(
                 RuntimeRowPlayOutcome::Controller(outcome),
             );
             if !applied {
-                debug!("Отложенный Play row не применён: строка больше не в очереди");
+                debug!("Play row no longer applied: line no longer in line");
             }
         }
         DeferredTransportExecutionOutcome::Navigation(outcome) => {
@@ -150,6 +150,6 @@ fn apply_deferred_manual_navigation_cancel(
             playlist_runtime,
             ReleasedPendingRequest { request_id, cause },
         ),
-        other => debug!(outcome = ?other, "Отложенная отмена навигации применена"),
+        other => debug!(outcome = ?other, "Delayed cancellation of navigation applied"),
     }
 }

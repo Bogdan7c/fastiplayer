@@ -60,7 +60,7 @@ pub enum PlayerWorkerShutdownRequestOutcome {
 
 /// Typed результат одной bounded попытки terminal shutdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[must_use = "shutdown outcome определяет, можно ли освобождать process-lifetime owners"]
+#[must_use = "shutdown outcome determines whether process-lifetime owners may be released"]
 pub enum PlayerWorkerShutdownOutcome {
     /// Поток завершился штатно и был join-нут в пределах deadline.
     Completed {
@@ -144,7 +144,7 @@ impl PlayerWorker {
             PlayerWorkerTerminalState::ShutdownRequested(request)
             | PlayerWorkerTerminalState::TimedOut(request) => request,
             PlayerWorkerTerminalState::Completed => {
-                unreachable!("completed worker не должен повторно запрашивать terminal outcome")
+                unreachable!("The completed worker must not request the terminal outcome again.")
             }
         }
     }
@@ -172,7 +172,7 @@ impl PlayerWorker {
     /// Первый вызов закрывает admission у всех clone-ов `PlayerCommandSender` до отправки
     /// shutdown. Повторный вызов не отправляет command/cancellation второй раз и только drain-ит
     /// сохранённый `JoinHandle`. `join` вызывается исключительно после `is_finished()`.
-    #[must_use = "timeout требует terminal process-exit либо повторного drain до release lease"]
+    #[must_use = "timeout requires terminal process exit or another drain before releasing the lease"]
     pub fn shutdown_before(
         &mut self,
         deadline: PlayerWorkerShutdownDeadline,

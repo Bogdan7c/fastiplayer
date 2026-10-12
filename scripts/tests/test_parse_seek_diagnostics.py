@@ -22,7 +22,7 @@ def load_parser() -> ModuleType:
         "parse_seek_diagnostics", PARSER_PATH
     )
     if module_spec is None or module_spec.loader is None:
-        raise RuntimeError(f"не удалось загрузить parser `{PARSER_PATH}`")
+        raise RuntimeError(f"failed to load parser `{PARSER_PATH}`")
     parser_module = importlib.util.module_from_spec(module_spec)
     sys.modules[module_spec.name] = parser_module
     module_spec.loader.exec_module(parser_module)
@@ -72,7 +72,7 @@ def worker_transaction(
             "Audio play accepted before final seek commit"
         )
     lines.append(
-        f"generation={generation} committed_ms=355000 Final seek commit завершён"
+        f"generation={generation} committed_ms=355000 Final seek commit completed"
     )
     return lines
 
@@ -168,13 +168,47 @@ class SeekDiagnosticsParserTests(unittest.TestCase):
     def test_audio_soft_fallback_does_not_satisfy_selected_audio_gate(self):
         parser = PARSER.SeekDiagnosticsParser(scenario="fallback", media_kind="auto")
         lines = worker_transaction(3, 9, include_audio=False)
-        lines.insert(-1, "generation=3 Final seek commit продолжен через audio gate soft fallback")
+        lines.insert(-1, "generation=3 Final seek commit continued with audio gate soft fallback")
 
         parser.parse_lines(lines, "fallback.log")
 
         self.assertEqual(parser.rows()[0]["verdict"], "FAIL")
         self.assertEqual(parser.rows()[0]["audio_gate"], "soft_fallback")
         self.assertEqual(parser.summary_rows()[1]["count"], "0")
+
+    def test_english_timeout_is_failure_and_excluded_from_latency_summary(self):
+        """Timeout не превращается в успешный seek даже при готовых A/V markers."""
+
+        parser = PARSER.SeekDiagnosticsParser(scenario="timeout", media_kind="auto")
+        lines = worker_transaction(4, 10)
+        lines[-1] = "generation=4 Final seek commit stopped on timeout"
+
+        parser.parse_lines(lines, "timeout.log")
+
+        row = parser.rows()[0]
+        self.assertEqual(row["verdict"], "FAIL")
+        self.assertEqual(row["final_commit"], "no")
+        self.assertEqual(row["public_to_presented_ms"], "10")
+        self.assertEqual(parser.summary_rows()[0]["count"], "0")
+
+    def test_english_track_update_requires_rebase_for_clean_pass(self):
+        """Обновление дорожек сохраняет прежнее различие WARN и чистого PASS."""
+
+        for rebase, expected in [(False, "WARN"), (True, "PASS")]:
+            with self.subTest(rebase=rebase):
+                parser = PARSER.SeekDiagnosticsParser(scenario="tracks", media_kind="auto")
+                lines = worker_transaction(5, 11)
+                lines.insert(-1, "generation=5 Demuxer reported a track list update")
+                if rebase:
+                    lines.insert(-1, "generation=5 Active seek rebased after post-seek TracksChanged/ResetRequired marker")
+
+                parser.parse_lines(lines, "tracks.log")
+
+                row = parser.rows()[0]
+                self.assertEqual(row["verdict"], expected)
+                self.assertEqual(row["final_commit"], "yes")
+                self.assertEqual(row["public_to_presented_ms"], "11")
+                self.assertEqual(row["public_to_audio_ms"], "11")
 
     def test_legacy_markers_still_parse_without_new_timing_fields(self):
         parser = PARSER.SeekDiagnosticsParser(scenario="legacy", media_kind="auto")
@@ -186,7 +220,7 @@ class SeekDiagnosticsParserTests(unittest.TestCase):
                 "generation=77 First post-seek video packet observed",
                 "generation=77 First post-seek decoded frame observed",
                 "generation=77 First post-seek presented frame observed",
-                "generation=77 committed_ms=8000 Final seek commit завершён",
+                "generation=77 committed_ms=8000 Final seek commit completed",
             ],
             "legacy.log",
         )

@@ -46,32 +46,32 @@ pub(crate) fn parse_flv_header(bytes: &[u8]) -> Result<FlvHeader, FlvDemuxError>
         bytes
             .first_chunk()
             .ok_or_else(|| FlvDemuxError::InvalidHeader {
-                reason: format!("нужно {FLV_HEADER_BYTES} bytes, доступно {}", bytes.len()),
+                reason: format!("{FLV_HEADER_BYTES} bytes, available {}", bytes.len()),
             })?;
     if &header[..3] != FLV_SIGNATURE {
         return Err(FlvDemuxError::InvalidHeader {
-            reason: "signature не равна FLV".to_owned(),
+            reason: "signature equal FLV".to_owned(),
         });
     }
     if header[3] != 1 {
         return Err(FlvDemuxError::InvalidHeader {
-            reason: format!("version {} не поддерживается", header[3]),
+            reason: format!("version {} is not supported", header[3]),
         });
     }
     let flags = header[4];
     if flags & !0b0000_0101 != 0 || flags & 0b0000_0010 != 0 {
         return Err(FlvDemuxError::InvalidHeader {
-            reason: format!("reserved flags выставлены: 0x{flags:02x}"),
+            reason: format!("reserved flags exhibited: 0x{flags:02x}"),
         });
     }
     let [.., o0, o1, o2, o3] = *header;
     let data_offset = u32::from_be_bytes([o0, o1, o2, o3]);
     let data_offset = usize::try_from(data_offset).map_err(|_| FlvDemuxError::InvalidHeader {
-        reason: "data offset не помещается в usize".to_owned(),
+        reason: "data offset not fitting in usize".to_owned(),
     })?;
     if data_offset < FLV_HEADER_BYTES {
         return Err(FlvDemuxError::InvalidHeader {
-            reason: format!("data offset {data_offset} меньше header"),
+            reason: format!("Data offset {data_offset} is smaller than header"),
         });
     }
     Ok(FlvHeader {
@@ -94,7 +94,7 @@ pub(crate) fn parse_tag_bytes(
         .ok_or_else(|| malformed(byte_offset, "tag size overflow"))?;
     let payload = bytes
         .get(TAG_HEADER_BYTES..total_size)
-        .ok_or_else(|| malformed(byte_offset, "tag payload обрезан"))?;
+        .ok_or_else(|| malformed(byte_offset, "tag payload cropped"))?;
     Ok((
         FlvTag {
             kind: tag_header.kind,
@@ -114,14 +114,14 @@ pub(crate) fn parse_tag_header(
 ) -> Result<FlvTagHeader, FlvDemuxError> {
     let header = bytes
         .get(..TAG_HEADER_BYTES)
-        .ok_or_else(|| malformed(byte_offset, "tag header обрезан"))?;
+        .ok_or_else(|| malformed(byte_offset, "tag header cropped"))?;
     let tag_flags = header[0];
     if tag_flags & 0b1100_0000 != 0 {
-        return Err(malformed(byte_offset, "reserved tag bits выставлены"));
+        return Err(malformed(byte_offset, "reserved tag bits are displayed"));
     }
     if tag_flags & 0b0010_0000 != 0 {
         return Err(FlvDemuxError::UnsupportedCodec {
-            reason: "filtered/encrypted FLV tags не поддерживаются".to_owned(),
+            reason: "filtered/encrypted FLV tags are not supported".to_owned(),
         });
     }
     let kind = match tag_flags & 0x1f {
@@ -147,7 +147,7 @@ pub(crate) fn parse_tag_header(
     if stream_id != 0 {
         return Err(malformed(
             byte_offset,
-            format!("StreamID должен быть 0, получено {stream_id}"),
+            format!("StreamID should be 0, received {stream_id}"),
         ));
     }
     let timestamp_ms = u32::from(header[7]) << 24 | read_u24_u32(&header[4..7]);
@@ -166,12 +166,12 @@ pub(crate) fn validate_previous_tag_size(
 ) -> Result<(), FlvDemuxError> {
     let value: &[u8; PREVIOUS_TAG_SIZE_BYTES] = bytes
         .first_chunk()
-        .ok_or_else(|| malformed(offset, "PreviousTagSize обрезан"))?;
+        .ok_or_else(|| malformed(offset, "PreviousTagSize is trimmed"))?;
     let actual = u32::from_be_bytes(*value);
     if usize::try_from(actual).ok() != Some(expected_tag_size) {
         return Err(malformed(
             offset,
-            format!("PreviousTagSize={actual}, ожидалось {expected_tag_size}"),
+            format!("PreviousTagSize={actual}, expected {expected_tag_size}"),
         ));
     }
     Ok(())

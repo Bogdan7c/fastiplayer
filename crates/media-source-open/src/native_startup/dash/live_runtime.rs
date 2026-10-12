@@ -123,16 +123,15 @@ pub(super) fn prepare_native_dash_live(
             preparation.snapshot_identity.parent.clone(),
             discovered.provider_default().clone(),
         )
-        .context("native DASH live provider default нарушил catalog parent identity")?,
+        .context("Native DASH live provider default violated catalog parent identity")?,
     };
     let WebMediaSelectionShape::Components(component_selection) = neutral_selection.shape() else {
-        return Err(anyhow!("native DASH live selection потерял component catalog shape").into());
+        return Err(anyhow!("Native DASH live selection lost component catalog shape").into());
     };
     let opened = prepare_discovered_dash_live(discovered, component_selection.clone())?;
     let (demuxer, async_seek_handle, timeline_port) = opened.into_parts();
     let seek_port = crate::web_media_dash_open::prepared_dash_seek_port(
-        async_seek_handle
-            .ok_or_else(|| anyhow!("DASH live runtime потерял seek receipt handle"))?,
+        async_seek_handle.ok_or_else(|| anyhow!("DASH live runtime lost seek receipt handle"))?,
     );
     let source_state = NativeDashSourceState::new(
         neutral_selection,

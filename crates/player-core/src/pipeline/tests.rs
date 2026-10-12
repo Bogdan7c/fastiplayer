@@ -222,11 +222,11 @@ impl FixedAudioClock {
         *self
             .now
             .lock()
-            .expect("fake clock mutex не должен ломаться") = now;
+            .expect("The fake clock mutex should not break.") = now;
         *self
             .submitted_output_end_position
             .lock()
-            .expect("fake submitted position mutex не должен ломаться") = now;
+            .expect("Fake submitted position mutex must not be broken") = now;
     }
 
     /// Задаёт отдельные audible/submitted позиции для tail-aware тестов.
@@ -238,11 +238,11 @@ impl FixedAudioClock {
         *self
             .now
             .lock()
-            .expect("fake clock mutex не должен ломаться") = audible_output_position;
+            .expect("The fake clock mutex should not break.") = audible_output_position;
         *self
             .submitted_output_end_position
             .lock()
-            .expect("fake submitted position mutex не должен ломаться") =
+            .expect("Fake submitted position mutex must not be broken") =
             submitted_output_end_position;
     }
 }
@@ -253,7 +253,7 @@ impl PlayerAudioClock for FixedAudioClock {
         *self
             .now
             .lock()
-            .expect("fake clock mutex не должен ломаться")
+            .expect("The fake clock mutex should not break.")
     }
 
     /// Возвращает scripted audible/submitted snapshot.
@@ -262,7 +262,7 @@ impl PlayerAudioClock for FixedAudioClock {
         let submitted_output_end_position = *self
             .submitted_output_end_position
             .lock()
-            .expect("fake submitted position mutex не должен ломаться");
+            .expect("Fake submitted position mutex must not be broken");
         AudioOutputClockTiming::new(audible_output_position, submitted_output_end_position)
     }
 
@@ -272,11 +272,11 @@ impl PlayerAudioClock for FixedAudioClock {
         *self
             .now
             .lock()
-            .expect("fake clock mutex не должен ломаться") = Duration::ZERO;
+            .expect("The fake clock mutex should not break.") = Duration::ZERO;
         *self
             .submitted_output_end_position
             .lock()
-            .expect("fake submitted position mutex не должен ломаться") = Duration::ZERO;
+            .expect("Fake submitted position mutex must not be broken") = Duration::ZERO;
     }
 
     /// Возвращает scripted underrun count.
@@ -374,7 +374,7 @@ impl PlayerAudioOutput for FixedAudioOutput {
         *self
             .last_volume
             .lock()
-            .expect("fake volume mutex не должен ломаться") = Some(volume);
+            .expect("Fake volume mutex should not be broken.") = Some(volume);
     }
 
     /// Возвращает scripted buffer level.

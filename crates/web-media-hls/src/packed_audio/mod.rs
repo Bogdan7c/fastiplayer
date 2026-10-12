@@ -54,13 +54,13 @@ const TIMESTAMP_33_BIT_MASK: u64 = (1_u64 << 33) - 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum PackedAudioError {
     /// ID3-тег объявляет размер больше, чем есть байт в сегменте.
-    #[error("packed audio: ID3-тег обрезан")]
+    #[error("packed audio: ID3 tag cropped")]
     TruncatedId3,
     /// После ID3-тегов нет sync-слова ADTS/MPEG audio.
-    #[error("packed audio: после ID3 нет sync-слова аудио-кадра")]
+    #[error("packed audio: no sync word after ID3")]
     MissingAudioSync,
     /// Распознан кадр AC-3/E-AC-3, который профиль не поддерживает.
-    #[error("packed audio: AC-3/E-AC-3 не поддержан")]
+    #[error("packed audio: AC-3/E-AC-3 not supported")]
     UnsupportedCodec,
 }
 

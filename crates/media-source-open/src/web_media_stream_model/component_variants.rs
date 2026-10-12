@@ -212,16 +212,19 @@ impl fmt::Display for ComponentVariantInstallationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ActiveParentMismatch => {
-                formatter.write_str("component catalog принадлежит другому active candidate")
+                formatter.write_str("Component catalog belongs to another active candidate")
             }
             Self::InvalidSelection(error) => {
                 write!(
                     formatter,
-                    "component selection не прошёл canonical lookup: {error}"
+                    "Component selection failed canonical lookup: {error}"
                 )
             }
             Self::ActiveVariantMissing { axis } => {
-                write!(formatter, "active {axis:?} variant отсутствует в catalog")
+                write!(
+                    formatter,
+                    "active {axis:?} variant is not available in the catalog"
+                )
             }
         }
     }
@@ -262,15 +265,15 @@ pub enum ComponentVariantActionError {
 impl fmt::Display for ComponentVariantActionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unavailable => formatter.write_str("component variants недоступны"),
+            Self::Unavailable => formatter.write_str("component variants are not available"),
             Self::StaleParentGeneration { .. } => {
-                formatter.write_str("action относится к прошлому parent generation")
+                formatter.write_str("The action is from the past parent generation.")
             }
             Self::StaleCatalogGeneration { .. } => {
-                formatter.write_str("action относится к прошлому component catalog")
+                formatter.write_str("The action is from the past component catalog.")
             }
             Self::WrongAxis { axis } => {
-                write!(formatter, "catalog не содержит axis {axis:?}")
+                write!(formatter, "catalog does not contain axis {axis:?}")
             }
             Self::VariantIndexOutOfRange {
                 axis,
@@ -278,12 +281,12 @@ impl fmt::Display for ComponentVariantActionError {
                 variant_count,
             } => write!(
                 formatter,
-                "индекс {provided} вне {axis:?} axis из {variant_count} rows"
+                "index {provided} outside {axis:?} axis of {variant_count} rows"
             ),
             Self::ReplacementFailed(error) => {
                 write!(
                     formatter,
-                    "immutable component replacement отклонён: {error}"
+                    "Immutable component replacement rejected: {error}"
                 )
             }
         }

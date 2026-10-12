@@ -82,15 +82,15 @@ pub enum PlaylistExportSnapshotError {
 impl fmt::Display for PlaylistExportSnapshotError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptySelection => formatter.write_str("export selection пуста"),
+            Self::EmptySelection => formatter.write_str("export selection is empty"),
             Self::DuplicateSelection(entry_id) => {
-                write!(formatter, "export selection повторяет {entry_id:?}")
+                write!(formatter, "export selection duplicates {entry_id:?}")
             }
             Self::MissingTopLevelEntry(entry_id) => {
-                write!(formatter, "top-level export entry {entry_id:?} отсутствует")
+                write!(formatter, "top-level export entry {entry_id:?} is missing")
             }
             Self::CompoundPartIsNotTopLevel(entry_id) => {
-                write!(formatter, "{entry_id:?} является subordinate compound part")
+                write!(formatter, "{entry_id:?} is a subordinate compound part.")
             }
         }
     }

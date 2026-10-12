@@ -164,7 +164,7 @@ impl SymphoniaDemuxer {
             track = video_track_id.get(),
             initial_backend_ms = initial_backend_timestamp.as_millis(),
             cue_anchor_ms = cue_timestamp.as_millis(),
-            "Matroska/WebM DecodePointBefore использует ближайший video cue перед target"
+            "Matroska/WebM DecodePointBefore uses the nearest video cue before the target"
         );
 
         (cue_timestamp, true)

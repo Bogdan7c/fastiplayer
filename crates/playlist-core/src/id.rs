@@ -60,7 +60,7 @@ impl fmt::Debug for PlaylistItemIdPersistenceError {
 
 impl fmt::Display for PlaylistItemIdPersistenceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("нулевой PlaylistItemId зарезервирован")
+        formatter.write_str("Zero PlaylistItemId reserved")
     }
 }
 
@@ -241,11 +241,9 @@ impl fmt::Debug for AllocatorRestoreError {
 impl fmt::Display for AllocatorRestoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ReservedZeroWatermark => {
-                formatter.write_str("next_item_id не может быть равен нулю")
-            }
+            Self::ReservedZeroWatermark => formatter.write_str("next_item_id can't be zero"),
             Self::WatermarkNotAboveRestoredIds { .. } => formatter
-                .write_str("next_item_id должен быть строго больше всех восстановленных Item ID"),
+                .write_str("next_item_id must be strictly larger than all recovered Item IDs."),
         }
     }
 }

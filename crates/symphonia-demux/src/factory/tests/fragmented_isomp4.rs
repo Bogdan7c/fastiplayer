@@ -25,7 +25,7 @@ fn box_type_positions(bytes: &[u8], box_type: &[u8; 4]) -> Vec<usize> {
 fn set_tfdt_base_decode_time(bytes: &mut [u8], occurrence: usize, decode_time: u64) {
     let positions = box_type_positions(bytes, b"tfdt");
     let type_position = positions[occurrence];
-    assert_eq!(bytes[type_position + 4], 1, "generated tfdt должен быть v1");
+    assert_eq!(bytes[type_position + 4], 1, "generated tfdt must be v1");
     bytes[type_position + 8..type_position + 16].copy_from_slice(&decode_time.to_be_bytes());
 }
 
@@ -91,9 +91,9 @@ pub(super) fn next_packet(demuxer: &mut dyn Demuxer) -> media_core::Packet {
         match demuxer.next_event().expect("read generated fMP4") {
             DemuxReadEvent::Packet(packet) => return packet,
             DemuxReadEvent::MediaMetadataChanged(_) | DemuxReadEvent::TracksChanged(_) => {}
-            DemuxReadEvent::EndOfStream => panic!("packet ожидался до clean EOF"),
+            DemuxReadEvent::EndOfStream => panic!("packet expected clean EOF"),
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                panic!("finite fMP4 не должен публиковать readiness")
+                panic!("finite fMP4 should not publish readiness")
             }
         }
     }
@@ -136,22 +136,24 @@ fn assert_structural_truncation(media_fragment: &[u8]) {
             Ok(DemuxReadEvent::Packet(_))
             | Ok(DemuxReadEvent::MediaMetadataChanged(_))
             | Ok(DemuxReadEvent::TracksChanged(_)) => {}
-            Ok(DemuxReadEvent::EndOfStream) => panic!("truncation не должна выглядеть как EOS"),
+            Ok(DemuxReadEvent::EndOfStream) => {
+                panic!("The truncation should not look like an EOS.")
+            }
             Ok(DemuxReadEvent::TemporarilyUnavailable(_)) => {
-                panic!("finite source не должен публиковать readiness")
+                panic!("finite source should not publish readiness")
             }
             Err(error) => {
                 assert!(
                     error
                         .downcast_ref::<DemuxError>()
                         .is_some_and(|demux_error| matches!(demux_error, DemuxError::Parse(_))),
-                    "truncation должна остаться structural parse error: {error:#}"
+                    "truncation should remain structural parse error: {error:#}"
                 );
                 return;
             }
         }
     }
-    panic!("truncated source не завершился bounded error-ом");
+    panic!("The truncated source did not end in bounded error.");
 }
 
 #[test]
@@ -185,7 +187,7 @@ fn fragmented_audio_seek_rolls_gap_target_back_by_timestamp() {
 
     let seeked = demuxer
         .seek(Duration::from_millis(300))
-        .expect("seek target внутри tfdt gap");
+        .expect("seek target inside tfdt gap");
 
     assert_eq!(seeked.actual_position.as_duration(), Duration::ZERO);
     assert_eq!(
@@ -205,7 +207,7 @@ fn fragmented_audio_seek_uses_original_fixture_flags_without_rewrite() {
 
     let seeked = demuxer
         .seek(Duration::from_millis(150))
-        .expect("audio seek не должен требовать video RAP flags");
+        .expect("audio seek don't demand video RAP flags");
 
     assert_eq!(
         seeked.actual_position.as_duration(),
@@ -281,7 +283,7 @@ fn local_full_fixture_still_reaches_clean_eof() {
     let expected_packet_offsets = box_type_positions(&fixture, b"mdat")
         .into_iter()
         .map(|box_type_position| {
-            u64::try_from(box_type_position + 4).expect("fixture offset помещается в u64")
+            u64::try_from(box_type_position + 4).expect("fixture offset is placed in u64")
         })
         .collect::<Vec<_>>();
     let (_fixture_guard, mut demuxer) = open_local(&fixture);
@@ -293,7 +295,7 @@ fn local_full_fixture_still_reaches_clean_eof() {
                 assert_eq!(
                     packet.byte_offset,
                     Some(expected_packet_offsets[packet_count]),
-                    "seekable factory path обязан сохранить exact sample offset"
+                    "seekable factory path retain exact sample offset"
                 );
                 packet_count += 1;
             }
@@ -303,9 +305,9 @@ fn local_full_fixture_still_reaches_clean_eof() {
             }
             DemuxReadEvent::MediaMetadataChanged(_) | DemuxReadEvent::TracksChanged(_) => {}
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                panic!("finite local fMP4 не должен публиковать readiness")
+                panic!("finite local fMP4 should not publish readiness")
             }
         }
     }
-    panic!("complete fixture не достиг clean EOF");
+    panic!("complete fixture failed clean EOF");
 }

@@ -703,7 +703,7 @@ mod tests {
         let mut reader = streaming_reader(generated_pcm_caf(64, 63));
         let error = reader
             .next_packet()
-            .expect_err("truncated CAF data должен fail-нуться");
+            .expect_err("The truncated CAF data must fail.");
         assert!(matches!(
             error,
             Error::IoError(ref source) if source.kind() == ErrorKind::UnexpectedEof
@@ -718,7 +718,7 @@ mod tests {
         let source = ReadOnlySource::new(Cursor::new(bytes));
         let source = MediaSourceStream::new(Box::new(source), Default::default());
         let error = match CafReader::try_new(source, FormatOptions::default()) {
-            Ok(_) => panic!("truncated CAF chunk header должен fail-нуться"),
+            Ok(_) => panic!("truncated CAF chunk header must fail"),
             Err(error) => error,
         };
         assert!(matches!(

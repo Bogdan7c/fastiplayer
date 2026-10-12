@@ -13,7 +13,7 @@ fn snapshot(format: Value, generation: u64) -> YtDlpCandidateSnapshot {
     let document: YtDlpCandidateDocument = serde_json::from_value(json!({
         "formats": [format]
     }))
-    .expect("synthetic yt-dlp document должен десериализоваться");
+    .expect("synthetic yt-dlp document should be deserialized");
     normalize_candidate_document(
         document,
         SourceIdentity::new(81),
@@ -24,8 +24,8 @@ fn snapshot(format: Value, generation: u64) -> YtDlpCandidateSnapshot {
 /// Возвращает единственный accepted candidate без fallback по selected row.
 fn accepted(snapshot: &YtDlpCandidateSnapshot) -> &YtDlpNormalizedCandidate {
     let mut candidates = snapshot.accepted_inventory_candidates();
-    let candidate = candidates.next().expect("candidate должен быть accepted");
-    assert!(candidates.next().is_none(), "ожидался один candidate");
+    let candidate = candidates.next().expect("The candidate must be accepted");
+    assert!(candidates.next().is_none(), "One candidate was expected");
     candidate
 }
 
@@ -48,17 +48,17 @@ fn fresh_content_probe_rematch_accepts_unknown_to_declared_codec_refinement() {
     let original = snapshot(ogg_format("stable-ogg", None, None), 1);
     let selection = original
         .selection_for(accepted(&original))
-        .expect("original candidate принадлежит snapshot-у");
+        .expect("original candidate belong snapshot-at");
 
     let refreshed = snapshot(ogg_format("stable-ogg", Some("none"), Some("vorbis")), 2);
     assert_ne!(
         selection.semantic_identity(),
         accepted(&refreshed).descriptor().semantic_identity(),
-        "compatibility fallback не должен ослаблять основной semantic identity"
+        "compatibility fallback should not weaken the main semantic identity"
     );
     let matched = refreshed
         .rematch_exact(&selection)
-        .expect("codec refinement того же physical format должен rematch-иться");
+        .expect("codec refinement of the same physical format must rematch.");
 
     assert_eq!(matched.kind(), YtDlpCandidateMatchKind::SemanticRematch);
     assert_eq!(
@@ -79,7 +79,7 @@ fn fresh_content_probe_rematch_accepts_unknown_to_declared_codec_refinement() {
     assert_eq!(
         changed_inside_same_generation
             .rematch_exact(&selection)
-            .expect_err("Exact identity не должна принимать changed attributes"),
+            .expect_err("Exact identity should not accept changed attributes."),
         YtDlpCandidateRematchError::ExactAttributesChanged
     );
 }
@@ -90,12 +90,12 @@ fn fresh_content_probe_rematch_accepts_declared_to_unknown_codec_drift() {
     let original = snapshot(ogg_format("stable-ogg", Some("none"), Some("vorbis")), 3);
     let selection = original
         .selection_for(accepted(&original))
-        .expect("original candidate принадлежит snapshot-у");
+        .expect("original candidate belong snapshot-at");
     let refreshed = snapshot(ogg_format("stable-ogg", None, None), 4);
 
     let matched = refreshed
         .rematch_exact(&selection)
-        .expect("metadata loss того же physical format должен пройти runtime re-proof");
+        .expect("metadata loss equally physical format must pass runtime re-proof");
 
     assert_eq!(matched.kind(), YtDlpCandidateMatchKind::SemanticRematch);
     assert_eq!(
@@ -118,13 +118,13 @@ fn content_probe_rematch_rejects_different_physical_format_identity() {
     let original = snapshot(ogg_format("physical-a", None, None), 5);
     let selection = original
         .selection_for(accepted(&original))
-        .expect("original candidate принадлежит snapshot-у");
+        .expect("original candidate belong snapshot-at");
     let refreshed = snapshot(ogg_format("physical-b", Some("none"), Some("vorbis")), 6);
 
     assert_eq!(
         refreshed
             .rematch_exact(&selection)
-            .expect_err("другой format ID не является тем же physical resource"),
+            .expect_err("other format ID not the same physical resource"),
         YtDlpCandidateRematchError::StaleExactIdentity
     );
 
@@ -132,33 +132,33 @@ fn content_probe_rematch_rejects_different_physical_format_identity() {
     assert_eq!(
         equally_unknown_neighbor
             .rematch_exact(&selection)
-            .expect_err("weak equal content-probed layout не отменяет physical format anchor"),
+            .expect_err("weak equal content-probed layout does not cancel physical format anchor"),
         YtDlpCandidateRematchError::StaleExactIdentity
     );
 
     let declared_vorbis = snapshot(ogg_format("codec-conflict", None, Some("vorbis")), 8);
     let declared_selection = declared_vorbis
         .selection_for(accepted(&declared_vorbis))
-        .expect("declared content-probed candidate принадлежит snapshot-у");
+        .expect("The declared content-probed candidate belongs to snapshot.");
     let declared_opus = snapshot(ogg_format("codec-conflict", None, Some("opus")), 9);
     assert_eq!(
         declared_opus
             .rematch_exact(&declared_selection)
-            .expect_err("два conflicting declared codec не являются metadata drift"),
+            .expect_err("Two conflicting declared codecs are not metadata drift"),
         YtDlpCandidateRematchError::StaleExactIdentity
     );
 
     let color_original = snapshot(ogg_format("color-conflict", None, None), 10);
     let color_selection = color_original
         .selection_for(accepted(&color_original))
-        .expect("color baseline принадлежит snapshot-у");
+        .expect("color baseline belong snapshot-at");
     let mut hdr_format = ogg_format("color-conflict", None, None);
     hdr_format["dynamic_range"] = json!("HDR10");
     let color_changed = snapshot(hdr_format, 11);
     assert_eq!(
         color_changed
             .rematch_exact(&color_selection)
-            .expect_err("color evidence не является optional codec drift"),
+            .expect_err("color evidence is not optional codec drift"),
         YtDlpCandidateRematchError::StaleExactIdentity
     );
 }

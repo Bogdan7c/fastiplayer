@@ -168,14 +168,14 @@ impl TopologyMappingNode for FakeTopologyNode {
 
 /// Парсит locator только service parser-ом, как production registry.
 fn locator(exact_locator: &str) -> YtDlpMediaLocator {
-    parse_yt_dlp_media_locator(exact_locator).expect("fixture locator должен быть valid")
+    parse_yt_dlp_media_locator(exact_locator).expect("The fixture location must be valid.")
 }
 
 /// Создаёт exact root durable locator без normalization.
 fn durable_root(exact_locator: &str) -> DurableReopenLocator {
     DurableReopenLocator::url(
         SecretUrlLocator::from_reopenable_url(exact_locator)
-            .expect("fixture root locator должен быть non-empty"),
+            .expect("fixture root locator should be non-empty"),
     )
 }
 
@@ -200,10 +200,10 @@ fn only_compound(
     preview: &super::YtDlpTopologyDraftPreview,
 ) -> &playlist_core::PlaylistCompoundImportDraft {
     let mut entries = preview.entries();
-    let entry = entries.next().expect("ожидается один compound");
-    assert!(entries.next().is_none(), "лишние top-level entries");
+    let entry = entries.next().expect("Expected to be one compound.");
+    assert!(entries.next().is_none(), "superfluous top-level entries");
     let PlaylistImportEntryDraft::Compound(compound) = entry else {
-        panic!("ожидается first-class compound");
+        panic!("First-class compound is expected.");
     };
     compound
 }
@@ -242,7 +242,7 @@ fn multi_video_preserves_group_summary_part_order_and_unavailable_state() {
             .provenance()
             .root_locator()
             .expose_url_for_reopen()
-            .expect("group provenance должна хранить exact root")
+            .expect("Provenance group should be used to store exact root")
             .expose_secret_for_persistence(),
         "https://root.invalid/watch?token=exact#fragment"
     );
@@ -310,17 +310,17 @@ fn duplicate_extractor_ids_remain_distinct_ordered_singles() {
         .entries()
         .map(|entry| match entry {
             PlaylistImportEntryDraft::Single(single) => single,
-            PlaylistImportEntryDraft::Compound(_) => panic!("неожиданный compound"),
+            PlaylistImportEntryDraft::Compound(_) => panic!("surprise-compound"),
         })
         .collect::<Vec<_>>();
     let first_payload = singles[0]
         .reopen_locator()
         .expose_service_payload_for_reopen()
-        .expect("extractor identity должна быть service-owned");
+        .expect("Extractor identity must be service-owned");
     let second_payload = singles[1]
         .reopen_locator()
         .expose_service_payload_for_reopen()
-        .expect("extractor identity должна быть service-owned");
+        .expect("Extractor identity must be service-owned");
 
     assert_eq!(singles.len(), 2);
     assert_eq!(singles[0].cached_metadata().title(), Some("First"));
@@ -351,7 +351,7 @@ fn nested_collections_flatten_but_delegation_remains_one_leaf() {
             PlaylistImportEntryDraft::Single(single) => {
                 single.cached_metadata().title().unwrap_or_default()
             }
-            PlaylistImportEntryDraft::Compound(_) => panic!("неожиданный compound"),
+            PlaylistImportEntryDraft::Compound(_) => panic!("surprise-compound"),
         })
         .collect::<Vec<_>>();
 
@@ -377,14 +377,14 @@ fn root_uses_exact_locator_while_extracted_child_uses_versioned_service_payload(
     let PlaylistImportEntryDraft::Single(root_single) =
         root_preview.entries().next().expect("root single")
     else {
-        panic!("root video должен стать Single");
+        panic!("root video should be single.");
     };
 
     assert_eq!(
         root_single
             .reopen_locator()
             .expose_url_for_reopen()
-            .expect("root должен остаться exact URL")
+            .expect("Root should remain the exact URL.")
             .expose_secret_for_persistence(),
         exact_root
     );
@@ -398,12 +398,12 @@ fn root_uses_exact_locator_while_extracted_child_uses_versioned_service_payload(
     let PlaylistImportEntryDraft::Single(child_single) =
         child_preview.entries().next().expect("child single")
     else {
-        panic!("child video должен стать Single");
+        panic!("Child video should be single.");
     };
     let service_payload = child_single
         .reopen_locator()
         .expose_service_payload_for_reopen()
-        .expect("extracted child должен сохранить service ownership");
+        .expect("Extracted child must retain service ownership");
 
     assert_eq!(
         service_payload.service_owner(),
@@ -486,7 +486,7 @@ fn retained_unavailable_child_obeys_aggregate_item_bound() {
         .next()
         .expect("first unavailable retained")
     else {
-        panic!("unavailable stable child должен остаться Single");
+        panic!("Unavailable stable child should remain single");
     };
 
     assert_eq!(
@@ -525,7 +525,7 @@ fn production_mapping_source_has_no_second_url_parser_queue_authority_or_ephemer
     ] {
         assert!(
             !production_source.contains(forbidden_fragment),
-            "production mapper не должен содержать `{forbidden_fragment}`"
+            "The production mapper must not contain {forbidden_fragment}"
         );
     }
 }

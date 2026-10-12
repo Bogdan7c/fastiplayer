@@ -136,7 +136,7 @@ pub(super) fn handle_row_response(
     }
 
     response.context_menu(|menu_ui| {
-        if menu_ui.button("Воспроизвести").clicked() {
+        if menu_ui.button("Play").clicked() {
             context.output.push_action(activation.playlist_action());
             menu_ui.close();
         }
@@ -150,7 +150,7 @@ pub(super) fn handle_row_response(
         if menu_ui
             .add_enabled(
                 selected_count > 0,
-                egui::Button::new(format!("Удалить выбранные ({selected_count})")),
+                egui::Button::new(format!("Remove selected ({selected_count})")),
             )
             .clicked()
         {
@@ -172,7 +172,7 @@ pub(super) fn handle_row_response(
         if menu_ui
             .add_enabled(
                 selected_count < context.model.item_count(),
-                egui::Button::new(format!("Удалить всё, кроме выбранных ({selected_count})")),
+                egui::Button::new(format!("Remove all except selected ({selected_count})")),
             )
             .clicked()
         {

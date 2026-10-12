@@ -421,7 +421,7 @@ mod tests {
                     .shapes
                     .iter()
                     .all(|shape| bounds.contains_rect(shape.shape.visual_bounding_rect())),
-                "{glyph:?} вышел за hit-area"
+                "{glyph:?} is out for hit-area"
             );
         }
     }
@@ -458,7 +458,7 @@ mod tests {
         assert_eq!(
             import.shapes[2].shape.visual_bounding_rect(),
             export.shapes[2].shape.visual_bounding_rect(),
-            "Import и Export обязаны использовать один playlist tray"
+            "Import and Export must use the same playlist tray"
         );
     }
 

@@ -231,7 +231,7 @@ fn approved_s42_rows_have_positive_production_shaped_plans() {
                 assert_eq!(
                     video.transport().raw(),
                     audio.transport().raw(),
-                    "S42 separate fixture не должен смешивать transport families"
+                    "S42 separate fixture must not mix transport families"
                 );
                 video.transport().raw().as_str()
             }
@@ -242,12 +242,12 @@ fn approved_s42_rows_have_positive_production_shaped_plans() {
         // Duplicate row/transport evidence не увеличивает доказанное покрытие.
         assert!(
             actual_row_transport_evidence.insert((row_id.clone(), transport_raw)),
-            "S42 row/transport evidence не должно повторяться"
+            "S42 row/transport evidence shall not be repeated"
         );
         let request = exact_request(&candidate);
         let snapshot = candidate_snapshot(vec![candidate]);
         let outcome = plan_playback(&snapshot, capabilities, &request, &policy)
-            .unwrap_or_else(|error| panic!("S42 row `{row_id}` должна быть playable: {error:?}"));
+            .unwrap_or_else(|error| panic!("S42 row '{row_id}' must be playable: {error:?}"));
 
         assert_eq!(
             outcome.selected().exact_identity().format().as_str(),

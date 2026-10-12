@@ -130,7 +130,7 @@ impl AppState {
                 debug!(
                     request_id = navigation.request_id.get(),
                     media_instance_id = navigation.media_instance_id.get(),
-                    "Lifecycle settlement подавил queue navigation после relative BeyondEnd"
+                    "Lifecycle settlement suppressed queue navigation after relative BeyondEnd"
                 );
             }
         }
@@ -182,7 +182,7 @@ impl AppState {
                 playlist_runtime.record_desktop_seek_outcome(desktop_outcome);
                 debug!(
                     ?desktop_outcome,
-                    "Exact timeline seek завершился без Seeked signal"
+                    "Exact timeline seek ends without Seeked signal"
                 );
                 None
             }
@@ -221,7 +221,7 @@ fn desktop_outcome_without_seeked_signal(
             }
         }
         ExactTimelineSeekOutcome::Applied { .. } | ExactTimelineSeekOutcome::BeyondEnd { .. } => {
-            warn!("Applied/BeyondEnd попали в non-applied desktop outcome adapter");
+            warn!("Applied/BeyondEnd reached the non-applied desktop outcome adapter");
             unreachable!("Applied and BeyondEnd are handled before this adapter")
         }
     }

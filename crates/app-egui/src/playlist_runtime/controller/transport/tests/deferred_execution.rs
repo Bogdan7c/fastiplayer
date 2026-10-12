@@ -260,7 +260,7 @@ fn newer_transport_command_supersedes_unexecuted_terminal_intent() {
     assert_eq!(
         controller.take_terminal_transport_intent(),
         None,
-        "latest-only: старый Next не должен исполниться после нового Play"
+        "latest-only: the old Next should not be fulfilled after the new Play"
     );
 }
 

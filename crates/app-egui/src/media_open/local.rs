@@ -53,30 +53,30 @@ pub(crate) struct PreparedLocalOpenResult {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PrepareLocalOpenError {
     /// Cooperative cancellation замечена между blocking stages.
-    #[error("подготовка локального media отменена")]
+    #[error("Local media preparation canceled")]
     Cancelled,
     /// Открытие либо чтение metadata source-а не удалось.
-    #[error("не удалось открыть локальный media source: {0}")]
+    #[error("Could not open the local media source: {0}")]
     Source(#[source] source_core::SourceError),
     /// Путь указывает на каталог. На Linux `File::open` каталога успешен и ошибка всплыла бы
     /// только при чтении внутри demux probe, где тип I/O-ошибки уже теряется, поэтому
     /// каталог отсекается явной проверкой до открытия.
-    #[error("локальный путь указывает на каталог, а не на файл")]
+    #[error("Local path points to a directory instead of a file")]
     Directory,
     /// Файл существует, но имеет нулевой размер: разбирать нечего.
-    #[error("локальный media-файл пустой")]
+    #[error("Local media file is empty")]
     EmptyFile,
     /// Container demuxer не смог открыть уже созданный source.
-    #[error("не удалось открыть media container")]
+    #[error("Could not open the media container")]
     Demux(#[source] media_source_open::local_media::LocalDemuxOpenError),
     /// Container не содержит audio/video tracks.
-    #[error("media container не содержит audio/video tracks")]
+    #[error("Media container contains no audio/video tracks")]
     NoAudioVideoTracks,
     /// Locator изменился после открытия handle-а и до ownership transfer.
-    #[error("локальный media source изменился во время подготовки")]
+    #[error("Local media source changed during preparation")]
     SourceChangedDuringPreparation,
     /// Финальная stat-проверка locator-а не удалась.
-    #[error("не удалось повторно проверить локальный media source: {0}")]
+    #[error("Could not recheck the local media source: {0}")]
     RevalidationIo(#[source] std::io::Error),
 }
 
@@ -425,7 +425,7 @@ pub(crate) mod tests {
         let message = crate::local_open_message::local_open_failure_message(&path, reason);
         assert_eq!(
             message,
-            "Не удалось открыть «private-customer-name.ts»: файл повреждён или обрезан"
+            "Could not open “private-customer-name.ts”: the file is corrupted or truncated"
         );
         assert!(!message.contains("private-customer-dir"));
     }

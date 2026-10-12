@@ -179,7 +179,7 @@ pub(super) fn prepare_native(
     {
         NativeSmoothAttempt::Prepared(prepared) => prepared,
         NativeSmoothAttempt::RequiresExtractorFallback(trigger) => {
-            panic!("valid Smooth VOD не имеет права требовать extractor: {trigger:?}")
+            panic!("Valid Smooth VOD is not eligible to require extractor: {trigger:?}")
         }
     }
 }
@@ -197,17 +197,17 @@ fn alternate_audio_selection(
         },
     ) = stream_configuration.component_variant_projection()
     else {
-        panic!("native Smooth обязан публиковать independent VideoAndAudio catalog");
+        panic!("Native Smooth to publish independent VideoAndAudio catalog");
     };
     assert_eq!(
         video.variants.len(),
         1,
-        "ровно одна video row имеет demux proof"
+        "A single video row has a demux proof."
     );
     assert_eq!(
         audio.variants.len(),
         2,
-        "ровно две audio rows имеют content proof"
+        "Two audio rows have content proof."
     );
     let alternate_index = usize::from(audio.active_index == 0);
     let resolution = stream_configuration
@@ -217,9 +217,9 @@ fn alternate_audio_selection(
             axis: WebMediaComponentVariantAxisKind::Audio,
             variant_index: alternate_index,
         })
-        .expect("fresh Smooth video action должна разрешиться");
+        .expect("Fresh Smooth video action should be allowed");
     let ComponentVariantActionResolution::SemanticReopen(selection) = resolution else {
-        panic!("alternate Smooth row не должна быть NoChange");
+        panic!("Alternative Smooth Row does not have to be NoChange.");
     };
     selection
 }
@@ -238,7 +238,7 @@ fn native_request_parts(
         settings,
     } = request.into_adapter()
     else {
-        panic!("Smooth switch/reopen обязан сохранить native semantic adapter intent");
+        panic!("Smooth switch/reopen should retain native semantic adapter intent");
     };
     (source, selection, settings)
 }
@@ -252,16 +252,13 @@ fn assert_vod_seek(
     let request_id = PreparedDemuxSeekRequestId::new(request_id);
     seek_port
         .enqueue_seek(request_id, DemuxSeekRequest::accurate(requested_position))
-        .expect("native Smooth seek должен войти в worker");
+        .expect("Smooth seek must be included in the worker.");
     let deadline = Instant::now() + SMOOTH_VERTICAL_DEADLINE;
     loop {
         if let Some(receipt) = seek_port.poll_seek_receipt() {
             assert_eq!(receipt.request_id, request_id);
             let PreparedDemuxSeekOutcome::Succeeded(result) = receipt.outcome else {
-                panic!(
-                    "native Smooth seek завершился неуспешно: {:?}",
-                    receipt.outcome
-                );
+                panic!("Native Smooth seek fails: {:?}", receipt.outcome);
             };
             assert_eq!(result.requested_position.as_duration(), requested_position);
             return;
@@ -287,7 +284,7 @@ pub(super) fn wait_for_tracks_changed(demuxer: &mut dyn Demuxer) {
             DemuxReadEvent::TemporarilyUnavailable(hint) => {
                 thread::sleep(hint.retry_after());
             }
-            other => panic!("tracks должны быть первой Smooth publication: {other:?}"),
+            other => panic!("tracks should be the first Smooth publication: {other:?}"),
         }
     }
 }
@@ -338,7 +335,7 @@ fn n14b_lifecycle_smooth_vod_seek_forward_back_switch_and_reopen_reaches_consume
     assert_eq!(
         server.request_count("/vod/Manifest"),
         0,
-        "syntactic Smooth classifier не должен fetch-ить root до open"
+        "syntactic Smooth classifier shouldn't fetch-ooze root before open"
     );
     let stable_source_identity = source.source_identity();
     let mut wgpu_harness = OffscreenWgpuHarness::new();
@@ -381,7 +378,7 @@ fn n14b_lifecycle_smooth_vod_seek_forward_back_switch_and_reopen_reaches_consume
             settings.clone(),
         )
     else {
-        panic!("fresh Smooth row action обязана запустить same-item switch");
+        panic!("Fresh Smooth Row Action must start the same-item switch");
     };
     let (switch_source, switch_selection, switch_settings) = native_request_parts(switch_request);
     let mut switched = prepare_native(&switch_source, Some(&switch_selection), &switch_settings);
@@ -395,12 +392,14 @@ fn n14b_lifecycle_smooth_vod_seek_forward_back_switch_and_reopen_reaches_consume
     let web_media_core::WebMediaSelectionShape::Components(switched_components) =
         switched.source_state.neutral_selection().shape()
     else {
-        panic!("switched Smooth selection должна сохранить component shape");
+        panic!(
+            "Smooth Selection: The Smooth Selector should retain the Smooth Smooth Selection component"
+        );
     };
     assert_eq!(
         switched_components.semantic_rematch_request(),
         expected_alternate,
-        "fresh catalog не должен менять semantic video/audio selection"
+        "fresh catalog don't change semantic video/audio selection"
     );
 
     let switched_intent =
@@ -411,7 +410,7 @@ fn n14b_lifecycle_smooth_vod_seek_forward_back_switch_and_reopen_reaches_consume
             switch_settings.demux_config,
             Some(switch_settings.clone()),
         )
-        .expect("native Smooth controlled reopen требует semantic rematch");
+        .expect("Smooth controlled reopen requires semantic rematch");
     let (reopen_source, reopen_selection, reopen_settings) = native_request_parts(reopen_request);
     let mut reopened = prepare_native(&reopen_source, Some(&reopen_selection), &reopen_settings);
     assert_eq!(server.request_count("/vod/Manifest"), 4);
@@ -429,12 +428,12 @@ fn n14b_lifecycle_smooth_vod_seek_forward_back_switch_and_reopen_reaches_consume
             .exact()
             .source(),
         stable_source_identity,
-        "stable-root refresh/rematch обязан сохранить source lineage"
+        "stable-root refresh/rematch retain source lineage"
     );
     assert_eq!(
         process_spy.invocation_count(),
         0,
-        "valid Smooth open, seek, switch и reopen не запускают extractor"
+        "valid Smooth open, seek, switch and reopen let off extractor"
     );
 }
 
@@ -538,7 +537,7 @@ fn native_smooth_keeps_profile_and_terminal_failures_distinct_without_extractor(
 
     assert!(matches!(
         prepare(&source("/foreign/Manifest"), CancellationToken::new())
-            .expect("foreign root должен стать typed initial fallback"),
+            .expect("Foreign root should be typed initial fallback."),
         NativeSmoothAttempt::RequiresExtractorFallback(
             web_media_core::WebMediaFallbackTrigger::ProviderDocument
         )
@@ -567,19 +566,19 @@ fn native_smooth_keeps_profile_and_terminal_failures_distinct_without_extractor(
     ] {
         let error = prepare(&source(path), CancellationToken::new())
             .err()
-            .expect("profile/malformed failure не должна становиться fallback");
+            .expect("profile/malformed Failure Should Not Become a Fallback");
         assert_eq!(smooth_failure_kind(&error), Some(expected_kind), "{path}");
     }
 
     let network_error = prepare(&source("/missing/Manifest"), CancellationToken::new())
         .err()
-        .expect("404 root fetch обязан остаться terminal network failure");
+        .expect("The 404 root fetch will remain a terminal network failure.");
     assert!(smooth_failure_kind(&network_error).is_none());
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let cancellation_error = prepare(&source("/vod/Manifest"), cancelled)
         .err()
-        .expect("pre-cancel не должен попасть в fallback");
+        .expect("Pre-Cancel is not allowed to fallback.");
     assert!(cancellation_error.to_string().contains("cancelled"));
     assert_eq!(process_spy.invocation_count(), 0);
 }

@@ -55,26 +55,26 @@ impl CountingPageFixtureLauncher {
 pub(crate) fn assert_pcm_advances_clock(decoded_samples: &[f32], sample_rate: u32, channels: u32) {
     assert!(
         !decoded_samples.is_empty(),
-        "PCM buffer не должен быть пустым"
+        "The PCM buffer should not be empty."
     );
-    assert!(sample_rate > 0, "decoded PCM обязан иметь sample rate");
-    assert!(channels > 0, "decoded PCM обязан иметь channel count");
+    assert!(sample_rate > 0, "decoded PCM must sample rate");
+    assert!(channels > 0, "decoded PCM must channel count");
     let channel_count =
-        usize::try_from(channels).expect("decoded channel count должен помещаться в usize");
+        usize::try_from(channels).expect("The decoded channel count must be placed in usize.");
     assert_eq!(
         decoded_samples.len() % channel_count,
         0,
-        "interleaved PCM обязан содержать целое число audio frames"
+        "interleaved PCM must contain a whole number audio frames"
     );
     let audio_clock = AudioClock::new(sample_rate, channels);
     let initial_position = audio_clock.now();
     let submitted_samples = u64::try_from(decoded_samples.len())
-        .expect("decoded PCM sample count должен помещаться в u64");
+        .expect("Decoded PCM sample count should be placed in u64.");
     audio_clock.record_written(submitted_samples);
     audio_clock.record_played(submitted_samples);
     assert!(
         audio_clock.now() > initial_position,
-        "production audio clock обязан продвинуться после played PCM callback"
+        "production audio clock I have to move on after played PCM callback"
     );
 }
 

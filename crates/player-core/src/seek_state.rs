@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn accurate_audio_only_final_seek_stays_container_accurate() {
         let mode = request_mode(false, SeekMode::Accurate)
-            .expect("audio-only accurate seek должен поддерживаться");
+            .expect("Audio-only accurate seek should be supported");
 
         assert_eq!(mode, DemuxSeekMode::Accurate);
     }
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn accurate_video_final_seek_uses_decode_safe_preroll_request() {
         let mode = request_mode(true, SeekMode::Accurate)
-            .expect("video accurate seek должен поддерживаться через preroll");
+            .expect("Video accurate seek should be supported via preroll");
 
         assert_eq!(mode, DemuxSeekMode::DecodePointBefore);
     }
@@ -714,7 +714,7 @@ mod tests {
     #[test]
     fn keyframe_before_final_seek_maps_to_decode_point_before() {
         let mode = request_mode(true, SeekMode::KeyframeBefore)
-            .expect("keyframe-before seek должен поддерживаться");
+            .expect("Keyframe-before seek should be supported");
 
         assert_eq!(mode, DemuxSeekMode::DecodePointBefore);
     }
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn keyframe_after_is_explicitly_unsupported() {
         let error = request_mode(true, SeekMode::KeyframeAfter)
-            .expect_err("keyframe-after пока должен отклоняться явно");
+            .expect_err("keyframe-after must be explicitly rejected for now");
 
         assert_eq!(
             error,

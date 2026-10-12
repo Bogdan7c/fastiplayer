@@ -75,10 +75,10 @@ pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) -> Option<UrlSidebarAct
 }
 
 fn show_inactive(ui: &mut Ui) {
-    ui.heading("Поток");
-    ui.label("Сейчас активно локальное медиа или источник ещё не установлен.");
+    ui.heading("Stream");
+    ui.label("Local media is active, or the source has not been installed yet.");
     ui.add_space(8.0);
-    ui.weak("URL добавляется только через кнопку «Добавить URL» в плейлисте.");
+    ui.weak("Use Add URL in Playlist to add a URL.");
 }
 
 fn show_single_web_media(
@@ -89,17 +89,17 @@ fn show_single_web_media(
     catalog: &WebMediaCatalogState,
 ) {
     let heading = match ingress {
-        web_media_core::WebMediaIngressKind::DirectResource => "Прямая ссылка на медиафайл",
-        web_media_core::WebMediaIngressKind::NativeManifest => "Нативный web-манифест",
-        web_media_core::WebMediaIngressKind::ExtractorBacked => "Web-медиа",
+        web_media_core::WebMediaIngressKind::DirectResource => "Direct media file link",
+        web_media_core::WebMediaIngressKind::NativeManifest => "Native web manifest",
+        web_media_core::WebMediaIngressKind::ExtractorBacked => "Web media",
     };
     ui.heading(heading);
-    wrapped_value(ui, "Источник", source_label);
+    wrapped_value(ui, "Source", source_label);
     ui.add_space(8.0);
     status_grid(ui, status);
     ui.add_space(8.0);
     let _ = show_stream_picker(ui, None, catalog, false);
-    ui.weak("У источника один установленный вариант; переключение не требуется.");
+    ui.weak("The source has one installed variant; no switch is needed.");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -118,21 +118,21 @@ fn show_catalog_backed(
     catalog: &WebMediaCatalogState,
     fallback_notice: bool,
 ) -> Option<UrlSidebarAction> {
-    ui.heading("Web-медиа");
-    wrapped_value(ui, "Источник", source_label);
-    wrapped_value(ui, "Применение", item_scope_label(item_scope));
-    wrapped_value(ui, "Предпочтение", &preference_label(preference));
+    ui.heading("Web media");
+    wrapped_value(ui, "Source", source_label);
+    wrapped_value(ui, "Application", item_scope_label(item_scope));
+    wrapped_value(ui, "Preference", &preference_label(preference));
     ui.add_space(8.0);
     status_grid(ui, status);
 
     if let Some(error) = safe_error {
         ui.add_space(8.0);
         ui.colored_label(ui.visuals().error_fg_color, safe_error_label(error));
-        ui.weak("Источник будет открыт заново; очередь при этом не меняется.");
+        ui.weak("The source will be reopened; the queue will stay unchanged.");
     }
     if fallback_notice {
         ui.add_space(8.0);
-        ui.weak("Запомнённый вариант недоступен; установлен лучший доступный поток.");
+        ui.weak("The saved variant is unavailable; the best available stream is installed.");
     }
 
     let _legacy_candidate_projection = (candidates, active_candidate);
@@ -152,13 +152,13 @@ fn show_stream_picker(
 ) -> Option<UrlSidebarAction> {
     match catalog {
         WebMediaCatalogState::Inactive => {
-            ui.label(RichText::new("Варианты недоступны.").strong());
+            ui.label(RichText::new("Variants are unavailable.").strong());
             None
         }
         WebMediaCatalogState::Failed { .. } => {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "Не удалось подготовить доступные варианты.",
+                "Could not prepare available variants.",
             );
             None
         }
@@ -171,7 +171,7 @@ fn show_stream_picker(
                         .selected_index
                         .and_then(|index| selector.options.get(index))
                         .map(facet_option_label)
-                        .unwrap_or_else(|| "Автоматически".to_owned());
+                        .unwrap_or_else(|| "Automatic".to_owned());
                     egui::ComboBox::from_id_salt(("web_media_facet", selector.facet))
                         .selected_text(selected_label)
                         .width(ui.available_width())
@@ -199,7 +199,7 @@ fn show_stream_picker(
                 }
             });
             if pending {
-                ui.weak("Переключаем поток...");
+                ui.weak("Switching stream...");
             }
             action
         }
@@ -208,10 +208,10 @@ fn show_stream_picker(
 
 fn facet_option_label(option: &WebMediaFacetOption) -> String {
     match option {
-        WebMediaFacetOption::Mode(WebMediaMode::Automatic) => "Определяется потоком".to_owned(),
-        WebMediaFacetOption::Mode(WebMediaMode::VideoAndAudio) => "Видео + аудио".to_owned(),
-        WebMediaFacetOption::Mode(WebMediaMode::VideoOnly) => "Только видео".to_owned(),
-        WebMediaFacetOption::Mode(WebMediaMode::AudioOnly) => "Только аудио".to_owned(),
+        WebMediaFacetOption::Mode(WebMediaMode::Automatic) => "Determined by stream".to_owned(),
+        WebMediaFacetOption::Mode(WebMediaMode::VideoAndAudio) => "Video + audio".to_owned(),
+        WebMediaFacetOption::Mode(WebMediaMode::VideoOnly) => "Video only".to_owned(),
+        WebMediaFacetOption::Mode(WebMediaMode::AudioOnly) => "Audio only".to_owned(),
         WebMediaFacetOption::Codec(codec) => codec_label(*codec).to_owned(),
         WebMediaFacetOption::Resolution { width, height } => {
             format!("{width}x{height} ({height}p)")
@@ -220,7 +220,7 @@ fn facet_option_label(option: &WebMediaFacetOption) -> String {
         WebMediaFacetOption::DynamicRange(web_media_core::DynamicRange::Hdr) => "HDR".to_owned(),
         WebMediaFacetOption::DynamicRange(web_media_core::DynamicRange::Sdr) => "SDR".to_owned(),
         WebMediaFacetOption::DynamicRange(web_media_core::DynamicRange::Unknown)
-        | WebMediaFacetOption::Automatic => "Автоматически".to_owned(),
+        | WebMediaFacetOption::Automatic => "Automatic".to_owned(),
     }
 }
 
@@ -253,16 +253,16 @@ fn stream_kind_label(kind: UrlSidebarStreamKind) -> &'static str {
     match kind {
         UrlSidebarStreamKind::Live => LIVE_STREAM_LABEL,
         UrlSidebarStreamKind::Vod => VOD_STREAM_LABEL,
-        UrlSidebarStreamKind::Unknown => "Определяется",
+        UrlSidebarStreamKind::Unknown => "Detecting",
     }
 }
 
 fn seek_availability_label(seek: UrlSidebarSeekAvailability) -> &'static str {
     match seek {
-        UrlSidebarSeekAvailability::Unknown => "Определяется",
-        UrlSidebarSeekAvailability::Unavailable => "Недоступна",
-        UrlSidebarSeekAvailability::Available => "Доступна",
-        UrlSidebarSeekAvailability::WithinLiveWindow => "В пределах окна эфира",
+        UrlSidebarSeekAvailability::Unknown => "Detecting",
+        UrlSidebarSeekAvailability::Unavailable => "Unavailable",
+        UrlSidebarSeekAvailability::Available => "Available",
+        UrlSidebarSeekAvailability::WithinLiveWindow => "Within the live window",
     }
 }
 
@@ -271,27 +271,27 @@ fn status_grid(ui: &mut Ui, status: UrlSidebarPlaybackStatus) {
         .num_columns(2)
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
-            ui.weak("Режим");
+            ui.weak("Mode");
             ui.label(stream_kind_label(status.stream_kind));
             ui.end_row();
 
-            ui.weak("Перемотка");
+            ui.weak("Seeking");
             ui.label(seek_availability_label(status.seek));
             ui.end_row();
 
-            ui.weak("Буферизация");
+            ui.weak("Buffering");
             ui.label(if status.buffering {
-                "Идёт"
+                "In progress"
             } else {
-                "Не требуется"
+                "Not required"
             });
             ui.end_row();
 
-            ui.weak("Обновление");
+            ui.weak("Refresh");
             ui.label(if status.refresh_on_reopen {
-                "При повторном открытии"
+                "When reopened"
             } else {
-                "Не требуется"
+                "Not required"
             });
             ui.end_row();
         });
@@ -307,36 +307,36 @@ fn wrapped_value(ui: &mut Ui, label: &str, value: &str) {
 fn preference_label(preference: WebMediaSelectionPreference) -> String {
     match preference {
         WebMediaSelectionPreference::GlobalBestPlayable => {
-            "Глобально: авто (быстрый старт)".to_owned()
+            "Global: automatic (fast start)".to_owned()
         }
         WebMediaSelectionPreference::GlobalPreferredHeight(height) => {
-            format!("Глобально: предпочитать {height}p")
+            format!("Global: prefer {height}p")
         }
         WebMediaSelectionPreference::ItemOverride(None) => {
-            "Для этого элемента: лучший доступный".to_owned()
+            "For this item: best available".to_owned()
         }
         WebMediaSelectionPreference::ItemOverride(Some(height)) => {
-            format!("Для этого элемента: {height}p")
+            format!("For this item: {height}p")
         }
     }
 }
 
 fn item_scope_label(scope: UrlSidebarItemScope) -> &'static str {
     match scope {
-        UrlSidebarItemScope::Detached => "Вне текущей очереди",
-        UrlSidebarItemScope::SingleItem => "Текущий элемент плейлиста",
-        UrlSidebarItemScope::CompoundPart => "Текущая часть составного элемента",
+        UrlSidebarItemScope::Detached => "Outside the current queue",
+        UrlSidebarItemScope::SingleItem => "Current Playlist item",
+        UrlSidebarItemScope::CompoundPart => "Current part of a compound item",
     }
 }
 
 fn safe_error_label(error: UrlSidebarSafeError) -> &'static str {
     match error {
-        UrlSidebarSafeError::SourceUnavailable => "Web-источник временно недоступен.",
-        UrlSidebarSafeError::SameItemSwitchBusy => "Переключение уже выполняется.",
+        UrlSidebarSafeError::SourceUnavailable => "The web source is temporarily unavailable.",
+        UrlSidebarSafeError::SameItemSwitchBusy => "A switch is already in progress.",
         UrlSidebarSafeError::SameItemSwitchStale => {
-            "Список вариантов устарел; выберите нужную строку ещё раз."
+            "The variant list is outdated; select the desired row again."
         }
-        UrlSidebarSafeError::SameItemSwitchCancelled => "Переключение отменено.",
+        UrlSidebarSafeError::SameItemSwitchCancelled => "Switch canceled.",
     }
 }
 
@@ -437,15 +437,15 @@ mod tests {
     #[test]
     fn mode_row_names_live_vod_and_unknown_streams_honestly() {
         let live = visible_labels(&direct_model_with(UrlSidebarStreamKind::Live));
-        assert!(live.iter().any(|label| label == "Прямой эфир"));
+        assert!(live.iter().any(|label| label == "Live stream"));
         assert!(!live.iter().any(|label| label == "VOD"));
 
         let vod = visible_labels(&direct_model_with(UrlSidebarStreamKind::Vod));
         assert!(vod.iter().any(|label| label == "VOD"));
-        assert!(!vod.iter().any(|label| label == "Прямой эфир"));
+        assert!(!vod.iter().any(|label| label == "Live stream"));
 
         let unknown = visible_labels(&direct_model_with(UrlSidebarStreamKind::Unknown));
-        assert!(unknown.iter().any(|label| label == "Определяется"));
+        assert!(unknown.iter().any(|label| label == "Detecting"));
         assert!(!unknown.iter().any(|label| label == "VOD"));
     }
 
@@ -453,12 +453,12 @@ mod tests {
     #[test]
     fn seek_row_names_each_availability_honestly() {
         let cases = [
-            (UrlSidebarSeekAvailability::Unknown, "Определяется"),
-            (UrlSidebarSeekAvailability::Unavailable, "Недоступна"),
-            (UrlSidebarSeekAvailability::Available, "Доступна"),
+            (UrlSidebarSeekAvailability::Unknown, "Detecting"),
+            (UrlSidebarSeekAvailability::Unavailable, "Unavailable"),
+            (UrlSidebarSeekAvailability::Available, "Available"),
             (
                 UrlSidebarSeekAvailability::WithinLiveWindow,
-                "В пределах окна эфира",
+                "Within the live window",
             ),
         ];
         for (seek, expected) in cases {
@@ -478,17 +478,13 @@ mod tests {
     #[test]
     fn direct_resource_heading_names_a_file_link_not_a_live_stream() {
         let labels = visible_labels(&direct_model_with(UrlSidebarStreamKind::Vod));
-        assert!(
-            labels
-                .iter()
-                .any(|label| label == "Прямая ссылка на медиафайл")
-        );
-        assert!(!labels.iter().any(|label| label.contains("web-поток")));
+        assert!(labels.iter().any(|label| label == "Direct media file link"));
+        assert!(!labels.iter().any(|label| label.contains("web stream")));
     }
 
     /// A10: под ошибкой источника нет технического жаргона («controlled reopen»).
     #[test]
-    fn source_error_hint_is_plain_russian_without_internal_jargon() {
+    fn source_error_hint_is_plain_english_without_internal_jargon() {
         let active_candidate = candidate_presentation();
         let model = UrlSidebarModel::CatalogBacked {
             generation: WebMediaStreamGeneration::for_test(1, 1),
@@ -515,12 +511,12 @@ mod tests {
         assert!(
             labels
                 .iter()
-                .any(|label| label == "Web-источник временно недоступен.")
+                .any(|label| label == "The web source is temporarily unavailable.")
         );
         assert!(
             labels
                 .iter()
-                .any(|label| label.contains("Источник будет открыт заново"))
+                .any(|label| label.contains("The source will be reopened"))
         );
         assert!(
             !labels
@@ -576,9 +572,9 @@ mod tests {
         };
 
         let labels = visible_labels(&model);
-        assert!(labels.iter().any(|label| label == "Видео"));
+        assert!(labels.iter().any(|label| label == "Video"));
         assert!(labels.iter().any(|label| label.contains("1920×1080")));
-        assert!(labels.iter().any(|label| label == "Активный"));
+        assert!(labels.iter().any(|label| label == "Active"));
     }
 
     #[test]
@@ -606,7 +602,7 @@ mod tests {
         assert!(
             labels
                 .iter()
-                .any(|label| label.contains("один установленный вариант"))
+                .any(|label| label.contains("one installed variant"))
         );
     }
 

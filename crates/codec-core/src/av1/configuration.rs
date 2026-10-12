@@ -67,18 +67,18 @@ impl fmt::Display for Av1DecoderConfigurationRecordError {
         match self {
             Self::TooShort { actual_size } => write!(
                 formatter,
-                "av1C header короче {AV1_DECODER_CONFIGURATION_RECORD_HEADER_SIZE} байт: {actual_size}"
+                "av1C header is shorter than {AV1_DECODER_CONFIGURATION_RECORD_HEADER_SIZE} bytes: {actual_size}"
             ),
             Self::InvalidMarker { marker } => {
-                write!(formatter, "av1C marker должен быть 1, получено {marker}")
+                write!(formatter, "av1C marker must be 1, obtained {marker}")
             }
             Self::UnsupportedVersion { version } => {
-                write!(formatter, "av1C version должна быть 1, получено {version}")
+                write!(formatter, "av1C version must be 1, received {version}")
             }
             Self::ReservedProfile { seq_profile } => {
                 write!(
                     formatter,
-                    "av1C содержит reserved seq_profile={seq_profile}"
+                    "av1C contains reserved seq_profile = {seq_profile}"
                 )
             }
             Self::InconsistentBitDepthFlags {
@@ -87,13 +87,13 @@ impl fmt::Display for Av1DecoderConfigurationRecordError {
                 twelve_bit,
             } => write!(
                 formatter,
-                "av1C содержит несовместимые bit-depth flags: seq_profile={seq_profile}, \
+                "av1C contains incompatible bit-depth flags: seq_profile={seq_profile}, \
                  high_bitdepth={high_bitdepth}, twelve_bit={twelve_bit}"
             ),
             Self::UnsupportedMonochrome => {
                 write!(
                     formatter,
-                    "monochrome AV1 не представлен neutral chroma model"
+                    "Monochrome AV1 is not represented by the neutral chroma model"
                 )
             }
             Self::InvalidChromaSubsampling {
@@ -101,8 +101,7 @@ impl fmt::Display for Av1DecoderConfigurationRecordError {
                 chroma_subsampling_y,
             } => write!(
                 formatter,
-                "av1C содержит некорректную chroma-пару: \
-                 subsampling_x={chroma_subsampling_x}, subsampling_y={chroma_subsampling_y}"
+                "av1C contains an incorrect chroma pair: subsampling_x={chroma_subsampling_x}, subsampling_y={chroma_subsampling_y}"
             ),
         }
     }
@@ -214,7 +213,7 @@ mod tests {
     fn sdr_fixture_header_reports_eight_bit_yuv420() {
         let requirement =
             av1_decode_requirement_from_decoder_configuration_record(&[0x81, 0x0d, 0x0c, 0x00])
-                .expect("валидный SDR av1C должен разобрать sequence metadata");
+                .expect("A valid SDR av1C must disassemble the sequence metadata");
 
         assert_eq!(
             requirement.profile,
@@ -229,7 +228,7 @@ mod tests {
     fn hdr_fixture_header_reports_ten_bit_yuv420() {
         let requirement =
             av1_decode_requirement_from_decoder_configuration_record(&[0x81, 0x0d, 0x4c, 0x00])
-                .expect("валидный HDR av1C должен разобрать sequence metadata");
+                .expect("Valid HDR av1C must disassemble sequence metadata");
 
         assert_eq!(
             requirement.profile,
@@ -244,7 +243,7 @@ mod tests {
     fn professional_header_reports_twelve_bit_yuv444() {
         let requirement =
             av1_decode_requirement_from_decoder_configuration_record(&[0x81, 0x4d, 0x60, 0x00])
-                .expect("валидный Professional av1C должен разобрать sequence metadata");
+                .expect("A valid Professional av1C must understand the metadata sequence.");
 
         assert_eq!(
             requirement.profile,

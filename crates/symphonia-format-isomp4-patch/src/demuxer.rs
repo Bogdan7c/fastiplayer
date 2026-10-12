@@ -1764,7 +1764,7 @@ mod tests {
         let segment = FakeSegment::new(0..1024, 1_000, 4);
 
         let span = collect_pcm_packet_span(&segment, 0, 0, 1_000, 1024)
-            .expect("contiguous PCM frame-samples должны склеиваться");
+            .expect("contiguous PCM frame-samples must stick together");
 
         assert_eq!(
             span,
@@ -1782,7 +1782,7 @@ mod tests {
         let segment = FakeSegment::new(2048..2784, 9_000, 4);
 
         let span = collect_pcm_packet_span(&segment, 0, 2048, 9_000, 1024)
-            .expect("tail PCM packet должен сохранить фактическую длину");
+            .expect("tail PCM packet must maintain the actual length of");
 
         assert_eq!(
             span,
@@ -1800,7 +1800,7 @@ mod tests {
         let segment = FakeSegment::new(0..1024, 20_000, 4).with_chunk_sample_count(512);
 
         let span = collect_pcm_packet_span(&segment, 0, 0, 20_000, 1024)
-            .expect("PCM packet должен завершиться на границе chunk");
+            .expect("PCM packet should end at the chunk border");
 
         assert_eq!(
             span,

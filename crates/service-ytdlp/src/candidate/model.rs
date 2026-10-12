@@ -572,13 +572,13 @@ pub struct YtDlpCandidateSelection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum YtDlpCandidateSelectionError {
     /// Candidate принадлежит другой source lineage.
-    #[error("candidate принадлежит другой source lineage")]
+    #[error("candidate other source lineage")]
     ForeignSource,
     /// Candidate принадлежит другому extraction generation.
-    #[error("candidate принадлежит другой extraction generation")]
+    #[error("The candidate is another extraction generation.")]
     ForeignGeneration,
     /// Candidate не найден среди accepted rows snapshot-а.
-    #[error("candidate отсутствует среди accepted snapshot rows")]
+    #[error("candidate is missing from the accepted snapshot rows")]
     CandidateNotInInventory,
 }
 
@@ -647,15 +647,15 @@ impl<'snapshot> YtDlpCandidateMatch<'snapshot> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum YtDlpCandidateRematchError {
     /// Snapshot принадлежит другой source lineage.
-    #[error("snapshot принадлежит другой source lineage")]
+    #[error("snapshot other source lineage")]
     SourceMismatch,
     /// Exact ID устарел и semantic match отсутствует.
-    #[error("exact identity устарела и semantic match отсутствует")]
+    #[error("exact identity is stale and no semantic match is available")]
     StaleExactIdentity,
     /// Same-generation ID найден, но semantic attributes изменились.
-    #[error("same-generation candidate изменил semantic attributes")]
+    #[error("same-generation candidate changes semantic attributes")]
     ExactAttributesChanged,
     /// Semantic identity не уникальна после attribute validation.
-    #[error("semantic identity неоднозначна после attribute validation")]
+    #[error("semantic identity ambiguous after attribute validation")]
     AmbiguousSemanticIdentity,
 }

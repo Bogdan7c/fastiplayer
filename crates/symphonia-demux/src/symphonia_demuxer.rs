@@ -390,7 +390,7 @@ impl SymphoniaDemuxer {
             attachments = symphonia_metadata.attachments,
             chapters = symphonia_metadata.has_chapters,
             metadata_revision = symphonia_metadata.has_metadata_revision,
-            "Symphonia media source открыт"
+            "Symphonia media source is open"
         );
 
         let mut media_metadata = media_core::MediaMetadata::default();
@@ -469,8 +469,7 @@ impl SymphoniaDemuxer {
     fn rebuild_format_reader_from_source_start(&mut self) -> Result<(), DemuxError> {
         if !self.can_reprobe_current_source() {
             return Err(DemuxError::SeekUnavailable(
-                "source не поддерживает seek, поэтому demuxer не может выполнить reprobe"
-                    .to_owned(),
+                "source supportive seek, therefore demuxer fails reprobe".to_owned(),
             ));
         }
 
@@ -515,7 +514,7 @@ impl SymphoniaDemuxer {
             attachments = symphonia_metadata.attachments,
             chapters = symphonia_metadata.has_chapters,
             metadata_revision = symphonia_metadata.has_metadata_revision,
-            "Symphonia FormatReader пересоздан после EOF/container-state сбоя"
+            "Symphonia FormatReader re-created EOF/container-state failure"
         );
 
         self.format = Some(rebuilt_format);
@@ -547,7 +546,7 @@ impl SymphoniaDemuxer {
             duration = ?self.duration,
             track_duration = ?track_state.track_duration,
             media_info_duration = ?track_state.media_info_duration,
-            "Symphonia ResetRequired обработан как обновление track list"
+            "Symphonia ResetRequired has been updated to track list"
         );
 
         Ok(DemuxTrackListUpdate::new(
@@ -600,7 +599,7 @@ impl SymphoniaDemuxer {
                         trace!(
                             track_id = %track_id,
                             reason,
-                            "Packet unsupported track-а пропущен"
+                            "Packet unsupported track missed"
                         );
                         continue;
                     }
@@ -718,7 +717,7 @@ impl Demuxer for SymphoniaDemuxer {
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
         if let DemuxSeekability::NotSeekable { reason } = self.seekability {
             return Err(MediaDemuxError::SeekUnavailable {
-                reason: format!("source/container boundary помечен как non-seekable: {reason:?}"),
+                reason: format!("source/container boundary marked as non-seekable: {reason:?}"),
             }
             .into());
         }

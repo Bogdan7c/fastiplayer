@@ -54,7 +54,7 @@ impl Demuxer for ScriptedDemuxer {
 
     /// Этот fake не выполняет seek: тест проверяет install-ready boundary.
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
-        panic!("scripted demuxer seek не должен вызываться в readiness test")
+        panic!("Scripted demuxer seek should not be called in readiness test")
     }
 }
 
@@ -106,9 +106,13 @@ fn wait_for_initial_tracks_rejects_unavailable_synchronous_runtime() {
         &mut demuxer,
         &HlsInitialReadinessCapability::AlreadySynchronous,
     )
-    .expect_err("synchronous capability не должна скрывать deferred queue");
+    .expect_err("synchronous capability don't hide deferred queue");
 
-    assert!(error.to_string().contains("синхронный HLS runtime"));
+    assert!(
+        error
+            .to_string()
+            .contains("HLS runtime did not publish initial topology immediately")
+    );
 }
 
 #[test]
@@ -131,7 +135,7 @@ fn wait_for_initial_tracks_accepts_bootstrapped_snapshot_without_consuming_packe
         &mut demuxer,
         &HlsInitialReadinessCapability::AlreadySynchronous,
     )
-    .expect("готовый bootstrap snapshot уже является install-ready");
+    .expect("Bootstrap snapshot is already install-ready.");
 
     assert_eq!(demuxer.events.len(), 1);
     assert_eq!(demuxer.tracks().len(), 1);
@@ -156,7 +160,7 @@ fn wait_for_initial_tracks_rejects_packet_before_topology() {
         &mut demuxer,
         &HlsInitialReadinessCapability::AlreadySynchronous,
     )
-    .expect_err("packet before track topology должен быть отвергнут");
+    .expect_err("packet before track topology should be rejected");
 
     assert!(error.to_string().contains("packet"));
     assert!(demuxer.tracks().is_empty());
@@ -214,7 +218,7 @@ fn hls_vod_is_seekable_with_duration_at_prepared_media_boundary() {
 #[test]
 fn generic_iso_bmff_hls_hint_requires_segment_content_probe() {
     let evidence = hls_main_container_evidence(ContainerFamily::IsoBmff)
-        .expect("generic ISO-BMFF входит в поддержанный HLS profile");
+        .expect("Generic ISO-BMFF is included in the HLS profile");
 
     assert!(matches!(evidence, HlsContainerEvidence::ContentProbe));
 }

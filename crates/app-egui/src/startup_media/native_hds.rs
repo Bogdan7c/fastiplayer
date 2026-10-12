@@ -81,17 +81,17 @@ impl NativeHdsStartupJob {
                 }
                 match result_publisher.publish_completion(result) {
                     Ok(WakeDelivery::EventLoopClosed) => tracing::debug!(
-                        "Event loop закрыт; native HDS terminal оставлен без wake retry"
+                        "Event loop closed; native HDS terminal left without wake retry"
                     ),
                     Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
                     Err(CompletionPublishError::AlreadyPublished) => tracing::warn!(
-                        "Native HDS startup opener попытался опубликовать второй terminal"
+                        "Native HDS startup opener tried to publish a second terminal"
                     ),
                 }
             })
-            .map_err(|error| format!("Не удалось запустить native HDS startup opener: {error}"))?;
+            .map_err(|error| format!("Failed to launch native HDS startup opener: {error}"))?;
         Ok(Self {
-            pending_message: "Проверка native HDS...".to_owned(),
+            pending_message: "Checking the native HDS...".to_owned(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -116,7 +116,7 @@ impl NativeHdsStartupJob {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
                         Err(StartupWebPreparationFailure::unclassified(
-                            "Native HDS startup opener завершился без результата",
+                            "Native HDS startup opener ended without a result",
                         ))
                     })
                 })
@@ -124,7 +124,7 @@ impl NativeHdsStartupJob {
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
                 Some(Err(StartupWebPreparationFailure::unclassified(
-                    "Native HDS startup opener завершился panic",
+                    "Native HDS startup opener finished panic",
                 )))
             }
             FinishedThreadJoin::StillRunning => None,
@@ -173,7 +173,7 @@ fn resolve_native_hds_startup_media(
             }
             tracing::info!(
                 ?invocation_reason,
-                "CLI native HDS admission передан единственному YtDlp fallback"
+                "CLI native HDS admission transferred to single YtDlp fallback"
             );
             let prepared = super::resolve_yt_dlp_startup_media(
                 &fallback_locator,
@@ -208,7 +208,7 @@ impl super::StartupMediaController {
             app_state.set_startup_error(error);
             return;
         }
-        app_state.set_startup_pending("Проверка native HDS...".to_owned());
+        app_state.set_startup_pending("Checking the native HDS...".to_owned());
         match NativeHdsStartupJob::spawn(
             source,
             fallback_locator,
@@ -223,7 +223,7 @@ impl super::StartupMediaController {
             }
             Err(error) => {
                 self.orchestration.preparation_failed();
-                tracing::warn!(error = %error, "Не удалось запустить native HDS startup opener");
+                tracing::warn!(error = %error, "The native HDS startup opener failed to launch.");
                 self.startup_error = Some(error.clone());
                 app_state.set_startup_error(error);
             }

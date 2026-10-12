@@ -88,7 +88,7 @@ impl PlaylistImportJob {
             .set_parent(window)
             .set_title(import_dialog_title(intent))
             .add_filter(
-                "Плейлисты M3U / M3U8 / XSPF / CUE",
+                "M3U / M3U8 / XSPF / CUE Playlists",
                 &["m3u", "m3u8", "xspf", "cue"],
             )
             .add_filter("M3U / M3U8", &["m3u", "m3u8"])
@@ -151,11 +151,11 @@ impl PlaylistImportJob {
                 if let Err(error) = publisher.publish_completion(completion) {
                     let CompletionPublishError::AlreadyPublished = error;
                     tracing::error!(
-                        "Playlist import job попытался опубликовать второй terminal result"
+                        "Playlist import job attempted to publish a second terminal result"
                     );
                 }
             })
-            .map_err(|error| format!("Не удалось запустить импорт плейлиста: {error}"))?;
+            .map_err(|error| format!("Could not start Playlist import: {error}"))?;
         Ok(Self {
             mailbox,
             join_handle: Some(join_handle),
@@ -372,8 +372,8 @@ impl PlaylistRuntime {
         match self.import_io.start(window, intent) {
             Ok(started) => started,
             Err(error) => {
-                tracing::warn!(%error, "Не удалось открыть dialog импорта плейлиста");
-                self.set_playlist_safe_feedback("Не удалось открыть файл плейлиста");
+                tracing::warn!(%error, "Could not open the Playlist import dialog");
+                self.set_playlist_safe_feedback("Could not open the Playlist file");
                 true
             }
         }
@@ -407,14 +407,14 @@ impl PlaylistRuntime {
                     return true;
                 }
                 if let Err(error) = self.stage_playlist_import(intent, draft) {
-                    tracing::warn!(?error, "Playlist import preview не прошёл S08 staging");
+                    tracing::warn!(?error, "Playlist import preview failed S08 staging");
                     if intent == PlaylistImportIntent::StartupReplace {
                         self.fail_startup_playlist_import(
-                            "Startup playlist preview не прошёл allocator gate",
+                            "Startup Playlist preview failed the allocator gate",
                         );
                     }
                     self.set_playlist_safe_feedback(
-                        "Импорт устарел или сейчас недоступен; выберите файл ещё раз",
+                        "Import is outdated or currently unavailable; select the file again",
                     );
                 }
                 true
@@ -422,14 +422,12 @@ impl PlaylistRuntime {
             PlaylistImportJobCompletion::Failed(error) => {
                 let safe_message = match error {
                     PlaylistImportJobError::UnsupportedRootFormat => {
-                        "Выберите плейлист M3U, M3U8, XSPF или CUE"
+                        "Select an M3U, M3U8, XSPF, or CUE Playlist"
                     }
                     PlaylistImportJobError::SourceRejected => {
-                        "Файл не прошёл проверку формата плейлиста"
+                        "File failed Playlist format validation"
                     }
-                    PlaylistImportJobError::WorkerPanicked => {
-                        "Не удалось обработать файл плейлиста"
-                    }
+                    PlaylistImportJobError::WorkerPanicked => "Could not process the Playlist file",
                 };
                 if self.startup_import.is_active() {
                     self.fail_startup_playlist_import(safe_message);
@@ -450,9 +448,9 @@ impl PlaylistRuntime {
         };
         if let Err(error) = self.stage_playlist_import(PlaylistImportIntent::StartupReplace, draft)
         {
-            tracing::warn!(?error, "Held startup playlist draft не прошёл S08 staging");
+            tracing::warn!(?error, "Held startup Playlist draft failed S08 staging");
             self.fail_startup_playlist_import(
-                "Startup playlist preview устарел до открытия allocator gate",
+                "Startup Playlist preview became outdated before the allocator gate opened",
             );
         }
         true
@@ -462,9 +460,9 @@ impl PlaylistRuntime {
 /// Заголовок объясняет destructive intent до native выбора файла.
 const fn import_dialog_title(intent: PlaylistImportIntent) -> &'static str {
     match intent {
-        PlaylistImportIntent::AppendToQueue => "Добавить плейлист",
-        PlaylistImportIntent::ReplaceQueue => "Открыть как новый плейлист",
-        PlaylistImportIntent::StartupReplace => "Открыть плейлист",
+        PlaylistImportIntent::AppendToQueue => "Add Playlist",
+        PlaylistImportIntent::ReplaceQueue => "Open as new Playlist",
+        PlaylistImportIntent::StartupReplace => "Open Playlist",
     }
 }
 
@@ -587,19 +585,11 @@ mod tests {
     fn m3u_xspf_and_cue_roots_use_authoritative_content_parsers() {
         let directory = tempfile::tempdir().expect("temporary import directory");
         let m3u_path = directory.path().join("queue.m3u8");
-        fs::write(&m3u_path, "#EXTM3U\n#EXTINF:12,Трек\nsong.mp3\n").expect("write M3U fixture");
+        fs::write(&m3u_path, "#EXTM3U\n#EXTINF:12,Track\nsong.mp3\n").expect("write M3U fixture");
         let xspf_path = directory.path().join("queue.xspf");
         fs::write(
             &xspf_path,
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<playlist version="1" xmlns="http://xspf.org/ns/0/">
-  <trackList>
-    <track>
-      <location>file:///tmp/song.mp3</location>
-      <title>Трек XSPF</title>
-    </track>
-  </trackList>
-</playlist>"#,
+            r#"<?xml version="1.0" encoding="UTF-8"?> <playlist version="1" xmlns="http://xspf.org/ns/0/"> <trackList> <track> <location> file:///tmp/song.mp3</location> <title> XSPF</title> </track> </trackList> </playlist>"#,
         )
         .expect("write XSPF fixture");
         let cue_path = directory.path().join("album.cue");

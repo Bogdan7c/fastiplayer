@@ -64,7 +64,7 @@ impl StartupMediaController {
         self.orchestration.phase = StartupMediaPhase::Idle;
         // Fallback на сохранённый элемент — тоже «открытие»; Stop его отменяет, а не подменяет.
         self.orchestration.restored_fallback_started = true;
-        tracing::info!("Стартовая подготовка источника отменена по Stop");
+        tracing::info!("Starting preparation of the source is canceled by Stop");
         PreparationCancelOutcome::Cancelled
     }
 

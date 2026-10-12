@@ -17,7 +17,7 @@ pub(crate) const fn usize_to_u64(value: usize) -> u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum PrefetchAppendError {
     /// Конец chunk-а вышел бы за пределы u64 absolute offset-ов.
-    #[error("chunk из {chunk_len} bytes после offset {buffered_end} выходит за пределы u64")]
+    #[error("chunk of {chunk_len} bytes after offset {buffered_end} goes beyond u64")]
     AddressSpaceExhausted {
         /// Absolute offset конца уже буферизованных данных.
         buffered_end: u64,
@@ -57,7 +57,7 @@ impl PrefetchBufferState {
     pub fn new(start_offset: u64, window_bytes: u64, lookback_bytes: u64) -> Self {
         assert!(
             window_bytes > 0,
-            "prefetch window должен быть больше нуля, иначе буфер никогда не запросит данные"
+            "The prefetch window must be more than zero, otherwise the buffer will never ask for data."
         );
 
         Self {
@@ -109,11 +109,11 @@ impl PrefetchBufferState {
     pub fn append_chunk(&mut self, chunk_bytes: Vec<u8>) -> Result<(), PrefetchAppendError> {
         assert!(
             !chunk_bytes.is_empty(),
-            "пустой chunk запрещён: EOF фиксируется через mark_eof_at_fetch_offset"
+            "empty chunks are forbidden: record EOF through mark_eof_at_fetch_offset"
         );
         assert!(
             self.eof_offset.is_none(),
-            "нельзя добавлять chunk после EOF: это ломает absolute eof_offset"
+            "You cannot add chunk after EOF: it breaks the absolute eof_offset."
         );
 
         let chunk_len = usize_to_u64(chunk_bytes.len());
@@ -155,13 +155,13 @@ impl PrefetchBufferState {
         let copied_bytes = self.copy_available_bytes(output, bytes_to_copy);
         debug_assert_eq!(
             copied_bytes, bytes_to_copy,
-            "available_from_cursor обещал больше bytes, чем нашлось в chunks"
+            "available_from_cursor promises more bytes than chunks"
         );
 
         self.read_cursor = Self::checked_offset_add(
             self.read_cursor,
             usize_to_u64(copied_bytes),
-            "read_cursor overflow после copy_to",
+            "read_cursor overflow after copy_to",
         );
         self.evict_before_lookback();
 
@@ -180,7 +180,7 @@ impl PrefetchBufferState {
 
         assert!(
             offset >= self.base_offset && offset <= buffered_end,
-            "cursor должен оставаться внутри [{}, {}], получен {}",
+            "cursor must remain inside [{}, {}], received {}",
             self.base_offset,
             buffered_end,
             offset
@@ -198,7 +198,7 @@ impl PrefetchBufferState {
     pub fn stage_cursor_ahead(&mut self, offset: u64) {
         assert!(
             offset > self.buffered_end(),
-            "staged cursor должен находиться строго впереди готового буфера"
+            "The staged cursor should be in front of the finished buffer."
         );
         self.read_cursor = offset;
     }
@@ -239,7 +239,7 @@ impl PrefetchBufferState {
                           помещается в usize"
             )]
             let chunk_start_index = usize::try_from(bytes_left_before_cursor)
-                .expect("chunk offset должен помещаться в usize");
+                .expect("chunk offset must be placed in usize.");
             let readable_chunk_bytes = &chunk_bytes[chunk_start_index..];
             let output_remaining = bytes_to_copy - copied_bytes;
             let bytes_from_chunk = readable_chunk_bytes.len().min(output_remaining);
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "пустой chunk запрещён")]
+    #[should_panic(expected = "empty chunks are forbidden")]
     fn append_chunk_rejects_empty_data() {
         let mut buffer = buffer_with_small_window();
 

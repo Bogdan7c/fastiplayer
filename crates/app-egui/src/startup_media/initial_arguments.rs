@@ -55,7 +55,7 @@ fn classify_startup_argument(
     match classify_startup_url(&utf8_argument) {
         StartupUrlClassification::NotUrl => {}
         StartupUrlClassification::Supported(locator) => {
-            info!(source = %locator.safe_label(), "CLI аргумент принят URL service adapter-ом");
+            info!(source = %locator.safe_label(), "CLI argument adopted by URL service adapter");
             if let Err(safe_error) = locator.validate_config(app_config) {
                 return ClassifiedStartupArgument::RejectedUrl(safe_error);
             }

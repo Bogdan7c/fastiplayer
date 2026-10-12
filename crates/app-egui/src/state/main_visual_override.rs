@@ -401,7 +401,7 @@ mod tests {
     }
 
     fn track_timestamp(track_id: TrackId, millis: u64) -> TrackTimestamp {
-        let time_base = TimeBase::new(1, 1_000).expect("валидная test timebase");
+        let time_base = TimeBase::new(1, 1_000).expect("validation");
         TrackTimestamp::new(track_id, millis as i64, time_base)
     }
 

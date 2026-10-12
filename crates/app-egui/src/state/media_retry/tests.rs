@@ -45,11 +45,11 @@ use crate::state::NotificationId;
 fn network_error_offers_retry_and_click_reopens_the_same_url() {
     let mut center = NotificationCenter::default();
     show_web_failure(&mut center, WebOpenFailureReason::NoConnection);
-    let (id, retry) = center_view(&mut center).expect("ошибка в центре");
+    let (id, retry) = center_view(&mut center).expect("lapse");
     assert_eq!(retry, RetryOffer::Available);
 
     assert_eq!(center.request_retry(id), RetryRequestOutcome::Requested);
-    let target = center.take_retry_request().expect("цель принята");
+    let target = center.take_retry_request().expect("target accepted");
     let mut port = RecordingRetryPort::new(center);
     execute_media_retry_for_test(&mut port, target);
 
@@ -59,11 +59,11 @@ fn network_error_offers_retry_and_click_reopens_the_same_url() {
     );
     assert!(
         center_view(&mut port.center).is_none(),
-        "ошибка снята: исход покажет новое открытие"
+        "Error removed: the outcome will show a new discovery"
     );
     assert!(
         port.center.take_retry_request().is_none(),
-        "запрос исполняется ровно один раз"
+        "request is executed exactly once"
     );
 }
 
@@ -72,7 +72,7 @@ fn network_error_offers_retry_and_click_reopens_the_same_url() {
 fn unsupported_format_has_no_retry_and_a_forced_request_is_refused() {
     let mut center = NotificationCenter::default();
     show_web_failure(&mut center, WebOpenFailureReason::UnrecognizedFormat);
-    let (id, retry) = center_view(&mut center).expect("ошибка в центре");
+    let (id, retry) = center_view(&mut center).expect("lapse");
 
     assert_eq!(retry, RetryOffer::Unavailable);
     assert_eq!(center.request_retry(id), RetryRequestOutcome::NotOffered);
@@ -92,11 +92,11 @@ fn local_file_not_found_offers_retry_but_unrecognized_format_does_not() {
     ] {
         let mut center = NotificationCenter::default();
         center.show_media_failure_planned(
-            "ошибка",
+            "error",
             MediaFailureOrigin::MediaOpen,
             RetryPlan::for_reason(reason.into(), MediaRetryTarget::LocalFile(path.clone())),
         );
-        assert_eq!(center_view(&mut center).expect("ошибка").1, expected);
+        assert_eq!(center_view(&mut center).expect("error").1, expected);
     }
 }
 
@@ -105,9 +105,9 @@ fn local_file_not_found_offers_retry_but_unrecognized_format_does_not() {
 fn failed_retry_shows_a_new_error_with_the_same_button() {
     let mut center = NotificationCenter::default();
     show_web_failure(&mut center, WebOpenFailureReason::NoConnection);
-    let (first_id, _) = center_view(&mut center).expect("первая ошибка");
+    let (first_id, _) = center_view(&mut center).expect("first-time");
     center.request_retry(first_id);
-    let target = center.take_retry_request().expect("цель");
+    let target = center.take_retry_request().expect("goal");
     let mut port = RecordingRetryPort::new(center);
     port.failure_on_open = Some(FailureOnOpen {
         message: web_open_failure_message(Some("media.test"), WebOpenFailureReason::NoConnection),
@@ -119,8 +119,11 @@ fn failed_retry_shows_a_new_error_with_the_same_button() {
 
     execute_media_retry_for_test(&mut port, target);
 
-    let (second_id, retry) = center_view(&mut port.center).expect("новая ошибка");
-    assert_ne!(second_id, first_id, "это новая ошибка, а не прежняя");
+    let (second_id, retry) = center_view(&mut port.center).expect("blunder");
+    assert_ne!(
+        second_id, first_id,
+        "This is a new mistake, not an old one."
+    );
     assert_eq!(retry, RetryOffer::Available);
     // И вторую попытку тоже можно повторить: тот же URL.
     assert_eq!(
@@ -138,7 +141,7 @@ fn failed_retry_shows_a_new_error_with_the_same_button() {
 fn retry_on_a_gone_failure_is_refused_without_side_effects() {
     let mut center = NotificationCenter::default();
     show_web_failure(&mut center, WebOpenFailureReason::NoConnection);
-    let (id, _) = center_view(&mut center).expect("ошибка");
+    let (id, _) = center_view(&mut center).expect("error");
     center.resolve_media_failure();
 
     assert_eq!(center.request_retry(id), RetryRequestOutcome::AlreadyGone);

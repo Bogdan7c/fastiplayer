@@ -102,38 +102,40 @@ impl fmt::Display for XspfParseErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Xml(error) => write!(formatter, "{error}"),
-            Self::InvalidRoot => formatter.write_str("некорректный root"),
-            Self::UnsupportedVersion => formatter.write_str("неподдерживаемая version"),
-            Self::UnexpectedNamespace => formatter.write_str("неожиданный namespace"),
-            Self::UnexpectedElement => formatter.write_str("неожиданный element"),
-            Self::UnexpectedAttribute => formatter.write_str("неожиданный attribute"),
-            Self::MissingRequiredAttribute => formatter.write_str("отсутствует required attribute"),
-            Self::DuplicateChild => formatter.write_str("повторён singleton child"),
-            Self::ChildOrderViolation => formatter.write_str("нарушен порядок children"),
-            Self::MissingTrackList => formatter.write_str("отсутствует mandatory trackList"),
-            Self::TextNotAllowed => formatter.write_str("character data запрещены в container"),
-            Self::MarkupNotAllowed => formatter.write_str("nested markup запрещён"),
-            Self::UnexpectedEof => formatter.write_str("неожиданный конец XML"),
-            Self::DocumentBaseUnavailable => formatter.write_str("document base недоступен"),
-            Self::InvalidUri => formatter.write_str("URI некорректен"),
-            Self::InvalidInteger => formatter.write_str("nonNegativeInteger некорректен"),
-            Self::TrackLimitExceeded => formatter.write_str("track budget исчерпан"),
-            Self::LocationLimitExceeded => formatter.write_str("location budget исчерпан"),
-            Self::GroupLimitExceeded => formatter.write_str("group budget исчерпан"),
+            Self::InvalidRoot => formatter.write_str("faulty root"),
+            Self::UnsupportedVersion => formatter.write_str("unsupported version"),
+            Self::UnexpectedNamespace => formatter.write_str("namespace"),
+            Self::UnexpectedElement => formatter.write_str("unexpected element"),
+            Self::UnexpectedAttribute => formatter.write_str("unexpected attribute"),
+            Self::MissingRequiredAttribute => formatter.write_str("There is no required attribute"),
+            Self::DuplicateChild => formatter.write_str("singleton child"),
+            Self::ChildOrderViolation => formatter.write_str("invalid child element order"),
+            Self::MissingTrackList => formatter.write_str("missing mandatory trackList"),
+            Self::TextNotAllowed => {
+                formatter.write_str("character data is forbidden in a container")
+            }
+            Self::MarkupNotAllowed => formatter.write_str("nested markup prohibited"),
+            Self::UnexpectedEof => formatter.write_str("unexpected end of XML"),
+            Self::DocumentBaseUnavailable => formatter.write_str("base document not available"),
+            Self::InvalidUri => formatter.write_str("URI incorrect"),
+            Self::InvalidInteger => formatter.write_str("invalid nonNegativeInteger"),
+            Self::TrackLimitExceeded => formatter.write_str("track budget exhausted"),
+            Self::LocationLimitExceeded => formatter.write_str("location budget is exhausted"),
+            Self::GroupLimitExceeded => formatter.write_str("group budget exhausted"),
             Self::TrackLimitExceedsDomainCapacity => {
-                formatter.write_str("track budget превышает domain capacity")
+                formatter.write_str("track budget exceeds domain capacity")
             }
             Self::GroupLimitExceedsDomainCapacity => {
-                formatter.write_str("group budget превышает domain capacity")
+                formatter.write_str("group budget exceeds domain capacity")
             }
             Self::DuplicateFastiplayerExtension => {
-                formatter.write_str("Fastiplayer extension повторён")
+                formatter.write_str("Fastiplayer extension is repeated")
             }
             Self::FastiplayerExtensionWrongScope => {
-                formatter.write_str("Fastiplayer extension находится в неправильном scope")
+                formatter.write_str("Fastiplayer extension is in the wrong scope.")
             }
-            Self::MissingGroupLocation => formatter.write_str("group location отсутствует"),
-            Self::InvalidGroupRange => formatter.write_str("group range некорректен"),
+            Self::MissingGroupLocation => formatter.write_str("group location is not available"),
+            Self::InvalidGroupRange => formatter.write_str("group range is incorrect"),
         }
     }
 }

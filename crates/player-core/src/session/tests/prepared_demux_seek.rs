@@ -214,7 +214,7 @@ fn video_one_shot_seek_uses_worker_receipt_without_synchronous_demux_scan() {
 
     let commands = port.commands();
     let [(request_id, request)] = commands.as_slice() else {
-        panic!("video one-shot seek должен создать ровно один worker request");
+        panic!("One-shot video needs to create exactly one worker request.");
     };
     assert_eq!(request.timestamp, Duration::from_secs(8));
     assert!(
@@ -222,7 +222,7 @@ fn video_one_shot_seek_uses_worker_receipt_without_synchronous_demux_scan() {
             .lock()
             .expect("synchronous seek log lock")
             .is_empty(),
-        "video one-shot seek не должен сканировать active demuxer синхронно"
+        "video one-shot seek should not be scanned active demuxer synchronously"
     );
     assert!(session.seek_commit().is_none());
     assert_eq!(session.playback_state(), PlaybackState::Seeking);
@@ -239,7 +239,7 @@ fn video_one_shot_seek_uses_worker_receipt_without_synchronous_demux_scan() {
 
     let commit = session
         .seek_commit()
-        .expect("authoritative worker receipt должен запустить video landing commit");
+        .expect("Authoritative Worker Receipt Launches Video Landing Commitment");
     assert_eq!(commit.target_position, MediaTime::from_secs(8));
     assert_eq!(commit.actual_position, MediaTime::from_secs(5));
     assert!(
@@ -247,7 +247,7 @@ fn video_one_shot_seek_uses_worker_receipt_without_synchronous_demux_scan() {
             .lock()
             .expect("synchronous seek log lock")
             .is_empty(),
-        "receipt acceptance не должен повторять demux seek на player-owner"
+        "receipt acceptance never repeat demux seek on player-owner"
     );
 }
 
@@ -291,12 +291,12 @@ fn worker_receipted_video_seek_reaches_target_frame_presentation() {
     harness.start_final_seek(MediaTime::from_duration(target_position));
     let commands = port.commands();
     let [(request_id, request)] = commands.as_slice() else {
-        panic!("public video seek должен создать один worker request");
+        panic!("Public Video Seek Creates One Worker Request");
     };
     assert_eq!(request.timestamp, target_position);
     assert!(
         harness.seek_requests().is_empty(),
-        "active demuxer не должен выполнять второй синхронный seek"
+        "active demuxer It should not perform the second synchronous seek"
     );
 
     port.complete(
@@ -319,7 +319,7 @@ fn worker_receipted_video_seek_reaches_target_frame_presentation() {
 
     assert!(
         presented_frames > 0,
-        "receipt должен привести не только к commit state, но и к presentation target-frame"
+        "receipt must not only lead to commit state, but presentation target-frame"
     );
     assert_eq!(
         harness
@@ -386,7 +386,7 @@ fn worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presenta
     assert_eq!(
         harness.seek_requests().as_slice(),
         &[DemuxSeekRequest::decode_point_before(target_position)],
-        "preview сохраняет прежний неблокирующий progressive route"
+        "preview retains the former non-blocking progressive route"
     );
 
     harness
@@ -398,7 +398,7 @@ fn worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presenta
 
     let commands = port.commands();
     let [(request_id, request)] = commands.as_slice() else {
-        panic!("EndScrub должен создать ровно один authoritative worker request");
+        panic!("EndScrub must create an authoritative employee request.");
     };
     assert_eq!(request.timestamp, target_position);
     assert!(harness.session.seek_commit().is_none());
@@ -406,7 +406,7 @@ fn worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presenta
     assert_eq!(
         harness.seek_requests().len(),
         1,
-        "release не должен повторять seek через preview controller"
+        "release never repeat seek through preview controller"
     );
 
     port.complete(
@@ -423,7 +423,7 @@ fn worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presenta
         harness
             .session
             .should_drop_decoded_frame_for_seek(receipted_anchor),
-        "после release кадры от anchor до target должны идти только в decoder preroll"
+        "After release, frames from anchor to target should go only in decoder preroll"
     );
     let mut presented_frame_positions = Vec::new();
     for _ in 0..6 {
@@ -433,7 +433,7 @@ fn worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presenta
                 .session
                 .pipeline
                 .present_video_frame()
-                .expect("presentation counter требует current frame")
+                .expect("Presentation of the current frame")
                 .pts;
             presented_frame_positions.push(presented_position);
         }
@@ -447,7 +447,7 @@ fn worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presenta
         presented_frame_positions
             .iter()
             .all(|position| *position >= target_position),
-        "после release ни один pre-target кадр не должен стать видимым: {presented_frame_positions:?}"
+        "afterward release none pre-target The frame should not be visible: {presented_frame_positions:?}"
     );
     assert_eq!(
         harness
@@ -456,7 +456,7 @@ fn worker_receipted_scrub_release_suppresses_preroll_until_target_frame_presenta
             .present_video_frame()
             .map(|frame| frame.pts),
         Some(landing_position),
-        "первый видимый итог release-а обязан быть target-or-after frame"
+        "The first visible release result must be target-or-after frame."
     );
     assert!(harness.session.seek_commit().is_none());
 }

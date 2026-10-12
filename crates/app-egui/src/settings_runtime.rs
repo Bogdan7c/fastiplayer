@@ -367,7 +367,7 @@ impl SettingsRuntime {
                 .with_status(self.status.clone()),
             Err(error) => SettingsUiModel::new(is_open, Vec::new(), self.pending_apply.is_some())
                 .with_status(
-                    self.runtime_error_status("Не удалось собрать модель настроек", &error),
+                    self.runtime_error_status("Could not build the Settings model", &error),
                 ),
         }
     }
@@ -427,7 +427,7 @@ impl SettingsRuntime {
 
     /// Строит статус сбоя: пользователю — человеческая фраза, англоязычные детали — в лог.
     fn runtime_error_status(&self, summary: &str, error: &SettingsError) -> SettingsUiStatus {
-        tracing::warn!(%error, summary, "Ошибка runtime настроек");
+        tracing::warn!(%error, summary, "Settings runtime error");
         SettingsUiStatus {
             summary: Some(summary.to_string()),
             details: vec![settings_error_text(&self.setting_labels(), error)],
@@ -544,9 +544,9 @@ impl SettingsRuntime {
         });
         self.latest_apply_report = None;
         self.status = SettingsUiStatus {
-            summary: Some("Применение настроек…".to_string()),
+            summary: Some("Applying settings…".to_string()),
             details: vec![
-                "Проверяем настройки; в файл они запишутся только после успешного применения."
+                "Validating settings; they will be saved only after successful application."
                     .to_string(),
             ],
         };
@@ -566,7 +566,7 @@ impl SettingsRuntime {
             .map(|(setting_id, error)| format!("{}: {error}", labels.quoted(setting_id)))
             .collect();
         self.status = SettingsUiStatus {
-            summary: Some("Сначала исправьте ошибки в полях".to_string()),
+            summary: Some("Fix the field errors first".to_string()),
             details,
         };
         true
@@ -599,18 +599,18 @@ impl SettingsRuntime {
         let Some(descriptor) = self.registry().descriptor(&setting_id) else {
             tracing::warn!(
                 setting_id = setting_id.as_str(),
-                "Изменение неизвестной настройки"
+                "Attempted to change an unknown setting"
             );
             self.field_validation_errors
-                .insert(setting_id.clone(), "Неизвестная настройка".to_string());
+                .insert(setting_id.clone(), "Unknown setting".to_string());
             return Ok(true);
         };
 
         if let Err(error) = descriptor.validate_value(&value) {
-            tracing::debug!(setting_id = setting_id.as_str(), %error, "Значение поля не прошло проверку");
+            tracing::debug!(setting_id = setting_id.as_str(), %error, "Field value failed validation");
             let error_text = setting_value_error_text(&error);
             self.status = SettingsUiStatus {
-                summary: Some("Поле содержит недопустимое значение".to_string()),
+                summary: Some("The field contains an invalid value".to_string()),
                 details: vec![format!(
                     "{}: {error_text}",
                     self.setting_labels().quoted(&setting_id)
@@ -632,11 +632,7 @@ impl SettingsRuntime {
     fn reset_field(&mut self, setting_id: SettingId) -> SettingsResult<bool> {
         self.field_validation_errors.remove(&setting_id);
         let report = self.controller.reset_value(setting_id)?;
-        self.status = status_from_reset(
-            &self.setting_labels(),
-            "Поле сброшено к значению по умолчанию",
-            &report,
-        );
+        self.status = status_from_reset(&self.setting_labels(), "Field reset to default", &report);
         Ok(true)
     }
 
@@ -648,11 +644,7 @@ impl SettingsRuntime {
     ) -> SettingsResult<bool> {
         let report = self.controller.reset_group(section, group)?;
         self.remove_validation_errors_for(&report.affected_settings);
-        self.status = status_from_reset(
-            &self.setting_labels(),
-            "Группа сброшена к значениям по умолчанию",
-            &report,
-        );
+        self.status = status_from_reset(&self.setting_labels(), "Group reset to defaults", &report);
         Ok(true)
     }
 
@@ -660,11 +652,8 @@ impl SettingsRuntime {
     fn reset_surface(&mut self, surface: SettingsSurfaceId) -> SettingsResult<bool> {
         let report = self.controller.reset_surface(surface)?;
         self.remove_validation_errors_for(&report.affected_settings);
-        self.status = status_from_reset(
-            &self.setting_labels(),
-            "Раздел сброшен к значениям по умолчанию",
-            &report,
-        );
+        self.status =
+            status_from_reset(&self.setting_labels(), "Section reset to defaults", &report);
         Ok(true)
     }
 
@@ -674,7 +663,7 @@ impl SettingsRuntime {
         self.field_validation_errors.clear();
         self.status = status_from_reset(
             &self.setting_labels(),
-            "Все настройки сброшены к значениям по умолчанию",
+            "All settings reset to defaults",
             &report,
         );
         Ok(true)

@@ -468,16 +468,14 @@ impl fmt::Display for WebMediaStreamModelBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::AvailabilityPlanningFailed => {
-                "не удалось построить inventory playable candidates"
+                "We did not have an inventory of playable candidates."
             }
-            Self::InvalidCandidateContainer => {
-                "playable candidate не имеет безопасного container summary"
-            }
+            Self::InvalidCandidateContainer => "Playable candidate has no safe container summary",
             Self::InvalidActiveCandidateIdentity => {
-                "exact и semantic active candidate identities имеют разный source"
+                "exact and semantic active candidate identities have different sources"
             }
-            Self::ActiveCandidateMissing => "active candidate отсутствует в safe inventory",
-            Self::ActiveCandidateNotPlayable => "active candidate не прошёл capability planning",
+            Self::ActiveCandidateMissing => "Active candidate is absent from the safe inventory",
+            Self::ActiveCandidateNotPlayable => "Active candidate failed capability planning",
         };
         formatter.write_str(message)
     }

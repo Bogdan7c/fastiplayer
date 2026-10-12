@@ -19,7 +19,7 @@ pub(super) fn player_error_for_demux_read_failure(error: &anyhow::Error) -> Play
     } else {
         PlayerErrorKind::DemuxError
     };
-    PlayerError::new(kind, format!("Ошибка чтения packet: {error}"))
+    PlayerError::new(kind, format!("Reading error packet: {error}"))
 }
 
 /// Ищет в цепочке причин метку «сеть недоступна».
@@ -41,7 +41,7 @@ mod tests {
 
     impl std::fmt::Display for WrappedIo {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(formatter, "Ошибка чтения: {}", self.0)
+            write!(formatter, "Reading error: {}", self.0)
         }
     }
 

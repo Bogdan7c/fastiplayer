@@ -61,7 +61,7 @@ pub enum PlaylistCompoundGroupIdPersistenceError {
 
 impl fmt::Display for PlaylistCompoundGroupIdPersistenceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("нулевой PlaylistCompoundGroupId зарезервирован")
+        formatter.write_str("Zero PlaylistCompoundGroupId reserved")
     }
 }
 
@@ -229,14 +229,14 @@ impl fmt::Display for CompoundGroupAllocatorRestoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ReservedZeroWatermark => {
-                formatter.write_str("нулевой compound Group ID watermark зарезервирован")
+                formatter.write_str("zero-point compound Group ID watermark reserved")
             }
             Self::WatermarkNotAboveRestoredIds {
                 next_group_id,
                 maximum_group_id,
             } => write!(
                 formatter,
-                "compound Group ID watermark {next_group_id} не выше restored ID {maximum_group_id}"
+                "compound Group ID watermark {next_group_id} not higher than restored ID {maximum_group_id}"
             ),
         }
     }
@@ -406,7 +406,7 @@ pub struct EmptyPlaylistCompoundDraft;
 
 impl fmt::Display for EmptyPlaylistCompoundDraft {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("compound draft обязан содержать хотя бы одну retained part")
+        formatter.write_str("compound draft must contain at least one retained part")
     }
 }
 

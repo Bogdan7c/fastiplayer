@@ -73,13 +73,13 @@ impl HlsLiveComponentFactory {
                 self.coordinator.audio_anchor_for(request.timestamp)?
             }
         }
-        .ok_or_else(|| anyhow!("HLS live seek target не имеет retained decode anchor"))?;
+        .ok_or_else(|| anyhow!("HLS live seek target has no retained decode anchor"))?;
         let snapshot = self.snapshot()?;
         let segment_index = snapshot
             .segments
             .iter()
             .position(|segment| segment.identity == identity)
-            .ok_or_else(|| anyhow!("HLS live seek anchor уже вытеснен"))?;
+            .ok_or_else(|| anyhow!("HLS live seek anchor has already been pushed out"))?;
         let replacement = HlsLiveComponentDemuxer::open_at(
             self.clone(),
             snapshot,
@@ -103,7 +103,7 @@ impl HlsLiveComponentFactory {
             HlsLiveComponentKind::AlternateAudio => self
                 .coordinator
                 .audio_snapshot()?
-                .context("HLS live alternate-audio snapshot отсутствует"),
+                .context("HLS live alternate-audio snapshot missing"),
         }
     }
 
@@ -118,7 +118,7 @@ impl HlsLiveComponentFactory {
             HlsLiveComponentKind::AlternateAudio => self
                 .coordinator
                 .audio_runtime_snapshot()?
-                .context("HLS live alternate-audio runtime snapshot отсутствует"),
+                .context("HLS live alternate-audio runtime snapshot missing"),
         }
     }
 }
@@ -206,7 +206,7 @@ impl HlsLiveComponentDemuxer {
             .segments
             .get(segment_index)
             .cloned()
-            .ok_or_else(|| anyhow!("HLS live start segment отсутствует"))?;
+            .ok_or_else(|| anyhow!("HLS live start segment is missing."))?;
         let key_cache = SharedHlsKeyCache::default();
         let (_, transport) = factory.runtime_snapshot()?;
         let expiry_observer = HlsLiveSegmentExpiryObserver::new(
@@ -281,7 +281,7 @@ impl HlsLiveComponentDemuxer {
                     return Err(anyhow!("HLS live seek anchor temporarily unavailable"));
                 }
                 DemuxReadEvent::EndOfStream => {
-                    return Err(anyhow!("HLS live seek anchor не найден внутри segment"));
+                    return Err(anyhow!("HLS live seek anchor not found within the segment"));
                 }
             }
         }
@@ -308,7 +308,7 @@ impl HlsLiveComponentDemuxer {
             .track_mapping
             .iter()
             .find_map(|(inner, public)| (*inner == packet.track_id).then_some(*public))
-            .ok_or_else(|| anyhow!("HLS live packet имеет неизвестный track id"))?;
+            .ok_or_else(|| anyhow!("HLS live packet has an unknown track id"))?;
         let origin = *self
             .current_timestamp_origin
             .get_or_insert_with(|| packet.dts.map_or(packet.pts, |dts| packet.pts.min(dts)));
@@ -355,7 +355,7 @@ impl HlsLiveComponentDemuxer {
             .public_tracks
             .iter()
             .find(|track| track.id == packet.track_id)
-            .ok_or_else(|| anyhow!("HLS live video packet потерял public track"))?;
+            .ok_or_else(|| anyhow!("HLS live video packet lost public track"))?;
         if track.codec_id != "V_MPEG4/ISO/AVC" {
             return Ok(HlsLiveVideoDecodeStartEvidence::Proven);
         }

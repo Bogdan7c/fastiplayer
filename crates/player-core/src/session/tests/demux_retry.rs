@@ -6,13 +6,13 @@ use crate::session::demux_retry::DemuxAudioStarvationMargin;
 /// Минимальный retry hint сохраняет production anti-busy-spin contract.
 fn retry_hint() -> media_core::DemuxRetryHint {
     media_core::DemuxRetryHint::new(media_core::DemuxRetryHint::MIN_RETRY_AFTER)
-        .expect("минимальный public retry hint обязан быть допустим")
+        .expect("The minimum public retry hint is required.")
 }
 
 /// Создаёт валидный hint для точных runway/deadline сценариев.
 fn retry_hint_for(retry_after: Duration) -> media_core::DemuxRetryHint {
     media_core::DemuxRetryHint::new(retry_after)
-        .expect("focused retry duration должна укладываться в public bounds")
+        .expect("Focused Retry Duration must be in public bounds")
 }
 
 /// Использует существующий low-water config как именованный scheduler/callback запас.
@@ -66,8 +66,8 @@ fn install_scripted_retry_media(
         .install_opened_media(Box::new(demuxer), None, None, tracks.clone());
     if tracks.iter().any(|track| track.kind == TrackKind::Video) {
         session
-            .select_default_video_track(&tracks, "retry fixture должна содержать video")
-            .expect("VP9 retry fixture должна пройти production selection");
+            .select_default_video_track(&tracks, "retry fixture must contain video")
+            .expect("VP9 retry fixture must be produced");
     }
     if let Some(audio_track_id) = tracks
         .iter()
@@ -111,7 +111,7 @@ fn playing_av_retry_session(
     session.pipeline.enqueue_queued_video_frame(queued_frame);
     session
         .dispatch_command(PlayerCommand::Play)
-        .expect("fixture должна войти в Playing через production command");
+        .expect("Fixture must enter Playing through production command");
 
     (session, output_handle)
 }
@@ -149,7 +149,7 @@ fn audio_starvation_buffers_and_resumes_only_after_full_av_preroll() {
     assert_eq!(
         output_handle.audible_output_position(),
         Duration::from_secs(2),
-        "pause/freeze boundary не должен пропускать wall-time jump"
+        "pause/freeze boundary should not miss wall-time jump"
     );
 
     wait_for_retry_deadline();
@@ -163,7 +163,7 @@ fn audio_starvation_buffers_and_resumes_only_after_full_av_preroll() {
     assert!(
         !session
             .finish_autoplay_preroll_if_ready(50.0)
-            .expect("49 ms audio не должны пройти preroll")
+            .expect("49 ms audio will not pass preroll")
     );
     assert_eq!(session.playback_state(), PlaybackState::Buffering);
     assert_eq!(output_handle.play_count(), initial_play_count);
@@ -172,7 +172,7 @@ fn audio_starvation_buffers_and_resumes_only_after_full_av_preroll() {
     assert!(
         session
             .finish_autoplay_preroll_if_ready(50.0)
-            .expect("recovered source и полный A/V preroll должны resume")
+            .expect("Recovered source and full A/V preroll")
     );
     assert_eq!(session.playback_state(), PlaybackState::Playing);
     assert_eq!(output_handle.pause_count(), 1);
@@ -192,7 +192,7 @@ fn audio_starvation_buffers_and_resumes_only_after_full_av_preroll() {
     assert_eq!(
         output_handle.play_count(),
         initial_play_count + 1,
-        "follow-up packets не должны повторять resume"
+        "follow-up packets don't repeat resume"
     );
 }
 
@@ -211,7 +211,7 @@ fn video_only_retry_keeps_playing_while_present_queue_has_runway() {
     session.pipeline.enqueue_queued_video_frame(queued_frame);
     session
         .dispatch_command(PlayerCommand::Play)
-        .expect("video-only fixture должна войти в Playing");
+        .expect("Video-only fixture should be included in Playing");
 
     tick_session(&mut session, retry_tick_config());
 
@@ -230,7 +230,7 @@ fn selected_audio_runway_freezes_before_retry_deadline_can_exhaust_it() {
     assert!(
         session
             .enter_buffering_for_demux_underrun_if_needed(observed_at, starvation_margin(4.0),)
-            .expect("5 ms runway должен заморозиться до 10 ms retry")
+            .expect("5 ms runway should freeze to 10 ms retry")
     );
 
     assert_eq!(session.playback_state(), PlaybackState::Buffering);
@@ -249,7 +249,7 @@ fn sufficient_selected_audio_runway_keeps_playing_until_retry() {
     assert!(
         !session
             .enter_buffering_for_demux_underrun_if_needed(observed_at, starvation_margin(4.0),)
-            .expect("15 ms runway должен покрыть 10 ms retry и 4 ms margin")
+            .expect("15 ms runway should cover 10 ms retry and 4 ms margin")
     );
 
     assert_eq!(session.playback_state(), PlaybackState::Playing);
@@ -273,8 +273,8 @@ fn selected_audio_runway_budget_handles_public_retry_hint_bounds() {
         assert!(
             session
                 .enter_buffering_for_demux_underrun_if_needed(observed_at, starvation_margin(4.0),)
-                .expect("exact runway budget должен безопасно войти в Buffering"),
-            "retry hint bound {retry_after:?} должен участвовать без truncation"
+                .expect("Exact runway budget must be securely logged in to Buffering"),
+            "retry hint bound {retry_after:?} should be involved without truncation"
         );
         assert_eq!(output_handle.pause_count(), 1);
     }
@@ -299,7 +299,7 @@ fn fresh_runway_decision_time_does_not_overestimate_remaining_retry_wait() {
     };
     let stale_tick_started_at = Instant::now()
         .checked_sub(Duration::from_millis(100))
-        .expect("focused old tick timestamp должен помещаться в Instant");
+        .expect("Focused old tick timestamp must be placed in Instant");
 
     tick_session_at(&mut session, tick_config, stale_tick_started_at);
 
@@ -327,8 +327,8 @@ fn invalid_audio_low_water_marks_use_canonical_default_margin() {
                     observed_at,
                     starvation_margin(invalid_low_water_mark_ms),
                 )
-                .expect("canonical 100 ms fallback должен заморозить 50 ms runway"),
-            "invalid low-water mark {invalid_low_water_mark_ms:?} обязан использовать default"
+                .expect("Canonical 100 ms fallback should freeze 50 ms runway"),
+            "Bad low-water mark {invalid_low_water_mark_ms:?} must use default"
         );
         assert_eq!(output_handle.pause_count(), 1);
     }
@@ -384,7 +384,7 @@ fn chained_demux_retry_blocks_ready_preroll_until_next_accepted_packet() {
     assert!(
         !session
             .finish_autoplay_preroll_if_ready(50.0)
-            .expect("pending chained retry должен блокировать ready preroll")
+            .expect("Continuous chained retry should block ready preroll")
     );
     assert_eq!(session.playback_state(), PlaybackState::Buffering);
     assert_eq!(output_handle.play_count(), initial_play_count);
@@ -433,14 +433,14 @@ fn paused_intent_is_not_overridden_by_demux_recovery() {
         .set_present_video_frame(decoded_frame_for_tests(Duration::from_secs(10), 92));
     session
         .dispatch_command(PlayerCommand::Pause)
-        .expect("fixture pause должна завершиться успешно");
+        .expect("Fixture pause must be completed successfully");
     let pause_count = output_handle.pause_count();
     session.schedule_installed_demux_retry(Instant::now(), retry_hint());
 
     assert!(
         !session
             .enter_buffering_for_demux_underrun_if_needed(Instant::now(), starvation_margin(4.0),)
-            .expect("paused intent не должен вызывать backend error")
+            .expect("Slow intention does not cause backend error.")
     );
     session.complete_installed_demux_retry_after_event();
 
@@ -465,7 +465,7 @@ fn selected_audio_without_output_enters_buffering_without_false_device_error() {
     session.pipeline.enqueue_queued_video_frame(queued_frame);
     session
         .dispatch_command(PlayerCommand::Play)
-        .expect("absent-output fixture должна войти в Playing");
+        .expect("absent-out fixture should be included in Playing");
 
     tick_session(&mut session, retry_tick_config());
 
@@ -491,7 +491,7 @@ fn demux_buffering_pause_error_is_typed_and_has_no_partial_transition() {
         .snapshot()
         .last_error
         .as_ref()
-        .expect("pause failure должен быть опубликован");
+        .expect("The delay failure must be published.");
     assert_eq!(error.kind, PlayerErrorKind::RuntimeError);
     assert!(
         error
@@ -518,14 +518,14 @@ fn demux_buffering_resume_play_error_remains_typed() {
     assert!(
         !session
             .finish_autoplay_preroll_if_ready(50.0)
-            .expect("recoverable play error не должен стать fatal")
+            .expect("Recoverable play error does not have to be fatal.")
     );
 
     let error = session
         .snapshot()
         .last_error
         .as_ref()
-        .expect("play failure должен быть опубликован");
+        .expect("play failure must be published");
     assert_eq!(error.kind, PlayerErrorKind::RuntimeError);
     assert!(
         error
@@ -538,7 +538,7 @@ fn demux_buffering_resume_play_error_remains_typed() {
     assert_eq!(
         output_handle.audible_output_position(),
         Duration::from_secs(2),
-        "failed resume не должен размораживать clock"
+        "A failed resume should not defrost the clock."
     );
     let failed_events = session.take_events();
     assert!(failed_events.iter().all(|event| {
@@ -552,18 +552,18 @@ fn demux_buffering_resume_play_error_remains_typed() {
     assert!(
         !session
             .finish_autoplay_preroll_if_ready(50.0)
-            .expect("следующий обычный preroll attempt остаётся recoverable")
+            .expect("The next normal preroll attempt is recoverable.")
     );
     assert!(
         session.take_events().is_empty(),
-        "идентичная persistent ошибка не должна спамить RecoverableError"
+        "Identical persistent error should not spam RecoverableError"
     );
 
     output_handle.set_play_error(None);
     assert!(
         session
             .finish_autoplay_preroll_if_ready(50.0)
-            .expect("следующий readiness attempt должен повторить play")
+            .expect("Next Readiness Attempt to Repeat Play")
     );
     assert_eq!(session.playback_state(), PlaybackState::Playing);
     assert_eq!(output_handle.play_count(), 4);
@@ -599,7 +599,7 @@ fn stale_retry_generation_cannot_enter_buffering() {
     assert!(
         !session
             .enter_buffering_for_demux_underrun_if_needed(Instant::now(), starvation_margin(4.0),)
-            .expect("stale fence должен быть side-effect-free")
+            .expect("Stale fence should be side-effect-free.")
     );
     session.complete_installed_demux_retry_after_event();
 
@@ -649,7 +649,7 @@ fn playback_window_rejected_packet_does_not_recover_buffering() {
     );
     session.playback_window = Some(
         MediaPlaybackWindow::new(MediaTime::from_secs(5), Some(MediaTime::from_secs(20)))
-            .expect("focused playback window должна быть валидна"),
+            .expect("The focused playback window should be valid."),
     );
     let tick_config = retry_tick_config();
     tick_session(&mut session, tick_config);

@@ -351,13 +351,11 @@ impl PlaylistImportContinueOutcome {
     pub(crate) const fn failure_feedback(&self) -> Option<&'static str> {
         match self {
             Self::AwaitingConfirmation | Self::Committed(_) => None,
-            Self::Stale => Some("Предпросмотр импорта устарел; выберите файл ещё раз"),
-            Self::RuntimeClosed => Some("Импорт уже недоступен: приложение завершает работу"),
-            Self::MaterializationRejected(_) => {
-                Some("Импорт содержит неподдерживаемый источник медиа")
-            }
-            Self::CommitRejected(_) => Some("Не удалось применить импорт без изменения плейлиста"),
-            Self::ConfirmationIdentityExhausted => Some("Не удалось открыть подтверждение импорта"),
+            Self::Stale => Some("Import preview is outdated; select the file again"),
+            Self::RuntimeClosed => Some("Import is no longer available: the app is shutting down"),
+            Self::MaterializationRejected(_) => Some("Import contains an unsupported media source"),
+            Self::CommitRejected(_) => Some("Could not apply import; Playlist was preserved"),
+            Self::ConfirmationIdentityExhausted => Some("Could not open import confirmation"),
         }
     }
 }
@@ -528,7 +526,7 @@ impl PlaylistRuntime {
                 requires_replacement_ack,
             );
             return match self.replacement_confirmation.replace_with_import(
-                crate::media_open::SafeMediaLabel::from_service_safe_label("Импорт плейлиста"),
+                crate::media_open::SafeMediaLabel::from_service_safe_label("Playlist import"),
                 reasons,
                 continuation,
             ) {
@@ -602,7 +600,7 @@ impl PlaylistRuntime {
                 self.import_transaction.cancel();
                 if intent == PlaylistImportIntent::StartupReplace {
                     self.fail_startup_playlist_import(
-                        "Startup playlist содержит неподдерживаемый source locator",
+                        "Startup Playlist contains an unsupported source locator",
                     );
                 }
                 return PlaylistImportContinueOutcome::MaterializationRejected(error);
@@ -612,7 +610,7 @@ impl PlaylistRuntime {
             self.import_transaction.cancel();
             if intent == PlaylistImportIntent::StartupReplace {
                 self.fail_startup_playlist_import(
-                    "Playlist controller недоступен для startup commit",
+                    "Playlist controller is unavailable for startup commit",
                 );
             }
             return PlaylistImportContinueOutcome::RuntimeClosed;
@@ -649,7 +647,7 @@ impl PlaylistRuntime {
                     self.finish_startup_playlist_commit(None);
                 }
                 Err(_) => self.fail_startup_playlist_import(
-                    "Startup playlist commit отклонён без queue mutation",
+                    "Startup Playlist commit rejected without queue mutation",
                 ),
             }
         }

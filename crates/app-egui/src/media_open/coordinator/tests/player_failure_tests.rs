@@ -44,7 +44,7 @@ pub(super) fn start_prepared_request(
 }
 
 fn player_failure(stage: MediaInstallFailureStage, kind: PlayerErrorKind) -> MediaInstallFailure {
-    MediaInstallFailure::new(stage, PlayerError::new(kind, "технические детали для лога"))
+    MediaInstallFailure::new(stage, PlayerError::new(kind, "technical details for log"))
 }
 
 /// Кладёт terminal player-а в fake receipt, как это сделал бы настоящий worker.
@@ -217,14 +217,14 @@ impl MediaOpenPlayerPort for RejectingStagePlayerPort {
         &self,
         _request_id: MediaInstallRequestId,
     ) -> Result<(), PlayerDispatchRejection> {
-        panic!("отклонённый stage не может дойти до position preparation")
+        panic!("Rejected stage cannot reach position preparation")
     }
 
     fn authorize(
         &self,
         _request_id: MediaInstallRequestId,
     ) -> Result<Box<dyn ControlReceiptPort>, PlayerDispatchRejection> {
-        panic!("отклонённый stage не может дойти до authorization")
+        panic!("The rejected stage cannot reach the authorization")
     }
 
     fn cancel(
@@ -232,14 +232,14 @@ impl MediaOpenPlayerPort for RejectingStagePlayerPort {
         _request_id: MediaInstallRequestId,
         _cause: MediaInstallCancellationCause,
     ) -> Result<Box<dyn ControlReceiptPort>, PlayerDispatchRejection> {
-        panic!("отклонённый stage не требует cancel")
+        panic!("Rejection stage does not require cancellation")
     }
 
     fn update_intent(
         &self,
         _update: PlaybackIntentUpdate,
     ) -> Result<PlaybackIntentUpdateReceipt, PlayerDispatchRejection> {
-        panic!("отклонённый stage не обновляет intent")
+        panic!("Rejected stage does not update intent")
     }
 }
 
@@ -309,7 +309,7 @@ impl Demuxer for UnknownVideoCodecDemuxer {
     }
 
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
-        panic!("staged preflight неизвестного кодека не делает seek")
+        panic!("staged preflight of an unknown codec does not make a seek")
     }
 }
 
@@ -326,7 +326,7 @@ pub(super) fn wait_for_worker_snapshot(
         }
         assert!(
             Instant::now() < deadline,
-            "player snapshot не достиг ожидаемого состояния"
+            "player snapshot failed to achieve the expected state"
         );
         thread::sleep(Duration::from_millis(1));
     }
@@ -338,13 +338,13 @@ pub(super) fn wait_for_worker_snapshot(
 #[test]
 fn real_player_rejects_unknown_video_codec_with_readable_reason_and_keeps_old_media() {
     let mut worker =
-        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("player worker стартует");
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("Player worker starts");
     let old_install = worker
         .load_prepared_media(
             player_core::PreparedMedia::from_external_label("old-media", Box::new(FakeDemuxer)),
             false,
         )
-        .expect("старое media принято worker-ом");
+        .expect("The old media accepted by the worker");
     let old_snapshot = wait_for_worker_snapshot(&mut worker, |snapshot| {
         snapshot.source_label.as_deref() == Some("old-media")
             && snapshot.media_instance_id.is_some()
@@ -368,13 +368,13 @@ fn real_player_rejects_unknown_video_codec_with_readable_reason_and_keeps_old_me
             start_intent(),
             MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
         )
-        .expect("stage доставлен настоящему worker-у");
+        .expect("The stage is delivered to the real worker.");
 
     let deadline = Instant::now() + REAL_WORKER_DEADLINE;
     while coordinator.snapshot().expect("current request").phase != MediaOpenPhase::Failed {
         assert!(
             Instant::now() < deadline,
-            "настоящий worker не завершил staging отказом"
+            "The real worker did not complete staging failure"
         );
         coordinator.drain();
         thread::sleep(Duration::from_millis(1));
@@ -382,13 +382,13 @@ fn real_player_rejects_unknown_video_codec_with_readable_reason_and_keeps_old_me
     let Ok(Some(MediaOpenTerminalOutcome::PlayerFailed { reason, .. })) =
         coordinator.take_terminal(request_id)
     else {
-        panic!("неподдерживаемый кодек обязан завершиться PlayerFailed");
+        panic!("Unsupported codec must end with PlayerFailed");
     };
 
     assert_eq!(reason, PlayerInstallFailureReason::UnsupportedVideoFormat);
     assert_eq!(
         local_open_failure_message(std::path::Path::new("/videos/clip.mkv"), reason),
-        "Не удалось открыть «clip.mkv»: формат видео не поддерживается"
+        "Could not open “clip.mkv”: unsupported video format"
     );
     let snapshot_after_failure =
         wait_for_worker_snapshot(&mut worker, |snapshot| snapshot.source_label.is_some());
@@ -409,13 +409,13 @@ fn web_preparation_failure_reports_reason_and_keeps_old_media_playing() {
     use crate::media_open::preparation::web_failure_tests::{LoopbackServer, ServerAnswer};
 
     let mut worker =
-        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("player worker стартует");
+        PlayerWorker::spawn(PlayerWorkerConfig::default()).expect("Player worker starts");
     let old_install = worker
         .load_prepared_media(
             player_core::PreparedMedia::from_external_label("old-media", Box::new(FakeDemuxer)),
             false,
         )
-        .expect("старое media принято worker-ом");
+        .expect("The old media accepted by the worker");
     let old_snapshot = wait_for_worker_snapshot(&mut worker, |snapshot| {
         snapshot.source_label.as_deref() == Some("old-media")
             && snapshot.media_instance_id.is_some()
@@ -429,7 +429,7 @@ fn web_preparation_failure_reports_reason_and_keeps_old_media_playing() {
     let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         &server.secret_media_url(),
     )
-    .expect("loopback mp4 ссылка — direct media");
+    .expect("mp4 loopback link - direct media");
     let request = crate::media_open::MediaOpenSourceRequest::Web(
         crate::media_open::WebMediaOpenRequest::direct(
             locator,
@@ -448,8 +448,8 @@ fn web_preparation_failure_reports_reason_and_keeps_old_media_playing() {
                 crate::media_open::preparation::prepare_source(request, &cancellation)
             },
         )
-        .expect("request принят");
-    let request_id = coordinator.snapshot().expect("текущий request").request_id;
+        .expect("request accepted");
+    let request_id = coordinator.snapshot().expect("current request").request_id;
 
     let deadline = Instant::now() + REAL_WORKER_DEADLINE;
     let kind = loop {
@@ -461,7 +461,7 @@ fn web_preparation_failure_reports_reason_and_keeps_old_media_playing() {
         }
         assert!(
             Instant::now() < deadline,
-            "подготовка не завершилась отказом"
+            "The preparation did not end with a refusal"
         );
         thread::sleep(Duration::from_millis(1));
     };

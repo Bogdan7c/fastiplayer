@@ -91,11 +91,11 @@ impl fmt::Debug for YtDlpDurableReopenPayload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum YtDlpDurableReopenClassificationError {
     /// Extractor не дал ни stable locator, ни local ID.
-    #[error("topology identity не содержит durable reopen material")]
+    #[error("topology identity does not contain durable reopen material")]
     MissingStableIdentity,
     /// Stable identity не помещается в approved durable payload envelope.
     #[error(
-        "topology identity превышает durable payload bound: {provided_bytes} > {maximum_bytes}"
+        "topology identity exceeds the durable payload bound: {provided_bytes} > {maximum_bytes}"
     )]
     PayloadLimitExceeded {
         /// Фактический размер без содержимого.
@@ -104,7 +104,7 @@ pub enum YtDlpDurableReopenClassificationError {
         maximum_bytes: usize,
     },
     /// Versioned extractor grammar не может представить длину компонента.
-    #[error("extractor identity не помещается в versioned length field")]
+    #[error("extractor identity does not fit the versioned length field")]
     ExtractorIdentityLengthExceeded,
 }
 

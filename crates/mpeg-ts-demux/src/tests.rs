@@ -657,7 +657,7 @@ fn resource_bounded_probe_reaches_interleaved_audio_evidence_beyond_default_cuto
         .saturating_mul(188);
     assert!(
         segment_bytes.len() > default_probe_bytes,
-        "fixture обязан пересечь прежний fixed packet cutoff"
+        "fixture must cross the former fixed packet cutoff"
     );
 
     let default_result = registry_with_options(MpegTsDemuxOptions::default()).open(
@@ -675,7 +675,7 @@ fn resource_bounded_probe_reaches_interleaved_audio_evidence_beyond_default_cuto
     );
     assert!(
         default_result.is_err(),
-        "fixture должен воспроизводить прежний cutoff до полного AAC PES"
+        "fixture must reproduce cutoff full-on AAC PES"
     );
 
     let resource_byte_budget =
@@ -696,7 +696,7 @@ fn resource_bounded_probe_reaches_interleaved_audio_evidence_beyond_default_cuto
             sniff_budget(),
             CancellationToken::never_cancelled(),
         )
-        .expect("resource-bounded probe должен дождаться полного AAC evidence");
+        .expect("resource-bound probe to wait for full AAC evidence");
 
     assert!(
         demuxer
@@ -766,7 +766,7 @@ fn ordered_segment_continuity_restart_keeps_tracks_stable_and_emits_media_packet
     assert_eq!(
         video_positions,
         [Duration::ZERO, Duration::from_secs(1)],
-        "ordered boundary обязан flush-нуть video RAP каждого segment-а"
+        "ordered boundary must flush-to-no video RAP of each segment"
     );
 }
 
@@ -798,7 +798,7 @@ fn ordered_segment_boundary_rejects_incomplete_pes_before_packet_publication() {
         DemuxInput::ordered_segments(Box::new(SegmentSource { segments })),
         DemuxHints::none(),
     )
-    .expect("ordered TS topology до truncated PES валидна");
+    .expect("ordered TS topology to truncated PES valid");
     let mut published_video_packet = false;
     let failure = loop {
         match demuxer.next_event() {
@@ -811,7 +811,7 @@ fn ordered_segment_boundary_rejects_incomplete_pes_before_packet_publication() {
                 | DemuxReadEvent::TemporarilyUnavailable(_),
             ) => {}
             Ok(DemuxReadEvent::EndOfStream) => {
-                panic!("incomplete PES не должен превратиться в clean EOF")
+                panic!("Incomplete PES should not be turned into clean EOF.")
             }
             Err(error) => break error,
         }
@@ -821,7 +821,7 @@ fn ordered_segment_boundary_rejects_incomplete_pes_before_packet_publication() {
     assert!(matches!(
         failure.downcast_ref::<MpegTsDemuxError>(),
         Some(MpegTsDemuxError::Malformed { reason })
-            if reason.contains("PES packet_length больше собранных bytes")
+            if reason.contains("PES packet_length more collected bytes")
     ));
 }
 
@@ -1052,7 +1052,7 @@ fn factory_probe_and_open_reject_pre_cancelled_requests() {
         cancellation: &active_cancellation,
     }) {
         DemuxProbeDecision::Match(selected_probe) => selected_probe,
-        decision => panic!("валидная TS signature должна match-иться: {decision:?}"),
+        decision => panic!("Valid TS signature must match: {decision:?}"),
     };
 
     assert!(matches!(
@@ -1083,7 +1083,7 @@ fn factory_probe_and_open_reject_pre_cancelled_requests() {
         selected_probe,
         cancellation,
     }) {
-        Ok(_) => panic!("pre-cancelled factory open не должен публиковать demuxer"),
+        Ok(_) => panic!("Pre-cancelled factory open does not publish demuxer"),
         Err(error) => error,
     };
     assert!(matches!(error, DemuxFactoryOpenError::Cancelled));
@@ -1103,7 +1103,7 @@ fn factory_maps_cancellation_that_arrives_during_open() {
         cancellation: &cancellation,
     }) {
         DemuxProbeDecision::Match(selected_probe) => selected_probe,
-        decision => panic!("валидная TS signature должна match-иться: {decision:?}"),
+        decision => panic!("Valid TS signature must match: {decision:?}"),
     };
     let cancelling_reader = CancellingProbeReader {
         bytes: Cursor::new(fixture),
@@ -1117,7 +1117,7 @@ fn factory_maps_cancellation_that_arrives_during_open() {
         selected_probe,
         cancellation,
     }) {
-        Ok(_) => panic!("mid-open cancellation не должна публиковать demuxer"),
+        Ok(_) => panic!("Mid-open cancellation should not publish demuxer"),
         Err(error) => error,
     };
     assert!(matches!(error, DemuxFactoryOpenError::Cancelled));
@@ -1132,7 +1132,7 @@ fn transport_signature_without_playable_program_is_backend_failure() {
         DemuxHints::none(),
     )
     .err()
-    .expect("сигнатурно валидный TS без PAT/PMT должен fail closed после probe");
+    .expect("Signature valid TS without PAT/PMT must fail closed after probe");
 
     assert!(matches!(
         error,
@@ -1253,10 +1253,10 @@ fn h264_access_unit_exposes_in_band_initialization_without_changing_keyframe_sem
 
     let self_contained =
         crate::elementary::classify_video_access_unit(&self_contained_access_unit, false)
-            .expect("self-contained H.264 AU должен классифицироваться");
+            .expect("Self-contained H.264 AU shall be classified");
     let external_configuration =
         crate::elementary::classify_video_access_unit(&idr_without_parameter_sets, false)
-            .expect("IDR-only H.264 AU должен оставаться валидным keyframe");
+            .expect("IDR-only H.264 AU must remain valid keyframe");
 
     assert!(self_contained.keyframe.is_known_keyframe());
     assert_eq!(

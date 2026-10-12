@@ -19,37 +19,37 @@ pub(crate) fn render(
                     .sensitive_playlist_export_locator_count()
                     .is_some()
                 {
-                    "Экспортировать чувствительные адреса?"
+                    "Export sensitive addresses?"
                 } else if reasons.queue_replacement() && reasons.sensitive_url_persistence() {
-                    "Подтвердить открытие и сохранение?"
+                    "Confirm opening and saving?"
                 } else if reasons.queue_replacement() {
-                    "Заменить текущую очередь?"
+                    "Replace the current queue?"
                 } else {
-                    "Сохранить URL в плейлисте?"
+                    "Save URL in Playlist?"
                 },
             );
             if reasons.queue_replacement() {
                 ui.label(format!(
-                    "Открыть «{}» и заменить непустую очередь?",
+                    "Open “{}” and replace the nonempty queue?",
                     model.safe_label()
                 ));
             }
             if reasons.sensitive_url_persistence() {
-                ui.label("URL содержит чувствительные параметры. Сохранить его в playlist-state?");
+                ui.label("The URL contains sensitive parameters. Save it in Playlist storage?");
             }
             if let Some(locator_count) = reasons.sensitive_playlist_export_locator_count() {
                 ui.label(format!(
-                    "Файл будет содержать чувствительные адреса ({locator_count}). Сохранить его с доступом только для текущего пользователя?"
+                    "The file will contain sensitive addresses ({locator_count}). Save it with access restricted to the current user?"
                 ));
             }
             ui.horizontal(|ui| {
-                if ui.button("Отмена").clicked() {
+                if ui.button("Cancel").clicked() {
                     action = Some(action_for(
                         model,
                         QueueReplacementConfirmationDecision::Cancel,
                     ));
                 }
-                if ui.button("Подтвердить").clicked() {
+                if ui.button("Confirm").clicked() {
                     action = Some(action_for(
                         model,
                         QueueReplacementConfirmationDecision::Confirm,

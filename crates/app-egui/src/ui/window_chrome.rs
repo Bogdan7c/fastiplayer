@@ -557,17 +557,17 @@ mod tests {
         let windowed_actions = window_actions_after_title_double_click(false);
         assert!(
             windowed_actions.contains(&WindowChromeAction::ToggleMaximize),
-            "в окне двойной клик по заголовку разворачивает: {windowed_actions:?}"
+            "In the double-click window, the header expands: {windowed_actions:?}"
         );
 
         let fullscreen_actions = window_actions_after_title_double_click(true);
         assert!(
             !fullscreen_actions.contains(&WindowChromeAction::ToggleMaximize),
-            "в фуллскрине maximize не запрашивается: {fullscreen_actions:?}"
+            "full-screen maximize not requested: {fullscreen_actions:?}"
         );
         assert!(
             fullscreen_actions.contains(&WindowChromeAction::StartDrag),
-            "остальные действия заголовка фильтр не трогает: {fullscreen_actions:?}"
+            "The other actions of the header filter does not touch: {fullscreen_actions:?}"
         );
     }
 

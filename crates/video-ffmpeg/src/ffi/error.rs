@@ -54,11 +54,11 @@ pub enum FfmpegErrorKind {
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum FfmpegError {
     /// Crate собран без optional FFmpeg feature.
-    #[error("video-ffmpeg собран без feature `ffmpeg`")]
+    #[error("video-ffmpeg was built without feature `ffmpeg`")]
     FeatureDisabled,
 
     /// Операция ещё намеренно не подключена к playback path-у.
-    #[error("FFmpeg operation `{operation}` ещё не реализована в scaffold")]
+    #[error("FFmpeg operation '{operation}' is not yet implemented in scaffold")]
     OperationUnsupported {
         /// Имя операции, чтобы diagnostic не терял контекст.
         operation: &'static str,

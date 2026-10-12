@@ -31,7 +31,7 @@ fn section_split_between_packets_is_reassembled_exactly_once() {
         let first = assembler
             .push(true, &unit_start_payload(&section[..split]))
             .expect("first part is accepted");
-        assert!(first.is_empty(), "split {split}: секция ещё не завершена");
+        assert!(first.is_empty(), "split {split}: section not yet complete");
         let completed = assembler
             .push(false, &section[split..])
             .expect("continuation completes section");
@@ -63,21 +63,21 @@ fn malformed_pointer_and_section_shapes_are_typed_errors() {
     let last = corrupted_crc.len() - 1;
     corrupted_crc[last] ^= 1;
     let cases: [(&str, Vec<u8>, &str); 4] = [
-        ("missing pointer", Vec::new(), "без pointer_field"),
+        ("missing pointer", Vec::new(), "without pointer_field"),
         (
             "pointer beyond payload",
             vec![10, 0, 0],
-            "pointer_field выходит за payload",
+            "pointer_field is coming to payload",
         ),
         (
             "section length",
             unit_start_payload(&too_long),
-            "section_length вне",
+            "section_length outside",
         ),
         (
             "crc",
             unit_start_payload(&corrupted_crc),
-            "CRC32 не совпадает",
+            "CRC32 doesn't match",
         ),
     ];
     for (case, payload, expected) in cases {
@@ -100,7 +100,9 @@ fn new_section_before_previous_completes_is_rejected() {
         .push(true, &unit_start_payload(&section))
         .expect_err("overlapping sections must be rejected");
     assert!(
-        error.to_string().contains("до завершения предыдущей"),
+        error
+            .to_string()
+            .contains("before the previous one is completed"),
         "{error}"
     );
 }

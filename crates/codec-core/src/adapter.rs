@@ -293,7 +293,7 @@ impl VideoRequirementRejection {
     pub fn user_message(&self) -> String {
         match self {
             Self::UnsupportedCodecAdapter { codec } => {
-                format!("для codec {codec} нет production packet requirement adapter-а")
+                format!("Codec {codec} No production packet requirement adapter")
             }
             Self::UnsupportedBitDepth { reason, .. } | Self::UnsupportedChroma { reason, .. } => {
                 reason.clone()
@@ -1163,7 +1163,7 @@ mod tests {
 
         let probe = probe_video_packet_requirement(VideoCodec::Vp9, &packet_bytes);
         let VideoRequirementProbe::Candidate(candidate) = probe else {
-            panic!("VP9 Profile 2 10-bit должен дать generic candidate, получено {probe:?}");
+            panic!("VP9 Profile 2 10-bit should give generic candidate, obtained {probe:?}");
         };
 
         assert_eq!(candidate.surface_format, Some(VideoFramePixelLayout::P010));
@@ -1200,7 +1200,7 @@ mod tests {
         );
 
         let VideoRequirementProbe::Candidate(candidate) = probe else {
-            panic!("H.265 Main10 hvcC должен дать candidate, получено {probe:?}");
+            panic!("H.265 Main10 hvcC must give candidate, received {probe:?}");
         };
         assert_eq!(
             candidate.requirement.profile,
@@ -1246,7 +1246,7 @@ mod tests {
             Some(&codec_private),
         );
         let VideoRequirementProbe::Candidate(candidate) = probe else {
-            panic!("H.265 Main10 hvcC должен дать candidate, получено {probe:?}");
+            panic!("H.265 Main10 hvcC must give candidate, received {probe:?}");
         };
         let resolved =
             resolve_video_metadata(VideoCodec::H265, Some(container_source), Some(candidate));

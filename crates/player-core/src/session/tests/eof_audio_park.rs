@@ -23,12 +23,12 @@ fn audio_output_is_paused_only_after_tail_is_played_out() {
     assert_eq!(
         session.playback_state(),
         PlaybackState::Draining,
-        "хвост 200 мс ещё в буфере: Ended рано"
+        "200ms tail still in buffer: Ended early"
     );
     assert_eq!(
         audio_output.pause_count.load(Ordering::Relaxed),
         0,
-        "пауза до доигрывания хвоста обрезала бы последние ~200 мс звука"
+        "A pause before the tail is played would cut off the last ~200ms of sound."
     );
 
     audio_output.set_buffer_level_ms(0.0);
@@ -38,7 +38,7 @@ fn audio_output_is_paused_only_after_tail_is_played_out() {
     assert_eq!(
         audio_output.pause_count.load(Ordering::Relaxed),
         1,
-        "на Ended output обязан уйти в backend-паузу"
+        "on Ended output must leave backend-pause"
     );
 }
 
@@ -55,7 +55,7 @@ fn parked_audio_output_asks_for_play_again_after_ended() {
     assert_eq!(session.playback_state(), PlaybackState::Seeking);
     assert!(
         session.seek_commit().is_some(),
-        "Play после Ended = replay seek"
+        "Play after Ended = replay seek"
     );
 }
 
@@ -74,6 +74,6 @@ fn failed_pause_at_eof_does_not_block_ended() {
     assert_eq!(session.playback_state(), PlaybackState::Ended);
     assert!(
         session.snapshot().last_error.is_none(),
-        "конец файла не fatal из-за паузы"
+        "The end of the file is not fatal due to a pause."
     );
 }

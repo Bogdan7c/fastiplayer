@@ -11,24 +11,24 @@ fn preview_does_not_persist_toml_on_field_change() {
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(
             vec![SettingsUiAction::Open, brightness_action(0.25)],
             &mut render_adapter,
         )
-        .expect("draft edit не должен писать TOML");
+        .expect("Draft Edit Shouldn't Write TOML");
     runtime
         .apply_due_preview(&mut render_adapter, Instant::now())
-        .expect("preview должен примениться без persist");
+        .expect("Preview should be applied without persisting.");
 
     assert_eq!(render_adapter.preview_updates.len(), 1);
     assert!(
         !path.exists(),
-        "slider/input movement и preview не должны создавать TOML"
+        "slider/input movement and preview do not create TOML"
     );
     remove_file_if_exists(&path);
 }
@@ -37,9 +37,9 @@ fn preview_does_not_persist_toml_on_field_change() {
 fn reset_surface_resets_settings_from_all_sections_because_surface_is_global() {
     let config = AppConfig::default();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
     let default_volume = AppConfig::default().audio.volume;
 
     runtime
@@ -57,19 +57,19 @@ fn reset_surface_resets_settings_from_all_sections_because_surface_is_global() {
             ],
             &mut render_adapter,
         )
-        .expect("actions должны пройти");
+        .expect("Actions must pass through");
 
     let audio_value = runtime
         .registry()
         .get_value(runtime.controller.draft(), &SettingId::from("audio.volume"))
-        .expect("audio.volume должен читаться");
+        .expect("audio.volume should read");
     let brightness_value = runtime
         .registry()
         .get_value(
             runtime.controller.draft(),
             &SettingId::from("render.color_adjustment.brightness"),
         )
-        .expect("brightness должен читаться");
+        .expect("brightness should be read");
     assert_eq!(audio_value, SettingValue::Float(default_volume));
     assert_eq!(brightness_value, SettingValue::Float(0.0));
 }
@@ -78,9 +78,9 @@ fn reset_surface_resets_settings_from_all_sections_because_surface_is_global() {
 fn reset_group_profile_hits_both_visual_profile_groups() {
     let config = AppConfig::default();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(
@@ -101,7 +101,7 @@ fn reset_group_profile_hits_both_visual_profile_groups() {
             ],
             &mut render_adapter,
         )
-        .expect("actions должны пройти");
+        .expect("Actions must pass through");
 
     let profile_value = runtime
         .registry()
@@ -109,14 +109,14 @@ fn reset_group_profile_hits_both_visual_profile_groups() {
             runtime.controller.draft(),
             &SettingId::from("render.profile"),
         )
-        .expect("render.profile должен читаться");
+        .expect("render.profile should read");
     let tone_mapping_value = runtime
         .registry()
         .get_value(
             runtime.controller.draft(),
             &SettingId::from("render.tone_mapping"),
         )
-        .expect("render.tone_mapping должен читаться");
+        .expect("render.tone_mapping should read");
     assert_eq!(
         profile_value,
         SettingValue::Select(SettingOptionId::from("vulkan"))
@@ -131,9 +131,9 @@ fn reset_group_profile_hits_both_visual_profile_groups() {
 fn reset_live_field_previews_default_value() {
     let config = AppConfig::default();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
     let first_tick = Instant::now();
 
     runtime
@@ -141,10 +141,10 @@ fn reset_live_field_previews_default_value() {
             vec![SettingsUiAction::Open, brightness_action(0.40)],
             &mut render_adapter,
         )
-        .expect("draft change должен пройти");
+        .expect("The draft change must be passed");
     runtime
         .apply_due_preview(&mut render_adapter, first_tick)
-        .expect("первый preview должен примениться");
+        .expect("The first preview should apply.");
     assert_eq!(
         render_adapter
             .preview_updates
@@ -160,10 +160,10 @@ fn reset_live_field_previews_default_value() {
             }],
             &mut render_adapter,
         )
-        .expect("reset field должен пройти");
+        .expect("The reset field must pass through.");
     runtime
         .apply_due_preview(&mut render_adapter, first_tick + Duration::from_secs(1))
-        .expect("preview после reset должен примениться");
+        .expect("preview after reset should apply");
 
     let default_brightness = AppConfig::default().render.color_adjustment.brightness;
     assert_eq!(
@@ -172,7 +172,7 @@ fn reset_live_field_previews_default_value() {
             .last()
             .map(|update| { update.settings.color_pipeline.adjustment.brightness }),
         Some(default_brightness),
-        "reset live поля должен отправить default в renderer preview"
+        "reset live fields must send default to renderer preview"
     );
 }
 
@@ -180,9 +180,9 @@ fn reset_live_field_previews_default_value() {
 fn multiple_color_changes_coalesce_to_last_preview_value() {
     let config = AppConfig::default();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(
@@ -193,10 +193,10 @@ fn multiple_color_changes_coalesce_to_last_preview_value() {
             ],
             &mut render_adapter,
         )
-        .expect("draft changes должны coalesce pending preview");
+        .expect("Draft changes to coalesce pending preview");
     runtime
         .apply_due_preview(&mut render_adapter, Instant::now())
-        .expect("preview должен примениться");
+        .expect("The preview should apply");
 
     assert_eq!(render_adapter.preview_updates.len(), 1);
     assert_eq!(
@@ -214,9 +214,9 @@ fn preview_pacing_uses_committed_live_preview_max_hz() {
     let mut config = AppConfig::default();
     config.ui.settings.live_preview_max_hz = 2;
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
     let first_tick = Instant::now();
 
     runtime
@@ -224,28 +224,28 @@ fn preview_pacing_uses_committed_live_preview_max_hz() {
             vec![SettingsUiAction::Open, brightness_action(0.10)],
             &mut render_adapter,
         )
-        .expect("первое draft change должно пройти");
+        .expect("The first draft change must be completed.");
     runtime
         .apply_due_preview(&mut render_adapter, first_tick)
-        .expect("первый preview должен примениться сразу");
+        .expect("The first preview should apply immediately.");
     runtime
         .handle_ui_actions(vec![brightness_action(0.20)], &mut render_adapter)
-        .expect("второе draft change должно пройти");
+        .expect("The second draft change should be completed.");
 
     let early_tick = runtime
         .apply_due_preview(&mut render_adapter, first_tick + Duration::from_millis(100))
-        .expect("ранний preview tick должен только запланировать retry");
+        .expect("Early preview tick should only schedule retry");
 
     assert_eq!(
         render_adapter.preview_updates.len(),
         1,
-        "runtime не должен отправлять preview чаще committed max_hz"
+        "runtime don't send preview more often committed max_hz"
     );
     assert_eq!(early_tick.repaint_after, Some(Duration::from_millis(400)));
 
     runtime
         .apply_due_preview(&mut render_adapter, first_tick + Duration::from_millis(500))
-        .expect("preview должен примениться после config-paced интервала");
+        .expect("Preview must be applied after the config-paced interval");
     assert_eq!(render_adapter.preview_updates.len(), 2);
     assert_eq!(
         render_adapter.preview_updates[1]
@@ -261,16 +261,16 @@ fn preview_pacing_uses_committed_live_preview_max_hz() {
 fn field_validation_error_does_not_mutate_draft_or_queue_preview() {
     let config = AppConfig::default();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(
             vec![SettingsUiAction::Open, brightness_action(99.0)],
             &mut render_adapter,
         )
-        .expect("field validation error должен стать UI state, а не hard error");
+        .expect("Field validation error should be a UI state, not a hard error.");
 
     let brightness_field = runtime
         .ui_model()
@@ -278,27 +278,27 @@ fn field_validation_error_does_not_mutate_draft_or_queue_preview() {
         .iter()
         .find(|field| field.descriptor.id == SettingId::from("render.color_adjustment.brightness"))
         .cloned()
-        .expect("brightness field должен быть в visual model");
+        .expect("The brightness field should be in the visual model.");
     assert!(brightness_field.validation_error.is_some());
     assert!(
         runtime
             .controller
             .diff()
-            .expect("draft и committed должны сравниваться")
+            .expect("Draft and committed should be compared")
             .is_empty(),
-        "invalid field value не должен мутировать draft"
+        "The invalid field value should not mutate the draft"
     );
     assert!(
         runtime.controller.preview().pending_routes().is_empty(),
-        "invalid field value не должен queue-ить preview"
+        "invalid field value shouldn't queue-ooze preview"
     );
 
     runtime
         .handle_ui_actions(vec![SettingsUiAction::Apply], &mut render_adapter)
-        .expect("Apply с field error должен стать UI status, а не hard error");
+        .expect("Apply with field error should be UI status, not hard error.");
     assert!(
         runtime.latest_apply_report().is_none(),
-        "field validation error должен блокировать persist/apply pipeline"
+        "field validation error to block persist/apply pipeline"
     );
 }
 
@@ -306,9 +306,9 @@ fn field_validation_error_does_not_mutate_draft_or_queue_preview() {
 fn backpressure_keeps_latest_pending_preview_update() {
     let config = AppConfig::default();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter = RecordingRenderAdapter::backpressured_once_from_config(&config)
-        .expect("adapter должен стартовать");
+        .expect("The adapter should start.");
     let first_tick = Instant::now();
 
     runtime
@@ -316,10 +316,10 @@ fn backpressure_keeps_latest_pending_preview_update() {
             vec![SettingsUiAction::Open, brightness_action(0.10)],
             &mut render_adapter,
         )
-        .expect("draft edit должен пройти");
+        .expect("The draft edit must be completed.");
     let backpressure_tick = runtime
         .apply_due_preview(&mut render_adapter, first_tick)
-        .expect("backpressure должен быть retryable preview state");
+        .expect("Backpressure must be retryable preview state");
 
     assert_eq!(render_adapter.preview_updates.len(), 0);
     assert!(
@@ -328,16 +328,16 @@ fn backpressure_keeps_latest_pending_preview_update() {
             .preview()
             .pending_routes()
             .contains(&SettingRouteId::from("render")),
-        "backpressure должен оставить latest preview pending"
+        "backpressure should leave latest preview pending"
     );
     assert!(backpressure_tick.repaint_after.is_some());
 
     runtime
         .handle_ui_actions(vec![brightness_action(0.50)], &mut render_adapter)
-        .expect("новое draft значение должно заменить pending preview");
+        .expect("New draft value to replace pending preview");
     runtime
         .apply_due_preview(&mut render_adapter, first_tick + Duration::from_secs(1))
-        .expect("retry должен отправить latest pending preview");
+        .expect("Retry should send a recent pending preview");
 
     assert_eq!(render_adapter.preview_updates.len(), 1);
     assert_eq!(
@@ -354,22 +354,22 @@ fn backpressure_keeps_latest_pending_preview_update() {
 fn cancel_rolls_back_lazy_preview_baseline_and_discards_draft() {
     let config = AppConfig::default();
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
-        .expect("settings runtime должен построиться");
+        .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(
             vec![SettingsUiAction::Open, brightness_action(0.35)],
             &mut render_adapter,
         )
-        .expect("draft edit должен пройти");
+        .expect("The draft edit must be completed.");
     runtime
         .apply_due_preview(&mut render_adapter, Instant::now())
-        .expect("preview должен примениться");
+        .expect("The preview should apply");
     runtime
         .handle_ui_actions(vec![SettingsUiAction::Cancel], &mut render_adapter)
-        .expect("cancel должен откатить preview");
+        .expect("Shutdown must be reset by preview");
 
     assert_eq!(render_adapter.rollbacks.len(), 1);
     assert_eq!(
@@ -380,9 +380,9 @@ fn cancel_rolls_back_lazy_preview_baseline_and_discards_draft() {
         runtime
             .controller
             .diff()
-            .expect("draft и committed должны сравниваться")
+            .expect("Draft and committed should be compared")
             .is_empty(),
-        "cancel должен отбросить draft changes"
+        "cancel must be thrown away draft changes"
     );
     assert!(!runtime.is_settings_window_open());
 }

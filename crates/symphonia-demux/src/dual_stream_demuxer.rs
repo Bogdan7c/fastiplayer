@@ -43,19 +43,19 @@ impl DualStreamDemuxer {
             .iter()
             .find(|track| track.kind == TrackKind::Video && track.codec_id == "V_VP9")
             .map(|track| track.id)
-            .ok_or_else(|| anyhow::anyhow!("Streaming video WebM не содержит VP9 video track"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Streaming video WebM does not contain VP9 video track")
+            })?;
         // Audio codec admission по-прежнему принадлежит existing downstream decoder selection.
         let audio_track_id = audio_demuxer
             .tracks()
             .iter()
             .find(|track| track.kind == TrackKind::Audio)
             .map(|track| track.id)
-            .ok_or_else(|| anyhow::anyhow!("Streaming audio WebM не содержит audio track"))?;
+            .ok_or_else(|| anyhow::anyhow!("Streaming audio WebM does not contain audio track"))?;
         // S21 сохраняет один pending packet на component; S21R применит timestamp lead к readiness.
         let bootstrap_byte_limit = std::num::NonZeroUsize::new(DUAL_STREAM_PENDING_BYTE_LIMIT)
-            .ok_or_else(|| {
-                anyhow::anyhow!("composite bootstrap byte limit должен быть ненулевым")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("composite bootstrap byte limit must be non-zero"))?;
         let lead_policy = demux_api::CompositeComponentLeadPolicy::single_pending_packet(
             DUAL_STREAM_MAX_COMPONENT_LEAD,
             bootstrap_byte_limit,
@@ -245,7 +245,7 @@ mod tests {
         where
             Self: 'source,
         {
-            unreachable!("fake reader не возвращает MediaSourceStream")
+            unreachable!("fake reader does not return a MediaSourceStream")
         }
     }
 
@@ -364,7 +364,7 @@ mod tests {
             DemuxSeekability::Seekable,
             options,
         )
-        .expect("fake stream demuxer должен открыться")
+        .expect("fake stream demuxer should open")
     }
 
     fn fake_dual_stream_demuxer(
@@ -427,12 +427,12 @@ mod tests {
             DemuxSeekability::Seekable,
             DemuxerOptions::default(),
         )
-        .expect("fake audio demuxer должен открыться");
+        .expect("fake audio demuxer should open");
         let mut demuxer =
             DualStreamDemuxer::new(video_demuxer, audio_demuxer).expect("dual demuxer opens");
         let error = demuxer
             .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
-            .expect_err("audio seek failure должен прервать composite seek");
+            .expect_err("audio seek failure must interrupt composite seek");
         let typed = error
             .downcast_ref::<demux_api::CompositeComponentSeekError>()
             .expect("typed composite seek error");
@@ -487,7 +487,7 @@ mod tests {
 
         let result = demuxer
             .seek_with_request(DemuxSeekRequest::decode_point_before(requested_timestamp))
-            .expect("audio packet granularity after target не должна ломать video seek");
+            .expect("audio packet granularity after target should not break video seek");
 
         assert_eq!(result.requested_position, MediaTime::from_secs(10));
         assert_eq!(result.actual_position, MediaTime::from_secs(9));
@@ -527,7 +527,7 @@ mod tests {
         assert_eq!(
             result
                 .actual_track_timestamp
-                .expect("composite seek должен сохранить raw timestamp")
+                .expect("composite seek must preserve the raw timestamp")
                 .track_id,
             TrackId::new(REMAPPED_AUDIO_TRACK_ID)
         );
@@ -549,7 +549,7 @@ mod tests {
         assert_eq!(
             result
                 .actual_track_timestamp
-                .expect("decode-point composite actual должен быть video timestamp")
+                .expect("decode-point composite actual must be the video timestamp")
                 .track_id,
             TrackId::new(REMAPPED_VIDEO_TRACK_ID)
         );
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(
             seek_result
                 .actual_track_timestamp
-                .expect("DecodePointBefore actual должен остаться video timestamp")
+                .expect("DecodePointBefore actual will remain video timestamp")
                 .track_id,
             TrackId::new(REMAPPED_VIDEO_TRACK_ID)
         );
@@ -619,9 +619,9 @@ mod tests {
                 }
                 DemuxReadEvent::TracksChanged(_) => continue,
                 DemuxReadEvent::MediaMetadataChanged(_) => continue,
-                DemuxReadEvent::TemporarilyUnavailable(hint) => panic!(
-                    "finite post-seek fixture не должна возвращать temporary readiness: {hint:?}"
-                ),
+                DemuxReadEvent::TemporarilyUnavailable(hint) => {
+                    panic!("finite post-seek fixture must not return temporary readiness: {hint:?}")
+                }
                 DemuxReadEvent::EndOfStream => panic!("audio bootstrap ended before audio packet"),
             }
         }
@@ -644,7 +644,7 @@ mod tests {
             .next_event()
             .expect("post-seek packet read should not fail");
         let DemuxReadEvent::Packet(packet) = packet_event else {
-            panic!("post-seek packet должен существовать, получено {packet_event:?}");
+            panic!("post-seek packet must exist, received {packet_event:?}");
         };
 
         assert_eq!(packet.kind, TrackKind::Video);
@@ -675,7 +675,7 @@ mod tests {
             .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
                 10,
             )))
-            .expect_err("video DecodePointBefore failure должен прервать composite seek");
+            .expect_err("video DecodePointBefore failure must interrupt composite seek");
 
         assert!(format!("{error}").contains("DecodePointBefore verification failed"));
         assert!(

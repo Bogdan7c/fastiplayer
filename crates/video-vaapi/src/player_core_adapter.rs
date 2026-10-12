@@ -352,7 +352,7 @@ mod tests {
     /// Проверяет, что packet adapter не теряет ownership payload-а и timing metadata.
     #[test]
     fn decode_packet_adapter_preserves_vaapi_fields_and_drops_unused_raw_pts() {
-        let time_base = media_core::TimeBase::new(1, 90_000).expect("валидная MPEG time base");
+        let time_base = media_core::TimeBase::new(1, 90_000).expect("valid MPEG time base");
         let packet = video_core::DecodePacket {
             track_id: TrackId::new(7),
             pts: Duration::from_millis(42),

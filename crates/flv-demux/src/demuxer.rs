@@ -231,8 +231,7 @@ impl FlvDemuxer {
                 } else {
                     "audio"
                 },
-                reason: "packet получен после SequenceEnd/discontinuity без новой SequenceStart"
-                    .to_owned(),
+                reason: "packet received SequenceEnd/discontinuity new SequenceStart".to_owned(),
             });
         }
         if self.recovery_gate {
@@ -525,7 +524,7 @@ impl FlvDemuxer {
             Ok(()) => original_error,
             Err(rollback_error) => FlvDemuxError::Source {
                 reason: format!(
-                    "seek failure `{original_error}`; rollback к offset {old_position} также failed: {rollback_error}"
+                    "seek failure `{original_error}`; rollback toward offset {old_position} also failed: {rollback_error}"
                 ),
             },
         }

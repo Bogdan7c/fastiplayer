@@ -31,7 +31,10 @@ fn wait_for_preview(runtime: &mut PlaylistRuntime) -> super::super::PlaylistImpo
         if let Some(preview) = runtime.pending_playlist_import_preview() {
             return preview;
         }
-        assert!(Instant::now() < deadline, "preview не появился за 5 секунд");
+        assert!(
+            Instant::now() < deadline,
+            "preview didn't show up 5 seconds"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -120,7 +123,7 @@ fn windows_1251_bytes(text: &str) -> Vec<u8> {
                 u8::try_from(0xC0 + (u32::from(character) - 0x0410)).expect("cp1251 byte")
             }
             ascii if ascii.is_ascii() => u8::try_from(u32::from(ascii)).expect("ascii byte"),
-            other => panic!("символ {other:?} не поддержан тестовым кодировщиком"),
+            other => panic!("{other:?} is not supported by a test encoder"),
         })
         .collect()
 }
@@ -146,7 +149,7 @@ fn windows_1251_m3u_imports_cyrillic_entries_and_reports_the_encoding_once() {
     assert_eq!(notices, vec![PlaylistImportNotice::TextReadAsWindows1251]);
     assert_eq!(
         notices[0].message(),
-        "Плейлист прочитан в кодировке Windows-1251"
+        "Playlist read using Windows-1251 encoding"
     );
     // Уведомление отдаётся ровно один раз.
     assert!(runtime.drain_playlist_import_notices().is_empty());

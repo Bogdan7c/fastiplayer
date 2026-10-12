@@ -59,7 +59,9 @@ impl HlsManifestComponentRole {
             (true, true) => Ok(Self::Muxed),
             (true, false) => Ok(Self::Video),
             (false, true) => Ok(Self::Audio),
-            (false, false) => anyhow::bail!("HLS manifest marker component не содержит A/V tracks"),
+            (false, false) => {
+                anyhow::bail!("HLS manifest marker component does not contain A/V tracks")
+            }
         }
     }
 }
@@ -254,7 +256,7 @@ mod tests {
             });
             assert!(
                 installation.is_ok(),
-                "global logger уже занят другим unit-test owner-ом"
+                "global logger is already occupied by another unit-test owner"
             );
             log::set_max_level(log::LevelFilter::Info);
             let owner_thread = std::thread::current().id();
@@ -389,7 +391,7 @@ mod tests {
         ] {
             assert!(
                 !normalized.contains(forbidden),
-                "утечка locator material: {forbidden}"
+                "locator material leakage: {forbidden}"
             );
         }
     }

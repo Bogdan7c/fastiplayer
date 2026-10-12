@@ -65,12 +65,12 @@ fn eager_probe_preserves_first_byte_source_failure() {
         DemuxerOptions::default(),
     );
     let error = match open_result {
-        Ok(_) => panic!("failing source не должен открыться как Ogg"),
+        Ok(_) => panic!("failing source should not be opened as Ogg"),
         Err(error) => error,
     };
 
     let DemuxError::Io(io_error) = error else {
-        panic!("ожидалась concrete I/O error, получено: {error}");
+        panic!("expected concrete I/O error, got: {error}");
     };
     assert!(matches!(
         io_error

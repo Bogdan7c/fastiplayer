@@ -267,14 +267,14 @@ mod tests {
 
         let zero_evidence = telemetry
             .record_first_target_frame_presented(7, Duration::from_secs(8))
-            .expect("первый target frame должен дать evidence");
+            .expect("The first target frame will provide evidence.");
         assert_eq!(zero_evidence.presented_pre_target_frames(), 0);
 
         telemetry.begin_seek(seek_commit(Instant::now()));
         telemetry.record_presented_pre_target_frame(7, Duration::from_secs(6));
         let violation_evidence = telemetry
             .record_first_target_frame_presented(7, Duration::from_secs(8))
-            .expect("target после нарушения всё равно должен сохранить counter");
+            .expect("The target after the violation should still keep the counter.");
         assert_eq!(violation_evidence.presented_pre_target_frames(), 1);
         assert_eq!(telemetry.commit_presentation_evidence(7), Some(1));
     }
@@ -299,7 +299,7 @@ mod tests {
                 Duration::from_millis(8_020),
                 committed_at + Duration::from_millis(20),
             )
-            .expect("положительный delta должен дать один proof");
+            .expect("A positive delta will give you one proof.");
         assert_eq!(progress.generation(), 7);
         assert_eq!(progress.observed_position(), Duration::from_millis(8_020));
         assert_eq!(progress.commit_elapsed(), Duration::from_millis(20));
@@ -325,7 +325,7 @@ mod tests {
 
         let progress = telemetry
             .observe_position_progress(Duration::from_millis(8_020), observed_at)
-            .expect("положительный delta должен сохранить оба monotonic origin-а");
+            .expect("A positive delta must retain both monotonic origins.");
 
         assert_eq!(progress.public_elapsed(), Duration::from_millis(1_620));
         assert_eq!(progress.receipt_elapsed(), Duration::from_millis(120));

@@ -145,7 +145,7 @@ impl PlaylistResumePersistenceOwner {
                         self.store_access = ResumeStoreAccess::Writable;
                         tracing::warn!(
                             ?cause,
-                            "Повреждённый playlist-resume sidecar изолирован; очередь не изменялась"
+                            "Corrupted playlist-resume sidecar quarantined; queue unchanged"
                         );
                     }
                     QuarantineOutcome::SourceChanged
@@ -154,7 +154,7 @@ impl PlaylistResumePersistenceOwner {
                         tracing::warn!(
                             ?cause,
                             ?quarantine,
-                            "Playlist-resume quarantine не завершён; sidecar защищён от записи"
+                            "Playlist-resume quarantine incomplete; sidecar protected from writes"
                         );
                     }
                 }
@@ -163,14 +163,14 @@ impl PlaylistResumePersistenceOwner {
                 self.store_access = ResumeStoreAccess::SaveBlocked;
                 tracing::warn!(
                     schema_version,
-                    "Новая schema playlist-resume защищена от перезаписи"
+                    "New schema playlist-resume protected from overwriting"
                 );
             }
             ResumeInspectionOutcome::ProtectedSaveBlocked { cause } => {
                 self.store_access = ResumeStoreAccess::SaveBlocked;
                 tracing::warn!(
                     ?cause,
-                    "Неопознанный playlist-resume sidecar защищён от перезаписи"
+                    "Unidentified playlist-resume sidecar protected from overwriting"
                 );
             }
         }
@@ -211,14 +211,14 @@ impl PlaylistResumePersistenceOwner {
             Ok(true) => StartupPosition::Restore(checkpoint.position()),
             Ok(false) => {
                 tracing::debug!(
-                    "Playlist-resume checkpoint не совпал с exact current locator и проигнорирован"
+                    "Playlist-resume checkpoint did not match the exact current locator and was ignored"
                 );
                 StartupPosition::KeepStart
             }
             Err(error) => {
                 tracing::warn!(
                     error = %error,
-                    "Exact locator fingerprint недоступен; resume checkpoint проигнорирован"
+                    "Exact locator fingerprint not available; resume checkpoint ignored"
                 );
                 StartupPosition::KeepStart
             }
@@ -407,7 +407,7 @@ impl PlaylistResumePersistenceOwner {
             Ok(worker) => self.worker = Some(worker),
             Err(error) => {
                 self.worker_start_failed = true;
-                tracing::error!(error = %error, "Playlist resume writer не запущен");
+                tracing::error!(error = %error, "Playlist resume writer not running");
             }
         }
     }
@@ -436,7 +436,7 @@ impl PlaylistResumePersistenceOwner {
         };
         let Some(revision) = NonZeroU64::new(self.next_revision) else {
             self.worker_start_failed = true;
-            tracing::error!("Playlist resume revision исчерпана");
+            tracing::error!("Playlist resume revision has been exhausted");
             return;
         };
         let snapshot =
@@ -449,11 +449,11 @@ impl PlaylistResumePersistenceOwner {
                 self.schedule.borrow_mut().record_capture(now);
             }
             ResumeSubmitOutcome::SameOrOlderRevision => {
-                tracing::warn!("Playlist resume writer отверг неожиданно старую revision");
+                tracing::warn!("Playlist resume writer rejects unexpectedly old revision");
             }
             ResumeSubmitOutcome::Disconnected => {
                 self.worker_start_failed = true;
-                tracing::error!("Playlist resume writer потерял command channel");
+                tracing::error!("Playlist resume writer loses command channel");
             }
         }
     }
@@ -487,7 +487,7 @@ impl PlaylistResumePersistenceOwner {
                 tracing::warn!(
                     revision = report.revision.get(),
                     ?cause,
-                    "Playlist resume target заменён, но directory durability не подтверждена"
+                    "Playlist resume target replaced, directory durability not confirmed"
                 );
             }
             AtomicWriteOutcome::NotReplaced(failure) => {
@@ -495,7 +495,7 @@ impl PlaylistResumePersistenceOwner {
                 tracing::warn!(
                     revision = report.revision.get(),
                     ?failure,
-                    "Playlist resume checkpoint не записан"
+                    "Playlist resume checkpoint not recorded"
                 );
             }
         }
@@ -580,7 +580,7 @@ fn checkpoint_for_item(
                 Err(error) => {
                     tracing::warn!(
                         error = %error,
-                        "Playlist resume checkpoint пропущен для неподдерживаемого native path"
+                        "Playlist resume checkpoint skipped for unsupported native path"
                     );
                     CheckpointCapture::Skip
                 }

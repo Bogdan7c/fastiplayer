@@ -20,11 +20,11 @@ use crate::DemuxerOptions;
 /// Единый bounded sniff budget достаточен для всех compact S28C fixtures.
 fn sniff_budget() -> DemuxSniffBudget {
     DemuxSniffBudget::new(
-        NonZeroUsize::new(4_096).expect("S28C sniff bytes ненулевые"),
+        NonZeroUsize::new(4_096).expect("S28C sniff bytes non-zero"),
         NonZeroUsize::MIN,
         Duration::from_secs(1),
     )
-    .expect("S28C sniff budget валиден")
+    .expect("S28C sniff budget valid")
 }
 
 /// Создаёт registry с единственным production Symphonia factory.
@@ -76,9 +76,9 @@ fn next_packet(demuxer: &mut dyn Demuxer) -> Packet {
         match demuxer.next_event().expect("read S28C packet") {
             DemuxReadEvent::Packet(packet) => return packet,
             DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
-            DemuxReadEvent::EndOfStream => panic!("S28C fixture закончился до первого packet-а"),
+            DemuxReadEvent::EndOfStream => panic!("S28C fixture ended before first packet"),
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                panic!("blocking Symphonia reader не публикует temporary readiness")
+                panic!("blocking Symphonia reader publisher temporary readiness")
             }
         }
     }
@@ -89,14 +89,14 @@ fn read_to_clean_eof(demuxer: &mut dyn Demuxer) {
     loop {
         match demuxer
             .next_event()
-            .expect("finite S28C fixture должен читаться")
+            .expect("finite S28C fixture should be read")
         {
             DemuxReadEvent::Packet(_)
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => return,
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                panic!("finite S28C fixture не должен ждать readiness")
+                panic!("finite S28C fixture wait out readiness")
             }
         }
     }
@@ -129,7 +129,7 @@ fn assert_fixture_contract(fixture: &AudioContainerFixture, demuxer: &mut dyn De
     assert_eq!(packet.data.as_ref(), fixture.first_packet.as_slice());
     assert_eq!(
         packet.byte_offset, None,
-        "{} generic Symphonia reader не должен выдумывать source offset",
+        "{} generic Symphonia reader should not invent source offset",
         fixture.extension
     );
     assert_eq!(packet.track_pts.expect("packet PTS").units.get(), 0);
@@ -180,7 +180,7 @@ fn streaming_audio_families_reject_seek_and_continue_to_clean_eof() {
         );
         let seek_error = demuxer
             .seek_with_request(DemuxSeekRequest::accurate(Duration::ZERO))
-            .expect_err("forward-only S28C input не должен seek-аться");
+            .expect_err("forward-only S28C input shouldn't seek-lay down");
         assert!(matches!(
             seek_error.downcast_ref::<MediaDemuxError>(),
             Some(MediaDemuxError::SeekUnavailable { .. })
@@ -196,7 +196,7 @@ fn every_audio_family_sniffs_without_extension_and_overrides_conflicting_hint() 
     let factory = SymphoniaDemuxFactory::new(DemuxerOptions::default()).expect("S28C factory");
     for fixture in fixtures() {
         let conflicting_hints = DemuxHints::none().with_extension(
-            DemuxSourceExtension::new("mp4").expect("conflicting extension валиден"),
+            DemuxSourceExtension::new("mp4").expect("conflicting extension is valid"),
         );
         let decision = factory.probe(DemuxProbeRequest {
             hints: &conflicting_hints,
@@ -205,10 +205,7 @@ fn every_audio_family_sniffs_without_extension_and_overrides_conflicting_hint() 
             cancellation: &CancellationToken::never_cancelled(),
         });
         let DemuxProbeDecision::Match(matched) = decision else {
-            panic!(
-                "{} signature должна победить hint: {decision:?}",
-                fixture.extension
-            );
+            panic!("{} signature beats hint: {decision:?}", fixture.extension);
         };
         assert_eq!(matched.container.as_str(), fixture.container_id);
         assert_eq!(
@@ -235,7 +232,7 @@ fn malformed_audio_families_fail_during_probe_or_backend_open() {
             sniff_budget(),
             CancellationToken::new(),
         ) {
-            Ok(_) => panic!("recognized truncated fixture должен fail-нуться"),
+            Ok(_) => panic!("recognized truncated fixture must fail"),
             Err(error) => error,
         };
         assert!(
@@ -261,7 +258,7 @@ fn cancellation_before_sniff_rejects_every_audio_family() {
             sniff_budget(),
             cancellation,
         ) {
-            Ok(_) => panic!("cancelled S28C open должен fail-нуться"),
+            Ok(_) => panic!("canceled S28C open must fail"),
             Err(error) => error,
         };
         assert!(matches!(
@@ -336,7 +333,7 @@ fn chained_ogg_maps_reset_required_to_tracks_changed_before_next_packet() {
             DemuxReadEvent::Packet(_) if reset_seen => packets_after_reset += 1,
             DemuxReadEvent::Packet(_) => packets_before_reset += 1,
             DemuxReadEvent::TracksChanged(update) => {
-                assert!(!reset_seen, "chained Ogg должен дать один reset");
+                assert!(!reset_seen, "chained Ogg will give you one reset");
                 assert_eq!(packets_before_reset, 1);
                 let audio_track = update
                     .tracks
@@ -349,7 +346,7 @@ fn chained_ogg_maps_reset_required_to_tracks_changed_before_next_packet() {
             DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => break,
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                panic!("finite chained Ogg не должен ждать readiness")
+                panic!("finite chained Ogg wait out readiness")
             }
         }
     }

@@ -406,7 +406,7 @@ impl MpegTsDemuxer {
             timestamps
                 .pts
                 .unwrap(pes.pts.ok_or_else(|| MpegTsDemuxError::Malformed {
-                    reason: format!("PES на PID {} не содержит PTS", pes.pid),
+                    reason: format!("PES on PID {} does not contain PTS", pes.pid),
                 })?);
         let raw_dts = pes.dts.map(|timestamp| timestamps.dts.unwrap(timestamp));
         if matches!(kind, StreamKind::H264 | StreamKind::H265) {
@@ -645,7 +645,7 @@ impl MpegTsDemuxer {
             .find(|(_, accumulator)| !accumulator.bytes.is_empty())
         {
             return Err(MpegTsDemuxError::Malformed {
-                reason: format!("оборван elementary audio frame на PID {pid}"),
+                reason: format!("ragged elementary audio frame on PID {pid}"),
             });
         }
         Ok(())

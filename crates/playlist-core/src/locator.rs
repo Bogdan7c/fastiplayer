@@ -302,7 +302,7 @@ impl fmt::Debug for PlaylistLocatorBuildError {
 
 impl fmt::Display for PlaylistLocatorBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("URL locator не может быть пустым")
+        formatter.write_str("The locator URL cannot be empty.")
     }
 }
 

@@ -100,22 +100,22 @@ impl ContainerProbeSnapshot {
 #[derive(Debug, thiserror::Error)]
 pub enum ContainerProbeError {
     /// Caller запросил cooperative cancellation.
-    #[error("local media probe отменён")]
+    #[error("local media probe canceled")]
     Cancelled,
 
     /// Symphonia не нашла подходящий container reader.
-    #[error("неподдерживаемый media container: {reason}")]
+    #[error("Unsupported media container: {reason}")]
     UnsupportedContainer {
         /// Безопасная техническая причина от Symphonia.
         reason: String,
     },
 
     /// Source не удалось прочитать или переместить.
-    #[error("ошибка I/O при чтении media container: {0}")]
+    #[error("Error I/O when reading media container: {0}")]
     IoFailure(#[source] io::Error),
 
     /// Container reader найден, но статическую структуру прочитать не удалось.
-    #[error("ошибка разбора media container: {reason}")]
+    #[error("parsing media container: {reason}")]
     ProbeFailure {
         /// Безопасная техническая причина от Symphonia.
         reason: String,
@@ -417,9 +417,9 @@ mod tests {
             .with_duration(SymphoniaDuration::new(12_500));
         let mut metadata_builder = MetadataBuilder::new(TEST_METADATA_INFO);
         let tags = [
-            StandardTag::TrackTitle(Arc::new("Название".to_owned())),
-            StandardTag::Artist(Arc::new("Исполнитель".to_owned())),
-            StandardTag::Album(Arc::new("Альбом".to_owned())),
+            StandardTag::TrackTitle(Arc::new("Title".to_owned())),
+            StandardTag::Artist(Arc::new("Artist".to_owned())),
+            StandardTag::Album(Arc::new("Album".to_owned())),
             StandardTag::DiscNumber(2),
             StandardTag::TrackNumber(7),
             StandardTag::TvSeasonNumber(3),
@@ -456,9 +456,9 @@ mod tests {
                 .and_then(|container| container.format_name.as_deref()),
             Some("test-container")
         );
-        assert_eq!(tags.title.as_deref(), Some("Название"));
-        assert_eq!(tags.artists, ["Исполнитель"]);
-        assert_eq!(tags.album.as_deref(), Some("Альбом"));
+        assert_eq!(tags.title.as_deref(), Some("Title"));
+        assert_eq!(tags.artists, ["Artist"]);
+        assert_eq!(tags.album.as_deref(), Some("Album"));
         assert_eq!(tags.disc_number, Some(DiscNumber::new(2)));
         assert_eq!(tags.track_number, Some(TrackNumber::new(7)));
         assert_eq!(tags.tv_season_number, Some(TvSeasonNumber::new(3)));

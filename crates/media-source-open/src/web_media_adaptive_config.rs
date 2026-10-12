@@ -33,7 +33,9 @@ pub fn adaptive_transport_limits(network: &NetworkConfig) -> Result<AdaptiveTran
         .and_then(|megabytes| megabytes.checked_mul(1_024 * 1_024))
         .and_then(NonZeroUsize::new)
         .ok_or_else(|| {
-            anyhow!("network.memory_cache_mb нельзя выразить как adaptive resource byte budget")
+            anyhow!(
+                "network.memory_cache_mb cannot be expressed as an adaptive resource byte budget"
+            )
         })?;
     Ok(AdaptiveTransportLimits::new(
         const { NonZeroUsize::new(2 * 1_024 * 1_024).expect("adaptive manifest budget") },

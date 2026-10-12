@@ -35,8 +35,7 @@ fn unplugged_device_becomes_info_toast_about_default_device() {
         visible_toasts(&mut center, now),
         vec![(
             ToastKind::Info,
-            "Звуковое устройство отключено — звук переключён на устройство по умолчанию"
-                .to_string()
+            "Audio device disconnected; switched to the default device".to_string()
         )]
     );
     // Это не ошибка media: центр экрана свободен.
@@ -67,13 +66,13 @@ fn missing_saved_device_toast_names_device() {
     assert!(
         toasts[0]
             .1
-            .contains("«front:CARD=Headset,DEV=0» недоступно"),
+            .contains("“front:CARD=Headset,DEV=0” is unavailable"),
         "{toasts:?}"
     );
 }
 
 #[test]
-fn audio_device_error_is_shown_in_plain_russian_without_technical_text() {
+fn audio_device_error_is_shown_in_plain_english_without_technical_text() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
 
@@ -97,7 +96,7 @@ fn audio_device_error_is_shown_in_plain_russian_without_technical_text() {
 }
 
 #[test]
-fn other_recoverable_errors_are_transient_toasts_in_plain_russian() {
+fn other_recoverable_errors_are_transient_toasts_in_plain_english() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
 
@@ -112,7 +111,7 @@ fn other_recoverable_errors_are_transient_toasts_in_plain_russian() {
     let toasts = visible_toasts(&mut center, now);
     assert_eq!(toasts.len(), 1);
     assert_eq!(toasts[0].0, ToastKind::Transient);
-    assert_eq!(toasts[0].1, "Перемотка для этого видео недоступна");
+    assert_eq!(toasts[0].1, "Seeking is unavailable for this video");
     assert!(!toasts[0].1.contains("SeekUnavailable"), "{toasts:?}");
     assert!(!toasts[0].1.contains("seek"), "{toasts:?}");
 }

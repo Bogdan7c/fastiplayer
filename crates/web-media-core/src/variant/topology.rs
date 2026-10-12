@@ -25,13 +25,13 @@ pub enum ComponentVariantEdgeLimitError {
 impl fmt::Display for ComponentVariantEdgeLimitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Zero => formatter.write_str("component compatibility edge limit равен нулю"),
+            Self::Zero => formatter.write_str("component compatibility edge limit is zero"),
             Self::AboveMaximum {
                 provided_edges,
                 maximum_edges,
             } => write!(
                 formatter,
-                "component compatibility edge limit {provided_edges} превышает максимум {maximum_edges}"
+                "component compatibility edge limit {provided_edges} exceeds the maximum {maximum_edges}"
             ),
         }
     }

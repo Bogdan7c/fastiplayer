@@ -135,11 +135,11 @@ fn prepare_native_live(
         audio_capabilities: settings.audio_capabilities,
         cancellation: CancellationToken::new(),
     })
-    .expect("native dynamic DASH admission должен пройти")
+    .expect("Local dynamic DASH admission must be completed")
     {
         NativeDashAttempt::Prepared(prepared) => prepared,
         NativeDashAttempt::RequiresExtractorFallback(trigger) => {
-            panic!("supported dynamic MPD не имеет права требовать extractor: {trigger:?}")
+            panic!("Supported dynamic MPD may not require extractor: {trigger:?}")
         }
     }
 }
@@ -153,7 +153,7 @@ fn wait_for_shifted_window(
     let deadline = Instant::now() + LIVE_VERTICAL_DEADLINE;
     loop {
         let PreparedNativeDashLifecycle::Live { timeline_port } = &prepared.lifecycle else {
-            panic!("supported dynamic MPD обязан создать live timeline port");
+            panic!("Supported dynamic MPD must create a live timeline port");
         };
         if let Some(range) = timeline_port.observe().snapshot.state.availability_range()
             && range.start > initial_start
@@ -167,7 +167,7 @@ fn wait_for_shifted_window(
             | Ok(DemuxReadEvent::TracksChanged(_))
             | Ok(DemuxReadEvent::MediaMetadataChanged(_)) => {}
             Ok(DemuxReadEvent::EndOfStream) => {
-                panic!("active DASH live завершился до window shift")
+                panic!("Active DASH live is up to window shift")
             }
             Err(error) => panic!("DASH live failed before window shift: {error}"),
         }
@@ -181,7 +181,7 @@ fn assert_retained_dvr_seek(prepared: &mut PreparedNativeDashMedia) {
     let deadline = Instant::now() + LIVE_VERTICAL_DEADLINE;
     let retained_target = loop {
         let PreparedNativeDashLifecycle::Live { timeline_port } = &prepared.lifecycle else {
-            panic!("retained DVR seek требует live timeline");
+            panic!("retained DVR seek requires live timeline");
         };
         if let Some(range) = timeline_port.observe().snapshot.state.seekable_range() {
             break range.start.as_duration();
@@ -191,7 +191,7 @@ fn assert_retained_dvr_seek(prepared: &mut PreparedNativeDashMedia) {
             | Ok(DemuxReadEvent::Packet(_))
             | Ok(DemuxReadEvent::TracksChanged(_))
             | Ok(DemuxReadEvent::MediaMetadataChanged(_)) => {}
-            Ok(DemuxReadEvent::EndOfStream) => panic!("DASH live завершился до seek evidence"),
+            Ok(DemuxReadEvent::EndOfStream) => panic!("DASH Live Ended Before Seeking Evidence"),
             Err(error) => panic!("DASH live seek evidence failed: {error}"),
         }
         assert!(Instant::now() < deadline, "DASH seek evidence timeout");
@@ -201,7 +201,7 @@ fn assert_retained_dvr_seek(prepared: &mut PreparedNativeDashMedia) {
     prepared
         .seek_port
         .enqueue_seek(request_id, DemuxSeekRequest::accurate(retained_target))
-        .expect("retained DASH DVR seek должен войти в worker");
+        .expect("Maintained DASH DVR seek must be included in the worker");
     let deadline = Instant::now() + LIVE_VERTICAL_DEADLINE;
     loop {
         if let Some(receipt) = prepared.seek_port.poll_seek_receipt() {
@@ -276,7 +276,7 @@ fn n14b_lifecycle_dash_live_dvr_expiry_recovery_reopen_has_no_false_eof() {
     assert_eq!(
         server.request_count("/manifest.mpd"),
         0,
-        "syntactic live-DASH classifier не должен fetch-ить root до open"
+        "syntactic live-DASH classifier shouldn't fetch-ooze root before open"
     );
     let stable_source_identity = source.source_identity();
     let mut prepared = prepare_native_live(&source, None, &settings);
@@ -291,9 +291,9 @@ fn n14b_lifecycle_dash_live_dvr_expiry_recovery_reopen_has_no_false_eof() {
             .snapshot
             .state
             .availability_range()
-            .expect("initial dynamic MPD должен публиковать availability"),
+            .expect("The initial dynamic MPD should publish availability."),
         PreparedNativeDashLifecycle::Vod { .. } => {
-            panic!("dynamic MPD ошибочно открыт как VOD")
+            panic!("Dynamic MPD is mistakenly opened as VOD")
         }
     };
 
@@ -305,7 +305,7 @@ fn n14b_lifecycle_dash_live_dvr_expiry_recovery_reopen_has_no_false_eof() {
     assert!(shifted_range.start > initial_range.start);
     assert!(
         prepared.demuxer.seek(Duration::ZERO).is_err(),
-        "expired DASH DVR target нельзя clamp-ить после window shift"
+        "expired DASH DVR target cannot be clamped after window shift"
     );
 
     let semantic_selection = semantic_reopen_request(&prepared.source_state);
@@ -331,21 +331,21 @@ fn n14b_lifecycle_dash_live_dvr_expiry_recovery_reopen_has_no_false_eof() {
             .exact()
             .source(),
         stable_source_identity,
-        "semantic rematch обязан сохранить stable source lineage"
+        "semantic rematch retain stable source lineage"
     );
     assert_decoder_render_audio(reopened.demuxer.as_mut(), &mut wgpu_harness);
     assert!(
         server.request_count("/manifest.mpd") >= 6,
-        "periodic/endpoint/reopen refresh-и обязаны обращаться к stable root"
+        "periodic/endpoint/reopen refresh and must apply to stable root"
     );
     assert!(
         server.request_count("/fmp4-6000.m4s") >= 2,
-        "первый expired fragment должен повториться только после stable-root endpoint recovery"
+        "The first expired fragment must be repeated only after stable-root endpoint recovery."
     );
     assert_eq!(
         process_spy.invocation_count(),
         0,
-        "supported DASH live open/refresh/DVR/reopen не запускают extractor"
+        "supported DASH live open/refresh/DVR/reopen let off extractor"
     );
 }
 
@@ -420,33 +420,33 @@ fn native_dynamic_dash_keeps_profile_network_malformed_and_cancel_failures_disti
 
     assert!(matches!(
         prepare(&source("/unsupported.mpd"), CancellationToken::new())
-            .expect("unsupported addressing должен остаться typed profile result"),
+            .expect("Unsupported addressing should remain typed profile result"),
         NativeDashAttempt::RequiresExtractorFallback(
             web_media_core::WebMediaFallbackTrigger::UnsupportedNativeProfile
         )
     ));
     assert!(
         prepare(&source("/malformed.mpd"), CancellationToken::new()).is_err(),
-        "malformed dynamic MPD не имеет права fallback-иться"
+        "malformed dynamic MPD lawless fallback-flow"
     );
     assert!(
         prepare(&source("/drm.mpd"), CancellationToken::new()).is_err(),
-        "DASH ContentProtection не является native-profile fallback-ом"
+        "DASH ContentProtection is not a native-profile fallback"
     );
     assert!(
         prepare(&source("/missing.mpd"), CancellationToken::new()).is_err(),
-        "network/status failure не имеет права fallback-иться"
+        "network/status failure is not eligible for fallback."
     );
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     assert!(
         prepare(&source("/cancelled.mpd"), cancelled).is_err(),
-        "cancelled attempt не имеет права fallback-иться"
+        "cancelled attempt lawless fallback-flow"
     );
     assert_eq!(server.request_count("/cancelled.mpd"), 0);
     assert_eq!(
         process_spy.invocation_count(),
         0,
-        "typed native admission outcomes сами не запускают extractor process"
+        "typed native admission outcomes don't start themselves extractor process"
     );
 }

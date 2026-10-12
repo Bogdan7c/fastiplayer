@@ -174,21 +174,21 @@ pub enum DemuxActiveReadInterruptionCapability {
 #[derive(Debug, thiserror::Error)]
 pub enum MediaDemuxError {
     /// Источник или контейнер не поддерживает seek для текущего media.
-    #[error("Seek недоступен: {reason}")]
+    #[error("Seek unavailable: {reason}")]
     SeekUnavailable {
         /// Человекочитаемая причина от container/source adapter-а.
         reason: String,
     },
 
     /// Запрошенный режим нельзя честно выполнить через legacy `seek(timestamp)`.
-    #[error("Seek mode {mode:?} не поддерживается этой реализацией demuxer-а")]
+    #[error("Seek mode {mode:?} is not supported by this demuxer implementation.")]
     UnsupportedSeekMode {
         /// Container-level режим, который demuxer не умеет честно выполнить.
         mode: DemuxSeekMode,
     },
 
     /// Newer accepted intent отменил ещё выполняющийся seek.
-    #[error("Seek отменён более новым запросом")]
+    #[error("Seek cancelled by newer request")]
     SeekCancelled,
 }
 
@@ -226,7 +226,7 @@ const MAX_DEMUX_RETRY_AFTER: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum DemuxRetryHintError {
     /// Задержка меньше process-level safety minimum.
-    #[error("demux retry delay {requested:?} меньше минимума {minimum:?}")]
+    #[error("demux retry delay {requested:?} is less than the minimum {minimum:?}")]
     TooShort {
         /// Значение, которое передал provider или adapter.
         requested: Duration,
@@ -235,7 +235,7 @@ pub enum DemuxRetryHintError {
     },
 
     /// Задержка больше process-level safety maximum.
-    #[error("demux retry delay {requested:?} превышает максимум {maximum:?}")]
+    #[error("demux retry delay {requested:?} max out {maximum:?}")]
     TooLong {
         /// Значение, которое передал provider или adapter.
         requested: Duration,
@@ -533,21 +533,21 @@ mod tests {
 
         let first_event = demuxer
             .next_event()
-            .expect("legacy packet должен стать read event");
+            .expect("Legacy packet should be read event");
         assert!(matches!(first_event, DemuxReadEvent::Packet(_)));
 
         let second_event = demuxer
             .next_event()
-            .expect("legacy EOF должен стать read event");
+            .expect("EOF legacy should be read event");
         assert_eq!(second_event, DemuxReadEvent::EndOfStream);
     }
 
     #[test]
     fn retry_hint_accepts_exact_bounds_and_rejects_outside_values() {
         let minimum = DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER)
-            .expect("exact minimum должен быть допустим");
+            .expect("The exact minimum must be allowed.");
         let maximum = DemuxRetryHint::new(DemuxRetryHint::MAX_RETRY_AFTER)
-            .expect("exact maximum должен быть допустим");
+            .expect("Exact maximum should be allowed.");
 
         assert_eq!(minimum.retry_after(), DemuxRetryHint::MIN_RETRY_AFTER);
         assert_eq!(maximum.retry_after(), DemuxRetryHint::MAX_RETRY_AFTER);
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn temporary_unavailable_is_not_packet_eof_or_error_mapping() {
         let hint = DemuxRetryHint::new(Duration::from_millis(25))
-            .expect("focused retry delay должен быть допустим");
+            .expect("A focused retry delay should be allowed.");
         let temporary_event = DemuxReadEvent::TemporarilyUnavailable(hint);
 
         assert_eq!(
@@ -613,7 +613,7 @@ mod tests {
 
         let result = demuxer
             .seek_with_request(DemuxSeekRequest::accurate(Duration::from_secs(3)))
-            .expect("accurate fallback должен использовать legacy seek");
+            .expect("Exact fallback: Legacy seek");
 
         assert_eq!(result.requested_position, MediaTime::from_secs(3));
         assert_eq!(demuxer.seek_log, vec![Duration::from_secs(3)]);
@@ -625,7 +625,7 @@ mod tests {
 
         let result = demuxer
             .seek_with_receipted_request(DemuxSeekRequest::accurate(Duration::from_secs(4)))
-            .expect("default receipted boundary должен делегировать обычному request seek");
+            .expect("Default receipted boundary must be delegated to the usual request seek");
 
         assert_eq!(result.requested_position, MediaTime::from_secs(4));
         assert_eq!(demuxer.seek_log, vec![Duration::from_secs(4)]);
@@ -641,7 +641,7 @@ mod tests {
                 DemuxSeekRequest::accurate(Duration::from_secs(5)),
                 cancellation,
             )
-            .expect("активный token должен сохранить default receipted semantics");
+            .expect("The active token must retain default receipted semantics.");
 
         assert_eq!(result.requested_position, MediaTime::from_secs(5));
         assert_eq!(demuxer.seek_log, vec![Duration::from_secs(5)]);
@@ -658,10 +658,10 @@ mod tests {
                 DemuxSeekRequest::accurate(Duration::from_secs(5)),
                 cancellation,
             )
-            .expect_err("cancelled token не должен входить в legacy seek");
+            .expect_err("The cancelled token must not be included in the legacy seek.");
         let demux_error = error
             .downcast_ref::<MediaDemuxError>()
-            .expect("отмена должна оставаться typed MediaDemuxError");
+            .expect("Cancellation must remain typed MediaDemuxError");
 
         assert!(matches!(demux_error, MediaDemuxError::SeekCancelled));
         assert!(demuxer.seek_log.is_empty());
@@ -674,10 +674,10 @@ mod tests {
 
         let error = demuxer
             .seek_with_request(DemuxSeekRequest::preview(target_position))
-            .expect_err("default demuxer не должен молча игнорировать preview mode");
+            .expect_err("default demuxer Don't ignore it preview mode");
         let demux_error = error
             .downcast_ref::<MediaDemuxError>()
-            .expect("ошибка должна оставаться typed MediaDemuxError");
+            .expect("The error must be typed MediaDemuxError.");
 
         assert!(matches!(
             demux_error,
@@ -695,10 +695,10 @@ mod tests {
 
         let error = demuxer
             .seek_with_request(DemuxSeekRequest::decode_point_before(target_position))
-            .expect_err("default demuxer не должен молча игнорировать decode-safe mode");
+            .expect_err("default demuxer Don't ignore it decode-safe mode");
         let demux_error = error
             .downcast_ref::<MediaDemuxError>()
-            .expect("ошибка должна оставаться typed MediaDemuxError");
+            .expect("The error must be typed MediaDemuxError.");
 
         assert!(matches!(
             demux_error,
@@ -722,7 +722,7 @@ mod tests {
 
         let stored_timestamp = result
             .actual_track_timestamp
-            .expect("seek result должен хранить raw track timestamp");
+            .expect("Seek Result to store raw track timestamp");
 
         assert_eq!(stored_timestamp.units.get(), -40);
         assert_eq!(result.actual_position, MediaTime::ZERO);

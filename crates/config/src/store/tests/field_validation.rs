@@ -458,7 +458,7 @@ unexpected = true
 
     let error = load_from_path(&config_path).expect_err("unknown ui settings field rejected");
 
-    assert!(error.to_string().contains("TOML-схеме"));
+    assert!(error.to_string().contains("TOML schema"));
     assert!(error.to_string().contains("unexpected"));
 }
 
@@ -540,5 +540,5 @@ unexpected = true
 
     let error = load_from_path(&config_path).expect_err("unknown field rejected");
 
-    assert!(error.to_string().contains("TOML-схеме"));
+    assert!(error.to_string().contains("TOML schema"));
 }

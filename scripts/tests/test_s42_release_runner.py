@@ -63,7 +63,7 @@ class S42ReleaseRunnerTests(unittest.TestCase):
         self.assertEqual(
             actual_owner_sequence,
             expected_owner_sequence,
-            "ветка `all)` обязана сохранять exact ordered blocking owner sequence",
+            "The ‘all’ branch must retain the exact ordered owner sequence blocking",
         )
 
     # Семь standalone forks обязаны оставаться exact, без glob или пропущенного lockfile.

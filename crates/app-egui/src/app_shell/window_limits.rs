@@ -111,10 +111,10 @@ mod tests {
             MIN_WINDOW_WIDTH_POINTS,
             Some(PlaylistGlobalTransportStatus::WaitingAutomatic),
         );
-        assert!(plain > 0.0, "панель должна занимать место");
+        assert!(plain > 0.0, "panel should take up space");
         assert!(
             with_status <= BOTTOM_PANEL_RESERVED_HEIGHT_POINTS,
-            "нижняя панель ({with_status}) выше зарезервированной"
+            "bottom panel ({with_status}) above the reserved"
         );
     }
 

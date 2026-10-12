@@ -80,14 +80,14 @@ fn hls_post_target_receipt_commits_only_after_presented_frame_and_audio_resume()
     harness
         .session
         .dispatch_command(PlayerCommand::Play)
-        .expect("pre-seek Play должен пройти session boundary");
+        .expect("Pre-Seek Play must go through boundary session");
     let _events_before_seek = harness.session.take_events();
     harness.start_final_seek(MediaTime::from_duration(requested_target));
 
     // До worker receipt-а запрещены commit state, UI position и скрытый synchronous demux seek.
     let commands = prepared_seek_port.commands();
     let [(request_id, request)] = commands.as_slice() else {
-        panic!("HLS public seek должен создать ровно один authoritative worker request");
+        panic!("The HLS public seek must create an authoritative worker request.");
     };
     assert_eq!(request.timestamp, requested_target);
     assert!(harness.session.seek_commit().is_none());
@@ -111,7 +111,7 @@ fn hls_post_target_receipt_commits_only_after_presented_frame_and_audio_resume()
     let active_commit = harness
         .session
         .seek_commit()
-        .expect("authoritative receipt должен открыть existing seek commit lifecycle");
+        .expect("Authoritative receipt opens existing seek commit lifecycle");
     assert_eq!(
         active_commit.target_position.as_duration(),
         requested_target
@@ -134,7 +134,7 @@ fn hls_post_target_receipt_commits_only_after_presented_frame_and_audio_resume()
                 .session
                 .pipeline
                 .present_video_frame()
-                .expect("presentation counter требует текущий frame")
+                .expect("Presentation counter requires current frame")
                 .pts;
             presented_positions.push(presented_position);
         }
@@ -159,12 +159,12 @@ fn hls_post_target_receipt_commits_only_after_presented_frame_and_audio_resume()
     assert_eq!(
         harness.session.snapshot().current_position,
         presented_landing,
-        "UI/snapshot обязаны коммитить фактически presented landing, а не requested 55 s"
+        "UI/snapshot are required to commit actually presented landing, not requested 55 s"
     );
     assert_eq!(
         harness.session.pipeline.media_clock_base(),
         presented_landing,
-        "post-seek A/V clock должен начинаться от честного landing frame"
+        "post-seek A/V clock must begin with honesty landing frame"
     );
     assert_eq!(audio_output.pause_count.load(Ordering::Relaxed), 1);
     assert_eq!(audio_output.clear_count.load(Ordering::Relaxed), 1);
@@ -328,5 +328,5 @@ fn event_index(events: &[PlayerEvent], predicate: impl Fn(&PlayerEvent) -> bool)
     events
         .iter()
         .position(predicate)
-        .unwrap_or_else(|| panic!("ожидаемый lifecycle event отсутствует: {events:#?}"))
+        .unwrap_or_else(|| panic!("Expected lifecycle event missing: {events:#?}"))
 }

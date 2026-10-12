@@ -52,53 +52,55 @@ pub enum HlsVodOpenError {
     Profile(#[from] HlsProfileError),
     #[error("HLS child target resolution failed: {0}")]
     Target(#[from] source_core::HttpRequestTargetError),
-    #[error("inline hls_media_playlist_data обязан быть media playlist")]
+    #[error("inline hls_media_playlist_data must be a media playlist")]
     InlineManifestWasMaster,
-    #[error("fetched HLS manifest принадлежит другой source generation")]
+    #[error("fetched HLS manifest belongs to another source generation")]
     FetchedManifestGenerationMismatch,
-    #[error("selected HLS child URI вернул nested master playlist")]
+    #[error("selected HLS child URI returned nested master playlist")]
     NestedMasterPlaylist,
-    #[error("HLS master не содержит variant, совместимый с explicit selection intent")]
+    #[error("HLS master does not contain variants compatible with explicit selection intent.")]
     MissingVariant,
-    #[error("HLS master содержит несколько variant, совместимых с explicit selection intent")]
+    #[error(
+        "HLS master contains several variants that are compatible with explicit selection intent."
+    )]
     AmbiguousVariant,
-    #[error("HLS master не содержит требуемый compatible AUDIO rendition")]
+    #[error("HLS master does not contain the required compatible AUDIO rendition")]
     MissingAudioRendition,
-    #[error("HLS master содержит несколько equally compatible AUDIO rendition")]
+    #[error("HLS master contains multiple equally compatible AUDIO renditions")]
     AmbiguousAudioRendition,
-    #[error("media-only HLS playlist не может удовлетворить separate-audio intent")]
+    #[error("media-only HLS playlist cannot satisfy separate-audio intent")]
     SeparateAudioRequiresMaster,
-    #[error("HLS main component не имеет required container evidence")]
+    #[error("HLS main component does not have the required container evidence")]
     MissingMainContainerEvidence,
-    #[error("HLS main component имеет ambiguous container evidence")]
+    #[error("HLS main component has ambiguous container evidence.")]
     AmbiguousMainContainerEvidence,
-    #[error("HLS main content probe доказал container вне TS/fMP4 profile")]
+    #[error("HLS main content probe proved a container outside the TS/fMP4 profile")]
     UnsupportedMainContainer,
-    #[error("HLS main content probe не смог открыть bounded media bytes: {0}")]
+    #[error("HLS main content probe failed to open bounded media bytes: {0}")]
     MainContainerProbeOpen(#[source] DemuxOpenError),
-    #[error("HLS alternate audio не имеет required container evidence")]
+    #[error("HLS alternate audio lacks required container evidence")]
     MissingAudioContainerEvidence,
-    #[error("HLS alternate audio имеет ambiguous container evidence")]
+    #[error("HLS alternate audio has ambiguous container evidence.")]
     AmbiguousAudioContainerEvidence,
-    #[error("HLS alternate audio content probe доказал container вне TS/fMP4 profile")]
+    #[error("HLS alternate audio content probe proved a container outside the TS/fMP4 profile")]
     UnsupportedAudioContainer,
-    #[error("HLS alternate audio content probe не смог открыть bounded media bytes: {0}")]
+    #[error("HLS alternate audio content probe failed to open bounded media bytes: {0}")]
     AudioContainerProbeOpen(#[source] DemuxOpenError),
-    #[error("muxed HLS intent не принимает alternate-audio container evidence")]
+    #[error("muxed HLS intent does not accept alternate-audio container evidence")]
     UnexpectedAudioContainerEvidence,
     #[error("HLS resource plan invalid: {0}")]
     Plan(#[from] HlsPlanError),
     #[error("HLS deferred demux worker failed to start: {0}")]
     ProgressiveStartup(#[from] ProgressiveDemuxStartupError),
-    #[error("HLS key fetch bound должен вмещать exact 16-byte AES key")]
+    #[error("The HLS key fetch bound must contain the exact 16-byte AES key.")]
     KeyFetchBoundTooSmall,
-    #[error("HLS key fetch bound превышает shared adaptive resource limit")]
+    #[error("HLS key fetch bound exceeds shared adaptive resource limit")]
     KeyFetchBoundExceedsAdaptiveLimit,
-    #[error("HLS seek index должен вмещать как минимум initial video и audio anchors")]
+    #[error("The HLS seek index should include at least initial video and audio anchors.")]
     SeekIndexBoundTooSmall,
-    #[error("HLS initial restore target находится за finite VOD duration")]
+    #[error("HLS initial restore target is located behind finite VOD duration")]
     InitialRestoreOutsideVod,
-    #[error("HLS initial restore не нашёл containing manifest candidate")]
+    #[error("HLS initial restore does not find the containing manifest candidate")]
     InitialRestoreCandidateMissing,
     #[error("HLS catalog reopen rejected: {0}")]
     CatalogReopen(#[from] HlsCatalogReopenError),

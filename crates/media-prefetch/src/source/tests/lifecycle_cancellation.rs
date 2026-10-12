@@ -22,18 +22,18 @@ fn lifecycle_cancellation_wakes_blocked_foreground_with_source_closed() {
 
     let error = source
         .read(&mut [0; 4], &CancellationToken::never_cancelled())
-        .expect_err("закрытый ресурс не отдаёт данные");
+        .expect_err("The closed resource does not give data");
 
     assert!(matches!(error, SourceError::SourceClosed), "{error}");
     assert!(started.elapsed() < Duration::from_secs(2));
-    assert_eq!(source.position(), 0, "закрытие не двигает позицию");
+    assert_eq!(source.position(), 0, "closing doesn't move position");
     canceller.join().expect("canceller thread");
 
     let drop_started = Instant::now();
     drop(source);
     assert!(
         drop_started.elapsed() < Duration::from_secs(2),
-        "Drop отменяет висящий fetch и не ждёт сеть"
+        "Drop cancels hanging fetch and does not wait for the network"
     );
 }
 

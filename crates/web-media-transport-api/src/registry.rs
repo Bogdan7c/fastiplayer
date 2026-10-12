@@ -167,7 +167,7 @@ impl TransportRegistry {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TransportRegistryError {
     /// Provider ID уже занят.
-    #[error("transport provider `{provider_id}` уже зарегистрирован")]
+    #[error("transport provider {provider_id} has already been registered")]
     DuplicateProvider {
         /// Exact duplicate provider identity.
         provider_id: TransportProviderId,
@@ -178,7 +178,7 @@ pub enum TransportRegistryError {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TransportOpenError {
     /// Exact selected provider отсутствует в composition snapshot.
-    #[error("transport provider `{provider_id}` недоступен")]
+    #[error("transport provider '{provider_id}' not available")]
     ProviderUnavailable {
         /// Missing provider identity.
         provider_id: TransportProviderId,
@@ -207,13 +207,13 @@ pub enum TransportOpenError {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TransportRefreshError {
     /// Exact selected provider отсутствует.
-    #[error("transport provider `{provider_id}` недоступен для refresh")]
+    #[error("transport provider '{provider_id}' not available for refresh")]
     ProviderUnavailable {
         /// Missing provider identity.
         provider_id: TransportProviderId,
     },
     /// Caller пытается применить result к уже заменённой generation.
-    #[error("transport refresh source generation устарела")]
+    #[error("transport refresh source generation is stale")]
     StaleSourceGeneration {
         /// Generation, которую request намеревался заменить.
         requested: SourceGeneration,
@@ -264,7 +264,7 @@ impl TransportRefreshError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderContractViolation {
     /// Provider сменил final target, но заявил zero redirects.
-    #[error("final target изменён без redirect hop")]
+    #[error("The final target is changed without redirect hop.")]
     FinalTargetChangedWithoutRedirect,
 }
 

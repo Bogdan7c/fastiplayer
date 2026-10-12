@@ -86,17 +86,17 @@ impl NativeHlsStartupJob {
                 }
                 match result_publisher.publish_completion(result) {
                     Ok(WakeDelivery::EventLoopClosed) => tracing::debug!(
-                        "Event loop закрыт; native HLS terminal оставлен без wake retry"
+                        "Event loop closed; native HLS terminal left without wake retry"
                     ),
                     Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
                     Err(CompletionPublishError::AlreadyPublished) => tracing::warn!(
-                        "Native HLS startup opener попытался опубликовать второй terminal"
+                        "Native HLS startup opener tried to publish a second terminal"
                     ),
                 }
             })
-            .map_err(|error| format!("Не удалось запустить native HLS startup opener: {error}"))?;
+            .map_err(|error| format!("Failed to launch native HLS startup opener: {error}"))?;
         Ok(Self {
-            pending_message: "Проверка native HLS...".to_owned(),
+            pending_message: "Checking the native HLS...".to_owned(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -119,7 +119,7 @@ impl NativeHlsStartupJob {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
                         Err(StartupWebPreparationFailure::unclassified(
-                            "Native HLS startup opener завершился без результата",
+                            "Native HLS startup opener ends without results",
                         ))
                     })
                 })
@@ -127,7 +127,7 @@ impl NativeHlsStartupJob {
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
                 Some(Err(StartupWebPreparationFailure::unclassified(
-                    "Native HLS startup opener завершился panic",
+                    "Native HLS startup opener ends with panic",
                 )))
             }
             FinishedThreadJoin::StillRunning => None,
@@ -151,7 +151,7 @@ impl super::StartupMediaController {
             app_state.set_startup_error(error);
             return;
         }
-        app_state.set_startup_pending("Проверка native HLS...".to_owned());
+        app_state.set_startup_pending("Checking the native HLS...".to_owned());
         let start = match self.orchestration.target.as_ref() {
             Some(StartupMediaTarget::RestoredCurrent(target)) => match target.position() {
                 crate::playlist_runtime::StartupPosition::KeepStart => HlsVodStartIntent::Beginning,
@@ -177,7 +177,7 @@ impl super::StartupMediaController {
             }
             Err(error) => {
                 self.orchestration.preparation_failed();
-                tracing::warn!(error = %error, "Не удалось запустить native HLS startup opener");
+                tracing::warn!(error = %error, "The native HLS startup opener was not launched.");
                 self.startup_error = Some(error.clone());
                 app_state.set_startup_error(error);
             }
@@ -233,7 +233,7 @@ fn resolve_native_hls_startup_media(
             }
             tracing::info!(
                 ?invocation_reason,
-                "CLI native HLS admission передан единственному YtDlp fallback"
+                "CLI native HLS admission transferred to single YtDlp fallback"
             );
             let prepared = super::resolve_yt_dlp_startup_media(
                 &fallback_locator,

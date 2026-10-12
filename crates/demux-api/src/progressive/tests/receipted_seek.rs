@@ -18,7 +18,7 @@ fn legacy_runtime_rejects_async_seek_capability_without_changing_legacy_contract
             receipt_fence(7, 1),
             DemuxSeekRequest::accurate(Duration::from_secs(1)),
         )
-        .expect_err("legacy runtime не должен притворяться receipt-capable");
+        .expect_err("legacy runtime don't pretend receipt-capable");
     assert_eq!(error, ProgressiveAsyncSeekEnqueueError::CapabilityAbsent);
 }
 
@@ -71,7 +71,7 @@ fn stale_fence_is_receipted_without_touching_inner_parser() {
             stale_fence,
             DemuxSeekRequest::accurate(Duration::from_secs(5)),
         )
-        .expect("stale request получает terminal receipt");
+        .expect("stale request receives terminal receipt");
 
     assert_eq!(
         poll_until_receipt(&handle),
@@ -214,7 +214,7 @@ fn newer_receipted_seek_physically_cancels_in_flight_worker_operation() {
     assert_eq!(
         started_receiver.recv_timeout(Duration::from_secs(1)),
         Ok(1),
-        "worker должен войти в первый cancellable seek"
+        "worker must enter first cancellable seek"
     );
 
     handle
@@ -226,7 +226,7 @@ fn newer_receipted_seek_physically_cancels_in_flight_worker_operation() {
     assert_eq!(
         started_receiver.recv_timeout(Duration::from_secs(1)),
         Ok(2),
-        "второй seek должен стартовать без ручного release первого"
+        "The second seek must start without manual release of the first"
     );
 
     let first = poll_until_receipt(&handle);
@@ -257,19 +257,17 @@ fn deferred_receipted_seek_interrupts_stalled_old_body_before_replacement_receip
         limits(4, 16),
         retry_hint(),
         ProgressiveRuntimeGeneration::new(7),
-        ProgressiveAsyncSeekLimits::new(
-            NonZeroUsize::new(2).expect("test receipt bound ненулевой"),
-        ),
+        ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("test receipt bound non-zero")),
     )
-    .expect("deferred receipt worker запускается");
+    .expect("Deferred Receipt Worker Launches");
     let handle = progressive
         .async_seek_handle()
-        .expect("deferred runtime публикует receipt capability");
+        .expect("Deferred Runtime Releases Receivable Capacity");
 
     assert_eq!(
         lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
         Ok(InterruptibleReadLifecycleEvent::ReadStarted),
-        "worker должен войти в stalled old body read"
+        "worker should enter stalled old body read"
     );
     handle
         .enqueue(
@@ -280,12 +278,12 @@ fn deferred_receipted_seek_interrupts_stalled_old_body_before_replacement_receip
     assert_eq!(
         lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
         Ok(InterruptibleReadLifecycleEvent::BodyDropped),
-        "physical old body owner должен быть dropped после interruption"
+        "The physical old body owner must be dropped after interruption."
     );
     assert_eq!(
         lifecycle_receiver.recv_timeout(Duration::from_secs(1)),
         Ok(InterruptibleReadLifecycleEvent::ReplacementStarted),
-        "replacement нельзя начинать до whole-parser unwind"
+        "replacement don't start before whole-parser unwind"
     );
     assert_eq!(
         interruption_controller.request_count.load(Ordering::SeqCst),
@@ -327,7 +325,7 @@ fn failed_replacement_after_active_read_interruption_has_no_fake_success_and_res
     assert_eq!(
         poll_until_receipt(&handle).outcome,
         ProgressiveAsyncSeekOutcome::Failed,
-        "ошибка replacement не имеет права публиковать fake success"
+        "error replacement I have no right to publish fake success"
     );
     assert_eq!(
         interruption_controller.request_count.load(Ordering::SeqCst),
@@ -335,14 +333,14 @@ fn failed_replacement_after_active_read_interruption_has_no_fake_success_and_res
     );
 
     let DemuxReadEvent::Packet(packet) =
-        poll_until_event(&mut progressive).expect("old committed source должен restart-нуться")
+        poll_until_event(&mut progressive).expect("Old committed source should be restarted.")
     else {
-        panic!("rollback обязан вернуть packet старого committed source-а");
+        panic!("The rollback must return the packet of the old committed source.");
     };
     assert_eq!(
         packet.pts,
         Duration::ZERO,
-        "failed target нельзя подменять новой timeline position"
+        "A failed target cannot be replaced by a new timeline position."
     );
 }
 
@@ -362,11 +360,11 @@ fn stale_receipted_seek_does_not_interrupt_current_active_read() {
             stale_fence,
             DemuxSeekRequest::accurate(Duration::from_secs(5)),
         )
-        .expect("stale request получает terminal receipt");
+        .expect("stale request receives terminal receipt");
     assert_eq!(
         interruption_controller.request_count.load(Ordering::SeqCst),
         0,
-        "stale fence не должен трогать current physical read"
+        "stale fence don't touch current physical read"
     );
 
     let _ = interruption_controller
@@ -428,13 +426,13 @@ fn completed_replacement_survives_later_failed_request_and_accepts_retry() {
                 receipt_fence(7, request_id),
                 DemuxSeekRequest::accurate(Duration::from_secs(target_seconds)),
             )
-            .expect("worker должен принимать retry после terminal receipt");
+            .expect("Employees must accept retry after terminal receipt");
         let receipt = poll_until_receipt(&handle);
         assert_eq!(receipt.fence.request_id.value(), request_id);
         assert_eq!(
             matches!(receipt.outcome, ProgressiveAsyncSeekOutcome::Succeeded(_)),
             expected_success,
-            "scripted request обязан сохранить свой terminal outcome"
+            "The scripted request must keep the terminal outcome."
         );
     }
 }
@@ -473,7 +471,7 @@ fn async_seek_after_visible_eof_reopens_front_generation() {
     let DemuxReadEvent::Packet(packet) =
         poll_until_event(&mut progressive).expect("post-seek packet after old EOF")
     else {
-        panic!("новая generation должна снять только старый EOS latch");
+        panic!("The new generation will only remove the old EOS latch.");
     };
     assert_eq!(packet.pts, Duration::from_secs(6));
 }

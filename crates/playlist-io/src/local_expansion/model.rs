@@ -131,12 +131,12 @@ pub enum LocalPlaylistExpansionLimitsError {
 impl fmt::Display for LocalPlaylistExpansionLimitsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ZeroDocuments => formatter.write_str("document budget равен нулю"),
-            Self::ZeroTotalBytes => formatter.write_str("aggregate byte budget равен нулю"),
-            Self::ZeroItems => formatter.write_str("item budget равен нулю"),
+            Self::ZeroDocuments => formatter.write_str("The document budget is zero."),
+            Self::ZeroTotalBytes => formatter.write_str("aggregate byte budget is equal to zero"),
+            Self::ZeroItems => formatter.write_str("item budget equals zero"),
             Self::ItemLimitExceedsDomainCapacity { provided, maximum } => write!(
                 formatter,
-                "item budget {provided} превышает domain capacity {maximum}"
+                "item budget {provided} exceeds domain capacity {maximum}"
             ),
         }
     }
@@ -508,10 +508,10 @@ impl fmt::Display for LocalPlaylistExpansionStartError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedRootFormat => {
-                formatter.write_str("root document format не поддерживает local expansion")
+                formatter.write_str("root document format does not support local expansion")
             }
             Self::RootPathMustBeAbsolute => {
-                formatter.write_str("root document path должен быть absolute")
+                formatter.write_str("root document path must have absolute")
             }
         }
     }

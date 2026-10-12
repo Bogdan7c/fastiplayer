@@ -87,11 +87,11 @@ pub enum NativeHlsDynamicRangePolicy {
 /// Invalid committed policy нельзя маскировать extractor fallback-ом.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum NativeHlsSelectionPolicyError {
-    #[error("native HLS video codec order пуст")]
+    #[error("native HLS video codec order is empty")]
     EmptyVideoCodecOrder,
-    #[error("native HLS video codec order содержит audio codec")]
+    #[error("native HLS video codec order contains an audio codec")]
     NonVideoCodec,
-    #[error("native HLS video codec order содержит duplicate")]
+    #[error("The native HLS video codec order contains duplicate codec.")]
     DuplicateVideoCodec,
 }
 
@@ -176,9 +176,9 @@ enum NativeHlsTopology {
 /// Admission отделяет safe fallback от malformed-HLS terminal errors.
 #[derive(Debug, thiserror::Error)]
 pub enum NativeHlsAdmissionError {
-    #[error("response body не является HLS manifest")]
+    #[error("response body is not HLS manifest")]
     StrictlyNotHls,
-    #[error("HLS manifest не содержит достаточных declared selection evidence")]
+    #[error("HLS manifest does not contain sufficient declared selection evidence")]
     ExtractorMaterialRequired,
     #[error("HLS manifest malformed: {0}")]
     Parse(#[source] HlsParseError),

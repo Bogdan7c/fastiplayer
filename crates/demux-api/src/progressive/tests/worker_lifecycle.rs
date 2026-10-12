@@ -30,7 +30,7 @@ fn oversized_packet_fails_with_typed_bounded_error() {
     };
     let typed = error
         .downcast_ref::<ProgressiveDemuxPacketTooLargeError>()
-        .expect("typed oversize source сохраняется");
+        .expect("Typed oversize source is retained");
     assert_eq!(typed.packet_bytes, 5);
     assert_eq!(typed.budget_bytes, 4);
 }
@@ -134,21 +134,21 @@ fn seekable_tua_wait_observes_cancellation_and_stops_before_return() {
     wait_for_gated_read(&read_started, 1);
     // 50 ms гарантированно больше production cancellation poll quantum 25 ms.
     let completed_retry_hint = DemuxRetryHint::new(Duration::from_millis(50))
-        .expect("controlled retry hint обязан быть валиден");
+        .expect("Controlled retry hint must be valid");
     // Первая TUA проходит normal retry timeout без queue publication.
     event_sender
         .send(DemuxReadEvent::TemporarilyUnavailable(completed_retry_hint))
-        .expect("worker ждёт первый controlled event");
+        .expect("The first controlled event");
     // Второй read доказывает, что wait_for_inner_retry завершил timeout path.
     wait_for_gated_read(&read_started, 2);
 
     // Длинный retry не может естественно истечь раньше cancellation.
     let cancelled_retry_hint = DemuxRetryHint::new(DemuxRetryHint::MAX_RETRY_AFTER)
-        .expect("maximum retry hint обязан быть валиден");
+        .expect("The maximum retry hint must be valid");
     // Worker получает вторую TUA, оставаясь внутри уже начатого read path.
     event_sender
         .send(DemuxReadEvent::TemporarilyUnavailable(cancelled_retry_hint))
-        .expect("worker ждёт второй controlled event");
+        .expect("The employee is waiting for the second controlled event.");
     // Cancellation прерывает retry wait, а не публикует fake EOF/error.
     cancellation.cancel();
     // Test не возвращается раньше mark_worker_stopped.
@@ -189,7 +189,7 @@ fn seekable_stale_and_stopped_push_outcomes_are_synchronized() {
     // Старый EOF возвращается только после generation change.
     event_sender
         .send(DemuxReadEvent::EndOfStream)
-        .expect("worker ждёт stale controlled event");
+        .expect("Manufacturer: Stale controlled event");
     // Второй read возможен только после Stale drop и применения pending seek.
     wait_for_gated_read(&read_started, 2);
     // Stale event не должен занимать current-generation queue.
@@ -205,7 +205,7 @@ fn seekable_stale_and_stopped_push_outcomes_are_synchronized() {
             true,
             Bytes::from_static(&[0x7a]),
         )))
-        .expect("worker ждёт current-generation packet");
+        .expect("The current-generation packet");
     // Player owner получает только packet актуальной generation.
     let DemuxReadEvent::Packet(packet) =
         poll_until_event(&mut progressive).expect("current-generation packet")
@@ -222,7 +222,7 @@ fn seekable_stale_and_stopped_push_outcomes_are_synchronized() {
     // Event после cancellation обязан получить Stopped, а не Published.
     event_sender
         .send(DemuxReadEvent::EndOfStream)
-        .expect("worker ждёт cancelled controlled event");
+        .expect("Worker: Canceled controlled event");
     // Test ждёт exact mark_worker_stopped notification.
     wait_until_worker_stopped(&progressive);
     // Cancelled event не должен остаться скрытым terminal message-ом.

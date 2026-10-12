@@ -38,7 +38,7 @@ fn persisted_position_for_settlement(
 
     match store.inspect() {
         ResumeInspectionOutcome::Loaded(Some(checkpoint)) => checkpoint.position(),
-        unexpected => panic!("shutdown sidecar не сохранил settled checkpoint: {unexpected:?}"),
+        unexpected => panic!("Shutdown sidecar doesn't save settled checkpoint: {unexpected:?}"),
     }
 }
 

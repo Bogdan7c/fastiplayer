@@ -56,7 +56,7 @@ fn default_cancellable_preview_seek_delegates_to_preview_semantics() {
 
     let result = demuxer
         .seek_with_cancellable_preview_request(request, DemuxSeekCancellationToken::new())
-        .expect("активный token должен сохранить обычную preview-compatible семантику");
+        .expect("The active token should retain the usual preview-compatible semantics.");
 
     assert_eq!(result.requested_position, MediaTime::from_secs(4));
     assert_eq!(demuxer.preview_compatible_requests, vec![request]);
@@ -74,10 +74,10 @@ fn default_cancellable_preview_seek_rejects_cancelled_token_without_mutation() {
             DemuxSeekRequest::accurate(Duration::from_secs(4)),
             cancellation,
         )
-        .expect_err("cancelled preview token не должен входить в legacy seek");
+        .expect_err("The cancelled preview token must not be included in the legacy seek.");
     let demux_error = error
         .downcast_ref::<MediaDemuxError>()
-        .expect("отмена должна оставаться typed MediaDemuxError");
+        .expect("Cancellation must remain typed MediaDemuxError");
 
     assert!(matches!(demux_error, MediaDemuxError::SeekCancelled));
     assert!(demuxer.preview_compatible_requests.is_empty());
@@ -91,7 +91,7 @@ fn cancellable_preview_preserves_semantic_split_from_receipted_seek() {
 
     demuxer
         .seek_with_cancellable_preview_request(request, DemuxSeekCancellationToken::new())
-        .expect("preview boundary должен сохранить обычную request semantics");
+        .expect("The preview boundary must retain the usual request semantics");
 
     assert_eq!(demuxer.preview_compatible_requests, vec![request]);
     assert!(demuxer.receipted_requests.is_empty());

@@ -119,7 +119,7 @@ impl DemuxActiveReadInterrupter for TestActiveReadInterrupter {
         if self.read_is_active.swap(false, Ordering::SeqCst) {
             self.interruption_sender
                 .try_send(())
-                .expect("active test read обязан владеть свободным signal slot-ом");
+                .expect("Active test read must have a free signal slot");
             DemuxActiveReadInterruptionResult::InterruptionRequestedRestartable
         } else {
             DemuxActiveReadInterruptionResult::AlreadyQuiescent
@@ -172,14 +172,14 @@ impl Demuxer for InterruptibleReceiptedSeekDemuxer {
                 .store(true, Ordering::SeqCst);
             self.lifecycle_sender
                 .send(InterruptibleReadLifecycleEvent::ReadStarted)
-                .expect("test lifecycle receiver должен жить");
+                .expect("The test lifecycle receiver must live.");
             let _body_guard = InterruptibleBodyDropGuard {
                 lifecycle_sender: self.lifecycle_sender.clone(),
             };
             self.interruption_receiver
                 .recv()
                 .map_err(|_| anyhow::anyhow!("test interruption sender disconnected"))?;
-            anyhow::bail!("старый read unwind-нулся к whole-parser restart boundary");
+            anyhow::bail!("old-school read unwind-slipped up whole-parser restart boundary");
         }
         if self.packet_emitted {
             return Ok(DemuxReadEvent::EndOfStream);
@@ -216,12 +216,12 @@ impl Demuxer for InterruptibleReceiptedSeekDemuxer {
     ) -> anyhow::Result<DemuxSeekResult> {
         self.lifecycle_sender
             .send(InterruptibleReadLifecycleEvent::ReplacementStarted)
-            .expect("test lifecycle receiver должен жить");
+            .expect("The test lifecycle receiver must live.");
         if cancellation.is_cancelled() {
             return Err(MediaDemuxError::SeekCancelled.into());
         }
         if self.replacement_fails {
-            anyhow::bail!("scripted replacement failure до commit");
+            anyhow::bail!("scripted replacement failure before commit");
         }
         self.seek_with_request(request)
     }
@@ -400,7 +400,7 @@ impl Demuxer for SeekableDeferredDemuxer {
 
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
         Err(anyhow::anyhow!(
-            "deferred seekable fake не должен дойти до seek"
+            "The deferred seekable fake does not have to reach the seeker."
         ))
     }
 }
@@ -610,7 +610,7 @@ impl Demuxer for CancellableReceiptSeekDemuxer {
         self.seek_count = self.seek_count.saturating_add(1);
         self.seek_started
             .send(self.seek_count)
-            .expect("test receiver должен жить");
+            .expect("The test receiver must live.");
         if self.seek_count == 1 {
             cancellation.wait_cancelled();
             return Err(MediaDemuxError::SeekCancelled.into());
@@ -645,10 +645,10 @@ impl Demuxer for SlowReceiptSeekDemuxer {
         if self.seek_count == 1 {
             self.first_seek_started
                 .send(())
-                .expect("test receiver должен жить");
+                .expect("The test receiver must live.");
             self.release_first_seek
                 .recv()
-                .expect("test обязан освободить blocking seek");
+                .expect("test must be released from the blocking seek");
         }
         Ok(DemuxSeekResult {
             requested_position: MediaTime::from_duration(request.timestamp),
@@ -691,7 +691,7 @@ impl Demuxer for CompletedTokenReplacementDemuxer {
             .as_ref()
             .is_some_and(DemuxSeekCancellationToken::is_cancelled)
         {
-            anyhow::bail!("late supersede отравил committed source token");
+            anyhow::bail!("late supersede poison committed source token");
         }
         Ok(DemuxReadEvent::EndOfStream)
     }
@@ -715,7 +715,7 @@ impl Demuxer for CompletedTokenReplacementDemuxer {
     ) -> anyhow::Result<DemuxSeekResult> {
         self.seek_count = self.seek_count.saturating_add(1);
         if self.seek_count == 2 {
-            anyhow::bail!("scripted failure после первого committed replacement");
+            anyhow::bail!("scripted failure first committed replacement");
         }
         match cancellation.complete() {
             DemuxSeekCancellationCompletion::Completed => {
@@ -858,15 +858,14 @@ impl Demuxer for CommandSeekableDemuxer {
 /// Строит explicit маленькие limits для focused tests.
 fn limits(max_events: usize, max_bytes: usize) -> ProgressiveDemuxBufferLimits {
     ProgressiveDemuxBufferLimits::new(
-        NonZeroUsize::new(max_events).expect("test event limit положителен"),
-        NonZeroUsize::new(max_bytes).expect("test byte limit положителен"),
+        NonZeroUsize::new(max_events).expect("test event limit is positive"),
+        NonZeroUsize::new(max_bytes).expect("test byte limit is positive"),
     )
 }
 
 /// Использует минимальный уже проверенный S21R retry interval.
 fn retry_hint() -> DemuxRetryHint {
-    DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER)
-        .expect("minimum retry hint обязан быть валиден")
+    DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER).expect("Minimum retry hint must be valid")
 }
 
 /// Создаёт blocking fake и его test-owned sender.
@@ -913,7 +912,7 @@ fn wait_for_gated_read(read_started: &Receiver<usize>, expected_sequence: usize)
     // Bounded receive не превращает regression в зависший test process.
     let actual_sequence = read_started
         .recv_timeout(Duration::from_secs(1))
-        .expect("seekable worker обязан начать ожидаемый inner read");
+        .expect("Seekable worker must start the expected inner read");
     // Sequence защищает test orchestration от пропущенного либо лишнего read-а.
     assert_eq!(actual_sequence, expected_sequence);
 }
@@ -929,7 +928,7 @@ fn wait_until_worker_stopped(progressive: &ProgressiveDemuxer) {
         // Истёкший deadline даёт точный lifecycle failure.
         assert!(
             Instant::now() < stop_deadline,
-            "progressive worker не опубликовал worker_stopped до deadline"
+            "progressive worker published worker_stopped before deadline"
         );
         // Оставшийся budget не продлевается после spurious wake.
         let remaining = stop_deadline.saturating_duration_since(Instant::now());
@@ -948,7 +947,7 @@ fn wait_until_worker_stopped(progressive: &ProgressiveDemuxer) {
         // Timeout допустим только если terminal flag установлен одновременно.
         assert!(
             !timeout_result.timed_out() || queue.worker_stopped,
-            "progressive worker не завершился внутри lifecycle timeout"
+            "progressive worker not finished inside lifecycle timeout"
         );
     }
 }
@@ -987,13 +986,13 @@ fn receipted_runtime(
         retry_hint(),
         ProgressiveRuntimeGeneration::new(7),
         ProgressiveAsyncSeekLimits::new(
-            NonZeroUsize::new(maximum_outstanding_receipts).expect("test bound ненулевой"),
+            NonZeroUsize::new(maximum_outstanding_receipts).expect("test bound non-zero"),
         ),
     )
-    .expect("receipt worker запускается");
+    .expect("Receipt worker starts up");
     let handle = progressive
         .async_seek_handle()
-        .expect("receipt capability опубликована");
+        .expect("Receipt capability published");
     (progressive, handle)
 }
 
@@ -1006,7 +1005,7 @@ fn poll_until_receipt(handle: &ProgressiveAsyncSeekHandle) -> ProgressiveAsyncSe
         }
         assert!(
             Instant::now() < deadline,
-            "worker обязан опубликовать terminal receipt"
+            "worker must publish terminal receipt"
         );
         thread::sleep(DemuxRetryHint::MIN_RETRY_AFTER);
     }

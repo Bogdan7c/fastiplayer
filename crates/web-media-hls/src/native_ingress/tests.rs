@@ -85,7 +85,7 @@ fmp4.m3u8\n";
         HlsParserLimits::default(),
         &policy(None),
     )
-    .expect("full catalog path не должен делегировать валидный master extractor-у");
+    .expect("The full catalog path does not need to delegate a valid master extractor.");
 
     assert_eq!(admitted.current_master_variant_index(), Some(1));
     assert_eq!(
@@ -107,12 +107,12 @@ video.m3u8\n";
         HlsParserLimits::default(),
         &policy(None),
     )
-    .expect("unique DEFAULT rendition должна открыть alternate-audio catalog");
+    .expect("unique DEFAULT rendition should open alternate-audio catalog");
 
     let HlsAudioLayoutIntent::NativeGroupResolved { group_id, evidence } =
         &admitted.runtime_intent().audio
     else {
-        panic!("alternate audio должна сохранить group/evidence shape");
+        panic!("alternate audio must be preserved group/evidence shape");
     };
     assert_eq!(group_id.as_ref(), "audio");
     assert_eq!(evidence.name.as_deref(), Some("English"));
@@ -128,7 +128,7 @@ fn catalog_admission_keeps_media_presentation_typed() {
         HlsParserLimits::default(),
         &policy(None),
     )
-    .expect("media VOD должен остаться native без fake master ordinal-а");
+    .expect("media VOD must remain native without fake master ordinal-?");
     assert_eq!(admitted_vod.current_master_variant_index(), None);
     assert_eq!(
         admitted_vod.presentation_evidence(),
@@ -148,7 +148,7 @@ fn catalog_admission_keeps_media_presentation_typed() {
         HlsParserLimits::default(),
         &policy(None),
     )
-    .expect("завершённый EVENT должен остаться native");
+    .expect("Completed EVENT must remain native");
     assert_eq!(
         admitted_event.presentation_evidence(),
         NativeHlsPresentationEvidence::TopMedia(HlsCatalogPresentation::Vod)
@@ -164,7 +164,7 @@ fn catalog_admission_keeps_media_presentation_typed() {
             HlsParserLimits::default(),
             &policy(None),
         )
-        .expect("supported sliding/event media должен остаться native");
+        .expect("supported sliding/event media must remain native");
         assert_eq!(
             admitted_live.presentation_evidence(),
             NativeHlsPresentationEvidence::TopMedia(HlsCatalogPresentation::Live)

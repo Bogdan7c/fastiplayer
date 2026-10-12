@@ -138,7 +138,7 @@ impl FatalStartupError {
     pub(crate) fn graphical_session_unavailable(error: &impl fmt::Display) -> Self {
         Self::new(
             FatalStartupReason::GraphicalSessionUnavailable,
-            format!("не удалось создать event loop: {error}"),
+            format!("could not create the event loop: {error}"),
         )
     }
 
@@ -146,7 +146,7 @@ impl FatalStartupError {
     pub(crate) fn window_creation_failed(error: &impl fmt::Display) -> Self {
         Self::new(
             FatalStartupReason::WindowCreationFailed,
-            format!("не удалось создать окно: {error}"),
+            format!("could not create the window: {error}"),
         )
     }
 
@@ -157,7 +157,7 @@ impl FatalStartupError {
     pub(crate) fn graphics_unavailable(error: &anyhow::Error) -> Self {
         Self::new(
             FatalStartupReason::GraphicsUnavailable,
-            format!("не удалось инициализировать рендерер: {error:#}"),
+            format!("could not initialize the renderer: {error:#}"),
         )
     }
 
@@ -209,7 +209,7 @@ impl FatalStartupErrorSlot {
                     reason = ?error.reason(),
                     phase = ?error.phase(),
                     detail = %error.technical_detail(),
-                    "Фатальная ошибка запуска; event loop останавливается"
+                    "Fatal startup error; stopping the event loop"
                 );
                 self.first_error = Some(error);
             }
@@ -217,7 +217,7 @@ impl FatalStartupErrorSlot {
                 reason = ?error.reason(),
                 phase = ?error.phase(),
                 detail = %error.technical_detail(),
-                "Повторная фатальная ошибка после уже зафиксированной; показана будет первая"
+                "Another fatal error followed the first; only the first will be shown"
             ),
         }
     }

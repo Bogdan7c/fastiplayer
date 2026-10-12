@@ -110,11 +110,11 @@ impl fmt::Debug for MetadataPatchItemOutcome {
 impl fmt::Display for MetadataPatchItemOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Applied { item_id } => write!(formatter, "metadata {item_id} обновлена"),
-            Self::NoChange { item_id } => write!(formatter, "metadata {item_id} не изменилась"),
-            Self::NotFound { item_id } => write!(formatter, "{item_id} не найден"),
+            Self::Applied { item_id } => write!(formatter, "metadata {item_id} updated"),
+            Self::NoChange { item_id } => write!(formatter, "metadata {item_id} has not changed"),
+            Self::NotFound { item_id } => write!(formatter, "{item_id} not found"),
             Self::SourceMismatch { item_id } => {
-                write!(formatter, "source precondition {item_id} не совпала")
+                write!(formatter, "source precondition {item_id} did not match")
             }
         }
     }
@@ -158,7 +158,7 @@ impl fmt::Display for MetadataPatchBatchOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "metadata batch: {} результатов, {} изменений",
+            "metadata batch: {} results, {} changes",
             self.item_outcomes.len(),
             self.applied_count
         )
@@ -180,7 +180,7 @@ impl fmt::Debug for MetadataPatchBatchError {
 
 impl fmt::Display for MetadataPatchBatchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("metadata revision исчерпана")
+        formatter.write_str("metadata revision has been exhausted")
     }
 }
 

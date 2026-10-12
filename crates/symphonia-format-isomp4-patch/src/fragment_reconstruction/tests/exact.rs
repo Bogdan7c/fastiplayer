@@ -75,7 +75,7 @@ fn standard_iso_bmff_version_zero_remains_unsigned() {
         &limits(),
         &|| false,
     )
-    .expect("standard ISO BMFF v0 offsets остаются unsigned");
+    .expect("ISO standard BMFF v0 offsets remain unsigned");
 
     assert!(
         plan.samples()

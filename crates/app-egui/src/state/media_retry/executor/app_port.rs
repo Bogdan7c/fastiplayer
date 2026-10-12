@@ -106,7 +106,7 @@ impl AppState {
         let Some(target) = self.notifications.take_retry_request() else {
             return;
         };
-        debug!(?target, "Повтор открытия по кнопке «Повторить»");
+        debug!(?target, "Repeat the opening button \"Repeat\"");
         execute_media_retry(
             &mut AppRetryPort {
                 app_state: self,

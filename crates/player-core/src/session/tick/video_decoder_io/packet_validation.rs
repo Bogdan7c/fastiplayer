@@ -267,7 +267,7 @@ mod tests {
             None,
             None,
         )
-        .expect_err("без avcC AVCC packet ошибочно выглядит как unsupported SPS");
+        .expect_err("without avcC AVCC packet looks wrongly unsupported SPS");
         assert_eq!(
             false_rejection.kind,
             PlayerErrorKind::UnsupportedVideoProfile
@@ -279,8 +279,8 @@ mod tests {
             Some(&codec_private),
             None,
         )
-        .expect("valid avcC должен уточнить H.264 requirement")
-        .expect("valid avcC должен вернуть candidate requirement");
+        .expect("A valid avcC should specify H.264 requirement")
+        .expect("A valid avcC must return the candidate requirement.");
 
         assert_eq!(
             refined_requirement.profile,
@@ -316,8 +316,8 @@ mod tests {
             encoded_bytes: Bytes::from(avcc_packet_with_annex_b_like_length_prefix()),
         };
         let refined_requirement = video_requirement_from_packet(&session, &packet)
-            .expect("session track codec_private должен быть передан в H.264 probe")
-            .expect("valid avcC должен вернуть refined requirement");
+            .expect("session track codec_private must be transmitted to H.264 probe")
+            .expect("Valid avcC returns refined requirement");
 
         assert_eq!(
             refined_requirement.profile,
@@ -348,7 +348,7 @@ mod tests {
 
         fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
             Err(anyhow::anyhow!(
-                "NoopDemuxer не поддерживает seek в этом тесте"
+                "NoopDemuxer does not support seek in this test"
             ))
         }
     }

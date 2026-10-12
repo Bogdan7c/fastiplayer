@@ -358,7 +358,7 @@ fn synchronous_receipt_preserves_ready_before_already_published_terminal() {
     assert!(matches!(
         receipt
             .wait_for_signal()
-            .expect("ReadyToCommit signal должен сохраниться"),
+            .expect("ReadyToCommit signal should be saved"),
         MediaInstallReceiptSignal::ReadyToCommit(MediaInstallPhase::ReadyToCommit {
             request_id: ready_request_id,
         }) if ready_request_id == request_id
@@ -366,7 +366,7 @@ fn synchronous_receipt_preserves_ready_before_already_published_terminal() {
     assert!(matches!(
         receipt
             .wait_for_signal()
-            .expect("Installed signal должен следовать после ReadyToCommit"),
+            .expect("Installed signal should follow after ReadyToCommittee"),
         MediaInstallReceiptSignal::Terminal(MediaInstallCompletion::Installed {
             request_id: installed_request_id,
             media_instance_id,

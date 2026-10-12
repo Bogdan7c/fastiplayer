@@ -9,7 +9,7 @@ use crate::media_open::PlayerDispatchRejection;
 fn video_configuration_failure(kind: PlayerErrorKind) -> MediaInstallFailure {
     MediaInstallFailure::new(
         MediaInstallFailureStage::VideoStreamConfiguration,
-        PlayerError::new(kind, "технические детали для лога"),
+        PlayerError::new(kind, "technical details for log"),
     )
 }
 
@@ -53,7 +53,7 @@ fn missing_hardware_or_required_backend_is_reported_as_no_suitable_decoder() {
     ] {
         let failure = MediaInstallFailure::new(
             MediaInstallFailureStage::CandidateVideoResourceAcquisition,
-            PlayerError::new(kind.clone(), "backend недоступен"),
+            PlayerError::new(kind.clone(), "backend unavailable"),
         );
         assert_eq!(
             PlayerInstallFailureReason::from_install_failure(&failure),

@@ -25,7 +25,7 @@ fn flagged_run(sample_flags: &[u32]) -> TrunAtom {
     assert!(matches!(iterator.next_header(), Ok(Some(_))));
     match iterator.read_atom::<TrunAtom>() {
         Ok(trun) => trun,
-        Err(_) => panic!("valid synthetic trun должен парситься"),
+        Err(_) => panic!("valid synthetic trun must parse successfully"),
     }
 }
 

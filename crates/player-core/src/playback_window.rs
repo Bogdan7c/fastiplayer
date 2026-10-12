@@ -142,7 +142,7 @@ impl fmt::Display for MediaPlaybackWindowError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EndNotAfterStart => {
-                formatter.write_str("playback window end должен быть позже start")
+                formatter.write_str("Playback window end must be after its start")
             }
         }
     }
@@ -164,10 +164,10 @@ impl fmt::Display for MediaPlaybackWindowSourceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::StartOutsideSource => {
-                formatter.write_str("playback window start находится вне media source")
+                formatter.write_str("Playback window start is outside the media source")
             }
             Self::EndOutsideSource => {
-                formatter.write_str("playback window end находится вне media source")
+                formatter.write_str("Playback window end is outside the media source")
             }
         }
     }

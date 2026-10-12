@@ -123,28 +123,28 @@ pub(crate) enum UrlSidebarActionApplyOutcome {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SameItemSwitchError {
     /// В процессе уже находится одна controlled switch транзакция.
-    #[error("same-item media switch уже выполняется")]
+    #[error("The same-item media switch is already running.")]
     Busy,
     /// UI intent больше не соответствует installed source generation.
-    #[error("same-item media switch intent устарел")]
+    #[error("same-item media switch intent is outdated")]
     Stale,
     /// Component action не прошёл generation/axis/index validation владельца catalog-а.
     #[error(transparent)]
     ComponentAction(#[from] ComponentVariantActionError),
     /// Active source не публикует переключаемый neutral catalog contract.
-    #[error("active source не поддерживает same-item media switch")]
+    #[error("active source supportive same-item media switch")]
     UnsupportedSource,
     /// App/controller больше не подтверждают exact active media identity.
-    #[error("active media identity отсутствует либо уже изменена")]
+    #[error("active media identity missing or already modified")]
     MissingActiveIdentity,
     /// Renderer-bound playlist binding неактивен.
-    #[error("playlist runtime binding недоступен")]
+    #[error("playlist runtime binding unavailable")]
     MissingBinding,
     /// Capability snapshot ещё не опубликован composition owner-ом.
-    #[error("system capability snapshot недоступен")]
+    #[error("system capability snapshot unavailable")]
     MissingCapabilities,
     /// Player lifecycle preflight не удалось прочитать без потери причины.
-    #[error("player runtime preflight отклонил same-item media switch: {0}")]
+    #[error("player runtime preflight flattened same-item media switch: {0}")]
     RuntimePreflight(player_core::PlayerRuntimeApplyError),
     /// Общий strong media-open envelope отверг запуск.
     #[error(transparent)]
@@ -368,7 +368,7 @@ impl AppState {
         )]
         let physical_request = match active_source
             .web_intent()
-            .expect("same-item web source был проверен до lifecycle start")
+            .expect("The same-item web source was checked before lifecycle start.")
             .selection_switch_request(selection_intent, settings)
         {
             crate::media_open::WebMediaSelectionSwitchResolution::NoChange => {

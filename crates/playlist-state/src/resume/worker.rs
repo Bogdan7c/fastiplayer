@@ -75,7 +75,7 @@ impl fmt::Display for ResumeWorkerStartError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "не удалось запустить playlist resume writer: {:?}",
+            "failed to launch playlist resume writer: {:?}",
             self.0
         )
     }

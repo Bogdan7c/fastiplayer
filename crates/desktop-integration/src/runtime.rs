@@ -113,7 +113,7 @@ impl Drop for DesktopIntegration {
         // backend-потока или разрыв канала фиксируются в логе. Повторный
         // shutdown после явного вызова возвращает Ok (AlreadyCompleted).
         if let Err(error) = self.shutdown() {
-            tracing::warn!(?error, "Desktop integration не завершилась чисто при drop");
+            tracing::warn!(?error, "Desktop integration didn’t end cleanly with drop");
         }
     }
 }

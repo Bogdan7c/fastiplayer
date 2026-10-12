@@ -289,7 +289,7 @@ impl<Reader: LocalDocumentReader> ExpansionContext<'_, '_, Reader> {
             LocalPlaylistDocumentFormat::M3u => M3uDeclaredFormat::M3u,
             LocalPlaylistDocumentFormat::M3u8 => M3uDeclaredFormat::M3u8,
             LocalPlaylistDocumentFormat::Xspf => {
-                unreachable!("XSPF не проходит через M3U parser")
+                unreachable!("XSPF does not pass through M3U parser.")
             }
         };
         let parsed_document = match parse_m3u_document(M3uParseRequest::new(
@@ -317,7 +317,7 @@ impl<Reader: LocalDocumentReader> ExpansionContext<'_, '_, Reader> {
                 DocumentAttempt::Unexpanded
             }
             M3uDocument::AdaptiveManifestReference(_) => {
-                unreachable!("local source не может вернуть network adaptive reference")
+                unreachable!("local source cannot return a network adaptive reference")
             }
         }
     }
@@ -578,9 +578,10 @@ mod tests {
             path: &Path,
             maximum_bytes: usize,
         ) -> io::Result<BoundedDocumentRead> {
-            let bytes = self.documents.get(path).cloned().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "fake document отсутствует")
-            })?;
+            let bytes =
+                self.documents.get(path).cloned().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "fake document absent")
+                })?;
             self.reads += 1;
             if self.cancel_after_first_read && self.reads == 1 {
                 self.cancellation.cancel();

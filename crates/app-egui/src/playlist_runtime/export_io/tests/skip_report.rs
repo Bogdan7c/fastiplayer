@@ -52,7 +52,7 @@ fn one_unexportable_entry_is_skipped_and_file_has_the_rest() {
         report, durability, ..
     } = completion
     else {
-        panic!("экспорт обязан завершиться записью, получено {completion:?}");
+        panic!("Exports must be completed by recording, got {completion:?}");
     };
     assert_eq!(report.exported_tracks, 2);
     assert_eq!(report.skipped.total(), 1);
@@ -65,7 +65,7 @@ fn one_unexportable_entry_is_skipped_and_file_has_the_rest() {
     assert!(!file.contains("broken"), "{file}");
     assert_eq!(
         messages::written_feedback(durability, &report).as_deref(),
-        Some("Экспортировано 2, пропущено 1: путь к локальному файлу нельзя записать")
+        Some("Exported 2, skipped 1: local file path cannot be written")
     );
 }
 
@@ -85,16 +85,18 @@ fn all_entries_unexportable_creates_no_file_and_says_nothing_to_export() {
     let completion = run_export(&queue, target_path.clone());
 
     let PlaylistExportJobCompletion::Failed { error, .. } = completion else {
-        panic!("ожидался отказ, получено {completion:?}");
+        panic!("Refusal was expected, received {completion:?}");
     };
     assert!(
         matches!(error, PlaylistExportJobError::NothingToExport(counts) if counts.total() == 1)
     );
-    assert!(!target_path.exists(), "пустой файл создаваться не должен");
+    assert!(
+        !target_path.exists(),
+        "An empty file should not be created."
+    );
     assert_eq!(
         messages::failure_feedback(error),
-        "Нечего экспортировать: ни одна из 1 записей не подходит для этого формата \
-         (путь к локальному файлу нельзя записать)"
+        "Nothing to export: none of the 1 entries is suitable for this format (local file path cannot be written)"
     );
 }
 
@@ -112,8 +114,7 @@ fn several_skip_reasons_are_listed_briefly() {
     assert_eq!(
         messages::written_feedback(PlaylistExportDurability::Durable, &report).as_deref(),
         Some(
-            "Экспортировано 4, пропущено 3: ссылки без стабильного адреса — 2, \
-             файлы с неподходящим путём — 1. Составные группы записаны отдельными строками"
+            "Exported 4, skipped 3: links without stable addresses — 2, files with unsuitable paths — 1. Compound groups were written as separate rows"
         )
     );
 }
@@ -145,7 +146,7 @@ fn read_only_directory_gives_permission_text_without_directory_path() {
         return;
     }
     let PlaylistExportJobCompletion::Failed { error, .. } = completion else {
-        panic!("запись в read-only каталог обязана провалиться: {completion:?}");
+        panic!("Read-only directory entry must fail: {completion:?}");
     };
     assert_eq!(
         error,
@@ -154,10 +155,10 @@ fn read_only_directory_gives_permission_text_without_directory_path() {
     let text = messages::failure_feedback(error);
     assert_eq!(
         text,
-        "Не удалось сохранить плейлист: нет прав на запись в выбранную папку"
+        "Could not save Playlist: no permission to write to the selected folder"
     );
     assert!(!text.contains(directory.path().to_string_lossy().as_ref()));
-    assert!(!target_path.exists(), "полуфайл остаться не должен");
+    assert!(!target_path.exists(), "The half-file should not remain.");
 }
 
 #[test]
@@ -196,10 +197,10 @@ fn disk_full_from_writer_reaches_user_text() {
         },
     );
     let PlaylistExportJobCompletion::Failed { error, .. } = completion else {
-        panic!("ожидался отказ записи: {completion:?}");
+        panic!("Expected recording failure: {completion:?}");
     };
     assert_eq!(
         messages::failure_feedback(error),
-        "Не удалось сохранить плейлист: на диске не хватает места"
+        "Could not save Playlist: not enough disk space"
     );
 }

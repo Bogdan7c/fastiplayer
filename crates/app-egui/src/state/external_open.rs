@@ -45,7 +45,7 @@ impl AppState {
                 renderer,
             };
             let outcome = dispatch_external_open_request(&mut host, request);
-            info!(?outcome, "Брошенные в окно данные обработаны");
+            info!(?outcome, "Data thrown into window processed");
         }
         // Любое событие жеста меняет подсветку, поэтому кадр нужен всегда.
         true
@@ -67,7 +67,7 @@ impl AppState {
             renderer,
         };
         let outcome = dispatch_external_open_request(&mut host, request);
-        info!(?outcome, "Файлы от второго запуска обработаны");
+        info!(?outcome, "Files from the second run processed");
     }
 
     /// Принимает устаревшее оконное событие файла (платформы без внешнего канала drag).
@@ -98,7 +98,7 @@ impl AppState {
                 first_item,
                 file_count,
             } => {
-                info!(file_count, "Очередь заменена брошенными файлами");
+                info!(file_count, "Queue replaced with dropped files");
                 // Файлы реально добавлены (пустая очередь или Confirm): только теперь
                 // честно сообщаем, что набор усечён лимитом обхода.
                 if let Some(notice) = dropped_collection::truncation_notice(truncation, file_count)
@@ -112,7 +112,7 @@ impl AppState {
                     renderer,
                     row_play,
                 ) {
-                    self.set_startup_error("Не удалось начать воспроизведение файлов".to_string());
+                    self.set_startup_error("Failed to start reproducing files".to_string());
                 }
                 self.mark_pending_worker_redraw();
             }
@@ -127,8 +127,8 @@ impl AppState {
             }
             LocalFilesReplacementOutcome::InstallInProgress => self.notify_open_still_in_progress(),
             LocalFilesReplacementOutcome::Rejected => {
-                warn!("Замена очереди брошенными файлами отклонена владельцем очереди");
-                self.notify_info("Не удалось открыть файлы".to_string());
+                warn!("Queue replacement with dropped files rejected by the queue owner");
+                self.notify_info("Failed to open files".to_string());
             }
         }
     }
@@ -177,8 +177,8 @@ impl AppState {
         match playlist_runtime.start_manual_file_add_in_given_order(paths) {
             Ok(_job_id) => self.mark_pending_worker_redraw(),
             Err(error) => {
-                warn!(?error, "Manual Add из брошенных файлов не стартовал");
-                self.notify_info("Не удалось добавить файлы".to_string());
+                warn!(?error, "Manual Add from dropped files did not start");
+                self.notify_info("Failed to add files".to_string());
             }
         }
     }
@@ -263,10 +263,7 @@ impl ExternalOpenHost for AppStateExternalOpenHost<'_> {
                 self.app_state.notify_open_still_in_progress();
             }
             Err(error @ DroppedCollectionWalkStartError::RuntimeClosed) => {
-                warn!(
-                    ?error,
-                    "Обход брошенных папок не принят: runtime закрывается"
-                );
+                warn!(?error, "Abandoned folders are not bypassed: runtime closes");
             }
             Err(DroppedCollectionWalkStartError::SpawnFailed) => {
                 self.app_state
@@ -295,7 +292,7 @@ impl ExternalOpenHost for AppStateExternalOpenHost<'_> {
             }
             PlaylistPathImportStart::RuntimeClosed | PlaylistPathImportStart::SpawnFailed => {
                 self.app_state
-                    .notify_info("Не удалось открыть плейлист".to_string());
+                    .notify_info("Unable to open the playlist".to_string());
             }
         }
     }

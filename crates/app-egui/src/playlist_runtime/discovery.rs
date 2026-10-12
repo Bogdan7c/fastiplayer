@@ -287,7 +287,7 @@ impl PlaylistDiscoveryCoordinator {
             .inspect_err(|error| {
                 tracing::error!(
                     ?error,
-                    "Discovery executor не запустился; sibling discovery будет недоступен"
+                    "Discovery executor not running; sibling discovery will not be available"
                 );
             })
             .ok();
@@ -340,7 +340,7 @@ impl PlaylistDiscoveryCoordinator {
             tracing::debug!(
                 cancelled_jobs = report.cancelled_jobs,
                 in_flight_work_units = report.in_flight_work_units,
-                "Discovery executor начал неблокирующий shutdown"
+                "Discovery executor starts non-blocking shutdown"
             );
         }
         if let Some(executor) = &self.cpu_executor {
@@ -485,7 +485,7 @@ impl PlaylistDiscoveryCoordinator {
                         Err(error) => {
                             tracing::warn!(
                                 ?error,
-                                "Discovery record не преобразован в playlist draft"
+                                "Discovery record not converted to playlist draft"
                             );
                             let _cancelled_now = active
                                 .job
@@ -528,7 +528,7 @@ impl PlaylistDiscoveryCoordinator {
                             }
                         }
                         Err(error) => {
-                            tracing::warn!(?error, "Discovery batch отклонён controller-ом");
+                            tracing::warn!(?error, "Discovery batch rejected by controller");
                             let _cancelled_now = active
                                 .job
                                 .cancel(DiscoveryCancellationCause::StructuralInvalidation);
@@ -654,7 +654,7 @@ impl PlaylistDiscoveryCoordinator {
         let job = match executor.submit(request) {
             Ok(job) => job,
             Err(error) => {
-                tracing::warn!(?error, "Discovery submit отклонён executor-ом");
+                tracing::warn!(?error, "Discovery submit rejected by executor");
                 self.initial_playback
                     .mark_scope_ready(manifest_job.scope_id);
                 self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {
@@ -671,7 +671,7 @@ impl PlaylistDiscoveryCoordinator {
         tracing::debug!(
             reprioritized = reprioritize.reprioritized,
             stale = reprioritize.stale,
-            "Sibling discovery применил neutral priority hint"
+            "Sibling discovery applied neutral priority hint"
         );
         let mut committed_ids_by_key = BTreeMap::new();
         committed_ids_by_key.insert(target_key, manifest_job.target_item_id);

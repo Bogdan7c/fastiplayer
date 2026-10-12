@@ -64,10 +64,7 @@ fn gesture_series_yields_one_request_with_all_items_in_source_order() {
 
     assert_eq!(request.target, DropTarget::Playlist);
     assert_eq!(request.items, items(&["/c.mkv", "/a.mkv", "/b.mkv"]));
-    assert!(
-        tracker.hovering_position().is_none(),
-        "бросок сбрасывает подсветку"
-    );
+    assert!(tracker.hovering_position().is_none(), "throw off");
 }
 
 #[test]
@@ -107,7 +104,7 @@ fn second_drop_yields_second_independent_request() {
         .expect("second request");
 
     assert_eq!(first.items, items(&["/one.mkv"]));
-    assert_eq!(first.target, DropTarget::Video, "нет позиции — видео");
+    assert_eq!(first.target, DropTarget::Video, "No position - video");
     assert_eq!(second.items, items(&["/two.mkv"]));
     assert_eq!(second.target, DropTarget::Playlist);
 }

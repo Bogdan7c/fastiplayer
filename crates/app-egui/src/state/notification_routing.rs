@@ -47,7 +47,7 @@ impl AppState {
 
     /// Сообщает пользователю, что повторный Open отклонён, пока идёт прошлое открытие.
     pub(crate) fn notify_open_still_in_progress(&mut self) {
-        debug!("Открытие media уже идёт, повторный запрос отклонён с уведомлением");
+        debug!("Opening media is already underway, re-request rejected with notification");
         self.notify_transient(OPEN_STILL_IN_PROGRESS_MESSAGE);
     }
 
@@ -72,7 +72,7 @@ impl AppState {
     /// к соответствующему intent-методу.
     pub(crate) fn show_playlist_queue_notices(&mut self, notices: Vec<AutomaticQueueNotice>) {
         for notice in &notices {
-            debug!(?notice, "Итог автоматического пропуска в очереди");
+            debug!(?notice, "The result of automatic pass in the queue");
             match playlist_queue_notice_delivery(notice) {
                 PlaylistQueueNoticeDelivery::InfoToast(text) => self.notify_info(text),
                 PlaylistQueueNoticeDelivery::TransientToast(text) => self.notify_transient(text),
@@ -92,7 +92,7 @@ impl AppState {
     /// Это информация, а не ошибка: плейлист уже разобран, поэтому инфо-toast (8 с).
     pub(crate) fn show_playlist_import_notices(&mut self, notices: Vec<PlaylistImportNotice>) {
         for notice in notices {
-            debug!(?notice, "Уведомление о чтении плейлиста");
+            debug!(?notice, "Notice of reading the playlist");
             self.notify_info(notice.message());
         }
     }
@@ -137,7 +137,7 @@ impl AppState {
                     // Исполняется в этом же кадре (`apply_requested_media_retry`): здесь нет
                     // ни очереди, ни renderer-а, поэтому цель только запоминается.
                     let outcome = self.notifications.request_retry(id);
-                    debug!(?outcome, "Нажата «Повторить»");
+                    debug!(?outcome, "Pressed \"Repeat.\"");
                     if outcome == RetryRequestOutcome::Requested {
                         self.mark_pending_worker_redraw();
                     }
@@ -145,7 +145,7 @@ impl AppState {
                 NotificationAction::Dismiss(id) => {
                     // «Уже нет» — штатный no-op: плашка могла истечь в том же кадре.
                     let outcome = self.notifications.dismiss(id);
-                    debug!(?outcome, "Уведомление закрыто пользователем");
+                    debug!(?outcome, "Notification closed by the user");
                     self.mark_pending_worker_redraw();
                 }
             }

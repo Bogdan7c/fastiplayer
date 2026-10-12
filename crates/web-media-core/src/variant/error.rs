@@ -91,91 +91,85 @@ pub enum ComponentVariantError {
 impl fmt::Display for ComponentVariantError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SourceMismatch => {
-                formatter.write_str("component variant принадлежит другому source")
-            }
+            Self::SourceMismatch => formatter.write_str("The component variant is another source."),
             Self::CrossParent => {
-                formatter.write_str("component variant принадлежит другому parent candidate")
+                formatter.write_str("The component variant is another parent candidate.")
             }
             Self::StaleCatalogGeneration { expected, provided } => write!(
                 formatter,
-                "component catalog generation устарела: ожидалась {}, получена {}",
+                "component catalog generation is stale: expected {}, received {}",
                 expected.value(),
                 provided.value()
             ),
             Self::WrongAxis { expected, provided } => write!(
                 formatter,
-                "component variant axis не совпадает: ожидалась {expected:?}, получена {provided:?}"
+                "component variant axis does not match: expected {expected:?}, received {provided:?}"
             ),
             Self::MissingVariant { component } => {
                 write!(
                     formatter,
-                    "exact {component:?} variant отсутствует в catalog"
+                    "exact {component:?} variant is not available in the catalog"
                 )
             }
             Self::MissingSemanticVariant { component } => write!(
                 formatter,
-                "semantic {component:?} variant отсутствует в catalog"
+                "The semantic {component:?} variant is missing from the catalog."
             ),
             Self::DuplicateExactIdentity { component } => {
                 write!(
                     formatter,
-                    "catalog содержит duplicate exact {component:?} identity"
+                    "catalog contains a duplicate exact {component:?} identity"
                 )
             }
             Self::AmbiguousSemanticIdentity { component } => write!(
                 formatter,
-                "catalog содержит ambiguous semantic {component:?} identity"
+                "catalog contains an ambiguous semantic {component:?} identity"
             ),
             Self::CatalogLimitExceeded {
                 provided_entries,
                 maximum_entries,
             } => write!(
                 formatter,
-                "catalog содержит {provided_entries} rows при лимите {maximum_entries}"
+                "catalog contains {provided_entries} rows; the limit is {maximum_entries}"
             ),
             Self::CompatibilityEdgeLimitExceeded {
                 provided_edges,
                 maximum_edges,
             } => write!(
                 formatter,
-                "catalog содержит {provided_edges} logical compatibility edges при лимите {maximum_edges}"
+                "catalog contains {provided_edges} logical compatibility edges; the limit is {maximum_edges}"
             ),
             Self::DanglingVariantReference { component } => write!(
                 formatter,
-                "catalog содержит dangling {component:?} variant reference"
+                "catalog contains a dangling {component:?} variant reference"
             ),
             Self::DuplicateVariantReference { component } => write!(
                 formatter,
-                "catalog содержит duplicate {component:?} variant reference"
+                "catalog contains a duplicate {component:?} variant reference"
             ),
             Self::DuplicateCompatibilityEdge => {
-                formatter.write_str("catalog содержит duplicate compatibility edge")
+                formatter.write_str("catalog contains a duplicate compatibility edge")
             }
             Self::IncompatibleComponentPair => {
-                formatter.write_str("video/audio component pair не разрешена catalog relation")
+                formatter.write_str("video/audio component pair not allowed catalog relation")
             }
             Self::NoSelectablePresentation => {
-                formatter.write_str("catalog не содержит selectable presentation")
+                formatter.write_str("The catalog does not contain a selectable presentation.")
             }
             Self::MissingCoupledPresentation => {
-                formatter.write_str("exact coupled presentation отсутствует в catalog")
+                formatter.write_str("exact coupled presentation is not available in catalog")
             }
             Self::DuplicateCoupledExactIdentity => {
-                formatter.write_str("catalog содержит duplicate exact coupled identity")
+                formatter.write_str("catalog contains a duplicate exact coupled identity")
             }
             Self::AmbiguousCoupledSemanticIdentity => {
-                formatter.write_str("catalog содержит ambiguous semantic coupled identity")
+                formatter.write_str("catalog contains an ambiguous semantic coupled identity")
             }
             Self::MissingRequiredAxis { component } => {
-                write!(
-                    formatter,
-                    "required {component:?} axis пуста или отсутствует"
-                )
+                write!(formatter, "required {component:?} axis is empty or absent")
             }
-            Self::LayoutMismatch => {
-                formatter.write_str("component selection shape не совпадает с catalog layout")
-            }
+            Self::LayoutMismatch => formatter
+                .write_str("component selection shape is not consistent with catalog layout"),
         }
     }
 }

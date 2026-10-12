@@ -70,10 +70,10 @@ impl fmt::Display for FrameRateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ZeroNumerator => {
-                formatter.write_str("frame-rate numerator должен быть ненулевым")
+                formatter.write_str("The frame-rate numerator must be non-zero.")
             }
             Self::ZeroDenominator => {
-                formatter.write_str("frame-rate denominator должен быть ненулевым")
+                formatter.write_str("The frame-rate denominator must be non-zero.")
             }
         }
     }
@@ -108,7 +108,7 @@ pub enum SampleRateError {
 
 impl fmt::Display for SampleRateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("sample rate должна быть больше нуля")
+        formatter.write_str("The sample rate should be more than zero.")
     }
 }
 
@@ -141,7 +141,7 @@ pub enum ChannelCountError {
 
 impl fmt::Display for ChannelCountError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("число audio channels должно быть больше нуля")
+        formatter.write_str("The number of audio channels should be more than zero.")
     }
 }
 
@@ -188,13 +188,13 @@ pub enum VideoWidthError {
 impl fmt::Display for VideoWidthError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Zero => formatter.write_str("ширина видео должна быть больше нуля"),
+            Self::Zero => formatter.write_str("The width of the video should be more than zero"),
             Self::TooLarge {
                 provided_pixels,
                 maximum_pixels,
             } => write!(
                 formatter,
-                "ширина {provided_pixels}px превышает лимит {maximum_pixels}px"
+                "Width {provided_pixels}px exceeds limit {maximum_pixels}px"
             ),
         }
     }
@@ -229,7 +229,7 @@ pub enum BitrateError {
 
 impl fmt::Display for BitrateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("bitrate должен быть больше нуля")
+        formatter.write_str("bitrate must be greater than zero")
     }
 }
 
@@ -606,7 +606,7 @@ impl fmt::Display for CandidateDescriptorError {
                 semantic_source,
             } => write!(
                 formatter,
-                "exact source {exact_source:?} не совпадает с semantic source {semantic_source:?}"
+                "exact source {exact_source:?} does not match semantic source {semantic_source:?}"
             ),
             Self::SubtitleSourceMismatch {
                 ordinal,
@@ -614,20 +614,20 @@ impl fmt::Display for CandidateDescriptorError {
                 subtitle_source,
             } => write!(
                 formatter,
-                "subtitle #{ordinal} source {subtitle_source:?} не совпадает с candidate source {candidate_source:?}"
+                "subtitle #{ordinal} source {subtitle_source:?} does not match candidate source {candidate_source:?}"
             ),
-            Self::EmptyText { field } => write!(formatter, "{field:?} не может быть пустым"),
+            Self::EmptyText { field } => write!(formatter, "{field:?} can't be empty"),
             Self::TextTooLong {
                 field,
                 provided_bytes,
                 maximum_bytes,
             } => write!(
                 formatter,
-                "{field:?} занимает {provided_bytes} bytes при лимите {maximum_bytes}"
+                "{field:?} occupies {provided_bytes} bytes at limit {maximum_bytes}"
             ),
             Self::TooManySubtitles { provided, maximum } => write!(
                 formatter,
-                "candidate содержит {provided} subtitles при лимите {maximum}"
+                "candidate contains {provided} subtitles; the limit is {maximum}"
             ),
         }
     }

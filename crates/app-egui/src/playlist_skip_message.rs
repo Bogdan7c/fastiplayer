@@ -15,18 +15,17 @@
 use crate::playlist_runtime::{AutomaticQueueNotice, QueueBlockReason, SkippedItemsSummary};
 
 /// Текст, когда не открылся ни один элемент очереди.
-pub(crate) const NOTHING_IN_QUEUE_OPENED_MESSAGE: &str = "Ни один файл очереди не удалось открыть";
+pub(crate) const NOTHING_IN_QUEUE_OPENED_MESSAGE: &str = "Could not open any file in the queue";
 
 /// Очередь встала, потому что нет сети (B8): файл не виноват, после возвращения сети — Play.
-pub(crate) const QUEUE_STOPPED_NO_NETWORK_MESSAGE: &str =
-    "Нет подключения к сети — очередь остановлена";
+pub(crate) const QUEUE_STOPPED_NO_NETWORK_MESSAGE: &str = "No network connection; queue stopped";
 
 /// Очередь встала, потому что сайт ограничил запросы (HTTP 429, B8).
 pub(crate) const QUEUE_STOPPED_SITE_RATE_LIMITED_MESSAGE: &str =
-    "Сайт ограничил запросы — очередь остановлена";
+    "Website limited requests - queue stopped";
 
 /// Хвост сообщения, когда после пропусков открывать больше нечего.
-const END_OF_QUEUE_SUFFIX: &str = "Дальше в очереди ничего нет";
+const END_OF_QUEUE_SUFFIX: &str = "There is nothing else in the queue";
 
 /// Как показать итог цепочки и каким текстом.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,9 +60,9 @@ pub(crate) fn playlist_queue_notice_delivery(
         }
         AutomaticQueueNotice::StoppedOnFailedItem { failed_item } => {
             let text = match failed_item {
-                Some(label) => format!("Очередь остановлена из-за ошибки: {label}"),
+                Some(label) => format!("Queue stopped due to an error: {label}"),
                 // Элемент мог исчезнуть из очереди раньше, чем controller узнал его имя.
-                None => "Очередь остановлена из-за ошибки файла".to_owned(),
+                None => "Queue stopped due to a file error".to_owned(),
             };
             PlaylistQueueNoticeDelivery::TransientToast(text)
         }
@@ -84,11 +83,7 @@ pub(crate) fn playlist_queue_notice_delivery(
 /// «Пропущено из-за ошибки 5 файлов: a.mkv, b.mp4, c.avi и ещё 2».
 fn skipped_items_sentence(skipped: &SkippedItemsSummary) -> String {
     let total = skipped.total();
-    let mut sentence = format!(
-        "{} из-за ошибки {total} {}",
-        skipped_verb(total),
-        files_noun(total)
-    );
+    let mut sentence = format!("Skipped {total} {} due to errors", files_noun(total));
     let names = skipped
         .named_items()
         .iter()
@@ -100,52 +95,14 @@ fn skipped_items_sentence(skipped: &SkippedItemsSummary) -> String {
     }
     let unnamed_count = skipped.unnamed_count();
     if unnamed_count > 0 && !names.is_empty() {
-        sentence.push_str(&format!(" и ещё {unnamed_count}"));
+        sentence.push_str(&format!(" and {unnamed_count} more"));
     }
     sentence
 }
 
-/// Согласование глагола с числом: «Пропущен 1 файл», «Пропущено 2 файла».
-const fn skipped_verb(count: usize) -> &'static str {
-    match russian_plural_form(count) {
-        RussianPluralForm::One => "Пропущен",
-        RussianPluralForm::Few | RussianPluralForm::Many => "Пропущено",
-    }
-}
-
-/// «файл» / «файла» / «файлов» по правилам русского языка.
+/// Английское существительное: единственное число только для ровно одного файла.
 const fn files_noun(count: usize) -> &'static str {
-    match russian_plural_form(count) {
-        RussianPluralForm::One => "файл",
-        RussianPluralForm::Few => "файла",
-        RussianPluralForm::Many => "файлов",
-    }
-}
-
-/// Три формы русского существительного после числа.
-///
-/// Общая для текстов уведомлений (её же использует `startup_arguments_message`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RussianPluralForm {
-    /// 1, 21, 101 — «файл».
-    One,
-    /// 2–4, 22–24 — «файла».
-    Few,
-    /// 0, 5–20, 25–30, 111–114 — «файлов».
-    Many,
-}
-
-/// Числа на 11–14 всегда во множественной форме, иначе решает последняя цифра.
-pub(crate) const fn russian_plural_form(count: usize) -> RussianPluralForm {
-    let last_two_digits = count % 100;
-    if last_two_digits >= 11 && last_two_digits <= 14 {
-        return RussianPluralForm::Many;
-    }
-    match count % 10 {
-        1 => RussianPluralForm::One,
-        2..=4 => RussianPluralForm::Few,
-        _ => RussianPluralForm::Many,
-    }
+    if count == 1 { "file" } else { "files" }
 }
 
 #[cfg(test)]

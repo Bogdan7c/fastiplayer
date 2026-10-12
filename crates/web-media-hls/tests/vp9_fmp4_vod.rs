@@ -48,10 +48,10 @@ fn split_init_and_media(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
         if &bytes[position + 4..position + 8] == b"moof" {
             return (bytes[..position].to_vec(), bytes[position..].to_vec());
         }
-        assert!(size >= 8, "битый top-level box в fixture");
+        assert!(size >= 8, "Broken top-level box in fixture");
         position += size;
     }
-    panic!("в fixture нет moof");
+    panic!("fixture has no moof");
 }
 
 #[test]
@@ -103,18 +103,18 @@ fn vp9_video_only_fmp4_vod_opens_and_publishes_keyframe_packet() {
         request,
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("VP9 fMP4 VOD должен подготовиться");
+    .expect("VP9 fMP4 VOD should be prepared");
     let mut demuxer = opened.into_demuxer();
 
     let deadline = Instant::now() + TEST_TIMEOUT;
     let first_packet = loop {
-        match demuxer.next_event().expect("VP9 fMP4 события читаются") {
+        match demuxer.next_event().expect("VP9 fMP4 Events Read") {
             DemuxReadEvent::Packet(packet) => break packet,
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                assert!(Instant::now() < deadline, "HLS worker не стал готов");
+                assert!(Instant::now() < deadline, "The HLS worker is not ready.");
                 std::thread::sleep(Duration::from_millis(2));
             }
-            DemuxReadEvent::EndOfStream => panic!("поток закончился до первого packet-а"),
+            DemuxReadEvent::EndOfStream => panic!("The stream ended before the first packet."),
             _ => {}
         }
     };

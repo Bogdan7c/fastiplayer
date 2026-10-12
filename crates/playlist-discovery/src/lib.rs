@@ -187,26 +187,26 @@ impl ProbedLocalMedia {
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeOneLocalMediaError {
     /// Caller запросил cooperative cancellation.
-    #[error("probe локального media отменён")]
+    #[error("Local media probe cancelled")]
     Cancelled,
 
     /// Для содержимого файла не найден поддерживаемый container reader.
-    #[error("неподдерживаемый media container: {reason}")]
+    #[error("Unsupported media container: {reason}")]
     UnsupportedContainer {
         /// Безопасная техническая причина от demux owner-а.
         reason: String,
     },
 
     /// Container прочитан, но audio/video tracks в нём нет.
-    #[error("media container не содержит audio/video tracks")]
+    #[error("Media container contains no audio/video tracks")]
     NoAudioVideoTracks,
 
     /// Файл не удалось открыть, stat-ить или прочитать.
-    #[error("ошибка I/O при probe локального media: {0}")]
+    #[error("Error I/O for local media probe: {0}")]
     IoFailure(#[source] io::Error),
 
     /// Reader найден, но container оказался malformed или нарушил probe limit/invariant.
-    #[error("ошибка разбора media container: {reason}")]
+    #[error("parsing media container: {reason}")]
     ProbeFailure {
         /// Безопасная техническая причина от demux owner-а.
         reason: String,

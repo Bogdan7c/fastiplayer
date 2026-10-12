@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn every_editable_setting_has_one_checked_live_application_contract() {
-        let registry = app_config_registry().expect("AppConfig registry должен собираться");
+        let registry = app_config_registry().expect("AppConfig Registry must be collected.");
         let editable_descriptors = registry
             .descriptors()
             .filter(|descriptor| descriptor.access == SettingAccess::ReadWrite)
@@ -552,12 +552,12 @@ mod tests {
         for descriptor in &editable_descriptors {
             let contract = setting_application_contract(&descriptor.id).unwrap_or_else(|| {
                 panic!(
-                    "editable setting `{}` не имеет live application contract",
+                    "editable setting '{}' does not have a live application contract",
                     descriptor.id.as_str()
                 )
             });
             let metadata_route = runtime_route_from_descriptor(descriptor)
-                .expect("editable descriptor должен иметь project runtime route");
+                .expect("An editable descriptor should have a project runtime route.");
 
             assert_eq!(contract.setting_id, descriptor.id);
             assert_eq!(contract.route, metadata_route);

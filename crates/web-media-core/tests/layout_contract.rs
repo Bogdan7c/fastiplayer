@@ -18,25 +18,25 @@ use web_media_core::{
 
 fn transport(raw: &str) -> NormalizedTransport {
     NormalizedTransport::parse(
-        RawTransportIdentity::new(raw).expect("test transport identity должна быть валидна"),
+        RawTransportIdentity::new(raw).expect("The transport identity test must be valid."),
     )
 }
 
 fn container(raw: &str) -> ContainerIdentity {
     ContainerIdentity::parse(
         None,
-        Some(RawContainerIdentity::new(raw).expect("test container identity должна быть валидна")),
+        Some(RawContainerIdentity::new(raw).expect("The test container identity must be valid")),
     )
 }
 
 fn codec(raw: &str) -> NormalizedCodec {
-    NormalizedCodec::parse(RawCodecIdentity::new(raw).expect("codec identity должна быть валидна"))
+    NormalizedCodec::parse(RawCodecIdentity::new(raw).expect("codec identity must be valid"))
 }
 
 fn video_track(height: Option<VideoHeight>) -> VideoTrackDescriptor {
     VideoTrackDescriptor::new(
         codec("avc1.640028"),
-        Some(VideoWidth::new(1_920).expect("width должна быть ненулевой")),
+        Some(VideoWidth::new(1_920).expect("The width must be non-zero.")),
         height,
         None,
         None,
@@ -52,11 +52,11 @@ fn audio_track() -> AudioTrackDescriptor {
 fn deferred_hls_layout_preserves_selection_evidence_without_inventing_codecs() {
     let expected_transport = transport("m3u8_native");
     let expected_container = container("mp4");
-    let expected_height = VideoHeight::new(1_080).expect("height должна быть ненулевой");
-    let expected_width = VideoWidth::new(1_920).expect("width должна быть ненулевой");
+    let expected_height = VideoHeight::new(1_080).expect("The height must be non-zero.");
+    let expected_width = VideoWidth::new(1_920).expect("The width must be non-zero.");
     let expected_frame_rate =
-        FrameRate::new(60_000, 1_001).expect("frame rate должна быть валидна");
-    let expected_bitrate = Bitrate::new(8_000_000).expect("bitrate должен быть ненулевым");
+        FrameRate::new(60_000, 1_001).expect("The frame rate should be valid");
+    let expected_bitrate = Bitrate::new(8_000_000).expect("bitrate must be non-zero");
 
     let descriptor = HlsMuxedCodecDeferredDescriptor::new(
         expected_transport.clone(),
@@ -67,7 +67,7 @@ fn deferred_hls_layout_preserves_selection_evidence_without_inventing_codecs() {
         Some(expected_bitrate),
         DynamicRange::Hdr,
     )
-    .expect("HLS transport должен допускать отложенное codec proof");
+    .expect("HLS transport must allow delayed codec proof");
 
     assert_eq!(descriptor.transport(), &expected_transport);
     assert_eq!(descriptor.container(), &expected_container);
@@ -88,7 +88,7 @@ fn deferred_hls_layout_rejects_non_hls_transport_before_catalog_publication() {
     let result = HlsMuxedCodecDeferredDescriptor::new(
         transport("https"),
         container("mp4"),
-        VideoHeight::new(720).expect("height должна быть ненулевой"),
+        VideoHeight::new(720).expect("The height must be non-zero."),
         None,
         None,
         None,
@@ -98,7 +98,7 @@ fn deferred_hls_layout_rejects_non_hls_transport_before_catalog_publication() {
     assert_eq!(
         result,
         Err(HlsMuxedCodecDeferredBuildError::TransportNotHls),
-        "обычный HTTP resource нельзя выдать за HLS ladder без codec evidence"
+        "HTTP resource cannot be given as HLS ladder without codec evidence."
     );
 }
 
@@ -106,8 +106,8 @@ fn deferred_hls_layout_rejects_non_hls_transport_before_catalog_publication() {
 fn every_layout_shape_keeps_proven_height_separate_from_soft_probe_hints() {
     let http_transport = transport("https");
     let mp4_container = container("mp4");
-    let proven_height = VideoHeight::new(1_080).expect("height должна быть ненулевой");
-    let soft_height = VideoHeight::new(720).expect("height должна быть ненулевой");
+    let proven_height = VideoHeight::new(1_080).expect("The height must be non-zero.");
+    let soft_height = VideoHeight::new(720).expect("The height must be non-zero.");
     let video = VideoComponentDescriptor::new(
         http_transport.clone(),
         mp4_container.clone(),
@@ -146,7 +146,7 @@ fn every_layout_shape_keeps_proven_height_separate_from_soft_probe_hints() {
         ContentProbedTrackEvidence::Declared(audio_track()),
         video_hints,
     )
-    .expect("audio proof должен допускать unknown video topology");
+    .expect("audio proof must allow unknown video topology");
     assert_eq!(probed_unknown_video.transport(), &http_transport);
     assert_eq!(probed_unknown_video.container(), &container("ogg"));
     assert_eq!(probed_unknown_video.probe_container(), ContainerFamily::Ogg);

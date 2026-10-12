@@ -53,7 +53,7 @@ fn open_selected_or_system_default<OpenedOutput>(
 
     warn!(
         error = %selected_error,
-        "Выбранное устройство вывода недоступно; пробуем устройство по умолчанию"
+        "Selected output device is not available; try the default device"
     );
     match open_device(DEFAULT_AUDIO_OUTPUT_DEVICE_ID) {
         Ok(output) => Ok((
@@ -63,7 +63,7 @@ fn open_selected_or_system_default<OpenedOutput>(
             },
         )),
         Err(default_error) => Err(default_error.context(format!(
-            "запасное устройство по умолчанию тоже недоступно (выбранное: {selected_error:#})"
+            "The default spare device is also unavailable (selected: {selected_error:#})"
         ))),
     }
 }
@@ -111,7 +111,7 @@ mod tests {
             AudioOutputDeviceRequest::SelectedOrSystemDefault,
             |id| devices.open(id),
         )
-        .expect("выбранное устройство доступно");
+        .expect("selected device available");
 
         assert_eq!(opened, HEADSET_ID);
         assert_eq!(route, AudioOutputDeviceRoute::SelectedDevice);
@@ -127,7 +127,7 @@ mod tests {
             AudioOutputDeviceRequest::SelectedOrSystemDefault,
             |id| devices.open(id),
         )
-        .expect("default доступен");
+        .expect("Default available");
 
         assert_eq!(opened, "default");
         assert_eq!(
@@ -148,7 +148,7 @@ mod tests {
             AudioOutputDeviceRequest::SelectedOrSystemDefault,
             |id| devices.open(id),
         )
-        .expect_err("ни одного устройства нет");
+        .expect_err("There's no device.");
 
         let message = format!("{error:#}");
         assert!(
@@ -167,7 +167,7 @@ mod tests {
             AudioOutputDeviceRequest::SelectedOrSystemDefault,
             |id| devices.open(id),
         )
-        .expect_err("default недоступен");
+        .expect_err("default is not available");
 
         assert!(format!("{error:#}").contains("device default is unavailable"));
         assert_eq!(devices.attempted_ids, vec!["default"]);
@@ -182,7 +182,7 @@ mod tests {
             AudioOutputDeviceRequest::SelectedOnly,
             |id| devices.open(id),
         )
-        .expect_err("явный выбор пользователя нельзя подменять");
+        .expect_err("The user's explicit choice cannot be substituted");
 
         assert!(format!("{error:#}").contains(HEADSET_ID));
         assert_eq!(devices.attempted_ids, vec![HEADSET_ID]);
@@ -197,7 +197,7 @@ mod tests {
             AudioOutputDeviceRequest::SystemDefault,
             |id| devices.open(id),
         )
-        .expect("default доступен");
+        .expect("Default available");
 
         assert_eq!(opened, "default");
         assert_eq!(route, AudioOutputDeviceRoute::SystemDefault);

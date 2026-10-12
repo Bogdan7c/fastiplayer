@@ -98,7 +98,7 @@ impl YtDlpTopologyDraftIssue {}
 #[derive(Debug, Error)]
 pub(crate) enum YtDlpTopologyDraftMappingError {
     /// Уже service-classified exact root не удалось перенести в neutral URL locator.
-    #[error("exact root locator не прошёл neutral playlist boundary")]
+    #[error("The exact root locator did not pass the neutral playlist boundary.")]
     RootLocator(#[from] PlaylistLocatorBuildError),
 }
 

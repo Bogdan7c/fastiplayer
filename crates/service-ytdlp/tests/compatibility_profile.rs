@@ -39,12 +39,11 @@ fn profile_directory() -> PathBuf {
 /// Читает JSON fixture, не включая его потенциально secret-bearing содержимое в ошибку.
 fn read_json(path: &Path) -> Value {
     // Ошибка чтения сообщает только checked-in путь, а не содержимое fixture.
-    let json_bytes = fs::read(path).unwrap_or_else(|error| {
-        panic!("не удалось прочитать compatibility artifact {path:?}: {error}")
-    });
+    let json_bytes = fs::read(path)
+        .unwrap_or_else(|error| panic!("Failed to read compatibility artifact {path:?}: {error}"));
     // Ошибка parse сообщает только путь: raw JSON не дублируется в test output.
     serde_json::from_slice(&json_bytes).unwrap_or_else(|error| {
-        panic!("не удалось разобрать compatibility artifact {path:?}: {error}")
+        panic!("I couldn't make out compatibility artifact {path:?}: {error}")
     })
 }
 
@@ -54,7 +53,7 @@ fn required_string<'value>(object: &'value Value, field: &str) -> &'value str {
     object
         .get(field)
         .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("обязательное строковое поле `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("No mandatory string field {field}"))
 }
 
 /// Возвращает обязательный массив manifest object.
@@ -64,7 +63,7 @@ fn required_array<'value>(object: &'value Value, field: &str) -> &'value [Value]
         .get(field)
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .unwrap_or_else(|| panic!("обязательный массив `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("The mandatory array {field} is missing"))
 }
 
 /// Проверяет уникальность строкового identity field во всём массиве объектов.
@@ -78,7 +77,7 @@ fn assert_unique_string_field(objects: &[Value], field: &str) {
         // Повтор означает alias/schema conflict.
         assert!(
             seen_identities.insert(identity),
-            "duplicate compatibility identity в поле `{field}`"
+            "duplicate compatibility identity in the field {field}"
         );
     }
 }
@@ -101,7 +100,7 @@ fn collect_fixture_ids(value: &Value, fixture_ids: &mut HashSet<String>) {
             // Duplicate fixture ID сделал бы provenance неоднозначным.
             assert!(
                 fixture_ids.insert(fixture_id.to_string()),
-                "duplicate fixture_id в checked-in corpus"
+                "duplicate fixture_id in checked-in corpus"
             );
         }
         // Рекурсивно посещаем каждое поле object.
@@ -134,7 +133,7 @@ fn assert_fixture_is_secret_safe(value: &Value) {
                     child_value
                         .as_str()
                         .is_some_and(|text| text.starts_with("<redacted-")),
-                    "fixture содержит неотредактированное cookie field"
+                    "fixture contains an unedited cookie field"
                 );
             }
             // Authorization header обязан быть только marker-ом.
@@ -144,7 +143,7 @@ fn assert_fixture_is_secret_safe(value: &Value) {
                     child_value
                         .as_str()
                         .is_some_and(|text| text.starts_with("<redacted-")),
-                    "fixture содержит неотредактированный Authorization header"
+                    "fixture contains unedited Authorization header"
                 );
             }
             // Cryptographic secret/key/IV fields обязаны быть только markers.
@@ -154,7 +153,7 @@ fn assert_fixture_is_secret_safe(value: &Value) {
                     child_value
                         .as_str()
                         .is_some_and(|text| text.starts_with("<redacted-")),
-                    "fixture содержит неотредактированный cryptographic secret"
+                    "fixture contains unedited cryptographic secret"
                 );
             }
             // Рекурсивно проверяем дочернее значение с именем его поля.
@@ -176,19 +175,19 @@ fn assert_fixture_is_secret_safe(value: &Value) {
             // Userinfo в synthetic fixture не нужен и может скрыть leak.
             assert!(
                 !authority.contains('@'),
-                "fixture locator содержит userinfo"
+                "fixture locator contains userinfo"
             );
             // Port не влияет на проверку reserved synthetic host.
             let host = authority.split(':').next().unwrap_or_default();
             // Каждый checked-in fixture locator обязан использовать reserved namespace.
             assert!(
                 host == "invalid" || host.ends_with(".invalid"),
-                "fixture содержит locator вне reserved .invalid namespace"
+                "fixture containing locator outside reserved .invalid namespace"
             );
             // Query/fragment могли бы случайно сохранить usable token.
             assert!(
                 !text.contains('?') && !text.contains('#'),
-                "fixture locator содержит query или fragment"
+                "fixture locator containing query or fragment"
             );
         }
     }
@@ -205,11 +204,11 @@ fn assert_raw_identity_bounds(value: &Value, raw_fields: &HashSet<&str>, max_byt
                 // В profile fixtures identity всегда строковый.
                 let identity = child_value
                     .as_str()
-                    .unwrap_or_else(|| panic!("raw identity `{field}` обязан быть строкой"));
+                    .unwrap_or_else(|| panic!("raw identity '{field}' must be a line"));
                 // len() для UTF-8 строки возвращает точное количество bytes.
                 assert!(
                     identity.len() <= max_bytes,
-                    "raw identity `{field}` превышает profile bound"
+                    "raw identity '{field}' exceeds profile bound"
                 );
             }
             // Вложенные format/request objects проверяются тем же правилом.
@@ -235,7 +234,7 @@ fn load_profile_and_corpus() -> (Value, Vec<Value>) {
     let corpus_paths = required_array(
         profile
             .get("corpus")
-            .unwrap_or_else(|| panic!("manifest corpus section отсутствует")),
+            .unwrap_or_else(|| panic!("manifest corpus section is not available")),
         "official_synthetic_fixtures",
     );
     // Выделяем ровно необходимую ёмкость для parsed fixtures.
@@ -245,11 +244,11 @@ fn load_profile_and_corpus() -> (Value, Vec<Value>) {
         // Путь обязан быть относительной строкой.
         let relative_path = corpus_path
             .as_str()
-            .unwrap_or_else(|| panic!("corpus path обязан быть строкой"));
+            .unwrap_or_else(|| panic!("The corpus path must be a line."));
         // Absolute path или parent traversal нарушили бы ownership boundary.
         assert!(
             !Path::new(relative_path).is_absolute() && !relative_path.contains(".."),
-            "corpus path покидает compatibility owner"
+            "corpus path leaves compatibility owner"
         );
         // Загружаем checked-in artifact.
         corpus.push(read_json(&owner_directory.join(relative_path)));
@@ -266,7 +265,7 @@ fn manifest_has_exact_source_and_no_schema_conflicts() {
     // Source section обязательна.
     let source = profile
         .get("source")
-        .unwrap_or_else(|| panic!("manifest source section отсутствует"));
+        .unwrap_or_else(|| panic!("manifest source section absent"));
     // Release обязан совпасть точно, без semver range.
     assert_eq!(required_string(source, "release"), EXPECTED_RELEASE);
     // Tag обязан совпасть с release.
@@ -291,7 +290,7 @@ fn manifest_has_exact_source_and_no_schema_conflicts() {
         .map(|field| {
             field
                 .as_str()
-                .unwrap_or_else(|| panic!("upstream format field обязан быть строкой"))
+                .unwrap_or_else(|| panic!("The upstream format field must be a string."))
         })
         .collect::<HashSet<_>>();
     // Set size обязан совпасть с array size, иначе official field повторён.
@@ -317,7 +316,7 @@ fn manifest_has_exact_source_and_no_schema_conflicts() {
     // Ни одно official field нельзя пропустить из classification inventory.
     assert_eq!(
         classified_upstream_fields, upstream_format_fields,
-        "classification inventory расходится с pinned official `_format_fields`"
+        "classification inventory diverges from pinned official `_format_fields`"
     );
     // Request-material decisions не могут дублировать один path.
     assert_unique_string_field(required_array(&profile, "request_material_fields"), "path");
@@ -342,7 +341,7 @@ fn manifest_has_exact_source_and_no_schema_conflicts() {
         // Пустой codec family set не описывает target row.
         assert!(
             !required_array(codec_profile, "families").is_empty(),
-            "codec profile не содержит families"
+            "codec profile lacking families"
         );
     }
     // Excluded IDs обязаны быть уникальны.
@@ -358,7 +357,7 @@ fn manifest_has_exact_source_and_no_schema_conflicts() {
         // Один ID не может одновременно обещаться и исключаться.
         assert!(
             !target_ids.contains(required_string(excluded_row, "id")),
-            "row одновременно Target и ProfileExcluded"
+            "row simultaneously Target and ProfileExcluded"
         );
     }
 
@@ -373,11 +372,11 @@ fn manifest_has_exact_source_and_no_schema_conflicts() {
             // Alias обязан быть строкой.
             let alias = alias
                 .as_str()
-                .unwrap_or_else(|| panic!("protocol alias обязан быть строкой"));
+                .unwrap_or_else(|| panic!("protocol alias must be a string"));
             // Duplicate alias сделал бы normalization неоднозначным.
             assert!(
                 protocol_aliases.insert(alias),
-                "protocol alias принадлежит нескольким families"
+                "protocol alias belongs to several families."
             );
         }
     }
@@ -402,7 +401,7 @@ fn manifest_has_exact_source_and_no_schema_conflicts() {
         collect_fixture_ids(fixture_document, &mut fixture_ids);
     }
     // Corpus обязан содержать evidence, а не только report.
-    assert!(!fixture_ids.is_empty(), "official synthetic corpus пуст");
+    assert!(!fixture_ids.is_empty(), "official synthetic corpus hollow");
 
     // Каждая Target row обязана ссылаться на future implementation и fixture.
     for target_row in target_rows {
@@ -411,24 +410,24 @@ fn manifest_has_exact_source_and_no_schema_conflicts() {
         // Future sessions закрепляют ownership дальнейшей реализации.
         assert!(
             !required_array(target_row, "future_sessions").is_empty(),
-            "Target row не связана с future session"
+            "Target row not linked to future session"
         );
         // Каждая codec profile reference обязана разрешаться.
         for codec_profile_ref in required_array(target_row, "codec_profile_refs") {
             // Reference обязана быть строкой.
             let codec_profile_ref = codec_profile_ref
                 .as_str()
-                .unwrap_or_else(|| panic!("codec profile reference обязана быть строкой"));
+                .unwrap_or_else(|| panic!("The codec profile reference must be a line."));
             // Unknown profile сделал бы target semantics неявной.
             assert!(
                 codec_profile_ids.contains(codec_profile_ref),
-                "Target row ссылается на отсутствующий codec profile"
+                "Target row links to missing codec profile"
             );
         }
         // Fixture reference обязана разрешаться в corpus.
         assert!(
             fixture_ids.contains(required_string(target_row, "fixture_id")),
-            "Target row ссылается на отсутствующий fixture"
+            "Target row references missing fixture"
         );
     }
 }
@@ -440,7 +439,7 @@ fn manifest_proves_exact_swf_adpcm_decoder_scope() {
     let audio_profile = required_array(&profile, "codec_profiles")
         .iter()
         .find(|codec_profile| required_string(codec_profile, "id") == "proven-native-audio")
-        .expect("proven-native-audio codec profile отсутствует");
+        .expect("proven-native-audio codec profile absent");
     let exact_scope = required_array(audio_profile, "exact_decoder_scope");
 
     assert_eq!(exact_scope.len(), 1);
@@ -500,11 +499,11 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
     // Invocation section обязательна.
     let invocations = profile
         .get("invocations")
-        .unwrap_or_else(|| panic!("manifest invocations section отсутствует"));
+        .unwrap_or_else(|| panic!("manifest invocations section is not available"));
     // Inventory hermetic profile проверяется exact equality.
     let hermetic_inventory = invocations
         .get("hermetic_inventory")
-        .unwrap_or_else(|| panic!("hermetic inventory invocation отсутствует"));
+        .unwrap_or_else(|| panic!("hermetic inventory invocation absent"));
     // Exact ordered args являются safety contract.
     assert_eq!(
         required_array(hermetic_inventory, "argv_before_url"),
@@ -539,7 +538,7 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
     // Selected profile обязан сохранять те же safety args.
     let hermetic_selected = invocations
         .get("hermetic_selected")
-        .unwrap_or_else(|| panic!("hermetic selected invocation отсутствует"));
+        .unwrap_or_else(|| panic!("hermetic selected invocation absent"));
     // Selector добавляется только после hermetic prefix.
     assert_eq!(
         required_array(hermetic_selected, "argv_before_selector"),
@@ -560,7 +559,7 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
     // Topology profile сочетает lazy per-entry dump и authoritative root dump.
     let hermetic_topology = invocations
         .get("hermetic_topology")
-        .unwrap_or_else(|| panic!("hermetic topology invocation отсутствует"));
+        .unwrap_or_else(|| panic!("hermetic topology invocation absent"));
     // Exact topology argv закрепляет flat/lazy semantics без child format extraction.
     assert_eq!(
         required_array(hermetic_topology, "argv_before_url"),
@@ -608,16 +607,16 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
             // Argument обязан быть строкой.
             let argument = argument
                 .as_str()
-                .unwrap_or_else(|| panic!("CLI argument обязан быть строкой"));
+                .unwrap_or_else(|| panic!("The CLI argument must be a string."));
             // Write family проверяется prefix-ом.
             assert!(
                 !argument.starts_with("--write-"),
-                "hermetic argv содержит write behavior"
+                "hermetic argv containing write behavior"
             );
             // Остальные опасные flags проверяются exact.
             assert!(
                 !forbidden_arguments.contains(&argument),
-                "hermetic argv содержит side-effect argument"
+                "hermetic argv containing side-effect argument"
             );
         }
     }
@@ -625,7 +624,7 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
     // Manual mode обязан быть отдельной explicit trust boundary.
     let manual_opt_in = invocations
         .get("manual_opt_in_inventory")
-        .unwrap_or_else(|| panic!("manual opt-in invocation отсутствует"));
+        .unwrap_or_else(|| panic!("manual opt-in invocation is not available"));
     // Manual mode честно сообщает чтение system config.
     assert_eq!(
         manual_opt_in.get("loads_system_config"),
@@ -648,7 +647,7 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
     // Current selected production suffix также фиксируется как manual opt-in.
     let manual_selected = invocations
         .get("manual_opt_in_selected")
-        .unwrap_or_else(|| panic!("manual selected invocation отсутствует"));
+        .unwrap_or_else(|| panic!("manual selected invocation is not available"));
     // Exact current selected argv не должен скрыто расходиться с process owner.
     assert_eq!(
         required_array(manual_selected, "argv_before_selector"),
@@ -677,7 +676,7 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
     // Production topology сохраняет explicit trusted-system boundary.
     let manual_topology = invocations
         .get("manual_opt_in_topology")
-        .unwrap_or_else(|| panic!("manual topology invocation отсутствует"));
+        .unwrap_or_else(|| panic!("manual topology invocation is not available"));
     // Exact production suffix совпадает с process owner.
     assert_eq!(
         required_array(manual_topology, "argv_before_url"),
@@ -717,25 +716,22 @@ fn corpus_preserves_unknown_identity_without_leaking_request_secrets() {
     // Bounds section обязательна.
     let bounds = profile
         .get("bounds")
-        .unwrap_or_else(|| panic!("manifest bounds section отсутствует"));
+        .unwrap_or_else(|| panic!("manifest bounds section is not available"));
     // Bound читается как беззнаковое число bytes.
     let max_bytes = bounds
         .get("raw_identity_max_utf8_bytes")
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or_else(|| panic!("raw identity bound обязан помещаться в usize"));
+        .unwrap_or_else(|| panic!("raw identity bound must be placed in usize"));
     // Нулевой bound не сохранял бы future identity.
-    assert!(
-        max_bytes > 0,
-        "raw identity bound обязан быть положительным"
-    );
+    assert!(max_bytes > 0, "raw identity bound must be positive.");
     // Собираем exact bounded field names.
     let raw_fields = required_array(bounds, "raw_identity_fields")
         .iter()
         .map(|field| {
             field
                 .as_str()
-                .unwrap_or_else(|| panic!("raw identity field обязан быть строкой"))
+                .unwrap_or_else(|| panic!("The raw identity field must be a line."))
         })
         .collect::<HashSet<_>>();
 
@@ -756,11 +752,11 @@ fn corpus_preserves_unknown_identity_without_leaking_request_secrets() {
                 .and_then(Value::as_str)
                 .is_some_and(|fixture_id| fixture_id == "format-inventory-separation")
         })
-        .unwrap_or_else(|| panic!("format inventory fixture отсутствует"));
+        .unwrap_or_else(|| panic!("format inventory fixture absent"));
     // Payload содержит extractor inventory и selection result рядом для проверки.
     let inventory_payload = format_inventory
         .get("payload")
-        .unwrap_or_else(|| panic!("format inventory payload отсутствует"));
+        .unwrap_or_else(|| panic!("format inventory payload absent"));
     // `formats` является полным inventory.
     let formats = required_array(inventory_payload, "formats");
     // `requested_formats` является только выбранными merge components.
@@ -768,7 +764,7 @@ fn corpus_preserves_unknown_identity_without_leaking_request_secrets() {
     // Selection result не может быть тем же списком, что inventory.
     assert!(
         requested_formats.len() < formats.len(),
-        "requested_formats ошибочно подменяет formats inventory"
+        "requested_formats Mistakenly Replaces Formats inventory"
     );
     // Собираем snapshot-local format IDs inventory.
     let inventory_ids = formats
@@ -780,7 +776,7 @@ fn corpus_preserves_unknown_identity_without_leaking_request_secrets() {
         // Unknown requested ID без semantic inventory match является stale/invalid.
         assert!(
             inventory_ids.contains(required_string(requested_format, "format_id")),
-            "requested format отсутствует в formats inventory"
+            "requested format absent formats inventory"
         );
     }
 
@@ -800,7 +796,7 @@ fn corpus_preserves_unknown_identity_without_leaking_request_secrets() {
                 .and_then(Value::as_str)
                 .is_some_and(|fixture_id| fixture_id == "future-unknown-identity")
         })
-        .unwrap_or_else(|| panic!("future unknown identity fixture отсутствует"));
+        .unwrap_or_else(|| panic!("future unknown identity fixture absent"));
     // Unknown path обязан сохранять typed incompatibility classification.
     assert_eq!(
         required_string(unknown_fixture, "expected_classification"),
@@ -811,7 +807,7 @@ fn corpus_preserves_unknown_identity_without_leaking_request_secrets() {
         required_string(
             unknown_fixture
                 .get("payload")
-                .unwrap_or_else(|| panic!("unknown identity payload отсутствует")),
+                .unwrap_or_else(|| panic!("unknown identity payload absent")),
             "protocol"
         ),
         "future_serializable_transport_v2"

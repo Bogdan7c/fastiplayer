@@ -29,7 +29,7 @@ struct StepwiseTestAdapter {
 impl StepwiseTestAdapter {
     fn new(config: &AppConfig, poll_script: Vec<MediaRebuildProgress>) -> Self {
         Self {
-            inner: RecordingRuntimeAdapter::from_config(config).expect("adapter должен стартовать"),
+            inner: RecordingRuntimeAdapter::from_config(config).expect("The adapter should start."),
             poll_script: poll_script.into(),
             begin_calls: 0,
             poll_calls: 0,
@@ -186,7 +186,7 @@ fn runtime_at(config: &AppConfig, test_name: &str) -> (SettingsRuntime, PathBuf)
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     (runtime, path)
 }
 
@@ -198,7 +198,7 @@ fn frame(
 ) {
     runtime
         .handle_ui_actions_with_runtime_adapter(actions, adapter)
-        .expect("кадр настроек должен обработаться");
+        .expect("The settings frame should be processed");
 }
 
 fn status_summary(runtime: &mut SettingsRuntime) -> String {
@@ -230,18 +230,21 @@ fn apply_with_media_rebuild_hands_control_back_and_writes_config_only_after_succ
     // Кадр запуска: пересборка стартовала, но кадр вернулся, не дожидаясь результата.
     frame(&mut runtime, &mut adapter, Vec::new());
 
-    assert!(runtime.has_pending_apply(), "пересборка ещё идёт");
+    assert!(runtime.has_pending_apply(), "reassembly still under way");
     assert_eq!(adapter.begin_calls, 1);
     assert_eq!(
         adapter.inner.media_updates, 0,
-        "блокирующий путь не должен вызываться"
+        "blocking path should not be called"
     );
-    assert_eq!(status_summary(&mut runtime), "Применяем настройки…");
+    assert_eq!(status_summary(&mut runtime), "Applying settings…");
     assert!(
         runtime.ui_model().command_state.is_busy,
-        "Apply/OK должны быть неактивны"
+        "Apply/OK must be inactive."
     );
-    assert!(!path.exists(), "config нельзя писать до успеха пересборки");
+    assert!(
+        !path.exists(),
+        "config You can't write until the reassembly is successful"
+    );
     assert_eq!(runtime.committed_config().ui.language, config.ui.language);
     assert_eq!(adapter.inner.finalize_calls, 0);
 
@@ -257,15 +260,12 @@ fn apply_with_media_rebuild_hands_control_back_and_writes_config_only_after_succ
     assert_eq!(
         runtime
             .latest_apply_report()
-            .expect("итоговый report")
+            .expect("final report")
             .final_state,
         ApplyFinalState::FullyApplied
     );
-    assert_eq!(
-        status_summary(&mut runtime),
-        "Настройки сохранены и применены"
-    );
-    assert!(path.exists(), "после успеха config записан");
+    assert_eq!(status_summary(&mut runtime), "Settings saved and applied");
+    assert!(path.exists(), "successively config recorded");
     assert_eq!(runtime.committed_config().ui.language, "en");
     assert_eq!(adapter.inner.finalize_calls, 1);
     assert_eq!(adapter.inner.snapshot_synced_after_finalize, vec![true]);
@@ -294,7 +294,7 @@ fn failed_rebuild_rolls_back_applied_routes_and_never_writes_config() {
     assert_eq!(
         adapter.inner.render.commits.len(),
         1,
-        "яркость применилась до ожидания пересборки"
+        "brightness applied before waiting for reassembly"
     );
     frame(&mut runtime, &mut adapter, Vec::new());
 
@@ -306,7 +306,7 @@ fn failed_rebuild_rolls_back_applied_routes_and_never_writes_config() {
     assert_eq!(
         adapter.inner.render.rollbacks.len(),
         1,
-        "применённая ранее яркость должна быть откачена"
+        "previously applied brightness should be pumped out"
     );
     assert_eq!(
         adapter
@@ -317,17 +317,14 @@ fn failed_rebuild_rolls_back_applied_routes_and_never_writes_config() {
             .adjustment
             .brightness,
         config.render.color_adjustment.brightness,
-        "значение яркости вернулось к прежнему"
+        "The brightness has returned to its former"
     );
     let summary = status_summary(&mut runtime);
-    assert_eq!(
-        summary,
-        "Не удалось применить настройки; изменения отменены"
-    );
+    assert_eq!(summary, "Could not apply settings; changes rolled back");
     let model_text = format!("{:?}", runtime.ui_model().status);
     assert!(
         !model_text.contains("technical detail"),
-        "технический текст не должен попасть в окно: {model_text}"
+        "Technical text should not be allowed to enter the window: {model_text}"
     );
     assert!(!runtime.has_pending_apply());
 }
@@ -364,17 +361,20 @@ fn second_apply_during_rebuild_is_busy_and_first_transaction_survives() {
         ],
     );
 
-    assert_eq!(adapter.begin_calls, 1, "вторая транзакция не стартовала");
+    assert_eq!(
+        adapter.begin_calls, 1,
+        "The second transaction did not start."
+    );
     assert!(runtime.has_pending_apply());
     let details = runtime.ui_model().status.details.join("\n");
     assert!(
-        details.contains("Предыдущее применение ещё идёт"),
-        "пользователь должен увидеть «занято»: {details}"
+        details.contains("The previous application is still in progress"),
+        "The user should see \"busy\": {details}"
     );
     assert_eq!(
         runtime.controller.draft().ui.language,
         "en",
-        "правка во время применения отброшена"
+        "correction during application discarded"
     );
 
     // Первая транзакция доходит до конца и пишет именно свой документ.
@@ -383,7 +383,7 @@ fn second_apply_during_rebuild_is_busy_and_first_transaction_survives() {
     assert_eq!(
         runtime
             .latest_apply_report()
-            .expect("report первой транзакции")
+            .expect("report of the first transaction")
             .final_state,
         ApplyFinalState::FullyApplied
     );
@@ -405,16 +405,16 @@ fn shutdown_during_rebuild_cancels_without_persisting() {
 
     runtime.cancel_pending_apply(&mut adapter);
 
-    assert_eq!(adapter.cancel_calls, 1, "пересборка прервана");
+    assert_eq!(adapter.cancel_calls, 1, "reassembly interrupted");
     assert!(!runtime.has_pending_apply());
-    assert!(!path.exists(), "config не записан");
+    assert!(!path.exists(), "config not recorded");
     assert_eq!(runtime.committed_config().ui.language, config.ui.language);
-    let report = runtime.latest_apply_report().expect("report отмены");
+    let report = runtime.latest_apply_report().expect("cancellation");
     assert_eq!(report.final_state, ApplyFinalState::Cancelled);
     assert_eq!(
         adapter.inner.render.rollbacks.len(),
         1,
-        "применённый ранее маршрут откатан"
+        "previously applied route is rolled back"
     );
     // Кадры после отмены ничего не продвигают и не паникуют.
     frame(&mut runtime, &mut adapter, Vec::new());
@@ -444,7 +444,7 @@ fn transaction_without_rebuild_completes_in_one_frame_like_before() {
     );
     assert!(
         runtime.has_pending_apply(),
-        "Apply сначала публикует статус"
+        "Apply publishes its status first"
     );
 
     frame(&mut runtime, &mut adapter, Vec::new());
@@ -529,7 +529,7 @@ fn runtime_originated_commits_wait_until_the_transaction_finishes() {
     // Пока транзакция идёт, запись ширины не стартует и не будит цикл просроченным deadline.
     let due_outcome = runtime
         .flush_due_sidebar_resize(started_at + Duration::from_secs(5), &mut adapter)
-        .expect("due flush не должен падать");
+        .expect("Due flush should not fall");
     assert_eq!(
         due_outcome,
         crate::settings_runtime::SidebarResizeFlushOutcome::NoPending
@@ -542,7 +542,7 @@ fn runtime_originated_commits_wait_until_the_transaction_finishes() {
     assert!(runtime.next_sidebar_resize_deadline().is_some());
     let flushed = runtime
         .flush_pending_sidebar_resize(&mut adapter)
-        .expect("flush после применения");
+        .expect("flush after application");
     assert_eq!(
         flushed,
         crate::settings_runtime::SidebarResizeFlushOutcome::Succeeded

@@ -116,7 +116,7 @@ impl NativeHlsSourceState {
             let web_media_core::WebMediaSelectionShape::Components(component_selection) =
                 neutral_selection.shape()
             else {
-                anyhow::bail!("native HLS master catalog потерял component selection");
+                anyhow::bail!("Native HLS master catalog lost component selection");
             };
             stream_configuration = stream_configuration
                 .with_component_variants(component_catalog, component_selection.clone())
@@ -209,7 +209,7 @@ mod tests {
         match intent {
             NativeHlsOpenIntent::SemanticSelection(_) => {}
             NativeHlsOpenIntent::InitialWithYtDlpFallback { .. } => {
-                panic!("semantic reopen не должен содержать fallback locator")
+                panic!("Semantic reopen should not contain fallback locator")
             }
         }
     }

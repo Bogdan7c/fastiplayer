@@ -132,11 +132,11 @@ impl YtDlpInputScheme {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum YtDlpLocatorParseError {
     /// Строка не является absolute URL.
-    #[error("некорректный URL для media service")]
+    #[error("Incorrect URL for media service")]
     InvalidSyntax,
 
     /// Схема URL отсутствует в exact S00-approved input set.
-    #[error("URL scheme не входит в утверждённый media-service profile")]
+    #[error("The URL scheme is not included in the approved media-service profile.")]
     UnsupportedScheme,
 }
 
@@ -178,24 +178,24 @@ mod tests {
         let exact_url =
             "https://media.example.test/watch/%2Fopaque?token=a%2Bb&utm_source=keep#chapter";
         let locator =
-            parse_yt_dlp_media_locator(exact_url).expect("generic HTTP(S) URL должен пройти parse");
+            parse_yt_dlp_media_locator(exact_url).expect("A generic HTTP(S) URL must pass parse.");
 
         assert_eq!(locator.expose_secret_for_persistence(), exact_url);
         assert_eq!(locator.expose_secret_for_open(), exact_url);
         assert!(
             locator.requires_sensitive_export_acknowledgement(),
-            "query-bearing exact identity обязана пройти aggregated acknowledgement"
+            "query-bearing exact identity must pass aggregated acknowledgement"
         );
         assert!(
             locator.requires_sensitive_persistence_acknowledgement(),
-            "durable persistence использует ту же aggregated acknowledgement policy"
+            "durable persistence uses the same aggregated acknowledgement policy"
         );
     }
 
     #[test]
     fn public_generic_url_does_not_require_sensitive_acknowledgement() {
         let locator = parse_yt_dlp_media_locator("https://media.example.test/watch/123")
-            .expect("public generic URL должен пройти parse");
+            .expect("public generic URL must pass parse");
 
         assert!(!locator.requires_sensitive_export_acknowledgement());
     }
@@ -205,7 +205,7 @@ mod tests {
         let locator = parse_yt_dlp_media_locator(
             "https://user:password@youtu.be/private-id?v=secret&unknown=keep#fragment",
         )
-        .expect("generic HTTP(S) URL должен пройти parse");
+        .expect("A generic HTTP(S) URL must pass parse.");
 
         assert_eq!(format!("{locator}"), "yt-dlp media (youtu.be)");
         assert!(!format!("{locator:?}").contains("secret"));
@@ -217,7 +217,7 @@ mod tests {
     fn invalid_syntax_error_does_not_reflect_input() {
         let secret_input = "https://user:password@[invalid]?token=secret";
         let error = parse_yt_dlp_media_locator(secret_input)
-            .expect_err("invalid syntax должна возвращать typed error");
+            .expect_err("invalid syntax should return typed error");
 
         assert_eq!(error, YtDlpLocatorParseError::InvalidSyntax);
         assert!(!format!("{error:?} {error}").contains("secret"));
@@ -239,7 +239,7 @@ mod tests {
             ("rtmpe://media.example.test/live", YtDlpInputScheme::Rtmpe),
         ] {
             let locator = parse_yt_dlp_media_locator(raw_locator)
-                .expect("exact S00-approved scheme должна пройти pure parse");
+                .expect("The exact S00-approved scheme is pure parse.");
             assert_eq!(locator.input_scheme(), expected_scheme);
             assert_eq!(locator.expose_secret_for_persistence(), raw_locator);
         }
@@ -287,7 +287,7 @@ mod tests {
         ] {
             assert_eq!(
                 parse_yt_dlp_media_locator(raw_locator)
-                    .expect_err("scheme вне exact profile должна быть отклонена"),
+                    .expect_err("scheme outside exact profile should be rejected"),
                 expected_error
             );
         }
@@ -298,7 +298,7 @@ mod tests {
         let locator = parse_yt_dlp_media_locator(
             "ftp://user:password@media.example.test/private/video.webm?token=secret",
         )
-        .expect("FTP locator из approved parser vocabulary");
+        .expect("FTP locator from approved parser vocabulary");
 
         assert_eq!(format!("{locator}"), "yt-dlp media (media.example.test)");
         let formatted = format!("{locator:?}");

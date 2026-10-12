@@ -25,14 +25,14 @@ const EXPECTED_BACKUP_NAME: &str = "config.toml.broken-2026-10-05_14-30-12.bak";
 fn default_config_text() -> String {
     AppConfig::default()
         .to_pretty_toml()
-        .expect("defaults сериализуются")
+        .expect("defaults are serialized")
 }
 
 /// Временный каталог с config-файлом заданного содержимого.
 fn config_dir_with(config_bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
-    let temp_dir = tempfile::tempdir().expect("temp dir создан");
+    let temp_dir = tempfile::tempdir().expect("dir temp created");
     let config_path = temp_dir.path().join("config.toml");
-    fs::write(&config_path, config_bytes).expect("config записан");
+    fs::write(&config_path, config_bytes).expect("config.");
     (temp_dir, config_path)
 }
 
@@ -40,7 +40,7 @@ fn config_dir_with(config_bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
 fn assert_recovered_from_broken(original_bytes: &[u8], expected_problem: BrokenConfigProblem) {
     let (temp_dir, config_path) = config_dir_with(original_bytes);
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     assert_eq!(
         loaded.origin,
@@ -53,14 +53,14 @@ fn assert_recovered_from_broken(original_bytes: &[u8], expected_problem: BrokenC
     assert_eq!(loaded.config, AppConfig::default());
     // Резервная копия хранит ровно те байты, что были у пользователя.
     let backup_bytes =
-        fs::read(temp_dir.path().join(EXPECTED_BACKUP_NAME)).expect("резервная копия есть");
+        fs::read(temp_dir.path().join(EXPECTED_BACKUP_NAME)).expect("backup is available");
     assert_eq!(backup_bytes, original_bytes);
     // На месте config-а — полноценный файл по умолчанию, который снова загружается.
     assert_eq!(
-        fs::read_to_string(&config_path).expect("новый config есть"),
+        fs::read_to_string(&config_path).expect("There's a new config"),
         default_config_text()
     );
-    let reloaded = load_from_path(&config_path).expect("новый config корректен");
+    let reloaded = load_from_path(&config_path).expect("The new config is correct");
     assert_eq!(reloaded.config, AppConfig::default());
     assert_no_save_temp_files(temp_dir.path());
 }
@@ -102,7 +102,7 @@ fn out_of_range_value_is_backed_up_with_field_name() {
     assert_ne!(
         broken_text,
         default_config_text(),
-        "fixture должна поменять значение"
+        "fixture should change the value"
     );
 
     assert_recovered_from_broken(
@@ -134,7 +134,7 @@ fn newer_schema_version_keeps_file_untouched_and_session_only() {
         + "\nfeature_from_the_future = true\n";
     let (temp_dir, config_path) = config_dir_with(newer_text.as_bytes());
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     assert_eq!(loaded.origin, ConfigLoadOrigin::DefaultsInMemory);
     let expected_reason = ConfigSessionOnlyReason::NewerSchemaVersion { found: 99 };
@@ -150,22 +150,14 @@ fn newer_schema_version_keeps_file_untouched_and_session_only() {
     let save_outcome = loaded
         .save_target()
         .save(&changed_config)
-        .expect("корректный документ принимается");
+        .expect("correct document adopted");
     assert_eq!(
         save_outcome,
         ConfigSaveOutcome::KeptInMemoryOnly(expected_reason)
     );
-    assert_eq!(
-        fs::read_to_string(&config_path).expect("файл на месте"),
-        newer_text
-    );
+    assert_eq!(fs::read_to_string(&config_path).expect("file"), newer_text);
     // Резервной копии нет: файл исправен, просто не для этой версии.
-    assert_eq!(
-        fs::read_dir(temp_dir.path())
-            .expect("каталог читается")
-            .count(),
-        1
-    );
+    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
 }
 
 /// В режиме без записи некорректный документ по-прежнему отклоняется проверкой.
@@ -173,14 +165,14 @@ fn newer_schema_version_keeps_file_untouched_and_session_only() {
 fn session_only_save_still_rejects_invalid_document() {
     let newer_text = default_config_text().replace("schema_version = 12", "schema_version = 99");
     let (_temp_dir, config_path) = config_dir_with(newer_text.as_bytes());
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     let mut invalid_config = loaded.config.clone();
     invalid_config.ui.sidebar.width_points = 5;
     let save_error = loaded
         .save_target()
         .save(&invalid_config)
-        .expect_err("значение вне диапазона отклоняется");
+        .expect_err("range-value deflects");
 
     assert!(save_error.to_string().contains("ui.sidebar.width_points"));
 }
@@ -188,11 +180,11 @@ fn session_only_save_still_rejects_invalid_document() {
 /// По пути config-а лежит каталог: ничего не трогаем, работа без записи.
 #[test]
 fn directory_at_config_path_is_left_untouched() {
-    let temp_dir = tempfile::tempdir().expect("temp dir создан");
+    let temp_dir = tempfile::tempdir().expect("dir temp created");
     let config_path = temp_dir.path().join("config.toml");
-    fs::create_dir(&config_path).expect("каталог создан");
+    fs::create_dir(&config_path).expect("catalogue");
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     assert_eq!(loaded.origin, ConfigLoadOrigin::DefaultsInMemory);
     assert_eq!(
@@ -200,12 +192,7 @@ fn directory_at_config_path_is_left_untouched() {
         ConfigSavePolicy::SessionOnly(ConfigSessionOnlyReason::ConfigPathIsNotFile)
     );
     assert!(config_path.is_dir());
-    assert_eq!(
-        fs::read_dir(temp_dir.path())
-            .expect("каталог читается")
-            .count(),
-        1
-    );
+    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
 }
 
 /// Файл без права чтения: без резервной копии, работа без записи, файл не тронут.
@@ -216,14 +203,14 @@ fn unreadable_file_is_left_untouched_without_backup() {
 
     let original_text = default_config_text();
     let (temp_dir, config_path) = config_dir_with(original_text.as_bytes());
-    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o000)).expect("права сняты");
+    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o000)).expect("entitlement");
     if fs::read(&config_path).is_ok() {
         // Под root права не мешают чтению — сценарий в этом окружении невоспроизводим.
-        eprintln!("пропуск: процесс читает файл без прав (root)");
+        eprintln!("Pass: the process reads the file without permission (root)");
         return;
     }
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     assert_eq!(loaded.origin, ConfigLoadOrigin::DefaultsInMemory);
     assert_eq!(
@@ -232,17 +219,12 @@ fn unreadable_file_is_left_untouched_without_backup() {
             error_kind: io::ErrorKind::PermissionDenied,
         })
     );
-    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).expect("права вернули");
+    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).expect("rights back");
     assert_eq!(
-        fs::read_to_string(&config_path).expect("файл на месте"),
+        fs::read_to_string(&config_path).expect("file"),
         original_text
     );
-    assert_eq!(
-        fs::read_dir(temp_dir.path())
-            .expect("каталог читается")
-            .count(),
-        1
-    );
+    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
 }
 
 /// Каталог только для чтения: копию сделать нельзя → файл не тронут, запись запрещена.
@@ -252,14 +234,14 @@ fn backup_failure_keeps_broken_file_and_disables_saving() {
     use std::os::unix::fs::PermissionsExt;
 
     let (temp_dir, config_path) = config_dir_with(b"[[[");
-    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o500)).expect("права сняты");
+    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o500)).expect("entitlement");
     if fs::write(temp_dir.path().join("probe"), b"").is_ok() {
-        eprintln!("пропуск: процесс пишет в read-only каталог (root)");
+        eprintln!("Pass: the process writes to read-only directory (root)");
         return;
     }
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
-    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700)).expect("права вернули");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
+    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700)).expect("rights back");
 
     assert_eq!(loaded.origin, ConfigLoadOrigin::DefaultsInMemory);
     assert_eq!(
@@ -268,13 +250,8 @@ fn backup_failure_keeps_broken_file_and_disables_saving() {
             error_kind: io::ErrorKind::PermissionDenied,
         })
     );
-    assert_eq!(fs::read(&config_path).expect("файл на месте"), b"[[[");
-    assert_eq!(
-        fs::read_dir(temp_dir.path())
-            .expect("каталог читается")
-            .count(),
-        1
-    );
+    assert_eq!(fs::read(&config_path).expect("file"), b"[[[");
+    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
 }
 
 /// Имя резервной копии уже занято: старая копия не перезаписывается, берётся `-2`.
@@ -282,9 +259,9 @@ fn backup_failure_keeps_broken_file_and_disables_saving() {
 fn existing_backup_is_never_overwritten() {
     let (temp_dir, config_path) = config_dir_with(b"second broken");
     let older_backup = temp_dir.path().join(EXPECTED_BACKUP_NAME);
-    fs::write(&older_backup, b"first broken").expect("старая копия создана");
+    fs::write(&older_backup, b"first broken").expect("copy-paste");
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     let expected_second_name = "config.toml.broken-2026-10-05_14-30-12-2.bak";
     assert_eq!(
@@ -295,11 +272,11 @@ fn existing_backup_is_never_overwritten() {
         })
     );
     assert_eq!(
-        fs::read(&older_backup).expect("старая копия цела"),
+        fs::read(&older_backup).expect("arch-piece"),
         b"first broken"
     );
     assert_eq!(
-        fs::read(temp_dir.path().join(expected_second_name)).expect("новая копия есть"),
+        fs::read(temp_dir.path().join(expected_second_name)).expect("new copy is"),
         b"second broken"
     );
 }
@@ -311,19 +288,19 @@ fn existing_backup_is_never_overwritten() {
 /// Следующий запуск создаёт полный config и убирает брошенный temp.
 #[test]
 fn interrupted_first_write_leaves_no_truncated_config() {
-    let temp_dir = tempfile::tempdir().expect("temp dir создан");
+    let temp_dir = tempfile::tempdir().expect("dir temp created");
     let config_path = temp_dir.path().join("config.toml");
     let truncated_default = &default_config_text()[..40];
     let stale_temp = temp_dir.path().join(".config.toml.save-777-3.tmp");
-    fs::write(&stale_temp, truncated_default).expect("брошенный temp создан");
+    fs::write(&stale_temp, truncated_default).expect("cast temp created");
     let legacy_stale_temp = temp_dir.path().join(".config.toml.777.0.tmp");
-    fs::write(&legacy_stale_temp, truncated_default).expect("брошенный temp старого формата");
+    fs::write(&legacy_stale_temp, truncated_default).expect("old-format temp");
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     assert_eq!(loaded.origin, ConfigLoadOrigin::CreatedDefault);
     assert_eq!(
-        fs::read_to_string(&config_path).expect("config создан"),
+        fs::read_to_string(&config_path).expect("config."),
         default_config_text()
     );
     assert!(!stale_temp.exists());
@@ -337,17 +314,17 @@ fn interrupted_first_write_leaves_no_truncated_config() {
 fn failed_first_write_runs_in_memory_without_partial_file() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp_dir = tempfile::tempdir().expect("temp dir создан");
+    let temp_dir = tempfile::tempdir().expect("dir temp created");
     // Каталог `fastiplayer` ещё не существует, а создать его в read-only родителе нельзя.
     let config_path = temp_dir.path().join("fastiplayer").join("config.toml");
-    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o500)).expect("права сняты");
+    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o500)).expect("entitlement");
     if fs::write(temp_dir.path().join("probe"), b"").is_ok() {
-        eprintln!("пропуск: процесс пишет в read-only каталог (root)");
+        eprintln!("Pass: the process writes to read-only directory (root)");
         return;
     }
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
-    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700)).expect("права вернули");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
+    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700)).expect("rights back");
 
     assert_eq!(loaded.origin, ConfigLoadOrigin::DefaultsInMemory);
     assert_eq!(
@@ -362,19 +339,19 @@ fn failed_first_write_runs_in_memory_without_partial_file() {
 /// Путь config-а проходит через обычный файл: это «не читается», а не «повреждён».
 #[test]
 fn path_through_regular_file_is_unreadable_not_broken() {
-    let temp_dir = tempfile::tempdir().expect("temp dir создан");
+    let temp_dir = tempfile::tempdir().expect("dir temp created");
     let blocking_file = temp_dir.path().join("not-a-directory");
-    fs::write(&blocking_file, b"user data").expect("блокирующий файл создан");
+    fs::write(&blocking_file, b"user data").expect("locker");
     let config_path = blocking_file.join("config.toml");
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     assert_eq!(loaded.origin, ConfigLoadOrigin::DefaultsInMemory);
     assert!(matches!(
         loaded.save_policy,
         ConfigSavePolicy::SessionOnly(ConfigSessionOnlyReason::ConfigFileUnreadable { .. })
     ));
-    assert_eq!(fs::read(&blocking_file).expect("файл цел"), b"user data");
+    assert_eq!(fs::read(&blocking_file).expect("file"), b"user data");
 }
 
 /// Каталог только для чтения при первом запуске: атомарная запись не оставляет ничего.
@@ -383,17 +360,17 @@ fn path_through_regular_file_is_unreadable_not_broken() {
 fn first_write_into_read_only_directory_leaves_nothing_behind() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp_dir = tempfile::tempdir().expect("temp dir создан");
+    let temp_dir = tempfile::tempdir().expect("dir temp created");
     let config_path = temp_dir.path().join("config.toml");
-    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o500)).expect("права сняты");
+    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o500)).expect("entitlement");
     if fs::write(temp_dir.path().join("probe"), b"").is_ok() {
-        eprintln!("пропуск: процесс пишет в read-only каталог (root)");
+        eprintln!("Pass: the process writes to read-only directory (root)");
         return;
     }
 
-    let strict_error = load_or_create_at(&config_path).expect_err("строгий путь сообщает ошибку");
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
-    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700)).expect("права вернули");
+    let strict_error = load_or_create_at(&config_path).expect_err("strict path communicates error");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
+    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700)).expect("rights back");
 
     assert!(matches!(
         strict_error,
@@ -405,12 +382,7 @@ fn first_write_into_read_only_directory_leaves_nothing_behind() {
             ConfigWriteProblem::Write(_)
         ))
     ));
-    assert_eq!(
-        fs::read_dir(temp_dir.path())
-            .expect("каталог читается")
-            .count(),
-        0
-    );
+    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 0);
 }
 
 /// Похожие на temp, но чужие файлы при старте не удаляются.
@@ -425,16 +397,16 @@ fn foreign_temp_like_files_survive_startup_cleanup() {
         "notes.tmp",
     ];
     for foreign_name in foreign_names {
-        fs::write(temp_dir.path().join(foreign_name), b"keep").expect("чужой файл создан");
+        fs::write(temp_dir.path().join(foreign_name), b"keep").expect("foul-file");
     }
 
-    load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     for foreign_name in foreign_names {
         assert_eq!(
-            fs::read(temp_dir.path().join(foreign_name)).expect("чужой файл на месте"),
+            fs::read(temp_dir.path().join(foreign_name)).expect("slip-file"),
             b"keep",
-            "{foreign_name} не должен удаляться"
+            "{foreign_name} should not be removed"
         );
     }
 }
@@ -446,24 +418,16 @@ fn valid_config_loads_unchanged() {
     custom_config.ui.sidebar.width_points = 500;
     let custom_text = custom_config
         .to_pretty_toml()
-        .expect("config сериализуется");
+        .expect("config is serialized");
     let (temp_dir, config_path) = config_dir_with(custom_text.as_bytes());
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("загрузка успешна");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("loading successfully");
 
     assert_eq!(loaded.origin, ConfigLoadOrigin::LoadedExisting);
     assert_eq!(loaded.save_policy, ConfigSavePolicy::WriteToFile);
     assert_eq!(loaded.config, custom_config);
-    assert_eq!(
-        fs::read_to_string(&config_path).expect("файл на месте"),
-        custom_text
-    );
-    assert_eq!(
-        fs::read_dir(temp_dir.path())
-            .expect("каталог читается")
-            .count(),
-        1
-    );
+    assert_eq!(fs::read_to_string(&config_path).expect("file"), custom_text);
+    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
 
     // Сохранение в обычном режиме реально пишет файл.
     custom_config.ui.sidebar.width_points = 450;
@@ -471,11 +435,11 @@ fn valid_config_loads_unchanged() {
         loaded
             .save_target()
             .save(&custom_config)
-            .expect("save успешен"),
+            .expect("save successfully"),
         ConfigSaveOutcome::Saved
     );
     assert_eq!(
-        load_from_path(&config_path).expect("перечитан").config,
+        load_from_path(&config_path).expect("recited").config,
         custom_config
     );
 }
@@ -486,15 +450,15 @@ fn valid_config_loads_unchanged() {
 fn missing_config_is_created_user_only() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp_dir = tempfile::tempdir().expect("temp dir создан");
+    let temp_dir = tempfile::tempdir().expect("dir temp created");
     let config_path = temp_dir.path().join("fastiplayer").join("config.toml");
 
-    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("запуск не падает");
+    let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
     assert_eq!(loaded.origin, ConfigLoadOrigin::CreatedDefault);
     assert_eq!(loaded.save_policy, ConfigSavePolicy::WriteToFile);
     let mode = fs::metadata(&config_path)
-        .expect("config создан")
+        .expect("config.")
         .permissions()
         .mode()
         & 0o777;

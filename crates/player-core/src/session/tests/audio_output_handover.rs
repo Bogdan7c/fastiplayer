@@ -66,7 +66,7 @@ fn recreated_output_keeps_audio_in_sync_with_video_despite_unplayed_tail() {
     first_output.fail_stream();
     session.recover_failed_audio_output_if_needed(Instant::now());
 
-    let new_output = factory_handle.last_output_handle().expect("новый output");
+    let new_output = factory_handle.last_output_handle().expect("new output");
     // Decoder ушёл дальше хвоста: первый настоящий PCM — это PTS `T + хвост`.
     let first_real_pcm_pts = POSITION_AT_UNPLUG + UNPLAYED_TAIL;
     // Настоящий PCM встанет в очередь нового output-а сразу после записанной тишины.
@@ -76,7 +76,7 @@ fn recreated_output_keeps_audio_in_sync_with_video_despite_unplayed_tail() {
 
     assert!(
         drift(clock_media_time, first_real_pcm_pts) <= SYNC_TOLERANCE,
-        "звук расходится с видео: clock {clock_media_time:?}, PTS звука {first_real_pcm_pts:?}"
+        "sound diverges from video: clock {clock_media_time:?}, PTS sound {first_real_pcm_pts:?}"
     );
 }
 
@@ -90,7 +90,7 @@ fn replacement_output_before_any_playback_does_not_gain_silence() {
     first_output.fail_stream();
     session.recover_failed_audio_output_if_needed(Instant::now());
 
-    let new_output = factory_handle.last_output_handle().expect("новый output");
+    let new_output = factory_handle.last_output_handle().expect("new output");
     assert!(new_output.written_samples().is_empty());
     assert_eq!(session.current_source_position, POSITION_AT_UNPLUG);
 }
@@ -105,14 +105,14 @@ fn settings_device_change_uses_same_handover_path() {
 
     session
         .recreate_active_audio_output(AudioOutputDeviceRequest::SelectedOnly)
-        .expect("выбранное устройство подключено");
+        .expect("selected device connected");
 
-    let new_output = factory_handle.last_output_handle().expect("новый output");
+    let new_output = factory_handle.last_output_handle().expect("new output");
     assert_eq!(written_duration(&new_output), UNPLAYED_TAIL);
     let clock_media_time = media_time_when_new_output_reaches(&session, &new_output, UNPLAYED_TAIL);
     assert!(
         drift(clock_media_time, POSITION_AT_UNPLUG + UNPLAYED_TAIL) <= SYNC_TOLERANCE,
-        "смена устройства в настройках сдвинула звук: {clock_media_time:?}"
+        "Change of device in settings shifted sound: {clock_media_time:?}"
     );
 }
 
@@ -120,7 +120,7 @@ fn settings_device_change_uses_same_handover_path() {
 fn recreation_while_paused_prefills_silence_without_starting_output() {
     let (mut session, factory_handle) = session_with_audio_track();
     feed_one_audio_packet(&mut session);
-    let first_output = factory_handle.last_output_handle().expect("output создан");
+    let first_output = factory_handle.last_output_handle().expect("output");
     factory_handle.set_devices(ONLY_SYSTEM_DEFAULT);
     first_output.set_underlying_output_timing(
         Duration::from_secs(1),
@@ -131,7 +131,7 @@ fn recreation_while_paused_prefills_silence_without_starting_output() {
     first_output.fail_stream();
     session.recover_failed_audio_output_if_needed(Instant::now());
 
-    let new_output = factory_handle.last_output_handle().expect("новый output");
+    let new_output = factory_handle.last_output_handle().expect("new output");
     assert_eq!(written_duration(&new_output), UNPLAYED_TAIL);
     assert_eq!(new_output.play_count(), 0);
 }
@@ -149,7 +149,7 @@ fn recreation_during_eof_drain_keeps_tail_length_and_restarts_output() {
     first_output.fail_stream();
     session.recover_failed_audio_output_if_needed(Instant::now());
 
-    let new_output = factory_handle.last_output_handle().expect("новый output");
+    let new_output = factory_handle.last_output_handle().expect("new output");
     // Хвост EOF-drain остаётся той же длины: новый output «доигрывает» его тишиной.
     assert_eq!(written_duration(&new_output), UNPLAYED_TAIL);
     assert_eq!(new_output.play_count(), 1);
@@ -164,7 +164,7 @@ fn silence_length_follows_tail_sample_rate_and_channels() {
     let mut output = ScriptedAudioOutput::new(0.0, None);
 
     let frames = prefill_replacement_output_with_silence(&mut output, stereo_spec(), UNPLAYED_TAIL)
-        .expect("fake принимает всё");
+        .expect("Fake takes everything.");
 
     assert_eq!(frames, 9_600);
     let written = output.handle.written_samples();
@@ -178,7 +178,7 @@ fn zero_tail_writes_nothing_to_replacement_output() {
 
     let frames =
         prefill_replacement_output_with_silence(&mut output, stereo_spec(), Duration::ZERO)
-            .expect("пустой хвост — не ошибка");
+            .expect("Empty tail isn't a mistake");
 
     assert_eq!(frames, 0);
     assert!(output.handle.written_samples().is_empty());
@@ -194,7 +194,7 @@ fn rejected_silence_write_is_reported_as_audio_device_error() {
         }));
 
     let error = prefill_replacement_output_with_silence(&mut output, stereo_spec(), UNPLAYED_TAIL)
-        .expect_err("ошибка записи не должна глотаться");
+        .expect_err("Recording error should not be swallowed");
 
     assert_eq!(error.kind, PlayerErrorKind::AudioDeviceUnavailable);
 }
@@ -207,11 +207,11 @@ fn partially_accepted_silence_is_reported_as_audio_device_error() {
         AudioOutputStreamFrameCount::new(9_600),
         AudioOutputStreamFrameCount::new(100),
     )
-    .expect("queued не больше prepared");
+    .expect("queued no more prepared");
     output.handle.set_write_result_override(Ok(partial));
 
     let error = prefill_replacement_output_with_silence(&mut output, stereo_spec(), UNPLAYED_TAIL)
-        .expect_err("неполная запись тишины делает output непригодным");
+        .expect_err("Incomplete recording of silence makes output unusable");
 
     assert_eq!(error.kind, PlayerErrorKind::AudioDeviceUnavailable);
 }

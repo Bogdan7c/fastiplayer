@@ -225,10 +225,10 @@ impl PlaylistExportJob {
                 let completion = runner(worker_cancellation);
                 if let Err(error) = publisher.publish_completion(completion) {
                     let CompletionPublishError::AlreadyPublished = error;
-                    tracing::error!("Playlist export job опубликовал второй terminal result");
+                    tracing::error!("Playlist export job published a second terminal result");
                 }
             })
-            .map_err(|error| format!("Не удалось запустить экспорт плейлиста: {error}"))?;
+            .map_err(|error| format!("Could not start Playlist export: {error}"))?;
         Ok(Self {
             generation,
             mailbox,
@@ -327,7 +327,7 @@ impl PlaylistExportIoOwner {
         let generation = self
             .generation
             .checked_add(1)
-            .ok_or_else(|| "Исчерпан generation экспорта плейлиста".to_owned())?;
+            .ok_or_else(|| "Playlist export generation exhausted".to_owned())?;
         let job = PlaylistExportJob::spawn_dialog(
             window,
             self.wake_port.clone(),
@@ -541,7 +541,7 @@ fn write_prepared_export_with(
             tracing::warn!(
                 stage = ?failure.stage,
                 cause = ?failure.cause,
-                "Не удалось записать файл экспорта плейлиста"
+                "Could not write the Playlist export file"
             );
             PlaylistExportJobCompletion::Failed {
                 generation,
@@ -558,9 +558,9 @@ fn export_dialog_presentation(
     request: PlaylistExportRequest,
 ) -> (&'static str, &'static str, &'static str) {
     match request.format {
-        PlaylistExportFormat::M3u8 => ("Плейлист M3U8", "m3u8", "Экспортировать плейлист в M3U8"),
-        PlaylistExportFormat::Xspf => ("Плейлист XSPF", "xspf", "Экспортировать плейлист в XSPF"),
-        PlaylistExportFormat::Cue => ("CUE sheet", "cue", "Экспортировать треки в CUE"),
+        PlaylistExportFormat::M3u8 => ("Playlist M3U8", "m3u8", "Export Playlist as M3U8"),
+        PlaylistExportFormat::Xspf => ("Playlist XSPF", "xspf", "Export Playlist as XSPF"),
+        PlaylistExportFormat::Cue => ("CUE sheet", "cue", "Export tracks as CUE"),
     }
 }
 
@@ -596,8 +596,8 @@ impl PlaylistRuntime {
         let snapshot = match PlaylistExportSnapshot::capture(queue, scope) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                tracing::warn!(?error, "Не удалось снять immutable export snapshot");
-                self.set_playlist_safe_feedback("Не удалось подготовить выбранный scope экспорта");
+                tracing::warn!(?error, "Could not capture an immutable export snapshot");
+                self.set_playlist_safe_feedback("Could not prepare the selected export scope");
                 return true;
             }
         };
@@ -605,8 +605,8 @@ impl PlaylistRuntime {
         match self.export_io.start(window, request, snapshot) {
             Ok(started) => started,
             Err(error) => {
-                tracing::warn!(%error, "Не удалось запустить export job");
-                self.set_playlist_safe_feedback("Не удалось открыть экспорт плейлиста");
+                tracing::warn!(%error, "Could not start the export job");
+                self.set_playlist_safe_feedback("Could not open Playlist export");
                 true
             }
         }
@@ -620,8 +620,8 @@ impl PlaylistRuntime {
         match self.export_io.start_confirmed(continuation) {
             Ok(started) => started,
             Err(error) => {
-                tracing::warn!(%error, "Не удалось запустить confirmed export writer");
-                self.set_playlist_safe_feedback("Не удалось продолжить экспорт плейлиста");
+                tracing::warn!(%error, "Could not start the confirmed export writer");
+                self.set_playlist_safe_feedback("Could not continue Playlist export");
                 true
             }
         }
@@ -639,14 +639,14 @@ impl PlaylistRuntime {
                 continuation,
                 ..
             } => {
-                let safe_label = SafeMediaLabel::from_service_safe_label("экспорт плейлиста");
+                let safe_label = SafeMediaLabel::from_service_safe_label("Playlist export");
                 if let Err(error) = self.replacement_confirmation.replace_with_export(
                     safe_label,
                     locator_count,
                     continuation,
                 ) {
-                    tracing::warn!(?error, "Не удалось открыть confirmation экспорта");
-                    self.set_playlist_safe_feedback("Не удалось подтвердить безопасный экспорт");
+                    tracing::warn!(?error, "Could not open export confirmation");
+                    self.set_playlist_safe_feedback("Could not confirm safe export");
                 }
                 true
             }

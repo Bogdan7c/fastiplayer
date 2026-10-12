@@ -56,7 +56,7 @@ impl HttpCookieSeed {
     pub(crate) fn expose_set_cookie_for_jar(&self) -> &str {
         self.serialized_set_cookie
             .to_str()
-            .expect("HttpCookieSeed всегда создаётся из ASCII-compatible HeaderValue")
+            .expect("HttpCookieSeed is always created from ASCII-compatible HeaderValue")
     }
 }
 
@@ -149,22 +149,22 @@ impl HttpCookieSeedBuilder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HttpCookieSeedError {
     /// Имя не соответствует HTTP token grammar.
-    #[error("cookie name имеет недопустимую форму")]
+    #[error("The cookie name has an unacceptable form.")]
     InvalidName,
     /// Value нельзя безопасно сериализовать как единственную cookie pair.
-    #[error("cookie value имеет недопустимую форму")]
+    #[error("The value cookie has an unacceptable form")]
     InvalidValue,
     /// Scoped cookie обязан иметь Domain в pinned yt-dlp representation.
-    #[error("scoped cookie не содержит domain")]
+    #[error("The scoped cookie does not contain the domain")]
     MissingDomain,
     /// Domain не является DNS/IP host-ом.
-    #[error("cookie domain имеет недопустимую форму")]
+    #[error("The domain cookie has an unacceptable form.")]
     InvalidDomain,
     /// Path не является абсолютным HTTP path-ом.
-    #[error("cookie path имеет недопустимую форму")]
+    #[error("The cookie path has an unacceptable form")]
     InvalidPath,
     /// Unix timestamp не представим поддерживаемым временем.
-    #[error("cookie expiration находится вне поддерживаемого диапазона")]
+    #[error("The expiration cookie is outside the supported range.")]
     InvalidExpiration,
 }
 

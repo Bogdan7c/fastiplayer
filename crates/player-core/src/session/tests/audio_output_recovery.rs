@@ -72,7 +72,7 @@ pub(super) fn playing_session_with_active_output() -> (
     feed_one_audio_packet(&mut session);
     let first_output = factory_handle
         .last_output_handle()
-        .expect("первый packet должен создать output на выбранном устройстве");
+        .expect("The first packet must create output on the selected device.");
     session.current_source_position = POSITION_AT_UNPLUG;
     let _ = session.take_events();
     (session, factory_handle, first_output)
@@ -132,7 +132,7 @@ fn unplugged_device_switches_sound_to_default_and_new_output_receives_pcm() {
     );
     let replacement_output = factory_handle
         .last_output_handle()
-        .expect("восстановление должно создать новый output");
+        .expect("Recovery will create a new output");
     // Звук снова идёт: PCM после переключения дошёл до нового output-а, а не до сломанного.
     assert_eq!(replacement_output.written_samples(), DECODED_PCM.to_vec());
     assert_eq!(first_output.written_samples(), DECODED_PCM.to_vec());
@@ -211,14 +211,14 @@ fn no_output_is_reported_as_absent_not_as_failure() {
 fn paused_session_recovers_output_without_starting_it() {
     let (mut session, factory_handle) = session_with_audio_track();
     feed_one_audio_packet(&mut session);
-    let first_output = factory_handle.last_output_handle().expect("output создан");
+    let first_output = factory_handle.last_output_handle().expect("output");
     factory_handle.set_devices(ONLY_SYSTEM_DEFAULT);
     let state_before = session.playback_state();
 
     first_output.fail_stream();
     let outcome = session.recover_failed_audio_output_if_needed(Instant::now());
 
-    let replacement_output = factory_handle.last_output_handle().expect("новый output");
+    let replacement_output = factory_handle.last_output_handle().expect("new output");
     assert_eq!(outcome, AudioOutputRecoveryOutcome::SwitchedToSystemDefault);
     assert_ne!(state_before, PlaybackState::Playing);
     assert_eq!(session.playback_state(), state_before);
@@ -235,7 +235,7 @@ fn missing_saved_device_at_open_plays_on_default_and_keeps_audio_track() {
 
     let output = factory_handle
         .last_output_handle()
-        .expect("звук должен пойти в default");
+        .expect("The sound should go default.");
     assert_eq!(output.written_samples(), DECODED_PCM.to_vec());
     assert_eq!(
         session.snapshot.selected_tracks.audio_track,
@@ -394,7 +394,7 @@ fn settings_device_change_never_substitutes_default() {
 
     let error = session
         .recreate_active_audio_output(AudioOutputDeviceRequest::SelectedOnly)
-        .expect_err("явно выбранное, но отключённое устройство — это ошибка для настроек");
+        .expect_err("A clearly selected but disabled device is a setting error");
 
     assert_eq!(error.kind, PlayerErrorKind::AudioDeviceUnavailable);
     assert_eq!(

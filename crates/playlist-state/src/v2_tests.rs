@@ -77,7 +77,7 @@ fn service_child_payload() -> PlaylistSingleDurablePayload {
     let ancillary_hint = PlaylistAncillaryTrackHint::new(
         "subtitle-main",
         Some("uk".to_owned()),
-        Some("Українські субтитри".to_owned()),
+        Some("Ukrainian subtitles".to_owned()),
         PlaylistAncillaryTrackSelectionKind::Manual,
         PlaylistAncillaryTrackOrigin::External(external_non_utf_locator),
         Some("vtt-stable".to_owned()),
@@ -482,7 +482,7 @@ fn transient_request_material_is_structurally_unrepresentable_in_v2_dto() {
     let state_path = temp_dir.path().join("playlist-state.json");
     let serialized_baseline = serialized_mixed_state();
     let baseline_text = String::from_utf8(serialized_baseline.clone())
-        .expect("playlist-state writer обязан выдавать UTF-8 JSON");
+        .expect("Playlist-state writer must issue UTF-8 JSON");
     let baseline: Value =
         serde_json::from_slice(&serialized_baseline).expect("baseline JSON parses");
 
@@ -499,7 +499,7 @@ fn transient_request_material_is_structurally_unrepresentable_in_v2_dto() {
     ] {
         assert!(
             !baseline_text.contains(&format!("\"{forbidden_field}\"")),
-            "playlist-state writer не должен публиковать transient field {forbidden_field}"
+            "playlist-state writer don't publish transient field {forbidden_field}"
         );
     }
 

@@ -227,16 +227,16 @@ pub enum StateSerializationError {
 impl fmt::Display for StateSerializationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
-            Self::TimeOutOfRange => "playlist state time не помещается в disk schema",
+            Self::TimeOutOfRange => "playlist state time does not fit the disk schema",
             Self::UnsupportedNativePathEncoding => {
-                "native path encoding не поддержан disk schema на этой платформе"
+                "native path encoding is not supported by disk schema on this platform"
             }
             Self::InvalidDurableReopenLocator => {
-                "playlist state содержит недопустимый durable reopen locator"
+                "playlist state contains an invalid durable reopen locator"
             }
-            Self::ResourceLimitExceeded => "playlist state превышает resource limit",
-            Self::SerializedStateTooLarge => "playlist state превышает file limit",
-            Self::JsonEncodingFailed => "playlist state не удалось сериализовать в JSON",
+            Self::ResourceLimitExceeded => "playlist state exceeds the resource limit",
+            Self::SerializedStateTooLarge => "playlist state exceeds the file limit",
+            Self::JsonEncodingFailed => "failed to serialize playlist state to JSON",
         };
         formatter.write_str(message)
     }

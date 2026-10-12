@@ -121,18 +121,21 @@ impl fmt::Display for QueueRestoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CapacityExceeded { maximum, .. } => {
-                write!(formatter, "restored queue превышает лимит {maximum}")
+                write!(formatter, "restored queue exceeds the limit {maximum}")
             }
             Self::DuplicateItemId { item_id } => {
-                write!(formatter, "restored queue повторяет {item_id}")
+                write!(formatter, "restored queue duplicates {item_id}")
             }
             Self::DuplicateCompoundGroupId { group_id } => {
-                write!(formatter, "restored queue повторяет {group_id}")
+                write!(formatter, "restored queue duplicates {group_id}")
             }
             Self::InvalidAllocator(error) => fmt::Display::fmt(error, formatter),
             Self::InvalidCompoundGroupAllocator(error) => fmt::Display::fmt(error, formatter),
             Self::CurrentItemNotCommitted { item_id } => {
-                write!(formatter, "restored current {item_id} отсутствует в queue")
+                write!(
+                    formatter,
+                    "restored current {item_id} is missing from the queue"
+                )
             }
         }
     }

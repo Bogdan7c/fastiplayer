@@ -85,37 +85,37 @@ impl ContentProbeProof {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ContentProbeRejection {
     /// Demux не опубликовал ни одной media-дорожки.
-    #[error("content probe не обнаружил video или audio track")]
+    #[error("content probe does not detect video or audio track")]
     NoMediaTracks,
     /// Demux не подтвердил declared video presence.
-    #[error("content probe не подтвердил declared video track")]
+    #[error("content probe not confirmed by declared video track")]
     MissingDeclaredVideo,
     /// Demux опубликовал video вопреки literal `vcodec=none`.
-    #[error("content probe обнаружил video при explicit vcodec=none")]
+    #[error("content probe found video with explicit vcodec=none")]
     UnexpectedVideo,
     /// Actual video codec не совпал с declared extractor codec family.
-    #[error("content probe обнаружил другой video codec, чем объявил extractor")]
+    #[error("content probe discovered a different video codec than the extractor announced")]
     DeclaredVideoCodecMismatch,
     /// Actual video нельзя декодировать текущей capability configuration.
-    #[error("content-probed video codec не поддерживается")]
+    #[error("Content-probed video codec is unsupported")]
     UnsupportedVideo,
     /// Demux не подтвердил declared audio presence.
-    #[error("content probe не подтвердил declared audio track")]
+    #[error("content probe not confirmed by declared audio track")]
     MissingDeclaredAudio,
     /// Demux опубликовал audio вопреки literal `acodec=none`.
-    #[error("content probe обнаружил audio при explicit acodec=none")]
+    #[error("content probe detects audio with explicit acodec=none")]
     UnexpectedAudio,
     /// Actual audio codec не совпал с declared extractor codec family.
-    #[error("content probe обнаружил другой audio codec, чем объявил extractor")]
+    #[error("content probe discovered a different audio codec than the extractor announced")]
     DeclaredAudioCodecMismatch,
     /// Actual audio нельзя декодировать текущей capability configuration.
-    #[error("content-probed audio codec не поддерживается")]
+    #[error("Content-probed audio codec is unsupported")]
     UnsupportedAudio,
     /// Actual video нарушает hard playback selection policy.
-    #[error("content-probed video отклонён playback policy: {0}")]
+    #[error("Content-probed video rejected by playback policy: {0}")]
     VideoPolicy(ResolvedVideoPolicyRejection),
     /// Provider доказал, что ни один boundedly probed adaptive variant не playable.
-    #[error("content probe не обнаружил playable adaptive variant")]
+    #[error("content probe does not detect playable adaptive variant")]
     NoPlayableAdaptiveVariant,
 }
 

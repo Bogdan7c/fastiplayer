@@ -42,21 +42,21 @@ fn preview_seek_clears_decode_point_prebuffer_without_verification() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(
             Duration::from_millis(500),
         ))
-        .expect("первый seek должен создать verification prebuffer");
+        .expect("first seek must create verification prebuffer");
     demuxer
         .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
-        .expect("preview-mode seek не должен запускать DecodePointBefore verification");
+        .expect("preview-mode seek shouldn't start DecodePointBefore verification");
     let packet_event = demuxer
         .next_event()
-        .expect("preview packet должен читаться после seek");
+        .expect("preview packet should read after seek");
     let DemuxReadEvent::Packet(packet) = packet_event else {
-        panic!("preview-mode seek должен вернуть packet, получено {packet_event:?}");
+        panic!("preview-mode seek should be returned packet, got {packet_event:?}");
     };
 
     assert_eq!(packet.pts, Duration::from_secs(11));
@@ -85,16 +85,16 @@ fn seek_result_uses_selected_video_track_timestamp_when_audio_track_is_first() {
         DemuxSeekability::Seekable,
         DemuxerOptions::default(),
     )
-    .expect("fake demuxer должен открыться");
+    .expect("The fake demuxer must open.");
 
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
-        .expect("preview-mode seek должен использовать selected video track");
+        .expect("preview-mode seek should be used selected video track");
 
     assert_eq!(
         seek_result
             .actual_track_timestamp
-            .expect("seek result должен сохранить raw timestamp")
+            .expect("seek result should be preserved raw timestamp")
             .track_id,
         TrackId::new(1)
     );

@@ -105,18 +105,18 @@ impl AdaptiveRetryPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AdaptiveRetryPolicyError {
     /// Нулевая задержка создала бы busy loop.
-    #[error("initial adaptive retry backoff должен быть ненулевым")]
+    #[error("The initial adaptive retry backoff must be non-zero.")]
     ZeroInitialBackoff,
     /// Exponential cap обязан быть не меньше первой задержки.
-    #[error("initial adaptive retry backoff превышает maximum backoff")]
+    #[error("initial adaptive retry backoff exceeds the maximum backoff")]
     InitialExceedsMaximum,
     /// Readiness hint не может превышать neutral 60-second bound.
-    #[error("maximum adaptive retry backoff превышает 60 seconds")]
+    #[error("maximum adaptive retry backoff exceeds 60 seconds")]
     MaximumExceedsReadinessBound,
     /// Нулевой server hint cap беззвучно отключил бы `Retry-After` contract.
-    #[error("maximum adaptive Retry-After должен быть ненулевым")]
+    #[error("maximum adaptive Retry-After must be non-zero")]
     ZeroMaximumRetryAfter,
     /// Server-directed ожидание не может превышать neutral 60-second bound.
-    #[error("maximum adaptive Retry-After превышает 60 seconds")]
+    #[error("maximum adaptive Retry-After exceeds 60 seconds")]
     RetryAfterExceedsReadinessBound,
 }

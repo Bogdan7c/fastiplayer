@@ -158,7 +158,7 @@ impl LocalFileOpenJob {
                     },
                 );
             })
-            .map_err(|error| format!("Не удалось запустить local file picker job: {error}"))?;
+            .map_err(|error| format!("Could not start local file picker job: {error}"))?;
 
         Ok(Self::from_parts(
             LocalFileOpenJobKind::Picker,
@@ -193,7 +193,7 @@ impl LocalFileOpenJob {
 
                 let progress_outcome = mailbox_publisher.publish_progress(selected_path.clone());
                 if progress_outcome.wake_delivery == WakeDelivery::EventLoopClosed {
-                    debug!("Event loop закрыт; local-file progress оставлен без wake retry");
+                    debug!("Event loop closed; local-file progress will not retry wake");
                 }
 
                 let prepare_result = prepare_local_open(
@@ -217,7 +217,7 @@ impl LocalFileOpenJob {
                 }
                 publish_local_file_completion(&mailbox_publisher, prepare_result);
             })
-            .map_err(|error| format!("Не удалось запустить local file preparation job: {error}"))?;
+            .map_err(|error| format!("Could not start local file preparation job: {error}"))?;
 
         Ok(Self::from_parts(
             LocalFileOpenJobKind::Preparation,
@@ -286,13 +286,13 @@ impl LocalFileOpenJob {
         let completion = match join_finished_thread(&mut self.join_handle) {
             FinishedThreadJoin::Joined => self.pending_completion.take().or_else(|| {
                 Some(LocalFileOpenResult::JobFailed {
-                    error: "Local file open job завершился без результата".to_string(),
+                    error: "Local file open job finished without a result".to_string(),
                 })
             }),
             FinishedThreadJoin::Panicked => {
                 self.pending_completion = None;
                 Some(LocalFileOpenResult::JobFailed {
-                    error: "Local file open job завершился panic".to_string(),
+                    error: "Local file open job panicked".to_string(),
                 })
             }
             FinishedThreadJoin::AlreadyJoined if self.pending_completion.is_some() => {
@@ -303,7 +303,7 @@ impl LocalFileOpenJob {
                     && self.join_handle.is_none()
                 {
                     Some(LocalFileOpenResult::JobFailed {
-                        error: "Local file open job потерял terminal result".to_string(),
+                        error: "Local file open job lost its terminal result".to_string(),
                     })
                 } else {
                     None
@@ -374,7 +374,7 @@ impl Drop for LocalFileOpenJob {
         // Это fail-safe, а не process shutdown path. AppShell обязан передать job
         // через suspend boundary и вызвать bounded shutdown до terminal Drop.
         if join_handle.join().is_err() {
-            warn!("Local file open job panic обнаружен во время fail-safe Drop");
+            warn!("Local file open job panic detected during fail-safe Drop");
         }
     }
 }
@@ -386,11 +386,11 @@ fn publish_local_file_completion(
 ) {
     match publisher.publish_completion(completion) {
         Ok(WakeDelivery::EventLoopClosed) => {
-            debug!("Event loop закрыт; local-file terminal оставлен без wake retry");
+            debug!("Event loop closed; local-file terminal will not retry wake");
         }
         Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
         Err(CompletionPublishError::AlreadyPublished) => {
-            warn!("Local file open job попытался опубликовать второй terminal result");
+            warn!("Local file open job attempted to publish a second terminal result");
         }
     }
 }
@@ -405,14 +405,14 @@ fn local_prepare_failure_result(
 ) -> LocalFileOpenResult {
     match error.user_outcome() {
         LocalOpenFailureOutcome::Cancelled => {
-            debug!(error = %error.diagnostic_chain(), "Подготовка локального файла отменена");
+            debug!(error = %error.diagnostic_chain(), "Local file preparation canceled");
             LocalFileOpenResult::Cancelled
         }
         LocalOpenFailureOutcome::Failed(reason) => {
             warn!(
                 reason = ?reason,
                 error = %error.diagnostic_chain(),
-                "Не удалось подготовить локальный файл"
+                "Could not prepare the local file"
             );
             LocalFileOpenResult::PrepareFailed {
                 path: selected_path,
@@ -488,7 +488,7 @@ mod tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "job не завершился вовремя"
+                "The job was not completed on time."
             );
             std::thread::yield_now();
         };
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(reason, LocalOpenFailureReason::FileNotFound);
         assert_eq!(
             crate::local_open_message::local_open_failure_message(&path, reason),
-            "Не удалось открыть «missing-job-clip.mkv»: файл не найден"
+            "Could not open “missing-job-clip.mkv”: file not found"
         );
     }
 
@@ -544,7 +544,7 @@ mod tests {
             if let Some(completion) = job.drain().completion {
                 return completion;
             }
-            assert!(std::time::Instant::now() < deadline, "job не завершился");
+            assert!(std::time::Instant::now() < deadline, "job is not complete.");
             std::thread::yield_now();
         }
     }
@@ -657,7 +657,9 @@ mod tests {
     #[test]
     fn suspend_transfer_preserves_join_authority() {
         let mut renderer_owner = Some(test_job(std::thread::spawn(|| {})));
-        let mut process_owner = renderer_owner.take().expect("suspend должен передать job");
+        let mut process_owner = renderer_owner
+            .take()
+            .expect("Suspend must transfer the job");
 
         assert!(renderer_owner.is_none());
         assert!(process_owner.join_handle.is_some());
@@ -681,20 +683,20 @@ mod tests {
             drop(job);
             drop_finished_sender
                 .send(())
-                .expect("test receiver должен оставаться жив");
+                .expect("The test receiver must be alive.");
         });
 
         assert!(
             drop_finished_receiver
                 .recv_timeout(Duration::from_millis(5))
                 .is_err(),
-            "Drop не должен detach-ить ещё работающий thread"
+            "Drop doesn’t have to detach or still work thread."
         );
         release.store(true, Ordering::Release);
         drop_finished_receiver
             .recv_timeout(Duration::from_secs(1))
-            .expect("Drop должен завершиться после worker-а");
-        dropper.join().expect("dropper не должен panic");
+            .expect("Drop should be completed after worker-a");
+        dropper.join().expect("Dropper doesn't have to be panic");
     }
 
     mod shutdown_observation;

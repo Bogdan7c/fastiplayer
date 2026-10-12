@@ -35,12 +35,12 @@ fn parent(
         CandidateIdentity::new(
             source,
             ExtractionGeneration::new(extraction_generation),
-            CandidateFormatIdentity::new(exact_key).expect("fixture parent key валиден"),
+            CandidateFormatIdentity::new(exact_key).expect("fixture parent key validated"),
         ),
         SemanticIdentity::new(source, format!("semantic-{exact_key}"))
-            .expect("fixture semantic parent валиден"),
+            .expect("fixture semantic parent validated"),
     )
-    .expect("fixture parent source совпадает")
+    .expect("fixing parent source is the same as")
 }
 
 fn catalog_identity(
@@ -68,23 +68,22 @@ fn video_variant(
         ComponentVariantExactIdentity::new(
             identity.clone(),
             ComponentKind::Video,
-            ComponentVariantExactKey::new(exact_key).expect("fixture video exact key валиден"),
+            ComponentVariantExactKey::new(exact_key).expect("fixture video exact key Valid"),
         ),
         ComponentVariantSemanticIdentity::new(
             identity.parent().semantic().clone(),
             ComponentKind::Video,
             ComponentVariantSemanticKey::new(semantic_key)
-                .expect("fixture video semantic key валиден"),
+                .expect("fixture video semantic key validated"),
         ),
         VideoTrackDescriptor::new(
             NormalizedCodec::parse(
-                RawCodecIdentity::new(codec_identity)
-                    .expect("fixture video codec identity валидна"),
+                RawCodecIdentity::new(codec_identity).expect("fixture video codec identity"),
             ),
-            Some(VideoWidth::new(height * 16 / 9).expect("fixture width валиден")),
-            Some(VideoHeight::new(height).expect("fixture height валиден")),
-            Some(FrameRate::new(60, 1).expect("fixture fps валиден")),
-            Some(Bitrate::new(u64::from(height) * 4_000).expect("fixture bitrate валиден")),
+            Some(VideoWidth::new(height * 16 / 9).expect("fixture width valid")),
+            Some(VideoHeight::new(height).expect("fixture height valid")),
+            Some(FrameRate::new(60, 1).expect("fixture fps valid")),
+            Some(Bitrate::new(u64::from(height) * 4_000).expect("fixture bitrate valid")),
             DynamicRange::Sdr,
         ),
     )
@@ -100,24 +99,24 @@ fn audio_variant(
         ComponentVariantExactIdentity::new(
             identity.clone(),
             ComponentKind::Audio,
-            ComponentVariantExactKey::new(exact_key).expect("fixture audio exact key валиден"),
+            ComponentVariantExactKey::new(exact_key).expect("fixture audio exact key Valid"),
         ),
         ComponentVariantSemanticIdentity::new(
             identity.parent().semantic().clone(),
             ComponentKind::Audio,
             ComponentVariantSemanticKey::new(semantic_key)
-                .expect("fixture audio semantic key валиден"),
+                .expect("fixture audio semantic key validated"),
         ),
         AudioTrackDescriptor::new(
             NormalizedCodec::parse(
-                RawCodecIdentity::new("opus").expect("fixture audio codec identity валидна"),
+                RawCodecIdentity::new("opus").expect("fixture audio codec identity valid"),
             ),
-            Some(SampleRate::new(48_000).expect("fixture sample rate валиден")),
-            Some(ChannelCount::new(2).expect("fixture channels валидны")),
-            Some(Bitrate::new(bitrate).expect("fixture audio bitrate валиден")),
+            Some(SampleRate::new(48_000).expect("fixture sample rate validated")),
+            Some(ChannelCount::new(2).expect("fixture channels valid")),
+            Some(Bitrate::new(bitrate).expect("fixture audio bitrate Valid")),
             Some(
                 LanguageTag::new("https://secret.example/audio?token=language")
-                    .expect("fixture language валиден"),
+                    .expect("fixture language valid"),
             ),
         ),
     )
@@ -140,12 +139,11 @@ fn coupled_variant(
     CoupledComponentVariant::new(
         CoupledVariantExactIdentity::new(
             identity.clone(),
-            ComponentVariantExactKey::new(exact_key).expect("fixture coupled exact key валиден"),
+            ComponentVariantExactKey::new(exact_key).expect("fixture coupled exact key Valid"),
         ),
         CoupledVariantSemanticIdentity::new(
             identity.parent().semantic().clone(),
-            ComponentVariantSemanticKey::new(semantic_key)
-                .expect("fixture coupled semantic key валиден"),
+            ComponentVariantSemanticKey::new(semantic_key).expect("fixture coupled semantic key"),
         ),
         video.track().clone(),
         audio.track().clone(),
@@ -215,10 +213,10 @@ fn catalog(
     };
     ComponentVariantCatalog::new(
         identity,
-        ComponentVariantCatalogLimit::new(16).expect("fixture catalog limit валиден"),
+        ComponentVariantCatalogLimit::new(16).expect("fixture catalog limit Valid"),
         entries,
     )
-    .expect("fixture catalog валиден")
+    .expect("fixture catalog Valid")
 }
 
 fn selection(
@@ -252,7 +250,7 @@ fn selection(
     };
     catalog
         .select_exact(request)
-        .expect("fixture selection валиден")
+        .expect("fixture selection validated")
 }
 
 fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStreamConfiguration {
@@ -323,13 +321,13 @@ fn matching_catalog_install_canonicalizes_supplied_selection() {
 
     let configured = configuration_for(active_parent.clone())
         .with_component_variants(Arc::clone(&canonical_catalog), supplied_selection)
-        .expect("matching catalog должен установиться");
+        .expect("Matching catalog should be installed");
 
     let WebMediaComponentVariantProjection::Installed(
         WebMediaInstalledComponentVariantPresentation::VideoAndAudio { video, audio, .. },
     ) = configured.component_variant_projection()
     else {
-        panic!("ожидалась shape V+A");
+        panic!("The shape V+A was expected.");
     };
     assert_eq!(video.active_index, 1);
     assert_eq!(audio.active_index, 0);
@@ -418,7 +416,7 @@ fn action_validation_order_covers_stale_parent_catalog_axis_and_index() {
     ));
     let configured = configuration_for(active_parent)
         .with_component_variants(Arc::clone(&variants), selection(&variants, 0, 0))
-        .expect("fixture catalog должен установиться");
+        .expect("fixture catalogue must be installed");
     let generation = configured.generation();
 
     let action = |parent_generation, catalog_generation, axis, variant_index| {
@@ -482,7 +480,7 @@ fn active_index_is_no_change_and_replacements_preserve_other_axis() {
     ));
     let configured = configuration_for(active_parent)
         .with_component_variants(Arc::clone(&variants), selection(&variants, 0, 0))
-        .expect("fixture catalog должен установиться");
+        .expect("fixture catalogue must be installed");
     let generation = configured.generation();
     let preference_before = configured.preference();
 
@@ -504,9 +502,9 @@ fn active_index_is_no_change_and_replacements_preserve_other_axis() {
             video: replaced_video,
             audio: retained_audio,
         },
-    ) = resolve(WebMediaComponentVariantAxisKind::Video, 1).expect("video replacement валиден")
+    ) = resolve(WebMediaComponentVariantAxisKind::Video, 1).expect("video replacement valid")
     else {
-        panic!("ожидался semantic V+A reopen");
+        panic!("The semantic V+A reopen");
     };
     assert_eq!(
         replaced_video,
@@ -526,9 +524,9 @@ fn active_index_is_no_change_and_replacements_preserve_other_axis() {
             video: retained_video,
             audio: replaced_audio,
         },
-    ) = resolve(WebMediaComponentVariantAxisKind::Audio, 1).expect("audio replacement валиден")
+    ) = resolve(WebMediaComponentVariantAxisKind::Audio, 1).expect("audio replacement valid")
     else {
-        panic!("ожидался semantic V+A reopen");
+        panic!("The semantic V+A reopen");
     };
     assert_eq!(
         retained_video,
@@ -555,13 +553,13 @@ fn coupled_axis_is_atomic_and_reopens_only_the_selected_semantic_row() {
     ));
     let configured = configuration_for(active_parent)
         .with_component_variants(Arc::clone(&variants), selection(&variants, 0, 0))
-        .expect("coupled catalog должен установиться без fake split");
+        .expect("coupled catalog must be installed without fake split");
     let generation = configured.generation();
     let WebMediaComponentVariantProjection::Installed(
         WebMediaInstalledComponentVariantPresentation::Coupled { coupled, .. },
     ) = configured.component_variant_projection()
     else {
-        panic!("ожидалась единая coupled A/V axis");
+        panic!("I was expecting a coupled A/V axis.");
     };
     assert_eq!(coupled.active_index, 0);
     assert_eq!(coupled.variants.len(), 2);
@@ -589,9 +587,9 @@ fn coupled_axis_is_atomic_and_reopens_only_the_selected_semantic_row() {
     let ComponentVariantActionResolution::SemanticReopen(
         ComponentVariantSemanticSelectionRequest::Coupled { presentation },
     ) = resolve(WebMediaComponentVariantAxisKind::Coupled, 1)
-        .expect("coupled replacement должен дать semantic reopen")
+        .expect("coupled replacement will give semantic reopening")
     else {
-        panic!("ожидался semantic coupled reopen");
+        panic!("It was a semantic coupled reopen.");
     };
     assert_eq!(
         presentation,
@@ -613,7 +611,7 @@ fn presentation_shapes_are_additive_and_secret_safe() {
         let variants = Arc::new(catalog(catalog_identity(active_parent.clone(), 7), layout));
         let configured = configuration_for(active_parent)
             .with_component_variants(Arc::clone(&variants), selection(&variants, 0, 0))
-            .expect("fixture catalog должен установиться");
+            .expect("fixture catalogue must be installed");
         let projection = configured.component_variant_projection();
 
         match (&projection, layout) {
@@ -650,7 +648,7 @@ fn presentation_shapes_are_additive_and_secret_safe() {
             ) => {
                 assert_eq!(coupled.variants.len(), 2);
             }
-            _ => panic!("projection должна сохранять catalog shape"),
+            _ => panic!("Explanation should retain the catalog shape"),
         }
 
         let debug = format!("{configured:?} {projection:?}");
@@ -665,7 +663,7 @@ fn presentation_shapes_are_additive_and_secret_safe() {
         ] {
             assert!(
                 !debug.contains(secret),
-                "safe Debug не должен содержать sentinel {secret}"
+                "safe Debug must not contain sentinel {secret}"
             );
         }
     }

@@ -167,7 +167,7 @@ impl DemuxSeekCancellationToken {
             Err(value) if value == DemuxSeekCancellationStatus::Cancelled as u8 => {
                 DemuxSeekCancellationCompletion::CancellationWon
             }
-            Err(value) => unreachable!("недопустимое состояние seek cancellation token: {value}"),
+            Err(value) => unreachable!("Inadmissible state of seek cancellation token: {value}"),
         }
     }
 
@@ -223,7 +223,7 @@ impl DemuxSeekCancellationToken {
             value if value == DemuxSeekCancellationStatus::Completed as u8 => {
                 DemuxSeekCancellationStatus::Completed
             }
-            value => unreachable!("недопустимое состояние seek cancellation token: {value}"),
+            value => unreachable!("Inadmissible state of seek cancellation token: {value}"),
         }
     }
 }
@@ -312,7 +312,7 @@ impl Future for DemuxSeekCancelled<'_> {
                 DemuxSeekCancellationStatus::Cancelled => Poll::Ready(()),
                 DemuxSeekCancellationStatus::Completed => Poll::Pending,
                 DemuxSeekCancellationStatus::Pending => {
-                    unreachable!("fail-closed cancellation обязана завершить pending seek intent")
+                    unreachable!("fail-closed cancellation must complete pending seek intent")
                 }
             };
         }
@@ -407,14 +407,14 @@ mod tests {
                 if let Some(sender) = entered_sender.take() {
                     sender
                         .send(())
-                        .expect("blocking wait test owner должен принять entered signal");
+                        .expect("Blocking wait test owner accepts entered signal");
                 }
             };
             waiter_token.wait_cancelled_with_observer(Some(&mut before_wait));
         });
         entered_receiver
             .recv_timeout(Duration::from_secs(1))
-            .expect("blocking wait worker должен войти в test rendezvous");
+            .expect("Blocking wait worker must enter test rendezvous");
 
         // Worker уже прошёл pending predicate и обязательно вызовет Condvar::wait.
         // Cancel получает mutex только после его атомарного release в wait, поэтому
@@ -422,7 +422,7 @@ mod tests {
         token.cancel();
         waiter
             .join()
-            .expect("blocking wait worker должен проснуться после cancel");
+            .expect("The blocking wait worker should wake up after canceling");
         assert!(token.is_cancelled());
     }
 

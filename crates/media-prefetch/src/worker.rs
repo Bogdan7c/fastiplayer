@@ -84,7 +84,7 @@ impl PrefetchWorker {
                 chunk_bytes = current_chunk_len,
                 max_chunk_bytes = max_chunk_len,
                 window_bytes = self.config.window_bytes(),
-                "media prefetch worker читает следующий chunk"
+                "Media prefetch worker is reading the next chunk"
             );
             let read_result = self
                 .inner
@@ -123,7 +123,7 @@ impl PrefetchWorker {
                     offset,
                     previous_buffered_end,
                     refetches = state.diagnostics.refetches,
-                    "media prefetch worker применяет новое окно после foreground seek"
+                    "Media prefetch worker is applying a new window after foreground seek"
                 );
                 // Seek начинает новую серию чтения с маленького Range, чтобы foreground
                 // получил первый байт с нового offset-а без ожидания полного большого chunk-а.
@@ -138,7 +138,7 @@ impl PrefetchWorker {
                 let fetch_cancellation = active_fetch.cancellation();
                 debug_assert!(
                     state.active_fetch.is_none(),
-                    "active fetch должен очищаться после каждого завершённого чтения"
+                    "active fetch must be cleared after every completed read"
                 );
                 state.active_fetch = Some(active_fetch);
                 return FetchDecision::Fetch {
@@ -151,7 +151,7 @@ impl PrefetchWorker {
                 buffered_end = state.buffer.buffered_end(),
                 next_fetch_offset = state.buffer.next_fetch_offset(),
                 window_bytes = self.config.window_bytes(),
-                "media prefetch worker ждёт foreground consume/seek"
+                "Media prefetch worker is waiting for foreground consume/seek"
             );
             state = self.shared.wait_state(state);
         }
@@ -206,7 +206,7 @@ impl PrefetchWorker {
                     tracing::debug!(
                         cancelled_fetches = state.diagnostics.cancelled_fetches,
                         seek_request_pending,
-                        "media prefetch worker отбросил отменённый fetch после foreground seek"
+                        "Media prefetch worker discarded a canceled fetch after foreground seek"
                     );
                 }
                 Ok(bytes_read) => {
@@ -214,7 +214,7 @@ impl PrefetchWorker {
                         bytes_read,
                         cancelled_fetches = state.diagnostics.cancelled_fetches,
                         seek_request_pending,
-                        "media prefetch worker отбросил устаревший chunk после foreground seek"
+                        "Media prefetch worker discarded an outdated chunk after foreground seek"
                     );
                 }
                 Err(error) => {
@@ -222,7 +222,7 @@ impl PrefetchWorker {
                         error = %error,
                         cancelled_fetches = state.diagnostics.cancelled_fetches,
                         seek_request_pending,
-                        "media prefetch worker отбросил ошибку устаревшего fetch-а после foreground seek"
+                        "Media prefetch worker discarded an outdated fetch error after foreground seek"
                     );
                 }
             }
@@ -237,7 +237,7 @@ impl PrefetchWorker {
                     eof_offset = state.buffer.buffered_end(),
                     chunks_fetched = state.diagnostics.chunks_fetched,
                     bytes_prefetched = state.diagnostics.bytes_prefetched,
-                    "media prefetch worker дошёл до EOF"
+                    "Media prefetch worker reached EOF"
                 );
                 self.shared.notify_all();
             }
@@ -251,7 +251,7 @@ impl PrefetchWorker {
                     // источника, а не повод ронять worker.
                     tracing::warn!(
                         %error,
-                        "media prefetch источник отдал данные за пределами u64 offset-ов; считаем это EOF"
+                        "media prefetch source gave data outside of u64 offsets; consider it EOF"
                     );
                     state.buffer.mark_eof_at_fetch_offset();
                     self.shared.notify_all();
@@ -268,14 +268,14 @@ impl PrefetchWorker {
                     buffered_end = state.buffer.buffered_end(),
                     chunks_fetched = state.diagnostics.chunks_fetched,
                     bytes_prefetched = state.diagnostics.bytes_prefetched,
-                    "media prefetch worker добавил chunk в RAM window"
+                    "Media prefetch worker added a chunk to the RAM window"
                 );
                 self.shared.notify_all();
             }
             Err(error) => {
                 tracing::debug!(
                     error = %error,
-                    "media prefetch worker передаёт ошибку foreground read"
+                    "Media prefetch worker is forwarding an error to foreground read"
                 );
                 state.fatal_error = Some(error);
                 self.shared.notify_all();

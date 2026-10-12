@@ -80,7 +80,7 @@ def extract_job(workflow_source: str, job_identifier: str) -> str:
     job_match = job_pattern.search(workflow_source)
     # AssertionError показывает exact job id при структурном drift workflow.
     if job_match is None:
-        raise AssertionError(f"workflow job `{job_identifier}` не найден")
+        raise AssertionError(f"workflow job `{job_identifier}` was not found")
     # Возвращаем job вместе с header, чтобы tests могли проверять его id при необходимости.
     return f"  {job_identifier}:\n{job_match.group('body')}"
 
@@ -99,7 +99,7 @@ def extract_named_step(job_source: str, step_name: str) -> str:
     step_match = step_pattern.search(job_source)
     # Ошибка называет exact step, который нужно восстановить.
     if step_match is None:
-        raise AssertionError(f"workflow step `{step_name}` не найден")
+        raise AssertionError(f"workflow step `{step_name}` was not found")
     # Header включается, чтобы условие `if` и run body проверялись одним source block.
     return f"      - name: {step_name}\n{step_match.group('body')}"
 
@@ -116,8 +116,8 @@ def apt_install_packages(step_source: str) -> frozenset[str]:
     # Несколько install-команд позволили бы скрыть лишний или непроверяемый package list.
     if len(install_lines) != 1:
         raise AssertionError(
-            "ожидалась ровно одна `sudo apt-get install` команда, "
-            f"получено: {install_lines}"
+            "There was one \"sudo apt-get install\" command expected. "
+            f"received: {install_lines}"
         )
     # shlex учитывает shell quoting и не исполняет workflow source.
     install_arguments = shlex.split(install_lines[0])
@@ -132,7 +132,7 @@ def apt_install_packages(step_source: str) -> frozenset[str]:
     # Drift флагов меняет воспроизводимость runner и должен быть видимым failure.
     if install_arguments[: len(expected_prefix)] != expected_prefix:
         raise AssertionError(
-            f"неожиданный apt install prefix: {install_arguments[:len(expected_prefix)]}"
+            f"unexpected apt install prefix: {install_arguments[:len(expected_prefix)]}"
         )
     # Set сравнивает смысл package inventory независимо от безопасного порядка имён.
     return frozenset(install_arguments[len(expected_prefix) :])

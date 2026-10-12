@@ -89,7 +89,7 @@ fn auto_with_stream_requirement_prefers_hardware_then_falls_back_to_ffmpeg() {
         decoder_thread_config,
         Some(&hardware_stream),
     )
-    .expect("auto должен выбрать hardware для hw-decodable стрима");
+    .expect("Auto must select hardware for hw-decodable streaming");
     assert_eq!(
         hardware_plan.backend_kind(),
         VideoBackendKind::HardwareZeroCopy
@@ -106,7 +106,7 @@ fn auto_with_stream_requirement_prefers_hardware_then_falls_back_to_ffmpeg() {
         decoder_thread_config,
         Some(&software_stream),
     )
-    .expect("auto должен упасть на ffmpeg для software-only стрима");
+    .expect("Auto should fall on ffmpeg for software-only streaming");
     assert_eq!(
         software_plan.backend_kind(),
         VideoBackendKind::FfmpegSoftware
@@ -131,16 +131,16 @@ fn hardware_preference_rejects_stream_no_hardware_output_can_decode() {
         decoder_thread_config,
         Some(&software_only_stream),
     )
-    .expect_err("hardware preference не должен падать на software для несовместимого стрима");
+    .expect_err("hardware preference should not fall software streamingly");
     match error {
         VideoPipelineSelectionError::HardwareOutputDoesNotServeStream { requirement } => {
             assert!(
                 requirement.contains("VP9"),
-                "diagnostic должен назвать stream requirement, got {requirement}"
+                "diagnostic must name the stream requirement, got {requirement}"
             );
         }
         unexpected_error => {
-            panic!("ожидали stream-specific hardware rejection, got {unexpected_error:?}");
+            panic!("Expected stream-specific hardware rejection, got {unexpected_error:?}");
         }
     }
 }

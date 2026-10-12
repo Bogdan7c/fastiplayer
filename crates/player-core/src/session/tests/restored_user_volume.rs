@@ -63,12 +63,12 @@ fn restored_mute_reaches_audio_output_and_unmute_returns_saved_volume() {
 
     let output = factory_handle
         .last_output_handle()
-        .expect("первый packet создаёт audio output");
+        .expect("The first packet creates audio output");
     assert_eq!(output.written_samples(), DECODED_PCM.to_vec());
     assert_eq!(
         output.last_applied_volume(),
         Some(0.0),
-        "output создан заглушённым"
+        "output is created by stunned"
     );
     assert!(session.snapshot().muted);
 

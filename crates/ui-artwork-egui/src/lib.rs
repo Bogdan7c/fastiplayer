@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(output.shapes.len(), 1);
         // Извлекаем реальные sampled points, а не дублируем формулу тестом.
         let Shape::Path(outline_path) = &output.shapes[0].shape else {
-            panic!("playback-rate outline должен быть PathShape");
+            panic!("playback-rate outline must be a PathShape");
         };
         // Верхняя точка начинается от bounding rect.
         let top_left = outline_path.points[0];
@@ -742,7 +742,7 @@ mod tests {
         );
         // Первая shape хранит fill без случайного outline stroke.
         let Shape::Vec(fill_shapes) = &output.shapes[0].shape else {
-            panic!("active fill slot должен содержать grouped row background");
+            panic!("active fill slot must contain grouped row background");
         };
         // Background helper сохраняет явное fill/stroke ordering.
         assert_eq!(fill_shapes.len(), 2);
@@ -910,7 +910,7 @@ mod tests {
         });
         assert_eq!(output.shapes.len(), 1);
         let Shape::LineSegment { points, stroke } = &output.shapes[0].shape else {
-            panic!("playlist separator должен быть одной line segment");
+            panic!("playlist separator must be a single line segment");
         };
         assert_eq!(
             [points[0].x, points[1].x],

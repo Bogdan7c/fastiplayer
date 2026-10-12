@@ -446,7 +446,7 @@ impl PlaybackPipeline {
         self.reset_video_decode_in_flight();
         debug_assert!(
             self.seek_preroll_fallback_video_frame.is_none(),
-            "reset_media_slots вызывается только после release всех video frames"
+            "reset_media_slots is called only after the release of all video frames."
         );
         self.seek_preroll_fallback_video_frame = None;
         self.reanchor_audio_clock_media_mapping(Duration::ZERO, PlaybackRate::NORMAL);

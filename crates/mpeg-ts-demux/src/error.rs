@@ -2,7 +2,7 @@
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MpegTsOptionsError {
     /// Нулевая граница отключила бы защиту от unbounded work.
-    #[error("MPEG-TS limit `{name}` должен быть больше нуля")]
+    #[error("MPEG-TS limit '{name}' must be greater than zero")]
     ZeroLimit {
         /// Имя ошибочного policy field.
         name: &'static str,
@@ -13,7 +13,7 @@ pub enum MpegTsOptionsError {
 #[derive(Debug, thiserror::Error)]
 pub enum MpegTsDemuxError {
     /// Cooperative cancellation подтверждён shared token-ом.
-    #[error("MPEG-TS операция отменена")]
+    #[error("MPEG-TS operation cancelled")]
     Cancelled,
     /// Transactional owner физически прервал body read; parser state нельзя продолжать.
     #[error("MPEG-TS restartable source read interrupted")]
@@ -23,37 +23,37 @@ pub enum MpegTsDemuxError {
         source: demux_api::OrderedResourceRestartableReadInterrupted,
     },
     /// 192-byte M2TS намеренно не входит в доказанный профиль.
-    #[error("192-byte M2TS framing не поддерживается; требуется 188-byte MPEG-TS")]
+    #[error("192-byte M2TS framing not supported; 188-byte MPEG-TS required")]
     UnsupportedM2ts,
     /// Ограниченный resync не нашёл устойчивую 188-byte синхронизацию.
-    #[error("MPEG-TS sync потерян: просмотрено не больше {searched_bytes} bytes")]
+    #[error("MPEG-TS sync lost: no more than {searched_bytes} bytes viewed")]
     SyncLost {
         /// Фактический configured search bound.
         searched_bytes: usize,
     },
     /// PSI/PES структура повреждена.
-    #[error("повреждённый MPEG-TS: {reason}")]
+    #[error("damaged MPEG-TS: {reason}")]
     Malformed {
         /// Secret-safe причина без media payload.
         reason: String,
     },
     /// Несколько программ можно воспроизвести, а silent selection запрещён.
-    #[error("MPEG-TS содержит несколько playable programs: {programs:?}")]
+    #[error("MPEG-TS contains several playable programs: {programs:?}")]
     MultiplePlayablePrograms {
         /// Program numbers, которые имеют поддерживаемые A/V streams.
         programs: Vec<u16>,
     },
     /// В bounded initial window не найден ни один поддерживаемый program.
-    #[error("в bounded MPEG-TS probe не найден playable PAT/PMT program")]
+    #[error("bounded MPEG-TS probe not found playable PAT/PMT program")]
     NoPlayableProgram,
     /// Scrambled payload нельзя безопасно передать decoder-у.
-    #[error("scrambled MPEG-TS payload на PID {pid}")]
+    #[error("scrambled MPEG-TS payload on PID {pid}")]
     Scrambled {
         /// PID с transport_scrambling_control != 0.
         pid: u16,
     },
     /// PES превысил явную memory boundary.
-    #[error("PES на PID {pid} превысил limit {limit_bytes} bytes")]
+    #[error("PES on PID {pid} exceeds limit {limit_bytes} bytes")]
     PesTooLarge {
         /// Elementary PID.
         pid: u16,
@@ -61,7 +61,7 @@ pub enum MpegTsDemuxError {
         limit_bytes: usize,
     },
     /// Stateful video AU assembly превысил отдельную memory boundary.
-    #[error("video access unit на PID {pid} превысил limit {limit_bytes} bytes")]
+    #[error("video access unit on PID {pid} exceeded limit {limit_bytes} bytes")]
     VideoAccessUnitTooLarge {
         /// Elementary video PID.
         pid: u16,
@@ -75,10 +75,10 @@ pub enum MpegTsDemuxError {
         reason: String,
     },
     /// Источник не поддерживает seek.
-    #[error("MPEG-TS seek недоступен для текущего input")]
+    #[error("MPEG-TS seek not available for current input")]
     NotSeekable,
     /// Sparse index не содержит decode-safe anchor для target.
-    #[error("bounded MPEG-TS index не нашёл decode-safe anchor до {target:?}")]
+    #[error("bounded MPEG-TS index did not find a decode-safe anchor before {target:?}")]
     SeekAnchorUnavailable {
         /// Исходная пользовательская позиция.
         target: std::time::Duration,

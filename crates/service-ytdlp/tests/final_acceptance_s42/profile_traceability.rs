@@ -84,7 +84,7 @@ fn exact_row_roles<'row>(row_id: &str, row: &'row Value) -> &'row Map<String, Va
     assert_eq!(
         roles.keys().map(String::as_str).collect::<BTreeSet<_>>(),
         REQUIRED_ROLES.into_iter().collect::<BTreeSet<_>>(),
-        "typed role set расходится для `{row_id}`"
+        "typed role set diverge `{row_id}`"
     );
     // Проверенный object возвращается focused role tests.
     roles
@@ -115,7 +115,7 @@ fn scoped_traceability_decision_schema_is_exact() {
         .s42_acceptance
         .get("decision")
         // Missing decision делает artifact невалидным.
-        .expect("S42 decision value обязано существовать");
+        .expect("S42 decision value must exist.");
     // Top-level decision относится только к profile traceability.
     let decision = required_object(&documents.s42_acceptance, "decision");
     // Scope не выдаёт этот artifact за полную final acceptance.
@@ -131,7 +131,7 @@ fn scoped_traceability_decision_schema_is_exact() {
     // Complete scoped decision не допускает скрытого unresolved evidence gap.
     assert!(
         required_array(&documents.s42_acceptance, "traceability_gaps").is_empty(),
-        "ProfileTraceabilityComplete не может содержать traceability gap"
+        "ProfileTraceabilityComplete does not contain traceability gap"
     );
     // Artifact явно не принимает manual/full release scopes.
     assert_eq!(
@@ -227,41 +227,41 @@ fn canonical_rows_match_profile_and_s41_handoff() {
         let s41_row = s41_rows
             .get(row_id)
             // Missing row здесь означает внутренне противоречивый gate.
-            .expect("matching S41 row обязана существовать");
+            .expect("matching S41 row must exist");
         // S42 не переписывает уже утверждённый runtime disposition.
         assert_eq!(
             required_string(s42_row, "status"),
             required_string(s41_row, "status"),
-            "S41/S42 status расходится для `{row_id}`"
+            "S41/S42 status differs for {row_id}"
         );
         // Matching canonical row уже доказана exact identity set comparison.
         let profile_row = profile_rows
             .get(row_id)
             // Missing row здесь означала бы internal gate contradiction.
-            .expect("matching S00 row обязана существовать");
+            .expect("matching S00 row must exist");
         // Transport identity копируется exact, без alias normalization.
         assert_eq!(
             required_string(s42_row, "transport"),
             required_string(profile_row, "transport"),
-            "canonical transport расходится для `{row_id}`"
+            "canonical transport diverge `{row_id}`"
         );
         // Container profile остаётся exact S00 boundary.
         assert_eq!(
             required_string(s42_row, "container_profile"),
             required_string(profile_row, "container_profile"),
-            "canonical container profile расходится для `{row_id}`"
+            "canonical container profile diverge `{row_id}`"
         );
         // Codec-profile references сохраняют exact order и identities.
         assert_eq!(
             required_string_array(s42_row, "codec_profile_refs"),
             required_string_array(profile_row, "codec_profile_refs"),
-            "canonical codec refs расходятся для `{row_id}`"
+            "canonical codec refs diverge `{row_id}`"
         );
         // Runtime fixture identity обязана совпасть с canonical corpus row.
         assert_eq!(
             required_string(s42_row, "fixture_id"),
             required_string(profile_row, "fixture_id"),
-            "canonical fixture ID расходится для `{row_id}`"
+            "canonical fixture ID diverge `{row_id}`"
         );
         // Role object обязан содержать exact schema set.
         exact_row_roles(row_id, s42_row);
@@ -282,7 +282,7 @@ fn canonical_rows_match_profile_and_s41_handoff() {
             }
             // Любой новый status требует отдельного architecture/profile решения.
             unexpected_status => {
-                panic!("недопустимый S42 row status `{unexpected_status}` для `{row_id}`")
+                panic!("S42 row status '{unexpected_status}' for '{row_id}'")
             }
         }
     }
@@ -324,17 +324,17 @@ fn implemented_rows_have_complete_typed_role_evidence() {
                 // Missing role уже пойман set assertion, но diagnostic остаётся точным.
                 .and_then(Value::as_object)
                 // Неверный type не допускается.
-                .unwrap_or_else(|| panic!("role `{role_name}` для `{row_id}` обязан быть object"));
+                .unwrap_or_else(|| panic!("role '{role_name}' for '{row_id}' must be object"));
             // Object helper ожидает Value, поэтому берём исходный field.
             let role_value = roles
                 .get(role_name)
                 // Field доказан выше.
-                .expect("matching role value обязан существовать");
+                .expect("matching role value must exist");
             // Implemented role не допускает nullable/fake disposition.
             assert_eq!(
                 required_string(role_value, "disposition"),
                 "Evidence",
-                "Implemented `{row_id}` role `{role_name}` не имеет evidence"
+                "Implemented '{row_id}' role '{role_name}' has no evidence"
             );
             // Каждая Implemented role обязана ссылаться минимум на одно evidence.
             let role_evidence_ids = required_evidence_ids(
@@ -345,7 +345,7 @@ fn implemented_rows_have_complete_typed_role_evidence() {
             // Empty Implemented role запрещён.
             assert!(
                 !role_evidence_ids.is_empty(),
-                "Implemented `{row_id}` role `{role_name}` имеет пустое evidence"
+                "Implemented '{row_id}' role '{role_name}' has empty evidence"
             );
             // Catalog role не может подменить provider test decoder test-ом.
             assert_evidence_role(
@@ -360,7 +360,7 @@ fn implemented_rows_have_complete_typed_role_evidence() {
                 assert_eq!(
                     executable_polarities(evidence_catalog, &role_evidence_ids),
                     BTreeSet::from(["Positive", "Negative"]),
-                    "`{row_id}` capability должна иметь positive и negative evidence"
+                    "{row_id} capability must have positive and negative evidence."
                 );
             }
             // Использование object выше закрепляет его JSON type.
@@ -386,7 +386,7 @@ fn aggregate_rtmp_row_remains_explicit_profile_exclusion() {
     let rtmp_row = s42_rows
         .get(RTMP_IDENTITY_ONLY_ROW)
         // Missing aggregate row был бы Implemented/exclusion gap.
-        .expect("aggregate RTMP row обязана существовать");
+        .expect("RTMP aggregate row must exist");
     // Runtime disposition остаётся typed exclusion.
     assert_eq!(required_string(rtmp_row, "status"), "ProfileExcluded");
     // Role schema остаётся общей для всех target rows.
@@ -414,7 +414,7 @@ fn aggregate_rtmp_row_remains_explicit_profile_exclusion() {
         let exclusion = profile_excluded_rows
             .get(exclusion_id)
             // Missing exact row превращал бы aggregate claim в guess.
-            .unwrap_or_else(|| panic!("canonical RTMP exclusion `{exclusion_id}` отсутствует"));
+            .unwrap_or_else(|| panic!("canonical RTMP exclusion `{exclusion_id}` absent"));
         // Hard и provisional exclusions допустимы, Implemented/Planned — нет.
         assert!(matches!(
             required_string(exclusion, "status"),
@@ -428,7 +428,7 @@ fn aggregate_rtmp_row_remains_explicit_profile_exclusion() {
         let role_value = roles
             .get(role_name)
             // Missing role уже пойман exact set assertion.
-            .expect("excluded role value обязан существовать");
+            .expect("excluded role value must exist");
         // Exclusion остаётся typed, а не false Implemented.
         assert_eq!(
             required_string(role_value, "disposition"),
@@ -457,7 +457,7 @@ fn aggregate_rtmp_row_remains_explicit_profile_exclusion() {
         let role_value = roles
             .get(role_name)
             // Missing role уже пойман exact set assertion.
-            .expect("not-applicable role value обязан существовать");
+            .expect("not-applicable role value must exist");
         // NotApplicable нельзя выдать за Implemented evidence.
         assert_eq!(required_string(role_value, "disposition"), "NotApplicable");
         // NotApplicable не должно ссылаться на фиктивный provider test.

@@ -94,10 +94,10 @@ fn first_packet_kinds(demuxer: &mut dyn Demuxer) -> Vec<TrackKind> {
     let deadline = Instant::now() + TEST_TIMEOUT;
     let mut kinds = Vec::new();
     while kinds.len() < 2 {
-        match demuxer.next_event().expect("VOD runtime читается") {
+        match demuxer.next_event().expect("VOD runtime reads") {
             DemuxReadEvent::Packet(packet) => kinds.push(packet.kind),
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                assert!(Instant::now() < deadline, "HLS worker не стал готов");
+                assert!(Instant::now() < deadline, "The HLS worker is not ready.");
                 std::thread::sleep(Duration::from_millis(2));
             }
             DemuxReadEvent::EndOfStream => break,
@@ -135,14 +135,14 @@ fn assert_event_opens_as_vod_with_packets(
     });
 
     let opened = prepare_hls_vod(open_request(&server, "/media.m3u8", container))
-        .expect("завершённый EVENT должен открыться как VOD");
+        .expect("The completed EVENT should open as a VOD.");
     // Длительность - сумма EXTINF (3 x 2 с), т.е. плеер видит конечный перематываемый ролик.
     assert_eq!(opened.duration(), Duration::from_secs(6));
     let mut demuxer = opened.into_demuxer();
     let kinds = first_packet_kinds(demuxer.as_mut());
     assert!(
         kinds.contains(&TrackKind::Video) && kinds.contains(&TrackKind::Audio),
-        "VOD-runtime должен отдать видео и аудио пакеты, получено {kinds:?}"
+        "VOD-runtime You have to give the video and audio packages, got {kinds:?}"
     );
 }
 
@@ -181,10 +181,10 @@ fn running_event_without_endlist_is_still_rejected_by_vod_path() {
         "/media.m3u8",
         HlsRequiredContainer::TransportStream,
     ))
-    .expect_err("EVENT без ENDLIST не является VOD");
+    .expect_err("EVENT without ENDLIST is not a VOD");
     assert!(
         matches!(error, HlsVodOpenError::Profile(_)),
-        "ожидалась ошибка профиля, получено {error:?}"
+        "A profile error was expected, received {error:?}"
     );
 }
 
@@ -224,7 +224,7 @@ fn master_with_finished_event_variant_is_classified_as_vod() {
             )
             .with_secret_forwarding(http.resource_secret_forwarding_for(&target)),
         )
-        .expect("master загружается");
+        .expect("master is loaded");
 
     let presentation = detect_hls_catalog_presentation(
         &top,
@@ -234,6 +234,6 @@ fn master_with_finished_event_variant_is_classified_as_vod() {
         None,
         HlsParserLimits::default(),
     )
-    .expect("child EVENT+ENDLIST проходит VOD-профиль");
+    .expect("child EVENT+ENDLIST passing VOD-profile");
     assert_eq!(presentation, HlsCatalogPresentation::Vod);
 }

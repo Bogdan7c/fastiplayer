@@ -25,7 +25,7 @@ pub enum SmoothManifestLimitKind {
 
 /// Builder сообщает точное обязательное поле без hidden defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("не задан обязательный Smooth Streaming budget {field:?}")]
+#[error("required Smooth Streaming budget {field:?} is not set")]
 pub struct MissingSmoothManifestLimit {
     field: SmoothManifestLimitKind,
 }
@@ -42,9 +42,9 @@ impl MissingSmoothManifestLimit {
 pub enum SmoothManifestLimitBuildError {
     #[error(transparent)]
     Missing(#[from] MissingSmoothManifestLimit),
-    #[error("Smooth Streaming budget {field:?} обязан быть больше нуля")]
+    #[error("Smooth Streaming budget {field:?} must be more than zero")]
     Zero { field: SmoothManifestLimitKind },
-    #[error("per-stream Smooth Streaming budget превышает total budget")]
+    #[error("per-stream Smooth Streaming budget exceeds the total budget")]
     PerStreamExceedsTotal {
         per_stream: SmoothManifestLimitKind,
         total: SmoothManifestLimitKind,

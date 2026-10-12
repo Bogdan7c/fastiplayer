@@ -328,25 +328,25 @@ mod tests {
 
         let change = controller
             .select_output_device("cpal-0.15-name:USB%20DAC")
-            .expect("stable id должен примениться");
+            .expect("Stable id should apply");
 
         assert_eq!(change, AudioOutputDeviceSelectionChange::Applied);
         assert_eq!(
             controller
                 .selected_device_id()
-                .expect("selected id должен читаться"),
+                .expect("Selected id should read"),
             "cpal-0.15-name:USB%20DAC"
         );
     }
 
     #[test]
     fn cpal_015_name_id_roundtrips_spaces_hashes_and_unicode() {
-        let stable_id = cpal_015_stable_id_from_name("USB DAC #1 Я", 2);
+        let stable_id = cpal_015_stable_id_from_name("USB DAC #1 I'm", 2);
 
         let (display_name, duplicate_index) =
-            parse_cpal_015_name_id(&stable_id).expect("id должен roundtrip-иться");
+            parse_cpal_015_name_id(&stable_id).expect("id should be roundtrip-");
 
-        assert_eq!(display_name, "USB DAC #1 Я");
+        assert_eq!(display_name, "USB DAC #1 I'm");
         assert_eq!(duplicate_index, 2);
     }
 

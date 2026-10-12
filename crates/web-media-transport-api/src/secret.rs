@@ -114,10 +114,10 @@ impl fmt::Debug for SecretQueryOverride {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SecretQueryOverrideError {
     /// Пустой override не несёт intent и должен быть `None`.
-    #[error("secret query override пуст")]
+    #[error("secret query override empty")]
     Empty,
     /// Override пытается включить query marker либо fragment.
-    #[error("secret query override имеет некорректную структуру")]
+    #[error("secret query override irregularly structured")]
     InvalidStructure,
 }
 

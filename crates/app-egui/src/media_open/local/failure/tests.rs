@@ -19,7 +19,7 @@ fn demux_open_error(open_error: DemuxOpenError) -> PrepareLocalOpenError {
 }
 
 fn test_factory_id() -> demux_api::DemuxFactoryId {
-    demux_api::DemuxFactoryId::new("test.factory").expect("валидный тестовый factory id")
+    demux_api::DemuxFactoryId::new("test.factory").expect("valid factory id test")
 }
 
 fn failed(reason: LocalOpenFailureReason) -> LocalOpenFailureOutcome {
@@ -173,7 +173,7 @@ fn diagnostic_chain_includes_hidden_source_causes() {
 
     assert!(!top_level_only.contains("pmt section crc mismatch"));
     assert!(chain.starts_with(&top_level_only));
-    assert!(chain.contains("demux probe отклонён"));
+    assert!(chain.contains("demux probe rejected"));
     assert!(chain.contains("pmt section crc mismatch"));
 }
 

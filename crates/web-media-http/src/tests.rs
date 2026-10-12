@@ -523,13 +523,13 @@ fn range_source_uses_existing_prefetch_path() {
         requests
             .iter()
             .all(|request| request.contains("user-agent: fastiplayer/")),
-        "initial probe и каждый Range read обязаны нести общую HTTP client identity"
+        "initial probe and each Range read must have a shared HTTP client identity."
     );
     assert!(
         requests
             .iter()
             .all(|request| request.contains("https://github.com/Bogdan7c/fastiplayer")),
-        "HTTP client identity должна оставлять server-у стабильный contact URL"
+        "HTTP client identity should leave the server with a stable contact URL."
     );
 }
 
@@ -617,13 +617,13 @@ fn source_range_limit_caps_initial_and_follow_up_prefetch_requests() {
         .collect::<Vec<_>>();
     assert!(
         requested_ranges.iter().any(|bytes| *bytes > 1),
-        "fixture должен увидеть хотя бы один prefetch range после probe"
+        "fixture You should see at least one of them prefetch range afterward probe"
     );
     assert!(
         requested_ranges
             .iter()
             .all(|bytes| *bytes <= RANGE_LIMIT_BYTES),
-        "ни один HTTP Range не должен превышать source-specific limit"
+        "No HTTP Range exceeds the source-specific limit"
     );
 }
 
@@ -632,7 +632,7 @@ fn source_range_limit_preserves_global_memory_window() {
     let default_config = media_prefetch::PrefetchConfig::default();
     let range_limit = HttpRangeRequestLimit::new(1024 * 1024).expect("strict source limit");
     let effective_config = prefetch_config_with_source_limit(default_config, Some(range_limit))
-        .expect("typed limit сохраняет prefetch invariants");
+        .expect("typed limit retain prefetch invariants");
 
     assert_eq!(
         effective_config.initial_chunk_bytes(),
@@ -646,7 +646,7 @@ fn source_range_limit_preserves_global_memory_window() {
 
     let youtube_limit = HttpRangeRequestLimit::new(10 * 1024 * 1024).expect("YouTube limit");
     let youtube_config = prefetch_config_with_source_limit(default_config, Some(youtube_limit))
-        .expect("мягкий source limit сохраняет global policy");
+        .expect("Soft source limit retains global policy");
     assert_eq!(youtube_config, default_config);
 }
 
@@ -904,7 +904,7 @@ fn open_error_for(behavior: TestServerBehavior) -> TransportOpenError {
             None,
             CancellationToken::new(),
         ))
-        .expect_err("ответ без media должен остаться open error")
+        .expect_err("The answer without media is open error.")
 }
 
 /// Мёртвая ссылка, устаревшая ссылка, лимит запросов и сбой сервера больше не
@@ -934,7 +934,7 @@ fn http_error_statuses_are_typed_instead_of_network_unavailable() {
         assert_eq!(
             error,
             TransportOpenError::Transport(expected),
-            "статус {status_line}"
+            "status {status_line}"
         );
     }
 }

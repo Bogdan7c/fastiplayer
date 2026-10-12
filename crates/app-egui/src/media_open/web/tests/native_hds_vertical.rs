@@ -120,7 +120,7 @@ fn prepare_native(
     {
         NativeHdsAttempt::Prepared(prepared) => prepared,
         NativeHdsAttempt::RequiresExtractorFallback(trigger) => {
-            panic!("valid HDS VOD не имеет права требовать extractor: {trigger:?}")
+            panic!("A valid HDS VOD is not eligible to require an extractor: {trigger:?}")
         }
     }
 }
@@ -137,9 +137,9 @@ fn alternate_coupled_selection(
         },
     ) = stream_configuration.component_variant_projection()
     else {
-        panic!("native HDS обязан публиковать coupled rendition catalog");
+        panic!("Native HDS must publish coupled rendition catalog");
     };
-    assert_eq!(coupled.variants.len(), 2, "обе HDS rows должны иметь proof");
+    assert_eq!(coupled.variants.len(), 2, "Both HDS rows must have proof.");
     let alternate_index = usize::from(coupled.active_index == 0);
     let resolution = stream_configuration
         .resolve_component_variant_action(ComponentVariantSelectionAction {
@@ -148,9 +148,9 @@ fn alternate_coupled_selection(
             axis: WebMediaComponentVariantAxisKind::Coupled,
             variant_index: alternate_index,
         })
-        .expect("fresh HDS coupled action должна разрешиться");
+        .expect("Fresh HDS coupled action should be allowed");
     let ComponentVariantActionResolution::SemanticReopen(selection) = resolution else {
-        panic!("alternate HDS row не должна быть NoChange");
+        panic!("The alternate HDS row does not have to be NoChange.");
     };
     selection
 }
@@ -169,7 +169,7 @@ fn native_request_parts(
         settings,
     } = request.into_adapter()
     else {
-        panic!("HDS switch/reopen обязан сохранить native semantic adapter intent");
+        panic!("HDS switch/reopen should retain native semantic adapter intent");
     };
     (source, selection, settings)
 }
@@ -183,16 +183,13 @@ fn assert_vod_seek(
     let request_id = PreparedDemuxSeekRequestId::new(request_id);
     seek_port
         .enqueue_seek(request_id, DemuxSeekRequest::accurate(requested_position))
-        .expect("native HDS seek должен войти в worker");
+        .expect("The native HDS seek must be included in the worker.");
     let deadline = Instant::now() + HDS_VERTICAL_DEADLINE;
     loop {
         if let Some(receipt) = seek_port.poll_seek_receipt() {
             assert_eq!(receipt.request_id, request_id);
             let PreparedDemuxSeekOutcome::Succeeded(result) = receipt.outcome else {
-                panic!(
-                    "native HDS seek завершился неуспешно: {:?}",
-                    receipt.outcome
-                );
+                panic!("Native HDS seek fails: {:?}", receipt.outcome);
             };
             assert_eq!(result.requested_position.as_duration(), requested_position);
             return;
@@ -213,7 +210,7 @@ fn wait_for_tracks_changed(demuxer: &mut dyn Demuxer) {
         match demuxer.next_event().expect("native HDS readiness event") {
             DemuxReadEvent::TracksChanged(_) => return,
             DemuxReadEvent::TemporarilyUnavailable(hint) => thread::sleep(hint.retry_after()),
-            other => panic!("tracks должны быть первой HDS publication: {other:?}"),
+            other => panic!("tracks should be the first HDS publication: {other:?}"),
         }
     }
 }
@@ -265,7 +262,7 @@ fn n14b_lifecycle_hds_vod_seek_forward_back_switch_and_reopen_reaches_consumers(
     assert_eq!(
         server.request_count("/vod/root.f4m?token=n12-secret"),
         0,
-        "syntactic HDS classifier не должен fetch-ить root до open"
+        "syntactic HDS classifier shouldn't fetch-ooze root before open"
     );
     let stable_source_identity = source.source_identity();
     let mut wgpu_harness = OffscreenWgpuHarness::new();
@@ -296,7 +293,7 @@ fn n14b_lifecycle_hds_vod_seek_forward_back_switch_and_reopen_reaches_consumers(
             settings.clone(),
         )
     else {
-        panic!("fresh HDS row action обязана запустить same-item switch");
+        panic!("Fresh HDS row action must start the same-item switch");
     };
     let (switch_source, switch_selection, switch_settings) = native_request_parts(switch_request);
     let mut switched = prepare_native(&switch_source, Some(&switch_selection), &switch_settings);
@@ -310,7 +307,7 @@ fn n14b_lifecycle_hds_vod_seek_forward_back_switch_and_reopen_reaches_consumers(
     let web_media_core::WebMediaSelectionShape::Components(switched_components) =
         switched.source_state.neutral_selection().shape()
     else {
-        panic!("switched HDS selection должна сохранить component shape");
+        panic!("Switched HDS selection should retain the component shape");
     };
     assert_eq!(
         switched_components.semantic_rematch_request(),
@@ -326,7 +323,7 @@ fn n14b_lifecycle_hds_vod_seek_forward_back_switch_and_reopen_reaches_consumers(
             switch_settings.demux_config,
             Some(switch_settings.clone()),
         )
-        .expect("native HDS controlled reopen требует semantic rematch");
+        .expect("Native HDS controlled reopen requires semantic rematch");
     let (reopen_source, reopen_selection, reopen_settings) = native_request_parts(reopen_request);
     let mut reopened = prepare_native(&reopen_source, Some(&reopen_selection), &reopen_settings);
     accounting_after_switch_lifecycle.assert_one_open_attempt_added(&server);
@@ -344,12 +341,12 @@ fn n14b_lifecycle_hds_vod_seek_forward_back_switch_and_reopen_reaches_consumers(
             .exact()
             .source(),
         stable_source_identity,
-        "stable-root refresh/rematch обязан сохранить source lineage"
+        "stable-root refresh/rematch retain source lineage"
     );
     assert_eq!(
         process_spy.invocation_count(),
         0,
-        "valid HDS open, seek, switch и reopen не запускают extractor"
+        "valid HDS open, seek, switch and reopen let off extractor"
     );
 }
 
@@ -424,7 +421,7 @@ fn native_hds_keeps_profile_and_terminal_failures_distinct_without_extractor() {
 
     assert!(matches!(
         prepare(&source("/foreign.f4m"), CancellationToken::new())
-            .expect("foreign root должен стать typed initial fallback"),
+            .expect("Foreign root should be typed initial fallback."),
         NativeHdsAttempt::RequiresExtractorFallback(
             web_media_core::WebMediaFallbackTrigger::ProviderDocument
         )
@@ -453,13 +450,13 @@ fn native_hds_keeps_profile_and_terminal_failures_distinct_without_extractor() {
     ] {
         let error = prepare(&source(path), CancellationToken::new())
             .err()
-            .expect("profile/malformed failure не должна становиться fallback");
+            .expect("profile/malformed Failure Should Not Become a Fallback");
         assert_eq!(native_hds_failure_kind(&error), expected_kind, "{path}");
     }
 
     let network_error = prepare(&source("/missing.f4m"), CancellationToken::new())
         .err()
-        .expect("404 root fetch обязан остаться terminal network failure");
+        .expect("The 404 root fetch will remain a terminal network failure.");
     assert_eq!(
         native_hds_failure_kind(&network_error),
         web_media_hds::HdsPrepareFailureKind::Network
@@ -468,7 +465,7 @@ fn native_hds_keeps_profile_and_terminal_failures_distinct_without_extractor() {
     cancelled.cancel();
     let cancellation_error = prepare(&source("/vod.f4m"), cancelled)
         .err()
-        .expect("pre-cancel не должен попасть в fallback");
+        .expect("Pre-Cancel is not allowed to fallback.");
     assert_eq!(
         native_hds_failure_kind(&cancellation_error),
         web_media_hds::HdsPrepareFailureKind::Cancelled

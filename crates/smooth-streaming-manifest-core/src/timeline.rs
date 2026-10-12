@@ -47,10 +47,10 @@ impl SmoothChunkRun {
         self.duration_ticks
             .checked_mul(
                 u64::try_from(self.fragment_count)
-                    .expect("validated usize fragment count помещается в u64"),
+                    .expect("validated usize fragment count fit in u64"),
             )
             .and_then(|span| self.first_start_ticks.checked_add(span))
-            .expect("run arithmetic проверена при normalization")
+            .expect("run arithmetic is checked with normalization")
     }
 }
 
@@ -124,7 +124,7 @@ impl SmoothChunkTimeline {
             .iter()
             .rev()
             .find(|run| run.first_fragment_index <= index)
-            .expect("validated nonempty timeline содержит run для каждого index");
+            .expect("validated nonempty timeline containing run for each index");
         let offset = index - run.first_fragment_index;
         let offset_ticks = run
             .duration_ticks
@@ -168,7 +168,7 @@ impl SmoothChunkTimeline {
         SmoothTime::new(
             self.runs
                 .last()
-                .expect("validated timeline непуст")
+                .expect("validated timeline is not empty")
                 .end_ticks(),
             self.timescale,
         )
@@ -198,18 +198,17 @@ impl Iterator for SmoothChunkFragmentIter<'_> {
             .timeline
             .runs
             .get(self.run_index)
-            .expect("validated iterator run всегда существует");
+            .expect("There is always a validated iterator run.");
         let offset_ticks = run
             .duration_ticks
             .checked_mul(
-                u64::try_from(self.offset_in_run)
-                    .expect("validated fragment offset помещается в u64"),
+                u64::try_from(self.offset_in_run).expect("validated fragment offset fit in u64"),
             )
-            .expect("validated run offset arithmetic не переполняется");
+            .expect("validated run offset arithmetic not overflowing");
         let start_ticks = run
             .first_start_ticks
             .checked_add(offset_ticks)
-            .expect("validated fragment start arithmetic не переполняется");
+            .expect("validated fragment start arithmetic not overflowing");
         let fragment = SmoothChunkFragment {
             index: self.next_index,
             start: SmoothTime::new(start_ticks, self.timeline.timescale),
@@ -445,7 +444,7 @@ fn validate_contiguous_start(
     )]
     let previous_start = runs
         .last()
-        .expect("previous end существует только после первого run")
+        .expect("The previous end is only after the first run.")
         .first_start_ticks;
     if start_ticks < previous_start {
         Err(invalid_timeline(SmoothTimelineError::BackwardStart))

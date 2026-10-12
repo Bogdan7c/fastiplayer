@@ -165,7 +165,7 @@ fn h265_hvcc_parser_accepts_length_sizes_and_extracts_vps_sps_pps() {
             ],
         );
         let record = parse_hevc_decoder_configuration_record(&record_bytes)
-            .expect("валидный hvcC должен разбираться");
+            .expect("Valid hvcC must be understood");
 
         assert_eq!(record.nal_length_size, expected_length_size);
         assert_eq!(
@@ -187,9 +187,9 @@ fn h265_hvcc_parser_accepts_length_sizes_and_extracts_vps_sps_pps() {
 fn h265_hvcc_parser_accepts_incomplete_records_when_header_is_safe() {
     let record_bytes = hvcc(4, 1, 1, 8, &[]);
     let record = parse_hevc_decoder_configuration_record(&record_bytes)
-        .expect("hvcC без parameter sets всё ещё сообщает packetization/header metadata");
+        .expect("hvcC without parameter sets still reports packetization/header metadata");
     let metadata = h265_header_metadata_from_hevc_decoder_configuration_record(&record)
-        .expect("Main 8-bit 4:2:0 header должен быть production-safe");
+        .expect("Main 8-bit 4:2:0 header should be production-safe");
 
     assert!(record.video_parameter_sets().is_empty());
     assert!(record.sequence_parameter_sets().is_empty());
@@ -269,7 +269,7 @@ fn h265_hvcc_to_annex_b_conversion_handles_length_sizes_and_injection() {
                 picture_parameter_sets: std::slice::from_ref(&picture_parameter_set),
             },
         )
-        .expect("length-prefixed HEVC AU должен конвертироваться");
+        .expect("Long-prefixed HEVC AU must be converted");
 
         assert_eq!(
             annex_b,
@@ -302,7 +302,7 @@ fn h265_annex_b_conversion_preserves_annex_b_input_and_scratch_contract() {
         H265ParameterSetInjection::None,
         &mut output,
     )
-    .expect("Annex B input должен оставаться Annex B");
+    .expect("Annex B input should remain Annex B.");
 
     assert_eq!(output, annex_b_input);
     assert_eq!(output.capacity(), capacity_before);
@@ -343,7 +343,7 @@ fn h265_injection_adds_only_available_parameter_sets() {
         },
         &mut output,
     )
-    .expect("неполный injection не должен падать из-за отсутствующих SPS/PPS");
+    .expect("Incomplete injection should not fall due to missing SPS/PPS");
 
     assert_eq!(
         output,
@@ -395,11 +395,11 @@ fn h265_hev1_style_in_band_parameter_sets_refine_requirement() {
     );
 
     let packetization = infer_h265_packetization(Some(&record_bytes), &access_unit)
-        .expect("hvcC должен доказать length-prefixed packetization");
+        .expect("hvcC must prove length-prefixed packetization");
     let requirement = h265_decode_requirement_from_packet(&access_unit, packetization)
-        .expect("in-band SPS должен уточнить Main10 requirement");
+        .expect("In-band SPS must specify Main10 requirement");
     let nal_types = h265_nal_units(&access_unit, packetization)
-        .expect("hev1-style AU должен разбираться")
+        .expect("Hev1-style AU should be understood.")
         .iter()
         .map(|nal_unit| nal_unit.nal_unit_type())
         .collect::<Vec<_>>();
@@ -435,13 +435,13 @@ fn h265_requirement_from_hvcc_uses_sps_when_present_and_header_when_incomplete()
     let record_without_sps = hvcc(4, 2, 1, 10, &[]);
 
     let sps_metadata = h265_sps_metadata_from_hevc_decoder_configuration_record(&record_with_sps)
-        .expect("hvcC SPS должен давать metadata");
+        .expect("hvcC SPS should give metadata");
     let requirement_with_dimensions =
         h265_decode_requirement_from_hevc_decoder_configuration_record(&record_with_sps)
-            .expect("hvcC с SPS должен дать requirement с dimensions");
+            .expect("hvcC with SPS must be required with dimensions");
     let requirement_without_dimensions =
         h265_decode_requirement_from_hevc_decoder_configuration_record(&record_without_sps)
-            .expect("неполный hvcC должен дать header-level requirement");
+            .expect("Incomplete hvcC must give header-level requirement");
 
     assert_eq!(sps_metadata.profile, H265Profile::Main);
     assert_eq!(requirement_with_dimensions.width, Some(1_920));

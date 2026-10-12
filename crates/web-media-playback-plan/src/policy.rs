@@ -207,7 +207,7 @@ pub enum SelectionPolicyBuildError {
 
 impl std::fmt::Display for SelectionPolicyBuildError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "selection policy недействительна: {self:?}")
+        write!(formatter, "selection policy is invalid: {self:?}")
     }
 }
 
@@ -217,11 +217,11 @@ impl std::fmt::Display for ResolvedVideoPolicyRejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownDynamicRange => {
-                formatter.write_str("runtime video dynamic range не разрешён")
+                formatter.write_str("runtime video dynamic range is not permitted")
             }
-            Self::HdrExcluded => formatter.write_str("runtime HDR video исключён policy"),
+            Self::HdrExcluded => formatter.write_str("runtime HDR video is excluded by policy"),
             Self::VideoCodecExcluded { codec } => {
-                write!(formatter, "runtime video codec {codec:?} исключён policy")
+                write!(formatter, "runtime video codec {codec:?} deleted policy")
             }
         }
     }
@@ -250,14 +250,14 @@ mod tests {
             PreferredHeightPolicy::NoPreference,
             vec![ContainerFamily::IsoBmff],
         )
-        .expect("focused runtime policy должна быть валидна")
+        .expect("focused runtime policy must be valid")
     }
 
     #[test]
     fn missing_color_evidence_does_not_invent_unknown_dynamic_range() {
         policy(HdrSelectionPolicy::SdrOnly, VideoCodec::H264)
             .check_resolved_video(VideoCodec::H264, None)
-            .expect("отсутствующая color metadata не должна запрещать otherwise playable video");
+            .expect("Absent color metadata should not prohibit otherwise playable video");
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
         );
         policy(HdrSelectionPolicy::PreferHdrWhenAvailable, VideoCodec::H264)
             .check_resolved_video(VideoCodec::H264, Some(DynamicRange::Sdr))
-            .expect("HDR preference is ordering, а не hard SDR rejection");
+            .expect("HDR preference is ordering, not hard SDR rejection.");
     }
 
     #[test]

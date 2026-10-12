@@ -22,7 +22,7 @@ mod tests;
 
 /// Повторять нечего: элемент очереди удалён или очередь уже не в том состоянии.
 pub(crate) const RETRY_TARGET_GONE_MESSAGE: &str =
-    "Не удалось повторить: элемента уже нет в очереди";
+    "I couldn’t repeat: the element is no longer in line.";
 
 /// Занят ли общий слот открытия файла из Open (подготовка или установка).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

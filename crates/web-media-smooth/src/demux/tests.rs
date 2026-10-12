@@ -268,7 +268,7 @@ fn canonical_sources_publish_stable_av_tracks_and_manifest_duration() {
     assert_eq!(
         factory.maximum_active_opens(),
         2,
-        "Smooth startup обязан готовить независимые A/V adapters параллельно"
+        "Smooth startup It is necessary to prepare independent A/V adapters parallelly"
     );
 
     let public_video_track_id = update.tracks[0].id;
@@ -347,7 +347,7 @@ fn receipted_seek_rebuilds_both_axes_at_exact_manifest_anchors() {
     assert_eq!(
         factory.maximum_active_opens(),
         2,
-        "Smooth seek обязан готовить независимые A/V replacements параллельно"
+        "Smooth seek It is necessary to prepare independent A/V replacements parallelly"
     );
     let requests = origin.request_targets();
     let replacement_requests = &requests[requests.len().saturating_sub(2)..];

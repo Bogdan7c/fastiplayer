@@ -9,19 +9,19 @@ use crate::OrderedSegmentLifecycleError;
 /// Ошибки demuxer.
 #[derive(Debug, thiserror::Error)]
 pub enum DemuxError {
-    #[error("Файл не найден: {0}")]
+    #[error("File not found: {0}")]
     FileNotFound(PathBuf),
 
-    #[error("Неподдерживаемый формат: {0}")]
+    #[error("Unsupported format: {0}")]
     UnsupportedFormat(String),
 
-    #[error("Нет видео треков в файле")]
+    #[error("No video tracks in the file.")]
     NoVideoTracks,
 
-    #[error("Нет аудио треков в файле")]
+    #[error("No audio tracks in the file")]
     NoAudioTracks,
 
-    #[error("Ошибка чтения: {0}")]
+    #[error("Reading error: {0}")]
     Io(#[from] std::io::Error),
 
     /// Typed lifecycle violation finite ordered ISO BMFF source-а.
@@ -32,17 +32,17 @@ pub enum DemuxError {
     #[error(transparent)]
     OrderedSegmentSource(#[from] OrderedSegmentReadError),
 
-    #[error("Ошибка парсинга: {0}")]
+    #[error("Parsing error: {0}")]
     Parse(#[from] symphonia::core::errors::Error),
 
-    #[error("Внутренний Symphonia reader недоступен во время операции {operation}")]
+    #[error("Inner Symphonia reader inaccessible during surgery {operation}")]
     ReaderUnavailable {
         /// Операция, для которой demuxer ожидал активный reader.
         operation: &'static str,
     },
 
     #[error(
-        "Reprobe изменил public track layout для {label}: было {before_snapshot}, стало {after_snapshot}"
+        "Reprobe changed the public track layout to {label}: {before_snapshot}, {after_snapshot}"
     )]
     ReprobeChangedTrackLayout {
         /// Человекочитаемый label source-а для diagnostics.
@@ -56,7 +56,7 @@ pub enum DemuxError {
     },
 
     #[error(
-        "Слишком много corrupted packets подряд: пропущено {skipped}, лимит {limit}; последняя ошибка: {last_error}"
+        "Too many corrupted packets in a row: skipped {skipped}, limit {limit}; last error: {last_error}"
     )]
     TooManyCorruptedPackets {
         /// Настроенный лимит последовательных corrupted packets.
@@ -69,7 +69,7 @@ pub enum DemuxError {
         last_error: String,
     },
 
-    #[error("Packet ссылается на неизвестный track id {track_id}")]
+    #[error("Packet references unknown track id {track_id}")]
     UnknownPacketTrack {
         /// Track id из container packet-а.
         track_id: u32,
@@ -78,16 +78,16 @@ pub enum DemuxError {
     #[error("Demux reset required: dynamic track changes are not supported yet")]
     ResetRequired,
 
-    #[error("Seek недоступен: {0}")]
+    #[error("Seek unavailable: {0}")]
     SeekUnavailable(String),
 
-    #[error("Seek mode {mode:?} не поддерживается этой реализацией demuxer-а")]
+    #[error("Seek mode {mode:?} is not supported by this demuxer implementation.")]
     UnsupportedSeekMode {
         /// Container-level режим, который demuxer не умеет честно выполнить.
         mode: DemuxSeekMode,
     },
 
-    #[error("Ошибка seek: {0}")]
+    #[error("Error seek: {0}")]
     SeekFailed(String),
 
     #[error(
@@ -114,7 +114,7 @@ pub enum DemuxError {
     },
 
     /// Concrete finite FormatReader path не должен публиковать live readiness.
-    #[error("Finite Symphonia seek verification неожиданно получила temporary readiness")]
+    #[error("Finite Symphonia seek verification unexpectedly received temporary readiness")]
     UnexpectedTemporaryReadinessDuringSeekVerification,
 }
 

@@ -146,11 +146,11 @@ fn keyframe_before_seek_keeps_actual_frame_as_runtime_anchor() {
     let diagnostics = harness
         .session
         .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
-        .expect("keyframe-before seek тоже имеет обычный active seek snapshot");
+        .expect("Keyframe-before seek is also the usual active seek snapshot.");
     assert_eq!(diagnostics.seek_mode, SeekMode::KeyframeBefore);
     assert!(
         !diagnostics.accurate_preroll.active,
-        "KeyframeBefore не должен включать Accurate skip/preroll diagnostics"
+        "KeyframeBefore must not include Accurate skip/preroll diagnostics"
     );
 
     harness.push_decoded_frame(actual_position, 75, 1);
@@ -448,22 +448,22 @@ fn reused_decoder_seek_preserves_terminal_demux_failure_in_player_snapshot() {
         .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
             MediaTime::from_secs(7),
         )))
-        .expect("player command boundary должен принять seek request");
+        .expect("The player command boundary must accept the request");
 
     let error = harness
         .session
         .snapshot()
         .last_error
         .as_ref()
-        .expect("terminal demux failure должен попасть в snapshot");
+        .expect("Terminal Demux Failure to Get Snapshot");
     assert_eq!(error.kind, PlayerErrorKind::DemuxError);
     assert!(
         error
             .message
             .contains("synthetic DecodePointBefore verification detail"),
-        "player boundary не должен затирать конкретную demux-причину: {error:?}"
+        "player boundary should not be obliterated demux-cause: {error:?}"
     );
-    assert!(!error.message.contains("не смог стартовать reused-decoder"));
+    assert!(!error.message.contains("Can't start reused-decoder"));
     assert!(harness.session.seek_commit().is_none());
     assert!(!harness.session.snapshot().timeline.scrubbing);
     assert_eq!(

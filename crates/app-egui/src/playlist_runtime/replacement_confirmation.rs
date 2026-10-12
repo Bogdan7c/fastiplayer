@@ -712,7 +712,7 @@ impl PlaylistRuntime {
             && self.startup_action_retention_is_active()
             && let Err(error) = self.retain_startup_media_replacement()
         {
-            tracing::error!(?error, "Не удалось сохранить confirmed startup replacement");
+            tracing::error!(?error, "Could not save the confirmed startup replacement");
         }
         outcome
     }

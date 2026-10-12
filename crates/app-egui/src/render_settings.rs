@@ -42,7 +42,7 @@ pub(crate) fn warn_legacy_tone_mapping_config(app_config: &AppConfig) {
 
     warn!(
         tone_mapping = ?app_config.render.tone_mapping,
-        "Legacy tone_mapping config не применяется как alternative HDR control в Phase 10"
+        "Legacy tone_mapping configuration is not applied as an alternative HDR control in Phase 10"
     );
 }
 
@@ -98,14 +98,14 @@ pub(crate) fn color_pipeline_settings_from_config(
 fn rgb_triplet_from_config(field: &'static str, values: &[f32]) -> Result<[f32; 3]> {
     if values.len() != 3 {
         bail!(
-            "{field} должен содержать ровно 3 значения, получено {}",
+            "{field} must contain exactly 3 values; got {}",
             values.len()
         );
     }
 
     for (channel_index, channel_value) in values.iter().copied().enumerate() {
         if !channel_value.is_finite() {
-            bail!("{field}[{channel_index}] должен быть конечным числом, получено {channel_value}");
+            bail!("{field}[{channel_index}] must be finite; got {channel_value}");
         }
     }
 
@@ -136,7 +136,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "render.color_adjustment.rgb_gain должен содержать ровно 3 значения, получено 2"
+            "render.color_adjustment.rgb_gain must contain exactly 3 values; got 2"
         );
     }
 

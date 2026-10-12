@@ -149,7 +149,7 @@ impl StartupMediaController {
                 app_state.record_installed_media(installed.as_ref());
                 if let Some(warning) = installed.position_warning {
                     let message = format!(
-                        "Сохранённая позиция {}.{:03} с недоступна; media открыто на {}.{:03} с",
+                        "Retained position {}.{:03} unavailable; media openly {}.{:03} on",
                         warning.requested_position.as_secs(),
                         warning.requested_position.subsec_millis(),
                         warning.available_position.as_secs(),
@@ -183,7 +183,7 @@ impl StartupMediaController {
                             {
                                 tracing::warn!(
                                     error = %error,
-                                    "CLI target установлен без sibling discovery"
+                                    "CLI target installed without sibling discovery"
                                 );
                             }
                         }
@@ -236,7 +236,7 @@ impl StartupMediaController {
                     tracing::info!(
                         reason = %safe_error,
                         terminal_request_id = ?error.terminal_request_id(),
-                        "Startup media install отменён пользователем или закрытием приложения"
+                        "Startup media installation was canceled by the user or by closing the application"
                     );
                 } else {
                     tracing::warn!(
@@ -413,7 +413,7 @@ mod tests {
         let texts = startup_install_failure_texts(&failed, &local_target("/tmp/clip.mkv"));
         assert_eq!(
             texts.user_message,
-            "Не удалось открыть «clip.mkv»: формат видео не поддерживается"
+            "Could not open “clip.mkv”: unsupported video format"
         );
     }
 
@@ -444,11 +444,11 @@ mod tests {
 
         assert_eq!(
             texts.user_message,
-            "Не удалось открыть «movie.mkv»: нет подходящего видеодекодера (выберите режим «Авто» в настройках декодера)"
+            "Could not open “movie.mkv”: no suitable video decoder (select Automatic in decoder settings)"
         );
         assert_eq!(
             texts.row_summary,
-            "Нет подходящего видеодекодера (выберите режим «Авто» в настройках декодера)"
+            "No suitable video decoder (select Automatic in decoder settings)"
         );
         assert!(!texts.user_message.contains("private-parent-dir"));
     }
@@ -465,9 +465,9 @@ mod tests {
 
         assert_eq!(
             texts.user_message,
-            "Не удалось открыть ссылку (example.test): формат видео не поддерживается"
+            "Could not open the link (example.test): unsupported video format"
         );
-        assert_eq!(texts.row_summary, "Формат видео не поддерживается");
+        assert_eq!(texts.row_summary, "Unsupported video format");
     }
 
     /// Элемент startup-плейлиста (источник неизвестен) сохраняет прежний текст окна.
@@ -479,7 +479,7 @@ mod tests {
         let texts = startup_install_failure_texts(&error, &StartupInstallTarget::PlaylistEntry);
 
         assert_eq!(texts.user_message, error.to_string());
-        assert_eq!(texts.row_summary, "Формат видео не поддерживается");
+        assert_eq!(texts.row_summary, "Unsupported video format");
     }
 
     /// Неклассифицированная ошибка не превращается в выдуманную причину для строки.
@@ -492,7 +492,7 @@ mod tests {
 
         assert_eq!(
             texts.user_message,
-            "Не удалось открыть «clip.mkv»: внутренняя ошибка плеера"
+            "Could not open “clip.mkv”: internal player error"
         );
         assert_eq!(texts.row_summary, error.to_string());
     }

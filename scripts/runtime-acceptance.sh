@@ -61,27 +61,27 @@ parse_arguments() {
     while (($# > 0)); do
         case "$1" in
             --suite)
-                (($# >= 2)) || { printf 'Ошибка: --suite требует значение\n' >&2; exit 2; }
+                (($# >= 2)) || { printf 'Error: --suite requires a value of \n' >&2; exit 2; }
                 acceptance_suite="$2"
                 shift 2
                 ;;
             --vp9)
-                (($# >= 2)) || { printf 'Ошибка: --vp9 требует путь\n' >&2; exit 2; }
+                (($# >= 2)) || { printf 'Error: --vp9 requires a path \n' >&2; exit 2; }
                 vp9_path="$2"
                 shift 2
                 ;;
             --av1)
-                (($# >= 2)) || { printf 'Ошибка: --av1 требует путь\n' >&2; exit 2; }
+                (($# >= 2)) || { printf 'Error: --av1 requires a path \n' >&2; exit 2; }
                 av1_path="$2"
                 shift 2
                 ;;
             --av1-hdr)
-                (($# >= 2)) || { printf 'Ошибка: --av1-hdr требует путь\n' >&2; exit 2; }
+                (($# >= 2)) || { printf 'Error: --av1-hdr requires a path \n' >&2; exit 2; }
                 av1_hdr_path="$2"
                 shift 2
                 ;;
             --h264)
-                (($# >= 2)) || { printf 'Ошибка: --h264 требует путь\n' >&2; exit 2; }
+                (($# >= 2)) || { printf 'Error: --h264 requires a path \n' >&2; exit 2; }
                 h264_path="$2"
                 shift 2
                 ;;
@@ -94,7 +94,7 @@ parse_arguments() {
                 exit 0
                 ;;
             *)
-                printf 'Ошибка: неизвестный аргумент `%s`\n' "$1" >&2
+                printf 'Mistake: Unknown Argument '%s' \n' "$1" >&2
                 exit 2
                 ;;
         esac
@@ -106,18 +106,18 @@ require_asset() {
     local option_name="$1"
     local asset_path="$2"
     [[ "${dry_run}" == "true" ]] && return
-    [[ -n "${asset_path}" ]] || skip_acceptance "не указан ${option_name} local asset path"
-    [[ -f "${asset_path}" ]] || skip_acceptance "${option_name} local asset не найден: ${asset_path}"
+    [[ -n "${asset_path}" ]] || skip_acceptance "${option_name} local asset path not included"
+    [[ -f "${asset_path}" ]] || skip_acceptance "${option_name} local asset not found: ${asset_path}"
 }
 
 # Проверяет software build/runtime prerequisites до запуска acceptance suite.
 require_ffmpeg_runtime() {
     [[ "${dry_run}" == "true" ]] && return
-    command -v pkg-config >/dev/null 2>&1 || skip_acceptance "pkg-config недоступен для FFmpeg runtime preflight"
+    command -v pkg-config >/dev/null 2>&1 || skip_acceptance "pkg-config not available for FFmpeg runtime preflight"
     pkg-config --atleast-version=62 libavcodec >/dev/null 2>&1 || \
-        skip_acceptance "libavcodec >= 62 недоступен через pkg-config"
+        skip_acceptance "libavcodec >= 62 not available via pkg-config"
     pkg-config --atleast-version=60 libavutil >/dev/null 2>&1 || \
-        skip_acceptance "libavutil >= 60 недоступен через pkg-config"
+        skip_acceptance "libavutil >= 60 unavailable pkg-config"
 }
 
 # Проверяет локальный VA-API runtime и exact AV1 decode capability без запуска GUI.
@@ -126,14 +126,14 @@ require_vaapi_runtime() {
         printf 'Would require readable %s and vainfo entry: VAProfileAV1Profile0 : VAEntrypointVLD.\n' "${VAAPI_RENDER_NODE}" >&2
         return
     fi
-    [[ -r "${VAAPI_RENDER_NODE}" ]] || skip_acceptance "нет readable VA-API render node ${VAAPI_RENDER_NODE}"
-    command -v vainfo >/dev/null 2>&1 || skip_acceptance "команда vainfo недоступна"
+    [[ -r "${VAAPI_RENDER_NODE}" ]] || skip_acceptance "No readable VA-API render node ${VAAPI_RENDER_NODE}"
+    command -v vainfo >/dev/null 2>&1 || skip_acceptance "command vainfo inaccessible"
     local vaapi_capabilities
     if ! vaapi_capabilities="$(vainfo --display drm --device "${VAAPI_RENDER_NODE}" 2>&1)"; then
-        skip_acceptance "vainfo не подтвердил рабочий VA-API runtime"
+        skip_acceptance "vainfo Worker didn't VA-API runtime"
     fi
     if ! grep -Eq -- "${AV1_VAAPI_PROFILE_REGEX}" <<<"${vaapi_capabilities}"; then
-        skip_acceptance "vainfo не содержит exact VAProfileAV1Profile0 : VAEntrypointVLD"
+        skip_acceptance "vainfo does not contain exact VAProfileAV1Profile0:VAEntrypointVLD"
     fi
 }
 
@@ -162,10 +162,10 @@ run_acceptance_command() {
 
 # Делает невыбранные runtime surfaces видимыми, не выдавая их за selected-suite SKIP.
 report_hermetic_runtime_not_run() {
-    printf 'NOT RUN: FFmpeg installed-runtime probe требует runtime-software suite; runtime acceptance not satisfied\n' >&2
-    printf 'NOT RUN: 18 local-media regressions (17 symphonia-demux + 1 direct HTTP Range) требуют explicit scripts/media-regression.sh --scenario/--path; fixture acceptance not satisfied\n' >&2
-    printf 'NOT RUN: S42 web-media manual acceptance требует scripts/progressive-web-smoke.sh с полной explicit --case + --url/--fixture matrix и --report; manual acceptance not satisfied\n' >&2
-    printf 'NOT RUN: VA-API/WGPU playback требует vaapi-hardware или playback-matrix suite; hardware acceptance not satisfied\n' >&2
+    printf 'NOT RUN: FFmpeg installed-runtime probe requires runtime-software suite; runtime acceptance not satisfied\n' >&2
+    printf 'NOT RUN: 18 local-media regressions (17 symphonia-demux + 1 direct HTTP Range) demand explicit scripts/media-regression.sh --scenario/--path; fixture acceptance not satisfied\n' >&2
+    printf 'NOT RUN: S42 web-media manual acceptance requires scripts/progressive-web-smoke.sh complete explicit-case + --url/--fixture matrix and --report; manual acceptance not satisfied\n' >&2
+    printf 'NOT RUN: VA-API/WGPU playback requires vaapi-hardware or playback-matrix suite; hardware acceptance not satisfied \n' >&2
 }
 
 # Маршрутизирует manifest suite к одной точной команде и её prerequisites.
@@ -207,7 +207,7 @@ run_selected_suite() {
             printf 'NOT RUN: missing --suite selection; acceptance not satisfied\n' >&2
             ;;
         *)
-            printf 'Ошибка: неизвестная suite `%s`\n' "${acceptance_suite}" >&2
+            printf 'Mistake: unknown suite `%s`\n' "${acceptance_suite}" >&2
             exit 2
             ;;
     esac

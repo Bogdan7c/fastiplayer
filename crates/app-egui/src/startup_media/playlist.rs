@@ -49,7 +49,7 @@ impl StartupMediaController {
                     Some(StartupMediaTarget::CliReplacement)
                 ) {
                     self.handle_install_failure(
-                        "Startup playlist commit потерял CLI winner identity".to_owned(),
+                        "Startup playlist commit lost CLI winner identity".to_owned(),
                         true,
                         app_state,
                     );
@@ -68,7 +68,7 @@ impl StartupMediaController {
                         }
                     };
                 app_state.set_startup_pending(
-                    "Открытие первого элемента startup playlist...".to_owned(),
+                    "Opening of the first element of startup playlist...".to_owned(),
                 );
                 match app_state.begin_startup_playlist_install(playlist_runtime, renderer, install)
                 {
@@ -88,7 +88,7 @@ impl StartupMediaController {
                 }
             }
             StartupPlaylistImportTerminal::Empty => self.handle_preparation_failure(
-                "Startup playlist не содержит accepted media entries".to_owned(),
+                "Startup Playlist contains no accepted media entries".to_owned(),
                 app_state,
                 playlist_runtime,
             ),
@@ -96,7 +96,7 @@ impl StartupMediaController {
                 self.handle_preparation_failure(error, app_state, playlist_runtime);
             }
             StartupPlaylistImportTerminal::Cancelled => self.handle_preparation_failure(
-                "Startup playlist import отменён до queue commit".to_owned(),
+                "Startup Playlist import canceled before queue commit".to_owned(),
                 app_state,
                 playlist_runtime,
             ),

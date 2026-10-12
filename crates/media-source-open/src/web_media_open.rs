@@ -123,7 +123,7 @@ fn validate_extractor_reason(
         Ok(())
     } else {
         Err(anyhow!(
-            "extractor invocation reason {reason:?} несовместим с media-open intent"
+            "extractor invocation reason {reason:?} incompatible media-open intent"
         ))
     }
 }
@@ -250,7 +250,7 @@ pub fn prepare_yt_dlp_web_media(
         extractor_reason,
         &is_cancelled,
     )
-    .context("Не удалось подготовить exact YtDlp candidate snapshot")?;
+    .context("Couldn't get ready exact YtDlp candidate snapshot")?;
     // Новый узкий adapter projection локализует extractor DTO до neutral catalog boundary.
     let extractor_catalog_projection =
         crate::web_media_extractor_adapter::ExtractorCatalogProjection::from_snapshot(
@@ -261,9 +261,9 @@ pub fn prepare_yt_dlp_web_media(
     // Downstream planner читает existing neutral catalog без второго inventory.
     let planning_snapshot = extractor_catalog_projection.catalog();
     let runtime = WebOpenRuntime::new(network_config, demux_config)
-        .context("Не удалось собрать web-media runtime registries")?;
+        .context("We failed to create web-media runtime registries.")?;
     let policy = selection_policy(web_media_config, preferred_video_codec_order)
-        .context("Не удалось собрать YtDlp playback selection policy")?;
+        .context("Failed to assemble YtDlp playback selection policy")?;
     let capabilities = runtime.playback_capabilities(system_capabilities, audio_capabilities);
     let planning_candidate_count = planning_snapshot.candidates().len();
     let normalization_rejection_count = candidate_snapshot
@@ -307,17 +307,17 @@ pub fn prepare_yt_dlp_web_media(
             )
             .with_context(|| {
                 format!(
-                    "YtDlp planner не нашёл playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, planning_rejections={planning_rejection_count})"
+                    "YtDlp planner found out playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, planning_rejections={planning_rejection_count})"
                 )
             })?;
             let (_, opened_attempt) =
                 content_probe_fallback::open_ranked_best(ranked, &is_cancelled, |candidate| {
                     let selection = candidate_snapshot
                         .selection_for(candidate)
-                        .context("Planner-ranked YtDlp candidate не имеет exact selection")?;
+                        .context("Planner-ranked YtDlp candidate does not have exact selection")?;
                     attempt_context.open(candidate, selection)
                 })
-                .context("Не удалось открыть planner-ranked BestPlayable YtDlp candidate")?;
+                .context("Failed to open planner-ranked BestPlayable YtDlp candidate")?;
             let (selection, opened) = opened_attempt.into_parts();
             (selection, None, opened)
         }
@@ -333,7 +333,7 @@ pub fn prepare_yt_dlp_web_media(
             .map_err(|error| {
                 let safe_summary = error.safe_summary();
                 anyhow::Error::new(error).context(format!(
-                    "YtDlp planner не нашёл exact playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, planning_rejections={planning_rejection_count}, {safe_summary})"
+                    "YtDlp planner found out exact playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, planning_rejections={planning_rejection_count}, {safe_summary})"
                 ))
             })?;
             let selected = candidate_snapshot
@@ -341,14 +341,14 @@ pub fn prepare_yt_dlp_web_media(
                     outcome.selected().exact_identity(),
                     outcome.selected().semantic_identity(),
                 )
-                .ok_or_else(|| anyhow!("planner выбрал отсутствующий YtDlp candidate"))?;
+                .ok_or_else(|| anyhow!("planner chose absentee YtDlp candidate"))?;
             let selection = candidate_snapshot
                 .selection_for(selected)
-                .context("Exact YtDlp candidate не имеет exact selection")?;
+                .context("Exact YtDlp candidate does not have exact selection")?;
             let opened_attempt = content_probe_fallback::open_single(selected, |candidate| {
                 attempt_context.open(candidate, selection)
             })
-            .context("Не удалось открыть exact YtDlp candidate")?;
+            .context("Unable to open exact YtDlp candidate")?;
             let (selection, opened) = opened_attempt.into_parts();
             (selection, None, opened)
         }
@@ -361,7 +361,7 @@ pub fn prepare_yt_dlp_web_media(
                 content_probe_fallback::open_single(candidate.as_ref(), |candidate| {
                     attempt_context.open(candidate, *parent_preference)
                 })
-                .context("Не удалось открыть composed YtDlp candidate")?;
+                .context("Unable to open a composed YtDlp candidate")?;
             let (candidate_selection, opened) = opened_attempt.into_parts();
             (candidate_selection, Some(selection), opened)
         }
@@ -377,7 +377,7 @@ pub fn prepare_yt_dlp_web_media(
             extractor_projection.selection(),
             selection_preference,
         )
-        .context("Не удалось построить secret-safe URL sidebar stream model")?;
+        .context("Failed to be built secret-safe URL sidebar stream model")?;
     let stream_configuration =
         stream_configuration.with_hls_subtitle_renditions(opened_candidate.subtitles);
     ensure_not_cancelled(&is_cancelled)?;
@@ -386,7 +386,7 @@ pub fn prepare_yt_dlp_web_media(
         component_selection_intent.clone(),
         opened_candidate.component_variants,
     )
-    .context("Не удалось финализировать fresh component variant configuration")?;
+    .context("Failed to finalize fresh component variant configuration")?;
     ensure_not_cancelled(&is_cancelled)?;
     let catalog_projection = catalog::catalog_attachment(catalog::CatalogAttachmentRequest {
         candidate_snapshot: &candidate_snapshot,
@@ -401,14 +401,14 @@ pub fn prepare_yt_dlp_web_media(
     let extractor_projection = extractor_projection.with_neutral_selection(
         stream_configuration
             .neutral_selection()
-            .context("Не удалось спроецировать canonical component selection")?,
+            .context("Failed to project canonical component selection")?,
     )?;
     let vod_endpoint_recovery = opened_candidate.vod_endpoint_recovery;
     if extractor_projection.presentation() == web_media_core::WebMediaPresentationKind::Live
         && vod_endpoint_recovery.is_some()
     {
         return Err(anyhow!(
-            "Live extractor projection не может владеть VOD endpoint recovery"
+            "Live extractor projection cannot own VOD endpoint recovery"
         ));
     }
     if let Some(recovery) = vod_endpoint_recovery.as_ref() {
@@ -459,7 +459,7 @@ fn next_source_identity() -> Result<SourceIdentity> {
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
-        .map_err(|_| anyhow!("YtDlp source identity space исчерпан"))?;
+        .map_err(|_| anyhow!("YtDlp source identity space is exhausted"))?;
     Ok(SourceIdentity::new(source_value))
 }
 
@@ -510,7 +510,7 @@ fn validate_component_tracks(role: MediaComponentRole, demuxer: &dyn Demuxer) ->
         MediaComponentRole::Subtitle | MediaComponentRole::PresentationManifest => false,
     };
     if !shape_matches {
-        bail!("Opened YtDlp component tracks не совпадают с selected descriptor role");
+        bail!("Opened YtDlp component tracks are not the same as the selected descriptor role");
     }
     Ok(())
 }
@@ -523,22 +523,22 @@ fn compose_candidate_components(
         return Ok(components.remove(0).demuxer);
     }
     if components.len() != 2 {
-        bail!("YtDlp candidate содержит неподдерживаемое число physical components");
+        bail!("YtDlp candidate contains an unsupported number of physical components");
     }
     let video_index = components
         .iter()
         .position(|component| component.role == MediaComponentRole::Video)
-        .ok_or_else(|| anyhow!("Separate YtDlp candidate не содержит video component"))?;
+        .ok_or_else(|| anyhow!("Separate YtDlp candidate lacking video component"))?;
     let video = components.remove(video_index).demuxer;
     let audio_index = components
         .iter()
         .position(|component| component.role == MediaComponentRole::Audio)
-        .ok_or_else(|| anyhow!("Separate YtDlp candidate не содержит audio component"))?;
+        .ok_or_else(|| anyhow!("Separate YtDlp candidate does not contain audio component"))?;
     let audio = components.remove(audio_index).demuxer;
     let video_track = selected_track(video.as_ref(), TrackKind::Video)
-        .ok_or_else(|| anyhow!("Separate video demuxer не содержит video track"))?;
+        .ok_or_else(|| anyhow!("Separate video demuxer does not contain video track"))?;
     let audio_track = selected_track(audio.as_ref(), TrackKind::Audio)
-        .ok_or_else(|| anyhow!("Separate audio demuxer не содержит audio track"))?;
+        .ok_or_else(|| anyhow!("Separate audio demuxer does not contain audio track"))?;
     let lead_policy = progressive_composite_lead_policy()?;
     let composite = CompositeAvDemuxer::new(
         video,
@@ -546,7 +546,7 @@ fn compose_candidate_components(
         CompositeAvTrackSelection::new(video_track, audio_track),
         lead_policy,
     )
-    .context("Не удалось скомпоновать separate YtDlp A/V demuxers")?;
+    .context("Cannot assemble separate YtDlp A/V demuxers")?;
     Ok(Box::new(composite))
 }
 
@@ -556,7 +556,7 @@ fn progressive_composite_lead_policy() -> Result<CompositeComponentLeadPolicy> {
         COMPOSITE_MAX_TIMESTAMP_LEAD,
         const {
             NonZeroUsize::new(COMPOSITE_MAX_PENDING_PACKET_BYTES)
-                .expect("composite pending packet limit ненулевой")
+                .expect("Multiple pending packet limit")
         },
     )
     .context("Progressive composite A/V safety bounds invalid")
@@ -574,7 +574,7 @@ fn selected_track(demuxer: &dyn Demuxer, kind: TrackKind) -> Option<TrackId> {
 /// Проверяет caller-owned cancellation между потенциально дорогими boundaries.
 fn ensure_not_cancelled(is_cancelled: &impl Fn() -> bool) -> Result<()> {
     if is_cancelled() {
-        bail!("YtDlp web media preparation отменена");
+        bail!("YtDlp web media preparation cancelled");
     }
     Ok(())
 }

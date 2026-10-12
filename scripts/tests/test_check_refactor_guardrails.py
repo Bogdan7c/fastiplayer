@@ -33,7 +33,7 @@ def load_guardrail_module() -> ModuleType:
         GUARDRAIL_PATH,
     )
     if module_spec is None or module_spec.loader is None:
-        raise RuntimeError(f"не удалось создать import spec для `{GUARDRAIL_PATH}`")
+        raise RuntimeError(f"failed to create an import spec for `{GUARDRAIL_PATH}`")
 
     guardrail_module = importlib.util.module_from_spec(module_spec)
     # `dataclasses` ищет module namespace через `sys.modules` во время декорирования.
@@ -165,7 +165,7 @@ class ArtworkBoundaryGuardrailTests(unittest.TestCase):
                                 for violation in violations
                             ),
                             msg=(
-                                f"ожидался запрет {kind_label} dependency "
+                                f"expected prohibition of {kind_label} dependency "
                                 f"{owner} -> {dependency_name}"
                             ),
                         )
@@ -940,7 +940,7 @@ class SourceTextPolicyTests(unittest.TestCase):
         """Инъекция anchors проверяет и наличие, и точную диагностику отсутствия."""
 
         anchor_path = Path("crates/player-core/src/session/anchor.rs")
-        rule = "player-core должен сохранять required decoder reuse anchor"
+        rule = "player-core must preserve the required decoder reuse anchor"
         anchors = ((anchor_path, ("reuse_main_decoder",), rule),)
         self.repository.write(anchor_path, "fn reuse_main_decoder() {}\n")
         self.assertEqual(
@@ -1183,7 +1183,7 @@ class SourceTextPolicyTests(unittest.TestCase):
         violation = GUARDRAIL.SourcePolicyViolation(
             path=Path("crates/app-egui/src/va_probe.rs"),
             line_number=7,
-            rule="VA display принадлежит video-vaapi",
+            rule="VA display belongs to video-vaapi",
             matched_text="vaGetDisplay(native)",
         )
         stderr = io.StringIO()
@@ -1191,7 +1191,7 @@ class SourceTextPolicyTests(unittest.TestCase):
             GUARDRAIL.print_failures([], [], [], [violation])
         diagnostic = stderr.getvalue()
         self.assertIn("crates/app-egui/src/va_probe.rs:7", diagnostic)
-        self.assertIn("VA display принадлежит video-vaapi", diagnostic)
+        self.assertIn("VA display belongs to video-vaapi", diagnostic)
 
 
 if __name__ == "__main__":

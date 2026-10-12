@@ -119,7 +119,7 @@ mod tests {
     fn arc_of(shapes: &[Shape]) -> Vec<Pos2> {
         match shapes {
             [Shape::Circle(_), Shape::Path(path)] => path.points.clone(),
-            other => panic!("ожидались подложка и дуга, нарисовано: {other:?}"),
+            other => panic!("A substrate and an arc were expected, drawn: {other:?}"),
         }
     }
 
@@ -131,7 +131,7 @@ mod tests {
     fn paints_backdrop_and_open_arc_inside_rect() {
         let shapes = painted_shapes(square(), 0.0);
         let Shape::Circle(backdrop) = &shapes[0] else {
-            panic!("первой рисуется подложка: {shapes:?}");
+            panic!("The first substrate is drawn: {shapes:?}");
         };
         assert_eq!(backdrop.center, square().center());
         assert!((backdrop.radius - 22.0).abs() < 1e-4);
@@ -145,7 +145,7 @@ mod tests {
         }
         // Дуга открыта: концы разнесены, четверть круга пустая.
         let gap = arc[0].distance(arc[arc.len() - 1]);
-        assert!(gap > 14.5, "концы дуги слишком близко: {gap}");
+        assert!(gap > 14.5, "ends of the arc too close: {gap}");
     }
 
     #[test]

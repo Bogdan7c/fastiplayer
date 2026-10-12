@@ -9,9 +9,8 @@ use std::path::{Path, PathBuf};
 
 /// Собирает Rust sources рекурсивно без нового test-only dependency.
 fn collect_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
-    for entry in fs::read_dir(directory).expect("app source directory должна читаться")
-    {
-        let path = entry.expect("app source entry должна читаться").path();
+    for entry in fs::read_dir(directory).expect("App source directory should be read") {
+        let path = entry.expect("App source entry should be read").path();
         if path.is_dir() {
             collect_rust_sources(&path, sources);
         } else if path.extension().is_some_and(|extension| extension == "rs") {
@@ -66,13 +65,13 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
         .filter_map(|source_path| {
             let relative_path = source_path
                 .strip_prefix(&source_root)
-                .expect("collected source обязан быть внутри app src")
+                .expect("The collected source must be inside the app src.")
                 .to_string_lossy()
                 .replace('\\', "/");
             if is_test_source(&relative_path) {
                 return None;
             }
-            let source = fs::read_to_string(&source_path).expect("app Rust source должен читаться");
+            let source = fs::read_to_string(&source_path).expect("App Rust source should be read");
             PROVIDER_DTO_MARKERS
                 .iter()
                 .any(|marker| source.contains(marker))
@@ -94,9 +93,9 @@ fn active_source_shape_excludes_ephemeral_endpoint_header_and_cookie_types() {
     let extractor_state_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../media-source-open/src/web_media_open/source_state.rs");
     let extractor_state = fs::read_to_string(extractor_state_path)
-        .expect("extractor source-state owner должен читаться");
+        .expect("Extractor source-state owner should be read");
     let neutral_source = fs::read_to_string(source_root.join("media_open/web.rs"))
-        .expect("neutral web source owner должен читаться");
+        .expect("Neutral Web Source Owner should read");
     let durable_source_shape = format!("{extractor_state}\n{neutral_source}");
 
     assert!(durable_source_shape.contains("YtDlpCandidateSelection"));
@@ -112,7 +111,7 @@ fn active_source_shape_excludes_ephemeral_endpoint_header_and_cookie_types() {
     ] {
         assert!(
             !durable_source_shape.contains(forbidden_type),
-            "active source не должен хранить ephemeral type {forbidden_type}"
+            "active source keep out ephemeral type {forbidden_type}"
         );
     }
 }

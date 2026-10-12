@@ -83,7 +83,7 @@ impl fmt::Debug for ReservedQueueMutation {
 pub(super) struct ReservationKey(NonZeroUsize);
 
 /// Opaque one-shot token: future IDs остаются private до `commit_reserved`.
-#[must_use = "reservation token нужно exact commit-нуть либо abort-нуть"]
+#[must_use = "reservation token needs to be exact commit or abort"]
 pub struct PreparedQueueMutationToken {
     key: ReservationKey,
     prepared_mutation: Box<PreparedMutation>,

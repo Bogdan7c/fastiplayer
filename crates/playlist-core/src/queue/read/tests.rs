@@ -301,8 +301,7 @@ fn playlist_queue_storage_and_owner_modules_stay_hardened() {
         let actual_lines = source.lines().count();
         assert!(
             actual_lines <= maximum_lines,
-            "{} содержит {actual_lines} строк при gate-лимите {maximum_lines}; \
-             новую логику нужно вынести к отдельному owner-у",
+            "{} contains {actual_lines} lines at gate-limit {maximum_lines}; the new logic must be transferred to a separate owner.",
             relative_path.display()
         );
     }
@@ -315,8 +314,7 @@ fn playlist_queue_storage_and_owner_modules_stay_hardened() {
         let actual_lines = source.lines().count();
         assert!(
             actual_lines <= PLAYLIST_DOMAIN_OWNER_MAXIMUM_LINES,
-            "{relative_path} содержит {actual_lines} строк при gate-лимите \
-             {PLAYLIST_DOMAIN_OWNER_MAXIMUM_LINES}; новую логику нужно вынести в отдельный модуль"
+            "{relative_path} contains {actual_lines} lines at gate-limit {PLAYLIST_DOMAIN_OWNER_MAXIMUM_LINES}; new logic must be transferred to a separate module"
         );
     }
 }

@@ -22,7 +22,7 @@ fn checked_limit_rejects_zero_above_ceiling_and_catalog_overflow() {
     assert_eq!(
         ComponentVariantCatalog::new(
             identity.clone(),
-            ComponentVariantCatalogLimit::new(1).expect("limit должен быть valid"),
+            ComponentVariantCatalogLimit::new(1).expect("The limit must be valid."),
             ComponentVariantCatalogEntries::VideoAndAudio {
                 video: vec![video_variant(&identity, "v", "sv", Some(720))],
                 audio: vec![audio_variant(&identity, "a", "sa", 1)],
@@ -88,12 +88,12 @@ fn catalog_rejects_cross_source_cross_parent_stale_generation_and_wrong_axis() {
         ComponentVariantExactIdentity::new(
             identity.clone(),
             ComponentKind::Audio,
-            ComponentVariantExactKey::new("v").expect("key должен быть valid"),
+            ComponentVariantExactKey::new("v").expect("The key must be valid."),
         ),
         ComponentVariantSemanticIdentity::new(
             identity.parent().semantic().clone(),
             ComponentKind::Audio,
-            ComponentVariantSemanticKey::new("sv").expect("key должен быть valid"),
+            ComponentVariantSemanticKey::new("sv").expect("The key must be valid."),
         ),
         video_track(Some(720)),
     );
@@ -124,7 +124,7 @@ fn catalog_rejects_semantic_source_parent_and_axis_mismatch() {
                 other_source_parent.semantic().clone(),
                 ComponentKind::Video,
                 ComponentVariantSemanticKey::new("stable-variant")
-                    .expect("semantic key должен быть valid"),
+                    .expect("The semantic key should be valid."),
             ),
             ComponentVariantError::SourceMismatch,
         ),
@@ -133,7 +133,7 @@ fn catalog_rejects_semantic_source_parent_and_axis_mismatch() {
                 other_semantic_parent.semantic().clone(),
                 ComponentKind::Video,
                 ComponentVariantSemanticKey::new("stable-variant")
-                    .expect("semantic key должен быть valid"),
+                    .expect("The semantic key should be valid."),
             ),
             ComponentVariantError::CrossParent,
         ),
@@ -142,7 +142,7 @@ fn catalog_rejects_semantic_source_parent_and_axis_mismatch() {
                 identity.parent().semantic().clone(),
                 ComponentKind::Audio,
                 ComponentVariantSemanticKey::new("stable-variant")
-                    .expect("semantic key должен быть valid"),
+                    .expect("The semantic key should be valid."),
             ),
             ComponentVariantError::WrongAxis {
                 expected: ComponentKind::Video,
@@ -155,7 +155,7 @@ fn catalog_rejects_semantic_source_parent_and_axis_mismatch() {
         let exact_identity = ComponentVariantExactIdentity::new(
             identity.clone(),
             ComponentKind::Video,
-            ComponentVariantExactKey::new("exact").expect("exact key должен быть valid"),
+            ComponentVariantExactKey::new("exact").expect("The exact key must be valid."),
         );
         let variant =
             VideoComponentVariant::new(exact_identity, semantic_identity, video_track(Some(720)));
@@ -215,16 +215,16 @@ fn exact_selection_validates_layout_and_missing_variant() {
     let catalog = video_and_audio_catalog();
     let video = catalog
         .required_video_variants()
-        .expect("video axis должна существовать");
+        .expect("video axis must exist");
     let audio = catalog
         .required_audio_variants()
-        .expect("audio axis должна существовать");
+        .expect("audio axis must exist");
     let selection = catalog
         .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
             video: video[0].exact_identity().clone(),
             audio: audio[1].exact_identity().clone(),
         })
-        .expect("exact selection должна быть valid");
+        .expect("The exact selection must be valid.");
     assert!(matches!(
         selection,
         ComponentVariantSelection::VideoAndAudio { .. }
@@ -240,7 +240,7 @@ fn exact_selection_validates_layout_and_missing_variant() {
     let missing = ComponentVariantExactIdentity::new(
         catalog.identity().clone(),
         ComponentKind::Video,
-        ComponentVariantExactKey::new("missing").expect("key должен быть valid"),
+        ComponentVariantExactKey::new("missing").expect("The key must be valid."),
     );
     assert_eq!(
         catalog.select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
@@ -258,16 +258,16 @@ fn exact_selection_request_round_trips_all_layouts_and_rejects_wrong_catalog() {
     let video_and_audio_catalog = video_and_audio_catalog();
     let video = video_and_audio_catalog
         .required_video_variants()
-        .expect("video axis должна существовать");
+        .expect("video axis must exist");
     let audio = video_and_audio_catalog
         .required_audio_variants()
-        .expect("audio axis должна существовать");
+        .expect("audio axis must exist");
     let video_and_audio_selection = video_and_audio_catalog
         .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
             video: video[1].exact_identity().clone(),
             audio: audio[0].exact_identity().clone(),
         })
-        .expect("VideoAndAudio selection должна быть valid");
+        .expect("VideoAndAudio selection must have valid");
     assert_eq!(
         video_and_audio_catalog.select_exact(video_and_audio_selection.exact_selection_request()),
         Ok(video_and_audio_selection.clone())
@@ -292,7 +292,7 @@ fn exact_selection_request_round_trips_all_layouts_and_rejects_wrong_catalog() {
             )],
         },
     )
-    .expect("wrong-generation catalog должен быть structurally valid");
+    .expect("wrong-generation catalog must have structurally valid");
     assert_eq!(
         wrong_catalog.select_exact(video_and_audio_selection.exact_selection_request()),
         Err(ComponentVariantError::StaleCatalogGeneration {
@@ -314,16 +314,16 @@ fn exact_selection_request_round_trips_all_layouts_and_rejects_wrong_catalog() {
             )],
         },
     )
-    .expect("VideoOnly catalog должен быть valid");
+    .expect("VideoOnly catalog should be valid");
     let video_selection = video_catalog
         .select_exact(ComponentVariantSelectionRequest::VideoOnly {
             video: video_catalog
                 .required_video_variants()
-                .expect("video axis должна существовать")[0]
+                .expect("video axis must exist")[0]
                 .exact_identity()
                 .clone(),
         })
-        .expect("VideoOnly selection должна быть valid");
+        .expect("VideoOnly selection must be valid");
     assert_eq!(
         video_catalog.select_exact(video_selection.exact_selection_request()),
         Ok(video_selection)
@@ -337,16 +337,16 @@ fn exact_selection_request_round_trips_all_layouts_and_rejects_wrong_catalog() {
             audio: vec![audio_variant(&audio_identity, "audio", "audio-semantic", 1)],
         },
     )
-    .expect("AudioOnly catalog должен быть valid");
+    .expect("AudioOnly catalog must be valid");
     let audio_selection = audio_catalog
         .select_exact(ComponentVariantSelectionRequest::AudioOnly {
             audio: audio_catalog
                 .required_audio_variants()
-                .expect("audio axis должна существовать")[0]
+                .expect("audio axis must exist")[0]
                 .exact_identity()
                 .clone(),
         })
-        .expect("AudioOnly selection должна быть valid");
+        .expect("AudioOnly selection must be valid");
     assert_eq!(
         audio_catalog.select_exact(audio_selection.exact_selection_request()),
         Ok(audio_selection)
@@ -358,20 +358,20 @@ fn replacements_preserve_the_other_axis_byte_for_byte() {
     let catalog = video_and_audio_catalog();
     let videos = catalog
         .required_video_variants()
-        .expect("video axis должна существовать");
+        .expect("video axis must exist");
     let audios = catalog
         .required_audio_variants()
-        .expect("audio axis должна существовать");
+        .expect("audio axis must exist");
     let original = catalog
         .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
             video: videos[0].exact_identity().clone(),
             audio: audios[0].exact_identity().clone(),
         })
-        .expect("selection должна быть valid");
+        .expect("selection must be valid");
 
     let changed_video = original
         .replace_video(&catalog, videos[1].exact_identity())
-        .expect("video replacement должна быть valid");
+        .expect("video replacement must have valid");
     match (&original, &changed_video) {
         (
             ComponentVariantSelection::VideoAndAudio {
@@ -383,12 +383,12 @@ fn replacements_preserve_the_other_axis_byte_for_byte() {
                 ..
             },
         ) => assert_eq!(preserved_audio, original_audio),
-        _ => panic!("test selection shape должна остаться VideoAndAudio"),
+        _ => panic!("test selection shape should remain VideoAndAudio"),
     }
 
     let changed_audio = original
         .replace_audio(&catalog, audios[1].exact_identity())
-        .expect("audio replacement должна быть valid");
+        .expect("audio replacement must have valid");
     match (&original, &changed_audio) {
         (
             ComponentVariantSelection::VideoAndAudio {
@@ -400,7 +400,7 @@ fn replacements_preserve_the_other_axis_byte_for_byte() {
                 ..
             },
         ) => assert_eq!(preserved_video, original_video),
-        _ => panic!("test selection shape должна остаться VideoAndAudio"),
+        _ => panic!("test selection shape should remain VideoAndAudio"),
     }
 }
 
@@ -409,21 +409,21 @@ fn failed_replacement_leaves_original_selection_unchanged() {
     let catalog = video_and_audio_catalog();
     let video = catalog
         .required_video_variants()
-        .expect("video axis должна существовать");
+        .expect("video axis must exist");
     let audio = catalog
         .required_audio_variants()
-        .expect("audio axis должна существовать");
+        .expect("audio axis must exist");
     let original = catalog
         .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
             video: video[0].exact_identity().clone(),
             audio: audio[0].exact_identity().clone(),
         })
-        .expect("selection должна быть valid");
+        .expect("selection must be valid");
     let before_failure = original.clone();
     let missing = ComponentVariantExactIdentity::new(
         catalog.identity().clone(),
         ComponentKind::Video,
-        ComponentVariantExactKey::new("missing").expect("key должен быть valid"),
+        ComponentVariantExactKey::new("missing").expect("The key must be valid."),
     );
 
     assert_eq!(
@@ -450,16 +450,16 @@ fn video_only_and_audio_only_have_exact_non_optional_shapes() {
             )],
         },
     )
-    .expect("VideoOnly catalog должен быть valid");
+    .expect("VideoOnly catalog should be valid");
     let selected_video = video_catalog
         .select_exact(ComponentVariantSelectionRequest::VideoOnly {
             video: video_catalog
                 .required_video_variants()
-                .expect("video axis должна существовать")[0]
+                .expect("video axis must exist")[0]
                 .exact_identity()
                 .clone(),
         })
-        .expect("VideoOnly selection должна быть valid");
+        .expect("VideoOnly selection must be valid");
     assert!(matches!(
         selected_video,
         ComponentVariantSelection::VideoOnly { .. }
@@ -473,16 +473,16 @@ fn video_only_and_audio_only_have_exact_non_optional_shapes() {
             audio: vec![audio_variant(&audio_identity, "audio", "audio-semantic", 1)],
         },
     )
-    .expect("AudioOnly catalog должен быть valid");
+    .expect("AudioOnly catalog must be valid");
     let selected_audio = audio_catalog
         .select_exact(ComponentVariantSelectionRequest::AudioOnly {
             audio: audio_catalog
                 .required_audio_variants()
-                .expect("audio axis должна существовать")[0]
+                .expect("audio axis must exist")[0]
                 .exact_identity()
                 .clone(),
         })
-        .expect("AudioOnly selection должна быть valid");
+        .expect("AudioOnly selection must be valid");
     assert!(matches!(
         selected_audio,
         ComponentVariantSelection::AudioOnly { .. }
@@ -507,7 +507,7 @@ fn video_and_audio_storage_is_additive_not_cartesian() {
             ],
         },
     )
-    .expect("cardinality test catalog должен быть valid");
+    .expect("The cardinality test catalog must be valid");
     let video_count = catalog.required_video_variants().unwrap().len();
     let audio_count = catalog.required_audio_variants().unwrap().len();
     assert_eq!(video_count, 3);
@@ -532,26 +532,26 @@ fn preferred_height_uses_existing_rank_and_preserves_first_on_equality() {
             ],
         },
     )
-    .expect("height test catalog должен быть valid");
+    .expect("The high-height test catalog should be valid.");
 
     let prefer_720 = PreferredHeightPolicy::Prefer(
-        PreferredVideoHeight::new(720).expect("preferred height должна быть valid"),
+        PreferredVideoHeight::new(720).expect("The preferred height should be valid."),
     );
     assert_eq!(
         catalog
             .preferred_video_variant(prefer_720)
-            .expect("video variant должна существовать")
+            .expect("The video variant should exist.")
             .exact_identity(),
         catalog.required_video_variants().unwrap()[0].exact_identity()
     );
 
     let prefer_800 = PreferredHeightPolicy::Prefer(
-        PreferredVideoHeight::new(800).expect("preferred height должна быть valid"),
+        PreferredVideoHeight::new(800).expect("The preferred height should be valid."),
     );
     assert_eq!(
         catalog
             .preferred_video_variant(prefer_800)
-            .expect("lower fallback должна существовать")
+            .expect("There should be a lower fallback.")
             .track()
             .height(),
         Some(VideoHeight::new(720).unwrap())
@@ -568,11 +568,11 @@ fn preferred_height_uses_existing_rank_and_preserves_first_on_equality() {
             ],
         },
     )
-    .expect("higher fallback catalog должен быть valid");
+    .expect("higher fallback catalog must have valid");
     assert_eq!(
         higher_only
             .preferred_video_variant(prefer_800)
-            .expect("higher fallback должна существовать")
+            .expect("There should be a higher fallback.")
             .track()
             .height(),
         Some(VideoHeight::new(1080).unwrap())
@@ -591,11 +591,11 @@ fn preferred_height_uses_existing_rank_and_preserves_first_on_equality() {
             )],
         },
     )
-    .expect("missing height catalog должен быть valid");
+    .expect("The missing height catalog should be valid.");
     assert_eq!(
         missing_only
             .preferred_video_variant(prefer_800)
-            .expect("missing fallback должна существовать")
+            .expect("The missing fallback must exist.")
             .track()
             .height(),
         None
@@ -631,7 +631,7 @@ fn topology_supports_all_pairs_coupled_and_single_component_rows_without_cartesi
             audio_only: vec![audio_only.clone()],
         },
     )
-    .expect("mixed topology должна быть valid");
+    .expect("mixed topology must have valid");
 
     assert_eq!(catalog.stored_variant_count(), 5);
     assert_eq!(catalog.compatibility().unwrap().logical_edge_count(), 4);

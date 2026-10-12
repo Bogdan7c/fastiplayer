@@ -306,7 +306,7 @@ fn exactly_one_track(tracks: &[TrackInfo], kind: TrackKind, label: &str) -> Resu
     match matches.as_slice() {
         [track_id] => Ok(*track_id),
         _ => Err(anyhow!(
-            "HLS {label} component требует ровно один {kind:?} track"
+            "HLS {label} component requires exactly {kind:?} track"
         )),
     }
 }
@@ -423,12 +423,12 @@ mod tests {
             },
             |_, _| {
                 compose_calls.set(compose_calls.get() + 1);
-                unreachable!("cancelled shared token не должен допустить composition")
+                unreachable!("canceled shared token must prevent composition")
             },
-            || unreachable!("failed audio preparation не должна доходить до commit authority"),
-            |_| unreachable!("failed audio preparation не должна публиковать commit evidence"),
+            || unreachable!("failed audio preparation must not reach commit authority"),
+            |_| unreachable!("failed audio preparation must not publish commit evidence"),
         )
-        .expect_err("audio phase должна увидеть отмену shared token");
+        .expect_err("audio phase must observe cancellation of the shared token");
 
         assert!(matches!(
             error.downcast_ref::<MediaDemuxError>(),
@@ -474,9 +474,9 @@ mod tests {
                     }
                 }
             },
-            |_| unreachable!("cancellation должна победить до commit evidence"),
+            |_| unreachable!("cancellation must take effect before commit evidence"),
         )
-        .expect_err("отмена должна победить до единственной mutation active pair");
+        .expect_err("Cancellation must be defeated before the single active pair mutation");
 
         assert!(matches!(
             error.downcast_ref::<MediaDemuxError>(),

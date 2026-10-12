@@ -172,7 +172,7 @@ mod tests {
                 assert_eq!(track_id, Some(9));
             }
             SeekTo::Timestamp { .. } => {
-                panic!("seek mapper должен строить time-based seek target")
+                panic!("seek mapper build up time-based seek target")
             }
         }
     }
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(
             result
                 .actual_track_timestamp
-                .expect("actual timestamp должен быть")
+                .expect("The actual timestamp should be")
                 .units
                 .get(),
             250
@@ -225,7 +225,7 @@ mod tests {
 
         let actual_track_timestamp = result
             .actual_track_timestamp
-            .expect("signed actual timestamp должен сохраняться для diagnostics");
+            .expect("signed actual timestamp must be saved for diagnostics");
 
         assert_eq!(actual_track_timestamp.units.get(), -25);
         assert_eq!(result.actual_position, media_core::MediaTime::ZERO);

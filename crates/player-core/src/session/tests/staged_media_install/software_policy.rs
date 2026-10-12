@@ -13,7 +13,7 @@ use video_frame_contract::VideoFrameContract;
 
 /// Возвращает canonical FFmpeg software backend ID без concrete decoder dependency.
 fn ffmpeg_software_backend_id() -> DecodeBackendId {
-    DecodeBackendId::new("ffmpeg-sw").expect("canonical FFmpeg backend id должен быть допустим")
+    DecodeBackendId::new("ffmpeg-sw").expect("Canonical FFmpeg backend id should be allowed.")
 }
 
 /// Строит capability snapshot, где одинаковый VP9 stream сначала предлагает VA-API,
@@ -24,12 +24,12 @@ fn vaapi_then_ffmpeg_vp9_capabilities() -> capability_core::SystemCapabilities {
         .playable_video_outputs
         .first()
         .cloned()
-        .expect("VP9 fixture должен содержать playable output");
+        .expect("The VP9 fixture includes playable output.");
     let base_backend = capabilities
         .video_backends
         .first()
         .cloned()
-        .expect("VP9 fixture должен содержать backend capabilities");
+        .expect("The VP9 fixture contains backend capabilities.");
 
     let vaapi_backend_id = DecodeBackendId::vaapi();
     let mut vaapi_output = base_output.clone();
@@ -91,7 +91,7 @@ fn software_policy_staged_install_and_startup_restore_reach_presented_frame() {
     let (resource_port, resource_state) =
         FakeResourcePort::available_for_backend(decoder.clone(), ffmpeg_backend_id.clone());
     let request_id = MediaInstallRequestId::from_non_zero(
-        NonZeroU64::new(1_901).expect("test request id должен быть non-zero"),
+        NonZeroU64::new(1_901).expect("test request id must be non-zero"),
     );
     let (receipt, install_port) = MediaInstallReceipt::new(request_id);
 
@@ -109,15 +109,15 @@ fn software_policy_staged_install_and_startup_restore_reach_presented_frame() {
 
     assert!(
         receipt.try_take_ready_to_commit().is_some(),
-        "software candidate должен достичь ReadyToCommit"
+        "software candidate must achieve ReadyToCommit"
     );
     {
         let state = resource_state
             .lock()
-            .expect("fake resource state lock должен оставаться доступен");
+            .expect("Fake resource state lock is still available.");
         assert_eq!(state.request_count, 1);
         let [selection] = state.requested_selections.as_slice() else {
-            panic!("player должен сделать ровно один exact backend request");
+            panic!("The player must make an exact backend request.");
         };
         assert_eq!(selection.expected_backend_id(), ffmpeg_backend_id.as_str());
         assert_eq!(
@@ -141,12 +141,12 @@ fn software_policy_staged_install_and_startup_restore_reach_presented_frame() {
     );
     let completion = receipt
         .try_take_completion()
-        .expect("authorization должна синхронно опубликовать Installed");
+        .expect("Authorization must simultaneously publish Installed");
     let MediaInstallCompletion::Installed {
         media_instance_id, ..
     } = completion
     else {
-        panic!("успешный software candidate должен завершиться Installed");
+        panic!("A successful software candidate must complete an Installed");
     };
 
     let (restore_tx, restore_rx) = crossbeam_channel::bounded(1);
@@ -165,7 +165,7 @@ fn software_policy_staged_install_and_startup_restore_reach_presented_frame() {
     assert_eq!(
         restore_rx.try_recv(),
         Err(crossbeam_channel::TryRecvError::Empty),
-        "restore нельзя подтверждать до decoder landing"
+        "restore can't confirm decoder landing"
     );
 
     let packet_tick = session.tick(PlayerTickContext::with_config(
@@ -199,7 +199,7 @@ fn software_policy_staged_install_and_startup_restore_reach_presented_frame() {
     assert_eq!(
         restore_rx
             .try_recv()
-            .expect("представленный target frame должен завершить restore"),
+            .expect("The presented target frame must complete the restore"),
         InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
     );
     assert_eq!(session.snapshot().current_position, target_position);
@@ -207,9 +207,7 @@ fn software_policy_staged_install_and_startup_restore_reach_presented_frame() {
     assert!(!session.snapshot().timeline.scrubbing);
     assert!(session.seek_commit().is_none());
     assert_eq!(
-        *seek_log
-            .lock()
-            .expect("seek log lock должен оставаться доступен"),
+        *seek_log.lock().expect("Seek log lock is available."),
         vec![target_position]
     );
 }
@@ -227,7 +225,7 @@ fn software_policy_never_requests_hardware_when_only_vaapi_matches() {
     let (resource_port, resource_state) =
         FakeResourcePort::available_for_backend(decoder, ffmpeg_backend_id.clone());
     let request_id = MediaInstallRequestId::from_non_zero(
-        NonZeroU64::new(1_902).expect("test request id должен быть non-zero"),
+        NonZeroU64::new(1_902).expect("test request id must be non-zero"),
     );
     let (receipt, install_port) = MediaInstallReceipt::new(request_id);
 
@@ -246,9 +244,9 @@ fn software_policy_never_requests_hardware_when_only_vaapi_matches() {
     assert!(receipt.try_take_ready_to_commit().is_none());
     let completion = receipt
         .try_take_completion()
-        .expect("required backend miss должен terminal-завершить install");
+        .expect("The required backend miss must be terminal-completed install");
     let MediaInstallCompletion::Failed { failure, .. } = completion else {
-        panic!("required backend miss должен вернуть typed Failed terminal");
+        panic!("The required backend miss must return the typed failed terminal.");
     };
     assert_eq!(
         failure.stage,
@@ -260,11 +258,11 @@ fn software_policy_never_requests_hardware_when_only_vaapi_matches() {
     );
     assert!(
         failure.error.message.contains(ffmpeg_backend_id.as_str()),
-        "diagnostic должен назвать exact required backend"
+        "diagnostic must name the exact required backend"
     );
     let state = resource_state
         .lock()
-        .expect("fake resource state lock должен оставаться доступен");
+        .expect("Fake resource state lock is still available.");
     assert_eq!(state.request_count, 0);
     assert!(state.requested_selections.is_empty());
     assert!(state.statuses.is_empty());
@@ -292,7 +290,7 @@ fn software_policy_resource_unavailable_reports_required_backend_and_preserves_o
             reason: resource_failure_reason,
         });
     let request_id = MediaInstallRequestId::from_non_zero(
-        NonZeroU64::new(1_903).expect("test request id должен быть non-zero"),
+        NonZeroU64::new(1_903).expect("test request id must be non-zero"),
     );
     let (receipt, install_port) = MediaInstallReceipt::new(request_id);
 
@@ -311,9 +309,9 @@ fn software_policy_resource_unavailable_reports_required_backend_and_preserves_o
     assert!(receipt.try_take_ready_to_commit().is_none());
     let completion = receipt
         .try_take_completion()
-        .expect("software resource failure должен terminal-завершить install");
+        .expect("Software Resource Failure must complete the installation");
     let MediaInstallCompletion::Failed { failure, .. } = completion else {
-        panic!("software resource failure должен вернуть typed Failed terminal");
+        panic!("Software resource failure returns typed failed terminal");
     };
     assert_eq!(
         failure.stage,
@@ -327,10 +325,10 @@ fn software_policy_resource_unavailable_reports_required_backend_and_preserves_o
 
     let state = resource_state
         .lock()
-        .expect("fake resource state lock должен оставаться доступен");
+        .expect("Fake resource state lock is still available.");
     assert_eq!(state.request_count, 1);
     let [selection] = state.requested_selections.as_slice() else {
-        panic!("player должен сделать ровно один exact software backend request");
+        panic!("The player must make an exact backend request.");
     };
     assert_eq!(selection.expected_backend_id(), ffmpeg_backend_id.as_str());
     assert_eq!(

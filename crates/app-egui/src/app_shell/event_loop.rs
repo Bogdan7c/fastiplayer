@@ -110,7 +110,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         if self.process_lifecycle != AppShellProcessLifecycle::Running {
             return;
         }
-        info!("Приостановка: освобождаем runtime-ресурсы");
+        info!("Suspending: releasing runtime resources");
         self.suspend_runtime();
     }
 
@@ -133,7 +133,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             return;
         }
 
-        info!("Resumed: создание окна");
+        info!("Resumed: creating window");
 
         let window_attributes = Window::default_attributes()
             .with_title("Fastiplayer")
@@ -160,7 +160,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             width = window.inner_size().width,
             height = window.inner_size().height,
             scale_factor = window.scale_factor(),
-            "Окно создано"
+            "Window created"
         );
 
         self.window = Some(window.clone());
@@ -269,18 +269,18 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
 
         match event {
             WindowEvent::CloseRequested => {
-                self.close_runtime_and_exit(event_loop, "Закрытие окна по запросу пользователя");
+                self.close_runtime_and_exit(event_loop, "Closing window at user request");
                 return;
             }
 
             WindowEvent::Resized(PhysicalSize { width, height }) => {
-                debug!(width, height, "Изменение размера окна");
+                debug!(width, height, "Window resized");
                 self.renderer_lifecycle
                     .resize_renderer(renderer, width, height);
             }
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                debug!(scale_factor, "Изменение масштаба");
+                debug!(scale_factor, "Scale factor changed");
                 app_state.egui_ctx.set_pixels_per_point(scale_factor as f32);
             }
 
@@ -303,7 +303,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 if frame_result.close_requested {
                     self.close_runtime_and_exit(
                         event_loop,
-                        "Закрытие окна через кастомный titlebar",
+                        "Closing window through custom titlebar",
                     );
                     return;
                 }

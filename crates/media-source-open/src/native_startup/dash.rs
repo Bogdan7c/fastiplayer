@@ -310,11 +310,11 @@ pub fn prepare_native_dash_attempt(
             snapshot_identity.parent.clone(),
             discovered.provider_default().clone(),
         )
-        .context("native DASH provider default нарушил catalog parent identity")?,
+        .context("native DASH provider default breach catalog parent identity")?,
     };
     let WebMediaSelectionShape::Components(component_selection) = neutral_selection.shape() else {
         return Err(anyhow!(
-            "native DASH selection потерял component catalog shape"
+            "native DASH selection lost component catalog shape"
         ));
     };
     let opened = prepare_discovered_dash_vod(discovered, component_selection.clone())

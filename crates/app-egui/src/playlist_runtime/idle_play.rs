@@ -16,7 +16,7 @@ impl PlaylistRuntime {
     /// «Playing» player получит только после реальной установки.
     pub(crate) fn play_idle_queue_target(&mut self) -> Option<RuntimeRowPlayOutcome> {
         let target = self.controller.as_ref()?.idle_play_target()?;
-        tracing::debug!(item_id = ?target, "Play из пустого плеера открывает элемент очереди");
+        tracing::debug!(item_id = ?target, "Play from an empty player opens the queue element");
         Some(self.play_playlist_row(target))
     }
 }

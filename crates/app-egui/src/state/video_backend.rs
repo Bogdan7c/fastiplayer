@@ -320,10 +320,10 @@ impl AppState {
                         queue,
                     })
                 {
-                    warn!(error = %error, "Не удалось переключить video backend под текущий стрим");
+                    warn!(error = %error, "Could not switch the video backend to the current stream");
                     if !request.decodable_by_active_backend {
                         self.reject_pending_video_backend(format!(
-                            "не удалось запустить совместимый backend: {error}"
+                            "Failed to start compatible backend: {error}"
                         ));
                     }
                 }
@@ -447,7 +447,7 @@ impl AppState {
     /// Сообщает worker-у, что совместимый backend для отложенного видео не найден.
     pub(super) fn reject_pending_video_backend(&self, reason: String) {
         if let Err(error) = self.player_worker.reject_pending_video_backend(reason) {
-            warn!(error = %error, "Не удалось доставить reject pending video backend в worker");
+            warn!(error = %error, "Failed to deliver reject pending video backend into worker");
         }
     }
 
@@ -613,7 +613,7 @@ impl AppState {
         self.system_capabilities_snapshot = Some(capabilities.clone());
 
         if let Err(error) = self.player_worker.set_system_capabilities(capabilities) {
-            warn!(error = %error, "Не удалось отправить capability report в worker");
+            warn!(error = %error, "Could not send the capability report to the worker");
             return;
         }
 

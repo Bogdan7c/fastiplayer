@@ -71,15 +71,13 @@ impl fmt::Display for PreferredVideoHeightError {
     /// Форматирует безопасную ошибку без media locator-ов или других secrets.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Zero => {
-                formatter.write_str("предпочитаемая высота видео должна быть больше нуля")
-            }
+            Self::Zero => formatter.write_str("preferred video height must be greater than zero"),
             Self::TooLarge {
                 provided_pixels,
                 maximum_pixels,
             } => write!(
                 formatter,
-                "предпочитаемая высота видео {provided_pixels} превышает максимум {maximum_pixels}"
+                "preferred video height {provided_pixels} exceeds maximum {maximum_pixels}"
             ),
         }
     }
@@ -104,11 +102,11 @@ pub struct AudioConfig {
         group = "output",
         surface = "main-settings-window",
         label_id = "settings.audio.volume.label",
-        label_ru = "Громкость",
+        label_ru = "Volume",
         description_id = "settings.audio.volume.description",
-        description_ru = "Громкость воспроизведения. Плеер запоминает её сам и восстанавливает при следующем запуске.",
+        description_ru = "Playback volume. The player saves it automatically and restores it on the next launch.",
         help_id = "settings.audio.volume.help",
-        help_ru = "Изменение слайдером в плеере сохраняется через несколько секунд и при выходе. Apply здесь сразу меняет и текущую громкость.",
+        help_ru = "Changes from the player volume slider are saved after a few seconds and on exit. Apply here also changes the current volume immediately.",
         editor = "float",
         min = crate::validation::MIN_AUDIO_VOLUME,
         max = crate::validation::MAX_AUDIO_VOLUME,
@@ -126,9 +124,9 @@ pub struct AudioConfig {
         group = "output",
         surface = "main-settings-window",
         label_id = "settings.audio.muted.label",
-        label_ru = "Звук выключен",
+        label_ru = "The sound's off.",
         description_id = "settings.audio.muted.description",
-        description_ru = "Mute. Плеер запоминает его сам; при включении звука вернётся сохранённая громкость.",
+        description_ru = "Mute. The player saves this automatically; unmuting restores the saved volume.",
         editor = "toggle",
         apply = "audio.apply"
     )]
@@ -144,7 +142,7 @@ pub struct AudioConfig {
         label_id = "settings.audio.output_device.label",
         label_ru = "Audio output device",
         description_id = "settings.audio.output_device.description",
-        description_ru = "Stable id audio output device; `default` означает системное устройство.",
+        description_ru = "Stable audio output device ID; `default` means the system default device.",
         editor = "select",
         option_provider = "audio.output_device",
         apply = "audio.apply"
@@ -161,7 +159,7 @@ pub struct AudioConfig {
         label_id = "settings.audio.buffer_target_ms.label",
         label_ru = "Audio buffer target",
         description_id = "settings.audio.buffer_target_ms.description",
-        description_ru = "Целевой high-water mark audio buffer.",
+        description_ru = "Target audio buffer high-water mark.",
         editor = "integer",
         min = crate::validation::MIN_AUDIO_BUFFER_TARGET_MS,
         max = crate::validation::MAX_AUDIO_BUFFER_TARGET_MS,
@@ -199,7 +197,7 @@ pub struct NetworkConfig {
         label_id = "settings.network.memory_cache_mb.label",
         label_ru = "RAM cache",
         description_id = "settings.network.memory_cache_mb.description",
-        description_ru = "Размер RAM cache; 0 явно отключает RAM cache.",
+        description_ru = "RAM cache size; 0 explicitly disables RAM caching.",
         editor = "integer",
         min = 0,
         max = crate::validation::MAX_NETWORK_MEMORY_CACHE_MB,
@@ -219,7 +217,7 @@ pub struct NetworkConfig {
         label_id = "settings.network.read_ahead_mb.label",
         label_ru = "Read-ahead window",
         description_id = "settings.network.read_ahead_mb.description",
-        description_ru = "RAM window, которое prefetch держит впереди foreground cursor-а.",
+        description_ru = "RAM window that prefetch keeps ahead of the foreground cursor.",
         editor = "integer",
         min = 1,
         max = crate::validation::MAX_NETWORK_READ_AHEAD_MB,
@@ -239,7 +237,7 @@ pub struct NetworkConfig {
         label_id = "settings.network.prefetch_initial_chunk_kb.label",
         label_ru = "Initial prefetch chunk",
         description_id = "settings.network.prefetch_initial_chunk_kb.description",
-        description_ru = "Размер первого фонового prefetch-чтения после open/seek.",
+        description_ru = "Size of the first background prefetch read after open/seek.",
         editor = "integer",
         min = 1,
         max = crate::validation::MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB,
@@ -259,7 +257,7 @@ pub struct NetworkConfig {
         label_id = "settings.network.prefetch_chunk_mb.label",
         label_ru = "Prefetch chunk",
         description_id = "settings.network.prefetch_chunk_mb.description",
-        description_ru = "Максимальный размер одного фонового prefetch-чтения.",
+        description_ru = "Maximum size of one background prefetch read.",
         editor = "integer",
         min = 1,
         max = crate::validation::MAX_NETWORK_READ_AHEAD_MB,
@@ -279,7 +277,7 @@ pub struct NetworkConfig {
         label_id = "settings.network.connect_timeout_ms.label",
         label_ru = "Connect timeout",
         description_id = "settings.network.connect_timeout_ms.description",
-        description_ru = "Timeout подключения к сетевому источнику.",
+        description_ru = "Network source connection timeout.",
         editor = "integer",
         min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
         max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
@@ -299,7 +297,7 @@ pub struct NetworkConfig {
         label_id = "settings.network.read_timeout_ms.label",
         label_ru = "Read timeout",
         description_id = "settings.network.read_timeout_ms.description",
-        description_ru = "Timeout чтения из сетевого источника.",
+        description_ru = "Network source read timeout.",
         editor = "integer",
         min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
         max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
@@ -321,9 +319,9 @@ pub struct NetworkConfig {
         group = "timeout",
         surface = "main-settings-window",
         label_id = "settings.network.reconnect_wait_ms.label",
-        label_ru = "Ожидание восстановления сети",
+        label_ru = "Network recovery wait",
         description_id = "settings.network.reconnect_wait_ms.description",
-        description_ru = "Сколько ждать возвращения сети при обрыве посреди просмотра; 0 — не ждать.",
+        description_ru = "How long to wait for the network to return after an interruption during playback; 0 means no waiting.",
         editor = "integer",
         min = 0,
         max = crate::validation::MAX_NETWORK_RECONNECT_WAIT_MS,

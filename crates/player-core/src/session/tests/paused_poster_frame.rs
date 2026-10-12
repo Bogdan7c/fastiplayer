@@ -57,7 +57,7 @@ fn pause_without_frame_mid_stream_seeks_to_current_position() {
 
     let commit = session
         .seek_commit()
-        .expect("пауза без кадра должна запросить постер");
+        .expect("A pause without a frame should request a poster");
     assert_eq!(commit.target_position, MediaTime::from_secs(7));
 }
 

@@ -131,34 +131,34 @@ fn open_button_text_for_each_player_reason_names_file_and_reason() {
     let cases = [
         (
             PlayerInstallFailureReason::UnsupportedVideoFormat,
-            "Не удалось открыть «clip.mkv»: формат видео не поддерживается",
+            "Could not open “clip.mkv”: unsupported video format",
         ),
         (
             PlayerInstallFailureReason::UnsupportedAudioFormat,
-            "Не удалось открыть «clip.mkv»: формат звука не поддерживается",
+            "Could not open “clip.mkv”: unsupported audio format",
         ),
         (
             PlayerInstallFailureReason::NoSuitableVideoDecoder,
-            "Не удалось открыть «clip.mkv»: нет подходящего видеодекодера (выберите режим «Авто» в настройках декодера)",
+            "Could not open “clip.mkv”: no suitable video decoder (select Automatic in decoder settings)",
         ),
         (
             PlayerInstallFailureReason::PreparationTimedOut,
-            "Не удалось открыть «clip.mkv»: файл читается слишком долго",
+            "Could not open “clip.mkv”: reading the file is taking too long",
         ),
         (
             PlayerInstallFailureReason::PlayerNotResponding,
-            "Не удалось открыть «clip.mkv»: плеер не отвечает, попробуйте ещё раз",
+            "Could not open “clip.mkv”: the player is not responding; try again",
         ),
         (
             PlayerInstallFailureReason::InternalError,
-            "Не удалось открыть «clip.mkv»: внутренняя ошибка плеера",
+            "Could not open “clip.mkv”: internal player error",
         ),
     ];
 
     for (reason, expected_text) in cases {
         let StrongMediaOpenUserOutcome::Failed(user_reason) = player_failed(reason).user_outcome()
         else {
-            panic!("отказ player-а обязан быть видимой ошибкой: {reason:?}");
+            panic!("Player failure must be an apparent error: {reason:?}");
         };
         let text = local_open_failure_message(path, user_reason);
         assert_eq!(text, expected_text);

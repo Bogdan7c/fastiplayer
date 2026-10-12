@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-PROCESS_START_MARKERS = ("=== fastiplayer ===", "Запуск приложения")
+PROCESS_START_MARKERS = ("=== fastiplayer ===", "Starting application")
 STARTUP_MEDIA_OPEN_ACCEPTED_MARKER = "Startup media-open/restore accepted"
 MEDIA_OPEN_ACCEPTED_MARKERS = (
     STARTUP_MEDIA_OPEN_ACCEPTED_MARKER,
@@ -31,8 +31,8 @@ DEMUX_ACCEPTED_MARKER = "Demux seek transaction accepted"
 PRESENTED_MARKER = "First post-seek presented frame observed"
 DECODED_MARKER = "First post-seek decoded frame observed"
 AUDIO_ACCEPTED_MARKER = "Audio play accepted before final seek commit"
-COMMIT_MARKER = "Final seek commit завершён"
-COMMIT_TIMEOUT_MARKER = "Final seek commit остановлен по timeout"
+COMMIT_MARKER = "Final seek commit completed"
+COMMIT_TIMEOUT_MARKER = "Final seek commit stopped on timeout"
 WAITING_MARKER = "Active seek transaction is still waiting"
 HTTP_REQUEST_MARKER = "Source HTTP request started"
 HTTP_HEADERS_MARKER = "Source HTTP response headers ready"

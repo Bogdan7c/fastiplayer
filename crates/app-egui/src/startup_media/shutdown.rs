@@ -256,7 +256,9 @@ impl StartupMediaController {
     /// Проверяет single-startup-job invariant и terminal admission.
     pub(super) fn startup_job_admission_error(&self) -> Option<String> {
         if self.terminal_shutdown_started {
-            return Some("Startup media shutdown уже начат; новый job запрещён".to_string());
+            return Some(
+                "Startup media shutdown has already started; new job is banned".to_string(),
+            );
         }
         if self.yt_dlp_startup_job.is_some()
             || self.direct_media_startup_job.is_some()
@@ -267,7 +269,7 @@ impl StartupMediaController {
             || self.local_startup_job.is_some()
         {
             return Some(
-                "Startup media job уже выполняется; параллельный запуск запрещён".to_string(),
+                "Startup media job is already running; parallel running is prohibited".to_string(),
             );
         }
         None
@@ -325,7 +327,7 @@ fn join_startup_thread_on_fail_safe_drop(
     if join_handle.join().is_err() {
         warn!(
             owner = owner_name,
-            "Startup media thread panic обнаружен во время fail-safe Drop"
+            "Startup media thread panic detected during fail-safe Drop"
         );
     }
 }

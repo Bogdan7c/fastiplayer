@@ -56,7 +56,7 @@ impl RenderedFrame {
             .iter()
             .find(|painted| painted.text == text)
             .map(|painted| painted.rect.center())
-            .unwrap_or_else(|| panic!("текст {text:?} не нарисован: {:?}", self.painted))
+            .unwrap_or_else(|| panic!("text {text:?} not drawn: {:?}", self.painted))
     }
 }
 
@@ -152,14 +152,14 @@ fn center_failure_close_button_removes_failure_from_next_frame() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
     let failure_id = center.show_media_failure(
-        "Не удалось открыть «broken.mkv»: файл повреждён",
+        "broken.mkv failed to open: file corrupted",
         MediaFailureOrigin::MediaOpen,
     );
     let egui_ctx = egui::Context::default();
 
     let frame = center.frame(OpenProgress::Idle, UiMotion::Reduced, now);
     let rendered = settle(&egui_ctx, &frame);
-    assert!(rendered.shows("Не удалось открыть «broken.mkv»: файл повреждён"));
+    assert!(rendered.shows("broken.mkv failed to open: file corrupted"));
     // Без клика никаких действий: уведомление не закрывается само.
     assert!(rendered.actions.is_empty());
 
@@ -174,7 +174,7 @@ fn center_failure_close_button_removes_failure_from_next_frame() {
         &egui_ctx,
         &center.frame(OpenProgress::Idle, UiMotion::Reduced, now),
     );
-    assert!(!after_dismiss.shows("Не удалось открыть «broken.mkv»: файл повреждён"));
+    assert!(!after_dismiss.shows("broken.mkv failed to open: file corrupted"));
     assert!(!after_dismiss.shows("×"));
 }
 
@@ -190,7 +190,7 @@ fn toast_is_painted_in_bottom_right_corner_and_closes_by_click() {
     let message_position = rendered.center_of(OPEN_STILL_IN_PROGRESS_MESSAGE);
     assert!(
         message_position.x > SCREEN_SIZE.x / 2.0 && message_position.y > SCREEN_SIZE.y / 2.0,
-        "toast должен быть в правом нижнем углу: {message_position:?}"
+        "The toast should be in the lower right corner: {message_position:?}"
     );
 
     let actions = click(&egui_ctx, &frame, rendered.center_of("×"));
@@ -210,14 +210,14 @@ fn toast_is_painted_in_bottom_right_corner_and_closes_by_click() {
 fn transient_toast_is_no_longer_painted_after_lifetime() {
     let started_at = Instant::now();
     let mut center = NotificationCenter::default();
-    center.notify_transient("Перемотка недоступна", started_at);
+    center.notify_transient("Seeking unavailable", started_at);
     let egui_ctx = egui::Context::default();
 
     let visible = settle(
         &egui_ctx,
         &center.frame(OpenProgress::Idle, UiMotion::Reduced, started_at),
     );
-    assert!(visible.shows("Перемотка недоступна"));
+    assert!(visible.shows("Seeking unavailable"));
 
     let expired = settle(
         &egui_ctx,
@@ -240,7 +240,7 @@ fn progress_in_center_has_no_close_button() {
     let rendered = settle(
         &egui_ctx,
         &center.frame(
-            OpenProgress::InProgress("Открываем «next.mkv»…"),
+            OpenProgress::InProgress("Opening “next.mkv”…"),
             UiMotion::Reduced,
             now,
         ),
@@ -250,14 +250,14 @@ fn progress_in_center_has_no_close_button() {
         .iter()
         .map(|painted| painted.text.as_str())
         .collect();
-    assert_eq!(texts, ["Открываем «next.mkv»…"]);
+    assert_eq!(texts, ["Opening “next.mkv”…"]);
 }
 
 #[test]
 fn fading_toast_requests_repaint_only_with_standard_motion() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
-    center.notify_transient("Перемотка недоступна", now);
+    center.notify_transient("Seeking unavailable", now);
 
     // Возраст 0: в обычном режиме плашка ещё проявляется и просит следующий кадр.
     let standard_ctx = crate::ui::test_frame::app_behavior_context();
@@ -273,7 +273,7 @@ fn fading_toast_requests_repaint_only_with_standard_motion() {
         &reduced_ctx,
         &center.frame(OpenProgress::Idle, UiMotion::Reduced, now),
     );
-    assert!(reduced.shows("Перемотка недоступна"));
+    assert!(reduced.shows("Seeking unavailable"));
     assert_eq!(reduced.repaint_delay, Duration::MAX);
 }
 
@@ -281,15 +281,15 @@ fn fading_toast_requests_repaint_only_with_standard_motion() {
 /// текст предупреждения → настоящий egui-кадр. Плашка видна и через час, × её закрывает.
 #[test]
 fn broken_config_on_disk_reaches_painted_warning_that_stays_until_closed() {
-    let config_directory = tempfile::tempdir().expect("temp dir создан");
+    let config_directory = tempfile::tempdir().expect("dir temp created");
     let config_path = config_directory.path().join("config.toml");
-    std::fs::write(&config_path, "schema_version = 12\n[[[\n").expect("битый config записан");
+    std::fs::write(&config_path, "schema_version = 12\n[[[\n").expect("broken config recorded");
     let loaded = fastiplayer_config::load_or_recover_at(&config_path, std::time::SystemTime::now())
-        .expect("старт не падает");
-    let warning = crate::config_startup_notice::config_startup_warning(&loaded)
-        .expect("о восстановлении предупреждаем");
+        .expect("startup does not fail");
+    let warning =
+        crate::config_startup_notice::config_startup_warning(&loaded).expect("Recovery Warning");
     let fastiplayer_config::ConfigLoadOrigin::RecoveredFromBroken(recovery) = &loaded.origin else {
-        panic!("битый файл должен быть восстановлен: {:?}", loaded.origin);
+        panic!("The broken file must be recovered: {:?}", loaded.origin);
     };
     assert!(
         config_directory
@@ -308,13 +308,13 @@ fn broken_config_on_disk_reaches_painted_warning_that_stays_until_closed() {
     let rendered = settle(&egui_ctx, &frame);
     assert!(
         rendered.shows(&warning),
-        "предупреждение нарисовано: {:?}",
+        "Warning drawn: {:?}",
         rendered.painted
     );
 
     let actions = click(&egui_ctx, &frame, rendered.center_of("×"));
     let [NotificationAction::Dismiss(warning_id)] = actions.as_slice() else {
-        panic!("ожидалось одно закрытие: {actions:?}");
+        panic!("Expected one closure: {actions:?}");
     };
     assert_eq!(
         center.dismiss(*warning_id),
@@ -334,7 +334,7 @@ fn center_failure_with_retry_paints_button_and_click_emits_retry_action() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
     let failure_id = center.show_media_failure_planned(
-        "Не удалось открыть ссылку (media.test): нет соединения с сервером — проверьте интернет",
+        "Could not open the link (media.test): cannot connect to the server; check your internet connection",
         MediaFailureOrigin::MediaOpen,
         RetryPlan::Offered(MediaRetryTarget::WebUrl(DroppedWebUrl::new(
             "http://media.test/video.mp4".to_owned(),
@@ -347,12 +347,12 @@ fn center_failure_with_retry_paints_button_and_click_emits_retry_action() {
     assert!(rendered.shows(crate::ui::notifications::RETRY_BUTTON_LABEL));
     assert!(rendered.shows("×"));
     assert!(
-        rendered.center_of("Повторить").x < rendered.center_of("×").x,
-        "«Повторить» левее ×"
+        rendered.center_of("Repeat.").x < rendered.center_of("×").x,
+        "\"Repeat\" to the left x"
     );
-    assert!(rendered.actions.is_empty(), "без клика действий нет");
+    assert!(rendered.actions.is_empty(), "no action without a click");
 
-    let retry_actions = click(&egui_ctx, &frame, rendered.center_of("Повторить"));
+    let retry_actions = click(&egui_ctx, &frame, rendered.center_of("Repeat."));
     assert_eq!(retry_actions, [NotificationAction::Retry(failure_id)]);
     let close_actions = click(&egui_ctx, &frame, rendered.center_of("×"));
     assert_eq!(close_actions, [NotificationAction::Dismiss(failure_id)]);
@@ -364,7 +364,7 @@ fn center_failure_without_retry_paints_no_retry_button() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
     center.show_media_failure(
-        "Не удалось открыть «clip.mkv»: формат файла не распознан или не поддерживается",
+        "Could not open “clip.mkv”: file format is unrecognized or unsupported",
         MediaFailureOrigin::MediaOpen,
     );
     let egui_ctx = egui::Context::default();
@@ -374,7 +374,7 @@ fn center_failure_without_retry_paints_no_retry_button() {
         &center.frame(OpenProgress::Idle, UiMotion::Reduced, now),
     );
 
-    assert!(!rendered.shows("Повторить"));
+    assert!(!rendered.shows("Repeat."));
     assert!(rendered.shows("×"));
 }
 
@@ -384,7 +384,7 @@ fn retry_button_is_a_labeled_button_in_the_accesskit_tree() {
     let now = Instant::now();
     let mut center = NotificationCenter::default();
     center.show_media_failure_planned(
-        "Нет связи с сервером",
+        "No connection to the server.",
         MediaFailureOrigin::PlayerFailed,
         RetryPlan::Offered(MediaRetryTarget::ResumeBlockedQueue),
     );
@@ -400,8 +400,8 @@ fn retry_button_is_a_labeled_button_in_the_accesskit_tree() {
         rendered
             .accesskit_button_labels
             .iter()
-            .any(|label| label == "Повторить"),
-        "кнопки accesskit: {:?}",
+            .any(|label| label == "Repeat."),
+        "buttons accesskit: {:?}",
         rendered.accesskit_button_labels
     );
 }
@@ -425,16 +425,16 @@ fn clicking_retry_in_a_painted_frame_reopens_the_same_url() {
     let frame = center.frame(OpenProgress::Idle, UiMotion::Reduced, now);
     let rendered = settle(&egui_ctx, &frame);
 
-    let actions = click(&egui_ctx, &frame, rendered.center_of("Повторить"));
+    let actions = click(&egui_ctx, &frame, rendered.center_of("Repeat."));
     let [NotificationAction::Retry(failure_id)] = actions.as_slice() else {
-        panic!("ожидался один запрос повтора: {actions:?}");
+        panic!("One repeat request was expected: {actions:?}");
     };
     // То же, что делает `AppState::apply_notification_actions` и исполнитель кадра.
     assert_eq!(
         center.request_retry(*failure_id),
         RetryRequestOutcome::Requested
     );
-    let target = center.take_retry_request().expect("цель принята");
+    let target = center.take_retry_request().expect("target accepted");
     let mut port = RecordingRetryPort::new(center);
     crate::state::media_retry::execute_media_retry(&mut port, target);
 
@@ -448,7 +448,7 @@ fn clicking_retry_in_a_painted_frame_reopens_the_same_url() {
             .center
             .frame(OpenProgress::Idle, UiMotion::Reduced, now),
     );
-    assert!(!after.shows("Повторить"), "ошибка снята, кнопки нет");
+    assert!(!after.shows("Repeat."), "Error removed, no button");
 }
 
 /// Результат кадра «панель телеметрии справа + центральные уведомления» (G3).
@@ -505,8 +505,7 @@ fn render_frame_with_telemetry(
 /// видны целиком в области центральных уведомлений и не заходят под панель телеметрии.
 #[test]
 fn center_failure_buttons_stay_fully_visible_beside_the_telemetry_panel() {
-    let message =
-        "Не удалось открыть ссылку (127.0.0.1): нет соединения с сервером — проверьте интернет";
+    let message = "Could not open the link (127.0.0.1): cannot connect to the server; check your internet connection";
     let mut center = NotificationCenter::default();
     let failure_id = center.show_media_failure_planned(
         message,
@@ -525,29 +524,29 @@ fn center_failure_buttons_stay_fully_visible_beside_the_telemetry_panel() {
 
         assert!(
             rendered.central_rect.width() > 0.0,
-            "ширина {width}: у центральной области нет места: {:?}",
+            "Width {width}: Central region has no space: {:?}",
             rendered.central_rect
         );
-        for label in ["Повторить", "×"] {
+        for label in ["Repeat.", "×"] {
             let (text, clip_rect) = rendered
                 .painted
                 .iter()
                 .find(|(text, _)| text.text == label)
                 .unwrap_or_else(|| {
                     panic!(
-                        "ширина {width}: {label:?} не нарисован; центр {:?}; текст {:?}",
+                        "width {width}: {label:?} not drawn; center {:?}; text {:?}",
                         rendered.central_rect, rendered.painted
                     )
                 });
             assert!(
                 rendered.central_rect.contains_rect(text.rect),
-                "ширина {width}: {label:?} {:?} вне центральной области {:?}",
+                "width {width}: {label:?} {:?} outside the central area {:?}",
                 text.rect,
                 rendered.central_rect
             );
             assert!(
                 clip_rect.contains_rect(text.rect),
-                "ширина {width}: {label:?} {:?} обрезан clip-областью {clip_rect:?}",
+                "width {width}: {label:?} {:?} cropped clip-field {clip_rect:?}",
                 text.rect
             );
         }
@@ -556,9 +555,9 @@ fn center_failure_buttons_stay_fully_visible_beside_the_telemetry_panel() {
         let retry_center = rendered
             .painted
             .iter()
-            .find(|(text, _)| text.text == "Повторить")
+            .find(|(text, _)| text.text == "Repeat.")
             .map(|(text, _)| text.rect.center())
-            .expect("кнопка «Повторить» нарисована");
+            .expect("\"Repeat\" button drawn");
         let pointer_button = |pressed| egui::Event::PointerButton {
             pos: retry_center,
             button: egui::PointerButton::Primary,
@@ -578,7 +577,7 @@ fn center_failure_buttons_stay_fully_visible_beside_the_telemetry_panel() {
         assert_eq!(
             actions,
             [NotificationAction::Retry(failure_id)],
-            "ширина {width}: клик по «Повторить» не дошёл до владельца"
+            "Width {width}: Click on “Repeat” did not reach the owner"
         );
     }
 }

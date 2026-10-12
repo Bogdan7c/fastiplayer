@@ -77,7 +77,7 @@ print_error() {
     local error_message="$1"
 
     # stderr отделяет диагностику smoke-runner-а от stdout вызываемых команд.
-    printf 'Ошибка: %s\n' "${error_message}" >&2
+    printf 'Error: %s\n' "${error_message}" >&2
 }
 
 # Функция печатает справку по локальному acceptance runner-у.
@@ -164,7 +164,7 @@ require_command() {
     # command -v проверяет PATH без запуска команды.
     if ! command -v "${required_command}" >/dev/null 2>&1; then
         # Ошибка содержит точное имя отсутствующего инструмента.
-        print_error "команда '${required_command}' не найдена в PATH"
+        print_error "${required_command} not found in PATH"
 
         # Продолжать нельзя: acceptance не сможет выполнить заявленный шаг.
         exit 1
@@ -202,23 +202,23 @@ require_av1_vaapi_decode_profile() {
 
     # Explicit DRM device исключает ложный X11/Wayland probe failure на headless runner-е.
     if [[ ! -r "${VAAPI_RENDER_NODE}" ]]; then
-        skip_hardware_acceptance "нет readable VA-API render node ${VAAPI_RENDER_NODE}"
+        skip_hardware_acceptance "No readable VA-API render node ${VAAPI_RENDER_NODE}"
     fi
 
     # Hardware acceptance без системного capability probe не может быть зачтена.
     if ! command -v vainfo >/dev/null 2>&1; then
-        skip_hardware_acceptance "команда vainfo недоступна для AV1 hardware preflight"
+        skip_hardware_acceptance "vainfo is unavailable for AV1 hardware preflight"
     fi
 
     # Один снимок вывода гарантирует, что runtime health и profile проверены вместе.
     local vaapi_capabilities
     if ! vaapi_capabilities="$(vainfo --display drm --device "${VAAPI_RENDER_NODE}" 2>&1)"; then
-        skip_hardware_acceptance "vainfo не подтвердил рабочий VA-API runtime"
+        skip_hardware_acceptance "vainfo did not confirm a working VA-API runtime"
     fi
 
     # Profile name без точного VLD entrypoint не доказывает аппаратный decode.
     if ! grep -Eq -- "${AV1_VAAPI_PROFILE_REGEX}" <<<"${vaapi_capabilities}"; then
-        skip_hardware_acceptance "vainfo не содержит exact VAProfileAV1Profile0 : VAEntrypointVLD"
+        skip_hardware_acceptance "vainfo does not contain exact VAProfileAV1Profile0: VAEntrypointVLD"
     fi
 }
 
@@ -269,7 +269,7 @@ validate_mode() {
             return
             ;;
         *)
-            print_error "неподдерживаемый --mode '${candidate_mode}'"
+            print_error "Unsupported --mode '${candidate_mode}'"
             exit 1
             ;;
     esac
@@ -282,7 +282,7 @@ validate_duration_seconds() {
 
     # Ноль и отрицательные значения не имеют смысла для timeout-а.
     if [[ ! "${candidate_duration}" =~ ^[1-9][0-9]*$ ]]; then
-        print_error "--duration должен быть положительным целым числом секунд"
+        print_error "--duration must be a positive whole number of seconds"
         exit 1
     fi
 }
@@ -307,7 +307,7 @@ parse_arguments() {
                 ;;
             --mode)
                 if (($# < 2)); then
-                    print_error "--mode требует значение"
+                    print_error "--mode requires a value"
                     exit 1
                 fi
                 validate_mode "$2"
@@ -316,7 +316,7 @@ parse_arguments() {
                 ;;
             --duration)
                 if (($# < 2)); then
-                    print_error "--duration требует значение"
+                    print_error "--duration requires a value"
                     exit 1
                 fi
                 validate_duration_seconds "$2"
@@ -325,7 +325,7 @@ parse_arguments() {
                 ;;
             --vp9)
                 if (($# < 2)); then
-                    print_error "--vp9 требует путь к media file"
+                    print_error "--vp9 requires a media file path"
                     exit 1
                 fi
                 vp9_profile0_path="$2"
@@ -333,7 +333,7 @@ parse_arguments() {
                 ;;
             --av1)
                 if (($# < 2)); then
-                    print_error "--av1 требует путь к media file"
+                    print_error "--av1 requires a media file path"
                     exit 1
                 fi
                 av1_path="$2"
@@ -341,7 +341,7 @@ parse_arguments() {
                 ;;
             --av1-hdr)
                 if (($# < 2)); then
-                    print_error "--av1-hdr требует путь к media file"
+                    print_error "--av1-hdr requires a media file path"
                     exit 1
                 fi
                 av1_hdr_path="$2"
@@ -349,14 +349,14 @@ parse_arguments() {
                 ;;
             --h264)
                 if (($# < 2)); then
-                    print_error "--h264 требует путь к media file"
+                    print_error "--h264 requires a media file path"
                     exit 1
                 fi
                 h264_path="$2"
                 shift 2
                 ;;
             *)
-                print_error "неизвестный аргумент '$1'"
+                print_error "Unknown argument: $1"
                 exit 1
                 ;;
         esac
@@ -435,7 +435,7 @@ require_log_regex() {
 
     # grep -E проверяет stable marker без привязки к цветам/target-ам tracing.
     if ! grep -Eq -- "${expected_regex}" "${log_path}"; then
-        fail_with_log_tail "не найден marker: ${marker_description}" "${log_path}"
+        fail_with_log_tail "Not found marker: ${marker_description}" "${log_path}"
     fi
 }
 
@@ -452,7 +452,7 @@ reject_log_regex() {
 
     # Наличие запрещённого marker-а означает regression.
     if grep -Eq -- "${forbidden_regex}" "${log_path}"; then
-        fail_with_log_tail "найден запрещённый marker: ${marker_description}" "${log_path}"
+        fail_with_log_tail "Prohibited marker found: ${marker_description}" "${log_path}"
     fi
 }
 
@@ -463,7 +463,7 @@ require_asset_file() {
 
     # Нечитаемый или несуществующий selected file остаётся failed local acceptance.
     if [[ ! -f "${asset_path}" ]]; then
-        print_error "выбранный media file не найден: ${asset_path}"
+        print_error "Selected media file not found: ${asset_path}"
         exit 1
     fi
 }
@@ -590,7 +590,7 @@ run_playback_scenario() {
 
     # Release binary должен быть результатом предыдущего cargo build шага.
     if [[ ! -x "${FASTIPLAYER_BINARY}" ]]; then
-        print_error "release binary не найден или не executable: ${FASTIPLAYER_BINARY}"
+        print_error "release binary was not found or is not executable: ${FASTIPLAYER_BINARY}"
         exit 1
     fi
 
@@ -633,7 +633,7 @@ run_playback_scenario() {
             ;;
         *)
             # Status 137 означает failed graceful shutdown и последующий SIGKILL.
-            fail_with_log_tail "playback scenario '${scenario_name}' завершился с кодом ${playback_status}" "${log_path}"
+            fail_with_log_tail "playback scenario '${scenario_name}' ends with code ${playback_status}" "${log_path}"
             ;;
     esac
 

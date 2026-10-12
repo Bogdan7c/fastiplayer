@@ -171,46 +171,46 @@ impl<'candidate> YtDlpDashTransportComponent<'candidate> {
 #[derive(Debug, Error)]
 pub enum YtDlpTransportRequestError {
     /// Request material не принадлежит реализованному progressive/public subset-у.
-    #[error("YtDlp request material нельзя открыть progressive HTTP transport-ом")]
+    #[error("YtDlp request material cannot open progressive HTTP transport")]
     RequestMaterial(#[source] YtDlpRequestMaterialViolation),
     /// Request material не принадлежит progressive FTP subset-у.
-    #[error("YtDlp request material нельзя открыть progressive FTP transport-ом")]
+    #[error("YtDlp request material cannot be opened by progressive FTP transport")]
     FtpRequestMaterial(#[source] YtDlpRequestMaterialViolation),
     /// Request material не является single-resource HLS profile.
-    #[error("YtDlp request material нельзя выразить как HLS open request")]
+    #[error("YtDlp request material cannot be expressed as HLS open request")]
     HlsRequestMaterial(#[source] YtDlpHlsRequestMaterialViolation),
     /// Request material не соответствует static DASH profile.
-    #[error("YtDlp request material нельзя выразить как DASH open request")]
+    #[error("YtDlp request material cannot be expressed as DASH open request")]
     DashRequestMaterial(#[source] YtDlpDashRequestMaterialViolation),
     /// Request material не соответствует static HDS F4M/F4F VOD profile.
-    #[error("YtDlp request material нельзя выразить как HDS manifest request")]
+    #[error("YtDlp request material cannot be expressed as HDS manifest request")]
     HdsRequestMaterial(#[source] YtDlpHdsManifestRequestMaterialViolation),
     /// Request material не соответствует manifest-only Smooth Streaming profile.
-    #[error("YtDlp request material нельзя выразить как Smooth manifest request")]
+    #[error("YtDlp request material cannot be expressed as Smooth manifest request")]
     SmoothRequestMaterial(#[source] YtDlpSmoothManifestRequestMaterialViolation),
     /// Scoped segment/key query не прошли shared secret policy.
-    #[error("YtDlp HLS query override нарушает secret scope contract")]
+    #[error("YtDlp HLS query override breaches secret scope contract")]
     HlsQueryProjection(#[source] SecretQueryOverrideError),
     /// Scoped DASH segment query не прошёл shared secret policy.
-    #[error("YtDlp DASH query override нарушает secret scope contract")]
+    #[error("YtDlp DASH query override breaches secret scope contract")]
     DashQueryProjection(#[source] SecretQueryOverrideError),
     /// Validated relative fragment не разрешился в absolute transport target.
-    #[error("YtDlp DASH fragment target нельзя разрешить безопасно")]
+    #[error("YtDlp DASH fragment target cannot be safely resolved")]
     DashTargetResolution,
     /// Extractor вернул syntactically invalid либо non-HTTP target.
-    #[error("YtDlp component содержит недопустимый HTTP target")]
+    #[error("The YtDlp component contains an invalid HTTP target.")]
     Target(#[source] source_core::HttpRequestTargetError),
     /// Extractor вернул syntactically invalid либо non-FTP target.
-    #[error("YtDlp component содержит недопустимый FTP target")]
+    #[error("The YtDlp component contains an inadmissible FTP target")]
     FtpTarget(#[source] source_core::FtpRequestTargetError),
     /// Smooth manifest target нарушил neutral HTTP target contract после material proof.
-    #[error("YtDlp Smooth manifest содержит недопустимый HTTP target")]
+    #[error("YtDlp Smooth manifest contains an invalid HTTP target")]
     SmoothTarget(#[source] source_core::HttpRequestTargetError),
     /// Smooth child resources cannot receive a safe presentation-directory path scope.
     #[error("YtDlp Smooth manifest target cannot create a presentation resource path scope")]
     SmoothTargetResolution,
     /// HDS manifest target нарушил neutral HTTP target contract.
-    #[error("YtDlp HDS manifest содержит недопустимый HTTP target")]
+    #[error("YtDlp HDS manifest contains an invalid HTTP target")]
     HdsTarget(#[source] source_core::HttpRequestTargetError),
     /// HDS child/media resources cannot receive a safe path scope.
     #[error("YtDlp HDS manifest target cannot create a resource path scope")]
@@ -219,64 +219,64 @@ pub enum YtDlpTransportRequestError {
     #[error("YtDlp HLS playlist target cannot create a resource path scope")]
     HlsTargetResolution,
     /// Candidate exact/semantic identities нарушили source lineage.
-    #[error("YtDlp component identity нарушает source lineage")]
+    #[error("YtDlp component identity is a source lineage")]
     Identity(#[source] MediaComponentIdentityError),
     /// Internal redirect constant вышел за transport API budget.
-    #[error("YtDlp redirect policy нарушает transport contract")]
+    #[error("YtDlp redirect policy violates transport contract")]
     RedirectLimit(#[source] RedirectHopLimitError),
     /// Neutral request rejected scoped-material contract.
-    #[error("YtDlp transport request нарушает secret scope contract")]
+    #[error("YtDlp transport request violates secret scope contract")]
     Request(#[source] TransportOpenRequestError),
     /// Extractor headers/cookies нельзя безопасно сериализовать как HTTP fields.
-    #[error("YtDlp HTTP authorization material имеет недопустимую serialization")]
+    #[error("YtDlp HTTP authorization material has an ineligible serialization")]
     AuthorizationSerialization(#[source] HttpHeaderValidationError),
     /// Descriptor layout не совпал с service-owned component roles.
-    #[error("YtDlp component roles не совпадают с descriptor layout")]
+    #[error("YtDlp component roles are not the same as the descriptor layout")]
     LayoutMismatch,
     /// Progressive adapter не принимает manifest/segment transport family.
-    #[error("YtDlp component использует non-progressive transport family")]
+    #[error("YtDlp component uses non-progressive transport family")]
     NonProgressiveTransportFamily,
     /// Initial HLS profile принимает один selected manifest resource.
-    #[error("YtDlp HLS candidate должен содержать ровно один manifest component")]
+    #[error("The YtDlp HLS candidate must contain exactly one manifest component.")]
     HlsComponentCount,
     /// Smooth VOD candidate обязан содержать один muxed либо exact video+audio request shape.
-    #[error("YtDlp Smooth candidate имеет неподдерживаемое число request components")]
+    #[error("YtDlp Smooth candidate has an unsupported number of request components")]
     SmoothComponentCount,
     /// Smooth request roles обязаны совпадать с muxed либо separate descriptor layout.
-    #[error("YtDlp Smooth component roles не совпадают с descriptor layout")]
+    #[error("YtDlp Smooth component roles are not the same as the descriptor layout.")]
     SmoothComponentRole,
     /// Smooth VOD projection принимает muxed либо separate video+audio descriptor layout.
-    #[error("YtDlp Smooth candidate должен иметь muxed либо separate A/V layout")]
+    #[error("YtDlp Smooth candidate must have a muxed or separate A/V layout")]
     SmoothLayout,
     /// Separate Smooth components должны ссылаться на один byte-exact presentation Manifest.
-    #[error("YtDlp Smooth A/V components ссылаются на разные presentation manifests")]
+    #[error("YtDlp Smooth A/V components link to different presentation manifests")]
     SmoothPresentationTargetMismatch,
     /// Separate Smooth components должны иметь один effective HTTP authorization context.
-    #[error("YtDlp Smooth A/V components имеют разные presentation request contexts")]
+    #[error("YtDlp Smooth A/V components have different presentation request contexts")]
     SmoothPresentationRequestContextMismatch,
     /// Descriptor transport обязан быть exact Smooth Streaming.
-    #[error("YtDlp Smooth candidate использует другую transport family")]
+    #[error("YtDlp Smooth candidate uses another transport family")]
     SmoothTransport,
     /// Approved Smooth row обязан описывать fragmented ISO BMFF container.
-    #[error("YtDlp Smooth candidate использует неподдерживаемый container")]
+    #[error("YtDlp Smooth candidate uses unsupported container")]
     SmoothContainer,
     /// Approved Smooth row обязан содержать H.264 video.
-    #[error("YtDlp Smooth candidate использует неподдерживаемый video codec")]
+    #[error("YtDlp Smooth candidate uses unsupported video codec")]
     SmoothVideoCodec,
     /// Approved Smooth row обязан содержать AAC audio.
-    #[error("YtDlp Smooth candidate использует неподдерживаемый audio codec")]
+    #[error("YtDlp Smooth candidate uses unsupported audio codec")]
     SmoothAudioCodec,
     /// S38 HDS base profile accepts one provider-probed manifest component.
-    #[error("YtDlp HDS candidate должен содержать ровно один content-probed component")]
+    #[error("The YtDlp HDS candidate should contain exactly one content-probed component.")]
     HdsComponentShape,
     /// HDS component role must preserve the provider-probed resource contract.
-    #[error("YtDlp HDS component должен иметь content-probed role")]
+    #[error("YtDlp HDS component must have a content-probed role")]
     HdsComponentRole,
     /// Descriptor transport must be HDS.
-    #[error("YtDlp HDS candidate использует другую transport family")]
+    #[error("YtDlp HDS candidate uses another transport family")]
     HdsTransport,
     /// S30 F4F container is required.
-    #[error("YtDlp HDS candidate использует неподдерживаемый container")]
+    #[error("YtDlp HDS candidate uses unsupported container")]
     HdsContainer,
 }
 

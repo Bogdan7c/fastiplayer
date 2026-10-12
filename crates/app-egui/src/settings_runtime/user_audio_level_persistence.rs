@@ -167,7 +167,7 @@ impl SettingsRuntime {
                 }
                 tracing::warn!(
                     expected_muted = expected.is_muted(),
-                    "Плеер не подтвердил восстановленную громкость вовремя; сохранение громкости продолжает следить за плеером"
+                    "The player did not confirm the restored volume in time; keeping volume continues to monitor the player"
                 );
                 self.user_audio_level.sync = PlayerAudioLevelSync::Following;
                 true
@@ -230,7 +230,7 @@ impl SettingsRuntime {
                     final_state = ?report.final_state,
                     attempted_volume = target.audible_volume().as_config_ratio(),
                     attempted_muted = target.is_muted(),
-                    "Не удалось сохранить громкость в config"
+                    "Failed to keep the volume in config"
                 );
                 return Ok(UserAudioLevelFlushOutcome::Failed);
             }
@@ -298,7 +298,7 @@ impl SettingsRuntime {
             PlaybackAudioLevelDelivery::NotDelivered => {
                 // Config уже записан; плеер применит его при следующем binding.
                 tracing::warn!(
-                    "Громкость из настроек сохранена, но не доставлена в текущее воспроизведение"
+                    "Loudness from settings saved but not delivered to current playback"
                 );
             }
         }

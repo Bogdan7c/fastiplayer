@@ -239,7 +239,7 @@ impl PlaylistPersistenceOwner {
     }
 
     pub(super) fn record_worker_start_error(&mut self, error: &SaveWorkerStartError) {
-        tracing::error!(error = %error, "Не удалось запустить playlist state save worker");
+        tracing::error!(error = %error, "Failed to launch playlist state save worker");
         self.view.fault = Some(PlaylistPersistenceFault::WorkerStart);
     }
 
@@ -262,7 +262,7 @@ impl PlaylistPersistenceOwner {
         let immutable = match ImmutableSaveSnapshot::capture(revision, snapshot) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                tracing::error!(error = %error, "Не удалось снять immutable playlist snapshot");
+                tracing::error!(error = %error, "Unable to remove immutable playlist snapshot");
                 self.view.fault = Some(PlaylistPersistenceFault::SnapshotCapture);
                 return;
             }
@@ -435,7 +435,7 @@ impl PlaylistPersistenceOwner {
                 self.view.fault = Some(PlaylistPersistenceFault::SnapshotCapture);
                 tracing::error!(
                     revision = revision.value(),
-                    "Не удалось снять committed-only playlist snapshot при shutdown"
+                    "I couldn't get it off committed-only playlist snapshot upon shutdown"
                 );
                 (None, Some(revision))
             }
@@ -644,7 +644,7 @@ mod tests {
             .queue()
             .iter_playable_ids()
             .next()
-            .expect("fixture должен содержать первый playable item");
+            .expect("The fixture contains the first playable item.");
         assert!(controller.select_row(Some(first_item)));
 
         let (ports, _receiver) = owner_ports();

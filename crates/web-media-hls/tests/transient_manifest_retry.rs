@@ -272,7 +272,7 @@ fn assert_no_containing_segment_request(server: &TestServer) {
         request_lines
             .iter()
             .all(|line| !line.contains(&format!("/segment-{CONTAINING_SEGMENT_INDEX}.ts"))),
-        "post-target seek не должен открывать containing segment: {request_lines:?}"
+        "post-target seek not open containing segment: {request_lines:?}"
     );
 }
 
@@ -343,7 +343,7 @@ fn transient_partial_body_restarts_whole_candidate_once_without_splice() {
 
     let (mut demuxer, receipt) = run_seek(&server, 1);
     let ProgressiveAsyncSeekOutcome::Succeeded(result) = receipt.outcome else {
-        panic!("single fresh restart должен успешно доказать target: {receipt:?}");
+        panic!("single fresh restart successfully proves target: {receipt:?}");
     };
     assert_eq!(
         result.actual_position.as_duration(),
@@ -352,16 +352,16 @@ fn transient_partial_body_restarts_whole_candidate_once_without_splice() {
     assert_eq!(
         target_attempts.load(Ordering::Acquire),
         2,
-        "второй physical request доказывает, что partial A не попал в completed cache"
+        "The second physical request proves that partial A did not make it to the completed cache."
     );
     assert_no_containing_segment_request(&server);
     let landing = first_post_seek_video_packet(&mut *demuxer);
     let landing_offset = landing
         .byte_offset
-        .expect("committed packet должен сохранять source provenance");
+        .expect("committed packet must be preserved source provenance");
     assert!(
         landing_offset < u64::try_from(incompatible_prefix.len()).expect("prefix length"),
-        "fresh parser обязан считать byte offset от B, а не от A+B splice: {landing_offset}"
+        "fresh parser must byte offset from B, not A+B splice: {landing_offset}"
     );
 }
 
@@ -406,7 +406,7 @@ fn persistent_transient_body_failure_is_bounded_to_two_requests() {
     let (_demuxer, receipt) = run_seek(&server, 1);
     assert!(
         matches!(receipt.outcome, ProgressiveAsyncSeekOutcome::Failed),
-        "persistent transient failure должна остаться terminal: {receipt:?}"
+        "persistent transient failure should remain terminal: {receipt:?}"
     );
     assert_eq!(target_attempts.load(Ordering::Acquire), 2);
     assert_no_containing_segment_request(&server);
@@ -438,7 +438,7 @@ fn successful_body_uses_single_request() {
 
     let (_demuxer, receipt) = run_seek(&server, 1);
     let ProgressiveAsyncSeekOutcome::Succeeded(result) = receipt.outcome else {
-        panic!("полный post-target body должен успешно завершить seek: {receipt:?}");
+        panic!("Full post-target body successfully completes seek: {receipt:?}");
     };
     assert_eq!(
         result.actual_position.as_duration(),
@@ -611,7 +611,7 @@ fn cancellation_of_discontinuous_partial_body_prevents_stale_publication_and_res
     assert_eq!(
         attempts_before_latest,
         1,
-        "cancelled old target нельзя рестартовать до latest seek: requests={:?}",
+        "cancelled old target cannot be restarted latest seek: requests={:?}",
         server.requests()
     );
 
@@ -621,13 +621,13 @@ fn cancellation_of_discontinuous_partial_body_prevents_stale_publication_and_res
     let superseded_receipt = receipts
         .iter()
         .find(|receipt| receipt.fence.request_id.value() == 1)
-        .unwrap_or_else(|| panic!("receipt старого discontinuous seek потерян: {receipts:?}"));
+        .unwrap_or_else(|| panic!("receipt old-school discontinuous seek lost: {receipts:?}"));
     assert!(
         matches!(
             &superseded_receipt.outcome,
             ProgressiveAsyncSeekOutcome::Superseded
         ),
-        "старый discontinuous seek обязан завершиться именно как superseded: {receipts:?}"
+        "Old discontinuous seek must end as superseded: {receipts:?}"
     );
     let latest_result = receipts
         .iter()
@@ -641,7 +641,7 @@ fn cancellation_of_discontinuous_partial_body_prevents_stale_publication_and_res
         })
         .unwrap_or_else(|| {
             panic!(
-                "новейший backward seek обязан завершиться успешно: {receipts:?}; requests={:?}",
+                "The newest backward seek must be completed successfully: {receipts:?}; requests={:?}",
                 server.requests()
             )
         });
@@ -653,6 +653,6 @@ fn cancellation_of_discontinuous_partial_body_prevents_stale_publication_and_res
     assert_eq!(
         presented_packet.pts,
         Duration::from_secs(40),
-        "superseded discontinuous epoch не должна публиковать packet старого target-а"
+        "superseded discontinuous epoch should not be published packet old-school target-?"
     );
 }

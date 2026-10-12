@@ -17,7 +17,7 @@ fn session_with_accepted_live_scrub_landing() -> PlayerSession {
             MediaTime::from_secs(8),
         )))
         .unwrap();
-    assert!(session.seek_commit().is_some(), "seek должен быть принят");
+    assert!(session.seek_commit().is_some(), "seek must be accepted");
     session
 }
 
@@ -38,13 +38,13 @@ fn first_track_list_marker_keeps_active_live_scrub_seek() {
 
     assert!(
         session.seek_commit().is_some(),
-        "маркер самого seek-а не должен отменять активную перемотку"
+        "The seek marker itself should not cancel the active rewinding."
     );
     assert!(session.snapshot().timeline.scrubbing);
     assert_eq!(
         session.snapshot().timeline.target_position,
         Some(MediaTime::from_secs(8)),
-        "цель перемотки должна сохраниться"
+        "rewinding target must be maintained"
     );
 }
 

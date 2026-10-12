@@ -55,7 +55,7 @@ impl StreamFailureSignal {
     pub(crate) fn record_failure(&self, error: &dyn std::fmt::Display) {
         let already_failed = self.failed.swap(true, Ordering::AcqRel);
         if !already_failed {
-            warn!(error = %error, "Поток вывода звука сломан; player пересоздаст output");
+            warn!(error = %error, "Output stream broken; player recreates output");
         }
     }
 
@@ -91,7 +91,7 @@ mod tests {
         // Error callback CPAL выполняется в другом потоке — проверяем именно этот путь.
         thread::spawn(move || callback_signal.record_failure(&"device unplugged"))
             .join()
-            .expect("поток error callback-а не должен паниковать");
+            .expect("Error callback streams should not panic");
 
         assert_eq!(owner_signal.health(), AudioOutputStreamHealth::Failed);
     }

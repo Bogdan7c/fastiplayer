@@ -64,11 +64,7 @@ impl MissingXmlBudget {
 impl fmt::Display for MissingXmlBudget {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Сообщение не содержит входной XML и безопасно для diagnostics.
-        write!(
-            formatter,
-            "не задан обязательный XML budget `{}`",
-            self.field
-        )
+        write!(formatter, "No mandatory XML budget `{}`", self.field)
     }
 }
 

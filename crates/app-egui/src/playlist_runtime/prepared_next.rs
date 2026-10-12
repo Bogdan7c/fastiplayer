@@ -241,10 +241,7 @@ impl PreparedNextOwner {
                 self.state = PreparedNextState::Failed { key };
             }
             SpeculativeMediaPreparationPoll::Failed(failure) => {
-                tracing::debug!(
-                    ?failure,
-                    "Next-item speculative preparation завершилась ошибкой"
-                );
+                tracing::debug!(?failure, "Next-item speculative preparation ended in error");
                 self.state = PreparedNextState::Failed { key };
             }
             SpeculativeMediaPreparationPoll::Preparing => {}

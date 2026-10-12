@@ -661,7 +661,7 @@ impl<Materializer, SubmissionBinding> ActiveVideoPipelinePointers<Materializer, 
 }
 
 /// Validated post-Installed token: все fallible work завершено до его создания.
-#[must_use = "после matching Installed token обязан немедленно выполнить infallible commit"]
+#[must_use = "afterward matching Installed token must immediately comply with infallible commit"]
 pub(crate) struct PreparedPostInstalledVideoPipelineCommit<'slot, Materializer, SubmissionBinding> {
     /// Exclusive borrow не позволяет lifecycle owner-у cancel/drop slot до commit-а.
     owner_slot: &'slot mut StagedVideoPipelineCandidateSlot<Materializer, SubmissionBinding>,

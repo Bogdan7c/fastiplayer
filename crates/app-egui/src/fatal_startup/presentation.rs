@@ -98,7 +98,7 @@ pub(super) fn deliver_notice(
         reason = ?error.reason(),
         phase = ?error.phase(),
         detail = %error.technical_detail(),
-        "Фатальная ошибка запуска"
+        "Fatal startup error"
     );
 
     let notice = notice_for(error.reason(), error.phase());
@@ -110,7 +110,7 @@ pub(super) fn deliver_notice(
             Err(failure) => tracing::warn!(
                 channel = channel.channel_name(),
                 ?failure,
-                "Канал показа фатальной ошибки не сработал; пробуем следующий"
+                "Fatal error presentation channel failed; trying the next channel"
             ),
         }
     }
@@ -123,7 +123,7 @@ fn write_notice_as_text(notice: &FatalStartupNotice, text_output: &mut dyn Write
     let written = writeln!(text_output, "{}.\n{}", notice.title, notice.message)
         .and_then(|()| text_output.flush());
     if let Err(write_error) = written {
-        tracing::warn!(%write_error, "Не удалось вывести текст фатальной ошибки в stderr");
+        tracing::warn!(%write_error, "Could not write the fatal error to stderr");
     }
 }
 
@@ -142,10 +142,10 @@ impl FatalStartupPresenter for SystemFatalStartupPresenter {
         let delivery = deliver_notice(error, &channels, &mut std::io::stderr().lock());
         match delivery {
             NoticeDelivery::ShownBy(channel) => {
-                tracing::info!(channel, "Фатальная ошибка запуска показана пользователю");
+                tracing::info!(channel, "Fatal startup error presented to the user");
             }
             NoticeDelivery::TextOutputOnly => tracing::warn!(
-                "Ни окно ошибки, ни уведомление недоступны; текст ошибки есть только в stderr"
+                "Neither an error window nor a notification is available; the error is only in stderr"
             ),
         }
     }

@@ -246,10 +246,10 @@ impl Vp9RequirementRejection {
     pub fn user_message(self) -> String {
         match self {
             Self::UnsupportedBitDepth(bit_depth) => {
-                format!("VP9 {bit_depth}-bit не поддерживается: P012/12-bit path вне scope Phase 9")
+                format!("VP9 {bit_depth}-bit not supported: P012/12-bit path outside scope Phase 9")
             }
             Self::UnsupportedChroma(chroma) => format!(
-                "VP9 chroma/profile combination {chroma} не поддерживается: production path принимает только VP9 Profile 0/2 4:2:0"
+                "VP9 chroma/profile combination {chroma} not supported: production path accepts only VP9 Profile 0/2 4:2:0"
             ),
         }
     }
@@ -397,7 +397,7 @@ pub fn validate_vp9_strict_hdr_core(
     } else {
         Err(Vp9StrictHdrValidationError::InvalidField {
             field: Vp9MetadataField::Transfer,
-            expected: "PQ или HLG".to_string(),
+            expected: "PQ or HLG".to_string(),
             actual: transfer_name,
         })
     }
@@ -873,7 +873,7 @@ mod tests {
         let probe = probe_vp9_packet_requirement(&packet_bytes);
 
         let Vp9RequirementProbe::Candidate(candidate) = probe else {
-            panic!("profile0 8-bit 4:2:0 должен дать candidate, получено {probe:?}");
+            panic!("profile0 8-bit 4:2:0 should give the candidate, received {probe:?}");
         };
         assert_eq!(candidate.decoded_format, Vp9DecodedFormatRequirement::Nv12);
         assert_eq!(
@@ -901,7 +901,7 @@ mod tests {
         let probe = probe_vp9_packet_requirement(&packet_bytes);
 
         let Vp9RequirementProbe::Candidate(candidate) = probe else {
-            panic!("profile2 10-bit 4:2:0 должен дать P010 candidate, получено {probe:?}");
+            panic!("profile2 10-bit 4:2:0 should give P010 candidate, received {probe:?}");
         };
         assert_eq!(candidate.decoded_format, Vp9DecodedFormatRequirement::P010);
         assert_eq!(
@@ -1205,7 +1205,7 @@ mod tests {
         let packet_bytes = build_vp9_keyframe(fixture);
         let Vp9RequirementProbe::Candidate(candidate) = probe_vp9_packet_requirement(&packet_bytes)
         else {
-            panic!("fixture должен давать VP9 candidate");
+            panic!("Fixture: The VP9 candidate");
         };
         candidate
     }

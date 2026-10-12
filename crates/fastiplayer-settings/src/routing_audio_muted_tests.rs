@@ -28,7 +28,7 @@ fn audio_muted_route_has_no_player_worker_payload() {
         .find(|route| route.route == AppRuntimeRoute::Player)
         .expect("player route exists");
     let RuntimeCommittedUpdate::Player(update) = &player_route.update else {
-        panic!("audio.muted должен попасть в player route update");
+        panic!("audio.muted should be included in the player route update");
     };
 
     assert_eq!(

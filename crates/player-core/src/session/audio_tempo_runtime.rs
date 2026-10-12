@@ -126,7 +126,7 @@ impl PlayerSession {
             primed_samples = history.len(),
             produced_warmup_frames = prime_report.produced_stretched_output().frame_count().get(),
             pending_warmup_frames = prime_report.pending_processor_output().frame_count().get(),
-            "Tempo processor праймлен passthrough историей"
+            "Tempo processor primed passthrough history"
         );
         Ok(())
     }

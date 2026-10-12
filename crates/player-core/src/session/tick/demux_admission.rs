@@ -344,7 +344,7 @@ pub(super) fn read_demux_packets(
                             window_end_ms = ?session
                                 .playback_window_end()
                                 .map(|end| end.as_duration().as_millis()),
-                            "Playback window достиг synthetic EOF"
+                            "Playback window reaches synthetic EOF"
                         );
                         session.enter_eof_drain();
                         break;
@@ -420,7 +420,7 @@ pub(super) fn read_demux_packets(
                 session.schedule_installed_demux_retry(Instant::now(), hint);
                 trace!(
                     retry_after_ms = hint.retry_after().as_millis(),
-                    "Demux временно не готов; exact-generation retry запланирован"
+                    "Demux temporarily not ready; exact-generation retry scheduled"
                 );
                 // Readiness не является packet, EOF или error и не мутирует lifecycle.
                 break;
@@ -441,7 +441,7 @@ pub(super) fn read_demux_packets(
             Err(error) => {
                 session.clear_installed_demux_retry_after_terminal_event();
                 session.note_demux_error_for_seek_preroll_diagnostics();
-                tracing::warn!(error = %error, "Ошибка чтения packet");
+                tracing::warn!(error = %error, "The packet reading error");
                 session.mark_fatal_error(
                     super::demux_read_failure::player_error_for_demux_read_failure(&error),
                 );
@@ -470,7 +470,7 @@ pub(super) fn read_demux_packets(
             packets_read_budget = packets_read,
             packet_budget,
             catch_up_deadline_active = catch_up_deadline.is_some(),
-            "Video backlog recovery packets агрегированы без per-packet telemetry"
+            "Video backlog recovery packets aggregated without per-packet telemetry"
         );
     }
 
@@ -564,7 +564,7 @@ pub(super) fn audio_packet_timing_from_media_packet(
         warn!(
             packet_track_id = %packet.track_id,
             timing_track_id = %track_pts.track_id,
-            "Audio packet raw PTS принадлежит другому track; decoder timing помечен unknown"
+            "Audio packet raw PTS belongs to another track; decoder timing is marked unknown"
         );
         return audio_core::AudioPacketTiming::unknown();
     }
@@ -573,7 +573,7 @@ pub(super) fn audio_packet_timing_from_media_packet(
         warn!(
             packet_track_id = %packet.track_id,
             time_base = ?track_pts.time_base,
-            "Audio packet raw PTS имеет некорректную time base; decoder timing помечен unknown"
+            "Audio packet raw PTS has incorrect time base; decoder timing is marked unknown"
         );
         return audio_core::AudioPacketTiming::unknown();
     };
@@ -609,7 +609,7 @@ pub(super) fn audio_packet_dts_units(
             dts_track_id = %track_dts.track_id,
             pts_time_base = ?track_pts.time_base,
             dts_time_base = ?track_dts.time_base,
-            "Audio packet raw DTS не согласован с PTS; DTS не передан decoder boundary"
+            "Audio packet raw DTS not agreed with PTS; DTS not transferred decoder boundary"
         );
         return None;
     }
@@ -631,7 +631,7 @@ pub(super) fn audio_packet_duration_units(
             duration_track_id = %track_duration.track_id,
             pts_time_base = ?track_pts.time_base,
             duration_time_base = ?track_duration.time_base,
-            "Audio packet raw duration не согласована с PTS; duration не передана decoder boundary"
+            "Audio packet raw duration not agreed with PTS; duration not transferred to decoder boundary"
         );
         return None;
     }

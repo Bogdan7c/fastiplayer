@@ -148,7 +148,7 @@ impl PlaylistFileDialogJob {
     pub(crate) fn spawn(window: &Window, wake_port: AppWakePort) -> Result<Self, String> {
         let dialog = rfd::AsyncFileDialog::new()
             .set_parent(window)
-            .set_title("Добавить файлы в плейлист")
+            .set_title("Add files to Playlist")
             .add_filter(
                 "Supported Media",
                 local_media::SUPPORTED_LOCAL_MEDIA_EXTENSIONS,
@@ -188,12 +188,10 @@ impl PlaylistFileDialogJob {
                 let completion = runner(worker_cancel);
                 if let Err(error) = publisher.publish_completion(completion) {
                     let CompletionPublishError::AlreadyPublished = error;
-                    tracing::error!(
-                        "Multi-file dialog попытался опубликовать второй terminal result"
-                    );
+                    tracing::error!("Multi-file dialog attempts to publish second terminal result");
                 }
             })
-            .map_err(|error| format!("Не удалось запустить multi-file dialog: {error}"))?;
+            .map_err(|error| format!("Failed to launch multi-file dialog: {error}"))?;
         Ok(Self {
             mailbox,
             join_handle: Some(join_handle),
@@ -572,7 +570,7 @@ impl PlaylistRuntime {
             Ok(changed) => changed,
             Err(_) => {
                 self.ui_interaction
-                    .set_safe_feedback("Не удалось открыть диалог выбора файлов");
+                    .set_safe_feedback("Could not open the file picker");
                 true
             }
         }
@@ -616,7 +614,7 @@ impl PlaylistRuntime {
             Ok(super::UrlAppendActionOutcome::NoCapacity) => self
                 .ui_interaction
                 .url_draft_mut()
-                .set_safe_error(PlaylistUrlDraftError::new("Плейлист заполнен")),
+                .set_safe_error(PlaylistUrlDraftError::new("Playlist's full.")),
             Err(error) => {
                 let safe_message = super::url_draft_message::url_append_error_message(error);
                 self.ui_interaction
@@ -639,11 +637,11 @@ impl PlaylistRuntime {
             super::PlaylistConfirmationApplyOutcome::UrlNoCapacity => self
                 .ui_interaction
                 .url_draft_mut()
-                .set_safe_error(PlaylistUrlDraftError::new("Плейлист заполнен")),
+                .set_safe_error(PlaylistUrlDraftError::new("Playlist's full.")),
             super::PlaylistConfirmationApplyOutcome::CommitRejected => self
                 .ui_interaction
                 .url_draft_mut()
-                .set_safe_error(PlaylistUrlDraftError::new("Не удалось добавить URL")),
+                .set_safe_error(PlaylistUrlDraftError::new("Could not add URL")),
             // Отказ импорта после подтверждения: то же сообщение, что у прямого Continue.
             super::PlaylistConfirmationApplyOutcome::Import(outcome) => {
                 if let Some(feedback) = outcome.failure_feedback() {
@@ -669,14 +667,12 @@ impl PlaylistRuntime {
             Ok(None) => {}
             Ok(Some(paths)) => {
                 if let Err(error) = self.start_manual_file_add(paths) {
-                    tracing::warn!(?error, "Manual Add не стартовал");
+                    tracing::warn!(?error, "Manual Add has not started.");
                     self.ui_interaction
-                        .set_safe_feedback("Не удалось начать добавление файлов");
+                        .set_safe_feedback("Could not start adding files");
                 }
             }
-            Err(()) => self
-                .ui_interaction
-                .set_safe_feedback("Диалог выбора файлов завершился с ошибкой"),
+            Err(()) => self.ui_interaction.set_safe_feedback("File picker failed"),
         }
         true
     }
@@ -720,14 +716,14 @@ mod tests {
             Arc::new(ChannelWakeEmitter(wake_sender)),
         );
         let job = PlaylistFileDialogJob::spawn_test(wake_port, completion)
-            .expect("hermetic dialog runner должен запуститься");
+            .expect("Hermetic dialog runner should start");
         (job, wake_receiver)
     }
 
     fn wait_for_dialog_wake(receiver: &Receiver<AppWakeEvent>) {
         receiver
             .recv_timeout(Duration::from_secs(1))
-            .expect("terminal dialog result должен разбудить owner");
+            .expect("The terminal dialog result should wake up the owner.");
     }
 
     #[test]
@@ -758,7 +754,7 @@ mod tests {
         let mut draft = PlaylistUrlDraftState::default();
         draft.open();
         draft.replace_text("https://example.test/first.mp4?token=secret".to_string());
-        draft.set_safe_error(PlaylistUrlDraftError::new("Безопасная ошибка"));
+        draft.set_safe_error(PlaylistUrlDraftError::new("Safe mistake"));
         draft.acknowledge_focus_request();
 
         assert!(!draft.requests_focus());
@@ -775,12 +771,12 @@ mod tests {
         let (mut job, wake_receiver) = test_dialog_job(PlaylistFileDialogCompletion::Cancelled);
         wait_for_dialog_wake(&wake_receiver);
 
-        let completion = job.drain().expect("Cancel terminal должен быть lossless");
+        let completion = job.drain().expect("Cancel terminal should be lost.");
         assert_eq!(
             manual_add_paths_from_dialog_completion(completion),
             Ok(None)
         );
-        assert!(job.drain().is_none(), "terminal нельзя доставить повторно");
+        assert!(job.drain().is_none(), "terminal cannot be delivered again");
     }
 
     #[test]
@@ -791,16 +787,14 @@ mod tests {
         ));
         wait_for_dialog_wake(&wake_receiver);
 
-        let completion = job
-            .drain()
-            .expect("Selected terminal должен быть доставлен");
+        let completion = job.drain().expect("Selected terminal must be delivered.");
         assert_eq!(
             manual_add_paths_from_dialog_completion(completion),
             Ok(Some(expected_paths))
         );
         assert!(
             job.drain().is_none(),
-            "result handoff должен быть exactly once"
+            "The result handoff should be exactly once"
         );
     }
 

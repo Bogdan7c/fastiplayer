@@ -25,10 +25,10 @@ fn load_profile() -> Value {
     let profile_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PROFILE_PATH);
     // Ошибка чтения является test infrastructure failure и сохраняет safe local path.
     let profile_bytes = fs::read(&profile_path)
-        .unwrap_or_else(|error| panic!("не удалось прочитать {}: {error}", profile_path.display()));
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", profile_path.display()));
     // Невалидный checked-in JSON обязан немедленно уронить focused test.
     serde_json::from_slice(&profile_bytes)
-        .unwrap_or_else(|error| panic!("не удалось разобрать {}: {error}", profile_path.display()))
+        .unwrap_or_else(|error| panic!("I couldn't make out {}: {error}", profile_path.display()))
 }
 
 /// Возвращает обязательное строковое поле profile row.
@@ -37,7 +37,7 @@ fn required_string<'value>(value: &'value Value, field: &str) -> &'value str {
     value
         .get(field)
         .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("обязательное строковое поле `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("No mandatory string field {field}"))
 }
 
 /// Возвращает обязательный array из profile document.
@@ -47,7 +47,7 @@ fn required_array<'value>(value: &'value Value, field: &str) -> &'value [Value] 
         .get(field)
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .unwrap_or_else(|| panic!("обязательный array `{field}` отсутствует"))
+        .unwrap_or_else(|| panic!("Mandatory array '{field}' not available"))
 }
 
 /// Находит одну exact row по stable ID.
@@ -55,7 +55,7 @@ fn required_row_by_id<'rows>(rows: &'rows [Value], expected_id: &str) -> &'rows 
     // Stable ID отделяет exact wire decision от соседних variant-ов.
     rows.iter()
         .find(|row| required_string(row, "id") == expected_id)
-        .unwrap_or_else(|| panic!("обязательная S39 row `{expected_id}` отсутствует"))
+        .unwrap_or_else(|| panic!("Mandatory S39 row '{expected_id}' missing"))
 }
 
 /// S39 не повышает identity-only RTMP inventory до недоказанного wire provider-а.
@@ -81,7 +81,7 @@ fn exact_rtmp_variants_remain_excluded_without_wire_fixtures() {
     let rtmp_identity_inventory = required_array(&profile, "protocol_aliases")
         .iter()
         .find(|family| required_string(family, "family") == "rtmp")
-        .unwrap_or_else(|| panic!("S00 RTMP identity inventory отсутствует"));
+        .unwrap_or_else(|| panic!("S00 RTMP identity inventory not available"));
     // Inventory не включает TLS/tunnel variants и не даёт им implicit admission.
     assert_eq!(
         required_array(rtmp_identity_inventory, "aliases"),
@@ -95,7 +95,7 @@ fn exact_rtmp_variants_remain_excluded_without_wire_fixtures() {
             target_rows
                 .iter()
                 .all(|row| row.get("transport").and_then(Value::as_str) != Some(exact_variant)),
-            "exact RTMP variant `{exact_variant}` ошибочно повышен до Target"
+            "exact RTMP variant '{exact_variant}' mistakenly upgraded to Target"
         );
     }
 

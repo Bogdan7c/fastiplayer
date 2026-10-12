@@ -62,7 +62,7 @@ fn staged_cold_resume_commits_nonzero_position_after_target_frame_and_audio_resu
 
     // Cold open проходит настоящий staged install protocol с известной request identity.
     let request_id = MediaInstallRequestId::from_non_zero(
-        NonZeroU64::new(3_551).expect("cold resume request id должен быть non-zero"),
+        NonZeroU64::new(3_551).expect("cold resume request id must be non-zero"),
     );
     let (install_receipt, install_port) = MediaInstallReceipt::new(request_id);
     let mut session = PlayerSession::new();
@@ -87,9 +87,9 @@ fn staged_cold_resume_commits_nonzero_position_after_target_frame_and_audio_resu
         media_instance_id, ..
     } = install_receipt
         .try_take_completion()
-        .expect("authorized cold open должен завершиться Installed")
+        .expect("Authorized cold open must end with Installed")
     else {
-        panic!("успешный cold open не должен завершаться failure/cancellation");
+        panic!("Successful cold open must not be completed failure/cancellation");
     };
 
     // Compatibility install получает concrete decoder/output после atomic media switch.
@@ -127,7 +127,7 @@ fn staged_cold_resume_commits_nonzero_position_after_target_frame_and_audio_resu
     // До worker receipt-а запрещены fake UI commit, Playing и скрытый synchronous fallback seek.
     let commands = prepared_seek_port.commands();
     let [(prepared_seek_request_id, prepared_seek_request)] = commands.as_slice() else {
-        panic!("cold resume должен отправить ровно один worker seek request");
+        panic!("Cold resume sends exactly one worker request");
     };
     assert_eq!(prepared_seek_request.timestamp, saved_position);
     let mut observed_events = session.take_events();
@@ -158,7 +158,7 @@ fn staged_cold_resume_commits_nonzero_position_after_target_frame_and_audio_resu
         if let Some(presented_frame) = session.pipeline.present_video_frame() {
             assert!(
                 presented_frame.pts >= saved_position,
-                "decode anchor/pre-target frame не имеет права становиться видимым"
+                "decode anchor/pre-target frame It has no right to become visible"
             );
         }
         observed_events.extend(session.take_events());
@@ -170,7 +170,7 @@ fn staged_cold_resume_commits_nonzero_position_after_target_frame_and_audio_resu
     // Final state доказывает frame, audio acceptance, restore receipt и отсутствие zero fallback-а.
     assert!(
         session.seek_commit().is_none(),
-        "cold resume не закрыл seek: diagnostics={:#?}, sent_packets={:#?}, events={:#?}",
+        "cold resume does not close seek: diagnostics={:#?}, sent_packets={:#?}, events={:#?}",
         session
             .active_seek_diagnostics(Instant::now(), &seek_regression_fast_preroll_tick_config()),
         decoder.sent_packets(),
@@ -186,21 +186,21 @@ fn staged_cold_resume_commits_nonzero_position_after_target_frame_and_audio_resu
     assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 1);
     assert_eq!(
         presented_frame_count, 1,
-        "cold resume должен представить только landing frame, а не decode anchor"
+        "cold resume I have to imagine landing frame, not decode anchor"
     );
     assert_eq!(session.playback_state(), PlaybackState::Playing);
     assert_eq!(session.snapshot().current_position, saved_position);
     assert!(
         synchronous_seek_log
             .lock()
-            .expect("synchronous seek log должен оставаться доступен")
+            .expect("The synchronous request log is still available.")
             .is_empty(),
-        "worker-receipted restore не должен скрыто вызывать synchronous demux seek"
+        "worker-receipted restore must not covertly call synchronous demux seek"
     );
     assert_eq!(
         restore_rx
             .recv()
-            .expect("target presentation и audio resume должны завершить restore"),
+            .expect("Target presentation and audio resume should be completed"),
         InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
     );
 
@@ -264,5 +264,5 @@ fn event_index(events: &[PlayerEvent], predicate: impl Fn(&PlayerEvent) -> bool)
     events
         .iter()
         .position(predicate)
-        .unwrap_or_else(|| panic!("ожидаемый lifecycle event отсутствует: {events:#?}"))
+        .unwrap_or_else(|| panic!("Expected lifecycle event missing: {events:#?}"))
 }

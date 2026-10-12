@@ -131,7 +131,7 @@ impl ExternalDragReceiver {
         let manager = match DataDeviceManagerState::bind(globals, queue_handle) {
             Ok(manager) => Some(manager),
             Err(error) => {
-                warn!("wl_data_device_manager недоступен, drag & drop из других приложений отключён: {error}");
+                warn!("wl_data_device_manager unavailable, drag & drop from other apps disabled: {error}");
                 None
             },
         };
@@ -225,7 +225,7 @@ impl WinitState {
 
         let window_id = make_wid(surface);
         let Some(scale_factor) = self.external_drag_scale_factor(window_id) else {
-            debug!("drag & drop над поверхностью, не принадлежащей окну winit: игнорируем");
+            debug!("drag & drop over a surface that does not belong to the winit window: ignore");
             return;
         };
         let Some(offer) = data_device.data::<DataDeviceData>().and_then(DataDeviceData::drag_offer)
@@ -296,14 +296,14 @@ impl WinitState {
         let pipe = match offer.receive(active.offered_name.clone()) {
             Ok(pipe) => pipe,
             Err(error) => {
-                warn!("drag & drop: не удалось запросить данные у источника: {error}");
+                warn!("drag & drop: failed to request data at source: {error}");
                 self.abort_external_drag(&offer, &active);
                 return;
             },
         };
         // Запрос `receive` должен дойти до источника до того, как мы начнём ждать пайп.
         if let Err(error) = connection.flush() {
-            warn!("drag & drop: не удалось отправить запрос данных композитору: {error}");
+            warn!("drag & drop: failed to send a request for data to the composer: {error}");
         }
         self.watch_drop_pipe(pipe, offer, active);
     }
@@ -327,7 +327,7 @@ impl WinitState {
         match reader_token {
             Ok(token) => session.borrow_mut().reader_token = Some(token),
             Err(error) => {
-                warn!("drag & drop: не удалось зарегистрировать чтение данных: {}", error.error);
+                warn!("drag & drop: failed to register reading data: {}", error.error);
                 self.abort_external_drag(&offer, &active);
                 return;
             },
@@ -349,7 +349,7 @@ impl WinitState {
         match timer_token {
             Ok(token) => session.borrow_mut().timeout_token = Some(token),
             Err(error) => {
-                warn!("drag & drop: не удалось поставить таймер ожидания данных: {}", error.error);
+                warn!("drag & drop: failed to set a data waiting timer: {}", error.error);
                 if let Some(reader_token) = session.borrow_mut().reader_token.take() {
                     self.loop_handle.remove(reader_token);
                 }
@@ -368,7 +368,7 @@ impl WinitState {
     fn finish_external_drop(&mut self, offer: &DragOffer, active: &ActiveDrag, received: &[u8]) {
         let payload = payload_from_bytes(active.format, received);
         if payload.is_empty() {
-            warn!("drag & drop: источник передал данные, из которых не получилось извлечь ни URI, ни текст");
+            warn!("drag & drop: the source transmitted data from which no URI or text could be extracted");
             self.abort_external_drag(offer, active);
             return;
         }
@@ -386,7 +386,7 @@ impl WinitState {
         if active.may_send_finish() {
             offer.finish();
         } else {
-            debug!("drag & drop: композитор не выбрал действие, `finish` пропущен");
+            debug!("drag & drop: compositor did not select an action; skipped `finish`");
         }
         offer.destroy();
     }
@@ -459,18 +459,18 @@ fn settle_drop_read(
         DropReadOutcome::Complete => state.finish_external_drop(&offer, &active, &received),
         DropReadOutcome::TooLarge(error) => {
             warn!(
-                "drag & drop: данные превысили лимит {MAX_DROP_PAYLOAD_BYTES} байт ({} байт), бросок отменён",
+                "drag & drop: data exceeded the limit of {MAX_DROP_PAYLOAD_BYTES} bytes ({} bytes), throw canceled",
                 error.attempted_bytes
             );
             state.abort_external_drag(&offer, &active);
         },
         DropReadOutcome::ReadFailed(error) => {
-            warn!("drag & drop: ошибка чтения данных источника, бросок отменён: {error}");
+            warn!("drag & drop: could not read source data; drop canceled: {error}");
             state.abort_external_drag(&offer, &active);
         },
         DropReadOutcome::TimedOut => {
             warn!(
-                "drag & drop: источник не передал данные за {DROP_READ_TIMEOUT:?}, бросок отменён"
+                "drag & drop: source did not provide data within {DROP_READ_TIMEOUT:?}; drop canceled"
             );
             state.abort_external_drag(&offer, &active);
         },

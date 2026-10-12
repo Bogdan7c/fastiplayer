@@ -178,12 +178,12 @@ pub(super) fn prepare_native_hls_attempt(
                     snapshot_identity.parent.clone(),
                     snapshot.provider_default_selection().clone(),
                 )
-                .context("native HLS provider default нарушил catalog parent identity")?,
+                .context("The native HLS provider defaulted on the catalog parent identity")?,
             };
             let WebMediaSelectionShape::Components(component_selection) = neutral_selection.shape()
             else {
                 return Err(anyhow!(
-                    "native HLS master selection потерял component catalog shape"
+                    "native HLS master selection lost component catalog shape"
                 ));
             };
             let reopen = snapshot
@@ -277,7 +277,7 @@ impl PreparedNativeHlsRuntime {
                 )]
                 let seek_port = endpoint_recovery
                     .wrap_seek_port(Some(seek_port))
-                    .expect("native HLS VOD всегда публикует receipted seek port");
+                    .expect("Native HLS VOD always publishes receipted seek port");
                 (
                     demuxer,
                     seek_port,

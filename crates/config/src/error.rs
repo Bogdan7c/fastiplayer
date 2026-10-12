@@ -12,11 +12,11 @@ pub type ConfigResult<T> = Result<T, ConfigError>;
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// Платформа не вернула стандартный config-dir для текущего пользователя.
-    #[error("не удалось определить пользовательскую config-директорию fastiplayer")]
+    #[error("Failed to identify the user config directory of fastiplayer")]
     ProjectDirsUnavailable,
 
     /// Не удалось проверить состояние config-файла перед чтением или созданием.
-    #[error("не удалось проверить config-файл {path}: {source}")]
+    #[error("Failed to check the config file {path}: {source}")]
     InspectConfigFile {
         /// Путь к config-файлу.
         path: PathBuf,
@@ -27,14 +27,14 @@ pub enum ConfigError {
     },
 
     /// По ожидаемому пути находится директория или другой не-файл.
-    #[error("ожидался TOML-файл config, но путь {path} не является обычным файлом")]
+    #[error("A TOML config file was expected, but the {path} path is not a regular file.")]
     ConfigPathIsNotFile {
         /// Путь, который должен указывать на `config.toml`.
         path: PathBuf,
     },
 
     /// Не удалось создать директорию для config-файла.
-    #[error("не удалось создать директорию config {path}: {source}")]
+    #[error("Could not create configuration directory {path}: {source}")]
     CreateConfigDir {
         /// Директория, которую пытались создать.
         path: PathBuf,
@@ -48,7 +48,7 @@ pub enum ConfigError {
     ///
     /// Протокол записи принадлежит `atomic-file-store`: при этой ошибке прежний
     /// config-файл (если он был) не заменён и остаётся полным.
-    #[error("не удалось записать config {path}: {failure}")]
+    #[error("Could not write configuration {path}: {failure}")]
     ReplaceConfigFile {
         /// Целевой config-файл.
         path: PathBuf,
@@ -58,7 +58,7 @@ pub enum ConfigError {
     },
 
     /// Не удалось прочитать существующий config.
-    #[error("не удалось прочитать config {path}: {source}")]
+    #[error("Could not read configuration {path}: {source}")]
     ReadConfigFile {
         /// Путь к config-файлу.
         path: PathBuf,
@@ -69,7 +69,7 @@ pub enum ConfigError {
     },
 
     /// TOML синтаксически некорректен или не совпадает со schema structs.
-    #[error("config {path} не соответствует TOML-схеме: {source}")]
+    #[error("config {path} does not match the TOML schema: {source}")]
     ParseConfigFile {
         /// Путь к config-файлу.
         path: PathBuf,
@@ -80,7 +80,7 @@ pub enum ConfigError {
     },
 
     /// Сгенерированный TOML не смог пройти roundtrip parse обратно в `AppConfig`.
-    #[error("сгенерированный config {path} не проходит TOML roundtrip: {source}")]
+    #[error("generated config {path} does not pass TOML roundtrip: {source}")]
     ParseSerializedConfig {
         /// Целевой путь config-файла, для которого готовился save.
         path: PathBuf,
@@ -91,14 +91,14 @@ pub enum ConfigError {
     },
 
     /// Сгенерированный TOML распарсился, но вернул другую структуру config.
-    #[error("сгенерированный config {path} изменил значения при TOML roundtrip")]
+    #[error("The generated config {path} changed the values at TOML roundtrip")]
     SerializedConfigRoundtripMismatch {
         /// Целевой путь config-файла, для которого готовился save.
         path: PathBuf,
     },
 
     /// Config не удалось сериализовать в TOML.
-    #[error("не удалось сериализовать config: {source}")]
+    #[error("Could not serialize configuration: {source}")]
     SerializeDefaultConfig {
         /// Ошибка TOML/Serde serialization.
         #[source]
@@ -106,7 +106,7 @@ pub enum ConfigError {
     },
 
     /// Config прошёл parsing, но нарушил бизнес-правила validation.
-    #[error("некорректное значение config-поля `{field}`: {message}")]
+    #[error("incorrect config field value {field}: {message}")]
     InvalidValue {
         /// TOML-путь поля, например `audio.volume`.
         field: &'static str,
@@ -116,7 +116,7 @@ pub enum ConfigError {
     },
 
     /// Config-файл синтаксически корректен, но не прошёл validation.
-    #[error("config {path} содержит некорректное значение: {source}")]
+    #[error("config {path} contains an incorrect value: {source}")]
     ValidateConfigFile {
         /// Путь к config-файлу.
         path: PathBuf,
@@ -129,7 +129,7 @@ pub enum ConfigError {
 
 /// Неудачная атомарная запись config-файла с человекочитаемым описанием этапа.
 ///
-/// Обёртка нужна, чтобы сообщение об ошибке было по-русски и без имён Rust-типов:
+/// Обёртка нужна, чтобы сообщение об ошибке было по-английски и без имён Rust-типов:
 /// `atomic-file-store` намеренно отдаёт только typed этап и класс I/O ошибки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigWriteFailure(pub AtomicFileWriteFailure);
@@ -137,19 +137,19 @@ pub struct ConfigWriteFailure(pub AtomicFileWriteFailure);
 impl fmt::Display for ConfigWriteFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let stage = match self.0.stage {
-            AtomicFileWriteStage::ValidateTargetPath => "путь не указывает на файл",
-            AtomicFileWriteStage::CreateTempFile => "не создан временный файл",
-            AtomicFileWriteStage::WriteTempFile => "не записан временный файл",
-            AtomicFileWriteStage::FlushTempFile => "не сброшен буфер временного файла",
-            AtomicFileWriteStage::SyncTempFile => "временный файл не сохранён на диск",
-            AtomicFileWriteStage::RenameTempFile => "временный файл не переименован в config",
+            AtomicFileWriteStage::ValidateTargetPath => "path doesn't point to file",
+            AtomicFileWriteStage::CreateTempFile => "no temporary file created",
+            AtomicFileWriteStage::WriteTempFile => "Temporary file was not written",
+            AtomicFileWriteStage::FlushTempFile => "temporary file buffer was not flushed",
+            AtomicFileWriteStage::SyncTempFile => "temporary file not saved to disk",
+            AtomicFileWriteStage::RenameTempFile => "Temporary file is not renamed to config",
         };
         match self.0.cause {
             AtomicFileWriteCause::Io(error_kind) => {
                 write!(formatter, "{stage} ({})", io::Error::from(error_kind))
             }
             AtomicFileWriteCause::TempNameAttemptsExhausted => {
-                write!(formatter, "{stage} (все имена временного файла заняты)")
+                write!(formatter, "{stage} (all temporary file names are occupied)")
             }
         }
     }

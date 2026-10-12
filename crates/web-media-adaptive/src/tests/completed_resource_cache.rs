@@ -56,7 +56,7 @@ impl CancelledThenCompleteServer {
                         Ok(0) => disconnect_sender
                             .send(())
                             .expect("publish cancellation disconnect"),
-                        Ok(_) => panic!("HTTP response client не должен писать body socket"),
+                        Ok(_) => panic!("HTTP response client does not need to write body socket"),
                         Err(error)
                             if matches!(
                                 error.kind(),
@@ -68,7 +68,7 @@ impl CancelledThenCompleteServer {
                                 .send(())
                                 .expect("publish cancellation reset")
                         }
-                        Err(error) => panic!("cancelled response не был закрыт: {error}"),
+                        Err(error) => panic!("cancelled response not closed: {error}"),
                     }
                     continue;
                 }
@@ -165,7 +165,7 @@ fn completed_vod_stream_replays_identical_range_chunks_without_second_request() 
     let first_resource_id = first.resource_correlation_id();
     assert!(
         first.network_request_attempt_id().is_some(),
-        "network open обязан иметь physical request id"
+        "The open network must have a physical request id"
     );
     let first_chunks = drain_streaming_resource(&mut first).expect("drain first range response");
     let first_final_target = first.final_target().clone();
@@ -189,13 +189,13 @@ fn completed_vod_stream_replays_identical_range_chunks_without_second_request() 
     assert_eq!(
         replay_controller.request_active_read_interruption(),
         AdaptiveRestartableReadInterruptionRequest::AlreadyQuiescent,
-        "completed replay не имеет physical body future и не должен быть poisoned"
+        "completed replay none physical body future and shouldn't poisoned"
     );
     assert_ne!(first_resource_id, replay.resource_correlation_id());
     assert_eq!(
         replay.network_request_attempt_id(),
         None,
-        "cache replay не должен выдумывать network request id"
+        "cache replay don't make up network request id"
     );
     let replay_diagnostics = format!("{replay:?}");
     assert!(!replay_diagnostics.contains("segment.ts"));
@@ -279,7 +279,7 @@ fn truncated_stream_is_not_cached_and_next_open_refetches() {
     let truncation_error = loop {
         match truncated.next_chunk() {
             Ok(Some(_)) => {}
-            Ok(None) => panic!("truncated response не должен завершиться validated EOF"),
+            Ok(None) => panic!("The truncated response should not end with a validated EOF."),
             Err(error) => break error,
         }
     };
@@ -325,7 +325,7 @@ fn cancelled_stream_is_not_cached_and_next_open_refetches() {
             .lock_completed_resource_cache()
             .pending_charge_bytes()
             > 0,
-        "network open обязан зарезервировать место до validated EOF"
+        "network open You must reserve a place before validated EOF"
     );
 
     // Program order намеренно доказывает pre-cancelled public read, не полагаясь на scheduler.
@@ -341,14 +341,14 @@ fn cancelled_stream_is_not_cached_and_next_open_refetches() {
             .lock_completed_resource_cache()
             .pending_charge_bytes(),
         0,
-        "cancellation обязана освободить pending cache reservation"
+        "cancellation must release pending cache reservation"
     );
     assert_eq!(
         context
             .lock_completed_resource_cache()
             .accounted_charge_bytes(),
         0,
-        "pre-cancelled response не должен оставить completed cache entry"
+        "pre-cancelled response don't completed cache entry"
     );
     server
         .first_disconnected

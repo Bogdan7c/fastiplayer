@@ -125,7 +125,7 @@ impl OffscreenWgpuHarness {
             force_fallback_adapter: false,
             apply_limit_buckets: false,
         }))
-        .expect("получить Vulkan adapter для headless WGPU acceptance");
+        .expect("Get Vulkan adapter for headless WGPU acceptance");
 
         // Software host-planar path не требует NV12/P010 device features.
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -136,7 +136,7 @@ impl OffscreenWgpuHarness {
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
-        .expect("создать WGPU device для software host-upload acceptance");
+        .expect("WGPU device for software host-upload acceptance");
 
         // Target поддерживает production render attachment и последующий acceptance readback.
         let target_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -198,16 +198,16 @@ impl OffscreenWgpuHarness {
         let uploaded_views = match materializer.try_host_planar_texture_view_lookup(&frame) {
             HostPlanarWgpuTextureViewLookup::Ready { views, .. } => views,
             HostPlanarWgpuTextureViewLookup::Busy { .. } => {
-                panic!("production HostPlanar materializer неожиданно вернул Busy")
+                panic!("production HostPlanar materializer flashback Busy")
             }
             HostPlanarWgpuTextureViewLookup::Missing { .. } => {
-                panic!("decoded AVFrame resource отсутствует на materializer boundary")
+                panic!("decoded AVFrame resource absent materializer boundary")
             }
             HostPlanarWgpuTextureViewLookup::Unsupported { reason, .. } => {
-                panic!("production HostPlanar materializer отклонил frame: {reason:?}")
+                panic!("production HostPlanar materializer flattened frame: {reason:?}")
             }
             HostPlanarWgpuTextureViewLookup::Error { .. } => {
-                panic!("production HostPlanar materializer завершился ошибкой")
+                panic!("production HostPlanar materializer ended in error")
             }
         };
 
@@ -218,7 +218,7 @@ impl OffscreenWgpuHarness {
             &uploaded_views.u_view,
             &uploaded_views.v_view,
         )
-        .expect("собрать production WGPU renderable frame");
+        .expect("gather up production WGPU renderable frame");
 
         // Один encoder содержит настоящий video render pass и texture-to-buffer evidence copy.
         let mut encoder = self
@@ -244,10 +244,10 @@ impl OffscreenWgpuHarness {
                 device: &self.device,
                 queue: &self.queue,
             })
-            .expect("production WGPU renderer должен принять materialized frame");
+            .expect("production WGPU renderer must accept materialized frame");
         assert!(
             drew_video,
-            "renderer не должен подменять video draw clear-only pass-ом"
+            "renderer should not replace video draw clear-only pass"
         );
 
         // Copy записывается после render pass в тот же command buffer.
@@ -285,7 +285,7 @@ impl OffscreenWgpuHarness {
         readback_slice.map_async(wgpu::MapMode::Read, move |mapping_result| {
             mapping_sender
                 .send(mapping_result)
-                .expect("передать результат WGPU readback mapping");
+                .expect("Transmit the result of WGPU readback mapping");
         });
 
         // Ждём конкретный submit; в это же время WGPU вызывает submitted release callback.
@@ -294,22 +294,21 @@ impl OffscreenWgpuHarness {
                 submission_index: Some(submission_index),
                 timeout: Some(ACCEPTANCE_TIMEOUT),
             })
-            .expect("дождаться завершения offscreen WGPU submit");
+            .expect("wait offscreen WGPU submit");
         mapping_receiver
             .recv_timeout(ACCEPTANCE_TIMEOUT)
-            .expect("получить callback WGPU readback mapping")
-            .expect("успешно отобразить WGPU readback buffer");
+            .expect("obtain callback WGPU readback mapping")
+            .expect("Successfully display WGPU readback buffer");
 
         // Проверяем только видимые bytes каждой строки, исключая alignment padding.
         let mapped_bytes = readback_slice
             .get_mapped_range()
-            .expect("получить mapped range WGPU readback");
-        let visible_row_bytes = usize::try_from(TARGET_WIDTH * 4).expect("row bytes помещаются");
-        let padded_row_bytes =
-            usize::try_from(self.padded_bytes_per_row).expect("stride помещается");
+            .expect("Get mapped range WGPU readback");
+        let visible_row_bytes = usize::try_from(TARGET_WIDTH * 4).expect("row bytes are placed");
+        let padded_row_bytes = usize::try_from(self.padded_bytes_per_row).expect("stride fits");
         let contains_visible_video = mapped_bytes
             .chunks_exact(padded_row_bytes)
-            .take(usize::try_from(TARGET_HEIGHT).expect("height помещается"))
+            .take(usize::try_from(TARGET_HEIGHT).expect("height-place"))
             .any(|row| {
                 row[..visible_row_bytes]
                     .as_chunks::<4>()
@@ -334,14 +333,14 @@ impl OffscreenWgpuHarness {
 
 /// Открывает explicit local synthetic asset через production MPEG-TS demuxer.
 fn open_demuxer(asset_path: &Path) -> MpegTsDemuxer {
-    let local_source = LocalFileSource::open(asset_path).expect("открыть AUD-013 MPEG-TS asset");
+    let local_source = LocalFileSource::open(asset_path).expect("Open AUD-013 MPEG-TS asset");
 
     MpegTsDemuxer::open(
         DemuxInput::byte_source(Box::new(local_source)),
         CancellationToken::never_cancelled(),
         MpegTsDemuxOptions::default(),
     )
-    .expect("открыть production MPEG-TS demuxer")
+    .expect("Open production MPEG-TS demuxer")
 }
 
 /// Стартует FFmpeg backend и оборачивает submitted releases production WGPU binding-ом.
@@ -354,7 +353,7 @@ fn open_wrapped_decoder(
 ) {
     let started_backend = FfmpegSoftwareVideoBackendFactory::new()
         .start_for_composition()
-        .expect("запустить software FFmpeg backend");
+        .expect("Launch the software FFmpeg backend");
     assert_eq!(started_backend.backend_id(), "ffmpeg-sw");
 
     // Wrapper разделяет unsubmitted decoder release и submitted renderer release semantics.
@@ -401,7 +400,7 @@ fn send_packet_and_collect_frames(
     match decoder.send_packet(decode_packet) {
         Ok(()) => {}
         Err(DecodeSendError::Backpressure(reason)) => {
-            panic!("неожиданный serial decode backpressure: {reason:?}")
+            panic!("Unexpected serial decode backpressure: {reason:?}")
         }
         Err(DecodeSendError::Fatal(error)) => panic!("fatal decoder send: {error}"),
     }
@@ -417,7 +416,7 @@ fn send_packet_and_collect_frames(
             break;
         }
         if let Some(error) = decoder.try_recv_error() {
-            panic!("software FFmpeg decoder завершился с ошибкой: {error}");
+            panic!("software FFmpeg decoder ended in error: {error}");
         }
         assert!(Instant::now() < deadline, "decoder packet ACK timeout");
         thread::sleep(Duration::from_millis(1));
@@ -437,7 +436,10 @@ fn decode_first_presentable_frame(
     minimum_pts: Duration,
 ) -> DecodedFrame {
     loop {
-        match demuxer.next_event().expect("прочитать MPEG-TS demux event") {
+        match demuxer
+            .next_event()
+            .expect("Read more about MPEG-TS demux event")
+        {
             DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video => {
                 let mut decoded_frames =
                     send_packet_and_collect_frames(decoder, generation, packet);
@@ -457,7 +459,7 @@ fn decode_first_presentable_frame(
                     assert_eq!(
                         unsubmitted_frame.generation,
                         generation.value(),
-                        "decoder не должен публиковать stale generation"
+                        "decoder don't publish stale generation"
                     );
                     decoder.release_frame(unsubmitted_frame.resource_handle);
                 }
@@ -466,7 +468,9 @@ fn decode_first_presentable_frame(
                 // FFmpeg вправе удерживать последний decoded frame до explicit EOF drain.
                 return drain_decoder_to_eof_presentable(decoder, generation, minimum_pts)
                     .unwrap_or_else(|| {
-                        panic!("MPEG-TS закончился до current-generation frame >= {minimum_pts:?}")
+                        panic!(
+                            "MPEG-TS terminated before current-generation frame >= {minimum_pts:?}"
+                        )
                     });
             }
             _ => {}
@@ -493,7 +497,7 @@ fn drain_decoder_to_eof_presentable(
                 }
             ) if started_generation == generation.value()
         ),
-        "decoder должен принять EOF drain current generation, получено {begin_result:?}"
+        "decoder must accept EOF drain current generation, got {begin_result:?}"
     );
 
     // Worker может публиковать DPB tail до того, как сменит state на Drained.
@@ -514,12 +518,12 @@ fn drain_decoder_to_eof_presentable(
                 generation: drained_generation,
             } if drained_generation == generation.value() => break,
             VideoDecoderEndOfStreamDrainState::Fatal { error, .. } => {
-                panic!("software FFmpeg EOF drain завершился с ошибкой: {error}")
+                panic!("software FFmpeg EOF drain ended in error: {error}")
             }
             _ => {}
         }
         if let Some(error) = decoder.try_recv_error() {
-            panic!("software FFmpeg decoder завершился во время EOF: {error}");
+            panic!("software FFmpeg decoder ended during EOF: {error}");
         }
         assert!(Instant::now() < deadline, "decoder EOF drain timeout");
         thread::sleep(Duration::from_millis(1));
@@ -549,7 +553,7 @@ fn retain_one_presentable_frame(
     assert_eq!(
         frame.generation,
         generation.value(),
-        "EOF drain не должен публиковать stale generation"
+        "EOF drain should not publish stale generation"
     );
     if presentable_frame.is_none() && frame.pts >= minimum_pts {
         *presentable_frame = Some(frame);
@@ -578,13 +582,13 @@ fn assert_resource_released(
             PresentFrameResourceDescriptorLookup::Ready { .. } => {}
             PresentFrameResourceDescriptorLookup::Busy { .. } => {}
             PresentFrameResourceDescriptorLookup::Fatal { .. } => {
-                panic!("resource provider завершился fatal после submitted release")
+                panic!("resource provider finished fatal afterward submitted release")
             }
         }
 
         assert!(
             Instant::now() < deadline,
-            "submitted resource не освобождён после WGPU completion"
+            "submitted resource not released after WGPU completion"
         );
         device
             .poll(wgpu::PollType::Poll)
@@ -600,7 +604,7 @@ fn h264_mpeg_ts_reaches_wgpu_submit_and_release_before_and_after_seek() {
     // Corpus передаётся явно: тест ничего не скачивает и не использует неясные fixtures.
     let asset_path = std::env::var_os("FASTIPLAYER_MEDIA_PATH")
         .map(std::path::PathBuf::from)
-        .expect("FASTIPLAYER_MEDIA_PATH должен указывать на generated MPEG-TS");
+        .expect("FASTIPLAYER_MEDIA_PATH should indicate generated MPEG-TS");
 
     // Один demuxer и один decoder сохраняют production seek lifecycle между поколениями.
     let mut demuxer = open_demuxer(&asset_path);
@@ -609,7 +613,7 @@ fn h264_mpeg_ts_reaches_wgpu_submit_and_release_before_and_after_seek() {
         .iter()
         .find(|track| track.kind == TrackKind::Video)
         .map(|track| track.id)
-        .expect("MPEG-TS должен содержать video track");
+        .expect("MPEG-TS should contain video track");
 
     // Headless target проверяет renderer без window/compositor нестабильности.
     let mut wgpu_harness = OffscreenWgpuHarness::new();
@@ -637,11 +641,13 @@ fn h264_mpeg_ts_reaches_wgpu_submit_and_release_before_and_after_seek() {
 
     // Production player сначала flush-ит decoder, затем повышает generation и seek-ит demuxer.
     release_unsubmitted_decoder_tail(decoder.as_ref());
-    decoder.flush().expect("flush software decoder перед seek");
+    decoder
+        .flush()
+        .expect("flush software decoder beforehand seek");
     let seek_target = Duration::from_secs(2);
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(seek_target))
-        .expect("выполнить nonzero decode-safe seek");
+        .expect("fulfill nonzero decode-safe seek");
     assert!(seek_result.actual_position.as_duration() <= seek_target);
 
     // Кадр generation 2 должен быть не раньше target и пройти те же production boundaries.

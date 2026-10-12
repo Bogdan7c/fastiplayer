@@ -141,7 +141,7 @@ impl AudioOutput {
     ) -> Result<Self> {
         let decoder_channels = decoder_layout.channel_count();
         if decoder_channels == 0 {
-            anyhow::bail!("Количество каналов декодера не может быть 0");
+            anyhow::bail!("The number of decoder channels cannot be 0");
         }
 
         let host = cpal::default_host();
@@ -170,7 +170,7 @@ impl AudioOutput {
         // Если rate декодера отличается от stream rate, нужен ресемплинг.
         let needs_resample = stream_rate != decoder_rate;
         if needs_resample {
-            info!(decoder_rate, stream_rate, "Будет использоваться ресемплинг");
+            info!(decoder_rate, stream_rate, "Resampling will be used.");
         }
 
         info!(
@@ -211,7 +211,7 @@ impl AudioOutput {
 
         let backend_stream_state = hold_new_stream(&stream)?;
 
-        info!(buffer_capacity, "AudioOutput создан");
+        info!(buffer_capacity, "AudioOutput created by");
 
         Ok(Self {
             stream,
@@ -319,7 +319,7 @@ impl AudioOutput {
                 requested,
                 written,
                 dropped = requested - written,
-                "Audio ring buffer переполнен: часть samples отброшена"
+                "Audio ring buffer full: some samples discarded"
             );
         }
 
@@ -566,17 +566,14 @@ impl Drop for AudioOutput {
             Ok(PauseStreamOutcome::Paused) => {}
             Ok(PauseStreamOutcome::UnsupportedByBackend) => {
                 tracing::debug!(
-                    "AudioOutput::drop — CPAL backend не поддерживает pause, stream будет остановлен drop-ом"
+                    "AudioOutput::drop - CPAL backend does not support pause, stream will be stopped by drop"
                 );
             }
             Err(error) => {
-                warn!(
-                    "AudioOutput::drop — не удалось остановить stream: {}",
-                    error
-                );
+                warn!("AudioOutput::drop – failed to stop stream: {}", error);
             }
         }
-        info!("AudioOutput остановлен (drop)");
+        info!("AudioOutput stopped (drop)");
     }
 }
 
@@ -701,10 +698,7 @@ mod tests {
             assert!(gain >= previous_gain);
             previous_gain = gain;
         }
-        assert_eq!(
-            previous_gain, 1.0,
-            "через секунду gain должен вернуться к 1"
-        );
+        assert_eq!(previous_gain, 1.0, "In a second, gain should return to 1.");
     }
 
     #[test]
@@ -744,12 +738,12 @@ mod tests {
             assert_eq!(
                 output_sample.to_bits(),
                 input_sample.to_bits(),
-                "direct PCM должен игнорировать tempo limiter gain"
+                "direct PCM must ignore tempo limiter gain"
             );
             assert_eq!(
                 convert_sample_for_output::<f32>(output_sample).to_bits(),
                 input_sample.to_bits(),
-                "same-format CPAL conversion не должна менять normal PCM"
+                "The same-format CPAL conversion does not change the normal PCM."
             );
         }
     }
@@ -843,11 +837,11 @@ mod tests {
         for sample_format in cpal_015_sample_formats {
             assert!(
                 output_sample_format_is_supported(sample_format),
-                "{sample_format:?} должен поддерживаться AudioOutput"
+                "{sample_format:?} must be supported by AudioOutput"
             );
             assert!(
                 sample_format_priority(sample_format) > 0,
-                "{sample_format:?} должен иметь fallback priority"
+                "{sample_format:?} should have a fallback priority."
             );
         }
     }

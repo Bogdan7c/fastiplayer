@@ -204,7 +204,7 @@ fn assert_bounded_or_cached_restart_requests(
         requests
             .iter()
             .all(|line| line.contains(permitted_path) || line.contains("/key.bin")),
-        "restart должен читать только exact tail либо completed cache: {requests:?}"
+        "restart should read just exact tail or completed cache: {requests:?}"
     );
     for forbidden_path in forbidden_paths {
         assert!(
@@ -349,24 +349,24 @@ fn avc3_fmp4_map_preserves_framing_and_emits_video_packet() {
         HlsRequiredContainer::FragmentedMp4,
         None,
     ))
-    .expect("avc3 fMP4 должен пройти HLS prepare");
+    .expect("avc3 fMP4 will pass the HLS prepare");
     let mut demuxer = opened.into_demuxer();
 
     let DemuxReadEvent::TracksChanged(initial_tracks) =
         next_ready_event(&mut *demuxer).expect("avc3 initial tracks")
     else {
-        panic!("avc3 HLS должен сначала опубликовать TracksChanged");
+        panic!("avc3 HLS must first publish TracksChanged");
     };
     let video_track = initial_tracks
         .tracks
         .iter()
         .find(|track| track.kind == TrackKind::Video)
-        .expect("avc3 fixture должен содержать video track");
+        .expect("avc3 fixture includes video track");
     assert_eq!(
         video_track
             .video
             .as_ref()
-            .expect("H.264 track должен содержать video metadata")
+            .expect("H.264 track contains video metadata")
             .packet_framing,
         VideoPacketFraming::LengthPrefixedWithInBandParameterSets
     );
@@ -382,10 +382,10 @@ fn avc3_fmp4_map_preserves_framing_and_emits_video_packet() {
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => {
-                panic!("avc3 HLS закончился до первого video packet-а");
+                panic!("avc3 HLS ended before the first video packet");
             }
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                unreachable!("next_ready_event фильтрует temporary readiness");
+                unreachable!("next_ready_event filters temporary readiness");
             }
         }
     }

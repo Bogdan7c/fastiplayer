@@ -17,16 +17,16 @@ pub enum SmoothVodDemuxBuildError {
 #[derive(thiserror::Error)]
 pub enum SmoothVodSeekError {
     /// Target лежит после authoritative VOD duration.
-    #[error("Smooth seek target находится за пределами VOD duration")]
+    #[error("Smooth seek target is outside VOD duration.")]
     TargetOutsideDuration,
     /// Selected runtime stream исчез из sealed manifest.
-    #[error("Smooth seek stream отсутствует в sealed manifest")]
+    #[error("Smooth seek stream is missing from sealed manifest")]
     StreamMissing,
     /// Validated timeline не смог вернуть fragment.
     #[error("Smooth seek timeline lookup failed")]
     Timeline(#[source] SmoothManifestError),
     /// Duration нельзя точно свести к bounded manifest ticks.
-    #[error("Smooth seek target не представим в manifest clock")]
+    #[error("Smooth seek target not presented in manifest clock")]
     TargetTickOverflow,
 }
 

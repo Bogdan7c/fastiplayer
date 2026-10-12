@@ -232,7 +232,7 @@ fn platform_endian_pcm16_is_rejected_instead_of_guessed() {
     )
     .err()
     .expect("ambiguous PCM16 must fail");
-    assert!(error.to_string().contains("неоднозначен"));
+    assert!(error.to_string().contains("ambiguous"));
 }
 
 #[test]

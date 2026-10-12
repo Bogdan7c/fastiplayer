@@ -502,7 +502,7 @@ impl AppState {
     /// Передаёт typed render bridge error в worker-owned player session.
     pub fn report_render_error(&mut self, error: PlayerRenderError) {
         if let Err(send_error) = self.player_worker.report_render_error(error) {
-            warn!(error = %send_error, "Не удалось отправить typed render error в worker");
+            warn!(error = %send_error, "Failed to send typed render error into worker");
             return;
         }
 

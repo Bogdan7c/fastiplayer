@@ -53,11 +53,11 @@ pub enum SourceError {
     /// `io::ErrorKind::Interrupted`, а Symphonia и `std::io::Read::read_exact`
     /// повторяют `Interrupted` бесконечно. Закрытый источник обязан завершать чтение
     /// обычной ошибкой, чтобы фоновый поток разбора вышел, а не крутился (сессия 16).
-    #[error("source закрыт владельцем")]
+    #[error("source locked up")]
     SourceClosed,
 
     /// Значение config не может быть использовано source слоем.
-    #[error("некорректное значение config-поля `{field}`: {message}")]
+    #[error("incorrect config field value {field}: {message}")]
     InvalidConfig {
         /// TOML-путь поля.
         field: &'static str,
@@ -67,7 +67,7 @@ pub enum SourceError {
     },
 
     /// Ошибка локальной файловой системы.
-    #[error("ошибка локального source `{context}`: {source}")]
+    #[error("Local source error {context}: {source}")]
     LocalIo {
         /// Операция, которая выполнялась.
         context: &'static str,
@@ -78,21 +78,21 @@ pub enum SourceError {
     },
 
     /// HTTP header name из внешнего service descriptor некорректен.
-    #[error("некорректное имя HTTP header `{name}`")]
+    #[error("Incorrect name HTTP header {name}")]
     InvalidHttpHeaderName {
         /// Имя header-а как пришло из caller-а.
         name: String,
     },
 
     /// HTTP header value из внешнего service descriptor некорректен.
-    #[error("некорректное значение HTTP header `{name}`")]
+    #[error("Incorrect HTTP header value {name}")]
     InvalidHttpHeaderValue {
         /// Имя header-а, значение которого не прошло validation.
         name: String,
     },
 
     /// Не удалось создать HTTP client.
-    #[error("не удалось создать HTTP client: {source}")]
+    #[error("HTTP client failed to be created: {source}")]
     HttpClientBuild {
         /// Ошибка reqwest builder-а.
         #[source]
@@ -100,7 +100,7 @@ pub enum SourceError {
     },
 
     /// HTTP операция превысила configured timeout.
-    #[error("HTTP timeout во время `{operation}` для {url}")]
+    #[error("HTTP timeout during '{operation}' for {url}")]
     HttpTimeout {
         /// Человекочитаемая операция: probe/read.
         operation: &'static str,
@@ -110,7 +110,7 @@ pub enum SourceError {
     },
 
     /// HTTP request не дошёл до успешного response.
-    #[error("HTTP request `{operation}` для {url} не удался: {source}")]
+    #[error("HTTP request '{operation}' for {url} failed: {source}")]
     HttpRequest {
         /// Человекочитаемая операция: probe/read.
         operation: &'static str,
@@ -124,7 +124,7 @@ pub enum SourceError {
     },
 
     /// HTTP body оборвался или не читается.
-    #[error("HTTP body `{operation}` для {url} не читается: {source}")]
+    #[error("HTTP body '{operation}' for {url} not read: {source}")]
     HttpBodyRead {
         /// Человекочитаемая операция: probe/read.
         operation: &'static str,
@@ -138,7 +138,7 @@ pub enum SourceError {
     },
 
     /// Сервер вернул статус, несовместимый с ожидаемой source-операцией.
-    #[error("HTTP source {url} вернул статус {status} во время `{operation}`")]
+    #[error("HTTP source {url} returns to {status} during '{operation}'")]
     HttpStatus {
         /// Человекочитаемая операция: probe/read.
         operation: &'static str,
@@ -154,7 +154,7 @@ pub enum SourceError {
     },
 
     /// HTTP body превысил caller-owned bounded resource limit.
-    #[error("HTTP body `{operation}` для {url} превысил лимит {maximum_bytes} bytes")]
+    #[error("HTTP body '{operation}' for {url} exceeded the limit of {maximum_bytes} bytes")]
     HttpBodyTooLarge {
         /// Стабильная категория операции без внешнего payload-а.
         operation: &'static str,
@@ -167,7 +167,7 @@ pub enum SourceError {
     },
 
     /// Redirect response не содержит безопасно разрешимый HTTP(S) target.
-    #[error("HTTP redirect для {url} отклонён source parser-ом: {reason}")]
+    #[error("HTTP redirect for {url} rejected by source parser: {reason}")]
     InvalidHttpRedirect {
         /// Redacted URL текущего hop-а.
         url: SecretHttpUrl,
@@ -177,7 +177,7 @@ pub enum SourceError {
     },
 
     /// Transport policy отклонила redirect, возникший во время Range read-а.
-    #[error("HTTP Range redirect для {url} отклонён: {reason}")]
+    #[error("HTTP Range redirect for {url} rejected: {reason}")]
     HttpRangeRedirectRejected {
         /// Redacted URL текущего hop-а.
         url: SecretHttpUrl,
@@ -187,7 +187,7 @@ pub enum SourceError {
     },
 
     /// HTTP source не подтвердил Range чтение через `206 Partial Content`.
-    #[error("HTTP source не поддерживает обязательный Range seek: {reason}")]
+    #[error("HTTP source does not support mandatory Range seek: {reason}")]
     HttpRangeUnsupported {
         /// Нормализованная причина отсутствия seek.
         reason: NotSeekableReason,
@@ -208,7 +208,7 @@ pub enum SourceError {
     },
 
     /// Header `Content-Range` отсутствует или не соответствует формату bytes range.
-    #[error("некорректный Content-Range от HTTP source {url}: {header}")]
+    #[error("Incorrect Content-Range from HTTP source {url}: {header}")]
     InvalidContentRange {
         /// URL источника.
         url: SecretHttpUrl,
@@ -218,7 +218,7 @@ pub enum SourceError {
     },
 
     /// Источник закончился раньше запрошенного byte range.
-    #[error("source вернул {actual_bytes} bytes вместо {expected_bytes} с offset {offset}")]
+    #[error("source returned {actual_bytes} bytes instead of {expected_bytes} offset {offset}")]
     UnexpectedEof {
         /// Начальный offset запроса.
         offset: u64,
@@ -231,14 +231,14 @@ pub enum SourceError {
     },
 
     /// Caller пытается читать seek range из non-seekable source.
-    #[error("source не поддерживает seek: {reason}")]
+    #[error("source supportive seek: {reason}")]
     NotSeekable {
         /// Почему source не seekable.
         reason: NotSeekableReason,
     },
 
     /// FTP control/data операция завершилась typed failure без raw URL/credentials.
-    #[error("FTP source `{operation}` не удался: {kind:?}")]
+    #[error("FTP source '{operation}' failed: {kind:?}")]
     FtpTransport {
         /// Стабильная операция: connect/login/type/size/rest/retr/read.
         operation: &'static str,

@@ -42,7 +42,7 @@ def load_guardrail_module() -> ModuleType:
     )
     # Loader обязан существовать для checked-in Python file.
     if module_spec is None or module_spec.loader is None:
-        raise RuntimeError("не удалось создать import spec S42 guardrail")
+        raise RuntimeError("failed to create import spec S42 guardrail")
     # Новый module object не запускает CLI благодаря __name__ guard.
     guardrail_module = importlib.util.module_from_spec(module_spec)
     # dataclass resolution требует module в sys.modules во время exec.
@@ -320,12 +320,12 @@ class S42SourceGuardrailTests(unittest.TestCase):
         observed_rules = {violation.rule for violation in violations}
         # F4F exact-path boundary ловит validate_afra/parse_f4f_segment.
         self.assertIn(
-            "F4F ISO-envelope adapter разрешён только в exact flv-demux path",
+            "F4F ISO-envelope adapter is only allowed in the exact flv-demux path",
             observed_rules,
         )
         # Generic owner boundary ловит sidx/moof/emsg declarations.
         self.assertIn(
-            "generic fMP4 parsing принадлежит symphonia-format-isomp4 patch",
+            "generic fMP4 parsing belong symphonia-format-isomp4 patch",
             observed_rules,
         )
 
@@ -367,12 +367,12 @@ class S42SourceGuardrailTests(unittest.TestCase):
         observed_rules = {violation.rule for violation in violations}
         # Missing exact identity нельзя скрыть сохранёнными symbol names.
         self.assertIn(
-            "exact F4F ISO-envelope adapter path отсутствует",
+            "exact F4F ISO-envelope adapter path missing",
             observed_rules,
         )
         # Moved F4F declarations также не получают directory-wide exception.
         self.assertIn(
-            "F4F ISO-envelope adapter разрешён только в exact flv-demux path",
+            "F4F ISO-envelope adapter is only allowed in the exact flv-demux path",
             observed_rules,
         )
 

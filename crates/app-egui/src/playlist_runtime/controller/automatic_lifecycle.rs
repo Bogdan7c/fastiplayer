@@ -493,7 +493,7 @@ impl PlaylistController {
                         UnstagedPlannedTargetFailureOutcome::OpenItem { install }
                     }
                     AutomaticTargetFailureOutcome::StaleRequest => {
-                        unreachable!("unstaged automatic plan не ищется по request ID")
+                        unreachable!("unstaged automatic plan no-brainer request ID")
                     }
                 }
             }
@@ -525,7 +525,7 @@ impl PlaylistController {
             self.mark_current_edge_handled();
             tracing::debug!(
                 cause = ?AutomaticStopCause::ErrorPolicy,
-                "automatic playlist lifecycle остановлен после ошибки target-а"
+                "automatic playlist lifecycle stopped after mistake target-?"
             );
             self.finish_automatic_skip_chain_with_stop(AutomaticStopCause::ErrorPolicy);
             return AutomaticTargetFailureOutcome::Stopped {
@@ -543,7 +543,7 @@ impl PlaylistController {
                 self.mark_current_edge_handled();
                 tracing::debug!(
                     cause = ?AutomaticStopCause::AllCandidatesFailed { attempted_count },
-                    "automatic playlist lifecycle остановлен после ошибки target-а"
+                    "automatic playlist lifecycle stopped after mistake target-?"
                 );
                 self.finish_automatic_skip_chain_with_stop(
                     AutomaticStopCause::AllCandidatesFailed { attempted_count },
@@ -737,7 +737,7 @@ impl PlaylistController {
     ) -> AutomaticLifecycleOutcome {
         // Outcome несёт только факт остановки; причина остаётся в логе для диагностики,
         // а пользователю она доходит через итог цепочки пропусков (см. `skip_report`).
-        tracing::debug!(?cause, "automatic playlist lifecycle остановлен");
+        tracing::debug!(?cause, "automatic playlist lifecycle stopped");
         self.finish_automatic_skip_chain_with_stop(cause);
         AutomaticLifecycleOutcome::Stop {
             #[cfg(test)]

@@ -248,10 +248,7 @@ mod tests {
         SettingDescriptor {
             id: SettingId::from(id),
             path: id.into(),
-            text: SettingDescriptorText::new(text(
-                &format!("settings.{id}.label"),
-                "Тестовая настройка",
-            )),
+            text: SettingDescriptorText::new(text(&format!("settings.{id}.label"), "Test setting")),
             placement: SettingPlacement::new("render", "color", "main-settings-window"),
             value_type,
             editor,
@@ -301,7 +298,7 @@ mod tests {
         assert!(dirty_state.can_ok());
 
         let error_state = SettingsUiCommandState::from_fields(
-            &[bool_field("render.enabled", true).with_validation_error("ошибка")],
+            &[bool_field("render.enabled", true).with_validation_error("error")],
             false,
         );
         assert!(!error_state.can_apply());
@@ -383,7 +380,7 @@ mod tests {
             status: SettingOptionsStatus::Ready,
             options: vec![SettingOption::new(
                 "default",
-                text("settings.audio.output.default", "Системное устройство"),
+                text("settings.audio.output.default", "System default device"),
             )],
             current: SettingOptionCurrentValue::UnavailableCurrent {
                 id: unavailable_id.clone(),
@@ -477,8 +474,8 @@ mod tests {
                     "test.auto_fixed_resource_slots",
                     SettingEditor::AutoFixedPositiveInteger(
                         AutoFixedPositiveIntegerDescriptor::new(
-                            text("settings.frame_server.budget.auto", "Авто"),
-                            text("settings.frame_server.budget.fixed", "Фиксированно"),
+                            text("settings.frame_server.budget.auto", "Automatic"),
+                            text("settings.frame_server.budget.fixed", "Fixed"),
                             None,
                         ),
                     ),

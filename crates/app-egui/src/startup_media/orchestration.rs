@@ -255,7 +255,7 @@ impl StartupMediaController {
         let Some(config) = self.startup_config.clone() else {
             // Config absence — process-wide failure, поэтому D22 item fallback здесь бессмысленен.
             self.handle_install_failure(
-                "Startup config недоступен для restored media".to_owned(),
+                "Startup config inaccessible restored media".to_owned(),
                 false,
                 app_state,
             );
@@ -303,7 +303,7 @@ impl StartupMediaController {
                     ) {
                         Ok(job) => {
                             self.local_startup_job = Some(job);
-                            app_state.set_startup_pending("Восстановление media...".to_owned());
+                            app_state.set_startup_pending("Recovery media...".to_owned());
                             return;
                         }
                         Err(error) => {
@@ -334,7 +334,7 @@ impl StartupMediaController {
                         };
                         let Some(next) = playlist_runtime.report_startup_restore_failure(
                             failed,
-                            Arc::<str>::from("Persisted URL больше не поддерживается"),
+                            Arc::<str>::from("Persisted URL is no longer supported"),
                         ) else {
                             return;
                         };
@@ -344,7 +344,7 @@ impl StartupMediaController {
                 };
                 let Some(capabilities) = self.system_capabilities.clone() else {
                     self.handle_install_failure(
-                        "System capabilities недоступны для restored URL".to_owned(),
+                        "System capabilities are not available for restored URL".to_owned(),
                         false,
                         app_state,
                     );
@@ -370,7 +370,7 @@ impl StartupMediaController {
                 };
                 let Some(next) = playlist_runtime.report_startup_restore_failure(
                     failed,
-                    Arc::<str>::from("Не удалось запустить restored URL preparation"),
+                    Arc::<str>::from("Failed to launch restored URL preparation"),
                 ) else {
                     return;
                 };
@@ -385,7 +385,7 @@ impl StartupMediaController {
             };
             let Some(next) = playlist_runtime.report_startup_restore_failure(
                 failed,
-                Arc::<str>::from("Persisted local path недоступен на этой platform"),
+                Arc::<str>::from("Persisted local path not available on this platform"),
             ) else {
                 return;
             };

@@ -105,20 +105,20 @@ fn prepare_dash_live_with_deadline(
             // Cancellation освобождает I/O workers; deadlocked open thread будет detached до exit.
             cancellation.cancel();
             drop(open_worker);
-            panic!("production DASH live preparation превысила bounded deadline");
+            panic!("production DASH live preparation exceeded bounded deadline");
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             // Join публикует worker panic вместо маскировки channel disconnect-ом.
             open_worker
                 .join()
-                .expect("DASH live open worker не должен паниковать");
-            panic!("DASH live open worker завершился без authoritative result");
+                .expect("DASH live open worker don't panic");
+            panic!("DASH live open worker ends without authoritative result");
         }
     };
     // Success path не оставляет test-owned worker после получения результата.
     open_worker
         .join()
-        .expect("DASH live open worker не должен паниковать");
+        .expect("DASH live open worker don't panic");
     // Production error остаётся typed test failure после bounded orchestration.
     preparation_result.expect("production DASH live preparation succeeds")
 }
@@ -261,7 +261,7 @@ impl HermeticDashServer {
                 .unwrap_or(Duration::ZERO);
             assert!(
                 !remaining.is_zero(),
-                "DASH refresh worker не запросил enabled newer MPD"
+                "DASH refresh worker does not request enabled newer MPD"
             );
             let (next_served_request_log, wait_result) = served_requests_changed
                 .wait_timeout(served_request_log, remaining)
@@ -269,7 +269,7 @@ impl HermeticDashServer {
             served_request_log = next_served_request_log;
             assert!(
                 !wait_result.timed_out() || served_request_log.refreshed_manifest_responses > 0,
-                "DASH refresh worker не завершил newer MPD response"
+                "DASH refresh worker fails to complete newer MPD response"
             );
         }
     }
@@ -805,7 +805,7 @@ fn observe_until_packet_at_or_after(
     loop {
         assert!(
             Instant::now() < deadline,
-            "DASH live worker не достиг required presentation suffix"
+            "DASH live worker fails to reach required presentation suffix"
         );
         let call_started = Instant::now();
         match demuxer.next_event().expect("DASH live demux event") {

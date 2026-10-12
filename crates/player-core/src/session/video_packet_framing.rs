@@ -71,7 +71,7 @@ pub(super) fn h265_packetization_from_track(
         return Err(PlayerError::new(
             PlayerErrorKind::UnsupportedVideoCodec,
             format!(
-                "H.265 track `{}` не содержит hvcC codec_private; packetization нельзя доказать до decoder config",
+                "H.265 track '{}' does not contain hvcC codec_private; packetization cannot be proved before decoder config",
                 track.id
             ),
         ));
@@ -118,7 +118,7 @@ fn reject_codec_configuration_conflict(track: &TrackInfo, codec: &str) -> Player
         return Err(PlayerError::new(
             PlayerErrorKind::UnsupportedVideoCodec,
             format!(
-                "{codec} track `{}` одновременно объявляет Annex-B packets и codec configuration для length-prefixed packets",
+                "{codec} track '{}' simultaneously announces Annex-B packets and codec configuration for length-prefixed packets",
                 track.id
             ),
         ));
@@ -134,7 +134,7 @@ fn missing_codec_configuration_error(
     PlayerError::new(
         PlayerErrorKind::UnsupportedVideoCodec,
         format!(
-            "{codec} track `{}` объявляет length-prefixed packets, но не содержит {configuration_name} codec_private",
+            "{codec} track '{}' announces length-prefixed packets but does not contain {configuration_name} codec_private",
             track.id
         ),
     )
@@ -149,7 +149,7 @@ fn invalid_codec_configuration_error(
     PlayerError::new(
         PlayerErrorKind::UnsupportedVideoCodec,
         format!(
-            "{codec} track `{}` codec_private не является поддержанным {configuration_name}: {error}",
+            "{codec} track '{}' codec_private not supported {configuration_name}: {error}",
             track.id
         ),
     )

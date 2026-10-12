@@ -289,7 +289,7 @@ impl PreparedDemuxSeekRuntime {
             PreparedDemuxSeekEnqueueFailure {
                 error: PlayerError::new(
                     PlayerErrorKind::SeekUnavailable,
-                    format!("Не удалось передать seek demux worker-у: {error}"),
+                    format!("Failed to transfer the seek demux worker: {error}"),
                 ),
                 disposition: failure_disposition.clone(),
             }
@@ -340,7 +340,7 @@ impl PreparedDemuxSeekRuntime {
         port.enqueue_seek(request_id, request).map_err(|error| {
             PlayerError::new(
                 PlayerErrorKind::SeekUnavailable,
-                format!("Не удалось передать staged seek demux worker-у: {error}"),
+                format!("Failed to transfer staged seek demux worker: {error}"),
             )
         })?;
         self.next_request_id = next_request_id;
@@ -357,7 +357,7 @@ impl PreparedDemuxSeekRuntime {
     pub(super) fn set_pending_public_accepted_at_for_tests(&mut self, public_accepted_at: Instant) {
         self.pending
             .as_mut()
-            .expect("test worker request должен оставаться pending")
+            .expect("The test worker request must remain pending.")
             .public_accepted_at = public_accepted_at;
     }
 
@@ -422,7 +422,7 @@ impl PlayerSession {
                         self.settle_prepared_demux_seek_failure(
                             PlayerError::new(
                                 PlayerErrorKind::SeekUnavailable,
-                                "Demux worker вернул receipt для другого requested target",
+                                "Demux worker returns receipt to another requested target",
                             ),
                             pending.failure_disposition,
                         );
@@ -432,7 +432,7 @@ impl PlayerSession {
                     self.settle_prepared_demux_seek_failure(
                         PlayerError::new(
                             PlayerErrorKind::SeekUnavailable,
-                            "Demux worker не смог выполнить seek",
+                            "Demux worker could not seek",
                         ),
                         pending.failure_disposition,
                     );
@@ -441,7 +441,7 @@ impl PlayerSession {
                     self.settle_prepared_demux_seek_failure(
                         PlayerError::new(
                             PlayerErrorKind::SeekUnavailable,
-                            "Demux seek отменён media lifecycle",
+                            "Demux seek cancelled media lifecycle",
                         ),
                         pending.failure_disposition,
                     );
@@ -450,7 +450,7 @@ impl PlayerSession {
                     self.settle_prepared_demux_seek_failure(
                         PlayerError::new(
                             PlayerErrorKind::SeekUnavailable,
-                            "Demux seek receipt устарел",
+                            "Demux seek receipt is outdated",
                         ),
                         pending.failure_disposition,
                     );
@@ -484,7 +484,7 @@ impl PlayerSession {
                 tracing::warn!(
                     secondary_error = %error,
                     causal_error = ?self.snapshot.last_error,
-                    "Prepared demux seek failure не заменил causal fatal player state"
+                    "Prepared demux seek failure did not replace the causal fatal player state"
                 );
             }
             PreparedDemuxSeekFailureDisposition::PreserveFailedState => {
@@ -492,7 +492,7 @@ impl PlayerSession {
                 self.set_playback_state(crate::PlaybackState::Failed);
                 tracing::warn!(
                     secondary_error = %error,
-                    "Prepared demux seek failure сохранил Failed state без causal error"
+                    "Prepared demux seek failure preserved the Failed state without a causal error"
                 );
             }
         }

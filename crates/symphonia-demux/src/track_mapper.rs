@@ -246,7 +246,7 @@ fn take_matroska_video_track_for_mapping(
         warn!(
             symphonia_track_id = %symphonia_track_id,
             matroska_track_id = %matroska_track_id,
-            "Matroska video track metadata сопоставлена по единственному video track fallback"
+            "Matroska video track metadata matched by single video track fallback"
         );
     }
     video_track
@@ -531,7 +531,7 @@ fn av1_requirement_from_symphonia_video_params(
         Err(error) => {
             warn!(
                 reason = %error,
-                "AV1 decoder configuration не удалось перенести в neutral track metadata"
+                "AV1 decoder configuration failed to transfer to neutral track metadata"
             );
             None
         }
@@ -907,7 +907,7 @@ fn parse_opus_head(codec_private_bytes: &[u8]) -> Option<(u32, u32)> {
     tracing::debug!(
         sample_rate = OPUS_PLAYBACK_SAMPLE_RATE,
         channels = channel_count,
-        "OpusHead распарсен из codec private data"
+        "OpusHead fragrant codec private data"
     );
 
     Some((OPUS_PLAYBACK_SAMPLE_RATE, channel_count))

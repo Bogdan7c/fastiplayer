@@ -132,7 +132,7 @@ impl PlayerSession {
         self.audio_output_recovery.record_attempt(now);
         match self.recreate_active_audio_output(AudioOutputDeviceRequest::SystemDefault) {
             Ok(PlayerRuntimeAcceptedChange::Applied) => {
-                info!("Поток вывода звука восстановлен на устройстве по умолчанию");
+                info!("The audio output stream is restored on the device by default");
                 self.push_player_event(PlayerEvent::AudioOutputSwitchedToSystemDefault(
                     AudioOutputSwitchReason::ActiveDeviceStopped,
                 ));
@@ -145,7 +145,7 @@ impl PlayerSession {
             Err(error) => {
                 warn!(
                     error = %error,
-                    "Не удалось пересоздать вывод звука на устройстве по умолчанию"
+                    "Failed to recreate the sound output on the default device"
                 );
                 if self.audio_output_recovery.admission(now)
                     == AudioOutputRecoveryAdmission::Exhausted
@@ -185,7 +185,7 @@ impl PlayerSession {
     /// переходит на существующий monotonic fallback с текущей позиции — видео продолжает
     /// играть с того же места.
     fn disable_audio_after_failed_recovery(&mut self, now: Instant) -> AudioOutputRecoveryOutcome {
-        warn!("Звук отключён: устройство вывода не удалось открыть заново");
+        warn!("The sound is turned off: the output device could not be reopened");
         self.disable_selected_audio_path();
         self.reanchor_no_audio_clock(self.current_source_position, now);
         self.record_recoverable_error(PlayerError::new(

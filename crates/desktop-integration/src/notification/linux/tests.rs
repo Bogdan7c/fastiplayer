@@ -161,7 +161,7 @@ fn critical_notification_reaches_service_with_escaped_body_and_no_expiry() {
     let outcome = send_via(
         || bus.connect(),
         CriticalDesktopNotification {
-            title: "Fastiplayer не запустился",
+            title: "Fastiplayer could not start",
             body: "Нет Vulkan <драйвера> & окна",
         },
     );
@@ -173,7 +173,7 @@ fn critical_notification_reaches_service_with_escaped_body_and_no_expiry() {
             application_name: "Fastiplayer".to_owned(),
             replaces_id: 0,
             icon_name: "dialog-error".to_owned(),
-            title: "Fastiplayer не запустился".to_owned(),
+            title: "Fastiplayer could not start".to_owned(),
             body: "Нет Vulkan &lt;драйвера&gt; &amp; окна".to_owned(),
             actions: Vec::new(),
             urgency: Some(2),

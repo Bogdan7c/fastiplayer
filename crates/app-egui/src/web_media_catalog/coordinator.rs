@@ -164,7 +164,7 @@ mod tests {
             attachment(first_parent, 1),
         );
         let WebMediaCatalogState::Ready(first) = coordinator.state() else {
-            panic!("first declared catalog должен публиковаться синхронно");
+            panic!("First declared catalog should be published simultaneously");
         };
         assert_eq!(first.generation(), 1);
 
@@ -174,7 +174,7 @@ mod tests {
             attachment(second_parent, 2),
         );
         let WebMediaCatalogState::Ready(second) = coordinator.state() else {
-            panic!("latest declared catalog должен быть Ready в том же вызове");
+            panic!("The latest declared catalog must be Ready in the same call.");
         };
         assert_eq!(second.generation(), 2);
         assert_eq!(
@@ -213,7 +213,7 @@ mod tests {
         coordinator.ensure(correlation, attachment(parent, 2));
 
         let WebMediaCatalogState::Ready(catalog) = coordinator.state() else {
-            panic!("same correlation должна сохранять Ready catalog");
+            panic!("The same correlation should save the Read catalog.");
         };
         assert_eq!(catalog.generation(), 1);
         assert_eq!(

@@ -106,7 +106,7 @@ fn extractor_only_identity_is_refused_and_never_falls_back_to_root() {
         )
     );
     let text = refusal.to_string();
-    assert!(text.contains("собственная ссылка"), "{text}");
+    assert!(text.contains("does not have its own link"), "{text}");
     assert!(!text.contains("entry1") && !text.contains("Youtube"));
 }
 
@@ -184,5 +184,5 @@ fn row_play_intent_uses_entry_url_and_refusal_has_human_summary() {
     let summary = runtime
         .operational_open_refusal_summary(&refused_install)
         .expect("human summary for the row badge");
-    assert!(summary.contains("откройте плейлист по исходной ссылке заново"));
+    assert!(summary.contains("open the playlist at the original link again"));
 }

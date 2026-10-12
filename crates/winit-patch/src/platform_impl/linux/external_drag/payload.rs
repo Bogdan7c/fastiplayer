@@ -68,7 +68,7 @@ pub(crate) fn parse_uri_list(bytes: &[u8]) -> Vec<String> {
             let line = match std::str::from_utf8(raw_line) {
                 Ok(line) => line.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\0'),
                 Err(error) => {
-                    warn!("drag & drop: строка text/uri-list не UTF-8, пропущена: {error}");
+                    warn!("drag & drop: text/uri-list line is not UTF-8; skipped: {error}");
                     return None;
                 },
             };
@@ -82,7 +82,7 @@ pub(crate) fn parse_uri_list(bytes: &[u8]) -> Vec<String> {
 /// Возвращает только ссылки (строки с чётными номерами), в исходном порядке.
 pub(crate) fn parse_moz_url(bytes: &[u8]) -> Vec<String> {
     let Some(text) = decode_utf16(bytes) else {
-        warn!("drag & drop: text/x-moz-url не является корректным UTF-16, пропущен");
+        warn!("drag & drop: text/x-moz-url is not valid UTF-16; skipped");
         return Vec::new();
     };
 
@@ -103,7 +103,7 @@ pub(crate) fn decode_plain_text(bytes: &[u8]) -> Option<String> {
             (!text.is_empty()).then(|| text.to_owned())
         },
         Err(error) => {
-            warn!("drag & drop: простой текст не UTF-8, пропущен: {error}");
+            warn!("drag & drop: plain text is not UTF-8; skipped: {error}");
             None
         },
     }
@@ -302,7 +302,7 @@ mod tests {
             Err(PayloadTooLarge { attempted_bytes: 7 })
         );
 
-        assert_eq!(buffer, b"abcdef", "при отказе буфер не меняется");
+        assert_eq!(buffer, b"abcdef", "When the buffer fails, it does not change.");
     }
 
     #[test]

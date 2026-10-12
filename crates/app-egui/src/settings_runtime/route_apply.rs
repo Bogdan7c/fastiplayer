@@ -143,7 +143,7 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
         _media_result: AppRouteApplyResult,
     ) -> PlayerRuntimeApplyResult {
         Err(PlayerRuntimeApplyError::Fatal(
-            "host не начинал пересборку media, продолжать player route нечем".to_owned(),
+            "The host did not start a media rebuild; the player route cannot continue".to_owned(),
         ))
     }
 
@@ -164,7 +164,7 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
     /// Неблокирующе продвигает начатую пересборку media.
     fn poll_media_rebuild(&mut self) -> MediaRebuildProgress {
         MediaRebuildProgress::Finished(AppRouteApplyResult::Failed {
-            message: "host не начинал пересборку media".to_owned(),
+            message: "The host did not start a media rebuild".to_owned(),
         })
     }
 

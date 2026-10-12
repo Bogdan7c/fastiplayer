@@ -216,7 +216,7 @@ fn decode(path: &Path) -> Result<Sample> {
     }
 
     if samples.is_empty() {
-        bail!("нет декодированных samples");
+        bail!("No decoded samples");
     }
     Ok(Sample {
         samples,

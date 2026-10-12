@@ -29,9 +29,9 @@ impl std::fmt::Debug for DecryptedBytes {
 /// Безопасная таксономия AES-ошибок без key/IV/ciphertext material.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Aes128CbcDecryptError {
-    #[error("AES-128-CBC ciphertext пуст или не кратен 16-byte block")]
+    #[error("AES-128-CBC ciphertext is empty or not a multiple of 16-byte block")]
     InvalidCiphertextLength,
-    #[error("AES-128-CBC plaintext имеет invalid PKCS#7 padding")]
+    #[error("AES-128-CBC plaintext has an invalid PKCS#7 padding")]
     InvalidPkcs7Padding,
 }
 

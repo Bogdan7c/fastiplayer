@@ -235,7 +235,7 @@ fn validate_playlist_section(config: &AppConfig) -> ConfigResult<()> {
     {
         return Err(invalid_value(
             "playlist.next_item_preload_max_hold_ms",
-            "срок готовой предзагрузки не может быть меньше окна запуска".to_string(),
+            "The preload period cannot be less than the launch window.".to_string(),
         ));
     }
     validate_u64_range(
@@ -267,7 +267,7 @@ fn validate_schema_version(schema_version: u32) -> ConfigResult<()> {
 
     Err(invalid_value(
         "schema_version",
-        format!("поддерживается только версия {CURRENT_SCHEMA_VERSION}, получена {schema_version}"),
+        format!("Only version {CURRENT_SCHEMA_VERSION} is supported, received {schema_version}"),
     ))
 }
 
@@ -277,7 +277,7 @@ fn validate_player_section(config: &AppConfig) -> ConfigResult<()> {
     if codec_order.is_empty() {
         return Err(invalid_value(
             "player.preferred_video_codec_order",
-            "список codec priority не должен быть пустым".to_string(),
+            "The codec priority list should not be empty.".to_string(),
         ));
     }
 
@@ -286,7 +286,7 @@ fn validate_player_section(config: &AppConfig) -> ConfigResult<()> {
         if !seen_codecs.insert(*codec) {
             return Err(invalid_value(
                 "player.preferred_video_codec_order",
-                format!("codec {codec:?} указан больше одного раза"),
+                format!("codec {codec:?} is specified more than once"),
             ));
         }
     }
@@ -526,7 +526,7 @@ fn validate_hdr_to_sdr_config(hdr_to_sdr: &HdrToSdrConfig) -> ConfigResult<()> {
         return Err(invalid_value(
             "render.hdr_to_sdr.hdr_reference_peak_nits",
             format!(
-                "HDR peak должен быть выше SDR reference white: peak={}, white={}",
+                "HDR peak should be higher than SDR reference white: peak={}, white={}",
                 hdr_to_sdr.hdr_reference_peak_nits, hdr_to_sdr.sdr_reference_white_nits
             ),
         ));
@@ -546,7 +546,7 @@ fn validate_positive_reference_nits(field: &'static str, value: f32) -> ConfigRe
     Err(invalid_value(
         field,
         format!(
-            "значение должно быть конечным числом в диапазоне {MIN_HDR_TO_SDR_REFERENCE_NITS}..={MAX_HDR_TO_SDR_REFERENCE_NITS}, получено {value}"
+            "the value must be a finite number in the range {MIN_HDR_TO_SDR_REFERENCE_NITS}..= {MAX_HDR_TO_SDR_REFERENCE_NITS}, obtained {value}"
         ),
     ))
 }
@@ -625,7 +625,7 @@ fn validate_u64_range(field: &'static str, value: u64, min: u64, max: u64) -> Co
 
     Err(invalid_value(
         field,
-        format!("значение должно быть в диапазоне {min}..={max}, получено {value}"),
+        format!("the value should be in the range {min}..={max}, obtained {value}"),
     ))
 }
 
@@ -637,7 +637,7 @@ fn validate_u32_range(field: &'static str, value: u32, min: u32, max: u32) -> Co
 
     Err(invalid_value(
         field,
-        format!("значение должно быть в диапазоне {min}..={max}, получено {value}"),
+        format!("the value should be in the range {min}..={max}, obtained {value}"),
     ))
 }
 
@@ -649,7 +649,7 @@ fn validate_u16_range(field: &'static str, value: u16, min: u16, max: u16) -> Co
 
     Err(invalid_value(
         field,
-        format!("значение должно быть в диапазоне {min}..={max}, получено {value}"),
+        format!("the value should be in the range {min}..={max}, obtained {value}"),
     ))
 }
 
@@ -666,7 +666,7 @@ fn validate_usize_range(
 
     Err(invalid_value(
         field,
-        format!("значение должно быть в диапазоне {min}..={max}, получено {value}"),
+        format!("the value should be in the range {min}..={max}, obtained {value}"),
     ))
 }
 
@@ -678,7 +678,7 @@ fn validate_f32_range(field: &'static str, value: f32, min: f32, max: f32) -> Co
 
     Err(invalid_value(
         field,
-        format!("значение должно быть конечным числом в диапазоне {min}..={max}, получено {value}"),
+        format!("the value must be a finite number in the range {min}..= {max}, obtained {value}"),
     ))
 }
 
@@ -693,7 +693,7 @@ fn validate_rgb_triplet(
         return Err(invalid_value(
             field,
             format!(
-                "RGB-массив должен содержать ровно {RGB_CHANNEL_COUNT} значения, получено {}",
+                "RGB array must contain exactly {RGB_CHANNEL_COUNT} values; got {}",
                 values.len()
             ),
         ));
@@ -704,7 +704,7 @@ fn validate_rgb_triplet(
             return Err(invalid_value(
                 field,
                 format!(
-                    "RGB-канал #{channel_index} должен быть конечным числом в диапазоне {min}..={max}, получено {channel_value}"
+                    "RGB channel #{channel_index} must be finite and within {min}..={max}; got {channel_value}"
                 ),
             ));
         }

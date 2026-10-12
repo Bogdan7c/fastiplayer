@@ -439,8 +439,8 @@ fn render_volume_icon_button_at(
     icon_state: VolumeIconState,
 ) -> egui::Response {
     let accessible_label = match icon_state {
-        VolumeIconState::Audible => "Выключить звук",
-        VolumeIconState::Muted => "Включить звук",
+        VolumeIconState::Audible => "Mute",
+        VolumeIconState::Muted => "Unmute",
     };
     let button_response = ui.allocate_rect(button_rect, Sense::click());
     let button_response = button_response.on_hover_text(accessible_label);
@@ -468,7 +468,7 @@ fn render_volume_slider_at(
 ) -> Option<f32> {
     let slider_response = ui.allocate_rect(slider_hit_rect, Sense::click_and_drag());
     slider_response
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Slider, ui.is_enabled(), "Громкость"));
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Slider, ui.is_enabled(), "Volume"));
 
     paint_volume_slider(
         ui,
@@ -530,7 +530,7 @@ fn render_open_file_button_at(
     button_rect: Rect,
     skin: &impl PlayerSkin,
 ) -> egui::Response {
-    let accessible_label = "Открыть файл";
+    let accessible_label = "Open file";
     let button_response = ui.allocate_rect(button_rect, Sense::click());
     let button_response = button_response.on_hover_text(accessible_label);
 
@@ -617,13 +617,13 @@ fn fullscreen_toggle_presentation(is_window_fullscreen: bool) -> FullscreenToggl
     if is_window_fullscreen {
         return FullscreenTogglePresentation {
             icon: FullscreenToggleIcon::ExitFullscreen,
-            accessible_label: "Выйти из полноэкранного режима",
+            accessible_label: "Exit fullscreen",
         };
     }
 
     FullscreenTogglePresentation {
         icon: FullscreenToggleIcon::EnterFullscreen,
-        accessible_label: "Полноэкранный режим",
+        accessible_label: "Fullscreen",
     }
 }
 
@@ -1047,14 +1047,14 @@ mod tests {
             fullscreen_toggle_presentation(false),
             FullscreenTogglePresentation {
                 icon: FullscreenToggleIcon::EnterFullscreen,
-                accessible_label: "Полноэкранный режим",
+                accessible_label: "Fullscreen",
             }
         );
         assert_eq!(
             fullscreen_toggle_presentation(true),
             FullscreenTogglePresentation {
                 icon: FullscreenToggleIcon::ExitFullscreen,
-                accessible_label: "Выйти из полноэкранного режима",
+                accessible_label: "Exit fullscreen",
             }
         );
     }

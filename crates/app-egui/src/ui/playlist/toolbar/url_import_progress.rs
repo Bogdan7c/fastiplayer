@@ -15,10 +15,10 @@ use super::super::PlaylistUiOutput;
 use super::super::actions::PlaylistAction;
 
 /// Подпись кнопки отмены (она же — имя для экранного диктора).
-const CANCEL_BUTTON_LABEL: &str = "Отменить";
+const CANCEL_BUTTON_LABEL: &str = "Cancel";
 
 /// Подсказка: что именно отменяется и что не пострадает.
-const CANCEL_BUTTON_TOOLTIP: &str = "Остановить получение данных по ссылке; очередь не изменится";
+const CANCEL_BUTTON_TOOLTIP: &str = "Stop fetching URL information; the queue will stay unchanged";
 
 /// Рисует строку индикатора под toolbar.
 pub(super) fn show(
@@ -40,8 +40,8 @@ pub(super) fn show(
 /// «Получаем данные по ссылке (youtube.com)…» — только домен, без пути и query.
 fn progress_text(progress: &PlaylistUrlImportProgress) -> String {
     match progress.display_host.as_deref() {
-        Some(host) => format!("Получаем данные по ссылке ({host})…"),
-        None => "Получаем данные по ссылке…".to_owned(),
+        Some(host) => format!("Fetching URL information ({host})…"),
+        None => "Fetching URL information…".to_owned(),
     }
 }
 

@@ -185,15 +185,15 @@ impl fmt::Display for ComponentVariantFinalizationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ComponentCatalogUnavailable => formatter
-                .write_str("provider не предоставил component catalog для semantic exact reopen"),
+                .write_str("Provider did not supply a component catalog for semantic exact reopen"),
             Self::SemanticRematch(error) => {
                 write!(
                     formatter,
-                    "fresh component semantic rematch отклонён: {error}"
+                    "fresh component semantic rematch rejected: {error}"
                 )
             }
             Self::Installation(error) => {
-                write!(formatter, "fresh component catalog не установлен: {error}")
+                write!(formatter, "fresh component catalog not installed: {error}")
             }
         }
     }

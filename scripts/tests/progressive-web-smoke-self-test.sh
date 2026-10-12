@@ -30,7 +30,7 @@ require_output() {
     local expected_text="$2"
     # Missing marker публикует безопасный captured output.
     if [[ "${output}" != *"${expected_text}"* ]]; then
-        printf 'FAIL: ожидалась строка `%s`\n%s\n' "${expected_text}" "${output}" >&2
+        printf 'FAIL: expected text: %s\n%s\n' "${expected_text}" "${output}" >&2
         exit 1
     fi
 }
@@ -43,7 +43,7 @@ require_absent() {
     local forbidden_text="$2"
     # Exact substring доказывает literal leakage.
     if [[ "${output}" == *"${forbidden_text}"* ]]; then
-        printf 'FAIL: обнаружен запрещённый secret marker\n' >&2
+        printf 'FAIL: found out secret marker\n' >&2
         exit 1
     fi
 }
@@ -53,11 +53,11 @@ bash -n "${PROGRESSIVE_WEB_SMOKE}" "${S42_LIBRARY}"
 
 # Owner module fail-closed при ошибочном direct execution.
 if direct_library_output="$(bash "${S42_LIBRARY}" 2>&1)"; then
-    printf 'FAIL: S42 owner module разрешил direct execution\n' >&2
+    printf 'FAIL: S42 owner module grantor direct execution\n' >&2
     exit 1
 fi
 # Diagnostic раскрывает только назначение module-а.
-require_output "${direct_library_output}" "не является самостоятельной командой"
+require_output "${direct_library_output}" "not a standalone command"
 
 # Source даёт self-test-у тот же readonly allowlist, что использует runner.
 source "${S42_LIBRARY}"
@@ -69,11 +69,11 @@ require_output "${missing_selection_output}" "NOT RUN: missing explicit"
 
 # Positional URL запрещён: intent выражается только named option-ом.
 if positional_output="$("${PROGRESSIVE_WEB_SMOKE}" "https://example.invalid/video" 2>&1)"; then
-    printf 'FAIL: positional URL завершился успешно\n' >&2
+    printf 'FAIL: positional URL completed successfully\n' >&2
     exit 1
 fi
 # Parser diagnostic не повторяет входной URL.
-require_output "${positional_output}" "input передаётся только через --url/--fixture"
+require_output "${positional_output}" "input is transmitted only through --url/--fixture"
 # Даже parser failure не отражает raw identity.
 require_absent "${positional_output}" "https://example.invalid/video"
 
@@ -81,7 +81,7 @@ require_absent "${positional_output}" "https://example.invalid/video"
 if invalid_scheme_output="$("${PROGRESSIVE_WEB_SMOKE}" \
     --url "file:///tmp/media.webm" \
     --report "${temporary_directory}/invalid.txt" 2>&1)"; then
-    printf 'FAIL: file URL завершился успешно\n' >&2
+    printf 'FAIL: file URL completed successfully \n' >&2
     exit 1
 fi
 # Typed CLI reason перечисляет exact admitted schemes.
@@ -92,11 +92,11 @@ if invalid_ftp_case_output="$("${PROGRESSIVE_WEB_SMOKE}" \
     --case ftp-ftps-progressive \
     --url "https://example.invalid/not-ftp" \
     --report "${temporary_directory}/invalid-ftp.txt" 2>&1)"; then
-    printf 'FAIL: FTP case принял HTTP URL\n' >&2
+    printf 'FAIL: FTP case accepts HTTP URL\n' >&2
     exit 1
 fi
 # Failure остаётся typed и не повторяет raw URL.
-require_output "${invalid_ftp_case_output}" "требует explicit FTP/FTPS URL"
+require_output "${invalid_ftp_case_output}" "requires an explicit FTP/FTPS URL"
 require_absent "${invalid_ftp_case_output}" "https://example.invalid/not-ftp"
 
 # Fake tools directory моделирует exact pinned system yt-dlp.
@@ -198,11 +198,11 @@ if overwrite_output="$(PATH="${fake_tools_directory}:${PATH}" "${PROGRESSIVE_WEB
     --url "${explicit_url_one}" \
     --binary "${fake_binary}" \
     --report "${legacy_report_path}" 2>&1)"; then
-    printf 'FAIL: existing report был перезаписан\n' >&2
+    printf 'FAIL: existing report re-recorded \n' >&2
     exit 1
 fi
 # Failure называет safe overwrite policy и скрывает raw URL.
-require_output "${overwrite_output}" "runner не перезаписывает artifacts"
+require_output "${overwrite_output}" "runner does not overwrite artifacts"
 require_absent "${overwrite_output}" "${explicit_url_one}"
 
 # Dry-run target остаётся новым, но file не создаётся.
@@ -219,7 +219,7 @@ require_absent "${dry_run_output}" "${explicit_url_one}"
 require_output "${dry_run_output}" "NOT RUN: dry-run only"
 # Dry-run не создаёт artifact.
 if [[ -e "${dry_report_path}" ]]; then
-    printf 'FAIL: dry-run создал report artifact\n' >&2
+    printf 'FAIL: dry-run created report artifact\n' >&2
     exit 1
 fi
 
@@ -245,15 +245,15 @@ if mismatch_output="$(PATH="${mismatched_tools_directory}:${PATH}" "${PROGRESSIV
     --url "${explicit_url_one}" \
     --binary "${fake_binary}" \
     --report "${mismatch_report_path}" 2>&1)"; then
-    printf 'FAIL: mismatched yt-dlp был принят\n' >&2
+    printf 'FAIL: mismatched yt-dlp was adopted \n' >&2
     exit 1
 fi
 # Diagnostic называет approved release, но не input.
-require_output "${mismatch_output}" "не совпадает с утверждённым 2026.07.04 profile"
+require_output "${mismatch_output}" "does not match the approved 2026.07.04 profile"
 require_absent "${mismatch_output}" "${explicit_url_one}"
 # Failed provenance не оставляет misleading report.
 if [[ -e "${mismatch_report_path}" ]]; then
-    printf 'FAIL: version mismatch создал report artifact\n' >&2
+    printf 'FAIL: version mismatch created report artifact\n' >&2
     exit 1
 fi
 
@@ -269,17 +269,17 @@ if collision_output="$(
         --binary "${fake_binary}" \
         --report "${collision_report_path}" 2>&1
 )"; then
-    printf 'FAIL: report collision завершился успешно\n' >&2
+    printf 'FAIL: report collision completed successfully \n' >&2
     exit 1
 fi
 # Failure остаётся secret-safe и объясняет atomic non-overwrite boundary.
-require_output "${collision_output}" "atomically создать новый --report"
+require_output "${collision_output}" "atomically create a new --report"
 require_absent "${collision_output}" "${collision_report_path}"
 require_absent "${collision_output}" "${explicit_url_one}"
 # Exact competing bytes доказывают отсутствие truncate/overwrite.
 collision_report_content="$(<"${collision_report_path}")"
 if [[ "${collision_report_content}" != "competitor-owned" ]]; then
-    printf 'FAIL: competing report artifact был изменён\n' >&2
+    printf 'FAIL: competing report artifact was altered\n' >&2
     exit 1
 fi
 
@@ -302,7 +302,7 @@ if failure_output="$(PATH="${fake_tools_directory}:${PATH}" "${PROGRESSIVE_WEB_S
     --url "${explicit_url_one}" \
     --binary "${failing_binary}" \
     --report "${failure_report_path}" 2>&1)"; then
-    printf 'FAIL: runtime failure завершился успешно\n' >&2
+    printf 'FAIL: runtime failure completed successfully\n' >&2
     exit 1
 fi
 # Terminal и sanitized report публикуют FAIL без raw input.
@@ -331,7 +331,7 @@ if PATH="${fake_tools_directory}:${PATH}" "${PROGRESSIVE_WEB_SMOKE}" \
     --duration 1 \
     --binary "${sigkill_binary}" \
     --report "${sigkill_report_path}" >/dev/null 2>&1; then
-    printf 'FAIL: runtime status 137 был принят как bounded shutdown\n' >&2
+    printf 'FAIL: runtime status 137 was accepted as bounded shutdown\n' >&2
     exit 1
 fi
 # Sanitized report сохраняет exact process status без raw URL.

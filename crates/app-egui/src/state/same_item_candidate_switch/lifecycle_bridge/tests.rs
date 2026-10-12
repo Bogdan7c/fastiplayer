@@ -59,7 +59,7 @@ impl SameItemSwitchLifecycleStartPort for FakeSameItemSwitchContext {
     ) -> Result<MediaOpenRequestId, StrongMediaOpenError> {
         assert!(
             matches!(source_request, MediaOpenSourceRequest::Web(_)),
-            "URL action обязан передать lifecycle port-у готовый neutral web reopen request"
+            "The action URL must transfer the lifecycle port to the ready-made neutral web reopen request."
         );
         self.begin_expected_active = Some(expected_active);
         self.begin_playback_intent = Some(playback_intent);
@@ -75,7 +75,7 @@ impl SameItemSwitchLifecyclePollPort for FakeSameItemSwitchContext {
         match self
             .poll_steps
             .pop_front()
-            .expect("fixture poll script должен содержать следующий step")
+            .expect("Fixture poll script contains the following step.")
         {
             FakePollStep::Pending => SameItemSwitchLifecyclePoll::Pending,
             FakePollStep::Installed {
@@ -237,7 +237,7 @@ fn adaptive_quality_switch_keeps_position_without_persisting_manual_preference()
     assert_eq!(context.playback.state, PlaybackState::Playing);
     assert!(
         context.remembered_targets.is_empty(),
-        "runtime adaptation не должна становиться manual item preference"
+        "runtime adaptation should not become manual item preference"
     );
     assert!(!context.fallback_notice_visible);
 }
@@ -282,16 +282,16 @@ fn assert_successful_url_action(state: PlaybackState, expected_intent: PlaybackI
             app_start(item_id, old_instance, old_generation, state),
             &mut context,
         )
-        .expect("URL action start должен пройти fake strong boundary"),
+        .expect("The action URL must go through a fake strong boundary."),
         UrlSidebarActionApplyOutcome::Started
     );
-    assert!(path.pending.is_some(), "action обязан стать pending");
+    assert!(path.pending.is_some(), "action must pending");
     assert_eq!(context.playback, old_playback);
     assert!(context.remembered_targets.is_empty());
     assert_eq!(context.begin_playback_intent, Some(expected_intent));
     let expected_active = context
         .begin_expected_active
-        .expect("strong begin получает exact active identity");
+        .expect("Strong Begins with an Active Identity");
     assert_eq!(expected_active.item_id(), Some(item_id));
     assert_eq!(expected_active.media_instance_id(), old_instance);
 
@@ -303,8 +303,8 @@ fn assert_successful_url_action(state: PlaybackState, expected_intent: PlaybackI
 
     assert_eq!(path.poll(&mut context), SameItemSwitchAppPoll::Installed);
     assert!(path.pending.is_none());
-    assert_eq!(context.item_id, item_id, "playlist item не меняется");
-    assert_eq!(context.source_lineage, 61, "source lineage не меняется");
+    assert_eq!(context.item_id, item_id, "playlist item changeable");
+    assert_eq!(context.source_lineage, 61, "source lineage changeable");
     assert_ne!(context.playback.media_instance_id, old_instance);
     assert_eq!(context.playback.media_instance_id, new_instance);
     assert_eq!(context.visible_generation, new_generation);
@@ -360,7 +360,7 @@ fn resolved_url_action_pre_barrier_failure_preserves_playback_and_restores_selec
         ),
         &mut context,
     )
-    .expect("URL action должен перейти в pending");
+    .expect("The action URL must go to the pending");
     assert_eq!(path.poll(&mut context), SameItemSwitchAppPoll::Pending);
     assert_eq!(
         path.poll(&mut context),
@@ -369,7 +369,7 @@ fn resolved_url_action_pre_barrier_failure_preserves_playback_and_restores_selec
 
     assert!(
         path.pending.is_none(),
-        "terminal failure снимает pending selector"
+        "terminal failure removes pending selector"
     );
     assert_eq!(context.item_id, item_id);
     assert_eq!(context.source_lineage, 83);
@@ -392,7 +392,7 @@ fn resolved_url_action_pre_barrier_failure_preserves_playback_and_restores_selec
         ),
         &mut context,
     )
-    .expect("restored selector должен принимать следующий action");
+    .expect("Restore Selector to take the next action");
     assert!(path.pending.is_some());
 }
 
@@ -426,11 +426,11 @@ fn pending_switch_blocks_conflicting_action_without_touching_playback() {
         app_start(item_id, old_instance, generation, PlaybackState::Paused),
         &mut context,
     )
-    .expect("первый action должен занять single-flight slot");
+    .expect("The first action takes place in a single-flight slot");
     let first_request_id = path
         .pending
         .as_ref()
-        .expect("первый switch остаётся pending")
+        .expect("The first switch remains pending.")
         .request_id;
 
     assert!(matches!(
@@ -443,7 +443,7 @@ fn pending_switch_blocks_conflicting_action_without_touching_playback() {
     assert_eq!(
         path.pending
             .as_ref()
-            .expect("conflicting action не снимает первый pending")
+            .expect("Conflicting action does not remove the first pending action")
             .request_id,
         first_request_id
     );
@@ -472,7 +472,7 @@ fn app_start(
     let locator = media_source_open::direct_progressive_open::classify_direct_media_url(
         "https://media.example.test/same-item-switch.mp4",
     )
-    .expect("direct URL fixture locator валиден");
+    .expect("Direct URL fixture location validated");
     SameItemSwitchAppStart {
         source_request: MediaOpenSourceRequest::Web(
             crate::media_open::WebMediaOpenRequest::direct(

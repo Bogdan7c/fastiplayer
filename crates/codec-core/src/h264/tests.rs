@@ -123,7 +123,7 @@ fn avcc_parser_accepts_valid_length_sizes_and_extracts_sps_pps() {
     ] {
         let record_bytes = avcc(size_bytes, &sequence_parameter_set, &picture_parameter_set);
         let record = parse_avc_decoder_configuration_record(&record_bytes)
-            .expect("валидный avcC должен разбираться");
+            .expect("Valid avcC must be understood");
 
         assert_eq!(record.nal_length_size, expected_length_size);
         assert_eq!(
@@ -146,7 +146,7 @@ fn avcc_parser_accepts_zeroed_reserved_bits_from_noncanonical_muxers() {
     record_bytes[4] &= AVC_LENGTH_SIZE_MINUS_ONE_MASK;
     record_bytes[5] &= AVC_SPS_COUNT_MASK;
     let record = parse_avc_decoder_configuration_record(&record_bytes)
-        .expect("avcC с zeroed reserved bits должен разбираться по значимым битам");
+        .expect("avcC with zeroed reserved bits must understand the significant bits");
 
     assert_eq!(record.nal_length_size, H264NalLengthSize::FOUR);
     assert_eq!(
@@ -164,14 +164,14 @@ fn avc3_parser_accepts_parameter_sets_only_inside_media_samples() {
     let record_bytes = avc3_without_out_of_band_parameter_sets();
 
     let strict_avc1_error = parse_avc_decoder_configuration_record(&record_bytes)
-        .expect_err("avc1 не должен принимать avcC без SPS/PPS");
+        .expect_err("avc1 should not accept avcC without SPS/PPS");
     assert_eq!(
         strict_avc1_error,
         AvcDecoderConfigurationRecordError::MissingSequenceParameterSet
     );
 
     let avc3_record = parse_avc3_decoder_configuration_record(&record_bytes)
-        .expect("avc3 разрешает передавать SPS/PPS внутри media samples");
+        .expect("avc3 allows the transmission of SPS/PPS inside media samples");
 
     assert_eq!(avc3_record.nal_length_size, H264NalLengthSize::FOUR);
     assert!(avc3_record.sequence_parameter_sets().is_empty());
@@ -233,7 +233,7 @@ fn annex_b_parser_accepts_three_and_four_byte_start_codes() {
     access_unit.extend_from_slice(&idr_slice());
 
     let nal_units = h264_nal_units(&access_unit, H264Packetization::AnnexB)
-        .expect("Annex B packet должен разбираться по start codes");
+        .expect("Annex B packet must be understood by start codes");
     let nal_types = nal_units
         .iter()
         .map(|nal_unit| nal_unit.nal_unit_type())
@@ -257,7 +257,7 @@ fn avcc_to_annex_b_conversion_uses_explicit_parameter_set_injection() {
             picture_parameter_sets: std::slice::from_ref(&picture_parameter_set),
         },
     )
-    .expect("AVCC access unit должен конвертироваться в Annex B");
+    .expect("AVCC access unit must be converted to Annex B");
 
     let expected =
         annex_b_access_unit(&[sequence_parameter_set, picture_parameter_set, idr_slice()]);
@@ -270,13 +270,13 @@ fn avcc_config_packet_reaches_annex_b_decoder_boundary_with_borrowed_nal_views()
     let picture_parameter_set = pps();
     let record_bytes = avcc(4, &sequence_parameter_set, &picture_parameter_set);
     let record = parse_avc_decoder_configuration_record(&record_bytes)
-        .expect("валидный avcC должен сохранить decoder configuration contract");
+        .expect("AvcC must retain the decoder configuration contract");
     let packetization = infer_h264_packetization(Some(&record_bytes), &[])
-        .expect("валидный avcC должен определить AVCC packetization");
+        .expect("Valid avcC must determine AVCC packetization");
     let access_unit = avcc_access_unit(H264NalLengthSize::FOUR, &[idr_slice()]);
 
     let packet_nal_units = h264_nal_units(&access_unit, packetization)
-        .expect("AVCC IDR packet должен дойти до NAL boundary");
+        .expect("AVCC IDR packet should reach NAL boundary");
     let borrowed_idr_bytes = packet_nal_units[0].bytes();
     let expected_idr_bytes = &access_unit[H264NalLengthSize::FOUR.bytes()..];
 
@@ -292,9 +292,9 @@ fn avcc_config_packet_reaches_annex_b_decoder_boundary_with_borrowed_nal_views()
             picture_parameter_sets: record.picture_parameter_sets(),
         },
     )
-    .expect("AVCC packet с явной injection policy должен дойти до Annex B decoder boundary");
+    .expect("AVCC packet with explicit injection policy must reach Annex B decoder boundary");
     let decoder_nal_types = h264_nal_units(&annex_b, H264Packetization::AnnexB)
-        .expect("decoder-facing Annex B packet должен оставаться структурно валидным")
+        .expect("Decoder-facing Annex B packet must remain structurally valid")
         .into_iter()
         .map(|nal_unit| nal_unit.nal_unit_type())
         .collect::<Vec<_>>();
@@ -302,7 +302,7 @@ fn avcc_config_packet_reaches_annex_b_decoder_boundary_with_borrowed_nal_views()
     assert_eq!(decoder_nal_types, vec![7, 8, 5]);
     assert!(
         probe_h264_packet_keyframe(&annex_b, H264Packetization::AnnexB)
-            .expect("injected decoder-facing packet должен сохранить IDR classification")
+            .expect("Injected decoder-facing packet should retain IDR classification")
     );
 }
 
@@ -315,7 +315,7 @@ fn malformed_bytestream_preserves_typed_length_header_and_empty_output_contracts
             nal_length_size: H264NalLengthSize::FOUR,
         },
     )
-    .expect_err("оборванный AVCC length-prefix должен быть typed ошибкой");
+    .expect_err("AVCC length-prefix must be a typed error");
     assert_eq!(
         truncated_length_error,
         H264ByteStreamError::TruncatedAvccNalLength {
@@ -326,7 +326,7 @@ fn malformed_bytestream_preserves_typed_length_header_and_empty_output_contracts
 
     let invalid_header_packet = [0x00, 0x00, 0x01, 0x80];
     let invalid_header_error = h264_nal_units(&invalid_header_packet, H264Packetization::AnnexB)
-        .expect_err("forbidden_zero_bit должен сохранить typed header ошибку");
+        .expect_err("forbidden_zero_bit: The typed header error");
     assert_eq!(
         invalid_header_error,
         H264ByteStreamError::InvalidNalHeader { header: 0x80 }
@@ -341,7 +341,7 @@ fn malformed_bytestream_preserves_typed_length_header_and_empty_output_contracts
         H264ParameterSetInjection::None,
         &mut decoder_output,
     )
-    .expect_err("невалидный header нельзя публиковать decoder-у");
+    .expect_err("A broken header can not be published decoder");
 
     assert_eq!(
         conversion_error,
@@ -367,7 +367,7 @@ fn avcc_to_annex_b_into_matches_legacy_wrapper() {
         picture_parameter_sets: std::slice::from_ref(&picture_parameter_set),
     };
     let legacy_annex_b = h264_access_unit_to_annex_b(&access_unit, packetization, injection)
-        .expect("legacy wrapper должен сохранить прежнюю конвертацию");
+        .expect("Legacy Coverper must retain the previous conversion");
     let mut caller_owned_annex_b = Vec::with_capacity(legacy_annex_b.len() + 64);
 
     h264_access_unit_to_annex_b_into(
@@ -379,7 +379,7 @@ fn avcc_to_annex_b_into_matches_legacy_wrapper() {
         },
         &mut caller_owned_annex_b,
     )
-    .expect("_into API должен писать те же Annex B bytes");
+    .expect("_into API should write the same Annex B bytes");
 
     assert_eq!(caller_owned_annex_b, legacy_annex_b);
 }
@@ -397,7 +397,7 @@ fn avcc_to_annex_b_none_injection_does_not_add_parameter_sets() {
         H264ParameterSetInjection::None,
         &mut annex_b,
     )
-    .expect("None injection должен только перепаковать NAL units");
+    .expect("None injection should only repack NAL units.");
 
     assert_eq!(annex_b, annex_b_access_unit(&[idr_slice()]));
 }
@@ -416,15 +416,15 @@ fn h264_keyframe_probe_distinguishes_idr_non_idr_and_sps_only_packets() {
 
     assert!(
         probe_h264_packet_keyframe(&idr_access_unit, H264Packetization::AnnexB)
-            .expect("IDR access unit должен разбираться")
+            .expect("IDR access unit should be understood.")
     );
     assert!(
         !probe_h264_packet_keyframe(&non_idr_access_unit, H264Packetization::AnnexB)
-            .expect("non-IDR access unit должен разбираться")
+            .expect("The non-IDR access unit must be understood.")
     );
     assert!(
         !probe_h264_packet_keyframe(&parameter_sets_only, H264Packetization::AnnexB)
-            .expect("SPS/PPS-only packet должен быть валидным, но не presentable keyframe")
+            .expect("SPS/PPS-only packet must be valid, but not presentable keyframe")
     );
 }
 
@@ -447,17 +447,17 @@ fn h264_in_band_decode_start_requires_sps_pps_and_idr_in_one_access_unit() {
 
     assert_eq!(
         probe_h264_packet_decode_start(&self_contained_access_unit, H264Packetization::AnnexB)
-            .expect("self-contained typed probe должен разбираться"),
+            .expect("Self-contained typed probe must be understood."),
         H264PacketDecodeStartProbe::IncludesInBandConfiguration
     );
     assert_eq!(
         probe_h264_packet_decode_start(&idr_without_parameter_sets, H264Packetization::AnnexB)
-            .expect("IDR-only typed probe должен разбираться"),
+            .expect("IDR-only typed probe should be understood."),
         H264PacketDecodeStartProbe::RequiresTrackConfiguration
     );
     assert_eq!(
         probe_h264_packet_decode_start(&parameter_sets_without_idr, H264Packetization::AnnexB)
-            .expect("non-IDR typed probe должен разбираться"),
+            .expect("Non-IDR typed probe should be understood."),
         H264PacketDecodeStartProbe::NotKeyframe
     );
 
@@ -466,35 +466,35 @@ fn h264_in_band_decode_start_requires_sps_pps_and_idr_in_one_access_unit() {
             &self_contained_access_unit,
             H264Packetization::AnnexB,
         )
-        .expect("self-contained access unit должен разбираться")
+        .expect("Self-contained access unit must be understood.")
     );
     assert!(
         !probe_h264_packet_in_band_decode_start(
             &idr_without_parameter_sets,
             H264Packetization::AnnexB,
         )
-        .expect("IDR-only access unit должен разбираться")
+        .expect("IDR-only access unit should be understood.")
     );
     assert!(
         !probe_h264_packet_in_band_decode_start(
             &idr_without_picture_parameter_set,
             H264Packetization::AnnexB,
         )
-        .expect("SPS+IDR access unit должен разбираться")
+        .expect("SPS+IDR access unit should be understood.")
     );
     assert!(
         !probe_h264_packet_in_band_decode_start(
             &parameter_sets_without_idr,
             H264Packetization::AnnexB,
         )
-        .expect("SPS/PPS-only access unit должен разбираться")
+        .expect("SPS/PPS-only access unit must be understood.")
     );
     assert!(
         !probe_h264_packet_in_band_decode_start(
             &parameter_sets_after_idr,
             H264Packetization::AnnexB,
         )
-        .expect("parameter sets после IDR не должны считаться decode-start")
+        .expect("parameter sets after IDR should not be considered decode-start.")
     );
     assert!(matches!(
         probe_h264_packet_in_band_decode_start(&[], H264Packetization::AnnexB),
@@ -526,7 +526,7 @@ fn h264_requirement_probe_uses_avcc_sps_and_rejects_unsupported_variants() {
     );
 
     let VideoRequirementProbe::Candidate(candidate) = probe else {
-        panic!("High 8-bit 4:2:0 SPS должен стать candidate");
+        panic!("High 8-bit 4:2:0 SPS should be a candidate");
     };
     assert_eq!(
         candidate.requirement.profile,
@@ -578,7 +578,7 @@ fn avc3_requirement_probe_reads_sps_from_length_prefixed_media_sample() {
     );
 
     let VideoRequirementProbe::Candidate(candidate) = probe else {
-        panic!("avc3 sample с in-band SPS должен доказать decode requirement");
+        panic!("avc3 sample with in-band SPS must prove decode requirement");
     };
     assert_eq!(
         candidate.requirement.profile,
@@ -630,7 +630,7 @@ fn avcc_requirement_parser_extracts_supported_sps_metadata() {
     let picture_parameter_set = pps();
     let record_bytes = avcc(4, &sequence_parameter_set, &picture_parameter_set);
     let metadata = h264_sps_metadata_from_avc_decoder_configuration_record(&record_bytes)
-        .expect("Constrained Baseline avcC должен дать SPS metadata");
+        .expect("Constrained Baseline avcC gives SPS metadata");
 
     assert_eq!(metadata.profile, H264Profile::ConstrainedBaseline);
     assert_eq!(metadata.width, 1_280);
@@ -655,7 +655,7 @@ fn profile_indication_distinguishes_baseline_from_constrained_baseline() {
 
     let unsupported_indication = H264ProfileIndication::new(110, 0);
     let unsupported_error = h264_profile_from_indication(unsupported_indication)
-        .expect_err("High 10 должен остаться вне текущего H.264 profile subset");
+        .expect_err("High 10 should remain outside the current H.264 profile subset");
     assert_eq!(unsupported_error.indication(), unsupported_indication);
     assert!(unsupported_error.reason().contains("High 10"));
 }
@@ -666,7 +666,7 @@ fn ordinary_baseline_avcc_and_requirement_probe_preserve_exact_profile() {
     let picture_parameter_set = pps();
     let record_bytes = avcc(4, &sequence_parameter_set, &picture_parameter_set);
     let metadata = h264_sps_metadata_from_avc_decoder_configuration_record(&record_bytes)
-        .expect("обычный Baseline avcC должен дать SPS metadata");
+        .expect("Baseline avcC should give SPS metadata");
 
     assert_eq!(metadata.profile, H264Profile::Baseline);
     assert_eq!(metadata.bit_depth, BitDepth::Eight);
@@ -680,7 +680,7 @@ fn ordinary_baseline_avcc_and_requirement_probe_preserve_exact_profile() {
         Some(&record_bytes),
     );
     let VideoRequirementProbe::Candidate(candidate) = probe else {
-        panic!("обычный Baseline avcC должен стать requirement candidate");
+        panic!("Baseline avcC should be a requirement candidate");
     };
 
     assert_eq!(

@@ -192,7 +192,7 @@ fn resolve_file_uri(mut parsed_uri: Url) -> Result<ResolvedGenericLocator, Locat
 fn local_resolution(native_path: PathBuf) -> ResolvedGenericLocator {
     ResolvedGenericLocator {
         durable_locator: DurableReopenLocator::local(LocalLocator::Native(native_path)),
-        fallback_display_name: "Локальный медиафайл".to_owned(),
+        fallback_display_name: "Local media file".to_owned(),
     }
 }
 

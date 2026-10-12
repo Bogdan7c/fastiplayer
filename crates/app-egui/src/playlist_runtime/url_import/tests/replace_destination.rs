@@ -130,7 +130,7 @@ impl DropRuntime {
             .start_dropped_web_url_replacement(url, &enabled_config());
         assert!(
             matches!(start, DroppedWebUrlReplacementStart::ResolvingTopology),
-            "ожидался запуск topology job, got {start:?}"
+            "expected launch topology job, got {start:?}"
         );
         self.started
             .recv_timeout(Duration::from_secs(1))
@@ -146,7 +146,7 @@ impl DropRuntime {
             taken = self.runtime.take_resolved_url_collection();
             taken.is_some()
         });
-        taken.expect("коллекция получена")
+        taken.expect("collection received")
     }
 
     /// Названия строк очереди в порядке воспроизведения.
@@ -197,7 +197,7 @@ fn confirm_decision(
 ) -> PlaylistConfirmationApplyOutcome {
     let model = runtime
         .pending_playlist_confirmation()
-        .expect("подтверждение должно ждать ответа");
+        .expect("Confirmation should wait for a response");
     runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
         intent_id: model.intent_id(),
         decision,
@@ -234,7 +234,7 @@ fn collection_on_nonempty_queue_shows_count_and_domain_then_confirm_replaces_and
         .runtime
         .pending_playlist_confirmation()
         .expect("pending");
-    assert_eq!(model.safe_label(), "3 ролика с collection.example.test");
+    assert_eq!(model.safe_label(), "3 videos from collection.example.test");
     assert!(model.reasons().queue_replacement());
     for secret in ["SECRETPATH", "playlist"] {
         assert!(!model.safe_label().contains(secret));
@@ -249,19 +249,19 @@ fn collection_on_nonempty_queue_shows_count_and_domain_then_confirm_replaces_and
         AdmittedQueueReplacementIntent::ResolvedUrlCollection(admitted),
     ) = outcome
     else {
-        panic!("Confirm должен вернуть допущенную коллекцию, got {outcome:?}");
+        panic!("Confirm must return the approved collection, got {outcome:?}");
     };
     assert_eq!(
         drop.queue_names(),
         ["old-0.mkv", "old-1.mkv"],
-        "Confirm очередь не меняет"
+        "Confirm doesn't change line"
     );
 
     let ServiceUrlReplacementOutcome::Replaced { item } = drop
         .runtime
         .replace_queue_with_resolved_url_collection(admitted)
     else {
-        panic!("замена должна пройти");
+        panic!("The replacement must pass");
     };
     assert_eq!(drop.queue_names(), ["clip-1", "clip-2", "clip-3"]);
     let first_id = drop
@@ -271,7 +271,7 @@ fn collection_on_nonempty_queue_shows_count_and_domain_then_confirm_replaces_and
         .iter_playable_items()
         .next()
         .map(|queued| queued.item_id());
-    assert_eq!(Some(item), first_id, "играть надо первую строку");
+    assert_eq!(Some(item), first_id, "play the first line");
     assert!(matches!(
         drop.runtime.play_playlist_row(item),
         RuntimeRowPlayOutcome::Controller(ControllerPlayItemOutcome::StartInstall { .. })
@@ -319,7 +319,7 @@ fn collection_on_empty_queue_replaces_immediately_in_source_order() {
         AdmittedQueueReplacementIntent::ResolvedUrlCollection(admitted),
     ) = admission
     else {
-        panic!("пустая очередь — без вопросов, got {admission:?}");
+        panic!("No questions asked, got {admission:?}");
     };
     assert!(drop.runtime.pending_playlist_confirmation().is_none());
     assert!(matches!(
@@ -344,7 +344,7 @@ fn single_entry_resolution_replaces_queue_with_exactly_one_row() {
         .runtime
         .pending_playlist_confirmation()
         .expect("pending");
-    assert_eq!(model.safe_label(), "1 ролик с collection.example.test");
+    assert_eq!(model.safe_label(), "1 video from collection.example.test");
 
     let PlaylistConfirmationApplyOutcome::QueueReplacementConfirmed(
         AdmittedQueueReplacementIntent::ResolvedUrlCollection(admitted),
@@ -353,7 +353,7 @@ fn single_entry_resolution_replaces_queue_with_exactly_one_row() {
         QueueReplacementConfirmationDecision::Confirm,
     )
     else {
-        panic!("Confirm должен вернуть коллекцию");
+        panic!("Confirm must return the collection");
     };
     assert!(matches!(
         drop.runtime
@@ -424,7 +424,7 @@ fn user_cancel_of_progress_row_leaves_queue_and_delivers_nothing() {
     assert_eq!(drop.indicator_host(), None);
     drop.assert_cancelled_result_never_arrives();
     assert_eq!(drop.queue_names(), ["old-0.mkv", "old-1.mkv"]);
-    assert_eq!(drop.feedback_text(), None, "отмена молчит");
+    assert_eq!(drop.feedback_text(), None, "cancellation is silent");
     assert!(drop.runtime.pending_playlist_confirmation().is_none());
 }
 
@@ -461,7 +461,11 @@ fn another_open_during_resolving_drops_the_result() {
         .admit_in_app_queue_replacement(other)
         .expect("admission");
 
-    assert_eq!(drop.indicator_host(), None, "прогресс снят вместе с job");
+    assert_eq!(
+        drop.indicator_host(),
+        None,
+        "Progress is removed along with the job"
+    );
     drop.assert_cancelled_result_never_arrives();
     assert_eq!(drop.queue_names(), ["old-0.mkv"]);
 }
@@ -496,7 +500,7 @@ fn direct_media_url_skips_topology_and_keeps_single_link_path() {
         matches!(start, DroppedWebUrlReplacementStart::SingleLink(_)),
         "got {start:?}"
     );
-    assert_eq!(drop.indicator_host(), None, "job не запускался");
+    assert_eq!(drop.indicator_host(), None, "job never started.");
     assert_eq!(drop.queue_names(), ["old-0.mkv"]);
 }
 
@@ -509,7 +513,7 @@ fn garbage_is_refused_with_safe_text_and_no_job() {
         .start_dropped_web_url_replacement("https://user:hunter2@ exa mple", &enabled_config());
 
     let DroppedWebUrlReplacementStart::Refused { user_message } = start else {
-        panic!("ожидался отказ, got {start:?}");
+        panic!("Expected failure, got {start:?}");
     };
     assert!(!user_message.contains("hunter2"));
     assert_eq!(drop.indicator_host(), None);

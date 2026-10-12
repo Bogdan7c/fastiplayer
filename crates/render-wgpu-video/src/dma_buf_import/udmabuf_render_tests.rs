@@ -173,7 +173,7 @@ fn create_udmabuf_with_contents(frame_bytes: &[u8]) -> (OwnedFd, u32) {
         .read(true)
         .write(true)
         .open(UDMABUF_DEVICE_PATH)
-        .expect("open /dev/udmabuf (нужен доступ пользователя к устройству)");
+        .expect("open /dev/udmabuf (user access to the device is required)");
     let create_request = UdmabufCreateRequest {
         memfd: u32::try_from(memfd_file.as_raw_fd()).expect("memfd is non-negative"),
         flags: UDMABUF_FLAGS_CLOEXEC,
@@ -279,7 +279,7 @@ impl GpuTestContext {
             force_fallback_adapter: false,
             apply_limit_buckets: false,
         }))
-        .expect("нужен Vulkan adapter для udmabuf GPU-теста");
+        .expect("Vulkan adapter for the udmabuf GPU test");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("udmabuf import render test device"),
             required_features: required_wgpu_video_texture_features(&adapter),
@@ -288,7 +288,7 @@ impl GpuTestContext {
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
-        .expect("создать Vulkan device с NV12 feature");
+        .expect("Create a Vulkan device with NV12 feature");
 
         Self {
             instance,
@@ -375,22 +375,22 @@ impl OffscreenTarget {
         readback_slice.map_async(wgpu::MapMode::Read, move |mapping_result| {
             mapping_sender
                 .send(mapping_result)
-                .expect("передать результат map_async");
+                .expect("pass the result map_async");
         });
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: Some(submission_index),
                 timeout: Some(GPU_WAIT_TIMEOUT),
             })
-            .expect("дождаться GPU submit-а");
+            .expect("Wait for the GPU to submit.");
         mapping_receiver
             .recv_timeout(GPU_WAIT_TIMEOUT)
-            .expect("получить map callback")
+            .expect("Get a map callback")
             .expect("map readback buffer");
 
         let mapped_bytes = readback_slice
             .get_mapped_range()
-            .expect("получить mapped range readback-а");
+            .expect("Get a mapped range readback");
         let pixels = pixel_positions
             .iter()
             .map(|&(x, y)| {
@@ -438,7 +438,7 @@ fn assert_dominant_channel(pixel: [u8; 4], dominant: usize, description: &str) {
 /// Известный кадр из настоящего DMA-BUF проходит production импорт и рендер без
 /// потери содержимого: слева красный, справа синий, а не нули/мусор.
 #[test]
-#[ignore = "нужны Vulkan GPU с NV12 + DMA-BUF и доступ к /dev/udmabuf"]
+#[ignore = "Vulkan GPU with NV12+DMA-BUF and /dev/udmabuf access"]
 fn udmabuf_nv12_frame_survives_import_and_renders_known_colors() {
     let gpu = GpuTestContext::new();
     let (dma_buf_fd, object_size) = create_udmabuf_with_contents(&split_red_blue_nv12_frame());
@@ -451,11 +451,11 @@ fn udmabuf_nv12_frame_survives_import_and_renders_known_colors() {
     );
     let imported = importer
         .import_exported_dma_buf_image(&descriptor)
-        .expect("production импорт linear NV12 DMA-BUF");
+        .expect("production imports linear NV12 DMA-BUF");
     let decoded_frame = decoded_nv12_frame();
     let renderable_frame =
         WgpuRenderableFrame::from_decoded_nv12(&decoded_frame, &imported.y_view, &imported.uv_view)
-            .expect("собрать renderable NV12 frame");
+            .expect("Create a renderable NV12 frame");
 
     let target = OffscreenTarget::new(&gpu.device);
     let mut renderer = WgpuVideoRenderer::new(&gpu.device, TARGET_FORMAT);
@@ -480,8 +480,8 @@ fn udmabuf_nv12_frame_survives_import_and_renders_known_colors() {
             device: &gpu.device,
             queue: &gpu.queue,
         })
-        .expect("renderer принимает импортированный кадр");
-    assert!(drew_video, "кадр должен быть нарисован, а не только очищен");
+        .expect("renderer accepts imported frame");
+    assert!(drew_video, "The frame should be painted, not just cleaned.");
     target.record_copy_to_readback(&mut encoder);
     let submission_index = gpu.queue.submit([encoder.finish()]);
 
@@ -490,6 +490,6 @@ fn udmabuf_nv12_frame_survives_import_and_renders_known_colors() {
     let right_center = (FRAME_WIDTH * 3 / 4, FRAME_HEIGHT / 2);
     let pixels = target.read_pixels(&gpu.device, submission_index, &[left_center, right_center]);
 
-    assert_dominant_channel(pixels[0], 0, "левая половина должна быть красной");
-    assert_dominant_channel(pixels[1], 2, "правая половина должна быть синей");
+    assert_dominant_channel(pixels[0], 0, "The left half should be red.");
+    assert_dominant_channel(pixels[1], 2, "The right half should be blue.");
 }

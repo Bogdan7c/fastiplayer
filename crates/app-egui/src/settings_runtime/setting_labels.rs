@@ -8,9 +8,9 @@ use fastiplayer_config::AppConfig;
 use settings_core::{SettingId, SettingsRegistry};
 
 /// Подпись, если id не найден в registry. Сам id пользователю не показывается (он уходит в лог).
-const UNKNOWN_SETTING_LABEL: &str = "неизвестная настройка";
+const UNKNOWN_SETTING_LABEL: &str = "unknown setting";
 
-/// Read-only адаптер «id настройки -> русское название» поверх registry.
+/// Read-only адаптер «id настройки -> английское название» поверх registry.
 pub(super) struct SettingLabels<'registry> {
     registry: &'registry SettingsRegistry<AppConfig>,
 }
@@ -31,7 +31,7 @@ impl<'registry> SettingLabels<'registry> {
             None => {
                 tracing::warn!(
                     setting_id = setting_id.as_str(),
-                    "В статусе настроек встретился id, которого нет в registry"
+                    "Settings status contains an ID absent from the registry"
                 );
                 format!("«{UNKNOWN_SETTING_LABEL}»")
             }

@@ -399,7 +399,7 @@ fn seek_discards_aborted_transfer_before_reconnect() {
         .expect("initial read");
     source
         .seek(10)
-        .expect("426 старой сессии не принадлежит новому seek");
+        .expect("426 The old session does not belong to the new seek");
     source
         .read(&mut bytes, &CancellationToken::never_cancelled())
         .expect("read after reconnect");

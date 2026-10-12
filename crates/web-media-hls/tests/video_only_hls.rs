@@ -74,7 +74,7 @@ fn admit(playlist: &str, target: &HttpRequestTarget) -> NativeHlsCatalogAdmissio
         HlsParserLimits::default(),
         &policy(),
     )
-    .expect("video-only media playlist должен пройти native admission")
+    .expect("video-only media playlist must pass native admission")
 }
 
 fn vod_request(
@@ -107,9 +107,9 @@ fn vod_request(
 fn next_ready(demuxer: &mut dyn Demuxer) -> DemuxReadEvent {
     let deadline = Instant::now() + TEST_TIMEOUT;
     loop {
-        match demuxer.next_event().expect("HLS runtime читается") {
+        match demuxer.next_event().expect("HLS runtime reads") {
             DemuxReadEvent::TemporarilyUnavailable(_) => {
-                assert!(Instant::now() < deadline, "HLS worker не стал готов");
+                assert!(Instant::now() < deadline, "The HLS worker is not ready.");
                 std::thread::sleep(Duration::from_millis(2));
             }
             event => return event,
@@ -126,7 +126,7 @@ fn first_packet_and_track_kinds(demuxer: &mut dyn Demuxer) -> (Packet, Vec<Track
                 track_kinds = update.tracks.iter().map(|track| track.kind).collect();
             }
             DemuxReadEvent::Packet(packet) => return (packet, track_kinds),
-            DemuxReadEvent::EndOfStream => panic!("поток закончился до первого пакета"),
+            DemuxReadEvent::EndOfStream => panic!("The stream ended before the first packet."),
             _ => {}
         }
     }
@@ -159,13 +159,13 @@ fn video_only_ts_vod_opens_reaches_video_packets_and_seeks() {
         vod_request(&server, vod_ts_playlist(), &admission),
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("video-only ts VOD должен открыться");
+    .expect("video-only ts VOD should open");
     assert_eq!(opened.duration(), Duration::from_secs(30));
     let seek_handle = opened.async_seek_handle().expect("receipted seek handle");
     let mut demuxer = opened.into_demuxer();
 
     let (packet, track_kinds) = first_packet_and_track_kinds(demuxer.as_mut());
-    assert_eq!(track_kinds, vec![TrackKind::Video], "звука быть не должно");
+    assert_eq!(track_kinds, vec![TrackKind::Video], "It shouldn't sound.");
     assert_eq!(packet.kind, TrackKind::Video);
     assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
 
@@ -184,17 +184,17 @@ fn video_only_ts_vod_opens_reaches_video_packets_and_seeks() {
         if let Some(receipt) = seek_handle.poll_receipt() {
             break receipt;
         }
-        assert!(Instant::now() < deadline, "seek receipt не пришёл");
+        assert!(Instant::now() < deadline, "seek receipt He didn't come");
         std::thread::sleep(Duration::from_millis(2));
     };
     let demux_api::ProgressiveAsyncSeekOutcome::Succeeded(result) = receipt.outcome else {
-        panic!("seek video-only VOD должен удаться: {receipt:?}");
+        panic!("seek video-only VOD must succeed: {receipt:?}");
     };
     // В fixture-е PTS сегмента смещён на 3000 тиков (33 мс) относительно DTS.
     let landed = result.actual_position.as_duration();
     assert!(
         landed >= Duration::from_secs(10) && landed < Duration::from_millis(10_100),
-        "seek должен сесть на keyframe второго сегмента, получено {landed:?}"
+        "seek should sit down keyframe second segment, got {landed:?}"
     );
     loop {
         if let DemuxReadEvent::Packet(packet) = next_ready(demuxer.as_mut()) {
@@ -202,7 +202,7 @@ fn video_only_ts_vod_opens_reaches_video_packets_and_seeks() {
             assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
             assert!(
                 packet.pts >= Duration::from_secs(10),
-                "после seek первый пакет не раньше anchor-а: {:?}",
+                "After seeking, the first package is not earlier than anchor: {:?}",
                 packet.pts
             );
             break;
@@ -217,7 +217,7 @@ fn video_only_fmp4_vod_opens_and_reaches_keyframe_packet() {
     let moof_at = bytes
         .windows(4)
         .position(|window| window == b"moof")
-        .expect("в fixture есть moof")
+        .expect("fixture has moof")
         - 4;
     let init = Arc::new(bytes[..moof_at].to_vec());
     let media = Arc::new(bytes[moof_at..].to_vec());
@@ -238,7 +238,7 @@ fn video_only_fmp4_vod_opens_and_reaches_keyframe_packet() {
         vod_request(&server, PLAYLIST, &admission),
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("video-only fMP4 VOD должен открыться");
+    .expect("video-only fMP4 VOD should open");
     let mut demuxer = opened.into_demuxer();
     let (packet, track_kinds) = first_packet_and_track_kinds(demuxer.as_mut());
     assert_eq!(track_kinds, vec![TrackKind::Video]);
@@ -271,7 +271,7 @@ fn muxed_ts_and_fmp4_still_open_with_both_tracks() {
             vod_request(&server, playlist, &admission),
             ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
         )
-        .expect("muxed VOD должен открыться");
+        .expect("The muxed VOD should open.");
         let mut demuxer = opened.into_demuxer();
         let (_, mut kinds) = first_packet_and_track_kinds(demuxer.as_mut());
         kinds.sort_by_key(|kind| matches!(kind, TrackKind::Audio));
@@ -334,7 +334,7 @@ fn video_only_live_ts_opens_and_reaches_video_packets() {
         ),
         initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
     })
-    .expect("video-only live должен открыться");
+    .expect("video-only live should open");
     let (mut demuxer, _timeline_port, _) = opened.into_parts();
     let (packet, _) = first_packet_and_track_kinds(demuxer.as_mut());
     let track_kinds: Vec<TrackKind> = demuxer.tracks().iter().map(|track| track.kind).collect();
@@ -366,7 +366,7 @@ impl HlsCatalogCapabilityProofPort for VideoOnlyCapabilities {
         &mut self,
         _track: &TrackInfo,
     ) -> Result<web_media_core::AudioTrackDescriptor, HlsCatalogCapabilityRejection> {
-        panic!("в video-only child не должно быть аудио-дорожки");
+        panic!("into video-only child There should be no audio-paths");
     }
 }
 
@@ -442,7 +442,7 @@ fn master_variant_without_audio_codec_plays_video_only_through_catalog() {
         },
         &mut VideoOnlyCapabilities,
     )
-    .expect("video-only master должен пройти discovery");
+    .expect("video-only master must pass discovery");
     let HlsCatalogDiscoveryOutcome::Installed(snapshot) = outcome else {
         panic!("master discovery must install a catalog");
     };
@@ -460,7 +460,7 @@ fn master_variant_without_audio_codec_plays_video_only_through_catalog() {
         reopen,
         ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
     )
-    .expect("video-only master child должен открыться");
+    .expect("video-only master child should open");
     let mut demuxer = opened.into_demuxer();
     let (packet, track_kinds) = first_packet_and_track_kinds(demuxer.as_mut());
     assert_eq!(track_kinds, vec![TrackKind::Video]);

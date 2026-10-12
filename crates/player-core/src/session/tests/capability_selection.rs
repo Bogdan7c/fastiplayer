@@ -42,7 +42,7 @@ fn unsupported_profile_returns_player_error_before_decode() {
         .expect_err("VP9 profile2 must be rejected by profile0-only capabilities");
 
     assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
-    assert!(error.message.contains("profile VP9 Profile 2"));
+    assert!(error.message.contains("Profile VP9 Profile 2"));
     assert!(!session.can_defer_packet_refinement(&requirement));
 }
 
@@ -67,8 +67,8 @@ fn active_backend_filters_matching_capability_output_contract_for_each_codec() {
     ] {
         let matched_output = session
             .validate_video_decode_requirement(&requirement)
-            .expect("active FFmpeg backend должен пройти playable software requirement")
-            .expect("capability selection должен вернуть concrete output");
+            .expect("Active FFmpeg backend must pass the playable software requirement")
+            .expect("Selection capability returns concrete output");
 
         assert_eq!(matched_output.backend.as_str(), "ffmpeg-sw");
         assert_eq!(
@@ -93,12 +93,12 @@ fn requested_video_track_selection_sets_matching_requirement() {
 
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
-        .expect("supported VP9 profile0 track должен быть выбран");
+        .expect("Supported VP9 profile0 track must be selected");
 
     let active_requirement = session
         .pipeline
         .active_video_requirement()
-        .expect("validated selection должен установить active requirement");
+        .expect("Validated selection must establish an active requirement.");
 
     assert_eq!(
         session.pipeline.selected_video_track_id(),
@@ -115,7 +115,7 @@ fn requested_video_track_selection_sets_matching_requirement() {
     assert_eq!(
         fake_decoder
             .stream_config()
-            .expect("VP9 selection должен сконфигурировать fake decoder")
+            .expect("VP9 selection must configure a fake decoder.")
             .codec,
         VideoCodec::Vp9
     );
@@ -141,12 +141,12 @@ fn requested_video_track_selection_replaces_stale_requirement() {
 
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
-        .expect("selection должен пересчитать requirement из выбранного track-а");
+        .expect("selection must recalculate the requirement from the selected track");
 
     let active_requirement = session
         .pipeline
         .active_video_requirement()
-        .expect("fresh selection должен заменить stale requirement");
+        .expect("Fresh selection replaces stale requirement");
 
     assert_eq!(
         session.pipeline.selected_video_track_id(),
@@ -176,16 +176,16 @@ fn requested_video_track_selection_rejects_unsupported_requirement_before_mutati
     install_tracks_for_capability_selection(&mut session, tracks);
     session
         .select_requested_video_track(supported_track_id)
-        .expect("initial supported selection должен пройти validation");
+        .expect("Initial supported selection must be validated");
     let accepted_requirement = session
         .pipeline
         .active_video_requirement()
-        .expect("initial selection должен установить requirement")
+        .expect("Initial selection must establish a requirement")
         .clone();
 
     let error = session
         .dispatch_command(PlayerCommand::SelectVideoTrack(unsupported_track_id))
-        .expect_err("unsupported profile2 track должен быть отвергнут до mutation");
+        .expect_err("unsupported profile2 track must be rejected before mutation");
 
     assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
     assert_eq!(
@@ -210,11 +210,11 @@ fn h264_stream_config_uses_track_codec_private_and_metadata() {
 
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
-        .expect("fake backend должен принять H.264 config без production VAAPI decode");
+        .expect("Fake backend must accept H.264 config without production VAAPI decode");
 
     let config = fake_decoder
         .stream_config()
-        .expect("H.264 selection должен передать stream config в decoder boundary");
+        .expect("H.264 selection must transfer stream config to decoder boundary");
 
     assert_eq!(config.track_id, video_track_id);
     assert_eq!(config.codec, VideoCodec::H264);
@@ -254,8 +254,8 @@ fn hls_avc3_sample_with_in_band_parameter_sets_reaches_presentation() {
     install_tracks_for_capability_selection(&mut session, tracks.clone());
     session.set_playback_state(PlaybackState::Playing);
     session
-        .select_default_video_track(&tracks, "HLS avc3 track должен выбрать video backend")
-        .expect("поддерживаемый avc3 track должен сконфигурировать decoder");
+        .select_default_video_track(&tracks, "HLS avc3 track to select video backend")
+        .expect("Avc3 track must be configured to decoder");
 
     let source_access_unit = h264_avc3_access_unit_with_in_band_parameter_sets();
     session
@@ -273,7 +273,7 @@ fn hls_avc3_sample_with_in_band_parameter_sets_reaches_presentation() {
 
     let configured_stream = decoder
         .stream_config()
-        .expect("avc3 track должен передать stream config в decoder boundary");
+        .expect("avc3 track must transmit stream config to decoder boundary");
     assert_eq!(
         configured_stream.codec_private,
         Some(h264_avc3_codec_private())
@@ -292,7 +292,7 @@ fn hls_avc3_sample_with_in_band_parameter_sets_reaches_presentation() {
     assert_eq!(
         first_tick.video_frames_presented + second_tick.video_frames_presented,
         1,
-        "avc3 packet должен стать предъявленным кадром, а не застрять после track mapping"
+        "avc3 packet should become the frame presented, not get stuck after track mapping"
     );
     assert_eq!(
         session
@@ -306,10 +306,10 @@ fn hls_avc3_sample_with_in_band_parameter_sets_reaches_presentation() {
 #[test]
 fn hls_avc3_track_rejects_missing_and_malformed_configuration_before_decode() {
     for (codec_private, expected_reason) in [
-        (None, "не содержит avc3 avcC"),
+        (None, "does not contain avc3 avcC"),
         (
             Some(Bytes::from_static(&[0x01, 0x4d])),
-            "не является поддержанным avc3 avcC",
+            "not supported avc3 avcC",
         ),
     ] {
         let mut session = PlayerSession::new();
@@ -323,7 +323,7 @@ fn hls_avc3_track_rejects_missing_and_malformed_configuration_before_decode() {
 
         let error = session
             .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
-            .expect_err("avc3 без валидного avcC должен быть отвергнут до decoder configure");
+            .expect_err("avc3 without valid avcC must be rejected before decoder configure");
 
         assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoCodec);
         assert!(
@@ -350,11 +350,11 @@ fn h264_stream_config_accepts_zeroed_avcc_reserved_bits() {
 
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
-        .expect("H.264 avcC с zeroed reserved bits должен сохранять AVCC packetization");
+        .expect("H.264 avcC with zeroed reserved bits must retain AVCC packetization");
 
     let config = fake_decoder
         .stream_config()
-        .expect("H.264 selection должен сконфигурировать fake decoder");
+        .expect("H.264 Selection must be configured with fake decoder");
 
     assert_eq!(config.codec_private, Some(codec_private));
     match config.packetization {
@@ -379,11 +379,11 @@ fn h265_stream_config_uses_track_hvcc_packetization_and_metadata() {
 
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
-        .expect("fake backend должен принять нейтральный H.265 config без VAAPI adapter-а");
+        .expect("Fake backend must accept neutral H.265 config without VAAPI adapter.");
 
     let config = fake_decoder
         .stream_config()
-        .expect("H.265 selection должен передать stream config в decoder boundary");
+        .expect("H.265 selection must transfer stream config to decoder boundary");
 
     assert_eq!(config.track_id, video_track_id);
     assert_eq!(config.codec, VideoCodec::H265);
@@ -418,7 +418,7 @@ fn h265_stream_config_rejects_missing_hvcc_with_typed_codec_error() {
 
     let error = session
         .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
-        .expect_err("H.265 без hvcC не должен превращаться в bool/no-op");
+        .expect_err("H.265 without hvcC should not be converted to bool/no-op");
 
     assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoCodec);
     assert!(error.message.contains("hvcC codec_private"));
@@ -497,7 +497,7 @@ fn explicit_annex_b_conflicting_with_codec_private_is_typed_rejection() {
         .expect_err("conflicting authoritative framing evidence");
 
     assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoCodec);
-    assert!(error.message.contains("одновременно объявляет Annex-B"));
+    assert!(error.message.contains("simultaneously announces Annex-B"));
 }
 
 #[test]
@@ -519,13 +519,13 @@ fn fake_backend_accepts_vp9_h264_vp9_switch_without_restart() {
 
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(first_vp9_track_id))
-        .expect("first VP9 track должен быть выбран");
+        .expect("The first VP9 track must be selected");
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(h264_track_id))
-        .expect("H.264 track должен быть выбран fake backend-ом");
+        .expect("H.264 track must be selected as fake backend");
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(second_vp9_track_id))
-        .expect("second VP9 track должен быть выбран без restart приложения");
+        .expect("Second VP9 track must be selected without restart");
 
     let codecs = fake_decoder
         .configured_streams()
@@ -559,11 +559,11 @@ fn stream_config_failure_does_not_mutate_selected_track_or_requirement() {
         .set_video_decoder_thread(fake_decoder.clone());
     session
         .dispatch_command(PlayerCommand::SelectVideoTrack(selected_track_id))
-        .expect("initial VP9 selection должен пройти");
+        .expect("Initial VP9 selection must be completed");
     let accepted_requirement = session
         .pipeline
         .active_video_requirement()
-        .expect("initial selection должен сохранить requirement")
+        .expect("Initial selection must retain the requirement")
         .clone();
     fake_decoder.push_configure_result(video_core::VideoStreamConfigResult::Fatal(
         DecodeThreadError::new("configure failed"),
@@ -571,7 +571,7 @@ fn stream_config_failure_does_not_mutate_selected_track_or_requirement() {
 
     let error = session
         .dispatch_command(PlayerCommand::SelectVideoTrack(rejected_track_id))
-        .expect_err("configure failure должен остановить selection до mutation");
+        .expect_err("configure failure must stop selection before mutation");
 
     assert_eq!(error.kind, PlayerErrorKind::RuntimeError);
     assert_eq!(
@@ -603,7 +603,7 @@ fn active_video_requirement_refinement_preserves_selection_and_rejects_before_mu
 
     session
         .refine_active_video_requirement(supported_requirement.clone())
-        .expect("profile0 requirement должен пройти fake capabilities");
+        .expect("Profile0 requirement must be used for fake capabilities");
 
     assert_eq!(
         session.pipeline.selected_video_track_id(),
@@ -616,7 +616,7 @@ fn active_video_requirement_refinement_preserves_selection_and_rejects_before_mu
 
     let error = session
         .refine_active_video_requirement(rejected_requirement)
-        .expect_err("profile2 должен быть отвергнут до изменения active requirement");
+        .expect_err("profile2 It must be rejected before the change active requirement");
 
     assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoProfile);
     assert_eq!(
@@ -641,8 +641,8 @@ fn refinement_reconfigures_decoder_when_output_contract_changes() {
     install_tracks_for_capability_selection(&mut session, tracks.clone());
 
     session
-        .select_default_video_track(&tracks, "fake media содержит video track")
-        .expect("VP9 track без bit_depth должен выбраться через NV12 fallback");
+        .select_default_video_track(&tracks, "fake media containing video track")
+        .expect("VP9 track with no bit_depth must get out via NV12 fallback");
 
     assert_eq!(
         session
@@ -660,7 +660,7 @@ fn refinement_reconfigures_decoder_when_output_contract_changes() {
 
     session
         .refine_active_video_requirement(refined_requirement)
-        .expect("10-bit refinement должен переконфигурировать decoder под P010");
+        .expect("10-bit refinement must reconfigure decoder under P010");
 
     assert_eq!(
         session
@@ -681,7 +681,7 @@ fn refinement_reconfigures_decoder_when_output_contract_changes() {
             video_frame_contract::VideoFramePixelLayout::Nv12,
             video_frame_contract::VideoFramePixelLayout::P010,
         ],
-        "decoder должен быть переинициализирован под refined P010 contract"
+        "decoder must be re-initiated under refined P010 contract"
     );
 }
 
@@ -700,13 +700,13 @@ fn deferred_bitstream_selection_preserves_selected_track() {
     let video_track_id = video_tracks[0].id;
 
     session
-        .select_default_video_track(&video_tracks, "fake media содержит video track")
-        .expect("неполный HDR metadata должен выбрать track до packet refinement");
+        .select_default_video_track(&video_tracks, "fake media containing video track")
+        .expect("Incomplete HDR metadata must select track to packet refinement");
 
     let active_requirement = session
         .pipeline
         .active_video_requirement()
-        .expect("deferred selection должен сохранить active requirement");
+        .expect("Deferred selection must retain an active requirement.");
 
     assert_eq!(
         session.pipeline.selected_video_track_id(),
@@ -882,7 +882,7 @@ fn h264_avc3_track(track_id: u32) -> TrackInfo {
     let video_metadata = track
         .video
         .as_mut()
-        .expect("H.264 test track должен иметь video metadata");
+        .expect("H.264 test track should have a video metadata");
     video_metadata.profile = Some(VideoProfile::H264(H264Profile::Main));
     video_metadata.packet_framing =
         media_core::VideoPacketFraming::LengthPrefixedWithInBandParameterSets;
@@ -1058,12 +1058,12 @@ fn active_hardware_backend_requests_reselection_when_only_software_can_decode() 
 
     let tracks = vec![vp9_full_track(1)];
     session
-        .select_default_video_track(&tracks, "media содержит VP9 video track")
-        .expect("VP9 трек должен запросить reselection, а не упасть как unsupported");
+        .select_default_video_track(&tracks, "media containing VP9 video track")
+        .expect("VP9 track should request reselection, not fall as unsupported");
 
     assert!(
         session.has_pending_video_backend_reselection(),
-        "видео должно ждать совместимого software backend-а"
+        "The video must wait for a compatible software backend."
     );
     assert!(
         session.take_events().iter().any(|event| matches!(
@@ -1071,7 +1071,7 @@ fn active_hardware_backend_requests_reselection_when_only_software_can_decode() 
             PlayerEvent::VideoBackendSelectionRequested(request)
                 if !request.decodable_by_active_backend
         )),
-        "shell должен получить запрос на подбор backend-а с decodable_by_active_backend=false"
+        "The shell must receive a backend request with decodable_by_active_backend=false"
     );
 }
 
@@ -1088,14 +1088,14 @@ fn late_video_track_without_decoder_requests_backend_before_selection() {
     session.set_playback_state(PlaybackState::Playing);
 
     session
-        .select_default_video_track(&late_tracks, "late HLS update содержит VP9 video track")
-        .expect("playable late video track должен запросить backend reselection");
+        .select_default_video_track(&late_tracks, "late HLS update containing VP9 video track")
+        .expect("Playable late video track must request backend reselection");
 
     assert!(session.has_pending_video_backend_reselection());
     assert_eq!(
         session.snapshot().selected_tracks.video_track,
         None,
-        "video track нельзя активировать до появления decoder thread"
+        "video track cannot be activated until it appears decoder thread"
     );
     assert!(session.take_events().iter().any(|event| matches!(
         event,
@@ -1111,19 +1111,19 @@ fn late_video_track_without_decoder_requests_backend_before_selection() {
     assert_eq!(
         session.snapshot().selected_tracks.video_track,
         Some(TrackId::new(1)),
-        "late video track должен активироваться после установки decoder-а"
+        "late video track should be activated after installation decoder-?"
     );
     assert_eq!(
         session.playback_state(),
         PlaybackState::Playing,
-        "forward keyframe bootstrap не должен превращать Playing в Paused"
+        "forward keyframe bootstrap don't Playing into Paused"
     );
     assert!(
         !session
             .take_events()
             .iter()
             .any(|event| matches!(event, PlayerEvent::SeekRequested(_))),
-        "late-track bootstrap не должен требовать ещё не доказанный seek anchor"
+        "late-track bootstrap should not require not yet proven seek anchor"
     );
 }
 
@@ -1140,7 +1140,7 @@ fn late_hls_h264_track_reaches_presentation_after_backend_install() {
     let late_h264_metadata = late_h264_track
         .video
         .as_mut()
-        .expect("H.264 test track должен иметь video metadata");
+        .expect("H.264 test track should have a video metadata");
     late_h264_metadata.profile = Some(VideoProfile::H264(H264Profile::Main));
     late_h264_metadata.packet_framing = media_core::VideoPacketFraming::AnnexB;
     let late_tracks = vec![late_h264_track];
@@ -1148,8 +1148,11 @@ fn late_hls_h264_track_reaches_presentation_after_backend_install() {
     session.set_playback_state(PlaybackState::Playing);
 
     session
-        .select_default_video_track(&late_tracks, "late HLS update содержит H.264 Annex-B track")
-        .expect("late H.264 track должен запросить совместимый backend");
+        .select_default_video_track(
+            &late_tracks,
+            "late HLS update containing H.264 Annex-B track",
+        )
+        .expect("late H.264 track must request a compatible backend");
     session
         .pipeline
         .enqueue_pending_video_packet(PendingVideoPacket::new(
@@ -1176,7 +1179,7 @@ fn late_hls_h264_track_reaches_presentation_after_backend_install() {
     assert_eq!(
         session.pipeline.pending_video_packet_len(),
         1,
-        "чужой packet должен быть удалён, а startup HLS keyframe — дождаться backend-а"
+        "The other person’s packet must be removed, and the startup HLS keyframe must wait for the backend."
     );
 
     let decoder = SharedFakeVideoDecoderThread::new();
@@ -1193,7 +1196,7 @@ fn late_hls_h264_track_reaches_presentation_after_backend_install() {
     assert_eq!(
         first_tick.video_frames_presented + second_tick.video_frames_presented,
         1,
-        "сохранённый HLS keyframe должен дойти до presentation, а не только до decoder send"
+        "The saved HLS keyframe should go to presentation, not just to decoder send."
     );
     assert_eq!(
         session
@@ -1226,16 +1229,16 @@ fn installing_compatible_backend_activates_pending_video_track() {
 
     assert!(
         !session.has_pending_video_backend_reselection(),
-        "после установки software backend-а отложенный выбор должен закрыться"
+        "After installing the software backend, the delayed selection should be closed."
     );
     assert_eq!(
         session.snapshot().selected_tracks.video_track,
         Some(TrackId::new(1)),
-        "VP9 трек должен активироваться на совместимом backend-е"
+        "VP9 track must be activated on compatible backend"
     );
     assert!(
         session.snapshot().last_error.is_none(),
-        "штатный reseek после backend swap не должен публиковать recoverable error"
+        "staffed reseek afterward backend swap don't publish recoverable error"
     );
 }
 
@@ -1262,17 +1265,17 @@ fn switching_to_hardware_backend_recomputes_active_frame_contract() {
     );
     assert!(
         !session.has_pending_video_backend_reselection(),
-        "software backend сам декодит VP9 — отложенного reselection быть не должно"
+        "software backend itself decodite VP9 - delayed reselection should not be"
     );
     let software_contract = ffmpeg_decoder
         .configured_streams()
         .last()
-        .expect("software decoder должен получить stream config")
+        .expect("The software decoder will receive the stream config.")
         .frame_contract;
     assert_eq!(
         software_contract,
         VideoFrameContract::host_yuv420_planar8(),
-        "на ffmpeg-sw трек должен идти через software host-upload контракт"
+        "ffmpeg-sw track must go through software host-upload contract"
     );
 
     let vaapi_decoder = SharedFakeVideoDecoderThread::new();
@@ -1284,17 +1287,17 @@ fn switching_to_hardware_backend_recomputes_active_frame_contract() {
     assert_eq!(
         session.snapshot().selected_tracks.video_track,
         Some(TrackId::new(1)),
-        "видео должно остаться выбранным после свапа на hardware backend"
+        "The video should remain selected after the swap on hardware backend"
     );
     let hardware_contract = vaapi_decoder
         .configured_streams()
         .last()
-        .expect("hardware decoder должен получить пересчитанный stream config")
+        .expect("The hardware decoder should receive a recalculated stream config.")
         .frame_contract;
     assert_eq!(
         hardware_contract,
         VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
-        "после свапа на vaapi контракт обязан стать DMA-BUF, а не остаться software host-upload"
+        "After a vaapi swap, the contract must become a DMA-BUF, not a software host-upload."
     );
 }
 
@@ -1316,7 +1319,7 @@ fn failed_settings_backend_rebuild_restores_previous_decoder_and_track_selection
     let previous_requirement = session
         .pipeline
         .active_video_requirement()
-        .expect("active media должен сохранить video requirement")
+        .expect("Active media must retain the video requirement.")
         .clone();
     let previous_configure_count = previous_decoder.configured_streams().len();
 
@@ -1330,7 +1333,7 @@ fn failed_settings_backend_rebuild_restores_previous_decoder_and_track_selection
             crate::StartedVideoBackend::from_decoder_thread("vaapi", failing_decoder),
             crate::PlayerVideoBackendInstallIntent::SettingsReconfigure,
         )
-        .expect_err("невалидный replacement decoder должен запустить rollback");
+        .expect_err("slippery replacement decoder should be launched rollback");
 
     assert!(matches!(error, crate::PlayerRuntimeApplyError::Fatal(_)));
     assert_eq!(session.pipeline.video_backend_name(), "Shared fake decoder");
@@ -1345,11 +1348,11 @@ fn failed_settings_backend_rebuild_restores_previous_decoder_and_track_selection
     assert_eq!(
         previous_decoder.configured_streams().len(),
         previous_configure_count,
-        "rollback не должен повторно мутировать уже сконфигурированный прежний decoder"
+        "The rollback must not re-mutate the previously configured decoder."
     );
     assert!(
         previous_decoder.stream_config().is_some(),
-        "прежний decoder должен сохранить рабочую stream configuration"
+        "The previous decoder must keep the working stream configuration running"
     );
 }
 
@@ -1370,7 +1373,7 @@ fn swapping_active_backend_advances_render_generation_but_first_install_does_not
     assert_eq!(
         session.pipeline.render_generation(),
         generation_before_first_install,
-        "первый install backend-а не должен двигать render generation"
+        "The first install backend should not move the render generation."
     );
 
     install_fake_media_with_seekability(
@@ -1387,7 +1390,7 @@ fn swapping_active_backend_advances_render_generation_but_first_install_does_not
     assert_eq!(
         session.pipeline.render_generation(),
         generation_before_swap.wrapping_add(1),
-        "живой свап активного backend-а обязан продвинуть render generation"
+        "Live swap active backend-a must promote render generation"
     );
 }
 
@@ -1401,22 +1404,22 @@ fn rejecting_pending_video_backend_fails_with_unsupported_error() {
     ));
     let tracks = vec![vp9_full_track(1)];
     session
-        .select_default_video_track(&tracks, "media содержит VP9 video track")
-        .expect("VP9 трек должен запросить reselection");
+        .select_default_video_track(&tracks, "media containing VP9 video track")
+        .expect("VP9 track must request reselection");
     assert!(session.has_pending_video_backend_reselection());
     let _ = session.take_events();
 
-    session.reject_pending_video_backend("hardware preference не допускает software".to_string());
+    session.reject_pending_video_backend("hardware preference let alone software".to_string());
 
     assert!(
         !session.has_pending_video_backend_reselection(),
-        "отклонённый выбор не должен оставаться pending"
+        "The rejected choice should not remain pending."
     );
     assert!(
         session.take_events().iter().any(|event| matches!(
             event,
             PlayerEvent::FatalError(error) if error.kind == PlayerErrorKind::UnsupportedVideoCodec
         )),
-        "отказ shell-а должен дать typed unsupported fatal error"
+        "The shell failure should give typed unsupported fatal error."
     );
 }

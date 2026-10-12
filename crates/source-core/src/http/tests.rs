@@ -383,7 +383,7 @@ fn interrupted_range_response_resumes_from_first_missing_byte() {
     assert_eq!(
         requests[2].headers.get("range").map(String::as_str),
         Some("bytes=2-4"),
-        "повтор продолжает с первого недостающего байта"
+        "Repeat from the first missing byte"
     );
     assert_eq!(source.range_diagnostics().reconnects, 1);
 }
@@ -405,7 +405,7 @@ fn interrupted_range_response_fails_without_reconnect_budget() {
     let mut output = [0_u8; 5];
     let error = source
         .read(&mut output, &CancellationToken::never_cancelled())
-        .expect_err("без бюджета обрыв не повторяется");
+        .expect_err("without budget, the cliff doesn't repeat");
 
     assert!(error.is_transient_network_failure(), "{error}");
     assert_eq!(source.position(), 0);
@@ -444,7 +444,7 @@ fn server_error_is_retried_after_backoff() {
     assert_eq!(server.requests().len(), 3);
     assert!(
         started.elapsed() >= Duration::from_millis(500),
-        "повтор идёт после паузы, а не мгновенно"
+        "Repeat after a pause, not immediately."
     );
 }
 

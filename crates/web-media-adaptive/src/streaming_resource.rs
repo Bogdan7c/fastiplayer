@@ -280,7 +280,7 @@ impl PendingCompletedResourceAdmission {
         let key = self
             .key
             .take()
-            .expect("active pending admission обязан владеть cache key");
+            .expect("active pending admission must possess cache key");
         let chunks: Arc<[Bytes]> = std::mem::take(&mut self.chunks).into();
         let reservation_charge_bytes = self.reservation_charge_bytes;
         self.context.lock_completed_resource_cache().commit_pending(

@@ -87,7 +87,7 @@ impl PlayerSession {
             debug_assert_eq!(
                 outcome,
                 MediaInstallControlOutcome::AuthorizationAccepted,
-                "direct compatibility install обязан auto-authorize matching ready request"
+                "direct compatibility install must auto-authorize matching ready request"
             );
         }
 
@@ -145,7 +145,7 @@ impl PlayerSession {
             first_post_seek_track_update,
             active_seek_generation_before = ?active_seek_before_update.map(|seek| seek.generation),
             pipeline_generation = pipeline_generation_before_update,
-            "Demuxer сообщил обновление track list"
+            "Demuxer reported a track list update"
         );
 
         let preserves_worker_seek_runtime = active_seek_before_update.is_some()
@@ -163,7 +163,7 @@ impl PlayerSession {
                 generation = pipeline_generation_before_update,
                 tracks = tracks.len(),
                 duration = ?duration,
-                "Exact post-receipt track topology подтверждена без повторного pipeline reset"
+                "Exact post-receipt track topology confirmed without repeat pipeline reset"
             );
             return;
         }
@@ -207,7 +207,7 @@ impl PlayerSession {
 
         self.init_audio_pipeline(&tracks);
         if let Err(error) =
-            self.select_default_video_track(&tracks, "Video track не найден после demux reset")
+            self.select_default_video_track(&tracks, "Video track not found after demux reset")
         {
             warn!(error = %error, "Video track rejected after demux track-list update");
             self.mark_fatal_error(error);
@@ -264,11 +264,11 @@ impl PlayerSession {
         self.advance_render_generation();
 
         if let Err(error) = self.clear_active_seek_decoder_output_floor("media reset") {
-            warn!(error = %error, "Не удалось очистить Accurate seek decoder output floor");
+            warn!(error = %error, "Accurate seek decoder output floor failed to clear");
         }
 
         if let Err(error) = self.pipeline.flush_video_decoder_thread() {
-            warn!(error = %error, "Не удалось сбросить video decoder thread");
+            warn!(error = %error, "Could not reset the video decoder thread");
         }
 
         match self.pipeline.clear_video_decoder_stream() {
@@ -276,7 +276,7 @@ impl PlayerSession {
             | video_core::VideoStreamConfigResult::Cleared
             | video_core::VideoStreamConfigResult::Unchanged => {}
             video_core::VideoStreamConfigResult::Configured => {
-                debug!("Decoder stream clear вернул unexpected Configured outcome");
+                debug!("Decoder stream clear returned unexpected Configured outcome");
             }
             video_core::VideoStreamConfigResult::Unsupported(rejection) => {
                 warn!(

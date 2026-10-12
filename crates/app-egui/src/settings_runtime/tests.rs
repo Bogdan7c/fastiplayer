@@ -46,6 +46,7 @@ use crate::settings_ui::SettingsUiAction;
 use crate::ui::sidebar::{SidebarWidthChange, SidebarWidthPoints};
 
 mod dynamic_options;
+mod english_texts;
 mod hardware_decode_hint;
 mod preview;
 mod render_keeps_draft;
@@ -106,11 +107,11 @@ fn run_runtime_actions(
 ) {
     runtime
         .handle_ui_actions_with_runtime_adapter(actions, adapter)
-        .expect("visual action frame должен обработаться");
+        .expect("Visual action frame must be processed");
     if runtime.pending_apply.is_some() {
         runtime
             .handle_ui_actions_with_runtime_adapter(Vec::new(), adapter)
-            .expect("transaction frame должен обработаться");
+            .expect("The transaction frame must be processed");
     }
 }
 
@@ -125,7 +126,7 @@ fn audio_output_field(runtime: &mut SettingsRuntime) -> crate::settings_ui::Sett
         .iter()
         .find(|field| field.descriptor.id == SettingId::from("audio.output_device"))
         .cloned()
-        .expect("audio.output_device field должен быть в visual model")
+        .expect("audio.output_device field should be in visual model")
 }
 
 fn setting_text(text: &str) -> SettingText {
@@ -138,7 +139,7 @@ fn ready_audio_options(
 ) -> SettingOptions {
     let mut options = vec![SettingOption::new(
         audio::DEFAULT_AUDIO_OUTPUT_DEVICE_ID,
-        setting_text("Системное устройство"),
+        setting_text("System default device"),
     )];
     options.extend(extra_options);
 
@@ -175,14 +176,14 @@ impl settings_core::SettingOptionProvider for ScriptedOptionProvider {
         let mut responses = self
             .responses
             .lock()
-            .expect("scripted provider responses mutex не должен ломаться");
+            .expect("Scripted provider responses mutex should not be broken");
         let response = if responses.len() > 1 {
             responses.remove(0)
         } else {
             responses
                 .first()
                 .cloned()
-                .expect("scripted provider должен иметь хотя бы один response")
+                .expect("The scripted provider must have at least one response.")
         };
 
         response.map(|mut options| {

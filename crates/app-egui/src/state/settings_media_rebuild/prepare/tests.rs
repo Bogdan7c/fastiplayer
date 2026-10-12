@@ -13,7 +13,7 @@ fn wait_for_finish<T: Send + 'static>(job: &mut SettingsMediaPrepareJob<T>) -> R
         match job.poll() {
             PrepareJobPoll::Finished(result) => return result,
             PrepareJobPoll::Running => {
-                assert!(Instant::now() < deadline, "фоновая подготовка зависла");
+                assert!(Instant::now() < deadline, "background");
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
@@ -52,43 +52,44 @@ fn preparation_runs_on_a_background_thread_and_ui_poll_does_not_block() {
             .map_err(|error| format!("release lost: {error}"))?;
         Ok(std::thread::current().id())
     })
-    .expect("поток подготовки должен запуститься");
+    .expect("The flow of preparation should start.");
 
     // Пока подготовка идёт, опрос возвращается сразу и сообщает «ещё идёт».
     let poll_started = Instant::now();
     assert!(matches!(job.poll(), PrepareJobPoll::Running));
     assert!(
         poll_started.elapsed() < Duration::from_millis(200),
-        "опрос не должен ждать подготовку"
+        "The survey should not wait for preparation"
     );
 
-    release_sender.send(()).expect("отпускаем подготовку");
-    let worker_thread = wait_for_finish(&mut job).expect("подготовка должна завершиться успехом");
+    release_sender.send(()).expect("let go");
+    let worker_thread =
+        wait_for_finish(&mut job).expect("preparation must be completed with success");
     assert_ne!(
         worker_thread, caller_thread,
-        "подготовка должна идти не на потоке вызывающего (UI)"
+        "The preparation should not be on the caller stream (UI)"
     );
 }
 
 #[test]
 fn preparation_error_text_reaches_the_ui_poll_unchanged() {
     let mut job = SettingsMediaPrepareJob::<u8>::spawn_task(|_cancel| {
-        Err("Не удалось применить: источник недоступен".to_string())
+        Err("Failed to apply: source unavailable".to_string())
     })
-    .expect("поток подготовки должен запуститься");
+    .expect("The flow of preparation should start.");
 
     assert_eq!(
         wait_for_finish(&mut job),
-        Err("Не удалось применить: источник недоступен".to_string())
+        Err("Failed to apply: source unavailable".to_string())
     );
 }
 
 #[test]
 fn panicking_preparation_becomes_a_human_error_instead_of_silence() {
     let mut job = SettingsMediaPrepareJob::<u8>::spawn_task(|_cancel| {
-        panic!("подготовка упала намеренно (тест)");
+        panic!("Preparation falls deliberately (test)");
     })
-    .expect("поток подготовки должен запуститься");
+    .expect("The flow of preparation should start.");
 
     let result = wait_for_finish(&mut job);
 
@@ -109,20 +110,20 @@ fn cancel_reaches_the_running_preparation_and_stops_it() {
         let _sent = observed_sender.send(cancel.is_cancelled());
         Ok(0)
     })
-    .expect("поток подготовки должен запуститься");
+    .expect("The flow of preparation should start.");
 
     job.cancel();
 
     assert_eq!(
         observed_receiver.recv_timeout(Duration::from_secs(5)),
         Ok(true),
-        "фоновая задача должна увидеть отмену"
+        "background task should see the cancellation"
     );
 }
 
 #[test]
 fn missing_local_file_gives_the_human_rebuild_message() {
-    let directory = tempfile::tempdir().expect("временная папка");
+    let directory = tempfile::tempdir().expect("time-folder");
     let result = prepare_rebuild_source(
         RebuildPrepareRequest {
             source: RebuildSourceInput::LocalFile {
@@ -145,8 +146,8 @@ fn real_local_file_is_prepared_in_the_background_job() {
     let mut fixture = tempfile::Builder::new()
         .suffix(".wav")
         .tempfile()
-        .expect("временный WAV");
-    fixture.write_all(&tiny_pcm_wav()).expect("запись WAV");
+        .expect("temporary");
+    fixture.write_all(&tiny_pcm_wav()).expect("WAV");
     let request = RebuildPrepareRequest {
         source: RebuildSourceInput::LocalFile {
             path: fixture.path().to_path_buf(),
@@ -154,13 +155,13 @@ fn real_local_file_is_prepared_in_the_background_job() {
         },
         preferred_video_codecs: Vec::new(),
     };
-    let mut job = SettingsMediaPrepareJob::spawn(request).expect("запуск подготовки");
+    let mut job = SettingsMediaPrepareJob::spawn(request).expect("start-up");
 
     let prepared = wait_for_finish(&mut job);
 
     assert!(
         prepared.is_ok(),
-        "настоящий файл должен подготовиться: {:?}",
+        "The present file must be prepared: {:?}",
         prepared.err()
     );
 }
@@ -170,14 +171,14 @@ fn token_of_a_delivered_result_is_not_cancelled_when_the_job_is_dropped() {
     // Токен принадлежит подготовленному источнику (его seek-поток живёт под ним):
     // после выдачи результата сброс job-а не должен его отменять.
     let mut job = SettingsMediaPrepareJob::spawn_task(|cancel| Ok(cancel.clone()))
-        .expect("поток подготовки должен запуститься");
-    let source_token = wait_for_finish(&mut job).expect("подготовка успешна");
+        .expect("The flow of preparation should start.");
+    let source_token = wait_for_finish(&mut job).expect("preparation");
 
     drop(job);
 
     assert!(
         !source_token.is_cancelled(),
-        "drop завершённого job-а сломал бы перемотку установленного media"
+        "drop of a completed job would break the rewinding of the installed media"
     );
 }
 
@@ -190,16 +191,16 @@ fn dropping_an_unfinished_job_cancels_its_preparation() {
         let _released = release_receiver.recv_timeout(Duration::from_secs(5));
         Ok(0)
     })
-    .expect("поток подготовки должен запуститься");
+    .expect("The flow of preparation should start.");
     let task_token = token_receiver
         .recv_timeout(Duration::from_secs(5))
-        .expect("задача должна стартовать");
+        .expect("task must begin");
 
     drop(job);
     let _unblock = release_sender.send(());
 
     assert!(
         task_token.is_cancelled(),
-        "незавершённая подготовка должна быть отменена при сбросе job-а"
+        "Incomplete preparation should be canceled when resetting the job."
     );
 }

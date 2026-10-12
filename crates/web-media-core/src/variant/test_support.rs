@@ -19,11 +19,11 @@ pub(super) fn parent_at_generation(
         CandidateIdentity::new(
             source,
             ExtractionGeneration::new(extraction_generation),
-            CandidateFormatIdentity::new(format).expect("test format identity должна быть valid"),
+            CandidateFormatIdentity::new(format).expect("test format identity must have valid"),
         ),
-        SemanticIdentity::new(source, semantic).expect("test semantic identity должна быть valid"),
+        SemanticIdentity::new(source, semantic).expect("test semantic identity must be valid"),
     )
-    .expect("test parent identities должны иметь один source")
+    .expect("test parent identities should have one source")
 }
 
 pub(super) fn catalog_identity(
@@ -36,10 +36,10 @@ pub(super) fn catalog_identity(
 pub(super) fn video_track(height: Option<u32>) -> VideoTrackDescriptor {
     VideoTrackDescriptor::new(
         NormalizedCodec::parse(
-            RawCodecIdentity::new("vp9").expect("test video codec identity должна быть valid"),
+            RawCodecIdentity::new("vp9").expect("test video codec identity must have valid"),
         ),
         None,
-        height.map(|pixels| VideoHeight::new(pixels).expect("test height должна быть valid")),
+        height.map(|pixels| VideoHeight::new(pixels).expect("The test height must be valid")),
         None,
         None,
         DynamicRange::Sdr,
@@ -54,7 +54,7 @@ pub(super) fn audio_track(bitrate_marker: u32) -> AudioTrackDescriptor {
     };
     AudioTrackDescriptor::new(
         NormalizedCodec::parse(
-            RawCodecIdentity::new(codec).expect("test audio codec identity должна быть valid"),
+            RawCodecIdentity::new(codec).expect("test audio codec identity must have valid"),
         ),
         None,
         None,
@@ -73,13 +73,13 @@ pub(super) fn video_variant(
         ComponentVariantExactIdentity::new(
             catalog.clone(),
             ComponentKind::Video,
-            ComponentVariantExactKey::new(exact_key).expect("test exact key должен быть valid"),
+            ComponentVariantExactKey::new(exact_key).expect("The exact test key must be valid."),
         ),
         ComponentVariantSemanticIdentity::new(
             catalog.parent().semantic().clone(),
             ComponentKind::Video,
             ComponentVariantSemanticKey::new(semantic_key)
-                .expect("test semantic key должен быть valid"),
+                .expect("test semantic key must have valid"),
         ),
         video_track(height),
     )
@@ -95,24 +95,24 @@ pub(super) fn audio_variant(
         ComponentVariantExactIdentity::new(
             catalog.clone(),
             ComponentKind::Audio,
-            ComponentVariantExactKey::new(exact_key).expect("test exact key должен быть valid"),
+            ComponentVariantExactKey::new(exact_key).expect("The exact test key must be valid."),
         ),
         ComponentVariantSemanticIdentity::new(
             catalog.parent().semantic().clone(),
             ComponentKind::Audio,
             ComponentVariantSemanticKey::new(semantic_key)
-                .expect("test semantic key должен быть valid"),
+                .expect("test semantic key must have valid"),
         ),
         audio_track(marker),
     )
 }
 
 pub(super) fn generous_limit() -> ComponentVariantCatalogLimit {
-    ComponentVariantCatalogLimit::new(32).expect("test limit должен быть valid")
+    ComponentVariantCatalogLimit::new(32).expect("The test limit must be valid.")
 }
 
 pub(super) fn generous_edge_limit() -> ComponentVariantEdgeLimit {
-    ComponentVariantEdgeLimit::new(64).expect("test edge limit должен быть valid")
+    ComponentVariantEdgeLimit::new(64).expect("The test edge limit should be valid.")
 }
 
 pub(super) fn coupled_variant(
@@ -124,12 +124,12 @@ pub(super) fn coupled_variant(
     CoupledComponentVariant::new(
         CoupledVariantExactIdentity::new(
             catalog.clone(),
-            ComponentVariantExactKey::new(exact_key).expect("test exact key должен быть valid"),
+            ComponentVariantExactKey::new(exact_key).expect("The exact test key must be valid."),
         ),
         CoupledVariantSemanticIdentity::new(
             catalog.parent().semantic().clone(),
             ComponentVariantSemanticKey::new(semantic_key)
-                .expect("test semantic key должен быть valid"),
+                .expect("test semantic key must have valid"),
         ),
         video_track(height),
         audio_track(2),
@@ -152,5 +152,5 @@ pub(super) fn video_and_audio_catalog() -> ComponentVariantCatalog {
             ],
         },
     )
-    .expect("test catalog должен быть valid")
+    .expect("The test catalog should be valid.")
 }

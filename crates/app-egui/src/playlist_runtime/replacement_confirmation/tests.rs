@@ -40,7 +40,7 @@ fn runtime_with_queue(item_count: usize) -> PlaylistRuntime {
 
 fn classified_url(raw_url: &str) -> crate::url_service_adapter::StartupUrlLocator {
     let StartupUrlClassification::Supported(locator) = classify_startup_url(raw_url) else {
-        panic!("test URL должен поддерживаться service registry");
+        panic!("The test URL must be supported by the service registry.");
     };
     locator
 }
@@ -112,7 +112,7 @@ fn empty_queue_gates_sensitive_direct_and_yt_dlp_but_admits_local() {
     ));
     let yt_dlp_model = yt_dlp_runtime
         .pending_playlist_confirmation()
-        .expect("query-bearing yt-dlp locator требует sensitive-only confirmation");
+        .expect("query-bearing yt-dlp locator requires sensitive-only confirmation");
     assert!(!yt_dlp_model.reasons().queue_replacement());
     assert!(yt_dlp_model.reasons().sensitive_url_persistence());
 }
@@ -250,7 +250,7 @@ fn replacement_row_play_and_clear_supersede_but_selection_and_removal_preserve_p
         .queue()
         .iter_playable_ids()
         .nth(1)
-        .expect("fixture должен содержать вторую playable строку");
+        .expect("The fixture must contain the second playable line.");
     assert!(runtime.controller.select_row(Some(selected_id)));
     assert_eq!(
         runtime
@@ -264,7 +264,7 @@ fn replacement_row_play_and_clear_supersede_but_selection_and_removal_preserve_p
         .queue()
         .iter_playable_ids()
         .nth(2)
-        .expect("fixture должен содержать третью playable строку");
+        .expect("Fixture must contain a third line of playable");
     let _removal = runtime.remove_playlist_item(removed_id, Instant::now());
     assert_eq!(
         runtime
@@ -322,7 +322,7 @@ fn current_playback_transport_and_selection_preserve_active_prompt_and_dirty_rev
         .queue()
         .iter_playable_ids()
         .next()
-        .expect("fixture должен содержать active playable строку");
+        .expect("The fixture must contain an active playable string.");
     runtime
         .controller
         .queue
@@ -351,7 +351,7 @@ fn current_playback_transport_and_selection_preserve_active_prompt_and_dirty_rev
         .queue()
         .iter_playable_ids()
         .nth(1)
-        .expect("fixture должен содержать вторую playable строку");
+        .expect("The fixture must contain the second playable line.");
     assert!(runtime.controller.select_row(Some(selected_item_id)));
 
     assert_eq!(runtime.controller.active_media(), Some(active));

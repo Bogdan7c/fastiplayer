@@ -59,7 +59,9 @@ impl TemporalUnitPresentationTime {
 fn expect_frame_ready(event: VaapiDecoderEvent) -> VaapiDecodedFrameHandle {
     match event {
         VaapiDecoderEvent::FrameReady(handle) => handle,
-        VaapiDecoderEvent::FormatChanged => panic!("ожидался FrameReady, получен FormatChanged"),
+        VaapiDecoderEvent::FormatChanged => {
+            panic!("Expected by FrameReady, obtained by FormatChanged")
+        }
     }
 }
 
@@ -146,7 +148,7 @@ mod tests {
         assert!(!stamped.surface_ready().unwrap());
         assert!(
             !sync_called.get(),
-            "stamp не должен синхронизировать surface"
+            "The stamp should not synchronize the surface."
         );
     }
 }

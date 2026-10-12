@@ -280,7 +280,7 @@ fn missing_or_mismatched_app_half_after_installed_is_a_fatal_invariant() {
     let Err(missing_error) =
         empty_slot.prepare_post_installed_commit(request_id(11), renderer_generation(3))
     else {
-        panic!("Installed без app half-а обязан быть fatal invariant");
+        panic!("Installed without app half-a must be fatal invariant");
     };
     assert_eq!(
         missing_error.match_error(),
@@ -294,7 +294,7 @@ fn missing_or_mismatched_app_half_after_installed_is_a_fatal_invariant() {
     let generation = renderer_generation(3);
     let reply = slot.prepare_and_stage(admitted_request_id, generation, ffmpeg_plan(), &mut driver);
     let Err(mismatch_error) = slot.prepare_post_installed_commit(request_id(13), generation) else {
-        panic!("mismatched Installed обязан быть fatal invariant");
+        panic!("Mismatched Installed must be fatal invariant");
     };
     assert_eq!(
         mismatch_error.match_error(),

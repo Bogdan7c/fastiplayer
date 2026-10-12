@@ -65,11 +65,11 @@ pub(super) fn parent(
         CandidateIdentity::new(
             source,
             ExtractionGeneration::new(extraction_generation),
-            CandidateFormatIdentity::new(exact_key).expect("fixture parent key валиден"),
+            CandidateFormatIdentity::new(exact_key).expect("fixture parent key validated"),
         ),
-        SemanticIdentity::new(source, semantic_key).expect("fixture parent semantic key валиден"),
+        SemanticIdentity::new(source, semantic_key).expect("fixture parent semantic key"),
     )
-    .expect("fixture parent identities принадлежат одному source")
+    .expect("Fixture Parent Identity is a single source")
 }
 
 /// Строит две video rows одного catalog generation.
@@ -87,12 +87,12 @@ pub(super) fn video_catalog(
     let second = video_variant(&identity, "fresh-exact-1080", second_semantic_key, 1080);
     ComponentVariantCatalog::new(
         identity,
-        ComponentVariantCatalogLimit::new(4).expect("fixture catalog limit валиден"),
+        ComponentVariantCatalogLimit::new(4).expect("fixture catalog limit Valid"),
         ComponentVariantCatalogEntries::VideoOnly {
             video: vec![first, second],
         },
     )
-    .expect("fixture catalog валиден")
+    .expect("fixture catalog Valid")
 }
 
 /// Строит одну immutable video row без URL-bearing presentation полей.
@@ -106,21 +106,21 @@ fn video_variant(
         ComponentVariantExactIdentity::new(
             catalog.clone(),
             ComponentKind::Video,
-            ComponentVariantExactKey::new(exact_key).expect("fixture exact key валиден"),
+            ComponentVariantExactKey::new(exact_key).expect("fixture exact key validated"),
         ),
         ComponentVariantSemanticIdentity::new(
             catalog.parent().semantic().clone(),
             ComponentKind::Video,
-            ComponentVariantSemanticKey::new(semantic_key).expect("fixture semantic key валиден"),
+            ComponentVariantSemanticKey::new(semantic_key).expect("fixture semantic key validated"),
         ),
         VideoTrackDescriptor::new(
             NormalizedCodec::parse(
-                RawCodecIdentity::new("vp09.00.51.08").expect("fixture codec валиден"),
+                RawCodecIdentity::new("vp09.00.51.08").expect("fixture codec validated"),
             ),
-            Some(VideoWidth::new(height * 16 / 9).expect("fixture width валиден")),
-            Some(VideoHeight::new(height).expect("fixture height валиден")),
+            Some(VideoWidth::new(height * 16 / 9).expect("fixture width valid")),
+            Some(VideoHeight::new(height).expect("fixture height valid")),
             None,
-            Some(Bitrate::new(u64::from(height) * 4_000).expect("fixture bitrate валиден")),
+            Some(Bitrate::new(u64::from(height) * 4_000).expect("fixture bitrate valid")),
             DynamicRange::Sdr,
         ),
     )
@@ -132,13 +132,13 @@ pub(super) fn video_selection(
     variant_index: usize,
 ) -> ComponentVariantSelection {
     let ComponentVariantCatalog::VideoOnly { video, .. } = catalog else {
-        panic!("fixture обязан быть video-only");
+        panic!("Fixture must be video-only");
     };
     catalog
         .select_exact(ComponentVariantSelectionRequest::VideoOnly {
             video: video[variant_index].exact_identity().clone(),
         })
-        .expect("fixture selection валиден")
+        .expect("fixture selection validated")
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn provider_default_and_unavailable_preserve_honest_unavailable_configuration() 
         YtDlpComponentSelectionOpenIntent::ProviderDefault,
         PreparedComponentVariantCatalog::Unavailable,
     )
-    .expect("provider default без catalog-а является валидной конфигурацией");
+    .expect("Default provider without catalog is a valid configuration");
 
     assert_eq!(
         finalized.component_variant_projection(),
@@ -175,7 +175,7 @@ fn provider_default_installs_fresh_provider_selection() {
             provider_selection,
         },
     )
-    .expect("provider default selection должен установиться");
+    .expect("Default selection provider must be established");
 
     let WebMediaComponentVariantProjection::Installed(
         WebMediaInstalledComponentVariantPresentation::VideoOnly {
@@ -184,7 +184,7 @@ fn provider_default_installs_fresh_provider_selection() {
         },
     ) = finalized.component_variant_projection()
     else {
-        panic!("ожидалась установленная video-only projection");
+        panic!("It is expected to be video-only projection.");
     };
     assert_eq!(catalog_generation.value(), 11);
     assert_eq!(video.active_index, 1);
@@ -203,7 +203,7 @@ fn semantic_and_unavailable_fail_before_publication_without_fallback() {
         YtDlpComponentSelectionOpenIntent::Semantic(semantic_request),
         PreparedComponentVariantCatalog::Unavailable,
     )
-    .expect_err("semantic intent не имеет права fallback-нуться");
+    .expect_err("semantic intent has no right to fallback");
 
     assert_eq!(
         error,
@@ -237,7 +237,7 @@ fn semantic_installed_rematches_fresh_exact_generation_not_provider_default() {
             provider_selection: provider_default,
         },
     )
-    .expect("semantic row должна rematch-нуться на fresh catalog");
+    .expect("The semantic row should be rematched on fresh catalog");
 
     let WebMediaComponentVariantProjection::Installed(
         WebMediaInstalledComponentVariantPresentation::VideoOnly {
@@ -246,12 +246,12 @@ fn semantic_installed_rematches_fresh_exact_generation_not_provider_default() {
         },
     ) = finalized.component_variant_projection()
     else {
-        panic!("ожидалась установленная video-only projection");
+        panic!("It is expected to be video-only projection.");
     };
     assert_eq!(catalog_generation.value(), 12);
     assert_eq!(
         video.active_index, 1,
-        "semantic stable-720 находится в fresh row 1, а provider default был row 0"
+        "semantic stable-720 situated fresh row 1, ? provider default was row 0"
     );
 }
 
@@ -278,7 +278,7 @@ fn missing_semantic_variant_is_typed_and_does_not_publish_partial_configuration(
             provider_selection: provider_default,
         },
     )
-    .expect_err("отсутствующий semantic variant обязан завершить preparation");
+    .expect_err("Absent semantic variant must complete preparation");
 
     assert!(matches!(
         error,
@@ -311,7 +311,7 @@ fn cross_parent_install_failure_stays_typed() {
             provider_selection: provider_default,
         },
     )
-    .expect_err("catalog другого parent-а обязан быть отклонён");
+    .expect_err("The other parent's catalog must be rejected.");
 
     assert_eq!(
         error,
@@ -344,7 +344,7 @@ fn finalization_debug_and_errors_do_not_expose_component_keys() {
             provider_selection: provider_default,
         },
     )
-    .expect_err("secret fixture специально не rematch-ится");
+    .expect_err("secret fixture intentionally cannot be rematched");
 
     assert!(!format!("{error:?}").contains(secret));
     assert!(!error.to_string().contains(secret));

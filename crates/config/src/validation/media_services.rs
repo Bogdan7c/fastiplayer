@@ -49,7 +49,7 @@ pub(super) fn validate_audio_section(config: &AppConfig) -> ConfigResult<()> {
         return Err(invalid_value(
             "audio.volume",
             format!(
-                "громкость должна быть конечным числом в диапазоне {MIN_AUDIO_VOLUME}..={MAX_AUDIO_VOLUME}, получено {}",
+                "volume should be a finite number in the range of {MIN_AUDIO_VOLUME}..={MAX_AUDIO_VOLUME}, obtained {}",
                 config.audio.volume,
             ),
         ));
@@ -58,7 +58,7 @@ pub(super) fn validate_audio_section(config: &AppConfig) -> ConfigResult<()> {
     if config.audio.output_device.trim().is_empty() {
         return Err(invalid_value(
             "audio.output_device",
-            "имя audio device не должно быть пустым".to_string(),
+            "The name of the audio device should not be empty.".to_string(),
         ));
     }
 
@@ -106,7 +106,7 @@ pub(super) fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
             invalid_value(
                 "network.prefetch_chunk_mb",
                 format!(
-                    "prefetch chunk не помещается в КиБ: prefetch_chunk_mb={}",
+                    "prefetch chunk does not fit in the CIB: prefetch_chunk_mb = {}",
                     config.network.prefetch_chunk_mb
                 ),
             )
@@ -115,7 +115,7 @@ pub(super) fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
         return Err(invalid_value(
             "network.prefetch_initial_chunk_kb",
             format!(
-                "initial prefetch chunk должен быть не больше chunk: prefetch_initial_chunk_kb={}, prefetch_chunk_mb={}",
+                "initial prefetch chunk should not be larger than chunk: prefetch_initial_chunk_kb={}, prefetch_chunk_mb={}",
                 config.network.prefetch_initial_chunk_kb, config.network.prefetch_chunk_mb
             ),
         ));
@@ -124,7 +124,7 @@ pub(super) fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
         return Err(invalid_value(
             "network.read_ahead_mb",
             format!(
-                "prefetch window должен быть не меньше chunk: read_ahead_mb={}, prefetch_chunk_mb={}",
+                "Prefetch window must be at least as large as a chunk: read_ahead_mb={}, prefetch_chunk_mb={}",
                 config.network.read_ahead_mb, config.network.prefetch_chunk_mb
             ),
         ));
@@ -203,7 +203,7 @@ pub(crate) fn validate_web_media_config(config: &WebMediaConfig) -> ConfigResult
     {
         return Err(invalid_value(
             "web_media.vod_endpoint_recovery_initial_backoff_ms",
-            "initial recovery backoff не может превышать maximum backoff".to_owned(),
+            "initial recovery backoff is not more than maximum backoff".to_owned(),
         ));
     }
     Ok(())

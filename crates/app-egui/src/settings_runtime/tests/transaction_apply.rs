@@ -11,22 +11,22 @@ fn apply_promotes_active_preview_to_committed_runtime_and_persists() {
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut render_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions(
             vec![SettingsUiAction::Open, brightness_action(0.45)],
             &mut render_adapter,
         )
-        .expect("draft edit должен пройти");
+        .expect("The draft edit must be completed.");
     runtime
         .apply_due_preview(&mut render_adapter, Instant::now())
-        .expect("preview должен примениться");
+        .expect("The preview should apply");
     let report = runtime
         .apply_draft(&mut render_adapter)
-        .expect("apply должен вернуть report");
+        .expect("apply should return the report");
 
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(
@@ -34,7 +34,7 @@ fn apply_promotes_active_preview_to_committed_runtime_and_persists() {
         settings_core::ApplyRouteResult::PreviewPromoted
     );
     assert_eq!(render_adapter.commits.len(), 1);
-    assert!(path.exists(), "Apply должен сохранить TOML atomically");
+    assert!(path.exists(), "Apply should keep the TOML atomically");
     assert_eq!(
         runtime
             .controller
@@ -59,9 +59,9 @@ fn ok_closes_only_after_full_success() {
         config.clone(),
         success_path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut success_adapter =
-        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRenderAdapter::from_config(&config).expect("The adapter should start.");
     success_runtime
         .handle_ui_actions(
             vec![
@@ -71,16 +71,16 @@ fn ok_closes_only_after_full_success() {
             ],
             &mut success_adapter,
         )
-        .expect("OK должен применить успешный draft");
+        .expect("OK must apply a successful draft");
     assert!(!success_runtime.is_settings_window_open());
 
     let mut failure_runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
         config.clone(),
         failure_path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut failure_adapter = RecordingRenderAdapter::fail_commit_from_config(&config)
-        .expect("adapter должен стартовать");
+        .expect("The adapter should start.");
     failure_runtime
         .handle_ui_actions(
             vec![
@@ -90,13 +90,13 @@ fn ok_closes_only_after_full_success() {
             ],
             &mut failure_adapter,
         )
-        .expect("OK должен вернуть report, а не падать");
+        .expect("OK should bring back the report, not fall");
 
     assert!(failure_runtime.is_settings_window_open());
     assert_eq!(
         failure_runtime
             .latest_apply_report()
-            .expect("failure должен сохранить apply report")
+            .expect("Failure to maintain the applicable report")
             .final_state,
         ApplyFinalState::RuntimeApplyFailed
     );
@@ -114,9 +114,9 @@ fn apply_progress_is_visible_before_transaction_starts() {
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     runtime
         .handle_ui_actions_with_runtime_adapter(
@@ -130,24 +130,24 @@ fn apply_progress_is_visible_before_transaction_starts() {
             ],
             &mut adapter,
         )
-        .expect("первый frame должен только запланировать apply");
+        .expect("The first frame should only be scheduled to apply");
 
     let progress_model = runtime.ui_model().clone();
     assert!(progress_model.command_state.is_busy);
     assert_eq!(
         progress_model.status.summary.as_deref(),
-        Some("Применение настроек…")
+        Some("Applying settings…")
     );
     assert_eq!(adapter.preflight_calls, 0);
     assert!(!path.exists());
 
     runtime
         .handle_ui_actions_with_runtime_adapter(Vec::new(), &mut adapter)
-        .expect("следующий frame должен выполнить transaction");
+        .expect("The next frame will execute the transaction.");
     assert_eq!(
         runtime
             .latest_apply_report()
-            .expect("apply report должен сохраниться")
+            .expect("Apply report should be retained")
             .final_state,
         ApplyFinalState::FullyApplied
     );
@@ -165,9 +165,9 @@ fn transaction_multi_group_success_commits_runtime_and_toml() {
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     run_runtime_actions(
         &mut runtime,
@@ -188,7 +188,7 @@ fn transaction_multi_group_success_commits_runtime_and_toml() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("успешный report должен сохраниться");
+        .expect("A successful report should be maintained.");
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(report.routes.len(), 2);
     assert_eq!(adapter.media_updates, 1);
@@ -213,9 +213,9 @@ fn next_item_preload_transaction_applies_once_then_persists_and_finalizes() {
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     adapter.expected_persisted_path_at_finalize = Some(path.clone());
 
     run_runtime_actions(
@@ -251,7 +251,7 @@ fn next_item_preload_transaction_applies_once_then_persists_and_finalizes() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("playlist success report должен сохраниться");
+        .expect("Playlist success report should be maintained");
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(report.routes.len(), 1);
     assert_eq!(report.routes[0].route, SettingRouteId::from("playlist"));
@@ -285,8 +285,8 @@ fn next_item_preload_transaction_applies_once_then_persists_and_finalizes() {
         requested_max_hold_ms
     );
     assert_eq!(runtime.committed_config().playlist, requested_playlist);
-    let persisted = fastiplayer_config::load_from_path(&path)
-        .expect("persisted preload config должен читаться");
+    let persisted =
+        fastiplayer_config::load_from_path(&path).expect("Continued preload config should be read");
     assert_eq!(persisted.config.playlist, requested_playlist);
     remove_file_if_exists(&path);
 }
@@ -301,9 +301,9 @@ fn dropped_items_controls_are_listed_applied_through_playlist_route_and_persiste
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     run_runtime_actions(&mut runtime, vec![SettingsUiAction::Open], &mut adapter);
     // Окно настроек строится из дескрипторов: три поля обязаны быть среди отрисовываемых.
@@ -320,7 +320,7 @@ fn dropped_items_controls_are_listed_applied_through_playlist_route_and_persiste
     ] {
         assert!(
             listed_setting_ids.iter().any(|id| id == expected),
-            "в окне настроек нет поля {expected}"
+            "There is no field {expected} in the settings window"
         );
     }
 
@@ -348,7 +348,7 @@ fn dropped_items_controls_are_listed_applied_through_playlist_route_and_persiste
 
     let report = runtime
         .latest_apply_report()
-        .expect("apply report должен сохраниться");
+        .expect("Apply report should be retained");
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(adapter.playlist_updates.len(), 1);
     let applied = adapter.playlist_updates[0].playlist;
@@ -359,7 +359,7 @@ fn dropped_items_controls_are_listed_applied_through_playlist_route_and_persiste
         fastiplayer_config::DroppedPlaylistFileAction::AppendToQueue
     );
     let persisted =
-        fastiplayer_config::load_from_path(&path).expect("persisted config должен читаться");
+        fastiplayer_config::load_from_path(&path).expect("persisted config should read");
     assert_eq!(persisted.config.playlist, applied);
     remove_file_if_exists(&path);
 }
@@ -374,9 +374,9 @@ fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     run_runtime_actions(
         &mut runtime,
@@ -393,7 +393,7 @@ fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("успешный report должен сохраниться");
+        .expect("A successful report should be maintained.");
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(adapter.media_updates, 1);
     assert_eq!(
@@ -431,9 +431,9 @@ fn transaction_second_group_failure_rolls_back_first_group_without_persistence()
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     adapter.fail_media = true;
 
     run_runtime_actions(
@@ -455,7 +455,7 @@ fn transaction_second_group_failure_rolls_back_first_group_without_persistence()
 
     let report = runtime
         .latest_apply_report()
-        .expect("failure report должен сохраниться");
+        .expect("Failure report should continue");
     assert_eq!(report.final_state, ApplyFinalState::RuntimeApplyFailed);
     assert_eq!(report.rollback.len(), 1);
     assert!(report.persistence.is_none());
@@ -474,9 +474,9 @@ fn transaction_rollback_failure_keeps_apply_and_rollback_results() {
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     adapter.fail_media = true;
     adapter.render.fail_rollback = true;
 
@@ -496,7 +496,7 @@ fn transaction_rollback_failure_keeps_apply_and_rollback_results() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("combined failure report должен сохраниться");
+        .expect("Combined failure report should be maintained");
     assert_eq!(report.final_state, ApplyFinalState::RollbackFailed);
     assert!(matches!(
         report.routes.last().map(|route| &route.result),
@@ -519,9 +519,9 @@ fn transaction_preflight_busy_preserves_draft_and_retries_only_on_explicit_apply
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
     adapter.preflight_failure = Some((
         AppRuntimeRoute::Player,
         AppRouteApplyResult::RuntimeBusy {
@@ -541,15 +541,15 @@ fn transaction_preflight_busy_preserves_draft_and_retries_only_on_explicit_apply
             ],
             &mut adapter,
         )
-        .expect("первый frame должен запланировать apply");
+        .expect("The first frame must be scheduled to apply");
     runtime
         .handle_ui_actions_with_runtime_adapter(Vec::new(), &mut adapter)
-        .expect("busy preflight должен вернуть report");
+        .expect("busy preflight returns the report");
 
     assert_eq!(
         runtime
             .latest_apply_report()
-            .expect("busy report должен сохраниться")
+            .expect("The busy report should remain")
             .final_state,
         ApplyFinalState::RuntimeBlocked
     );
@@ -566,26 +566,26 @@ fn transaction_preflight_busy_preserves_draft_and_retries_only_on_explicit_apply
             .status
             .details
             .iter()
-            .any(|detail| detail.contains("Черновик сохранён"))
+            .any(|detail| detail.contains("Your draft is preserved"))
     );
 
     runtime
         .handle_ui_actions_with_runtime_adapter(Vec::new(), &mut adapter)
-        .expect("idle frame не должен ставить hidden retry в очередь");
+        .expect("Idle frame should not put hidden retry in line.");
     assert_eq!(adapter.preflight_calls, 1);
 
     adapter.preflight_failure = None;
     runtime
         .handle_ui_actions_with_runtime_adapter(vec![SettingsUiAction::Apply], &mut adapter)
-        .expect("explicit retry должен запланироваться");
+        .expect("Explicit retry should be planned.");
     runtime
         .handle_ui_actions_with_runtime_adapter(Vec::new(), &mut adapter)
-        .expect("explicit retry должен применить тот же draft");
+        .expect("explicit retry should apply the same draft");
 
     assert_eq!(
         runtime
             .latest_apply_report()
-            .expect("retry report должен сохраниться")
+            .expect("The retry report should be retained.")
             .final_state,
         ApplyFinalState::FullyApplied
     );
@@ -603,14 +603,14 @@ fn transaction_persistence_failure_rolls_runtime_back() {
     let config = custom_config_for_test();
     let path = temp_config_path("transaction-persist-failure");
     remove_file_if_exists(&path);
-    fs::create_dir_all(&path).expect("target directory создаёт deterministic rename failure");
+    fs::create_dir_all(&path).expect("Target director creates deterministic rename failure");
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     run_runtime_actions(
         &mut runtime,
@@ -627,7 +627,7 @@ fn transaction_persistence_failure_rolls_runtime_back() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("persistence failure report должен сохраниться");
+        .expect("Continued failure report should be maintained");
     assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
     assert_eq!(report.rollback.len(), 1);
     assert_eq!(adapter.media_updates, 2);
@@ -635,7 +635,7 @@ fn transaction_persistence_failure_rolls_runtime_back() {
     assert_eq!(adapter.finalize_calls, 0);
     assert!(adapter.snapshot_synced_after_finalize.is_empty());
     assert_eq!(runtime.committed_config().network, config.network);
-    fs::remove_dir_all(&path).expect("test target directory должна удалиться");
+    fs::remove_dir_all(&path).expect("Test target directory should be removed");
 }
 
 /// Проверяет exact compensating rollback playlist owner-а при отказе atomic persistence.
@@ -644,15 +644,15 @@ fn next_item_preload_persistence_failure_rolls_back_once_without_finalize() {
     let config = custom_config_for_test();
     let path = temp_config_path("next-item-preload-persist-failure");
     remove_file_if_exists(&path);
-    fs::create_dir_all(&path).expect("target directory создаёт deterministic rename failure");
+    fs::create_dir_all(&path).expect("Target director creates deterministic rename failure");
     let requested_budget_mb = config.playlist.next_item_preload_budget_mb + 16;
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     run_runtime_actions(
         &mut runtime,
@@ -671,7 +671,7 @@ fn next_item_preload_persistence_failure_rolls_back_once_without_finalize() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("playlist persistence failure report должен сохраниться");
+        .expect("playlist persistence failure report should continue");
     assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
     assert_eq!(report.rollback.len(), 1);
     assert_eq!(adapter.playlist_updates.len(), 1);
@@ -693,7 +693,7 @@ fn next_item_preload_persistence_failure_rolls_back_once_without_finalize() {
         ]
     );
     assert_eq!(runtime.committed_config().playlist, config.playlist);
-    fs::remove_dir_all(&path).expect("test target directory должна удалиться");
+    fs::remove_dir_all(&path).expect("Test target directory should be removed");
 }
 
 /// Combined backend + URL quality transaction передаёт каждому route exact destination,
@@ -704,14 +704,14 @@ fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
     config.video.preferred_backend = VideoBackendPreference::Hardware;
     let path = temp_config_path("combined-backend-quality-target-policy");
     remove_file_if_exists(&path);
-    fs::create_dir_all(&path).expect("target directory создаёт deterministic rename failure");
+    fs::create_dir_all(&path).expect("Target director creates deterministic rename failure");
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     run_runtime_actions(
         &mut runtime,
@@ -732,7 +732,7 @@ fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("persistence failure report должен сохраниться");
+        .expect("Continued failure report should be maintained");
     assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
     assert_eq!(report.rollback.len(), 2);
     assert_eq!(
@@ -754,7 +754,7 @@ fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
         VideoBackendPreference::Hardware
     );
     assert!(adapter.committed_snapshots.is_empty());
-    fs::remove_dir_all(&path).expect("test target directory должна удалиться");
+    fs::remove_dir_all(&path).expect("Test target directory should be removed");
 }
 
 /// Проверяет no-op повторного apply после полного success.
@@ -767,9 +767,9 @@ fn transaction_repeated_apply_is_noop() {
         config.clone(),
         path.clone(),
     ))
-    .expect("settings runtime должен построиться");
+    .expect("settings runtime should be built");
     let mut adapter =
-        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
 
     run_runtime_actions(
         &mut runtime,
@@ -789,7 +789,7 @@ fn transaction_repeated_apply_is_noop() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("no-op report должен сохраниться");
+        .expect("No-op report should be retained");
     assert_eq!(report.final_state, ApplyFinalState::NoChanges);
     assert_eq!(adapter.preflight_calls, preflight_calls_after_first_apply);
     remove_file_if_exists(&path);

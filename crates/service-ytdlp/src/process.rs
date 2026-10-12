@@ -284,7 +284,7 @@ fn run_process_with_extractor_invocation(
 ) -> Result<ProcessOutput, YtDlpServiceError> {
     if timeout.is_zero() {
         return Err(YtDlpServiceError::process(anyhow::anyhow!(
-            "process timeout должен быть положительным"
+            "process timeout should be positive"
         )));
     }
     if is_cancelled() {
@@ -327,14 +327,15 @@ fn run_process_with_extractor_invocation(
     let stdout = match process.take_stdout() {
         Some(stdout) => stdout,
         None => {
-            let primary = YtDlpServiceError::process(anyhow::anyhow!("stdout pipe недоступен"));
+            let primary =
+                YtDlpServiceError::process(anyhow::anyhow!("stdout pipe is not available"));
             return Err(finish_process_after_error(&mut process, primary));
         }
     };
     let stderr = match process.take_stderr() {
         Some(stderr) => stderr,
         None => {
-            let primary = YtDlpServiceError::process(anyhow::anyhow!("stderr pipe недоступен"));
+            let primary = YtDlpServiceError::process(anyhow::anyhow!("stderr pipe not available"));
             return Err(finish_process_after_error(&mut process, primary));
         }
     };

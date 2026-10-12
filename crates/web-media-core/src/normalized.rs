@@ -38,14 +38,14 @@ pub enum RawIdentityBuildError {
 impl fmt::Display for RawIdentityBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty { field } => write!(formatter, "{field:?} identity не может быть пустой"),
+            Self::Empty { field } => write!(formatter, "{field:?} identity can't be empty"),
             Self::TooLong {
                 field,
                 provided_bytes,
                 maximum_bytes,
             } => write!(
                 formatter,
-                "{field:?} identity занимает {provided_bytes} bytes при лимите {maximum_bytes}"
+                "{field:?} identity occupies {provided_bytes} bytes at limit {maximum_bytes}"
             ),
         }
     }
@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn raw_identity_is_preserved_with_bounds_and_redaction() {
         let raw_text = "Future_Protocol.V2";
-        let raw = RawTransportIdentity::new(raw_text).expect("raw identity валидна");
+        let raw = RawTransportIdentity::new(raw_text).expect("raw identity valid");
         let normalized = NormalizedTransport::parse(raw);
 
         assert_eq!(normalized.raw().as_str(), raw_text);
@@ -625,7 +625,7 @@ mod tests {
         assert!(!format!("{normalized:?}").contains(raw_text));
 
         let error = RawCodecIdentity::new("x".repeat(MAX_RAW_IDENTITY_UTF8_BYTES + 1))
-            .expect_err("overflow обязан быть rejected");
+            .expect_err("overflow must be rejected");
         assert_eq!(
             error,
             RawIdentityBuildError::TooLong {
@@ -641,15 +641,15 @@ mod tests {
     fn transport_aliases_map_to_manifest_families() {
         // HLS alias обязан остаться в concrete adaptive family.
         let hls = NormalizedTransport::parse(
-            RawTransportIdentity::new("m3u8_native").expect("identity валидна"),
+            RawTransportIdentity::new("m3u8_native").expect("identity valid"),
         );
         // DASH alias обязан остаться в concrete adaptive family.
         let dash = NormalizedTransport::parse(
-            RawTransportIdentity::new("dash_frag_urls").expect("identity валидна"),
+            RawTransportIdentity::new("dash_frag_urls").expect("identity valid"),
         );
         // Generator identity хранится отдельно от serializable DASH fragments.
         let generator = NormalizedTransport::parse(
-            RawTransportIdentity::new("http_dash_segments_generator").expect("identity валидна"),
+            RawTransportIdentity::new("http_dash_segments_generator").expect("identity valid"),
         );
 
         // Known HLS alias не теряет family semantics.
@@ -672,13 +672,13 @@ mod tests {
         ] {
             // Парсим exact raw identity без alias normalization между providers.
             let special_transport = NormalizedTransport::parse(
-                RawTransportIdentity::new(special_identity).expect("identity валидна"),
+                RawTransportIdentity::new(special_identity).expect("identity valid"),
             );
             // Serializable protocol string не является admission воспроизводимого provider-а.
             assert_eq!(
                 special_transport.family(),
                 TransportFamily::KnownExcluded(KnownExcludedTransport::PrivateLiveState),
-                "special identity `{special_identity}` неожиданно получила provider family"
+                "Special identity {special_identity} unexpectedly received by a family provider"
             );
         }
     }
@@ -687,13 +687,13 @@ mod tests {
     #[test]
     fn codec_family_and_parameters_are_parsed_without_raw_loss() {
         let avc = NormalizedCodec::parse(
-            RawCodecIdentity::new("avc1.640028").expect("codec identity валидна"),
+            RawCodecIdentity::new("avc1.640028").expect("codec identity valid"),
         );
         let aac = NormalizedCodec::parse(
-            RawCodecIdentity::new("mp4a.40.2").expect("codec identity валидна"),
+            RawCodecIdentity::new("mp4a.40.2").expect("codec identity valid"),
         );
         let future = NormalizedCodec::parse(
-            RawCodecIdentity::new("futureCodec.Profile-X").expect("codec identity валидна"),
+            RawCodecIdentity::new("futureCodec.Profile-X").expect("codec identity valid"),
         );
 
         assert_eq!(avc.kind(), CodecKind::Known(CodecFamily::H264));
@@ -722,7 +722,7 @@ mod tests {
 
         for (raw_codec, expected_family) in cases {
             let codec = NormalizedCodec::parse(
-                RawCodecIdentity::new(raw_codec).expect("container codec identity валидна"),
+                RawCodecIdentity::new(raw_codec).expect("container codec identity valid"),
             );
             assert_eq!(codec.kind(), CodecKind::Known(expected_family));
             assert_eq!(codec.raw().as_str(), raw_codec);
@@ -733,8 +733,8 @@ mod tests {
     #[test]
     fn container_hint_conflict_is_typed() {
         let identity = ContainerIdentity::parse(
-            Some(RawExtensionIdentity::new("webm").expect("ext валиден")),
-            Some(RawContainerIdentity::new("mp4").expect("container валиден")),
+            Some(RawExtensionIdentity::new("webm").expect("ext is valid")),
+            Some(RawContainerIdentity::new("mp4").expect("container valid")),
         );
 
         assert_eq!(
@@ -757,8 +757,8 @@ mod tests {
 
         for (extension, container, expected) in cases {
             let identity = ContainerIdentity::parse(
-                Some(RawExtensionIdentity::new(extension).expect("ext валиден")),
-                Some(RawContainerIdentity::new(container).expect("container валиден")),
+                Some(RawExtensionIdentity::new(extension).expect("ext is valid")),
+                Some(RawContainerIdentity::new(container).expect("container valid")),
             );
 
             assert_eq!(identity.consistent_family(), Ok(Some(expected)));
@@ -769,11 +769,11 @@ mod tests {
     #[test]
     fn f4v_routes_to_iso_bmff_without_collapsing_f4f_into_flv() {
         let f4v = ContainerIdentity::parse(
-            Some(RawExtensionIdentity::new("f4v").expect("ext валиден")),
+            Some(RawExtensionIdentity::new("f4v").expect("ext is valid")),
             None,
         );
         let f4f = ContainerIdentity::parse(
-            Some(RawExtensionIdentity::new("f4f").expect("ext валиден")),
+            Some(RawExtensionIdentity::new("f4f").expect("ext is valid")),
             None,
         );
 
@@ -788,7 +788,7 @@ mod tests {
     fn isma_and_ismv_route_to_fragmented_iso_bmff() {
         for extension in ["isma", "ismv"] {
             let identity = ContainerIdentity::parse(
-                Some(RawExtensionIdentity::new(extension).expect("ext валиден")),
+                Some(RawExtensionIdentity::new(extension).expect("ext is valid")),
                 None,
             );
             assert_eq!(

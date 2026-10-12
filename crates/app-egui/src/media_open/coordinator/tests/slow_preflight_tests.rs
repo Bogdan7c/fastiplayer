@@ -55,14 +55,14 @@ impl Demuxer for NeverReadyVideoDemuxer {
 
     fn next_event(&mut self) -> anyhow::Result<media_core::DemuxReadEvent> {
         let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(20))
-            .map_err(|_| anyhow::anyhow!("retry hint вне допустимого диапазона"))?;
+            .map_err(|_| anyhow::anyhow!("retry hint off-limits"))?;
         Ok(media_core::DemuxReadEvent::TemporarilyUnavailable(
             retry_hint,
         ))
     }
 
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
-        panic!("staged preflight медленного файла не делает seek")
+        panic!("staged preflight slow file does not make seek")
     }
 }
 
@@ -75,13 +75,13 @@ fn worker_with_old_media() -> (PlayerWorker, Option<player_core::MediaInstanceId
         },
         ..PlayerWorkerConfig::default()
     })
-    .expect("player worker стартует");
+    .expect("Player worker starts");
     let old_install = worker
         .load_prepared_media(
             player_core::PreparedMedia::from_external_label("old-media", Box::new(FakeDemuxer)),
             false,
         )
-        .expect("старое media принято worker-ом");
+        .expect("The old media accepted by the worker");
     let old_snapshot = wait_for_worker_snapshot(&mut worker, |snapshot| {
         snapshot.source_label.as_deref() == Some("old-media")
             && snapshot.media_instance_id.is_some()
@@ -111,7 +111,7 @@ fn stage_slow_file(
             start_intent(),
             MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
         )
-        .expect("stage доставлен настоящему worker-у");
+        .expect("The stage is delivered to the real worker.");
     assert_eq!(
         coordinator.snapshot().expect("current request").phase,
         MediaOpenPhase::PlayerStaging
@@ -129,13 +129,13 @@ fn blocking_progress_wait_holds_caller_for_whole_slow_preflight() {
     let wait_started = Instant::now();
     let phase = coordinator
         .wait_for_progress(request_id)
-        .expect("player отвечает таймаутом, а не пропадает");
+        .expect("Player responds with a timeout, not disappears");
     let blocked_for = wait_started.elapsed();
 
     assert_eq!(phase, MediaOpenPhase::Failed);
     assert!(
         blocked_for >= TEST_PREFLIGHT_TIMEOUT.mul_f32(0.9),
-        "блокирующий шаг вернулся раньше player-а: {blocked_for:?}"
+        "The blocking step returned before the player: {blocked_for:?}"
     );
 }
 
@@ -154,7 +154,7 @@ fn nonblocking_steps_report_slow_file_timeout_and_keep_old_media() {
         let phase = coordinator.snapshot().expect("current request").phase;
         assert!(
             step_started.elapsed() < NONBLOCKING_STEP_BUDGET,
-            "неблокирующий шаг ждал player-а"
+            "The non-blocking step was waiting for the player."
         );
         if phase == MediaOpenPhase::Failed {
             break;
@@ -163,7 +163,7 @@ fn nonblocking_steps_report_slow_file_timeout_and_keep_old_media() {
         steps_while_player_was_busy += 1;
         assert!(
             staging_started.elapsed() < REAL_WORKER_DEADLINE,
-            "player так и не ответил таймаутом предпросмотра"
+            "The player never responded with a preview timeout."
         );
         thread::sleep(Duration::from_millis(10));
     }
@@ -174,12 +174,12 @@ fn nonblocking_steps_report_slow_file_timeout_and_keep_old_media() {
     let Ok(Some(MediaOpenTerminalOutcome::PlayerFailed { reason, .. })) =
         coordinator.take_terminal(request_id)
     else {
-        panic!("таймаут предпросмотра обязан завершиться PlayerFailed");
+        panic!("Preview timeout must end with PlayerFailed");
     };
     assert_eq!(reason, PlayerInstallFailureReason::PreparationTimedOut);
     assert_eq!(
         local_open_failure_message(std::path::Path::new("/nas/movies/clip.mkv"), reason),
-        "Не удалось открыть «clip.mkv»: файл читается слишком долго"
+        "Could not open “clip.mkv”: reading the file is taking too long"
     );
     let snapshot_after_failure =
         wait_for_worker_snapshot(&mut worker, |snapshot| snapshot.source_label.is_some());

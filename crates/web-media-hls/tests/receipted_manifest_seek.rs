@@ -276,14 +276,14 @@ fn late_receipted_seek_fetches_target_segment_and_publishes_landing_packet() {
         seek_request_lines
             .iter()
             .any(|line| line.contains("/segment-7.ts")),
-        "seek должен открыть первый post-target segment: {seek_request_lines:?}"
+        "Seek to open the first post-target segment: {seek_request_lines:?}"
     );
     for skipped_segment in 1..7 {
         assert!(
             seek_request_lines
                 .iter()
                 .all(|line| !line.contains(&format!("/segment-{skipped_segment}.ts"))),
-            "seek не должен последовательно читать segment-{skipped_segment}: {seek_request_lines:?}"
+            "Seek does not read segment-{skipped_segment} sequentially: {seek_request_lines:?}"
         );
     }
 
@@ -378,14 +378,14 @@ fn default_receipted_seek_keeps_containing_segment_decode_forward_semantics() {
     let containing_request_index = seek_request_lines
         .iter()
         .position(|line| line.contains("/segment-6.ts"))
-        .expect("default seek обязан открыть containing segment");
+        .expect("default seek must open containing segment");
     if let Some(next_request_index) = seek_request_lines
         .iter()
         .position(|line| line.contains("/segment-7.ts"))
     {
         assert!(
             containing_request_index < next_request_index,
-            "parser read-ahead допустим только после containing selection: {seek_request_lines:?}"
+            "parser read-ahead is allowed only after containing selection: {seek_request_lines:?}"
         );
     }
 
@@ -464,7 +464,7 @@ fn failed_seek_after_committed_streaming_replacement_keeps_worker_retryable() {
                 },
                 DemuxSeekRequest::decode_point_before(Duration::from_secs(target_seconds)),
             )
-            .expect("terminal failure не должен останавливать HLS seek worker");
+            .expect("terminal failure must not stop HLS seeking worker");
         let receipt = wait_for_receipt(&seek_handle);
         assert_eq!(receipt.fence.request_id.value(), request_id);
         match (&receipt.outcome, expected_actual_seconds) {
@@ -472,19 +472,17 @@ fn failed_seek_after_committed_streaming_replacement_keeps_worker_retryable() {
                 assert_eq!(
                     result.actual_position.as_duration(),
                     Duration::from_secs(expected_actual_seconds),
-                    "success обязан публиковать RAP реально выбранного post-target segment-а; receipt={receipt:?}; requests={:?}",
+                    "success obliged to publish RAP genuinely chosen post-target segment-?; receipt={receipt:?}; requests={:?}",
                     server.requests()
                 );
             }
             (ProgressiveAsyncSeekOutcome::Failed, None) => {}
-            _ => panic!(
-                "controlled request {request_id} обязан сохранить terminal outcome: {receipt:?}"
-            ),
+            _ => panic!("controlled request {request_id} retain terminal outcome: {receipt:?}"),
         }
         if request_id == 2 {
             loop {
                 match next_ready_event(&mut *demuxer)
-                    .expect("failed B не должен отравить committed source A")
+                    .expect("failed B should not be poisoned committed source A")
                 {
                     DemuxReadEvent::EndOfStream => break,
                     DemuxReadEvent::TracksChanged(_)
@@ -498,7 +496,7 @@ fn failed_seek_after_committed_streaming_replacement_keeps_worker_retryable() {
             assert_eq!(
                 server.requests().len(),
                 requests_before_current_seek,
-                "inside-final seek должен переиспользовать proven exact anchor без несуществующего future GET"
+                "inside-final seek should be reused proven exact anchor non-existent future GET"
             );
         }
     }
@@ -512,19 +510,19 @@ fn failed_seek_after_committed_streaming_replacement_keeps_worker_retryable() {
         request_lines
             .iter()
             .any(|line| line.contains("/segment-5.ts")),
-        "ошибочный B обязан дойти до controlled transport failure: {request_lines:?}"
+        "Error B must reach controlled transport failure: {request_lines:?}"
     );
     assert!(
         request_lines
             .iter()
             .all(|line| !line.contains("/segment-4.ts")),
-        "post-target B не должен ошибочно открывать containing segment: {request_lines:?}"
+        "post-target B Do not open it incorrectly containing segment: {request_lines:?}"
     );
     assert!(
         request_lines
             .iter()
             .any(|line| line.contains("/segment-7.ts")),
-        "retry C обязан сохранить proven final-segment source: {request_lines:?}"
+        "retry C must retain proven final-segment source: {request_lines:?}"
     );
 
     loop {
@@ -674,7 +672,7 @@ fn accepted_seek_interrupts_stalled_body_and_failed_replacement_rolls_back_exact
     let (ready, _) = ready_event
         .wait_timeout_while(ready, TEST_TIMEOUT, |ready| !*ready)
         .expect("wait stalled committed prefix");
-    assert!(*ready, "committed response prefix должен быть отправлен");
+    assert!(*ready, "committed response prefix should be sent");
     drop(ready);
     // После initial TracksChanged worker дочитывает replay-prefix и входит в контролируемый
     // pending body read. Fixture содержит только null-packet хвост, поэтому новых queue events нет.
@@ -692,11 +690,11 @@ fn accepted_seek_interrupts_stalled_body_and_failed_replacement_rolls_back_exact
     let receipt = wait_for_receipt(&seek_handle);
     assert!(
         matches!(receipt.outcome, ProgressiveAsyncSeekOutcome::Failed),
-        "controlled target failure не должен публиковать success: {receipt:?}"
+        "controlled target failure don't publish success: {receipt:?}"
     );
     assert!(
         first_body_dropped.load(Ordering::Acquire),
-        "accepted seek обязан физически drop-нуть stalled old response до replacement GET"
+        "accepted seek obligated drop-lash stalled old response before replacement GET"
     );
 
     let rollback_packet = loop {
@@ -730,7 +728,7 @@ fn accepted_seek_interrupts_stalled_body_and_failed_replacement_rolls_back_exact
         request_lines
             .iter()
             .all(|line| !line.contains("/segment-4.ts")),
-        "failed post-target replacement не должен обращаться к containing segment: {request_lines:?}"
+        "failed post-target replacement should not appeal containing segment: {request_lines:?}"
     );
     let rollback_index = request_lines
         .iter()
@@ -846,7 +844,7 @@ fn receipted_seek_opens_and_lands_before_target_segment_body_completes() {
         .expect("wait gated HLS prefix");
     assert!(
         state.0,
-        "target segment prefix должен быть физически отправлен"
+        "target segment prefix Must have been physically sent"
     );
     drop(state);
 
@@ -859,17 +857,17 @@ fn receipted_seek_opens_and_lands_before_target_segment_body_completes() {
             let mut state = gate_lock.lock().expect("release timed-out HLS gate");
             state.1 = true;
             gate_ready.notify_all();
-            panic!("HLS receipt не должен ждать gated segment tail");
+            panic!("HLS receipt does not wait for gated segment tail");
         }
         std::thread::sleep(Duration::from_millis(2));
     };
     assert!(
         matches!(&receipt.outcome, ProgressiveAsyncSeekOutcome::Succeeded(_)),
-        "streaming receipt должен завершиться по prefix: {receipt:?}; requests={:?}",
+        "streaming receipt must be completed by prefix: {receipt:?}; requests={:?}",
         server.requests()
     );
     let ProgressiveAsyncSeekOutcome::Succeeded(result) = &receipt.outcome else {
-        unreachable!("outcome проверен выше")
+        unreachable!("The outcome verified above")
     };
     assert_eq!(
         result.actual_position.as_duration(),
@@ -885,7 +883,7 @@ fn receipted_seek_opens_and_lands_before_target_segment_body_completes() {
             .filter(|request| request.request_line.contains("/segment-7.ts"))
             .count(),
         1,
-        "target segment должен иметь единственный HTTP request"
+        "The target segment must have a single HTTP request."
     );
     let seek_request_lines = server
         .requests()
@@ -897,7 +895,7 @@ fn receipted_seek_opens_and_lands_before_target_segment_body_completes() {
         seek_request_lines
             .iter()
             .all(|line| !line.contains("/segment-6.ts")),
-        "streaming seek не должен открывать containing segment: {seek_request_lines:?}"
+        "streaming seek does not open containing segment: {seek_request_lines:?}"
     );
 
     let mut state = gate_lock.lock().expect("release gated HLS tail");
@@ -975,28 +973,28 @@ fn receipted_seek_without_near_target_rap_falls_back_to_proven_exact_anchor() {
     let post_target_candidate_index = seek_request_lines
         .iter()
         .position(|line| line.contains("/segment-7.ts"))
-        .expect("post-target candidate должен проверяться первым");
+        .expect("post-target candidate should be checked first");
     let containing_candidate_index = seek_request_lines
         .iter()
         .position(|line| line.contains("/segment-6.ts"))
-        .expect("legacy fallback должен проверить containing segment");
+        .expect("legacy fallback should be checked containing segment");
     let previous_candidate_index = seek_request_lines
         .iter()
         .position(|line| line.contains("/segment-5.ts"))
-        .expect("legacy fallback должен проверить previous same-epoch segment");
+        .expect("legacy fallback should be checked previous same-epoch segment");
     assert!(post_target_candidate_index < containing_candidate_index);
     assert!(containing_candidate_index < previous_candidate_index);
     assert!(
         seek_request_lines
             .iter()
             .any(|line| line.contains("/segment-6.ts")),
-        "first candidate должен проверить target segment: {seek_request_lines:?}"
+        "The first candidate should check the target segment: {seek_request_lines:?}"
     );
     assert!(
         seek_request_lines
             .iter()
             .any(|line| line.contains("/segment-5.ts")),
-        "second candidate должен проверить previous segment: {seek_request_lines:?}"
+        "The second candidate should check the previous segment: {seek_request_lines:?}"
     );
     assert_eq!(
         requests_after_seek
@@ -1004,7 +1002,7 @@ fn receipted_seek_without_near_target_rap_falls_back_to_proven_exact_anchor() {
             .filter(|request| request.request_line.contains("/segment-0.ts"))
             .count(),
         segment_zero_requests_before_seek,
-        "legacy exact-anchor restart должен переиспользовать completed VOD resource без второго HTTP request"
+        "legacy exact-anchor restart must reuse completed VOD resource without second HTTP request"
     );
 
     loop {
@@ -1130,7 +1128,7 @@ fn separate_av_receipted_seek_commits_exact_boundary_component_pair() {
     assert!(
         video_landing_position > Duration::from_secs(60)
             && video_landing_position < Duration::from_secs(61),
-        "receipt должен сохранить post-target PTS target-segment RAP: {video_landing_position:?}"
+        "receipt should be preserved post-target PTS target-segment RAP: {video_landing_position:?}"
     );
 
     let seek_request_lines = server
@@ -1155,7 +1153,7 @@ fn separate_av_receipted_seek_commits_exact_boundary_component_pair() {
                 !line.contains(&format!("/video-{skipped_segment}.ts"))
                     && !line.contains(&format!("/audio-{skipped_segment}.ts"))
             }),
-            "separate A/V seek прочитал промежуточный segment: {seek_request_lines:?}"
+            "separate A/V seek read intermediate segment: {seek_request_lines:?}"
         );
     }
 

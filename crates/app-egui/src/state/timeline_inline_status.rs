@@ -96,7 +96,7 @@ mod tests {
 
     fn scrub_context_for_tests() -> ScrubTargetContext {
         let video_track = TrackId::new(7);
-        let time_base = TimeBase::new(1, 1_000).expect("валидная test timebase");
+        let time_base = TimeBase::new(1, 1_000).expect("validation");
 
         ScrubTargetContext::new(
             SourceRevision::new(10),

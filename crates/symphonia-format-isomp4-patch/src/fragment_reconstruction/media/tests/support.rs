@@ -58,12 +58,12 @@ pub(super) fn inspection_limits() -> FragmentInspectionLimits {
         .max_sample_table_bytes(64 * 1024)
         .max_box_payload_bytes(256 * 1024)
         .build()
-        .expect("все inspection budgets заданы")
+        .expect("All inspection budgets are set")
 }
 
 /// Output budget отдельно от input budgets.
 pub(super) fn write_limits() -> FragmentWriteLimits {
-    FragmentWriteLimits::try_new(512 * 1024).expect("ненулевой output budget")
+    FragmentWriteLimits::try_new(512 * 1024).expect("non-zero output budget")
 }
 
 /// Собирает public request для exact track 1.
@@ -155,7 +155,7 @@ pub(super) fn inspect<'input>(
     limits: &FragmentInspectionLimits,
 ) -> NormalizedFragmentPlan<'input> {
     inspect_with_policy(input, base_decode_time, media_kind, limits, &never_cancel)
-        .expect("test fragment должен пройти inspection")
+        .expect("The test fragment must pass the inspection.")
 }
 
 /// Возвращает F1A result для negative tests.
@@ -191,7 +191,7 @@ pub(super) fn inspect_iso_bmff<'input>(
         limits,
         &never_cancel,
     )
-    .expect("synthetic ISO BMFF fragment должен пройти inspection")
+    .expect("synthetic ISO BMFF fragment must pass inspection")
 }
 
 /// Выполняет inspection с явной семантикой входного container-а.
@@ -229,13 +229,13 @@ fn inspect_with_semantics<'input>(
 /// Создаёт accepted video init для captured 1501k representation.
 pub(super) fn video_initialization() -> Vec<u8> {
     let dimensions = FragmentVideoDimensions::new(
-        FragmentVideoWidth::try_new(1680).expect("width представим"),
-        FragmentVideoHeight::try_new(750).expect("height представим"),
+        FragmentVideoWidth::try_new(1680).expect("Imagine the width."),
+        FragmentVideoHeight::try_new(750).expect("Imagine the height."),
     );
     let configuration = FragmentH264Configuration::new(
         dimensions,
-        FragmentH264SequenceParameterSet::try_new(&VIDEO_1501K_SPS).expect("captured SPS валиден"),
-        FragmentH264PictureParameterSet::try_new(&VIDEO_1501K_PPS).expect("captured PPS валиден"),
+        FragmentH264SequenceParameterSet::try_new(&VIDEO_1501K_SPS).expect("captured SPS validated"),
+        FragmentH264PictureParameterSet::try_new(&VIDEO_1501K_PPS).expect("captured PPS valid"),
     );
     build_fragmented_initialization_segment(FragmentInitializationRequest::new(
         track_id(),
@@ -251,12 +251,12 @@ pub(super) fn video_initialization() -> Vec<u8> {
 /// Создаёт accepted AAC-LC init.
 pub(super) fn audio_initialization() -> Vec<u8> {
     let configuration = FragmentAacLcConfiguration::try_new(
-        FragmentAacSampleRate::try_new(48_000).expect("48 kHz представимы"),
-        FragmentAacChannelCount::try_new(2).expect("stereo представимо"),
+        FragmentAacSampleRate::try_new(48_000).expect("48 kHz is conceivable"),
+        FragmentAacChannelCount::try_new(2).expect("stereo is imaginable"),
         FragmentAacAudioSpecificConfig::try_new(&AUDIO_SPECIFIC_CONFIG_48K_STEREO)
-            .expect("captured ASC валиден"),
+            .expect("captured ASC is valid"),
     )
-    .expect("typed AAC metadata совпадает с ASC");
+    .expect("typed AAC metadata is the same as ASC");
     build_fragmented_initialization_segment(FragmentInitializationRequest::new(
         track_id(),
         timescale(),
@@ -274,9 +274,9 @@ pub(super) fn production_reader(bytes: Vec<u8>) -> IsoMp4Reader<'static> {
     let mut media_source_stream = MediaSourceStream::new(Box::new(source), Default::default());
     media_source_stream
         .read_quad_bytes()
-        .expect("production probe читает первые четыре bytes");
+        .expect("production probe Read the first four bytes");
     IsoMp4Reader::try_new(media_source_stream, FormatOptions::default())
-        .expect("production IsoMp4Reader открывает canonical stream")
+        .expect("production IsoMp4Reader opener canonical stream")
 }
 
 /// Читает все production packets до clean EOS.
@@ -409,15 +409,15 @@ fn initialization_limits() -> FragmentInitializationLimits {
         .maximum_output_bytes(4_096)
         .maximum_codec_configuration_bytes(1_024)
         .build()
-        .expect("все init budgets заданы")
+        .expect("All init budgets are set")
 }
 
 fn timescale() -> FragmentTimescale {
-    FragmentTimescale::new(NonZeroU32::new(10_000_000).expect("ненулевой timescale"))
+    FragmentTimescale::new(NonZeroU32::new(10_000_000).expect("timescale"))
 }
 
 fn track_id() -> FragmentTrackId {
-    FragmentTrackId::new(NonZeroU32::new(1).expect("ненулевой track ID"))
+    FragmentTrackId::new(NonZeroU32::new(1).expect("non-zero track ID"))
 }
 
 fn write_box_header(bytes: &mut Vec<u8>, size: u32, box_type: [u8; 4]) {

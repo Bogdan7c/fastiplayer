@@ -944,7 +944,7 @@ impl SupportedVideoDecodeFormat {
         let mut description = format!("{} {} {}", self.profile, self.bit_depth, self.chroma);
 
         if let (Some(max_width), Some(max_height)) = (self.max_width, self.max_height) {
-            description.push_str(&format!(" до {max_width}x{max_height}"));
+            description.push_str(&format!(" up to {max_width}x{max_height}"));
         }
 
         if let Some(max_fps) = self.max_fps {

@@ -85,39 +85,29 @@ fn dropped_collection_label(
     source: &DroppedCollectionSource,
     truncation: Option<DroppedCollectionTruncation>,
 ) -> SafeMediaLabel {
-    let noun = russian_files_noun(count);
+    let noun = files_noun(count);
     let prefix = match truncation {
-        Some(DroppedCollectionTruncation::FileLimit) => "первые ",
+        Some(DroppedCollectionTruncation::FileLimit) => "first ",
         Some(DroppedCollectionTruncation::DepthLimit) | None => "",
     };
     let others = match source.other_item_count {
         0 => String::new(),
-        other_count => format!(" и ещё {other_count}"),
+        other_count => format!(" and {other_count} more"),
     };
     SafeMediaLabel::from_service_safe_label(&format!(
-        "{prefix}{count} {noun} из папки „{}“{others}",
+        "{prefix}{count} {noun} from folder “{}”{others}",
         source.first_folder_name
     ))
 }
 
 /// «1 файл», «3 файла», «5 файлов» — подпись набора без имён и путей.
 fn local_files_count_label(count: usize) -> SafeMediaLabel {
-    SafeMediaLabel::from_service_safe_label(&format!("{count} {}", russian_files_noun(count)))
+    SafeMediaLabel::from_service_safe_label(&format!("{count} {}", files_noun(count)))
 }
 
-/// Форма слова «файл» для числа: 1 файл, 2 файла, 5 файлов, 11 файлов, 21 файл.
-fn russian_files_noun(count: usize) -> &'static str {
-    let last_two_digits = count % 100;
-    let last_digit = count % 10;
-    if (11..=14).contains(&last_two_digits) {
-        "файлов"
-    } else {
-        match last_digit {
-            1 => "файл",
-            2..=4 => "файла",
-            _ => "файлов",
-        }
-    }
+/// Английское единственное число используется только для ровно одного файла.
+fn files_noun(count: usize) -> &'static str {
+    if count == 1 { "file" } else { "files" }
 }
 
 #[cfg(test)]
@@ -125,15 +115,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn count_label_uses_correct_russian_plural_forms() {
+    fn count_label_uses_correct_english_plural_forms() {
         let label = |count| local_files_count_label(count).as_str().to_owned();
-        assert_eq!(label(1), "1 файл");
-        assert_eq!(label(2), "2 файла");
-        assert_eq!(label(5), "5 файлов");
-        assert_eq!(label(11), "11 файлов");
-        assert_eq!(label(21), "21 файл");
-        assert_eq!(label(24), "24 файла");
-        assert_eq!(label(112), "112 файлов");
+        assert_eq!(label(1), "1 file");
+        assert_eq!(label(2), "2 files");
+        assert_eq!(label(5), "5 files");
+        assert_eq!(label(11), "11 files");
+        assert_eq!(label(21), "21 files");
+        assert_eq!(label(24), "24 files");
+        assert_eq!(label(112), "112 files");
     }
 
     #[test]
@@ -147,10 +137,10 @@ mod tests {
                 .as_str()
                 .to_owned()
         };
-        assert_eq!(label(23, None), "23 файла из папки „Музыка“");
+        assert_eq!(label(23, None), "23 files from folder “Музыка”");
         assert_eq!(
             label(2000, Some(DroppedCollectionTruncation::FileLimit)),
-            "первые 2000 файлов из папки „Музыка“"
+            "first 2000 files from folder “Музыка”"
         );
         let with_others = DroppedCollectionSource {
             other_item_count: 2,
@@ -158,7 +148,7 @@ mod tests {
         };
         assert_eq!(
             dropped_collection_label(1, &with_others, None).as_str(),
-            "1 файл из папки „Музыка“ и ещё 2"
+            "1 file from folder “Музыка” and 2 more"
         );
     }
 

@@ -324,18 +324,18 @@ fn release_driven_eof_continuation_preserves_last_coalesced_release_edge() {
 
     let first_pass = decode_loop
         .begin_end_of_stream_drain(17, 1)
-        .expect("первый bounded EOF pass должен отдать первый tail frame");
+        .expect("The first bounded EOF pass gives the first tail frame.");
     let first_result = VideoDecoderEndOfStreamDrainResult::Started(first_pass.state.clone());
     assert!(
         eof_drain_result_requires_owner_reentry(&first_result),
-        "Draining обязан вернуть owner loop к release-driven continuation"
+        "Draining must return owner loop to release-driven continuation"
     );
 
     // Один coalesced release edge открыл сразу два slots: один для последнего
     // tail frame, второй — чтобы тем же owner turn увидеть terminal EOF.
     let completion = decode_loop
         .begin_end_of_stream_drain(17, 2)
-        .expect("последний release edge должен довести decoder до terminal EOF");
+        .expect("The last release edge should bring the decoder to the terminal EOF");
     let completion_result = VideoDecoderEndOfStreamDrainResult::Started(completion.state.clone());
 
     assert_eq!(completion.frames.len(), 1);
@@ -353,7 +353,7 @@ fn accepted_ffmpeg_eof_rejects_receive_eagain_instead_of_spinning() {
 
     let error = decode_loop
         .begin_end_of_stream_drain(23, 1)
-        .expect_err("accepted FFmpeg EOF не допускает receive-side EAGAIN");
+        .expect_err("accepted FFmpeg EOF does not allow receive-side EAGAIN");
 
     assert!(matches!(
         error,
@@ -546,7 +546,7 @@ fn pts_policy_uses_best_effort_then_pts_then_interpolation() {
 #[test]
 fn pts_only_packet_time_base_resolves_materialized_frame_timestamp() {
     let track_id = media_core::TrackId::new(1);
-    let time_base = media_core::TimeBase::new(1, 90_000).expect("валидная MPEG time base");
+    let time_base = media_core::TimeBase::new(1, 90_000).expect("valid MPEG time base");
     let mut decode_packet = decode_packet_with_pts(7, 18_000, Duration::from_millis(200));
     decode_packet.track_pts = Some(media_core::TrackTimestamp::new(track_id, 18_000, time_base));
     decode_packet.track_dts = None;
@@ -561,7 +561,7 @@ fn pts_only_packet_time_base_resolves_materialized_frame_timestamp() {
 
     let progress = decode_loop
         .send_packet_for_test(decode_packet)
-        .expect("PTS-only packet должен materialize frame");
+        .expect("PTS-only packet must be materialized frame");
 
     assert_eq!(progress.frames.len(), 1);
     assert_eq!(progress.frames[0].generation, 7);
@@ -811,8 +811,8 @@ fn h264_avc3_config_passes_minimal_codec_private_as_extradata() {
     );
 
     let extradata = extradata_for_stream_config(&config)
-        .expect("avc3 config должен быть валиден")
-        .expect("length-prefixed avc3 должен передать decoder configuration");
+        .expect("avc3 config must be valid")
+        .expect("length-prefixed avc3 must pass decoder configuration");
 
     assert_eq!(extradata.as_slice(), avc3_configuration.as_ref());
 }

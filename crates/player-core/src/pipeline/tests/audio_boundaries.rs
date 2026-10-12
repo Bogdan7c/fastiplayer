@@ -21,8 +21,8 @@ fn audio_decoder_boundaries_preserve_absent_success_and_error_states() {
 
     let decoded_audio = pipeline
         .decode_audio_packet(&packet)
-        .expect("installed decoder должен вернуть decode result")
-        .expect("successful fake decoder не должен падать");
+        .expect("Installed decoder will return the decode result.")
+        .expect("A successful fake decoder should not fall.");
     let DecodedAudioPacket::Pcm {
         samples,
         output_spec,
@@ -46,8 +46,8 @@ fn audio_decoder_boundaries_preserve_absent_success_and_error_states() {
 
     let decode_error = pipeline
         .decode_audio_packet(&bad_packet)
-        .expect("installed decoder должен сохранить decode error")
-        .expect_err("decode error должен дойти до session boundary");
+        .expect("The installed decoder should save the decode error.")
+        .expect_err("decode error should reach session boundary");
     assert_eq!(decode_error.to_string(), "decode failed");
 
     pipeline.clear_audio_decoder();
@@ -55,8 +55,8 @@ fn audio_decoder_boundaries_preserve_absent_success_and_error_states() {
 
     let reset_error = pipeline
         .reset_audio_decoder()
-        .expect("installed decoder должен вернуть reset result")
-        .expect_err("reset error должен дойти до session boundary");
+        .expect("The installed decoder will return the reset result.")
+        .expect_err("The reset error must reach the boundary session");
     assert_eq!(reset_error.to_string(), "reset failed");
 }
 
@@ -196,13 +196,15 @@ fn installed_audio_output_boundary_forwards_calls_and_neutral_clock() {
     assert_eq!(
         pipeline
             .clear_audio_output_for_seek(7)
-            .expect("installed output должен вернуть clear result")
-            .expect("fake clear должен быть успешным"),
+            .expect("Installed output returns clear result")
+            .expect("Fake clear must be successful."),
         7
     );
     assert!(pipeline.set_audio_output_volume(0.25));
     assert_eq!(
-        *volume.lock().expect("fake volume mutex не должен ломаться"),
+        *volume
+            .lock()
+            .expect("Fake volume mutex should not be broken."),
         Some(0.25)
     );
 
@@ -221,14 +223,14 @@ fn audio_output_boundary_preserves_play_pause_errors() {
 
     let play_error = pipeline
         .play_audio_output()
-        .expect("installed output должен вернуть play result")
-        .expect_err("play error должен пройти через boundary");
+        .expect("Installed output will return the play result")
+        .expect_err("play error must pass through boundary");
     assert_eq!(play_error.to_string(), "play failed");
 
     let pause_error = pipeline
         .pause_audio_output_and_capture_clock()
-        .expect("installed output должен вернуть pause result")
-        .expect_err("pause error должен пройти через boundary");
+        .expect("Installed output will return the pause result.")
+        .expect_err("The pause error must pass through the boundary");
     assert_eq!(pause_error.to_string(), "pause failed");
 }
 
@@ -268,8 +270,8 @@ fn audio_eof_drain_state_preserves_queue_output_and_playback_distinctions() {
 
     pipeline
         .play_audio_output()
-        .expect("installed output должен вернуть play result")
-        .expect("fake output play должен быть успешным");
+        .expect("Installed output will return the play result")
+        .expect("Fake output play must be successful");
     assert_eq!(
         pipeline.audio_eof_drain_state(),
         AudioEofDrainState::DrainingOutput {

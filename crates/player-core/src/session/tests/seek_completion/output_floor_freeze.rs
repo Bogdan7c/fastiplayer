@@ -162,7 +162,7 @@ fn unsupported_decoder_output_floor_keeps_player_side_preroll_drop_path() {
             .session
             .pipeline
             .has_seek_preroll_fallback_video_frame(),
-        "unsupported decoder floor должен оставить старый player-side fallback/drop path"
+        "The unsupported decoder floor should leave the old player side fallback/drop path."
     );
     assert!(harness.session.seek_commit().is_some());
 }
@@ -339,7 +339,7 @@ fn active_seek_long_preroll_drain_keeps_present_queue_bounded() {
     assert_eq!(
         tick_result.dropped_video_frames.len(),
         32,
-        "весь pre-target GOP должен остаться seek-preroll, а не playback"
+        "The entire pre-target GOP should remain a seek-preroll, not a playback."
     );
     assert!(
         !harness
@@ -498,7 +498,7 @@ fn accurate_seek_freezes_pre_seek_frame_then_commits_on_target_frame() {
             .decoder
             .released_handles()
             .contains(&video_core::FrameResourceHandle(15)),
-        "замена fallback candidate должна релизить старый pre-target frame"
+        "replacement fallback candidate should release the old pre-target frame"
     );
     assert!(harness.session.seek_commit().is_some());
 
@@ -528,14 +528,14 @@ fn accurate_seek_freezes_pre_seek_frame_then_commits_on_target_frame() {
             .decoder
             .released_handles()
             .contains(&video_core::FrameResourceHandle(19)),
-        "target кадр должен очистить fallback candidate без texture leak"
+        "The target frame should clear the fallback candidate without texture leak."
     );
     assert!(
         harness
             .decoder
             .released_handles()
             .contains(&video_core::FrameResourceHandle(10)),
-        "target кадр должен релизить pre-seek present frame"
+        "The target frame should be released pre-seek present frame"
     );
     assert!(harness.session.seek_commit().is_none());
     assert_eq!(harness.session.snapshot().current_position, target_position);
@@ -633,7 +633,7 @@ fn keyframe_before_seek_does_not_set_accurate_output_floor() {
 
     assert!(
         harness.decoder.preroll_floor_sets().is_empty(),
-        "KeyframeBefore не должен включать Accurate output-floor"
+        "KeyframeBefore does not include Accurate output-floor"
     );
 
     // Pre-target кадр KeyframeBefore не маркируется как drop-preroll и потому не оседает в
@@ -663,7 +663,7 @@ fn keyframe_before_seek_does_not_set_accurate_output_floor() {
             .session
             .pipeline
             .has_seek_preroll_fallback_video_frame(),
-        "KeyframeBefore не должен заполнять Accurate fallback-слот"
+        "KeyframeBefore must not fill the Accurate fallback slot"
     );
 }
 
@@ -722,7 +722,7 @@ fn accurate_seek_eof_commits_on_fallback_frame_after_decoder_drain() {
     ));
     assert_eq!(
         eof_tick.video_frames_presented, 1,
-        "EOF fallback должен презентоваться только после decoder drain"
+        "EOF fallback should be presented only after decoder drain"
     );
     assert!(harness.session.seek_commit().is_none());
     assert_eq!(

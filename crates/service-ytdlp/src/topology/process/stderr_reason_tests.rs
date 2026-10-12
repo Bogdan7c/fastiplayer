@@ -20,9 +20,9 @@ fn create_script(body: &str) -> PathBuf {
         "fastiplayer-ytdlp-topology-reason-{}-{sequence}.sh",
         std::process::id()
     ));
-    fs::write(&path, body).expect("test script должен записаться");
+    fs::write(&path, body).expect("The test script must be written down.");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-        .expect("test script должен стать executable");
+        .expect("The test script should be executable.");
     path
 }
 
@@ -44,7 +44,7 @@ fn recognized_error_line_becomes_reason_without_keeping_stderr_text() {
         "#!/bin/sh\nprintf 'WARNING: [youtube:tab] some entries are unavailable\\n' >&2\nprintf 'ERROR: [youtube] abc: Private video. Sign in https://x.invalid/?token=very-secret\\n' >&2\nexit 1\n",
     );
 
-    let output = run(&script).expect("process layer возвращает status вызывающему");
+    let output = run(&script).expect("process layer returns status to the caller");
     let _removed = fs::remove_file(&script);
 
     assert!(!output.status.success());
@@ -62,10 +62,10 @@ fn missing_executable_is_typed_not_found_instead_of_process_failure() {
         std::process::id()
     ));
 
-    let error = run(&missing_executable).expect_err("несуществующая программа не запускается");
+    let error = run(&missing_executable).expect_err("Non-existing program does not start");
 
     assert!(
         matches!(error, YtDlpTopologyError::ExecutableNotFound),
-        "ожидался ExecutableNotFound, получено: {error:?}"
+        "Expected ExecutableNotFound, received: {error:?}"
     );
 }

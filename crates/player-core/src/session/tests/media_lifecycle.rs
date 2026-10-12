@@ -13,7 +13,7 @@ fn active_seek_generation_is_rebased_after_track_list_update() {
         .unwrap();
     let seek_before_reset = session
         .seek_commit()
-        .expect("seek должен быть активен после accepted demux seek");
+        .expect("The request must be active after accepted demux seek.");
     let generation_before_reset = seek_before_reset.generation;
 
     session.handle_demux_track_list_update(DemuxTrackListUpdate::new(
@@ -23,7 +23,7 @@ fn active_seek_generation_is_rebased_after_track_list_update() {
 
     let seek_after_reset = session
         .seek_commit()
-        .expect("TracksChanged не должен закрывать active seek");
+        .expect("TracksChanged should not close active seek");
     assert_eq!(
         seek_after_reset.generation,
         session.pipeline.seek_generation()
@@ -74,9 +74,11 @@ fn active_seek_survives_tracks_changed_before_first_video_packet() {
     session
         .select_default_video_track(
             &initial_tracks,
-            "fake media lifecycle media содержит video track",
+            "fake media lifecycle media containing video track",
         )
-        .expect("fake media lifecycle video track должен получить fresh decode requirement");
+        .expect(
+            "Fake media lifecycle video track should be updated with a fresh decode requirement",
+        );
     session.set_snapshot_duration(Some(Duration::from_secs(30)));
     session.apply_demux_seekability(DemuxSeekability::Seekable);
     session.set_playback_state(PlaybackState::Paused);
@@ -92,7 +94,7 @@ fn active_seek_survives_tracks_changed_before_first_video_packet() {
         .unwrap();
     let generation_after_demux_seek = session
         .seek_commit()
-        .expect("accepted seek должен открыть commit")
+        .expect("Accepted seek must open commit")
         .generation;
 
     let demux_tick = session.tick(PlayerTickContext::with_config(
@@ -106,7 +108,7 @@ fn active_seek_survives_tracks_changed_before_first_video_packet() {
 
     let seek_after_reset = session
         .seek_commit()
-        .expect("post-reset packet ещё ждёт decoded target frame");
+        .expect("Post-reset packet still awaits decoded target frame");
     assert_eq!(demux_tick.demuxed_packets.len(), 1);
     assert_eq!(demux_tick.demuxed_packets[0].track_id, TrackId::new(3));
     assert_eq!(fake_decoder.sent_packets().len(), 1);
@@ -153,7 +155,7 @@ fn stale_packets_from_old_generation_are_dropped_after_track_list_update() {
         .unwrap();
     let stale_generation = session
         .seek_commit()
-        .expect("seek должен быть активен")
+        .expect("Seek must be active")
         .generation;
 
     session.handle_demux_track_list_update(DemuxTrackListUpdate::new(
@@ -405,7 +407,7 @@ fn failed_prepared_media_open_publishes_error_without_resetting_old_playback() {
             .snapshot()
             .last_error
             .as_ref()
-            .expect("open failure должен попасть в snapshot")
+            .expect("Open failure should be in snapshot.")
             .kind,
         PlayerErrorKind::DemuxError
     );
@@ -462,9 +464,9 @@ fn not_seekable_prepared_media_blocks_seek_transaction() {
         .snapshot()
         .last_error
         .as_ref()
-        .expect("blocked seek должен опубликовать user-facing error");
+        .expect("Blocked seek must publish user-facing error");
     assert_eq!(seek_error.kind, PlayerErrorKind::SeekUnavailable);
-    assert!(seek_error.message.contains("timeline не seekable"));
+    assert!(seek_error.message.contains("timeline not seekable"));
 
     let events = session.take_events();
     assert!(events.iter().any(|event| {
@@ -539,7 +541,7 @@ fn audio_only_play_and_tick_do_not_require_video_decoder() {
             session.snapshot().playback_state,
             PlaybackState::Playing | PlaybackState::Draining | PlaybackState::Ended
         ),
-        "audio-only tick должен сохранить playback lifecycle без video decoder, actual state: {:?}",
+        "audio-only tick should save playback lifecycle without video decoder, actual state: {:?}",
         session.snapshot().playback_state
     );
     assert_eq!(tick_result.demuxed_packets.len(), 1);
@@ -549,7 +551,7 @@ fn audio_only_play_and_tick_do_not_require_video_decoder() {
     assert_eq!(
         tick_result.demuxed_packets[0]
             .track_pts
-            .expect("tick telemetry должен сохранить raw PTS")
+            .expect("Tick telemetry should retain the raw PTS")
             .units
             .get(),
         480
@@ -557,7 +559,7 @@ fn audio_only_play_and_tick_do_not_require_video_decoder() {
     assert_eq!(
         tick_result.demuxed_packets[0]
             .track_dts
-            .expect("tick telemetry должен сохранить raw DTS")
+            .expect("Tick telemetry should retain raw DTS")
             .units
             .get(),
         480

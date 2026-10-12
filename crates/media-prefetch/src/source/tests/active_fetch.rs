@@ -90,11 +90,11 @@ impl ByteSource for ControlledStaleFailureSource {
             // Worker сообщает, что active fetch уже нельзя спутать с будущим refetch-ом.
             self.first_read_started_sender
                 .send(())
-                .expect("test должен ждать старта первого read-а");
+                .expect("The test must wait for the first read to start.");
             // Ожидание намеренно игнорирует cancellation и моделирует ordinary I/O failure.
             self.first_read_release_receiver
                 .recv_timeout(Duration::from_secs(1))
-                .expect("test должен освободить stale failure после seek-а");
+                .expect("The test should release stale failure after the seek");
             return Err(SourceError::UnexpectedEof {
                 offset: self.position,
                 expected_bytes: output.len(),
@@ -103,7 +103,8 @@ impl ByteSource for ControlledStaleFailureSource {
         }
 
         // Refetch читает bytes с позиции, установленной worker-owned seek path.
-        let start = usize::try_from(self.position).expect("test offset должен помещаться в usize");
+        let start =
+            usize::try_from(self.position).expect("The test offset must be placed in the usize");
         let returned_len = self.bytes.len().saturating_sub(start).min(output.len());
         output[..returned_len].copy_from_slice(&self.bytes[start..start + returned_len]);
         self.position = self.position.saturating_add(returned_len as u64);
@@ -157,7 +158,7 @@ fn empty_foreground_read_preserves_position_and_followup_bytes() {
     let mut output = [0; 4];
     let bytes_read = source
         .read(&mut output, &token())
-        .expect("обычное чтение после no-op должно пройти");
+        .expect("The usual post-no-op reading should be");
     assert_eq!(bytes_read, output.len());
     assert_eq!(output, bytes[..output.len()]);
 }
@@ -175,12 +176,12 @@ fn forward_seek_inside_active_fetch_coalesces_without_cancel_or_refetch() {
     assert_eq!(active_fetch.requested_len, 16);
     source
         .seek(20)
-        .expect("seek внутрь active fetch должен изменить только logical cursor");
+        .expect("Seek inward active fetch can only change the logical cursor");
 
     let mut output = [0_u8; 4];
     let bytes_read = source
         .read(&mut output, &token())
-        .expect("foreground read должен дождаться active fetch");
+        .expect("Foreground Read: Wait for the active fetch");
 
     assert_eq!(bytes_read, output.len());
     assert_eq!(output, bytes[20..24]);
@@ -213,15 +214,15 @@ fn superseded_out_of_window_seek_returns_to_buffer_without_duplicate_refetch() {
 
     source
         .seek(160)
-        .expect("seek за текущее окно должен стать pending");
+        .expect("The search for the current window should become pending.");
     source
         .seek(0)
-        .expect("возврат в сохранённое окно должен supersede-нуть pending seek");
+        .expect("The return to the saved window must be supersede pending seek.");
 
     let mut output = [0_u8; 4];
     let bytes_read = source
         .read(&mut output, &token())
-        .expect("foreground должен сразу переиспользовать исходное окно");
+        .expect("Foreground must immediately reuse the original window.");
 
     assert_eq!(bytes_read, output.len());
     assert_eq!(output, bytes[..output.len()]);
@@ -235,11 +236,11 @@ fn superseded_out_of_window_seek_returns_to_buffer_without_duplicate_refetch() {
             .filter(|record| record.offset == 0)
             .count(),
         1,
-        "начальный Range не должен скачиваться повторно"
+        "The initial Range should not be downloaded again."
     );
     assert!(
         !handle.seek_offsets().contains(&160),
-        "superseded seek не должен достигать inner source"
+        "superseded seek should not inner source"
     );
 }
 
@@ -258,20 +259,20 @@ fn stale_non_cancelled_failure_after_seek_is_discarded_before_refetch() {
     // Handoff доказывает, что последующий seek точно supersede-ит active fetch.
     first_read_started
         .recv_timeout(Duration::from_secs(1))
-        .expect("первый prefetch read должен стартовать до deadline");
+        .expect("The first prefetch read should start before the deadline.");
     source
         .seek(seek_offset)
-        .expect("seek за active fetch должен поставить новое окно");
+        .expect("Call for active fetch to provide a new window");
     // Ошибка возвращается worker-у только после публикации pending seek/cancellation.
     first_read_release
         .send(())
-        .expect("worker должен ждать release stale failure");
+        .expect("Worker waiting for release stale failure");
 
     // Успешный read доказывает, что stale error отброшена, а refetch дошёл до consumer-а.
     let mut output = [0; 8];
     let bytes_read = source
         .read(&mut output, &token())
-        .expect("stale ordinary error не должна стать foreground fatal error");
+        .expect("Stale common error should not be a foreground fatal error");
 
     // Consumer получает bytes именно из нового seek window.
     assert_eq!(bytes_read, output.len());
@@ -300,7 +301,7 @@ fn non_seekable_source_rejects_forward_seek_inside_active_fetch() {
     assert_eq!(active_fetch.requested_len, 16);
     let error = source
         .seek(20)
-        .expect_err("active fetch не должен обходить NotSeekable contract");
+        .expect_err("active fetch don't NotSeekable contract");
 
     assert!(matches!(error, SourceError::NotSeekable { .. }));
     assert_eq!(source.position(), 0);

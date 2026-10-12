@@ -36,7 +36,7 @@ def validate() -> list[str]:
     inventory = read_toml(INVENTORY_PATH)
     # Неизвестная схема должна обновляться осознанно вместе с checker-ом.
     if inventory.get("schema_version") != 1:
-        errors.append("docs/dependency-patches.toml: ожидается schema_version = 1")
+        errors.append("docs/dependency-patches.toml: expected schema_version = 1")
     # Нормализованный set упрощает точное сравнение standalone directories.
     excluded_paths = set(root_manifest.get("workspace", {}).get("exclude", []))
     # Members нужны для отдельной проверки принятого запрета normal workspace membership.
@@ -53,19 +53,19 @@ def validate() -> list[str]:
         for field in REQUIRED_FIELDS:
             # False также ловит пустую строку и пустой список.
             if not patch.get(field):
-                errors.append(f"{patch_path}: отсутствует непустое поле {field}")
+                errors.append(f"{patch_path}: missing nonempty field {field}")
         # Неполную запись дальше нельзя безопасно сопоставить с manifest.
         if not all(patch.get(field) for field in ("path", "package", "version")):
             continue
         # Standalone crate должен быть явно исключён из normal workspace membership.
         if patch_path not in excluded_paths:
-            errors.append(f"{patch_path}: путь отсутствует в workspace.exclude")
+            errors.append(f"{patch_path}: path is missing from workspace.exclude")
         # Принятое решение владельца прямо запрещает добавлять fork в members.
         if patch_path in workspace_members:
-            errors.append(f"{patch_path}: standalone patch запрещено добавлять в workspace.members")
+            errors.append(f"{patch_path}: standalone patch must not be added to workspace.members")
         # Повторный path является ошибкой inventory независимо от общего числа записей.
         if patch_path in inventoried_paths:
-            errors.append(f"{patch_path}: path повторяется в inventory")
+            errors.append(f"{patch_path}: duplicate path in inventory")
         # Первый occurrence запоминается для проверки следующих записей.
         inventoried_paths.add(patch_path)
         # На диске обязаны существовать самостоятельные manifest и lock-файл.
@@ -74,7 +74,7 @@ def validate() -> list[str]:
         for required_name in ("Cargo.toml", "Cargo.lock"):
             # Missing lock делает cargo test --locked невыполнимым.
             if not (patch_directory / required_name).is_file():
-                errors.append(f"{patch_path}: отсутствует {required_name}")
+                errors.append(f"{patch_path}: missing {required_name}")
         # Manifest identity должен совпадать с заменяемым registry package.
         # Missing manifest уже получил actionable ошибку и не должен вызывать traceback.
         if not (patch_directory / "Cargo.toml").is_file():
@@ -85,23 +85,23 @@ def validate() -> list[str]:
         package = patch_manifest.get("package", {})
         # Проверяем имя и версию без наследования workspace metadata.
         if package.get("name") != patch["package"] or package.get("version") != patch["version"]:
-            errors.append(f"{patch_path}: package name/version не совпадают с inventory")
+            errors.append(f"{patch_path}: package name/version does not match the inventory")
         # Точный root replace остаётся неизменным и указывает на тот же путь.
         replace_key = f'{patch["package"]}:{patch["version"]}'
         # Сравнение path не позволяет inventory описывать неактивный fork.
         if replacements.get(replace_key, {}).get("path") != patch_path:
-            errors.append(f"{patch_path}: root [replace] {replace_key} отсутствует или указывает не сюда")
+            errors.append(f"{patch_path}: root [replace] {replace_key} is missing or points elsewhere")
         # Registry checksum служит точной upstream revision опубликованного архива.
         if not patch["upstream_revision"].startswith("crates.io:sha256:"):
-            errors.append(f"{patch_path}: upstream_revision должна быть crates.io sha256 identity")
+            errors.append(f"{patch_path}: upstream_revision must be a crates.io sha256 identity")
         # Direct locked command обязана быть явно зафиксирована в test inventory.
         expected_command = f"cargo test --manifest-path {patch_path}/Cargo.toml --locked"
         # Точное совпадение предотвращает незаметный запуск через root workspace.
         if expected_command not in patch["focused_automated_tests"]:
-            errors.append(f"{patch_path}: отсутствует direct locked test command")
+            errors.append(f"{patch_path}: missing direct locked test command")
     # Ровно восемь записей защищают от удаления replace без обновления policy.
     if len(inventory.get("patch", [])) != 8:
-        errors.append("docs/dependency-patches.toml: ожидаются ровно восемь patch записей")
+        errors.append("docs/dependency-patches.toml: exactly eight patch records are expected")
     # Возвращаем полный набор нарушений вызывающему runner-у.
     return errors
 
@@ -112,12 +112,12 @@ def main() -> int:
     # Каждая ошибка получает одинаковый префикс для CI поиска.
     for error in errors:
         # stderr отделяет policy failures от success output.
-        print(f"Ошибка dependency patch inventory: {error}", file=sys.stderr)
+        print(f"Dependency patch inventory error: {error}", file=sys.stderr)
     # Ненулевой status блокирует CI только при найденных нарушениях.
     if errors:
         return 1
     # Короткое подтверждение показывает число проверенных forks.
-    print("Dependency patch inventory: проверены 8 standalone patch crates")
+    print("Dependency patch inventory: 8 standalone patch crates checked")
     # Ноль означает полное соответствие inventory и manifests.
     return 0
 

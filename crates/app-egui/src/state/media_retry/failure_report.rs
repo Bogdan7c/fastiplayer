@@ -16,7 +16,7 @@ use crate::state::{AppState, StrongMediaOpenError, StrongMediaOpenUserOutcome};
 use crate::web_open_message::web_open_failure_message;
 
 /// Начало текста для элемента очереди, имя которого в центре не показывается.
-const QUEUE_ITEM_FAILURE_PREFIX: &str = "Не удалось открыть элемент очереди";
+const QUEUE_ITEM_FAILURE_PREFIX: &str = "Cannot open the queue element.";
 
 impl AppState {
     /// Ошибка открытия локального файла (кнопка Open, drag & drop, повтор): «Не удалось
@@ -46,10 +46,7 @@ impl AppState {
             return;
         };
         let StrongMediaOpenUserOutcome::Failed(reason) = error.user_outcome() else {
-            debug!(
-                ?item_id,
-                "Ручное открытие не удалось без причины для показа"
-            );
+            debug!(?item_id, "Manual opening failed without reason to show");
             return;
         };
         let message = match reason {

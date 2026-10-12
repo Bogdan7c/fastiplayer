@@ -60,7 +60,7 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
     let decoder = SharedFakeVideoDecoderThread::new();
     let (resource_port, _) = FakeResourcePort::available(decoder.clone());
     let request_id = MediaInstallRequestId::from_non_zero(
-        NonZeroU64::new(1_902).expect("test request id должен быть non-zero"),
+        NonZeroU64::new(1_902).expect("test request id must be non-zero"),
     );
     let (receipt, install_port) = MediaInstallReceipt::new(request_id);
 
@@ -84,10 +84,10 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
     let staged_seek_commands = staged_seek_port
         .commands
         .lock()
-        .expect("staged command lock должен оставаться доступен")
+        .expect("Staged command lock is still available.")
         .clone();
     let [(staged_seek_request_id, staged_seek_request)] = staged_seek_commands.as_slice() else {
-        panic!("position preparation должна отправить ровно один staged demux seek");
+        panic!("Position preparation should send exactly one staged demux seek");
     };
     assert_eq!(staged_seek_request.timestamp, target_position);
     staged_seek_port.complete(
@@ -115,14 +115,14 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
         media_instance_id, ..
     } = receipt
         .try_take_completion()
-        .expect("authorization должна опубликовать Installed")
+        .expect("Authorization must be published by Installed")
     else {
-        panic!("успешный same-lineage candidate должен завершиться Installed");
+        panic!("A successful same-lineage candidate must complete an Installed");
     };
     let generation_before_track_update = session
         .seek_runtime
         .active_commit()
-        .expect("adopted staged position должна ждать decoder landing")
+        .expect("Adopted staged position awaits decoder landing")
         .generation;
 
     // Первый installed tick читает exact demux event без повторной смены generation.
@@ -140,7 +140,7 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
     let generation_after_track_update = session
         .seek_runtime
         .active_commit()
-        .expect("TracksChanged должен сохранить active adopted seek")
+        .expect("TrackChanged should keep active adopted seek")
         .generation;
     assert_eq!(
         generation_after_track_update,
@@ -164,7 +164,7 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
     assert_eq!(
         restore_rx.try_recv(),
         Err(crossbeam_channel::TryRecvError::Empty),
-        "receipt нельзя завершать до presentation commit-а текущей generation"
+        "receipt can't be completed presentation commit-current generation"
     );
 
     // Второй tick проводит target packet через обычный installed decoder admission.
@@ -200,7 +200,7 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
     assert_eq!(
         restore_rx
             .try_recv()
-            .expect("представленный target frame должен завершить rebased receipt"),
+            .expect("The submitted target frame must complete the rebased receipt"),
         InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
     );
     assert_eq!(session.snapshot().current_position, target_position);
@@ -212,14 +212,14 @@ fn staged_track_rebase_before_adoption_reaches_presented_frame_without_second_de
         staged_seek_port
             .commands
             .lock()
-            .expect("staged command lock должен оставаться доступен")
+            .expect("Staged command lock is still available.")
             .len(),
         1
     );
     assert!(
         demux_seek_log
             .lock()
-            .expect("demux seek log lock должен оставаться доступен")
+            .expect("Demux seek log lock is available.")
             .is_empty()
     );
 }

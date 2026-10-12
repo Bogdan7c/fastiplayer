@@ -39,7 +39,7 @@ pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAc
         ui.with_layout(Layout::top_down(egui::Align::Min), |ui| {
             let sections = section_list::sections_for_fields(&model.fields);
             if sections.is_empty() {
-                ui.label("Настройки недоступны");
+                ui.label("Settings unavailable");
                 return;
             }
             let selected_section = &sections[render_section_tabs(ui, &sections)];
@@ -175,7 +175,7 @@ fn render_section_header(
     ui.horizontal(|ui| {
         ui.heading(section_list::section_label(section));
         ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Сбросить экран").clicked() {
+            if ui.small_button("Reset panel").clicked() {
                 actions.push(section_list::reset_surface_action(&section.surface));
             }
         });
@@ -192,7 +192,7 @@ fn render_group_header(
     ui.horizontal(|ui| {
         ui.heading(group.as_str());
         ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Сбросить группу").clicked() {
+            if ui.small_button("Reset group").clicked() {
                 actions.push(reset_group_action(section, group));
             }
         });
@@ -206,12 +206,11 @@ fn render_footer(
     actions: &mut Vec<SettingsUiAction>,
 ) {
     ui.horizontal(|ui| {
-        if let Some(action) = reset_all_action_for_button(ui.button("Сбросить всё").clicked())
-        {
+        if let Some(action) = reset_all_action_for_button(ui.button("Reset all").clicked()) {
             actions.push(action);
         }
 
-        if ui.button("Отмена").clicked() {
+        if ui.button("Cancel").clicked() {
             actions.push(SettingsUiAction::Cancel);
         }
 
@@ -225,7 +224,7 @@ fn render_footer(
             }
 
             if let Some(action) = apply_action_for_button(
-                ui.add_enabled(command_state.can_apply(), Button::new("Применить"))
+                ui.add_enabled(command_state.can_apply(), Button::new("Apply"))
                     .clicked(),
                 command_state,
             ) {

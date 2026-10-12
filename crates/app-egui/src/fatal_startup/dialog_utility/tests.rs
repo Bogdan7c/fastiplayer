@@ -9,7 +9,7 @@ use crate::fatal_startup::presentation::{FatalNoticeChannel, NoticeChannelFailur
 
 fn notice() -> FatalStartupNotice {
     FatalStartupNotice {
-        title: "Fastiplayer не запустился",
+        title: "Fastiplayer could not start",
         message: "Нет Vulkan <драйвера> & окна\nвторая строка".to_owned(),
     }
 }
@@ -76,7 +76,7 @@ fn kdialog_receives_title_and_error_text_as_separate_arguments() {
         recorded_arguments(&arguments_log),
         [
             "--title",
-            "Fastiplayer не запустился",
+            "Fastiplayer could not start",
             "--error",
             "Нет Vulkan <драйвера> & окна\nвторая строка",
         ]
@@ -96,7 +96,7 @@ fn zenity_disables_markup_so_text_is_shown_verbatim() {
             "--error",
             "--no-markup",
             "--title",
-            "Fastiplayer не запустился",
+            "Fastiplayer could not start",
             "--text",
             "Нет Vulkan <драйвера> & окна\nвторая строка",
         ]

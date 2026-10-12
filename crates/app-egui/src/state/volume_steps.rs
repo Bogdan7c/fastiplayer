@@ -66,7 +66,7 @@ impl AppState {
             return;
         };
         if let Err(error) = self.player_worker.try_send_command(command) {
-            warn!(error = %error, "Не удалось изменить громкость шагом из UI");
+            warn!(error = %error, "Failed to change the volume with a step from the UI");
         } else {
             self.mark_pending_worker_redraw();
         }

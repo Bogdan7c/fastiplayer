@@ -38,7 +38,7 @@ pub(super) fn globalize_packet_timestamp(
     timestamp
         .checked_sub(media_time_origin)
         .ok_or_else(|| {
-            anyhow::anyhow!("DASH packet {timestamp_name} предшествует proven media origin")
+            anyhow::anyhow!("DASH packet {timestamp_name} precedes proven media origin")
         })?
         .checked_add(period_timeline_start)
         .ok_or_else(|| anyhow::anyhow!("DASH global packet {timestamp_name} overflow"))
@@ -73,7 +73,7 @@ fn ordered_resource_start(
             .filter(|resource| resource.kind == DashSerializedFragmentKind::Media)
             .nth(first_media_index)
             .and_then(|resource| resource.timeline_start)
-            .ok_or_else(|| anyhow::anyhow!("DASH media fragment index отсутствует")),
+            .ok_or_else(|| anyhow::anyhow!("DASH media fragment index not available")),
         DashPeriodInputPlan::Range { .. } => Ok(Duration::ZERO),
     }
 }

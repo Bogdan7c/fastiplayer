@@ -58,7 +58,7 @@ impl HermeticFixtureDirectory {
 impl Drop for HermeticFixtureDirectory {
     fn drop(&mut self) {
         if let Err(error) = fs::remove_dir_all(&self.path) {
-            eprintln!("не удалось удалить N03 hermetic fixture: {error}");
+            eprintln!("N03 hermetic fixture failed to be removed: {error}");
         }
     }
 }
@@ -220,9 +220,8 @@ printf '%s\n' '{"title":"HTML page title","duration":12,"is_live":false,"live_st
 
 /// Собирает production Rust sources, исключая отдельные test modules.
 fn collect_production_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
-    for entry in fs::read_dir(directory).expect("service source directory должна читаться")
-    {
-        let path = entry.expect("service source entry должна читаться").path();
+    for entry in fs::read_dir(directory).expect("service source directory should read") {
+        let path = entry.expect("service source entry should read").path();
         if path.is_dir() {
             collect_production_rust_sources(&path, sources);
         } else if path.extension().is_some_and(|extension| extension == "rs")
@@ -245,10 +244,10 @@ fn production_process_spawn_entrypoints_match_exact_injected_owner_allowlist() {
     for source_path in rust_sources {
         let relative_path = source_path
             .strip_prefix(&source_root)
-            .expect("collected service source обязан быть внутри src")
+            .expect("The collected service source must be inside the src")
             .to_string_lossy()
             .replace('\\', "/");
-        let source = fs::read_to_string(&source_path).expect("service Rust source должен читаться");
+        let source = fs::read_to_string(&source_path).expect("service Rust source should read");
         let direct_spawn_count = source.matches(".spawn()").count();
         direct_spawn_sources.extend(std::iter::repeat_n(
             relative_path.clone(),

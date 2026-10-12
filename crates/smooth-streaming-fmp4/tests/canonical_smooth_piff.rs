@@ -62,7 +62,7 @@ fn xml_budgets() -> XmlBudgets {
         .maximum_namespace_bytes(1_024)
         .maximum_text_bytes(8 * 1024)
         .build()
-        .expect("test XML budgets полны")
+        .expect("XML test budgets are complete")
 }
 
 /// Manifest budgets покрывают corpus, но не являются production defaults.
@@ -83,7 +83,7 @@ fn manifest_limits() -> SmoothManifestLimits {
         .maximum_custom_attribute_name_bytes(64)
         .maximum_custom_attribute_value_bytes(128)
         .build()
-        .expect("test manifest budgets полны")
+        .expect("test manifest budgets full")
 }
 
 /// Парсит caller-provided document через exact parser fixture.
@@ -93,7 +93,7 @@ fn parse_manifest(document: &[u8]) -> SmoothManifest {
         xml_budgets: xml_budgets(),
         limits: manifest_limits(),
     })
-    .expect("канонический Smooth manifest должен парситься")
+    .expect("Canonical Smooth manifest must be parsed")
 }
 
 /// Находит stream и quality по kind/bitrate, не предполагая video-first ordering.
@@ -123,7 +123,7 @@ fn selection_for(
                 })
             })
         })
-        .expect("fixture stream/quality должен существовать")
+        .expect("fixture stream/quality should be available.")
 }
 
 /// Обязательные F1 init budgets передаются каждым caller-ом явно.
@@ -132,7 +132,7 @@ fn initialization_limits() -> FragmentInitializationLimits {
         .maximum_output_bytes(16 * 1024)
         .maximum_codec_configuration_bytes(4 * 1024)
         .build()
-        .expect("test init budgets полны")
+        .expect("test init budgets full")
 }
 
 /// Обязательные F1 inspection budgets передаются без adapter defaults.
@@ -147,12 +147,12 @@ fn inspection_limits() -> FragmentInspectionLimits {
         .max_sample_table_bytes(256 * 1024)
         .max_box_payload_bytes(512 * 1024)
         .build()
-        .expect("test inspection budgets полны")
+        .expect("test inspection budgets full")
 }
 
 /// Обязательный F1 write budget.
 fn write_limits() -> FragmentWriteLimits {
-    FragmentWriteLimits::try_new(512 * 1024).expect("test write budget ненулевой")
+    FragmentWriteLimits::try_new(512 * 1024).expect("test-write the non-zero budget")
 }
 
 /// Ищет ISO box по type в каноническом init output.
@@ -169,7 +169,7 @@ fn box_start(bytes: &[u8], box_type: [u8; 4]) -> usize {
             (size >= 8 && start.checked_add(size)? <= bytes.len()).then_some(start)
         })
         .next_back()
-        .expect("ожидаемый ISO box должен существовать")
+        .expect("The expected ISO box should exist.")
 }
 
 /// Читает big-endian `u32`.
@@ -177,7 +177,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
     u32::from_be_bytes(
         bytes[offset..offset + 4]
             .try_into()
-            .expect("test field помещается в input"),
+            .expect("test field fit in input"),
     )
 }
 
@@ -195,7 +195,7 @@ fn video_mapping_and_initialization_are_exact_and_deterministic() {
             selection_for(&manifest, SmoothStreamKind::Video, bitrate),
             &not_cancelled,
         ))
-        .expect("video mapping должен пройти");
+        .expect("video mapping must pass");
         assert_eq!(track.identity().media_kind(), SmoothTrackMediaKind::Video);
         assert_eq!(track.identity().bitrate().get(), bitrate);
         assert_eq!(track.timescale_ticks_per_second(), 10_000_000);
@@ -205,13 +205,13 @@ fn video_mapping_and_initialization_are_exact_and_deterministic() {
             &init_limits,
             &not_cancelled,
         ))
-        .expect("video init должен собраться");
+        .expect("video init should be packed");
         let second = build_smooth_initialization_segment(SmoothInitializationRequest::new(
             &track,
             &init_limits,
             &not_cancelled,
         ))
-        .expect("повторный video init должен собраться");
+        .expect("Repeated video init should be assembled");
         assert_eq!(
             first.initialization_segment_bytes(),
             second.initialization_segment_bytes()
@@ -249,7 +249,7 @@ fn mapped_video_and_audio_expose_authoritative_reconstructed_track_id() {
             selection_for(&manifest, media_kind, bitrate),
             &not_cancelled,
         ))
-        .expect("canonical track mapping должен пройти");
+        .expect("canonical track mapping must pass");
 
         assert_eq!(track.reconstructed_track_id().get(), 1);
     }
@@ -274,7 +274,7 @@ fn audio_mapping_preserves_explicit_and_derived_manifest_asc() {
             .expect("audio stream");
         let audio_quality = match &audio_stream.qualities()[0] {
             SmoothQualityLevel::Audio(audio) => audio,
-            SmoothQualityLevel::Video(_) => panic!("audio stream обязан содержать audio quality"),
+            SmoothQualityLevel::Video(_) => panic!("Audio stream must contain audio quality"),
         };
         assert_eq!(audio_quality.codec_configuration().as_bytes(), [0x11, 0x90]);
         assert_eq!(audio_quality.sampling_rate().get(), 48_000);
@@ -291,13 +291,13 @@ fn audio_mapping_preserves_explicit_and_derived_manifest_asc() {
             selection_for(manifest, SmoothStreamKind::Audio, 64_008),
             &not_cancelled,
         ))
-        .expect("audio mapping должен пройти");
+        .expect("audio mapping must pass");
         let initialization = build_smooth_initialization_segment(SmoothInitializationRequest::new(
             &track,
             &init_limits,
             &not_cancelled,
         ))
-        .expect("audio init должен собраться");
+        .expect("audio init should be packed");
         let bytes = initialization.initialization_segment_bytes();
         let tkhd = box_start(bytes, *b"tkhd");
         let mdhd = box_start(bytes, *b"mdhd");
@@ -311,7 +311,7 @@ fn audio_mapping_preserves_explicit_and_derived_manifest_asc() {
         assert_eq!(read_u32(bytes, mp4a + 32), 48_000 << 16);
         assert!(
             bytes.windows(2).any(|window| window == [0x11, 0x90]),
-            "init обязан содержать exact manifest ASC"
+            "init must contain exact manifest ASC"
         );
     }
 }
@@ -350,13 +350,13 @@ fn reversed_canonical_sps_pps_order_is_accepted() {
         selection_for(&manifest, SmoothStreamKind::Video, 401_000),
         &not_cancelled,
     ))
-    .expect("reversed SPS/PPS mapping должен пройти");
+    .expect("reversed SPS/PPS mapping must succeed");
     build_smooth_initialization_segment(SmoothInitializationRequest::new(
         &track,
         &initialization_limits(),
         &not_cancelled,
     ))
-    .expect("reversed SPS/PPS init должен собраться");
+    .expect("reversed SPS/PPS initialization must build");
 }
 
 /// План строит exact path/window и сохраняет исчерпывающий video/audio kind.
@@ -405,19 +405,19 @@ fn fragment_plans_render_exact_paths_and_windows() {
             selection_for(&manifest, kind, bitrate),
             &not_cancelled,
         ))
-        .expect("mapping должен пройти");
+        .expect("mapping must succeed");
         let first = plan_smooth_fragment(SmoothFragmentPlanRequest::new(
             &track,
             SmoothFragmentIndex::new(index),
             &not_cancelled,
         ))
-        .expect("plan должен собраться");
+        .expect("plan must build");
         let second = plan_smooth_fragment(SmoothFragmentPlanRequest::new(
             &track,
             SmoothFragmentIndex::new(index),
             &not_cancelled,
         ))
-        .expect("повторный plan должен собраться");
+        .expect("repeated plan must build");
         assert_eq!(first.identity().media_kind(), expected_media_kind);
         assert_eq!(second.identity().media_kind(), expected_media_kind);
         assert_eq!(
@@ -478,9 +478,9 @@ fn canonical_fragments_follow_exact_admission_matrix() {
             write_limits(),
             &not_cancelled,
         ))
-        .expect("exact video должен admission");
+        .expect("exact video must pass admission");
         let SmoothReconstructedFragment::Admitted(fragment) = outcome else {
-            panic!("video exact обязан быть admitted");
+            panic!("exact video must be admitted");
         };
         assert_eq!(
             (
@@ -522,7 +522,7 @@ fn canonical_fragments_follow_exact_admission_matrix() {
             write_limits(),
             &not_cancelled,
         ))
-        .expect("audio overhang должен стать pending");
+        .expect("audio overhang must become pending");
         let second = reconstruct_smooth_fragment(SmoothFragmentReconstructionRequest::new(
             input,
             &plan,
@@ -530,12 +530,12 @@ fn canonical_fragments_follow_exact_admission_matrix() {
             write_limits(),
             &not_cancelled,
         ))
-        .expect("повторный audio reconstruction должен пройти");
+        .expect("repeated audio reconstruction must succeed");
         let SmoothReconstructedFragment::PendingAudioPresentationWindow(first) = first else {
-            panic!("audio overhang обязан требовать exact clipping");
+            panic!("audio overhang must require exact clipping");
         };
         let SmoothReconstructedFragment::PendingAudioPresentationWindow(second) = second else {
-            panic!("audio overhang обязан детерминированно оставаться pending");
+            panic!("audio overhang must deterministically remain pending");
         };
         assert_eq!(
             (
@@ -563,7 +563,7 @@ fn canonical_fragments_follow_exact_admission_matrix() {
         assert_eq!(
             first.identity().media_kind(),
             SmoothTrackMediaKind::Audio,
-            "pending path доступен только audio plan state"
+            "pending path is available only for audio plan state"
         );
         assert_eq!(first.identity(), track.identity());
         assert_eq!(
@@ -602,9 +602,9 @@ fn audio_subsample_underrun_requires_bounded_window_but_larger_gap_fails() {
         write_limits(),
         &not_cancelled,
     ))
-    .expect("subsample audio underrun должен сохранить exact presentation proof");
+    .expect("subsample audio underrun must preserve exact presentation proof");
     let SmoothReconstructedFragment::PendingAudioPresentationWindow(pending) = reconstructed else {
-        panic!("subsample audio underrun обязан требовать bounded presentation window");
+        panic!("subsample audio underrun must require a bounded presentation window");
     };
     assert_eq!(
         pending.adjustment(),
@@ -625,7 +625,7 @@ fn audio_subsample_underrun_requires_bounded_window_but_larger_gap_fails() {
         write_limits(),
         &not_cancelled,
     ))
-    .expect_err("audio underrun размером не меньше PCM frame должен быть отвергнут");
+    .expect_err("audio underrun of at least one PCM frame must be rejected");
     assert!(matches!(
         error,
         SmoothFragmentReconstructionError::Underrun { missing_ticks }
@@ -642,7 +642,7 @@ fn media_box_start(bytes: &[u8], box_type: [u8; 4]) -> usize {
 fn adjust_last_trun_duration(bytes: &mut [u8], delta: i32) {
     let trun = media_box_start(bytes, *b"trun");
     let flags = read_u32(bytes, trun + 8) & 0x00ff_ffff;
-    assert_ne!(flags & 0x000100, 0, "fixture обязан иметь sample duration");
+    assert_ne!(flags & 0x000100, 0, "fixture must have a sample duration");
     let sample_count = usize::try_from(read_u32(bytes, trun + 12)).unwrap();
     let mut rows_start = trun + 16;
     if flags & 0x000001 != 0 {
@@ -720,7 +720,7 @@ fn classifier_rejects_underrun_video_overhang_and_start_mismatch() {
         write_limits(),
         &not_cancelled,
     ))
-    .expect_err("underrun должен быть отвергнут");
+    .expect_err("underrun must be rejected");
     assert!(matches!(
         error,
         SmoothFragmentReconstructionError::Underrun { missing_ticks }
@@ -736,7 +736,7 @@ fn classifier_rejects_underrun_video_overhang_and_start_mismatch() {
         write_limits(),
         &not_cancelled,
     ))
-    .expect_err("video overhang должен быть отвергнут");
+    .expect_err("video overhang must be rejected");
     assert!(matches!(
         error,
         SmoothFragmentReconstructionError::VideoOverhang { excess_ticks }
@@ -752,7 +752,7 @@ fn classifier_rejects_underrun_video_overhang_and_start_mismatch() {
         write_limits(),
         &not_cancelled,
     ))
-    .expect_err("tfdt mismatch должен быть отвергнут");
+    .expect_err("tfdt mismatch must be rejected");
     assert!(matches!(
         error,
         SmoothFragmentReconstructionError::StartMismatch {
@@ -824,7 +824,7 @@ fn stages_honor_cancellation_budgets_and_redaction() {
         &tiny_init_limits,
         &not_cancelled,
     ))
-    .expect_err("tiny init budget должен сработать");
+    .expect_err("tiny initialization budget must be enforced");
     assert!(matches!(
         error,
         SmoothInitializationError::Contract(
@@ -853,7 +853,7 @@ fn stages_honor_cancellation_budgets_and_redaction() {
         write_limits(),
         &not_cancelled,
     ))
-    .expect_err("tiny inspection budget должен сработать");
+    .expect_err("tiny inspection budget must be enforced");
     assert!(matches!(
         error,
         SmoothFragmentReconstructionError::Inspection(
@@ -880,7 +880,7 @@ fn mapped_track_identity_is_exact_and_debug_hides_codec_bytes() {
         selection_for(&manifest, SmoothStreamKind::Video, 401_000),
         &not_cancelled,
     ))
-    .expect("video mapping должен пройти");
+    .expect("video mapping must pass");
     assert_eq!(track.identity().stream_ordinal(), selection.stream_ordinal);
     assert_eq!(track.identity().quality_index(), selection.quality_index);
 

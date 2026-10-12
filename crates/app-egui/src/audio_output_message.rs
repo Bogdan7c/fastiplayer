@@ -12,16 +12,16 @@ use player_core::AudioOutputSwitchReason;
 
 /// Текст, когда звук не удалось вывести ни на одно устройство.
 pub(crate) const AUDIO_OUTPUT_UNAVAILABLE_MESSAGE: &str =
-    "Звук недоступен: не удалось открыть устройство вывода. Видео воспроизводится без звука";
+    "Audio is unavailable: could not open the output device. Video is playing without sound";
 
 /// Формулирует уведомление о переходе звука на устройство по умолчанию.
 pub(crate) fn audio_output_switch_message(reason: &AudioOutputSwitchReason) -> String {
     match reason {
-        AudioOutputSwitchReason::SelectedDeviceUnavailable { device_name } => format!(
-            "Звуковое устройство «{device_name}» недоступно — звук идёт на устройство по умолчанию"
-        ),
+        AudioOutputSwitchReason::SelectedDeviceUnavailable { device_name } => {
+            format!("Audio device “{device_name}” is unavailable; using the default device")
+        }
         AudioOutputSwitchReason::ActiveDeviceStopped => {
-            "Звуковое устройство отключено — звук переключён на устройство по умолчанию".to_string()
+            "Audio device disconnected; switched to the default device".to_string()
         }
     }
 }
@@ -39,7 +39,7 @@ mod tests {
 
         assert_eq!(
             message,
-            "Звуковое устройство «USB Headset» недоступно — звук идёт на устройство по умолчанию"
+            "Audio device “USB Headset” is unavailable; using the default device"
         );
     }
 
@@ -47,7 +47,7 @@ mod tests {
     fn unplugged_device_message_says_where_sound_went() {
         let message = audio_output_switch_message(&AudioOutputSwitchReason::ActiveDeviceStopped);
 
-        assert!(message.contains("отключено"), "{message}");
-        assert!(message.contains("устройство по умолчанию"), "{message}");
+        assert!(message.contains("disconnected"), "{message}");
+        assert!(message.contains("default device"), "{message}");
     }
 }

@@ -216,7 +216,7 @@ def complete_seek(
                     if include_pre_target_proof
                     else ""
                 )
-                + "Final seek commit завершён",
+                + "Final seek commit completed",
             ),
         ]
     )
@@ -461,13 +461,13 @@ class PlaybackAcceptanceAnalyzerTests(unittest.TestCase):
             1, 100, 0, 60_000, 100, process_ready_base_ms=200
         )
         commit_index = next(
-            index for index, line in enumerate(lines) if "Final seek commit завершён" in line
+            index for index, line in enumerate(lines) if "Final seek commit completed" in line
         )
         lines.pop(commit_index)
         commit_line = log_line(
             150,
             "generation=1 target_ms=60000 committed_ms=60000 "
-            "presented_pre_target_frames=0 Final seek commit завершён",
+            "presented_pre_target_frames=0 Final seek commit completed",
         )
         presented_index = next(
             index
@@ -1403,7 +1403,7 @@ class PlaybackAcceptanceAnalyzerTests(unittest.TestCase):
                 122,
                 "generation=7 target_ms=60000 actual_ms=60033 committed_ms=60000 "
                 "presented_pre_target_frames=0 public_to_commit_ms=22 "
-                "Final seek commit завершён",
+                "Final seek commit completed",
             ),
             log_line(
                 123,
@@ -1674,7 +1674,7 @@ class PlaybackAcceptanceAnalyzerTests(unittest.TestCase):
             log_line(
                 1100,
                 "generation=1 target_ms=355000 actual_ms=350033 "
-                "Final seek commit остановлен по timeout",
+                "Final seek commit stopped on timeout",
             ),
         ]
 

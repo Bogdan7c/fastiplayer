@@ -85,7 +85,7 @@ fn sensitive_preflight_does_not_touch_target_before_confirmation() {
         ..
     } = completion
     else {
-        panic!("sensitive URL обязан ждать aggregated confirmation");
+        panic!("Sensitive URL must wait for aggregated confirmation");
     };
     assert_eq!(locator_count, 1);
     assert_eq!(
@@ -279,7 +279,10 @@ fn stale_generation_and_conflicting_writer_cannot_mutate_current_job() {
         generation: 2,
         job: Some(stale_job),
     };
-    assert!(owner.drain().is_none(), "stale terminal обязан подавляться");
+    assert!(
+        owner.drain().is_none(),
+        "The stale terminal must be suppressed."
+    );
 
     owner.job = Some(
         PlaylistExportJob::spawn_runner(wake_port(), 2, "export-conflict-test", |_| {

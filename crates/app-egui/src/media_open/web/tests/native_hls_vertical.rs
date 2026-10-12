@@ -136,7 +136,7 @@ impl ControlledHlsServer {
     /// Строит exact HTTP target локального route-а.
     pub(super) fn target(&self, path: &str) -> source_core::HttpRequestTarget {
         source_core::HttpRequestTarget::parse_exact(format!("http://{}{path}", self.address))
-            .expect("валидный N07 HTTP target")
+            .expect("valid N07 HTTP target")
     }
 
     /// Возвращает точное число GET-ов выбранного route-а.
@@ -177,14 +177,17 @@ fn read_request_path(stream: &mut TcpStream) -> String {
     let mut chunk = [0_u8; 1_024];
     loop {
         let read = stream.read(&mut chunk).expect("read N07 HLS request");
-        assert!(read > 0, "N07 HTTP request оборвался до конца headers");
+        assert!(
+            read > 0,
+            "N07 HTTP request terminated before the end of headers"
+        );
         request_bytes.extend_from_slice(&chunk[..read]);
         if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
             break;
         }
     }
     String::from_utf8(request_bytes)
-        .expect("N07 request обязан быть UTF-8 HTTP")
+        .expect("N07 request must be UTF-8 HTTP")
         .lines()
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
@@ -225,7 +228,7 @@ fn master_manifest(fmp4_first: bool) -> Vec<u8> {
 pub(super) fn decode_fixture(encoded: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
         .decode(encoded.split_whitespace().collect::<String>())
-        .expect("N07 fixture должен быть валидным base64")
+        .expect("N07 fixture must be a valid base64")
 }
 
 /// Собирает immutable loopback routes для root, TS и fMP4 вариантов.
@@ -274,7 +277,7 @@ pub(super) fn fixture_routes() -> HashMap<String, Vec<Vec<u8>>> {
 
 /// Capability snapshot описывает ровно тот H.264 baseline contract, который декодирует fixture.
 fn h264_system_capabilities() -> SystemCapabilities {
-    let backend_id = DecodeBackendId::new("nseven_h").expect("валидный backend ID");
+    let backend_id = DecodeBackendId::new("nseven_h").expect("valid backend ID");
     let output = SupportedVideoOutput {
         backend: backend_id.clone(),
         decode_format: SupportedVideoDecodeFormat {
@@ -342,11 +345,12 @@ pub(super) fn prepare_native(
         start,
         cancellation: CancellationToken::new(),
     });
-    match NativeHlsAdmissionPort::prepare(&mut port).expect("native HLS admission должен пройти")
+    match NativeHlsAdmissionPort::prepare(&mut port)
+        .expect("Native HLS admission must be completed.")
     {
         NativeHlsAttempt::Prepared(prepared) => prepared,
         NativeHlsAttempt::RequiresExtractorFallback(trigger) => {
-            panic!("валидный N07 HLS VOD не имеет права требовать extractor: {trigger:?}")
+            panic!("Valid N07 HLS VOD is not eligible to require extractor: {trigger:?}")
         }
     }
 }
@@ -388,13 +392,13 @@ fn assert_decoder_render_audio_samples(
         .iter()
         .find(|track| track.kind == TrackKind::Video)
         .cloned()
-        .expect("native HLS variant должен публиковать video track");
+        .expect("The native HLS variant should publish a video track.");
     let audio_track = demuxer
         .tracks()
         .iter()
         .find(|track| track.kind == TrackKind::Audio)
         .cloned()
-        .expect("native HLS variant должен публиковать audio track");
+        .expect("The native HLS variant should publish the audio track");
     let (video_decoder, renderer_provider) =
         open_decoder(&video_track, wgpu_harness.queue(), video_codec);
     let materializer = HostPlanarWgpuFrameMaterializer::new(
@@ -405,13 +409,16 @@ fn assert_decoder_render_audio_samples(
     let audio_factory = ProductionAudioDecoderFactory::default();
     let mut audio_decoder = audio_factory
         .create_decoder(decoder_config_from_track(&audio_track))
-        .expect("production AAC decoder должен принять native HLS track");
+        .expect("Production AAC decoder to adopt native HLS track");
     let deadline = Instant::now() + VERTICAL_DEADLINE;
     let mut decoded_video_frames = Vec::new();
     let mut decoded_audio_batches = 0_usize;
 
     while decoded_video_frames.len() < minimum_samples || decoded_audio_batches < minimum_samples {
-        match demuxer.next_event().expect("читать native HLS demux event") {
+        match demuxer
+            .next_event()
+            .expect("Read more about the local HLS demux event")
+        {
             DemuxReadEvent::Packet(packet) if packet.track_id == video_track.id => {
                 for decoded_frame in decode_packet(video_decoder.as_ref(), packet) {
                     if decoded_video_frames.len() < minimum_samples {
@@ -429,7 +436,7 @@ fn assert_decoder_render_audio_samples(
                 );
                 let decoded_samples = audio_decoder
                     .decode(&encoded_packet)
-                    .expect("production AAC decoder должен декодировать native HLS packet");
+                    .expect("Production AAC decoder must decode native HLS packet");
                 if !decoded_samples.is_empty() {
                     assert_pcm_advances_clock(
                         &decoded_samples,
@@ -446,7 +453,7 @@ fn assert_decoder_render_audio_samples(
                 thread::sleep(DemuxRetryHint::MIN_RETRY_AFTER);
             }
             DemuxReadEvent::TemporarilyUnavailable(hint) => {
-                panic!("native HLS vertical превысил readiness deadline: {hint:?}")
+                panic!("Native HLS vertical exceeds readiness deadline: {hint:?}")
             }
             DemuxReadEvent::EndOfStream => {
                 if decoded_video_frames.len() < minimum_samples {
@@ -454,7 +461,7 @@ fn assert_decoder_render_audio_samples(
                 }
                 assert!(
                     decoded_audio_batches >= minimum_samples,
-                    "native HLS достиг EOS до требуемого числа AAC PCM batches"
+                    "native HLS reaches EOS to the required number of AAC PCM batches"
                 );
             }
         }
@@ -491,12 +498,12 @@ pub(super) fn alternate_component_selection(
         },
     ) = stream_configuration.component_variant_projection()
     else {
-        panic!("native HLS master должен публиковать coupled TS/fMP4 catalog");
+        panic!("Native HLS master publishes coupled TS/fMP4 catalog");
     };
     assert_eq!(
         coupled.variants.len(),
         2,
-        "catalog обязан содержать обе строки"
+        "The catalog must contain both lines."
     );
     let alternate_index = usize::from(coupled.active_index == 0);
     let resolution = stream_configuration
@@ -506,9 +513,9 @@ pub(super) fn alternate_component_selection(
             axis: WebMediaComponentVariantAxisKind::Coupled,
             variant_index: alternate_index,
         })
-        .expect("fresh component action должен разрешиться");
+        .expect("Fresh component action must be allowed");
     let ComponentVariantActionResolution::SemanticReopen(selection) = resolution else {
-        panic!("alternate row не должна разрешаться как NoChange");
+        panic!("The alternate row should not be resolved as NoChange.");
     };
     (coupled.active_index, alternate_index, selection)
 }
@@ -527,7 +534,7 @@ pub(super) fn native_request_parts(
         settings,
     } = request.into_adapter()
     else {
-        panic!("native action обязан остаться native semantic request-ом");
+        panic!("native action must remain a native semantic request");
     };
     (source, selection, settings)
 }
@@ -562,7 +569,7 @@ fn n14a_consumer_hls_vod_ts_and_fmp4_reach_consumers_with_exact_accounting() {
             settings.clone(),
         )
     else {
-        panic!("N14A TS row должна создать exact native selection request");
+        panic!("N14A TS row to create exact native selection request");
     };
     let (ts_source, ts_selection, ts_settings) = native_request_parts(ts_request);
     let mut ts_media = prepare_native(
@@ -596,7 +603,7 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
     assert_eq!(
         server.request_count("/master.m3u8"),
         0,
-        "syntactic HLS classifier не должен fetch-ить root до open"
+        "syntactic HLS classifier shouldn't fetch-ooze root before open"
     );
     let stable_source_identity = source.source_identity();
     let mut wgpu_harness = OffscreenWgpuHarness::new();
@@ -608,9 +615,9 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
         alternate_component_selection(&initial.source_state);
     assert_eq!(
         initial_index, 1,
-        "higher-bandwidth fMP4 row должна быть provider default"
+        "higher-bandwidth fMP4 row must have provider default"
     );
-    assert_eq!(alternate_index, 0, "switch должен выбрать TS row");
+    assert_eq!(alternate_index, 0, "switch must choose TS row");
     let expected_ts_selection = alternate_selection.clone();
     let initial_intent = WebMediaSourceIntent::native_hls(
         source.clone(),
@@ -627,7 +634,7 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
             settings.clone(),
         )
     else {
-        panic!("fresh native component action обязан запустить exact same-item switch");
+        panic!("Fresh native action component: Just same-item switch");
     };
     let (switch_source, switch_selection, switch_settings) = native_request_parts(switch_request);
     let mut switched = prepare_native(
@@ -642,7 +649,7 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
             switched.vod_initial_position(),
             Some(PreparedInitialPosition::PositionedAt { .. })
         ),
-        "switch должен вернуть authoritative seek receipt: {:?}",
+        "switch should be returned authoritative seek receipt: {:?}",
         switched.vod_initial_position()
     );
     assert_decoder_render_audio(switched.demuxer.as_mut(), &mut wgpu_harness);
@@ -653,18 +660,18 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
         .stream_configuration()
         .component_variant_projection()
     else {
-        panic!("switched source должен сохранить coupled catalog");
+        panic!("Switched source should save coupled catalog");
     };
     assert_eq!(coupled.variants.len(), 2);
     let web_media_core::WebMediaSelectionShape::Components(switched_components) =
         switched.source_state.neutral_selection().shape()
     else {
-        panic!("switched native selection должна сохранить component shape");
+        panic!("Switched native selection retains the component shape");
     };
     assert_eq!(
         switched_components.semantic_rematch_request(),
         expected_ts_selection,
-        "switch должен semantic-rematch TS после перестановки master rows"
+        "switch must semantic-rematch TS post-shift master rows"
     );
     assert_eq!(
         switched
@@ -674,7 +681,7 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
             .exact()
             .source(),
         stable_source_identity,
-        "switch обязан сохранить stable source lineage"
+        "switch retain stable source lineage"
     );
 
     let switched_intent = WebMediaSourceIntent::native_hls(
@@ -688,7 +695,7 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
             switch_settings.demux_config,
             Some(switch_settings.clone()),
         )
-        .expect("native controlled reopen требует semantic rematch");
+        .expect("Native controlled reopen requires semantic rematch");
     let (reopen_source, reopen_selection, reopen_settings) = native_request_parts(reopen_request);
     let mut reopened = prepare_native(
         &reopen_source,
@@ -702,7 +709,7 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
             reopened.vod_initial_position(),
             Some(PreparedInitialPosition::PositionedAt { .. })
         ),
-        "reopen должен вернуть authoritative seek receipt: {:?}",
+        "reopen must return authoritative seek receipt: {:?}",
         reopened.vod_initial_position()
     );
     assert_decoder_render_audio(reopened.demuxer.as_mut(), &mut wgpu_harness);
@@ -713,18 +720,18 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
         .stream_configuration()
         .component_variant_projection()
     else {
-        panic!("reopen должен заново опубликовать полный coupled catalog");
+        panic!("Reopen must re-publish the full coupled catalog");
     };
     assert_eq!(coupled.variants.len(), 2);
     let web_media_core::WebMediaSelectionShape::Components(reopened_components) =
         reopened.source_state.neutral_selection().shape()
     else {
-        panic!("reopened native selection должна сохранить component shape");
+        panic!("Reopened native selection should retain the component shape");
     };
     assert_eq!(
         reopened_components.semantic_rematch_request(),
         expected_ts_selection,
-        "reopen должен снова semantic-rematch TS после обратной перестановки rows"
+        "reopen must reset semantic-rematch TS after rearrangement of rows"
     );
     assert_eq!(
         reopened
@@ -734,12 +741,12 @@ fn native_hls_master_ts_fmp4_switch_seek_reopen_reaches_consumers_without_extrac
             .exact()
             .source(),
         stable_source_identity,
-        "root refresh/rematch не должен менять stable source lineage"
+        "root refresh/rematch does not change the stable source lineage"
     );
     assert_eq!(
         process_spy.invocation_count(),
         0,
-        "valid TS/fMP4 open, seek, switch и reopen не запускают extractor"
+        "valid TS/fMP4 open, seek, switch and reopen let off extractor"
     );
 }
 

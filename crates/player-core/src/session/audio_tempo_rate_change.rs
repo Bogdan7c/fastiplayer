@@ -76,7 +76,7 @@ impl PlayerSession {
             Some(Err(error)) => return Err(self.reject_audio_tempo_rate_change(error)),
             None => {
                 return Err(self.reject_audio_tempo_rate_change(anyhow::anyhow!(
-                    "audio tempo processor исчез во время атомарной смены segment-а"
+                    "audio tempo processor disappeared during the atomic shift segment-?"
                 )));
             }
         };
@@ -143,7 +143,11 @@ impl PlayerSession {
     ) -> anyhow::Result<AudioTempoProcessReport> {
         self.pipeline
             .prime_audio_tempo_history(warmup_history, pcm_format)
-            .ok_or_else(|| anyhow::anyhow!("audio tempo processor исчез до завершения warmup"))?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "The audio tempo processor has disappeared before the warmup is completed."
+                )
+            })?
     }
 
     /// Записывает recoverable diagnostic и строит typed non-fatal reject.
@@ -181,6 +185,6 @@ fn log_prepared_tempo_segment(report: &AudioTempoProcessReport) {
         pending_output_ms = report.pending_processor_output().duration().as_millis(),
         input_latency_media_ms = report.input_latency().duration().as_millis(),
         output_latency_ms = report.output_latency().duration().as_millis(),
-        "Audio tempo segment подготовлен для атомарного commit"
+        "Audio tempo segment prepared for atomic commit"
     );
 }

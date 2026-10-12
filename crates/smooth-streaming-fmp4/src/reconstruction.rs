@@ -340,11 +340,11 @@ fn classify_timing(
     if coded_coverage.end_exclusive() > manifest_window.end_exclusive() {
         let excess = coded_coverage.end_exclusive() - manifest_window.end_exclusive();
         return SmoothTimingRelation::Overhang(
-            NonZeroU64::new(excess).expect("strict greater relation даёт ненулевой overhang"),
+            NonZeroU64::new(excess).expect("strict greater relation non-zero overhang"),
         );
     }
     let missing = manifest_window.end_exclusive() - coded_coverage.end_exclusive();
     SmoothTimingRelation::Underrun(
-        NonZeroU64::new(missing).expect("strict lesser relation даёт ненулевой underrun"),
+        NonZeroU64::new(missing).expect("strict lesser relation non-zero underrun"),
     )
 }

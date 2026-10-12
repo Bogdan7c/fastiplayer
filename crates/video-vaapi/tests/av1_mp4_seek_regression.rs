@@ -68,14 +68,14 @@ fn av1_mp4_vaapi_decodes_global_motion_before_and_after_seek() {
     let video_track = first_av1_video_track(&demuxer);
     let track_duration = video_track
         .duration
-        .expect("регрессии нужен AV1 track с известной длительностью для seek в середину");
+        .expect("Regression requires an AV1 track with a known duration to seek in the middle");
 
     let decoder = VideoDecodeThread::new_with_config(VideoDecodeThreadConfig::from_env())
-        .expect("VA-API decoder thread должен стартовать");
+        .expect("VA-API decoder thread should start");
     assert_eq!(
         decoder.configure_stream(av1_stream_config(&video_track)),
         VideoStreamConfigResult::Configured,
-        "VA-API должен принять AV1 Main 8-bit NV12 stream"
+        "VA-API must accept AV1 Main 8-bit NV12 stream"
     );
 
     // Фаза 1: обычное проигрывание с начала файла.
@@ -90,16 +90,16 @@ fn av1_mp4_vaapi_decodes_global_motion_before_and_after_seek() {
     assert_phase_frames(&playback, "playback");
 
     // Фаза 2: seek в середину файла и декодирование до EOF.
-    decoder.flush().expect("seek flush VA-API decoder-а");
+    decoder.flush().expect("seek flush VA-API decoder-?");
     release_pending_frames(&decoder);
     let seek_target = track_duration / 2;
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(seek_target))
-        .expect("demux seek в середину AV1 MP4");
+        .expect("demux seek midway AV1 MP4");
     let decode_point = seek_result.actual_position.as_duration();
     assert!(
         decode_point <= seek_target,
-        "decode point не должен быть позже target"
+        "decode point shouldn't be later target"
     );
 
     let mut after_seek = decode_until(
@@ -113,7 +113,7 @@ fn av1_mp4_vaapi_decodes_global_motion_before_and_after_seek() {
     assert_phase_frames(&after_seek, "after-seek");
     assert!(
         after_seek.frame_pts[0] >= decode_point,
-        "после seek не должно быть кадров раньше decode point"
+        "afterward seek You don't have to have a staff before decode point"
     );
 
     eprintln!(
@@ -136,10 +136,10 @@ enum PhaseEnd {
 fn selected_media_path() -> PathBuf {
     let media_path = std::env::var_os("FASTIPLAYER_MEDIA_PATH")
         .map(PathBuf::from)
-        .expect("FASTIPLAYER_MEDIA_PATH должен указывать на AV1 MP4");
+        .expect("FASTIPLAYER_MEDIA_PATH should indicate AV1 MP4");
     assert!(
         media_path.is_file(),
-        "{} не является файлом",
+        "{} is not a file.",
         media_path.display()
     );
     media_path
@@ -155,7 +155,7 @@ fn first_av1_video_track(demuxer: &SymphoniaDemuxer) -> TrackInfo {
                 && VideoCodec::from_container_codec_id(&track.codec_id) == Some(VideoCodec::Av1)
         })
         .cloned()
-        .expect("выбранный файл должен содержать AV1 video track")
+        .expect("The selected file must contain AV1 video track.")
 }
 
 /// Строит тот же stream config, что player собирает из av1C: NV12 DMA-BUF.
@@ -165,7 +165,7 @@ fn av1_stream_config(video_track: &TrackInfo) -> VideoStreamDecodeConfig {
         .as_deref()
         .map(|av1c_record| {
             av1_decode_requirement_from_decoder_configuration_record(av1c_record)
-                .expect("av1C выбранного файла должен разбираться")
+                .expect("av1C of the selected file must be understood")
         })
         .unwrap_or_else(|| VideoDecodeRequirement::new(VideoCodec::Av1));
 
@@ -187,8 +187,7 @@ fn decode_until(
 ) -> PhaseEvidence {
     let mut evidence = PhaseEvidence::default();
     loop {
-        let packet = match demuxer.next_event().expect("demux следующего события")
-        {
+        let packet = match demuxer.next_event().expect("demux of the next") {
             DemuxReadEvent::Packet(packet)
                 if packet.kind == TrackKind::Video && packet.track_id == video_track.id =>
             {
@@ -198,7 +197,7 @@ fn decode_until(
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => continue,
             DemuxReadEvent::TemporarilyUnavailable(hint) => {
-                panic!("локальный файл неожиданно вернул temporary readiness: {hint:?}")
+                panic!("Local file unexpectedly returns temporary readiness: {hint:?}")
             }
             DemuxReadEvent::EndOfStream => return evidence,
         };
@@ -219,7 +218,7 @@ fn send_video_packet(
     evidence: &mut PhaseEvidence,
 ) {
     let microsecond_pts = Duration::from_micros(
-        u64::try_from(packet.pts.as_micros()).expect("PTS packet-а помещается в u64 микросекунд"),
+        u64::try_from(packet.pts.as_micros()).expect("PTS packet-a is placed in u64 microseconds"),
     );
     let decode_packet = DecodePacket {
         track_id: packet.track_id,
@@ -234,7 +233,7 @@ fn send_video_packet(
     match decoder.send_packet(decode_packet) {
         Ok(()) => evidence.sent_packet_pts.push(microsecond_pts),
         Err(DecodeThreadSendError::Backpressure(reason)) => {
-            panic!("неожиданный backpressure при serial отправке: {reason:?}")
+            panic!("surprise backpressure upon serial shipment: {reason:?}")
         }
         Err(DecodeThreadSendError::Fatal(error)) => panic!("fatal decoder send: {error}"),
     }
@@ -262,7 +261,7 @@ fn wait_for_all_frames(decoder: &VideoDecodeThread, generation: u64, evidence: &
         assert_decoder_alive(decoder);
         assert!(
             Instant::now() < deadline,
-            "decoder не опубликовал все кадры фазы"
+            "decoder He didn't post all the phase footage"
         );
         thread::sleep(Duration::from_millis(1));
     }
@@ -283,7 +282,7 @@ fn drain_decoder_to_eof(
                     | VideoDecoderEndOfStreamDrainState::Drained { generation: started }
             ) if started == generation
         ),
-        "decoder должен принять EOF drain текущей generation, получено {begin_result:?}"
+        "decoder must accept EOF drain current generation, got {begin_result:?}"
     );
 
     let deadline = Instant::now() + DECODER_WAIT_TIMEOUT;
@@ -296,7 +295,7 @@ fn drain_decoder_to_eof(
                 break;
             }
             VideoDecoderEndOfStreamDrainState::Fatal { error, .. } => {
-                panic!("VA-API EOF drain завершился ошибкой: {error}")
+                panic!("VA-API EOF drain ended in error: {error}")
             }
             _ => {}
         }
@@ -312,7 +311,7 @@ fn collect_frames(decoder: &VideoDecodeThread, generation: u64, evidence: &mut P
     while let Some(frame) = decoder.try_recv_frame() {
         assert_eq!(
             frame.generation, generation,
-            "кадр устаревшей generation после seek"
+            "A photo of an outdated generation after seeking"
         );
         evidence.frame_pts.push(frame.pts);
         release_frame(decoder, frame);
@@ -334,7 +333,7 @@ fn release_frame(decoder: &VideoDecodeThread, frame: DecodedFrame) {
 /// Падает с причиной, если decoder thread сообщил ошибку.
 fn assert_decoder_alive(decoder: &VideoDecodeThread) {
     if let Some(error) = decoder.try_recv_error() {
-        panic!("VA-API decoder thread завершился с ошибкой: {error}");
+        panic!("VA-API decoder thread ended with an error: {error}");
     }
 }
 
@@ -345,12 +344,12 @@ fn assert_decoder_alive(decoder: &VideoDecodeThread) {
 fn assert_phase_frames(evidence: &PhaseEvidence, phase_name: &str) {
     assert!(
         !evidence.sent_packet_pts.is_empty(),
-        "{phase_name}: фаза не отправила ни одного пакета"
+        "{phase_name}: The phase did not send a single packet"
     );
     assert_eq!(
         evidence.frame_pts.len(),
         evidence.sent_packet_pts.len(),
-        "{phase_name}: каждый AV1 temporal unit должен дать ровно один показанный кадр"
+        "{phase_name}: Each AV1 temporal unit must produce exactly one frame shown."
     );
     let first_mismatch = evidence
         .frame_pts
@@ -359,10 +358,10 @@ fn assert_phase_frames(evidence: &PhaseEvidence, phase_name: &str) {
         .position(|(frame_pts, packet_pts)| frame_pts != packet_pts);
     assert_eq!(
         first_mismatch, None,
-        "{phase_name}: PTS кадра должен совпадать с PTS показавшего его temporal unit-а"
+        "{phase_name}: The PTS of the frame must match the PTS of the temporal unit that showed it."
     );
     assert!(
         evidence.frame_pts.windows(2).all(|pair| pair[0] < pair[1]),
-        "{phase_name}: PTS опубликованных кадров должны строго расти"
+        "{phase_name}: PTS Published Footprints Should Strictly Grow"
     );
 }

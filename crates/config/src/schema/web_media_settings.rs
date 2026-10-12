@@ -34,8 +34,8 @@ impl SettingsSchema for WebMediaConfig {
             &mut registry,
             descriptor(
                 "web_media.hdr_selection",
-                "Динамический диапазон web media",
-                "Выбирать только SDR или предпочитать HDR при полной поддержке decoder и renderer с автоматическим SDR fallback.",
+                "Web media dynamic range",
+                "Select SDR only, or prefer HDR when fully supported by the decoder and renderer, with automatic SDR fallback.",
                 "quality",
                 SettingValueType::Select,
                 SettingEditor::Select(SelectDescriptor::Static {
@@ -48,8 +48,8 @@ impl SettingsSchema for WebMediaConfig {
             &mut registry,
             descriptor(
                 "web_media.preferred_video_height",
-                "Предпочитаемая высота web video",
-                "Лучшее доступное представление либо глобальная высота с fallback: точная, ближайшая ниже, затем ближайшая выше.",
+                "Preferred web video height",
+                "Best available representation, or a global height with fallback: exact, nearest lower, then nearest higher.",
                 "quality",
                 SettingValueType::Select,
                 SettingEditor::Select(SelectDescriptor::Static {
@@ -62,8 +62,8 @@ impl SettingsSchema for WebMediaConfig {
             &mut registry,
             descriptor(
                 "web_media.vod_endpoint_recovery_enabled",
-                "Автовосстановление web VOD",
-                "Автоматически переоткрывать web VOD после истечения временного endpoint-а.",
+                "Automatic web VOD recovery",
+                "Automatically reopen web VOD after a temporary endpoint expires.",
                 "recovery",
                 SettingValueType::Bool,
                 SettingEditor::Toggle,
@@ -74,8 +74,8 @@ impl SettingsSchema for WebMediaConfig {
             &mut registry,
             RecoveryIntegerDescriptor {
                 id: "web_media.vod_endpoint_recovery_max_consecutive_attempts",
-                label_ru: "Попытки восстановления web VOD",
-                description_ru: "Максимальное число последовательных переоткрытий до terminal failure.",
+                label_ru: "Web VOD recovery attempts",
+                description_ru: "Maximum consecutive reopen attempts before a terminal failure.",
                 maximum: crate::validation::MAX_WEB_MEDIA_VOD_RECOVERY_ATTEMPTS,
                 step: 1,
                 unit: "attempts",
@@ -86,8 +86,8 @@ impl SettingsSchema for WebMediaConfig {
             &mut registry,
             RecoveryIntegerDescriptor {
                 id: "web_media.vod_endpoint_recovery_initial_backoff_ms",
-                label_ru: "Начальная задержка восстановления web VOD",
-                description_ru: "Начальная задержка перед повторным source resolution.",
+                label_ru: "Initial web VOD recovery delay",
+                description_ru: "Initial delay before resolving the source again.",
                 maximum: crate::validation::MAX_WEB_MEDIA_VOD_RECOVERY_BACKOFF_MS,
                 step: 50,
                 unit: "ms",
@@ -98,8 +98,8 @@ impl SettingsSchema for WebMediaConfig {
             &mut registry,
             RecoveryIntegerDescriptor {
                 id: "web_media.vod_endpoint_recovery_max_backoff_ms",
-                label_ru: "Максимальная задержка восстановления web VOD",
-                description_ru: "Верхняя граница exponential backoff между recovery attempts.",
+                label_ru: "Maximum web VOD recovery delay",
+                description_ru: "Upper limit for exponential backoff between recovery attempts.",
                 maximum: crate::validation::MAX_WEB_MEDIA_VOD_RECOVERY_BACKOFF_MS,
                 step: 100,
                 unit: "ms",
@@ -110,8 +110,8 @@ impl SettingsSchema for WebMediaConfig {
             &mut registry,
             RecoveryIntegerDescriptor {
                 id: "web_media.vod_endpoint_recovery_stable_reset_ms",
-                label_ru: "Сброс бюджета восстановления web VOD",
-                description_ru: "Время стабильного playback, после которого последовательный recovery budget сбрасывается.",
+                label_ru: "Web VOD recovery budget reset",
+                description_ru: "Stable playback time after which the consecutive recovery budget resets.",
                 maximum: crate::validation::MAX_WEB_MEDIA_VOD_RECOVERY_STABLE_RESET_MS,
                 step: 1_000,
                 unit: "ms",
@@ -319,12 +319,12 @@ fn hdr_selection_options() -> Vec<SettingOption> {
         (
             WebMediaHdrSelection::SdrOnly,
             "settings.web_media.hdr_selection.sdr_only",
-            "Только SDR",
+            "SDR only",
         ),
         (
             WebMediaHdrSelection::PreferHdrWhenAvailable,
             "settings.web_media.hdr_selection.prefer_hdr",
-            "Предпочитать HDR",
+            "Prefer HDR",
         ),
     ]
     .into_iter()
@@ -342,7 +342,7 @@ fn preferred_height_options() -> Vec<SettingOption> {
         id: "best_playable".into(),
         label: SettingText::new(
             "settings.web_media.preferred_video_height.best_playable",
-            "Лучшее доступное",
+            "Best available",
         ),
         description: None,
     };
@@ -374,14 +374,14 @@ const fn hdr_selection_id(selection: WebMediaHdrSelection) -> &'static str {
 fn hdr_selection_value(value: SettingValue) -> SettingsResult<WebMediaHdrSelection> {
     let SettingValue::Select(option_id) = value else {
         return Err(SettingsError::access_failed(
-            "web_media.hdr_selection ожидает select value",
+            "web_media.hdr_selection expects a select value",
         ));
     };
     match option_id.as_str() {
         "sdr_only" => Ok(WebMediaHdrSelection::SdrOnly),
         "prefer_hdr" => Ok(WebMediaHdrSelection::PreferHdrWhenAvailable),
         _ => Err(SettingsError::access_failed(
-            "web_media.hdr_selection получил неизвестный option id",
+            "web_media.hdr_selection received an unknown option ID",
         )),
     }
 }
@@ -390,7 +390,7 @@ fn hdr_selection_value(value: SettingValue) -> SettingsResult<WebMediaHdrSelecti
 fn preferred_height_value(value: SettingValue) -> SettingsResult<Option<PreferredVideoHeight>> {
     let SettingValue::Select(option_id) = value else {
         return Err(SettingsError::access_failed(
-            "web_media.preferred_video_height ожидает select value",
+            "web_media.preferred_video_height expects a select value",
         ));
     };
     if option_id.as_str() == "best_playable" {
@@ -398,7 +398,7 @@ fn preferred_height_value(value: SettingValue) -> SettingsResult<Option<Preferre
     }
     let pixels = option_id.as_str().parse::<u32>().map_err(|_| {
         SettingsError::access_failed(
-            "web_media.preferred_video_height ожидает best_playable или целое число",
+            "web_media.preferred_video_height expects best_playable or an integer",
         )
     })?;
     PreferredVideoHeight::new(pixels)
@@ -415,7 +415,7 @@ fn preferred_height_value(value: SettingValue) -> SettingsResult<Option<Preferre
 fn integer_value(number: u64, field_name: &'static str) -> SettingValue {
     SettingValue::Integer(
         i64::try_from(number)
-            .unwrap_or_else(|_| panic!("validated {field_name} всегда помещается в i64")),
+            .unwrap_or_else(|_| panic!("validated {field_name} always fits in i64")),
     )
 }
 
@@ -424,7 +424,7 @@ fn bool_value(setting_path: &'static str, value: SettingValue) -> SettingsResult
     match value {
         SettingValue::Bool(enabled) => Ok(enabled),
         _ => Err(SettingsError::access_failed(format!(
-            "{setting_path} ожидает bool"
+            "{setting_path} expects a boolean"
         ))),
     }
 }
@@ -433,12 +433,11 @@ fn bool_value(setting_path: &'static str, value: SettingValue) -> SettingsResult
 fn u64_value(setting_path: &'static str, value: SettingValue) -> SettingsResult<u64> {
     let SettingValue::Integer(number) = value else {
         return Err(SettingsError::access_failed(format!(
-            "{setting_path} ожидает integer value"
+            "{setting_path} expects an integer value"
         )));
     };
-    u64::try_from(number).map_err(|_| {
-        SettingsError::access_failed(format!("{setting_path} не может быть отрицательным"))
-    })
+    u64::try_from(number)
+        .map_err(|_| SettingsError::access_failed(format!("{setting_path} cannot be negative")))
 }
 
 #[cfg(test)]
@@ -453,37 +452,37 @@ mod tests {
             (
                 WebMediaField::HdrSelection,
                 SettingValue::Bool(true),
-                "web_media.hdr_selection ожидает select value",
+                "web_media.hdr_selection expects a select value",
             ),
             (
                 WebMediaField::HdrSelection,
                 SettingValue::Select("unknown_hdr_policy".into()),
-                "web_media.hdr_selection получил неизвестный option id",
+                "web_media.hdr_selection received an unknown option ID",
             ),
             (
                 WebMediaField::PreferredVideoHeight,
                 SettingValue::Bool(true),
-                "web_media.preferred_video_height ожидает select value",
+                "web_media.preferred_video_height expects a select value",
             ),
             (
                 WebMediaField::PreferredVideoHeight,
                 SettingValue::Select("not_a_height".into()),
-                "web_media.preferred_video_height ожидает best_playable или целое число",
+                "web_media.preferred_video_height expects best_playable or an integer",
             ),
             (
                 WebMediaField::VodEndpointRecoveryEnabled,
                 SettingValue::Integer(1),
-                "web_media.vod_endpoint_recovery_enabled ожидает bool",
+                "web_media.vod_endpoint_recovery_enabled expects a boolean",
             ),
             (
                 WebMediaField::VodEndpointRecoveryMaxAttempts,
                 SettingValue::Bool(true),
-                "web_media.vod_endpoint_recovery_max_consecutive_attempts ожидает integer value",
+                "web_media.vod_endpoint_recovery_max_consecutive_attempts expects an integer value",
             ),
             (
                 WebMediaField::VodEndpointRecoveryInitialBackoff,
                 SettingValue::Integer(-1),
-                "web_media.vod_endpoint_recovery_initial_backoff_ms не может быть отрицательным",
+                "web_media.vod_endpoint_recovery_initial_backoff_ms cannot be negative",
             ),
         ];
         // Один typed config позволяет заметить даже частичную мутацию между rejected calls.
@@ -496,7 +495,7 @@ mod tests {
             // Ошибочный neutral input обязан сохраниться как различимая SettingsError.
             let error = field
                 .set(&mut config, invalid_value)
-                .expect_err("accessor не должен принимать неверное neutral value");
+                .expect_err("accessor don't take the wrong one neutral value");
 
             // Exact reason сохраняет различия между типом, id, parse и signedness.
             assert_eq!(

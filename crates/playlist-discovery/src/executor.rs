@@ -87,19 +87,19 @@ impl DiscoveryProbe for LocalMediaProbe {
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoverySubmitError {
     /// Process может не создать требуемые bounded workers.
-    #[error("не удалось создать discovery worker: {0:?}")]
+    #[error("failed to create discovery worker: {0:?}")]
     WorkerSpawn(io::ErrorKind),
     /// Active job registry достиг именованной границы.
-    #[error("достигнут лимит активных discovery jobs")]
+    #[error("active discovery job limit reached")]
     ActiveJobLimitReached,
     /// Reserved/normal input lane не принимает новый work.
-    #[error("bounded discovery input заполнен")]
+    #[error("bounded discovery input is full")]
     InputBackpressure,
     /// Executor больше не принимает jobs.
-    #[error("discovery executor завершает работу")]
+    #[error("discovery executor is shutting down")]
     ShuttingDown,
     /// Process-lifetime job ID space исчерпан.
-    #[error("исчерпано пространство discovery job IDs")]
+    #[error("discovery job ID space exhausted")]
     JobIdExhausted,
     /// Caller передал больше bounded job-local items, чем representable policy разрешает.
     #[error("discovery request item limit {limit} reached; observed {observed}")]

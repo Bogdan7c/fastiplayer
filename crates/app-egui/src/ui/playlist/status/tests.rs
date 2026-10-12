@@ -96,7 +96,7 @@ fn event_presentation(generation: u64) -> PlaylistStatusPresentation {
     PlaylistStatusPresentation::from_rows(vec![PlaylistStatusRow::new(
         PlaylistStatusProblemIdentity::SafeFeedback(PlaylistSafeFeedbackGeneration(generation)),
         PlaylistStatusRetention::Event,
-        "Не удалось выполнить действие",
+        "Failed to perform the action",
         StatusTone::Warning,
         StatusRowKind::Normal,
         None,
@@ -197,7 +197,7 @@ fn single_and_wrapped_problem_add_content_and_lower_separator() {
         &model,
         &safe_feedback(
             2,
-            "Длинная безопасная строка ошибки должна переноситься внутри одной общей status-области без расширения sidebar ".repeat(12),
+            "A long safe error string must be carried within a common status area without extending the sidebar. ".repeat(12),
         ),
     );
 
@@ -256,7 +256,7 @@ fn settled_status_has_no_idle_repaint_and_schedules_only_nearest_deadline() {
 fn production_ui_requests_one_delayed_wake_at_the_problem_deadline() {
     let context = crate::ui::test_frame::app_behavior_context();
     let model = playlist_model(0);
-    let interaction = safe_feedback(1, "Не удалось выполнить действие");
+    let interaction = safe_feedback(1, "Failed to perform the action");
     let mut state = PlaylistUiState::default();
     let mut output = PlaylistUiOutput::default();
 
@@ -399,7 +399,7 @@ fn actionless_status_button_is_disabled_before_residual_paint() {
 #[test]
 fn disabled_copy_is_actionless_and_cannot_resurrect_expired_problem() {
     let model = playlist_model(0);
-    let interaction = safe_feedback(1, "Не удалось выполнить действие");
+    let interaction = safe_feedback(1, "Failed to perform the action");
     let mut state = PlaylistUiState::default();
     let mut output = PlaylistUiOutput::default();
 

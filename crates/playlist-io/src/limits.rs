@@ -112,13 +112,13 @@ pub enum M3uParserLimitsError {
 impl fmt::Display for M3uParserLimitsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ZeroDocumentBytes => formatter.write_str("M3U document budget равен нулю"),
-            Self::ZeroLineBytes => formatter.write_str("M3U line budget равен нулю"),
-            Self::ZeroItems => formatter.write_str("M3U item budget равен нулю"),
-            Self::ZeroIssues => formatter.write_str("M3U issue budget равен нулю"),
+            Self::ZeroDocumentBytes => formatter.write_str("The M3U document budget is zero."),
+            Self::ZeroLineBytes => formatter.write_str("The M3U line budget is zero."),
+            Self::ZeroItems => formatter.write_str("The M3U item budget is zero."),
+            Self::ZeroIssues => formatter.write_str("The M3U issue budget is zero."),
             Self::ItemLimitExceedsDomainCapacity { provided, maximum } => write!(
                 formatter,
-                "M3U item budget {provided} превышает domain capacity {maximum}"
+                "M3U item budget {provided} exceeds domain capacity {maximum}"
             ),
         }
     }

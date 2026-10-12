@@ -14,12 +14,12 @@ use super::PlaylistUiOutput;
 use super::actions::{PlaylistAction, PlaylistUrlDraftText};
 
 const SORT_KEYS: [(PlaylistSortKey, &str); 6] = [
-    (PlaylistSortKey::NaturalFilename, "Имя файла"),
-    (PlaylistSortKey::Title, "Название"),
-    (PlaylistSortKey::Artist, "Исполнитель"),
-    (PlaylistSortKey::Album, "Альбом"),
-    (PlaylistSortKey::Duration, "Длительность"),
-    (PlaylistSortKey::SmartSequence, "Умная последовательность"),
+    (PlaylistSortKey::NaturalFilename, "File name"),
+    (PlaylistSortKey::Title, "Title"),
+    (PlaylistSortKey::Artist, "Artist"),
+    (PlaylistSortKey::Album, "Album"),
+    (PlaylistSortKey::Duration, "Duration"),
+    (PlaylistSortKey::SmartSequence, "Smart order"),
 ];
 
 pub(super) fn show(
@@ -47,7 +47,7 @@ fn show_url_editor(
 ) {
     ui.group(|ui| {
         let interaction_enabled = ui.is_enabled();
-        let label = ui.label("URL медиа:");
+        let label = ui.label("Media URL:");
         let mut editable_text = model.url_text.clone();
         let response = ui
             .add(
@@ -72,10 +72,10 @@ fn show_url_editor(
             && response.has_focus()
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         ui.horizontal(|ui| {
-            if ui.button("Добавить").clicked() || submit_by_enter {
+            if ui.button("Add").clicked() || submit_by_enter {
                 output.push_action(PlaylistAction::SubmitUrl);
             }
-            if ui.button("Отмена").clicked() || cancel_by_escape {
+            if ui.button("Cancel").clicked() || cancel_by_escape {
                 output.push_action(PlaylistAction::CancelUrlEditor);
             }
         });
@@ -201,13 +201,13 @@ mod tests {
             .collect();
         button_labels.sort();
         let mut expected_labels = vec![
-            "Добавить файлы",
-            "Добавить URL",
-            "Сортировать плейлист",
-            "Перейти к текущему медиа",
-            "Импортировать плейлист",
-            "Экспортировать плейлист",
-            "Очистить очередь",
+            "Add files",
+            "Add URL",
+            "Sort Playlist",
+            "Go to current media",
+            "Import Playlist",
+            "Export Playlist",
+            "Clear queue",
         ];
         expected_labels.sort_unstable();
         assert_eq!(button_labels, expected_labels);

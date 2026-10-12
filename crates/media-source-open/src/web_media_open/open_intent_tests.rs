@@ -99,10 +99,10 @@ fn selection_with_layout(
     let candidate = snapshot
         .accepted_candidates()
         .find(|candidate| matches_layout(candidate.descriptor().layout()))
-        .expect("fixture содержит candidate нужной формы");
+        .expect("fixture contains candidate of the desired form");
     snapshot
         .selection_for(candidate)
-        .expect("fixture candidate имеет exact selection")
+        .expect("Fixture Candidate: Specific Selection")
 }
 
 fn video_only_selection(snapshot: &YtDlpCandidateSnapshot) -> YtDlpCandidateSelection {
@@ -137,7 +137,7 @@ fn exact_parent_provider_default_keeps_selection_and_preference_but_resets_compo
     );
 
     let YtDlpCandidateOpenIntent::Exact(exact) = &intent else {
-        panic!("ожидался exact intent");
+        panic!("expected exactly");
     };
     assert_eq!(exact.selection(), &selection);
     assert_eq!(exact.preference(), preference);
@@ -160,7 +160,7 @@ fn exact_preserving_configuration_inherits_installed_preference_and_component_in
     );
 
     let YtDlpCandidateOpenIntent::Exact(exact) = &intent else {
-        panic!("ожидался exact intent");
+        panic!("expected exactly");
     };
     assert_eq!(exact.selection(), &selection);
     assert_eq!(exact.preference(), installed_configuration.preference());
@@ -186,7 +186,7 @@ fn exact_with_semantic_selection_keeps_installed_preference_and_carries_request(
     );
 
     let YtDlpCandidateOpenIntent::Exact(exact) = &intent else {
-        panic!("ожидался exact intent");
+        panic!("expected exactly");
     };
     assert_eq!(exact.selection(), &selection);
     assert_eq!(exact.preference(), installed_configuration.preference());
@@ -203,7 +203,7 @@ fn composed_exposes_composition_parent_and_preference_with_provider_default_comp
     let audio = audio_only_selection(&snapshot);
     let composed_selection = snapshot
         .compose_inventory_av(&video, &audio)
-        .expect("fixture video-only + audio-only составляются");
+        .expect("fixture video-only + audio-only");
     let preference = WebMediaSelectionPreference::GlobalPreferredHeight(1080);
 
     let intent = YtDlpCandidateOpenIntent::composed(
@@ -213,7 +213,7 @@ fn composed_exposes_composition_parent_and_preference_with_provider_default_comp
     );
 
     let YtDlpCandidateOpenIntent::Composed(composed) = &intent else {
-        panic!("ожидался composed intent");
+        panic!("Expected intention");
     };
     assert_eq!(composed.selection(), &composed_selection);
     assert_eq!(composed.parent_preference(), &video);

@@ -198,13 +198,13 @@ mod tests {
             live_edge: Some(media_core::MediaTime::from_secs(70)),
             ..TimelineSnapshot::default()
         };
-        assert_eq!(timeline_right_label(&timeline), "ЭФИР");
+        assert_eq!(timeline_right_label(&timeline), "LIVE");
 
         timeline.seekable_range = media_core::TimelineRange::new(
             media_core::MediaTime::from_secs(30),
             media_core::MediaTime::from_secs(70),
         );
-        assert_eq!(timeline_right_label(&timeline), "DVR 00:30–01:10 · ЭФИР");
+        assert_eq!(timeline_right_label(&timeline), "DVR 00:30–01:10 · LIVE");
     }
 
     /// Рисует строку времени в окне минимальной ширины 400 (A4) и возвращает
@@ -233,10 +233,10 @@ mod tests {
         (labels, right_edge)
     }
 
-    /// A15-live: у live-потока в плеере нарисована русская подпись, а не «LIVE»,
+    /// У live-потока в плеере нарисована английская подпись LIVE,
     /// и она помещается в окно шириной 400 вместе с диапазоном DVR.
     #[test]
-    fn live_time_label_is_drawn_in_russian_and_fits_minimum_window() {
+    fn live_time_label_is_drawn_in_english_and_fits_minimum_window() {
         let timeline = TimelineSnapshot {
             mode: media_core::TimelineMode::Live,
             live_edge: Some(media_core::MediaTime::from_secs(3_670)),
@@ -248,14 +248,19 @@ mod tests {
         };
         let (labels, right_edge) = drawn_time_labels(&timeline);
         assert!(
-            labels.iter().any(|label| label.ends_with("· ЭФИР")),
-            "подпись live не нарисована: {labels:?}"
+            labels.iter().any(|label| label.ends_with("· LIVE")),
+            "signature live not drawn: {labels:?}"
         );
         assert!(
-            !labels.iter().any(|label| label.contains("LIVE")),
-            "английский LIVE остался на экране: {labels:?}"
+            !labels
+                .iter()
+                .any(|label| label.chars().any(|ch| matches!(ch, 'А'..='я' | 'Ё' | 'ё'))),
+            "Untranslated live label remains: {labels:?}"
         );
-        assert!(right_edge <= 400.0, "строка шире окна 400: {right_edge}");
+        assert!(
+            right_edge <= 400.0,
+            "line wider than window 400: {right_edge}"
+        );
     }
 
     /// Кадр: кнопка (может держать фокус) над таймлайном 100 с.
@@ -274,7 +279,7 @@ mod tests {
         let mut actions = Vec::new();
         let mut timeline_rect = Rect::NOTHING;
         let _ = crate::ui::test_frame::run_ui_frame(egui_ctx, input, |ui| {
-            let button = ui.button("Кнопка");
+            let button = ui.button("Button");
             if focus_button {
                 button.request_focus();
             }
@@ -327,7 +332,7 @@ mod tests {
             actions
                 .iter()
                 .any(|action| matches!(action, super::super::TimelineAction::ClickSeek(_))),
-            "клик должен перематывать, получено {actions:?}"
+            "Click must rewind, received {actions:?}"
         );
         assert_eq!(keyboard_focus_owner(&egui_ctx), KeyboardFocusOwner::Nobody);
     }

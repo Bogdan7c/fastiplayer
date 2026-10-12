@@ -70,11 +70,11 @@ impl VideoRequirementPreflightUnavailable {
     pub fn user_message(&self) -> String {
         match self {
             Self::MissingCodecPrivate { codec } => format!(
-                "Для {} не хватает обязательного codec-private заголовка с точным форматом видео",
+                "{} lacks a required codec-private header with an exact video format",
                 codec.display_name()
             ),
             Self::InvalidCodecPrivate { codec, reason } => format!(
-                "Codec-private заголовок {} повреждён или не поддерживается: {reason}",
+                "Codec-private header {} corrupted or not supported: {reason}",
                 codec.display_name()
             ),
         }
@@ -291,7 +291,7 @@ mod tests {
             Some(container_source),
             Some(&av1c_main_8bit_yuv420),
         ) else {
-            panic!("валидный av1C должен завершить preflight");
+            panic!("Av1C must complete the preflight");
         };
 
         assert_eq!(
@@ -338,7 +338,7 @@ mod tests {
         let VideoRequirementPreflight::Resolved(resolved) =
             preflight_video_requirement(VideoCodec::H265, Some(container_source), Some(&hvcc))
         else {
-            panic!("валидный hvcC должен завершить H.265 preflight");
+            panic!("Valid hvcC must complete H.265 preflight");
         };
 
         assert_eq!(
@@ -357,7 +357,7 @@ mod tests {
         let VideoRequirementPreflight::Resolved(resolved) =
             preflight_video_requirement(VideoCodec::Vp8, None, None)
         else {
-            panic!("VP8 fixed contract должен быть готов без packet probe");
+            panic!("VP8 fixed contract must be ready without packet probe");
         };
 
         assert_eq!(

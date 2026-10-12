@@ -541,12 +541,12 @@ fn receipted_seek_outcome(
     if shared.lock_queue().current_generation != generation {
         return ProgressiveAsyncSeekOutcome::Superseded;
     }
-    match worker_result.expect("current runtime всегда выполняет inner seek") {
+    match worker_result.expect("The current runtime is an internal seek.") {
         Ok(result) => ProgressiveAsyncSeekOutcome::Succeeded(result),
         Err(source) => {
             tracing::debug!(
                 error = ?source,
-                "Progressive worker receipted seek завершился typed demux failure"
+                "Progressive worker receipted seek terminated with typed demux failure"
             );
             ProgressiveAsyncSeekOutcome::Failed
         }

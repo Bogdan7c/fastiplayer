@@ -451,7 +451,7 @@ fn unsupported_default_alternate_audio_is_row_local_when_native_policy_allows_om
         },
         &mut proofs,
     )
-    .expect("unsupported alternate audio не должен отравлять proven video");
+    .expect("unsupported alternate audio should not be poisoned proven video");
 
     assert_eq!(
         snapshot.catalog().required_video_variants().unwrap().len(),
@@ -459,7 +459,7 @@ fn unsupported_default_alternate_audio_is_row_local_when_native_policy_allows_om
     );
     assert!(
         snapshot.catalog().required_audio_variants().is_err(),
-        "video-only catalog не должен публиковать fake required audio axis"
+        "video-only catalog don't publish fake required audio axis"
     );
     assert_eq!(snapshot.sibling_rejections().len(), 1);
     assert!(matches!(

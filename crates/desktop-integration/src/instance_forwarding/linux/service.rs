@@ -95,7 +95,7 @@ impl FreedesktopApplicationEndpoint {
             uris,
             activation_token_from_platform_data(&platform_data),
         )
-        .inspect_err(|rejection| warn!(%rejection, "Пересланный запрос Open отклонён"))?;
+        .inspect_err(|rejection| warn!(%rejection, "Transmitted Open request denied"))?;
         self.deliver_and_wait(request).await
     }
 
@@ -107,7 +107,7 @@ impl FreedesktopApplicationEndpoint {
         _parameter: Vec<OwnedValue>,
         _platform_data: HashMap<String, OwnedValue>,
     ) -> Result<(), ForwardingServiceFailure> {
-        warn!("Пересланный запрос ActivateAction отклонён: действия не поддерживаются");
+        warn!("ActivateAction Request Rejected: Actions Not Supported");
         Err(ForwardedRequestRejection::UnsupportedAction.into())
     }
 }
@@ -135,7 +135,7 @@ impl FreedesktopApplicationEndpoint {
             None => None,
         };
         admit_peer(peer_uid, self.own_uid)
-            .inspect_err(|rejection| warn!(%rejection, "Пересланный запрос отклонён"))
+            .inspect_err(|rejection| warn!(%rejection, "Transmitted request denied"))
             .map_err(ForwardingServiceFailure::from)
     }
 
@@ -149,7 +149,7 @@ impl FreedesktopApplicationEndpoint {
         let (acknowledged_sender, acknowledged_receiver) = async_channel::bounded::<()>(1);
         let acknowledgement = ForwardedRequestAcknowledgement::from_callback(move || {
             if acknowledged_sender.try_send(()).is_err() {
-                debug!("Подтверждение пересланного запроса пришло после таймаута");
+                debug!("Confirmation of the forwarded request came after the timeout");
             }
         });
 
@@ -167,16 +167,16 @@ impl FreedesktopApplicationEndpoint {
 
         match wait_for_acknowledgement(acknowledged_receiver, self.acknowledgement_timeout).await {
             AcknowledgementOutcome::Accepted => {
-                info!("Пересланный запрос принят UI-потоком");
+                info!("Request received by UI-stream");
                 Ok(())
             }
             AcknowledgementOutcome::Discarded => Err(ForwardingServiceFailure::ShuttingDown(
-                "приложение завершается".to_owned(),
+                "appendix is complete".to_owned(),
             )),
             AcknowledgementOutcome::TimedOut => {
-                warn!("UI-поток не забрал пересланный запрос вовремя");
+                warn!("The UI stream did not pick up the forwarded request on time.");
                 Err(ForwardingServiceFailure::NotResponding(
-                    "UI-поток не ответил вовремя".to_owned(),
+                    "UI stream failed to respond in time".to_owned(),
                 ))
             }
         }
@@ -207,14 +207,14 @@ async fn query_peer_unix_user(connection: &zbus::Connection, peer: BusName<'_>) 
     let bus = match zbus::fdo::DBusProxy::new(connection).await {
         Ok(bus) => bus,
         Err(error) => {
-            warn!(%error, "Не удалось создать proxy шины для проверки отправителя");
+            warn!(%error, "Failed to create a proxy bus to verify the sender");
             return None;
         }
     };
     match bus.get_connection_unix_user(peer).await {
         Ok(peer_uid) => Some(peer_uid),
         Err(error) => {
-            warn!(%error, "Шина не сообщила uid отправителя");
+            warn!(%error, "Bus did not report the sender UID");
             None
         }
     }
@@ -255,10 +255,10 @@ impl ServiceBackend {
         // Имя освобождается первым: новые запуски сразу увидят, что приёмника нет,
         // и не будут ждать ответа от закрывающегося соединения.
         if let Err(error) = connection.release_name(FASTIPLAYER_APPLICATION_ID) {
-            warn!(%error, "Не удалось освободить имя службы пересылки");
+            warn!(%error, "The name of the forwarding service was not released.");
         }
         if let Err(error) = connection.close() {
-            warn!(%error, "Не удалось закрыть соединение службы пересылки");
+            warn!(%error, "Failed to close the forwarding service connection");
         }
     }
 }
@@ -307,7 +307,7 @@ pub(super) fn start_with(
         RequestNameFlags::DoNotQueue.into(),
     ) {
         Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {
-            info!("Служба пересылки запросов второго запуска запущена");
+            info!("Service for forwarding requests of the second launch launched");
             Ok(ServiceBackend {
                 connection: Some(connection),
             })
@@ -323,7 +323,7 @@ pub(super) fn start_with(
 /// uid владельца собственного соединения — эталон для проверки отправителей.
 fn own_unix_user(connection: &Connection) -> Result<u32, InstanceForwardingServiceError> {
     let unique_name = connection.unique_name().ok_or_else(|| {
-        InstanceForwardingServiceError::Transport("у соединения нет уникального имени".to_owned())
+        InstanceForwardingServiceError::Transport("The compound has no unique name.".to_owned())
     })?;
     let bus = zbus::blocking::fdo::DBusProxy::new(connection).map_err(transport_error)?;
     bus.get_connection_unix_user(BusName::from(unique_name.as_ref()))

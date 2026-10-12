@@ -29,7 +29,7 @@ fn xml_budgets() -> XmlBudgets {
         .maximum_namespace_bytes(4 * 1024)
         .maximum_text_bytes(32 * 1024)
         .build()
-        .expect("test XML budgets валидны")
+        .expect("XML test budgets are valid")
 }
 
 /// Test-only schema caps.
@@ -99,7 +99,7 @@ fn timing_depth_ato_and_atc_true_are_parsed_without_float_rounding() {
     let DashAddressing::Template(template) =
         &mpd.presentation.periods[0].adaptation_sets[0].representations[0].addressing
     else {
-        panic!("dynamic profile допускает только template");
+        panic!("The dynamic profile allows only template");
     };
     assert_eq!(
         template.availability_time_offset_nanoseconds,
@@ -147,7 +147,7 @@ fn dash_if_simple_http_xsdate_open_period_shape_is_preserved() {
     );
     assert_eq!(mpd.presentation.periods[0].adaptation_sets[0].id, None);
     let DashUtcTiming::HttpXsDate(resource) = &mpd.utc_timing else {
-        panic!("ожидался pure HTTP XSDATE descriptor");
+        panic!("A pure HTTP XSDATE descriptor is expected.");
     };
     assert_eq!(resource.reference(), "clock");
     assert_eq!(mpd.direct_utc_time(), None);
@@ -193,9 +193,9 @@ fn unsupported_clock_missing_timing_and_partial_availability_are_typed() {
     ];
     for (document, expected) in cases {
         let DashDynamicMpdError::ProfileExcluded(actual) =
-            parse(&document).expect_err("profile должен fail closed")
+            parse(&document).expect_err("profile must fail closed")
         else {
-            panic!("ожидался typed profile exclusion");
+            panic!("Typed Profile Exclusion");
         };
         assert_eq!(actual, expected);
     }
@@ -224,9 +224,9 @@ fn duration_addressing_and_missing_period_identity_are_excluded() {
         ),
     ] {
         let DashDynamicMpdError::ProfileExcluded(actual) =
-            parse(&document).expect_err("неполный timing contract")
+            parse(&document).expect_err("partial timing contract")
         else {
-            panic!("ожидался typed profile exclusion");
+            panic!("Typed Profile Exclusion");
         };
         assert_eq!(actual, expected);
     }
@@ -272,7 +272,7 @@ fn utc_timing_accepts_paired_whitespace_and_rejects_payload_nested_or_duplicate_
               value="2026-07-24T10:01:01Z">
           </UTCTiming>"#,
     );
-    parse(&paired).expect("paired whitespace-only UTCTiming входит в strict profile");
+    parse(&paired).expect("paired whitespace-only UTCTiming is included in strict profile");
 
     let text_payload = paired.replace(
         "\n          </UTCTiming>",
@@ -290,7 +290,7 @@ fn utc_timing_accepts_paired_whitespace_and_rejects_payload_nested_or_duplicate_
           <Period"#,
     );
     for document in [text_payload, nested_payload, duplicate_mixed] {
-        let error = parse(&document).expect_err("неоднозначный UTC contract должен fail closed");
+        let error = parse(&document).expect_err("UTC contract must fail closed");
         assert!(matches!(
             error,
             DashDynamicMpdError::ProfileExcluded(
@@ -312,7 +312,7 @@ fn dynamic_debug_is_structural_and_redacts_source_material() {
         ),
     );
 
-    let mpd = parse(&document).expect("dynamic fixture с root BaseURL");
+    let mpd = parse(&document).expect("dynamic fixture with root baseurl");
     let diagnostics = format!("{mpd:?}");
 
     assert!(diagnostics.contains("period_count: 1"));
@@ -348,7 +348,7 @@ fn utc_clock_response_and_diagnostics_are_exact_and_secret_safe() {
         );
     let http_mpd = parse(&http_document).expect("HTTP XSDATE descriptor");
     let DashUtcTiming::HttpXsDate(resource) = &http_mpd.utc_timing else {
-        panic!("ожидался HTTP XSDATE descriptor");
+        panic!("HTTP XSDATE Descriptor is expected");
     };
     assert_eq!(
         format!("{:?}", http_mpd.utc_timing),
@@ -453,7 +453,7 @@ fn root_timing_and_shape_failures_keep_typed_boundaries() {
     ];
 
     for (document, expected) in cases {
-        let error = parse(&document).expect_err("неполный dynamic contract должен fail closed");
+        let error = parse(&document).expect_err("Incomplete dynamic contract must fail closed");
         assert!(matches!(
             error,
             DashDynamicMpdError::ProfileExcluded(actual) if actual == expected
@@ -483,7 +483,7 @@ fn dynamic_period_continuity_accepts_derived_bounds_and_rejects_ambiguity() {
           </Period>
         </MPD>"#,
         );
-    let mpd = parse(&derived_first_duration).expect("next Period start задаёт finite bound");
+    let mpd = parse(&derived_first_duration).expect("Next Period start is set to finite bound");
     assert_eq!(
         mpd.presentation.periods[0].duration,
         DashPresentationDuration::FiniteMilliseconds(120_000)
@@ -500,7 +500,7 @@ fn dynamic_period_continuity_accepts_derived_bounds_and_rejects_ambiguity() {
         non_contiguous,
     ];
     for (case_index, document) in ambiguous_cases.into_iter().enumerate() {
-        let error = parse(&document).expect_err("ambiguous Period timing должен fail closed");
+        let error = parse(&document).expect_err("ambiguous Period timing must fail closed");
         assert!(
             matches!(
                 &error,

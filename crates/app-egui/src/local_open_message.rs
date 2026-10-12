@@ -3,7 +3,7 @@
 //! Единственный владелец формулировок: кнопка Open, замена очереди, CLI-старт и строка
 //! плейлиста берут текст только отсюда, поэтому одна и та же причина везде выглядит
 //! одинаково. Причину определяет `media_open::LocalOpenFailureReason` (классификация
-//! живёт рядом с ошибкой), а здесь — только превращение причины в русский текст.
+//! живёт рядом с ошибкой), а здесь — только превращение причины в английский текст.
 //!
 //! Причины бывают двух стадий (`MediaOpenUserFailureReason`): подготовка файла (сессия 02)
 //! и отказ player-а установить уже подготовленный файл (сессия 03). Обе идут через одни и
@@ -28,7 +28,7 @@ pub(crate) fn local_open_failure_message(
 ) -> String {
     let file_label = safe_local_open_label(path);
     format!(
-        "Не удалось открыть «{file_label}»: {}",
+        "Could not open “{file_label}”: {}",
         failure_reason_phrase(reason.into())
     )
 }
@@ -36,7 +36,7 @@ pub(crate) fn local_open_failure_message(
 /// Сообщение, пока файл готовится к воспроизведению: «Открываем «clip.mkv»…».
 pub(crate) fn local_open_preparing_message(path: &Path) -> String {
     let file_label = safe_local_open_label(path);
-    format!("Открываем «{file_label}»…")
+    format!("Opening “{file_label}”…")
 }
 
 /// Короткая причина для бейджа строки плейлиста: «Файл не найден».
@@ -64,35 +64,33 @@ pub(crate) const fn failure_reason_phrase(reason: MediaOpenUserFailureReason) ->
 /// Формулировки отказа player-а (таблица утверждена владельцем в сессии 03).
 const fn player_install_failure_phrase(reason: PlayerInstallFailureReason) -> &'static str {
     match reason {
-        PlayerInstallFailureReason::UnsupportedVideoFormat => "формат видео не поддерживается",
-        PlayerInstallFailureReason::UnsupportedAudioFormat => "формат звука не поддерживается",
+        PlayerInstallFailureReason::UnsupportedVideoFormat => "unsupported video format",
+        PlayerInstallFailureReason::UnsupportedAudioFormat => "unsupported audio format",
         PlayerInstallFailureReason::NoSuitableVideoDecoder => {
-            "нет подходящего видеодекодера (выберите режим «Авто» в настройках декодера)"
+            "no suitable video decoder (select Automatic in decoder settings)"
         }
-        PlayerInstallFailureReason::PreparationTimedOut => "файл читается слишком долго",
-        PlayerInstallFailureReason::PlayerNotResponding => "плеер не отвечает, попробуйте ещё раз",
-        PlayerInstallFailureReason::InternalError => "внутренняя ошибка плеера",
+        PlayerInstallFailureReason::PreparationTimedOut => "reading the file is taking too long",
+        PlayerInstallFailureReason::PlayerNotResponding => {
+            "the player is not responding; try again"
+        }
+        PlayerInstallFailureReason::InternalError => "internal player error",
     }
 }
 
 /// Формулировки отказа подготовки локального файла (таблица сессии 02).
 const fn preparation_failure_phrase(reason: LocalOpenFailureReason) -> &'static str {
     match reason {
-        LocalOpenFailureReason::FileNotFound => "файл не найден",
-        LocalOpenFailureReason::AccessDenied => "нет доступа к файлу",
-        LocalOpenFailureReason::IsDirectory => "это папка, а не файл",
-        LocalOpenFailureReason::EmptyFile => "файл пустой",
-        LocalOpenFailureReason::UnrecognizedFormat => {
-            "формат файла не распознан или не поддерживается"
-        }
-        LocalOpenFailureReason::DamagedOrTruncated => "файл повреждён или обрезан",
-        LocalOpenFailureReason::ReadFailed => "не удалось прочитать файл",
-        LocalOpenFailureReason::ReadTimedOut => "файл читается слишком долго",
-        LocalOpenFailureReason::NoAudioOrVideo => "в файле нет ни видео, ни звука",
-        LocalOpenFailureReason::ChangedDuringOpen => {
-            "файл изменился во время открытия, попробуйте ещё раз"
-        }
-        LocalOpenFailureReason::InternalError => "внутренняя ошибка плеера",
+        LocalOpenFailureReason::FileNotFound => "file not found",
+        LocalOpenFailureReason::AccessDenied => "access to the file is denied",
+        LocalOpenFailureReason::IsDirectory => "this is a folder, not a file",
+        LocalOpenFailureReason::EmptyFile => "the file is empty",
+        LocalOpenFailureReason::UnrecognizedFormat => "file format is unrecognized or unsupported",
+        LocalOpenFailureReason::DamagedOrTruncated => "the file is corrupted or truncated",
+        LocalOpenFailureReason::ReadFailed => "could not read the file",
+        LocalOpenFailureReason::ReadTimedOut => "reading the file is taking too long",
+        LocalOpenFailureReason::NoAudioOrVideo => "the file contains neither video nor audio",
+        LocalOpenFailureReason::ChangedDuringOpen => "the file changed while opening; try again",
+        LocalOpenFailureReason::InternalError => "internal player error",
     }
 }
 

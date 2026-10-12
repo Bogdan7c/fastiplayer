@@ -19,7 +19,7 @@ impl PresentationWindowOrderedSegmentSource for FailingContinuationSource {
         Err(self
             .failure
             .take()
-            .expect("consumer должен остановиться после injected source failure"))
+            .expect("consumer should stop after injected source failure"))
     }
 }
 
@@ -43,7 +43,7 @@ fn source_failure_after_media_reaches_demux_consumer_without_false_eof() {
             sniff_budget(),
             DemuxerOptions::default(),
         )
-        .expect("canonical first fragment должен открыться до отказа continuation");
+        .expect("canonical first fragment must open before failure continuation");
 
         // Проверяем публичный consumer path: реальные packets, затем typed error.
         // Fixture конечен; EOF/readiness вместо ошибки немедленно проваливает тест.
@@ -51,17 +51,14 @@ fn source_failure_after_media_reaches_demux_consumer_without_false_eof() {
         let error = loop {
             match demuxer.next_event() {
                 Ok(DemuxReadEvent::Packet(_)) => packet_count += 1,
-                Ok(event) => panic!("ожидались media packets или source error, получено {event:?}"),
+                Ok(event) => panic!("expected media packets or source error, got {event:?}"),
                 Err(error) => break error,
             }
         };
-        assert!(
-            packet_count > 0,
-            "ошибка должна возникнуть после media delivery"
-        );
+        assert!(packet_count > 0, "Error must occur after media delivery");
         let typed = error
             .downcast_ref::<PresentationWindowOrderedIsoMp4Error>()
-            .expect("consumer должен получить typed ordered-source error");
+            .expect("consumer must receive a typed ordered-source error");
         if expected_cancelled {
             assert!(matches!(
                 typed,

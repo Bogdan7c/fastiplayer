@@ -43,7 +43,7 @@ impl fmt::Display for InstalledMediaReleaseReceiptError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingOwnerOutcome => formatter.write_str(
-                "player worker завершился без authoritative installed-media release outcome",
+                "Player worker finished without an authoritative installed-media release outcome",
             ),
         }
     }

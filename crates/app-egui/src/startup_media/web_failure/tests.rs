@@ -16,7 +16,7 @@ fn preparation_error_keeps_typed_reason_and_full_diagnostic_chain() {
         stderr_bytes: 64,
         reason: YtDlpRejectionReason::LoginRequired,
     })
-    .context("Не удалось подготовить YtDlp media через candidate transport path");
+    .context("YtDlp media failed to prepare via candidate transport path");
 
     let failure = StartupWebPreparationFailure::from_preparation_error(&error);
 
@@ -32,7 +32,7 @@ fn disabled_extractor_fallback_is_typed_disabled_reason() {
         .context(
             "native HLS admission requires extractor fallback (NativeProfileCompatibilityFallback)",
         )
-        .expect_err("ошибка");
+        .expect_err("error");
 
     let failure = StartupWebPreparationFailure::from_preparation_error(&error);
 
@@ -42,10 +42,10 @@ fn disabled_extractor_fallback_is_typed_disabled_reason() {
 /// Отказ без типизированной причины не выдумывает её.
 #[test]
 fn unclassified_failure_has_generic_reason_and_keeps_diagnostic() {
-    let failure = StartupWebPreparationFailure::unclassified("job завершился без результата");
+    let failure = StartupWebPreparationFailure::unclassified("The job ended without a result.");
 
     assert_eq!(failure.reason(), WebOpenFailureReason::Unclassified);
-    assert_eq!(failure.diagnostic(), "job завершился без результата");
+    assert_eq!(failure.diagnostic(), "The job ended without a result.");
 }
 
 /// Контроллер, который открывает ссылку из командной строки и держит её черновик.

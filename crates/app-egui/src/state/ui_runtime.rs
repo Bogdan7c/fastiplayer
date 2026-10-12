@@ -135,7 +135,7 @@ fn playback_rate_from_step_count(
     match PlaybackRate::new(clamped_rate) {
         Ok(playback_rate) => Some(playback_rate),
         Err(error) => {
-            warn!(error = %error, clamped_rate, "UI сформировал некорректную скорость playback");
+            warn!(error = %error, clamped_rate, "UI formed an incorrect playback speed");
             None
         }
     }
@@ -202,14 +202,14 @@ impl AppState {
         let notifications_frame = self.notifications_frame(player_snapshot, Instant::now());
         let mut notification_output = crate::ui::notifications::NotificationUiOutput::default();
         let render_diagnostics = frame_context.render_diagnostics();
-        let selected_skin =
-            skin::skin_from_config(self.committed_config_snapshot.ui_skin()).unwrap_or_else(|| {
-            warn!(
-                skin = %self.committed_config_snapshot.ui_skin(),
-                "Config validation должна была отклонить неизвестный UI skin; используем minimal"
-            );
-            skin::MinimalSkin
-        });
+        let selected_skin = skin::skin_from_config(self.committed_config_snapshot.ui_skin())
+            .unwrap_or_else(|| {
+                warn!(
+                    skin = %self.committed_config_snapshot.ui_skin(),
+                    "Config validation should reject unknown UI skin; use minimal"
+                );
+                skin::MinimalSkin
+            });
         let controls_style = selected_skin.controls_style();
         // Один typed grid contract обслуживает titlebar и движущийся sidebar header.
         let window_chrome_edge_alignment =
@@ -492,7 +492,7 @@ impl AppState {
                         .player_worker
                         .try_send_command(PlayerCommand::SetVolume(requested_volume))
                     {
-                        warn!(error = %error, "Некорректное значение громкости из UI");
+                        warn!(error = %error, "Incorrect Volume Value from UI");
                     } else {
                         self.mark_pending_worker_redraw();
                     }
@@ -509,7 +509,7 @@ impl AppState {
                                     .remembered_audible_volume(),
                             })
                     {
-                        warn!(error = %error, "Не удалось переключить mute из UI");
+                        warn!(error = %error, "Could not switch mute from UI");
                     } else {
                         self.mark_pending_worker_redraw();
                     }
@@ -521,7 +521,7 @@ impl AppState {
                     };
 
                     if let Err(error) = self.player_worker.try_send_command(command) {
-                        warn!(error = %error, "Не удалось изменить скорость playback из UI");
+                        warn!(error = %error, "Unable to change playback speed from UI");
                     } else {
                         self.mark_pending_worker_redraw();
                     }
@@ -607,7 +607,7 @@ impl AppState {
             | TimelineAction::EndLiveScrubAtVisiblePreview(position) => {
                 #[expect(clippy::expect_used, reason = "release несёт scrub commit policy")]
                 let commit_policy = live_scrub_release_policy_from_action(action)
-                    .expect("release action всегда содержит typed scrub commit policy");
+                    .expect("release action always includes typed scrub commit policy");
                 if let Some(target) = self
                     .timeline_ui_state
                     .live_scrub_release_dispatch_target(Instant::now(), position)
@@ -663,7 +663,7 @@ impl AppState {
         let command_for_diagnostics = command.clone();
 
         if let Err(error) = self.player_worker.try_send_command(command) {
-            warn!(error = %error, "Не удалось отправить timeline command");
+            warn!(error = %error, "Could not send the timeline command");
             return;
         }
 
@@ -671,7 +671,7 @@ impl AppState {
             action = ?action,
             command = ?command_for_diagnostics,
             route = route.as_str(),
-            "Timeline action отправлен в player worker"
+            "Timeline action sent to player worker"
         );
         self.mark_pending_worker_redraw();
     }
@@ -714,7 +714,7 @@ impl AppState {
             .player_worker
             .try_send_command(PlayerCommand::Seek(SeekRequest::absolute(target.into())))
         {
-            warn!(error = %error, "Не удалось отправить configured hotkey seek");
+            warn!(error = %error, "Could not send the configured hotkey seek");
         } else {
             self.mark_pending_worker_redraw();
         }
@@ -745,7 +745,7 @@ impl AppState {
                         fallback_volume: self.committed_config_snapshot.remembered_audible_volume(),
                     })
                 {
-                    warn!(error = %error, "Не удалось переключить mute");
+                    warn!(error = %error, "Failed to switch mute");
                 } else {
                     self.mark_pending_worker_redraw();
                 }
@@ -792,11 +792,11 @@ impl AppState {
         match LocalFileOpenJob::spawn_picker(window, self.local_file_open_wake_port.clone()) {
             Ok(job) => {
                 self.local_file_open_job = Some(job);
-                self.set_startup_pending("Выбор media-файла...".to_string());
+                self.set_startup_pending("Selecting a media file...".to_string());
             }
             Err(error) => {
-                warn!(error = %error, "Не удалось запустить local file open job");
-                self.set_startup_error(format!("Ошибка открытия media-файла: {error}"));
+                warn!(error = %error, "Could not start the local file open job");
+                self.set_startup_error(format!("Opening the media file error: {error}"));
             }
         }
     }

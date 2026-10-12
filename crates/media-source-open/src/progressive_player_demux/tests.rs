@@ -85,18 +85,18 @@ fn next_packet_without_blocking(demuxer: &mut dyn Demuxer) -> Packet {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let started = Instant::now();
-        let event = demuxer.next_event().expect("fake не падает");
+        let event = demuxer.next_event().expect("Fake doesn't fall");
         assert!(
             started.elapsed() < Duration::from_millis(100),
-            "next_event заблокировал поток player-а на {:?}",
+            "next_event blocked player stream at {:?}",
             started.elapsed()
         );
         match event {
             DemuxReadEvent::Packet(packet) => return packet,
             DemuxReadEvent::TemporarilyUnavailable(hint) => thread::sleep(hint.retry_after()),
-            other => panic!("неожиданное событие: {other:?}"),
+            other => panic!("surprise: {other:?}"),
         }
-        assert!(Instant::now() < deadline, "packet так и не пришёл");
+        assert!(Instant::now() < deadline, "The packet never came.");
     }
 }
 
@@ -110,11 +110,11 @@ fn seekable_input_gets_seek_port_and_never_blocks_player_thread() {
         CancellationToken::new(),
         prefetch_config(),
     )
-    .expect("seekable runtime стартует");
+    .expect("Seekable Runtime Starts");
     let seek_port = player_demuxer
         .seek_port
         .take()
-        .expect("seekable вход отдаёт seek port");
+        .expect("Seekable entrance to seek port");
 
     assert_eq!(
         player_demuxer.demuxer.seekability(),
@@ -129,13 +129,13 @@ fn seekable_input_gets_seek_port_and_never_blocks_player_thread() {
             request_id,
             DemuxSeekRequest::accurate(Duration::from_secs(5)),
         )
-        .expect("seek принят в очередь worker-а");
+        .expect("Received from the worker's list");
     let deadline = Instant::now() + Duration::from_secs(5);
     let receipt = loop {
         if let Some(receipt) = seek_port.poll_seek_receipt() {
             break receipt;
         }
-        assert!(Instant::now() < deadline, "seek receipt не пришёл");
+        assert!(Instant::now() < deadline, "seek receipt He didn't come");
         thread::sleep(Duration::from_millis(1));
     };
     assert_eq!(receipt.request_id, request_id);
@@ -158,7 +158,7 @@ fn streaming_input_keeps_forward_only_contract_without_seek_port() {
         CancellationToken::new(),
         prefetch_config(),
     )
-    .expect("forward-only runtime стартует");
+    .expect("The forward-only runtime will start.");
 
     assert!(player_demuxer.seek_port.is_none());
     assert!(matches!(
@@ -182,7 +182,7 @@ fn seekable_transport_with_non_seekable_container_is_typed_startup_error() {
         CancellationToken::new(),
         prefetch_config(),
     ) else {
-        panic!("несогласованная seekability должна отклоняться");
+        panic!("Uncoordinated seekability must be rejected");
     };
 
     assert!(
@@ -239,7 +239,7 @@ impl Demuxer for InstantDemuxer {
 fn tiny_prefetch_window_still_queues_a_batch_of_packets() {
     let window_equals_chunk =
         media_prefetch::PrefetchConfig::new(64 * 1024, 1024 * 1024, 1024 * 1024)
-            .expect("минимальное окно из config-а");
+            .expect("Minimum window of config-a");
     let mut player_demuxer = into_player_demuxer(
         Box::new(InstantDemuxer {
             next_pts: Duration::ZERO,
@@ -248,7 +248,7 @@ fn tiny_prefetch_window_still_queues_a_batch_of_packets() {
         CancellationToken::new(),
         window_equals_chunk,
     )
-    .expect("seekable runtime стартует");
+    .expect("Seekable Runtime Starts");
     // Дать worker-у наполнить очередь.
     thread::sleep(Duration::from_millis(200));
 
@@ -263,6 +263,6 @@ fn tiny_prefetch_window_still_queues_a_batch_of_packets() {
 
     assert_eq!(
         consecutive_packets, 64,
-        "player должен получить пачку пакетов подряд, без TemporarilyUnavailable"
+        "The player must receive a bundle of packages in a row, without TemporarilyUnavailable"
     );
 }

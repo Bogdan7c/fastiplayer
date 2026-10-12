@@ -10,19 +10,19 @@ use super::*;
 /// Строит повторяемый video component для layout tests.
 fn video_component() -> VideoComponentDescriptor {
     let transport =
-        NormalizedTransport::parse(RawTransportIdentity::new("https").expect("transport валиден"));
+        NormalizedTransport::parse(RawTransportIdentity::new("https").expect("transport valid"));
     let container = ContainerIdentity::parse(
         None,
-        Some(RawContainerIdentity::new("webm").expect("container валиден")),
+        Some(RawContainerIdentity::new("webm").expect("container valid")),
     );
     let codec =
-        NormalizedCodec::parse(RawCodecIdentity::new("vp09.00.41.08").expect("codec валиден"));
+        NormalizedCodec::parse(RawCodecIdentity::new("vp09.00.41.08").expect("codec valid"));
     let video = VideoTrackDescriptor::new(
         codec,
-        Some(VideoWidth::new(1920).expect("width валидна")),
-        Some(VideoHeight::new(1080).expect("height валидна")),
-        Some(FrameRate::new(30_000, 1001).expect("frame rate валиден")),
-        Some(Bitrate::new(4_000_000).expect("video bitrate валиден")),
+        Some(VideoWidth::new(1920).expect("width valid")),
+        Some(VideoHeight::new(1080).expect("height valid")),
+        Some(FrameRate::new(30_000, 1001).expect("frame rate valid")),
+        Some(Bitrate::new(4_000_000).expect("video bitrate valid")),
         DynamicRange::Sdr,
     );
 
@@ -37,17 +37,17 @@ fn video_component() -> VideoComponentDescriptor {
 /// Строит повторяемый audio component для layout tests.
 fn audio_component() -> AudioComponentDescriptor {
     let transport =
-        NormalizedTransport::parse(RawTransportIdentity::new("https").expect("transport валиден"));
+        NormalizedTransport::parse(RawTransportIdentity::new("https").expect("transport valid"));
     let container = ContainerIdentity::parse(
         None,
-        Some(RawContainerIdentity::new("webm").expect("container валиден")),
+        Some(RawContainerIdentity::new("webm").expect("container valid")),
     );
-    let codec = NormalizedCodec::parse(RawCodecIdentity::new("opus").expect("codec валиден"));
+    let codec = NormalizedCodec::parse(RawCodecIdentity::new("opus").expect("codec valid"));
     let audio = AudioTrackDescriptor::new(
         codec,
-        Some(SampleRate::new(48_000).expect("sample rate валидна")),
-        Some(ChannelCount::new(2).expect("channels валидны")),
-        Some(Bitrate::new(160_000).expect("audio bitrate валиден")),
+        Some(SampleRate::new(48_000).expect("sample rate valid")),
+        Some(ChannelCount::new(2).expect("channels valid")),
+        Some(Bitrate::new(160_000).expect("audio bitrate valid")),
         None,
     );
 
@@ -97,17 +97,17 @@ fn candidate_keeps_snapshot_and_refresh_identities_separate() {
     let identity = CandidateIdentity::new(
         SourceIdentity::new(1),
         ExtractionGeneration::new(2),
-        CandidateFormatIdentity::new("137+140").expect("format id валиден"),
+        CandidateFormatIdentity::new("137+140").expect("formatid"),
     );
-    let semantic = SemanticIdentity::new(SourceIdentity::new(1), "h264-1080p-aac")
-        .expect("semantic id валиден");
+    let semantic =
+        SemanticIdentity::new(SourceIdentity::new(1), "h264-1080p-aac").expect("semantic id valid");
     let candidate = CandidateDescriptor::new(
         identity.clone(),
         semantic.clone(),
         StreamLayout::VideoOnly(video_component()),
         Vec::new(),
     )
-    .expect("candidate валиден");
+    .expect("candidate is valid");
 
     assert_eq!(candidate.identity(), &identity);
     assert_eq!(candidate.semantic_identity(), &semantic);
@@ -120,10 +120,10 @@ fn candidate_rejects_cross_source_semantic_identity() {
     let identity = CandidateIdentity::new(
         SourceIdentity::new(1),
         ExtractionGeneration::new(2),
-        CandidateFormatIdentity::new("137").expect("format id валиден"),
+        CandidateFormatIdentity::new("137").expect("formatid"),
     );
     let semantic =
-        SemanticIdentity::new(SourceIdentity::new(2), "h264-1080p").expect("semantic id валиден");
+        SemanticIdentity::new(SourceIdentity::new(2), "h264-1080p").expect("semantic id valid");
 
     let error = CandidateDescriptor::new(
         identity,
@@ -131,7 +131,7 @@ fn candidate_rejects_cross_source_semantic_identity() {
         StreamLayout::VideoOnly(video_component()),
         Vec::new(),
     )
-    .expect_err("cross-source identity должна быть rejected");
+    .expect_err("cross-source identity must have rejected");
 
     assert_eq!(
         error,
@@ -148,15 +148,15 @@ fn candidate_rejects_cross_source_subtitle_identity() {
     let identity = CandidateIdentity::new(
         SourceIdentity::new(1),
         ExtractionGeneration::new(2),
-        CandidateFormatIdentity::new("137").expect("format id валиден"),
+        CandidateFormatIdentity::new("137").expect("formatid"),
     );
     let semantic =
-        SemanticIdentity::new(SourceIdentity::new(1), "h264-1080p").expect("semantic id валиден");
+        SemanticIdentity::new(SourceIdentity::new(1), "h264-1080p").expect("semantic id valid");
     let subtitle = SubtitleDescriptor::new(
         SemanticIdentity::new(SourceIdentity::new(2), "subtitle-en")
-            .expect("subtitle identity валидна"),
-        SubtitleFormatIdentity::new("vtt").expect("subtitle format валиден"),
-        Some(LanguageTag::new("en").expect("language валиден")),
+            .expect("subtitle identity valid"),
+        SubtitleFormatIdentity::new("vtt").expect("subtitle format valid"),
+        Some(LanguageTag::new("en").expect("languagevalid")),
     );
 
     let error = CandidateDescriptor::new(
@@ -165,7 +165,7 @@ fn candidate_rejects_cross_source_subtitle_identity() {
         StreamLayout::VideoOnly(video_component()),
         vec![subtitle],
     )
-    .expect_err("cross-source subtitle должна быть rejected");
+    .expect_err("cross-source subtitle must have rejected");
 
     assert_eq!(
         error,

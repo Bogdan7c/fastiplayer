@@ -37,16 +37,16 @@ fn sync_discard_ready_frame_syncs_and_returns_handle_to_pool() {
     let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
 
     sync_discard_ready_frame(&mut frame_pool, handle, "flush")
-        .expect("flush discard должен sync-нуть ready tail frame");
+        .expect("flush discard must sync-lash ready tail frame");
 
     assert!(
         sync_called.get(),
-        "discard path обязан вызвать blocking sync перед release"
+        "discard path muster blocking sync beforehand release"
     );
     assert_eq!(
         frame_pool.num_free(),
         initial_free_frames + 1,
-        "discard path должен вернуть backing frame в pool"
+        "discard path should be returned backing frame into pool"
     );
 }
 
@@ -73,7 +73,7 @@ fn overflow_forces_sync_of_oldest_only_as_fallback() {
             generation: 1,
         },
     )
-    .expect("первый enqueue должен пройти без overflow");
+    .expect("The first enqueue will pass without overflow.");
     enqueue_suppressed_frame_for_reclaim_in_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
@@ -86,16 +86,16 @@ fn overflow_forces_sync_of_oldest_only_as_fallback() {
             generation: 2,
         },
     )
-    .expect("overflow enqueue должен освободить oldest и принять incoming");
+    .expect("overflow enqueue free oldest accept incoming");
 
     assert_eq!(suppressed_reclaim_queue.len(), 1);
     assert!(
         oldest_sync_called.get(),
-        "overflow должен forced-sync только oldest handle"
+        "overflow must be forced-sync only oldest handle"
     );
     assert!(
         !incoming_sync_called.get(),
-        "incoming handle нельзя sync-ать как обычную per-frame policy"
+        "incoming handle cannot be sync-regularize per-frame policy"
     );
     assert_eq!(suppressed_reclaim_counters.ring_full_count, 1);
     assert_eq!(suppressed_reclaim_counters.forced_sync_count, 1);

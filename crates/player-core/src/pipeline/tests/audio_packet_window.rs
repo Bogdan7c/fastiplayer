@@ -6,13 +6,13 @@ use super::*;
 
 /// Строит exact audio window для lifecycle-тестов pending queue.
 fn bounded_audio_window(track_id: TrackId) -> PacketPresentationWindow {
-    let time_base = TimeBase::new(1, 48_000).expect("test time base должна быть валидной");
+    let time_base = TimeBase::new(1, 48_000).expect("The test time base must be valid.");
     PacketPresentationWindow::Bounded(
         ExactPresentationWindow::new(
             TrackTimestamp::new(track_id, 480, time_base),
             TrackTimestamp::new(track_id, 1_440, time_base),
         )
-        .expect("test presentation window должно быть валидным"),
+        .expect("The test presentation window must be valid."),
     )
 }
 
@@ -31,14 +31,14 @@ fn throttled_requeue_preserves_exact_audio_packet_window() {
 
     let throttled_packet = pipeline
         .pop_pending_audio_packet_front()
-        .expect("throttle path должен забрать front packet");
+        .expect("Throttle path should pick up front packet");
     assert_eq!(throttled_packet.presentation_window(), bounded_window);
 
     pipeline.push_pending_audio_packet_front(throttled_packet);
 
     let requeued_packet = pipeline
         .pop_pending_audio_packet_front()
-        .expect("throttle path должен вернуть тот же packet");
+        .expect("Throttle path should return the same packet");
     assert_eq!(requeued_packet.presentation_window(), bounded_window);
     assert_eq!(requeued_packet.encoded_bytes(), b"audio");
 }

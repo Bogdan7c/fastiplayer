@@ -43,7 +43,7 @@ impl StartupMediaController {
                     }
                     LocalFileOpenResult::Selected { .. } => {
                         self.handle_preparation_failure(
-                            "Startup local owner получил неожиданный picker result".to_owned(),
+                            "Startup local owner got an unexpected picker result".to_owned(),
                             app_state,
                             playlist_runtime,
                         );
@@ -195,7 +195,7 @@ impl StartupMediaController {
                 cancelled_target,
                 Some(StartupMediaTarget::RestoredCurrent(_))
             ),
-            "Стартовая подготовка локального файла отменена"
+            "Starting preparation of the local file is canceled"
         );
     }
 }

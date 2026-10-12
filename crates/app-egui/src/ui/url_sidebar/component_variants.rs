@@ -17,14 +17,14 @@ use crate::web_media_stream_model::{UrlSidebarPendingSelection, WebMediaStreamGe
 
 use super::codec_label;
 
-pub(super) const VIDEO_HEADING: &str = "Видео";
-pub(super) const AUDIO_HEADING: &str = "Аудио";
-pub(super) const COUPLED_HEADING: &str = "Видео и аудио";
-pub(super) const UNAVAILABLE_TEXT: &str = "Раздельный выбор недоступен для этого формата";
-pub(super) const VIDEO_AXIS_MISSING_TEXT: &str = "В этом формате нет отдельной видеодорожки";
-pub(super) const AUDIO_AXIS_MISSING_TEXT: &str = "В этом формате нет отдельной аудиодорожки";
-const ACTIVE_VARIANT_TEXT: &str = "Этот вариант уже активен.";
-const SWITCH_PENDING_TEXT: &str = "Сначала дождитесь завершения текущего переключения.";
+pub(super) const VIDEO_HEADING: &str = "Video";
+pub(super) const AUDIO_HEADING: &str = "Audio";
+pub(super) const COUPLED_HEADING: &str = "Video and audio";
+pub(super) const UNAVAILABLE_TEXT: &str = "Separate selection is unavailable for this format";
+pub(super) const VIDEO_AXIS_MISSING_TEXT: &str = "This format has no separate video track";
+pub(super) const AUDIO_AXIS_MISSING_TEXT: &str = "This format has no separate audio track";
+const ACTIVE_VARIANT_TEXT: &str = "This variant is already active.";
+const SWITCH_PENDING_TEXT: &str = "Wait for the current switch to finish first.";
 
 /// Рисует две стабильные секции после candidate inventory.
 pub(super) fn show(
@@ -235,11 +235,11 @@ fn show_variant_row(
     ui.group(|ui| {
         ui.set_min_width(0.0);
         ui.label(if pending {
-            "Ожидает переключения"
+            "Waiting to switch"
         } else if active {
-            "Активный"
+            "Active"
         } else {
-            "Доступен"
+            "Available"
         });
         ui.label(label);
         variant_button(ui, row_action, active, pending_selection.is_some()).clicked()
@@ -264,11 +264,7 @@ pub(super) fn variant_button(
             |ui| {
                 ui.add_enabled(
                     !active && !switch_in_progress,
-                    Button::new(if active {
-                        "Активно"
-                    } else {
-                        "Выбрать"
-                    }),
+                    Button::new(if active { "Active" } else { "Select" }),
                 )
             },
         )
@@ -293,13 +289,13 @@ fn video_label(variant: &WebMediaVideoComponentVariantPresentation) -> String {
         parts.push(format!("{:.2} fps", numerator as f64 / denominator as f64));
     }
     if let Some(bitrate) = variant.bitrate {
-        parts.push(format!("{} кбит/с", bitrate / 1_000));
+        parts.push(format!("{} kbps", bitrate / 1_000));
     }
     if let Some(codec) = variant.codec {
         parts.push(codec_label(codec).to_owned());
     }
     parts.push(dynamic_range_label(variant.dynamic_range).to_owned());
-    fallback_label(parts, "Параметры видео не указаны")
+    fallback_label(parts, "Video parameters are unspecified")
 }
 
 fn audio_label(variant: &WebMediaAudioComponentVariantPresentation) -> String {
@@ -308,18 +304,18 @@ fn audio_label(variant: &WebMediaAudioComponentVariantPresentation) -> String {
         parts.push(language_label.to_string());
     }
     if let Some(bitrate) = variant.bitrate {
-        parts.push(format!("{} кбит/с", bitrate / 1_000));
+        parts.push(format!("{} kbps", bitrate / 1_000));
     }
     if let Some(sample_rate_hz) = variant.sample_rate_hz {
-        parts.push(format!("{sample_rate_hz} Гц"));
+        parts.push(format!("{sample_rate_hz} Hz"));
     }
     if let Some(channels) = variant.channels {
-        parts.push(format!("{channels} кан."));
+        parts.push(format!("{channels} ch."));
     }
     if let Some(codec) = variant.codec {
         parts.push(codec_label(codec).to_owned());
     }
-    fallback_label(parts, "Параметры аудио не указаны")
+    fallback_label(parts, "Audio parameters are unspecified")
 }
 
 /// Объединяет safe metadata одной coupled row, не создавая независимый выбор осей.
@@ -343,6 +339,6 @@ fn dynamic_range_label(dynamic_range: DynamicRange) -> &'static str {
     match dynamic_range {
         DynamicRange::Sdr => "SDR",
         DynamicRange::Hdr => "HDR",
-        DynamicRange::Unknown => "Dynamic range не указан",
+        DynamicRange::Unknown => "Dynamic range is unspecified",
     }
 }

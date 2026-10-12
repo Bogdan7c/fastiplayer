@@ -69,9 +69,9 @@ fn schema_v2_roundtrips_compound_queue_without_flattening_parts() {
         .expect("append compound fixture");
 
     let serialized = serialize_state(PlaylistStateSnapshot::new(&queue, RepeatMode::StopAtEnd))
-        .expect("schema v2 сохраняет compound");
+        .expect("Schema v2 retains the compound");
     let serialized_json: serde_json::Value =
-        serde_json::from_slice(&serialized).expect("schema v2 JSON валиден");
+        serde_json::from_slice(&serialized).expect("schema v2 JSON is valid");
 
     assert_eq!(serialized_json["schema_version"].as_u64(), Some(2));
     assert_eq!(

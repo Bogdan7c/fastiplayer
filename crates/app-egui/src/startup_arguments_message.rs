@@ -4,10 +4,8 @@
 //! победил по правилам drag & drop и сколько аргументов какого вида пропущено. Здесь —
 //! только формулировки. Показ — информационная плашка (8 с) через `AppState::notify_info`.
 //!
-//! Правила текста (общие правила плана): по-русски, без путей к папкам, без имён
+//! Правила текста (общие правила плана): по-английски, без путей к папкам, без имён
 //! Rust-типов; пропущенное называется числом и видом («2 плейлиста и 1 ссылка»).
-
-use crate::playlist_skip_message::{RussianPluralForm, russian_plural_form};
 
 /// Кого открыл startup из нескольких аргументов (решение владельца 6 сессии 12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,15 +38,15 @@ pub(crate) fn several_arguments_skipped_notice(
     let mut sentences = Vec::new();
     if let Some(skipped_kinds) = skipped_kinds_text(skipped) {
         let opened = match winner {
-            SeveralArgumentsWinnerKind::LocalFiles => "Открыты только видео- и аудиофайлы",
-            SeveralArgumentsWinnerKind::FirstPlaylist => "Открыт только первый плейлист",
-            SeveralArgumentsWinnerKind::FirstLink => "Открыта только первая ссылка",
+            SeveralArgumentsWinnerKind::LocalFiles => "Only video and audio files were opened",
+            SeveralArgumentsWinnerKind::FirstPlaylist => "Only the first Playlist was opened",
+            SeveralArgumentsWinnerKind::FirstLink => "Only the first link was opened",
         };
-        sentences.push(format!("{opened}, пропущено: {skipped_kinds}."));
+        sentences.push(format!("{opened}; skipped: {skipped_kinds}."));
     }
     if skipped.files_over_queue_limit > 0 {
         sentences.push(format!(
-            "В очередь помещается не больше {queue_capacity} {}, остальные {} не открыты.",
+            "The queue holds at most {queue_capacity} {}; the remaining {} were not opened.",
             files_noun(queue_capacity),
             skipped.files_over_queue_limit,
         ));
@@ -69,38 +67,27 @@ fn skipped_kinds_text(skipped: SkippedStartupArguments) -> Option<String> {
     if skipped.links > 0 {
         parts.push(format!("{} {}", skipped.links, links_noun(skipped.links)));
     }
-    (!parts.is_empty()).then(|| parts.join(" и "))
+    (!parts.is_empty()).then(|| parts.join(" and "))
 }
 
-/// «плейлист» / «плейлиста» / «плейлистов».
+/// Английское существительное: 21 и 101 тоже требуют множественного числа.
 const fn playlists_noun(count: usize) -> &'static str {
-    match russian_plural_form(count) {
-        RussianPluralForm::One => "плейлист",
-        RussianPluralForm::Few => "плейлиста",
-        RussianPluralForm::Many => "плейлистов",
-    }
+    if count == 1 { "Playlist" } else { "Playlists" }
 }
 
-/// «ссылка» / «ссылки» / «ссылок».
+/// Единственное число используется только для ровно одной ссылки.
 const fn links_noun(count: usize) -> &'static str {
-    match russian_plural_form(count) {
-        RussianPluralForm::One => "ссылка",
-        RussianPluralForm::Few => "ссылки",
-        RussianPluralForm::Many => "ссылок",
-    }
+    if count == 1 { "link" } else { "links" }
 }
 
-/// «файла» / «файлов» после «не больше N» (родительный падеж).
+/// В английском форма существительного не зависит от падежа.
 const fn files_noun(count: usize) -> &'static str {
-    match russian_plural_form(count) {
-        RussianPluralForm::One => "файла",
-        RussianPluralForm::Few | RussianPluralForm::Many => "файлов",
-    }
+    if count == 1 { "file" } else { "files" }
 }
 
 /// Первый файл открыт, а остальные не удалось поставить в очередь за ним.
 pub(crate) const FOLLOW_UP_FILES_NOT_QUEUED_MESSAGE: &str =
-    "Первый файл открыт, но остальные файлы не удалось добавить в очередь";
+    "The first file was opened, but the remaining files could not be added to the queue";
 
 #[cfg(test)]
 mod tests {
@@ -127,15 +114,15 @@ mod tests {
         };
         assert_eq!(
             notice(2, 1).as_deref(),
-            Some("Открыты только видео- и аудиофайлы, пропущено: 2 плейлиста и 1 ссылка.")
+            Some("Only video and audio files were opened; skipped: 2 Playlists and 1 link.")
         );
         assert_eq!(
             notice(0, 5).as_deref(),
-            Some("Открыты только видео- и аудиофайлы, пропущено: 5 ссылок.")
+            Some("Only video and audio files were opened; skipped: 5 links.")
         );
         assert_eq!(
             notice(1, 0).as_deref(),
-            Some("Открыты только видео- и аудиофайлы, пропущено: 1 плейлист.")
+            Some("Only video and audio files were opened; skipped: 1 Playlist.")
         );
     }
 
@@ -148,7 +135,7 @@ mod tests {
                 CAPACITY,
             )
             .as_deref(),
-            Some("Открыт только первый плейлист, пропущено: 1 плейлист и 2 ссылки.")
+            Some("Only the first Playlist was opened; skipped: 1 Playlist and 2 links.")
         );
         assert_eq!(
             several_arguments_skipped_notice(
@@ -157,7 +144,7 @@ mod tests {
                 CAPACITY,
             )
             .as_deref(),
-            Some("Открыта только первая ссылка, пропущено: 21 ссылка.")
+            Some("Only the first link was opened; skipped: 21 links.")
         );
     }
 
@@ -187,8 +174,7 @@ mod tests {
         assert_eq!(
             notice.as_deref(),
             Some(
-                "Открыты только видео- и аудиофайлы, пропущено: 1 плейлист. \
-                 В очередь помещается не больше 50000 файлов, остальные 7 не открыты."
+                "Only video and audio files were opened; skipped: 1 Playlist. The queue holds at most 50000 files; the remaining 7 were not opened."
             )
         );
     }

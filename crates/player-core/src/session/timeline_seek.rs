@@ -82,7 +82,7 @@ impl PlayerSession {
                 media_instance_id: request.media_instance_id,
                 error: PlayerError::new(
                     PlayerErrorKind::SeekUnavailable,
-                    "exact timeline seek не был принят seek transaction",
+                    "exact timeline seek not accepted by the seek transaction",
                 ),
             });
             return;

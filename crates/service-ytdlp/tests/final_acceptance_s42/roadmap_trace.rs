@@ -96,13 +96,13 @@ fn exact_string_set(values: &[Value], context: &str) -> BTreeSet<String> {
         let text = value
             .as_str()
             // Context называет точное место malformed artifact.
-            .unwrap_or_else(|| panic!("{context} содержит нестроковое значение"));
+            .unwrap_or_else(|| panic!("{context} contains a non-linear value."));
         // Пустая identity не может участвовать в trace.
-        assert!(!text.is_empty(), "{context} содержит пустую identity");
+        assert!(!text.is_empty(), "{context} contains an empty identity.");
         // Duplicate evidence/requirement identity запрещён.
         assert!(
             result.insert(text.to_owned()),
-            "{context} содержит duplicate `{text}`"
+            "{context} contains duplicate '{text}'"
         );
     }
     // Owned set не удерживает borrow JSON document-а.
@@ -117,7 +117,7 @@ fn requirement_by_id<'document>(document: &'document Value, expected_id: &str) -
         // Exact byte equality запрещает alias и prefix matching.
         .find(|requirement| required_string(requirement, "id") == expected_id)
         // Missing ratcheted row немедленно ломает gate.
-        .unwrap_or_else(|| panic!("roadmap trace не содержит requirement `{expected_id}`"))
+        .unwrap_or_else(|| panic!("roadmap trace lacking requirement `{expected_id}`"))
 }
 
 /// Возвращает exact evidence IDs одного requirement.
@@ -132,7 +132,7 @@ fn requirement_evidence_ids(document: &Value, requirement_id: &str) -> BTreeSet<
     // Пустая ссылка не является goal→tests trace.
     assert!(
         !evidence_ids.is_empty(),
-        "requirement `{requirement_id}` не имеет evidence"
+        "requirement '{requirement_id}' is not evidence"
     );
     // Caller получает canonical set.
     evidence_ids
@@ -144,7 +144,7 @@ fn assert_requirement_schema(requirement: &Value) {
     let requirement_object = requirement
         .as_object()
         // Array scalar не может пройти schema.
-        .expect("roadmap requirement обязан быть object");
+        .expect("The roadmap requirement must be an object");
     // Version 1 допускает только три explicit fields.
     let actual_fields = requirement_object
         .keys()
@@ -156,12 +156,12 @@ fn assert_requirement_schema(requirement: &Value) {
     assert_eq!(
         actual_fields,
         BTreeSet::from(["id", "goal", "evidence_ids"]),
-        "roadmap requirement schema изменился без version bump"
+        "roadmap requirement schema changed version bump"
     );
     // Human-readable goal не заменяет stable ID, но не может быть пустым.
     assert!(
         !required_string(requirement, "goal").is_empty(),
-        "roadmap requirement содержит пустой goal"
+        "The roadmap requirement contains an empty goal."
     );
 }
 
@@ -177,14 +177,14 @@ fn source_with_symbol(evidence_id: &str, evidence: &Value) -> String {
             && !parsed_path
                 .components()
                 .any(|component| matches!(component, std::path::Component::ParentDir)),
-        "evidence `{evidence_id}` содержит небезопасный path"
+        "evidence `{evidence_id}` contains an unsafe path"
     );
     // Source читается из canonical workspace root.
     let source_path = workspace_root().join(parsed_path);
     // Missing source является stale trace, а не skipped evidence.
     let source = fs::read_to_string(&source_path).unwrap_or_else(|error| {
         panic!(
-            "evidence `{evidence_id}` не удалось прочитать {}: {error}",
+            "Evidence '{evidence_id}' failed to read {}: {error}",
             source_path.display()
         )
     });
@@ -193,7 +193,7 @@ fn source_with_symbol(evidence_id: &str, evidence: &Value) -> String {
     // Подстрока является только common preflight; kind-specific checks идут ниже.
     assert!(
         !symbol.is_empty() && source.contains(symbol),
-        "evidence `{evidence_id}` не содержит symbol `{symbol}`"
+        "evidence '{evidence_id}' does not contain the symbol '{symbol}'"
     );
     // Source возвращается kind-specific validator-у.
     source
@@ -207,7 +207,7 @@ fn assert_python_unittest(evidence_id: &str, evidence: &Value) {
     let actual_fields = evidence
         .as_object()
         // Catalog entry обязан быть object.
-        .expect("Python evidence обязан быть object")
+        .expect("Python evidence must object")
         .keys()
         // Field names сравниваются без allocation.
         .map(String::as_str)
@@ -223,14 +223,14 @@ fn assert_python_unittest(evidence_id: &str, evidence: &Value) {
     // Exact directory исключает arbitrary tool source без теста.
     assert!(
         path.starts_with("scripts/tests/test_") && path.ends_with(".py"),
-        "Python evidence `{evidence_id}` не является checked-in unittest"
+        "Python evidence '{evidence_id}' is not checked-in unittest"
     );
     // Target является unittest.TestCase owner class.
     let target = required_string(evidence, "target");
     // Exact class declaration связывает symbol с executable discovery owner-ом.
     assert!(
         source.contains(&format!("class {target}(unittest.TestCase):")),
-        "Python evidence `{evidence_id}` не содержит target class `{target}`"
+        "Python evidence '{evidence_id}' does not contain target class '{target}'"
     );
     // Method обязан быть discoverable standard unittest test.
     let symbol = required_string(evidence, "symbol");
@@ -239,7 +239,7 @@ fn assert_python_unittest(evidence_id: &str, evidence: &Value) {
         symbol.starts_with("test_")
             && source.contains(&format!("    def {symbol}(self"))
             && source.contains("unittest.main()"),
-        "Python evidence `{evidence_id}` symbol `{symbol}` не является unittest test"
+        "Python evidence '{evidence_id}' symbol '{symbol}' not unittest test"
     );
 }
 
@@ -251,7 +251,7 @@ fn assert_script_function(evidence_id: &str, evidence: &Value) {
     let actual_fields = evidence
         .as_object()
         // Scalar не может пройти kind validator.
-        .expect("ScriptFunction evidence обязан быть object")
+        .expect("ScriptFunction evidence must be object")
         .keys()
         // Borrowed field names достаточно.
         .map(String::as_str)
@@ -269,7 +269,7 @@ fn assert_script_function(evidence_id: &str, evidence: &Value) {
         // Main CI owner.
         "scripts/ci-checks.sh" => "ci-checks",
         // Новый script требует обсуждаемого schema update.
-        _ => panic!("ScriptFunction evidence `{evidence_id}` имеет unknown owner `{path}`"),
+        _ => panic!("ScriptFunction evidence '{evidence_id}' has an unknown owner '{path}'"),
     };
     // Artifact target обязан совпасть с exact owner.
     assert_eq!(required_string(evidence, "target"), expected_target);
@@ -280,7 +280,7 @@ fn assert_script_function(evidence_id: &str, evidence: &Value) {
         source
             .lines()
             .any(|line| line.trim() == format!("{symbol}() {{")),
-        "ScriptFunction evidence `{evidence_id}` не содержит function `{symbol}`"
+        "ScriptFunction evidence '{evidence_id}' does not contain function '{symbol}'"
     );
 }
 
@@ -313,9 +313,9 @@ fn assert_roadmap_evidence(evidence_id: &str, evidence: &Value) {
             }
             // Docs/manual/decision evidence не доказывает hermetic goal.
             unexpected_kind =>
-                panic!("roadmap evidence `{evidence_id}` имеет unknown kind `{unexpected_kind}`"),
+                panic!("roadmap evidence '{evidence_id}' has an unknown kind '{unexpected_kind}'"),
         },
-        "roadmap evidence `{evidence_id}` имеет несовместимую role"
+        "roadmap evidence `{evidence_id}` incompatible role"
     );
 }
 
@@ -328,7 +328,7 @@ fn roadmap_trace_covers_exact_s42_requirements_and_real_checked_in_evidence() {
     let document_fields = document
         .as_object()
         // Scalar root не может быть roadmap manifest.
-        .expect("roadmap trace root обязан быть object")
+        .expect("roadmap trace root must object")
         .keys()
         // Borrowed keys достаточно для exact schema.
         .map(String::as_str)
@@ -399,9 +399,7 @@ fn roadmap_trace_covers_exact_s42_requirements_and_real_checked_in_evidence() {
         for evidence_id in evidence_ids {
             // Missing catalog entry является stale trace.
             let evidence = evidence_catalog.get(&evidence_id).unwrap_or_else(|| {
-                panic!(
-                    "requirement `{requirement_id}` ссылается на missing evidence `{evidence_id}`"
-                )
+                panic!("requirement '{requirement_id}' refers to missing evidence '{evidence_id}'")
             });
             // Kind-specific source/path/symbol/target проверяется независимо от reuse.
             assert_roadmap_evidence(&evidence_id, evidence);
@@ -416,14 +414,14 @@ fn roadmap_trace_covers_exact_s42_requirements_and_real_checked_in_evidence() {
         // Script-only requirement был бы лишь wiring claim без test ratchet.
         assert!(
             has_executable_test,
-            "requirement `{requirement_id}` не имеет executable test evidence"
+            "requirement {requirement_id} is not executable test evidence"
         );
     }
     // Ни один catalog row не может оставаться stale/dead.
     assert_eq!(
         referenced_evidence_ids,
         evidence_catalog.keys().cloned().collect::<BTreeSet<_>>(),
-        "roadmap trace содержит dead либо незаявленное evidence"
+        "roadmap trace containing dead undeclared evidence"
     );
 }
 

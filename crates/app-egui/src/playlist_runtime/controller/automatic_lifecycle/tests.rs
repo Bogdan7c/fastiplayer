@@ -381,7 +381,7 @@ fn cue_clean_ended_advances_to_exact_next_track_item() {
             .traversal_current()
             .map(|current| current.item_id()),
         Some(ids[0]),
-        "current меняется только после matching Installed"
+        "current changes only after matching Installed"
     );
 }
 

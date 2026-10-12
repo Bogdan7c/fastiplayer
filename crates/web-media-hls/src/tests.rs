@@ -396,7 +396,7 @@ fn default_and_autoselect_do_not_break_strict_audio_tie() {
             main_track_layout: HlsMainTrackLayoutIntent::MuxedAv,
         },
     )
-    .expect_err("DEFAULT/AUTOSELECT не являются exact evidence");
+    .expect_err("DEFAULT/AUTOSELECT is not exact evidence.");
     assert!(matches!(error, HlsVodOpenError::AmbiguousAudioRendition));
 }
 
@@ -421,7 +421,7 @@ fn mixed_in_band_and_external_audio_group_is_typed_ambiguous() {
             main_track_layout: HlsMainTrackLayoutIntent::MuxedAv,
         },
     )
-    .expect_err("topology нельзя выбирать по наличию URI");
+    .expect_err("topology You can't choose by presence URI");
     assert!(matches!(error, HlsVodOpenError::AmbiguousAudioRendition));
 }
 
@@ -503,10 +503,10 @@ fn top_media_layout_accepts_video_or_single_audio_only() {
     let layout = HlsMainTrackLayoutIntent::VideoWithOptionalAudioOrAudioOnly;
     let accepts =
         |tracks: &[media_core::TrackInfo]| validate_track_shape(tracks, layout, "top").is_ok();
-    assert!(accepts(std::slice::from_ref(&video)), "видео без звука");
-    assert!(accepts(&[video.clone(), audio.clone()]), "видео и звук");
-    assert!(accepts(std::slice::from_ref(&audio)), "только звук");
-    assert!(!accepts(&[]), "пустой набор дорожек");
+    assert!(accepts(std::slice::from_ref(&video)), "soundless");
+    assert!(accepts(&[video.clone(), audio.clone()]), "video");
+    assert!(accepts(std::slice::from_ref(&audio)), "sound");
+    assert!(!accepts(&[]), "lanyard");
     assert!(
         !accepts(&[audio.clone(), track(3, TrackKind::Audio)]),
         "два звука"

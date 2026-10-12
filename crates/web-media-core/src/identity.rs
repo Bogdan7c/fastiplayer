@@ -43,14 +43,14 @@ pub enum IdentityBuildError {
 impl fmt::Display for IdentityBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty { field } => write!(formatter, "{field:?} identity не может быть пустой"),
+            Self::Empty { field } => write!(formatter, "{field:?} identity can't be empty"),
             Self::TooLong {
                 field,
                 provided_bytes,
                 maximum_bytes,
             } => write!(
                 formatter,
-                "{field:?} identity занимает {provided_bytes} bytes при лимите {maximum_bytes}"
+                "{field:?} identity occupies {provided_bytes} bytes at limit {maximum_bytes}"
             ),
         }
     }
@@ -280,15 +280,15 @@ mod tests {
     #[test]
     fn identity_bounds_and_redaction_are_secret_safe() {
         let exact_identity = "format-with-sensitive-looking-material";
-        let identity = CandidateFormatIdentity::new(exact_identity).expect("identity валидна");
+        let identity = CandidateFormatIdentity::new(exact_identity).expect("identity valid");
 
         assert_eq!(identity.as_str(), exact_identity);
         assert!(!format!("{identity:?}").contains(exact_identity));
         assert_eq!(identity.to_string(), "<redacted>");
 
         let overflow = "я".repeat(MAX_CANDIDATE_FORMAT_IDENTITY_UTF8_BYTES / 2 + 1);
-        let error =
-            CandidateFormatIdentity::new(overflow).expect_err("bound считается в UTF-8 bytes");
+        let error = CandidateFormatIdentity::new(overflow)
+            .expect_err("It is considered bound in UTF-8 bytes.");
         assert_eq!(
             error,
             IdentityBuildError::TooLong {
@@ -304,20 +304,20 @@ mod tests {
     fn semantic_identity_equality_is_independent_from_extraction_generation() {
         let source = SourceIdentity::new(7);
         let semantic_before =
-            SemanticIdentity::new(source, "vp9-1080p-opus").expect("semantic key валиден");
+            SemanticIdentity::new(source, "vp9-1080p-opus").expect("semantic key valid");
         let semantic_after =
-            SemanticIdentity::new(source, "vp9-1080p-opus").expect("semantic key валиден");
+            SemanticIdentity::new(source, "vp9-1080p-opus").expect("semantic key valid");
         let semantic_other_source = SemanticIdentity::new(SourceIdentity::new(8), "vp9-1080p-opus")
-            .expect("semantic key валиден");
+            .expect("semantic key valid");
         let exact_before = CandidateIdentity::new(
             source,
             ExtractionGeneration::new(10),
-            CandidateFormatIdentity::new("248+251").expect("format id валиден"),
+            CandidateFormatIdentity::new("248+251").expect("formatid"),
         );
         let exact_after = CandidateIdentity::new(
             source,
             ExtractionGeneration::new(11),
-            CandidateFormatIdentity::new("616+251").expect("format id валиден"),
+            CandidateFormatIdentity::new("616+251").expect("formatid"),
         );
 
         assert_eq!(semantic_before, semantic_after);

@@ -132,12 +132,12 @@ mod tests {
     /// Брошенный temp удаляется, а target, чужие temp и похожие имена остаются.
     #[test]
     fn removes_only_exact_stale_temp_files_of_target() {
-        let directory = tempfile::tempdir().expect("temp directory доступен");
+        let directory = tempfile::tempdir().expect("Temp directory is available");
         let target_path = directory.path().join("config.toml");
-        fs::write(&target_path, b"target").expect("target создан");
+        fs::write(&target_path, b"target").expect("target");
         // Брошенный temp прошлого запуска — ровно наш шаблон.
         let stale_temp = directory.path().join(".config.toml.save-4242-7.tmp");
-        fs::write(&stale_temp, b"half-written").expect("stale temp создан");
+        fs::write(&stale_temp, b"half-written").expect("stale temp created by");
         // Имена, которые похожи, но не принадлежат этому target-у или шаблону.
         let foreign_names = [
             ".playlist-state.json.save-4242-7.tmp",
@@ -148,19 +148,19 @@ mod tests {
             ".config.toml.save-4242.tmp",
         ];
         for foreign_name in foreign_names {
-            fs::write(directory.path().join(foreign_name), b"foreign").expect("foreign создан");
+            fs::write(directory.path().join(foreign_name), b"foreign").expect("foreigner");
         }
 
-        let report = remove_stale_temp_files(&target_path).expect("каталог читается");
+        let report = remove_stale_temp_files(&target_path).expect("catalogue");
 
         assert_eq!(report.removed_count, 1);
         assert!(report.removal_failures.is_empty());
         assert!(!stale_temp.exists());
-        assert_eq!(fs::read(&target_path).expect("target цел"), b"target");
+        assert_eq!(fs::read(&target_path).expect("target"), b"target");
         for foreign_name in foreign_names {
             assert!(
                 directory.path().join(foreign_name).exists(),
-                "чужой файл {foreign_name} не должен удаляться"
+                "File {foreign_name} should not be deleted."
             );
         }
     }
@@ -168,12 +168,12 @@ mod tests {
     /// Каталог с именем temp-шаблона не удаляется: убираем только обычные файлы.
     #[test]
     fn directory_matching_pattern_is_not_removed() {
-        let directory = tempfile::tempdir().expect("temp directory доступен");
+        let directory = tempfile::tempdir().expect("Temp directory is available");
         let target_path = directory.path().join("config.toml");
         let directory_with_temp_name = directory.path().join(".config.toml.save-1-2.tmp");
-        fs::create_dir(&directory_with_temp_name).expect("каталог создан");
+        fs::create_dir(&directory_with_temp_name).expect("catalogue");
 
-        let report = remove_stale_temp_files(&target_path).expect("каталог читается");
+        let report = remove_stale_temp_files(&target_path).expect("catalogue");
 
         assert_eq!(report.removed_count, 0);
         assert!(directory_with_temp_name.is_dir());
@@ -182,10 +182,10 @@ mod tests {
     /// Отсутствующий каталог — штатный «ничего не найдено», а не ошибка.
     #[test]
     fn missing_directory_reports_nothing_removed() {
-        let directory = tempfile::tempdir().expect("temp directory доступен");
+        let directory = tempfile::tempdir().expect("Temp directory is available");
         let target_path = directory.path().join("absent").join("config.toml");
 
-        let report = remove_stale_temp_files(&target_path).expect("отсутствие каталога штатно");
+        let report = remove_stale_temp_files(&target_path).expect("lack of catalogue");
 
         assert_eq!(report.removed_count, 0);
     }
@@ -204,13 +204,13 @@ mod tests {
             OsStr::new("config.tom")
         ));
         // Успешная запись не оставляет ничего, что уборка могла бы найти.
-        let directory = tempfile::tempdir().expect("temp directory доступен");
+        let directory = tempfile::tempdir().expect("Temp directory is available");
         let target_path = directory.path().join("config.toml");
         assert_eq!(
             replace_file_atomically(&target_path, b"payload"),
             AtomicFileWriteOutcome::Durable
         );
-        let report = remove_stale_temp_files(&target_path).expect("каталог читается");
+        let report = remove_stale_temp_files(&target_path).expect("catalogue");
         assert_eq!(report.removed_count, 0);
     }
 }

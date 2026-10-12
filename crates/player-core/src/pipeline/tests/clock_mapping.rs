@@ -141,7 +141,7 @@ fn assert_media_position_close(actual: Duration, expected: Duration) {
     let delta = actual.abs_diff(expected);
     assert!(
         delta <= Duration::from_millis(1),
-        "media position {actual:?} должна быть близка к {expected:?}"
+        "media position {actual:?} should be close to {expected:?}"
     );
 }
 
@@ -250,7 +250,7 @@ fn repeated_rate_change_inside_tail_keeps_mapping_monotonic_and_bounded() {
     assert!(tail_end_position >= mid_tail_position);
     assert!(
         tail_end_position <= Duration::from_millis(10_500),
-        "конец хвоста {tail_end_position:?} не должен применять 4x к старому output-у"
+        "The end of the tail {tail_end_position:?} should not apply 4x to the old output."
     );
 
     // После хвоста media идёт с новым 4x темпом.
@@ -275,20 +275,16 @@ fn passthrough_audio_history_is_bounded_and_keeps_latest_samples() {
     pipeline.record_passthrough_audio_history(&new_chunk, output_spec);
 
     let history = pipeline.take_passthrough_audio_history_for_priming(output_spec);
-    assert_eq!(
-        history.len(),
-        120,
-        "история должна быть обрезана до бюджета"
-    );
+    assert_eq!(history.len(), 120, "History should be cut before budget");
     assert_eq!(
         history.last().copied(),
         Some(159.0),
-        "история должна хранить последние samples"
+        "History should keep the last samples."
     );
     assert_eq!(
         history.len() % channels as usize,
         0,
-        "история frame-aligned"
+        "history of frame-aligned"
     );
 
     // Повторный take пуст: история одноразовая для одного прайминга.
@@ -313,7 +309,7 @@ fn passthrough_audio_history_with_mismatched_spec_is_not_used_for_priming() {
         pipeline
             .take_passthrough_audio_history_for_priming(same_count_unknown_layout)
             .is_empty(),
-        "история чужого PCM format не должна праймить processor"
+        "The history of another PCM format does not need to prime the processor"
     );
 }
 

@@ -459,7 +459,7 @@ impl PreparedMedia {
             return Ok(());
         }
         if !matches!(self.seekability, DemuxSeekability::Seekable) {
-            anyhow::bail!("playback window с ненулевым start требует seekable source");
+            anyhow::bail!("A playback window with a nonzero start requires a seekable source");
         }
 
         let seek_result = self.demuxer.seek(playback_window.start().as_duration())?;
@@ -581,7 +581,7 @@ impl PreparedMediaSource {
                 kind: MediaSourceKind::LocalFile,
                 display_location: path.display().to_string(),
                 size_bytes: std::fs::metadata(path).map(|metadata| metadata.len()).map_err(|error| {
-                    tracing::warn!(path = %path.display(), error = %error, "Не удалось прочитать размер media source для Info");
+                    tracing::warn!(path = %path.display(), error = %error, "Could not read the media source size for Info");
                 }).ok(),
             },
             Self::ExternalLabel(label) => MediaSourceInfo {
@@ -638,8 +638,8 @@ impl PreparedMediaSource {
     /// Диагностика выбора video track отличается для файла и external demuxer.
     pub(crate) fn missing_video_track_message(&self) -> &'static str {
         match self {
-            Self::LocalFile(_) => "Поддерживаемый video track не найден",
-            Self::ExternalLabel(_) => "Поддерживаемый video track не найден в streaming demuxer",
+            Self::LocalFile(_) => "Supported video track not found",
+            Self::ExternalLabel(_) => "Supported video track not found in streaming demuxer",
         }
     }
 }

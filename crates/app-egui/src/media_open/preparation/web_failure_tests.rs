@@ -119,11 +119,11 @@ fn open_link_against(answer: ServerAnswer) -> UserVisibleFailure {
     let server = LoopbackServer::spawn(answer);
     let url = server.secret_media_url();
     let StartupUrlClassification::Supported(startup_locator) = classify_startup_url(&url) else {
-        panic!("loopback mp4 ссылка должна поддерживаться");
+        panic!("loopback mp4 link should be supported");
     };
     let display_host = startup_locator.display_host();
     let locator = media_source_open::direct_progressive_open::classify_direct_media_url(&url)
-        .expect("loopback mp4 ссылка — direct media");
+        .expect("mp4 loopback link - direct media");
     let request = MediaOpenSourceRequest::Web(WebMediaOpenRequest::direct(
         locator,
         fastiplayer_config::NetworkConfig::default(),
@@ -132,12 +132,12 @@ fn open_link_against(answer: ServerAnswer) -> UserVisibleFailure {
     let cancellation = super::super::executor::PreparationCancellation::new();
 
     let kind = match super::prepare_source(request, &cancellation) {
-        Ok(_) => panic!("сервер без media не может дать подготовленный источник"),
+        Ok(_) => panic!("A server without media cannot provide a source."),
         Err(kind) => kind,
     };
     let reason = kind
         .user_failure_reason()
-        .expect("отказ web-подготовки обязан иметь пользовательскую причину");
+        .expect("Web Preparation Failure Must Have a User Reason");
     UserVisibleFailure {
         kind,
         window_message: crate::web_open_message::web_open_failure_message(
@@ -158,7 +158,10 @@ fn assert_no_link_secrets(text: &str) {
         "token",
         "topsecret",
     ] {
-        assert!(!text.contains(secret), "«{secret}» утёк в текст: {text}");
+        assert!(
+            !text.contains(secret),
+            "\"{secret}\" leaked to text: {text}"
+        );
     }
 }
 
@@ -176,14 +179,14 @@ fn dead_link_shows_not_found_instead_of_no_network() {
     );
     assert_eq!(
         failure.window_message,
-        "Не удалось открыть ссылку (127.0.0.1): страница не найдена (ошибка 404) — проверьте ссылку"
+        "Could not open the link (127.0.0.1): page not found (error 404); check the link"
     );
     assert_eq!(
         failure.row_summary,
-        "Страница не найдена (ошибка 404) — проверьте ссылку"
+        "Page not found (error 404); check the link"
     );
     assert_no_link_secrets(&failure.window_message);
-    assert!(!failure.window_message.contains("соединени"));
+    assert!(!failure.window_message.contains("joined"));
 }
 
 /// 403, 429 с Retry-After и оборванное соединение дают разные понятные тексты.
@@ -201,15 +204,15 @@ fn forbidden_rate_limited_and_dropped_connection_have_distinct_texts() {
 
     assert_eq!(
         forbidden.window_message,
-        "Не удалось открыть ссылку (127.0.0.1): сервер запретил доступ (ошибка 403)"
+        "Could not open the link (127.0.0.1): the server denied access (error 403)"
     );
     assert_eq!(
         rate_limited.window_message,
-        "Не удалось открыть ссылку (127.0.0.1): сервер просит подождать: слишком много запросов — попробуйте позже"
+        "Could not open the link (127.0.0.1): the server asks you to wait: too many requests; try again later"
     );
     assert_eq!(
         dropped.window_message,
-        "Не удалось открыть ссылку (127.0.0.1): нет соединения с сервером — проверьте интернет"
+        "Could not open the link (127.0.0.1): cannot connect to the server; check your internet connection"
     );
     for failure in [&forbidden, &rate_limited, &dropped] {
         assert_no_link_secrets(&failure.window_message);

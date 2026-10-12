@@ -185,7 +185,7 @@ impl InitialQueuePlaybackCoordinator {
             Err(error) => {
                 tracing::warn!(
                     error = ?error,
-                    "Не удалось построить guarded start с начала новой очереди"
+                    "Cannot build a guarded start from the beginning of the new line"
                 );
                 None
             }

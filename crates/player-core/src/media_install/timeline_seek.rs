@@ -95,10 +95,10 @@ impl fmt::Display for ExactTimelineSeekReceiptError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DeadlineElapsed => {
-                formatter.write_str("deadline ожидания exact timeline seek outcome истёк")
+                formatter.write_str("Timed out waiting for an exact timeline seek outcome")
             }
             Self::MissingOwnerOutcome => {
-                formatter.write_str("player owner завершился без exact timeline seek outcome")
+                formatter.write_str("Player owner finished without an exact timeline seek outcome")
             }
         }
     }
@@ -212,7 +212,7 @@ mod tests {
         };
         outcome_tx
             .send(expected.clone())
-            .expect("test owner должен сохранить connected receipt");
+            .expect("The test owner must keep the connected receipt");
 
         assert_eq!(
             receipt.wait_for_outcome_until(Instant::now() + Duration::from_secs(1)),

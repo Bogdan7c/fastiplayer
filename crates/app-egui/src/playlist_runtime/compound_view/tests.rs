@@ -43,7 +43,7 @@ fn compound_draft(root_name: &str, part_names: &[&str]) -> PlaylistEntryDraft {
         CachedPlaylistMetadata::new(root_name, PlaylistMediaKind::Audio),
         parts,
     )
-    .expect("focused compound fixture всегда содержит хотя бы одну part");
+    .expect("A focused compound fixture always contains at least one part.");
     PlaylistEntryDraft::Compound(group)
 }
 
@@ -59,7 +59,7 @@ fn fixture() -> CompoundFixture {
         ])
         .expect("append focused S17G fixture")
     else {
-        panic!("non-empty S17G fixture обязана выделить identities");
+        panic!("Non-empty S17G fixture is required to identify identities");
     };
     CompoundFixture {
         queue,
@@ -177,7 +177,7 @@ fn collapsed_and_expanded_rows_keep_top_level_count_separate_for_one_and_many_pa
     assert_ne!(
         collapsed.layout_identity(),
         expanded.layout_identity(),
-        "disclosure меняет layout identity без fake structural mutation"
+        "disclosure shifter layout identity without fake structural mutation"
     );
     assert_eq!(expanded.top_level_entry_count(), 4);
     assert_eq!(expanded.visible_row_count(), 8);
@@ -194,7 +194,7 @@ fn collapsed_and_expanded_rows_keep_top_level_count_separate_for_one_and_many_pa
             .map(|visible_slot| expanded.structural_insertion_slot(visible_slot))
             .collect::<Vec<_>>(),
         vec![0, 1, 2, 2, 3, 3, 3, 3, 4],
-        "child geometry не должна разрешать insertion внутрь compound group"
+        "child geometry must not allow insertion inside compound group"
     );
 }
 
@@ -227,7 +227,7 @@ fn header_play_resolves_current_or_first_as_one_exact_target_without_scan() {
     assert_eq!(
         first_only_target,
         CompoundHeaderPlayTarget::ExactItem(item_ids[2]),
-        "resolver возвращает один strong-open target и не публикует fallback candidates"
+        "resolver returns one strong-open target and does not publish fallback candidates"
     );
 }
 
@@ -401,6 +401,6 @@ fn stale_group_and_part_actions_are_rejected_before_state_changes() {
             .snapshot(&queue, projection_state(None, &empty_selection))
             .visible_row_count(),
         4,
-        "stale toggle не должен раскрывать group"
+        "stale toggle shouldn't group"
     );
 }

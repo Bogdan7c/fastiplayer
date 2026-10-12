@@ -138,11 +138,11 @@ pub(in crate::ui::player_controls) fn render_reset_button_at(
                 WidgetInfo::labeled(
                     WidgetType::Button,
                     ui.is_enabled(),
-                    format!("Скорость воспроизведения {rate_label}"),
+                    format!("Playback speed {rate_label}"),
                 )
             });
             // Glyphless control получает понятную подсказку при наведении.
-            response.on_hover_text("Сбросить скорость воспроизведения")
+            response.on_hover_text("Reset playback speed")
         })
     });
 

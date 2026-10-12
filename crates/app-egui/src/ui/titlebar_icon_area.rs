@@ -11,10 +11,10 @@ const ACTIVE_FILL_ALPHA: u8 = 20;
 const ACTIVE_HOVER_FILL_ALPHA: u8 = 42;
 
 const BUTTONS: [(SidebarSection, &str); 4] = [
-    (SidebarSection::Playlist, "Плейлист"),
-    (SidebarSection::Settings, "Настройки"),
+    (SidebarSection::Playlist, "Playlist"),
+    (SidebarSection::Settings, "Settings"),
     (SidebarSection::Url, "URL"),
-    (SidebarSection::Info, "Информация"),
+    (SidebarSection::Info, "Info"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

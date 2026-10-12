@@ -18,9 +18,9 @@ use crate::web_media_open::ContentProbeRejection;
 /// Оборачивает типизированную ошибку так же, как production: `anyhow` + слои контекста.
 fn wrapped(error: impl std::error::Error + Send + Sync + 'static) -> anyhow::Error {
     Err::<(), _>(error)
-        .context("Progressive transport не открыл direct mp4 (media.example.test)")
-        .context("Не удалось открыть direct media URL")
-        .expect_err("ошибка должна остаться ошибкой")
+        .context("Progressive transport does not open direct mp4 (media.example.test)")
+        .context("I was unable to open the direct media URL.")
+        .expect_err("The mistake must remain a mistake.")
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn demux_and_content_probe_failures_distinguish_format_from_playability() {
 #[test]
 fn cancellation_and_untyped_errors_fall_back_to_unclassified() {
     let cancelled = wrapped(TransportOpenError::Cancelled);
-    let untyped = anyhow::anyhow!("строковая ошибка без типизированного владельца");
+    let untyped = anyhow::anyhow!("line error without a typed owner");
 
     assert_eq!(
         classify_web_open_failure(&cancelled),
@@ -206,7 +206,7 @@ fn outermost_meaningful_link_wins() {
 fn meaningless_wrapper_is_skipped_to_deeper_reason() {
     let error = wrapped(DemuxOpenError::FactoryRejected {
         factory_id: demux_api::DemuxFactoryId::new("test-factory")
-            .expect("статический factory id валиден"),
+            .expect("static factory id is valid"),
         source: demux_api::DemuxFactoryOpenError::Backend(anyhow::Error::new(
             TransportOpenError::Transport(TransportFailure::ServerError),
         )),
@@ -224,9 +224,9 @@ fn meaningless_wrapper_is_skipped_to_deeper_reason() {
 fn demux_backend_failure_without_deeper_cause_is_unrecognized_format() {
     let error = wrapped(DemuxOpenError::FactoryRejected {
         factory_id: demux_api::DemuxFactoryId::new("test-factory")
-            .expect("статический factory id валиден"),
+            .expect("static factory id is valid"),
         source: demux_api::DemuxFactoryOpenError::Backend(anyhow::anyhow!(
-            "Неподдерживаемый формат: mp4 is not streamable"
+            "Unsupported format: mp4 is not streamable"
         )),
     });
 
@@ -333,14 +333,14 @@ fn answer(mut stream: TcpStream, response: LoopbackResponse) {
 fn direct_open_reason(response: LoopbackResponse) -> WebOpenFailureReason {
     let server = LoopbackServer::spawn(response);
     let locator = crate::direct_progressive_open::classify_direct_media_url(&server.media_url())
-        .expect("loopback mp4 URL должен классифицироваться как direct media");
+        .expect("Loopback mp4 URL should be classified as direct media.");
     let error = match crate::direct_progressive_open::open_direct_media(
         &locator,
         &NetworkConfig::default(),
         &PlayerDemuxConfig::default(),
         CancellationToken::new(),
     ) {
-        Ok(_) => panic!("сервер без media не может дать открытый demuxer"),
+        Ok(_) => panic!("A server without media can’t give an open demuxer"),
         Err(error) => error,
     };
     classify_web_open_failure(&error)
@@ -405,7 +405,7 @@ fn yt_dlp_resolve_reason(search_directory: &std::path::Path) -> WebOpenFailureRe
     let locator = service_ytdlp::parse_yt_dlp_media_locator(
         "https://user:secret@video.example.test/watch?v=private&token=hidden",
     )
-    .expect("тестовый locator валиден");
+    .expect("test-locator");
     let service_error = adapter
         .resolve_candidate_snapshot_with_cancellation(
             &locator,
@@ -418,9 +418,9 @@ fn yt_dlp_resolve_reason(search_directory: &std::path::Path) -> WebOpenFailureRe
             web_media_core::ExtractorInvocationReason::PageMediaResolution,
             &|| false,
         )
-        .expect_err("resolve без рабочего yt-dlp обязан упасть");
+        .expect_err("resolve without working yt-dlp must fall");
     let error = anyhow::Error::new(service_error)
-        .context("Не удалось подготовить exact YtDlp candidate snapshot");
+        .context("Couldn't get ready exact YtDlp candidate snapshot");
     classify_web_open_failure(&error)
 }
 
@@ -428,7 +428,7 @@ fn yt_dlp_resolve_reason(search_directory: &std::path::Path) -> WebOpenFailureRe
 #[cfg(unix)]
 #[test]
 fn yt_dlp_missing_from_path_is_extractor_not_installed() {
-    let empty_directory = tempfile::TempDir::new().expect("пустой каталог PATH");
+    let empty_directory = tempfile::TempDir::new().expect("blank-catalogue");
 
     assert_eq!(
         yt_dlp_resolve_reason(empty_directory.path()),
@@ -443,15 +443,15 @@ fn yt_dlp_missing_from_path_is_extractor_not_installed() {
 fn yt_dlp_private_video_rejection_reaches_user_reason() {
     use std::os::unix::fs::PermissionsExt;
 
-    let script_directory = tempfile::TempDir::new().expect("каталог подставного yt-dlp");
+    let script_directory = tempfile::TempDir::new().expect("dummy");
     let executable = script_directory.path().join("yt-dlp");
     std::fs::write(
         &executable,
         "#!/bin/sh\nprintf 'ERROR: [youtube] abc: Private video. Sign in if you have access\\n' >&2\nexit 1\n",
     )
-    .expect("записать подставной yt-dlp");
+    .expect("write down");
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-        .expect("сделать подставной yt-dlp исполняемым");
+        .expect("make the dummy yt-dlp executable");
 
     assert_eq!(
         yt_dlp_resolve_reason(script_directory.path()),
@@ -521,7 +521,7 @@ fn yt_dlp_topology_reason(search_directory: &std::path::Path) -> Option<WebOpenF
     let locator = service_ytdlp::parse_yt_dlp_media_locator(
         "https://video.example.test/playlist?list=private&token=hidden",
     )
-    .expect("тестовый locator валиден");
+    .expect("test-locator");
     let topology_error = adapter
         .extract_topology_with_budgets(
             &locator,
@@ -534,7 +534,7 @@ fn yt_dlp_topology_reason(search_directory: &std::path::Path) -> Option<WebOpenF
             web_media_core::ExtractorInvocationReason::CollectionTopologyResolution,
             &|| false,
         )
-        .expect_err("topology без рабочего yt-dlp обязана упасть");
+        .expect_err("topology workerless yt-dlp must fall");
     classify_yt_dlp_topology_error(&topology_error)
 }
 
@@ -542,7 +542,7 @@ fn yt_dlp_topology_reason(search_directory: &std::path::Path) -> Option<WebOpenF
 #[cfg(unix)]
 #[test]
 fn yt_dlp_topology_missing_from_path_is_extractor_not_installed() {
-    let empty_directory = tempfile::TempDir::new().expect("пустой каталог PATH");
+    let empty_directory = tempfile::TempDir::new().expect("blank-catalogue");
 
     assert_eq!(
         yt_dlp_topology_reason(empty_directory.path()),
@@ -557,15 +557,15 @@ fn yt_dlp_topology_missing_from_path_is_extractor_not_installed() {
 fn yt_dlp_topology_private_rejection_reaches_user_reason() {
     use std::os::unix::fs::PermissionsExt;
 
-    let script_directory = tempfile::TempDir::new().expect("каталог подставного yt-dlp");
+    let script_directory = tempfile::TempDir::new().expect("dummy");
     let executable = script_directory.path().join("yt-dlp");
     std::fs::write(
         &executable,
         "#!/bin/sh\nprintf 'WARNING: [youtube:tab] abc: some entries are unavailable\\n' >&2\nprintf 'ERROR: [youtube] abc: Private video. Sign in if you have access\\n' >&2\nexit 1\n",
     )
-    .expect("записать подставной yt-dlp");
+    .expect("write down");
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-        .expect("сделать подставной yt-dlp исполняемым");
+        .expect("make the dummy yt-dlp executable");
 
     assert_eq!(
         yt_dlp_topology_reason(script_directory.path()),
@@ -591,9 +591,9 @@ fn hls_profile_exclusion_reaches_user_as_no_playable_format() {
     let playlist = parse_hls(
         "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"k.key\"\n#EXTINF:2,\nx0.ts\n#EXT-X-ENDLIST\n",
     )
-    .expect("плейлист с SAMPLE-AES структурно корректен");
+    .expect("Sample-AES playlist is structurally correct");
     let profile_error = hls_playlist_core::validate_vod_profile(&playlist, None)
-        .expect_err("SAMPLE-AES вне VOD-профиля");
+        .expect_err("SAMPLE-AES outside VOD-profile");
 
     assert_eq!(
         classify_web_open_failure(&wrapped(profile_error)),
@@ -604,7 +604,7 @@ fn hls_profile_exclusion_reaches_user_as_no_playable_format() {
 #[test]
 fn malformed_hls_manifest_reaches_user_as_invalid_server_response() {
     let parse_error = parse_hls("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:abc,\nx0.ts\n")
-        .expect_err("нечисловая длительность сегмента — структурная ошибка");
+        .expect_err("Non-numerical segment duration – a structural error");
 
     assert_eq!(
         classify_web_open_failure(&wrapped(parse_error)),

@@ -216,7 +216,7 @@ mod tests {
         match action.control_flow {
             ControlFlow::WaitUntil(deadline) => deadline,
             other_control_flow => {
-                panic!("ожидали WaitUntil(deadline), получили {other_control_flow:?}");
+                panic!("expected WaitUntil(deadline), received {other_control_flow:?}");
             }
         }
     }

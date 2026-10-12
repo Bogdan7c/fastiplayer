@@ -633,7 +633,7 @@ fn regression_active_seek_diagnostics_reports_audio_blocker_when_video_is_ready(
     session.note_presented_frame_for_seek(Duration::from_secs(5));
     let seek_commit = session
         .seek_commit()
-        .expect("audio gate должен удерживать seek после target frame");
+        .expect("Audio gate must hold the seek after the target frame");
 
     session.finish_seek_commit_if_ready_for_tests(
         seek_commit.started_at + Duration::from_millis(1),
@@ -644,7 +644,7 @@ fn regression_active_seek_diagnostics_reports_audio_blocker_when_video_is_ready(
     );
     let diagnostics = session
         .active_seek_diagnostics(Instant::now(), &seek_regression_tick_config())
-        .expect("active seek diagnostics должны быть доступны пока audio gate блокирует");
+        .expect("Active seek diagnostics must be available while audio gate is blocked");
 
     assert!(session.seek_commit().is_some());
     assert_eq!(

@@ -38,7 +38,7 @@ pub(crate) fn drain_adts_frames(
         }
         if payload[cursor] != 0xff || payload[cursor + 1] & 0xf6 != 0xf0 {
             return Err(malformed(
-                "AAC stream_type 0x0f не содержит ADTS sync/header",
+                "AAC stream_type 0x0f does not contain ADTS sync/header",
             ));
         }
         let protection_absent = payload[cursor + 1] & 0x01 != 0;
@@ -48,12 +48,12 @@ pub(crate) fn drain_adts_frames(
             8_000, 7_350,
         ];
         let Some(&sample_rate) = sample_rates.get(sample_rate_index) else {
-            return Err(malformed("ADTS sample frequency index зарезервирован"));
+            return Err(malformed("ADTS sample frequency index reserved"));
         };
         let channels = u32::from(((payload[cursor + 2] & 0x01) << 2) | (payload[cursor + 3] >> 6));
         if channels == 0 {
             return Err(malformed(
-                "ADTS program config element без channel config не поддержан",
+                "ADTS program config element without channel config is not supported",
             ));
         }
         let frame_length = (usize::from(payload[cursor + 3] & 0x03) << 11)
@@ -61,7 +61,7 @@ pub(crate) fn drain_adts_frames(
             | usize::from(payload[cursor + 5] >> 5);
         let header_length = if protection_absent { 7 } else { 9 };
         if frame_length < header_length {
-            return Err(malformed("ADTS frame length меньше header"));
+            return Err(malformed("ADTS frame length less header"));
         }
         if cursor + frame_length > payload.len() {
             break;
@@ -272,7 +272,7 @@ fn annex_b_nal_offsets(
         cursor = header_offset + 1;
     }
     if offsets.is_empty() {
-        return Err(malformed("video PES не содержит Annex-B NAL units"));
+        return Err(malformed("video PES lacking Annex-B NAL units"));
     }
     Ok(offsets)
 }
@@ -294,7 +294,7 @@ struct MpegAudioHeader {
 
 fn parse_mpeg_audio_header(payload: &[u8]) -> Result<MpegAudioHeader, MpegTsDemuxError> {
     if payload.len() < 4 || payload[0] != 0xff || payload[1] & 0xe0 != 0xe0 {
-        return Err(malformed("MPEG audio sync/header отсутствует"));
+        return Err(malformed("MPEG audio sync/header missing"));
     }
     let version = (payload[1] >> 3) & 0x03;
     let layer_bits = (payload[1] >> 1) & 0x03;
@@ -305,7 +305,7 @@ fn parse_mpeg_audio_header(payload: &[u8]) -> Result<MpegAudioHeader, MpegTsDemu
         || matches!(bitrate_index, 0 | 15)
         || sample_rate_index == 3
     {
-        return Err(malformed("зарезервированный MPEG audio header"));
+        return Err(malformed("Reserved MPEG audio header"));
     }
     let mpeg1 = version == 0x03;
     let layer = usize::from(4 - layer_bits);

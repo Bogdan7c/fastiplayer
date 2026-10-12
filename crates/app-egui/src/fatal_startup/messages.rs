@@ -1,6 +1,6 @@
 //! Человеческие тексты фатальных ошибок запуска.
 //!
-//! Тексты по-русски, без имён Rust-типов, `{:?}` и внутреннего жаргона. Каждый
+//! Тексты по-английски, без имён Rust-типов, `{:?}` и внутреннего жаргона. Каждый
 //! текст отвечает на два вопроса: что случилось и что пользователь может сделать.
 //! Технические подробности сюда не попадают — они идут в лог.
 
@@ -9,13 +9,13 @@ use crate::app_instance::ProcessArgsError;
 use super::{ConfigDirectoryLocation, ConfigDirectoryProblem, FatalErrorPhase, FatalStartupReason};
 
 /// Заголовок окна ошибки и уведомления; одинаков для всех причин.
-pub(super) const FATAL_STARTUP_TITLE: &str = "Fastiplayer не запустился";
+pub(super) const FATAL_STARTUP_TITLE: &str = "Fastiplayer could not start";
 
 /// Заголовок для ошибки, случившейся в уже работавшем плеере (после сна/сворачивания).
-pub(super) const FATAL_RUNTIME_TITLE: &str = "Fastiplayer остановлен";
+pub(super) const FATAL_RUNTIME_TITLE: &str = "Fastiplayer stopped";
 
 /// Где пользователь увидит технические подробности: лог пишется только в stderr.
-const DETAILS_HINT: &str = "Подробности видны, если запустить fastiplayer из терминала.";
+const DETAILS_HINT: &str = "Run fastiplayer from a terminal to see details.";
 
 /// Готовый к показу текст: заголовок и сообщение.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,16 +50,12 @@ pub(super) fn notice_for(
 fn runtime_recreation_message_for(reason: &FatalStartupReason) -> String {
     match reason {
         FatalStartupReason::GraphicsUnavailable => {
-            "Не удалось восстановить вывод видео после выхода из сна или сворачивания окна: \
-             видеокарта или её драйвер не отвечают.\n\n\
-             Плеер закрывается. Запустите его снова; если это повторяется, \
-             обновите драйвер видеокарты."
+            "Could not restore video output after sleep or window minimization: the graphics card or its driver is not responding.\n\nThe player is closing. Start it again; if this keeps happening, update your graphics driver."
                 .to_owned()
         }
         FatalStartupReason::InternalFailure => {
             format!(
-                "Не удалось восстановить работу плеера после выхода из сна или сворачивания \
-                 окна.\n\nПлеер закрывается. Запустите его снова. {DETAILS_HINT}"
+                "Could not restore the player after sleep or window minimization.\n\nThe player is closing. Start it again. {DETAILS_HINT}"
             )
         }
         FatalStartupReason::InvalidArguments(_)
@@ -82,66 +78,53 @@ fn message_for(reason: &FatalStartupReason) -> String {
             invalid_arguments_message(*arguments_error)
         }
         FatalStartupReason::ConfigLocationUnknown => {
-            "Не удалось определить, где хранить настройки: система не сообщила \
-             домашнюю папку пользователя."
+            "Could not determine where to store settings: the system did not provide the user home folder."
                 .to_owned()
         }
-        FatalStartupReason::AlreadyRunning => "Fastiplayer уже запущен.\n\n\
-             Перейдите в окно уже открытого плеера."
+        FatalStartupReason::AlreadyRunning => "Fastiplayer is already running.\n\nSwitch to the open player window."
             .to_owned(),
         FatalStartupReason::RunningInstanceNotResponding => {
-            "Fastiplayer уже запущен, но не отвечает.\n\n\
-             Подождите немного и попробуйте снова. Если окно плеера не реагирует, \
-             закройте его и откройте файл заново."
+            "Fastiplayer is already running but is not responding.\n\nWait a moment and try again. If the player window does not respond, close it and open the file again."
                 .to_owned()
         }
-        FatalStartupReason::RunningInstanceShuttingDown => "Fastiplayer как раз закрывается.\n\n\
-             Подождите несколько секунд и откройте файл снова."
+        FatalStartupReason::RunningInstanceShuttingDown => "Fastiplayer is closing.\n\nWait a few seconds and open the file again."
             .to_owned(),
         FatalStartupReason::RunningInstanceDidNotTakeFiles => {
             format!(
-                "Fastiplayer уже запущен, но передать ему файлы не удалось.\n\n\
-                 Откройте их в окне уже запущенного плеера. {DETAILS_HINT}"
+                "Fastiplayer is already running, but the files could not be forwarded.\n\nOpen them in the running player window. {DETAILS_HINT}"
             )
         }
         FatalStartupReason::ConfigDirectoryUnusable { problem, location } => {
             config_directory_message(problem, location)
         }
         FatalStartupReason::ConfigFileUnusable { location } => format!(
-            "Не удалось прочитать или создать файл настроек в папке {}.\n\n\
-             Проверьте права на папку и свободное место на диске. {DETAILS_HINT}",
+            "Could not read or create the settings file in folder {}.\n\nCheck folder permissions and free disk space. {DETAILS_HINT}",
             location.readable_text()
         ),
         FatalStartupReason::UnsupportedPlatform => {
-            "Эта операционная система пока не поддерживается: Fastiplayer работает в Linux."
+            "This operating system is not supported yet: Fastiplayer runs on Linux."
                 .to_owned()
         }
         FatalStartupReason::GraphicalSessionUnavailable => {
-            "Не удалось подключиться к графическому сеансу (Wayland или X11).\n\n\
-             Fastiplayer нужно запускать внутри графического рабочего стола."
+            "Could not connect to the graphical session (Wayland or X11).\n\nStart Fastiplayer within a graphical desktop session."
                 .to_owned()
         }
         FatalStartupReason::WindowCreationFailed => {
-            format!("Не удалось создать окно плеера.\n\n{DETAILS_HINT}")
+            format!("Could not create the player window.\n\n{DETAILS_HINT}")
         }
         FatalStartupReason::GraphicsUnavailable => {
-            "Не удалось запустить вывод изображения: плееру нужна видеокарта \
-             с поддержкой Vulkan.\n\n\
-             Установите или обновите драйвер Vulkan для вашей видеокарты \
-             и запустите плеер снова."
+            "Could not start video output: the player requires a graphics card with Vulkan support.\n\nInstall or update the Vulkan driver for your graphics card and start the player again."
                 .to_owned()
         }
         FatalStartupReason::InternalFailure => {
-            format!("Во время запуска произошла внутренняя ошибка плеера.\n\n{DETAILS_HINT}")
+            format!("An internal player error occurred during startup.\n\n{DETAILS_HINT}")
         }
     }
 }
 
 fn invalid_arguments_message(arguments_error: ProcessArgsError) -> String {
     match arguments_error {
-        ProcessArgsError::UnknownOption => "Плеер запущен с неизвестным параметром.\n\n\
-             Если имя файла начинается с «-», поставьте перед ним «--», например: \
-             fastiplayer -- -видео.mkv"
+        ProcessArgsError::UnknownOption => "The player was started with an unknown option.\n\nIf the file name starts with '-', put '--' before it, for example: fastiplayer -- -video.mkv"
             .to_owned(),
     }
 }
@@ -153,38 +136,30 @@ fn config_directory_message(
     let folder = location.readable_text();
     match problem {
         ConfigDirectoryProblem::OwnedByAnotherUser => format!(
-            "Папка настроек {folder} принадлежит другому пользователю — скорее всего, \
-             плеер когда-то запускали через sudo.\n\n\
-             Верните папку себе командой в терминале:\n{}",
+            "The settings folder {folder} belongs to another user, probably because the player was previously run with sudo.\n\nRestore your ownership of the folder with this terminal command:\n{}",
             ownership_fix_command(location)
         ),
         ConfigDirectoryProblem::NotADirectory => format!(
-            "Вместо папки настроек {folder} лежит файл.\n\n\
-             Переименуйте или удалите его, и плеер создаст папку заново."
+            "The settings folder path {folder} points to a file.\n\nRename or delete it, and the player will create the folder again."
         ),
         ConfigDirectoryProblem::LockFileNotRegularFile { lock_file_name } => format!(
-            "Служебный файл {lock_file_name} в папке настроек {folder} повреждён.\n\n\
-             Удалите его, и плеер создаст новый."
+            "The service file {lock_file_name} in settings folder {folder} is corrupted.\n\nDelete it, and the player will create a new one."
         ),
         ConfigDirectoryProblem::LockFileReplacedDuringStartup => format!(
-            "Служебный файл в папке настроек {folder} изменился во время запуска.\n\n\
-             Запустите плеер ещё раз."
+            "A service file in settings folder {folder} changed during startup.\n\nStart the player again."
         ),
         ConfigDirectoryProblem::AccessDenied => format!(
-            "Нет доступа к папке настроек {folder}.\n\n\
-             Если плеер когда-то запускали через sudo, верните папку себе командой \
-             в терминале:\n{}",
+            "Access to settings folder {folder} is denied.\n\nIf the player was previously run with sudo, restore your ownership of the folder with this terminal command:\n{}",
             ownership_fix_command(location)
         ),
         ConfigDirectoryProblem::ReadOnlyStorage => {
-            format!("Папка настроек {folder} находится на диске, доступном только для чтения.")
+            format!("The settings folder {folder} is on a read-only disk.")
         }
         ConfigDirectoryProblem::StorageFull => {
-            format!("На диске с папкой настроек {folder} закончилось место.")
+            format!("The disk containing settings folder {folder} is full.")
         }
         ConfigDirectoryProblem::SystemError => format!(
-            "Не удалось подготовить папку настроек {folder} из-за системной ошибки.\n\n\
-             {DETAILS_HINT}"
+            "Could not prepare settings folder {folder} due to a system error.\n\n{DETAILS_HINT}"
         ),
     }
 }

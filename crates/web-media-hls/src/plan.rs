@@ -195,31 +195,31 @@ impl HlsComponentPlan {
 /// Secret-safe статическая ошибка до publication segment/demux runtime-а.
 #[derive(Debug, thiserror::Error)]
 pub enum HlsPlanError {
-    #[error("HLS fMP4 media playlist содержит segment без required EXT-X-MAP")]
+    #[error("HLS fMP4 media playlist includes segment without required EXT-X-MAP")]
     FragmentedMp4MapRequired,
-    #[error("HLS media playlist не содержит сегментов")]
+    #[error("HLS media playlist does not contain segments.")]
     EmptyMediaPlaylist,
-    #[error("HLS byte range имеет нулевую либо непредставимую длину")]
+    #[error("The HLS byte range is either zero or unimaginable.")]
     InvalidByteRangeLength,
-    #[error("implicit HLS byte range не продолжает предыдущий range того же resource")]
+    #[error("implicit HLS byte range does not extend the previous range of the same resource.")]
     MissingImplicitByteRangeBase,
-    #[error("HLS byte range offset переполняется")]
+    #[error("HLS byte range offset is overflowing")]
     ByteRangeOverflow,
-    #[error("HLS duration не помещается в runtime timeline")]
+    #[error("HLS duration does not fit in runtime timeline")]
     DurationOverflow,
-    #[error("HLS duration имеет invalid validated representation")]
+    #[error("HLS duration is invalid validated representation.")]
     InvalidDuration,
-    #[error("HLS restart segment index переполняется")]
+    #[error("HLS restart segment index is overflowing")]
     RestartSegmentIndexOverflow,
     #[error("HLS resource target invalid: {0}")]
     Target(#[from] source_core::HttpRequestTargetError),
     #[error("HLS exact HTTP range invalid")]
     HttpRange,
-    #[error("HLS exact byte range превышает shared adaptive resource limit")]
+    #[error("HLS exact byte range exceeds shared adaptive resource limit")]
     ResourceRangeExceedsAdaptiveLimit,
     #[error("HLS AES profile invalid: {0}")]
     Key(#[from] HlsKeyStateError),
-    #[error("HLS encrypted resource потерял declaration identity")]
+    #[error("HLS encrypted resource lost declaration identity")]
     MissingKeyIdentity,
 }
 

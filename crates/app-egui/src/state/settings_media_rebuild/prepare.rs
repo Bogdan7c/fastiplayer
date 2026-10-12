@@ -71,7 +71,7 @@ pub(crate) fn prepare_rebuild_source(
                     ))
                 }
                 Err(error) => {
-                    warn!(error = %format!("{error:#}"), "Не удалось пересобрать локальный файл после смены настроек");
+                    warn!(error = %format!("{error:#}"), "Failed to reassemble the local file after changing the settings");
                     Err(crate::settings_rebuild_message::local_rebuild_failed_message())
                 }
             }
@@ -93,7 +93,7 @@ pub(crate) fn prepare_rebuild_source(
             Err(error) => {
                 warn!(
                     ?error,
-                    "Не удалось пересобрать web-источник после смены настроек"
+                    "Could not rebuild the web source after settings changed"
                 );
                 Err(crate::settings_rebuild_message::web_rebuild_failed_message(
                     error.web_open_failure_reason(),
@@ -140,7 +140,7 @@ impl<T: Send + 'static> SettingsMediaPrepareJob<T> {
                 let _delivery = sender.send(task(&worker_cancel));
             })
             .map_err(|error| {
-                warn!(%error, "Не удалось запустить поток подготовки media для настроек");
+                warn!(%error, "Failed to start the media preparation stream for settings");
                 crate::settings_rebuild_message::install_rebuild_failed_message()
             })?;
         Ok(Self {
@@ -164,7 +164,7 @@ impl<T: Send + 'static> SettingsMediaPrepareJob<T> {
                 // Поток завершился без результата (panic): это сбой подготовки, а не тишина.
                 self.result_pending = false;
                 self.reap_finished_thread();
-                warn!("Поток подготовки media для настроек завершился без результата");
+                warn!("Media preparation worker for settings ended without a result");
                 PrepareJobPoll::Finished(Err(
                     crate::settings_rebuild_message::install_rebuild_failed_message(),
                 ))
@@ -180,7 +180,9 @@ impl<T: Send + 'static> SettingsMediaPrepareJob<T> {
             ShutdownDeadline::after(CANCELLED_PREPARE_JOIN_TIMEOUT),
         );
         if status == FinishedThreadJoin::StillRunning {
-            warn!("Поток подготовки media ещё завершается после отмены; join повторится в Drop");
+            warn!(
+                "Media preparation worker is still stopping after cancellation; Drop will retry joining it"
+            );
         }
     }
 

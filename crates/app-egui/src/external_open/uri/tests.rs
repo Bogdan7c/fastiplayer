@@ -99,7 +99,7 @@ fn payload_keeps_source_order_and_skips_blank_uris() {
 fn plain_text_is_used_only_without_uris_and_only_for_web_links() {
     let items = items_from_drop_payload(
         &[],
-        Some("  https://a.example/1 \nпривет\nhttp://b.example/2\nftp://c/3"),
+        Some("  https://a.example/1 \nhello\nhttp://b.example/2\nftp://c/3"),
     );
     let urls: Vec<&str> = items
         .iter()
@@ -109,7 +109,7 @@ fn plain_text_is_used_only_without_uris_and_only_for_web_links() {
         })
         .collect();
     assert_eq!(urls, ["https://a.example/1", "http://b.example/2"]);
-    assert!(items_from_drop_payload(&[], Some("просто текст")).is_empty());
+    assert!(items_from_drop_payload(&[], Some("simpler")).is_empty());
     assert!(items_from_drop_payload(&[], None).is_empty());
 }
 
@@ -152,9 +152,9 @@ fn absolute_path_round_trips_through_file_uri_byte_for_byte() {
         )),
     ];
     for path in paths {
-        let uri = file_uri_from_absolute_path(&path).expect("абсолютный путь");
+        let uri = file_uri_from_absolute_path(&path).expect("pathless");
         assert!(uri.starts_with("file:///"), "{uri}");
-        assert!(uri.is_ascii(), "URI должен быть ASCII: {uri}");
+        assert!(uri.is_ascii(), "URI must be ASCII: {uri}");
         assert_eq!(item_from_uri(&uri), ExternalOpenItem::LocalPath(path));
     }
 }

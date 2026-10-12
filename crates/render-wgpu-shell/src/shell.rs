@@ -83,7 +83,7 @@ fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> Result<wgpu::Textur
     formats
         .first()
         .copied()
-        .context("Surface capabilities не вернул ни одного texture format")
+        .context("Surface capabilities have not returned any texture format.")
 }
 
 /// GPU ресурсы: device, queue, surface и их конфигурация.
@@ -153,9 +153,11 @@ impl std::fmt::Display for RendererGpuDrainError {
                 "WGPU device lost ({:?}): {}",
                 device_lost.reason, device_lost.message
             ),
-            Self::Timeout => formatter.write_str("ожидание старой GPU queue завершилось timeout"),
+            Self::Timeout => {
+                formatter.write_str("The wait for the old GPU queue ended with timeout")
+            }
             Self::WrongSubmissionIndex => {
-                formatter.write_str("WGPU отклонил submission index при ожидании GPU queue")
+                formatter.write_str("WGPU rejects submission index while waiting for GPU queue")
             }
             Self::DeviceLostStatePoisoned => {
                 formatter.write_str("device-lost lifecycle state poisoned")
@@ -177,7 +179,7 @@ impl GpuContext {
     /// 5. Surface configuration — настройка swapchain
     #[instrument(skip(window), fields(window = "fastiplayer"))]
     pub async fn new(window: Arc<Window>, surface_present: SurfacePresentSettings) -> Result<Self> {
-        info!("Инициализация WGPU Vulkan instance");
+        info!("Initialization of WGPU Vulkan instance");
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
@@ -186,9 +188,9 @@ impl GpuContext {
 
         let surface = instance
             .create_surface(window.clone())
-            .context("Не удалось создать surface для окна")?;
+            .context("Could not create the window surface")?;
 
-        info!("Запрос адаптера GPU");
+        info!("Requesting a GPU adapter");
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -200,7 +202,7 @@ impl GpuContext {
                 apply_limit_buckets: false,
             })
             .await
-            .context("Не удалось получить GPU адаптер. Проверьте драйверы Vulkan")?;
+            .context("Couldn't get a GPU adapter. Check Vulkan drivers")?;
 
         let adapter_info = adapter.get_info();
         info!(
@@ -208,7 +210,7 @@ impl GpuContext {
             vendor = %adapter_info.vendor,
             device_type = ?adapter_info.device_type,
             backend = ?adapter_info.backend,
-            "Выбран GPU адаптер"
+            "Selected GPU adapter"
         );
 
         let required_features = required_wgpu_video_texture_features(&adapter);
@@ -217,7 +219,7 @@ impl GpuContext {
             p010_texture_format = required_features.contains(wgpu::Features::TEXTURE_FORMAT_P010),
             texture_format_16bit_norm =
                 required_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
-            "Запрос WGPU device с video texture features"
+            "WGPU device with video texture features"
         );
 
         let (device, queue) = adapter
@@ -230,7 +232,7 @@ impl GpuContext {
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
             })
             .await
-            .context("Не удалось создать wgpu device с video texture features")?;
+            .context("Cannot create wgpu device with video texture features")?;
 
         let device_lost = Arc::new(Mutex::new(None));
         let device_lost_callback_state = device_lost.clone();
@@ -240,7 +242,7 @@ impl GpuContext {
                     *state = Some(GpuDeviceLost { reason, message });
                 }
                 Err(_) => {
-                    tracing::error!("Не удалось записать WGPU device-lost state: mutex poisoned");
+                    tracing::error!("Could not write WGPU device-lost state: mutex poisoned");
                 }
             }
         });
@@ -281,7 +283,7 @@ impl GpuContext {
             desired_maximum_frame_latency,
             width = size.width,
             height = size.height,
-            "Surface настроен"
+            "Surface is set to be set up"
         );
 
         Ok(Self {
@@ -304,7 +306,7 @@ impl GpuContext {
     #[instrument(skip(self), fields(width, height))]
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
-            debug!("Пропуск ресайза: нулевой размер");
+            debug!("Resize skip: Zero size");
             return;
         }
 
@@ -349,7 +351,7 @@ impl Renderer {
             WindowCornerMaskRenderer::new(&gpu.device, gpu.surface_format, alpha_encoding)
         });
 
-        info!("Рендерер полностью инициализирован");
+        info!("Renderer is fully initialized");
 
         Ok(Self {
             gpu,
@@ -542,7 +544,7 @@ impl Renderer {
                     | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
                     other => {
                         tracing::error!(
-                            "Не удалось получить surface texture после reconfigure: {:?}",
+                            "Failed to obtain surface texture afterward reconfigure: {:?}",
                             other
                         );
                         Err(dropped_frame_after_surface_acquire(
@@ -574,7 +576,7 @@ impl Renderer {
                 // Surface потерян: сначала пробуем штатный reconfigure текущей surface.
                 // Если драйвер не восстановит surface, следующий redraw снова попадёт
                 // сюда, и внешний lifecycle сможет пересоздать runtime через resumed/suspend.
-                tracing::warn!("Surface lost — пробуем reconfigure");
+                tracing::warn!("Surface lost — try out reconfigure");
                 self.gpu
                     .surface
                     .configure(&self.gpu.device, &self.gpu.surface_config);
@@ -683,7 +685,7 @@ impl Renderer {
         // больше не является основным механизмом выживания resource cleanup-а.
         let stage_started_at = Instant::now();
         if let Err(error) = self.gpu.device.poll(wgpu::PollType::Poll) {
-            tracing::warn!(error = %error, "wgpu device poll завершился ошибкой во время GPU callback polling");
+            tracing::warn!(error = %error, "wgpu device poll resulted in an error during the GPU callback polling");
         }
         let device_poll_elapsed = stage_started_at.elapsed();
 
@@ -772,7 +774,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("Surface capabilities не вернул ни одного texture format")
+                .contains("Surface capabilities have not returned any texture format.")
         );
     }
 }

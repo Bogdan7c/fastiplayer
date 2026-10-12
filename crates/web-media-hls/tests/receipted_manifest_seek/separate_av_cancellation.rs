@@ -193,7 +193,7 @@ fn run_partial_component_scenario(blocked: BlockedComponent) {
             cancelling_receipt.outcome,
             ProgressiveAsyncSeekOutcome::Failed
         ),
-        "fixture receipt должен завершиться до replacement commit: {cancelling_receipt:?}"
+        "fixture receipt must be completed before replacement commit: {cancelling_receipt:?}"
     );
     assert_old_pair_tail_is_still_readable(&mut *demuxer, &stable_tracks);
 
@@ -221,7 +221,7 @@ fn run_partial_component_scenario(blocked: BlockedComponent) {
     assert!(
         result.actual_position.as_duration() >= Duration::from_secs(40)
             && result.actual_position.as_duration() < Duration::from_secs(41),
-        "video RAP должен принадлежать final target segment: {result:?}"
+        "video RAP must belong final target segment: {result:?}"
     );
     let mut saw_video = false;
     let mut saw_audio = false;
@@ -255,11 +255,11 @@ fn run_partial_component_scenario(blocked: BlockedComponent) {
     }
     assert_eq!(
         tracks_changed_count, 1,
-        "успешная A/V замена должна публиковаться ровно один раз"
+        "Successful A/V replacement must be published exactly once."
     );
     assert!(
         blocked_attempts.load(Ordering::Acquire) >= 2,
-        "fixture обязана физически открыть initial и cancelled component bodies"
+        "fixture It must be physically opened initial and cancelled component bodies"
     );
     assert_eq!(failed_final_video_attempts.load(Ordering::Acquire), 1);
     assert_eq!(successful_final_video_attempts.load(Ordering::Acquire), 1);
@@ -286,10 +286,10 @@ fn read_initial_old_pair_anchor(demuxer: &mut dyn Demuxer, stable_tracks: &[(Tra
                 }
             },
             DemuxReadEvent::TracksChanged(_) => {
-                panic!("initial topology не должна повторно меняться до preview")
+                panic!("initial topology It should not be changed again until preview")
             }
             DemuxReadEvent::MediaMetadataChanged(_) => {}
-            DemuxReadEvent::EndOfStream => panic!("old A/V pair закончилась до initial anchor"),
+            DemuxReadEvent::EndOfStream => panic!("old A/V pair finished initial anchor"),
             DemuxReadEvent::TemporarilyUnavailable(_) => unreachable!(),
         }
     }
@@ -323,13 +323,12 @@ fn assert_old_pair_tail_is_still_readable(
                 }
             },
             DemuxReadEvent::TracksChanged(_) => {
-                panic!("cancelled candidate не должен публиковать replacement topology")
+                panic!("cancelled candidate don't publish replacement topology")
             }
             DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => {
                 panic!(
-                    "old A/V pair стала EOF после cancelled candidate: \
-                     saw_video_tail={saw_video_tail}, saw_audio_tail={saw_audio_tail}"
+                    "old A/V pair becomes EOF after cancelled candidate: saw_video_tail={saw_video_tail}: saw_audio_tail={saw_audio_tail}"
                 )
             }
             DemuxReadEvent::TemporarilyUnavailable(_) => unreachable!(),
@@ -341,7 +340,7 @@ fn stable_track_id(stable_tracks: &[(TrackId, TrackKind)], kind: TrackKind) -> T
     stable_tracks
         .iter()
         .find_map(|(track_id, track_kind)| (*track_kind == kind).then_some(*track_id))
-        .unwrap_or_else(|| panic!("stable topology не содержит {kind:?} track"))
+        .unwrap_or_else(|| panic!("stable topology lacking {kind:?} track"))
 }
 
 fn observe_disconnect(stream: &mut std::net::TcpStream, sender: &mpsc::SyncSender<()>) {
