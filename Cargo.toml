@@ -40,6 +40,8 @@ members = [
     "crates/natural-sort-key",
     "crates/playlist-core",
     "crates/playlist-io",
+    "crates/subtitle-core",
+    "crates/subtitle-formats",
     "crates/playlist-discovery",
     "crates/playlist-state",
     "crates/media-core",
@@ -211,6 +213,8 @@ atomic-file-store = { version = "0.1.0-alpha.1", path = "crates/atomic-file-stor
 natural-sort-key = { version = "0.1.0-alpha.1", path = "crates/natural-sort-key" }
 playlist-core = { version = "0.1.0-alpha.1", path = "crates/playlist-core" }
 playlist-io = { version = "0.1.0-alpha.1", path = "crates/playlist-io" }
+subtitle-core = { version = "0.1.0-alpha.1", path = "crates/subtitle-core" }
+subtitle-formats = { version = "0.1.0-alpha.1", path = "crates/subtitle-formats" }
 hls-playlist-core = { version = "0.1.0-alpha.1", path = "crates/hls-playlist-core" }
 playlist-discovery = { version = "0.1.0-alpha.1", path = "crates/playlist-discovery" }
 playlist-state = { version = "0.1.0-alpha.1", path = "crates/playlist-state" }
@@ -251,6 +255,11 @@ syn = "2.0"
 url = "2.5"
 # Windows-1251 fallback для legacy .m3u/.cue (решение владельца B1); WHATWG-совместимые таблицы.
 encoding_rs = "0.8.42"
+# Статистическое определение legacy-кодировки текстовых субтитров без BOM (subtitle-formats);
+# того же автора, что и encoding_rs, лицензия Apache-2.0 OR MIT.
+chardetng = "1.0.0"
+# Валидация и нормализация BCP 47 языковых тегов дорожек субтитров (subtitle-core), лицензия MIT.
+oxilangtag = "0.1.6"
 percent-encoding = "2"
 unicode-normalization = "0.1"
 quick-xml = "0.41"

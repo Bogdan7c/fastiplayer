@@ -1,0 +1,23 @@
+[package]
+name = "subtitle-formats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "subtitle_formats"
+path = "src/lib.rs"
+
+[dependencies]
+# Нейтральная модель событий, в которую парсеры складывают результат.
+subtitle-core.workspace = true
+# Декодирование байтов в текст (UTF-8/UTF-16/легаси-кодировки) по правилам WHATWG.
+encoding_rs.workspace = true
+# Эвристическое определение легаси-кодировки (cp1251, KOI8-R и т.д.) у файлов без BOM.
+chardetng.workspace = true
+# Typed errors для фатальных ошибок загрузки файла субтитров.
+thiserror.workspace = true
+
+[lints]
+workspace = true

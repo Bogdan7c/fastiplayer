@@ -61,6 +61,8 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/natural-sort-key
     crates/playlist-core
     crates/playlist-io
+    crates/subtitle-core
+    crates/subtitle-formats
     crates/hls-playlist-core
     crates/playlist-discovery
     crates/playlist-state

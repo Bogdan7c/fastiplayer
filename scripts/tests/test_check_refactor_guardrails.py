@@ -765,6 +765,36 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_subtitle_core_rejects_gpu_dependency(self) -> None:
+        """Нейтральная модель субтитров не может зависеть от wgpu."""
+
+        packages = complete_workspace_packages()
+        packages["subtitle-core"] = package_with_dependencies(
+            "subtitle-core", (("oxilangtag", None), ("thiserror", None))
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "subtitle-core"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["subtitle-core"] = package_with_dependencies(
+            "subtitle-core", (("oxilangtag", None), ("wgpu", None))
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "subtitle-core" and violation.dependency == "wgpu"
+                for violation in failing_result.dependency_violations
+            )
+        )
+
     def test_playlist_discovery_rejects_player_and_ui_dependencies(self) -> None:
         """Local probe owner видит только neutral metadata/source/demux boundaries."""
 

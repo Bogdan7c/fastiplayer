@@ -42,6 +42,8 @@ CONTRACT_CRATES = frozenset(
         "playlist-core",
         "playlist-io",
         "playlist-state",
+        "subtitle-core",
+        "subtitle-formats",
         "codec-core",
         "demux-api",
         "settings-core",
@@ -189,6 +191,14 @@ ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES = frozenset()
 
 # Hardened XML boundary не должен получить filesystem/network/domain dependencies.
 BOUNDED_XML_READER_ALLOWED_DEPENDENCIES = frozenset({"quick-xml", "thiserror"})
+
+# Нейтральная модель субтитров знает только BCP 47 теги и typed errors: ни GPU, ни UI, ни форматов.
+SUBTITLE_CORE_ALLOWED_DEPENDENCIES = frozenset({"oxilangtag", "thiserror"})
+
+# Парсеры текстовых субтитров получают только модель, декодирование и typed errors.
+SUBTITLE_FORMATS_ALLOWED_DEPENDENCIES = frozenset(
+    {"subtitle-core", "encoding_rs", "chardetng", "thiserror"}
+)
 
 # Neutral web-media values не должны напрямую знать process/service/network/app owners.
 WEB_MEDIA_CORE_ALLOWED_DEPENDENCIES = frozenset()
@@ -1217,6 +1227,22 @@ def find_dependency_violations(
             frozenset({"atomic-file-store"}),
             ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES,
             "atomic-file-store remains std-only neutral durability boundary",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"subtitle-core"}),
+            SUBTITLE_CORE_ALLOWED_DEPENDENCIES,
+            "subtitle-core remains a neutral model without GPU/UI/format dependencies",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"subtitle-formats"}),
+            SUBTITLE_FORMATS_ALLOWED_DEPENDENCIES,
+            "subtitle-formats depends only on subtitle-core and text decoding",
         )
     )
     violations.extend(

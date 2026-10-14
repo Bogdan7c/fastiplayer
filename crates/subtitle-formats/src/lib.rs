@@ -1,0 +1,28 @@
+//! Загрузка текстовых форматов субтитров в нейтральную модель `subtitle-core`.
+//!
+//! Конвейер: байты -> [`decode_subtitle_bytes`] (кодировка) -> парсер формата ->
+//! [`ParsedSubtitleDocument`] (события, регионы, отчёт). Точка входа — [`load_text_subtitle`].
+//!
+//! Фатальны только ошибки файла целиком ([`SubtitleLoadError`]: слишком большой вход,
+//! слишком много событий). Проблемы отдельных реплик пропускаются и попадают
+//! в [`SubtitleParseReport`] — плохая реплика не должна ломать весь фильм.
+
+mod document;
+mod encoding;
+mod error;
+mod limits;
+mod load;
+mod report;
+mod sniff;
+mod srt;
+mod webvtt;
+
+pub use document::ParsedSubtitleDocument;
+pub use encoding::{
+    DecodedSubtitleText, DetectedSubtitleEncoding, LegacyEncodingHint, decode_subtitle_bytes,
+};
+pub use error::SubtitleLoadError;
+pub use limits::SubtitleParseLimits;
+pub use load::{LoadedTextSubtitle, load_text_subtitle};
+pub use report::{CueSettingName, LineNumber, ParseIssue, ParseIssueKind, SubtitleParseReport};
+pub use sniff::{TextSubtitleFormat, sniff_text_subtitle_format};

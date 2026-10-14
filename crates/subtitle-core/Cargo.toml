@@ -1,0 +1,19 @@
+[package]
+name = "subtitle-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "subtitle_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Валидация и нормализация BCP 47 тегов языка дорожки (en-us -> en-US).
+oxilangtag.workspace = true
+# Typed errors для конструкторов значений, нарушающих инварианты модели.
+thiserror.workspace = true
+
+[lints]
+workspace = true
