@@ -16,8 +16,8 @@ pub enum SidecarSubtitleFormat {
 }
 
 impl SidecarSubtitleFormat {
-    /// Определяет формат по расширению без учёта регистра; прочие расширения — `None`.
-    pub(crate) fn from_extension(extension: &str) -> Option<Self> {
+    /// Определяет формат по расширению без учёта регистра (без точки); прочие — `None`.
+    pub fn from_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
             "srt" => Some(Self::Srt),
             "vtt" => Some(Self::WebVtt),
@@ -25,6 +25,11 @@ impl SidecarSubtitleFormat {
             "ssa" => Some(Self::Ssa),
             _ => None,
         }
+    }
+
+    /// Формат по расширению пути; нет расширения или оно не в UTF-8 — `None`.
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        Self::from_extension(path.extension()?.to_str()?)
     }
 
     /// Можно ли показать этот формат уже сейчас (текстовые SRT/WebVTT). ASS/SSA найдены,
@@ -53,6 +58,9 @@ pub enum SidecarLocation {
     SubtitleDirectory,
     /// `Subs/<основа видео>/`.
     MovieNamedDirectory,
+    /// Файл выбрал пользователь (бросил на окно или «Загрузить файл…»): поиск его не находил,
+    /// в порядке кандидатов места нет.
+    ChosenByUser,
 }
 
 /// Один найденный файл субтитров.

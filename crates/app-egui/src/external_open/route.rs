@@ -13,6 +13,19 @@
 //! на своём месте фоновым обходом. Файл плейлиста даёт [`OpenStep::ImportPlaylistFile`]
 //! (если принесено несколько плейлистов, импортируется первый, остальные — с уведомлением).
 //!
+//! Файлы субтитров (`.srt`, `.vtt`, `.ass`, `.ssa`) в media-таблицу не входят и очередь не
+//! меняют никогда:
+//!
+//! | Бросок                                         | Шаг                                          |
+//! |------------------------------------------------|----------------------------------------------|
+//! | только субтитры (любое место)                  | прикрепить к текущему видео                  |
+//! | видео/папка/ссылка + субтитры, место «видео»  | запомнить для открываемого видео (до play)   |
+//! | что-то + субтитры, место «плейлист»            | уведомление, субтитры НЕ прикрепляются       |
+//!
+//! Для панели плейлиста выбрано простое правило: добавление в очередь не запускает
+//! воспроизведение, поэтому «станет ли добавленный элемент играющим» не определимо на этапе
+//! броска; субтитры не принимаются, пользователь получает подсказку.
+//!
 //! Ссылки (решение владельца): панель плейлиста — как «Добавить URL», видео — новая очередь
 //! ([`OpenStep::OpenWebUrl`] с местом броска). За один бросок берётся первая ссылка, остальные
 //! — с уведомлением; если вместе с ссылкой принесли файлы или папки, обрабатываются они, а
@@ -48,6 +61,13 @@ pub(crate) enum OpenStep {
         /// Куда брошено.
         target: DropTarget,
     },
+    /// Только субтитры: добавить к текущему видео (локальному или web), выбрать и показать.
+    /// Очередь и плейлист не меняются; без открытого видео владелец ответит подсказкой.
+    AttachSubtitlesToCurrentMedia(Vec<PathBuf>),
+    /// Видео и субтитры в одном броске: запомнить субтитры для видео, которое сейчас
+    /// открывается. Исполняется ДО шага открытия; судьбу «открытие не состоялось» решает
+    /// хост (см. `AppState::settle_dropped_subtitles`).
+    QueueSubtitlesForOpenedMedia(Vec<PathBuf>),
     /// Показать пользователю сообщение.
     Notify(DropNotice),
     /// Ссылка: на панель плейлиста — добавить как «Добавить URL», на видео — новая очередь.
@@ -68,6 +88,7 @@ pub(crate) fn route_plan(plan: ExternalOpenPlan) -> Vec<OpenStep> {
     let mut missing_count = 0usize;
     let mut unsupported_count = 0usize;
     let mut web_urls = Vec::new();
+    let mut subtitle_files = Vec::new();
     for item in plan.items {
         match item {
             ClassifiedItem::MediaFile(path) => {
@@ -82,9 +103,17 @@ pub(crate) fn route_plan(plan: ExternalOpenPlan) -> Vec<OpenStep> {
             }
             ClassifiedItem::PlaylistFile(path) => playlist_files.push(path),
             ClassifiedItem::WebUrl(url) => web_urls.push(url),
+            ClassifiedItem::SubtitleFile(path) => subtitle_files.push(path),
         }
     }
 
+    // Субтитры в «смеси» только если в броске есть содержимое для открытия. Решается ДО
+    // того, как `media_files`/`web_urls` будут израсходованы ниже.
+    let subtitle_company = SubtitleCompany::of_drop(
+        !media_files.is_empty() || has_folder,
+        !web_urls.is_empty(),
+        !playlist_files.is_empty(),
+    );
     let mut steps = Vec::new();
     if has_folder {
         steps.push(OpenStep::CollectDroppedItems {
@@ -109,6 +138,11 @@ pub(crate) fn route_plan(plan: ExternalOpenPlan) -> Vec<OpenStep> {
         WebUrlCompany::WithLocalItems
     };
     push_web_url_steps(&mut steps, plan.target, web_urls, web_url_company);
+    // Шаг субтитров ставится ПЕРВЫМ: запомненные файлы должны существовать к моменту, когда
+    // видео установится, а все шаги открытия лишь запускают асинхронную работу.
+    if let Some(subtitle_step) = subtitle_step(plan.target, subtitle_files, subtitle_company) {
+        steps.insert(0, subtitle_step);
+    }
     if extra_playlist_count > 0 {
         steps.push(OpenStep::Notify(DropNotice::PlaylistsOneAtATime));
     }
@@ -127,6 +161,59 @@ pub(crate) fn route_plan(plan: ExternalOpenPlan) -> Vec<OpenStep> {
         steps.push(OpenStep::Notify(DropNotice::NothingToOpen));
     }
     steps
+}
+
+/// Что принесли в одном броске вместе с файлами субтитров.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubtitleCompany {
+    /// Только субтитры (возможно, рядом с «файл не найден»): прикрепляются к текущему видео.
+    Alone,
+    /// Рядом есть файл или папка с media: субтитры ждут первое установленное видео.
+    WithMedia,
+    /// Рядом только ссылка: она может стать видео, как и media.
+    WithWebUrl,
+    /// Рядом только плейлист: видео, к которому прикрепить, заранее неизвестно.
+    WithPlaylistFile,
+}
+
+impl SubtitleCompany {
+    /// Определяет сопровождение по тому, что есть в броске.
+    const fn of_drop(
+        has_media_or_folder: bool,
+        has_web_url: bool,
+        has_playlist_file: bool,
+    ) -> Self {
+        if has_media_or_folder {
+            Self::WithMedia
+        } else if has_web_url {
+            Self::WithWebUrl
+        } else if has_playlist_file {
+            Self::WithPlaylistFile
+        } else {
+            Self::Alone
+        }
+    }
+}
+
+/// Шаг для файлов субтитров по таблице модуля; `None`, если субтитров в броске нет.
+fn subtitle_step(
+    target: DropTarget,
+    subtitle_files: Vec<PathBuf>,
+    company: SubtitleCompany,
+) -> Option<OpenStep> {
+    if subtitle_files.is_empty() {
+        return None;
+    }
+    Some(match (company, target) {
+        (SubtitleCompany::Alone, _) => OpenStep::AttachSubtitlesToCurrentMedia(subtitle_files),
+        (SubtitleCompany::WithMedia | SubtitleCompany::WithWebUrl, DropTarget::Video) => {
+            OpenStep::QueueSubtitlesForOpenedMedia(subtitle_files)
+        }
+        // Панель плейлиста не запускает воспроизведение; плейлист-файл не называет видео.
+        (_, DropTarget::Playlist) | (SubtitleCompany::WithPlaylistFile, DropTarget::Video) => {
+            OpenStep::Notify(DropNotice::SubtitlesNeedPlayingVideo)
+        }
+    })
 }
 
 /// Были ли ссылки принесены вместе с файлами, папками или плейлистом.

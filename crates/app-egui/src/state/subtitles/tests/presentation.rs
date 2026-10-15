@@ -8,8 +8,8 @@ use subtitle_raster::{CueSourceId, SubtitleAppearance, SubtitleOverlay};
 
 use super::super::active_track::ActiveSubtitleTrack;
 use super::super::presentation::SubtitlePresenter;
-use super::super::sidecar_job::{FontLibraryPlan, LoadedSidecarTrack, SidecarJobOutcome};
-use super::super::{JobResultDisposition, SubtitleLifecycleView, SubtitleMediaSource};
+use super::super::sidecar_job::{FontLibraryPlan, SidecarJobOutcome};
+use super::super::{JobOrigin, JobResultDisposition, SubtitleLifecycleView, SubtitleMediaSource};
 use super::*;
 
 const VIEW_WIDTH: u32 = 1280;
@@ -202,7 +202,7 @@ fn new_media_drops_the_previous_track_at_once_and_late_results_of_the_old_media_
     // Поздний результат задачи A (готовый Loaded) не должен применяться к B.
     let late = loaded_outcome();
     assert_eq!(
-        owner.accept_job_outcome(media_a, late),
+        owner.accept_job_outcome(media_a, JobOrigin::Discovery, late),
         JobResultDisposition::DroppedStale
     );
     assert_eq!(
@@ -216,12 +216,9 @@ fn new_media_drops_the_previous_track_at_once_and_late_results_of_the_old_media_
 fn loaded_outcome() -> SidecarJobOutcome {
     let directory = tempfile::tempdir().expect("tempdir");
     let video = write_movie(directory.path(), Some(TWO_CUE_SRT));
-    let request = super::super::sidecar_job::SidecarJobRequest {
-        video_path: video,
-        fonts: FontLibraryPlan::BuildEmbeddedOnly,
-    };
+    let request = discovery_request(&video, FontLibraryPlan::BuildEmbeddedOnly);
     let outcome = super::super::sidecar_job::run_sidecar_job(&request, &|| false);
-    assert!(matches!(outcome, SidecarJobOutcome::Loaded(_)));
+    assert!(matches!(&outcome, SidecarJobOutcome::Discovered(d) if d.preloaded.is_some()));
     outcome
 }
 
@@ -352,20 +349,24 @@ fn sync_offset_moves_the_lookup_time_of_a_frame() {
     // Презентатор напрямую: дорожка со сдвигом +2 с (субтитры позже на 2 с).
     let directory = tempfile::tempdir().expect("tempdir");
     let video = write_movie(directory.path(), Some(TWO_CUE_SRT));
-    let request = super::super::sidecar_job::SidecarJobRequest {
-        video_path: video,
-        fonts: FontLibraryPlan::BuildEmbeddedOnly,
-    };
-    let SidecarJobOutcome::Loaded(loaded) =
-        super::super::sidecar_job::run_sidecar_job(&request, &|| false)
-    else {
-        panic!("track must load");
-    };
-    let LoadedSidecarTrack {
-        timeline, fonts, ..
-    } = *loaded;
-    let mut presenter = SubtitlePresenter::new(None);
-    presenter.install_font_library(fonts.expect("fonts requested"));
+    let request = discovery_request(&video, FontLibraryPlan::BuildEmbeddedOnly);
+    let discovery = expect_discovery(super::super::sidecar_job::run_sidecar_job(
+        &request,
+        &|| false,
+    ));
+    let timeline = discovery
+        .preloaded
+        .expect("track is read")
+        .result
+        .expect("track must load")
+        .timeline;
+    let config = SubtitlesConfig::default();
+    let mut presenter = SubtitlePresenter::new(
+        None,
+        SubtitleAppearance::youtube_like(),
+        super::super::limits::raster_limits_from_config(&config),
+    );
+    presenter.install_font_library(discovery.fonts.expect("fonts requested"));
     let delayed = ActiveSubtitleTrack::new(
         CueSourceId::new(7),
         timeline,

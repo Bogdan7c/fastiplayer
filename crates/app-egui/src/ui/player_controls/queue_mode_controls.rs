@@ -15,11 +15,11 @@ use crate::ui::skin::{ControlsStyle, PersistentControlStyle};
 use super::{ControlAction, TransportControlAction};
 
 /// Hover плавно меняет цвет за 120 миллисекунд.
-const HOVER_TRANSITION_SECONDS: f32 = 0.120;
+pub(super) const HOVER_TRANSITION_SECONDS: f32 = 0.120;
 /// Authoritative active snapshot плавно меняет цвет за 160 миллисекунд.
-const ACTIVE_TRANSITION_SECONDS: f32 = 0.160;
+pub(super) const ACTIVE_TRANSITION_SECONDS: f32 = 0.160;
 /// Pressed surface и content scale реагируют за 80 миллисекунд.
-const PRESSED_TRANSITION_SECONDS: f32 = 0.080;
+pub(super) const PRESSED_TRANSITION_SECONDS: f32 = 0.080;
 /// Обычный press уменьшает только содержимое, не затрагивая layout/hit-area.
 const PRESSED_CONTENT_SCALE: f32 = 0.97;
 
@@ -105,12 +105,59 @@ const fn next_repeat_mode(current_mode: RepeatMode) -> RepeatMode {
 }
 
 /// Ставит Repeat от центра, сжимает расстояние по статическим краям и зеркалит Shuffle.
+///
+/// Раскладка без кнопки субтитров; в production строку раскладывает `subtitle_control`,
+/// эта форма остаётся эталоном «как было до CC» для тестов.
+#[cfg(test)]
 pub(super) fn control_layout(
     playback_button_rect: Rect,
     open_file_button_rect: Rect,
     fullscreen_button_rect: Rect,
     controls_style: ControlsStyle,
     item_spacing: f32,
+) -> QueueModeControlLayout {
+    control_layout_reserving_trailing_space(
+        playback_button_rect,
+        open_file_button_rect,
+        fullscreen_button_rect,
+        controls_style,
+        item_spacing,
+        TrailingReservedWidth::NONE,
+    )
+}
+
+/// Ширина, которую нужно оставить между Repeat и Fullscreen для кнопки субтитров (CC).
+///
+/// Резерв включает саму кнопку и её дальний зазор до Fullscreen; ближний зазор до Repeat
+/// (`external_gap`) добавляется внутри раскладки так же, как для Fullscreen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct TrailingReservedWidth(f32);
+
+impl TrailingReservedWidth {
+    /// Ничего не зарезервировано: раскладка совпадает с прежней.
+    pub(super) const NONE: Self = Self(0.0);
+
+    /// Резерв заданной ширины; отрицательное и нечисловое значение считается нулём.
+    pub(super) fn of_width(width: f32) -> Self {
+        Self(if width.is_finite() {
+            width.max(0.0)
+        } else {
+            0.0
+        })
+    }
+}
+
+/// То же, что `control_layout` (тестовый эталон без CC), но правый предел Repeat отодвинут на `trailing_reserved`.
+///
+/// Именно так CC «раздвигает» Shuffle/Repeat симметрично: ограничение — одно число
+/// `resolved_center_distance`, на него опирается и зеркальный Shuffle.
+pub(super) fn control_layout_reserving_trailing_space(
+    playback_button_rect: Rect,
+    open_file_button_rect: Rect,
+    fullscreen_button_rect: Rect,
+    controls_style: ControlsStyle,
+    item_spacing: f32,
+    trailing_reserved: TrailingReservedWidth,
 ) -> QueueModeControlLayout {
     // Обе кнопки используют ту же 32-point hit-area, что Previous/Next.
     let button_size = Vec2::splat(controls_style.transport_button_size);
@@ -120,6 +167,7 @@ pub(super) fn control_layout(
     let external_gap = item_spacing.max(controls_style.queue_mode_neighbor_gap);
     // Правый предел зависит только от статического Fullscreen, а не от rate progress.
     let right_distance_limit = fullscreen_button_rect.left()
+        - trailing_reserved.0
         - external_gap
         - button_half_width
         - playback_button_rect.center().x;
@@ -296,7 +344,7 @@ fn paint_control(
 }
 
 /// Делегирует timing/reversal egui и не просит repaint после достижения target.
-fn animated_bool(ui: &Ui, animation_id: Id, target: bool, duration_seconds: f32) -> f32 {
+pub(super) fn animated_bool(ui: &Ui, animation_id: Id, target: bool, duration_seconds: f32) -> f32 {
     ui.ctx().animate_bool_with_time_and_easing(
         animation_id,
         target,
@@ -306,7 +354,7 @@ fn animated_bool(ui: &Ui, animation_id: Id, target: bool, duration_seconds: f32)
 }
 
 /// Преобразует animation progress в один paint-state без знания конкретной кнопки.
-fn resolve_paint_state(
+pub(super) fn resolve_paint_state(
     style: PersistentControlStyle,
     enabled: bool,
     focus_visible: bool,
@@ -355,7 +403,7 @@ fn resolve_paint_state(
 }
 
 /// Линейно интерполирует unmultiplied RGBA токены с явным clamp progress.
-fn lerp_color(start: Color32, end: Color32, progress: f32) -> Color32 {
+pub(super) fn lerp_color(start: Color32, end: Color32, progress: f32) -> Color32 {
     let progress = progress.clamp(0.0, 1.0);
     // Точные endpoints не проходят через округление и сохраняют исходные style tokens.
     if progress <= 0.0 {

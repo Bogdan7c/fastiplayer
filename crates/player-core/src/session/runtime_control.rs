@@ -330,8 +330,12 @@ impl PlayerSession {
     }
 
     /// Выбирает subtitle track или отключает субтитры.
+    ///
+    /// `Some(id)` обязан указывать на subtitle-трек текущего media (иначе `InvalidCommand`
+    /// без изменения выбора и без события), см. `subtitle_selection`.
     pub(super) fn select_subtitle_track(&mut self, track_id: Option<TrackId>) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        self.validate_subtitle_track_selection(track_id)?;
         self.snapshot.selected_tracks.subtitle_track = track_id;
         self.push_player_event(PlayerEvent::SubtitleTrackSelected(track_id));
         Ok(())

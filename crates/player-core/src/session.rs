@@ -74,6 +74,7 @@ mod seek_transaction;
 mod snapshot_builder;
 mod staged_media_install;
 mod staged_video_preflight;
+mod subtitle_selection;
 mod tick;
 mod timeline_seek;
 mod video_packet_framing;

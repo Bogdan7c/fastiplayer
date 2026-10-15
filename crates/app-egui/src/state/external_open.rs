@@ -310,4 +310,12 @@ impl ExternalOpenHost for AppStateExternalOpenHost<'_> {
                 self.renderer,
             );
     }
+
+    fn attach_subtitle_files_to_current_media(&mut self, paths: Vec<PathBuf>) {
+        self.app_state.attach_dropped_subtitle_files(&paths);
+    }
+
+    fn queue_subtitle_files_for_opened_media(&mut self, paths: Vec<PathBuf>) {
+        self.app_state.queue_dropped_subtitle_files(paths);
+    }
 }

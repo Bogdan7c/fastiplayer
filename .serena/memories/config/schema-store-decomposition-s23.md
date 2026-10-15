@@ -27,3 +27,6 @@
 
 ## UX12 schema v12 (2026-10-07)
 - `CURRENT_SCHEMA_VERSION = 12`: в `[playlist]` добавлены `dropped_folder_max_files` (2000, 1..=10000, step 100), `dropped_folder_max_depth` (8, 0..=32) и `dropped_playlist_file_action` (`by_drop_target` | `new_playlist` | `append_to_queue`). Миграция v11→v12 только поднимает версию, старые файлы получают defaults через serde(default). Валидация диапазонов — `validation/playlist_drop.rs` (вынесено, `validation.rs` у лимита 800). Контролы в окне настроек строятся из `#[setting]`-метаданных, Apply идёт через route playlist. Контекст: `mem:app-egui/external-open-drag-drop-ux12`.
+
+## Subtitles schema v13 (2026-10-15)
+- `CURRENT_SCHEMA_VERSION = 13`: новая секция `[subtitles]` (`schema/subtitles.rs`, `validation/subtitles.rs`, комментарии default-документа — `schema/default_document/subtitles.rs`, т.к. ключ `enabled` есть и в других секциях). Миграция v12→v13 только поднимает версию. Маршрут `subtitles.apply` (`fastiplayer-settings/src/routing/subtitles.rs`, `SettingStateOwner::SubtitlePolicy`), фикстура `tests/fixtures/current_schema_v13.toml`. Поля и семантика применения: `mem:subtitles/controls-s04`.

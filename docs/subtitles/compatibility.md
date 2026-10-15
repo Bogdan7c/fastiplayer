@@ -45,7 +45,7 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 | GPU pass between video and UI (menus and buttons always on top) | Full (wgpu); one draw per frame, texture upload only when the cue set, picture size or style changes |
 | Timing | by the pts of the frame actually drawn; pause keeps the cue, seek drops it on the first new frame, cues of the previous file never appear |
 | Placement | bottom of the picture area (never on the letterbox bars yet — bars and lifting above the controls: session 05) |
-| Track choice | temporary: the first sidecar file found (menu and language preferences: session 04) |
+| Track choice | automatic by preferred languages, or from the CC menu (session 04, see below) |
 | Files with a non-zero container start time (some MPEG-TS/M2TS) | not yet: sidecar times are compared with raw frame pts; tracked for session 14 |
 
 ### Sidecar files next to a local video
@@ -61,6 +61,19 @@ Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Su
 | `Other.srt`, `Movie2.srt`, `Extras/Movie.srt`, `Subs/Other/x.srt` | no | — |
 | `.ass` / `.ssa` | found, not shown yet (session 08) | — |
 | Non-UTF-8 file names | yes, paths are kept byte-exact | — |
+
+## Controls (session 04)
+
+| Feature | Status |
+|---|---|
+| CC button | right of Repeat, only when the video has at least one subtitle track; underlined when on. Window ≥ 498 pt: CC + ▾ menu; 470–497 pt: CC only (right-click opens the menu); < 470 pt: hidden, hotkeys still work |
+| Menu | tracks (`Russian — forced (SRT, file)`; a file without a language shows its file name), Off, Load file…, Delay with Reset; unavailable tracks are greyed with the reason on hover |
+| Hotkeys | `C` on/off, `V` next track (cycles through Off), `Z` / `X` delay −0.1 s / +0.1 s (one updating notification) |
+| Auto-selection | off by default; when on: first track matching `subtitles.preferred_languages` (empty = system language; `rus` matches `ru`), otherwise the first track; forced tracks are shown even when subtitles are off |
+| Remembered | whether subtitles are on (config `subtitles.enabled`); per-video track and delay memory: session 07 |
+| Drop a subtitle file on the window | attaches to the current video (local or web) and shows it; the queue is not changed. Nothing playing → "Open a video first, then add subtitles." Video + subtitle file dropped together → attached to that video; dropped on the playlist panel → not attached (notification) |
+| Language from a dropped / loaded file name | `Movie.ru.srt`, `sintel_ru.srt`, `Movie English.srt`, `Movie [Forced].srt`; only known languages (no video name to compare with, so `The_Big_Lie.srt` is not "lie") |
+| Settings | Settings → `subtitles`: show subtitles, preferred languages, style (box / outline, size, colors, box opacity), resource limits (config schema v13) |
 
 ## Text encodings (SRT, WebVTT files)
 

@@ -291,6 +291,18 @@ pub struct ControlsStyle {
     /// Размер hand-drawn fullscreen glyph внутри кнопки.
     pub fullscreen_icon_extent: f32,
 
+    /// Размер квадратной hit-area кнопки субтитров CC.
+    pub subtitles_button_size: f32,
+
+    /// Ширина отдельной hit-area стрелки «▾» меню субтитров.
+    pub subtitles_menu_arrow_width: f32,
+
+    /// Ширина значка «CC» внутри кнопки.
+    pub subtitles_button_icon_extent: f32,
+
+    /// Толщина подчёркивания под значком, когда субтитры включены.
+    pub subtitles_underline_thickness: f32,
+
     /// Ширина volume slider.
     pub volume_slider_width: f32,
 

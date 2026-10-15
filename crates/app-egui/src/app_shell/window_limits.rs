@@ -83,6 +83,9 @@ mod tests {
         // Панель egui узнаёт свою высоту после первого прохода содержимого, поэтому
         // измеряем на втором кадре того же контекста.
         let egui_ctx = egui::Context::default();
+        // Дорожек нет: CC не показывается, высота панели не зависит от субтитров.
+        let subtitle_menu =
+            crate::state::SubtitleMenuView::empty(crate::state::SubtitleVisibility::Shown);
         for _frame in 0..2 {
             run_ui_frame(&egui_ctx, input.clone(), |ui| {
                 let _actions = render_bottom_controls(
@@ -96,6 +99,7 @@ mod tests {
                         live_scrub_enabled: false,
                         reduced_motion: false,
                         playlist_transport: &transport,
+                        subtitle_menu: &subtitle_menu,
                     },
                 );
                 remaining_height = ui.available_height();

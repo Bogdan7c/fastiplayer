@@ -1,31 +1,31 @@
-//! Тело фоновой задачи загрузки субтитров: поиск файла рядом -> выбор -> чтение -> разбор.
+//! Тело фоновой задачи субтитров. Два вида работы (см. [`SidecarJobTask`]):
+//!
+//! 1. `DiscoverNextToVideo` — найти файлы рядом с видео, выполнить автовыбор и прочитать
+//!    ТОЛЬКО одну дорожку (выбранную или принудительную). Остальные остаются в списке
+//!    непрочитанными.
+//! 2. `LoadFile` — прочитать одну явно указанную дорожку (выбор в меню, брошенный файл).
 //!
 //! Это чистая функция без потоков и без знания об `AppState`: поток и доставку результата
 //! обеспечивает `job_runner`, а здесь только последовательность шагов с проверками отмены
 //! между ними. Благодаря этому тесты запускают её синхронно.
 //!
-//! Правила (решения владельца, сессия 03):
-//! - из найденных кандидатов берётся ПЕРВЫЙ, который можно показать сейчас
-//!   (`is_renderable_now`); ASS/SSA пропускаются (до сессий 08–10), это пишется в debug-лог;
-//! - если выбранный файл не читается или не разбирается, дорожка помечается недоступной
-//!   (типизированная причина), следующий кандидат НЕ пробуется: выбор дорожек — сессия 04;
-//! - в логи не попадают ни текст реплик, ни пути каталогов (имя файла — только на debug).
+//! Библиотека шрифтов строится только когда задача действительно что-то загрузила (media без
+//! субтитров не платит ~90 мс), и только если растеризатора ещё нет (`FontLibraryPlan`).
+//!
+//! В логи не попадают ни текст реплик, ни пути каталогов (имя файла — только на debug).
 
-use std::ffi::OsString;
-use std::fs::File;
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
 
-use subtitle_core::{SubtitleLanguage, SubtitleTimeline};
-use subtitle_formats::{
-    LegacyEncodingHint, SubtitleLoadError, TextSubtitleFormat, load_text_subtitle,
-};
+use subtitle_formats::SubtitleLoadError;
 use subtitle_raster::{FontLibraryError, SubtitleFontLibrary};
-use subtitle_sidecar::{SidecarSearchError, SidecarSubtitleFormat, find_sidecar_subtitles};
-
-use super::limits::{
-    FONT_LOOKUP_CACHE_LIMITS, SIDECAR_SEARCH_LIMITS, SUBTITLE_FILE_MAX_BYTES, SUBTITLE_PARSE_LIMITS,
+use subtitle_sidecar::{
+    SidecarSearchError, SidecarSubtitleCandidate, SidecarSubtitleFormat, find_sidecar_subtitles,
 };
+
+use super::auto_select::{AutoSelection, PreferredLanguages, TrackTraits, auto_select};
+use super::file_loader::{FileLoadError, LoadedSidecarTrack, load_candidate_timeline};
+use super::limits::LoadLimits;
 
 /// Нужна ли задаче новая библиотека шрифтов.
 ///
@@ -45,24 +45,61 @@ pub(super) enum FontLibraryPlan {
     BuildEmbeddedOnly,
 }
 
+/// Какую дорожку читать сразу после поиска.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreloadTarget {
+    /// Субтитры включены: читаем выбранную автовыбором дорожку.
+    Selected,
+    /// Субтитры выключены: читаем только принудительную дорожку нужного языка (если есть).
+    ForcedFallback,
+    /// Ничего не читаем: выбор уже сделан пользователем (его дорожку грузит другая задача).
+    Nothing,
+}
+
+/// Что именно делает задача.
+#[derive(Debug, Clone)]
+pub(super) enum SidecarJobTask {
+    /// Поиск рядом с видео, автовыбор и чтение одной дорожки.
+    DiscoverNextToVideo {
+        /// Путь установленного локального видео.
+        video_path: PathBuf,
+        /// Предпочитаемые языки (уже с учётом языка системы).
+        preferred_languages: PreferredLanguages,
+        /// Какую дорожку читать сразу.
+        preload: PreloadTarget,
+    },
+    /// Чтение одного файла.
+    LoadFile {
+        /// Файл (из поиска или выбранный пользователем).
+        candidate: SidecarSubtitleCandidate,
+    },
+}
+
 /// Что нужно сделать задаче.
 #[derive(Debug, Clone)]
 pub(super) struct SidecarJobRequest {
-    /// Путь установленного локального видео; рядом с ним ищутся субтитры.
-    pub(super) video_path: PathBuf,
+    /// Вид работы.
+    pub(super) task: SidecarJobTask,
     /// Нужна ли библиотека шрифтов.
     pub(super) fonts: FontLibraryPlan,
+    /// Лимиты на момент запуска (смена настроек задачу не затрагивает).
+    pub(super) limits: LoadLimits,
 }
 
 /// Почему дорожка недоступна. Воспроизведение видео при этом не затрагивается.
 ///
-/// `Display` английский и без путей/текста: его можно писать в лог и (в сессии 04)
-/// показывать человеку.
+/// `Display` английский и без путей/текста: его можно писать в лог и показывать человеку.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum SubtitleLoadFailure {
     /// Поиск рядом с видео невозможен (у пути нет каталога или имени).
     #[error("subtitle search failed: {0}")]
     SearchFailed(SidecarSearchError),
+    /// Формат найден, но показ ещё не поддержан.
+    #[error("subtitle format {format:?} is not supported yet")]
+    FormatNotSupportedYet {
+        /// Формат файла.
+        format: SidecarSubtitleFormat,
+    },
     /// Файл больше лимита и не читался.
     #[error("subtitle file is larger than the {limit_bytes} byte limit")]
     FileTooLarge {
@@ -92,32 +129,45 @@ pub(super) enum SubtitleLoadFailure {
     WorkerLost,
 }
 
-/// Загруженная дорожка и (при необходимости) новая библиотека шрифтов.
-pub(super) struct LoadedSidecarTrack {
-    /// Реплики дорожки.
-    pub(super) timeline: SubtitleTimeline,
-    /// Библиотека для создания растеризатора; `None` при `FontLibraryPlan::ReuseExisting`.
+/// Дорожка, прочитанная сразу после поиска (или причина, почему не вышло).
+pub(super) struct PreloadedTrack {
+    /// Номер дорожки во вернувшемся списке кандидатов.
+    pub(super) candidate_index: usize,
+    /// Результат чтения.
+    pub(super) result: Result<LoadedSidecarTrack, SubtitleLoadFailure>,
+}
+
+/// Итог поиска.
+pub(super) struct DiscoveryOutcome {
+    /// Все найденные кандидаты в порядке предпочтения поиска.
+    pub(super) candidates: Vec<SidecarSubtitleCandidate>,
+    /// Результат автовыбора (индексы в `candidates`).
+    pub(super) selection: AutoSelection,
+    /// Прочитанная дорожка (если автовыбор что-то выбрал для `PreloadTarget`).
+    pub(super) preloaded: Option<PreloadedTrack>,
+    /// Новая библиотека шрифтов; `None` при `ReuseExisting` или если ничего не читалось.
     pub(super) fonts: Option<SubtitleFontLibrary>,
-    /// Язык дорожки по имени файла (`Movie.ja.srt`); `None` — не указан.
-    pub(super) language: Option<SubtitleLanguage>,
-    /// Формат файла (для логов и будущего меню).
-    pub(super) format: SidecarSubtitleFormat,
-    /// Имя файла без каталога: только для debug-лога.
-    pub(super) file_name: Option<OsString>,
 }
 
 /// Итог задачи.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "значение живёт мгновение и один раз переезжает через mailbox; Box только усложнил бы доступ"
+)]
 pub(super) enum SidecarJobOutcome {
-    /// Рядом нет файла, который можно показать сейчас. Это не ошибка.
-    NoRenderableCandidate {
-        /// Сколько найденных кандидатов пропущено из-за формата (ASS/SSA).
-        skipped_unsupported_format: usize,
+    /// Поиск выполнен (кандидатов может не быть: это не ошибка).
+    Discovered(Box<DiscoveryOutcome>),
+    /// Явный файл загружен.
+    FileLoaded {
+        /// Дорожка.
+        track: Box<LoadedSidecarTrack>,
+        /// Новая библиотека шрифтов, если она требовалась.
+        fonts: Option<SubtitleFontLibrary>,
     },
-    /// Дорожка загружена.
-    Loaded(Box<LoadedSidecarTrack>),
-    /// Дорожка недоступна по типизированной причине.
+    /// Задача не дала результата по типизированной причине (для `LoadFile` — дорожка
+    /// недоступна; для поиска — поиск невозможен).
     Failed(SubtitleLoadFailure),
-    /// Задачу отменили (сменился media); результат нужно выбросить.
+    /// Задачу отменили (сменился media или выбор); результат нужно выбросить.
     Cancelled,
 }
 
@@ -126,14 +176,36 @@ pub(super) fn run_sidecar_job(
     request: &SidecarJobRequest,
     is_cancelled: &dyn Fn() -> bool,
 ) -> SidecarJobOutcome {
-    let search =
-        match find_sidecar_subtitles(&request.video_path, &SIDECAR_SEARCH_LIMITS, is_cancelled) {
-            Ok(outcome) => outcome,
-            Err(SidecarSearchError::Cancelled) => return SidecarJobOutcome::Cancelled,
-            Err(error) => {
-                return SidecarJobOutcome::Failed(SubtitleLoadFailure::SearchFailed(error));
-            }
-        };
+    match &request.task {
+        SidecarJobTask::DiscoverNextToVideo {
+            video_path,
+            preferred_languages,
+            preload,
+        } => run_discovery(
+            request,
+            video_path,
+            preferred_languages,
+            *preload,
+            is_cancelled,
+        ),
+        SidecarJobTask::LoadFile { candidate } => run_file_load(request, candidate, is_cancelled),
+    }
+}
+
+fn run_discovery(
+    request: &SidecarJobRequest,
+    video_path: &std::path::Path,
+    preferred_languages: &PreferredLanguages,
+    preload: PreloadTarget,
+    is_cancelled: &dyn Fn() -> bool,
+) -> SidecarJobOutcome {
+    let search = match find_sidecar_subtitles(video_path, &request.limits.search, is_cancelled) {
+        Ok(outcome) => outcome,
+        Err(SidecarSearchError::Cancelled) => return SidecarJobOutcome::Cancelled,
+        Err(error) => {
+            return SidecarJobOutcome::Failed(SubtitleLoadFailure::SearchFailed(error));
+        }
+    };
     if search.report.is_truncated() || !search.report.unreadable_directories.is_empty() {
         // Пути каталогов в лог не пишем: только факт и счётчики.
         tracing::debug!(
@@ -142,140 +214,125 @@ pub(super) fn run_sidecar_job(
             "Subtitle search was incomplete"
         );
     }
+    let candidates = search.candidates;
 
-    let Some(candidate) = search
-        .candidates
+    let traits: Vec<TrackTraits<'_>> = candidates
         .iter()
-        .find(|candidate| text_format_of(candidate.format).is_some())
-    else {
-        let skipped_unsupported_format = search.candidates.len();
-        if skipped_unsupported_format > 0 {
-            tracing::debug!(
-                skipped_unsupported_format,
-                "Subtitle files found, but none is in a format that can be shown yet"
-            );
-        }
-        return SidecarJobOutcome::NoRenderableCandidate {
-            skipped_unsupported_format,
-        };
+        .map(|candidate| TrackTraits {
+            language: candidate.language.as_ref(),
+            is_forced: candidate.disposition.is_forced,
+            is_hearing_impaired: candidate.is_hearing_impaired,
+            is_renderable: candidate.format.is_renderable_now(),
+        })
+        .collect();
+    let selection = auto_select(&traits, preferred_languages);
+    drop(traits);
+
+    let preload_index = match preload {
+        PreloadTarget::Selected => selection.for_enabled,
+        PreloadTarget::ForcedFallback => selection.forced_fallback,
+        PreloadTarget::Nothing => None,
     };
-    let Some(text_format) = text_format_of(candidate.format) else {
-        // Недостижимо: `find` выше уже отобрал кандидата с текстовым форматом. Явная ветка
-        // вместо unwrap, чтобы нарушение инварианта не превращалось в панику.
-        return SidecarJobOutcome::NoRenderableCandidate {
-            skipped_unsupported_format: search.candidates.len(),
-        };
+    let Some(candidate_index) = preload_index else {
+        return SidecarJobOutcome::Discovered(Box::new(DiscoveryOutcome {
+            candidates,
+            selection,
+            preloaded: None,
+            fonts: None,
+        }));
+    };
+    // Индекс пришёл из `auto_select` по тому же списку; `get` вместо индексации на случай
+    // нарушения этого инварианта.
+    let Some(candidate) = candidates.get(candidate_index) else {
+        return SidecarJobOutcome::Discovered(Box::new(DiscoveryOutcome {
+            candidates,
+            selection,
+            preloaded: None,
+            fonts: None,
+        }));
     };
 
-    if is_cancelled() {
-        return SidecarJobOutcome::Cancelled;
-    }
-    let bytes = match read_file_with_limit(&candidate.path, SUBTITLE_FILE_MAX_BYTES) {
-        Ok(bytes) => bytes,
-        Err(failure) => return SidecarJobOutcome::Failed(failure),
+    let result = match load_candidate_timeline(candidate, &request.limits, is_cancelled) {
+        Ok(track) => Ok(track),
+        Err(FileLoadError::Cancelled) => return SidecarJobOutcome::Cancelled,
+        Err(FileLoadError::Failed(failure)) => Err(failure),
     };
-
-    if is_cancelled() {
-        return SidecarJobOutcome::Cancelled;
-    }
-    let document = match load_text_subtitle(
-        &bytes,
-        text_format,
-        encoding_hint_for(candidate.language.as_ref()),
-        &SUBTITLE_PARSE_LIMITS,
-    ) {
-        Ok(loaded) => loaded.into_document(),
-        Err(error) => return SidecarJobOutcome::Failed(SubtitleLoadFailure::ParseFailed(error)),
+    // Шрифты нужны, только если есть что показывать.
+    let (result, fonts) = match result {
+        Ok(track) => match build_fonts_unless_cancelled(request, is_cancelled) {
+            FontStep::Built(fonts) => (Ok(track), fonts),
+            FontStep::Cancelled => return SidecarJobOutcome::Cancelled,
+            FontStep::Failed(failure) => (Err(failure), None),
+        },
+        Err(failure) => (Err(failure), None),
     };
-    // Освобождаем сырые байты до долгой операции со шрифтами.
-    drop(bytes);
-    let (events, _regions, _report) = document.into_parts();
-    let (timeline, _build_report) = SubtitleTimeline::from_events(events);
-
-    if is_cancelled() {
-        return SidecarJobOutcome::Cancelled;
-    }
-    let fonts = match build_font_library(request.fonts) {
-        Ok(fonts) => fonts,
-        Err(error) => {
-            return SidecarJobOutcome::Failed(SubtitleLoadFailure::FontLibraryFailed(error));
-        }
-    };
-
-    SidecarJobOutcome::Loaded(Box::new(LoadedSidecarTrack {
-        timeline,
+    SidecarJobOutcome::Discovered(Box::new(DiscoveryOutcome {
+        candidates,
+        selection,
+        preloaded: Some(PreloadedTrack {
+            candidate_index,
+            result,
+        }),
         fonts,
-        language: candidate.language.clone(),
-        format: candidate.format,
-        file_name: candidate.path.file_name().map(OsString::from),
     }))
 }
 
-/// Текстовый формат парсера для формата файла; `None` — показать нельзя (ASS/SSA и будущие).
-///
-/// Совмещаем два условия: кандидат должен быть «показываемым сейчас» по оценке поиска и
-/// иметь парсер здесь, иначе новый формат без парсера молча привёл бы к ошибке на загрузке.
-fn text_format_of(format: SidecarSubtitleFormat) -> Option<TextSubtitleFormat> {
-    if !format.is_renderable_now() {
-        return None;
-    }
-    match format {
-        SidecarSubtitleFormat::Srt => Some(TextSubtitleFormat::Srt),
-        SidecarSubtitleFormat::WebVtt => Some(TextSubtitleFormat::WebVtt),
-        _ => None,
-    }
-}
-
-/// Подсказка кодировки для файлов без BOM и не в UTF-8.
-///
-/// Кириллические языки и «язык не указан» (самый частый случай `Movie.srt`) получают
-/// кириллическую подсказку (продуктовое решение: Fastiplayer русскоязычный); явно указанный
-/// другой язык не навязывает кириллицу. Переедет в конфиг вместе с языками (сессия 04).
-pub(super) fn encoding_hint_for(language: Option<&SubtitleLanguage>) -> LegacyEncodingHint {
-    const CYRILLIC_LANGUAGES: [&str; 7] = ["ru", "uk", "be", "bg", "sr", "mk", "kk"];
-    match language {
-        None => LegacyEncodingHint::Cyrillic,
-        Some(language) if CYRILLIC_LANGUAGES.contains(&language.primary_language()) => {
-            LegacyEncodingHint::Cyrillic
-        }
-        Some(_) => LegacyEncodingHint::Generic,
+fn run_file_load(
+    request: &SidecarJobRequest,
+    candidate: &SidecarSubtitleCandidate,
+    is_cancelled: &dyn Fn() -> bool,
+) -> SidecarJobOutcome {
+    let track = match load_candidate_timeline(candidate, &request.limits, is_cancelled) {
+        Ok(track) => track,
+        Err(FileLoadError::Cancelled) => return SidecarJobOutcome::Cancelled,
+        Err(FileLoadError::Failed(failure)) => return SidecarJobOutcome::Failed(failure),
+    };
+    match build_fonts_unless_cancelled(request, is_cancelled) {
+        FontStep::Built(fonts) => SidecarJobOutcome::FileLoaded {
+            track: Box::new(track),
+            fonts,
+        },
+        FontStep::Cancelled => SidecarJobOutcome::Cancelled,
+        FontStep::Failed(failure) => SidecarJobOutcome::Failed(failure),
     }
 }
 
-/// Читает файл целиком, но не больше `limit_bytes`: больший файл — типизированный отказ.
-///
-/// Читаем через `take(limit + 1)`, а не доверяем `metadata().len()`: файл мог вырасти
-/// между проверкой и чтением, а у особых файлов длина вообще не отражает содержимое.
-pub(super) fn read_file_with_limit(
-    path: &Path,
-    limit_bytes: usize,
-) -> Result<Vec<u8>, SubtitleLoadFailure> {
-    let file =
-        File::open(path).map_err(|error| SubtitleLoadFailure::ReadFailed { kind: error.kind() })?;
-    let read_limit = u64::try_from(limit_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut bytes = Vec::new();
-    file.take(read_limit)
-        .read_to_end(&mut bytes)
-        .map_err(|error| SubtitleLoadFailure::ReadFailed { kind: error.kind() })?;
-    if bytes.len() > limit_bytes {
-        return Err(SubtitleLoadFailure::FileTooLarge { limit_bytes });
+/// Итог шага «библиотека шрифтов».
+#[expect(
+    clippy::large_enum_variant,
+    reason = "значение живёт мгновение и один раз переезжает через mailbox; Box только усложнил бы доступ"
+)]
+enum FontStep {
+    Built(Option<SubtitleFontLibrary>),
+    Cancelled,
+    Failed(SubtitleLoadFailure),
+}
+
+fn build_fonts_unless_cancelled(
+    request: &SidecarJobRequest,
+    is_cancelled: &dyn Fn() -> bool,
+) -> FontStep {
+    if is_cancelled() {
+        return FontStep::Cancelled;
     }
-    Ok(bytes)
+    match build_font_library(request.fonts, &request.limits) {
+        Ok(fonts) => FontStep::Built(fonts),
+        Err(error) => FontStep::Failed(SubtitleLoadFailure::FontLibraryFailed(error)),
+    }
 }
 
 /// Строит библиотеку шрифтов по плану.
 fn build_font_library(
     plan: FontLibraryPlan,
+    limits: &LoadLimits,
 ) -> Result<Option<SubtitleFontLibrary>, FontLibraryError> {
     match plan {
         FontLibraryPlan::ReuseExisting => Ok(None),
         FontLibraryPlan::BuildEmbeddedOnly => {
-            SubtitleFontLibrary::with_embedded_fonts(FONT_LOOKUP_CACHE_LIMITS).map(Some)
+            SubtitleFontLibrary::with_embedded_fonts(limits.font_lookup_cache).map(Some)
         }
         FontLibraryPlan::BuildWithSystemFonts => {
-            let mut library = SubtitleFontLibrary::with_embedded_fonts(FONT_LOOKUP_CACHE_LIMITS)?;
+            let mut library = SubtitleFontLibrary::with_embedded_fonts(limits.font_lookup_cache)?;
             let report = library.load_system_fonts();
             tracing::debug!(status = ?report.status, "System fonts prepared for subtitles");
             Ok(Some(library))

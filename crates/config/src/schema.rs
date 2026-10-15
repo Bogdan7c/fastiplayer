@@ -7,6 +7,7 @@ mod player;
 mod playlist;
 mod render;
 mod services;
+mod subtitles;
 mod ui;
 mod version;
 mod video;
@@ -20,13 +21,14 @@ pub use player::*;
 pub use playlist::*;
 pub use render::*;
 pub use services::*;
+pub use subtitles::*;
 pub use ui::*;
 pub use version::CURRENT_SCHEMA_VERSION;
 pub(crate) use version::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,
     LEGACY_SCHEMA_VERSION_5, LEGACY_SCHEMA_VERSION_6, LEGACY_SCHEMA_VERSION_7,
     LEGACY_SCHEMA_VERSION_8, LEGACY_SCHEMA_VERSION_9, LEGACY_SCHEMA_VERSION_10,
-    LEGACY_SCHEMA_VERSION_11,
+    LEGACY_SCHEMA_VERSION_11, LEGACY_SCHEMA_VERSION_12,
 };
 pub use video::*;
 
@@ -102,6 +104,11 @@ pub struct AppConfig {
     #[serde(default)]
     #[setting(nested)]
     pub ui: UiConfig,
+
+    /// Субтитры: показ, язык, стиль и лимиты ресурсов.
+    #[serde(default)]
+    #[setting(nested)]
+    pub subtitles: SubtitlesConfig,
 }
 
 impl AppConfig {
@@ -139,6 +146,7 @@ impl Default for AppConfig {
             web_media: WebMediaConfig::default(),
             yt_dlp: YtDlpConfig::default(),
             ui: UiConfig::default(),
+            subtitles: SubtitlesConfig::default(),
         }
     }
 }

@@ -2,6 +2,8 @@
 
 use oxilangtag::LanguageTag;
 
+use crate::language_table;
+
 /// Некорректный языковой тег.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("invalid subtitle language tag `{tag}`: {reason}")]
@@ -41,6 +43,19 @@ impl SubtitleLanguage {
     pub fn primary_language(&self) -> &str {
         self.0.primary_language()
     }
+
+    /// Основной язык в канонической форме: известный 3-буквенный код (`rus`, `ger`) приводится
+    /// к двухбуквенному (`ru`, `de`), неизвестный остаётся в нижнем регистре. Именно эту форму
+    /// нужно сравнивать с предпочтениями пользователя.
+    pub fn canonical_primary_language(&self) -> String {
+        language_table::canonical_primary_language(self.primary_language())
+    }
+
+    /// Английское название языка для меню (`Russian`); `None` — языка нет в таблице. Регион
+    /// и скрипт в название не входят.
+    pub fn english_display_name(&self) -> Option<&'static str> {
+        language_table::english_name(self.primary_language())
+    }
 }
 
 #[cfg(test)]
@@ -65,6 +80,19 @@ mod tests {
     fn invalid_tag_is_rejected_with_original_text() {
         let error = SubtitleLanguage::parse("not a tag!").expect_err("invalid tag");
         assert_eq!(error.tag(), "not a tag!");
+    }
+
+    #[test]
+    fn three_letter_sidecar_code_matches_the_two_letter_preference() {
+        let sidecar = SubtitleLanguage::parse("rus").expect("valid tag");
+        let preference = SubtitleLanguage::parse("ru-RU").expect("valid tag");
+        assert_eq!(sidecar.canonical_primary_language(), "ru");
+        assert_eq!(
+            sidecar.canonical_primary_language(),
+            preference.canonical_primary_language()
+        );
+        assert_eq!(sidecar.english_display_name(), Some("Russian"));
+        assert_eq!(preference.english_display_name(), Some("Russian"));
     }
 
     #[test]

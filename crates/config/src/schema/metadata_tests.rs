@@ -109,6 +109,21 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "ui.settings.live_preview_max_hz",
     "ui.animations.reduced_motion",
     "ui.animations.sidebar_slide_duration_ms",
+    "subtitles.enabled",
+    "subtitles.preferred_languages",
+    "subtitles.decoration",
+    "subtitles.text_size_percent",
+    "subtitles.text_color",
+    "subtitles.background_color",
+    "subtitles.background_opacity_percent",
+    "subtitles.max_file_size_mb",
+    "subtitles.max_cues_per_file",
+    "subtitles.sidecar_max_entries_per_folder",
+    "subtitles.sidecar_max_candidates",
+    "subtitles.render_cache_mb",
+    "subtitles.font_lookup_cache_chars",
+    "subtitles.max_chars_per_cue",
+    "subtitles.max_cues_on_screen",
 ];
 
 #[test]
@@ -294,6 +309,80 @@ fn metadata_ranges_match_validation_constants() {
         validation::MIN_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
         validation::MAX_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
     );
+    assert_integer_range(
+        &registry,
+        "subtitles.text_size_percent",
+        crate::MIN_TEXT_SIZE_PERCENT,
+        crate::MAX_TEXT_SIZE_PERCENT,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.background_opacity_percent",
+        crate::MIN_BACKGROUND_OPACITY_PERCENT,
+        crate::MAX_BACKGROUND_OPACITY_PERCENT,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_file_size_mb",
+        crate::MIN_MAX_FILE_SIZE_MB,
+        crate::MAX_MAX_FILE_SIZE_MB,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_cues_per_file",
+        crate::MIN_MAX_CUES_PER_FILE,
+        crate::MAX_MAX_CUES_PER_FILE,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.sidecar_max_entries_per_folder",
+        crate::MIN_SIDECAR_MAX_ENTRIES_PER_FOLDER,
+        crate::MAX_SIDECAR_MAX_ENTRIES_PER_FOLDER,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.sidecar_max_candidates",
+        crate::MIN_SIDECAR_MAX_CANDIDATES,
+        crate::MAX_SIDECAR_MAX_CANDIDATES,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.render_cache_mb",
+        crate::MIN_RENDER_CACHE_MB,
+        crate::MAX_RENDER_CACHE_MB,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.font_lookup_cache_chars",
+        crate::MIN_FONT_LOOKUP_CACHE_CHARS,
+        crate::MAX_FONT_LOOKUP_CACHE_CHARS,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_chars_per_cue",
+        crate::MIN_MAX_CHARS_PER_CUE,
+        crate::MAX_MAX_CHARS_PER_CUE,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_cues_on_screen",
+        crate::MIN_MAX_CUES_ON_SCREEN,
+        crate::MAX_MAX_CUES_ON_SCREEN,
+    );
+    assert_text_len(
+        &registry,
+        "subtitles.preferred_languages",
+        crate::MIN_PREFERRED_LANGUAGES_LEN,
+        crate::MAX_PREFERRED_LANGUAGES_LEN,
+    );
+    for color_id in ["subtitles.text_color", "subtitles.background_color"] {
+        assert_text_len(
+            &registry,
+            color_id,
+            crate::HEX_COLOR_LEN,
+            crate::HEX_COLOR_LEN,
+        );
+    }
     assert_integer_range(
         &registry,
         "playlist.dropped_folder_max_files",
@@ -693,6 +782,7 @@ fn static_enum_and_string_options_use_stable_ids() {
         "playlist.dropped_playlist_file_action",
         &["by_drop_target", "new_playlist", "append_to_queue"],
     );
+    assert_select_options(&registry, "subtitles.decoration", &["box", "outline"]);
     assert_select_options(&registry, "render.profile", &["auto", "vulkan", "opengles"]);
     assert_select_options(&registry, "render.hdr_to_sdr.operator", &["bt2446_c"]);
     assert_select_options(&registry, "render.tone_mapping", &["auto", "disabled"]);

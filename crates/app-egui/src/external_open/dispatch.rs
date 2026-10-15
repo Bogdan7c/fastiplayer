@@ -46,6 +46,12 @@ pub(crate) trait ExternalOpenHost {
     fn add_web_url_like_add_url_button(&mut self, url: DroppedWebUrl);
     /// Ссылка на видео: новая очередь из неё (с подтверждением, если очередь не пуста) и play.
     fn replace_queue_with_web_url(&mut self, url: DroppedWebUrl);
+    /// Добавить файлы субтитров к текущему видео (выбрать и показать). Очередь не меняется.
+    /// Без открытого видео хост показывает подсказку и ничего не запоминает.
+    fn attach_subtitle_files_to_current_media(&mut self, paths: Vec<PathBuf>);
+    /// Запомнить файлы субтитров для видео, которое открывает этот же бросок. Если открытие
+    /// не состоится, хост обязан их забыть (они не должны прилипнуть к чужому видео).
+    fn queue_subtitle_files_for_opened_media(&mut self, paths: Vec<PathBuf>);
 }
 
 /// Итог обработки запроса: отличает «отклонено занятостью» от «исполнено».
@@ -86,6 +92,12 @@ fn execute_step(host: &mut impl ExternalOpenHost, step: OpenStep) {
         OpenStep::ImportPlaylistFile { path, target } => {
             let intent = playlist_import_intent(host.dropped_playlist_file_action(), target);
             host.import_playlist_file(path, intent);
+        }
+        OpenStep::AttachSubtitlesToCurrentMedia(paths) => {
+            host.attach_subtitle_files_to_current_media(paths);
+        }
+        OpenStep::QueueSubtitlesForOpenedMedia(paths) => {
+            host.queue_subtitle_files_for_opened_media(paths);
         }
         OpenStep::Notify(notice) => host.notify_info(notice.text()),
         OpenStep::OpenWebUrl { url, target } => match target {

@@ -135,3 +135,51 @@ fn playlist_next_to_missing_file_or_unsupported_link_is_not_skipped() {
             .contains(&ClassifiedItem::PlaylistFile(playlist))
     );
 }
+
+#[test]
+fn subtitle_extensions_are_subtitle_files_in_any_case_and_media_stays_media() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let classify_name = |name: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, b"x").expect("file");
+        classify_request(request(DropTarget::Video, vec![local(&path)])).items
+    };
+    for name in ["a.srt", "b.SRT", "c.vtt", "d.ass", "e.ssa"] {
+        let path = dir.path().join(name);
+        assert_eq!(
+            classify_name(name),
+            vec![ClassifiedItem::SubtitleFile(path)],
+            "{name}"
+        );
+    }
+    let video = dir.path().join("clip.mkv");
+    assert_eq!(
+        classify_name("clip.mkv"),
+        vec![ClassifiedItem::MediaFile(video)]
+    );
+}
+
+#[test]
+fn missing_subtitle_path_is_still_reported_as_missing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gone = dir.path().join("gone.srt");
+    assert_eq!(
+        classify_request(request(DropTarget::Video, vec![local(&gone)])).items,
+        vec![ClassifiedItem::Missing(gone)]
+    );
+}
+
+#[test]
+fn playlist_next_to_a_subtitle_file_is_skipped_as_a_mix() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let playlist = dir.path().join("list.m3u");
+    let subtitle = dir.path().join("a.srt");
+    std::fs::write(&playlist, b"#EXTM3U").expect("playlist");
+    std::fs::write(&subtitle, b"x").expect("subtitle");
+    let plan = classify_request(request(
+        DropTarget::Video,
+        vec![local(&playlist), local(&subtitle)],
+    ));
+    assert_eq!(plan.items, vec![ClassifiedItem::SubtitleFile(subtitle)]);
+    assert_eq!(plan.skipped_playlist_files, 1);
+}

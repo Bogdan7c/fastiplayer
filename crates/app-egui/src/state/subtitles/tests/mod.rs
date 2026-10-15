@@ -3,19 +3,30 @@
 //! Общие помощники: временный каталог с «фильмом» и файлом субтитров, владелец с быстрыми
 //! встроенными шрифтами, ожидание фоновой загрузки через настоящий `begin_media`.
 
+mod control_actions;
+mod drop_flow;
 mod gpu_chain;
 mod language;
 mod presentation;
 mod real_sidecar;
 mod sidecar_job;
+mod track_selection;
 
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use fastiplayer_config::SubtitlesConfig;
 use player_core::MediaInstanceId;
 use render_core::{PictureLayout, PictureRect, PictureSize, RenderViewport};
 
+use super::auto_select::PreferredLanguages;
+use super::intents::SubtitleVisibility;
+use super::limits::LoadLimits;
+use super::sidecar_job::{
+    DiscoveryOutcome, FontLibraryPlan, PreloadTarget, SidecarJobOutcome, SidecarJobRequest,
+    SidecarJobTask,
+};
 use super::{
     CurrentMediaForSubtitles, SubmittedFrameForSubtitles, SubtitleLifecycleView,
     SubtitleMediaSource, SubtitleOwner,
@@ -34,9 +45,65 @@ pub(super) fn instance(raw: u64) -> MediaInstanceId {
     MediaInstanceId::from_non_zero(NonZeroU64::new(raw).expect("test instance id is non-zero"))
 }
 
+/// Лимиты загрузки по умолчанию (как в продукте).
+pub(super) fn default_load_limits() -> LoadLimits {
+    LoadLimits::from_config(&SubtitlesConfig::default())
+}
+
+/// Запрос «найти рядом с видео и прочитать выбранную автовыбором дорожку» без языков.
+pub(super) fn discovery_request(video: &Path, fonts: FontLibraryPlan) -> SidecarJobRequest {
+    discovery_request_with(video, fonts, &[], PreloadTarget::Selected)
+}
+
+/// То же с языками и целью чтения.
+pub(super) fn discovery_request_with(
+    video: &Path,
+    fonts: FontLibraryPlan,
+    preferred: &[&str],
+    preload: PreloadTarget,
+) -> SidecarJobRequest {
+    let codes: Vec<String> = preferred.iter().map(|code| (*code).to_owned()).collect();
+    SidecarJobRequest {
+        task: SidecarJobTask::DiscoverNextToVideo {
+            video_path: video.to_path_buf(),
+            preferred_languages: PreferredLanguages::resolve(&codes, None),
+            preload,
+        },
+        fonts,
+        limits: default_load_limits(),
+    }
+}
+
+/// Итог поиска из результата задачи (иначе тест падает с понятным сообщением).
+pub(super) fn expect_discovery(outcome: SidecarJobOutcome) -> DiscoveryOutcome {
+    match outcome {
+        SidecarJobOutcome::Discovered(discovery) => *discovery,
+        SidecarJobOutcome::FileLoaded { .. } => panic!("expected a search result, got a file"),
+        SidecarJobOutcome::Failed(failure) => panic!("expected a search result, got {failure}"),
+        SidecarJobOutcome::Cancelled => panic!("expected a search result, got cancellation"),
+    }
+}
+
 /// Владелец с отключённым wake-портом и встроенными шрифтами (быстро и без шрифтов машины).
 pub(super) fn owner() -> SubtitleOwner {
-    let mut owner = SubtitleOwner::new(AppWakePort::disconnected(AppWakeOwner::Subtitles), None);
+    owner_with_config(&enabled_config())
+}
+
+/// Конфиг с включёнными субтитрами (по умолчанию в продукте они выключены).
+pub(super) fn enabled_config() -> SubtitlesConfig {
+    SubtitlesConfig {
+        enabled: true,
+        ..SubtitlesConfig::default()
+    }
+}
+
+/// Владелец с заданным конфигом, отключённым wake-портом и встроенными шрифтами.
+pub(super) fn owner_with_config(config: &SubtitlesConfig) -> SubtitleOwner {
+    let mut owner = SubtitleOwner::new(
+        AppWakePort::disconnected(AppWakeOwner::Subtitles),
+        None,
+        config,
+    );
     owner.use_embedded_fonts_only();
     owner
 }

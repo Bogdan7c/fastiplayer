@@ -1,15 +1,21 @@
 //! Владелец субтитров текущего media в `AppState`.
 //!
 //! # Архитектура
-//! - `SubtitleOwner` (этот файл) владеет жизненным циклом: какое media сейчас, идёт ли
-//!   загрузка, загружена ли дорожка. Он единственный решает, что показывать, и скрывает
-//!   субтитры при любом сомнении о принадлежности кадра текущему media.
-//! - `sidecar_job` + `job_runner`: отдельная фоновая задача «найти файл рядом с видео,
-//!   прочитать, разобрать», запускается ПОСЛЕ установки локального файла в плеер. Она
-//!   привязана к `MediaInstanceId` и не входит в путь подготовки media.
+//! - `SubtitleOwner` (этот файл) владеет жизненным циклом: какое media сейчас, какие у него
+//!   дорожки, что выбрано, включены ли субтитры и какой сдвиг. Он единственный решает, что
+//!   показывать, и скрывает субтитры при любом сомнении о принадлежности кадра текущему media.
+//! - `media_state`: всё состояние одного media (отбрасывается целиком при смене media).
+//! - `track_list`: дорожки media (найденные рядом + добавленные пользователем) и состояние
+//!   загрузки каждой; таймлайн читается лениво, только для показываемой дорожки.
+//! - `auto_select`: чистый автовыбор дорожки (решение владельца 14).
+//! - `sidecar_job` + `file_loader` + `job_runner`: фоновая задача «найти файлы рядом, выбрать,
+//!   прочитать одну дорожку» либо «прочитать один файл». Привязана к `MediaInstanceId`.
+//! - `owner_loading`: приём результатов задач и запуск ленивой загрузки.
+//! - `owner_intents` + `app_state_api`: intent-API для UI (включить, выбрать, сдвиг, файл).
+//! - `menu_view`/`intents`: типы ответов API и read-only снимок для меню.
 //! - `active_track`: загруженный таймлайн + идентичность источника + сдвиг синхронизации.
 //! - `presentation`: решение по кадру (реплики по pts кадра -> overlay растеризатора).
-//! - `limits`: все лимиты и бюджеты (переедут в конфиг в сессии 04).
+//! - `settings` + `limits` + `appearance_mapping`: настройки из `[subtitles]` конфига.
 //!
 //! # Точка запуска (единая для всех способов открыть файл)
 //! Любой путь установки media (кнопка Open, drag&drop, playlist next, пересборка после
@@ -35,31 +41,59 @@
 //! остаётся на экране без реплики, первый свежий кадр показывает реплику по своему pts.
 
 mod active_track;
+mod app_state_api;
+mod appearance_mapping;
+mod auto_select;
+mod control_actions;
+mod file_loader;
+mod intents;
 mod job_runner;
 mod limits;
+mod media_state;
+mod menu_view;
+mod owner_intents;
+mod owner_loading;
 mod presentation;
+mod settings;
 mod sidecar_job;
+mod sync_offset;
 mod system_language;
 #[cfg(test)]
 mod tests;
+mod track_list;
 
 use std::path::PathBuf;
 
 use player_core::MediaInstanceId;
-use subtitle_core::{SubtitleLanguage, SubtitleSyncOffset};
+use subtitle_core::SubtitleLanguage;
 use subtitle_raster::{CueSourceId, SubtitleOverlay};
+use subtitle_sidecar::SidecarSubtitleCandidate;
 
-use self::active_track::ActiveSubtitleTrack;
+use self::auto_select::PreferredLanguages;
+pub(crate) use self::control_actions::ControlActionFeedback;
+pub(crate) use self::intents::{AttachOutcome, SubtitleVisibility};
 use self::job_runner::{SidecarJob, SidecarJobPoll};
+use self::media_state::{DiscoveryState, MediaSubtitles};
+#[cfg(test)]
+pub(crate) use self::menu_view::SubtitleMenuTrack;
+pub(crate) use self::menu_view::{
+    SubtitleFileOrigin, SubtitleMenuView, SubtitleTrackAvailability, SubtitleTrackLabel,
+    SubtitleUnavailableReason,
+};
 #[cfg(test)]
 use self::presentation::PresentationStats;
 pub(crate) use self::presentation::SubmittedFrameForSubtitles;
 use self::presentation::SubtitlePresenter;
+use self::settings::SubtitleSettings;
+#[cfg(test)]
+use self::sidecar_job::SubtitleLoadFailure;
 use self::sidecar_job::{
-    FontLibraryPlan, SidecarJobOutcome, SidecarJobRequest, SubtitleLoadFailure,
+    FontLibraryPlan, PreloadTarget, SidecarJobOutcome, SidecarJobRequest, SidecarJobTask,
 };
+pub(crate) use self::sync_offset::SyncNudge;
 pub(super) use self::system_language::read_system_language;
-use super::{ActiveMediaSource, AppState, InstalledSingleMediaOpen};
+use self::track_list::TrackLoadState;
+use super::{ActiveMediaSource, InstalledSingleMediaOpen};
 use crate::app_wake::AppWakePort;
 use player_core::MediaInstallCompletion;
 
@@ -68,7 +102,8 @@ use player_core::MediaInstallCompletion;
 pub(super) enum SubtitleMediaSource {
     /// Локальный файл: рядом с ним ищем файлы субтитров.
     LocalFile(PathBuf),
-    /// Не локальный источник (web и прочее): файлов рядом нет, субтитры очищены.
+    /// Не локальный источник (web и прочее): файлов рядом нет; доступны только файлы,
+    /// которые пользователь добавит сам.
     NotLocal,
 }
 
@@ -90,49 +125,28 @@ pub(super) enum JobResultDisposition {
     DroppedStale,
 }
 
-/// Жизненный цикл субтитров текущего media.
-enum SubtitleLifecycle {
-    /// Media нет или оно не локальное.
-    Idle,
-    /// Фоновая задача ещё работает.
-    Loading {
-        media_instance_id: MediaInstanceId,
-        job: SidecarJob,
-    },
-    /// Дорожка загружена и может показываться.
-    Ready {
-        media_instance_id: MediaInstanceId,
-        track: ActiveSubtitleTrack,
-    },
-    /// Для этого media нет файла, который можно показать сейчас (не ошибка).
-    NoSubtitleFile { media_instance_id: MediaInstanceId },
-    /// Дорожка найдена, но недоступна по типизированной причине.
-    Unavailable {
-        media_instance_id: MediaInstanceId,
-        #[cfg_attr(
-            not(test),
-            expect(dead_code, reason = "причину покажет меню субтитров (сессия 04)")
-        )]
-        failure: SubtitleLoadFailure,
-    },
+/// Чей это результат: поиска или загрузки конкретной дорожки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum JobOrigin {
+    /// Поиск файлов рядом с видео.
+    Discovery,
+    /// Загрузка одной дорожки.
+    TrackLoad(subtitle_core::SubtitleTrackId),
 }
 
-impl SubtitleLifecycle {
-    /// Media, которому принадлежит состояние.
-    fn media_instance_id(&self) -> Option<MediaInstanceId> {
-        match self {
-            Self::Idle => None,
-            Self::Loading {
-                media_instance_id, ..
-            }
-            | Self::Ready {
-                media_instance_id, ..
-            }
-            | Self::NoSubtitleFile { media_instance_id }
-            | Self::Unavailable {
-                media_instance_id, ..
-            } => Some(*media_instance_id),
-        }
+/// Выдаёт уникальные идентификаторы источников реплик для кэша растеризатора.
+///
+/// Каждая загруженная дорожка получает новый идентификатор, поэтому кэш не спутает реплики
+/// разных дорожек с одинаковыми `SubtitleEventId` (контракт `CueKey`).
+struct SourceIdAllocator {
+    next_value: u64,
+}
+
+impl SourceIdAllocator {
+    fn allocate(&mut self) -> CueSourceId {
+        let source_id = CueSourceId::new(self.next_value);
+        self.next_value = self.next_value.saturating_add(1);
+        source_id
     }
 }
 
@@ -140,86 +154,180 @@ impl SubtitleLifecycle {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SubtitleLifecycleView {
+    /// Media нет.
     Idle,
+    /// Идёт поиск или загрузка показываемой дорожки.
     Loading,
+    /// Показываемая дорожка загружена.
     Ready,
+    /// Показывать нечего: дорожек нет либо ни одна не выбрана.
     NoSubtitleFile,
+    /// Поиск или показываемая дорожка недоступны по типизированной причине.
     Unavailable,
 }
 
 /// Владелец субтитров (см. документацию модуля).
 pub(super) struct SubtitleOwner {
     wake_port: AppWakePort,
-    lifecycle: SubtitleLifecycle,
     presenter: SubtitlePresenter,
+    /// Настройки из конфига; лимиты захватываются задачами при их запуске.
+    settings: SubtitleSettings,
+    /// Язык системы: запасной язык предпочтений и текста.
+    system_language: Option<SubtitleLanguage>,
+    /// Состояние текущего media; `None` — media нет.
+    media: Option<MediaSubtitles>,
+    /// Запомненное «включены ли субтитры»: стартовое значение для следующего media.
+    default_visibility: SubtitleVisibility,
+    /// Файлы, ожидающие следующего media (бросок «видео + субтитры» вместе).
+    queued_files: Vec<SidecarSubtitleCandidate>,
+    /// Непрочитанное изменение «включено» по воле пользователя (для сохранения в конфиг).
+    enabled_preference_change: Option<SubtitleVisibility>,
+    /// Лимиты растеризатора изменились: пересоздать его при следующем media.
+    rasterizer_reset_pending: bool,
     /// Задачи, которые больше не нужны, но ещё работают: ждём их завершения без блокировки UI.
     retiring_jobs: Vec<SidecarJob>,
-    /// Следующий идентификатор источника реплик для кэша растеризатора.
-    next_source_id: u64,
+    source_ids: SourceIdAllocator,
     /// Какие шрифты строить новой задаче; тесты выбирают встроенные.
     font_plan_for_new_library: FontLibraryPlan,
 }
 
 impl SubtitleOwner {
     /// Создаёт владельца без media. `system_language` — язык системы, прочитанный один раз
-    /// на границе сборки приложения ([`read_system_language`]); он нужен как запасной язык
-    /// текста, когда дорожка своего не объявляет.
-    pub(super) fn new(wake_port: AppWakePort, system_language: Option<SubtitleLanguage>) -> Self {
+    /// на границе сборки приложения ([`read_system_language`]). `config` — стартовая
+    /// секция `[subtitles]` конфига; из неё берутся стартовое «включено», стиль и лимиты.
+    pub(super) fn new(
+        wake_port: AppWakePort,
+        system_language: Option<SubtitleLanguage>,
+        config: &fastiplayer_config::SubtitlesConfig,
+    ) -> Self {
+        let settings = SubtitleSettings::from_config(config);
         Self {
             wake_port,
-            lifecycle: SubtitleLifecycle::Idle,
-            presenter: SubtitlePresenter::new(system_language),
+            presenter: SubtitlePresenter::new(
+                system_language.clone(),
+                settings.appearance,
+                settings.raster_limits,
+            ),
+            default_visibility: settings.default_visibility,
+            settings,
+            system_language,
+            media: None,
+            queued_files: Vec::new(),
+            enabled_preference_change: None,
+            rasterizer_reset_pending: false,
             retiring_jobs: Vec::new(),
-            next_source_id: 0,
+            source_ids: SourceIdAllocator { next_value: 0 },
             font_plan_for_new_library: FontLibraryPlan::BuildWithSystemFonts,
         }
     }
 
-    /// Новое media установлено: прежние субтитры сброшены, для локального файла стартует
-    /// фоновая загрузка. Вызывается из единой точки установки media.
+    /// Предпочитаемые языки с учётом языка системы.
+    fn preferred_languages(&self) -> PreferredLanguages {
+        PreferredLanguages::resolve(
+            &self.settings.preferred_language_codes,
+            self.system_language.as_ref(),
+        )
+    }
+
+    /// Новое media установлено: прежнее состояние сброшено, для локального файла стартует
+    /// фоновый поиск, файлы из очереди становятся дорожками. Вызывается из единой точки
+    /// установки media.
     pub(super) fn begin_media(
         &mut self,
         media_instance_id: MediaInstanceId,
         source: SubtitleMediaSource,
     ) {
-        self.reset_to_idle();
-        let SubtitleMediaSource::LocalFile(video_path) = source else {
-            // Не локальный источник: файлов рядом нет, это штатное «без субтитров».
-            self.lifecycle = SubtitleLifecycle::NoSubtitleFile { media_instance_id };
-            return;
+        self.reset_media();
+        if std::mem::take(&mut self.rasterizer_reset_pending) {
+            // Лимиты растеризатора изменились: новый растеризатор получит их вместе с
+            // новой библиотекой шрифтов (строится в фоне первой задачей).
+            self.presenter.discard_rasterizer();
+            self.presenter
+                .replace_raster_limits(self.settings.raster_limits);
+        }
+
+        let mut media = MediaSubtitles::new(media_instance_id, self.default_visibility);
+        self.adopt_queued_files(&mut media);
+        if let SubtitleMediaSource::LocalFile(video_path) = source {
+            media.discovery = self.start_discovery(video_path, &media);
+        }
+        self.media = Some(media);
+        // Дорожки из очереди (если есть) читаются сразу, остальные — по требованию.
+        self.ensure_display_track_loading();
+    }
+
+    /// Файлы из очереди становятся дорожками нового media; первый выбирается и включает
+    /// субтитры (пользователь сам принёс файл).
+    fn adopt_queued_files(&mut self, media: &mut MediaSubtitles) {
+        let queued = std::mem::take(&mut self.queued_files);
+        for candidate in &queued {
+            let track_id = media.tracks.push_chosen(candidate);
+            if media.selected.is_none() {
+                media.selected = Some(track_id);
+            }
+        }
+        if !queued.is_empty() {
+            media.user_chose_track = true;
+            media.visibility = SubtitleVisibility::Shown;
+            self.default_visibility = SubtitleVisibility::Shown;
+            self.enabled_preference_change = Some(SubtitleVisibility::Shown);
+        }
+    }
+
+    /// Запускает поиск рядом с видео. Ошибка запуска потока — типизированная причина.
+    fn start_discovery(&self, video_path: PathBuf, media: &MediaSubtitles) -> DiscoveryState {
+        let preload = if media.user_chose_track {
+            // Выбор уже сделан пользователем: лишнюю дорожку не читаем.
+            PreloadTarget::Nothing
+        } else if media.visibility == SubtitleVisibility::Shown {
+            PreloadTarget::Selected
+        } else {
+            PreloadTarget::ForcedFallback
         };
-        let fonts = if self.presenter.has_rasterizer() {
+        let request = SidecarJobRequest {
+            task: SidecarJobTask::DiscoverNextToVideo {
+                video_path,
+                preferred_languages: self.preferred_languages(),
+                preload,
+            },
+            fonts: self.font_plan_for_next_job(),
+            limits: self.settings.load_limits,
+        };
+        match SidecarJob::spawn(request, self.wake_port.clone()) {
+            Ok(job) => DiscoveryState::Searching(job),
+            Err(failure) => {
+                tracing::warn!(%failure, "Subtitles are unavailable; playback continues");
+                DiscoveryState::Failed(failure)
+            }
+        }
+    }
+
+    /// Нужна ли новой задаче библиотека шрифтов: только пока растеризатора ещё нет.
+    fn font_plan_for_next_job(&self) -> FontLibraryPlan {
+        if self.presenter.has_rasterizer() {
             FontLibraryPlan::ReuseExisting
         } else {
             self.font_plan_for_new_library
-        };
-        let request = SidecarJobRequest { video_path, fonts };
-        self.lifecycle = match SidecarJob::spawn(request, self.wake_port.clone()) {
-            Ok(job) => SubtitleLifecycle::Loading {
-                media_instance_id,
-                job,
-            },
-            Err(failure) => {
-                tracing::warn!(%failure, "Subtitles are unavailable; playback continues");
-                SubtitleLifecycle::Unavailable {
-                    media_instance_id,
-                    failure,
-                }
-            }
-        };
+        }
     }
 
-    /// Media исчезло (release/reset): субтитры и задача сброшены.
+    /// Media исчезло (release/reset): состояние и задачи сброшены. Очередь файлов для
+    /// СЛЕДУЮЩЕГО media при этом сохраняется (её ставят до открытия видео).
     pub(super) fn clear_media(&mut self) {
-        self.reset_to_idle();
+        self.reset_media();
     }
 
-    /// Останавливает текущую задачу (уходит в `retiring_jobs`) и забывает дорожку и overlay.
-    fn reset_to_idle(&mut self) {
-        let previous = std::mem::replace(&mut self.lifecycle, SubtitleLifecycle::Idle);
-        if let SubtitleLifecycle::Loading { job, .. } = previous {
-            job.cancel();
-            self.retiring_jobs.push(job);
+    /// Останавливает задачи (уходят в `retiring_jobs`) и забывает состояние media и overlay.
+    fn reset_media(&mut self) {
+        if let Some(media) = self.media.take() {
+            if let DiscoveryState::Searching(job) = media.discovery {
+                job.cancel();
+                self.retiring_jobs.push(job);
+            }
+            if let Some(load) = media.load_job {
+                load.job.cancel();
+                self.retiring_jobs.push(load.job);
+            }
         }
         self.presenter.forget_shown_overlay();
     }
@@ -235,94 +343,33 @@ impl SubtitleOwner {
             !job.is_finished()
         });
 
-        let finished = match &self.lifecycle {
-            SubtitleLifecycle::Loading {
-                media_instance_id,
-                job,
-            } => match job.poll() {
-                SidecarJobPoll::Pending => None,
-                SidecarJobPoll::Finished(outcome) => Some((*media_instance_id, outcome)),
-            },
-            _ => {
-                // Задач, которых ждёт владелец, нет: сбрасываем «взведённость» порта.
-                self.wake_port.acknowledge_abandoned_mailbox();
-                None
-            }
+        let Some(media) = &self.media else {
+            self.wake_port.acknowledge_abandoned_mailbox();
+            return false;
         };
-        match finished {
-            Some((media_instance_id, outcome)) => {
-                self.accept_job_outcome(media_instance_id, outcome) == JobResultDisposition::Applied
-            }
-            None => false,
-        }
-    }
-
-    /// Применяет результат задачи, запущенной для `media_instance_id`.
-    ///
-    /// Поздний результат для другого media выбрасывается: проверка идёт по текущему
-    /// состоянию, а не по порядку доставки.
-    fn accept_job_outcome(
-        &mut self,
-        media_instance_id: MediaInstanceId,
-        outcome: SidecarJobOutcome,
-    ) -> JobResultDisposition {
-        if self.lifecycle.media_instance_id() != Some(media_instance_id)
-            || !matches!(self.lifecycle, SubtitleLifecycle::Loading { .. })
+        let media_instance_id = media.media_instance_id;
+        let mut finished: Vec<(JobOrigin, SidecarJobOutcome)> = Vec::new();
+        if let DiscoveryState::Searching(job) = &media.discovery
+            && let SidecarJobPoll::Finished(outcome) = job.poll()
         {
-            tracing::debug!("Dropped a subtitle result for media that is no longer current");
-            return JobResultDisposition::DroppedStale;
+            finished.push((JobOrigin::Discovery, outcome));
         }
-        // Завершённая задача больше не нужна: освобождаем поток.
-        let previous = std::mem::replace(&mut self.lifecycle, SubtitleLifecycle::Idle);
-        drop(previous);
+        if let Some(load) = &media.load_job
+            && let SidecarJobPoll::Finished(outcome) = load.job.poll()
+        {
+            finished.push((JobOrigin::TrackLoad(load.track_id), outcome));
+        }
+        if !media.has_running_jobs() {
+            // Задач, которых ждёт владелец, нет: сбрасываем «взведённость» порта.
+            self.wake_port.acknowledge_abandoned_mailbox();
+        }
 
-        self.lifecycle = match outcome {
-            SidecarJobOutcome::Cancelled => return JobResultDisposition::DroppedStale,
-            SidecarJobOutcome::NoRenderableCandidate {
-                skipped_unsupported_format,
-            } => {
-                tracing::debug!(skipped_unsupported_format, "No subtitle file to show");
-                SubtitleLifecycle::NoSubtitleFile { media_instance_id }
-            }
-            SidecarJobOutcome::Failed(failure) => {
-                tracing::warn!(%failure, "Subtitle file is unavailable; playback continues");
-                SubtitleLifecycle::Unavailable {
-                    media_instance_id,
-                    failure,
-                }
-            }
-            SidecarJobOutcome::Loaded(loaded) => {
-                let loaded = *loaded;
-                if let Some(fonts) = loaded.fonts {
-                    self.presenter.install_font_library(fonts);
-                }
-                tracing::debug!(
-                    format = ?loaded.format,
-                    file_name = ?loaded.file_name,
-                    events = loaded.timeline.len(),
-                    "Subtitle track loaded"
-                );
-                let source_id = self.allocate_source_id();
-                SubtitleLifecycle::Ready {
-                    media_instance_id,
-                    track: ActiveSubtitleTrack::new(
-                        source_id,
-                        loaded.timeline,
-                        SubtitleSyncOffset::ZERO,
-                        loaded.language,
-                    ),
-                }
-            }
-        };
-        self.presenter.forget_shown_overlay();
-        JobResultDisposition::Applied
-    }
-
-    /// Выдаёт новый идентификатор источника реплик.
-    fn allocate_source_id(&mut self) -> CueSourceId {
-        let source_id = CueSourceId::new(self.next_source_id);
-        self.next_source_id = self.next_source_id.saturating_add(1);
-        source_id
+        let mut visible_state_changed = false;
+        for (origin, outcome) in finished {
+            visible_state_changed |= self.accept_job_outcome(media_instance_id, origin, outcome)
+                == JobResultDisposition::Applied;
+        }
+        visible_state_changed
     }
 
     /// Overlay для кадра, который прямо сейчас уходит в renderer, или `None`.
@@ -334,19 +381,40 @@ impl SubtitleOwner {
         current: CurrentMediaForSubtitles,
         frame: &SubmittedFrameForSubtitles,
     ) -> Option<&SubtitleOverlay> {
-        let SubtitleLifecycle::Ready {
-            media_instance_id,
-            track,
-        } = &self.lifecycle
-        else {
-            return None;
-        };
-        if current.media_instance_id != Some(*media_instance_id)
+        let media = self.media.as_ref()?;
+        if current.media_instance_id != Some(media.media_instance_id)
             || frame.render_generation() != current.render_generation
         {
             return None;
         }
+        let entry = media.tracks.get(media.display_track_id()?)?;
+        let TrackLoadState::Ready(track) = &entry.load else {
+            return None;
+        };
         self.presenter.overlay_for_frame(track, frame)
+    }
+
+    /// Применяет новую секцию `[subtitles]` после committed изменения настроек.
+    ///
+    /// - стиль действует сразу: следующий кадр растеризуется заново;
+    /// - лимиты загрузки действуют со следующей задачи, лимиты растеризатора — с созданием
+    ///   нового (растеризатор пересоздаётся при следующем media);
+    /// - «включено» и список языков действуют со следующего media: текущий выбор
+    ///   пользователя настройки не перебивают.
+    pub(super) fn apply_config(&mut self, config: &fastiplayer_config::SubtitlesConfig) {
+        let next = SubtitleSettings::from_config(config);
+        if next == self.settings {
+            return;
+        }
+        if next.appearance != self.settings.appearance {
+            self.presenter.replace_appearance(next.appearance);
+        }
+        if next.raster_limits != self.settings.raster_limits {
+            self.rasterizer_reset_pending = true;
+            self.settings.raster_limits = next.raster_limits;
+        }
+        self.default_visibility = next.default_visibility;
+        self.settings = next;
     }
 
     /// Счётчики презентации.
@@ -358,20 +426,38 @@ impl SubtitleOwner {
     /// Текущее состояние для тестов.
     #[cfg(test)]
     fn lifecycle_view(&self) -> SubtitleLifecycleView {
-        match self.lifecycle {
-            SubtitleLifecycle::Idle => SubtitleLifecycleView::Idle,
-            SubtitleLifecycle::Loading { .. } => SubtitleLifecycleView::Loading,
-            SubtitleLifecycle::Ready { .. } => SubtitleLifecycleView::Ready,
-            SubtitleLifecycle::NoSubtitleFile { .. } => SubtitleLifecycleView::NoSubtitleFile,
-            SubtitleLifecycle::Unavailable { .. } => SubtitleLifecycleView::Unavailable,
+        let Some(media) = &self.media else {
+            return SubtitleLifecycleView::Idle;
+        };
+        if matches!(media.discovery, DiscoveryState::Searching(_)) {
+            return SubtitleLifecycleView::Loading;
+        }
+        let display = media
+            .display_track_id()
+            .and_then(|track_id| media.tracks.get(track_id));
+        match display.map(|entry| &entry.load) {
+            Some(TrackLoadState::Ready(_)) => SubtitleLifecycleView::Ready,
+            Some(TrackLoadState::NotLoaded | TrackLoadState::Loading) => {
+                SubtitleLifecycleView::Loading
+            }
+            Some(TrackLoadState::Unavailable(_)) => SubtitleLifecycleView::Unavailable,
+            None if matches!(media.discovery, DiscoveryState::Failed(_)) => {
+                SubtitleLifecycleView::Unavailable
+            }
+            None => SubtitleLifecycleView::NoSubtitleFile,
         }
     }
 
-    /// Причина недоступности для тестов.
+    /// Причина недоступности (поиска или показываемой дорожки) для тестов.
     #[cfg(test)]
     fn unavailable_failure(&self) -> Option<&SubtitleLoadFailure> {
-        match &self.lifecycle {
-            SubtitleLifecycle::Unavailable { failure, .. } => Some(failure),
+        let media = self.media.as_ref()?;
+        if let DiscoveryState::Failed(failure) = &media.discovery {
+            return Some(failure);
+        }
+        let entry = media.tracks.get(media.display_track_id()?)?;
+        match &entry.load {
+            TrackLoadState::Unavailable(failure) => Some(failure),
             _ => None,
         }
     }
@@ -394,8 +480,7 @@ impl SubtitleOwner {
         self.presenter.replace_appearance(appearance);
     }
 
-    /// Для тестов: подмена загруженной дорожки без фоновой задачи не нужна — тесты идут
-    /// через `accept_job_outcome`, как production.
+    /// Для тестов: сколько ушедших задач ещё ждёт завершения.
     #[cfg(test)]
     fn retiring_job_count(&self) -> usize {
         self.retiring_jobs.len()
@@ -421,49 +506,5 @@ pub(super) fn installed_media_instance_id(
             media_instance_id, ..
         } => Some(media_instance_id),
         MediaInstallCompletion::Failed { .. } | MediaInstallCompletion::Cancelled { .. } => None,
-    }
-}
-
-impl AppState {
-    /// Media установлено в плеер: запускает (или сбрасывает) загрузку субтитров.
-    ///
-    /// Единая точка для всех способов открыть файл (см. документацию модуля). Без
-    /// `MediaInstanceId` (receipt не `Installed`) субтитры очищаются.
-    pub(super) fn start_subtitles_for_installed_media(
-        &mut self,
-        media_instance_id: Option<MediaInstanceId>,
-        source: &ActiveMediaSource,
-    ) {
-        match media_instance_id {
-            Some(media_instance_id) => self
-                .subtitles
-                .begin_media(media_instance_id, subtitle_source_of(source)),
-            None => self.subtitles.clear_media(),
-        }
-    }
-
-    /// Media исчезло из плеера: субтитры сброшены.
-    pub(super) fn clear_subtitles_for_released_media(&mut self) {
-        self.subtitles.clear_media();
-    }
-
-    /// Опрос фоновых задач субтитров (по wake-событию). `true` — нужна перерисовка.
-    pub(crate) fn poll_subtitle_jobs(&mut self) -> bool {
-        self.subtitles.poll_jobs()
-    }
-
-    /// Overlay субтитров для кадра, который прямо сейчас уходит в renderer.
-    ///
-    /// Читает `media_instance_id` и `render_generation` из последнего snapshot плеера,
-    /// не раскрывая их внешнему коду.
-    pub(crate) fn subtitle_overlay_for_submitted_frame(
-        &mut self,
-        frame: &SubmittedFrameForSubtitles,
-    ) -> Option<&SubtitleOverlay> {
-        let current = CurrentMediaForSubtitles {
-            media_instance_id: self.last_player_snapshot.media_instance_id,
-            render_generation: self.last_player_snapshot.render_generation,
-        };
-        self.subtitles.overlay_for_frame(current, frame)
     }
 }

@@ -15,6 +15,7 @@ mod playlist_toolbar;
 mod queue_mode_controls;
 mod settings_button;
 mod sidebar_buttons;
+mod subtitles_button;
 #[cfg(test)]
 mod test_frame;
 mod timeline;
@@ -43,6 +44,7 @@ pub use playlist_toolbar::{
 };
 pub use queue_mode_controls::{QueueModeControlStyle, QueueModeGlyph, QueueModePaintState};
 pub use sidebar_buttons::SidebarButtonGlyph;
+pub use subtitles_button::{SubtitlesButtonPaintState, SubtitlesButtonStyle};
 pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
 pub use transport_button::{TransportButtonStyle, TransportGlyph};
 pub use undo_button::{UndoButtonPaintState, UndoButtonStyle};
@@ -94,6 +96,26 @@ impl<'a> ArtworkPainter<'a> {
         style: QueueModeControlStyle,
     ) {
         queue_mode_controls::paint(self.painter, rect, glyph, state, style);
+    }
+
+    /// Рисует кнопку субтитров «CC» с подчёркиванием включённого состояния.
+    pub fn subtitles_button(
+        self,
+        rect: egui::Rect,
+        state: SubtitlesButtonPaintState,
+        style: SubtitlesButtonStyle,
+    ) {
+        subtitles_button::paint(self.painter, rect, state, style);
+    }
+
+    /// Рисует стрелку «▾» меню субтитров.
+    pub fn subtitles_menu_arrow(
+        self,
+        rect: egui::Rect,
+        state: SubtitlesButtonPaintState,
+        style: SubtitlesButtonStyle,
+    ) {
+        subtitles_button::paint_menu_arrow(self.painter, rect, state, style);
     }
 
     /// Рисует компактную кнопку перехода к предыдущему или следующему элементу.

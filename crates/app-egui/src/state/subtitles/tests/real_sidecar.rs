@@ -31,10 +31,8 @@ use subtitle_sidecar::{
     SidecarLocation, SidecarSubtitleCandidate, SidecarSubtitleFormat, find_sidecar_subtitles,
 };
 
-use super::super::limits::{SIDECAR_SEARCH_LIMITS, SUBTITLE_FILE_MAX_BYTES, SUBTITLE_PARSE_LIMITS};
-use super::super::sidecar_job::{
-    FontLibraryPlan, SidecarJobOutcome, SidecarJobRequest, encoding_hint_for, run_sidecar_job,
-};
+use super::super::file_loader::encoding_hint_for;
+use super::super::sidecar_job::{FontLibraryPlan, SidecarJobOutcome, run_sidecar_job};
 use super::gpu_chain::Harness;
 use super::*;
 
@@ -195,7 +193,7 @@ fn expectation_for(directory: &Path) -> Option<&'static Expectation> {
 
 /// Первый подходящий кандидат поиска (тот же выбор, что делает задача).
 fn picked_candidate(movie: &Path) -> Option<SidecarSubtitleCandidate> {
-    let outcome = find_sidecar_subtitles(movie, &SIDECAR_SEARCH_LIMITS, &|| false)
+    let outcome = find_sidecar_subtitles(movie, &default_load_limits().search, &|| false)
         .expect("sidecar search must succeed");
     outcome
         .candidates
@@ -207,18 +205,15 @@ fn picked_candidate(movie: &Path) -> Option<SidecarSubtitleCandidate> {
 fn assert_pick_and_load(scenario: &Scenario, expectation: &Expectation) -> Option<SubtitleTime> {
     let candidate = picked_candidate(&scenario.movie);
     let outcome = run_sidecar_job(
-        &SidecarJobRequest {
-            video_path: scenario.movie.clone(),
-            fonts: FontLibraryPlan::ReuseExisting,
-        },
+        &discovery_request(&scenario.movie, FontLibraryPlan::ReuseExisting),
         &|| false,
     );
 
     let Some(expected_location) = expectation.location else {
         assert!(candidate.is_none(), "no subtitle files: nothing is picked");
         assert!(
-            matches!(outcome, SidecarJobOutcome::NoRenderableCandidate { .. }),
-            "scenario without subtitles must end as NoRenderableCandidate"
+            matches!(&outcome, SidecarJobOutcome::Discovered(d) if d.preloaded.is_none()),
+            "scenario without a renderable subtitle reads nothing"
         );
         return None;
     };
@@ -250,7 +245,7 @@ fn assert_pick_and_load(scenario: &Scenario, expectation: &Expectation) -> Optio
 
     // Кодировку задача наружу не отдаёт: разбираем выбранный файл теми же лимитами и подсказкой.
     let bytes = std::fs::read(&candidate.path).expect("read picked subtitle file");
-    assert!(bytes.len() <= SUBTITLE_FILE_MAX_BYTES);
+    assert!(bytes.len() <= default_load_limits().file_max_bytes);
     let text_format = match candidate.format {
         SidecarSubtitleFormat::WebVtt => subtitle_formats::TextSubtitleFormat::WebVtt,
         _ => subtitle_formats::TextSubtitleFormat::Srt,
@@ -259,7 +254,7 @@ fn assert_pick_and_load(scenario: &Scenario, expectation: &Expectation) -> Optio
         &bytes,
         text_format,
         encoding_hint_for(candidate.language.as_ref()),
-        &SUBTITLE_PARSE_LIMITS,
+        &default_load_limits().parse,
     )
     .expect("picked subtitle file must parse");
     if let Some(expected_name) = expectation.encoding_name {
@@ -270,9 +265,14 @@ fn assert_pick_and_load(scenario: &Scenario, expectation: &Expectation) -> Optio
         "no U+FFFD: the text was decoded cleanly"
     );
 
-    let SidecarJobOutcome::Loaded(track) = outcome else {
-        panic!("scenario must end with a loaded track");
+    let SidecarJobOutcome::Discovered(discovery) = outcome else {
+        panic!("scenario must end with a search result");
     };
+    let track = discovery
+        .preloaded
+        .expect("scenario must read a track")
+        .result
+        .expect("the picked track must load");
     assert_eq!(
         track.file_name.as_deref(),
         candidate.path.file_name(),
@@ -339,7 +339,11 @@ fn assert_owner_and_pixels(
 ) {
     let media = instance(1);
     // Владелец с системными шрифтами, как в продакшене (нужны для арабского и японского).
-    let mut owner = SubtitleOwner::new(AppWakePort::disconnected(AppWakeOwner::Subtitles), None);
+    let mut owner = SubtitleOwner::new(
+        AppWakePort::disconnected(AppWakeOwner::Subtitles),
+        None,
+        &enabled_config(),
+    );
     begin_and_wait(&mut owner, media, &scenario.movie);
     assert_eq!(
         owner.lifecycle_view(),

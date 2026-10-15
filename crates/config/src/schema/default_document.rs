@@ -1,3 +1,5 @@
+mod subtitles;
+
 /// Добавляет русские комментарии к полям текущей config schema.
 pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
@@ -396,6 +398,7 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
         "sidebar_slide_duration_ms = 500",
         "# Длительность выезда settings sidebar и сжатия видео, мс; 0 отключает анимацию.",
     );
+    subtitles::document_subtitles_defaults(toml_text);
 }
 
 #[expect(

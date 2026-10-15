@@ -76,6 +76,7 @@ mod settings_error_message;
 mod sidebar_resize;
 mod status_text;
 mod stepwise_apply;
+mod subtitle_enabled_persistence;
 mod target_policy;
 #[cfg(test)]
 mod tests;
@@ -108,6 +109,8 @@ use status_text::{
     group_reports, status_from_apply_report, status_from_cancel, status_from_preview_reports,
     status_from_reset,
 };
+#[cfg(test)]
+pub(crate) use subtitle_enabled_persistence::SubtitleEnabledFlushOutcome;
 pub(crate) use target_policy::SettingsRouteTargetPolicy;
 pub(crate) use user_audio_level_persistence::PlaybackAudioLevelDelivery;
 #[cfg(test)]
@@ -145,6 +148,9 @@ pub(crate) struct SettingsRuntime {
 
     /// Громкость и mute пользователя: наблюдение за плеером и отложенная запись (UX-11).
     user_audio_level: user_audio_level_persistence::UserAudioLevelPersistence,
+
+    /// Отложенное решение пользователя «субтитры включены/выключены».
+    pending_subtitle_enabled: Option<subtitle_enabled_persistence::PendingSubtitleEnabled>,
 
     /// Открыто ли visual settings window; draft transaction начинается при `Open`.
     settings_window_open: bool,
@@ -234,6 +240,7 @@ impl SettingsRuntime {
             route_sequence: None,
             pending_sidebar_resize: None,
             user_audio_level,
+            pending_subtitle_enabled: None,
             settings_window_open: false,
             field_validation_errors: BTreeMap::new(),
             status: SettingsUiStatus::default(),

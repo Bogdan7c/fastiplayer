@@ -38,6 +38,12 @@ impl ActiveSubtitleTrack {
         }
     }
 
+    /// Меняет сдвиг синхронизации (вызывает только список дорожек, чтобы сдвиг оставался
+    /// общим для всех дорожек media).
+    pub(super) fn set_sync_offset(&mut self, offset: SubtitleSyncOffset) {
+        self.sync_offset = offset;
+    }
+
     /// Язык дорожки; `None` — дорожка его не объявляет (тогда решает язык системы).
     pub(super) fn language(&self) -> Option<&SubtitleLanguage> {
         self.language.as_ref()

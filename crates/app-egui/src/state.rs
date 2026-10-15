@@ -58,6 +58,7 @@ use crate::video_pipeline_selector::{
 };
 
 mod automatic_web_media_quality;
+mod dropped_subtitles;
 mod external_open;
 mod fullscreen_chrome_routing;
 mod local_open_install;
@@ -93,6 +94,7 @@ mod same_item_candidate_switch;
 mod sidebar_controller;
 mod startup_context;
 mod strong_media_open;
+mod subtitle_control_actions;
 mod subtitles;
 mod suspended_media_resume;
 #[cfg(test)]
@@ -125,6 +127,12 @@ pub use present_frame_cache::RenderablePresentFrame;
 pub(crate) use startup_context::AppStateStartupContext;
 use startup_context::player_timeline_wake_bridge;
 pub(crate) use subtitles::SubmittedFrameForSubtitles;
+#[cfg(test)]
+pub(crate) use subtitles::SubtitleMenuTrack;
+pub(crate) use subtitles::{
+    AttachOutcome, SubtitleFileOrigin, SubtitleMenuView, SubtitleTrackAvailability,
+    SubtitleTrackLabel, SubtitleUnavailableReason, SubtitleVisibility, SyncNudge,
+};
 pub(crate) use video_backend::{
     BackendSwapVideoCheckpoint, BackendSwapVideoPhase, VideoPipelineRebuildError,
     VideoPipelineRebuildRequest,
@@ -290,6 +298,9 @@ pub struct AppState {
     /// активная дорожка и решение «что рисовать на этом кадре».
     subtitles: subtitles::SubtitleOwner,
 
+    /// Диалог «Load file…» для субтитров (`subtitle_file_open.rs`): один диалог за раз.
+    subtitle_file_picker: crate::subtitle_file_open::SubtitleFilePicker,
+
     /// Transient pointer state timeline; player position здесь не хранится.
     timeline_ui_state: TimelineUiState,
 
@@ -376,6 +387,8 @@ impl AppState {
         }
         let sidebar_host_state =
             SidebarHostState::from_committed(committed_config_snapshot.sidebar_width_points());
+        // Стартовые настройки субтитров берутся из committed config до его перемещения в состояние.
+        let subtitles_config = committed_config_snapshot.as_config().subtitles.clone();
 
         let app_state = Self {
             egui_ctx,
@@ -424,9 +437,13 @@ impl AppState {
             local_open_install: local_open_install::LocalOpenInstallOwner::default(),
             settings_media_rebuild: settings_media_rebuild::SettingsMediaRebuildOwner::default(),
             local_file_open_wake_port,
+            subtitle_file_picker: crate::subtitle_file_open::SubtitleFilePicker::new(
+                startup_context.subtitle_wake_port.clone(),
+            ),
             subtitles: subtitles::SubtitleOwner::new(
                 startup_context.subtitle_wake_port.clone(),
                 subtitles::read_system_language(),
+                &subtitles_config,
             ),
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
@@ -503,7 +520,16 @@ impl AppState {
     pub(crate) fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
         let previous_sidebar_width = self.committed_config_snapshot.sidebar_width_points();
         let next_sidebar_width = snapshot.sidebar_width_points();
+        let subtitles_changed =
+            self.committed_config_snapshot.as_config().subtitles != snapshot.as_config().subtitles;
         self.committed_config_snapshot = snapshot;
+        if subtitles_changed {
+            // Настройки субтитров применяются здесь, а не в route: снимок обновляется только
+            // после успешной транзакции, поэтому откат настроек не оставит новый стиль в плеере.
+            self.apply_subtitles_config(
+                &self.committed_config_snapshot.as_config().subtitles.clone(),
+            );
+        }
         if previous_sidebar_width != next_sidebar_width {
             self.sidebar_host_state
                 .restore_committed_width(SidebarWidthPoints::from_committed(next_sidebar_width));

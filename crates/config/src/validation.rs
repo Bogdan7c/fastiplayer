@@ -8,6 +8,7 @@ use crate::{
 
 mod media_services;
 mod playlist_drop;
+mod subtitles;
 mod ui;
 
 pub(crate) use media_services::{
@@ -20,6 +21,7 @@ pub(crate) use media_services::{
 };
 use media_services::{validate_audio_section, validate_network_section};
 use playlist_drop::validate_dropped_folder_limits;
+use subtitles::validate_subtitles_section;
 use ui::validate_ui_section;
 // Skin по умолчанию нужен снаружи модуля только тестам схемы.
 #[cfg(test)]
@@ -206,6 +208,7 @@ pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
     validate_ui_section(config)?;
     validate_frame_server_section(config)?;
     validate_playlist_section(config)?;
+    validate_subtitles_section(config)?;
 
     Ok(())
 }

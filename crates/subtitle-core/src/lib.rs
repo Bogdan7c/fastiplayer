@@ -15,6 +15,7 @@
 mod color;
 mod event;
 mod language;
+mod language_table;
 mod placement;
 mod styled_text;
 mod time;

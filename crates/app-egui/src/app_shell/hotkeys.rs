@@ -181,6 +181,32 @@ mod tests {
         );
     }
 
+    /// C/V/Z/X (субтитры) обрабатывает внутрикадровый сборщик egui: оболочка winit их не
+    /// перехватывает, иначе клавиши не дошли бы до `ui::global_hotkeys`.
+    #[test]
+    fn subtitle_keys_are_left_to_the_egui_hotkey_collector() {
+        for (character, code) in [
+            ("c", KeyCode::KeyC),
+            ("v", KeyCode::KeyV),
+            ("z", KeyCode::KeyZ),
+            ("x", KeyCode::KeyX),
+        ] {
+            for owner in [KeyboardFocusOwner::Nobody, KeyboardFocusOwner::Widget] {
+                assert_eq!(
+                    classified(
+                        Key::Character(character.into()),
+                        PhysicalKey::Code(code),
+                        ElementState::Pressed,
+                        false,
+                        owner,
+                    ),
+                    None,
+                    "{character} with {owner:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn logical_media_wins_when_logical_and_physical_both_match() {
         assert_eq!(

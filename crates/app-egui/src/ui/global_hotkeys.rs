@@ -4,7 +4,9 @@
 //! (учёт модификаторов, раскладочно-независимые `+`/`=`):
 //! - `+` / `=` / `-` — шаг скорости, `0` — сброс скорости;
 //! - `↑` / `↓` — громкость;
-//! - `Ctrl+O` — открыть файл (тот же `ControlAction::OpenFile`, что и у кнопки Open).
+//! - `Ctrl+O` — открыть файл (тот же `ControlAction::OpenFile`, что и у кнопки Open);
+//! - `C` — субтитры вкл/выкл, `V` — следующая дорожка (по кругу, включая «выкл»),
+//!   `Z` / `X` — сдвиг субтитров на 0,1 с раньше / позже (сессия 04 субтитров).
 //!
 //! Кто может получить клавишу, решает владелец клавиатуры
 //! (`ui::keyboard_focus::KeyboardFocusOwner`), а не отдельная логика:
@@ -19,8 +21,9 @@
 
 use egui::{InputState, Key, Modifiers};
 
+use crate::state::SyncNudge;
 use crate::ui::keyboard_focus::{KeyboardFocusOwner, keyboard_focus_owner};
-use crate::ui::player_controls::ControlAction;
+use crate::ui::player_controls::{ControlAction, SubtitleControlAction};
 
 /// Собирает глобальные действия клавиатуры за текущий кадр.
 ///
@@ -47,6 +50,8 @@ fn actions_for_owner(
     if input.consume_key(Modifiers::COMMAND, Key::O) {
         actions.push(ControlAction::OpenFile);
     }
+
+    push_subtitle_actions(input, &mut actions);
 
     // Скорость: `+` и `=` — шаг вверх (на обычной клавиатуре `+` это Shift+`=`).
     if input.consume_key(Modifiers::NONE, Key::Num0) {
@@ -76,6 +81,22 @@ fn actions_for_owner(
         }
     }
     actions
+}
+
+/// Клавиши субтитров: `C`, `V`, `Z`, `X` без модификаторов. Виджеты эти буквы не используют,
+/// поэтому они доступны и при фокусе на кнопке; ввод текста отсекается раньше.
+fn push_subtitle_actions(input: &mut InputState, actions: &mut Vec<ControlAction>) {
+    for (key, action) in [
+        (Key::C, SubtitleControlAction::ToggleVisibility),
+        (Key::V, SubtitleControlAction::SelectNextTrack),
+        (Key::Z, SubtitleControlAction::NudgeSync(SyncNudge::Earlier)),
+        (Key::X, SubtitleControlAction::NudgeSync(SyncNudge::Later)),
+    ] {
+        // Каждое нажатие — отдельное действие: быстрые Z-Z дают сдвиг -0,2 с.
+        for _ in 0..input.count_and_consume_key(Modifiers::NONE, key) {
+            actions.push(ControlAction::Subtitles(action));
+        }
+    }
 }
 
 #[cfg(test)]

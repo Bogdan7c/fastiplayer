@@ -192,6 +192,9 @@ impl AppState {
         // что могло ждать за ней (например, Next, отменивший открытие).
         let install_changed = self.poll_local_open_install(playlist_runtime);
         let job_changed = self.drain_local_file_open_job(playlist_runtime, renderer);
+        // После опроса: если открытие закончилось без установки, файлы субтитров из того же
+        // броска не должны дожидаться чужого видео.
+        self.settle_dropped_subtitles(playlist_runtime);
         install_changed || job_changed
     }
 

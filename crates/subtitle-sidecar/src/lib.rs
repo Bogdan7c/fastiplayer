@@ -19,6 +19,7 @@
 //! 3) файлы в `Subs`-подобных папках, 4) файлы в `Subs/<Movie>/`. Внутри группы — по
 //! порядку `OsStr` имени файла (на unix побайтовый).
 
+mod chosen_file;
 mod error;
 mod language_hint;
 mod limits;
@@ -27,6 +28,7 @@ mod outcome;
 mod scan;
 mod search;
 
+pub use chosen_file::{describe_subtitle_file, is_subtitle_file_extension};
 pub use error::SidecarSearchError;
 pub use limits::SidecarSearchLimits;
 pub use outcome::{

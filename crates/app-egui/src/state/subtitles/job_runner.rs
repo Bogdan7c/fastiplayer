@@ -23,6 +23,10 @@ use super::sidecar_job::{
 const SIDECAR_JOB_THREAD_NAME: &str = "subtitle-sidecar-load";
 
 /// Что владелец увидел при опросе задачи.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "значение живёт мгновение и один раз переезжает через mailbox; Box только усложнил бы доступ"
+)]
 pub(super) enum SidecarJobPoll {
     /// Результата ещё нет.
     Pending,

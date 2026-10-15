@@ -1,0 +1,96 @@
+//! Read-only представление субтитров для меню и кнопки CC.
+//!
+//! UI получает готовые к показу данные и не знает ни о внутренних состояниях загрузки, ни о
+//! фоновых задачах: достаточно прочитать [`SubtitleMenuView`] и вызвать intent-методы.
+//! Подписи дорожек собирает UI из частей [`SubtitleTrackLabel`] (тексты интерфейса —
+//! английские и принадлежат UI).
+
+use subtitle_core::{SubtitleFormat, SubtitleLanguage, SubtitleSyncOffset, SubtitleTrackId};
+
+use super::intents::SubtitleVisibility;
+
+/// Откуда у дорожки файл.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubtitleFileOrigin {
+    /// Найден автоматически рядом с видео.
+    NextToVideo,
+    /// Добавлен пользователем (бросок на окно или «Загрузить файл…»).
+    ChosenByUser,
+}
+
+/// Части подписи дорожки; пустые поля пропускаются при сборке текста.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubtitleTrackLabel {
+    /// Язык, если известен (по имени файла); без языка UI пишет «Track N».
+    pub(crate) language: Option<SubtitleLanguage>,
+    /// Формат файла (SRT, WebVTT, ASS…).
+    pub(crate) format: SubtitleFormat,
+    /// Откуда файл.
+    pub(crate) origin: SubtitleFileOrigin,
+    /// Принудительная дорожка (только иностранная речь).
+    pub(crate) is_forced: bool,
+    /// Дорожка для слабослышащих.
+    pub(crate) is_hearing_impaired: bool,
+    /// Нераспознанные слова из имени файла.
+    pub(crate) title: Option<String>,
+    /// Имя файла без каталога (для показа).
+    pub(crate) file_name: Option<String>,
+}
+
+/// Почему дорожку нельзя выбрать. `Display` английский, без путей.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum SubtitleUnavailableReason {
+    /// Формат найден, но показ ещё не поддержан (ASS/SSA до сессии 08).
+    #[error("this subtitle format is not supported yet")]
+    FormatNotSupportedYet,
+    /// Файл не прочитан или не разобран; текст — краткая причина без путей.
+    #[error("{0}")]
+    LoadFailed(String),
+}
+
+/// Можно ли выбрать дорожку.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SubtitleTrackAvailability {
+    /// Дорожку можно выбрать (она может ещё грузиться: выбор не блокируется).
+    Available,
+    /// Дорожка недоступна по указанной причине.
+    Unavailable(SubtitleUnavailableReason),
+}
+
+/// Одна строка меню.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubtitleMenuTrack {
+    /// Идентификатор для `select_subtitle_track`.
+    pub(crate) id: SubtitleTrackId,
+    /// Части подписи.
+    pub(crate) label: SubtitleTrackLabel,
+    /// Отмечена ли строка: субтитры включены и выбрана именно эта дорожка.
+    pub(crate) is_selected: bool,
+    /// Доступность.
+    pub(crate) availability: SubtitleTrackAvailability,
+}
+
+/// Всё, что нужно кнопке CC и меню, одним снимком.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubtitleMenuView {
+    /// Есть ли у текущего media хотя бы одна дорожка (нет дорожек — кнопки CC нет).
+    pub(crate) has_tracks: bool,
+    /// Включены ли субтитры (кнопка подчёркнута).
+    pub(crate) visibility: SubtitleVisibility,
+    /// Дорожки в порядке меню.
+    pub(crate) tracks: Vec<SubtitleMenuTrack>,
+    /// Текущий сдвиг синхронизации.
+    pub(crate) sync_offset: SubtitleSyncOffset,
+}
+
+impl SubtitleMenuView {
+    /// Пустой вид: нет media или нет дорожек; `visibility` — запомненное предпочтение.
+    pub(crate) fn empty(visibility: SubtitleVisibility) -> Self {
+        Self {
+            has_tracks: false,
+            visibility,
+            tracks: Vec::new(),
+            sync_offset: SubtitleSyncOffset::ZERO,
+        }
+    }
+}

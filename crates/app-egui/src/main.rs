@@ -37,6 +37,8 @@ mod startup_arguments_message;
 mod startup_media;
 mod startup_readiness;
 mod state;
+mod subtitle_file_open;
+mod subtitle_message;
 mod system_capabilities;
 mod telemetry;
 mod transport_runtime;

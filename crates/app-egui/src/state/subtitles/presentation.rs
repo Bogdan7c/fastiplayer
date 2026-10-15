@@ -17,13 +17,14 @@ use std::time::{Duration, Instant};
 use render_core::{PictureLayout, PictureRect, PictureSize, RenderViewport, RenderableFrame};
 use subtitle_core::{SubtitleContent, SubtitleEventId, SubtitleLanguage};
 use subtitle_raster::{
-    CanvasSize, CueKey, CueSourceId, RenderRequest, RenderableCue, SubtitleAppearance,
-    SubtitleFontLibrary, SubtitleOverlay, SubtitleRasterizer, TextLanguagePreference,
+    CanvasSize, CueKey, CueSourceId, RasterLimits, RenderRequest, RenderableCue,
+    SubtitleAppearance, SubtitleFontLibrary, SubtitleOverlay, SubtitleRasterizer,
+    TextLanguagePreference,
 };
 use video_present_core::VideoPresentFrameIdentity;
 
 use super::active_track::ActiveSubtitleTrack;
-use super::limits::{RASTER_LIMITS, RASTERIZATION_TIME_BUDGET};
+use super::limits::RASTERIZATION_TIME_BUDGET;
 
 /// Кадр, который реально уходит в renderer, в терминах нужных субтитрам.
 ///
@@ -135,6 +136,8 @@ pub(super) struct SubtitlePresenter {
     /// Появляется, когда фоновая задача принесла библиотеку шрифтов.
     rasterizer: Option<SubtitleRasterizer>,
     appearance: SubtitleAppearance,
+    /// Лимиты, с которыми создаётся растеризатор (меняются только до его создания).
+    raster_limits: RasterLimits,
     /// Язык системы: запасной язык текста, когда дорожка своего не объявляет. Читается один
     /// раз при сборке приложения и дальше неизменен.
     system_language: Option<SubtitleLanguage>,
@@ -145,11 +148,16 @@ pub(super) struct SubtitlePresenter {
 }
 
 impl SubtitlePresenter {
-    /// Создаёт презентатор со стилем YouTube по умолчанию (стиль пользователя — сессия 04).
-    pub(super) fn new(system_language: Option<SubtitleLanguage>) -> Self {
+    /// Создаёт презентатор со стилем и лимитами из настроек пользователя.
+    pub(super) fn new(
+        system_language: Option<SubtitleLanguage>,
+        appearance: SubtitleAppearance,
+        raster_limits: RasterLimits,
+    ) -> Self {
         Self {
             rasterizer: None,
-            appearance: SubtitleAppearance::youtube_like(),
+            appearance,
+            raster_limits,
             system_language,
             scratch_active_events: Vec::new(),
             shown: None,
@@ -164,7 +172,7 @@ impl SubtitlePresenter {
 
     /// Создаёт растеризатор поверх библиотеки, подготовленной в фоне.
     pub(super) fn install_font_library(&mut self, fonts: SubtitleFontLibrary) {
-        self.rasterizer = Some(SubtitleRasterizer::new(fonts, RASTER_LIMITS));
+        self.rasterizer = Some(SubtitleRasterizer::new(fonts, self.raster_limits));
         self.shown = None;
     }
 
@@ -174,10 +182,23 @@ impl SubtitlePresenter {
         self.shown = None;
     }
 
-    /// Меняет стиль; следующий кадр растеризуется заново.
-    #[cfg(test)]
+    /// Меняет стиль; следующий кадр растеризуется заново (кэш растеризатора ключуется стилем,
+    /// поэтому старые картинки не переиспользуются), последующие кадры берут новый overlay.
     pub(super) fn replace_appearance(&mut self, appearance: SubtitleAppearance) {
         self.appearance = appearance;
+        self.shown = None;
+    }
+
+    /// Запоминает лимиты для СЛЕДУЮЩЕГО растеризатора. Действующий не трогает: его лимиты
+    /// заданы при создании.
+    pub(super) fn replace_raster_limits(&mut self, raster_limits: RasterLimits) {
+        self.raster_limits = raster_limits;
+    }
+
+    /// Освобождает растеризатор (вместе с библиотекой шрифтов и кэшами). Следующая загрузка
+    /// построит новый с актуальными лимитами. Вызывает владелец только на смене media.
+    pub(super) fn discard_rasterizer(&mut self) {
+        self.rasterizer = None;
         self.shown = None;
     }
 

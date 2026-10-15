@@ -96,6 +96,10 @@ impl PlayerSkin for MinimalSkin {
             playback_rate_button_stroke_width: 1.2,
             fullscreen_button_size: 32.0,
             fullscreen_icon_extent: 16.0,
+            subtitles_button_size: 32.0,
+            subtitles_menu_arrow_width: 14.0,
+            subtitles_button_icon_extent: 18.0,
+            subtitles_underline_thickness: 1.6,
             volume_slider_width: 96.0,
             panel_margin: Margin::symmetric(10, 6),
         }

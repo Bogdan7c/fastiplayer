@@ -29,6 +29,7 @@ fn owner_with_system_language(system_language: Option<SubtitleLanguage>) -> Subt
     let mut owner = SubtitleOwner::new(
         AppWakePort::disconnected(AppWakeOwner::Subtitles),
         system_language,
+        &enabled_config(),
     );
     owner.use_embedded_fonts_only();
     owner
@@ -109,4 +110,28 @@ fn new_media_with_another_track_language_redraws_with_the_new_language() {
         calls_after_first + 1,
         "the shown overlay of the old track must not be reused"
     );
+}
+
+/// Реальный случай из жизни: `Movie.rus.srt` и `Movie.eng.srt` рядом, предпочтения `ru, en`.
+#[test]
+fn three_letter_sidecar_codes_are_matched_by_two_letter_preferences() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let video = directory.path().join("Movie.mkv");
+    std::fs::write(&video, b"not a real video").expect("write dummy video");
+    std::fs::write(directory.path().join("Movie.eng.srt"), TWO_CUE_SRT).expect("write eng");
+    std::fs::write(directory.path().join("Movie.rus.srt"), TWO_CUE_SRT).expect("write rus");
+    let mut owner = owner_with_config(&SubtitlesConfig {
+        enabled: true,
+        preferred_languages: "ru, en".to_owned(),
+        ..SubtitlesConfig::default()
+    });
+    begin_and_wait(&mut owner, instance(1), &video);
+
+    let view = owner.menu_view();
+    let selected = view
+        .tracks
+        .iter()
+        .find(|track| track.is_selected)
+        .expect("a track is selected");
+    assert_eq!(selected.label.file_name.as_deref(), Some("Movie.rus.srt"));
 }

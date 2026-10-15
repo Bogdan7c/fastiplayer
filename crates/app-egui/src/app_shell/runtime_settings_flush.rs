@@ -1,6 +1,6 @@
 //! Сохранение runtime-originated настроек перед suspend и terminal exit.
 //!
-//! Ширина sidebar и громкость пользователя (UX-11) пишутся в config с паузой.
+//! Ширина sidebar, громкость пользователя (UX-11) и выбор «субтитры включены» пишутся в config с паузой.
 //! Перед уничтожением renderer-bound `AppState` отложенные значения нужно записать
 //! сразу, иначе изменения последних секунд потеряются.
 
@@ -27,6 +27,10 @@ impl AppShell {
                     .settings_runtime
                     .next_user_audio_level_persist_deadline()
                     .is_some()
+                || self
+                    .settings_runtime
+                    .next_subtitle_enabled_persist_deadline()
+                    .is_some()
             {
                 tracing::error!(
                     "Deferred settings reached a lifecycle boundary without an active AppState"
@@ -43,8 +47,14 @@ impl AppShell {
             .settings_runtime
             .record_player_audio_observation(final_audio_observation, Instant::now());
 
+        // Переключение субтитров между последним кадром и выходом тоже не должно теряться.
+        let _subtitles_choice_changed = self.settings_runtime.record_subtitle_enabled_change(
+            app_state.take_subtitle_enabled_preference_change(),
+            Instant::now(),
+        );
+
         let settings_runtime = &mut self.settings_runtime;
-        let (sidebar_result, audio_result) = with_lifecycle_settings_adapter(
+        let (sidebar_result, audio_result, subtitles_result) = with_lifecycle_settings_adapter(
             window,
             renderer,
             app_state,
@@ -57,7 +67,9 @@ impl AppShell {
                 // Ошибка sidebar не должна мешать сохранить громкость, и наоборот.
                 let sidebar_result = settings_runtime.flush_pending_sidebar_resize(runtime_adapter);
                 let audio_result = settings_runtime.flush_pending_user_audio_level(runtime_adapter);
-                (sidebar_result, audio_result)
+                let subtitles_result =
+                    settings_runtime.flush_pending_subtitle_enabled(runtime_adapter);
+                (sidebar_result, audio_result, subtitles_result)
             },
         );
 
@@ -68,6 +80,10 @@ impl AppShell {
         if let Err(error) = audio_result {
             self.settings_runtime
                 .report_runtime_error("Could not save volume before suspend/exit", error);
+        }
+        if let Err(error) = subtitles_result {
+            self.settings_runtime
+                .report_runtime_error("Could not save subtitles choice before suspend/exit", error);
         }
     }
 }

@@ -35,6 +35,8 @@ pub(crate) enum DropNotice {
     TooManyFiles,
     /// Плейлист ещё загружается и не готов принять файлы.
     PlaylistStillLoading,
+    /// Субтитры принесли вместе с файлами на панель плейлиста: прикрепить не к чему.
+    SubtitlesNeedPlayingVideo,
 }
 
 impl DropNotice {
@@ -61,6 +63,7 @@ impl DropNotice {
             Self::PlaylistStillLoading => {
                 "Playlist is still loading; try again in a second".to_owned()
             }
+            Self::SubtitlesNeedPlayingVideo => "Drop subtitles onto a playing video.".to_owned(),
         }
     }
 }

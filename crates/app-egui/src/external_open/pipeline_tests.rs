@@ -69,6 +69,12 @@ impl ExternalOpenHost for RecordingHost {
     fn replace_queue_with_web_url(&mut self, url: super::request::DroppedWebUrl) {
         self.calls.push(format!("replace-url:{}", url.as_str()));
     }
+    fn attach_subtitle_files_to_current_media(&mut self, paths: Vec<PathBuf>) {
+        self.calls.push(format!("attach-subs:{}", joined(&paths)));
+    }
+    fn queue_subtitle_files_for_opened_media(&mut self, paths: Vec<PathBuf>) {
+        self.calls.push(format!("queue-subs:{}", joined(&paths)));
+    }
 }
 
 /// `file://`-URI настоящего пути (пробелы кодируются, как делает файловый менеджер).

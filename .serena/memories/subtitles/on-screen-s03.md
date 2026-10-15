@@ -12,13 +12,13 @@
 - **Контракт для второго рендера (GLES2, #6)**: `SubtitleOverlay` + `PictureRect` + размер экрана; canvas (0,0) → левый верх picture rect, округлённый до целых px; 1 px холста = 1 px surface (растеризуем с canvas = округлённый размер картинки).
 - app-egui: `state/subtitles.rs` (`SubtitleOwner`, жизненный цикл Idle/Loading/Ready/NoSubtitleFile/Unavailable) + `state/subtitles/{limits,active_track,job_runner,sidecar_job,presentation}.rs`. Точка запуска — `AppState::record_installed_media_observables` (`state/media_jobs.rs`), общая для Open/DnD/playlist next/пересборки/resume; сброс — `clear_released_installed_media_source`, `record_cleared_media_after_exact_reset`. Wake — `AppWakeOwner::Subtitles` → `AppState::poll_subtitle_jobs`. Подключение к кадру — `frame_prepare/submit.rs` (`SubmittedFrameForSubtitles::from_submission` + `AppState::subtitle_overlay_for_submitted_frame`); `frame_prepare.rs` не трогали.
 - Язык для выбора варианта CJK: `TextLanguagePreference::track_then_system` (CJK-язык дорожки из sidecar-суффикса, иначе язык системы из `LC_ALL`/`LC_MESSAGES`/`LANG`, читается один раз при старте — `state/subtitles/system_language.rs`) → `RenderRequest.text_language`. Ранжирование лиц — `mem:subtitles/raster`.
-- Все лимиты — `state/subtitles/limits.rs` (временно, в конфиг в сессии 04); бюджет растеризации 8 мс (warn).
+- Лимиты — из конфига `[subtitles]` (v13, сессия 04); в `state/subtitles/limits.rs` только внутренние инварианты; бюджет растеризации 8 мс (warn).
 
 ## Инварианты
 - Показ только если MediaInstanceId владельца == snapshot И `render_generation` кадра == snapshot; кадр без identity (stale-lease при seek) — без субтитров.
-- Время = pts отправляемого кадра через `SubtitleSyncOffset` (пока ZERO). Пауза → тот же кадр → тот же overlay без растеризации/загрузки.
+- Время = pts отправляемого кадра через `SubtitleSyncOffset` (Z/X ±0.1 с с сессии 04). Пауза → тот же кадр → тот же overlay без растеризации/загрузки.
 - **Известное ограничение:** pts кадра — сырой timestamp контейнера (нормализации старта нет нигде); у MPEG-TS/M2TS с ненулевым стартом sidecar разъедется. Поправку вносить в одной точке (`SubtitleSyncOffset`/lookup) — сессия 14 или отдельное решение владельца.
-- Временный автовыбор — первый `is_renderable_now()` кандидат (UI — сессия 04).
+- Выбор дорожки (с сессии 04): автовыбор по языкам, меню CC, хоткеи — `mem:subtitles/controls-s04`. Задача поиска хранит ВСЕ кандидаты, читает только выбранную.
 
 ## Замеры (release, 2026-10-15)
 Новая реплика 0.1–0.8 мс до 4K; холодный старт CJK ~3.5 мс (загрузка системного лица); библиотека шрифтов ~94 мс один раз в фоне. CPU вживую 720p: 11.2 % без субтитров vs 11.3 % с ними.

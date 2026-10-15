@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use super::request::{DropTarget, DroppedWebUrl, ExternalOpenItem, ExternalOpenRequest};
 use crate::startup_media::is_recognized_startup_playlist_path;
+use subtitle_sidecar::is_subtitle_file_extension;
 
 /// Элемент запроса после классификации.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +20,8 @@ pub(crate) enum ClassifiedItem {
     Directory(PathBuf),
     /// Файл плейлиста (`.m3u`, `.m3u8`, `.xspf`, `.cue`).
     PlaylistFile(PathBuf),
+    /// Файл субтитров (`.srt`, `.vtt`, `.ass`, `.ssa`): не media, а дорожка для видео.
+    SubtitleFile(PathBuf),
     /// Пути уже нет на диске (удалили между броском и разбором).
     Missing(PathBuf),
     /// Ссылка http(s).
@@ -55,7 +58,10 @@ pub(crate) fn classify_request(request: ExternalOpenRequest) -> ExternalOpenPlan
     let has_non_playlist_item = classified.iter().any(|item| {
         matches!(
             item,
-            ClassifiedItem::MediaFile(_) | ClassifiedItem::Directory(_) | ClassifiedItem::WebUrl(_)
+            ClassifiedItem::MediaFile(_)
+                | ClassifiedItem::Directory(_)
+                | ClassifiedItem::WebUrl(_)
+                | ClassifiedItem::SubtitleFile(_)
         )
     });
     let has_playlist_item = classified
@@ -94,6 +100,9 @@ fn classify_local_path(path: PathBuf) -> ClassifiedItem {
     match std::fs::metadata(&path) {
         Ok(metadata) if metadata.is_dir() => ClassifiedItem::Directory(path),
         Ok(_) if is_recognized_startup_playlist_path(&path) => ClassifiedItem::PlaylistFile(path),
+        // Расширение субтитров проверяется раньше `MediaFile`: иначе `.srt` ушёл бы в
+        // очередь как «видео, которое не откроется». Содержимое здесь не читается.
+        Ok(_) if has_subtitle_extension(&path) => ClassifiedItem::SubtitleFile(path),
         Ok(_) => ClassifiedItem::MediaFile(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => ClassifiedItem::Missing(path),
         // Нет прав и прочие сбои: файл существует, пусть обычный путь открытия назовёт
@@ -103,6 +112,13 @@ fn classify_local_path(path: PathBuf) -> ClassifiedItem {
             ClassifiedItem::MediaFile(path)
         }
     }
+}
+
+/// Есть ли у пути расширение файла субтитров (регистр не важен, решает `subtitle-sidecar`).
+fn has_subtitle_extension(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(is_subtitle_file_extension)
 }
 
 #[cfg(test)]

@@ -19,6 +19,14 @@ impl Default for RecordingHost {
     }
 }
 
+fn joined_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 /// «F:путь» для файла и «D:путь» для папки: порядок и вид элементов видны в проверке.
 fn describe_entries(entries: &[DroppedCollectionEntry]) -> String {
     entries
@@ -78,6 +86,14 @@ impl ExternalOpenHost for RecordingHost {
     }
     fn replace_queue_with_web_url(&mut self, url: DroppedWebUrl) {
         self.calls.push(format!("replace-url:{}", url.as_str()));
+    }
+    fn attach_subtitle_files_to_current_media(&mut self, paths: Vec<PathBuf>) {
+        self.calls
+            .push(format!("attach-subs:{}", joined_paths(&paths)));
+    }
+    fn queue_subtitle_files_for_opened_media(&mut self, paths: Vec<PathBuf>) {
+        self.calls
+            .push(format!("queue-subs:{}", joined_paths(&paths)));
     }
 }
 
@@ -366,4 +382,50 @@ fn empty_drop_tells_the_user_there_is_nothing_to_open() {
     let mut host = RecordingHost::default();
     dispatch_external_open_request(&mut host, request_with_files(DropTarget::Video, &[]));
     assert_eq!(host.calls, vec!["info:There is nothing to open here"]);
+}
+
+#[test]
+fn subtitles_with_video_are_queued_before_the_video_opens_and_never_reach_the_queue() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let video = dir.path().join("m.mkv");
+    let subtitle = dir.path().join("m.srt");
+    std::fs::write(&video, b"x").expect("video");
+    std::fs::write(&subtitle, b"x").expect("subtitle");
+    let mut host = RecordingHost::default();
+    dispatch_external_open_request(
+        &mut host,
+        ExternalOpenRequest {
+            target: DropTarget::Video,
+            items: vec![
+                ExternalOpenItem::LocalPath(subtitle.clone()),
+                ExternalOpenItem::LocalPath(video.clone()),
+            ],
+        },
+    );
+    assert_eq!(
+        host.calls,
+        vec![
+            format!("queue-subs:{}", subtitle.display()),
+            format!("open:{}", video.display()),
+        ]
+    );
+}
+
+#[test]
+fn lone_subtitle_attaches_without_touching_the_queue() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let subtitle = dir.path().join("m.vtt");
+    std::fs::write(&subtitle, b"x").expect("subtitle");
+    let mut host = RecordingHost::default();
+    dispatch_external_open_request(
+        &mut host,
+        ExternalOpenRequest {
+            target: DropTarget::Playlist,
+            items: vec![ExternalOpenItem::LocalPath(subtitle.clone())],
+        },
+    );
+    assert_eq!(
+        host.calls,
+        vec![format!("attach-subs:{}", subtitle.display())]
+    );
 }

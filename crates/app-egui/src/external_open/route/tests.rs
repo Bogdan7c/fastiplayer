@@ -256,3 +256,138 @@ fn notice_texts_are_human_english_without_debug_noise() {
         "Import Playlists one at a time"
     );
 }
+
+fn subtitle(path: &str) -> ClassifiedItem {
+    ClassifiedItem::SubtitleFile(PathBuf::from(path))
+}
+
+fn paths(names: &[&str]) -> Vec<PathBuf> {
+    names.iter().map(PathBuf::from).collect()
+}
+
+#[test]
+fn lone_subtitles_attach_to_current_media_on_either_target() {
+    for target in [DropTarget::Video, DropTarget::Playlist] {
+        let steps = route_plan(plan(
+            target,
+            vec![subtitle("/a.srt"), subtitle("/b.vtt")],
+            0,
+        ));
+        assert_eq!(
+            steps,
+            vec![OpenStep::AttachSubtitlesToCurrentMedia(paths(&[
+                "/a.srt", "/b.vtt"
+            ]))]
+        );
+    }
+}
+
+#[test]
+fn video_with_subtitle_on_video_queues_subtitles_before_opening() {
+    let steps = route_plan(plan(
+        DropTarget::Video,
+        vec![subtitle("/a.srt"), media("/m.mkv")],
+        0,
+    ));
+    assert_eq!(
+        steps,
+        vec![
+            OpenStep::QueueSubtitlesForOpenedMedia(paths(&["/a.srt"])),
+            OpenStep::OpenSingleMediaFile(PathBuf::from("/m.mkv")),
+        ]
+    );
+}
+
+#[test]
+fn several_videos_with_subtitle_replace_queue_and_queue_subtitles_first() {
+    let steps = route_plan(plan(
+        DropTarget::Video,
+        vec![media("/1.mkv"), media("/2.mkv"), subtitle("/a.srt")],
+        0,
+    ));
+    assert_eq!(
+        steps[0],
+        OpenStep::QueueSubtitlesForOpenedMedia(paths(&["/a.srt"]))
+    );
+    assert_eq!(
+        steps[1],
+        OpenStep::ReplaceQueueWithMediaFiles(paths(&["/1.mkv", "/2.mkv"]))
+    );
+}
+
+#[test]
+fn folder_with_subtitle_on_video_keeps_the_walk_and_queues_subtitles() {
+    let steps = route_plan(plan(
+        DropTarget::Video,
+        vec![
+            ClassifiedItem::Directory(PathBuf::from("/d")),
+            subtitle("/a.srt"),
+        ],
+        0,
+    ));
+    assert_eq!(
+        steps[0],
+        OpenStep::QueueSubtitlesForOpenedMedia(paths(&["/a.srt"]))
+    );
+    assert!(matches!(steps[1], OpenStep::CollectDroppedItems { .. }));
+    assert_eq!(steps.len(), 2);
+}
+
+#[test]
+fn playlist_target_mixed_drop_appends_media_and_never_attaches_subtitles() {
+    let steps = route_plan(plan(
+        DropTarget::Playlist,
+        vec![media("/m.mkv"), subtitle("/a.srt")],
+        0,
+    ));
+    assert_eq!(
+        steps,
+        vec![
+            OpenStep::Notify(DropNotice::SubtitlesNeedPlayingVideo),
+            OpenStep::AppendMediaFiles(paths(&["/m.mkv"])),
+        ]
+    );
+}
+
+#[test]
+fn url_with_subtitle_on_video_opens_the_url_and_queues_subtitles() {
+    let steps = route_plan(plan(
+        DropTarget::Video,
+        vec![url("https://example.org/v"), subtitle("/a.srt")],
+        0,
+    ));
+    assert_eq!(
+        steps,
+        vec![
+            OpenStep::QueueSubtitlesForOpenedMedia(paths(&["/a.srt"])),
+            open_url_step("https://example.org/v", DropTarget::Video),
+        ]
+    );
+}
+
+#[test]
+fn subtitle_next_to_missing_file_still_attaches_and_reports_the_missing_one() {
+    let steps = route_plan(plan(
+        DropTarget::Video,
+        vec![
+            ClassifiedItem::Missing(PathBuf::from("/gone")),
+            subtitle("/a.srt"),
+        ],
+        0,
+    ));
+    assert_eq!(
+        steps,
+        vec![
+            OpenStep::AttachSubtitlesToCurrentMedia(paths(&["/a.srt"])),
+            OpenStep::Notify(DropNotice::FilesNotFound { count: 1 }),
+        ]
+    );
+}
+
+#[test]
+fn subtitle_notice_text_is_the_documented_hint() {
+    assert_eq!(
+        DropNotice::SubtitlesNeedPlayingVideo.text(),
+        "Drop subtitles onto a playing video."
+    );
+}

@@ -15,8 +15,10 @@ use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 pub(crate) mod playback_button_test_harness;
 mod playback_rate;
 mod queue_mode_controls;
+mod subtitle_control;
 mod transport;
 pub(crate) use playback_rate::PLAYBACK_RATE_STEP_X;
+pub use subtitle_control::SubtitleControlAction;
 pub(crate) use transport::TransportControlAction;
 
 const VOLUME_SEPARATOR_WIDTH: f32 = 1.0;
@@ -58,6 +60,9 @@ pub enum ControlAction {
     /// Переключить fullscreen.
     ToggleFullscreen,
 
+    /// Действие субтитров (кнопка CC, меню, клавиши C/V/Z/X).
+    Subtitles(SubtitleControlAction),
+
     /// Действие timeline.
     Timeline(TimelineAction),
 }
@@ -72,6 +77,8 @@ pub(crate) struct BottomControlsInput<'a, S: PlayerSkin> {
     pub(crate) live_scrub_enabled: bool,
     pub(crate) reduced_motion: bool,
     pub(crate) playlist_transport: &'a crate::playlist_runtime::PlaylistTransportUiModel,
+    /// Снимок субтитров для кнопки CC и меню.
+    pub(crate) subtitle_menu: &'a crate::state::SubtitleMenuView,
 }
 
 /// Рисует нижнюю player controls панель и возвращает действия пользователя.
@@ -89,6 +96,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
         live_scrub_enabled,
         reduced_motion,
         playlist_transport,
+        subtitle_menu,
     } = input;
     let mut actions = Vec::new();
     let panel_id = bottom_panel_id(skin.id());
@@ -125,6 +133,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
                 is_window_fullscreen,
                 reduced_motion,
                 playlist_transport,
+                subtitle_menu,
                 &mut actions,
             );
         });
@@ -133,6 +142,10 @@ pub fn render_bottom_controls<S: PlayerSkin>(
 }
 
 /// Рисует строку кнопок и volume slider.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "строка собирает независимые снимки разных владельцев; группировка в структуру только добавила бы слой"
+)]
 fn render_button_row(
     ui: &mut Ui,
     player_snapshot: &PlayerSnapshot,
@@ -140,6 +153,7 @@ fn render_button_row(
     is_window_fullscreen: bool,
     reduced_motion: bool,
     playlist_transport: &crate::playlist_runtime::PlaylistTransportUiModel,
+    subtitle_menu: &crate::state::SubtitleMenuView,
     actions: &mut Vec<ControlAction>,
 ) {
     let controls_style = skin.controls_style();
@@ -151,14 +165,22 @@ fn render_button_row(
     let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
     let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
     let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
-    let queue_mode_layout = queue_mode_controls::control_layout(
-        playback_button_rect,
-        open_file_button_rect,
-        fullscreen_button_rect,
-        controls_style,
-        ui.spacing().item_spacing.x,
-    );
     let base_next_button_rect = transport::next_button_rect(playback_button_rect, controls_style);
+    // CC занимает место между Repeat и Fullscreen и сжимает Shuffle/Repeat симметрично.
+    let subtitle_frame = subtitle_control::SubtitleControlFrame::prepare(
+        ui,
+        subtitle_control::SubtitleLayoutGeometry {
+            playback_button_rect,
+            base_next_button_rect,
+            open_file_button_rect,
+            fullscreen_button_rect,
+            controls_style,
+            item_spacing: ui.spacing().item_spacing.x,
+        },
+        subtitle_menu,
+        reduced_motion,
+    );
+    let queue_mode_layout = subtitle_frame.queue_mode_layout();
     let playback_rate_reveal_progress =
         playback_rate::reveal_progress(ui, player_snapshot.playback_rate, reduced_motion);
     let playback_rate_layout = playback_rate::control_layout(
@@ -234,6 +256,8 @@ fn render_button_row(
     {
         actions.push(ControlAction::ToggleFullscreen);
     }
+
+    subtitle_frame.render(ui, subtitle_menu, reduced_motion, actions);
 }
 
 /// Считает rect open-file кнопки от всей content-строки.

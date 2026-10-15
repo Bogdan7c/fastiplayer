@@ -1,12 +1,13 @@
 //! Покадровая отложенная запись runtime-originated настроек в config.
 //!
-//! Два независимых источника: ширина sidebar (drag мышью) и громкость пользователя
-//! (UX-11: слайдер, M, MPRIS). Оба только запоминают изменение и пишут config после
+//! Три независимых источника: ширина sidebar (drag мышью), громкость пользователя
+//! (UX-11: слайдер, M, MPRIS) и выбор «субтитры включены» (CC, клавиша C). Все только запоминают изменение и пишут config после
 //! паузы через `SettingsRuntime`; сам frame pipeline не знает про debounce.
 
 use std::time::Instant;
 
 use crate::settings_runtime::SettingsRuntime;
+use crate::state::SubtitleVisibility;
 use crate::ui::sidebar::SidebarWidthChange;
 use crate::user_audio_level::PlayerAudioObservation;
 
@@ -20,6 +21,7 @@ pub(super) fn persist_due_runtime_originated_settings(
     settings_runtime: &mut SettingsRuntime,
     sidebar_width_change: Option<SidebarWidthChange>,
     player_audio: PlayerAudioObservation,
+    subtitle_enabled_change: Option<SubtitleVisibility>,
     runtime_adapter: &mut FrameSettingsRuntimeAdapter<'_>,
 ) -> bool {
     let now = Instant::now();
@@ -27,6 +29,8 @@ pub(super) fn persist_due_runtime_originated_settings(
         let _pending_changed = settings_runtime.record_sidebar_width_change(width_change, now);
     }
     let _audio_level_changed = settings_runtime.record_player_audio_observation(player_audio, now);
+    let _subtitles_choice_changed =
+        settings_runtime.record_subtitle_enabled_change(subtitle_enabled_change, now);
 
     let resize_requested_repaint =
         match settings_runtime.flush_due_sidebar_resize(now, runtime_adapter) {
@@ -44,5 +48,13 @@ pub(super) fn persist_due_runtime_originated_settings(
                 true
             }
         };
-    resize_requested_repaint || audio_requested_repaint
+    let subtitles_requested_repaint =
+        match settings_runtime.flush_due_subtitle_enabled(now, runtime_adapter) {
+            Ok(outcome) => outcome.needs_redraw(),
+            Err(error) => {
+                settings_runtime.report_runtime_error("Could not save subtitles choice", error);
+                true
+            }
+        };
+    resize_requested_repaint || audio_requested_repaint || subtitles_requested_repaint
 }

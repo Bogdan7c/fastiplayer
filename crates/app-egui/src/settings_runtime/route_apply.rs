@@ -497,6 +497,16 @@ impl SettingsRuntimeRouteAppliers {
                 let result = reconfigure_host.apply_playlist_runtime_settings(&update);
                 Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
+            RuntimeCommittedUpdate::Subtitles(_) => {
+                // Настройки субтитров применяет `AppState::sync_committed_config_snapshot`
+                // (-> `SubtitleOwner::apply_config`) ТОЛЬКО после успешной транзакции, поэтому
+                // откат настроек не оставит новый стиль в плеере. Здесь применять нечего.
+                Ok(Self::route_report(
+                    route,
+                    AppRouteApplyResult::Applied,
+                    ApplyMechanism::InPlace,
+                ))
+            }
             RuntimeCommittedUpdate::RenderPreview(_update) => unreachable!(
                 "render preview committed route requires render adapter promotion path"
             ),

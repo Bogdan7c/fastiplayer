@@ -242,6 +242,10 @@ impl PlayerSession {
             InstalledSubtitleRestore::Disabled => None,
             InstalledSubtitleRestore::Select(track_id) => Some(track_id),
         };
+        // Неизвестный id (трек из прошлой сессии) деградирует в «без субтитров», а не в отказ.
+        if !self.subtitle_restore_target_is_known(track_id) {
+            return Ok(());
+        }
         self.dispatch_command(PlayerCommand::SelectSubtitleTrack(track_id))
             .map(|_| ())
             .map_err(|error| InstalledMediaStateRestoreOutcome::Failed {

@@ -893,6 +893,8 @@ pub(crate) fn render_frame(
     let mut ui_prepare_timings = prepared_ui_frame.timings;
     ui_prepare_timings.total = stage_started_at.elapsed();
 
+    // Решение пользователя по субтитрам этого кадра (C, CC, меню); отдаётся один раз.
+    let subtitle_enabled_change = app_state.take_subtitle_enabled_preference_change();
     let settings_action_requested_repaint = {
         let surface_event_pending = window_chrome_actions.iter().any(|action| {
             matches!(
@@ -914,6 +916,7 @@ pub(crate) fn render_frame(
             settings_runtime,
             sidebar_width_change,
             PlayerAudioObservation::from_player_snapshot(frame_context.player_snapshot()),
+            subtitle_enabled_change,
             &mut runtime_adapter,
         );
         let actions_requested_repaint = match settings_runtime
@@ -1067,6 +1070,7 @@ pub(crate) fn render_frame(
             undo_model.next_wake_deadline,
             settings_runtime.next_sidebar_resize_deadline(),
             settings_runtime.next_user_audio_level_persist_deadline(),
+            settings_runtime.next_subtitle_enabled_persist_deadline(),
             app_state.next_notification_wake_deadline(),
             app_state.fullscreen_chrome_wake_deadline(),
         ]),

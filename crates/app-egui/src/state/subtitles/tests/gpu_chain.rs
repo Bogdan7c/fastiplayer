@@ -396,3 +396,43 @@ fn frames_without_subtitles_cause_no_gpu_uploads_and_no_rasterization() {
     assert_eq!(harness.renderer.upload_stats().bitmap_uploads, 0);
     assert_eq!(owner.presentation_stats().rasterizer_calls, 0);
 }
+
+#[test]
+fn toggling_subtitles_on_and_off_adds_and_removes_their_pixels_in_the_rendered_frame() {
+    let mut harness = gpu_or_skip!();
+    let media = instance(1);
+    // Субтитры выключены по умолчанию, как в продукте.
+    let directory = tempfile::tempdir().expect("tempdir");
+    let video = write_movie(directory.path(), Some(TWO_CUE_SRT));
+    let mut owner = owner_with_config(&SubtitlesConfig::default());
+    begin_and_wait(&mut owner, media, &video);
+    let rect = letterboxed_rect(TARGET_WIDTH, TARGET_HEIGHT);
+    let (_, video_only) = harness.frame(rect, None);
+    let render_at_cue = |owner: &mut SubtitleOwner, harness: &mut Harness| {
+        let overlay = owner
+            .overlay_for_frame(current(media, GENERATION), &frame(2_000, GENERATION, rect))
+            .cloned();
+        harness.frame(rect, overlay.as_ref()).1
+    };
+
+    // Выключено: кадр равен чистому видео.
+    assert_eq!(render_at_cue(&mut owner, &mut harness), video_only);
+
+    // Включили: файл читается лениво, затем пиксели субтитра появляются в кадре.
+    owner.set_visibility(SubtitleVisibility::Shown);
+    let deadline = Instant::now() + LOAD_TIMEOUT;
+    while owner.lifecycle_view() != SubtitleLifecycleView::Ready {
+        assert!(Instant::now() < deadline, "track must load after enabling");
+        owner.poll_jobs();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let shown = render_at_cue(&mut owner, &mut harness);
+    assert!(
+        changed_rows(&shown, &video_only).len() > 5,
+        "subtitle pixels appear after enabling"
+    );
+
+    // Выключили: пиксели исчезли, кадр снова равен чистому видео.
+    owner.set_visibility(SubtitleVisibility::Hidden);
+    assert_eq!(render_at_cue(&mut owner, &mut harness), video_only);
+}

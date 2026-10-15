@@ -37,10 +37,12 @@ use crate::ui::animation::UiMotion;
 
 mod buffering;
 mod player_feed;
+mod replacing;
 
 #[cfg(test)]
 pub(crate) use buffering::BUFFERING_INDICATOR_APPEAR_DELAY;
 pub(crate) use buffering::BufferingIndicator;
+pub(crate) use replacing::TransientReplaceKey;
 
 #[cfg(test)]
 mod audio_device_tests;
@@ -214,6 +216,8 @@ struct ToastEntry {
     shown_at: Instant,
     /// Когда плашка исчезнет сама; `None` — только по ×.
     expires_at: Option<Instant>,
+    /// Ключ замены: плашка с ключом обновляется повтором, а не дублируется (`replacing`).
+    replace_key: Option<TransientReplaceKey>,
 }
 
 /// Фатальная ошибка внутри владельца.
@@ -474,6 +478,7 @@ impl NotificationCenter {
             message,
             shown_at: now,
             expires_at,
+            replace_key: None,
         });
         self.evict_overflow();
         id

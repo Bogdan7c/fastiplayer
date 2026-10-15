@@ -5,20 +5,20 @@ use std::io::Write;
 use subtitle_core::SubtitleLanguage;
 use subtitle_formats::{LegacyEncodingHint, SubtitleLoadError};
 
+use super::super::file_loader::{encoding_hint_for, read_file_with_limit};
 use super::super::job_runner::{SidecarJob, SidecarJobPoll};
-use super::super::limits::SUBTITLE_FILE_MAX_BYTES;
-use super::super::sidecar_job::{
-    FontLibraryPlan, SidecarJobOutcome, SidecarJobRequest, SubtitleLoadFailure, encoding_hint_for,
-    read_file_with_limit, run_sidecar_job,
-};
-use super::super::{JobResultDisposition, SubtitleLifecycleView};
+use super::super::menu_view::{SubtitleTrackAvailability, SubtitleUnavailableReason};
+use super::super::sidecar_job::{SidecarJobOutcome, SubtitleLoadFailure, run_sidecar_job};
+use super::super::{JobOrigin, JobResultDisposition, SubtitleLifecycleView};
 use super::*;
 
+/// Лимит размера файла по умолчанию, байт.
+fn file_limit_bytes() -> usize {
+    default_load_limits().file_max_bytes
+}
+
 fn request_for(video: &Path, fonts: FontLibraryPlan) -> SidecarJobRequest {
-    SidecarJobRequest {
-        video_path: video.to_path_buf(),
-        fonts,
-    }
+    discovery_request(video, fonts)
 }
 
 #[test]
@@ -31,11 +31,15 @@ fn srt_next_to_the_video_is_loaded_with_its_cues_and_a_font_library() {
         &|| false,
     );
 
-    let SidecarJobOutcome::Loaded(loaded) = outcome else {
-        panic!("srt must be loaded");
-    };
+    let discovery = expect_discovery(outcome);
+    assert_eq!(discovery.candidates.len(), 1);
+    let loaded = discovery
+        .preloaded
+        .expect("the auto-selected track is read")
+        .result
+        .expect("srt must be loaded");
     assert_eq!(loaded.timeline.len(), 2, "both cues are in the timeline");
-    assert!(loaded.fonts.is_some(), "a new library was requested");
+    assert!(discovery.fonts.is_some(), "a new library was requested");
     assert_eq!(
         loaded.file_name.as_deref().and_then(|name| name.to_str()),
         Some("Movie.srt")
@@ -52,11 +56,10 @@ fn reusing_the_existing_rasterizer_builds_no_font_library() {
         &|| false,
     );
 
-    let SidecarJobOutcome::Loaded(loaded) = outcome else {
-        panic!("srt must be loaded");
-    };
+    let discovery = expect_discovery(outcome);
+    assert!(discovery.preloaded.is_some(), "the track is still loaded");
     assert!(
-        loaded.fonts.is_none(),
+        discovery.fonts.is_none(),
         "no second font scan for the next media"
     );
 }
@@ -71,12 +74,13 @@ fn no_candidates_means_no_subtitles_without_any_error() {
         &request_for(&video, FontLibraryPlan::BuildEmbeddedOnly),
         &|| false,
     );
-    assert!(matches!(
-        outcome,
-        SidecarJobOutcome::NoRenderableCandidate {
-            skipped_unsupported_format: 0
-        }
-    ));
+    let discovery = expect_discovery(outcome);
+    assert!(discovery.candidates.is_empty(), "Other.srt does not match");
+    assert!(discovery.preloaded.is_none());
+    assert!(
+        discovery.fonts.is_none(),
+        "media without subtitles does not pay for the font scan"
+    );
 
     // Тот же сценарий через владельца: состояние «нет файла», не «недоступно».
     let mut owner = owner();
@@ -89,7 +93,7 @@ fn no_candidates_means_no_subtitles_without_any_error() {
 }
 
 #[test]
-fn only_ass_is_skipped_and_counted() {
+fn only_ass_is_listed_as_unavailable_but_never_selected() {
     let directory = tempfile::tempdir().expect("tempdir");
     let video = write_movie(directory.path(), None);
     std::fs::write(directory.path().join("Movie.ass"), "[Script Info]\n").expect("write ass");
@@ -99,12 +103,25 @@ fn only_ass_is_skipped_and_counted() {
         &|| false,
     );
 
-    assert!(matches!(
-        outcome,
-        SidecarJobOutcome::NoRenderableCandidate {
-            skipped_unsupported_format: 1
-        }
-    ));
+    let discovery = expect_discovery(outcome);
+    assert_eq!(discovery.candidates.len(), 1, "the ass file is found");
+    assert_eq!(discovery.selection.for_enabled, None, "but never selected");
+    assert!(discovery.preloaded.is_none(), "and never read");
+
+    // Через владельца: дорожка в списке, недоступна по причине, показывать нечего.
+    let mut owner = owner();
+    begin_and_wait(&mut owner, instance(1), &video);
+    assert_eq!(
+        owner.lifecycle_view(),
+        SubtitleLifecycleView::NoSubtitleFile
+    );
+    let view = owner.menu_view();
+    assert!(view.has_tracks);
+    assert_eq!(
+        view.tracks[0].availability,
+        SubtitleTrackAvailability::Unavailable(SubtitleUnavailableReason::FormatNotSupportedYet)
+    );
+    assert!(!view.tracks[0].is_selected);
 }
 
 #[test]
@@ -118,10 +135,14 @@ fn a_renderable_candidate_is_picked_even_when_ass_is_present() {
         &|| false,
     );
 
-    let SidecarJobOutcome::Loaded(loaded) = outcome else {
-        panic!("srt must be picked");
-    };
-    assert_eq!(loaded.timeline.len(), 2);
+    let discovery = expect_discovery(outcome);
+    let preloaded = discovery.preloaded.expect("a renderable track is picked");
+    let picked = &discovery.candidates[preloaded.candidate_index];
+    assert_eq!(
+        picked.path.extension().and_then(|e| e.to_str()),
+        Some("srt")
+    );
+    assert_eq!(preloaded.result.expect("srt loads").timeline.len(), 2);
 }
 
 #[test]
@@ -129,7 +150,7 @@ fn oversized_file_is_a_typed_failure_that_leaves_playback_state_alone() {
     let directory = tempfile::tempdir().expect("tempdir");
     let video = write_movie(directory.path(), None);
     let mut huge = std::fs::File::create(directory.path().join("Movie.srt")).expect("create");
-    huge.write_all(&vec![b'a'; SUBTITLE_FILE_MAX_BYTES + 1])
+    huge.write_all(&vec![b'a'; file_limit_bytes() + 1])
         .expect("write huge");
     drop(huge);
 
@@ -139,7 +160,7 @@ fn oversized_file_is_a_typed_failure_that_leaves_playback_state_alone() {
     assert_eq!(owner.lifecycle_view(), SubtitleLifecycleView::Unavailable);
     assert!(matches!(
         owner.unavailable_failure(),
-        Some(SubtitleLoadFailure::FileTooLarge { limit_bytes }) if *limit_bytes == SUBTITLE_FILE_MAX_BYTES
+        Some(SubtitleLoadFailure::FileTooLarge { limit_bytes }) if *limit_bytes == file_limit_bytes()
     ));
     // Недоступная дорожка ничего не рисует.
     assert!(
@@ -176,11 +197,15 @@ fn invalid_webvtt_is_a_parse_failure() {
         &|| false,
     );
 
+    let failure = expect_discovery(outcome)
+        .preloaded
+        .expect("the only track was tried")
+        .result
+        .err()
+        .expect("not a WebVTT file must fail");
     assert!(matches!(
-        outcome,
-        SidecarJobOutcome::Failed(SubtitleLoadFailure::ParseFailed(
-            SubtitleLoadError::NotWebVtt
-        ))
+        failure,
+        SubtitleLoadFailure::ParseFailed(SubtitleLoadError::NotWebVtt)
     ));
 }
 
@@ -278,7 +303,7 @@ fn job_delivers_its_result_through_the_owner_mailbox() {
             }
         }
     };
-    assert!(matches!(outcome, SidecarJobOutcome::Loaded(_)));
+    assert!(expect_discovery(outcome).preloaded.is_some());
 }
 
 #[test]
@@ -305,6 +330,7 @@ fn late_failed_result_for_an_old_media_is_dropped_too() {
 
     let disposition = owner.accept_job_outcome(
         instance(1),
+        JobOrigin::Discovery,
         SidecarJobOutcome::Failed(SubtitleLoadFailure::WorkerLost),
     );
 

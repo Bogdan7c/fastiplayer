@@ -197,3 +197,80 @@ fn plain_o_and_ctrl_arrows_do_not_trigger_anything() {
         .is_empty()
     );
 }
+
+/// Действие субтитров в обёртке `ControlAction`.
+fn subtitles(action: SubtitleControlAction) -> ControlAction {
+    ControlAction::Subtitles(action)
+}
+
+#[test]
+fn subtitle_keys_map_to_their_actions_without_any_focus() {
+    for (key, expected) in [
+        (Key::C, SubtitleControlAction::ToggleVisibility),
+        (Key::V, SubtitleControlAction::SelectNextTrack),
+        (Key::Z, SubtitleControlAction::NudgeSync(SyncNudge::Earlier)),
+        (Key::X, SubtitleControlAction::NudgeSync(SyncNudge::Later)),
+    ] {
+        assert_eq!(
+            actions(FocusHolder::Nobody, vec![key_press(key, Modifiers::NONE)]),
+            vec![subtitles(expected)],
+            "{key:?}"
+        );
+    }
+}
+
+#[test]
+fn subtitle_keys_work_while_a_button_has_focus_but_not_while_typing() {
+    assert_eq!(
+        actions(
+            FocusHolder::Button,
+            vec![key_press(Key::C, Modifiers::NONE)]
+        ),
+        vec![subtitles(SubtitleControlAction::ToggleVisibility)],
+        "buttons do not use letters"
+    );
+    for key in [Key::C, Key::V, Key::Z, Key::X] {
+        assert!(
+            actions(
+                FocusHolder::TextField,
+                vec![key_press(key, Modifiers::NONE)]
+            )
+            .is_empty(),
+            "{key:?} is text input while a text field has focus"
+        );
+    }
+}
+
+#[test]
+fn subtitle_keys_with_ctrl_are_left_to_the_system_shortcuts() {
+    for key in [Key::C, Key::V, Key::Z, Key::X] {
+        assert!(
+            actions(
+                FocusHolder::Nobody,
+                vec![key_press(key, Modifiers::COMMAND)]
+            )
+            .is_empty(),
+            "Ctrl+{key:?} (copy/paste/undo/cut) must not touch subtitles"
+        );
+    }
+}
+
+#[test]
+fn repeated_nudge_presses_in_one_frame_are_separate_steps() {
+    assert_eq!(
+        actions(
+            FocusHolder::Nobody,
+            vec![
+                key_press(Key::X, Modifiers::NONE),
+                key_press(Key::X, Modifiers::NONE),
+                key_press(Key::Z, Modifiers::NONE),
+            ]
+        ),
+        vec![
+            subtitles(SubtitleControlAction::NudgeSync(SyncNudge::Earlier)),
+            subtitles(SubtitleControlAction::NudgeSync(SyncNudge::Later)),
+            subtitles(SubtitleControlAction::NudgeSync(SyncNudge::Later)),
+        ],
+        "each press counts once; order follows the key table (C, V, Z, X)"
+    );
+}
