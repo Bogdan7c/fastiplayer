@@ -21,6 +21,14 @@ impl FontWeightClass {
         }
     }
 
+    /// Типичный числовой вес класса (400 и 700): цель при выборе ближайшего по весу лица.
+    pub fn nominal_os2_weight(self) -> u16 {
+        match self {
+            Self::Regular => 400,
+            Self::Bold => 700,
+        }
+    }
+
     /// Полужирный ли класс.
     pub fn is_bold(self) -> bool {
         self == Self::Bold

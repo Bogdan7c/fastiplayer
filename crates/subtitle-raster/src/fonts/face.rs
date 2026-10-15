@@ -7,6 +7,7 @@ use skrifa::FontRef;
 
 use super::counters::LibraryCounters;
 use super::coverage::GlyphCoverage;
+use super::face_language::FaceLanguages;
 use super::shared_bytes::SharedBytesCache;
 use super::style::{FontStyle, FontWeightClass};
 
@@ -79,6 +80,9 @@ pub(super) enum FaceSource {
         file_key: SystemFileKey,
         /// Какие кодпоинты есть в `cmap` лица.
         coverage: GlyphCoverage,
+        /// CJK-языки лица (`meta`/`dlng`, иначе эвристика по имени), посчитанные при
+        /// сканировании: по ним fallback выбирает региональную форму иероглифов.
+        languages: FaceLanguages,
     },
 }
 
@@ -92,8 +96,11 @@ pub(super) struct LoadedFace {
     pub(super) collection_index: u32,
     /// Основное имя семейства (для диагностики).
     pub(super) family: String,
-    /// Насыщенность.
+    /// Насыщенность (класс: решает синтетику).
     pub(super) weight: FontWeightClass,
+    /// Точный вес OS/2 (`usWeightClass`, 100..900): нужен, чтобы среди системных лиц с
+    /// одинаковым покрытием выбрать ближайшее к запрошенному весу, а не первое попавшееся.
+    pub(super) os2_weight: u16,
     /// Наклон.
     pub(super) style: FontStyle,
     /// Лицо признано непригодным для рисования (не загрузилось); больше не выбирается.

@@ -4,7 +4,7 @@ use subtitle_core::SubtitleTextCue;
 
 use crate::appearance::{CollisionDirection, SubtitleAppearance, cue_style};
 use crate::face_cache::FaceCache;
-use crate::fonts::SubtitleFontLibrary;
+use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
 use crate::overlay::{CanvasSize, SubtitleBitmap};
 use crate::plate::{PlateError, build_plate};
 use crate::render_diagnostics::RenderDiagnostics;
@@ -71,6 +71,7 @@ pub(crate) type CuePainter = fn(
     &SubtitleTextCue,
     &SubtitleAppearance,
     CanvasSize,
+    TextLanguagePreference,
 ) -> Result<RasterizedCue, CueRenderError>;
 
 /// Рисует реплику стилем пользователя на холсте.
@@ -80,10 +81,11 @@ pub(crate) fn rasterize_cue(
     cue: &SubtitleTextCue,
     appearance: &SubtitleAppearance,
     canvas: CanvasSize,
+    language: TextLanguagePreference,
 ) -> Result<RasterizedCue, CueRenderError> {
     note_unsupported_span_backgrounds(cue);
     let style = cue_style(appearance, &cue.placement, canvas);
-    let rendered = render_cue_text(fonts, faces, &cue.text, &style.event, canvas)?;
+    let rendered = render_cue_text(fonts, faces, &cue.text, &style.event, canvas, language)?;
 
     let mut bitmaps = Vec::with_capacity(rendered.images.len() + 1);
     // Плашка идёт первой: она лежит под текстом.

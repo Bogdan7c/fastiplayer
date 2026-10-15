@@ -4,10 +4,16 @@ use render_core::RenderViewport;
 use render_wgpu_video::WgpuRenderableFrame;
 use winit::window::Window;
 
-use crate::WindowCornerMask;
+use crate::{SubtitleOverlayFrame, WindowCornerMask};
 
 /// Итог одного render-frame вызова.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Timing — небольшой Copy-снимок на кадр; Box добавил бы аллокацию на каждый present
+// ради варианта, который и так самый частый.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Copy-снимок timing на кадр дешевле, чем Box-аллокация на каждый present"
+)]
 pub enum RenderFrameOutcome {
     /// Кадр был отправлен в swapchain и представлен.
     Presented(RenderFrameTiming),
@@ -46,6 +52,9 @@ pub struct RenderFrameStageTimings {
     /// Egui overlay pass поверх video output.
     pub egui_render: Duration,
 
+    /// Overlay субтитров между video и egui.
+    pub subtitle_overlay: Duration,
+
     /// Финальная маска общего контура окна после video и egui.
     pub window_corner_mask: Duration,
 
@@ -83,6 +92,7 @@ impl RenderFrameStageTimings {
             ("surface_acquire", self.surface_acquire),
             ("surface_view_creation", self.surface_view_creation),
             ("video_render", self.video_render),
+            ("subtitle_overlay", self.subtitle_overlay),
             ("egui_render", self.egui_render),
             ("window_corner_mask", self.window_corner_mask),
             ("queue_submit", self.queue_submit),
@@ -175,6 +185,9 @@ pub struct RenderFrameInput<'frame> {
 
     /// Разрешённая app-слоем форма текущего desktop-кадра.
     pub window_corner_mask: WindowCornerMask,
+
+    /// Субтитры между video и egui; `None` — рисовать нечего.
+    pub subtitle_overlay: Option<SubtitleOverlayFrame<'frame>>,
 }
 
 /// Зажимает app-computed video viewport к текущему swapchain target-у.

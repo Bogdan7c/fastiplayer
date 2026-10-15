@@ -30,7 +30,7 @@
     "crates/render-wgpu-video/src/dma_buf_import.rs": 1393,
     "crates/render-wgpu-video/src/video/host_planar_upload.rs": 1497,
     "crates/render-wgpu-video/src/video/host_yuv420_renderer.rs": 1293,
-    "crates/render-wgpu-video/src/video/mod.rs": 1028,
+    "crates/render-wgpu-video/src/video/mod.rs": 1022,
     "crates/render-wgpu-video/src/video/p010_renderer.rs": 1395,
     "crates/fastiplayer-settings/src/routing.rs": 1943,
     "crates/settings-core/src/controller.rs": 1443,

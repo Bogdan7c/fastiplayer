@@ -16,6 +16,8 @@ pub(crate) struct AppStateStartupContext {
     /// `AppShell` передаёт его ровно один раз — в первый созданный `AppState`, поэтому
     /// пересоздание `AppState` после suspend не показывает предупреждение повторно.
     pub(super) config_warning: Option<String>,
+    /// Wake-порт фоновой загрузки субтитров: process-lifetime, копируется в каждый `AppState`.
+    pub(super) subtitle_wake_port: AppWakePort,
 }
 
 impl AppStateStartupContext {
@@ -24,11 +26,13 @@ impl AppStateStartupContext {
         process_started_at: Instant,
         startup_error: Option<String>,
         config_warning: Option<String>,
+        subtitle_wake_port: AppWakePort,
     ) -> Self {
         Self {
             process_started_at,
             startup_error,
             config_warning,
+            subtitle_wake_port,
         }
     }
 }

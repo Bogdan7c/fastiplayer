@@ -93,6 +93,7 @@ mod same_item_candidate_switch;
 mod sidebar_controller;
 mod startup_context;
 mod strong_media_open;
+mod subtitles;
 mod suspended_media_resume;
 #[cfg(test)]
 pub(crate) use strong_media_open::PreparedPositionRestoreStrategy;
@@ -123,6 +124,7 @@ pub use present_frame_cache::PresentFrameAcquisition;
 pub use present_frame_cache::RenderablePresentFrame;
 pub(crate) use startup_context::AppStateStartupContext;
 use startup_context::player_timeline_wake_bridge;
+pub(crate) use subtitles::SubmittedFrameForSubtitles;
 pub(crate) use video_backend::{
     BackendSwapVideoCheckpoint, BackendSwapVideoPhase, VideoPipelineRebuildError,
     VideoPipelineRebuildRequest,
@@ -284,6 +286,10 @@ pub struct AppState {
     /// Process-lifetime owner wake port для каждого нового local-file job-а.
     local_file_open_wake_port: AppWakePort,
 
+    /// Владелец субтитров текущего media (`state/subtitles.rs`): фоновая загрузка,
+    /// активная дорожка и решение «что рисовать на этом кадре».
+    subtitles: subtitles::SubtitleOwner,
+
     /// Transient pointer state timeline; player position здесь не хранится.
     timeline_ui_state: TimelineUiState,
 
@@ -418,6 +424,10 @@ impl AppState {
             local_open_install: local_open_install::LocalOpenInstallOwner::default(),
             settings_media_rebuild: settings_media_rebuild::SettingsMediaRebuildOwner::default(),
             local_file_open_wake_port,
+            subtitles: subtitles::SubtitleOwner::new(
+                startup_context.subtitle_wake_port.clone(),
+                subtitles::read_system_language(),
+            ),
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_controller: SidebarController::default(),

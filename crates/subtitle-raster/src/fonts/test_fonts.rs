@@ -25,6 +25,24 @@ pub(crate) fn noto_regular_bytes() -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// Байты встроенного Noto Sans Bold.
+pub(crate) fn noto_bold_bytes() -> Vec<u8> {
+    EMBEDDED_FONTS
+        .iter()
+        .find(|font| {
+            font.purpose == EmbeddedFontPurpose::PrimaryLatinGreekCyrillic
+                && font.weight == FontWeightClass::Bold
+        })
+        .map(|font| font.data.to_vec())
+        .unwrap_or_default()
+}
+
+/// Выставляет вес `usWeightClass` в таблице `OS/2` (так `fontdb` узнаёт вес системного лица).
+pub(crate) fn set_os2_weight(bytes: &mut [u8], weight: u16) {
+    let (_, os2) = find_table(bytes, b"OS/2");
+    bytes[os2 + 4..os2 + 6].copy_from_slice(&weight.to_be_bytes());
+}
+
 fn read_u16(bytes: &[u8], at: usize) -> usize {
     usize::from(u16::from_be_bytes([bytes[at], bytes[at + 1]]))
 }
@@ -178,4 +196,87 @@ pub(crate) fn corrupt_glyph_outline(bytes: &mut [u8], glyph: u16) {
     for byte in &mut bytes[glyf + start + 10..glyf + end] {
         *byte = 0xFF;
     }
+}
+
+/// Заменяет строку `from` на `to` (той же длины) в таблице `name`: и в UTF-16BE (Windows),
+/// и в однобайтовом виде (Mac). Так `fontdb` видит у копии шрифта другое имя семейства.
+pub(crate) fn rename_family(bytes: &mut [u8], from: &str, to: &str) {
+    assert_eq!(
+        from.chars().count(),
+        to.chars().count(),
+        "equal length only"
+    );
+    let utf16 = |text: &str| -> Vec<u8> {
+        text.encode_utf16()
+            .flat_map(|unit| unit.to_be_bytes())
+            .collect()
+    };
+    for (old, new) in [
+        (utf16(from), utf16(to)),
+        (from.as_bytes().to_vec(), to.as_bytes().to_vec()),
+    ] {
+        let mut at = 0;
+        while at + old.len() <= bytes.len() {
+            if bytes[at..at + old.len()] == old[..] {
+                bytes[at..at + old.len()].copy_from_slice(&new);
+                at += old.len();
+            } else {
+                at += 1;
+            }
+        }
+    }
+}
+
+/// Добавляет в одиночный шрифт (не `.ttc`) таблицу `meta` с записью `dlng` = `languages`
+/// (список тегов через запятую, например `"Jpan"`). Каталог таблиц остаётся отсортированным.
+pub(crate) fn add_meta_dlng(font: &[u8], languages: &str) -> Vec<u8> {
+    let mut meta = Vec::new();
+    meta.extend_from_slice(&1_u32.to_be_bytes()); // version
+    meta.extend_from_slice(&0_u32.to_be_bytes()); // flags
+    meta.extend_from_slice(&0_u32.to_be_bytes()); // reserved
+    meta.extend_from_slice(&1_u32.to_be_bytes()); // dataMapsCount
+    meta.extend_from_slice(b"dlng");
+    meta.extend_from_slice(&28_u32.to_be_bytes()); // dataOffset: заголовок 16 + запись 12
+    meta.extend_from_slice(&(languages.len() as u32).to_be_bytes());
+    meta.extend_from_slice(languages.as_bytes());
+    add_table(font, b"meta", &meta)
+}
+
+/// Собирает новый файл шрифта с дополнительной таблицей `tag` (контрольные суммы не нужны:
+/// читатели шрифтов их не проверяют).
+fn add_table(font: &[u8], tag: &[u8; 4], content: &[u8]) -> Vec<u8> {
+    let table_count = read_u16(font, 4);
+    let old_records_end = 12 + 16 * table_count;
+    let mut records: Vec<[u8; 16]> = (0..table_count)
+        .map(|index| {
+            let at = 12 + 16 * index;
+            let mut record = [0_u8; 16];
+            record.copy_from_slice(&font[at..at + 16]);
+            // Данные уехали на одну запись (16 байт) дальше от начала файла.
+            let shifted = (read_u32(font, at + 8) + 16) as u32;
+            record[8..12].copy_from_slice(&shifted.to_be_bytes());
+            record
+        })
+        .collect();
+    let mut data: Vec<u8> = font[old_records_end..].to_vec();
+    while !data.len().is_multiple_of(4) {
+        data.push(0);
+    }
+    let new_offset = (old_records_end + 16 + data.len()) as u32;
+    let mut new_record = [0_u8; 16];
+    new_record[..4].copy_from_slice(tag);
+    new_record[8..12].copy_from_slice(&new_offset.to_be_bytes());
+    new_record[12..16].copy_from_slice(&(content.len() as u32).to_be_bytes());
+    records.push(new_record);
+    records.sort_by_key(|record| [record[0], record[1], record[2], record[3]]);
+
+    let mut result = Vec::with_capacity(old_records_end + 16 + data.len() + content.len());
+    result.extend_from_slice(&font[..12]);
+    result[4..6].copy_from_slice(&((table_count + 1) as u16).to_be_bytes());
+    for record in &records {
+        result.extend_from_slice(record);
+    }
+    result.extend_from_slice(&data);
+    result.extend_from_slice(content);
+    result
 }

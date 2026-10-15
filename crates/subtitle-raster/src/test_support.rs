@@ -6,7 +6,9 @@ use crate::event_style::{
     AxisPair, BaseDirection, BorderStyle, EventStyle, StyleColors, TextMargins, WrapStyle,
 };
 use crate::face_cache::FaceCache;
-use crate::fonts::{FontLookupCacheLimits, FontStyle, FontWeightClass, SubtitleFontLibrary};
+use crate::fonts::{
+    FontLookupCacheLimits, FontStyle, FontWeightClass, SubtitleFontLibrary, TextLanguagePreference,
+};
 use crate::glyph_info::TextCluster;
 use crate::glyph_render::{FREETYPE_REQUEST_SIZE, retrieve_glyphs};
 use crate::shaping::shape_text;
@@ -78,7 +80,14 @@ pub(crate) fn shaped_clusters(
 ) -> Vec<TextCluster> {
     let source = SourceText::from_styled(text, style);
     let mut faces = FaceCache::new();
-    let mut clusters = shape_text(fonts, &mut faces, &source, style).expect("shaping");
+    let mut clusters = shape_text(
+        fonts,
+        &mut faces,
+        &source,
+        style,
+        TextLanguagePreference::unknown(),
+    )
+    .expect("shaping");
     retrieve_glyphs(
         &faces,
         &mut clusters,

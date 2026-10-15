@@ -65,6 +65,32 @@ pub(crate) fn choose_present_mode(
     auto_choice()
 }
 
+/// Выбирает формат swapchain для SDR-видео.
+pub(crate) fn choose_surface_format(
+    formats: &[wgpu::TextureFormat],
+) -> Result<wgpu::TextureFormat> {
+    // Для текущего NV12 renderer предпочитаем обычный 8-bit формат.
+    const PREFERRED_FORMATS: &[wgpu::TextureFormat] = &[
+        wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ];
+
+    // Сначала ищем явно поддерживаемый 8-bit формат.
+    for preferred_format in PREFERRED_FORMATS {
+        if formats.contains(preferred_format) {
+            return Ok(*preferred_format);
+        }
+    }
+
+    // Если 8-bit форматов нет, используем первый формат из capabilities.
+    formats
+        .first()
+        .copied()
+        .context("Surface capabilities have not returned any texture format.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +139,37 @@ mod tests {
             error
                 .to_string()
                 .contains("Surface capabilities have not returned any present mode")
+        );
+    }
+}
+
+#[cfg(test)]
+mod surface_format_tests {
+    use super::choose_surface_format;
+
+    /// Проверяет, что SDR path предпочитает Unorm, чтобы не включить implicit sRGB transfer.
+    #[test]
+    fn surface_format_prefers_current_unorm_path_before_srgb() {
+        let formats = [
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Bgra8Unorm,
+        ];
+
+        let selected_format = choose_surface_format(&formats).expect("surface format selected");
+
+        assert_eq!(selected_format, wgpu::TextureFormat::Bgra8Unorm);
+    }
+
+    /// Проверяет явную ошибку вместо panic при некорректных surface capabilities.
+    #[test]
+    fn empty_surface_format_list_is_reported_as_error() {
+        let error = choose_surface_format(&[]).expect_err("empty format list rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Surface capabilities have not returned any texture format.")
         );
     }
 }

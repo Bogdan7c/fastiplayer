@@ -2,6 +2,7 @@
 //!
 //! Crate владеет только shell-слоем:
 //! - surface/swapchain lifecycle;
+//! - subtitle overlay pass между video и egui (контракт — в `subtitle_overlay`);
 //! - egui composition поверх video pass-а;
 //! - submit/present полного кадра.
 //!
@@ -12,6 +13,7 @@
 mod egui_compositor;
 mod frame;
 mod shell;
+mod subtitle_overlay;
 mod surface_alpha;
 mod surface_settings;
 mod window_corner_mask;
@@ -21,6 +23,10 @@ pub use frame::{
     RenderFrameSlowestStage, RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
 };
 pub use shell::{GpuContext, GpuDeviceLost, Renderer, RendererGpuDrainError};
+pub use subtitle_overlay::{
+    SubtitleOverlayFrame, SubtitleOverlayOutcome, SubtitleOverlayRenderer, SubtitleOverlayTarget,
+    SubtitleOverlayUploadStats,
+};
 pub use surface_alpha::SurfaceAlphaPreference;
 pub use surface_settings::{ShellPresentMode, SurfacePresentSettings};
 pub use window_corner_mask::WindowCornerMask;

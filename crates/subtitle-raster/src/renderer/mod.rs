@@ -8,7 +8,7 @@
 //!   стиль) или рисуется (`cue_render`); затем `collisions` раздвигает налезающие
 //!   реплики (меняются только позиции, маски те же — это даёт `OverlayChange::Moved`);
 //!   затем результат сравнивается с прошлым кадром (`detect_overlay_change`).
-//! - Если запрос совпал с прошлым (те же ключи в том же порядке, холст, стиль), работа не
+//! - Если запрос совпал с прошлым (те же ключи в том же порядке, холст, стиль, языковое предпочтение), работа не
 //!   делается вообще: возвращается прошлый результат с `Unchanged` (быстрый путь).
 //!
 //! ## Политика ошибок
@@ -33,7 +33,7 @@ use crate::cache::ByteLruCache;
 use crate::face_cache::FaceCache;
 use crate::fonts::{
     AttachedFontError, AttachedFontLimits, AttachedFontRegistration, AttachedFontStatus,
-    SubtitleFontLibrary, SystemFontScanReport, SystemFontScanStatus,
+    SubtitleFontLibrary, SystemFontScanReport, SystemFontScanStatus, TextLanguagePreference,
 };
 use crate::overlay::{
     CanvasSize, OverlayChange, OverlayRevision, SubtitleBitmap, SubtitleOverlay,
@@ -55,6 +55,8 @@ struct CueCacheKey {
     cue: CueKey,
     canvas: CanvasSize,
     appearance: SubtitleAppearance,
+    /// Язык меняет выбор CJK-лица, а значит и маски: другой язык — другая запись.
+    text_language: TextLanguagePreference,
 }
 
 /// Растеризатор субтитров.
@@ -260,6 +262,7 @@ impl SubtitleRasterizer {
             cue: key,
             canvas: request.canvas,
             appearance: *request.appearance,
+            text_language: request.text_language,
         };
         // Попадание в кэш означает, что реплика уже прошла проверку длины: повторно не считаем.
         if let Some(hit) = self.cue_cache.get(&cache_key) {
@@ -284,6 +287,7 @@ impl SubtitleRasterizer {
             cue,
             request.appearance,
             request.canvas,
+            request.text_language,
         ) {
             Ok(rasterized) => {
                 self.counters.rasterized_cues += 1;

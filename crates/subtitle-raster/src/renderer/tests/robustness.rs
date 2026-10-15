@@ -42,13 +42,14 @@ fn painter_failing_on_broken(
     cue: &SubtitleTextCue,
     appearance: &SubtitleAppearance,
     canvas: CanvasSize,
+    language: crate::fonts::TextLanguagePreference,
 ) -> Result<RasterizedCue, CueRenderError> {
     if cue.text.plain_text().contains("BROKEN") {
         return Err(CueRenderError::Text(
             crate::text_renderer::TextRenderError::InvalidDecorationSize,
         ));
     }
-    rasterize_cue(fonts, faces, cue, appearance, canvas)
+    rasterize_cue(fonts, faces, cue, appearance, canvas, language)
 }
 
 #[test]

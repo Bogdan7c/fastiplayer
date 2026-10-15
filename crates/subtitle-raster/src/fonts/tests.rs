@@ -9,6 +9,7 @@ use skrifa::{FontRef, GlyphId, MetadataProvider};
 
 use super::face::{FaceBytes, FaceId};
 use super::glyph_lookup::GlyphLookup;
+use super::language::TextLanguagePreference;
 use super::library::SubtitleFontLibrary;
 use super::lookup_cache::FontLookupCacheLimits;
 use super::style::{FontRequest, FontStyle, FontWeightClass};
@@ -81,7 +82,8 @@ fn system_lookup_reads_no_files_except_the_selected_face() {
     assert!(opens_after_scan >= 3, "the scan itself reads every file");
 
     // Символ есть только в одном из трёх файлов: открыт должен быть ровно он.
-    let (face, glyph) = found_face(fonts.glyph_for_char(primary, remapped));
+    let (face, glyph) =
+        found_face(fonts.glyph_for_char(primary, remapped, TextLanguagePreference::unknown()));
     assert_eq!(
         fonts.describe_face(face).expect("face").origin,
         FaceOrigin::System
@@ -99,12 +101,16 @@ fn system_lookup_reads_no_files_except_the_selected_face() {
 
     // Повтор идёт из кэша поиска: файлы не открываются вовсе.
     let opens_after_hit = fonts.statistics().system_font_file_opens;
-    found_face(fonts.glyph_for_char(primary, remapped));
+    found_face(fonts.glyph_for_char(primary, remapped, TextLanguagePreference::unknown()));
     assert_eq!(fonts.statistics().system_font_file_opens, opens_after_hit);
 
     // Символ, которого нет нигде: полный перебор по индексу, ни одного открытия файла.
     assert!(matches!(
-        fonts.glyph_for_char(primary, ABSENT_EVERYWHERE),
+        fonts.glyph_for_char(
+            primary,
+            ABSENT_EVERYWHERE,
+            TextLanguagePreference::unknown()
+        ),
         GlyphLookup::Missing { .. }
     ));
     assert_eq!(fonts.statistics().system_font_file_opens, opens_after_hit);
@@ -169,7 +175,7 @@ fn unreadable_candidate_is_marked_unusable_and_never_selected_again() {
     std::fs::write(&file, b"no longer a font").expect("overwrite");
 
     assert!(matches!(
-        fonts.glyph_for_char(primary, remapped),
+        fonts.glyph_for_char(primary, remapped, TextLanguagePreference::unknown()),
         GlyphLookup::Missing { .. }
     ));
     let statistics = fonts.statistics();
@@ -182,7 +188,7 @@ fn unreadable_candidate_is_marked_unusable_and_never_selected_again() {
     // Второй поиск лицо не трогает: файл не открывается, счётчики не растут.
     let opens = statistics.system_font_file_opens;
     assert!(matches!(
-        fonts.glyph_for_char(primary, '\u{10F001}'),
+        fonts.glyph_for_char(primary, '\u{10F001}', TextLanguagePreference::unknown()),
         GlyphLookup::Missing { .. }
     ));
     assert_eq!(fonts.statistics().system_font_file_opens, opens);
@@ -219,7 +225,8 @@ fn glyph_chain_prefers_attached_over_system_and_embedded_over_both() {
     let primary = primary(&fonts);
 
     // Пока вложенного нет, символ берётся из системного шрифта.
-    let (system_face, _) = found_face(fonts.glyph_for_char(primary, remapped));
+    let (system_face, _) =
+        found_face(fonts.glyph_for_char(primary, remapped, TextLanguagePreference::unknown()));
     assert_eq!(
         fonts.describe_face(system_face).expect("face").origin,
         FaceOrigin::System
@@ -230,7 +237,8 @@ fn glyph_chain_prefers_attached_over_system_and_embedded_over_both() {
         .register_attached_font(Arc::from(remapped_font), &ATTACHED_LIMITS)
         .expect("valid font");
     assert_eq!(registration.status, AttachedFontStatus::Registered);
-    let (face, glyph) = found_face(fonts.glyph_for_char(primary, remapped));
+    let (face, glyph) =
+        found_face(fonts.glyph_for_char(primary, remapped, TextLanguagePreference::unknown()));
     assert_eq!(
         fonts.describe_face(face).expect("face").origin,
         FaceOrigin::Attached
@@ -239,7 +247,8 @@ fn glyph_chain_prefers_attached_over_system_and_embedded_over_both() {
     assert_eq!(glyph, glyph_of_letter_a());
 
     // Латиница по-прежнему из встроенного, даже если вложенный шрифт тоже мог бы её дать.
-    let (latin_face, _) = found_face(fonts.glyph_for_char(primary, 'B'));
+    let (latin_face, _) =
+        found_face(fonts.glyph_for_char(primary, 'B', TextLanguagePreference::unknown()));
     assert_eq!(
         fonts.describe_face(latin_face).expect("face").origin,
         FaceOrigin::Embedded
@@ -255,7 +264,7 @@ fn duplicate_attached_font_changes_nothing_and_keeps_lookup_cache() {
     let first = fonts
         .register_attached_font(Arc::clone(&bytes), &ATTACHED_LIMITS)
         .expect("valid");
-    found_face(fonts.glyph_for_char(primary, remapped));
+    found_face(fonts.glyph_for_char(primary, remapped, TextLanguagePreference::unknown()));
     let before = fonts.statistics();
     assert_eq!(before.cached_lookups, 1);
 

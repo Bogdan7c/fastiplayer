@@ -87,6 +87,7 @@ pub(super) struct ParsedAttachedFace {
     pub(super) collection_index: u32,
     pub(super) family_names: Vec<String>,
     pub(super) weight: FontWeightClass,
+    pub(super) os2_weight: u16,
     pub(super) style: FontStyle,
 }
 
@@ -124,6 +125,7 @@ pub(super) fn parse_attached_font(
             collection_index: info.index,
             family_names: info.families.iter().map(|(name, _)| name.clone()).collect(),
             weight: FontWeightClass::from_os2_weight(info.weight.0),
+            os2_weight: info.weight.0,
             style: match info.style {
                 fontdb::Style::Normal => FontStyle::Normal,
                 fontdb::Style::Italic | fontdb::Style::Oblique => FontStyle::Italic,

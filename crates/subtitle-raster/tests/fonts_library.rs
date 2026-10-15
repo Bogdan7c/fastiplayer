@@ -14,6 +14,7 @@ use subtitle_raster::{
     AscentDescentSource, AttachedFontError, AttachedFontLimits, EMBEDDED_FONTS, FaceId, FaceOrigin,
     FamilyMatch, FontLookupCacheLimits, FontRequest, FontStyle, FontWeightClass, GlyphId,
     GlyphLookup, SubtitleFontLibrary, SyntheticBold, SyntheticItalic, SystemFontScanStatus,
+    TextLanguagePreference,
 };
 
 fn library_with_cache(max_cached_chars: usize) -> SubtitleFontLibrary {
@@ -38,7 +39,7 @@ fn primary_face(library: &SubtitleFontLibrary) -> FaceId {
 /// Семейство лица, в котором найден глиф; тест падает, если глиф не найден.
 fn family_of_found_glyph(library: &mut SubtitleFontLibrary, text_char: char) -> String {
     let primary = primary_face(library);
-    match library.glyph_for_char(primary, text_char) {
+    match library.glyph_for_char(primary, text_char, TextLanguagePreference::unknown()) {
         GlyphLookup::Found { face, glyph } => {
             assert_ne!(glyph, GlyphId::NOTDEF, "{text_char:?}");
             library.describe_face(face).unwrap().family.to_owned()
@@ -111,7 +112,7 @@ fn unmapped_character_is_missing_counted_and_uses_primary_notdef() {
     let primary = primary_face(&library);
     assert_eq!(library.statistics().missing_glyph_lookups, 0);
     // U+10FFFD — private use plane 16: нет ни в одном встроенном шрифте.
-    let lookup = library.glyph_for_char(primary, '\u{10FFFD}');
+    let lookup = library.glyph_for_char(primary, '\u{10FFFD}', TextLanguagePreference::unknown());
     assert_eq!(
         lookup,
         GlyphLookup::Missing {
@@ -121,7 +122,10 @@ fn unmapped_character_is_missing_counted_and_uses_primary_notdef() {
     );
     assert_eq!(library.statistics().missing_glyph_lookups, 1);
     // Повтор (теперь из кэша) тоже считается пропуском и даёт тот же результат.
-    assert_eq!(library.glyph_for_char(primary, '\u{10FFFD}'), lookup);
+    assert_eq!(
+        library.glyph_for_char(primary, '\u{10FFFD}', TextLanguagePreference::unknown()),
+        lookup
+    );
     assert_eq!(library.statistics().missing_glyph_lookups, 2);
 }
 
@@ -131,7 +135,7 @@ fn control_characters_resolve_to_primary_without_counting_as_missing() {
     let primary = primary_face(&library);
     for ch in ['\u{0}', '\n', '\u{1F}'] {
         assert_eq!(
-            library.glyph_for_char(primary, ch),
+            library.glyph_for_char(primary, ch, TextLanguagePreference::unknown()),
             GlyphLookup::ControlCharacter { face: primary }
         );
     }
@@ -143,9 +147,9 @@ fn control_characters_resolve_to_primary_without_counting_as_missing() {
 fn repeated_lookup_hits_cache_and_returns_same_result() {
     let mut library = library_with_cache(16);
     let primary = primary_face(&library);
-    let first = library.glyph_for_char(primary, 'ש');
+    let first = library.glyph_for_char(primary, 'ש', TextLanguagePreference::unknown());
     let before = library.statistics();
-    let second = library.glyph_for_char(primary, 'ש');
+    let second = library.glyph_for_char(primary, 'ש', TextLanguagePreference::unknown());
     let after = library.statistics();
     assert_eq!(first, second);
     assert!(matches!(first, GlyphLookup::Found { .. }));
@@ -159,13 +163,13 @@ fn cache_never_exceeds_its_limit_and_results_stay_correct() {
     let primary = primary_face(&library);
     let expected: Vec<GlyphLookup> = "abcdefgh"
         .chars()
-        .map(|ch| library.glyph_for_char(primary, ch))
+        .map(|ch| library.glyph_for_char(primary, ch, TextLanguagePreference::unknown()))
         .collect();
     assert!(library.statistics().cached_lookups <= 3);
     // После вытеснения результаты те же.
     let again: Vec<GlyphLookup> = "abcdefgh"
         .chars()
-        .map(|ch| library.glyph_for_char(primary, ch))
+        .map(|ch| library.glyph_for_char(primary, ch, TextLanguagePreference::unknown()))
         .collect();
     assert_eq!(expected, again);
     assert!(
@@ -412,7 +416,7 @@ fn system_font_scan_is_consistent_and_idempotent() {
     // А «ничего не найдено» остаётся Missing независимо от машины.
     let primary = primary_face(&library);
     assert!(matches!(
-        library.glyph_for_char(primary, '\u{10FFFD}'),
+        library.glyph_for_char(primary, '\u{10FFFD}', TextLanguagePreference::unknown()),
         GlyphLookup::Missing { .. }
     ));
 }
@@ -426,7 +430,9 @@ fn system_face_found_by_family_name_is_readable_when_machine_has_fonts() {
     }
     // Берём любое системное лицо через fallback по CJK-иероглифу, если он есть в системе.
     let primary = primary_face(&library);
-    if let GlyphLookup::Found { face, glyph } = library.glyph_for_char(primary, '漢') {
+    if let GlyphLookup::Found { face, glyph } =
+        library.glyph_for_char(primary, '漢', TextLanguagePreference::unknown())
+    {
         let description = library.describe_face(face).unwrap();
         assert_eq!(description.origin, FaceOrigin::System);
         assert_ne!(glyph, GlyphId::NOTDEF);

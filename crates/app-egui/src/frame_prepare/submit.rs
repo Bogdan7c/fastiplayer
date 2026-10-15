@@ -1,7 +1,7 @@
 //! Renderer submit, mark-submitted и surface telemetry одного кадра.
 
 use player_core::PlayerRenderError;
-use render_wgpu_shell::{RenderFrameOutcome, RenderFrameTiming, Renderer};
+use render_wgpu_shell::{RenderFrameOutcome, RenderFrameTiming, Renderer, SubtitleOverlayFrame};
 use winit::window::Window;
 
 use super::ui_prepare::PreparedUiFrame;
@@ -9,7 +9,7 @@ use super::{
     PreparedVideoFrame, render_drop_reason_invalidates_cached_present_frame,
     render_outcome_marks_video_submitted, report_video_render_boundary_error,
 };
-use crate::state::AppState;
+use crate::state::{AppState, SubmittedFrameForSubtitles};
 use crate::telemetry::Telemetry;
 
 /// Отдельный tracing target позволяет acceptance включить покадровое доказательство точечно.
@@ -34,6 +34,25 @@ pub(super) fn submit_render_frame(
     let submitted_video_frame = video_frame.is_some();
     let startup_frame_identity = prepared_video_frame.current_frame_identity();
 
+    // Субтитры строятся по pts кадра, который прямо сейчас уходит в renderer. Overlay
+    // заимствует `app_state` до конца `render_frame`; после него `app_state` снова свободен.
+    let subtitle_frame = video_frame.as_ref().and_then(|frame| {
+        SubmittedFrameForSubtitles::from_submission(
+            startup_frame_identity,
+            &frame.metadata,
+            prepared_ui_frame.video_viewport,
+            prepared_ui_frame.screen.size_in_pixels,
+        )
+    });
+    let subtitle_overlay = subtitle_frame.as_ref().and_then(|frame| {
+        app_state
+            .subtitle_overlay_for_submitted_frame(frame)
+            .map(|overlay| SubtitleOverlayFrame {
+                overlay,
+                picture_rect: frame.picture_rect(),
+            })
+    });
+
     let render_frame_outcome = renderer.render_frame(render_wgpu_shell::RenderFrameInput {
         window,
         video_frame: video_frame.as_ref(),
@@ -43,6 +62,7 @@ pub(super) fn submit_render_frame(
         video_viewport: prepared_ui_frame.video_viewport,
         video_exclusion_rects: prepared_ui_frame.video_exclusion_rects,
         window_corner_mask: prepared_ui_frame.window_corner_mask,
+        subtitle_overlay,
     });
     let video_was_submitted =
         render_outcome_marks_video_submitted(&render_frame_outcome, submitted_video_frame);

@@ -1,10 +1,14 @@
-//! Ограниченный кэш «(основное лицо, символ) -> результат поиска глифа».
+//! Ограниченный кэш «(основное лицо, символ, язык) -> результат поиска глифа».
+//!
+//! Язык входит в ключ: выбор CJK-лица зависит от него, и результат для японской дорожки не
+//! должен отдаваться китайской.
 
 use std::collections::{HashMap, VecDeque};
 
 use skrifa::GlyphId;
 
 use super::face::FaceId;
+use super::language::TextLanguagePreference;
 
 /// Лимит кэша поиска символов. Значение задаёт вызывающий (из конфига), `Default` нет.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,12 +26,15 @@ pub(super) enum CachedLookup {
     Missing,
 }
 
+/// Ключ записи: основное лицо, символ и языковое предпочтение поиска.
+type LookupKey = (FaceId, char, TextLanguagePreference);
+
 /// Кэш с вытеснением самых старых записей (FIFO): без дорогой учётной информации на hit.
 #[derive(Debug)]
 pub(super) struct LookupCache {
     limits: FontLookupCacheLimits,
-    entries: HashMap<(FaceId, char), CachedLookup>,
-    insertion_order: VecDeque<(FaceId, char)>,
+    entries: HashMap<LookupKey, CachedLookup>,
+    insertion_order: VecDeque<LookupKey>,
 }
 
 impl LookupCache {
@@ -39,16 +46,24 @@ impl LookupCache {
         }
     }
 
-    pub(super) fn get(&self, primary: FaceId, ch: char) -> Option<CachedLookup> {
-        self.entries.get(&(primary, ch)).copied()
+    pub(super) fn get(
+        &self,
+        primary: FaceId,
+        ch: char,
+        language: TextLanguagePreference,
+    ) -> Option<CachedLookup> {
+        self.entries.get(&(primary, ch, language)).copied()
     }
 
     /// Запоминает результат; при переполнении вытесняет самые старые записи.
-    pub(super) fn insert(&mut self, primary: FaceId, ch: char, lookup: CachedLookup) {
+    pub(super) fn insert(
+        &mut self,
+        key: (FaceId, char, TextLanguagePreference),
+        lookup: CachedLookup,
+    ) {
         if self.limits.max_cached_chars == 0 {
             return;
         }
-        let key = (primary, ch);
         if self.entries.insert(key, lookup).is_none() {
             self.insertion_order.push_back(key);
         }
@@ -85,6 +100,8 @@ impl LookupCache {
 mod tests {
     use super::*;
 
+    const NO_LANGUAGE: TextLanguagePreference = TextLanguagePreference::unknown();
+
     fn found(face: u32) -> CachedLookup {
         CachedLookup::Found {
             face: FaceId(face),
@@ -97,13 +114,13 @@ mod tests {
         let mut cache = LookupCache::new(FontLookupCacheLimits {
             max_cached_chars: 2,
         });
-        cache.insert(FaceId(0), 'a', found(0));
-        cache.insert(FaceId(0), 'b', found(1));
-        cache.insert(FaceId(0), 'c', found(2));
+        cache.insert((FaceId(0), 'a', NO_LANGUAGE), found(0));
+        cache.insert((FaceId(0), 'b', NO_LANGUAGE), found(1));
+        cache.insert((FaceId(0), 'c', NO_LANGUAGE), found(2));
         assert_eq!(cache.len(), 2);
-        assert_eq!(cache.get(FaceId(0), 'a'), None);
-        assert_eq!(cache.get(FaceId(0), 'b'), Some(found(1)));
-        assert_eq!(cache.get(FaceId(0), 'c'), Some(found(2)));
+        assert_eq!(cache.get(FaceId(0), 'a', NO_LANGUAGE), None);
+        assert_eq!(cache.get(FaceId(0), 'b', NO_LANGUAGE), Some(found(1)));
+        assert_eq!(cache.get(FaceId(0), 'c', NO_LANGUAGE), Some(found(2)));
     }
 
     #[test]
@@ -111,10 +128,13 @@ mod tests {
         let mut cache = LookupCache::new(FontLookupCacheLimits {
             max_cached_chars: 2,
         });
-        cache.insert(FaceId(0), 'a', found(0));
-        cache.insert(FaceId(0), 'a', CachedLookup::Missing);
+        cache.insert((FaceId(0), 'a', NO_LANGUAGE), found(0));
+        cache.insert((FaceId(0), 'a', NO_LANGUAGE), CachedLookup::Missing);
         assert_eq!(cache.len(), 1);
-        assert_eq!(cache.get(FaceId(0), 'a'), Some(CachedLookup::Missing));
+        assert_eq!(
+            cache.get(FaceId(0), 'a', NO_LANGUAGE),
+            Some(CachedLookup::Missing)
+        );
     }
 
     #[test]
@@ -122,10 +142,13 @@ mod tests {
         let mut cache = LookupCache::new(FontLookupCacheLimits {
             max_cached_chars: 4,
         });
-        cache.insert(FaceId(0), 'a', found(0));
-        cache.insert(FaceId(1), 'a', CachedLookup::Missing);
-        assert_eq!(cache.get(FaceId(0), 'a'), Some(found(0)));
-        assert_eq!(cache.get(FaceId(1), 'a'), Some(CachedLookup::Missing));
+        cache.insert((FaceId(0), 'a', NO_LANGUAGE), found(0));
+        cache.insert((FaceId(1), 'a', NO_LANGUAGE), CachedLookup::Missing);
+        assert_eq!(cache.get(FaceId(0), 'a', NO_LANGUAGE), Some(found(0)));
+        assert_eq!(
+            cache.get(FaceId(1), 'a', NO_LANGUAGE),
+            Some(CachedLookup::Missing)
+        );
     }
 
     #[test]
@@ -133,16 +156,19 @@ mod tests {
         let mut cache = LookupCache::new(FontLookupCacheLimits {
             max_cached_chars: 8,
         });
-        cache.insert(FaceId(0), 'a', found(5));
-        cache.insert(FaceId(0), 'b', found(6));
-        cache.insert(FaceId(0), 'c', CachedLookup::Missing);
+        cache.insert((FaceId(0), 'a', NO_LANGUAGE), found(5));
+        cache.insert((FaceId(0), 'b', NO_LANGUAGE), found(6));
+        cache.insert((FaceId(0), 'c', NO_LANGUAGE), CachedLookup::Missing);
         cache.forget_face(FaceId(5));
-        assert_eq!(cache.get(FaceId(0), 'a'), None);
-        assert_eq!(cache.get(FaceId(0), 'b'), Some(found(6)));
-        assert_eq!(cache.get(FaceId(0), 'c'), Some(CachedLookup::Missing));
+        assert_eq!(cache.get(FaceId(0), 'a', NO_LANGUAGE), None);
+        assert_eq!(cache.get(FaceId(0), 'b', NO_LANGUAGE), Some(found(6)));
+        assert_eq!(
+            cache.get(FaceId(0), 'c', NO_LANGUAGE),
+            Some(CachedLookup::Missing)
+        );
         assert_eq!(cache.len(), 2);
         // Порядок вытеснения остался согласован с таблицей: переполнение не теряет записи.
-        cache.insert(FaceId(0), 'd', found(1));
+        cache.insert((FaceId(0), 'd', NO_LANGUAGE), found(1));
         assert_eq!(cache.len(), 3);
     }
 
@@ -151,8 +177,8 @@ mod tests {
         let mut cache = LookupCache::new(FontLookupCacheLimits {
             max_cached_chars: 0,
         });
-        cache.insert(FaceId(0), 'a', found(0));
+        cache.insert((FaceId(0), 'a', NO_LANGUAGE), found(0));
         assert_eq!(cache.len(), 0);
-        assert_eq!(cache.get(FaceId(0), 'a'), None);
+        assert_eq!(cache.get(FaceId(0), 'a', NO_LANGUAGE), None);
     }
 }

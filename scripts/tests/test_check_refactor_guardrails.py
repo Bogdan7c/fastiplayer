@@ -795,6 +795,37 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_subtitle_sidecar_rejects_gpu_dependency(self) -> None:
+        """Поиск файлов субтитров не может зависеть от wgpu, но может от модели и thiserror."""
+
+        packages = complete_workspace_packages()
+        packages["subtitle-sidecar"] = package_with_dependencies(
+            "subtitle-sidecar", (("subtitle-core", None), ("thiserror", None))
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "subtitle-sidecar"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["subtitle-sidecar"] = package_with_dependencies(
+            "subtitle-sidecar", (("subtitle-core", None), ("wgpu", None))
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "subtitle-sidecar"
+                and violation.dependency == "wgpu"
+                for violation in failing_result.dependency_violations
+            )
+        )
+
     def test_subtitle_raster_rejects_gpu_dependency(self) -> None:
         """Растеризатор субтитров не может зависеть от wgpu, но может от шрифтовых библиотек."""
 

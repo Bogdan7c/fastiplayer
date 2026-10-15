@@ -3,6 +3,7 @@
 use subtitle_core::{SubtitleEventId, SubtitleTextCue};
 
 use crate::appearance::SubtitleAppearance;
+use crate::fonts::TextLanguagePreference;
 use crate::overlay::CanvasSize;
 
 /// Источник реплик: дорожка и её «поколение» (идентификатор задаёт вызывающий).
@@ -73,6 +74,10 @@ pub struct RenderRequest<'a> {
     pub canvas: CanvasSize,
     /// Стиль пользователя.
     pub appearance: &'a SubtitleAppearance,
+    /// Язык текста для выбора региональной формы CJK при системном fallback: язык дорожки,
+    /// иначе системы ([`TextLanguagePreference::track_then_system`]). Смена языка перерисует
+    /// реплики, а прошлый кадр не будет переиспользован.
+    pub text_language: TextLanguagePreference,
 }
 
 /// Лимиты кэшей растеризатора. Значений по умолчанию нет: их задаёт конфиг (сессия 04).

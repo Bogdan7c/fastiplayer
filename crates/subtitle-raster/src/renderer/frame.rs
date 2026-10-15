@@ -5,14 +5,16 @@
 
 use super::request::{CueKey, RenderRequest};
 use crate::appearance::SubtitleAppearance;
+use crate::fonts::TextLanguagePreference;
 use crate::overlay::{CanvasSize, SubtitleOverlay};
 
-/// Подпись запроса: ключи реплик по порядку, холст и стиль.
+/// Подпись запроса: ключи реплик по порядку, холст, стиль и язык текста.
 #[derive(Debug, Clone)]
 pub(crate) struct FrameSignature {
     keys: Vec<CueKey>,
     canvas: CanvasSize,
     appearance: SubtitleAppearance,
+    text_language: TextLanguagePreference,
 }
 
 impl FrameSignature {
@@ -22,6 +24,7 @@ impl FrameSignature {
             keys: request.cues.iter().map(|cue| cue.key).collect(),
             canvas: request.canvas,
             appearance: *request.appearance,
+            text_language: request.text_language,
         }
     }
 
@@ -29,6 +32,7 @@ impl FrameSignature {
     pub(crate) fn matches(&self, request: &RenderRequest<'_>) -> bool {
         self.canvas == request.canvas
             && self.appearance == *request.appearance
+            && self.text_language == request.text_language
             && self.keys.len() == request.cues.len()
             && self
                 .keys

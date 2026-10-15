@@ -9,14 +9,19 @@ mod counters;
 mod coverage;
 mod embedded;
 mod face;
+mod face_language;
+#[cfg(test)]
+mod fallback_tests;
 mod family_index;
 mod glyph_lookup;
+mod language;
 mod library;
 mod lookup_cache;
 mod metrics;
 mod resolve;
 mod shared_bytes;
 mod style;
+mod system_fallback;
 mod system_scan;
 #[cfg(test)]
 pub(crate) mod test_fonts;
@@ -29,6 +34,7 @@ pub use attached::{
 pub use embedded::{EMBEDDED_FONTS, EmbeddedFont, EmbeddedFontPurpose};
 pub use face::{FaceBytes, FaceId, FaceOrigin};
 pub use glyph_lookup::GlyphLookup;
+pub use language::TextLanguagePreference;
 pub use library::{
     FaceDescription, FontLibraryError, FontLibraryStatistics, SubtitleFontLibrary,
     SystemFontScanReport, SystemFontScanStatus,

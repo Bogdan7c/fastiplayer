@@ -124,6 +124,9 @@ pub(crate) struct AppShell {
     /// Payload-free bridge для dynamic timeline worker revision.
     player_timeline_wake_port: crate::app_wake::AppWakePort,
 
+    /// Port фоновой загрузки субтитров; копируется в каждый renderer-bound AppState.
+    subtitle_wake_port: crate::app_wake::AppWakePort,
+
     /// Приём файлов от следующих запусков (сессия 13); process-lifetime, как lease.
     instance_forwarding: crate::instance_forwarding::InstanceForwardingInbox,
 
@@ -179,6 +182,7 @@ impl AppShell {
         let settings_wake_port = wake_proxy.port(AppWakeOwner::SettingsDynamicOptions);
         let playlist_wake_port = wake_proxy.port(AppWakeOwner::PlaylistRuntime);
         let player_timeline_wake_port = wake_proxy.port(AppWakeOwner::PlayerTimeline);
+        let subtitle_wake_port = wake_proxy.port(AppWakeOwner::Subtitles);
         let instance_forwarding_wake_port = wake_proxy.port(AppWakeOwner::InstanceForwarding);
         // Сначала строятся все fallible process owners. Inspection запускается
         // последней: после неё constructor уже не может вернуть ошибку и detach-нуть thread.
@@ -230,6 +234,7 @@ impl AppShell {
             playlist_runtime,
             local_file_open_wake_port: local_file_wake_port,
             player_timeline_wake_port,
+            subtitle_wake_port,
             instance_forwarding,
             suspended_local_file_open_job: None,
             settings_runtime,
@@ -297,6 +302,7 @@ impl AppShell {
                 self.process_started_at,
                 self.startup_media.startup_error_message(),
                 self.pending_config_warning.take(),
+                self.subtitle_wake_port.clone(),
             ),
             self.telemetry.clone(),
             self.settings_runtime.committed_snapshot(),

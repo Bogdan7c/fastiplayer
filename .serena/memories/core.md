@@ -16,7 +16,7 @@
 - Demux: `mem:demux-api/core`, `mem:symphonia-demux/core`, `mem:mpeg-ts-demux/core`, `mem:flv-demux/core`; кодеки `mem:codec-core/h264` (+ h265/av1).
 - Открытие источников без UI (local/direct/web-media leaves, вынесено из app-egui): `mem:media-source-open/core`.
 - Источники байтов: `mem:source-core/core`; сетевые протоколы (HLS/DASH/Smooth/HDS/HTTP/FTP/yt-dlp): `mem:media-services/core`; XML: `mem:xml/core`.
-- Субтитры (нейтральные `subtitle-core`/`subtitle-formats`, план `user/subtitles/`, issue #1): `mem:subtitles/core`; растеризатор `subtitle-raster` (порт libass 0.17.5, шрифты, стили, `SubtitleOverlay`): `mem:subtitles/raster`.
+- Субтитры (нейтральные `subtitle-core`/`subtitle-formats`, план `user/subtitles/`, issue #1): `mem:subtitles/core`; растеризатор `subtitle-raster` (порт libass 0.17.5, шрифты, стили, `SubtitleOverlay`): `mem:subtitles/raster`; на экране (GPU-проход, владелец в app-egui, `subtitle-sidecar`, контракт для GLES2): `mem:subtitles/on-screen-s03`.
 - Очередь/плейлист: `mem:playlist/core`, `mem:playlist/state`, `mem:playlist/discovery`.
 - Приложение (composition root): разделение состояния `mem:app-egui/state-split`, event loop `mem:app-egui/app-shell-event-loop-decomposition-s42-2026-08-27`.
 - Настройки: UI `mem:settings-ui/design`, схема/хранилище `mem:config/schema-store-decomposition-s23`.

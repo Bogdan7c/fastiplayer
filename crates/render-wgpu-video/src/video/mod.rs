@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Result, bail, ensure};
 use codec_core::VideoDisplayOrientation;
 use render_core::{
-    ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
+    ColorPipelineSettings, HdrToSdrSettings, PictureLayout, RenderCapabilities, RenderDiagnostics,
     RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
     RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate, RenderViewport,
     RenderableFrame, SwapchainTransferMode, ToneMappingMode,
@@ -922,21 +922,15 @@ pub(super) fn letterbox_scale_and_offset(
     frame: &RenderableFrame,
     viewport_size: (u32, u32),
 ) -> ([f32; 2], [f32; 2]) {
-    // Соотношение сторон кадра после container display orientation.
-    let video_aspect =
-        frame.oriented_display_width() as f32 / frame.oriented_display_height().max(1) as f32;
-    // Соотношение сторон области video draw, уже ужатой app layout-ом.
-    let viewport_aspect = viewport_size.0 as f32 / viewport_size.1.max(1) as f32;
-
-    if video_aspect > viewport_aspect {
-        // Видео шире viewport-а: чёрные полосы сверху и снизу, масштабируем по вертикали.
-        let scale_y = video_aspect / viewport_aspect;
-        ([1.0, scale_y], [0.0, (1.0 - scale_y) * 0.5])
-    } else {
-        // Видео уже viewport-а (или равно): чёрные полосы слева и справа.
-        let scale_x = viewport_aspect / video_aspect;
-        ([scale_x, 1.0], [(1.0 - scale_x) * 0.5, 0.0])
-    }
+    // Формула живёт в render-core (`PictureLayout`): её же используют оверлеи.
+    // Вырожденный viewport/кадр не рисуется, поэтому отдаём нейтральное identity-отображение.
+    PictureLayout::fit_frame(
+        frame,
+        RenderViewport::new(0, 0, viewport_size.0, viewport_size.1),
+    )
+    .map_or(([1.0, 1.0], [0.0, 0.0]), |layout| {
+        layout.uv_scale_and_offset()
+    })
 }
 
 /// Возвращает affine rows для преобразования display UV в source texture UV.

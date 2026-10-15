@@ -55,7 +55,7 @@ pub use fonts::{
     FaceDescription, FaceId, FaceMatch, FaceMetrics, FaceOrigin, FamilyMatch, FontLibraryError,
     FontLibraryStatistics, FontLookupCacheLimits, FontRequest, FontStyle, FontWeightClass,
     GlyphLookup, SubtitleFontLibrary, SyntheticBold, SyntheticItalic, SystemFontScanReport,
-    SystemFontScanStatus,
+    SystemFontScanStatus, TextLanguagePreference,
 };
 pub use overlay::{
     BitmapOutsideCanvas, CanvasSize, OverlayChange, OverlayRevision, PixelPoint, SubtitleBitmap,

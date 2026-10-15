@@ -75,6 +75,8 @@ pub struct FaceDescription<'a> {
     pub family: &'a str,
     /// Насыщенность.
     pub weight: FontWeightClass,
+    /// Точный вес OS/2 (100..900).
+    pub os2_weight: u16,
     /// Наклон.
     pub style: FontStyle,
     /// Индекс в коллекции `.ttc` (0 для обычных файлов).
@@ -223,6 +225,7 @@ impl SubtitleFontLibrary {
                 collection_index: parsed.collection_index,
                 family: parsed.family_names.first().cloned().unwrap_or_default(),
                 weight: parsed.weight,
+                os2_weight: parsed.os2_weight,
                 style: parsed.style,
                 unusable: false,
             });
@@ -248,6 +251,7 @@ impl SubtitleFontLibrary {
             origin: loaded.origin,
             family: &loaded.family,
             weight: loaded.weight,
+            os2_weight: loaded.os2_weight,
             style: loaded.style,
             collection_index: loaded.collection_index,
         })
@@ -352,6 +356,7 @@ fn embedded_face(font: &EmbeddedFont) -> LoadedFace {
         collection_index: 0,
         family: font.family.to_owned(),
         weight: font.weight,
+        os2_weight: font.weight.nominal_os2_weight(),
         style: font.style,
         unusable: false,
     }

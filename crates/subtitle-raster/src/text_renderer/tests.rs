@@ -173,6 +173,7 @@ fn unbuildable_border_is_counted_and_the_fill_is_still_drawn() {
         &plain_text("Hi"),
         &absurd,
         canvas(),
+        crate::fonts::TextLanguagePreference::unknown(),
     )
     .expect("the cue is rendered without borders");
     assert_eq!(
@@ -198,6 +199,7 @@ fn unbuildable_border_is_counted_and_the_fill_is_still_drawn() {
         &plain_text("Hi"),
         &normal,
         canvas(),
+        crate::fonts::TextLanguagePreference::unknown(),
     )
     .expect("render");
     assert_eq!(fine.diagnostics, RenderDiagnostics::default());

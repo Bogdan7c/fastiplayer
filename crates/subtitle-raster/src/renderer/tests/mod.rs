@@ -3,6 +3,7 @@
 mod caching;
 mod font_fallback;
 mod geometry;
+mod language;
 mod limits;
 mod robustness;
 
@@ -127,12 +128,30 @@ pub(super) fn render_on(
     appearance: &SubtitleAppearance,
     canvas: CanvasSize,
 ) -> SubtitleOverlay {
+    render_in_language(
+        rasterizer,
+        test_cues,
+        appearance,
+        canvas,
+        crate::fonts::TextLanguagePreference::unknown(),
+    )
+}
+
+/// Рисует реплики с заданным языковым предпочтением текста.
+pub(super) fn render_in_language(
+    rasterizer: &mut SubtitleRasterizer,
+    test_cues: &[TestCue],
+    appearance: &SubtitleAppearance,
+    canvas: CanvasSize,
+    text_language: crate::fonts::TextLanguagePreference,
+) -> SubtitleOverlay {
     let list = renderables(test_cues);
     rasterizer
         .render(&RenderRequest {
             cues: &list,
             canvas,
             appearance,
+            text_language,
         })
         .clone()
 }

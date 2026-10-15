@@ -19,7 +19,7 @@ use subtitle_core::{
 use subtitle_raster::{
     CanvasSize, CueKey, CueSourceId, FontLookupCacheLimits, RasterCacheLimits, RasterInputLimits,
     RasterLimits, RenderRequest, RenderableCue, SubtitleAppearance, SubtitleFontLibrary,
-    SubtitleOverlay, SubtitleRasterizer,
+    SubtitleOverlay, SubtitleRasterizer, TextLanguagePreference,
 };
 
 /// Ширина кадра приёмки.
@@ -121,6 +121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 cues: &cues,
                 canvas,
                 appearance,
+                text_language: TextLanguagePreference::unknown(),
             });
             let path = output_dir.join(format!("{}_{style_name}.png", sample.file_stem));
             write_over_gradient(&path, overlay)?;

@@ -30,12 +30,37 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 | Plain text with the default style (Latin, Cyrillic, two lines, smart wrap, BorderStyle 1/3/4) | Partial — near pixel-exact with libass (a few to ~100 pixels differ per 720p frame due to FreeType vs skrifa outline rounding) |
 | Right-to-left text (Arabic, Hebrew), complex shaping (Indic) | Partial — `unicode-bidi` + `harfrust`; Arabic differs from libass by ~1 px on some glyphs (autohinter advance rounding) |
 | Built-in fonts | Noto Sans Regular/Bold (Latin, Greek, Cyrillic) + Regular for Arabic, Hebrew, Devanagari, Bengali, Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Thai, Lao, Georgian, Armenian, Ethiopic, Khmer, Myanmar, Sinhala, symbols (~3.3 MiB, OFL-1.1) |
-| CJK, emoji | from system fonts only; missing glyphs are drawn as `.notdef` and counted |
+| CJK, emoji | from system fonts only; missing glyphs are drawn as `.notdef` and counted. The system fallback face is ranked like fontconfig: slant, language, nearest weight. The regional CJK variant (JP/SC/TC/HK/KR) follows the track language, otherwise the system language |
+| First CJK cue | ~12–14 ms once per run (loading a ~20 MB system font); background warm-up — session 14 |
 | Fonts attached to MKV | interface only (`register_attached_font`); extraction — session 06 |
 | User styles | "YouTube-like" (white text on a rounded 75% dark box per line) and "outline + shadow" |
 | WebVTT placement | `line`, `position`, `size`, `align`, `\anN` anchors; regions and vertical text are drawn horizontally |
 | Underline/strikethrough, span background, synthetic bold/italic, `\N`-less CJK line breaking | not yet (later sessions / backlog) |
 | ASS override tags, karaoke, blur, clip, rotations | Planned — sessions 08–10 |
+
+## On screen (session 03)
+
+| Feature | Status |
+|---|---|
+| GPU pass between video and UI (menus and buttons always on top) | Full (wgpu); one draw per frame, texture upload only when the cue set, picture size or style changes |
+| Timing | by the pts of the frame actually drawn; pause keeps the cue, seek drops it on the first new frame, cues of the previous file never appear |
+| Placement | bottom of the picture area (never on the letterbox bars yet — bars and lifting above the controls: session 05) |
+| Track choice | temporary: the first sidecar file found (menu and language preferences: session 04) |
+| Files with a non-zero container start time (some MPEG-TS/M2TS) | not yet: sidecar times are compared with raw frame pts; tracked for session 14 |
+
+### Sidecar files next to a local video
+
+Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Subtitle` (any case) and in `Subs/Movie/`.
+
+| File | Found | Language |
+|---|---|---|
+| `Movie.srt`, `movie.SRT` | yes (exact name is preferred) | — |
+| `Movie.ru.srt`, `Movie.English.srt`, `Movie_en.srt`, `Movie [Forced].srt` | yes | from the suffix (`forced`, `sdh` are flags) |
+| `Subs/Movie.en.srt`, `Subtitles/Movie.vtt` | yes | from the suffix |
+| `Subs/Movie/2_English.srt` (any name inside a folder named after the video) | yes | from the name |
+| `Other.srt`, `Movie2.srt`, `Extras/Movie.srt`, `Subs/Other/x.srt` | no | — |
+| `.ass` / `.ssa` | found, not shown yet (session 08) | — |
+| Non-UTF-8 file names | yes, paths are kept byte-exact | — |
 
 ## Text encodings (SRT, WebVTT files)
 

@@ -1,0 +1,23 @@
+[package]
+name = "subtitle-sidecar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "subtitle_sidecar"
+path = "src/lib.rs"
+
+[dependencies]
+# Модель языка и флагов дорожки (SubtitleLanguage, SubtitleTrackDisposition, SubtitleFormat).
+subtitle-core.workspace = true
+# Typed errors поиска.
+thiserror.workspace = true
+
+[dev-dependencies]
+# Временные деревья каталогов для сквозных тестов поиска.
+tempfile = "3"
+
+[lints]
+workspace = true

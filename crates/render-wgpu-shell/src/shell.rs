@@ -38,8 +38,11 @@ use crate::frame::{
     RenderFrameStageTimings, RenderFrameTiming, clamp_video_exclusion_rects_to_screen,
     clamp_video_viewport_to_screen,
 };
+use crate::subtitle_overlay::{
+    SubtitleOverlayRenderer, SubtitleOverlayTarget, SubtitleOverlayUploadStats,
+};
 use crate::surface_alpha::choose_alpha_mode;
-use crate::surface_settings::{SurfacePresentSettings, choose_present_mode};
+use crate::surface_settings::{SurfacePresentSettings, choose_present_mode, choose_surface_format};
 use crate::window_corner_mask::{SurfaceAlphaEncoding, WindowCornerMaskRenderer};
 
 /// Превращает длительность в миллисекунды для числовых tracing fields.
@@ -60,30 +63,6 @@ fn dropped_frame_after_surface_acquire(
         "render frame dropped before present"
     );
     RenderFrameOutcome::Dropped(reason)
-}
-
-/// Выбирает формат swapchain для SDR-видео.
-fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> Result<wgpu::TextureFormat> {
-    // Для текущего NV12 renderer предпочитаем обычный 8-bit формат.
-    const PREFERRED_FORMATS: &[wgpu::TextureFormat] = &[
-        wgpu::TextureFormat::Bgra8Unorm,
-        wgpu::TextureFormat::Rgba8Unorm,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-    ];
-
-    // Сначала ищем явно поддерживаемый 8-bit формат.
-    for preferred_format in PREFERRED_FORMATS {
-        if formats.contains(preferred_format) {
-            return Ok(*preferred_format);
-        }
-    }
-
-    // Если 8-bit форматов нет, используем первый формат из capabilities.
-    formats
-        .first()
-        .copied()
-        .context("Surface capabilities have not returned any texture format.")
 }
 
 /// GPU ресурсы: device, queue, surface и их конфигурация.
@@ -332,6 +311,9 @@ pub struct Renderer {
 
     /// Финальный compositor контура; отсутствует при opaque/inherit surface fallback.
     window_corner_mask_renderer: Option<WindowCornerMaskRenderer>,
+
+    /// Субтитры между video и egui.
+    subtitle_overlay_renderer: SubtitleOverlayRenderer,
 }
 
 impl Renderer {
@@ -351,6 +333,9 @@ impl Renderer {
             WindowCornerMaskRenderer::new(&gpu.device, gpu.surface_format, alpha_encoding)
         });
 
+        let subtitle_overlay_renderer =
+            SubtitleOverlayRenderer::new(&gpu.device, gpu.surface_format);
+
         info!("Renderer is fully initialized");
 
         Ok(Self {
@@ -358,7 +343,14 @@ impl Renderer {
             egui_compositor,
             video_renderer,
             window_corner_mask_renderer,
+            subtitle_overlay_renderer,
         })
+    }
+
+    /// Счётчики загрузок субтитров в GPU (диагностика и приёмочные тесты).
+    #[must_use]
+    pub fn subtitle_overlay_upload_stats(&self) -> SubtitleOverlayUploadStats {
+        self.subtitle_overlay_renderer.upload_stats()
     }
 
     /// Возвращает wgpu instance для decoder backend-ов, которым нужен shared GPU context.
@@ -476,6 +468,7 @@ impl Renderer {
             video_viewport,
             video_exclusion_rects,
             window_corner_mask,
+            subtitle_overlay,
         } = input;
         // Window::inner_size может измениться до доставки Resized, особенно в XWayland.
         // Surface должна соответствовать размеру подготовленного UI до acquire:
@@ -640,6 +633,21 @@ impl Renderer {
         }
         let video_render_elapsed = stage_started_at.elapsed();
 
+        // Субтитры: поверх видео, под egui; запись pass-а целиком в subtitle_overlay.
+        let stage_started_at = Instant::now();
+        self.subtitle_overlay_renderer.render(
+            SubtitleOverlayTarget {
+                device: &self.gpu.device,
+                queue: &self.gpu.queue,
+                encoder: &mut encoder,
+                target: &surface_view,
+                screen_size: screen.size_in_pixels,
+                visible_area: clamped_video_viewport,
+            },
+            subtitle_overlay.as_ref(),
+        );
+        let subtitle_overlay_elapsed = stage_started_at.elapsed();
+
         // Рендерим egui поверх видео.
         let stage_started_at = Instant::now();
         self.egui_compositor.render_overlay(
@@ -708,6 +716,7 @@ impl Renderer {
             surface_acquire: surface_acquire_elapsed,
             surface_view_creation: surface_view_creation_elapsed,
             video_render: video_render_elapsed,
+            subtitle_overlay: subtitle_overlay_elapsed,
             egui_render: egui_render_elapsed,
             window_corner_mask: window_corner_mask_elapsed,
             queue_submit: queue_submit_elapsed,
@@ -745,36 +754,5 @@ impl RenderLiveSettingsAdapter for Renderer {
         baseline: &RenderLiveSettings,
     ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
         self.video_renderer.rollback_live_settings(baseline)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Проверяет, что SDR path предпочитает Unorm, чтобы не включить implicit sRGB transfer.
-    #[test]
-    fn surface_format_prefers_current_unorm_path_before_srgb() {
-        let formats = [
-            wgpu::TextureFormat::Bgra8UnormSrgb,
-            wgpu::TextureFormat::Rgba8Unorm,
-            wgpu::TextureFormat::Bgra8Unorm,
-        ];
-
-        let selected_format = choose_surface_format(&formats).expect("surface format selected");
-
-        assert_eq!(selected_format, wgpu::TextureFormat::Bgra8Unorm);
-    }
-
-    /// Проверяет явную ошибку вместо panic при некорректных surface capabilities.
-    #[test]
-    fn empty_surface_format_list_is_reported_as_error() {
-        let error = choose_surface_format(&[]).expect_err("empty format list rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("Surface capabilities have not returned any texture format.")
-        );
     }
 }

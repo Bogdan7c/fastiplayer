@@ -16,10 +16,12 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use skrifa::raw::TableProvider;
 use skrifa::{FontRef, MetadataProvider};
 
 use super::coverage::GlyphCoverage;
 use super::face::{FaceOrigin, FaceSource, LoadedFace, SystemFileKey, parse_and_inspect};
+use super::face_language::FaceLanguages;
 use super::library::{SubtitleFontLibrary, SystemFontScanReport, SystemFontScanStatus};
 use super::metrics::compute_face_metrics;
 use super::style::{FontStyle, FontWeightClass};
@@ -31,6 +33,7 @@ struct DiscoveredFace {
     collection_index: u32,
     family_names: Vec<String>,
     weight: FontWeightClass,
+    os2_weight: u16,
     style: FontStyle,
 }
 
@@ -83,10 +86,20 @@ impl SubtitleFontLibrary {
         let discovered = self.discover_new_faces(&known);
         let mut skipped = 0;
         for face in discovered {
-            let Some(coverage) = self.analyze_face(&face) else {
+            let Some(analysis) = self.analyze_face(&face) else {
                 skipped += 1;
                 self.unusable_faces += 1;
                 continue;
+            };
+            let FaceAnalysis {
+                coverage,
+                declared_languages,
+            } = analysis;
+            // `meta`/`dlng` авторитетнее; имя семейства — запасной путь для шрифтов без `meta`.
+            let languages = if declared_languages.is_declared() {
+                declared_languages
+            } else {
+                FaceLanguages::from_family_names(face.family_names.iter().map(String::as_str))
             };
             self.coverage_index_bytes = self
                 .coverage_index_bytes
@@ -98,10 +111,12 @@ impl SubtitleFontLibrary {
                     database_id: face.database_id,
                     file_key: face.file_key,
                     coverage,
+                    languages,
                 },
                 collection_index: face.collection_index,
                 family: face.family_names.first().cloned().unwrap_or_default(),
                 weight: face.weight,
+                os2_weight: face.os2_weight,
                 style: face.style,
                 unusable: false,
             });
@@ -132,6 +147,7 @@ impl SubtitleFontLibrary {
                 collection_index: info.index,
                 family_names: info.families.iter().map(|(name, _)| name.clone()).collect(),
                 weight: FontWeightClass::from_os2_weight(info.weight.0),
+                os2_weight: info.weight.0,
                 style: match info.style {
                     fontdb::Style::Normal => FontStyle::Normal,
                     fontdb::Style::Italic | fontdb::Style::Oblique => FontStyle::Italic,
@@ -140,13 +156,12 @@ impl SubtitleFontLibrary {
             .collect()
     }
 
-    /// Открывает файл лица один раз и строит покрытие; `None` — лицо непригодно.
-    fn analyze_face(&self, face: &DiscoveredFace) -> Option<GlyphCoverage> {
+    /// Открывает файл лица один раз и строит покрытие и объявленные языки; `None` — лицо непригодно.
+    fn analyze_face(&self, face: &DiscoveredFace) -> Option<FaceAnalysis> {
         self.counters.note_system_file_open();
         self.system_database
             .with_face_data(face.database_id, |bytes, index| {
-                parse_and_inspect(bytes, index, &self.counters, coverage_of_renderable_face)
-                    .flatten()
+                parse_and_inspect(bytes, index, &self.counters, analyze_renderable_face).flatten()
             })
             .flatten()
     }
@@ -174,12 +189,27 @@ impl SubtitleFontLibrary {
     }
 }
 
-/// Покрытие лица, если у него есть пригодные метрики; иначе `None`.
-fn coverage_of_renderable_face(font: &FontRef<'_>) -> Option<GlyphCoverage> {
+/// Что узнали о лице при единственном открытии файла в сканировании.
+struct FaceAnalysis {
+    /// Кодпоинты из `cmap`.
+    coverage: GlyphCoverage,
+    /// Языки из `meta`/`dlng`; пусто, если таблицы нет или она не говорит о CJK.
+    declared_languages: FaceLanguages,
+}
+
+/// Анализ лица, если у него есть пригодные метрики; иначе `None`.
+fn analyze_renderable_face(font: &FontRef<'_>) -> Option<FaceAnalysis> {
     if !compute_face_metrics(font)?.is_renderable() {
         return None;
     }
-    Some(GlyphCoverage::from_mappings(
-        font.charmap().mappings().map(|(codepoint, _)| codepoint),
-    ))
+    let coverage =
+        GlyphCoverage::from_mappings(font.charmap().mappings().map(|(codepoint, _)| codepoint));
+    // Отсутствие или порча `meta` — не ошибка лица: оно просто ничего не заявляет.
+    let declared_languages = font.meta().map_or(FaceLanguages::undeclared(), |meta| {
+        FaceLanguages::from_meta_table(&meta)
+    });
+    Some(FaceAnalysis {
+        coverage,
+        declared_languages,
+    })
 }

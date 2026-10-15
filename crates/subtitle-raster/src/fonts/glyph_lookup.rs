@@ -6,6 +6,7 @@
 use skrifa::{GlyphId, MetadataProvider};
 
 use super::face::{FaceId, FaceSource};
+use super::language::TextLanguagePreference;
 use super::library::SubtitleFontLibrary;
 use super::lookup_cache::CachedLookup;
 
@@ -36,12 +37,20 @@ pub enum GlyphLookup {
 impl SubtitleFontLibrary {
     /// Находит лицо и глиф для символа `ch` при основном лице `primary`
     /// (libass 0.17.5: `ass_font.c:ass_font_get_index`).
-    pub fn glyph_for_char(&mut self, primary: FaceId, ch: char) -> GlyphLookup {
+    ///
+    /// `language` влияет только на выбор СИСТЕМНОГО fallback-лица среди равных по покрытию
+    /// (региональная форма CJK); основное, встроенные и вложенные лица он не меняет.
+    pub fn glyph_for_char(
+        &mut self,
+        primary: FaceId,
+        ch: char,
+        language: TextLanguagePreference,
+    ) -> GlyphLookup {
         // libass: управляющие символы не ищутся, это глиф 0 первого лица.
         if u32::from(ch) < 0x20 {
             return GlyphLookup::ControlCharacter { face: primary };
         }
-        let cached = self.lookup_cache.get(primary, ch);
+        let cached = self.lookup_cache.get(primary, ch, language);
         let outcome = match cached {
             Some(hit) => {
                 self.lookup_cache_hits += 1;
@@ -49,13 +58,13 @@ impl SubtitleFontLibrary {
             }
             None => {
                 self.lookup_cache_misses += 1;
-                let SearchOutcome { lookup, unreadable } = self.search_glyph(primary, ch);
+                let SearchOutcome { lookup, unreadable } = self.search_glyph(primary, ch, language);
                 // Лицо, которое не читается, исключаем из выбора до записи в кэш: иначе кэш
                 // мог бы хранить ссылки на лицо, которое мы только что отключили.
                 for face in unreadable {
                     self.mark_face_unusable(face);
                 }
-                self.lookup_cache.insert(primary, ch, lookup);
+                self.lookup_cache.insert((primary, ch, language), lookup);
                 lookup
             }
         };
@@ -83,13 +92,25 @@ impl SubtitleFontLibrary {
     /// системных, потому что шрифты MKV часто несут нужные письменности (например, CJK) именно
     /// для этого фильма. Непригодные лица пропускаются; системные проверяются по индексу
     /// покрытия в памяти, файл открывается только у лица-кандидата для получения номера глифа.
-    fn search_glyph(&self, primary: FaceId, ch: char) -> SearchOutcome {
+    fn search_glyph(
+        &self,
+        primary: FaceId,
+        ch: char,
+        language: TextLanguagePreference,
+    ) -> SearchOutcome {
         let embedded = (0..self.embedded_face_count)
             .map(|index| FaceId(u32::try_from(index).unwrap_or(u32::MAX)));
+        // Системные лица идут не по порядку индекса, а от самого похожего на основное лицо
+        // по наклону и весу (см. `system_fallback`). Список строится лениво: только когда
+        // перебор дошёл до системных, то есть в основном, встроенных и вложенных символа нет.
+        let system = std::iter::once(()).flat_map(|()| {
+            let preference = self.fallback_preference(primary, language);
+            self.ranked_system_candidates(ch, preference)
+        });
         let candidates = std::iter::once(primary)
             .chain(embedded)
             .chain(self.attached.all_faces())
-            .chain(self.system_face_ids.iter().copied())
+            .chain(system)
             .enumerate()
             // Основное лицо уже стоит первым, повторно его не проверяем.
             .filter(|(position, face)| *position == 0 || *face != primary);
@@ -116,6 +137,34 @@ impl SubtitleFontLibrary {
             lookup: CachedLookup::Missing,
             unreadable,
         }
+    }
+
+    /// Глиф символа в одном из уже использованных системных лиц (непрерывность участка).
+    ///
+    /// libass (`ass_font_get_index`) перед запросом нового fallback перебирает лица, уже
+    /// добавленные в шрифт; иначе соседние символы одной строки расползались бы по разным
+    /// лицам. Берётся первое из `used` (в порядке использования), где символ есть. Лица не
+    /// системные, непригодные и нечитаемые пропускаются: решение о них принимает основной поиск.
+    pub(crate) fn glyph_in_used_system_faces(
+        &self,
+        used: &[FaceId],
+        ch: char,
+    ) -> Option<(FaceId, GlyphId)> {
+        used.iter().find_map(|&face| {
+            if !self.is_system_face(face) || !self.is_face_usable(face) {
+                return None;
+            }
+            match self.glyph_in_face(face, ch) {
+                FaceProbe::Glyph(glyph) => Some((face, glyph)),
+                FaceProbe::Absent | FaceProbe::Unreadable => None,
+            }
+        })
+    }
+
+    /// Системное ли лицо (только такие участвуют в непрерывности fallback).
+    pub(crate) fn is_system_face(&self, face: FaceId) -> bool {
+        self.face(face)
+            .is_some_and(|loaded| matches!(loaded.source, FaceSource::System { .. }))
     }
 
     /// Есть ли в лице глиф символа.

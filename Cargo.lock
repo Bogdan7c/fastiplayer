@@ -181,6 +181,10 @@ dependencies = [
  "service-ytdlp",
  "settings-core",
  "source-core",
+ "subtitle-core",
+ "subtitle-formats",
+ "subtitle-raster",
+ "subtitle-sidecar",
  "symphonia-demux",
  "tempfile",
  "thiserror 2.0.18",
@@ -4123,6 +4127,8 @@ dependencies = [
  "pollster",
  "render-core",
  "render-wgpu-video",
+ "subtitle-core",
+ "subtitle-raster",
  "tracing",
  "wgpu",
  "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -4834,6 +4840,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "unicode-bidi",
+]
+
+[[package]]
+name = "subtitle-sidecar"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "subtitle-core",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -10,6 +10,7 @@ mod color;
 mod diagnostics;
 mod frame;
 mod live_settings;
+mod picture_rect;
 mod shader_parameters;
 mod viewport;
 
@@ -29,6 +30,7 @@ pub use live_settings::{
     RenderLiveSettings, RenderLiveSettingsAdapter, RenderLiveSettingsError,
     RenderLiveSettingsErrorKind, RenderLiveSettingsUpdate,
 };
+pub use picture_rect::{PictureLayout, PictureRect, PictureSize};
 pub use shader_parameters::{
     ShaderNumericRange, ShaderParameter, ShaderParameterDescriptor, ShaderParameterId,
     ShaderParameterOptionId, ShaderParameterSet, ShaderParameterValue, ShaderParameterValueType,

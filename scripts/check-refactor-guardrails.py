@@ -45,6 +45,7 @@ CONTRACT_CRATES = frozenset(
         "subtitle-core",
         "subtitle-formats",
         "subtitle-raster",
+        "subtitle-sidecar",
         "codec-core",
         "demux-api",
         "settings-core",
@@ -200,6 +201,9 @@ SUBTITLE_CORE_ALLOWED_DEPENDENCIES = frozenset({"oxilangtag", "thiserror"})
 SUBTITLE_FORMATS_ALLOWED_DEPENDENCIES = frozenset(
     {"subtitle-core", "encoding_rs", "chardetng", "thiserror"}
 )
+
+# Поиск файлов субтитров рядом с видео: только модель и typed errors (std::fs — часть std).
+SUBTITLE_SIDECAR_ALLOWED_DEPENDENCIES = frozenset({"subtitle-core", "thiserror"})
 
 # Растеризатор субтитров: модель, разбор шрифтов/шейпинг/BiDi и typed errors; никакого GPU/UI/плеера.
 SUBTITLE_RASTER_ALLOWED_DEPENDENCIES = frozenset(
@@ -1265,6 +1269,14 @@ def find_dependency_violations(
             frozenset({"subtitle-raster"}),
             SUBTITLE_RASTER_ALLOWED_DEPENDENCIES,
             "subtitle-raster depends only on subtitle-core, font/shaping libraries and diagnostics",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"subtitle-sidecar"}),
+            SUBTITLE_SIDECAR_ALLOWED_DEPENDENCIES,
+            "subtitle-sidecar depends only on subtitle-core and typed errors",
         )
     )
     violations.extend(

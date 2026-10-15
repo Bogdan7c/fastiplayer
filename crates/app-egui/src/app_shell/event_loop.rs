@@ -76,6 +76,13 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             }
             AppWakeOwner::PlaylistRuntime => self.drain_playlist_persistence(),
             AppWakeOwner::InstanceForwarding => self.drain_instance_forwarding(),
+            AppWakeOwner::Subtitles => match self.app_state.as_mut() {
+                Some(app_state) => app_state.poll_subtitle_jobs(),
+                None => {
+                    self.subtitle_wake_port.acknowledge_abandoned_mailbox();
+                    false
+                }
+            },
             AppWakeOwner::PlayerTimeline => {
                 self.player_timeline_wake_port.clear_pending_for_drain();
                 match self.app_state.as_mut() {

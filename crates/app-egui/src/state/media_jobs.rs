@@ -42,7 +42,10 @@ impl AppState {
 
     /// Публикует exact Installed вместе с runtime-only VOD recovery attachment-ом.
     pub(crate) fn record_installed_media(&mut self, installed: &InstalledSingleMediaOpen) {
-        self.record_installed_media_observables(installed.source.clone());
+        self.record_installed_media_observables(
+            installed.source.clone(),
+            super::subtitles::installed_media_instance_id(installed),
+        );
         self.bind_installed_vod_endpoint_recovery(installed);
     }
 
@@ -55,12 +58,19 @@ impl AppState {
             media_source_open::web_media_vod_recovery::VodEndpointRecoveryAttachment,
         >,
     ) {
-        self.record_installed_media_observables(source.clone());
+        self.record_installed_media_observables(source.clone(), Some(media_instance_id));
         self.bind_resumed_vod_endpoint_recovery(media_instance_id, source, attachment);
     }
 
     /// Общие UI projections не знают устройство source lifecycle attachment-а.
-    fn record_installed_media_observables(&mut self, source: ActiveMediaSource) {
+    ///
+    /// Здесь же стартует загрузка субтитров: это общая точка всех путей установки media
+    /// (Open, drag&drop, playlist next, пересборка настроек, resume).
+    fn record_installed_media_observables(
+        &mut self,
+        source: ActiveMediaSource,
+        media_instance_id: Option<player_core::MediaInstanceId>,
+    ) {
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.url_sidebar_controller.record_installed_source();
@@ -71,6 +81,7 @@ impl AppState {
                 unreachable!("physical_source removes playback-window wrappers")
             }
         };
+        self.start_subtitles_for_installed_media(media_instance_id, &source);
         self.remember_active_media_source(source);
         self.mark_pending_worker_redraw();
     }
@@ -90,6 +101,7 @@ impl AppState {
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.current_local_file = None;
         self.active_media_source = None;
+        self.clear_subtitles_for_released_media();
         self.clear_installed_vod_endpoint_recovery();
         self.last_player_snapshot.media_instance_id = None;
         self.last_player_snapshot.playback_state = PlaybackState::Stopped;
@@ -115,6 +127,7 @@ impl AppState {
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::PlaylistClearReset);
         self.current_local_file = None;
         self.active_media_source = None;
+        self.clear_subtitles_for_released_media();
         self.last_player_snapshot.media_instance_id = None;
         self.last_player_snapshot.playback_state = PlaybackState::Stopped;
         self.last_player_snapshot.source_label = None;

@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use super::*;
 use crate::fonts::test_fonts::{
-    TempFontDir, corrupt_glyph_outline, noto_regular_bytes, remap_letter_a, rename_table,
+    TempFontDir, corrupt_glyph_outline, noto_bold_bytes, noto_regular_bytes, remap_letter_a,
+    rename_table,
 };
 use crate::fonts::{AttachedFontLimits, AttachedFontStatus};
 
@@ -235,4 +236,44 @@ fn system_font_bytes_live_only_while_the_face_cache_holds_the_face() {
     assert!(!again.is_empty());
     assert!(rasterizer.fonts().statistics().system_font_file_opens > opens_before);
     assert_eq!(rasterizer.statistics().failed_cues, 0);
+}
+
+/// Источник байт шрифта-фикстуры.
+type FontBytes = fn() -> Vec<u8>;
+
+/// Каталог «системных» шрифтов: перенесённые `A..Z` в указанных начертаниях; возвращает символ.
+fn directory_with_remapped_faces(faces: &[(&str, FontBytes)]) -> (TempFontDir, String) {
+    let dir = TempFontDir::new();
+    let mut remapped = None;
+    for (name, bytes_of) in faces {
+        let mut bytes = bytes_of();
+        remapped = Some(remap_letter_a(&mut bytes));
+        dir.write(name, &bytes);
+    }
+    let text: String = remapped.into_iter().cycle().take(3).collect();
+    (dir, text)
+}
+
+#[test]
+fn regular_cue_renders_through_the_regular_system_face_not_the_first_by_index() {
+    // Bold лежит в файле, который сканируется раньше Regular: «первый по индексу» был бы Bold.
+    let (both_dir, text) = directory_with_remapped_faces(&[
+        ("a-bold.ttf", noto_bold_bytes),
+        ("z-regular.ttf", noto_regular_bytes),
+    ]);
+    let (regular_dir, _) = directory_with_remapped_faces(&[("only.ttf", noto_regular_bytes)]);
+    let (bold_dir, _) = directory_with_remapped_faces(&[("only.ttf", noto_bold_bytes)]);
+    let width_in = |dir: &TempFontDir| {
+        let mut rasterizer = rasterizer_over_directory(dir);
+        let overlay = render_once(&mut rasterizer, &cues(1, &[text.as_str()]), &youtube());
+        assert_eq!(rasterizer.statistics().missing_glyph_lookups, 0);
+        glyph_ink_width(&overlay)
+    };
+    let regular_width = width_in(&regular_dir);
+    let bold_width = width_in(&bold_dir);
+    assert_ne!(
+        regular_width, bold_width,
+        "the fixtures must be distinguishable"
+    );
+    assert_eq!(width_in(&both_dir), regular_width);
 }

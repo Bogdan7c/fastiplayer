@@ -22,6 +22,8 @@ pub(crate) enum AppWakeOwner {
     PlaylistRuntime,
     /// Player-visible dynamic timeline revision без payload.
     PlayerTimeline,
+    /// Фоновая загрузка субтитров текущего media (поиск файла рядом, чтение, разбор).
+    Subtitles,
     /// Запросы следующих запусков плеера (сессия 13): payload в ящике
     /// `instance_forwarding::InstanceForwardingInbox`.
     InstanceForwarding,

@@ -14,7 +14,7 @@ use subtitle_core::StyledText;
 use crate::compose::{ComposeError, ComposeInput, compose_text};
 use crate::event_style::EventStyle;
 use crate::face_cache::{FaceCache, FaceLoadError};
-use crate::fonts::SubtitleFontLibrary;
+use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
 use crate::glyph_render::{FREETYPE_REQUEST_SIZE, retrieve_glyphs};
 use crate::layout::{LineBox, arrange_text, line_boxes};
 use crate::overlay::{CanvasSize, SubtitleBitmap};
@@ -64,6 +64,7 @@ pub(crate) fn render_cue_text(
     text: &StyledText,
     style: &EventStyle,
     canvas: CanvasSize,
+    language: TextLanguagePreference,
 ) -> Result<RenderedText, TextRenderError> {
     validate_style(style)?;
     let source = SourceText::from_styled(text, style);
@@ -75,7 +76,7 @@ pub(crate) fn render_cue_text(
         });
     }
 
-    let mut clusters = shape_text(fonts, faces, &source, style)?;
+    let mut clusters = shape_text(fonts, faces, &source, style, language)?;
     let font_scale = style.font_size / FREETYPE_REQUEST_SIZE;
     let retrieved = retrieve_glyphs(faces, &mut clusters, &source.looks, font_scale)?;
     let layout = arrange_text(&mut clusters, style, canvas);
@@ -110,7 +111,15 @@ pub(crate) fn render_text_event(
     canvas: CanvasSize,
 ) -> Result<Vec<SubtitleBitmap>, TextRenderError> {
     let mut faces = FaceCache::new();
-    render_cue_text(fonts, &mut faces, text, style, canvas).map(|rendered| rendered.images)
+    render_cue_text(
+        fonts,
+        &mut faces,
+        text,
+        style,
+        canvas,
+        TextLanguagePreference::unknown(),
+    )
+    .map(|rendered| rendered.images)
 }
 
 /// Проверяет числа стиля, от которых зависит арифметика конвейера.

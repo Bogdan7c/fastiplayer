@@ -38,7 +38,7 @@ use crate::event_style::EventStyle;
 use crate::face_cache::{FaceCache, FaceLoadError};
 use crate::fonts::{
     FaceId, FaceMatch, FontRequest, GlyphLookup, SubtitleFontLibrary, SyntheticBold,
-    SyntheticItalic,
+    SyntheticItalic, TextLanguagePreference,
 };
 use crate::glyph_info::{LineStart, PlacedGlyph, TextCluster};
 use crate::glyph_render::FREETYPE_REQUEST_SIZE;
@@ -106,6 +106,7 @@ fn build_clusters(
     faces: &mut FaceCache,
     source: &SourceText,
     primary: &[FaceId],
+    language: TextLanguagePreference,
 ) -> Result<Vec<TextCluster>, FaceLoadError> {
     // `SourceText` гарантирует, что каждый индекс внешнего вида есть в `looks`; пустой список
     // лиц означает пустой текст, и кластеров не будет.
@@ -115,6 +116,8 @@ fn build_clusters(
     let symbols: Vec<char> = source.chars.iter().map(|c| c.ch).collect();
     let scripts = determine_scripts(&symbols);
     let mut clusters: Vec<TextCluster> = Vec::with_capacity(symbols.len());
+    // Системные fallback-лица, уже выбранные в этой реплике, в порядке первого использования.
+    let mut used_system_faces: Vec<(FaceId, FaceId)> = Vec::new();
     for (index, (SourceChar { ch, look }, script_value)) in
         source.chars.iter().zip(scripts).enumerate()
     {
@@ -126,8 +129,14 @@ fn build_clusters(
                 .map_or(primary_face, |previous| previous.face);
             (inherited, GlyphId::NOTDEF)
         } else {
-            match fonts.glyph_for_char(primary_face, *ch) {
-                GlyphLookup::Found { face, glyph } => (face, glyph),
+            match fonts.glyph_for_char(primary_face, *ch, language) {
+                GlyphLookup::Found { face, glyph } => apply_system_run_continuity(
+                    fonts,
+                    &mut used_system_faces,
+                    primary_face,
+                    *ch,
+                    (face, glyph),
+                ),
                 GlyphLookup::ControlCharacter { face } => (face, GlyphId::NOTDEF),
                 GlyphLookup::Missing { face, notdef } => (face, notdef),
             }
@@ -151,6 +160,33 @@ fn build_clusters(
         });
     }
     Ok(clusters)
+}
+
+/// Непрерывность системного fallback (libass `ass_font_get_index` перебирает лица, уже
+/// добавленные в шрифт, раньше нового запроса): если найденное лицо системное, а символ есть
+/// в системном лице, которое реплика уже использовала для того же основного лица, берём его,
+/// а не «лучшее по рангу». Так соседние символы остаются в одном лице, пока оно их покрывает.
+/// Основное, встроенные и вложенные лица (они выше по приоритету) не трогаются.
+fn apply_system_run_continuity(
+    fonts: &SubtitleFontLibrary,
+    used_system_faces: &mut Vec<(FaceId, FaceId)>,
+    primary_face: FaceId,
+    ch: char,
+    found: (FaceId, GlyphId),
+) -> (FaceId, GlyphId) {
+    if !fonts.is_system_face(found.0) {
+        return found;
+    }
+    let used_for_primary: Vec<FaceId> = used_system_faces
+        .iter()
+        .filter(|(primary, _)| *primary == primary_face)
+        .map(|(_, face)| *face)
+        .collect();
+    if let Some(reused) = fonts.glyph_in_used_system_faces(&used_for_primary, ch) {
+        return reused;
+    }
+    used_system_faces.push((primary_face, found.0));
+    found
 }
 
 /// Подготавливает лицо глифа. Запасное лицо, которое не загрузилось, помечается непригодным,
@@ -209,15 +245,16 @@ fn assign_shape_runs(clusters: &mut [TextCluster]) {
 /// Шейпит реплику и возвращает кластеры в логическом порядке.
 ///
 /// `faces` пополняется всеми лицами, которые понадобились; дальнейшие стадии (контуры,
-/// метрики) берут лица оттуда.
+/// метрики) берут лица оттуда. `language` задаёт региональную форму CJK при системном fallback.
 pub(crate) fn shape_text(
     fonts: &mut SubtitleFontLibrary,
     faces: &mut FaceCache,
     source: &SourceText,
     style: &EventStyle,
+    language: TextLanguagePreference,
 ) -> Result<Vec<TextCluster>, FaceLoadError> {
     let primary = primary_faces(fonts, faces, source, style)?;
-    let mut clusters = build_clusters(fonts, faces, source, &primary)?;
+    let mut clusters = build_clusters(fonts, faces, source, &primary, language)?;
     mark_style_runs(&mut clusters);
     assign_shape_runs(&mut clusters);
 
