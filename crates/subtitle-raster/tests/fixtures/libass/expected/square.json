@@ -1,0 +1,22 @@
+{
+  "libass_version": "0.17.5",
+  "width": 320,
+  "height": 180,
+  "time_ms": 1000,
+  "images": [
+    {
+      "type": 0,
+      "dst_x": 99,
+      "dst_y": 59,
+      "w": 48,
+      "h": 48,
+      "stride": 64,
+      "color": [
+        230,
+        40,
+        40,
+        255
+      ]
+    }
+  ]
+}

@@ -1,0 +1,127 @@
+// Порт из libass 0.17.5: ass_render.c (часть ass_render_event: расчёт max_text_width,
+// wrap_lines_smart, выбор device_x/device_y для событий без \pos).
+//
+// Copyright (C) 2006 Evgeniy Stepanov <eugeni.stepanov@gmail.com>
+//
+// Permission to use, copy, modify, and distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+//
+// Rust port © Fastiplayer contributors.
+
+//! Раскладка реплики на холсте: переносы строк, измерение, порядок BiDi, выравнивание и
+//! положение блока текста.
+//!
+//! Шаги и их порядок те же, что в `ass_render_event` (libass 0.17.5):
+//! 1. предварительные позиции по продвижениям ([`wrap::preliminary_layout`]);
+//! 2. перенос строк `wrap_lines_smart` = простой проход + выравнивание длин + обрезка
+//!    пробелов + измерение;
+//! 3. порядок BiDi и позиции на строках ([`reorder::reorder_text`]);
+//! 4. выравнивание строк внутри блока;
+//! 5. положение блока: для нижнего якоря низ последней строки стоит на `высота − поле`.
+//!
+//! Все размеры — пиксели кадра; PlayRes равен кадру (масштаб 1), `\pos` не поддерживается.
+
+mod line_boxes;
+mod measure;
+mod reorder;
+mod wrap;
+
+use subtitle_core::ScreenAnchor;
+
+pub(crate) use line_boxes::{LineBox, line_boxes};
+pub(crate) use measure::{TextBounds, TextMeasure};
+use reorder::{HorizontalAlignment, align_lines, reorder_text};
+pub(crate) use wrap::preliminary_layout;
+
+use crate::event_style::{BaseDirection, EventStyle};
+use crate::glyph_info::TextCluster;
+use crate::overlay::CanvasSize;
+
+/// Итог раскладки реплики.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TextLayout {
+    /// Измерения строк.
+    pub(crate) measure: TextMeasure,
+    /// Габариты блока по позициям кластеров.
+    pub(crate) bounds: TextBounds,
+    /// Смещение блока по горизонтали (`device_x`), пиксели кадра.
+    pub(crate) device_x: f64,
+    /// Положение базовой линии первой строки (`device_y`), пиксели кадра.
+    pub(crate) device_y: f64,
+}
+
+/// Расставляет кластеры по строкам и вычисляет положение блока (все шаги, кроме растеризации).
+///
+/// Предполагает, что у кластеров уже есть продвижения и рамки (после шейпинга и загрузки
+/// контуров). Позиции глифов после вызова — относительно блока текста; перевод в координаты
+/// кадра делает композиция с учётом [`TextLayout::device_x`] и [`TextLayout::device_y`].
+pub(crate) fn arrange_text(
+    clusters: &mut [TextCluster],
+    style: &EventStyle,
+    canvas: CanvasSize,
+) -> TextLayout {
+    preliminary_layout(clusters);
+
+    let max_text_width =
+        f64::from(canvas.width()) - f64::from(style.margins.right) - f64::from(style.margins.left);
+    // wrap_lines_smart: проход, выравнивание, обрезка пробелов, измерение.
+    let line_count = wrap::wrap_lines_naive(clusters, max_text_width, style.wrap_style);
+    wrap::wrap_lines_rebalance(clusters, style.wrap_style);
+    measure::trim_whitespace(clusters);
+    let measure = measure::measure_text(clusters, line_count, style);
+
+    let split_by_style = style.base_direction == BaseDirection::LeftToRight;
+    reorder_text(clusters, &measure, style, split_by_style);
+    align_lines(
+        clusters,
+        HorizontalAlignment::of(style.alignment),
+        max_text_width,
+    );
+    let bounds = measure::string_bounds(clusters, &measure);
+
+    let device_x = f64::from(style.margins.left);
+    let device_y = block_baseline(style, canvas, &measure, &bounds);
+    TextLayout {
+        measure,
+        bounds,
+        device_x,
+        device_y,
+    }
+}
+
+/// Базовая линия первой строки для события без явной позиции (libass: ветки `valign`).
+fn block_baseline(
+    style: &EventStyle,
+    canvas: CanvasSize,
+    measure: &TextMeasure,
+    bounds: &TextBounds,
+) -> f64 {
+    let first_ascent = measure.lines.first().map_or(0.0, |line| line.ascent);
+    let margin = f64::from(style.margins.vertical);
+    match style.alignment {
+        ScreenAnchor::TopLeft | ScreenAnchor::TopCenter | ScreenAnchor::TopRight => {
+            margin + first_ascent
+        }
+        ScreenAnchor::MiddleLeft | ScreenAnchor::MiddleCenter | ScreenAnchor::MiddleRight => {
+            let screen_middle = f64::from(canvas.height()) / 2.0;
+            screen_middle - (bounds.y_max + bounds.y_min) / 2.0
+        }
+        ScreenAnchor::BottomLeft | ScreenAnchor::BottomCenter | ScreenAnchor::BottomRight => {
+            // Нижний край блока — на `высота − поле`; первая строка выше на высоту блока.
+            let bottom = f64::from(canvas.height()) - margin;
+            bottom - measure.height + first_ascent
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -44,6 +44,7 @@ CONTRACT_CRATES = frozenset(
         "playlist-state",
         "subtitle-core",
         "subtitle-formats",
+        "subtitle-raster",
         "codec-core",
         "demux-api",
         "settings-core",
@@ -198,6 +199,19 @@ SUBTITLE_CORE_ALLOWED_DEPENDENCIES = frozenset({"oxilangtag", "thiserror"})
 # Парсеры текстовых субтитров получают только модель, декодирование и typed errors.
 SUBTITLE_FORMATS_ALLOWED_DEPENDENCIES = frozenset(
     {"subtitle-core", "encoding_rs", "chardetng", "thiserror"}
+)
+
+# Растеризатор субтитров: модель, разбор шрифтов/шейпинг/BiDi и typed errors; никакого GPU/UI/плеера.
+SUBTITLE_RASTER_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "subtitle-core",
+        "skrifa",
+        "harfrust",
+        "fontdb",
+        "unicode-bidi",
+        "thiserror",
+        "tracing",
+    }
 )
 
 # Neutral web-media values не должны напрямую знать process/service/network/app owners.
@@ -1243,6 +1257,14 @@ def find_dependency_violations(
             frozenset({"subtitle-formats"}),
             SUBTITLE_FORMATS_ALLOWED_DEPENDENCIES,
             "subtitle-formats depends only on subtitle-core and text decoding",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"subtitle-raster"}),
+            SUBTITLE_RASTER_ALLOWED_DEPENDENCIES,
+            "subtitle-raster depends only on subtitle-core, font/shaping libraries and diagnostics",
         )
     )
     violations.extend(

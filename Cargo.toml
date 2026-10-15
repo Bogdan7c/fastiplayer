@@ -42,6 +42,7 @@ members = [
     "crates/playlist-io",
     "crates/subtitle-core",
     "crates/subtitle-formats",
+    "crates/subtitle-raster",
     "crates/playlist-discovery",
     "crates/playlist-state",
     "crates/media-core",
@@ -215,6 +216,7 @@ playlist-core = { version = "0.1.0-alpha.1", path = "crates/playlist-core" }
 playlist-io = { version = "0.1.0-alpha.1", path = "crates/playlist-io" }
 subtitle-core = { version = "0.1.0-alpha.1", path = "crates/subtitle-core" }
 subtitle-formats = { version = "0.1.0-alpha.1", path = "crates/subtitle-formats" }
+subtitle-raster = { version = "0.1.0-alpha.1", path = "crates/subtitle-raster" }
 hls-playlist-core = { version = "0.1.0-alpha.1", path = "crates/hls-playlist-core" }
 playlist-discovery = { version = "0.1.0-alpha.1", path = "crates/playlist-discovery" }
 playlist-state = { version = "0.1.0-alpha.1", path = "crates/playlist-state" }
@@ -260,6 +262,17 @@ encoding_rs = "0.8.42"
 chardetng = "1.0.0"
 # Валидация и нормализация BCP 47 языковых тегов дорожек субтитров (subtitle-core), лицензия MIT.
 oxilangtag = "0.1.6"
+# Доступ к таблицам и cmap шрифтов для растеризатора субтитров (subtitle-raster); тот же skrifa,
+# что уже подтянут через egui (один read-fonts), лицензия MIT OR Apache-2.0.
+skrifa = "0.44"
+# OpenType-шейпинг (порт роли HarfBuzz) для subtitle-raster; версия совпадает с Cargo.lock через egui.
+harfrust = "0.12"
+# База системных шрифтов (замена fontconfig из libass) для subtitle-raster, лицензия MIT.
+fontdb = "0.24"
+# Двунаправленный текст (замена FriBidi из libass) для subtitle-raster, лицензия MIT OR Apache-2.0.
+unicode-bidi = "0.3"
+# Чтение PNG-эталонов libass в тестах паритета subtitle-raster (только dev-dependency), MIT OR Apache-2.0.
+png = "0.18"
 percent-encoding = "2"
 unicode-normalization = "0.1"
 quick-xml = "0.41"

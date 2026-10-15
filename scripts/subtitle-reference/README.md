@@ -1,0 +1,60 @@
+# Эталоны libass для растеризатора субтитров
+
+Инструмент генерирует эталонные картинки системного **libass 0.17.5** (ISC) для проверки порта
+растеризатора в `crates/subtitle-raster` (модули `outline`, `raster`, `bitmap`).
+
+**Это не часть сборки и не часть CI.** C-кода в сборке проекта нет: `render_reference.c` компилируется
+скриптом во временный каталог и нигде не сохраняется. В репозиторий коммитятся только результаты —
+фикстуры в `crates/subtitle-raster/tests/fixtures/libass/expected/`. Тесты Rust читают готовые
+PNG/JSON и ни libass, ни компилятор C не требуют.
+
+## Когда запускать
+
+Только при изменении кейсов (`crates/subtitle-raster/tests/fixtures/libass/cases/*.ass`) или при
+обновлении версии libass, по которой идёт порт. Результат пересоздаётся детерминированно.
+
+## Как запускать
+
+Нужны: `cc`, `pkg-config`, dev-пакеты libass (системный libass 0.17.5), Python 3 (только stdlib).
+
+```sh
+python3 -I scripts/subtitle-reference/generate.py
+```
+
+Скрипт печатает версию libass (`ass_library_version`) — она записывается в `libass_version` каждого
+`.json`; тест паритета проверяет, что это `0.17.5`. Для текущих фикстур версия: **0.17.5**
+(commit `4a05d8127f525943ebf45fdc6497c9e665947f0d`).
+
+## Что делает
+
+1. Собирает `render_reference.c` (`cc $(pkg-config --cflags --libs libass)`) во временный каталог.
+2. Для каждого кейса `cases/<имя>.ass` читает параметры кадра из комментария-заголовка:
+   `; reference: width=320 height=180 time_ms=1000`.
+3. Рендерит кадр и получает список `ASS_Image`.
+4. Пишет `expected/<имя>.png` — композит RGBA с прямой (straight) альфой, оператор *over* в порядке
+   списка, по той же формуле, что `SubtitleOverlay::composite_rgba_over_transparent`. В libass альфа
+   цвета инвертирована (`AA = 255 - непрозрачность`), скрипт это учитывает.
+5. Пишет `expected/<имя>.json` — список картинок: `type` (0 заливка, 1 обводка, 2 тень), `dst_x`,
+   `dst_y`, `w`, `h`, `stride`, `color` (RGBA, прямой).
+
+## Детерминизм
+
+- `ass_set_fonts_dir` указывает на `crates/subtitle-raster/fonts`, а `ass_set_fonts(.., "Noto Sans",
+  ASS_FONTPROVIDER_NONE, ..)` отключает системные шрифты: в libass 0.17.5 встроенный провайдер
+  (`ass_embedded_fonts_add_provider`) загружает все файлы каталога (`load_fonts_from_dir`),
+  поэтому шрифты берутся только оттуда (в журнале: `fontselect: (Noto Sans, 400, 0) ->
+  NotoSans-Regular`).
+- `ASS_HINTING_NONE`, `ASS_SHAPING_COMPLEX`, размер хранения равен размеру кадра.
+- Кейсы `text_*.ass` — обычный текст (стиль Default, PlayRes = кадр 1280x720, без тегов кроме `\N`):
+  их рендерит текстовый конвейер порта (`libass_parity/text_tests.rs`). Автоматического fallback
+  по глифам у libass с провайдером NONE нет (в журнале: «failed to find any fallback»), поэтому
+  арабский кейс задаёт шрифт `Noto Sans Arabic` явно. У подложки `BorderStyle 4` libass оставляет
+  поле `type` неинициализированным — тест его не сравнивает.
+- Кейсы без `text_` — ASS-рисунки (`{\p1}`), они идут через тот же растеризатор и обводчик, что и глифы,
+  но шрифтов не используют.
+
+## Примечание про шаг строки
+
+Системный libass на x86-64 использует SIMD-движок (AVX2 выравнивает `stride` по 32), а порт — C-движок
+(выравнивание по 16). Содержимое масок от этого не зависит (libass гарантирует побитовое совпадение
+SIMD и C), поэтому тесты паритета не сравнивают `stride`.

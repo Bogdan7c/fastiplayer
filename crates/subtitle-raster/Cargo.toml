@@ -1,0 +1,35 @@
+[package]
+name = "subtitle-raster"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "subtitle_raster"
+path = "src/lib.rs"
+
+[dependencies]
+# Нейтральная модель субтитров: цвет и стили, из которых строятся картинки.
+subtitle-core.workspace = true
+# Таблицы шрифтов (cmap, OS/2, hhea) и позже контуры глифов.
+skrifa.workspace = true
+# Системные шрифты (сканирование каталогов, имена семейств, начертания).
+fontdb.workspace = true
+# OpenType-шейпинг (роль HarfBuzz в libass): глифы и позиции для участков текста одного шрифта.
+harfrust.workspace = true
+# Двунаправленный текст (роль FriBidi в libass): уровни вложенности и порядок на строке.
+unicode-bidi.workspace = true
+# Typed errors для границ библиотеки шрифтов и вложенных шрифтов.
+thiserror.workspace = true
+# Диагностика: пропущенные глифы, пропущенные шрифты (без шума на горячем пути).
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# Чтение PNG-эталонов libass (тесты паритета растеризатора); тот же png, что уже в Cargo.lock.
+png.workspace = true
+# Описание изображений-эталонов (geometry JSON) в тестах паритета; dev-only.
+serde_json.workspace = true

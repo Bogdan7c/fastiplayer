@@ -20,6 +20,23 @@ Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). N
 | HLS WebVTT, DASH TTML/IMSC | streaming | Planned | 13 |
 | VobSub, DVB, FLV subtitles | — | Backlog | — |
 
+## Rendering (crate `subtitle-raster`, session 02)
+
+Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of 8-bit coverage masks with one colour each (like libass `ASS_Image`). Not on screen yet; the GPU pass is session 03.
+
+| Feature | Status |
+|---|---|
+| Glyph rasterizer, border stroker, shadow (libass port) | Full — bit-exact with libass on vector drawings |
+| Plain text with the default style (Latin, Cyrillic, two lines, smart wrap, BorderStyle 1/3/4) | Partial — near pixel-exact with libass (a few to ~100 pixels differ per 720p frame due to FreeType vs skrifa outline rounding) |
+| Right-to-left text (Arabic, Hebrew), complex shaping (Indic) | Partial — `unicode-bidi` + `harfrust`; Arabic differs from libass by ~1 px on some glyphs (autohinter advance rounding) |
+| Built-in fonts | Noto Sans Regular/Bold (Latin, Greek, Cyrillic) + Regular for Arabic, Hebrew, Devanagari, Bengali, Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Thai, Lao, Georgian, Armenian, Ethiopic, Khmer, Myanmar, Sinhala, symbols (~3.3 MiB, OFL-1.1) |
+| CJK, emoji | from system fonts only; missing glyphs are drawn as `.notdef` and counted |
+| Fonts attached to MKV | interface only (`register_attached_font`); extraction — session 06 |
+| User styles | "YouTube-like" (white text on a rounded 75% dark box per line) and "outline + shadow" |
+| WebVTT placement | `line`, `position`, `size`, `align`, `\anN` anchors; regions and vertical text are drawn horizontally |
+| Underline/strikethrough, span background, synthetic bold/italic, `\N`-less CJK line breaking | not yet (later sessions / backlog) |
+| ASS override tags, karaoke, blur, clip, rotations | Planned — sessions 08–10 |
+
 ## Text encodings (SRT, WebVTT files)
 
 | Input | Result |
