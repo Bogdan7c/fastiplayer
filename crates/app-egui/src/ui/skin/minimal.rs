@@ -8,6 +8,8 @@ use crate::ui::skin::{
     ControlsStyle, PersistentControlStyle, PlayerSkin, PlaylistHeaderUndoStyle, PlaylistRowStyle,
     PlaylistToolbarStyle, SkinId, TimelineStyle,
 };
+use crate::ui::subtitle_appearance_edit::SubtitleAppearanceEditStyle;
+use ui_artwork_egui::SubtitleEditFrameStyle;
 
 /// Первый production skin для desktop player controls.
 #[derive(Debug, Clone, Copy, Default)]
@@ -156,6 +158,30 @@ impl PlayerSkin for MinimalSkin {
             separator_color: Color32::from_rgba_unmultiplied(255, 255, 255, 128),
             insertion_stroke: egui::Stroke::new(1.5_f32, light_stroke),
             focus_stroke: egui::Stroke::new(1.0_f32, light_stroke),
+        }
+    }
+
+    /// Возвращает светлую пунктирную рамку и тёмную панель правки субтитров.
+    fn subtitle_appearance_edit_style(&self) -> SubtitleAppearanceEditStyle {
+        let light = Color32::from_gray(245);
+        SubtitleAppearanceEditStyle {
+            frame: SubtitleEditFrameStyle {
+                dash_stroke: egui::Stroke::new(1.5_f32, light),
+                dash_length: 6.0,
+                gap_length: 4.0,
+                handle_extent: 10.0,
+                handle_fill: Color32::from_rgb(30, 30, 30),
+                handle_hover_fill: light,
+                handle_outline: egui::Stroke::new(1.5_f32, light),
+                handle_corner_radius: 2.0,
+            },
+            frame_padding: 4.0,
+            handle_hit_extent: 18.0,
+            panel_top_margin: 12.0,
+            panel_fill: Color32::from_rgba_unmultiplied(18, 18, 18, 235),
+            panel_stroke: egui::Stroke::new(1.0_f32, Color32::from_white_alpha(60)),
+            panel_corner_radius: 8.0,
+            panel_inner_margin: 10.0,
         }
     }
 

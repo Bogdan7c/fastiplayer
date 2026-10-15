@@ -72,6 +72,9 @@ pub(crate) enum ChromeHoldReason {
     PointerDrag,
     /// Видео не воспроизводится (пауза, остановка, ошибка, ничего не открыто).
     PlaybackNotRunning,
+    /// Идёт правка внешнего вида субтитров на видео: панель настроек и курсор нужны на виду,
+    /// а режим работает и во время воспроизведения.
+    SubtitleAppearanceEdit,
 }
 
 impl ChromeHoldReason {
@@ -83,6 +86,7 @@ impl ChromeHoldReason {
             Self::PopupOpen => 1 << 2,
             Self::PointerDrag => 1 << 3,
             Self::PlaybackNotRunning => 1 << 4,
+            Self::SubtitleAppearanceEdit => 1 << 5,
         }
     }
 }

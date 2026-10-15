@@ -24,8 +24,9 @@ pub use controller::{
     PreviewApplyResult, PreviewRollbackRequest, PreviewRollbacker, PreviewRouteState,
     PreviewSettingsApplier, PreviewTransactionState, ResetReport, ResetScope, RollbackReport,
     RollbackResult, RouteApplyUpdate, RouteGeneration, RouteGenerationConflict,
-    RuntimeSettingCommitRequest, SetValueReport, SettingsController, SettingsPersister,
-    SettingsValidator, StepwiseCommittedApplier, ValidationReport, ValidationRequest,
+    RuntimeCommitOutcome, RuntimeSettingCommitRequest, SetValueReport, SettingsController,
+    SettingsPersister, SettingsValidator, StepwiseCommittedApplier, ValidationReport,
+    ValidationRequest,
 };
 pub use diff::{SettingChange, SettingsDiff};
 pub use error::{

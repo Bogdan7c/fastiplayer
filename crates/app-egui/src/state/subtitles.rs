@@ -15,7 +15,12 @@
 //! - `menu_view`/`intents`: типы ответов API и read-only снимок для меню.
 //! - `active_track`: загруженный таймлайн + идентичность источника + сдвиг синхронизации.
 //! - `presentation`: решение по кадру (реплики по pts кадра -> overlay растеризатора).
-//! - `settings` + `limits` + `appearance_mapping`: настройки из `[subtitles]` конфига.
+//! - `layer_placement` (чистая геометрия) + `controls_obstruction` + `owner_placement`: куда сдвинуть
+//!   готовый слой на экране (позиция пользователя, подъём над нижней панелью, чёрные полосы).
+//!   Сдвиг уходит в рендер как `SubtitleLayerOffset` и меняет только uniform: без перерастеризации.
+//! - `settings` + `limits` + `user_style`: настройки из `[subtitles]` конфига.
+//! - `appearance_edit` + `owner_appearance_edit` + `sample_cue` + `owner_fonts_bootstrap`: правка
+//!   внешнего вида на видео (черновик вживую, образец реплики, отмена/сохранение).
 //!
 //! # Точка запуска (единая для всех способов открыть файл)
 //! Любой путь установки media (кнопка Open, drag&drop, playlist next, пересборка после
@@ -42,18 +47,24 @@
 
 mod active_track;
 mod app_state_api;
-mod appearance_mapping;
+mod appearance_edit;
 mod auto_select;
 mod control_actions;
+mod controls_obstruction;
 mod file_loader;
 mod intents;
 mod job_runner;
+mod layer_placement;
 mod limits;
 mod media_state;
 mod menu_view;
+mod owner_appearance_edit;
+mod owner_fonts_bootstrap;
 mod owner_intents;
 mod owner_loading;
+mod owner_placement;
 mod presentation;
+mod sample_cue;
 mod settings;
 mod sidecar_job;
 mod sync_offset;
@@ -61,18 +72,27 @@ mod system_language;
 #[cfg(test)]
 mod tests;
 mod track_list;
+mod user_style;
 
 use std::path::PathBuf;
 
 use player_core::MediaInstanceId;
 use subtitle_core::SubtitleLanguage;
-use subtitle_raster::{CueSourceId, SubtitleOverlay};
+use subtitle_raster::CueSourceId;
 use subtitle_sidecar::SidecarSubtitleCandidate;
 
+use self::active_track::ActiveSubtitleTrack;
+use self::appearance_edit::AppearanceEditSession;
+pub(crate) use self::appearance_edit::{
+    AppearanceEdit, AppearanceEditBegin, AppearanceEditChange, AppearanceEditFinish,
+    AppearanceEditOutcome, AppearanceEditView,
+};
 use self::auto_select::PreferredLanguages;
 pub(crate) use self::control_actions::ControlActionFeedback;
+pub(crate) use self::controls_obstruction::BottomControlsObstruction;
 pub(crate) use self::intents::{AttachOutcome, SubtitleVisibility};
 use self::job_runner::{SidecarJob, SidecarJobPoll};
+pub(crate) use self::layer_placement::PlacedLayerRect;
 use self::media_state::{DiscoveryState, MediaSubtitles};
 #[cfg(test)]
 pub(crate) use self::menu_view::SubtitleMenuTrack;
@@ -80,6 +100,7 @@ pub(crate) use self::menu_view::{
     SubtitleFileOrigin, SubtitleMenuView, SubtitleTrackAvailability, SubtitleTrackLabel,
     SubtitleUnavailableReason,
 };
+pub(crate) use self::owner_placement::PlacedSubtitleOverlay;
 #[cfg(test)]
 use self::presentation::PresentationStats;
 pub(crate) use self::presentation::SubmittedFrameForSubtitles;
@@ -92,7 +113,9 @@ use self::sidecar_job::{
 };
 pub(crate) use self::sync_offset::SyncNudge;
 pub(super) use self::system_language::read_system_language;
+#[cfg(test)]
 use self::track_list::TrackLoadState;
+pub(crate) use self::user_style::{SubtitleRgb, UserSubtitleStyle};
 use super::{ActiveMediaSource, InstalledSingleMediaOpen};
 use crate::app_wake::AppWakePort;
 use player_core::MediaInstallCompletion;
@@ -182,8 +205,26 @@ pub(super) struct SubtitleOwner {
     queued_files: Vec<SidecarSubtitleCandidate>,
     /// Непрочитанное изменение «включено» по воле пользователя (для сохранения в конфиг).
     enabled_preference_change: Option<SubtitleVisibility>,
+    /// Что сейчас закрывает низ видео (наблюдение UI на этом кадре).
+    controls_obstruction: BottomControlsObstruction,
+    /// Где слой оказался на экране при последнем размещении (для рамки правки на видео).
+    last_placed_layer_rect: Option<PlacedLayerRect>,
+    /// Картинка видео (пиксели окна) того же кадра: UI правки переводит мышь в доли картинки.
+    /// Задаётся и сбрасывается вместе с `last_placed_layer_rect`.
+    last_placed_picture_rect: Option<render_core::PictureRect>,
+    /// Фактический сдвиг слоя того же кадра (после зажимов и подъёма над панелью): от него
+    /// режим правки начинает перенос мышью. Задаётся и сбрасывается вместе с прямоугольником.
+    last_placed_layer_offset: Option<render_wgpu_shell::SubtitleLayerOffset>,
     /// Лимиты растеризатора изменились: пересоздать его при следующем media.
     rasterizer_reset_pending: bool,
+    /// Сессия правки внешнего вида на видео (`None` - не правим).
+    appearance_edit: Option<AppearanceEditSession>,
+    /// Образец реплики для режима правки (`None`, если собрать не удалось).
+    sample_track: Option<ActiveSubtitleTrack>,
+    /// Стиль, который пользователь сохранил и который ждёт записи в конфиг.
+    style_save_request: Option<UserSubtitleStyle>,
+    /// Фоновое построение шрифтов для образца, когда растеризатора ещё нет.
+    fonts_bootstrap_job: Option<SidecarJob>,
     /// Задачи, которые больше не нужны, но ещё работают: ждём их завершения без блокировки UI.
     retiring_jobs: Vec<SidecarJob>,
     source_ids: SourceIdAllocator,
@@ -205,7 +246,7 @@ impl SubtitleOwner {
             wake_port,
             presenter: SubtitlePresenter::new(
                 system_language.clone(),
-                settings.appearance,
+                settings.style.to_appearance(),
                 settings.raster_limits,
             ),
             default_visibility: settings.default_visibility,
@@ -214,6 +255,14 @@ impl SubtitleOwner {
             media: None,
             queued_files: Vec::new(),
             enabled_preference_change: None,
+            controls_obstruction: BottomControlsObstruction::Absent,
+            last_placed_layer_rect: None,
+            last_placed_picture_rect: None,
+            last_placed_layer_offset: None,
+            appearance_edit: None,
+            sample_track: sample_cue::build_sample_track(),
+            style_save_request: None,
+            fonts_bootstrap_job: None,
             rasterizer_reset_pending: false,
             retiring_jobs: Vec::new(),
             source_ids: SourceIdAllocator { next_value: 0 },
@@ -313,8 +362,12 @@ impl SubtitleOwner {
 
     /// Media исчезло (release/reset): состояние и задачи сброшены. Очередь файлов для
     /// СЛЕДУЮЩЕГО media при этом сохраняется (её ставят до открытия видео).
+    ///
+    /// Идущая правка внешнего вида при этом сохраняется (неявный выход, решение владельца 6):
+    /// стиль попадает в очередь записи, которую забирает `AppState`.
     pub(super) fn clear_media(&mut self) {
         self.reset_media();
+        self.end_appearance_edit_for_cleared_media();
     }
 
     /// Останавливает задачи (уходят в `retiring_jobs`) и забывает состояние media и overlay.
@@ -337,6 +390,13 @@ impl SubtitleOwner {
     /// Всегда опустошает ящики (в том числе у уходящих задач), иначе wake-порт остался бы
     /// «взведённым» и следующие результаты не будили бы окно.
     pub(super) fn poll_jobs(&mut self) -> bool {
+        let fonts_changed = self.poll_fonts_bootstrap();
+        let media_changed = self.poll_media_jobs();
+        fonts_changed || media_changed
+    }
+
+    /// Опрос задач текущего media и уходящих задач (см. [`Self::poll_jobs`]).
+    fn poll_media_jobs(&mut self) -> bool {
         // Результаты уходящих задач выбрасываем; завершённые потоки освобождаем.
         self.retiring_jobs.retain(|job| {
             let _discarded = job.poll();
@@ -344,7 +404,9 @@ impl SubtitleOwner {
         });
 
         let Some(media) = &self.media else {
-            self.wake_port.acknowledge_abandoned_mailbox();
+            if !self.has_running_fonts_bootstrap() {
+                self.wake_port.acknowledge_abandoned_mailbox();
+            }
             return false;
         };
         let media_instance_id = media.media_instance_id;
@@ -359,7 +421,7 @@ impl SubtitleOwner {
         {
             finished.push((JobOrigin::TrackLoad(load.track_id), outcome));
         }
-        if !media.has_running_jobs() {
+        if !media.has_running_jobs() && !self.has_running_fonts_bootstrap() {
             // Задач, которых ждёт владелец, нет: сбрасываем «взведённость» порта.
             self.wake_port.acknowledge_abandoned_mailbox();
         }
@@ -370,28 +432,6 @@ impl SubtitleOwner {
                 == JobResultDisposition::Applied;
         }
         visible_state_changed
-    }
-
-    /// Overlay для кадра, который прямо сейчас уходит в renderer, или `None`.
-    ///
-    /// Реализует правило из документации модуля: другое media или другое поколение
-    /// ресурсов рендера — субтитров нет.
-    pub(super) fn overlay_for_frame(
-        &mut self,
-        current: CurrentMediaForSubtitles,
-        frame: &SubmittedFrameForSubtitles,
-    ) -> Option<&SubtitleOverlay> {
-        let media = self.media.as_ref()?;
-        if current.media_instance_id != Some(media.media_instance_id)
-            || frame.render_generation() != current.render_generation
-        {
-            return None;
-        }
-        let entry = media.tracks.get(media.display_track_id()?)?;
-        let TrackLoadState::Ready(track) = &entry.load else {
-            return None;
-        };
-        self.presenter.overlay_for_frame(track, frame)
     }
 
     /// Применяет новую секцию `[subtitles]` после committed изменения настроек.
@@ -406,15 +446,17 @@ impl SubtitleOwner {
         if next == self.settings {
             return;
         }
-        if next.appearance != self.settings.appearance {
-            self.presenter.replace_appearance(next.appearance);
-        }
         if next.raster_limits != self.settings.raster_limits {
             self.rasterizer_reset_pending = true;
             self.settings.raster_limits = next.raster_limits;
         }
         self.default_visibility = next.default_visibility;
         self.settings = next;
+        // Во время правки показ определяет черновик пользователя: его чужой коммит не
+        // перезаписывает, обновляется только `before` (куда вернёт «Отмена»). Вне правки
+        // новый стиль применяется сразу; презентатор сам пропускает неизменный стиль.
+        self.follow_committed_style_in_session();
+        self.sync_presenter_appearance();
     }
 
     /// Счётчики презентации.

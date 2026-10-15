@@ -76,7 +76,12 @@ fn open_import_preview_with_intent(
 }
 
 fn collect(runtime: &PlaylistRuntime, presentation: WindowPresentation) -> EscapeContext {
-    EscapeContext::collect(&app_behavior_context(), runtime, presentation)
+    EscapeContext::collect(
+        &app_behavior_context(),
+        runtime,
+        SubtitleAppearanceEditState::Inactive,
+        presentation,
+    )
 }
 
 #[test]
@@ -229,7 +234,12 @@ fn escape_with_open_egui_popup_is_left_to_egui_which_closes_it() {
         "precondition: popup open-ended"
     );
 
-    let context = EscapeContext::collect(&egui_ctx, &runtime, WindowPresentation::Fullscreen);
+    let context = EscapeContext::collect(
+        &egui_ctx,
+        &runtime,
+        SubtitleAppearanceEditState::Active,
+        WindowPresentation::Fullscreen,
+    );
     let target = resolve_escape_target(&context);
 
     // Popup выше диалога и фуллскрина: shell ничего не отменяет сам.
@@ -247,4 +257,59 @@ fn escape_with_open_egui_popup_is_left_to_egui_which_closes_it() {
     assert!(!egui::Popup::is_any_open(&egui_ctx));
     // Диалог подтверждения этим нажатием не тронут.
     assert!(runtime.pending_playlist_confirmation().is_some());
+}
+
+/// Контекст с режимом правки субтитров поверх остальных слоёв (кроме popup).
+fn collect_with_edit(runtime: &PlaylistRuntime, presentation: WindowPresentation) -> EscapeContext {
+    EscapeContext::collect(
+        &app_behavior_context(),
+        runtime,
+        SubtitleAppearanceEditState::Active,
+        presentation,
+    )
+}
+
+#[test]
+fn subtitle_appearance_edit_is_cancelled_before_dialogs_and_fullscreen() {
+    let mut runtime = runtime_with_queued_item();
+    open_replacement_confirmation(&mut runtime);
+    let _preview_id = open_import_preview(&mut runtime);
+
+    let target =
+        resolve_escape_target(&collect_with_edit(&runtime, WindowPresentation::Fullscreen));
+
+    // Правка выше подтверждения, preview и фуллскрина: каждое следующее нажатие закроет следующий слой.
+    assert_eq!(target, EscapeTarget::SubtitleAppearanceEdit);
+}
+
+#[test]
+fn open_popup_is_closed_before_subtitle_appearance_edit() {
+    let runtime = PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+    let egui_ctx = app_behavior_context();
+    run_combo_box_frame(&egui_ctx, Vec::new());
+    egui::Popup::open_id(&egui_ctx, egui::Id::new("colour_picker_popup"));
+    let context = EscapeContext::collect(
+        &egui_ctx,
+        &runtime,
+        SubtitleAppearanceEditState::Active,
+        WindowPresentation::Windowed,
+    );
+
+    // Окно выбора цвета панели правки - popup egui: первый Esc закрывает его, а не правку.
+    assert_eq!(resolve_escape_target(&context), EscapeTarget::EguiPopup);
+}
+
+#[test]
+fn without_subtitle_appearance_edit_escape_keeps_the_previous_priorities() {
+    let runtime = PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+
+    assert_eq!(
+        resolve_escape_target(&collect(&runtime, WindowPresentation::Fullscreen)),
+        EscapeTarget::Fullscreen
+    );
+    assert_eq!(
+        resolve_escape_target(&collect_with_edit(&runtime, WindowPresentation::Windowed)),
+        EscapeTarget::SubtitleAppearanceEdit,
+        "the edit mode is cancelled even in a window, where Esc does nothing otherwise"
+    );
 }

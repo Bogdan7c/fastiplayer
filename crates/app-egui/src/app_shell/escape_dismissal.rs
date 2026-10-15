@@ -1,11 +1,12 @@
 //! Семантика Esc на уровне окна: «закрыть то, что сверху».
 //!
 //! Решение владельца (UX edge cases, сессия 01, вариант A): Esc по приоритету
-//! 1) закрывает открытое меню/popup egui;
-//! 2) отменяет подтверждение замены очереди;
-//! 3) отменяет preview импорта плейлиста;
-//! 4) выходит из полноэкранного режима;
-//! 5) иначе ничего не делает. Приложение по Esc **не** закрывается.
+//! 1) закрывает открытое меню/popup egui (в том числе окно выбора цвета панели правки);
+//! 2) отменяет правку внешнего вида субтитров на видео (стиль возвращается прежний);
+//! 3) отменяет подтверждение замены очереди;
+//! 4) отменяет preview импорта плейлиста;
+//! 5) выходит из полноэкранного режима;
+//! 6) иначе ничего не делает. Приложение по Esc **не** закрывается.
 //!
 //! Настройки по Esc намеренно не закрываются: закрытие настроек отменяет
 //! несохранённые правки, и одно случайное нажатие не должно их стирать.
@@ -23,7 +24,7 @@ use crate::playlist_runtime::{
     PlaylistConfirmationAction, PlaylistImportPreviewId, PlaylistRuntime,
     QueueReplacementConfirmationDecision,
 };
-use crate::state::AppState;
+use crate::state::{AppState, AppearanceEditFinish};
 use crate::ui::playlist::PlaylistAction;
 
 /// Открыто ли сейчас меню/popup egui (ComboBox, контекстное меню, меню тулбара).
@@ -31,6 +32,13 @@ use crate::ui::playlist::PlaylistAction;
 pub(super) enum EguiPopupState {
     Open,
     Closed,
+}
+
+/// Идёт ли правка внешнего вида субтитров на видео.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SubtitleAppearanceEditState {
+    Active,
+    Inactive,
 }
 
 /// Режим окна, от которого зависит, есть ли из чего «выходить» по Esc.
@@ -47,6 +55,7 @@ pub(super) enum WindowPresentation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EscapeContext {
     pub(super) egui_popup: EguiPopupState,
+    pub(super) subtitle_appearance_edit: SubtitleAppearanceEditState,
     /// Готовое действие «Отмена» для открытого подтверждения, если оно есть.
     pub(super) playlist_confirmation_cancel: Option<PlaylistConfirmationAction>,
     /// Id открытого preview импорта, если оно есть.
@@ -59,6 +68,7 @@ impl EscapeContext {
     pub(super) fn collect(
         egui_ctx: &egui::Context,
         playlist_runtime: &PlaylistRuntime,
+        subtitle_appearance_edit: SubtitleAppearanceEditState,
         window_presentation: WindowPresentation,
     ) -> Self {
         // Память egui хранит открытые popup-ы между кадрами, поэтому её можно
@@ -80,6 +90,7 @@ impl EscapeContext {
             .map(|preview| preview.preview_id());
         Self {
             egui_popup,
+            subtitle_appearance_edit,
             playlist_confirmation_cancel,
             playlist_import_preview,
             window_presentation,
@@ -92,6 +103,8 @@ impl EscapeContext {
 pub(super) enum EscapeTarget {
     /// Popup закроет сам egui в ближайшем кадре (он видит тот же Esc).
     EguiPopup,
+    /// Отменить правку внешнего вида субтитров на видео (как кнопка «Cancel» панели правки).
+    SubtitleAppearanceEdit,
     /// Отменить подтверждение замены очереди (как кнопка «Отмена»).
     PlaylistConfirmation(PlaylistConfirmationAction),
     /// Отменить preview импорта (как кнопка «Отмена» в preview).
@@ -109,6 +122,10 @@ pub(super) enum EscapeTarget {
 pub(super) fn resolve_escape_target(context: &EscapeContext) -> EscapeTarget {
     if context.egui_popup == EguiPopupState::Open {
         return EscapeTarget::EguiPopup;
+    }
+    // Сразу после popup: открытое окно выбора цвета закрывается первым Esc, правка - вторым.
+    if context.subtitle_appearance_edit == SubtitleAppearanceEditState::Active {
+        return EscapeTarget::SubtitleAppearanceEdit;
     }
     if let Some(cancel_action) = context.playlist_confirmation_cancel {
         return EscapeTarget::PlaylistConfirmation(cancel_action);
@@ -141,12 +158,21 @@ pub(super) fn dismiss_topmost(
     let context = EscapeContext::collect(
         &app_state.egui_ctx,
         playlist_runtime,
+        if app_state.is_editing_subtitle_appearance() {
+            SubtitleAppearanceEditState::Active
+        } else {
+            SubtitleAppearanceEditState::Inactive
+        },
         window_presentation(window),
     );
     let target = resolve_escape_target(&context);
     match target {
         // egui сам закроет popup: событие Esc уже в его очереди ввода.
         EscapeTarget::EguiPopup | EscapeTarget::Nothing => {}
+        EscapeTarget::SubtitleAppearanceEdit => {
+            // Тот же путь, что у кнопки «Cancel» на панели правки: возврат прежнего стиля.
+            let _outcome = app_state.finish_subtitle_appearance_edit(AppearanceEditFinish::Cancel);
+        }
         EscapeTarget::PlaylistConfirmation(cancel_action) => {
             // Тот же путь, что у кнопки «Отмена» в диалоге подтверждения.
             app_state.apply_playlist_confirmation_action(cancel_action, playlist_runtime, renderer);

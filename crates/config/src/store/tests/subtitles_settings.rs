@@ -1,4 +1,4 @@
-//! Настройки субтитров (`[subtitles]`, схема v13): defaults, миграция v12 и validation.
+//! Настройки субтитров (`[subtitles]`, схема v14): defaults, миграция v12 и validation.
 //!
 //! Решение владельца (субтитры, сессия 04): лимиты, язык и стиль живут в `config.toml`;
 //! старый файл без секции обязан грузиться с defaults, равными прежним константам
@@ -21,6 +21,15 @@ load_siblings = false
 volume = 0.4
 "#;
 
+/// Документ v13: стиль субтитров уже настроен, новых ключей позиции и ASS-флага ещё нет.
+const SCHEMA_V13_WITHOUT_POSITION: &str = r#"
+schema_version = 13
+
+[subtitles]
+enabled = true
+text_size_percent = 120
+"#;
+
 /// Проверяет, что `config` отклонён и ошибка называет `field`.
 fn assert_rejected_naming(config: &AppConfig, field: &str) {
     let error = config
@@ -33,7 +42,7 @@ fn assert_rejected_naming(config: &AppConfig, field: &str) {
 }
 
 /// Старый файл грузится с defaults субтитров, чужие значения целы, после сохранения
-/// файл содержит v13 и секцию, а повторная загрузка ничего не меняет.
+/// файл содержит текущую версию схемы и секцию, а повторная загрузка ничего не меняет.
 #[test]
 fn schema_v12_without_subtitles_loads_defaults_and_roundtrips() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
@@ -41,19 +50,69 @@ fn schema_v12_without_subtitles_loads_defaults_and_roundtrips() {
     fs::write(&config_path, SCHEMA_V12_WITHOUT_SUBTITLES).expect("v12 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v12 config loads");
-    assert_eq!(migrated.config.schema_version, 13);
+    assert_eq!(migrated.config.schema_version, 14);
     assert_eq!(migrated.config.subtitles, SubtitlesConfig::default());
     assert!(!migrated.config.playlist.load_siblings);
     assert!((migrated.config.audio.volume - 0.4).abs() < f64::EPSILON);
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 13"));
+    assert!(saved_text.contains("schema_version = 14"));
     assert!(saved_text.contains("[subtitles]"));
     assert!(saved_text.contains("max_file_size_mb = 8"));
     assert!(saved_text.contains("decoration = \"box\""));
     let reloaded = load_from_path(&config_path).expect("saved config reloads");
     assert_eq!(reloaded.config, migrated.config);
+}
+
+/// v13 без новых ключей: позиция и ASS-флаг получают defaults, чужие значения целы,
+/// после сохранения файл содержит v14 и новые ключи, повторная загрузка ничего не меняет.
+#[test]
+fn schema_v13_without_position_keys_loads_defaults_and_roundtrips() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(&config_path, SCHEMA_V13_WITHOUT_POSITION).expect("v13 fixture written");
+
+    let migrated = load_from_path(&config_path).expect("v13 config loads");
+    assert_eq!(migrated.config.schema_version, 14);
+    assert_eq!(migrated.config.subtitles.position_horizontal_percent, 50);
+    assert_eq!(migrated.config.subtitles.position_vertical_percent, 6);
+    assert!(!migrated.config.subtitles.ass_force_user_style);
+    assert!(migrated.config.subtitles.enabled);
+    assert_eq!(migrated.config.subtitles.text_size_percent, 120);
+
+    save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
+    let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
+    assert!(saved_text.contains("schema_version = 14"));
+    assert!(saved_text.contains("position_horizontal_percent = 50"));
+    assert!(saved_text.contains("position_vertical_percent = 6"));
+    assert!(saved_text.contains("ass_force_user_style = false"));
+    let reloaded = load_from_path(&config_path).expect("saved config reloads");
+    assert_eq!(reloaded.config, migrated.config);
+}
+
+/// Негативная и граничная позиция переживают файл; значения вне диапазона отклоняются.
+#[test]
+fn subtitle_position_bounds_roundtrip_and_out_of_range_is_rejected() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    let mut config = AppConfig::default();
+    config.subtitles.position_horizontal_percent = 100;
+    config.subtitles.position_vertical_percent = -40;
+    config.subtitles.ass_force_user_style = true;
+    save_validated_atomic_at(&config_path, &config).expect("bounds config saves");
+    let loaded = load_from_path(&config_path).expect("bounds config loads");
+    assert_eq!(loaded.config.subtitles, config.subtitles);
+
+    let mut too_high = AppConfig::default();
+    too_high.subtitles.position_vertical_percent = 96;
+    assert_rejected_naming(&too_high, "subtitles.position_vertical_percent");
+    let mut too_low = AppConfig::default();
+    too_low.subtitles.position_vertical_percent = -41;
+    assert_rejected_naming(&too_low, "subtitles.position_vertical_percent");
+    let mut too_right = AppConfig::default();
+    too_right.subtitles.position_horizontal_percent = 101;
+    assert_rejected_naming(&too_right, "subtitles.position_horizontal_percent");
 }
 
 /// Defaults повторяют прежние константы приложения и пресет `youtube_like()`.
@@ -67,6 +126,9 @@ fn subtitle_defaults_match_previous_application_constants() {
     assert_eq!(defaults.text_color, "#FFFFFF");
     assert_eq!(defaults.background_color, "#080808");
     assert_eq!(defaults.background_opacity_percent, 75);
+    assert_eq!(defaults.position_horizontal_percent, 50);
+    assert_eq!(defaults.position_vertical_percent, 6);
+    assert!(!defaults.ass_force_user_style);
     assert_eq!(defaults.max_file_size_mb, 8);
     assert_eq!(defaults.max_cues_per_file, 100_000);
     assert_eq!(defaults.sidecar_max_entries_per_folder, 5_000);
@@ -92,6 +154,9 @@ fn custom_subtitle_settings_roundtrip_through_file() {
             text_color: "#ffcc00".to_string(),
             background_color: "#102030".to_string(),
             background_opacity_percent: 40,
+            position_horizontal_percent: 30,
+            position_vertical_percent: -15,
+            ass_force_user_style: true,
             max_file_size_mb: 16,
             max_cues_per_file: 250_000,
             sidecar_max_entries_per_folder: 1_000,
@@ -212,14 +277,14 @@ fn unknown_subtitle_key_or_decoration_is_a_parse_error() {
 
     fs::write(
         &config_path,
-        "schema_version = 13\n\n[subtitles]\ndecoration = \"glow\"\n",
+        "schema_version = 14\n\n[subtitles]\ndecoration = \"glow\"\n",
     )
     .expect("fixture written");
     assert!(load_from_path(&config_path).is_err());
 
     fs::write(
         &config_path,
-        "schema_version = 13\n\n[subtitles]\nmystery = 1\n",
+        "schema_version = 14\n\n[subtitles]\nmystery = 1\n",
     )
     .expect("fixture written");
     assert!(load_from_path(&config_path).is_err());

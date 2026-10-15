@@ -1,4 +1,4 @@
-//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v13).
+//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v14).
 //!
 //! Решение владельца (субтитры, сессия 04): лимиты и внешний вид живут в `config.toml`,
 //! значения по умолчанию равны прежним константам приложения, поэтому старый файл без
@@ -36,6 +36,25 @@ pub const DEFAULT_BACKGROUND_OPACITY_PERCENT: u8 = 75;
 pub const MIN_BACKGROUND_OPACITY_PERCENT: u8 = 0;
 /// Максимальная непрозрачность плашки.
 pub const MAX_BACKGROUND_OPACITY_PERCENT: u8 = 100;
+
+/// Положение по горизонтали по умолчанию: центр картинки, %.
+pub const DEFAULT_POSITION_HORIZONTAL_PERCENT: u8 = 50;
+/// Минимум положения по горизонтали (левый край картинки), %.
+pub const MIN_POSITION_HORIZONTAL_PERCENT: u8 = 0;
+/// Максимум положения по горизонтали (правый край картинки), %.
+pub const MAX_POSITION_HORIZONTAL_PERCENT: u8 = 100;
+
+/// Положение по вертикали по умолчанию: низ текста на 6 % высоты картинки выше её низа.
+///
+/// ВАЖНО: число обязано равняться нижнему отступу пресета растеризатора
+/// (`CanvasFraction` 0.06 в `subtitle-raster`): приложение считает смещение как
+/// `value/100 - отступ_пресета`, и при значении по умолчанию оно ровно нулевое.
+/// Это закреплено тестом в `app-egui`.
+pub const DEFAULT_POSITION_VERTICAL_PERCENT: i16 = 6;
+/// Минимум положения по вертикали: отрицательное значение уводит текст на чёрную полосу под картинкой, %.
+pub const MIN_POSITION_VERTICAL_PERCENT: i16 = -40;
+/// Максимум положения по вертикали (почти верх картинки), %.
+pub const MAX_POSITION_VERTICAL_PERCENT: i16 = 95;
 
 /// Размер файла субтитров по умолчанию, МБ (прежняя константа 8 МиБ).
 pub const DEFAULT_MAX_FILE_SIZE_MB: u16 = 8;
@@ -238,6 +257,62 @@ pub struct SubtitlesConfig {
     )]
     pub background_opacity_percent: u8,
 
+    /// Центр слоя субтитров по горизонтали, % ширины картинки.
+    #[setting(
+        id = "subtitles.position_horizontal_percent",
+        path = "subtitles.position_horizontal_percent",
+        section = "subtitles",
+        group = "style",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.position_horizontal_percent.label",
+        label_ru = "Horizontal position",
+        description_id = "settings.subtitles.position_horizontal_percent.description",
+        description_ru = "Where the center of the subtitles sits across the picture: 0 is the left edge, 50 the middle, 100 the right edge.",
+        editor = "integer",
+        min = crate::MIN_POSITION_HORIZONTAL_PERCENT,
+        max = crate::MAX_POSITION_HORIZONTAL_PERCENT,
+        step = 1,
+        unit = "%",
+        apply = "subtitles.apply"
+    )]
+    pub position_horizontal_percent: u8,
+
+    /// Низ субтитров над нижним краем картинки, % высоты (отрицательное = на полосе под картинкой).
+    #[setting(
+        id = "subtitles.position_vertical_percent",
+        path = "subtitles.position_vertical_percent",
+        section = "subtitles",
+        group = "style",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.position_vertical_percent.label",
+        label_ru = "Vertical position",
+        description_id = "settings.subtitles.position_vertical_percent.description",
+        description_ru = "Height of the subtitles above the bottom edge of the picture. Negative values move them onto the black bar below the picture.",
+        editor = "integer",
+        min = crate::MIN_POSITION_VERTICAL_PERCENT,
+        max = crate::MAX_POSITION_VERTICAL_PERCENT,
+        step = 1,
+        unit = "%",
+        apply = "subtitles.apply"
+    )]
+    pub position_vertical_percent: i16,
+
+    /// Применять свои цвета и обводку также к ASS/SSA-субтитрам.
+    #[setting(
+        id = "subtitles.ass_force_user_style",
+        path = "subtitles.ass_force_user_style",
+        section = "subtitles",
+        group = "style",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.ass_force_user_style.label",
+        label_ru = "Override ASS/SSA styling",
+        description_id = "settings.subtitles.ass_force_user_style.description",
+        description_ru = "Use your colors and outline for ASS/SSA subtitles too. Takes effect when ASS rendering is available.",
+        editor = "toggle",
+        apply = "subtitles.apply"
+    )]
+    pub ass_force_user_style: bool,
+
     /// Максимальный размер файла субтитров, МБ.
     #[setting(
         id = "subtitles.max_file_size_mb",
@@ -410,6 +485,9 @@ impl Default for SubtitlesConfig {
             text_color: DEFAULT_TEXT_COLOR.to_string(),
             background_color: DEFAULT_BACKGROUND_COLOR.to_string(),
             background_opacity_percent: DEFAULT_BACKGROUND_OPACITY_PERCENT,
+            position_horizontal_percent: DEFAULT_POSITION_HORIZONTAL_PERCENT,
+            position_vertical_percent: DEFAULT_POSITION_VERTICAL_PERCENT,
+            ass_force_user_style: false,
             max_file_size_mb: DEFAULT_MAX_FILE_SIZE_MB,
             max_cues_per_file: DEFAULT_MAX_CUES_PER_FILE,
             sidecar_max_entries_per_folder: DEFAULT_SIDECAR_MAX_ENTRIES_PER_FOLDER,

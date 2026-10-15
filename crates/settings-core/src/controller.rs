@@ -9,7 +9,9 @@ use crate::metadata::{
 use crate::registry::SettingsRegistry;
 
 mod pending_apply;
+mod runtime_commit;
 pub use pending_apply::{BeginApply, CommittedApplyProgress, PollApply, StepwiseCommittedApplier};
+pub use runtime_commit::RuntimeCommitOutcome;
 
 /// Monotonic generation of one runtime settings route.
 ///
@@ -1014,123 +1016,6 @@ where
             changed_settings: &plan.changed_settings,
         });
         Ok(self.finish_apply(delegate, plan, apply_result))
-    }
-
-    /// Атомарно коммитит одно runtime-originated значение через обычный transaction pipeline.
-    ///
-    /// Порядок остаётся тем же, что у [`Self::apply`]: validation -> runtime apply ->
-    /// atomic persistence -> finalize либо compensating rollback. В отличие от полного Apply,
-    /// открытый пользовательский draft и preview transaction не уничтожаются: на успехе в них
-    /// заменяется только `request.setting_id`, а соседние изменения сохраняются.
-    pub fn commit_runtime_setting<A>(
-        &mut self,
-        request: RuntimeSettingCommitRequest,
-        delegate: &mut A,
-    ) -> SettingsResult<ApplyReport>
-    where
-        A: SettingsValidator<D> + SettingsPersister<D> + CommittedSettingsApplier<D>,
-    {
-        if self.pending_apply.is_some() {
-            // Runtime-commit подменяет draft: во время stepwise-транзакции это запрещено.
-            return Err(SettingsError::access_failed(
-                "another settings transaction is still applying",
-            ));
-        }
-        let RuntimeSettingCommitRequest { setting_id, value } = request;
-        let route = self
-            .registry
-            .descriptor(&setting_id)
-            .ok_or_else(|| SettingsError::UnknownSetting {
-                id: setting_id.clone(),
-            })?
-            .route
-            .clone();
-        let route_generation_before_commit = self.route_generation(&route);
-
-        // Runtime transaction строится только от последнего committed document-а, поэтому
-        // незавершённые значения других полей не могут случайно попасть в persistence.
-        let mut requested_document = self.committed.clone();
-        self.registry
-            .set_value(&mut requested_document, &setting_id, value)?;
-        let normalized_value = self.registry.get_value(&requested_document, &setting_id)?;
-
-        // Заранее готовим success-state. Все accessor failures происходят до runtime mutation,
-        // поэтому после успешного persistence/finalize здесь не остаётся fallible шага.
-        let saved_draft = self.draft.clone();
-        let saved_preview = self.preview.clone();
-        let saved_route_generation_baselines = self.route_generation_baselines.clone();
-        let mut synchronized_draft = saved_draft.clone();
-        self.registry.set_value(
-            &mut synchronized_draft,
-            &setting_id,
-            normalized_value.clone(),
-        )?;
-        let mut synchronized_preview = saved_preview.clone();
-        self.synchronize_runtime_value_in_preview(
-            &mut synchronized_preview,
-            &setting_id,
-            &normalized_value,
-        )?;
-        let route_still_has_draft_changes =
-            self.document_has_changes_for_route(&requested_document, &synchronized_draft, &route)?;
-
-        // Существующий apply pipeline получает изолированный одно-полевой draft.
-        self.draft = requested_document;
-        self.preview = PreviewTransactionState::default();
-        self.route_generation_baselines.clear();
-        let apply_result = self.apply(delegate);
-
-        match apply_result {
-            Ok(report)
-                if matches!(
-                    report.final_state,
-                    ApplyFinalState::FullyApplied | ApplyFinalState::NoChanges
-                ) =>
-            {
-                let current_generation = self.route_generation(&route);
-                self.draft = synchronized_draft;
-                self.preview = synchronized_preview;
-                self.route_generation_baselines = saved_route_generation_baselines;
-
-                // Runtime commit увеличивает generation этой route. Если соседнее draft-поле
-                // той же route всё ещё изменено, оно теперь должно сравниваться с новым
-                // committed поколением, а не получать ложный conflict. Уже stale baseline
-                // не перебазируется: runtime intent не имеет права скрывать настоящий conflict.
-                if route_still_has_draft_changes {
-                    match self.route_generation_baselines.get(&route).copied() {
-                        Some(baseline) if baseline == route_generation_before_commit => {
-                            self.route_generation_baselines
-                                .insert(route.clone(), current_generation);
-                        }
-                        Some(_) => {}
-                        None => {
-                            self.route_generation_baselines
-                                .insert(route.clone(), current_generation);
-                        }
-                    }
-                } else {
-                    self.route_generation_baselines.remove(&route);
-                }
-                self.preview.rebase_route_generation(
-                    &route,
-                    route_generation_before_commit,
-                    current_generation,
-                );
-                Ok(report)
-            }
-            Ok(report) => {
-                self.draft = saved_draft;
-                self.preview = saved_preview;
-                self.route_generation_baselines = saved_route_generation_baselines;
-                Ok(report)
-            }
-            Err(error) => {
-                self.draft = saved_draft;
-                self.preview = saved_preview;
-                self.route_generation_baselines = saved_route_generation_baselines;
-                Err(error)
-            }
-        }
     }
 
     /// Cancels the draft transaction and rolls back captured preview routes.

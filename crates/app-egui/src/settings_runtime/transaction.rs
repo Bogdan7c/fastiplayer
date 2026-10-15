@@ -159,6 +159,8 @@ where
 
 impl SettingsRuntime {
     /// Пропускает одно runtime-originated значение через тот же transaction delegate.
+    ///
+    /// Частный случай батча из одного значения: путь коммита общий.
     pub(super) fn commit_runtime_setting_with_runtime_adapter<A>(
         &mut self,
         request: RuntimeSettingCommitRequest,
@@ -167,9 +169,29 @@ impl SettingsRuntime {
     where
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
+        match self.commit_runtime_settings_with_runtime_adapter(vec![request], runtime_adapter)? {
+            RuntimeCommitOutcome::Transaction(report) => Ok(*report),
+            RuntimeCommitOutcome::NothingRequested => Err(SettingsError::access_failed(
+                "runtime commit of a single setting produced no transaction",
+            )),
+        }
+    }
+
+    /// Пропускает несколько runtime-originated значений ОДНОЙ транзакцией: одна валидация,
+    /// одна запись config-а, одно применение маршрутов, один sync committed snapshot.
+    ///
+    /// Пустой список — [`RuntimeCommitOutcome::NothingRequested`] без побочных эффектов.
+    pub(crate) fn commit_runtime_settings_with_runtime_adapter<A>(
+        &mut self,
+        requests: Vec<RuntimeSettingCommitRequest>,
+        runtime_adapter: &mut A,
+    ) -> SettingsResult<RuntimeCommitOutcome>
+    where
+        A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
+    {
         self.invalidate_ui_model();
         let mut unused_route_sequence = None;
-        let report = {
+        let outcome = {
             let mut delegate = SettingsRuntimeApplyDelegate {
                 validator: AppConfigValidator,
                 store: &mut self.store,
@@ -179,15 +201,17 @@ impl SettingsRuntime {
                 route_sequence: &mut unused_route_sequence,
             };
             self.controller
-                .commit_runtime_setting(request, &mut delegate)?
+                .commit_runtime_settings(requests, &mut delegate)?
         };
-        if report.final_state == ApplyFinalState::FullyApplied {
-            runtime_adapter.sync_committed_config_snapshot(CommittedConfigSnapshot::from_config(
-                self.controller.committed(),
-            ));
+        if let Some(report) = outcome.report() {
+            if report.final_state == ApplyFinalState::FullyApplied {
+                runtime_adapter.sync_committed_config_snapshot(
+                    CommittedConfigSnapshot::from_config(self.controller.committed()),
+                );
+            }
+            self.latest_apply_report = Some(report.clone());
         }
-        self.latest_apply_report = Some(report.clone());
-        Ok(report)
+        Ok(outcome)
     }
 
     /// Test-only apply path with a renderer-neutral adapter.

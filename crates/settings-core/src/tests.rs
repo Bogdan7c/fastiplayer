@@ -1511,3 +1511,5 @@ fn codec_order_descriptor() -> SettingDescriptor {
 
 #[path = "controller/pending_apply/tests.rs"]
 mod pending_apply_tests;
+#[path = "controller/runtime_commit_tests.rs"]
+mod runtime_commit_tests;

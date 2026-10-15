@@ -386,3 +386,59 @@ fn composite_order_matters() {
         vec![0, 255, 0, 255]
     );
 }
+
+#[test]
+fn content_bounds_is_none_without_bitmaps() {
+    let canvas = CanvasSize::new(100, 50).unwrap();
+    let overlay = SubtitleOverlay::empty(canvas, OverlayRevision::INITIAL, OverlayChange::Replaced);
+    assert_eq!(overlay.content_bounds(), None);
+}
+
+#[test]
+fn content_bounds_is_union_of_all_bitmaps() {
+    let canvas = CanvasSize::new(100, 50).unwrap();
+    let mask = full_mask(10);
+    let bitmaps = vec![
+        solid_bitmap(5, 30, 10, WHITE, &mask),
+        solid_bitmap(60, 20, 10, WHITE, &mask),
+        solid_bitmap(40, 38, 10, WHITE, &mask),
+    ];
+    let overlay = SubtitleOverlay::new(
+        canvas,
+        bitmaps,
+        OverlayRevision::INITIAL,
+        OverlayChange::Replaced,
+    )
+    .unwrap();
+    assert_eq!(
+        overlay.content_bounds(),
+        Some(CanvasRect {
+            x: 5,
+            y: 20,
+            width: 65,
+            height: 28
+        })
+    );
+}
+
+#[test]
+fn content_bounds_of_single_bitmap_equals_its_rect() {
+    let canvas = CanvasSize::new(100, 50).unwrap();
+    let mask = full_mask(10);
+    let overlay = SubtitleOverlay::new(
+        canvas,
+        vec![solid_bitmap(90, 40, 10, WHITE, &mask)],
+        OverlayRevision::INITIAL,
+        OverlayChange::Replaced,
+    )
+    .unwrap();
+    assert_eq!(
+        overlay.content_bounds(),
+        Some(CanvasRect {
+            x: 90,
+            y: 40,
+            width: 10,
+            height: 10
+        })
+    );
+}

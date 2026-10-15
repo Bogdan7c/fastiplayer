@@ -10,6 +10,7 @@ use egui::{Color32, Frame, Margin, Stroke};
 
 use crate::ui::animation::AnimationState;
 use crate::ui::assets::AssetProvider;
+use crate::ui::subtitle_appearance_edit::SubtitleAppearanceEditStyle;
 
 pub use minimal::MinimalSkin;
 
@@ -354,6 +355,10 @@ pub trait PlayerSkin: AssetProvider {
     /// Возвращает explicit стиль иконного toolbar плейлиста.
     #[must_use]
     fn playlist_toolbar_style(&self) -> PlaylistToolbarStyle;
+
+    /// Возвращает токены рамки и панели правки субтитров на видео.
+    #[must_use]
+    fn subtitle_appearance_edit_style(&self) -> SubtitleAppearanceEditStyle;
 
     /// Возвращает frame нижней панели.
     fn bottom_panel_frame(&self) -> Frame {

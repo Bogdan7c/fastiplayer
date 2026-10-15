@@ -82,8 +82,8 @@ impl SubtitleOwner {
                 self.apply_discovery(*discovery);
                 JobResultDisposition::Applied
             }
-            SidecarJobOutcome::FileLoaded { .. } => {
-                tracing::error!("A search task returned a file result; ignoring it");
+            SidecarJobOutcome::FileLoaded { .. } | SidecarJobOutcome::FontsBuilt(_) => {
+                tracing::error!("A search task returned a foreign result; ignoring it");
                 media.discovery = DiscoveryState::Failed(SubtitleLoadFailure::WorkerLost);
                 JobResultDisposition::Applied
             }
@@ -140,8 +140,8 @@ impl SubtitleOwner {
             SidecarJobOutcome::Cancelled => return JobResultDisposition::DroppedStale,
             SidecarJobOutcome::FileLoaded { track, fonts } => (Ok(*track), fonts),
             SidecarJobOutcome::Failed(failure) => (Err(failure), None),
-            SidecarJobOutcome::Discovered(_) => {
-                tracing::error!("A file task returned a search result; ignoring it");
+            SidecarJobOutcome::Discovered(_) | SidecarJobOutcome::FontsBuilt(_) => {
+                tracing::error!("A file task returned a foreign result; ignoring it");
                 (Err(SubtitleLoadFailure::WorkerLost), None)
             }
         };
@@ -161,7 +161,7 @@ impl SubtitleOwner {
 
     /// Создаёт растеризатор из принесённой библиотеки, если его ещё нет (две параллельные
     /// задачи могли построить библиотеки: достаётся первая, вторая выбрасывается).
-    fn install_fonts_if_needed(&mut self, fonts: Option<SubtitleFontLibrary>) {
+    pub(super) fn install_fonts_if_needed(&mut self, fonts: Option<SubtitleFontLibrary>) {
         if let Some(fonts) = fonts
             && !self.presenter.has_rasterizer()
         {

@@ -94,6 +94,7 @@ mod same_item_candidate_switch;
 mod sidebar_controller;
 mod startup_context;
 mod strong_media_open;
+mod subtitle_appearance_edit;
 mod subtitle_control_actions;
 mod subtitles;
 mod suspended_media_resume;
@@ -129,6 +130,10 @@ use startup_context::player_timeline_wake_bridge;
 pub(crate) use subtitles::SubmittedFrameForSubtitles;
 #[cfg(test)]
 pub(crate) use subtitles::SubtitleMenuTrack;
+pub(crate) use subtitles::{
+    AppearanceEdit, AppearanceEditFinish, AppearanceEditView, PlacedLayerRect, SubtitleRgb,
+    UserSubtitleStyle,
+};
 pub(crate) use subtitles::{
     AttachOutcome, SubtitleFileOrigin, SubtitleMenuView, SubtitleTrackAvailability,
     SubtitleTrackLabel, SubtitleUnavailableReason, SubtitleVisibility, SyncNudge,

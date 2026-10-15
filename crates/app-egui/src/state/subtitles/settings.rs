@@ -6,11 +6,11 @@
 //! владельцу, что именно изменилось (стиль — сразу, лимиты — со следующей загрузки).
 
 use fastiplayer_config::SubtitlesConfig;
-use subtitle_raster::{RasterLimits, SubtitleAppearance};
+use subtitle_raster::RasterLimits;
 
-use super::appearance_mapping::appearance_from_config;
 use super::intents::SubtitleVisibility;
 use super::limits::{LoadLimits, raster_limits_from_config};
+use super::user_style::UserSubtitleStyle;
 
 /// Настройки субтитров, разобранные из конфига.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,8 +19,8 @@ pub(super) struct SubtitleSettings {
     pub(super) default_visibility: SubtitleVisibility,
     /// Коды предпочитаемых языков в порядке приоритета (проверка кодов — при автовыборе).
     pub(super) preferred_language_codes: Vec<String>,
-    /// Стиль растеризатора.
-    pub(super) appearance: SubtitleAppearance,
+    /// Пользовательский стиль (позиция, размер, цвета, оформление).
+    pub(super) style: UserSubtitleStyle,
     /// Лимиты фоновой загрузки (захватываются задачей при запуске).
     pub(super) load_limits: LoadLimits,
     /// Лимиты растеризатора (действуют с создания растеризатора).
@@ -37,7 +37,7 @@ impl SubtitleSettings {
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
-            appearance: appearance_from_config(config),
+            style: UserSubtitleStyle::from_config(config),
             load_limits: LoadLimits::from_config(config),
             raster_limits: raster_limits_from_config(config),
         }

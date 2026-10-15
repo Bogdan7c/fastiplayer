@@ -4,8 +4,10 @@
 //!
 //! Вход — `SubtitleOverlay` (список масок покрытия с цветом и позицией на холсте) +
 //! прямоугольник картинки видео на экране (`PictureRect`) + размер экрана. Правила:
-//! - левый верхний угол холста лежит в левом верхнем углу картинки видео, округлённом до
-//!   целого пикселя surface;
+//! - левый верхний угол холста лежит в левом верхнем углу картинки видео плюс сдвиг слоя
+//!   (`SubtitleLayerOffset`, пиксели surface, x вправо, y вниз), сумма округляется до
+//!   целого пикселя surface; слой может выходить за картинку (на чёрные полосы) — рисуется
+//!   всё, что попало в видимую область видео;
 //! - 1 пиксель холста = 1 пиксель surface (вызывающий растеризует холст размером
 //!   округлённой картинки), поэтому масштабирования и фильтрации нет;
 //! - картинки рисуются строго в порядке списка (первая — самая нижняя), смешивание «over»;
@@ -24,7 +26,7 @@
 //! содержимым; `Arc::ptr_eq` по маскам (мы держим клоны, адрес не переиспользуется) это
 //! исключает. Тот же overlay на следующем кадре — ноль `write_texture`/`write_buffer`
 //! инстансов и ни одной аллокации, только draw. Сдвиг картинки видео меняет лишь uniform
-//! (16 байт).
+//! (16 байт); то же верно для сдвига слоя (`layer_offset`).
 
 mod atlas;
 mod instances;
@@ -38,6 +40,7 @@ use render_core::{PictureRect, RenderViewport};
 use subtitle_raster::{OverlayRevision, SubtitleOverlay};
 
 use self::atlas::{AtlasLayout, AtlasPackError, MaskExtent, pack_masks};
+pub use self::instances::SubtitleLayerOffset;
 use self::instances::{BitmapInstance, INSTANCE_STRIDE_BYTES, placement_origin};
 use self::pipeline::{
     AtlasGpu, OverlayPipeline, UNIFORM_SIZE_BYTES, create_instance_buffer, create_uniform_buffer,
@@ -54,6 +57,9 @@ pub struct SubtitleOverlayFrame<'frame> {
     /// Картинка видео без чёрных полос в пикселях surface; её округлённый левый верхний
     /// угол — точка, куда ложится (0, 0) холста.
     pub picture_rect: PictureRect,
+    /// Сдвиг всего слоя относительно `picture_rect` в пикселях surface (позиция по выбору
+    /// пользователя, подъём над панелью управления). Меняется только uniform.
+    pub layer_offset: SubtitleLayerOffset,
 }
 
 /// Счётчики загрузок для тестов и диагностики.
@@ -179,7 +185,7 @@ impl SubtitleOverlayRenderer {
         let screen_area =
             RenderViewport::full_surface(target.screen_size[0], target.screen_size[1]);
         let (Some(origin), Some(scissor)) = (
-            placement_origin(frame.picture_rect),
+            placement_origin(frame.picture_rect, frame.layer_offset),
             target.visible_area.intersection(screen_area),
         ) else {
             return SubtitleOverlayOutcome::NothingToDraw;

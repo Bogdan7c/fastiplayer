@@ -48,6 +48,8 @@ pub(crate) struct ChromeHoldObservation<'a> {
     pub(crate) visible_chrome_rects: &'a [egui::Rect],
     /// Открыт ли (или открывается) сайдбар.
     pub(crate) sidebar_open: bool,
+    /// Идёт ли правка внешнего вида субтитров на видео.
+    pub(crate) subtitle_appearance_editing: bool,
     /// Состояние воспроизведения из snapshot-а кадра.
     pub(crate) playback_state: PlaybackState,
 }
@@ -73,6 +75,9 @@ impl ChromeHoldObservation<'_> {
         }
         if ctx.dragged_id().is_some() {
             holds = holds.with(ChromeHoldReason::PointerDrag);
+        }
+        if self.subtitle_appearance_editing {
+            holds = holds.with(ChromeHoldReason::SubtitleAppearanceEdit);
         }
         if !playback_keeps_running(self.playback_state) {
             holds = holds.with(ChromeHoldReason::PlaybackNotRunning);

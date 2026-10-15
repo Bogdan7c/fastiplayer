@@ -10,7 +10,8 @@ use std::sync::mpsc;
 
 use render_core::PictureRect;
 use render_wgpu_shell::{
-    SubtitleOverlayFrame, SubtitleOverlayOutcome, SubtitleOverlayRenderer, SubtitleOverlayTarget,
+    SubtitleLayerOffset, SubtitleOverlayFrame, SubtitleOverlayOutcome, SubtitleOverlayRenderer,
+    SubtitleOverlayTarget,
 };
 
 use super::*;
@@ -38,7 +39,7 @@ pub(super) struct Harness {
 
 impl Harness {
     /// `None`, если нет GPU adapter-а.
-    fn new() -> Option<Self> {
+    pub(super) fn new() -> Option<Self> {
         Self::with_size(TARGET_WIDTH, TARGET_HEIGHT)
     }
 
@@ -96,6 +97,16 @@ impl Harness {
         picture: PictureRect,
         overlay: Option<&subtitle_raster::SubtitleOverlay>,
     ) -> (SubtitleOverlayOutcome, Vec<u8>) {
+        self.frame_with_offset(picture, overlay, SubtitleLayerOffset::NONE)
+    }
+
+    /// То же, но слой субтитров сдвинут на `layer_offset` (как это делает размещение).
+    pub(super) fn frame_with_offset(
+        &mut self,
+        picture: PictureRect,
+        overlay: Option<&subtitle_raster::SubtitleOverlay>,
+        layer_offset: SubtitleLayerOffset,
+    ) -> (SubtitleOverlayOutcome, Vec<u8>) {
         self.write_video(picture);
         let mut encoder = self
             .device
@@ -105,6 +116,7 @@ impl Harness {
         let overlay_frame = overlay.map(|overlay| SubtitleOverlayFrame {
             overlay,
             picture_rect: picture,
+            layer_offset,
         });
         let outcome = self.renderer.render(
             SubtitleOverlayTarget {

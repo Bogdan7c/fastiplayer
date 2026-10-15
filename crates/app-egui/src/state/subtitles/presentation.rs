@@ -37,6 +37,9 @@ pub(crate) struct SubmittedFrameForSubtitles {
     frame_pts: Duration,
     render_generation: u64,
     picture_rect: PictureRect,
+    /// Зажатая область видео в пикселях окна: в ней рисуются субтитры (чёрные полосы
+    /// вокруг картинки - её часть).
+    video_viewport: RenderViewport,
 }
 
 impl SubmittedFrameForSubtitles {
@@ -62,12 +65,18 @@ impl SubmittedFrameForSubtitles {
             frame_pts: frame.pts,
             render_generation: frame_identity.render_generation(),
             picture_rect: layout.rect(),
+            video_viewport: clamped_viewport,
         })
     }
 
     /// Прямоугольник картинки видео на экране (без чёрных полос).
     pub(crate) fn picture_rect(&self) -> PictureRect {
         self.picture_rect
+    }
+
+    /// Зажатая область видео на экране: слой субтитров может стоять где угодно внутри неё.
+    pub(super) fn video_viewport(&self) -> RenderViewport {
+        self.video_viewport
     }
 
     /// Поколение ресурсов рендера, которому принадлежит кадр.
@@ -82,10 +91,29 @@ impl SubmittedFrameForSubtitles {
         render_generation: u64,
         picture_rect: PictureRect,
     ) -> Self {
+        // Область видео по умолчанию - ровно картинка (без полос).
+        let video_viewport = RenderViewport::new(
+            picture_rect.x.max(0.0).floor() as u32,
+            picture_rect.y.max(0.0).floor() as u32,
+            picture_rect.width.ceil() as u32,
+            picture_rect.height.ceil() as u32,
+        );
+        Self::for_test_with_viewport(frame_pts, render_generation, picture_rect, video_viewport)
+    }
+
+    /// То же, но с явной областью видео (тесты полос вокруг картинки).
+    #[cfg(test)]
+    pub(super) fn for_test_with_viewport(
+        frame_pts: Duration,
+        render_generation: u64,
+        picture_rect: PictureRect,
+        video_viewport: RenderViewport,
+    ) -> Self {
         Self {
             frame_pts,
             render_generation,
             picture_rect,
+            video_viewport,
         }
     }
 }
@@ -129,6 +157,15 @@ impl ShownOverlay {
             && self.canvas == canvas
             && self.active_events.as_slice() == active_events
     }
+}
+
+/// Были ли на кадре активные реплики у проверяемой дорожки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveCues {
+    /// Реплик нет (или кадр нельзя разместить).
+    None,
+    /// Реплики есть; показать их удалось или нет - решает растеризатор.
+    Present,
 }
 
 /// Владелец растеризатора и последнего показанного overlay.
@@ -184,7 +221,14 @@ impl SubtitlePresenter {
 
     /// Меняет стиль; следующий кадр растеризуется заново (кэш растеризатора ключуется стилем,
     /// поэтому старые картинки не переиспользуются), последующие кадры берут новый overlay.
+    ///
+    /// Тот же стиль - no-op: показанный overlay остаётся, перерастеризации нет. Это позволяет
+    /// владельцу вызывать метод при любом событии (сохранение правки, подтверждение конфига)
+    /// и не бояться лишней работы на кадре.
     pub(super) fn replace_appearance(&mut self, appearance: SubtitleAppearance) {
+        if self.appearance == appearance {
+            return;
+        }
         self.appearance = appearance;
         self.shown = None;
     }
@@ -222,7 +266,39 @@ impl SubtitlePresenter {
         track: &ActiveSubtitleTrack,
         frame: &SubmittedFrameForSubtitles,
     ) -> Option<&SubtitleOverlay> {
-        let canvas = canvas_for_picture(frame.picture_rect())?;
+        self.prepare_overlay(track, frame);
+        self.shown_overlay()
+    }
+
+    /// Overlay кадра в режиме правки: настоящая реплика, а если на кадре её нет - образец.
+    ///
+    /// Приоритет у настоящей реплики (решение владельца 2): образец подставляется только когда
+    /// `primary` отсутствует либо на этом кадре у неё нет активных реплик.
+    pub(super) fn overlay_for_frame_or_sample(
+        &mut self,
+        primary: Option<&ActiveSubtitleTrack>,
+        sample: &ActiveSubtitleTrack,
+        frame: &SubmittedFrameForSubtitles,
+    ) -> Option<&SubtitleOverlay> {
+        let primary_has_cues =
+            primary.is_some_and(|track| self.prepare_overlay(track, frame) == ActiveCues::Present);
+        if !primary_has_cues {
+            self.prepare_overlay(sample, frame);
+        }
+        self.shown_overlay()
+    }
+
+    /// Готовит `shown` для кадра по репликам дорожки и сообщает, были ли реплики на кадре.
+    ///
+    /// Растеризатор вызывается только когда изменился набор реплик, холст или стиль.
+    fn prepare_overlay(
+        &mut self,
+        track: &ActiveSubtitleTrack,
+        frame: &SubmittedFrameForSubtitles,
+    ) -> ActiveCues {
+        let Some(canvas) = canvas_for_picture(frame.picture_rect()) else {
+            return ActiveCues::None;
+        };
         let lookup_time = track.lookup_time_for(frame.frame_pts);
 
         self.scratch_active_events.clear();
@@ -232,7 +308,7 @@ impl SubtitlePresenter {
         if self.scratch_active_events.is_empty() {
             // На кадре нет реплик: показанного больше нет, растеризатор не нужен.
             self.shown = None;
-            return None;
+            return ActiveCues::None;
         }
 
         let reuse_shown = self.shown.as_ref().is_some_and(|shown| {
@@ -240,9 +316,15 @@ impl SubtitlePresenter {
         });
         if reuse_shown {
             self.stats.reused_frames += 1;
-        } else {
-            self.rasterize_active_events(track, canvas)?;
+        } else if self.rasterize_active_events(track, canvas).is_none() {
+            // Растеризатора ещё нет: реплики есть, показать пока нечего.
+            self.shown = None;
         }
+        ActiveCues::Present
+    }
+
+    /// Показанный overlay, если он не пуст.
+    fn shown_overlay(&self) -> Option<&SubtitleOverlay> {
         self.shown
             .as_ref()
             .map(|shown| &shown.overlay)

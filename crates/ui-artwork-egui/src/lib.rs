@@ -15,6 +15,7 @@ mod playlist_toolbar;
 mod queue_mode_controls;
 mod settings_button;
 mod sidebar_buttons;
+mod subtitle_edit_frame;
 mod subtitles_button;
 #[cfg(test)]
 mod test_frame;
@@ -44,6 +45,10 @@ pub use playlist_toolbar::{
 };
 pub use queue_mode_controls::{QueueModeControlStyle, QueueModeGlyph, QueueModePaintState};
 pub use sidebar_buttons::SidebarButtonGlyph;
+pub use subtitle_edit_frame::{
+    SubtitleEditFrameHandle, SubtitleEditFramePaintState, SubtitleEditFrameStyle,
+    subtitle_edit_frame_handle_rects,
+};
 pub use subtitles_button::{SubtitlesButtonPaintState, SubtitlesButtonStyle};
 pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
 pub use transport_button::{TransportButtonStyle, TransportGlyph};
@@ -106,6 +111,16 @@ impl<'a> ArtworkPainter<'a> {
         style: SubtitlesButtonStyle,
     ) {
         subtitles_button::paint(self.painter, rect, state, style);
+    }
+
+    /// Рисует пунктирную рамку правки субтитров с четырьмя угловыми маркерами.
+    pub fn subtitle_edit_frame(
+        self,
+        frame: egui::Rect,
+        state: SubtitleEditFramePaintState,
+        style: SubtitleEditFrameStyle,
+    ) {
+        subtitle_edit_frame::paint(self.painter, frame, state, style);
     }
 
     /// Рисует стрелку «▾» меню субтитров.

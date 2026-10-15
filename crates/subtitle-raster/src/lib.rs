@@ -58,8 +58,8 @@ pub use fonts::{
     SystemFontScanStatus, TextLanguagePreference,
 };
 pub use overlay::{
-    BitmapOutsideCanvas, CanvasSize, OverlayChange, OverlayRevision, PixelPoint, SubtitleBitmap,
-    SubtitleBitmapError, SubtitleBitmapKind, SubtitleOverlay,
+    BitmapOutsideCanvas, CanvasRect, CanvasSize, OverlayChange, OverlayRevision, PixelPoint,
+    SubtitleBitmap, SubtitleBitmapError, SubtitleBitmapKind, SubtitleOverlay,
 };
 pub use renderer::{
     CueKey, CueSourceId, RasterCacheLimits, RasterInputLimits, RasterLimits, RasterStatistics,

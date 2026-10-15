@@ -6,6 +6,9 @@
 
 pub mod field_widget;
 pub mod layout;
+pub mod section_extras;
+#[cfg(test)]
+mod section_extras_tests;
 pub mod section_list;
 
 use settings_core::{
@@ -65,6 +68,12 @@ pub enum SettingsUiAction {
         /// Stable id provider-а, который нужно обновить.
         provider_id: OptionProviderId,
     },
+
+    /// Пользователь нажал «Edit appearance on video…» в секции субтитров.
+    ///
+    /// Окно настроек этим действием закрывается (черновик в этот момент чист, кнопка иначе
+    /// выключена), а владелец приложения открывает режим правки на видео.
+    EditSubtitleAppearanceOnVideo,
 
     /// Пользователь нажал Apply; окно остаётся открытым до решения runtime-слоя.
     Apply,

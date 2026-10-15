@@ -22,10 +22,12 @@ pub(crate) mod queue_replacement_confirmation;
 pub mod sidebar;
 pub mod skin;
 pub(crate) mod stream_kind_labels;
+pub(crate) mod subtitle_appearance_edit;
 #[cfg(test)]
 pub(crate) mod test_frame;
 pub mod timeline;
 pub mod titlebar_icon_area;
 pub(crate) mod url_sidebar;
+pub(crate) mod video_area_input;
 pub(crate) mod video_surface_input;
 pub mod window_chrome;

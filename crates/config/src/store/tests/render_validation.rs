@@ -7,7 +7,7 @@ use super::*;
 fn render_color_adjustment_defaults_are_identity() {
     let config = AppConfig::default();
 
-    // Точные значения дефолтов закрепляет golden-файл `current_schema_v13.toml`
+    // Точные значения дефолтов закрепляет golden-файл `current_schema_v14.toml`
     // (тест `current_schema_toml_roundtrip_is_textually_stable`); здесь — смысл: identity.
     assert!(config.render.color_adjustment.is_identity());
 }

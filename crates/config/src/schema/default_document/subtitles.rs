@@ -31,6 +31,18 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
         "# Непрозрачность плашки в процентах (0..=100).",
     ),
     (
+        "position_horizontal_percent",
+        "# Центр субтитров по горизонтали в процентах ширины картинки (0..=100; 50 — по центру).",
+    ),
+    (
+        "position_vertical_percent",
+        "# Высота низа субтитров над низом картинки в процентах высоты (-40..=95); минус — на полосу под картинкой.",
+    ),
+    (
+        "ass_force_user_style",
+        "# Применять свои цвета и обводку также к ASS/SSA-субтитрам (работает, когда доступен ASS-рендер).",
+    ),
+    (
         "max_file_size_mb",
         "# Файлы субтитров больше этого размера (МБ) не загружаются.",
     ),
@@ -67,7 +79,7 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
 /// Добавляет комментарии перед ключами секции `[subtitles]`.
 ///
 /// Если секции нет (не должно случаться для документа из `AppConfig`), текст не меняется;
-/// золотой файл `current_schema_v13.toml` тогда провалит тест стабильности схемы.
+/// золотой файл `current_schema_v14.toml` тогда провалит тест стабильности схемы.
 pub(super) fn document_subtitles_defaults(toml_text: &mut String) {
     let Some(header_offset) = toml_text.find(&format!("\n{SUBTITLES_HEADER}\n")) else {
         return;

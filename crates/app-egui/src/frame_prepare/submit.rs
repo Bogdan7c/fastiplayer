@@ -47,9 +47,10 @@ pub(super) fn submit_render_frame(
     let subtitle_overlay = subtitle_frame.as_ref().and_then(|frame| {
         app_state
             .subtitle_overlay_for_submitted_frame(frame)
-            .map(|overlay| SubtitleOverlayFrame {
-                overlay,
+            .map(|placed| SubtitleOverlayFrame {
+                overlay: placed.overlay,
                 picture_rect: frame.picture_rect(),
+                layer_offset: placed.layer_offset,
             })
     });
 

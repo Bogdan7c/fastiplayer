@@ -55,6 +55,22 @@ pub struct PixelPoint {
     pub y: i32,
 }
 
+/// Прямоугольник в пикселях холста: левый верхний угол и размер.
+///
+/// Нужен вызывающему коду, чтобы знать, где на холсте лежит видимое содержимое
+/// ([`SubtitleOverlay::content_bounds`]), не разбирая отдельные картинки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CanvasRect {
+    /// Левый край, пиксели слева направо.
+    pub x: i32,
+    /// Верхний край, пиксели сверху вниз.
+    pub y: i32,
+    /// Ширина в пикселях.
+    pub width: u32,
+    /// Высота в пикселях.
+    pub height: u32,
+}
+
 /// Что изображено в картинке. Порядок отрисовки задаётся порядком в списке,
 /// `kind` нужен диагностике и будущим эффектам (например, размытию только обводки).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -341,6 +357,33 @@ impl SubtitleOverlay {
     /// Нет ни одной картинки.
     pub fn is_empty(&self) -> bool {
         self.bitmaps.is_empty()
+    }
+
+    /// Объединяющий прямоугольник всех картинок в пикселях холста; `None`, если картинок нет.
+    ///
+    /// Границы берутся по размерам картинок целиком (включая нулевое покрытие внутри маски):
+    /// это стабильная геометрия слоя, которая не «дышит» от содержимого масок. Инвариант
+    /// «внутри холста» гарантирует, что результат тоже внутри холста.
+    pub fn content_bounds(&self) -> Option<CanvasRect> {
+        let mut bounds: Option<(i64, i64, i64, i64)> = None;
+        for bitmap in &self.bitmaps {
+            let origin = bitmap.origin();
+            let left = i64::from(origin.x);
+            let top = i64::from(origin.y);
+            let right = left + i64::from(bitmap.width());
+            let bottom = top + i64::from(bitmap.height());
+            bounds = Some(match bounds {
+                None => (left, top, right, bottom),
+                Some((l, t, r, b)) => (l.min(left), t.min(top), r.max(right), b.max(bottom)),
+            });
+        }
+        let (left, top, right, bottom) = bounds?;
+        Some(CanvasRect {
+            x: i32::try_from(left).ok()?,
+            y: i32::try_from(top).ok()?,
+            width: u32::try_from(right - left).ok()?,
+            height: u32::try_from(bottom - top).ok()?,
+        })
     }
 
     /// Композиция на прозрачный холст: RGBA с прямой (не премультиплицированной) альфой,

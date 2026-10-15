@@ -25,7 +25,7 @@ fn newer_schema_config_on_disk(test_name: &str) -> (PathBuf, PathBuf, String) {
     let newer_text = AppConfig::default()
         .to_pretty_toml()
         .expect("defaults are serialized")
-        .replace("schema_version = 13", "schema_version = 99");
+        .replace("schema_version = 14", "schema_version = 99");
     fs::write(&config_path, &newer_text).expect("Config new version recorded");
     (directory, config_path, newer_text)
 }

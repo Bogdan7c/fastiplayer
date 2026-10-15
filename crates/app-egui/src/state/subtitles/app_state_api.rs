@@ -7,11 +7,12 @@
 use std::path::{Path, PathBuf};
 
 use player_core::MediaInstanceId;
-use subtitle_raster::SubtitleOverlay;
 
 use super::intents::{AttachOutcome, QueueOutcome, SubtitleVisibility};
 use super::menu_view::SubtitleMenuView;
-use super::{CurrentMediaForSubtitles, SubmittedFrameForSubtitles, subtitle_source_of};
+use super::{
+    CurrentMediaForSubtitles, PlacedSubtitleOverlay, SubmittedFrameForSubtitles, subtitle_source_of,
+};
 use crate::state::{ActiveMediaSource, AppState};
 use crate::subtitle_message::attach_batch_message;
 
@@ -57,16 +58,17 @@ impl AppState {
     /// Overlay субтитров для кадра, который прямо сейчас уходит в renderer.
     ///
     /// Читает `media_instance_id` и `render_generation` из последнего snapshot плеера,
-    /// не раскрывая их внешнему коду.
+    /// не раскрывая их внешнему коду. Вместе с overlay отдаёт сдвиг слоя (позиция из стиля,
+    /// подъём над панелью управления): рендер применяет его без перерастеризации.
     pub(crate) fn subtitle_overlay_for_submitted_frame(
         &mut self,
         frame: &SubmittedFrameForSubtitles,
-    ) -> Option<&SubtitleOverlay> {
+    ) -> Option<PlacedSubtitleOverlay<'_>> {
         let current = CurrentMediaForSubtitles {
             media_instance_id: self.last_player_snapshot.media_instance_id,
             render_generation: self.last_player_snapshot.render_generation,
         };
-        self.subtitles.overlay_for_frame(current, frame)
+        self.subtitles.placed_overlay_for_frame(current, frame)
     }
 
     // ---- Intent-API для UI (кнопка CC, меню, хоткеи, внешнее открытие) ----

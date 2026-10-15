@@ -5,12 +5,14 @@
 use crate::{
     AppConfig, ConfigResult, HEX_COLOR_LEN, MAX_BACKGROUND_OPACITY_PERCENT,
     MAX_FONT_LOOKUP_CACHE_CHARS, MAX_MAX_CHARS_PER_CUE, MAX_MAX_CUES_ON_SCREEN,
-    MAX_MAX_CUES_PER_FILE, MAX_MAX_FILE_SIZE_MB, MAX_PREFERRED_LANGUAGE_COUNT,
-    MAX_PREFERRED_LANGUAGES_LEN, MAX_RENDER_CACHE_MB, MAX_SIDECAR_MAX_CANDIDATES,
-    MAX_SIDECAR_MAX_ENTRIES_PER_FOLDER, MAX_TEXT_SIZE_PERCENT, MIN_BACKGROUND_OPACITY_PERCENT,
-    MIN_FONT_LOOKUP_CACHE_CHARS, MIN_MAX_CHARS_PER_CUE, MIN_MAX_CUES_ON_SCREEN,
-    MIN_MAX_CUES_PER_FILE, MIN_MAX_FILE_SIZE_MB, MIN_RENDER_CACHE_MB, MIN_SIDECAR_MAX_CANDIDATES,
-    MIN_SIDECAR_MAX_ENTRIES_PER_FOLDER, MIN_TEXT_SIZE_PERCENT, SubtitlesConfig,
+    MAX_MAX_CUES_PER_FILE, MAX_MAX_FILE_SIZE_MB, MAX_POSITION_HORIZONTAL_PERCENT,
+    MAX_POSITION_VERTICAL_PERCENT, MAX_PREFERRED_LANGUAGE_COUNT, MAX_PREFERRED_LANGUAGES_LEN,
+    MAX_RENDER_CACHE_MB, MAX_SIDECAR_MAX_CANDIDATES, MAX_SIDECAR_MAX_ENTRIES_PER_FOLDER,
+    MAX_TEXT_SIZE_PERCENT, MIN_BACKGROUND_OPACITY_PERCENT, MIN_FONT_LOOKUP_CACHE_CHARS,
+    MIN_MAX_CHARS_PER_CUE, MIN_MAX_CUES_ON_SCREEN, MIN_MAX_CUES_PER_FILE, MIN_MAX_FILE_SIZE_MB,
+    MIN_POSITION_HORIZONTAL_PERCENT, MIN_POSITION_VERTICAL_PERCENT, MIN_RENDER_CACHE_MB,
+    MIN_SIDECAR_MAX_CANDIDATES, MIN_SIDECAR_MAX_ENTRIES_PER_FOLDER, MIN_TEXT_SIZE_PERCENT,
+    SubtitlesConfig,
 };
 
 use super::{invalid_value, validate_u16_range, validate_u32_range};
@@ -36,8 +38,28 @@ pub(super) fn validate_subtitles_section(config: &AppConfig) -> ConfigResult<()>
         u16::from(MIN_BACKGROUND_OPACITY_PERCENT),
         u16::from(MAX_BACKGROUND_OPACITY_PERCENT),
     )?;
+    validate_u16_range(
+        "subtitles.position_horizontal_percent",
+        u16::from(subtitles.position_horizontal_percent),
+        u16::from(MIN_POSITION_HORIZONTAL_PERCENT),
+        u16::from(MAX_POSITION_HORIZONTAL_PERCENT),
+    )?;
+    validate_vertical_position(subtitles.position_vertical_percent)?;
     validate_preferred_languages(subtitles)?;
     validate_subtitle_limits(subtitles)
+}
+
+/// Вертикальное положение знаковое (`i16`), поэтому проверяется отдельно от беззнаковых помощников.
+fn validate_vertical_position(value: i16) -> ConfigResult<()> {
+    if (MIN_POSITION_VERTICAL_PERCENT..=MAX_POSITION_VERTICAL_PERCENT).contains(&value) {
+        return Ok(());
+    }
+    Err(invalid_value(
+        "subtitles.position_vertical_percent",
+        format!(
+            "the value must be between {MIN_POSITION_VERTICAL_PERCENT} and {MAX_POSITION_VERTICAL_PERCENT}; got {value}"
+        ),
+    ))
 }
 
 /// Проверяет числовые лимиты ресурсов.

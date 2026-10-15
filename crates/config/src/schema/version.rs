@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 13;
+pub const CURRENT_SCHEMA_VERSION: u32 = 14;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -46,14 +46,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_11: u32 = 11;
 /// только поднимает версию (старый файл без секции грузится с defaults).
 pub(crate) const LEGACY_SCHEMA_VERSION_12: u32 = 12;
 
+/// Последняя схема до позиции субтитров и флага `ass_force_user_style`.
+///
+/// Решение владельца (субтитры, сессия 05): три поля добавляются со значениями по
+/// умолчанию; переписывать пользовательские значения нечего, поэтому миграция v13 -> v14
+/// только поднимает версию (старый файл без полей грузится с defaults).
+pub(crate) const LEGACY_SCHEMA_VERSION_13: u32 = 13;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v13 и полная цепочка поддерживаемых legacy-версий v2..v12.
+    /// Текущая схема v14 и полная цепочка поддерживаемых legacy-версий v2..v13.
     #[test]
-    fn schema_v13_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 13);
+    fn schema_v14_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -67,8 +74,9 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_10,
                 LEGACY_SCHEMA_VERSION_11,
                 LEGACY_SCHEMA_VERSION_12,
+                LEGACY_SCHEMA_VERSION_13,
             ],
-            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
     }
 }

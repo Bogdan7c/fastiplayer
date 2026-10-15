@@ -3,10 +3,13 @@
 //! Общие помощники: временный каталог с «фильмом» и файлом субтитров, владелец с быстрыми
 //! встроенными шрифтами, ожидание фоновой загрузки через настоящий `begin_media`.
 
+mod appearance_edit;
+mod appearance_edit_ui;
 mod control_actions;
 mod drop_flow;
 mod gpu_chain;
 mod language;
+mod placement;
 mod presentation;
 mod real_sidecar;
 mod sidecar_job;
@@ -79,6 +82,7 @@ pub(super) fn expect_discovery(outcome: SidecarJobOutcome) -> DiscoveryOutcome {
     match outcome {
         SidecarJobOutcome::Discovered(discovery) => *discovery,
         SidecarJobOutcome::FileLoaded { .. } => panic!("expected a search result, got a file"),
+        SidecarJobOutcome::FontsBuilt(_) => panic!("expected a search result, got fonts"),
         SidecarJobOutcome::Failed(failure) => panic!("expected a search result, got {failure}"),
         SidecarJobOutcome::Cancelled => panic!("expected a search result, got cancellation"),
     }

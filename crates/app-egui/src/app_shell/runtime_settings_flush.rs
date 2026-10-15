@@ -7,6 +7,7 @@
 use std::time::Instant;
 
 use crate::frame_prepare::with_lifecycle_settings_adapter;
+use crate::settings_runtime::SubtitleStyleCommitOutcome;
 use crate::user_audio_level::PlayerAudioObservation;
 
 use super::AppShell;
@@ -53,25 +54,46 @@ impl AppShell {
             Instant::now(),
         );
 
+        // Открытая правка внешнего вида субтитров на видео при выходе/suspend - это «Done»:
+        // стиль записывается сразу одной транзакцией (его debounce не нужен: действие осознанное).
+        let subtitle_style_commit = app_state.take_subtitle_style_commit_for_lifecycle_boundary();
+
         let settings_runtime = &mut self.settings_runtime;
-        let (sidebar_result, audio_result, subtitles_result) = with_lifecycle_settings_adapter(
-            window,
-            renderer,
-            app_state,
-            &mut self.playlist_runtime,
-            &mut self.renderer_lifecycle,
-            |runtime_adapter| {
-                // Незавершённое применение настроек отменяется первым: оно не должно ни
-                // записать config, ни мешать runtime-commit-ам ниже (C2).
-                settings_runtime.cancel_pending_apply(runtime_adapter);
-                // Ошибка sidebar не должна мешать сохранить громкость, и наоборот.
-                let sidebar_result = settings_runtime.flush_pending_sidebar_resize(runtime_adapter);
-                let audio_result = settings_runtime.flush_pending_user_audio_level(runtime_adapter);
-                let subtitles_result =
-                    settings_runtime.flush_pending_subtitle_enabled(runtime_adapter);
-                (sidebar_result, audio_result, subtitles_result)
-            },
-        );
+        let (sidebar_result, audio_result, subtitles_result, subtitle_style_outcome) =
+            with_lifecycle_settings_adapter(
+                window,
+                renderer,
+                app_state,
+                &mut self.playlist_runtime,
+                &mut self.renderer_lifecycle,
+                |runtime_adapter| {
+                    // Незавершённое применение настроек отменяется первым: оно не должно ни
+                    // записать config, ни мешать runtime-commit-ам ниже (C2).
+                    settings_runtime.cancel_pending_apply(runtime_adapter);
+                    // Ошибка sidebar не должна мешать сохранить громкость, и наоборот.
+                    let sidebar_result =
+                        settings_runtime.flush_pending_sidebar_resize(runtime_adapter);
+                    let audio_result =
+                        settings_runtime.flush_pending_user_audio_level(runtime_adapter);
+                    let subtitles_result =
+                        settings_runtime.flush_pending_subtitle_enabled(runtime_adapter);
+                    let subtitle_style_outcome = subtitle_style_commit.map(|requests| {
+                        settings_runtime.commit_subtitle_style(requests, runtime_adapter)
+                    });
+                    (
+                        sidebar_result,
+                        audio_result,
+                        subtitles_result,
+                        subtitle_style_outcome,
+                    )
+                },
+            );
+
+        // Причина сбоя уже в статусе настроек и в логе (`commit_subtitle_style`); здесь только
+        // отмечаем, что стиль на границе жизненного цикла не сохранился.
+        if subtitle_style_outcome == Some(SubtitleStyleCommitOutcome::Failed) {
+            tracing::error!("Subtitle style was not saved before suspend/exit");
+        }
 
         if let Err(error) = sidebar_result {
             self.settings_runtime

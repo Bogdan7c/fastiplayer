@@ -1,8 +1,10 @@
 use super::telemetry_panel::TelemetryPanelState;
 use super::*;
 use crate::fullscreen_chrome::ChromeHoldObservation;
+use crate::state::subtitles::BottomControlsObstruction;
 use crate::ui::buffering_indicator::render_buffering_indicator;
-use crate::ui::video_surface_input;
+use crate::ui::subtitle_appearance_edit::SubtitleAppearanceEditInput;
+use crate::ui::video_area_input::{self, VideoAreaMode};
 use crate::ui::{control_action_coalescing, fullscreen_chrome_panels, global_hotkeys};
 use tracing::warn;
 
@@ -229,6 +231,11 @@ impl AppState {
         let window_is_fullscreen = window.fullscreen().is_some();
         let mut control_actions = Vec::new();
         let mut settings_actions = Vec::new();
+        // Режим правки субтитров на видео: снимок сессии, токены skin-а и собранные намерения.
+        let subtitle_edit_view = self.subtitle_appearance_edit_view();
+        let subtitle_edit_style = selected_skin.subtitle_appearance_edit_style();
+        let settings_host_facts = self.settings_host_facts();
+        let mut subtitle_edit_actions = Vec::new();
         let mut sidebar_width_change = None;
         let mut sidebar_close_requested = false;
         let mut window_chrome_actions = Vec::new();
@@ -335,6 +342,13 @@ impl AppState {
                 },
             );
             control_actions = bottom_controls.inner;
+            // Панель закрывает низ видео: владелец субтитров поднимает слой, только если мешает.
+            self.subtitles.observe_bottom_controls_obstruction(
+                BottomControlsObstruction::from_visible_rect(
+                    bottom_controls.visible_rect,
+                    ui.ctx().pixels_per_point(),
+                ),
+            );
             bottom_controls_elapsed = stage_started_at.elapsed();
 
             let sidebar_rect = sidebar::show(
@@ -345,6 +359,7 @@ impl AppState {
                 self.sidebar_controller.content_transition(),
                 SidebarRenderContext {
                     model: settings_ui_model,
+                    settings_host: settings_host_facts,
                     snapshot: player_snapshot,
                     url_model: &url_sidebar_model,
                     playlist_model: playlist_view_model.as_ref(),
@@ -394,11 +409,24 @@ impl AppState {
             }
 
             // До оверлеев: их виджеты регистрируются позже и перехватывают клики первыми.
-            control_actions.extend(
-                video_surface_input::show(ui, ui.available_rect_before_wrap())
-                    .into_iter()
-                    .map(ControlAction::from),
+            // Ввод по видео принадлежит либо обычному просмотру, либо правке субтитров.
+            let video_rect = ui.available_rect_before_wrap();
+            let video_area = video_area_input::show(
+                ui,
+                video_rect,
+                match subtitle_edit_view.as_ref() {
+                    Some(view) => {
+                        VideoAreaMode::SubtitleAppearanceEdit(SubtitleAppearanceEditInput {
+                            view,
+                            video_rect,
+                            style: &subtitle_edit_style,
+                        })
+                    }
+                    None => VideoAreaMode::Playback,
+                },
             );
+            control_actions.extend(video_area.control_actions);
+            subtitle_edit_actions = video_area.subtitle_edit_actions;
             // Глобальные клавиши (скорость, громкость, Ctrl+O) — после панелей кадра:
             // сфокусированные виджеты уже забрали свои клавиши.
             control_actions.extend(global_hotkeys::collect_actions(ui.ctx()));
@@ -426,6 +454,7 @@ impl AppState {
                 ChromeHoldObservation {
                     visible_chrome_rects: &visible_chrome_rects,
                     sidebar_open: self.sidebar_controller.displayed().is_some(),
+                    subtitle_appearance_editing: subtitle_edit_view.is_some(),
                     playback_state: player_snapshot.playback_state,
                 },
             );
@@ -433,6 +462,8 @@ impl AppState {
         if sidebar_close_requested {
             self.sidebar_controller.hide();
         }
+        self.apply_subtitle_appearance_edit_actions(subtitle_edit_actions);
+        self.route_subtitle_appearance_edit_settings_actions(&mut settings_actions);
         self.apply_notification_actions(notification_output);
         let egui_run_elapsed = egui_run_started_at.elapsed();
 

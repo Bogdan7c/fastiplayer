@@ -895,6 +895,9 @@ pub(crate) fn render_frame(
 
     // Решение пользователя по субтитрам этого кадра (C, CC, меню); отдаётся один раз.
     let subtitle_enabled_change = app_state.take_subtitle_enabled_preference_change();
+    // Стиль, сохранённый кнопкой «Готово» (или неявным выходом), пишется сразу, одной транзакцией.
+    let subtitle_style_commit = app_state.take_subtitle_style_commit();
+    let mut subtitle_style_outcome = None;
     let settings_action_requested_repaint = {
         let surface_event_pending = window_chrome_actions.iter().any(|action| {
             matches!(
@@ -919,6 +922,10 @@ pub(crate) fn render_frame(
             subtitle_enabled_change,
             &mut runtime_adapter,
         );
+        if let Some(requests) = subtitle_style_commit {
+            subtitle_style_outcome =
+                Some(settings_runtime.commit_subtitle_style(requests, &mut runtime_adapter));
+        }
         let actions_requested_repaint = match settings_runtime
             .handle_ui_actions_with_runtime_adapter(settings_actions, &mut runtime_adapter)
         {
@@ -930,6 +937,9 @@ pub(crate) fn render_frame(
         };
         resize_requested_repaint || actions_requested_repaint
     };
+    if subtitle_style_outcome == Some(crate::settings_runtime::SubtitleStyleCommitOutcome::Failed) {
+        app_state.report_subtitle_style_save_failed();
+    }
     let chrome_close_requested = apply_window_chrome_actions(window, window_chrome_actions);
     renderer_lifecycle.set_surface_event_pending(false);
 

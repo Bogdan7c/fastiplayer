@@ -106,6 +106,8 @@ pub(crate) struct SidebarOutput {
 /// Все borrowed данные сменяемого содержимого sidebar.
 pub(crate) struct SidebarRenderContext<'a> {
     pub(crate) model: &'a SettingsUiModel,
+    /// Факты приложения для дополнительных строк секций настроек (например, есть ли видео).
+    pub(crate) settings_host: crate::settings_ui::section_extras::SettingsHostFacts,
     pub(crate) snapshot: &'a player_core::PlayerSnapshot,
     pub(crate) url_model: &'a crate::web_media_stream_model::UrlSidebarModel,
     pub(crate) playlist_model: Option<&'a crate::playlist_runtime::PlaylistViewModel>,
@@ -342,7 +344,12 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
                 );
             }
             SidebarSection::Settings => {
-                layout::show(ui, context.model, context.settings_actions);
+                layout::show_with_host_facts(
+                    ui,
+                    context.model,
+                    context.settings_host,
+                    context.settings_actions,
+                );
             }
             SidebarSection::Url => {
                 *context.url_action = url_sidebar::show(ui, context.url_model);

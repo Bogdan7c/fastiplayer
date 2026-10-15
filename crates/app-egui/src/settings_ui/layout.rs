@@ -4,6 +4,7 @@ use egui::collapsing_header::CollapsingState;
 use egui::{Button, Layout, RichText, Ui};
 use settings_core::{SettingGroupId, SettingSectionId};
 
+use super::section_extras::{self, SettingsHostFacts};
 use super::{
     SettingsUiAction, SettingsUiCommandState, SettingsUiField, SettingsUiModel, field_widget,
     section_list,
@@ -16,6 +17,17 @@ use super::{
 /// Статус живёт в блоке фиксированной высоты: его появление/смена текста
 /// (preview/reset ticks) не сдвигают поля и не дёргают панель при drag-е.
 pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAction>) {
+    show_with_host_facts(ui, model, SettingsHostFacts::default(), actions);
+}
+
+/// То же, что [`show`], но с фактами о приложении для дополнительных строк секций
+/// (например, есть ли видео для кнопки «Edit appearance on video…»).
+pub fn show_with_host_facts(
+    ui: &mut Ui,
+    model: &SettingsUiModel,
+    host: SettingsHostFacts,
+    actions: &mut Vec<SettingsUiAction>,
+) {
     let status_height = status_reserved_height(ui);
 
     ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
@@ -55,10 +67,26 @@ pub fn show(ui: &mut Ui, model: &SettingsUiModel, actions: &mut Vec<SettingsUiAc
                 .id_salt(selected_section.section.as_str())
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    render_section(ui, &section_fields, selected_section, actions);
+                    render_section(
+                        ui,
+                        &section_fields,
+                        selected_section,
+                        SectionContext {
+                            host,
+                            command_state: model.command_state,
+                        },
+                        actions,
+                    );
                 });
         });
     });
+}
+
+/// Факты, нужные секции кроме её полей: состояние приложения и командных кнопок.
+#[derive(Clone, Copy)]
+struct SectionContext {
+    host: SettingsHostFacts,
+    command_state: SettingsUiCommandState,
 }
 
 /// Строки, резервируемые под status snapshot между списком и footer-ом.
@@ -124,9 +152,17 @@ fn render_section(
     ui: &mut Ui,
     fields: &[&SettingsUiField],
     section: &section_list::SettingsUiSection,
+    context: SectionContext,
     actions: &mut Vec<SettingsUiAction>,
 ) {
     render_section_header(ui, section, actions);
+    section_extras::show_extras_for_section(
+        ui,
+        &section.section,
+        context.host,
+        context.command_state,
+        actions,
+    );
 
     let mut groups: Vec<(&SettingGroupId, Vec<&SettingsUiField>)> = Vec::new();
     for field in fields.iter().copied() {

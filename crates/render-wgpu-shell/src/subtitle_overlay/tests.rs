@@ -292,6 +292,7 @@ fn hello_cue_is_blended_exactly_on_the_bottom_of_the_letterboxed_picture() {
         Some(&SubtitleOverlayFrame {
             overlay: &overlay,
             picture_rect: rect,
+            layer_offset: SubtitleLayerOffset::NONE,
         }),
         full_view(),
     );
@@ -367,6 +368,7 @@ fn same_revision_uploads_nothing_and_new_revision_uploads_once_more() {
     let frame_of = |overlay| SubtitleOverlayFrame {
         overlay,
         picture_rect: rect,
+        layer_offset: SubtitleLayerOffset::NONE,
     };
 
     let (_, first) = harness.frame(Some(&frame_of(&hello)), full_view());
@@ -411,6 +413,7 @@ fn recreated_rasterizer_with_equal_revision_is_still_uploaded() {
         Some(&SubtitleOverlayFrame {
             overlay: &first,
             picture_rect: rect,
+            layer_offset: SubtitleLayerOffset::NONE,
         }),
         full_view(),
     );
@@ -418,6 +421,7 @@ fn recreated_rasterizer_with_equal_revision_is_still_uploaded() {
         Some(&SubtitleOverlayFrame {
             overlay: &second,
             picture_rect: rect,
+            layer_offset: SubtitleLayerOffset::NONE,
         }),
         full_view(),
     );
@@ -441,6 +445,7 @@ fn missing_or_empty_overlay_draws_nothing_and_touches_no_counters() {
         Some(&SubtitleOverlayFrame {
             overlay: &empty,
             picture_rect: rect,
+            layer_offset: SubtitleLayerOffset::NONE,
         }),
         full_view(),
     );
@@ -460,6 +465,7 @@ fn moving_the_picture_rewrites_only_the_uniform_and_shifts_the_pixels() {
     let at = |picture_rect| SubtitleOverlayFrame {
         overlay: &overlay,
         picture_rect,
+        layer_offset: SubtitleLayerOffset::NONE,
     };
 
     let (_, original) = harness.frame(Some(&at(rect)), full_view());
@@ -493,6 +499,7 @@ fn subtitles_never_paint_outside_the_visible_video_area() {
     let frame = SubtitleOverlayFrame {
         overlay: &overlay,
         picture_rect: rect,
+        layer_offset: SubtitleLayerOffset::NONE,
     };
     let (_, video_only) = harness.frame(None, full_view());
     let (_, unclipped) = harness.frame(Some(&frame), full_view());
@@ -524,4 +531,87 @@ fn subtitles_never_paint_outside_the_visible_video_area() {
     let (outcome, pixels) = harness.frame(Some(&frame), RenderViewport::new(0, 0, 0, 0));
     assert_eq!(outcome, SubtitleOverlayOutcome::NothingToDraw);
     assert_eq!(pixels, video_only);
+}
+
+#[test]
+fn layer_offset_shifts_pixels_onto_the_bar_by_rewriting_only_the_uniform() {
+    let mut harness = gpu_or_skip!();
+    let (rect, canvas) = letterboxed_picture();
+    let overlay = rasterize(&mut rasterizer(), 1, Some("Hello"), canvas);
+    let with_offset = |layer_offset| SubtitleOverlayFrame {
+        overlay: &overlay,
+        picture_rect: rect,
+        layer_offset,
+    };
+    let (_, video_only) = harness.frame(None, full_view());
+    let (_, original) = harness.frame(Some(&with_offset(SubtitleLayerOffset::NONE)), full_view());
+    let before = harness.renderer.upload_stats();
+
+    let (shift_x, shift_y) = (-12_i32, 24_i32);
+    let (outcome, shifted) = harness.frame(
+        Some(&with_offset(SubtitleLayerOffset {
+            x: shift_x as f32,
+            y: shift_y as f32,
+        })),
+        full_view(),
+    );
+    assert!(matches!(outcome, SubtitleOverlayOutcome::Drawn { .. }));
+
+    // Только uniform: маски в атлас заново не грузились.
+    let after = harness.renderer.upload_stats();
+    assert_eq!(after.atlas_uploads, before.atlas_uploads);
+    assert_eq!(after.bitmap_uploads, before.bitmap_uploads);
+    assert_eq!(after.uniform_uploads, before.uniform_uploads + 1);
+
+    // Каждый изменённый пиксель исходного кадра переехал ровно на (shift_x, shift_y),
+    // а нижняя полоса под картинкой в исходном кадре чистая и в сдвинутом — нет.
+    let bar_top = (rect.y + rect.height).round() as u32;
+    let mut changed_pixels = 0;
+    let mut changed_in_bar_before = 0;
+    let mut changed_in_bar_after = 0;
+    for y in 0..TARGET_HEIGHT {
+        for x in 0..TARGET_WIDTH {
+            let in_bar = y >= bar_top;
+            if pixel(&original, x, y) != pixel(&video_only, x, y) {
+                changed_pixels += 1;
+                changed_in_bar_before += usize::from(in_bar);
+                let (moved_x, moved_y) = (x as i32 + shift_x, y as i32 + shift_y);
+                assert_eq!(
+                    pixel(&shifted, moved_x as u32, moved_y as u32),
+                    pixel(&original, x, y),
+                    "pixel ({x},{y}) must land at ({moved_x},{moved_y})"
+                );
+            }
+            changed_in_bar_after +=
+                usize::from(in_bar && pixel(&shifted, x, y) != pixel(&video_only, x, y));
+        }
+    }
+    assert!(changed_pixels > 0);
+    assert_eq!(
+        changed_in_bar_before, 0,
+        "default placement stays on the picture"
+    );
+    assert!(changed_in_bar_after > 0, "shifted layer must reach the bar");
+}
+
+#[test]
+fn layer_offset_is_still_clipped_by_the_visible_video_area() {
+    let mut harness = gpu_or_skip!();
+    let (rect, canvas) = letterboxed_picture();
+    let overlay = rasterize(&mut rasterizer(), 1, Some("Hello"), canvas);
+    let frame = SubtitleOverlayFrame {
+        overlay: &overlay,
+        picture_rect: rect,
+        layer_offset: SubtitleLayerOffset { x: 0.0, y: 24.0 },
+    };
+    let (_, video_only) = harness.frame(None, full_view());
+    // Видимая область заканчивается на нижнем крае картинки: бар под ней недоступен.
+    let bar_top = (rect.y + rect.height).round() as u32;
+    let picture_only = RenderViewport::new(0, 0, TARGET_WIDTH, bar_top);
+    let (_, pixels) = harness.frame(Some(&frame), picture_only);
+    for y in bar_top..TARGET_HEIGHT {
+        for x in 0..TARGET_WIDTH {
+            assert_eq!(pixel(&pixels, x, y), pixel(&video_only, x, y), "({x},{y})");
+        }
+    }
 }

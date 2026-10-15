@@ -56,6 +56,7 @@ mod snapshot_routes;
 mod status_text_user_facing;
 mod stepwise_apply;
 mod subtitle_enabled;
+mod subtitle_style;
 mod transaction_apply;
 mod user_audio_level;
 mod web_media_recovery_apply;

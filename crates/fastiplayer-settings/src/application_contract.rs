@@ -535,6 +535,9 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "subtitles.text_color"
         | "subtitles.background_color"
         | "subtitles.background_opacity_percent"
+        | "subtitles.position_horizontal_percent"
+        | "subtitles.position_vertical_percent"
+        | "subtitles.ass_force_user_style"
         | "subtitles.max_file_size_mb"
         | "subtitles.max_cues_per_file"
         | "subtitles.sidecar_max_entries_per_folder"
@@ -662,7 +665,7 @@ mod tests {
         );
     }
 
-    /// Все 15 настроек субтитров идут своим route и владельцем, не задевая playlist/player.
+    /// Все 18 настроек субтитров идут своим route и владельцем, не задевая playlist/player.
     #[test]
     fn subtitle_descriptors_use_dedicated_route_and_owner() {
         let registry = crate::app_config_registry().expect("registry builds");
@@ -671,7 +674,7 @@ mod tests {
             .filter(|descriptor| descriptor.id.as_str().starts_with("subtitles."))
             .map(|descriptor| descriptor.id.clone())
             .collect();
-        assert_eq!(subtitle_ids.len(), 15);
+        assert_eq!(subtitle_ids.len(), 18);
 
         for setting_id in subtitle_ids {
             let contract = setting_application_contract(&setting_id)

@@ -127,6 +127,7 @@ fn every_hold_reason_keeps_chrome_visible_without_wake_deadline() {
         ChromeHoldReason::PopupOpen,
         ChromeHoldReason::PointerDrag,
         ChromeHoldReason::PlaybackNotRunning,
+        ChromeHoldReason::SubtitleAppearanceEdit,
     ] {
         let mut harness = Harness::fullscreen();
         harness
@@ -289,6 +290,7 @@ fn finish_real_frame(
                     ChromeHoldObservation {
                         visible_chrome_rects: observation_rects,
                         sidebar_open,
+                        subtitle_appearance_editing: false,
                         playback_state,
                     },
                 );
@@ -406,4 +408,36 @@ fn finish_frame_hides_cursor_only_after_hide_decision() {
         |_| {},
     );
     assert_eq!(hidden_cursor, egui::CursorIcon::None);
+}
+
+#[test]
+fn subtitle_appearance_edit_holds_chrome_even_while_playing_and_the_hold_is_not_sticky() {
+    let egui_ctx = egui::Context::default();
+    let mut controller = FullscreenChromeController::default();
+    let finish = |controller: &mut FullscreenChromeController, editing: bool, time: f64| {
+        run_ui_frame(&egui_ctx, input_at(time, Vec::new()), |ui| {
+            controller.finish_frame(
+                ui.ctx(),
+                ChromeHoldObservation {
+                    visible_chrome_rects: &[],
+                    sidebar_open: false,
+                    subtitle_appearance_editing: editing,
+                    playback_state: PlaybackState::Playing,
+                },
+            );
+        });
+    };
+
+    finish(&mut controller, true, 0.0);
+    assert_eq!(
+        controller.holds,
+        ChromeHolds::default().with(ChromeHoldReason::SubtitleAppearanceEdit),
+        "editing is the only reason: the video is playing"
+    );
+
+    finish(&mut controller, false, 0.05);
+    assert!(
+        controller.holds.is_empty(),
+        "the hold ends with the edit mode"
+    );
 }

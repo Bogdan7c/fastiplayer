@@ -116,6 +116,9 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "subtitles.text_color",
     "subtitles.background_color",
     "subtitles.background_opacity_percent",
+    "subtitles.position_horizontal_percent",
+    "subtitles.position_vertical_percent",
+    "subtitles.ass_force_user_style",
     "subtitles.max_file_size_mb",
     "subtitles.max_cues_per_file",
     "subtitles.sidecar_max_entries_per_folder",
@@ -320,6 +323,19 @@ fn metadata_ranges_match_validation_constants() {
         "subtitles.background_opacity_percent",
         crate::MIN_BACKGROUND_OPACITY_PERCENT,
         crate::MAX_BACKGROUND_OPACITY_PERCENT,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.position_horizontal_percent",
+        crate::MIN_POSITION_HORIZONTAL_PERCENT,
+        crate::MAX_POSITION_HORIZONTAL_PERCENT,
+    );
+    // Вертикальная позиция знаковая: проверяем, что отрицательный минимум дошёл до редактора без потерь.
+    assert_integer_range(
+        &registry,
+        "subtitles.position_vertical_percent",
+        crate::MIN_POSITION_VERTICAL_PERCENT,
+        crate::MAX_POSITION_VERTICAL_PERCENT,
     );
     assert_integer_range(
         &registry,

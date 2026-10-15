@@ -387,6 +387,7 @@ mod tests {
             ui.set_width(HEADER_TEST_WIDTH_POINTS);
             let mut render_context = SidebarRenderContext {
                 model: &settings_model,
+                settings_host: crate::settings_ui::section_extras::SettingsHostFacts::default(),
                 snapshot: &snapshot,
                 url_model: &url_model,
                 playlist_model: None,

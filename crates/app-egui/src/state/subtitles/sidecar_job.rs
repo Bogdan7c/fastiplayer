@@ -1,9 +1,11 @@
-//! Тело фоновой задачи субтитров. Два вида работы (см. [`SidecarJobTask`]):
+//! Тело фоновой задачи субтитров. Три вида работы (см. [`SidecarJobTask`]):
 //!
 //! 1. `DiscoverNextToVideo` — найти файлы рядом с видео, выполнить автовыбор и прочитать
 //!    ТОЛЬКО одну дорожку (выбранную или принудительную). Остальные остаются в списке
 //!    непрочитанными.
 //! 2. `LoadFile` — прочитать одну явно указанную дорожку (выбор в меню, брошенный файл).
+//!
+//! 3. `BuildFontsOnly` — только построить библиотеку шрифтов (образец в режиме правки).
 //!
 //! Это чистая функция без потоков и без знания об `AppState`: поток и доставку результата
 //! обеспечивает `job_runner`, а здесь только последовательность шагов с проверками отмены
@@ -73,6 +75,9 @@ pub(super) enum SidecarJobTask {
         /// Файл (из поиска или выбранный пользователем).
         candidate: SidecarSubtitleCandidate,
     },
+    /// Только построить библиотеку шрифтов (для образца в режиме правки, когда ни одна дорожка
+    /// ещё не читалась и растеризатора нет).
+    BuildFontsOnly,
 }
 
 /// Что нужно сделать задаче.
@@ -150,10 +155,6 @@ pub(super) struct DiscoveryOutcome {
 }
 
 /// Итог задачи.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "значение живёт мгновение и один раз переезжает через mailbox; Box только усложнил бы доступ"
-)]
 pub(super) enum SidecarJobOutcome {
     /// Поиск выполнен (кандидатов может не быть: это не ошибка).
     Discovered(Box<DiscoveryOutcome>),
@@ -164,6 +165,8 @@ pub(super) enum SidecarJobOutcome {
         /// Новая библиотека шрифтов, если она требовалась.
         fonts: Option<SubtitleFontLibrary>,
     },
+    /// Библиотека шрифтов построена (`None` - растеризатор уже есть, строить не пришлось).
+    FontsBuilt(Option<SubtitleFontLibrary>),
     /// Задача не дала результата по типизированной причине (для `LoadFile` — дорожка
     /// недоступна; для поиска — поиск невозможен).
     Failed(SubtitleLoadFailure),
@@ -189,6 +192,12 @@ pub(super) fn run_sidecar_job(
             is_cancelled,
         ),
         SidecarJobTask::LoadFile { candidate } => run_file_load(request, candidate, is_cancelled),
+        SidecarJobTask::BuildFontsOnly => match build_fonts_unless_cancelled(request, is_cancelled)
+        {
+            FontStep::Built(fonts) => SidecarJobOutcome::FontsBuilt(fonts),
+            FontStep::Cancelled => SidecarJobOutcome::Cancelled,
+            FontStep::Failed(failure) => SidecarJobOutcome::Failed(failure),
+        },
     }
 }
 

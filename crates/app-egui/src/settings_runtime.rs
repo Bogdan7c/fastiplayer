@@ -40,12 +40,12 @@ use settings_core::{
     CommittedSettingsApplier, OptionProviderId, PersistOutcome, PersistReport, PersistRequest,
     PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest,
     PreviewRollbacker, PreviewSettingsApplier, ResetReport, RollbackReport, RollbackResult,
-    RuntimeSettingCommitRequest, SelectDescriptor, SettingEditor, SettingGroupId, SettingId,
-    SettingOption, SettingOptionCurrentValue, SettingOptionId, SettingOptionProvider,
-    SettingOptions, SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus,
-    SettingRouteId, SettingText, SettingValue, SettingsController, SettingsError,
-    SettingsPersister, SettingsRegistry, SettingsResult, SettingsSurfaceId, SettingsValidator,
-    ValidationReport, ValidationRequest,
+    RuntimeCommitOutcome, RuntimeSettingCommitRequest, SelectDescriptor, SettingEditor,
+    SettingGroupId, SettingId, SettingOption, SettingOptionCurrentValue, SettingOptionId,
+    SettingOptionProvider, SettingOptions, SettingOptionsError, SettingOptionsRequest,
+    SettingOptionsStatus, SettingRouteId, SettingText, SettingValue, SettingsController,
+    SettingsError, SettingsPersister, SettingsRegistry, SettingsResult, SettingsSurfaceId,
+    SettingsValidator, ValidationReport, ValidationRequest,
 };
 
 #[cfg(test)]
@@ -77,6 +77,7 @@ mod sidebar_resize;
 mod status_text;
 mod stepwise_apply;
 mod subtitle_enabled_persistence;
+mod subtitle_style_persistence;
 mod target_policy;
 #[cfg(test)]
 mod tests;
@@ -111,6 +112,7 @@ use status_text::{
 };
 #[cfg(test)]
 pub(crate) use subtitle_enabled_persistence::SubtitleEnabledFlushOutcome;
+pub(crate) use subtitle_style_persistence::SubtitleStyleCommitOutcome;
 pub(crate) use target_policy::SettingsRouteTargetPolicy;
 pub(crate) use user_audio_level_persistence::PlaybackAudioLevelDelivery;
 #[cfg(test)]
@@ -504,6 +506,15 @@ impl SettingsRuntime {
                 }
             }
             SettingsUiAction::Cancel => self.cancel_edit(runtime_adapter),
+            SettingsUiAction::EditSubtitleAppearanceOnVideo => {
+                // Действие принадлежит приложению: `AppState` заменяет его на `Cancel` и открывает
+                // режим правки до передачи действий сюда. Если оно всё же дошло, делать нечего.
+                tracing::warn!(
+                    target: "fastiplayer::settings_actions",
+                    "EditSubtitleAppearanceOnVideo must be routed by AppState, ignoring"
+                );
+                Ok(false)
+            }
             SettingsUiAction::SetValue { setting_id, value } => {
                 if setting_id.as_str() == sidebar_resize::SIDEBAR_WIDTH_SETTING_ID {
                     let _flush_outcome = self.flush_pending_sidebar_resize(runtime_adapter)?;

@@ -69,17 +69,42 @@ impl BitmapInstance {
     }
 }
 
-/// Левый верхний угол холста субтитров на экране: origin картинки видео, округлённый до
-/// целого пикселя surface.
+/// Сдвиг всего слоя субтитров относительно левого верхнего угла картинки видео.
+///
+/// Единицы — пиксели surface (не точки egui); `x` вправо, `y` вниз. Слой едет целиком одним
+/// сдвигом uniform-а: перерастеризация и повторная загрузка атласа не нужны. Решает сдвиг
+/// вызывающий (пользовательская позиция, подъём над панелью управления), рендер лишь
+/// применяет его.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SubtitleLayerOffset {
+    /// Сдвиг вправо в пикселях surface (отрицательный — влево).
+    pub x: f32,
+    /// Сдвиг вниз в пикселях surface (отрицательный — вверх).
+    pub y: f32,
+}
+
+impl SubtitleLayerOffset {
+    /// Без сдвига: слой лежит ровно на картинке видео.
+    pub const NONE: Self = Self { x: 0.0, y: 0.0 };
+}
+
+/// Левый верхний угол холста субтитров на экране: origin картинки видео плюс сдвиг слоя,
+/// округлённый до целого пикселя surface.
 ///
 /// Холст растеризуется 1:1 к пикселям экрана, поэтому дробный origin дал бы «мыло» от
 /// интерполяции; округление гарантирует, что маска ложится ровно на пиксельную сетку.
-/// `None` для нечисловых координат (защита от NaN/inf, а не штатный случай).
-pub(super) fn placement_origin(picture_rect: PictureRect) -> Option<[f32; 2]> {
-    if !picture_rect.x.is_finite() || !picture_rect.y.is_finite() {
+/// Округляется сумма (а не слагаемые): иначе сдвиг `0.4 + 0.4` потерялся бы дважды.
+/// `None` для нечисловых координат или сдвига (защита от NaN/inf, а не штатный случай).
+pub(super) fn placement_origin(
+    picture_rect: PictureRect,
+    layer_offset: SubtitleLayerOffset,
+) -> Option<[f32; 2]> {
+    let x = picture_rect.x + layer_offset.x;
+    let y = picture_rect.y + layer_offset.y;
+    if !x.is_finite() || !y.is_finite() {
         return None;
     }
-    Some([picture_rect.x.round(), picture_rect.y.round()])
+    Some([x.round(), y.round()])
 }
 
 #[cfg(test)]
@@ -97,14 +122,36 @@ mod tests {
 
     #[test]
     fn placement_origin_rounds_to_whole_surface_pixels() {
-        assert_eq!(placement_origin(rect(10.4, 18.5)), Some([10.0, 19.0]));
-        assert_eq!(placement_origin(rect(0.0, 17.6)), Some([0.0, 18.0]));
+        let none = SubtitleLayerOffset::NONE;
+        assert_eq!(placement_origin(rect(10.4, 18.5), none), Some([10.0, 19.0]));
+        assert_eq!(placement_origin(rect(0.0, 17.6), none), Some([0.0, 18.0]));
     }
 
     #[test]
     fn placement_origin_rejects_non_finite_coordinates() {
-        assert_eq!(placement_origin(rect(f32::NAN, 0.0)), None);
-        assert_eq!(placement_origin(rect(0.0, f32::INFINITY)), None);
+        let none = SubtitleLayerOffset::NONE;
+        assert_eq!(placement_origin(rect(f32::NAN, 0.0), none), None);
+        assert_eq!(placement_origin(rect(0.0, f32::INFINITY), none), None);
+        let nan_offset = SubtitleLayerOffset {
+            x: f32::NAN,
+            y: 0.0,
+        };
+        assert_eq!(placement_origin(rect(0.0, 0.0), nan_offset), None);
+        let inf_offset = SubtitleLayerOffset {
+            x: 0.0,
+            y: f32::NEG_INFINITY,
+        };
+        assert_eq!(placement_origin(rect(0.0, 0.0), inf_offset), None);
+    }
+
+    #[test]
+    fn placement_origin_adds_the_layer_offset_before_rounding() {
+        let offset = SubtitleLayerOffset { x: 0.4, y: -30.4 };
+        // 10.4 + 0.4 = 10.8 -> 11; 18.5 - 30.4 = -11.9 -> -12 (слой может уйти выше картинки).
+        assert_eq!(
+            placement_origin(rect(10.4, 18.5), offset),
+            Some([11.0, -12.0])
+        );
     }
 
     #[test]
