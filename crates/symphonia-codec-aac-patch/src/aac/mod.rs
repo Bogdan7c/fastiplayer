@@ -24,13 +24,16 @@ use symphonia_core::io::{BitReaderLtr, FiniteBitStream, ReadBitsLtr};
 use symphonia_core::packet::PacketRef;
 use symphonia_core::{codec_profile, support_audio_codec};
 
-use symphonia_common::mpeg::audio::{AudioObjectType, AudioSpecificConfig};
+use symphonia_common::mpeg::audio::{
+    AudioObjectType, AudioSpecificConfig, Mpeg4AudioChannels, get_mpeg4_audio_channels_by_config_index,
+};
 
 mod codebooks;
 mod common;
 mod cpe;
 mod dsp;
 mod ics;
+mod pce;
 mod window;
 
 use common::*;
@@ -236,7 +239,10 @@ impl AacDecoder {
         // If extra data present, parse the audio specific config
         let asc = if let Some(extra_data_buf) = &params.extra_data {
             validate!(extra_data_buf.len() >= 2);
-            AudioSpecificConfig::read(extra_data_buf)?
+            // fastiplayer patch: `channel_configuration == 0` + PCE приводится к эквивалентной
+            // индексной конфигурации 1..=7 до разбора ASC (upstream такой ASC отвергает).
+            let indexed_extra_data = pce::resolve_indexed_audio_specific_config(extra_data_buf)?;
+            AudioSpecificConfig::read(&indexed_extra_data)?
         }
         else {
             // Otherwise, assume there is no ASC and use the codec parameters for ADTS.
@@ -257,8 +263,8 @@ impl AacDecoder {
 
         // The channel configuration must be known.
         //
-        // TODO: Support getting this from program configuration element (PCE). However, this would
-        // require deferring the rest of the initialization until the PCE has been read.
+        // PCE из ASC уже свёрнут в индексную конфигурацию выше; PCE внутри пакетов
+        // сверяется с этой раскладкой в `verify_in_band_program_config`.
         let channels = match &asc.channels {
             Some(channels) => channels.clone(),
             _ => return unsupported_error("aac: channels or channel layout is required"),
@@ -306,9 +312,27 @@ impl AacDecoder {
         })
     }
 
+    /// Проверяет, что in-band PCE описывает ту же раскладку, с которой создан декодер.
+    ///
+    /// Совпадение — no-op; конфликт — `Unsupported`, потому что смена раскладки посреди
+    /// потока потребовала бы пересоздать декодер (это решает вызывающий код).
+    fn verify_in_band_program_config(&self, program_config: &pce::ProgramConfig) -> Result<()> {
+        let index = program_config.indexed_channel_configuration()?;
+        let announced_elements = match get_mpeg4_audio_channels_by_config_index(u32::from(index)) {
+            Mpeg4AudioChannels::Channels(channels) => canonical_aac_channel_elements(&channels),
+            _ => None,
+        };
+        if announced_elements != Some(self.channel_elements) {
+            return unsupported_error("aac: in-band program config conflicts with configured layout");
+        }
+        Ok(())
+    }
+
     fn decode_ga<B: ReadBitsLtr + FiniteBitStream>(&mut self, bs: &mut B) -> Result<()> {
         let mut channel_element_cursor =
             IndexedChannelElementCursor::new(self.channel_elements);
+        // Точка отсчёта для byte_alignment() внутри in-band PCE: начало raw_data_block.
+        let block_start_bits_left = bs.bits_left();
         while bs.bits_left() > 3 {
             let id = bs.read_bits_leq32(3)?;
 
@@ -355,8 +379,11 @@ impl AacDecoder {
                     bs.ignore_bits(count * 8)?; // no SBR payload or such
                 }
                 5 => {
-                    // ID_PCE
-                    return unsupported_error("aac: program config");
+                    // ID_PCE: раскладка уже задана конфигурацией, поэтому совпадающий PCE
+                    // только пропускается (с корректным продвижением по битам).
+                    let program_config =
+                        pce::read_program_config_element(bs, block_start_bits_left)?;
+                    self.verify_in_band_program_config(&program_config)?;
                 }
                 6 => {
                     // ID_FIL
@@ -583,5 +610,75 @@ mod tests {
                 .consume(AacChannelElementKind::Single, 2)
                 .is_err()
         );
+    }
+
+    /// Декодер, созданный из реального ASC ffmpeg: channelConfiguration 0 + PCE (5.1).
+    fn decoder_from_ffmpeg_pce_asc() -> AacDecoder {
+        let mut params = AudioCodecParameters::new();
+        params
+            .for_codec(CODEC_ID_AAC)
+            .with_extra_data(Box::new(pce::tests::FFMPEG_PCE_5P1_EXTRA_DATA));
+        AacDecoder::try_new(&params, &AudioDecoderOptions::default()).unwrap()
+    }
+
+    /// Собирает raw_data_block: ID_PCE с заданными списками element-ов и ID_TERM.
+    fn raw_data_block_with_pce(front: &[bool], side: &[bool], back: &[bool], lfe: u32) -> Vec<u8> {
+        let mut writer = pce::tests::BitWriter::default();
+        writer.push(5, 3);
+        pce::tests::pce_bits(&mut writer, front, side, back, lfe, 0, 0);
+        writer.push(7, 3);
+        writer.into_bytes()
+    }
+
+    fn decode_block(decoder: &mut AacDecoder, block: &[u8]) -> Result<()> {
+        use symphonia_core::units::{Duration, Timestamp};
+        let packet = PacketRef::new(0, Timestamp::ZERO, Duration::ZERO, block);
+        decoder.decode_ref(&packet).map(|_| ())
+    }
+
+    #[test]
+    fn pce_asc_creates_five_point_one_decoder_with_six_planes() {
+        let decoder = decoder_from_ffmpeg_pce_asc();
+
+        assert_eq!(decoder.channel_elements, AAC_5P1_ELEMENTS);
+        assert_eq!(decoder.codec_params().sample_rate, Some(48_000));
+        assert_eq!(decoder.codec_params().channels.as_ref().map(Channels::count), Some(6));
+    }
+
+    #[test]
+    fn matching_in_band_pce_is_skipped_and_decoding_continues_to_layout_check() {
+        let mut decoder = decoder_from_ffmpeg_pce_asc();
+        // PCE 5.1 + ID_TERM, но без самих channel elements: PCE пропущен без ошибки разбора,
+        // а отказ приходит уже от проверки полноты раскладки (decode error, не Unsupported).
+        let block = raw_data_block_with_pce(&[false, true], &[], &[true], 1);
+
+        match decode_block(&mut decoder, &block) {
+            Err(symphonia_core::errors::Error::DecodeError(message)) => {
+                assert_eq!(message, "aac: decoded channel elements do not fill configured layout");
+            }
+            other => panic!("expected layout-fill decode error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn conflicting_or_unknown_in_band_pce_stays_unsupported() {
+        let mut decoder = decoder_from_ffmpeg_pce_asc();
+        let stereo_block = raw_data_block_with_pce(&[true], &[], &[], 0);
+        let quad_block = raw_data_block_with_pce(&[true], &[], &[true], 0);
+
+        for block in [stereo_block, quad_block] {
+            let error = decode_block(&mut decoder, &block).unwrap_err();
+            assert!(matches!(error, symphonia_core::errors::Error::Unsupported(_)), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn truncated_in_band_pce_is_an_error_not_a_panic() {
+        let mut decoder = decoder_from_ffmpeg_pce_asc();
+        let block = raw_data_block_with_pce(&[false, true], &[], &[true], 1);
+
+        for length in 0..block.len() - 1 {
+            assert!(decode_block(&mut decoder, &block[..length]).is_err(), "length {length}");
+        }
     }
 }

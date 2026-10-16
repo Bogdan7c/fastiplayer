@@ -384,6 +384,21 @@ mod tests {
     }
 
     #[test]
+    fn factory_builds_aac_5_1_decoder_from_pce_codec_private() {
+        // ASC ffmpeg для 5.1(side): channelConfiguration 0 + Program Config Element.
+        let pce_asc = vec![
+            0x11, 0x80, 0x04, 0xc8, 0x05, 0x00, 0x01, 0x08, 0x80, 0x0c, b'L', b'a', b'v', b'c',
+            b'6', b'3', b'.', b'1', b'.', b'1', b'0', b'2', 0x56, 0xe5, 0x00,
+        ];
+        let config = AudioDecoderConfig::from_track_metadata(2, "A_AAC", Some(48_000), Some(6))
+            .with_codec_private(Some(pce_asc));
+
+        let decoder = create_audio_decoder(config).expect("PCE AAC 5.1 must build a decoder");
+
+        assert_eq!((decoder.sample_rate(), decoder.channels()), (48_000, 6));
+    }
+
+    #[test]
     fn symphonia_positioned_5_1_maps_to_exact_neutral_canonical_layout() {
         let layout =
             audio_channel_layout_from_symphonia(&layouts::CHANNEL_LAYOUT_5P1, "A_AAC").unwrap();

@@ -64,11 +64,11 @@ package = "symphonia-codec-aac"
 version = "0.6.0"
 upstream_repository = "https://github.com/pdeljanov/Symphonia"
 upstream_revision = "crates.io:sha256:f1979c515a76371b186aad2feff5f23e21cbec775bf95de08bf1e3af92a2ad76"
-reason = "AAC-LC multichannel acceptance и coded-order to canonical-plane mapping с полной element identity validation."
-owned_diff_areas = ["src/aac/mod.rs", "tests/tests.rs"]
+reason = "AAC-LC multichannel acceptance и coded-order to canonical-plane mapping с полной element identity validation. Additive: AAC-LC с channel_configuration = 0 и Program Config Element (ffmpeg пишет так 5.1(side) и др.) приводится к эквивалентной индексной конфигурации 1..=7 (ASC и in-band ID_PCE); раньше upstream отвергал такой ASC, и дорожка не играла."
+owned_diff_areas = ["src/aac/mod.rs", "src/aac/pce.rs", "tests/tests.rs", "tests/fixtures"]
 dependent_crates = ["audio"]
-focused_automated_tests = ["cargo test --manifest-path crates/symphonia-codec-aac-patch/Cargo.toml --locked", "cargo test -p audio --locked"]
-manual_media_matrix = ["AAC-LC 3.0/4.0/5.0/5.1/7.1", "AAC-LC 5.1 dialogue/LFE/surround channel identity", "AAC arbitrary unique element tags"]
+focused_automated_tests = ["cargo test --manifest-path crates/symphonia-codec-aac-patch/Cargo.toml --locked", "cargo test -p audio -p symphonia-demux --locked"]
+manual_media_matrix = ["AAC-LC 3.0/4.0/5.0/5.1/7.1", "AAC-LC PCE-configured (channel_config=0) 5.1", "AAC-LC 5.1 dialogue/LFE/surround channel identity", "AAC arbitrary unique element tags"]
 removal_gate = "Удалять только когда upstream принимает multichannel AAC-LC, сохраняет каноническую раскладку и проходит direct mapping tests, audio suite и 5.1 listening matrix."
 
 # Запись связывает Matroska/WebM fork с точным опубликованным архивом Symphonia 0.6.0.

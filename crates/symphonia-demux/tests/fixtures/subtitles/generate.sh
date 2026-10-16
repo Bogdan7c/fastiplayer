@@ -114,3 +114,10 @@ ffmpeg -hide_banner -loglevel error -y \
   -disposition:a:0 default -disposition:a:1 0 \
   -disposition:s:0 default -disposition:s:1 forced+hearing_impaired \
   "$here/two-audio-two-srt.mkv"
+
+# (f) MKV: только AAC-LC 5.1(side) с Program Config Element (channel_configuration = 0 в ASC):
+# синус 880 Гц, 1 с, 48 кГц, ТОЛЬКО в канале FC. Для теста `aac_pce_playback.rs`.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "sine=frequency=880:sample_rate=48000:duration=1" \
+  -af "pan=5.1(side)|FC=c0" -c:a aac -b:a 96k \
+  "$here/aac-pce-5p1.mkv"
