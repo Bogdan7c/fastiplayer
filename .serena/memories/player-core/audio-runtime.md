@@ -11,6 +11,10 @@
 - `session/tick/mod.rs` keeps scheduling/demux admission policy, but pending audio packet processing is implemented by audio runtime through `PlayerSession::process_pending_audio_packets_with_buffer_limit`.
 - Focused tests live in `crates/player-core/src/session/tests/audio_runtime.rs`; related audio gate distinction coverage also exists in `session/tests/seek_transaction.rs` and `session/tests/seek_regressions.rs`. Usual verification for this boundary is `cargo test -p player-core audio_runtime`, `cargo test -p player-core audio`, `cargo check -p player-core`, and `cargo fmt --all --check`.
 
+## Runtime audio track switch (subtitles session 07, 2026-10-16)
+
+`SelectAudioTrack(id)` больше не заглушка: `session/audio_track_switch.rs` валидирует id (только `TrackKind::Audio` текущего media, иначе recoverable `InvalidCommand`, тот же id → no-op без события), `PlaybackPipeline::replace_selected_audio_track` (`pipeline/audio_track_switch.rs`) сбрасывает decoder/output/clock/pending packets и ставит deferred config новой дорожки, затем внутренний accurate seek в текущую позицию (Playing/Paused сохраняются; non-seekable — без seek, якорь no-audio clock; seek/scrub в полёте — присоединение). Фикс `SeekRuntimeState::in_flight_seek_resume_intent()` для seek поверх audio-only seek. Тесты `session/tests/audio_track_switch.rs`. Детали: `mem:subtitles/audio-tracks-memory-s07`.
+
 ## Audio device loss (UX edge cases session 10, 2026-10-06)
 
 - Lazy output init (`ensure_audio_output_for_decoded_spec`) asks the factory for `SelectedOrSystemDefault`; a fallback route publishes `PlayerEvent::AudioOutputSwitchedToSystemDefault(AudioOutputSwitchReason::SelectedDeviceUnavailable { device_name })`. Audio track stays selected. No device at all → old path: `disable_selected_audio_path` + recoverable `AudioDeviceUnavailable`.

@@ -27,16 +27,30 @@ impl AppState {
         media_instance_id: Option<MediaInstanceId>,
         source: &ActiveMediaSource,
     ) {
+        // Действия пользователя в прежнем media уходят в память ДО смены ключа.
+        self.capture_user_subtitle_choices();
         match media_instance_id {
-            Some(media_instance_id) => self
-                .subtitles
-                .begin_media(media_instance_id, subtitle_source_of(source)),
-            None => self.subtitles.clear_media(),
+            Some(media_instance_id) => {
+                let restore = self.begin_track_memory_for_media(media_instance_id, source);
+                self.subtitles.begin_media_restoring(
+                    media_instance_id,
+                    subtitle_source_of(source),
+                    restore,
+                );
+                // Файл, брошенный вместе с видео, - выбор пользователя «для этого видео».
+                self.capture_user_subtitle_choices();
+            }
+            None => {
+                self.end_track_memory_for_media();
+                self.subtitles.clear_media();
+            }
         }
     }
 
     /// Media исчезло из плеера: субтитры сброшены.
     pub(in crate::state) fn clear_subtitles_for_released_media(&mut self) {
+        self.capture_user_subtitle_choices();
+        self.end_track_memory_for_media();
         self.subtitles.clear_media();
     }
 
@@ -102,7 +116,9 @@ impl AppState {
 
     /// Добавляет файл субтитров к текущему media: дорожка выбирается, субтитры включаются.
     pub(crate) fn attach_subtitle_file(&mut self, path: &Path) -> AttachOutcome {
-        self.subtitles.attach_file(path)
+        let outcome = self.subtitles.attach_file(path);
+        self.capture_user_subtitle_choices();
+        outcome
     }
 
     /// Забывает файлы, ждавшие следующего media (открытие видео не состоялось).
@@ -114,6 +130,7 @@ impl AppState {
     /// становится выбранным) и показывает подсказку, если что-то не вышло.
     pub(crate) fn attach_dropped_subtitle_files(&mut self, paths: &[PathBuf]) {
         let outcomes = self.subtitles.attach_files(paths);
+        self.capture_user_subtitle_choices();
         if let Some(message) = attach_batch_message(&outcomes) {
             self.notify_transient(message);
         }

@@ -3,6 +3,7 @@
 //! Crate не знает о событиях, playback-состоянии и виджетах: вызывающая сторона
 //! передаёт только painter, прямоугольники и типизированное визуальное состояние.
 
+mod audio_tracks_button;
 mod buffering_spinner;
 mod compound_playlist_row;
 mod fullscreen_button;
@@ -111,6 +112,16 @@ impl<'a> ArtworkPainter<'a> {
         style: SubtitlesButtonStyle,
     ) {
         subtitles_button::paint(self.painter, rect, state, style);
+    }
+
+    /// Рисует кнопку выбора аудиодорожки «♪» в рамке, парной к кнопке CC.
+    pub fn audio_tracks_button(
+        self,
+        rect: egui::Rect,
+        state: SubtitlesButtonPaintState,
+        style: SubtitlesButtonStyle,
+    ) {
+        audio_tracks_button::paint(self.painter, rect, state, style);
     }
 
     /// Рисует пунктирную рамку правки субтитров с четырьмя угловыми маркерами.

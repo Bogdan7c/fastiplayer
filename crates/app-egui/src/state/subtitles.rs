@@ -21,6 +21,9 @@
 //! - `embedded_track` + `embedded_events` + `owner_embedded` + `embedded_fonts`: встроенные дорожки
 //!   контейнера (сессия 06): список из снимка плеера, кэш реплик из трубы пакетов, вложенные
 //!   шрифты. Подробности и инварианты — в документации `owner_embedded`.
+//! - `owner_memory`: связь с памятью выбора «для каждого видео» (сессия 07): восстановление при
+//!   старте media (`begin_media_restoring`) и выдача ТОЛЬКО действий пользователя
+//!   (`take_memory_changes`). Сама память - `state/track_memory`.
 //! - `settings` + `limits` + `user_style`: настройки из `[subtitles]` конфига.
 //! - `appearance_edit` + `owner_appearance_edit` + `sample_cue` + `owner_fonts_bootstrap`: правка
 //!   внешнего вида на видео (черновик вживую, образец реплики, отмена/сохранение).
@@ -69,6 +72,7 @@ mod owner_embedded;
 mod owner_fonts_bootstrap;
 mod owner_intents;
 mod owner_loading;
+mod owner_memory;
 mod owner_placement;
 mod presentation;
 mod sample_cue;
@@ -110,6 +114,8 @@ pub(crate) use self::menu_view::{
 };
 use self::owner_embedded::EmbeddedFeedState;
 pub(crate) use self::owner_embedded::EmbeddedUpdate;
+use self::owner_memory::PendingRememberedChoice;
+pub(crate) use self::owner_memory::{SubtitleMemoryChanges, SubtitleRestoreRequest};
 pub(crate) use self::owner_placement::PlacedSubtitleOverlay;
 #[cfg(test)]
 use self::presentation::PresentationStats;
@@ -295,12 +301,33 @@ impl SubtitleOwner {
     }
 
     /// Новое media установлено: прежнее состояние сброшено, для локального файла стартует
-    /// фоновый поиск, файлы из очереди становятся дорожками. Вызывается из единой точки
-    /// установки media.
+    /// фоновый поиск, файлы из очереди становятся дорожками.
+    ///
+    /// Вариант без памяти выбора - для тестов; продукт вызывает из единой точки установки
+    /// media [`Self::begin_media_restoring`].
+    #[cfg(test)]
     pub(super) fn begin_media(
         &mut self,
         media_instance_id: MediaInstanceId,
         source: SubtitleMediaSource,
+    ) {
+        self.begin_media_restoring(
+            media_instance_id,
+            source,
+            SubtitleRestoreRequest::nothing_remembered(),
+        );
+    }
+
+    /// То же, что `begin_media` (только в тестах), но с выбором «для этого видео» из памяти.
+    ///
+    /// Восстановление НЕ меняет глобальное «субтитры включены» (`default_visibility` и
+    /// `enabled_preference_change` не трогаются) и не помечается как выбор пользователя:
+    /// в память попадают только его собственные действия.
+    pub(super) fn begin_media_restoring(
+        &mut self,
+        media_instance_id: MediaInstanceId,
+        source: SubtitleMediaSource,
+        restore: SubtitleRestoreRequest,
     ) {
         self.reset_media();
         if std::mem::take(&mut self.rasterizer_reset_pending) {
@@ -313,9 +340,17 @@ impl SubtitleOwner {
 
         let mut media = MediaSubtitles::new(media_instance_id, self.default_visibility);
         self.adopt_queued_files(&mut media);
-        if let SubtitleMediaSource::LocalFile(video_path) = source {
-            media.discovery = self.start_discovery(video_path, &media);
-        }
+        owner_memory::apply_restore_request(&mut media, restore);
+        media.discovery = match source {
+            SubtitleMediaSource::LocalFile(video_path) => {
+                self.start_discovery(Some(video_path), &media)
+            }
+            // Не локальный источник: искать рядом нечего, но запомненный файл надо проверить.
+            SubtitleMediaSource::NotLocal if media.pending_memory.is_some() => {
+                self.start_discovery(None, &media)
+            }
+            SubtitleMediaSource::NotLocal => DiscoveryState::Finished,
+        };
         self.media = Some(media);
         // Труба могла принести сообщения этого media раньше, чем пришла установка.
         self.adopt_media_for_embedded_feed(media_instance_id);
@@ -335,6 +370,8 @@ impl SubtitleOwner {
         }
         if !queued.is_empty() {
             media.user_chose_track = true;
+            // Файл принёс пользователь вместе с видео: это его выбор «для этого видео».
+            media.note_user_choice();
             media.visibility = SubtitleVisibility::Shown;
             self.default_visibility = SubtitleVisibility::Shown;
             self.enabled_preference_change = Some(SubtitleVisibility::Shown);
@@ -342,8 +379,12 @@ impl SubtitleOwner {
     }
 
     /// Запускает поиск рядом с видео. Ошибка запуска потока — типизированная причина.
-    fn start_discovery(&self, video_path: PathBuf, media: &MediaSubtitles) -> DiscoveryState {
-        let preload = if media.user_chose_track {
+    fn start_discovery(
+        &self,
+        video_path: Option<PathBuf>,
+        media: &MediaSubtitles,
+    ) -> DiscoveryState {
+        let preload = if media.user_chose_track || media.pending_memory.is_some() {
             // Выбор уже сделан пользователем: лишнюю дорожку не читаем.
             PreloadTarget::Nothing
         } else if media.visibility == SubtitleVisibility::Shown {
@@ -356,6 +397,10 @@ impl SubtitleOwner {
                 video_path,
                 preferred_languages: self.preferred_languages(),
                 preload,
+                remembered_file: media
+                    .pending_memory
+                    .as_ref()
+                    .and_then(PendingRememberedChoice::file_to_check),
             },
             fonts: self.font_plan_for_next_job(),
             limits: self.settings.load_limits,

@@ -8,10 +8,12 @@ mod atomic_write;
 mod dto;
 mod envelope;
 mod identity;
+mod locator_fingerprint;
 mod quarantine;
 mod resume;
 mod snapshot;
 mod store;
+mod track_memory;
 mod types;
 mod worker;
 
@@ -33,6 +35,19 @@ pub use resume::{
 };
 pub use snapshot::{ImmutableSaveSnapshot, SaveRevision, SaveRevisionExhausted};
 pub use store::PlaylistStateStore;
+pub use track_memory::{
+    CURRENT_TRACK_MEMORY_SCHEMA_VERSION, MAX_HINT_CODEC_ID_BYTES, MAX_HINT_LANGUAGE_BYTES,
+    MAX_HINT_TITLE_BYTES, MAX_REMEMBERED_FILE_PATH_UNITS, MAX_SUBTITLE_SYNC_OFFSET_MILLIS,
+    MAX_TRACK_MEMORY_BYTES, RecencyStamp, RememberOutcome, RememberedFilePath,
+    RememberedFilePathError, RememberedSubtitleChoice, RememberedTrackHint, SubtitleSyncOffset,
+    SubtitleSyncOffsetOutOfRange, TRACK_MEMORY_FILENAME, TRACK_MEMORY_HARD_MAX_ENTRIES,
+    TouchOutcome, TrackHintCandidate, TrackHintError, TrackHintMatch, TrackMemory,
+    TrackMemoryCapacity, TrackMemoryCapacityError, TrackMemoryCorruptCause, TrackMemoryEntry,
+    TrackMemoryInspection, TrackMemorySaveRevision, TrackMemoryStore, TrackMemorySubmitOutcome,
+    TrackMemoryWriteReport, TrackMemoryWriteSnapshot, TrackMemoryWriter,
+    TrackMemoryWriterShutdownOutcome, TrackMemoryWriterStartError, VideoKey, VideoKeyError,
+    VideoSegment, find_matching_track,
+};
 pub use types::{
     CorruptStateCause, InspectedFileIdentity, InspectionOutcome, LoadedPlaylistState,
     PlaylistStateSnapshot, ProtectedStateCause, QuarantineFailureCause, QuarantineOutcome,

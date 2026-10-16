@@ -509,11 +509,19 @@ impl AppState {
                         ResumeCheckpointError::InstallFailed,
                     );
                 }
+                // Выбор звука «для этого видео» переживает suspend: память принадлежит процессу.
+                let installed_snapshot = self.refresh_player_snapshot();
+                let remembered_audio =
+                    if installed_snapshot.media_instance_id == Some(media_instance_id) {
+                        self.remembered_audio_restore(&attempt.source, &installed_snapshot)
+                    } else {
+                        InstalledTrackRestore::KeepDefault
+                    };
                 let restore = InstalledMediaStateRestore {
                     request_id: player_request_id,
                     media_instance_id,
                     video_track: InstalledTrackRestore::KeepDefault,
-                    audio_track: InstalledTrackRestore::KeepDefault,
+                    audio_track: remembered_audio,
                     subtitle_track: InstalledSubtitleRestore::KeepDefault,
                     volume: player_core::InstalledVolumeRestore::KeepCurrent,
                     position: match attempt.position {

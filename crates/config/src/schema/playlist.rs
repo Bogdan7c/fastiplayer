@@ -13,6 +13,14 @@ pub const MIN_DROPPED_FOLDER_MAX_DEPTH: u16 = 0;
 /// Максимальная глубина подпапок.
 pub const MAX_DROPPED_FOLDER_MAX_DEPTH: u16 = 32;
 
+/// Сколько видео помнит память дорожек (аудио, субтитры, задержка) по умолчанию.
+pub const DEFAULT_TRACK_MEMORY_MAX_ENTRIES: u32 = 1_000;
+/// Минимум запомненных видео: меньше смысла нет (память не помнила бы даже очередь).
+pub const MIN_TRACK_MEMORY_MAX_ENTRIES: u32 = 10;
+/// Максимум запомненных видео; совпадает с жёстким потолком `playlist-state`
+/// (`TRACK_MEMORY_HARD_MAX_ENTRIES`), от которого посчитан предел размера файла.
+pub const MAX_TRACK_MEMORY_MAX_ENTRIES: u32 = 10_000;
+
 /// Фильтр соседних файлов, который фиксируется новым discovery job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -278,6 +286,28 @@ pub struct PlaylistConfig {
     )]
     pub resume_checkpoint_interval_ms: u64,
 
+    /// Сколько видео запоминает выбор аудиодорожки, субтитров и их задержки.
+    #[setting(
+        id = "playlist.track_memory_max_entries",
+        path = "playlist.track_memory_max_entries",
+        section = "playlist",
+        group = "persistence",
+        surface = "main-settings-window",
+        label_id = "settings.playlist.track_memory_max_entries.label",
+        label_ru = "Remembered videos (tracks and subtitle delay)",
+        description_id = "settings.playlist.track_memory_max_entries.description",
+        description_ru = "How many videos remember the chosen audio track, subtitles, and subtitle delay; the least recently used are forgotten first.",
+        help_id = "settings.playlist.track_memory_max_entries.help",
+        help_ru = "The memory is stored in a separate small file next to the config; videos are recognized by a fingerprint of their path or link, not the path or link itself. A subtitle file you picked is remembered by its path.",
+        editor = "integer",
+        min = crate::MIN_TRACK_MEMORY_MAX_ENTRIES,
+        max = crate::MAX_TRACK_MEMORY_MAX_ENTRIES,
+        step = 100,
+        unit = "videos",
+        apply = "playlist.apply"
+    )]
+    pub track_memory_max_entries: u32,
+
     /// Порог restart-current для команды Previous.
     #[setting(
         id = "playlist.previous_restart_threshold_ms",
@@ -376,6 +406,7 @@ impl Default for PlaylistConfig {
             error_behavior: PlaylistErrorBehavior::Skip,
             state_save_debounce_ms: 2_000,
             resume_checkpoint_interval_ms: 5_000,
+            track_memory_max_entries: DEFAULT_TRACK_MEMORY_MAX_ENTRIES,
             previous_restart_threshold_ms: 5_000,
             dropped_folder_max_files: DEFAULT_DROPPED_FOLDER_MAX_FILES,
             dropped_folder_max_depth: DEFAULT_DROPPED_FOLDER_MAX_DEPTH,

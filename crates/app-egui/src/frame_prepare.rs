@@ -895,6 +895,8 @@ pub(crate) fn render_frame(
 
     // Решение пользователя по субтитрам этого кадра (C, CC, меню); отдаётся один раз.
     let subtitle_enabled_change = app_state.take_subtitle_enabled_preference_change();
+    // Память выбора дорожек: пауза покоя прошла - снимок уходит в фоновую запись.
+    app_state.tick_track_memory();
     // Стиль, сохранённый кнопкой «Готово» (или неявным выходом), пишется сразу, одной транзакцией.
     let subtitle_style_commit = app_state.take_subtitle_style_commit();
     let mut subtitle_style_outcome = None;
@@ -1081,6 +1083,7 @@ pub(crate) fn render_frame(
             settings_runtime.next_sidebar_resize_deadline(),
             settings_runtime.next_user_audio_level_persist_deadline(),
             settings_runtime.next_subtitle_enabled_persist_deadline(),
+            app_state.track_memory_wake_deadline(),
             app_state.next_notification_wake_deadline(),
             app_state.fullscreen_chrome_wake_deadline(),
         ]),

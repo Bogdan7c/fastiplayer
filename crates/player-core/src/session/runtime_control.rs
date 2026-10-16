@@ -320,13 +320,12 @@ impl PlayerSession {
         Ok(())
     }
 
-    /// Выбирает audio track через pipeline-owned track boundary.
+    /// Выбирает audio track: пересоздаёт аудио-путь под новую дорожку (`audio_track_switch`).
     pub(super) fn select_audio_track(&mut self, track_id: TrackId) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.pipeline.select_audio_track(track_id);
-        self.snapshot.selected_tracks.audio_track = Some(track_id);
-        self.push_player_event(PlayerEvent::AudioTrackSelected(track_id));
-        Ok(())
+        // Валидация, сброс аудио-пути, snapshot, событие и seek — см. `audio_track_switch`.
+        self.switch_selected_audio_track(track_id)
+            .map(|_outcome| ())
     }
 
     /// Выбирает subtitle track или отключает субтитры.

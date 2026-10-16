@@ -77,3 +77,40 @@ ffmpeg -hide_banner -loglevel error -y \
   -c:v libx264 -preset ultrafast -crf 40 -pix_fmt yuv420p -c:s mov_text \
   -metadata:s:s:0 language=rus \
   "$here/mov-text-rus.mp4"
+
+# (d) MKV: VP8 + ДВЕ аудиодорожки с разным кодеком/частотой/каналами/содержимым
+# (фикстура для переключения аудиодорожки, сессия 07 плана субтитров):
+#   дорожка 1: FLAC, 22050 Гц, стерео, синус 440 Гц, язык rus, название «Dub»;
+#   дорожка 2: Opus, 48000 Гц, моно, синус 880 Гц, язык eng, название «Original».
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc=size=64x64:rate=10:duration=3" \
+  -f lavfi -i "sine=frequency=440:sample_rate=22050:duration=3" \
+  -f lavfi -i "sine=frequency=880:sample_rate=48000:duration=3" \
+  -map 0:v -map 1:a -map 2:a \
+  -c:v libvpx -b:v 40k -c:a:0 flac -ac:a:0 2 -c:a:1 libopus -b:a:1 16k -ac:a:1 1 \
+  -metadata:s:v:0 language=eng -metadata:s:v:0 title="Main video" \
+  -metadata:s:a:0 language=rus -metadata:s:a:0 title="Dub" \
+  -metadata:s:a:1 language=eng -metadata:s:a:1 title="Original" \
+  -disposition:a:0 default -disposition:a:1 0 \
+  "$here/two-audio-tracks.mkv"
+
+# (e) MKV: VP8 + ДВЕ аудиодорожки (как в (d)) + ДВЕ SRT-дорожки (как в (a)): «фильм с двумя
+# озвучками и субтитрами» для теста памяти выбора (сессия 07 плана субтитров):
+#   аудио 1: FLAC 22050 Гц стерео 440 Гц, rus «Dub» (default); аудио 2: Opus 48000 Гц моно 880 Гц, eng «Original»;
+#   субтитры 1: eng «English» (default), реплики «Hello» 0,5-1,5 с и «Second line» 2,0-2,8 с;
+#   субтитры 2: rus «Russian SDH» (forced + hearing_impaired).
+ffmpeg -hide_banner -loglevel error -y \
+  "${video[@]}" \
+  -f lavfi -i "sine=frequency=440:sample_rate=22050:duration=3" \
+  -f lavfi -i "sine=frequency=880:sample_rate=48000:duration=3" \
+  -i "$work/eng.srt" -i "$work/rus.srt" \
+  -map 0:v -map 1:a -map 2:a -map 3 -map 4 \
+  -c:v libvpx -b:v 40k -c:a:0 flac -ac:a:0 2 -c:a:1 libopus -b:a:1 16k -ac:a:1 1 -c:s srt \
+  -metadata:s:v:0 language=eng -metadata:s:v:0 title="Main video" \
+  -metadata:s:a:0 language=rus -metadata:s:a:0 title="Dub" \
+  -metadata:s:a:1 language=eng -metadata:s:a:1 title="Original" \
+  -metadata:s:s:0 language=eng -metadata:s:s:0 title="English" \
+  -metadata:s:s:1 language=rus -metadata:s:s:1 title="Russian SDH" \
+  -disposition:a:0 default -disposition:a:1 0 \
+  -disposition:s:0 default -disposition:s:1 forced+hearing_impaired \
+  "$here/two-audio-two-srt.mkv"

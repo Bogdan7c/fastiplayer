@@ -6,7 +6,8 @@
 //! - `↑` / `↓` — громкость;
 //! - `Ctrl+O` — открыть файл (тот же `ControlAction::OpenFile`, что и у кнопки Open);
 //! - `C` — субтитры вкл/выкл, `V` — следующая дорожка (по кругу, включая «выкл»),
-//!   `Z` / `X` — сдвиг субтитров на 0,1 с раньше / позже (сессия 04 субтитров).
+//!   `Z` / `X` — сдвиг субтитров на 0,1 с раньше / позже (сессия 04 субтитров);
+//! - `B` — следующая аудиодорожка по кругу (сессия 07 субтитров).
 //!
 //! Кто может получить клавишу, решает владелец клавиатуры
 //! (`ui::keyboard_focus::KeyboardFocusOwner`), а не отдельная логика:
@@ -23,7 +24,7 @@ use egui::{InputState, Key, Modifiers};
 
 use crate::state::SyncNudge;
 use crate::ui::keyboard_focus::{KeyboardFocusOwner, keyboard_focus_owner};
-use crate::ui::player_controls::{ControlAction, SubtitleControlAction};
+use crate::ui::player_controls::{AudioTrackControlAction, ControlAction, SubtitleControlAction};
 
 /// Собирает глобальные действия клавиатуры за текущий кадр.
 ///
@@ -52,6 +53,7 @@ fn actions_for_owner(
     }
 
     push_subtitle_actions(input, &mut actions);
+    push_audio_track_actions(input, &mut actions);
 
     // Скорость: `+` и `=` — шаг вверх (на обычной клавиатуре `+` это Shift+`=`).
     if input.consume_key(Modifiers::NONE, Key::Num0) {
@@ -96,6 +98,19 @@ fn push_subtitle_actions(input: &mut InputState, actions: &mut Vec<ControlAction
         for _ in 0..input.count_and_consume_key(Modifiers::NONE, key) {
             actions.push(ControlAction::Subtitles(action));
         }
+    }
+}
+
+/// Клавиша `B` без модификаторов: следующая аудиодорожка. Виджеты эту букву не используют,
+/// поэтому она доступна и при фокусе на кнопке; ввод текста отсекается раньше.
+///
+/// За кадр даём одно действие, сколько бы раз ни нажали: snapshot плеера обновится только после
+/// применения команды, и вторая `B` в том же кадре выбрала бы ту же «следующую» дорожку.
+fn push_audio_track_actions(input: &mut InputState, actions: &mut Vec<ControlAction>) {
+    if input.consume_key(Modifiers::NONE, Key::B) {
+        actions.push(ControlAction::AudioTracks(
+            AudioTrackControlAction::SelectNextTrack,
+        ));
     }
 }
 

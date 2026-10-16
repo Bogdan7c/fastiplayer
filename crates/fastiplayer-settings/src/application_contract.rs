@@ -504,6 +504,7 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "playlist.next_item_preload_lead_time_ms"
         | "playlist.next_item_preload_max_hold_ms"
         | "playlist.dropped_folder_max_files"
+        | "playlist.track_memory_max_entries"
         | "playlist.dropped_folder_max_depth"
         | "playlist.dropped_playlist_file_action" => SettingApplicationContract::new(
             setting_name,

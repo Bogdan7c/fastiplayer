@@ -129,7 +129,7 @@ impl PlayerSession {
         self.ensure_not_shutdown()?;
         let resume_intent = self
             .seek_runtime
-            .active_seek_landing_resume_intent()
+            .in_flight_seek_resume_intent()
             .unwrap_or_else(|| PlaybackResumeIntent::from_playback_state(self.playback_state()));
         self.start_seek_with_resume_intent(request, resume_intent)
     }

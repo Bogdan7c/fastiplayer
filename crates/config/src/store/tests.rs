@@ -16,6 +16,7 @@ mod playlist_error_behavior_migration;
 mod recovery;
 mod render_validation;
 mod subtitles_settings;
+mod track_memory_settings;
 /// Проверяет, что atomic save не оставил временных файлов рядом с config.
 fn assert_no_save_temp_files(config_directory: &Path) {
     let leftover_temp_file_count = fs::read_dir(config_directory)

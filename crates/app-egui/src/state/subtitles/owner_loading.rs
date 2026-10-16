@@ -96,6 +96,7 @@ impl SubtitleOwner {
             candidates,
             preloaded,
             fonts,
+            remembered_file,
             // Автовыбор задачи нужен только ей самой (чтобы решить, что прочитать); итоговый
             // выбор считается заново над полным списком.
             selection: _,
@@ -108,6 +109,16 @@ impl SubtitleOwner {
         media.discovery = DiscoveryState::Finished;
 
         let track_ids = media.tracks.insert_discovered(&candidates);
+        // Запомненный файл из другой папки (брошенный/выбранный пользователем) становится
+        // дорожкой, только пока выбор из памяти ещё ждёт именно его.
+        if let Some(candidate) = &remembered_file
+            && media
+                .pending_memory
+                .as_ref()
+                .is_some_and(|pending| pending.is_file(&candidate.path))
+        {
+            media.tracks.push_chosen(candidate);
+        }
         let id_of = |index: usize| track_ids.get(index).copied();
         // Автовыбор по всему списку (файлы + встроенные, которые могли появиться раньше поиска).
         // Считается ДО применения прочитанной дорожки: нечитаемый файл остаётся выбранным и

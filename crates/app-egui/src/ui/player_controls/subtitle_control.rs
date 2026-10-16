@@ -22,11 +22,17 @@ use egui::{Id, Ui};
 use subtitle_core::SubtitleTrackId;
 
 use super::ControlAction;
-use super::queue_mode_controls::QueueModeControlLayout;
 use crate::state::{SubtitleMenuView, SyncNudge};
+pub(super) use layout::APPEAR_SLIDE_DISTANCE;
 pub(super) use layout::SubtitleLayoutGeometry;
 use layout::{
     SubtitleControlAvailability, SubtitleControlLayout, SubtitleControlMode, choose_mode,
+};
+/// Раскладка CC для тестов соседней кнопки «♪»: она сверяется с реальной раскладкой CC.
+#[cfg(test)]
+pub(super) use layout::{
+    SubtitleControlMode as TestSubtitleControlMode, choose_mode as choose_subtitle_mode,
+    layout as subtitle_layout, layout_without_subtitles,
 };
 
 /// Полный переход «появилась/исчезла» занимает 250 мс (как кнопка скорости).
@@ -58,6 +64,21 @@ pub(super) struct SubtitleControlFrame {
     layout: SubtitleControlLayout,
     reveal_progress: f32,
     geometry: SubtitleLayoutGeometry,
+    /// CC должна быть видна при полном появлении (есть дорожки и хватает места).
+    target_visible: bool,
+}
+
+/// Что соседней кнопке «♪» нужно знать о CC, чтобы встать левее и не наехать на неё.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SubtitleNeighbor {
+    /// Геометрия строки (общая для обеих кнопок).
+    pub(super) geometry: SubtitleLayoutGeometry,
+    /// Режим CC (у CC приоритет: «♪» подстраивается под него, а не наоборот).
+    pub(super) mode: SubtitleControlMode,
+    /// CC будет видна при полном появлении.
+    pub(super) target_visible: bool,
+    /// Текущий прогресс появления CC.
+    pub(super) reveal_progress: f32,
 }
 
 impl SubtitleControlFrame {
@@ -81,12 +102,18 @@ impl SubtitleControlFrame {
             layout: layout::layout(&geometry, mode, reveal_progress),
             reveal_progress,
             geometry,
+            target_visible,
         }
     }
 
-    /// Раскладка Shuffle/Repeat этого кадра (с учётом места под CC).
-    pub(super) fn queue_mode_layout(&self) -> QueueModeControlLayout {
-        self.layout.queue_mode
+    /// Данные CC для кнопки аудиодорожек: она стоит левее и занимает место вместе с CC.
+    pub(super) fn neighbor_for_audio_tracks(&self) -> SubtitleNeighbor {
+        SubtitleNeighbor {
+            geometry: self.geometry,
+            mode: self.layout.mode,
+            target_visible: self.target_visible,
+            reveal_progress: self.reveal_progress,
+        }
     }
 
     /// Рисует CC и стрелку (если они видны) и добавляет действия пользователя.

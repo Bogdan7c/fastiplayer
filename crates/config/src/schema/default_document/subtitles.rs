@@ -95,7 +95,7 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
 /// Добавляет комментарии перед ключами секции `[subtitles]`.
 ///
 /// Если секции нет (не должно случаться для документа из `AppConfig`), текст не меняется;
-/// золотой файл `current_schema_v15.toml` тогда провалит тест стабильности схемы.
+/// золотой файл `current_schema_v16.toml` тогда провалит тест стабильности схемы.
 pub(super) fn document_subtitles_defaults(toml_text: &mut String) {
     let Some(header_offset) = toml_text.find(&format!("\n{SUBTITLES_HEADER}\n")) else {
         return;

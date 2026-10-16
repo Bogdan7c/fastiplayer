@@ -436,6 +436,17 @@ impl SeekRuntimeState {
         }
     }
 
+    /// Resume intent seek-а, который прямо сейчас в полёте (SeekLanding или commit).
+    ///
+    /// Нужен новому seek-у, запущенному поверх незавершённого: public state в этот момент
+    /// `Seeking`, а он ничего не говорит о том, играл плеер или стоял на паузе. Audio-only
+    /// seek не имеет SeekLanding и несёт намерение только в commit, поэтому смотрим оба.
+    #[must_use]
+    pub(crate) fn in_flight_seek_resume_intent(&self) -> Option<PlaybackResumeIntent> {
+        self.active_seek_landing_resume_intent()
+            .or_else(|| self.active_commit().map(|commit| commit.resume_intent))
+    }
+
     /// Возвращает `true`, если active route принадлежит live scrub gesture.
     #[must_use]
     pub(crate) const fn active_seek_landing_is_live_scrub(&self) -> bool {

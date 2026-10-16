@@ -24,6 +24,11 @@ impl QuarantineFileName {
         Self::from_timestamp_with_stem(timestamp, "playlist-resume")
     }
 
+    /// Deterministic filename `track-memory.corrupt-<timestamp>.json`.
+    pub fn track_memory_from_timestamp(timestamp: SystemTime) -> Self {
+        Self::from_timestamp_with_stem(timestamp, "track-memory")
+    }
+
     /// Общий formatter оставляет выбор artifact stem у typed public constructor-а.
     fn from_timestamp_with_stem(timestamp: SystemTime, artifact_stem: &str) -> Self {
         let timestamp_label = match timestamp.duration_since(UNIX_EPOCH) {

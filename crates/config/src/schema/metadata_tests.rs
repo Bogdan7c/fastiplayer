@@ -34,6 +34,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "playlist.error_behavior",
     "playlist.state_save_debounce_ms",
     "playlist.resume_checkpoint_interval_ms",
+    "playlist.track_memory_max_entries",
     "playlist.previous_restart_threshold_ms",
     "playlist.dropped_folder_max_files",
     "playlist.dropped_folder_max_depth",
@@ -315,6 +316,12 @@ fn metadata_ranges_match_validation_constants() {
         "playlist.resume_checkpoint_interval_ms",
         validation::MIN_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
         validation::MAX_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
+    );
+    assert_integer_range(
+        &registry,
+        "playlist.track_memory_max_entries",
+        u64::from(crate::MIN_TRACK_MEMORY_MAX_ENTRIES),
+        u64::from(crate::MAX_TRACK_MEMORY_MAX_ENTRIES),
     );
     assert_integer_range(
         &registry,

@@ -57,6 +57,7 @@ use crate::video_pipeline_selector::{
     select_video_pipeline_plan,
 };
 
+mod audio_tracks;
 mod automatic_web_media_quality;
 mod dropped_subtitles;
 mod external_open;
@@ -111,6 +112,7 @@ pub(crate) use strong_media_open::{
 };
 mod telemetry_panel;
 mod timeline_inline_status;
+mod track_memory;
 mod ui_runtime;
 mod video_backend;
 mod vod_endpoint_recovery;
@@ -120,6 +122,7 @@ mod web_media_catalog;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use audio_tracks::AudioTrackMenuView;
 pub(crate) use main_visual_override::MainVisualOverrideAcquisition;
 pub(crate) use media_jobs::ActiveMediaSource;
 #[allow(unused_imports)]
@@ -137,6 +140,9 @@ pub(crate) use subtitles::{
 pub(crate) use subtitles::{
     AttachOutcome, SubtitleFileOrigin, SubtitleMenuView, SubtitleTrackAvailability,
     SubtitleTrackLabel, SubtitleUnavailableReason, SubtitleVisibility, SyncNudge,
+};
+pub(crate) use track_memory::{
+    TrackMemoryHandle, TrackMemoryShutdownOutcome, TrackMemoryStartOutcome, start_track_memory,
 };
 pub(crate) use video_backend::{
     BackendSwapVideoCheckpoint, BackendSwapVideoPhase, VideoPipelineRebuildError,
@@ -303,6 +309,9 @@ pub struct AppState {
     /// активная дорожка и решение «что рисовать на этом кадре».
     subtitles: subtitles::SubtitleOwner,
 
+    /// Память выбора дорожек «для каждого видео» (`state/track_memory`): общая для процесса.
+    track_memory: TrackMemoryHandle,
+
     /// Диалог «Load file…» для субтитров (`subtitle_file_open.rs`): один диалог за раз.
     subtitle_file_picker: crate::subtitle_file_open::SubtitleFilePicker,
 
@@ -452,6 +461,7 @@ impl AppState {
                 subtitles::read_system_language(),
                 &subtitles_config,
             ),
+            track_memory: startup_context.track_memory.clone(),
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_controller: SidebarController::default(),
@@ -543,6 +553,7 @@ impl AppState {
                 &self.committed_config_snapshot.as_config().subtitles.clone(),
             );
         }
+        self.sync_track_memory_capacity();
         if previous_sidebar_width != next_sidebar_width {
             self.sidebar_host_state
                 .restore_committed_width(SidebarWidthPoints::from_committed(next_sidebar_width));

@@ -35,6 +35,7 @@ mod audio;
 mod audio_clock_mapping;
 mod audio_output_health;
 mod audio_packet_window;
+mod audio_track_switch;
 mod media_slots;
 mod render_resources;
 mod retired_video_decoders;

@@ -254,6 +254,12 @@ fn validate_playlist_section(config: &AppConfig) -> ConfigResult<()> {
         MAX_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
     )?;
     validate_u64_range(
+        "playlist.track_memory_max_entries",
+        u64::from(config.playlist.track_memory_max_entries),
+        u64::from(crate::MIN_TRACK_MEMORY_MAX_ENTRIES),
+        u64::from(crate::MAX_TRACK_MEMORY_MAX_ENTRIES),
+    )?;
+    validate_u64_range(
         "playlist.previous_restart_threshold_ms",
         config.playlist.previous_restart_threshold_ms,
         MIN_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS,

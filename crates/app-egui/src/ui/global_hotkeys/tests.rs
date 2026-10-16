@@ -274,3 +274,62 @@ fn repeated_nudge_presses_in_one_frame_are_separate_steps() {
         "each press counts once; order follows the key table (C, V, Z, X)"
     );
 }
+
+fn select_next_audio_track() -> ControlAction {
+    ControlAction::AudioTracks(AudioTrackControlAction::SelectNextTrack)
+}
+
+#[test]
+fn b_selects_the_next_audio_track_without_any_focus_or_with_a_button_focused() {
+    for holder in [FocusHolder::Nobody, FocusHolder::Button] {
+        assert_eq!(
+            actions(holder, vec![key_press(Key::B, Modifiers::NONE)]),
+            vec![select_next_audio_track()]
+        );
+    }
+}
+
+#[test]
+fn b_is_text_input_while_a_text_field_has_focus() {
+    assert!(
+        actions(
+            FocusHolder::TextField,
+            vec![key_press(Key::B, Modifiers::NONE)]
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn b_with_ctrl_is_left_to_the_system_and_other_keys_do_not_trigger_audio() {
+    assert!(
+        actions(
+            FocusHolder::Nobody,
+            vec![key_press(Key::B, Modifiers::COMMAND)]
+        )
+        .is_empty()
+    );
+    // Соседние клавиши субтитров не должны вызывать аудио.
+    assert!(
+        !actions(
+            FocusHolder::Nobody,
+            vec![key_press(Key::V, Modifiers::NONE)]
+        )
+        .contains(&select_next_audio_track())
+    );
+}
+
+#[test]
+fn several_b_presses_in_one_frame_give_one_switch() {
+    assert_eq!(
+        actions(
+            FocusHolder::Nobody,
+            vec![
+                key_press(Key::B, Modifiers::NONE),
+                key_press(Key::B, Modifiers::NONE)
+            ]
+        ),
+        vec![select_next_audio_track()],
+        "the snapshot does not change inside a frame, so a second B would repeat the same track"
+    );
+}

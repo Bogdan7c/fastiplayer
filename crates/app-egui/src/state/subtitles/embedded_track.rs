@@ -13,6 +13,7 @@
 use media_core::subtitle_codec::{self, SubtitleCodecFamily};
 use media_core::{TrackId, TrackLabels};
 use player_core::TrackSummarySnapshot;
+use playlist_state::TrackHintCandidate;
 use subtitle_core::{SubtitleFormat, SubtitleLanguage};
 use subtitle_formats::EmbeddedCueFormat;
 
@@ -91,6 +92,19 @@ impl EmbeddedTrackDescription {
     /// Язык в нормализованном виде; `None` — не указан, «und» или невалидный тег.
     pub(super) fn language(&self) -> Option<&SubtitleLanguage> {
         self.language.as_ref()
+    }
+
+    /// Описание дорожки для сверки с запомненным выбором «для этого видео».
+    ///
+    /// `ordinal_among_kind` — номер среди встроенных субтитровых дорожек в порядке снимка.
+    /// Язык берётся «сырым» (как записал контейнер), чтобы описание не зависело от
+    /// нормализации, которая может измениться между версиями.
+    pub(super) fn track_hint_candidate(&self, ordinal_among_kind: u32) -> TrackHintCandidate {
+        crate::state::track_memory::hint_candidate_from_labels(
+            &self.labels,
+            &self.codec_id,
+            ordinal_among_kind,
+        )
     }
 
     /// Формат для подписи в меню; `None` — формат без названия в модели.

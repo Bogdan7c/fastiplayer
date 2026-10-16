@@ -37,6 +37,7 @@ impl SubtitleOwner {
         self.default_visibility = visibility;
         if let Some(media) = self.media.as_mut() {
             media.visibility = visibility;
+            media.note_user_choice();
         }
         if visibility == SubtitleVisibility::Shown {
             self.select_automatically_if_nothing_selected();
@@ -84,6 +85,7 @@ impl SubtitleOwner {
         }
         media.selected = Some(track_id);
         media.user_chose_track = true;
+        media.note_user_choice();
         let was_hidden = media.visibility != SubtitleVisibility::Shown;
         media.visibility = SubtitleVisibility::Shown;
         self.default_visibility = SubtitleVisibility::Shown;
@@ -155,6 +157,7 @@ impl SubtitleOwner {
             return;
         };
         media.sync_offset = offset;
+        media.memory_dirty.sync_offset = true;
         media.tracks.apply_sync_offset(offset);
         self.presenter.forget_shown_overlay();
     }

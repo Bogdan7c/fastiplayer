@@ -299,14 +299,19 @@ impl AppState {
             PostInstalledStartupPositionFacts::from_snapshot(&snapshot),
         );
         match position_plan {
-            PostInstalledStartupPositionPlan::Continue { warning } => self.begin_playback_intent(
-                playlist_runtime,
-                pending,
-                installed,
-                media_instance_id,
-                initial_checkpoint_position,
-                warning,
-            ),
+            PostInstalledStartupPositionPlan::Continue { warning } => {
+                // Позиции для восстановления нет: запомненный звук выбирается командой
+                // до команды воспроизведения.
+                self.select_remembered_audio_before_playback(&installed.source, &snapshot);
+                self.begin_playback_intent(
+                    playlist_runtime,
+                    pending,
+                    installed,
+                    media_instance_id,
+                    initial_checkpoint_position,
+                    warning,
+                )
+            }
             PostInstalledStartupPositionPlan::Restore {
                 requested_position,
                 position,
@@ -315,7 +320,7 @@ impl AppState {
                     request_id: installed.player_request_id,
                     media_instance_id,
                     video_track: player_core::InstalledTrackRestore::KeepDefault,
-                    audio_track: player_core::InstalledTrackRestore::KeepDefault,
+                    audio_track: self.remembered_audio_restore(&installed.source, &snapshot),
                     subtitle_track: player_core::InstalledSubtitleRestore::KeepDefault,
                     volume: player_core::InstalledVolumeRestore::KeepCurrent,
                     position,

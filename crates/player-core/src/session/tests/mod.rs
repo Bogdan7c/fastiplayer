@@ -49,6 +49,7 @@ mod audio_output_handover;
 mod audio_output_recovery;
 mod audio_packet_window;
 mod audio_runtime;
+mod audio_track_switch;
 mod capability_selection;
 mod cold_resume_av;
 mod decoder_boundary;

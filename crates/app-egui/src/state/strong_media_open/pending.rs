@@ -5,6 +5,7 @@ use super::*;
 mod admission;
 mod compensation;
 mod live_same_item_restore;
+mod remembered_audio;
 use compensation::PostInstalledCompensationPoll;
 mod resume;
 mod resume_policy;

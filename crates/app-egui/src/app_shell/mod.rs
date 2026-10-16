@@ -18,6 +18,7 @@ mod instance_forwarding;
 mod resolved_url_collection;
 mod runtime_settings_flush;
 mod shutdown;
+mod track_memory_flush;
 mod window_limits;
 
 #[cfg(test)]
@@ -50,7 +51,9 @@ use crate::redraw_pacing::{BackgroundPollScheduler, RedrawControlAction};
 use crate::renderer_recreation::RendererLifecycleCoordinator;
 use crate::settings_runtime::{HardwareDecodeAvailability, SettingsRuntime};
 use crate::startup_media::{InitialMedia, StartupMediaController};
-use crate::state::{AppState, AppStateStartupContext, LifecycleTimelineSeekSettlement};
+use crate::state::{
+    AppState, AppStateStartupContext, LifecycleTimelineSeekSettlement, TrackMemoryHandle,
+};
 use crate::telemetry::Telemetry;
 use shutdown::{
     AppShellProcessLifecycle, AppShellShutdownReport, OwnerTerminalDisposition,
@@ -157,6 +160,10 @@ pub(crate) struct AppShell {
     /// показывается как потеря работавшего плеера, а не как «ошибка запуска».
     fatal_error_phase: FatalErrorPhase,
 
+    /// Память выбора дорожек «для каждого видео»: живёт весь процесс, `AppState` её только
+    /// использует (пересоздание после suspend выбор не теряет).
+    track_memory: TrackMemoryHandle,
+
     /// Единственный platform path owner для будущего state worker integration.
     _config_paths: ConfigPaths,
 
@@ -215,6 +222,8 @@ impl AppShell {
             .map_err(|error| {
                 anyhow::anyhow!("playlist state inspection startup failed: {error:?}")
             })?;
+        // Память выбора дорожек: файл рядом с config; повреждённый уходит в карантин.
+        let track_memory = track_memory_flush::start_for_shell(&config_paths, &settings_runtime);
         // Под уже взятым lease: имя приложения на шине принадлежит единственному
         // экземпляру. Запускается как можно раньше, чтобы второй запуск ждал недолго.
         let instance_forwarding = crate::instance_forwarding::InstanceForwardingInbox::start(
@@ -244,6 +253,7 @@ impl AppShell {
             process_lifecycle: AppShellProcessLifecycle::Running,
             fatal_startup_error: FatalStartupErrorSlot::default(),
             fatal_error_phase: FatalErrorPhase::Startup,
+            track_memory,
             _config_paths: config_paths,
             _instance_lease: instance_lease,
         })
@@ -303,6 +313,7 @@ impl AppShell {
                 self.startup_media.startup_error_message(),
                 self.pending_config_warning.take(),
                 self.subtitle_wake_port.clone(),
+                self.track_memory.clone(),
             ),
             self.telemetry.clone(),
             self.settings_runtime.committed_snapshot(),
@@ -431,6 +442,7 @@ impl AppShell {
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
     fn suspend_runtime(&mut self) {
         self.flush_runtime_settings_for_lifecycle_boundary();
+        self.flush_track_memory_for_suspend();
         let timeline_seek_deadline = Instant::now() + TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET;
         let mut transferred_local_file_open_job = None;
         if let Some(app_state) = &mut self.app_state {
@@ -541,6 +553,7 @@ impl AppShell {
         self.instance_forwarding.shutdown();
 
         self.flush_runtime_settings_for_lifecycle_boundary();
+        self.shutdown_track_memory();
         let deadline = ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET);
         if let Some(app_state) = self.app_state.as_mut()
             && let Some(binding) = app_state.playlist_runtime_binding()

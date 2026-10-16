@@ -262,3 +262,27 @@ fn observed_write_report_remains_available_for_bounded_shutdown_proof() {
         } if final_report == observed_report
     ));
 }
+
+/// Fingerprint-ы resume зафиксированы побайтово: общий кодировщик локатора (им же пользуется
+/// track memory со своим domain separator) не имеет права менять байты resume-файлов.
+#[test]
+fn resume_locator_fingerprints_keep_their_historical_bytes() {
+    let local =
+        ResumeCheckpoint::for_locator(item_id(1), &local_locator("episode.mkv"), Duration::ZERO)
+            .expect("local fingerprint");
+    let url = ResumeCheckpoint::for_locator(
+        item_id(1),
+        &url_locator("https://example.com/v?t=1"),
+        Duration::ZERO,
+    )
+    .expect("url fingerprint");
+
+    assert_eq!(
+        local.fingerprint_hex(),
+        "7b2e066cb7cdda835a35f379164ee3c984bfb6e0db31c0cb9a54b02cf6fd0017"
+    );
+    assert_eq!(
+        url.fingerprint_hex(),
+        "68eac7a9be1c6a27c8c401e8e2d2444e11f0bc2b1dfd0f3d5f8e1ec08f5bfec3"
+    );
+}

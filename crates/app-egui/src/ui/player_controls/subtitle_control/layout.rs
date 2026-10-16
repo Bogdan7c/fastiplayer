@@ -23,7 +23,7 @@ use super::super::queue_mode_controls::{
 use crate::ui::skin::ControlsStyle;
 
 /// Насколько CC «выезжает» вбок при появлении (points): лёгкий slide вместе с fade.
-const APPEAR_SLIDE_DISTANCE: f32 = 6.0;
+pub(in crate::ui::player_controls) const APPEAR_SLIDE_DISTANCE: f32 = 6.0;
 
 /// Как показывается кнопка субтитров при данной ширине строки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,13 +77,13 @@ pub(in crate::ui::player_controls) struct SubtitleControlLayout {
 
 impl SubtitleLayoutGeometry {
     /// Зазор между соседними controls: не меньше общего spacing и skin-овых 12 pt.
-    fn neighbor_gap(&self) -> f32 {
+    pub(in crate::ui::player_controls) fn neighbor_gap(&self) -> f32 {
         self.item_spacing
             .max(self.controls_style.queue_mode_neighbor_gap)
     }
 
     /// Ширина, которую занимает CC в режиме (без зазоров).
-    fn footprint_width(&self, mode: SubtitleControlMode) -> f32 {
+    pub(in crate::ui::player_controls) fn footprint_width(&self, mode: SubtitleControlMode) -> f32 {
         let style = self.controls_style;
         match mode {
             SubtitleControlMode::Full => {
@@ -96,7 +96,7 @@ impl SubtitleLayoutGeometry {
 
     /// Резерв между Repeat и Fullscreen: сама CC и её дальний зазор до Fullscreen.
     /// Ближний зазор до Repeat добавляет раскладка Shuffle/Repeat.
-    fn reserve_for(
+    pub(in crate::ui::player_controls) fn reserve_for(
         &self,
         mode: SubtitleControlMode,
         reveal_progress: f32,
@@ -111,7 +111,10 @@ impl SubtitleLayoutGeometry {
     }
 
     /// Раскладка Shuffle/Repeat при данном резерве.
-    fn queue_mode_with_reserve(&self, reserve: TrailingReservedWidth) -> QueueModeControlLayout {
+    pub(in crate::ui::player_controls) fn queue_mode_with_reserve(
+        &self,
+        reserve: TrailingReservedWidth,
+    ) -> QueueModeControlLayout {
         control_layout_reserving_trailing_space(
             self.playback_button_rect,
             self.open_file_button_rect,

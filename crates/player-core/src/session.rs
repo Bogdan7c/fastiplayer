@@ -44,6 +44,7 @@ mod audio_runtime;
 mod audio_starvation;
 mod audio_tempo_rate_change;
 mod audio_tempo_runtime;
+mod audio_track_switch;
 mod capability_selection;
 mod command_dispatch;
 mod demux_retry;

@@ -692,7 +692,9 @@ fn first_audio_track(tracks: &[TrackInfo]) -> Option<&TrackInfo> {
 }
 
 /// Создаёт чистый lazy-init plan для audio decoder-а без открытия CPAL device.
-fn audio_decoder_init_spec_from_track(track: &TrackInfo) -> PlayerResult<AudioDecoderInitSpec> {
+pub(super) fn audio_decoder_init_spec_from_track(
+    track: &TrackInfo,
+) -> PlayerResult<AudioDecoderInitSpec> {
     if track.sample_rate == Some(0) {
         return Err(PlayerError::new(
             PlayerErrorKind::RuntimeError,

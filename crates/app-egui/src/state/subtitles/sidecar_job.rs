@@ -22,7 +22,8 @@ use std::path::PathBuf;
 use subtitle_formats::SubtitleLoadError;
 use subtitle_raster::{FontLibraryError, SubtitleFontLibrary};
 use subtitle_sidecar::{
-    SidecarSearchError, SidecarSubtitleCandidate, SidecarSubtitleFormat, find_sidecar_subtitles,
+    SidecarSearchError, SidecarSubtitleCandidate, SidecarSubtitleFormat, describe_subtitle_file,
+    find_sidecar_subtitles,
 };
 
 use super::auto_select::{
@@ -65,12 +66,16 @@ pub(super) enum PreloadTarget {
 pub(super) enum SidecarJobTask {
     /// Поиск рядом с видео, автовыбор и чтение одной дорожки.
     DiscoverNextToVideo {
-        /// Путь установленного локального видео.
-        video_path: PathBuf,
+        /// Путь установленного локального видео; `None` — рядом искать нечего (источник не
+        /// локальный), задача только проверяет `remembered_file`.
+        video_path: Option<PathBuf>,
         /// Предпочитаемые языки (уже с учётом языка системы).
         preferred_languages: PreferredLanguages,
         /// Какую дорожку читать сразу.
         preload: PreloadTarget,
+        /// Файл субтитров из памяти выбора «для этого видео»: существует ли он сейчас.
+        /// Проверка идёт здесь, в фоне, а не в потоке интерфейса.
+        remembered_file: Option<PathBuf>,
     },
     /// Чтение одного файла.
     LoadFile {
@@ -163,6 +168,10 @@ pub(super) struct DiscoveryOutcome {
     pub(super) selection: AutoSelection,
     /// Прочитанная дорожка (если автовыбор что-то выбрал для `PreloadTarget`).
     pub(super) preloaded: Option<PreloadedTrack>,
+    /// Файл из памяти выбора, который существует, имеет поддерживаемое расширение и не найден
+    /// поиском рядом с видео (брошенный/выбранный пользователем файл из другой папки).
+    /// `None` — файла нет (удалён) либо он уже среди `candidates`.
+    pub(super) remembered_file: Option<SidecarSubtitleCandidate>,
     /// Новая библиотека шрифтов; `None` при `ReuseExisting` или если ничего не читалось.
     pub(super) fonts: Option<SubtitleFontLibrary>,
 }
@@ -197,9 +206,13 @@ pub(super) fn run_sidecar_job(
             video_path,
             preferred_languages,
             preload,
+            remembered_file,
         } => run_discovery(
             request,
-            video_path,
+            DiscoveryTarget {
+                video_path: video_path.as_deref(),
+                remembered_file: remembered_file.as_deref(),
+            },
             preferred_languages,
             *preload,
             is_cancelled,
@@ -214,29 +227,46 @@ pub(super) fn run_sidecar_job(
     }
 }
 
+/// Что именно искать задаче поиска.
+struct DiscoveryTarget<'a> {
+    /// Видео, рядом с которым ищем файлы (`None` — не ищем).
+    video_path: Option<&'a std::path::Path>,
+    /// Файл из памяти выбора, существование которого надо проверить.
+    remembered_file: Option<&'a std::path::Path>,
+}
+
 fn run_discovery(
     request: &SidecarJobRequest,
-    video_path: &std::path::Path,
+    target: DiscoveryTarget<'_>,
     preferred_languages: &PreferredLanguages,
     preload: PreloadTarget,
     is_cancelled: &dyn Fn() -> bool,
 ) -> SidecarJobOutcome {
-    let search = match find_sidecar_subtitles(video_path, &request.limits.search, is_cancelled) {
-        Ok(outcome) => outcome,
-        Err(SidecarSearchError::Cancelled) => return SidecarJobOutcome::Cancelled,
-        Err(error) => {
-            return SidecarJobOutcome::Failed(SubtitleLoadFailure::SearchFailed(error));
+    let candidates = match target.video_path {
+        Some(video_path) => {
+            let search =
+                match find_sidecar_subtitles(video_path, &request.limits.search, is_cancelled) {
+                    Ok(outcome) => outcome,
+                    Err(SidecarSearchError::Cancelled) => return SidecarJobOutcome::Cancelled,
+                    Err(error) => {
+                        return SidecarJobOutcome::Failed(SubtitleLoadFailure::SearchFailed(error));
+                    }
+                };
+            if search.report.is_truncated() || !search.report.unreadable_directories.is_empty() {
+                // Пути каталогов в лог не пишем: только факт и счётчики.
+                tracing::debug!(
+                    truncated = search.report.is_truncated(),
+                    unreadable_directories = search.report.unreadable_directories.len(),
+                    "Subtitle search was incomplete"
+                );
+            }
+            search.candidates
         }
+        None => Vec::new(),
     };
-    if search.report.is_truncated() || !search.report.unreadable_directories.is_empty() {
-        // Пути каталогов в лог не пишем: только факт и счётчики.
-        tracing::debug!(
-            truncated = search.report.is_truncated(),
-            unreadable_directories = search.report.unreadable_directories.len(),
-            "Subtitle search was incomplete"
-        );
-    }
-    let candidates = search.candidates;
+    let remembered_file = target
+        .remembered_file
+        .and_then(|path| describe_existing_remembered_file(path, &candidates));
 
     let traits: Vec<TrackTraits<'_>> = candidates
         .iter()
@@ -262,6 +292,7 @@ fn run_discovery(
             candidates,
             selection,
             preloaded: None,
+            remembered_file,
             fonts: None,
         }));
     };
@@ -272,6 +303,7 @@ fn run_discovery(
             candidates,
             selection,
             preloaded: None,
+            remembered_file,
             fonts: None,
         }));
     };
@@ -297,8 +329,26 @@ fn run_discovery(
             candidate_index,
             result,
         }),
+        remembered_file,
         fonts,
     }))
+}
+
+/// Описание запомненного файла, если он ещё существует и не найден поиском рядом с видео.
+///
+/// Отсутствие файла (удалён, диск не подключён) — штатный исход, а не ошибка: память выбора
+/// молча уступает автовыбору. Причину не логируем: путь в лог не пишем, а факт не интересен.
+fn describe_existing_remembered_file(
+    path: &std::path::Path,
+    discovered: &[SidecarSubtitleCandidate],
+) -> Option<SidecarSubtitleCandidate> {
+    if discovered.iter().any(|candidate| candidate.path == path) {
+        return None;
+    }
+    if !path.is_file() {
+        return None;
+    }
+    describe_subtitle_file(path)
 }
 
 fn run_file_load(

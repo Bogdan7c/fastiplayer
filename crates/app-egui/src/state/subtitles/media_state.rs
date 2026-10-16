@@ -9,6 +9,7 @@ use player_core::MediaInstanceId;
 
 use super::intents::SubtitleVisibility;
 use super::job_runner::SidecarJob;
+use super::owner_memory::{MemoryDirty, PendingRememberedChoice};
 use super::sidecar_job::SubtitleLoadFailure;
 use super::track_list::SubtitleTrackList;
 
@@ -59,6 +60,12 @@ pub(super) struct MediaSubtitles {
     pub(super) user_chose_track: bool,
     /// Идущая загрузка выбранной (или принудительной) дорожки. Одновременно не больше одной.
     pub(super) load_job: Option<TrackLoadJob>,
+    /// Выбор из памяти «для этого видео», который ещё не нашёл свою дорожку (дорожки приходят
+    /// позже: файлы — из фонового поиска, встроенные — из снимка плеера). Сбрасывается, когда
+    /// дорожка найдена, когда её нет, и при любом действии пользователя с субтитрами.
+    pub(super) pending_memory: Option<PendingRememberedChoice>,
+    /// Что пользователь изменил с последней выдачи в память выбора.
+    pub(super) memory_dirty: MemoryDirty,
 }
 
 impl MediaSubtitles {
@@ -74,6 +81,8 @@ impl MediaSubtitles {
             sync_offset: SubtitleSyncOffset::ZERO,
             user_chose_track: false,
             load_job: None,
+            pending_memory: None,
+            memory_dirty: MemoryDirty::default(),
         }
     }
 

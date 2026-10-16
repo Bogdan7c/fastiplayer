@@ -34,6 +34,7 @@ impl AppState {
             return;
         }
         let feedback = self.subtitles.apply_control_action(action);
+        self.capture_user_subtitle_choices();
         deliver_feedback(&mut self.notifications, feedback, Instant::now());
         self.mark_pending_worker_redraw();
     }

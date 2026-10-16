@@ -1,4 +1,4 @@
-schema_version = 15
+schema_version = 16
 
 [player]
 start_paused = false
@@ -59,6 +59,8 @@ error_behavior = "skip"
 state_save_debounce_ms = 2000
 # Интервал periodic checkpoint-а позиции; lifecycle boundaries сохраняются сразу.
 resume_checkpoint_interval_ms = 5000
+# Сколько видео помнят аудиодорожку, субтитры и их задержку (давние забываются).
+track_memory_max_entries = 1000
 # Порог restart-current для Previous; 0 отключает эту ветку.
 previous_restart_threshold_ms = 5000
 # Сколько media-файлов брать из папки, брошенной в окно (с подпапками).

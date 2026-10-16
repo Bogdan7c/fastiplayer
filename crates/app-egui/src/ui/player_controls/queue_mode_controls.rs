@@ -145,6 +145,16 @@ impl TrailingReservedWidth {
             0.0
         })
     }
+
+    /// Зарезервированная ширина в points.
+    pub(super) fn width(self) -> f32 {
+        self.0
+    }
+
+    /// Сумма двух резервов: так CC и «♪» вместе раздвигают Shuffle/Repeat.
+    pub(super) fn plus(self, other: Self) -> Self {
+        Self::of_width(self.0 + other.0)
+    }
 }
 
 /// То же, что `control_layout` (тестовый эталон без CC), но правый предел Repeat отодвинут на `trailing_reserved`.

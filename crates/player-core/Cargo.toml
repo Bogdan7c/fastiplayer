@@ -26,6 +26,8 @@ video-frame-contract = { workspace = true }
 video-present-core = { workspace = true }
 
 [dev-dependencies]
+# Настоящие аудио-декодеры нужны только функциональным тестам переключения дорожки.
+audio = { workspace = true }
 symphonia-demux = { workspace = true }
 render-core = { workspace = true }
 video-frame-contract.workspace = true

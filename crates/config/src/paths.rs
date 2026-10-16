@@ -13,6 +13,9 @@ const PLAYLIST_STATE_FILE_NAME: &str = "playlist-state.json";
 /// Имя маленького sidecar последней подтверждённой позиции.
 const PLAYLIST_RESUME_FILE_NAME: &str = "playlist-resume.json";
 
+/// Имя файла памяти выбора дорожек и задержки субтитров по видео.
+const TRACK_MEMORY_FILE_NAME: &str = "track-memory.json";
+
 /// Имя стабильного lock artifact, который нельзя удалять между запусками.
 const APP_INSTANCE_LOCK_FILE_NAME: &str = "fastiplayer.instance.lock";
 
@@ -75,6 +78,13 @@ impl ConfigPaths {
         self.config_dir.join(PLAYLIST_RESUME_FILE_NAME)
     }
 
+    /// Строит путь к памяти дорожек по видео; отдельный файл, чтобы частые правки выбора не
+    /// переписывали очередь и resume-позицию.
+    #[must_use]
+    pub fn track_memory_file(&self) -> PathBuf {
+        self.config_dir.join(TRACK_MEMORY_FILE_NAME)
+    }
+
     /// Строит путь к стабильному process-instance lock artifact.
     #[must_use]
     pub fn app_instance_lock_file(&self) -> PathBuf {
@@ -102,6 +112,10 @@ mod tests {
         assert_eq!(
             paths.playlist_resume_file(),
             config_root.join("playlist-resume.json")
+        );
+        assert_eq!(
+            paths.track_memory_file(),
+            config_root.join("track-memory.json")
         );
         assert_eq!(
             paths.app_instance_lock_file(),

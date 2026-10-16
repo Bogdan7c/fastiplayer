@@ -71,7 +71,7 @@ Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Su
 | Menu | tracks (`Russian — forced (SRT, file)`; a file without a language shows its file name), Off, Load file…, Delay with Reset; unavailable tracks are greyed with the reason on hover |
 | Hotkeys | `C` on/off, `V` next track (cycles through Off), `Z` / `X` delay −0.1 s / +0.1 s (one updating notification) |
 | Auto-selection | off by default; when on: first track matching `subtitles.preferred_languages` (empty = system language; `rus` matches `ru`), otherwise the first track; forced tracks are shown even when subtitles are off |
-| Remembered | whether subtitles are on (config `subtitles.enabled`); per-video track and delay memory: session 07 |
+| Remembered | whether subtitles are on (config `subtitles.enabled`); per-video track, Off and delay: see "Audio tracks and per-video memory (session 07)" |
 | Drop a subtitle file on the window | attaches to the current video (local or web) and shows it; the queue is not changed. Nothing playing → "Open a video first, then add subtitles." Video + subtitle file dropped together → attached to that video; dropped on the playlist panel → not attached (notification) |
 | Language from a dropped / loaded file name | `Movie.ru.srt`, `sintel_ru.srt`, `Movie English.srt`, `Movie [Forced].srt`; only known languages (no video name to compare with, so `The_Big_Lie.srt` is not "lie") |
 | Settings | Settings → `subtitles`: show subtitles, preferred languages, style (box / outline, size, colors, box opacity), resource limits (config schema v15) |
@@ -149,3 +149,16 @@ Limitations:
 - ASS / SSA tracks are drawn as plain text with the default style (override tags are stripped) until session 08; the track's own style header is not used yet;
 - like mpv, cues are known only after the demuxer has read them: after a forward seek, a cue that started before the target and is still active appears once the demuxer reaches its packet (the container is read from the nearest keyframe before the target, so this is usually immediate); a cue that was never read is not shown;
 - if the packet queue between the player and the UI overflows, packets are dropped (counted, one warning in the log) while video and audio keep playing.
+
+## Audio tracks and per-video memory (session 07)
+
+| Feature | Status |
+|---|---|
+| Audio button | `♪ ▾` left of CC, only when the video has at least two audio tracks; click opens the track list (`Russian — Dub (FLAC)`, `Track 2 (Opus)` without tags). Hidden before CC in narrow windows (shown from about 586 pt, with ▾ from about 614 pt); `B` still works |
+| Hotkey | `B` next audio track (cycles), one updating notification `Audio: …` |
+| Switching | the audio path is rebuilt for the new track (its own codec, rate and channels) and the player does a short seek to the current position, so audio and video stay in sync; Paused stays paused. Non-seekable sources continue from the next packets without a seek |
+| Per-video memory | the chosen audio track, subtitle track (embedded, file beside the video, loaded / dropped file), Off and the subtitle delay are remembered per video (local files and links) and restored on reopen, after restart and when the queue reaches the video again. Priority: this video's memory, then auto-selection, then container flags |
+| Storage | `track-memory.json` next to the config (schema v1); videos are keyed by a fingerprint of the path / link, a chosen subtitle file is stored by its path. Limit `playlist.track_memory_max_entries` (default 1000, 10–10000); the least recently used videos are forgotten first. A broken file is set aside as `track-memory.corrupt-*.json`, playback starts with an empty memory (warning in the log) |
+| Not remembered | automatic choices; quality / candidate switches keep the current tracks; YouTube audio language is session 12 |
+| Known limits | a track is found again by language + title + codec (+ position among tracks); a track in another language is never picked instead. The same web video opened by a different kind of link (manifest URL vs page URL) has separate memory |
+

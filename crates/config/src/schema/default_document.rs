@@ -59,6 +59,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "track_memory_max_entries = 1000",
+        "# Сколько видео помнят аудиодорожку, субтитры и их задержку (давние забываются).",
+    );
+    insert_default_config_comment(
+        toml_text,
         "previous_restart_threshold_ms = 5000",
         "# Порог restart-current для Previous; 0 отключает эту ветку.",
     );

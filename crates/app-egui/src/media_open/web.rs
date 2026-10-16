@@ -20,6 +20,7 @@ use super::{
 };
 
 mod adapter_view;
+mod durable_identity;
 mod source_actions;
 pub(super) use adapter_view::WebMediaOpenAdapterView;
 pub(crate) use source_actions::{

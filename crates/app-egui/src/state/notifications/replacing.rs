@@ -17,6 +17,8 @@ pub(crate) enum TransientReplaceKey {
     SubtitleSync,
     /// Выбранная дорожка субтитров («Subtitles: Russian (SRT, file)»).
     SubtitleTrack,
+    /// Выбранная аудиодорожка («Audio: Russian — Dub (FLAC)»), клавиша `B`.
+    AudioTrack,
 }
 
 impl NotificationCenter {

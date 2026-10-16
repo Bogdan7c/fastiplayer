@@ -231,6 +231,9 @@ impl SubtitleOwner {
         let Some(media) = self.media.as_mut() else {
             return;
         };
+        // Память выбора «для этого видео» важнее автовыбора: если дорожка из неё нашлась,
+        // `user_chose_track` ниже не даёт автовыбору её перебить.
+        super::owner_memory::resolve_pending_remembered_choice(media);
         let selection = {
             let traits = media.tracks.traits();
             auto_select(&traits, &preferred)

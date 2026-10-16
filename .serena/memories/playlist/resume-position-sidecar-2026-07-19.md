@@ -37,6 +37,8 @@ Dynamic live media (`TimelineMode::Live`) never writes, restores, or synthesizes
 - Playlist queue writer schema поднят до v2, но `playlist-resume.json`, `CURRENT_PLAYLIST_RESUME_SCHEMA_VERSION = 1`, checkpoint DTO, fingerprint, quarantine и writer lifecycle не изменены.
 - Focused `resume_update_never_rewrites_large_playlist_state_file` и полный resume suite продолжают доказывать file/schema isolation после S02.
 
+S07 субтитров (2026-10-16): кодирование отпечатка вынесено в общий `playlist-state/src/locator_fingerprint.rs` с параметром-доменом; выход resume не изменился (golden-тест). Отдельный файл памяти дорожек — `mem:subtitles/audio-tracks-memory-s07`.
+
 Related memories: `mem:playlist/state`, `mem:app-egui/playlist-persistence-s14`, `mem:app-egui/startup-orchestration-s17`, `mem:playlist/settings-s13`, `mem:config/schema-store-decomposition-s23`.
 
 

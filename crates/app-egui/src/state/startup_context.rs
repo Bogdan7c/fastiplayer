@@ -18,6 +18,9 @@ pub(crate) struct AppStateStartupContext {
     pub(super) config_warning: Option<String>,
     /// Wake-порт фоновой загрузки субтитров: process-lifetime, копируется в каждый `AppState`.
     pub(super) subtitle_wake_port: AppWakePort,
+    /// Память выбора дорожек: общая для всех `AppState` процесса, чтобы пересоздание после
+    /// suspend не теряло выбор и не перечитывало файл.
+    pub(super) track_memory: super::track_memory::TrackMemoryHandle,
 }
 
 impl AppStateStartupContext {
@@ -27,12 +30,14 @@ impl AppStateStartupContext {
         startup_error: Option<String>,
         config_warning: Option<String>,
         subtitle_wake_port: AppWakePort,
+        track_memory: super::track_memory::TrackMemoryHandle,
     ) -> Self {
         Self {
             process_started_at,
             startup_error,
             config_warning,
             subtitle_wake_port,
+            track_memory,
         }
     }
 }

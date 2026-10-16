@@ -15,6 +15,8 @@ mod embedded_support;
 mod embedded_test_font;
 mod gpu_chain;
 mod language;
+mod memory_chain;
+mod memory_restore;
 mod placement;
 mod presentation;
 mod real_sidecar;
@@ -74,9 +76,10 @@ pub(super) fn discovery_request_with(
     let codes: Vec<String> = preferred.iter().map(|code| (*code).to_owned()).collect();
     SidecarJobRequest {
         task: SidecarJobTask::DiscoverNextToVideo {
-            video_path: video.to_path_buf(),
+            video_path: Some(video.to_path_buf()),
             preferred_languages: PreferredLanguages::resolve(&codes, None),
             preload,
+            remembered_file: None,
         },
         fonts,
         limits: default_load_limits(),
