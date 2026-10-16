@@ -28,13 +28,13 @@ pub(super) const OPUS_FREQUENCY_HZ: f64 = 880.0;
 /// Длина фикстуры, секунды.
 pub(super) const FIXTURE_SECONDS: f64 = 3.0;
 
-pub(super) fn fixture_path(name: &str) -> std::path::PathBuf {
+pub(in crate::session::tests) fn fixture_path(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../symphonia-demux/tests/fixtures/subtitles")
         .join(name)
 }
 
-pub(super) fn open_fixture(name: &str) -> symphonia_demux::SymphoniaDemuxer {
+pub(in crate::session::tests) fn open_fixture(name: &str) -> symphonia_demux::SymphoniaDemuxer {
     symphonia_demux::SymphoniaDemuxer::from_file(&fixture_path(name))
         .expect("audio-track fixture must open")
 }
@@ -255,7 +255,7 @@ impl SwitchHarness {
 }
 
 /// Ставит media настоящим staged-протоколом без video backend (audio-only).
-pub(super) fn install_media(
+pub(in crate::session::tests) fn install_media(
     session: &mut PlayerSession,
     demuxer: Box<dyn Demuxer + Send>,
     intent: PlaybackIntent,

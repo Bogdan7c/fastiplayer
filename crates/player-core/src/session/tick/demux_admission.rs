@@ -11,6 +11,7 @@ use tracing::{debug, trace, warn};
 
 use super::{
     PlayerTickConfig, PlayerTickResult,
+    audio_read_ahead::audio_read_ahead_limit_ms,
     presentation_scheduler::{
         available_video_present_slots, host_upload_ready_queue_capacity, seek_admission_active,
         video_decoder_texture_limits,
@@ -28,7 +29,6 @@ use crate::pipeline::{VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScan
 use crate::{
     PendingAudioPacket, PendingVideoPacket, PendingVideoPacketTimestamps, PipelineLatencyStage,
     PipelinePauseReason, PlayerTickPacket, PlayerVideoDropReason, session::PlayerSession,
-    session::audio_runtime::sanitize_audio_high_water_mark,
 };
 
 /// Результат маршрутизации demux packet-а внутри session queues.
@@ -234,8 +234,7 @@ pub(super) fn audio_read_ahead_blocks_demux(
     match session.audio_buffer_level_ms() {
         Some(audio_buffer_level_ms) => {
             !audio_buffer_level_ms.is_finite()
-                || audio_buffer_level_ms
-                    > sanitize_audio_high_water_mark(tick_config.audio_buffer_high_water_mark_ms)
+                || audio_buffer_level_ms > audio_read_ahead_limit_ms(session, tick_config)
         }
         None => !session.pipeline.pending_audio_packet_is_empty(),
     }

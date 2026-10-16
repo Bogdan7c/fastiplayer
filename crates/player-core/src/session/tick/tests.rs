@@ -30,6 +30,7 @@ use crate::{
 };
 
 mod audio_packet_window;
+mod audio_read_ahead;
 
 /// Scripted demuxer для focused admission tests без реального container backend-а.
 struct AdmissionTestDemuxer {

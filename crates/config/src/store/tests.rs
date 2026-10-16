@@ -15,6 +15,7 @@ mod playlist_dropped_items;
 mod playlist_error_behavior_migration;
 mod recovery;
 mod render_validation;
+mod startup_read_ahead_settings;
 mod subtitles_settings;
 mod track_memory_settings;
 /// Проверяет, что atomic save не оставил временных файлов рядом с config.

@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 16;
+pub const CURRENT_SCHEMA_VERSION: u32 = 17;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -68,14 +68,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_14: u32 = 14;
 /// миграция v15 -> v16 только поднимает версию (старый файл без ключа грузится с defaults).
 pub(crate) const LEGACY_SCHEMA_VERSION_15: u32 = 15;
 
+/// Последняя схема до ключа `audio.startup_read_ahead_cap_ms`.
+///
+/// Решение владельца: потолок чтения аудио вперёд до первого видеокадра добавляется со
+/// значением по умолчанию; переписывать пользовательские значения нечего, поэтому
+/// миграция v16 -> v17 только поднимает версию (старый файл без ключа грузится с defaults).
+pub(crate) const LEGACY_SCHEMA_VERSION_16: u32 = 16;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v16 и полная цепочка поддерживаемых legacy-версий v2..v15.
+    /// Текущая схема v17 и полная цепочка поддерживаемых legacy-версий v2..v16.
     #[test]
-    fn schema_v16_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
+    fn schema_v17_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 17);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -92,8 +99,9 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_13,
                 LEGACY_SCHEMA_VERSION_14,
                 LEGACY_SCHEMA_VERSION_15,
+                LEGACY_SCHEMA_VERSION_16,
             ],
-            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
     }
 }

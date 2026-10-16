@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use super::PlayerSession;
 use crate::{PipelinePauseReason, PlaybackState};
 
+mod audio_read_ahead;
 mod demux_admission;
 mod demux_read_failure;
 mod presentation_scheduler;
@@ -28,6 +29,7 @@ pub use types::{
 };
 pub(crate) use wakeup::PlayerWorkerWakeupPlan;
 
+use audio_read_ahead::audio_read_ahead_limit_ms;
 use demux_admission::{
     demux_catch_up_deadline_for_tick, demux_packet_budget_for_tick, read_demux_packets,
 };
@@ -69,9 +71,10 @@ impl PlayerSession {
         }
 
         if self.is_demuxing_active() || self.is_eof_draining() {
-            self.process_pending_audio_packets_with_buffer_limit(
-                tick_context.config.audio_buffer_high_water_mark_ms,
-            );
+            self.process_pending_audio_packets_with_buffer_limit(audio_read_ahead_limit_ms(
+                self,
+                &tick_context.config,
+            ));
             self.start_eof_audio_tail_if_needed();
         }
 

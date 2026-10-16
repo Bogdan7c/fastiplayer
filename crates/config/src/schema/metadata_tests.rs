@@ -81,6 +81,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "audio.muted",
     "audio.output_device",
     "audio.buffer_target_ms",
+    "audio.startup_read_ahead_cap_ms",
     "network.memory_cache_mb",
     "network.read_ahead_mb",
     "network.prefetch_initial_chunk_kb",
@@ -687,6 +688,12 @@ fn metadata_ranges_match_validation_constants() {
         "audio.buffer_target_ms",
         validation::MIN_AUDIO_BUFFER_TARGET_MS,
         validation::MAX_AUDIO_BUFFER_TARGET_MS,
+    );
+    assert_integer_range(
+        &registry,
+        "audio.startup_read_ahead_cap_ms",
+        crate::MIN_AUDIO_STARTUP_READ_AHEAD_CAP_MS,
+        crate::MAX_AUDIO_STARTUP_READ_AHEAD_CAP_MS,
     );
     assert_integer_range(
         &registry,

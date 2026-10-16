@@ -9,6 +9,7 @@ use tracing::{debug, trace};
 
 use super::{
     PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoDropReason,
+    audio_read_ahead::audio_read_ahead_limit_ms,
     demux_admission::{
         catch_up_deadline_reached, read_demux_packets, seek_preroll_pending_video_limit,
     },
@@ -510,9 +511,10 @@ pub(super) fn run_adaptive_catch_up_pass(
         made_progress |= demuxed_packets > 0;
 
         if demuxed_packets > 0 {
-            session.process_pending_audio_packets_with_buffer_limit(
-                tick_config.audio_buffer_high_water_mark_ms,
-            );
+            session.process_pending_audio_packets_with_buffer_limit(audio_read_ahead_limit_ms(
+                session,
+                tick_config,
+            ));
         }
     }
 

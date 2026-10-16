@@ -5,7 +5,7 @@
 //! Проверяем наблюдаемое: какой сигнал дошёл до output-а, в каком формате пересоздан
 //! output, что с позицией, состоянием и событиями.
 
-mod harness;
+pub(super) mod harness;
 
 use std::time::Duration;
 

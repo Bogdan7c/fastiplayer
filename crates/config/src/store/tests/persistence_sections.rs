@@ -17,7 +17,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(loaded.config.render.color_adjustment.is_identity());
 
     let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-    assert!(created_toml.contains("schema_version = 16"));
+    assert!(created_toml.contains("schema_version = 17"));
     assert!(created_toml.contains("[web_media]"));
     assert!(created_toml.contains("[player.seek]"));
     assert!(created_toml.contains("# Настройки seek commit"));
@@ -220,7 +220,7 @@ fn schema_v11_without_audio_muted_loads_unmuted_and_roundtrips_user_audio_level(
     fs::write(
         &config_path,
         r#"
-schema_version = 16
+schema_version = 17
 
 [audio]
 volume = 0.3

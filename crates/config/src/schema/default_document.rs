@@ -64,6 +64,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "startup_read_ahead_cap_ms = 1500",
+        "# Сколько аудио (мс) можно читать вперёд, пока нет первого видеокадра; потом снова buffer_target_ms.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "previous_restart_threshold_ms = 5000",
         "# Порог restart-current для Previous; 0 отключает эту ветку.",
     );

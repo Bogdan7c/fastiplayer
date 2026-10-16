@@ -118,6 +118,12 @@ pub struct PlayerTickConfig {
     /// Уровень audio buffer, выше которого audio packets временно не декодируются.
     pub audio_buffer_high_water_mark_ms: f64,
 
+    /// Потолок уровня audio buffer-а, пока стартовый video preroll голоден (нет первого кадра).
+    ///
+    /// Временно заменяет high-water mark, чтобы video decoder успел накопить reorder/DPB
+    /// глубину; после первого кадра снова действует `audio_buffer_high_water_mark_ms`.
+    pub audio_startup_read_ahead_cap_ms: f64,
+
     /// Уровень audio buffer, ниже которого demux может читать сквозь video backpressure.
     pub audio_demux_low_water_mark_ms: f64,
 
@@ -181,6 +187,8 @@ impl Default for PlayerTickConfig {
             seek_fast_preroll_time_budget: Duration::from_millis(48),
             seek_fast_preroll_video_packet_burst: 512,
             audio_buffer_high_water_mark_ms: 200.0,
+            audio_startup_read_ahead_cap_ms:
+                fastiplayer_config::DEFAULT_AUDIO_STARTUP_READ_AHEAD_CAP_MS as f64,
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
             seek_commit_timeout: Duration::from_millis(10_000),
@@ -238,6 +246,7 @@ impl From<&AppConfig> for PlayerTickConfig {
                 .seek
                 .fast_preroll_video_packet_burst,
             audio_buffer_high_water_mark_ms: config.audio.buffer_target_ms as f64,
+            audio_startup_read_ahead_cap_ms: config.audio.startup_read_ahead_cap_ms as f64,
             audio_demux_low_water_mark_ms: (config.audio.buffer_target_ms as f64 * 0.5)
                 .max(config.player.seek.resume_audio_min_buffer_ms as f64),
             audio_preroll_target_ms: config.player.seek.resume_audio_min_buffer_ms as f64,

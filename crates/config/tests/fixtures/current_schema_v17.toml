@@ -1,4 +1,4 @@
-schema_version = 16
+schema_version = 17
 
 [player]
 start_paused = false
@@ -158,6 +158,8 @@ volume = 0.8
 muted = false
 output_device = "default"
 buffer_target_ms = 200
+# Сколько аудио (мс) можно читать вперёд, пока нет первого видеокадра; потом снова buffer_target_ms.
+startup_read_ahead_cap_ms = 1500
 
 # Настройки будущего source/network cache слоя.
 [network]

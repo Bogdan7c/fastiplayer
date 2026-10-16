@@ -394,6 +394,7 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "player.seek.fast_preroll_budget_ms"
         | "player.seek.fast_preroll_video_packet_burst"
         | "audio.buffer_target_ms"
+        | "audio.startup_read_ahead_cap_ms"
         | "video.max_decode_ahead_ms"
         | "video.present_queue_frames"
         | "video.scheduler.demux_packets_per_tick"

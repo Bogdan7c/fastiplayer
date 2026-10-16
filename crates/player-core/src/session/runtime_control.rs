@@ -169,6 +169,19 @@ impl PlayerSession {
         audio_ready && video_ready
     }
 
+    /// `true`, пока preroll голоден по видео: идёт `Buffering`, видеотрек выбран, а первого
+    /// кадра (present или в очереди) ещё нет.
+    ///
+    /// Покрывает и стартовый autoplay preroll, и buffering-resume, если кадры исчезли.
+    /// Intent-метод для audio read-ahead policy: чтение вперёд не должно упираться в
+    /// high-water mark, пока decoder не накопил глубину для первого кадра. Seek сюда не
+    /// попадает: у него состояние `Seeking` и собственный fast-preroll bypass.
+    pub(crate) fn video_preroll_is_starved(&self) -> bool {
+        self.snapshot.playback_state == PlaybackState::Buffering
+            && self.pipeline.has_selected_video_track()
+            && !self.autoplay_video_preroll_ready()
+    }
+
     /// Проверяет video gate autoplay-preroll без раскрытия очередей pipeline.
     fn autoplay_video_preroll_ready(&self) -> bool {
         if !self.pipeline.has_selected_video_track() {

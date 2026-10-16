@@ -68,6 +68,12 @@ pub(super) fn validate_audio_section(config: &AppConfig) -> ConfigResult<()> {
         MIN_AUDIO_BUFFER_TARGET_MS,
         MAX_AUDIO_BUFFER_TARGET_MS,
     )?;
+    validate_u64_range(
+        "audio.startup_read_ahead_cap_ms",
+        config.audio.startup_read_ahead_cap_ms,
+        crate::MIN_AUDIO_STARTUP_READ_AHEAD_CAP_MS,
+        crate::MAX_AUDIO_STARTUP_READ_AHEAD_CAP_MS,
+    )?;
 
     Ok(())
 }

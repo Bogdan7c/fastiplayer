@@ -1143,6 +1143,7 @@ fn player_tick_setting(setting_id: &str) -> bool {
     matches!(
         setting_id,
         "audio.buffer_target_ms"
+            | "audio.startup_read_ahead_cap_ms"
             | "player.seek.commit_timeout_ms"
             | "player.seek.resume_audio_min_buffer_ms"
             | "player.seek.resume_audio_gate_timeout_ms"
@@ -1189,6 +1190,7 @@ fn player_runtime_setting_id(setting_id: &str) -> Option<PlayerRuntimeSettingId>
     let runtime_id = match setting_id {
         "audio.volume" => PlayerRuntimeSettingId::AudioDefaultVolume,
         "audio.buffer_target_ms" => PlayerRuntimeSettingId::AudioBufferTargetMs,
+        "audio.startup_read_ahead_cap_ms" => PlayerRuntimeSettingId::AudioStartupReadAheadCapMs,
         "player.demux.max_consecutive_corrupted_packets" => {
             PlayerRuntimeSettingId::PlayerDemuxMaxConsecutiveCorruptedPackets
         }

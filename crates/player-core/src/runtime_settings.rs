@@ -66,6 +66,9 @@ pub enum PlayerRuntimeSettingId {
     /// `audio.buffer_target_ms`.
     AudioBufferTargetMs,
 
+    /// `audio.startup_read_ahead_cap_ms`.
+    AudioStartupReadAheadCapMs,
+
     /// `video.max_decode_ahead_ms`.
     VideoMaxDecodeAheadMs,
 
@@ -162,6 +165,7 @@ impl PlayerRuntimeSettingId {
                 "player.seek.fast_preroll_video_packet_burst"
             }
             Self::AudioBufferTargetMs => "audio.buffer_target_ms",
+            Self::AudioStartupReadAheadCapMs => "audio.startup_read_ahead_cap_ms",
             Self::VideoMaxDecodeAheadMs => "video.max_decode_ahead_ms",
             Self::VideoPresentQueueFrames => "video.present_queue_frames",
             Self::VideoDecoderPacketChannelFrames => "video.decoder_packet_channel_frames",
@@ -926,6 +930,10 @@ pub(crate) fn validate_runtime_tick_config(tick_config: &PlayerTickConfig) -> Re
     ensure_non_negative_finite(
         tick_config.audio_buffer_high_water_mark_ms,
         PlayerRuntimeSettingId::AudioBufferTargetMs,
+    )?;
+    ensure_non_negative_finite(
+        tick_config.audio_startup_read_ahead_cap_ms,
+        PlayerRuntimeSettingId::AudioStartupReadAheadCapMs,
     )?;
     ensure_non_negative_finite(
         tick_config.audio_demux_low_water_mark_ms,

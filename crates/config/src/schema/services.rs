@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::ConfigResult;
 
+/// Сколько аудио (мс) плеер может прочитать вперёд, пока ждёт первый видеокадр, по умолчанию.
+pub const DEFAULT_AUDIO_STARTUP_READ_AHEAD_CAP_MS: u64 = 1_500;
+/// Минимум стартового потолка: меньше обычного `audio.buffer_target_ms` (200 мс) смысла нет.
+pub const MIN_AUDIO_STARTUP_READ_AHEAD_CAP_MS: u64 = 200;
+/// Максимум стартового потолка. Кольцевой буфер audio output вмещает ~2000 мс PCM
+/// (`audio::output`), поэтому потолок оставляет запас ~200 мс на последний декодированный пакет.
+pub const MAX_AUDIO_STARTUP_READ_AHEAD_CAP_MS: u64 = 1_800;
+
 /// Верхняя граница persisted preference, синхронизированная app boundary с `web-media-core`.
 pub const MAX_PREFERRED_VIDEO_HEIGHT: u32 = 16_384;
 
@@ -168,6 +176,28 @@ pub struct AudioConfig {
         apply = "audio.apply"
     )]
     pub buffer_target_ms: u64,
+
+    /// Потолок чтения аудио вперёд, пока ещё нет первого видеокадра.
+    #[setting(
+        id = "audio.startup_read_ahead_cap_ms",
+        path = "audio.startup_read_ahead_cap_ms",
+        section = "audio",
+        group = "buffer",
+        surface = "main-settings-window",
+        label_id = "settings.audio.startup_read_ahead_cap_ms.label",
+        label_ru = "Audio read-ahead while waiting for the first frame",
+        description_id = "settings.audio.startup_read_ahead_cap_ms.description",
+        description_ru = "How much audio may be read ahead at startup while the first video frame is still being decoded.",
+        help_id = "settings.audio.startup_read_ahead_cap_ms.help",
+        help_ru = "Video with B-frames needs a dozen packets before the first picture appears; if the audio buffer limit stops reading earlier, playback never starts. After the first frame the normal audio buffer target applies again.",
+        editor = "integer",
+        min = crate::MIN_AUDIO_STARTUP_READ_AHEAD_CAP_MS,
+        max = crate::MAX_AUDIO_STARTUP_READ_AHEAD_CAP_MS,
+        step = 100,
+        unit = "ms",
+        apply = "audio.apply"
+    )]
+    pub startup_read_ahead_cap_ms: u64,
 }
 
 impl Default for AudioConfig {
@@ -178,6 +208,7 @@ impl Default for AudioConfig {
             muted: false,
             output_device: "default".to_string(),
             buffer_target_ms: 200,
+            startup_read_ahead_cap_ms: DEFAULT_AUDIO_STARTUP_READ_AHEAD_CAP_MS,
         }
     }
 }

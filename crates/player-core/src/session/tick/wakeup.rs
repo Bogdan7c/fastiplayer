@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use super::{
     PlayerTickConfig,
+    audio_read_ahead::audio_read_ahead_limit_ms,
     demux_admission::{
         audio_demux_catchup_needed, can_read_next_demux_packet_with_audio_priority,
         selected_audio_bootstrap_needs_demux,
@@ -27,7 +28,6 @@ use crate::{
     PlaybackState, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
     pipeline::{VideoDecoderActivityStatus, VideoDecoderSendBackpressure},
     session::PlayerSession,
-    session::audio_runtime::sanitize_audio_high_water_mark,
 };
 
 /// Read-only план следующего playback wakeup-а worker-а.
@@ -344,8 +344,7 @@ pub(super) fn audio_buffer_refill_wakeup_delay(
         return None;
     }
 
-    let high_water_mark_ms =
-        sanitize_audio_high_water_mark(tick_config.audio_buffer_high_water_mark_ms);
+    let high_water_mark_ms = audio_read_ahead_limit_ms(session, tick_config);
     if audio_buffer_level_ms <= high_water_mark_ms {
         return None;
     }
@@ -403,7 +402,7 @@ pub(super) fn pending_audio_work_available(
     }
 
     session.audio_buffer_level_ms().unwrap_or(0.0)
-        <= sanitize_audio_high_water_mark(tick_config.audio_buffer_high_water_mark_ms)
+        <= audio_read_ahead_limit_ms(session, tick_config)
 }
 
 /// Проверяет, может ли worker прямо сейчас отправить или списать video packet.
