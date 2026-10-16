@@ -33,7 +33,7 @@
 
 ## Subtitles session 06 (2026-10-16): MKV/isomp4 additive extensions
 
-- MKV: `TrackElement.name` → per-track metadata tag `fastiplayer.track.name`; attachment limits via `with_attachment_read_limits(limits, || probe)` thread-local scope (generic Probe cannot pass parameters) and `MkvReader::try_new_with_attachment_limits`; oversized FileData skipped without reading; `FlagDefault` absent = DEFAULT (spec fix, upstream lost it). Known pre-existing gap: `EditionUID` treated as mandatory → ffmpeg-remuxed MKV with chapters fails to open (not fixed in 06).
+- MKV: `TrackElement.name` → per-track metadata tag `fastiplayer.track.name`; attachment limits via `with_attachment_read_limits(limits, || probe)` thread-local scope (generic Probe cannot pass parameters) and `MkvReader::try_new_with_attachment_limits`; oversized FileData skipped without reading; `FlagDefault` absent = DEFAULT (spec fix, upstream lost it). `EditionUID` is optional (RFC 9559; ffmpeg omits it): `EditionEntryElement.uid: Option<NonZeroU64>`, edition-targeted tags apply only when present, 0 stays an error (fixed 2026-10-16 after session 06; before that ffmpeg-remuxed MKV with chapters did not open at all). Tests: patch `reader_tests.rs` `edition_*`, functional `symphonia-demux/tests/matroska_chapters.rs` + generated fixture `tests/fixtures/matroska/`.
 - isomp4: `mdhd` language → `Track::with_language`. Details: `mem:subtitles/embedded-tracks-s06`.
 
 ## Why Each Patch Is Still Needed

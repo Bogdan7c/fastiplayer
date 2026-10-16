@@ -1887,7 +1887,10 @@ impl ChaptersElement {
 
 #[derive(Debug)]
 pub(crate) struct EditionEntryElement {
-    pub(crate) uid: NonZeroU64,
+    // Fastiplayer: EditionUID необязателен по RFC 9559 (minOccurs не задан), ffmpeg его не пишет.
+    // Upstream требовал его и не открывал такие файлы вовсе; без UID edition просто не может
+    // быть целью тэгов.
+    pub(crate) uid: Option<NonZeroU64>,
     pub(crate) is_hidden: bool,
     pub(crate) is_default: bool,
     #[allow(dead_code)]
@@ -1910,7 +1913,7 @@ impl EbmlElement<MkvSchema> for EditionEntryElement {
         while let Some(header) = it.next_header()? {
             match header.element_type() {
                 MkvElement::EditionUid => {
-                    // Mandatory element. Must not be 0.
+                    // Optional element (RFC 9559). If present, must not be 0.
                     let val = NonZeroU64::new(it.read_u64_no_default()?)
                         .ok_or(EbmlError::ElementError("mkv: invalid (0) edition uid"))?;
 
@@ -1939,7 +1942,7 @@ impl EbmlElement<MkvSchema> for EditionEntryElement {
         }
 
         Ok(Self {
-            uid: uid.ok_or(EbmlError::ElementError("mkv: missing edition uid"))?,
+            uid,
             is_hidden,
             is_default,
             is_ordered,
@@ -1951,16 +1954,19 @@ impl EbmlElement<MkvSchema> for EditionEntryElement {
 
 impl EditionEntryElement {
     pub(crate) fn get_target_uids(&self, target_tags: &mut TargetTagsMap) {
-        // Append edition UID.
-        target_tags.insert(TargetUid::Edition(self.uid.get()), Default::default());
+        // Append edition UID, if the edition has one (without a UID tags cannot target it).
+        if let Some(uid) = self.uid {
+            target_tags.insert(TargetUid::Edition(uid.get()), Default::default());
+        }
         // Append chapter UIDs.
         self.chapters.iter().for_each(|chapter| chapter.get_target_uids(target_tags));
     }
 
     pub(crate) fn into_chapter_group(self, target_tags: &mut TargetTagsMap) -> ChapterGroup {
         // Take the vector of tags associated with this edition, if any.
-        let mut tags = target_tags
-            .remove(&TargetUid::Edition(self.uid.get()))
+        let mut tags = self
+            .uid
+            .and_then(|uid| target_tags.remove(&TargetUid::Edition(uid.get())))
             .unwrap_or_else(|| Vec::with_capacity(self.display.len()));
 
         // Edition title tags.

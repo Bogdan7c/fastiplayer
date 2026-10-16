@@ -1,6 +1,6 @@
 # Hermetic media fixture policy (Session 02)
 
-- Исключение (план субтитров, README `user/subtitles/`, 2026-10-16): маленькие СГЕНЕРИРОВАННЫЕ фикстуры с документированной генерацией и свободной лицензией допустимы только в тестовых каталогах crate-ов — `crates/symphonia-demux/tests/fixtures/subtitles/` (MKV/MP4 ~50 КБ, `generate.sh`), эталоны libass в `subtitle-raster`. Реальные/скачанные медиа по-прежнему не коммитятся. См. `mem:subtitles/embedded-tracks-s06`.
+- Исключение (план субтитров, README `user/subtitles/`, 2026-10-16): маленькие СГЕНЕРИРОВАННЫЕ фикстуры с документированной генерацией и свободной лицензией допустимы только в тестовых каталогах crate-ов — `crates/symphonia-demux/tests/fixtures/subtitles/` (MKV/MP4 ~50 КБ, `generate.sh`), `crates/symphonia-demux/tests/fixtures/matroska/` (MKV с главами без EditionUID, 7 КБ), эталоны libass в `subtitle-raster`. Реальные/скачанные медиа по-прежнему не коммитятся. См. `mem:subtitles/embedded-tracks-s06`.
 
 - Default `cargo +1.96.0 test --workspace --locked` must not read `test-assets/` or any real media file. Do not add media files, fixture packs, downloads, `include_bytes!` copies of real media, or a required filename inventory to Git. Keep `.gitignore:test-assets/`.
 - Hermetic demux/service tests use `FakeFormatReader`, fake dual streams, structured Matroska EBML/cue bytes, a generated in-memory PCM WAV, and a small structured WebM byte stream. They verify behavior without owner-local assets.

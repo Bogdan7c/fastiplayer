@@ -5,7 +5,8 @@ use std::io::Cursor;
 use symphonia_core::formats::TrackFlags;
 use symphonia_core::formats::prelude::*;
 use symphonia_core::io::MediaSourceStream;
-use symphonia_core::meta::RawValue;
+use symphonia_core::meta::{ChapterGroupItem, RawValue};
+use symphonia_core::units::Time;
 
 use crate::{
     AttachmentReadLimits, FASTIPLAYER_TRACK_NAME_TAG, MkvReader, SkippedAttachmentReason,
@@ -47,6 +48,11 @@ fn minimal_matroska(small: &[u8], big: &[u8]) -> Vec<u8> {
 
 /// То же, но с дополнительными дочерними элементами `TrackEntry`.
 fn matroska_with_track_extra(small: &[u8], big: &[u8], track_extra: &[u8]) -> Vec<u8> {
+    build_matroska(small, big, track_extra, &[])
+}
+
+/// Полный конструктор: дополнительные дети `TrackEntry` и `Segment` (например, `Chapters`).
+fn build_matroska(small: &[u8], big: &[u8], track_extra: &[u8], segment_extra: &[u8]) -> Vec<u8> {
     let ebml = element(&[0x1A, 0x45, 0xDF, 0xA3], &text(&[0x42, 0x82], "matroska"));
     let info = element(
         &[0x15, 0x49, 0xA9, 0x66],
@@ -76,7 +82,10 @@ fn matroska_with_track_extra(small: &[u8], big: &[u8], track_extra: &[u8]) -> Ve
         &[attached_file(1, "small.ttf", small), attached_file(2, "big.ttf", big)].concat(),
     );
     let cluster = element(&[0x1F, 0x43, 0xB6, 0x75], &uint(&[0xE7], 0));
-    let segment = element(&[0x18, 0x53, 0x80, 0x67], &[info, tracks, attachments, cluster].concat());
+    let segment = element(
+        &[0x18, 0x53, 0x80, 0x67],
+        &[info, tracks, attachments, segment_extra.to_vec(), cluster].concat(),
+    );
     [ebml, segment].concat()
 }
 
@@ -186,4 +195,66 @@ fn absent_flag_default_means_default_track_and_explicit_zero_clears_it() {
         AttachmentReadLimits::UNLIMITED,
     );
     assert!(explicit_one.tracks()[0].flags.contains(TrackFlags::DEFAULT));
+}
+
+/// `Chapters` с одной edition (с `EditionUID` или без) и одной главой «Intro» на 5 с.
+fn chapters_with_one_edition(edition_uid: Option<u64>) -> Vec<u8> {
+    let chapter_display = element(&[0x80], &text(&[0x85], "Intro"));
+    let chapter_atom = element(
+        &[0xB6],
+        &[uint(&[0x73, 0xC4], 42), uint(&[0x91], 5_000_000_000), chapter_display].concat(),
+    );
+    let edition_uid = edition_uid.map(|uid| uint(&[0x45, 0xBC], uid)).unwrap_or_default();
+    let edition = element(&[0x45, 0xB9], &[edition_uid, chapter_atom].concat());
+    element(&[0x10, 0x43, 0xA7, 0x70], &edition)
+}
+
+/// Стартовые времена глав первого уровня, которые reader отдал наружу.
+fn chapter_start_times(reader: &MkvReader<'_>) -> Vec<Time> {
+    reader
+        .chapters()
+        .map(|group| {
+            group
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ChapterGroupItem::Chapter(chapter) => Some(chapter.start_time),
+                    ChapterGroupItem::Group(_) => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn edition_without_uid_opens_and_keeps_its_chapters() {
+    // ffmpeg не пишет необязательный EditionUID (RFC 9559); раньше такой файл не открывался
+    // вовсе с ошибкой «mkv: missing edition uid».
+    let bytes = build_matroska(b"small", b"big", &[], &chapters_with_one_edition(None));
+    let reader = open(bytes, AttachmentReadLimits::UNLIMITED);
+
+    assert_eq!(chapter_start_times(&reader), vec![Time::from_nanos(5_000_000_000)]);
+    assert_eq!(reader.tracks().len(), 1, "дорожки читаются как обычно");
+}
+
+#[test]
+fn edition_with_uid_still_opens_with_the_same_chapters() {
+    let bytes = build_matroska(b"small", b"big", &[], &chapters_with_one_edition(Some(7)));
+    let reader = open(bytes, AttachmentReadLimits::UNLIMITED);
+
+    assert_eq!(chapter_start_times(&reader), vec![Time::from_nanos(5_000_000_000)]);
+}
+
+#[test]
+fn edition_uid_zero_is_still_rejected_as_malformed() {
+    // Спецификация запрещает значение 0; необязательность не делает ноль допустимым.
+    let bytes = build_matroska(b"small", b"big", &[], &chapters_with_one_edition(Some(0)));
+    let source = MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default());
+    let opened = MkvReader::try_new_with_attachment_limits(
+        source,
+        FormatOptions::default(),
+        AttachmentReadLimits::UNLIMITED,
+    );
+
+    assert!(opened.is_err(), "EditionUID = 0 must stay an error");
 }
