@@ -92,6 +92,11 @@ impl Demuxer for PrefetchedDemuxer {
         self.visible_media_metadata.clone()
     }
 
+    /// Вложения не зависят от позиции replay: делегируем реальному demuxer-у.
+    fn take_attachments(&mut self) -> media_core::MediaAttachments {
+        self.inner.take_attachments()
+    }
+
     /// Не раскрывает преждевременно seekability продвинутого `inner` demuxer-а.
     fn seekability(&self) -> DemuxSeekability {
         self.visible_seekability

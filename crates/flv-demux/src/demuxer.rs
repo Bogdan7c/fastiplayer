@@ -220,6 +220,8 @@ impl FlvDemuxer {
         let sequence_active = match encoded.kind {
             TrackKind::Video => self.video_sequence_active,
             TrackKind::Audio => self.audio_sequence_active,
+            // FLV не содержит субтитровых дорожек: такой пакет никогда не создаётся парсером.
+            TrackKind::Subtitle => return Ok(()),
         };
         if self.recovery_gate && !sequence_active {
             return Ok(());
@@ -251,6 +253,8 @@ impl FlvDemuxer {
         let decoded_timestamp_ms = match encoded.kind {
             TrackKind::Video => self.video_clock.unwrap(raw_timestamp_ms),
             TrackKind::Audio => self.audio_clock.unwrap(raw_timestamp_ms),
+            // Недостижимо: субтитровый пакет отсеян выше (FLV их не создаёт).
+            TrackKind::Subtitle => return Ok(()),
         };
         let presentation_ms = i128::from(decoded_timestamp_ms)
             .saturating_add(i128::from(encoded.composition_offset_ms));

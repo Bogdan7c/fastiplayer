@@ -11,7 +11,8 @@ use player_core::MediaInstanceId;
 use super::intents::{AttachOutcome, QueueOutcome, SubtitleVisibility};
 use super::menu_view::SubtitleMenuView;
 use super::{
-    CurrentMediaForSubtitles, PlacedSubtitleOverlay, SubmittedFrameForSubtitles, subtitle_source_of,
+    CurrentMediaForSubtitles, EmbeddedUpdate, PlacedSubtitleOverlay, SubmittedFrameForSubtitles,
+    subtitle_source_of,
 };
 use crate::state::{ActiveMediaSource, AppState};
 use crate::subtitle_message::attach_batch_message;
@@ -48,6 +49,30 @@ impl AppState {
         self.subtitles.apply_config(config);
     }
 
+    /// Передаёт владельцу субтитров приёмник трубы встроенных дорожек (один раз при сборке).
+    pub(in crate::state) fn attach_subtitle_feed(
+        &mut self,
+        receiver: player_core::SubtitleFeedReceiver,
+    ) {
+        self.subtitles.attach_feed_receiver(receiver);
+    }
+
+    /// Синхронизирует встроенные дорожки с последним снимком плеера и читает трубу пакетов.
+    ///
+    /// Идемпотентно и дёшево: неизменный список дорожек не перестраивается, чтение трубы
+    /// ограничено по числу сообщений. Зовётся при каждом обновлении снимка плеера.
+    pub(in crate::state) fn pump_embedded_subtitles(&mut self) {
+        let snapshot = &self.last_player_snapshot;
+        let tracks_update = self
+            .subtitles
+            .sync_embedded_tracks(snapshot.media_instance_id, &snapshot.tracks);
+        let feed_update = self.subtitles.drain_embedded_feed();
+        if tracks_update.merge(feed_update) == EmbeddedUpdate::Changed {
+            // Меню CC или реплика на экране изменились: нужен ещё один кадр.
+            self.mark_pending_worker_redraw();
+        }
+    }
+
     /// Опрос фоновых задач субтитров (по wake-событию). `true` — нужна перерисовка.
     pub(crate) fn poll_subtitle_jobs(&mut self) -> bool {
         // Порядок важен: ответ диалога «Load file…» приходит по тому же wake-событию.
@@ -64,6 +89,8 @@ impl AppState {
         &mut self,
         frame: &SubmittedFrameForSubtitles,
     ) -> Option<PlacedSubtitleOverlay<'_>> {
+        // Новые пакеты, пришедшие после последнего снимка, видны уже на этом кадре.
+        self.subtitles.drain_embedded_feed();
         let current = CurrentMediaForSubtitles {
             media_instance_id: self.last_player_snapshot.media_instance_id,
             render_generation: self.last_player_snapshot.render_generation,

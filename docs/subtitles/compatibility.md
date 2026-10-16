@@ -12,13 +12,14 @@ Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). N
 |---|---|---|---|
 | SubRip (`.srt`) | sidecar file | Partial (see below) | 01 |
 | WebVTT (`.vtt`) | sidecar file | Partial (see below) | 01 |
-| SubRip / WebVTT inside MKV | embedded | Planned | 06 |
-| mov_text (`tx3g`) inside MP4 | embedded | Planned | 06 |
-| ASS / SSA | sidecar, embedded | Planned (libass port) | 08–10 |
-| PGS inside MKV | embedded | Planned | 11 |
+| SubRip / WebVTT inside MKV | embedded | Supported (see "Embedded tracks") | 06 |
+| mov_text (`tx3g`) inside MP4 | embedded | Supported (bold / italic / underline / colour) | 06 |
+| ASS / SSA text inside MKV | embedded | Text only, default style (no ASS styles or tags until the libass port) | 06; styles 08–10 |
+| ASS / SSA sidecar file | sidecar | Planned (libass port) | 08–10 |
+| PGS inside MKV | embedded | Listed greyed out ("not supported yet"); picture rendering planned | 11 |
 | YouTube srv3 / WebVTT | web | Planned | 12 |
 | HLS WebVTT, DASH TTML/IMSC | streaming | Planned | 13 |
-| VobSub, DVB, FLV subtitles | — | Backlog | — |
+| VobSub, DVB, FLV subtitles | — | Backlog (embedded VobSub / DVB tracks are listed greyed out) | — |
 
 ## Rendering (crate `subtitle-raster`, session 02)
 
@@ -32,7 +33,7 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 | Built-in fonts | Noto Sans Regular/Bold (Latin, Greek, Cyrillic) + Regular for Arabic, Hebrew, Devanagari, Bengali, Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Thai, Lao, Georgian, Armenian, Ethiopic, Khmer, Myanmar, Sinhala, symbols (~3.3 MiB, OFL-1.1) |
 | CJK, emoji | from system fonts only; missing glyphs are drawn as `.notdef` and counted. The system fallback face is ranked like fontconfig: slant, language, nearest weight. The regional CJK variant (JP/SC/TC/HK/KR) follows the track language, otherwise the system language |
 | First CJK cue | ~12–14 ms once per run (loading a ~20 MB system font); background warm-up — session 14 |
-| Fonts attached to MKV | interface only (`register_attached_font`); extraction — session 06 |
+| Fonts attached to MKV | Supported (session 06): prepared off the UI thread, installed per video, removed when the video changes |
 | User styles | "YouTube-like" (white text on a rounded 75% dark box per line) and "outline + shadow" |
 | WebVTT placement | `line`, `position`, `size`, `align`, `\anN` anchors; regions and vertical text are drawn horizontally |
 | Underline/strikethrough, span background, synthetic bold/italic, `\N`-less CJK line breaking | not yet (later sessions / backlog) |
@@ -73,7 +74,7 @@ Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Su
 | Remembered | whether subtitles are on (config `subtitles.enabled`); per-video track and delay memory: session 07 |
 | Drop a subtitle file on the window | attaches to the current video (local or web) and shows it; the queue is not changed. Nothing playing → "Open a video first, then add subtitles." Video + subtitle file dropped together → attached to that video; dropped on the playlist panel → not attached (notification) |
 | Language from a dropped / loaded file name | `Movie.ru.srt`, `sintel_ru.srt`, `Movie English.srt`, `Movie [Forced].srt`; only known languages (no video name to compare with, so `The_Big_Lie.srt` is not "lie") |
-| Settings | Settings → `subtitles`: show subtitles, preferred languages, style (box / outline, size, colors, box opacity), resource limits (config schema v14) |
+| Settings | Settings → `subtitles`: show subtitles, preferred languages, style (box / outline, size, colors, box opacity), resource limits (config schema v15) |
 
 ## Appearance and position (session 05)
 
@@ -129,3 +130,22 @@ Gaps:
 - region/cue conflict rules and region scrolling are left to the renderer (session 03+);
 - ruby annotation attaches to the first span of a multi-span base;
 - only an empty line separates blocks (whitespace-only lines do not), as in the W3C spec.
+
+## Embedded tracks (session 06)
+
+Subtitle tracks inside the container (MKV, MP4) appear in the CC menu next to files found beside the video, with the word "embedded" in the label (language, title, forced / SDH flags and the format come from the container).
+
+Supported:
+- text codecs: SubRip (`S_TEXT/UTF8`), WebVTT, ASS / SSA text lines, `mov_text`;
+- every subtitle track of the video is read in the background, not only the selected one, so switching tracks during playback is instant and shows cues that were already read;
+- seeking back shows previously read cues from the cache (duplicate packets are ignored);
+- auto-select: preferred language, then non-SDH, then a file beside the video before an embedded track, then the container "default" flag, then list order; without a language match: a file beside the video, then the embedded default, then the first track. Forced tracks follow the same rules as before;
+- fonts attached to MKV (`font/*`, `application/x-truetype-font`, `application/vnd.ms-opentype`, `application/font-sfnt`, `.ttf/.otf/.ttc/.otc`) are used for the video's subtitles; attachments over the limits (`max_attached_font_mb`, `max_attached_fonts_total_mb`) are not loaded and are reported in the log as counts only.
+
+Limitations:
+- picture tracks (PGS, VobSub, DVB) and unknown codecs are listed greyed out ("not supported yet");
+- a cue without a duration in the container is shown for `embedded_cue_max_open_duration_ms` (default 5 s) instead of "until the next cue", because the next cue has not been read yet;
+- WebVTT inside MKV carries no positioning in the packet (only the text and markup), so cues are placed by the user style;
+- ASS / SSA tracks are drawn as plain text with the default style (override tags are stripped) until session 08; the track's own style header is not used yet;
+- like mpv, cues are known only after the demuxer has read them: after a forward seek, a cue that started before the target and is still active appears once the demuxer reaches its packet (the container is read from the nearest keyframe before the target, so this is usually immediate); a cue that was never read is not shown;
+- if the packet queue between the player and the UI overflows, packets are dropped (counted, one warning in the log) while video and audio keep playing.

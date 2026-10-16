@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 14;
+pub const CURRENT_SCHEMA_VERSION: u32 = 15;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -53,14 +53,22 @@ pub(crate) const LEGACY_SCHEMA_VERSION_12: u32 = 12;
 /// только поднимает версию (старый файл без полей грузится с defaults).
 pub(crate) const LEGACY_SCHEMA_VERSION_13: u32 = 13;
 
+/// Последняя схема до лимитов встроенных дорожек субтитров.
+///
+/// Решение владельца (субтитры, сессия 06): четыре лимита (вложенные шрифты, труба
+/// пакетов, показ реплики без длительности) добавляются со значениями по умолчанию;
+/// переписывать пользовательские значения нечего, поэтому миграция v14 -> v15 только
+/// поднимает версию (старый файл без ключей грузится с defaults).
+pub(crate) const LEGACY_SCHEMA_VERSION_14: u32 = 14;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v14 и полная цепочка поддерживаемых legacy-версий v2..v13.
+    /// Текущая схема v15 и полная цепочка поддерживаемых legacy-версий v2..v14.
     #[test]
-    fn schema_v14_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
+    fn schema_v15_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 15);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -75,8 +83,9 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_11,
                 LEGACY_SCHEMA_VERSION_12,
                 LEGACY_SCHEMA_VERSION_13,
+                LEGACY_SCHEMA_VERSION_14,
             ],
-            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
     }
 }

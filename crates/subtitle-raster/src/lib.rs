@@ -51,11 +51,12 @@ pub use cache::CacheStatistics;
 pub use face_cache::FaceCacheStatistics;
 pub use fonts::{
     AscentDescentSource, AttachedFontError, AttachedFontLimits, AttachedFontRegistration,
-    AttachedFontStatus, EMBEDDED_FONTS, EmbeddedFont, EmbeddedFontPurpose, FaceBytes,
-    FaceDescription, FaceId, FaceMatch, FaceMetrics, FaceOrigin, FamilyMatch, FontLibraryError,
-    FontLibraryStatistics, FontLookupCacheLimits, FontRequest, FontStyle, FontWeightClass,
-    GlyphLookup, SubtitleFontLibrary, SyntheticBold, SyntheticItalic, SystemFontScanReport,
-    SystemFontScanStatus, TextLanguagePreference,
+    AttachedFontStatus, AttachedFontsClearOutcome, AttachedFontsInstallReport, EMBEDDED_FONTS,
+    EmbeddedFont, EmbeddedFontPurpose, FaceBytes, FaceDescription, FaceId, FaceMatch, FaceMetrics,
+    FaceOrigin, FamilyMatch, FontLibraryError, FontLibraryStatistics, FontLookupCacheLimits,
+    FontRequest, FontStyle, FontWeightClass, GlyphLookup, PreparedAttachedFont,
+    PreparedAttachedFonts, RejectedAttachedFont, SubtitleFontLibrary, SyntheticBold,
+    SyntheticItalic, SystemFontScanReport, SystemFontScanStatus, TextLanguagePreference,
 };
 pub use overlay::{
     BitmapOutsideCanvas, CanvasRect, CanvasSize, OverlayChange, OverlayRevision, PixelPoint,

@@ -25,6 +25,7 @@ use crate::{PlayerError, PlayerErrorKind, PlayerResult};
 /// Субтитровая ли дорожка этого вида. Исчерпывающий `match` намеренно без `_`.
 const fn track_kind_is_subtitle(kind: TrackKind) -> bool {
     match kind {
+        TrackKind::Subtitle => true,
         TrackKind::Video | TrackKind::Audio => false,
     }
 }

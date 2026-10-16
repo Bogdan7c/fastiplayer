@@ -6,10 +6,30 @@ use demux_api::{
     DemuxFactoryOpenError, DemuxHints, DemuxInput, DemuxOpenError, DemuxProbeRejection,
     DemuxRegistry, DemuxSniffBudget, DemuxSourceExtension,
 };
-use fastiplayer_config::PlayerDemuxConfig;
+use fastiplayer_config::{PlayerDemuxConfig, SubtitlesConfig};
 use media_core::Demuxer;
 use player_core::PreparedMedia;
 use source_core::{CancellationToken, LocalFileSource};
+pub use symphonia_demux::AttachmentReadLimits;
+
+/// Байтов в мегабайте конфига (МБ = МиБ, как в прежних константах демуксера 20/100 МиБ).
+const BYTES_PER_CONFIG_MEGABYTE: u64 = 1024 * 1024;
+
+/// Лимиты чтения вложений контейнера (шрифты MKV) из секции `[subtitles]` конфига.
+///
+/// Конфиг уже проверен `validate()`; перевод МБ в байты насыщающий, поэтому паники нет
+/// даже при непроверенном значении. Вложения больше лимита демуксер пропускает, не читая
+/// их содержимое в память.
+#[must_use]
+pub fn attachment_read_limits_from_config(config: &SubtitlesConfig) -> AttachmentReadLimits {
+    AttachmentReadLimits::default()
+        .with_max_bytes_per_attachment(
+            u64::from(config.max_attached_font_mb).saturating_mul(BYTES_PER_CONFIG_MEGABYTE),
+        )
+        .with_max_total_bytes(
+            u64::from(config.max_attached_fonts_total_mb).saturating_mul(BYTES_PER_CONFIG_MEGABYTE),
+        )
+}
 
 /// Audio/container extensions, которые показываем пользователю как быстрые подсказки.
 ///
@@ -67,8 +87,9 @@ impl LocalDemuxOpenError {
 pub fn prepare_local_file(
     path: &Path,
     demux_config: &PlayerDemuxConfig,
+    attachment_limits: AttachmentReadLimits,
 ) -> anyhow::Result<PreparedMedia> {
-    let demuxer = open_local_demuxer(path, demux_config)?;
+    let demuxer = open_local_demuxer(path, demux_config, attachment_limits)?;
 
     Ok(PreparedMedia::from_local_file(path.to_path_buf(), demuxer))
 }
@@ -80,6 +101,7 @@ pub fn prepare_local_file(
 pub(crate) fn open_local_demuxer(
     path: &Path,
     demux_config: &PlayerDemuxConfig,
+    attachment_limits: AttachmentReadLimits,
 ) -> anyhow::Result<Box<dyn Demuxer + Send>> {
     let local_source = LocalFileSource::open(path)?;
     let extension_hint = path.extension().and_then(|value| value.to_str());
@@ -87,6 +109,7 @@ pub(crate) fn open_local_demuxer(
         local_source,
         extension_hint,
         demux_config,
+        attachment_limits,
         CancellationToken::never_cancelled(),
     )?)
 }
@@ -96,13 +119,17 @@ pub fn open_local_demuxer_from_source(
     local_source: LocalFileSource,
     extension_hint: Option<&str>,
     demux_config: &PlayerDemuxConfig,
+    attachment_limits: AttachmentReadLimits,
     cancellation: CancellationToken,
 ) -> Result<Box<dyn Demuxer + Send>, LocalDemuxOpenError> {
     let mut registry = DemuxRegistry::new();
     registry
         .register(Box::new(
-            symphonia_demux::SymphoniaDemuxFactory::new(demuxer_options_from_config(demux_config))
-                .map_err(|error| LocalDemuxOpenError::RegistrySetup(error.into()))?,
+            symphonia_demux::SymphoniaDemuxFactory::new(demuxer_options_from_config(
+                demux_config,
+                attachment_limits,
+            ))
+            .map_err(|error| LocalDemuxOpenError::RegistrySetup(error.into()))?,
         ))
         .map_err(|error| LocalDemuxOpenError::RegistrySetup(error.into()))?;
     registry
@@ -148,13 +175,17 @@ fn local_demux_sniff_budget() -> DemuxSniffBudget {
 )]
 pub(crate) fn demuxer_options_from_config(
     config: &PlayerDemuxConfig,
+    attachment_limits: AttachmentReadLimits,
 ) -> symphonia_demux::DemuxerOptions {
     symphonia_demux::DemuxerOptions::from_max_consecutive_corrupted_packets(
         config.max_consecutive_corrupted_packets,
     )
     .expect("validated AppConfig must provide positive demux corrupted packet limit")
+    .with_attachment_read_limits(attachment_limits)
 }
 
+#[cfg(test)]
+mod attachment_limits_tests;
 #[cfg(test)]
 mod ts_fixture;
 
@@ -163,8 +194,9 @@ mod tests {
     use media_core::VideoPacketFraming;
 
     use super::{
-        SUPPORTED_LOCAL_MEDIA_EXTENSIONS, has_supported_local_media_extension, open_local_demuxer,
-        open_local_demuxer_from_source, prepare_local_file,
+        AttachmentReadLimits, SUPPORTED_LOCAL_MEDIA_EXTENSIONS,
+        has_supported_local_media_extension, open_local_demuxer, open_local_demuxer_from_source,
+        prepare_local_file,
     };
 
     /// Кандидат определяется расширением без учёта регистра; прочее отсекается.
@@ -214,8 +246,10 @@ mod tests {
             .expect("write generated TS");
         let config = fastiplayer_config::PlayerDemuxConfig::default();
 
-        let prepared = prepare_local_file(&path, &config).expect("prepare local TS");
-        let rebuilt = open_local_demuxer(&path, &config).expect("rebuild local TS demuxer");
+        let prepared = prepare_local_file(&path, &config, AttachmentReadLimits::default())
+            .expect("prepare local TS");
+        let rebuilt = open_local_demuxer(&path, &config, AttachmentReadLimits::default())
+            .expect("rebuild local TS demuxer");
 
         for tracks in [prepared.tracks(), rebuilt.tracks()] {
             let video = tracks
@@ -242,6 +276,7 @@ mod tests {
             source,
             Some("ts"),
             &fastiplayer_config::PlayerDemuxConfig::default(),
+            AttachmentReadLimits::default(),
             cancellation,
         ) {
             Ok(_) => panic!("cancelled registry probe must not return demuxer"),

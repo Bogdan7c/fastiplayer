@@ -7,11 +7,12 @@ use codec_core::{
     VideoDisplayOrientation, VideoProfile, Vp9Profile,
     av1_decode_requirement_from_decoder_configuration_record,
 };
-use media_core::{TrackId, TrackInfo, TrackKind, VideoPacketFraming, VideoTrackMetadata};
+use media_core::{
+    TrackId, TrackInfo, TrackKind, VideoPacketFraming, VideoTrackMetadata, subtitle_codec,
+};
 use symphonia::core::codecs::audio::well_known as audio_codec;
 use symphonia::core::codecs::audio::{AudioCodecId, CODEC_ID_NULL_AUDIO};
-use symphonia::core::codecs::subtitle::well_known as subtitle_codec;
-use symphonia::core::codecs::subtitle::{CODEC_ID_NULL_SUBTITLE, SubtitleCodecId};
+use symphonia::core::codecs::subtitle::CODEC_ID_NULL_SUBTITLE;
 use symphonia::core::codecs::video::well_known as video_codec;
 use symphonia::core::codecs::video::well_known::extra_data::VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG;
 use symphonia::core::codecs::video::well_known::profiles as video_profile;
@@ -21,8 +22,12 @@ use symphonia::core::formats::{Track, TrackType};
 use symphonia::core::units::TimeBase as SymphoniaTimeBase;
 use tracing::{debug, warn};
 
+mod subtitle_codecs;
+
+use self::subtitle_codecs::codec_id_from_symphonia_subtitle_codec;
 use crate::matroska_metadata::MatroskaVideoTrack;
 use crate::symphonia_api::{media_time_base_from_symphonia, symphonia_duration_to_duration};
+use crate::track_labels::labels_from_track;
 
 /// Codec id для video track-а, когда контейнер не дал доказательства конкретного codec-а.
 const UNKNOWN_VIDEO_CODEC_ID: &str = "unknown_video";
@@ -30,7 +35,7 @@ const UNKNOWN_VIDEO_CODEC_ID: &str = "unknown_video";
 /// Codec id для audio track-а, когда контейнер не дал доказательства конкретного codec-а.
 const UNKNOWN_AUDIO_CODEC_ID: &str = "unknown_audio";
 
-/// Codec id для subtitle/unknown track-а, который не входит в neutral playback model.
+/// Codec id для track-а без type-specific codec params, который не входит в neutral model.
 const UNSUPPORTED_TRACK_CODEC_ID: &str = "unsupported_track";
 
 /// Внутренняя запись track-а, нужная packet/seek mapper-ам после открытия demuxer-а.
@@ -56,7 +61,7 @@ impl TrackEntry {
     }
 }
 
-/// Внутренний тип track-а: public model пока знает только audio/video, но demuxer должен помнить
+/// Внутренний тип track-а: public model знает audio/video/subtitle, но demuxer должен помнить
 /// unsupported tracks, чтобы их packets не выглядели как неизвестный track id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrackEntryKind {
@@ -85,13 +90,10 @@ impl TrackEntryKind {
     }
 }
 
-/// Unsupported track categories, которые Symphonia может отдать как track, но player пока не
+/// Unsupported track categories, которые Symphonia может отдать как track, но player не
 /// декодирует и не выбирает.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UnsupportedTrackKind {
-    /// Subtitle track: его нельзя маскировать под video.
-    Subtitle,
-
     /// Track без type-specific codec params или с неизвестным будущим типом.
     Unknown,
 }
@@ -100,7 +102,6 @@ impl UnsupportedTrackKind {
     /// Короткая стабильная причина для logs и packet skip diagnostics.
     pub(crate) const fn diagnostic_reason(self) -> &'static str {
         match self {
-            Self::Subtitle => "subtitle track is not supported by media-core TrackKind yet",
             Self::Unknown => "track type is unknown because codec params are absent or unsupported",
         }
     }
@@ -135,6 +136,7 @@ pub(crate) fn map_tracks(
         &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
     )
 }
 
@@ -145,6 +147,7 @@ pub(crate) fn map_tracks_with_video_metadata(
     display_orientations_by_track: &HashMap<TrackId, VideoDisplayOrientation>,
     color_metadata_by_track: &HashMap<TrackId, VideoColorMetadata>,
     packet_framings_by_track: &HashMap<TrackId, VideoPacketFraming>,
+    track_titles_by_track: &HashMap<TrackId, String>,
 ) -> TrackMapping {
     let mut tracks = Vec::new();
     let mut track_map = HashMap::new();
@@ -177,6 +180,9 @@ pub(crate) fn map_tracks_with_video_metadata(
             display_orientation,
             color_metadata,
             packet_framing,
+            track_titles_by_track
+                .get(&TrackId::new(track.id))
+                .map(String::as_str),
         ) {
             log_supported_track_metadata(track, &track_entry, &track_info, video_metadata_source);
             tracks.push(track_info);
@@ -269,8 +275,7 @@ fn matroska_video_fallback_policy(
         TrackEntryKind::Unsupported(UnsupportedTrackKind::Unknown) => {
             Some(MatroskaVideoFallbackPolicy::ExactOnly)
         }
-        TrackEntryKind::Supported(TrackKind::Audio)
-        | TrackEntryKind::Unsupported(UnsupportedTrackKind::Subtitle) => None,
+        TrackEntryKind::Supported(TrackKind::Audio | TrackKind::Subtitle) => None,
     }
 }
 
@@ -279,7 +284,7 @@ pub(crate) fn infer_track_kind(track: &Track) -> TrackEntryKind {
     match track.track_type() {
         Some(TrackType::Audio) => TrackEntryKind::Supported(TrackKind::Audio),
         Some(TrackType::Video) => TrackEntryKind::Supported(TrackKind::Video),
-        Some(TrackType::Subtitle) => TrackEntryKind::Unsupported(UnsupportedTrackKind::Subtitle),
+        Some(TrackType::Subtitle) => TrackEntryKind::Supported(TrackKind::Subtitle),
         Some(_) | None => infer_track_kind_from_codec_params(track.codec_params.as_ref()),
     }
 }
@@ -289,9 +294,7 @@ fn infer_track_kind_from_codec_params(codec_params: Option<&CodecParameters>) ->
     match codec_params {
         Some(CodecParameters::Audio(_)) => TrackEntryKind::Supported(TrackKind::Audio),
         Some(CodecParameters::Video(_)) => TrackEntryKind::Supported(TrackKind::Video),
-        Some(CodecParameters::Subtitle(_)) => {
-            TrackEntryKind::Unsupported(UnsupportedTrackKind::Subtitle)
-        }
+        Some(CodecParameters::Subtitle(_)) => TrackEntryKind::Supported(TrackKind::Subtitle),
         Some(_) | None => TrackEntryKind::Unsupported(UnsupportedTrackKind::Unknown),
     }
 }
@@ -344,6 +347,7 @@ fn build_track_info(
     display_orientation: VideoDisplayOrientation,
     color_metadata: Option<VideoColorMetadata>,
     container_packet_framing: Option<VideoPacketFraming>,
+    track_title: Option<&str>,
 ) -> Option<TrackInfo> {
     let kind = track_entry.supported_kind()?;
     let duration = track_entry
@@ -398,6 +402,7 @@ fn build_track_info(
         sample_rate: track_entry.sample_rate,
         channels: track_entry.channels,
         video,
+        labels: labels_from_track(track, track_title),
     })
 }
 
@@ -642,7 +647,11 @@ fn codec_private_from_codec_params(codec_params: &CodecParameters) -> Option<Byt
             .iter()
             .find(|extra_data| !extra_data.data.is_empty())
             .map(|extra_data| Bytes::copy_from_slice(&extra_data.data)),
-        CodecParameters::Subtitle(_) => None,
+        CodecParameters::Subtitle(subtitle_params) => subtitle_params
+            .extra_data
+            .as_deref()
+            .filter(|extra_data| !extra_data.is_empty())
+            .map(Bytes::copy_from_slice),
         _ => None,
     }
 }
@@ -697,6 +706,11 @@ fn resolve_track_codec_id(
 
     if codec_params_has_null_codec(codec_params) {
         return unknown_codec_id_for_kind(kind).to_string();
+    }
+
+    // Субтитры публикуют только константы media-core: потребитель не разбирает диагностические id.
+    if kind == TrackEntryKind::Supported(TrackKind::Subtitle) {
+        return subtitle_codec::UNKNOWN.to_string();
     }
 
     codec_params
@@ -817,26 +831,6 @@ fn codec_id_from_symphonia_video_codec(codec: VideoCodecId) -> Option<&'static s
     }
 }
 
-/// Мапит subtitle codec ids в стабильные diagnostic ids; public TrackKind пока их не содержит.
-fn codec_id_from_symphonia_subtitle_codec(codec: SubtitleCodecId) -> Option<&'static str> {
-    match codec {
-        subtitle_codec::CODEC_ID_TEXT_UTF8 => Some("S_TEXT/UTF8"),
-        subtitle_codec::CODEC_ID_SSA => Some("S_TEXT/SSA"),
-        subtitle_codec::CODEC_ID_ASS => Some("S_TEXT/ASS"),
-        subtitle_codec::CODEC_ID_SAMI => Some("S_TEXT/SAMI"),
-        subtitle_codec::CODEC_ID_SRT => Some("S_TEXT/SRT"),
-        subtitle_codec::CODEC_ID_WEBVTT => Some("S_TEXT/WEBVTT"),
-        subtitle_codec::CODEC_ID_DVBSUB => Some("S_DVBSUB"),
-        subtitle_codec::CODEC_ID_HDMV_TEXTST => Some("S_HDMV/TEXTST"),
-        subtitle_codec::CODEC_ID_MOV_TEXT => Some("S_MOV_TEXT"),
-        subtitle_codec::CODEC_ID_BMP => Some("S_IMAGE/BMP"),
-        subtitle_codec::CODEC_ID_VOBSUB => Some("S_VOBSUB"),
-        subtitle_codec::CODEC_ID_HDMV_PGS => Some("S_HDMV/PGS"),
-        subtitle_codec::CODEC_ID_KATE => Some("S_KATE"),
-        _ => None,
-    }
-}
-
 /// Проверяет, что Symphonia явно не знает codec.
 fn codec_params_has_null_codec(codec_params: Option<&CodecParameters>) -> bool {
     match codec_params {
@@ -866,6 +860,7 @@ fn unknown_codec_id_for_kind(kind: TrackEntryKind) -> &'static str {
     match kind {
         TrackEntryKind::Supported(TrackKind::Video) => UNKNOWN_VIDEO_CODEC_ID,
         TrackEntryKind::Supported(TrackKind::Audio) => UNKNOWN_AUDIO_CODEC_ID,
+        TrackEntryKind::Supported(TrackKind::Subtitle) => subtitle_codec::UNKNOWN,
         TrackEntryKind::Unsupported(_) => UNSUPPORTED_TRACK_CODEC_ID,
     }
 }

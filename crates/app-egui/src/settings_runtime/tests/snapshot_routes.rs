@@ -213,6 +213,19 @@ fn local_open_snapshot_uses_current_committed_config() {
 }
 
 #[test]
+fn local_open_snapshot_exposes_attachment_limits_from_subtitles_config() {
+    let mut config = custom_config_for_test();
+    config.subtitles.max_attached_font_mb = 5;
+    config.subtitles.max_attached_fonts_total_mb = 9;
+    let snapshot = CommittedConfigSnapshot::from_config(&config);
+
+    let limits = snapshot.attachment_limits_for_open();
+
+    assert_eq!(limits.max_bytes_per_attachment, 5 * 1024 * 1024);
+    assert_eq!(limits.max_total_bytes, 9 * 1024 * 1024);
+}
+
+#[test]
 fn render_initial_settings_are_unchanged() {
     let config = custom_config_for_test();
     let runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))

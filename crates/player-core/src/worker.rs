@@ -55,8 +55,8 @@ use crate::{
     PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot,
     PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoBackendInstallIntent,
     PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PrepareMediaInstallPosition,
-    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
-    scheduler_timing_diagnostics,
+    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, SubtitleFeedCapacity,
+    SubtitleFeedReceiver, scheduler_timing_diagnostics,
 };
 
 mod command_queue;
@@ -70,6 +70,7 @@ mod runtime_timeline;
 mod runtime_wait;
 mod sender;
 mod staged_media_install;
+mod subtitle_config;
 mod terminal;
 #[cfg(test)]
 mod tests;
@@ -143,40 +144,15 @@ pub struct PlayerWorkerConfig {
 
     /// App-owned bridge, который будит UI после player-visible live revision.
     pub timeline_activity_wake: Option<Arc<dyn PlayerWorkerTimelineWake>>,
+
+    /// Ёмкость трубы встроенных субтитров (в сообщениях); см. `subtitle_config.rs`.
+    pub subtitle_feed_capacity: SubtitleFeedCapacity,
 }
 
 /// Минимальный bridge: payload и policy остаются в player snapshot.
 pub trait PlayerWorkerTimelineWake: Send + Sync {
     /// Будит owner UI после уже применённой player-visible revision.
     fn wake_player_timeline(&self);
-}
-
-impl fmt::Debug for PlayerWorkerConfig {
-    /// Не раскрывает trait object, но показывает остальную runtime конфигурацию.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PlayerWorkerConfig")
-            .field("coarse_wakeup_interval", &self.coarse_wakeup_interval)
-            .field(
-                "decoder_readiness_poll_interval",
-                &self.decoder_readiness_poll_interval,
-            )
-            .field("tick_config", &self.tick_config)
-            .field("decoder_thread_config", &self.decoder_thread_config)
-            .field("default_volume", &self.default_volume)
-            .field("audio_decoder_factory", &"<dyn AudioDecoderFactory>")
-            .field("audio_output_factory", &"<dyn AudioOutputFactory>")
-            .field(
-                "audio_tempo_processor_factory",
-                &"<dyn AudioTempoProcessorFactory>",
-            )
-            .field("frame_server_config", &self.frame_server_config)
-            .field(
-                "timeline_activity_wake",
-                &self.timeline_activity_wake.as_ref().map(|_| "<configured>"),
-            )
-            .finish()
-    }
 }
 
 impl PlayerWorkerConfig {
@@ -197,6 +173,7 @@ impl PlayerWorkerConfig {
                 .validate()
                 .expect("default frame-server config must validate"),
             timeline_activity_wake: None,
+            subtitle_feed_capacity: SubtitleFeedCapacity::FALLBACK,
         }
     }
 
@@ -214,6 +191,7 @@ impl PlayerWorkerConfig {
             audio_tempo_processor_factory: missing_audio_tempo_processor_factory(),
             frame_server_config: Self::frame_server_config_from_app_config(config),
             timeline_activity_wake: None,
+            subtitle_feed_capacity: subtitle_config::subtitle_feed_capacity_from_app_config(config),
         }
     }
 
@@ -544,6 +522,9 @@ pub struct PlayerWorker {
 
     /// Decoder-thread limits, которые shell должен передать concrete backend factory.
     decoder_thread_config: PlayerVideoDecoderThreadConfig,
+
+    /// Единственный потребитель трубы субтитров, пока приложение его не забрало.
+    subtitle_feed_receiver: Option<SubtitleFeedReceiver>,
 
     /// Аварийный shutdown signal, если command queue недоступна.
     shutdown_tx: Sender<()>,

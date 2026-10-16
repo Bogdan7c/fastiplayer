@@ -11,8 +11,10 @@
 //!    форме: `ru` подходит к `ru-RU` и к `rus`.
 //! 4. Внутри одного языка обычная дорожка лучше дорожки для слабослышащих (SDH); при
 //!    равенстве — раньше в порядке кандидатов.
-//! 5. Если ни один язык не совпал, берётся первая подходящая дорожка в порядке кандидатов
-//!    (пользователь хочет субтитры хоть какие-то).
+//! 5. При равном языке и «слышимости» файл рядом (sidecar) лучше встроенной дорожки (решение
+//!    владельца сессии 06); затем дорожка с флагом default контейнера; затем порядок списка.
+//! 6. Если ни один язык не совпал, берётся: файл рядом, затем встроенная дорожка с флагом
+//!    default, затем первая подходящая в порядке списка (пользователь хочет субтитры хоть какие-то).
 //!
 //! Выключено (`forced_fallback`): показывается только forced-дорожка, язык которой совпал с
 //! предпочтениями (первый совпавший язык из списка); нет совпадения — ничего.
@@ -21,9 +23,22 @@
 
 use subtitle_core::SubtitleLanguage;
 
+/// Откуда дорожка. Порядок вариантов = приоритет при равенстве остальных признаков.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum TrackOrigin {
+    /// Файл рядом с видео либо добавленный пользователем.
+    Sidecar,
+    /// Дорожка внутри контейнера.
+    Embedded,
+}
+
 /// Признаки дорожки, нужные для автовыбора (без путей и содержимого).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TrackTraits<'a> {
+    /// Файл или встроенная дорожка (файл важнее при равенстве).
+    pub(super) origin: TrackOrigin,
+    /// Контейнер пометил дорожку как выбираемую по умолчанию (у файлов всегда `false`).
+    pub(super) is_default: bool,
     /// Язык дорожки; `None` — не объявлен (с предпочтениями не совпадает никогда).
     pub(super) language: Option<&'a SubtitleLanguage>,
     /// Дорожка принудительная (только иностранная речь).
@@ -115,14 +130,27 @@ fn select_for_enabled(tracks: &[TrackTraits<'_>], preferred: &PreferredLanguages
 
     let best_preferred = pool()
         .filter_map(|(index, track)| {
-            preferred
-                .rank_of(track.language)
-                .map(|language_rank| ((language_rank, track.is_hearing_impaired), index))
+            preferred.rank_of(track.language).map(|language_rank| {
+                (
+                    (
+                        language_rank,
+                        track.is_hearing_impaired,
+                        track.origin,
+                        !track.is_default,
+                    ),
+                    index,
+                )
+            })
         })
         // `min_by_key` при равных ключах оставляет первый: это и есть «раньше в порядке».
         .min_by_key(|(sort_key, _)| *sort_key)
         .map(|(_, index)| index);
-    best_preferred.or_else(|| pool().map(|(index, _)| index).next())
+    // Язык не совпал: файл рядом, затем default контейнера, затем порядок списка.
+    best_preferred.or_else(|| {
+        pool()
+            .min_by_key(|(_, track)| (track.origin, !track.is_default))
+            .map(|(index, _)| index)
+    })
 }
 
 /// Принудительная дорожка нужного языка для режима «выключено».
@@ -154,6 +182,8 @@ mod tests {
     /// Дорожка с языком; флаги по умолчанию «обычная, показываемая».
     fn track(language: Option<&SubtitleLanguage>) -> TrackTraits<'_> {
         TrackTraits {
+            origin: TrackOrigin::Sidecar,
+            is_default: false,
             language,
             is_forced: false,
             is_hearing_impaired: false,
@@ -338,6 +368,54 @@ mod tests {
         assert_eq!(
             auto_select(&[], &preferred(&["ru"])),
             AutoSelection::default()
+        );
+    }
+
+    #[test]
+    fn sidecar_beats_embedded_and_default_flag_breaks_remaining_ties() {
+        let en = language("en");
+        let embedded_default = TrackTraits {
+            origin: TrackOrigin::Embedded,
+            is_default: true,
+            ..track(Some(&en))
+        };
+        let embedded_plain = TrackTraits {
+            origin: TrackOrigin::Embedded,
+            ..track(Some(&en))
+        };
+        let sidecar = track(Some(&en));
+
+        let tracks = [embedded_plain, embedded_default, sidecar];
+        assert_eq!(
+            auto_select(&tracks, &preferred(&["en"])).for_enabled,
+            Some(2),
+            "sidecar first"
+        );
+        assert_eq!(
+            auto_select(&tracks[..2], &preferred(&["en"])).for_enabled,
+            Some(1),
+            "then the container default"
+        );
+        assert_eq!(
+            auto_select(&tracks[..1], &preferred(&["en"])).for_enabled,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn non_sdh_beats_origin_for_the_same_language() {
+        let en = language("en");
+        let sdh_sidecar = TrackTraits {
+            is_hearing_impaired: true,
+            ..track(Some(&en))
+        };
+        let plain_embedded = TrackTraits {
+            origin: TrackOrigin::Embedded,
+            ..track(Some(&en))
+        };
+        assert_eq!(
+            auto_select(&[sdh_sidecar, plain_embedded], &preferred(&["en"])).for_enabled,
+            Some(1)
         );
     }
 }

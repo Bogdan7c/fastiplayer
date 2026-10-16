@@ -110,6 +110,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
                 duration: track.duration,
                 video: track.video.clone(),
                 video_color_summary: video_color_summary(track),
+                labels: track.labels.clone(),
             });
         }
 
@@ -421,6 +422,7 @@ mod tests {
             sample_rate: (kind == TrackKind::Audio).then_some(48_000),
             channels: (kind == TrackKind::Audio).then_some(2),
             video: None,
+            labels: media_core::TrackLabels::default(),
         }
     }
 }

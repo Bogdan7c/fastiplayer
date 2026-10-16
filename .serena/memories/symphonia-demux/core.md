@@ -1,3 +1,7 @@
+## Субтитровые дорожки и вложения (сессия 06, 2026-10-16)
+
+- Субтитры больше не `Unsupported`: `TrackKind::Subtitle`, codec_id из `media_core::subtitle_codec`, пакеты проходят (keyframe, dur 0 → None); `TrackInfo.labels` из `Track.language/flags` + MKV `Name` (тег патча `fastiplayer.track.name`, кэшируется при открытии). Субтитры не участвуют в seek/DecodePointBefore. `DemuxerOptions::with_attachment_read_limits`; `take_attachments()` для MKV через thread-local область патча вокруг `probe_format_reader` (покрывает file/stream/byte_source/reprobe). Модули: `attachments.rs`, `track_labels.rs`, `track_mapper/subtitle_codecs.rs`, `symphonia_demuxer/track_state.rs`. Подробно: `mem:subtitles/embedded-tracks-s06`.
+
 ## Stream probe failure observer (2026-10-04)
 
 - Корень: Symphonia 0.6 `Probe::next` сканирует `while let Ok(byte) = mss.read_byte()` — любая ошибка чтения выглядит как EOF, наружу выходит `UnsupportedFormat("no suitable format reader found")`, настоящая причина (сбой сети/producer-а) терялась.

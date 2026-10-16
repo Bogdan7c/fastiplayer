@@ -1,3 +1,7 @@
+## Труба субтитров (сессия 06, 2026-10-16)
+
+- `subtitle_feed/` — bounded неблокирующая труба worker → UI для пакетов `TrackKind::Subtitle` всех дорожек (мимо декодеров, без packet_budget/backpressure/playback-window) и `MediaStarted` с вложениями (`commit_staged_media`, `pipeline.take_media_attachments()`). Переполнение = выброс со счётчиком. `PlayerWorker::take_subtitle_feed_receiver()`; ёмкость `PlayerWorkerConfig::with_subtitle_feed_capacity` из `[subtitles].embedded_feed_capacity`. `TrackSummarySnapshot.labels`. `select_subtitle_track` принимает субтитровые id. Подробно: `mem:subtitles/embedded-tracks-s06`.
+
 ## Play без media (A15-live, 2026-10-11)
 
 - Инвариант state machine: `Playing` бывает только при установленном media. `PlayerSession::play()` (владелец `session/runtime_control.rs`) без demuxer-а, вне `Opening` и без staged install — no-op с debug-логом; раньше пустой player уходил в `Playing` с тикающим таймером. Тело Play вынесено в `begin_playback`; юнит-тестам scheduler-а/аудио без настоящего demuxer-а доступен `#[cfg(test)] begin_playback_without_media_for_test`. Тесты: `session/tests/playback.rs` (`play_and_toggle_without_media_*`, `play_with_installed_media_reaches_playing`).

@@ -33,7 +33,9 @@ use crate::cache::ByteLruCache;
 use crate::face_cache::FaceCache;
 use crate::fonts::{
     AttachedFontError, AttachedFontLimits, AttachedFontRegistration, AttachedFontStatus,
-    SubtitleFontLibrary, SystemFontScanReport, SystemFontScanStatus, TextLanguagePreference,
+    AttachedFontsClearOutcome, AttachedFontsInstallReport, PreparedAttachedFont,
+    PreparedAttachedFonts, SubtitleFontLibrary, SystemFontScanReport, SystemFontScanStatus,
+    TextLanguagePreference,
 };
 use crate::overlay::{
     CanvasSize, OverlayChange, OverlayRevision, SubtitleBitmap, SubtitleOverlay,
@@ -160,6 +162,47 @@ impl SubtitleRasterizer {
             self.invalidate_font_dependent_state();
         }
         Ok(registration)
+    }
+
+    /// Дешёвая фаза вложенного шрифта, подготовленного вне UI-потока
+    /// ([`PreparedAttachedFont::prepare`]). Кэши сбрасываются так же, как в
+    /// [`Self::register_attached_font`]: только при новой регистрации.
+    pub fn install_prepared_attached_font(
+        &mut self,
+        prepared: PreparedAttachedFont,
+        limits: &AttachedFontLimits,
+    ) -> Result<AttachedFontRegistration, AttachedFontError> {
+        let registration = self
+            .fonts
+            .install_prepared_attached_font(prepared, limits)?;
+        if registration.status == AttachedFontStatus::Registered {
+            self.invalidate_font_dependent_state();
+        }
+        Ok(registration)
+    }
+
+    /// Дешёвая фаза для пакета вложений media ([`PreparedAttachedFonts::prepare`]).
+    /// Кэши сбрасываются один раз и только если хоть один файл реально добавлен.
+    pub fn install_prepared_attached_fonts(
+        &mut self,
+        prepared: PreparedAttachedFonts,
+        limits: &AttachedFontLimits,
+    ) -> AttachedFontsInstallReport {
+        let report = self.fonts.install_prepared_attached_fonts(prepared, limits);
+        if report.registered > 0 {
+            self.invalidate_font_dependent_state();
+        }
+        report
+    }
+
+    /// Снимает все вложенные шрифты (смена media): готовые реплики и прошлый кадр сбрасываются,
+    /// только если что-то было снято. Встроенные и системные шрифты не затрагиваются.
+    pub fn clear_attached_fonts(&mut self) -> AttachedFontsClearOutcome {
+        let outcome = self.fonts.clear_attached_fonts();
+        if matches!(outcome, AttachedFontsClearOutcome::Cleared { .. }) {
+            self.invalidate_font_dependent_state();
+        }
+        outcome
     }
 
     /// Явный IO-шаг: сканирует системные шрифты. Если появились новые лица, готовые реплики

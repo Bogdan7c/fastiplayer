@@ -25,7 +25,9 @@ use subtitle_sidecar::{
     SidecarSearchError, SidecarSubtitleCandidate, SidecarSubtitleFormat, find_sidecar_subtitles,
 };
 
-use super::auto_select::{AutoSelection, PreferredLanguages, TrackTraits, auto_select};
+use super::auto_select::{
+    AutoSelection, PreferredLanguages, TrackOrigin, TrackTraits, auto_select,
+};
 use super::file_loader::{FileLoadError, LoadedSidecarTrack, load_candidate_timeline};
 use super::limits::LoadLimits;
 
@@ -105,6 +107,9 @@ pub(super) enum SubtitleLoadFailure {
         /// Формат файла.
         format: SidecarSubtitleFormat,
     },
+    /// Встроенная дорожка с кодеком, который пока не показываем (PGS, VobSub, DVB и прочие).
+    #[error("embedded subtitle codec is not supported yet")]
+    EmbeddedCodecNotSupportedYet,
     /// Файл больше лимита и не читался.
     #[error("subtitle file is larger than the {limit_bytes} byte limit")]
     FileTooLarge {
@@ -146,7 +151,15 @@ pub(super) struct PreloadedTrack {
 pub(super) struct DiscoveryOutcome {
     /// Все найденные кандидаты в порядке предпочтения поиска.
     pub(super) candidates: Vec<SidecarSubtitleCandidate>,
-    /// Результат автовыбора (индексы в `candidates`).
+    /// Результат автовыбора (индексы в `candidates`). Владелец повторяет выбор над полным
+    /// списком (файлы + встроенные), поле читают тесты.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "владелец считает итоговый выбор заново по всему списку"
+        )
+    )]
     pub(super) selection: AutoSelection,
     /// Прочитанная дорожка (если автовыбор что-то выбрал для `PreloadTarget`).
     pub(super) preloaded: Option<PreloadedTrack>,
@@ -228,6 +241,8 @@ fn run_discovery(
     let traits: Vec<TrackTraits<'_>> = candidates
         .iter()
         .map(|candidate| TrackTraits {
+            origin: TrackOrigin::Sidecar,
+            is_default: false,
             language: candidate.language.as_ref(),
             is_forced: candidate.disposition.is_forced,
             is_hearing_impaired: candidate.is_hearing_impaired,

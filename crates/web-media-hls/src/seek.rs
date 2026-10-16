@@ -92,6 +92,8 @@ impl HlsSeekIndex {
                 HlsSeekAnchorKind::VideoRandomAccessPoint
             }
             (TrackKind::Audio, _) => HlsSeekAnchorKind::AudioPacket,
+            // Субтитры не бывают seek-якорем.
+            (TrackKind::Subtitle, _) => return,
             (TrackKind::Video, PacketKeyframe::NotKeyframe | PacketKeyframe::Unknown) => return,
         };
         let anchor = HlsSeekAnchor {

@@ -18,6 +18,8 @@ impl PlayerWorker {
         let (event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
         let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
         let (shutdown_tx, shutdown_rx) = bounded(1);
+        let (subtitle_feed_sender, subtitle_feed_receiver) =
+            crate::subtitle_feed::subtitle_feed(config.subtitle_feed_capacity);
         let admission_closed = Arc::new(AtomicBool::new(false));
         let decoder_thread_config = config.decoder_thread_config;
         let audio_decoder_factory = Arc::clone(&config.audio_decoder_factory);
@@ -45,6 +47,7 @@ impl PlayerWorker {
                 )
                 .with_audio_tempo_processor_factory(audio_tempo_processor_factory)
                 .with_playback_intent_control(Arc::clone(&playback_intent_control))
+                .with_subtitle_feed(subtitle_feed_sender)
                 .with_staged_video_preflight_timeout(
                     config.tick_config.staged_video_preflight_timeout,
                 );
@@ -91,6 +94,7 @@ impl PlayerWorker {
             event_rx,
             render_bridge_client,
             decoder_thread_config,
+            subtitle_feed_receiver: Some(subtitle_feed_receiver),
             shutdown_tx,
             join_handle: Some(join_handle),
             terminal_state: PlayerWorkerTerminalState::Running,
@@ -107,6 +111,13 @@ impl PlayerWorker {
     #[must_use]
     pub const fn decoder_thread_config(&self) -> PlayerVideoDecoderThreadConfig {
         self.decoder_thread_config
+    }
+
+    /// Отдаёт приложению единственного потребителя трубы встроенных субтитров.
+    ///
+    /// Первый вызов возвращает `Some`, дальше — `None` (single-consumer контракт).
+    pub fn take_subtitle_feed_receiver(&mut self) -> Option<SubtitleFeedReceiver> {
+        self.subtitle_feed_receiver.take()
     }
 
     /// Отправляет обычную player command без блокировки.

@@ -22,12 +22,15 @@ use symphonia_core::meta::{
 };
 use symphonia_core::units::{Duration, Time, TimeBase, Timestamp};
 
+use crate::attachment_limits::{
+    AttachmentBudget, AttachmentReadLimits, SkippedAttachment, SkippedAttachmentReason,
+};
 use crate::ebml::{EbmlElement, EbmlElementHeader, EbmlError, EbmlIterator, ReadEbml, Result};
 use crate::schema::{MkvElement, MkvSchema};
 use crate::sub_fields::*;
 use crate::tags::{TagContext, Target, make_raw_tags, map_std_tag};
 
-const MKV_METADATA_INFO: MetadataInfo = MetadataInfo {
+pub(crate) const MKV_METADATA_INFO: MetadataInfo = MetadataInfo {
     metadata: METADATA_ID_MATROSKA,
     short_name: "mkv",
     long_name: "Matroska / WebM",
@@ -356,6 +359,8 @@ pub(crate) struct TrackElement {
     pub(crate) uid: NonZeroU64,
     pub(crate) lang: String,
     pub(crate) lang_bcp47: Option<String>,
+    /// Fastiplayer: `TrackEntry/Name`, человекочитаемое название дорожки.
+    pub(crate) name: Option<String>,
     pub(crate) codec_id: String,
     pub(crate) codec_private: Option<Box<[u8]>>,
     pub(crate) codec_delay: MatroskaTicks,
@@ -377,6 +382,7 @@ impl EbmlElement<MkvSchema> for TrackElement {
         let mut uid = None;
         let mut lang = None;
         let mut lang_bcp47 = None;
+        let mut name = None;
         let mut audio = None;
         let mut video = None;
         let mut block_addition_mappings = Vec::new();
@@ -387,7 +393,9 @@ impl EbmlElement<MkvSchema> for TrackElement {
         let mut default_decoded_field_duration = None;
         let mut track_timestamp_scale = None;
         let mut seek_pre_roll = None;
-        let mut flags = Default::default();
+        // Fastiplayer: по спецификации FlagDefault по умолчанию равен 1, а muxer-ы (ffmpeg,
+        // mkvmerge) опускают элемент, когда флаг установлен. Upstream в этом случае терял DEFAULT.
+        let mut flags = TrackFlags::DEFAULT;
 
         while let Some(child) = it.next_header()? {
             match child.element_type() {
@@ -412,6 +420,10 @@ impl EbmlElement<MkvSchema> for TrackElement {
                 MkvElement::LanguageBcp47 => {
                     // Non-mandatory element. No schema-defined default.
                     lang_bcp47 = Some(it.read_string_no_default()?);
+                }
+                MkvElement::Name => {
+                    // Fastiplayer: non-mandatory element. Пустое название равно отсутствию.
+                    name = it.read_string()?.filter(|value| !value.is_empty());
                 }
                 MkvElement::CodecId => {
                     // Mandatory element. No schema-defined default.
@@ -468,6 +480,9 @@ impl EbmlElement<MkvSchema> for TrackElement {
                     if it.read_u64_default(1)? == 1 {
                         flags |= TrackFlags::DEFAULT;
                     }
+                    else {
+                        flags.remove(TrackFlags::DEFAULT);
+                    }
                 }
                 MkvElement::FlagForced => {
                     // Mandatory element. Schema-defined default is 0 (unset).
@@ -523,6 +538,7 @@ impl EbmlElement<MkvSchema> for TrackElement {
             uid: uid.ok_or(EbmlError::ElementError("mkv: missing track uid"))?,
             lang,
             lang_bcp47,
+            name,
             codec_id: codec_id.ok_or(EbmlError::ElementError("mkv: missing codec id"))?,
             codec_private,
             codec_delay,
@@ -1642,12 +1658,27 @@ pub(crate) struct AttachedFileElement {
     pub(crate) desc: Option<String>,
     pub(crate) media_type: String,
     pub(crate) data: Box<[u8]>,
+    /// Fastiplayer: `Some`, если FileData пропущен по лимиту (тогда `data` пуст).
+    pub(crate) skipped: Option<SkippedAttachmentReason>,
 }
 
 impl EbmlElement<MkvSchema> for AttachedFileElement {
     const TYPE: MkvElement = MkvElement::AttachedFile;
 
     fn read<R: ReadEbml>(it: &mut MkvEbmlIterator<R>, hdr: &MkvEbmlElementHeader) -> Result<Self> {
+        // Upstream-путь: без лимитов.
+        Self::read_with_budget(it, hdr, &mut AttachmentBudget::new(AttachmentReadLimits::UNLIMITED))
+    }
+}
+
+impl AttachedFileElement {
+    /// Fastiplayer: читает вложение, пропуская FileData, если бюджет не позволяет.
+    pub(crate) fn read_with_budget<R: ReadEbml>(
+        it: &mut MkvEbmlIterator<R>,
+        hdr: &MkvEbmlElementHeader,
+        budget: &mut AttachmentBudget,
+    ) -> Result<Self> {
+        let mut skipped = None;
         let mut uid = None;
         let mut name = None;
         let mut desc = None;
@@ -1655,6 +1686,7 @@ impl EbmlElement<MkvSchema> for AttachedFileElement {
         let mut data = None;
 
         while let Some(header) = it.next_header()? {
+            let declared_data_size = header.data_size();
             match header.element_type() {
                 MkvElement::FileDescription => {
                     // Non-mandatory element. No schema-defined default.
@@ -1670,7 +1702,16 @@ impl EbmlElement<MkvSchema> for AttachedFileElement {
                 }
                 MkvElement::FileData => {
                     // Mandatory element. No schema-defined default.
-                    data = Some(it.read_binary()?);
+                    match declared_data_size.map(|size| budget.admit(size)) {
+                        Some(Err(reason)) => {
+                            // Содержимое НЕ читается в память: перешагиваем элемент.
+                            it.skip_data()?;
+                            skipped = Some(reason);
+                            data = Some(Box::default());
+                        }
+                        // Размер известен и допустим, либо неизвестен (read_binary вернёт ошибку).
+                        Some(Ok(())) | None => data = Some(it.read_binary()?),
+                    }
                 }
                 MkvElement::FileUid => {
                     // Mandatory element. May not be 0. No schema-defined default.
@@ -1693,6 +1734,7 @@ impl EbmlElement<MkvSchema> for AttachedFileElement {
             media_type: media_type
                 .ok_or(EbmlError::ElementError("mkv: missing attached file media-type"))?,
             data: data.ok_or(EbmlError::ElementError("mkv: missing attached file data"))?,
+            skipped,
         })
     }
 }
@@ -1706,12 +1748,47 @@ impl EbmlElement<MkvSchema> for AttachmentsElement {
     const TYPE: MkvElement = MkvElement::Attachments;
 
     fn read<R: ReadEbml>(it: &mut MkvEbmlIterator<R>, hdr: &MkvEbmlElementHeader) -> Result<Self> {
+        Self::read_with_limits(it, hdr, AttachmentReadLimits::UNLIMITED)
+    }
+}
+
+/// Fastiplayer: читает текущий элемент `Attachments` под лимитами (аналог `read_master_element`).
+pub(crate) fn read_attachments_element<R: ReadEbml>(
+    it: &mut MkvEbmlIterator<R>,
+    limits: AttachmentReadLimits,
+) -> Result<AttachmentsElement> {
+    let header = *it.current().ok_or(EbmlError::NoElement)?;
+    if header.element_type() != MkvElement::Attachments {
+        return Err(EbmlError::ExpectedMasterElement);
+    }
+    it.push_element()?;
+    let element = AttachmentsElement::read_with_limits(it, &header, limits)?;
+    it.pop_element()?;
+    Ok(element)
+}
+
+impl AttachmentsElement {
+    /// Fastiplayer: читает вложения под общим бюджетом лимитов.
+    pub(crate) fn read_with_limits<R: ReadEbml>(
+        it: &mut MkvEbmlIterator<R>,
+        hdr: &MkvEbmlElementHeader,
+        limits: AttachmentReadLimits,
+    ) -> Result<Self> {
+        let mut budget = AttachmentBudget::new(limits);
         let mut attached_files = Vec::new();
 
         while let Some(header) = it.next_header()? {
             match header.element_type() {
                 MkvElement::AttachedFile => {
-                    attached_files.push(it.read_master_element::<AttachedFileElement>()?);
+                    // Аналог `read_master_element`: войти в элемент, прочитать, выйти.
+                    let file_header = *header;
+                    it.push_element()?;
+                    attached_files.push(AttachedFileElement::read_with_budget(
+                        it,
+                        &file_header,
+                        &mut budget,
+                    )?);
+                    it.pop_element()?;
                 }
                 other => {
                     // Unexpected child element.
@@ -1731,19 +1808,28 @@ impl AttachmentsElement {
         })
     }
 
-    pub(crate) fn into_attachments(self, _target_tags: &mut TargetTagsMap) -> Vec<Attachment> {
-        self.attached_files
-            .into_vec()
-            .into_iter()
-            .map(|file| {
-                Attachment::File(FileAttachment {
-                    name: file.name,
-                    description: file.desc,
-                    media_type: Some(file.media_type),
-                    data: file.data,
-                })
-            })
-            .collect()
+    /// Возвращает принятые вложения и отчёт о пропущенных по лимиту (Fastiplayer).
+    pub(crate) fn into_attachments(
+        self,
+        _target_tags: &mut TargetTagsMap,
+    ) -> (Vec<Attachment>, Vec<SkippedAttachment>) {
+        let mut accepted = Vec::new();
+        let mut skipped = Vec::new();
+
+        for file in self.attached_files.into_vec() {
+            if let Some(reason) = file.skipped {
+                skipped.push(SkippedAttachment { file_name: file.name, reason });
+                continue;
+            }
+            accepted.push(Attachment::File(FileAttachment {
+                name: file.name,
+                description: file.desc,
+                media_type: Some(file.media_type),
+                data: file.data,
+            }));
+        }
+
+        (accepted, skipped)
     }
 }
 

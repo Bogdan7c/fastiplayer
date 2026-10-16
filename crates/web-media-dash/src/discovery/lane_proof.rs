@@ -539,6 +539,7 @@ mod tests {
             sample_rate: Some(48_000),
             channels: None,
             video: None,
+            labels: media_core::TrackLabels::default(),
         }
     }
 

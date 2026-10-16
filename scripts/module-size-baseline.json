@@ -37,7 +37,7 @@
     "crates/settings-core/src/metadata.rs": 929,
     "crates/source-core/src/ftp_session.rs": 824,
     "crates/symphonia-demux/src/matroska_metadata.rs": 1208,
-    "crates/symphonia-demux/src/track_mapper.rs": 917,
+    "crates/symphonia-demux/src/track_mapper.rs": 912,
     "crates/ui-artwork-egui/src/lib.rs": 972,
     "crates/video-ffmpeg/src/codec_adapter.rs": 1103,
     "crates/video-ffmpeg/src/ffi/frame.rs": 961,

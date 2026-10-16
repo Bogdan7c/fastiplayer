@@ -299,6 +299,9 @@ impl StartupMediaController {
                     match crate::local_file_open::LocalFileOpenJob::spawn_preparation(
                         path.to_path_buf(),
                         config.player.demux,
+                        media_source_open::local_media::attachment_read_limits_from_config(
+                            &config.subtitles,
+                        ),
                         self.wake_port.clone(),
                     ) {
                         Ok(job) => {

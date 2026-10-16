@@ -69,6 +69,7 @@ fn track(id: u32, kind: TrackKind) -> TrackInfo {
         sample_rate: None,
         channels: None,
         video: None,
+        labels: media_core::TrackLabels::default(),
     }
 }
 

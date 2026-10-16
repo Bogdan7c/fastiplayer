@@ -6,6 +6,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 
 use fastiplayer_config::PlayerDemuxConfig;
+use media_source_open::local_media::AttachmentReadLimits;
 use pollster::FutureExt as _;
 use tracing::{debug, warn};
 use winit::window::Window;
@@ -173,6 +174,7 @@ impl LocalFileOpenJob {
     pub(crate) fn spawn_preparation(
         selected_path: PathBuf,
         demux_config: PlayerDemuxConfig,
+        attachment_limits: AttachmentReadLimits,
         wake_port: AppWakePort,
     ) -> std::result::Result<Self, String> {
         let (mailbox_publisher, mailbox_receiver) = owner_mailbox(wake_port);
@@ -199,6 +201,7 @@ impl LocalFileOpenJob {
                 let prepare_result = prepare_local_open(
                     &selected_path,
                     &demux_config,
+                    attachment_limits,
                     None,
                     worker_source_cancellation,
                     || worker_cancellation_requested.load(Ordering::Acquire),
@@ -477,6 +480,7 @@ mod tests {
         let mut job = LocalFileOpenJob::spawn_preparation(
             missing_path.clone(),
             fastiplayer_config::PlayerDemuxConfig::default(),
+            media_source_open::local_media::AttachmentReadLimits::default(),
             AppWakePort::disconnected(AppWakeOwner::LocalFileOpen),
         )
         .expect("spawn preparation job");

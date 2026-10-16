@@ -250,6 +250,7 @@ fn video_track_for_tests(track_id: u32) -> media_core::TrackInfo {
         sample_rate: None,
         channels: None,
         video: None,
+        labels: media_core::TrackLabels::default(),
     }
 }
 
@@ -2137,6 +2138,7 @@ fn demux_audio_catchup_preserves_runway_until_stream_provides_proven_keyframe() 
         sample_rate: None,
         channels: None,
         video: None,
+        labels: media_core::TrackLabels::default(),
     };
     let tracks = vec![video_track, audio_track];
     let recovery_keyframe_pts = Duration::from_millis(20);

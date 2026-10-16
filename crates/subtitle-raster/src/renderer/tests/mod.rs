@@ -1,5 +1,6 @@
 //! Функциональные тесты публичного растеризатора: реплики на входе — картинки на выходе.
 
+mod attached_fonts;
 mod caching;
 mod font_fallback;
 mod geometry;

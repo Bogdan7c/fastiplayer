@@ -196,6 +196,8 @@ impl PlaybackWindowEndState {
         match kind {
             media_core::TrackKind::Audio => self.audio_end_seen = true,
             media_core::TrackKind::Video => self.video_end_seen = true,
+            // Субтитры не определяют конец playback-window: окно закрывают audio/video.
+            media_core::TrackKind::Subtitle => {}
         }
     }
 

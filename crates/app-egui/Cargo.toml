@@ -63,6 +63,7 @@ libc.workspace = true
 player-core.workspace = true
 frame-server-core.workspace = true
 media-core.workspace = true
+bytes.workspace = true
 symphonia-demux.workspace = true
 
 # UI helpers для async/file-dialog.

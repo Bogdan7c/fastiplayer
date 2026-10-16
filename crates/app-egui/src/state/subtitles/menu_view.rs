@@ -16,6 +16,8 @@ pub(crate) enum SubtitleFileOrigin {
     NextToVideo,
     /// Добавлен пользователем (бросок на окно или «Загрузить файл…»).
     ChosenByUser,
+    /// Дорожка внутри контейнера видео (MKV, MP4…): отдельного файла нет.
+    Embedded,
 }
 
 /// Части подписи дорожки; пустые поля пропускаются при сборке текста.
@@ -23,8 +25,9 @@ pub(crate) enum SubtitleFileOrigin {
 pub(crate) struct SubtitleTrackLabel {
     /// Язык, если известен (по имени файла); без языка UI пишет «Track N».
     pub(crate) language: Option<SubtitleLanguage>,
-    /// Формат файла (SRT, WebVTT, ASS…).
-    pub(crate) format: SubtitleFormat,
+    /// Формат дорожки (SRT, WebVTT, ASS…); `None` — у встроенной дорожки формат без названия
+    /// в модели (например VobSub или DVB): UI пишет «other».
+    pub(crate) format: Option<SubtitleFormat>,
     /// Откуда файл.
     pub(crate) origin: SubtitleFileOrigin,
     /// Принудительная дорожка (только иностранная речь).

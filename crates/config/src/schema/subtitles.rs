@@ -1,4 +1,4 @@
-//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v14).
+//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v15).
 //!
 //! Решение владельца (субтитры, сессия 04): лимиты и внешний вид живут в `config.toml`,
 //! значения по умолчанию равны прежним константам приложения, поэтому старый файл без
@@ -111,6 +111,34 @@ pub const DEFAULT_MAX_CUES_ON_SCREEN: u16 = 16;
 pub const MIN_MAX_CUES_ON_SCREEN: u16 = 1;
 /// Максимум одновременных реплик.
 pub const MAX_MAX_CUES_ON_SCREEN: u16 = 64;
+
+/// Лимит одного вложенного шрифта по умолчанию, МБ (прежняя константа 20 МиБ в демуксере).
+pub const DEFAULT_MAX_ATTACHED_FONT_MB: u16 = 20;
+/// Минимальный лимит одного вложения, МБ.
+pub const MIN_MAX_ATTACHED_FONT_MB: u16 = 1;
+/// Максимальный лимит одного вложения, МБ.
+pub const MAX_MAX_ATTACHED_FONT_MB: u16 = 256;
+
+/// Суммарный лимит вложенных шрифтов одного видео по умолчанию, МБ (прежняя константа 100 МиБ).
+pub const DEFAULT_MAX_ATTACHED_FONTS_TOTAL_MB: u16 = 100;
+/// Минимальный суммарный лимит вложений, МБ.
+pub const MIN_MAX_ATTACHED_FONTS_TOTAL_MB: u16 = 1;
+/// Максимальный суммарный лимит вложений, МБ.
+pub const MAX_MAX_ATTACHED_FONTS_TOTAL_MB: u16 = 1_024;
+
+/// Ёмкость трубы встроенных субтитров (плеер -> интерфейс), пакетов, по умолчанию.
+pub const DEFAULT_EMBEDDED_FEED_CAPACITY: u32 = 4_096;
+/// Минимальная ёмкость трубы, пакетов.
+pub const MIN_EMBEDDED_FEED_CAPACITY: u32 = 256;
+/// Максимальная ёмкость трубы, пакетов.
+pub const MAX_EMBEDDED_FEED_CAPACITY: u32 = 65_536;
+
+/// Сколько показывать встроенную реплику без длительности, мс, по умолчанию.
+pub const DEFAULT_EMBEDDED_CUE_MAX_OPEN_DURATION_MS: u32 = 5_000;
+/// Минимальное время показа такой реплики, мс.
+pub const MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS: u32 = 500;
+/// Максимальное время показа такой реплики, мс.
+pub const MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS: u32 = 60_000;
 
 /// Чем подчёркивается текст субтитров над видео.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -472,6 +500,86 @@ pub struct SubtitlesConfig {
         apply = "subtitles.apply"
     )]
     pub max_cues_on_screen: u16,
+
+    /// Максимальный размер одного вложенного в видео файла (шрифта), МБ.
+    #[setting(
+        id = "subtitles.max_attached_font_mb",
+        path = "subtitles.max_attached_font_mb",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.max_attached_font_mb.label",
+        label_ru = "Largest attached font",
+        description_id = "settings.subtitles.max_attached_font_mb.description",
+        description_ru = "Fonts attached inside a video file (MKV) that are larger than this are not loaded.",
+        editor = "integer",
+        min = crate::MIN_MAX_ATTACHED_FONT_MB,
+        max = crate::MAX_MAX_ATTACHED_FONT_MB,
+        step = 1,
+        unit = "MB",
+        apply = "subtitles.apply"
+    )]
+    pub max_attached_font_mb: u16,
+
+    /// Суммарный размер вложенных в одно видео файлов (шрифтов), МБ.
+    #[setting(
+        id = "subtitles.max_attached_fonts_total_mb",
+        path = "subtitles.max_attached_fonts_total_mb",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.max_attached_fonts_total_mb.label",
+        label_ru = "Attached fonts per video",
+        description_id = "settings.subtitles.max_attached_fonts_total_mb.description",
+        description_ru = "Total size of fonts loaded from one video file. Must not be smaller than the largest attached font.",
+        editor = "integer",
+        min = crate::MIN_MAX_ATTACHED_FONTS_TOTAL_MB,
+        max = crate::MAX_MAX_ATTACHED_FONTS_TOTAL_MB,
+        step = 10,
+        unit = "MB",
+        apply = "subtitles.apply"
+    )]
+    pub max_attached_fonts_total_mb: u16,
+
+    /// Сколько пакетов встроенных субтитров помещается в трубу от плеера к интерфейсу.
+    #[setting(
+        id = "subtitles.embedded_feed_capacity",
+        path = "subtitles.embedded_feed_capacity",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.embedded_feed_capacity.label",
+        label_ru = "Embedded subtitle buffer",
+        description_id = "settings.subtitles.embedded_feed_capacity.description",
+        description_ru = "How many embedded subtitle packets can wait for the interface. Extra packets are dropped. Applies the next time the player starts.",
+        editor = "integer",
+        min = crate::MIN_EMBEDDED_FEED_CAPACITY,
+        max = crate::MAX_EMBEDDED_FEED_CAPACITY,
+        step = 256,
+        unit = "packets",
+        apply = "subtitles.apply"
+    )]
+    pub embedded_feed_capacity: u32,
+
+    /// Сколько показывать встроенную реплику, у которой в файле нет длительности, мс.
+    #[setting(
+        id = "subtitles.embedded_cue_max_open_duration_ms",
+        path = "subtitles.embedded_cue_max_open_duration_ms",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.embedded_cue_max_open_duration_ms.label",
+        label_ru = "Embedded cue display time",
+        description_id = "settings.subtitles.embedded_cue_max_open_duration_ms.description",
+        description_ru = "How long an embedded subtitle stays on screen when the file gives it no duration.",
+        editor = "integer",
+        min = crate::MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
+        max = crate::MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
+        step = 500,
+        unit = "ms",
+        apply = "subtitles.apply"
+    )]
+    pub embedded_cue_max_open_duration_ms: u32,
 }
 
 impl Default for SubtitlesConfig {
@@ -496,6 +604,10 @@ impl Default for SubtitlesConfig {
             font_lookup_cache_chars: DEFAULT_FONT_LOOKUP_CACHE_CHARS,
             max_chars_per_cue: DEFAULT_MAX_CHARS_PER_CUE,
             max_cues_on_screen: DEFAULT_MAX_CUES_ON_SCREEN,
+            max_attached_font_mb: DEFAULT_MAX_ATTACHED_FONT_MB,
+            max_attached_fonts_total_mb: DEFAULT_MAX_ATTACHED_FONTS_TOTAL_MB,
+            embedded_feed_capacity: DEFAULT_EMBEDDED_FEED_CAPACITY,
+            embedded_cue_max_open_duration_ms: DEFAULT_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
         }
     }
 }

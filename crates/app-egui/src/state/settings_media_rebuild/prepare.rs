@@ -31,6 +31,8 @@ pub(crate) enum RebuildSourceInput {
     LocalFile {
         path: PathBuf,
         demux: PlayerDemuxConfig,
+        /// Лимиты вложений контейнера (шрифты MKV) из `[subtitles]` конфига.
+        attachment_limits: media_source_open::local_media::AttachmentReadLimits,
     },
     /// Web-источник (direct/yt-dlp): запрос уже содержит новые настройки сети и кодеков.
     Web {
@@ -58,8 +60,16 @@ pub(crate) fn prepare_rebuild_source(
         preferred_video_codecs,
     } = request;
     match source {
-        RebuildSourceInput::LocalFile { path, demux } => {
-            match media_source_open::local_media::prepare_local_file(&path, &demux) {
+        RebuildSourceInput::LocalFile {
+            path,
+            demux,
+            attachment_limits,
+        } => {
+            match media_source_open::local_media::prepare_local_file(
+                &path,
+                &demux,
+                attachment_limits,
+            ) {
                 Ok(prepared_media) => {
                     let prepared_media =
                         prepared_media.with_preferred_video_codecs(&preferred_video_codecs);

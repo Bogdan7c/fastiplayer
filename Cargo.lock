@@ -151,6 +151,7 @@ dependencies = [
  "base64",
  "bounded-work-executor",
  "bounded-xml-reader",
+ "bytes",
  "capability-core",
  "codec-core",
  "dash-mpd-core",
@@ -3656,6 +3657,7 @@ dependencies = [
  "frame-server-core",
  "media-core",
  "render-core",
+ "symphonia-demux",
  "tracing",
  "video-backend-api",
  "video-core",
@@ -5014,6 +5016,7 @@ dependencies = [
  "source-core",
  "symphonia",
  "symphonia-format-isomp4 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "symphonia-format-mkv 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror 2.0.18",
  "tracing",
 ]

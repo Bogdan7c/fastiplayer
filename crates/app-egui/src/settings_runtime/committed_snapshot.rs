@@ -34,6 +34,14 @@ impl CommittedConfigSnapshot {
         self.config.player.demux
     }
 
+    /// Лимиты чтения вложений контейнера (шрифты MKV), которые local open job захватывает при запуске.
+    #[must_use]
+    pub(crate) fn attachment_limits_for_open(
+        &self,
+    ) -> media_source_open::local_media::AttachmentReadLimits {
+        media_source_open::local_media::attachment_read_limits_from_config(&self.config.subtitles)
+    }
+
     /// Committed intent выбора video backend-а для app-owned pipeline selector-а.
     #[must_use]
     pub(crate) fn video_backend_preference(&self) -> VideoBackendPreference {

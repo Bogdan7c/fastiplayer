@@ -271,6 +271,8 @@ impl HlsLiveTimelineEvidence {
         let is_decode_anchor = match packet.kind {
             TrackKind::Video => video_decode_start == HlsLiveVideoDecodeStartEvidence::Proven,
             TrackKind::Audio => self.random_access == HlsLiveRandomAccessSource::EveryAudioPacket,
+            // Субтитровый пакет никогда не является точкой старта декодирования.
+            TrackKind::Subtitle => false,
         };
         if is_decode_anchor {
             evidence.decode_anchor = Some(

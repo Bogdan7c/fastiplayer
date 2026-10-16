@@ -16,6 +16,7 @@ use crate::error::SubtitleLoadError;
 use crate::limits::SubtitleParseLimits;
 use crate::report::{LineNumber, ParseIssue, ParseIssueKind, SubtitleParseReport};
 
+pub(crate) use markup::parse_srt_markup as parse_srt_markup_text;
 pub(crate) use timestamp::parse_timing_line;
 
 /// Сколько первых строк блока может занимать «номер + время» до текста.

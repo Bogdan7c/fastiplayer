@@ -34,6 +34,18 @@ use crate::report::{CueSettingName, LineNumber, ParseIssue, ParseIssueKind, Subt
 
 pub(crate) use blocks::has_webvtt_signature;
 
+/// Текст реплики WebVTT из пакета контейнера: без таймингов и таблицы стилей.
+///
+/// Окно времени пустое (`start == end`), поэтому караоке-метки внутри текста не откладывают
+/// показ: у пакета нет собственной шкалы, к которой их можно было бы привязать.
+pub(crate) fn parse_embedded_webvtt_cue_text(cue_text: &str) -> subtitle_core::StyledText {
+    let window = CueTimeWindow {
+        start: subtitle_core::SubtitleTime::from_millis(0),
+        end: subtitle_core::SubtitleTime::from_millis(0),
+    };
+    parse_cue_text(cue_text, window, &CueStyleSheet::default())
+}
+
 /// Сколько первых строк блока может занимать «идентификатор + время» до текста.
 const TIMING_LINE_SEARCH_DEPTH: usize = 2;
 /// Заголовки блоков.

@@ -40,6 +40,10 @@ pub(super) enum DemuxPacketRouteOutcome {
     /// Packet был полностью отброшен как audio preroll active accurate seek-а.
     DroppedSeekAudioPreroll,
 
+    /// Субтитровый packet ушёл мимо декодеров в трубу субтитров (или отброшен при её
+    /// переполнении — это учитывает сама труба) и не расходует packet budget тика.
+    ForwardedSubtitlePacket,
+
     /// Video packet удержан в bounded staging до keyframe/rollback/EOF.
     StagedVideoBacklogRecoveryPacket,
 
@@ -80,6 +84,8 @@ impl DemuxPacketRouteOutcome {
             // tick имеет time deadline; без deadline zero-config тесты и ручные вызовы
             // остаются bounded обычным budget-ом.
             Self::DroppedSeekAudioPreroll => catch_up_deadline.is_none(),
+            // Субтитры не расходуют packet_budget тика (контракт сессии 06).
+            Self::ForwardedSubtitlePacket => false,
             // Recovery scan может пройти dense interleave сверх packet count
             // только внутри явного time deadline. Zero-budget tests остаются bounded.
             Self::StagedVideoBacklogRecoveryPacket => catch_up_deadline.is_none(),
@@ -505,6 +511,11 @@ pub(super) fn route_demuxed_packet(
                 .pipeline
                 .enqueue_pending_audio_packet(pending_packet);
             DemuxPacketRouteOutcome::Queued
+        }
+        // Субтитры идут мимо декодеров и backpressure: только в неблокирующую трубу.
+        TrackKind::Subtitle => {
+            session.forward_subtitle_packet(&packet);
+            DemuxPacketRouteOutcome::ForwardedSubtitlePacket
         }
         TrackKind::Video => {
             let pending_packet = PendingVideoPacket::new_with_decode_timestamps(

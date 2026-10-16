@@ -31,6 +31,11 @@
 - Removal gate: когда egui-winit поддерживает стабильный winit 0.31, заменить app-переходник `external_open::winit_source` на DragEntered/DragMoved/DragDropped/DragLeft + DataTransfer.
 - UX13 (2026-10-08): additive `winit::platform::external_activation::WindowExtExternalActivation::activate_with_token(ActivationToken)` — Wayland `xdg_activation.activate(token, surface)` для уже существующего окна (штатный winit 0.30 предъявляет билет только при создании, `focus_window` на Wayland пустой), X11 → `focus_window`. Потребитель — `app-egui::instance_forwarding::window_activation` (`mem:app-egui/instance-forwarding-ux13`).
 
+## Subtitles session 06 (2026-10-16): MKV/isomp4 additive extensions
+
+- MKV: `TrackElement.name` → per-track metadata tag `fastiplayer.track.name`; attachment limits via `with_attachment_read_limits(limits, || probe)` thread-local scope (generic Probe cannot pass parameters) and `MkvReader::try_new_with_attachment_limits`; oversized FileData skipped without reading; `FlagDefault` absent = DEFAULT (spec fix, upstream lost it). Known pre-existing gap: `EditionUID` treated as mandatory → ffmpeg-remuxed MKV with chapters fails to open (not fixed in 06).
+- isomp4: `mdhd` language → `Track::with_language`. Details: `mem:subtitles/embedded-tracks-s06`.
+
 ## Why Each Patch Is Still Needed
 
 - `symphonia-format-caf`: exact 0.6.0 replacement for S28C forward-only CAF. It stops initial chunk scan at `data` on non-seekable sources while preserving seekable full scan/seek-back, and exact-reads declared fixed/variable packets so structural truncation cannot become a short packet or clean EOS. Stream-friendly CAF must place `desc` and required codec configuration before `data`. Removal gate and tests live in `docs/dependency-patches.toml`; full proof: `mem:symphonia-demux/audio-containers-s28c-2026-07-22`.

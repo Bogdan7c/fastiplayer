@@ -24,6 +24,11 @@ impl FamilyIndex {
         }
     }
 
+    /// Забывает все семейства.
+    pub(super) fn clear(&mut self) {
+        self.faces_by_family.clear();
+    }
+
     /// Сколько различных имён семейств в индексе.
     pub(super) fn family_count(&self) -> usize {
         self.faces_by_family.len()

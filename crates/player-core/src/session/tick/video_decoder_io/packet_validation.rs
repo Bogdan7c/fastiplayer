@@ -373,6 +373,7 @@ mod tests {
                 color: None,
                 orientation: codec_core::VideoDisplayOrientation::Identity,
             }),
+            labels: media_core::TrackLabels::default(),
         }
     }
 

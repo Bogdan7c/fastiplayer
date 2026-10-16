@@ -14,6 +14,7 @@
 #![allow(clippy::identity_op)]
 #![allow(clippy::manual_range_contains)]
 
+mod attachment_limits;
 mod codecs;
 mod demuxer;
 mod ebml;
@@ -21,8 +22,18 @@ mod lacing;
 mod schema;
 mod segment;
 mod tags;
+mod track_names;
 
+#[cfg(test)]
+mod reader_tests;
+
+pub use crate::attachment_limits::{
+    AttachmentReadLimits, SkippedAttachment, SkippedAttachmentReason, with_attachment_read_limits,
+};
 pub use crate::demuxer::MkvReader;
+
+/// Ключ per-track тега с названием дорожки (`TrackEntry/Name`); `track_id` тега = номер дорожки.
+pub const FASTIPLAYER_TRACK_NAME_TAG: &str = "fastiplayer.track.name";
 
 pub mod sub_fields {
     //! Key name constants for sub-fields of MKV tags and chapters.

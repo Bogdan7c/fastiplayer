@@ -95,6 +95,13 @@ impl TrackState {
             track.with_codec_params(codec_params);
         }
 
+        // Fastiplayer: язык из `mdhd` (ISO 639-2/T). Пустой/невалидный код и `und` (не определён)
+        // не публикуются, чтобы потребитель отличал «неизвестно» от настоящего языка.
+        let language = &trak.mdia.mdhd.language;
+        if !language.is_empty() && language != "und" {
+            track.with_language(language);
+        }
+
         // Populate timing information.
         track.with_time_base(TimeBase::from_recip(timespan.timescale));
         if let Some(duration) = timespan.duration {

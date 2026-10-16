@@ -74,6 +74,7 @@ mod seek_transaction;
 mod snapshot_builder;
 mod staged_media_install;
 mod staged_video_preflight;
+mod subtitle_feed_bridge;
 mod subtitle_selection;
 mod tick;
 mod timeline_seek;
@@ -228,6 +229,9 @@ pub struct PlayerSession {
     /// tick уже успел залатать; дельта device-side underruns ловит каждый
     /// реальный разрыв независимо от момента refill.
     last_seen_audio_underrun_callbacks: u64,
+
+    /// Труба встроенных субтитров к приложению (по умолчанию отключена).
+    subtitle_feed: crate::subtitle_feed::SubtitleFeedSender,
 
     /// Момент предыдущего tick-а для диагностики стопора worker-треда.
     last_tick_observed_at: Option<Instant>,
@@ -745,6 +749,7 @@ impl Default for PlayerSession {
             audio_output_recovery: audio_output_recovery::AudioOutputRecoveryBudget::default(),
             last_audio_starvation_warn_at: None,
             last_seen_audio_underrun_callbacks: 0,
+            subtitle_feed: crate::subtitle_feed::SubtitleFeedSender::disabled(),
             last_tick_observed_at: None,
         }
     }

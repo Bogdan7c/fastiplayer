@@ -384,7 +384,9 @@ impl AppState {
                     audio_signalsmith::SignalsmithTempoProcessorFactory,
                 ))
                 .with_timeline_activity_wake(timeline_activity_wake);
-        let player_worker = PlayerWorker::spawn(worker_config)?;
+        let mut player_worker = PlayerWorker::spawn(worker_config)?;
+        // Приёмник трубы встроенных субтитров: единственный потребитель — владелец субтитров.
+        let subtitle_feed_receiver = player_worker.take_subtitle_feed_receiver();
         if let Err(error) = player_worker.try_send_command(PlayerCommand::SetVolume(
             committed_config_snapshot.remembered_audible_volume(),
         )) {
@@ -395,7 +397,7 @@ impl AppState {
         // Стартовые настройки субтитров берутся из committed config до его перемещения в состояние.
         let subtitles_config = committed_config_snapshot.as_config().subtitles.clone();
 
-        let app_state = Self {
+        let mut app_state = Self {
             egui_ctx,
             egui_winit_state,
             player_worker,
@@ -463,6 +465,12 @@ impl AppState {
             sidebar_host_state,
             sidebar_slide_last_tick: None,
         };
+        match subtitle_feed_receiver {
+            Some(receiver) => app_state.attach_subtitle_feed(receiver),
+            None => {
+                tracing::warn!("Subtitle feed receiver is unavailable; embedded subtitles are off")
+            }
+        }
         tracing::debug!(
             available_audio_decode_family_count = app_state
                 .audio_decode_capability_snapshot()
@@ -723,6 +731,7 @@ impl AppState {
             .player_worker
             .latest_snapshot(self.frame_counters_snapshot());
         self.last_player_snapshot = player_snapshot.clone();
+        self.pump_embedded_subtitles();
         player_snapshot
     }
 

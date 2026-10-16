@@ -273,7 +273,7 @@ fn prepared_media(track_kinds: &[TrackKind]) -> PreparedMedia {
             let track_id = (index + 1) as u32;
             match kind {
                 TrackKind::Video => staged_vp9_track(track_id),
-                TrackKind::Audio => fake_track(track_id, TrackKind::Audio),
+                TrackKind::Audio | TrackKind::Subtitle => fake_track(track_id, *kind),
             }
         })
         .collect::<Vec<_>>();

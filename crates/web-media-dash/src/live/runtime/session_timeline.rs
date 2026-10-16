@@ -239,6 +239,7 @@ mod tests {
                 sample_rate: Some(48_000),
                 channels: Some(2),
                 video: None,
+                labels: media_core::TrackLabels::default(),
             }],
             duration: Some(origin + Duration::from_secs(60)),
         });

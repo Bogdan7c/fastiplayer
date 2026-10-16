@@ -18,6 +18,9 @@
 //! - `layer_placement` (чистая геометрия) + `controls_obstruction` + `owner_placement`: куда сдвинуть
 //!   готовый слой на экране (позиция пользователя, подъём над нижней панелью, чёрные полосы).
 //!   Сдвиг уходит в рендер как `SubtitleLayerOffset` и меняет только uniform: без перерастеризации.
+//! - `embedded_track` + `embedded_events` + `owner_embedded` + `embedded_fonts`: встроенные дорожки
+//!   контейнера (сессия 06): список из снимка плеера, кэш реплик из трубы пакетов, вложенные
+//!   шрифты. Подробности и инварианты — в документации `owner_embedded`.
 //! - `settings` + `limits` + `user_style`: настройки из `[subtitles]` конфига.
 //! - `appearance_edit` + `owner_appearance_edit` + `sample_cue` + `owner_fonts_bootstrap`: правка
 //!   внешнего вида на видео (черновик вживую, образец реплики, отмена/сохранение).
@@ -51,6 +54,9 @@ mod appearance_edit;
 mod auto_select;
 mod control_actions;
 mod controls_obstruction;
+mod embedded_events;
+mod embedded_fonts;
+mod embedded_track;
 mod file_loader;
 mod intents;
 mod job_runner;
@@ -59,6 +65,7 @@ mod limits;
 mod media_state;
 mod menu_view;
 mod owner_appearance_edit;
+mod owner_embedded;
 mod owner_fonts_bootstrap;
 mod owner_intents;
 mod owner_loading;
@@ -90,6 +97,7 @@ pub(crate) use self::appearance_edit::{
 use self::auto_select::PreferredLanguages;
 pub(crate) use self::control_actions::ControlActionFeedback;
 pub(crate) use self::controls_obstruction::BottomControlsObstruction;
+use self::embedded_fonts::AttachedFontsState;
 pub(crate) use self::intents::{AttachOutcome, SubtitleVisibility};
 use self::job_runner::{SidecarJob, SidecarJobPoll};
 pub(crate) use self::layer_placement::PlacedLayerRect;
@@ -100,6 +108,8 @@ pub(crate) use self::menu_view::{
     SubtitleFileOrigin, SubtitleMenuView, SubtitleTrackAvailability, SubtitleTrackLabel,
     SubtitleUnavailableReason,
 };
+use self::owner_embedded::EmbeddedFeedState;
+pub(crate) use self::owner_embedded::EmbeddedUpdate;
 pub(crate) use self::owner_placement::PlacedSubtitleOverlay;
 #[cfg(test)]
 use self::presentation::PresentationStats;
@@ -228,6 +238,10 @@ pub(super) struct SubtitleOwner {
     /// Задачи, которые больше не нужны, но ещё работают: ждём их завершения без блокировки UI.
     retiring_jobs: Vec<SidecarJob>,
     source_ids: SourceIdAllocator,
+    /// Чтение трубы встроенных дорожек: приёмник, буферы, счётчики.
+    embedded_feed: EmbeddedFeedState,
+    /// Вложенные шрифты текущего media (подготовка, ожидание растеризатора).
+    attached_fonts: AttachedFontsState,
     /// Какие шрифты строить новой задаче; тесты выбирают встроенные.
     font_plan_for_new_library: FontLibraryPlan,
 }
@@ -266,6 +280,8 @@ impl SubtitleOwner {
             rasterizer_reset_pending: false,
             retiring_jobs: Vec::new(),
             source_ids: SourceIdAllocator { next_value: 0 },
+            embedded_feed: EmbeddedFeedState::default(),
+            attached_fonts: AttachedFontsState::default(),
             font_plan_for_new_library: FontLibraryPlan::BuildWithSystemFonts,
         }
     }
@@ -301,6 +317,8 @@ impl SubtitleOwner {
             media.discovery = self.start_discovery(video_path, &media);
         }
         self.media = Some(media);
+        // Труба могла принести сообщения этого media раньше, чем пришла установка.
+        self.adopt_media_for_embedded_feed(media_instance_id);
         // Дорожки из очереди (если есть) читаются сразу, остальные — по требованию.
         self.ensure_display_track_loading();
     }
@@ -382,6 +400,9 @@ impl SubtitleOwner {
                 self.retiring_jobs.push(load.job);
             }
         }
+        // Шрифты и кэши встроенных дорожек принадлежат прежнему media (кэши реплик лежат в
+        // `MediaSubtitles` и уходят вместе с ним).
+        self.forget_attached_fonts();
         self.presenter.forget_shown_overlay();
     }
 
@@ -391,8 +412,9 @@ impl SubtitleOwner {
     /// «взведённым» и следующие результаты не будили бы окно.
     pub(super) fn poll_jobs(&mut self) -> bool {
         let fonts_changed = self.poll_fonts_bootstrap();
+        let attached_fonts_changed = self.poll_attached_fonts();
         let media_changed = self.poll_media_jobs();
-        fonts_changed || media_changed
+        fonts_changed || attached_fonts_changed || media_changed
     }
 
     /// Опрос задач текущего media и уходящих задач (см. [`Self::poll_jobs`]).
@@ -404,7 +426,7 @@ impl SubtitleOwner {
         });
 
         let Some(media) = &self.media else {
-            if !self.has_running_fonts_bootstrap() {
+            if !self.has_running_font_jobs() {
                 self.wake_port.acknowledge_abandoned_mailbox();
             }
             return false;
@@ -421,7 +443,7 @@ impl SubtitleOwner {
         {
             finished.push((JobOrigin::TrackLoad(load.track_id), outcome));
         }
-        if !media.has_running_jobs() && !self.has_running_fonts_bootstrap() {
+        if !media.has_running_jobs() && !self.has_running_font_jobs() {
             // Задач, которых ждёт владелец, нет: сбрасываем «взведённость» порта.
             self.wake_port.acknowledge_abandoned_mailbox();
         }

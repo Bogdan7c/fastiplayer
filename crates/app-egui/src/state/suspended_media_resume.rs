@@ -274,6 +274,10 @@ impl AppState {
                 path: path.clone(),
                 expected_fingerprint: None,
                 demux_config: config.player.demux,
+                attachment_limits:
+                    media_source_open::local_media::attachment_read_limits_from_config(
+                        &config.subtitles,
+                    ),
             },
             ActiveMediaSource::Web(web_intent) => {
                 let adaptive_settings =

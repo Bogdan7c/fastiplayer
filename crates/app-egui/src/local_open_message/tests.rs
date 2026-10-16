@@ -48,6 +48,7 @@ fn prepare_and_classify(path: &Path) -> LocalOpenFailureOutcome {
     match prepare_local_open(
         path,
         &PlayerDemuxConfig::default(),
+        media_source_open::local_media::AttachmentReadLimits::default(),
         None,
         CancellationToken::never_cancelled(),
         || false,
@@ -233,6 +234,7 @@ fn cancelled_preparation_is_not_user_visible_failure() {
     let outcome = match prepare_local_open(
         &path,
         &PlayerDemuxConfig::default(),
+        media_source_open::local_media::AttachmentReadLimits::default(),
         None,
         CancellationToken::never_cancelled(),
         || true,

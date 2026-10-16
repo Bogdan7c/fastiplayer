@@ -5,6 +5,9 @@
 //! «какое лицо взять по имени» и «в каком лице есть глиф для символа».
 
 mod attached;
+mod attached_lifecycle;
+#[cfg(test)]
+mod attached_lifecycle_tests;
 mod counters;
 mod coverage;
 mod embedded;
@@ -30,6 +33,8 @@ mod tests;
 
 pub use attached::{
     AttachedFontError, AttachedFontLimits, AttachedFontRegistration, AttachedFontStatus,
+    AttachedFontsClearOutcome, AttachedFontsInstallReport, PreparedAttachedFont,
+    PreparedAttachedFonts, RejectedAttachedFont,
 };
 pub use embedded::{EMBEDDED_FONTS, EmbeddedFont, EmbeddedFontPurpose};
 pub use face::{FaceBytes, FaceId, FaceOrigin};

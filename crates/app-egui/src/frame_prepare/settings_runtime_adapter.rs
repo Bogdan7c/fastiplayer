@@ -62,6 +62,8 @@ struct ActiveMediaReconfigureConfig {
     web_media: fastiplayer_config::WebMediaConfig,
     yt_dlp: fastiplayer_config::YtDlpConfig,
     demux: fastiplayer_config::PlayerDemuxConfig,
+    /// Лимиты вложений контейнера (шрифты MKV) из `[subtitles]` для пересборки локального файла.
+    attachment_limits: media_source_open::local_media::AttachmentReadLimits,
     preferred_video_codec_order: Vec<fastiplayer_config::VideoCodec>,
     video_backend_preference: fastiplayer_config::VideoBackendPreference,
     reselect_web_media_stream: bool,
@@ -147,6 +149,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
             ActiveMediaSource::LocalFile(path) => RebuildSourceInput::LocalFile {
                 path,
                 demux: config.demux,
+                attachment_limits: config.attachment_limits,
             },
             ActiveMediaSource::Web(web_intent) => {
                 let system_capabilities =
@@ -583,6 +586,10 @@ impl FrameSettingsRuntimeAdapter<'_> {
                 web_media: app_config.web_media,
                 yt_dlp: app_config.yt_dlp,
                 demux: app_config.player.demux,
+                attachment_limits:
+                    media_source_open::local_media::attachment_read_limits_from_config(
+                        &app_config.subtitles,
+                    ),
                 preferred_video_codec_order: app_config.player.preferred_video_codec_order,
                 video_backend_preference: target_backend_preference,
                 reselect_web_media_stream,
@@ -735,6 +742,10 @@ impl FrameSettingsRuntimeAdapter<'_> {
                 web_media: app_config.web_media,
                 yt_dlp: app_config.yt_dlp,
                 demux: app_config.player.demux,
+                attachment_limits:
+                    media_source_open::local_media::attachment_read_limits_from_config(
+                        &app_config.subtitles,
+                    ),
                 preferred_video_codec_order: app_config.player.preferred_video_codec_order,
                 video_backend_preference: target_backend_preference,
                 reselect_web_media_stream: preferred_height_changed,

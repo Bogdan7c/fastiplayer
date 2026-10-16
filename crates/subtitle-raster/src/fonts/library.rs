@@ -4,13 +4,9 @@
 //! (решение владельца). Ввод-вывод (сканирование системных шрифтов) — отдельный явный шаг
 //! [`SubtitleFontLibrary::load_system_fonts`]; остальная логика работает на уже загруженном.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use super::attached::{
-    AttachedFontError, AttachedFontLimits, AttachedFontRegistration, AttachedFontStatus,
-    AttachedRegistry, parse_attached_font,
-};
+use super::attached::AttachedRegistry;
 use super::counters::LibraryCounters;
 use super::embedded::{EMBEDDED_FONTS, EmbeddedFont, EmbeddedFontPurpose};
 use super::face::{
@@ -197,56 +193,10 @@ impl SubtitleFontLibrary {
         })
     }
 
-    /// Регистрирует вложенный шрифт (все лица коллекции). При ошибке библиотека не меняется.
-    ///
-    /// Точно такие же байты, уже зарегистрированные раньше, дают
-    /// [`AttachedFontStatus::AlreadyRegistered`] и не меняют библиотеку (в том числе кэш
-    /// поиска глифов): для вызывающего это сигнал, что сбрасывать свои кэши не нужно.
-    pub fn register_attached_font(
-        &mut self,
-        font_bytes: Arc<[u8]>,
-        limits: &AttachedFontLimits,
-    ) -> Result<AttachedFontRegistration, AttachedFontError> {
-        if let Some(known) = self.attached.faces_of_duplicate(&font_bytes) {
-            return Ok(AttachedFontRegistration {
-                status: AttachedFontStatus::AlreadyRegistered,
-                faces: known.to_vec(),
-            });
-        }
-        let parsed_faces = parse_attached_font(&font_bytes, limits)?;
-        self.attached
-            .check_total_limits(font_bytes.len(), parsed_faces.len(), limits)?;
-        let mut registered = Vec::with_capacity(parsed_faces.len());
-        for parsed in parsed_faces {
-            let face_id = self.next_face_id();
-            self.faces.push(LoadedFace {
-                origin: FaceOrigin::Attached,
-                source: FaceSource::Attached(Arc::clone(&font_bytes)),
-                collection_index: parsed.collection_index,
-                family: parsed.family_names.first().cloned().unwrap_or_default(),
-                weight: parsed.weight,
-                os2_weight: parsed.os2_weight,
-                style: parsed.style,
-                unusable: false,
-            });
-            for name in &parsed.family_names {
-                self.attached_names.add(name, face_id);
-            }
-            registered.push(face_id);
-        }
-        self.attached.record(font_bytes, registered.clone());
-        // Вложенные шрифты входят в цепочку fallback по глифу: прежние результаты поиска
-        // (особенно «нигде нет») могли устареть.
-        self.lookup_cache.clear();
-        Ok(AttachedFontRegistration {
-            status: AttachedFontStatus::Registered,
-            faces: registered,
-        })
-    }
-
     /// Описание лица или `None`, если такого `FaceId` нет в этой библиотеке.
     pub fn describe_face(&self, face: FaceId) -> Option<FaceDescription<'_>> {
-        let loaded = self.face(face)?;
+        // Снятое вложенное лицо (после `clear_attached_fonts`) для внешнего мира уже не существует.
+        let loaded = self.face(face).filter(|loaded| !loaded.is_detached())?;
         Some(FaceDescription {
             origin: loaded.origin,
             family: &loaded.family,

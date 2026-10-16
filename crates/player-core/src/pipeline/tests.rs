@@ -63,6 +63,7 @@ fn source_slot_track(track_id: TrackId, kind: TrackKind, codec_id: &str) -> Trac
         sample_rate: (kind == TrackKind::Audio).then_some(48_000),
         channels: (kind == TrackKind::Audio).then_some(2),
         video: None,
+        labels: media_core::TrackLabels::default(),
     }
 }
 

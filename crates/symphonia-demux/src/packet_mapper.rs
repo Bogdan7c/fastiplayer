@@ -74,8 +74,13 @@ pub(crate) fn convert_packet_with_source_offset(
     let track_dts = packet_track_timestamp(track_id, track_entry.time_base, packet.dts);
     let pts = packet_presentation_timestamp(track_entry.time_base, packet.pts);
     let dts = packet_decode_timestamp(track_entry.time_base, packet.pts, packet.dts);
-    let duration = packet_duration(track_entry.time_base, packet.dur);
-    let track_duration = packet_track_duration(track_id, track_entry.time_base, packet.dur);
+    // Субтитр с нулевой длительностью означает «контейнер длительность не указал» (например,
+    // SimpleBlock в MKV), а не реплику нулевой длины: потребитель сам подберёт конец показа.
+    let has_unknown_subtitle_duration = track_kind == TrackKind::Subtitle && packet.dur.get() == 0;
+    let duration = packet_duration(track_entry.time_base, packet.dur)
+        .filter(|_| !has_unknown_subtitle_duration);
+    let track_duration = packet_track_duration(track_id, track_entry.time_base, packet.dur)
+        .filter(|_| !has_unknown_subtitle_duration);
     let keyframe = packet_keyframe(track_entry, track_kind, &packet.data);
 
     let mut media_packet = MediaPacket::new_with_keyframe_unbounded(
@@ -172,8 +177,11 @@ fn packet_keyframe(
     track_kind: TrackKind,
     packet_data: &[u8],
 ) -> PacketKeyframe {
-    if track_kind != TrackKind::Video {
-        return PacketKeyframe::NotKeyframe;
+    match track_kind {
+        // Каждый пакет субтитров самостоятельный: реплику можно разобрать без предыдущих.
+        TrackKind::Subtitle => return PacketKeyframe::Keyframe,
+        TrackKind::Audio => return PacketKeyframe::NotKeyframe,
+        TrackKind::Video => {}
     }
 
     match VideoCodec::from_container_codec_id(&track_entry.codec_id).map(|codec| {
@@ -548,19 +556,49 @@ mod tests {
     fn packet_for_unsupported_track_is_skipped_mapping_error() {
         let track_map = HashMap::from([(
             9,
-            unsupported_track_entry(UnsupportedTrackKind::Subtitle, "S_TEXT/WEBVTT"),
+            unsupported_track_entry(UnsupportedTrackKind::Unknown, "unsupported_track"),
         )]);
 
-        let error = convert_packet(packet(9, 0, b"subtitle"), &track_map)
+        let error = convert_packet(packet(9, 0, b"opaque"), &track_map)
             .expect_err("unsupported track packet must have skip signal");
 
         assert_eq!(
             error,
             PacketConvertError::UnsupportedTrack {
                 track_id: TrackId::new(9),
-                reason: UnsupportedTrackKind::Subtitle.diagnostic_reason(),
+                reason: UnsupportedTrackKind::Unknown.diagnostic_reason(),
             }
         );
+    }
+
+    #[test]
+    fn subtitle_packet_converts_with_text_duration_and_self_contained_keyframe() {
+        let track_map = HashMap::from([(3, track_entry(TrackKind::Subtitle, "S_TEXT/UTF8"))]);
+        let mut subtitle_packet = packet(3, 96_000, b"Hello");
+        subtitle_packet.dur = SymphoniaDuration::new(48_000);
+
+        let converted = convert_packet(subtitle_packet, &track_map)
+            .expect("subtitle packet must be converted, not skipped");
+
+        assert_eq!(converted.kind, TrackKind::Subtitle);
+        assert_eq!(converted.track_id, TrackId::new(3));
+        assert_eq!(converted.pts, Duration::from_secs(2));
+        assert_eq!(converted.duration, Some(Duration::from_secs(1)));
+        assert_eq!(&converted.data[..], b"Hello");
+        assert_eq!(converted.keyframe, PacketKeyframe::Keyframe);
+    }
+
+    #[test]
+    fn subtitle_packet_with_zero_duration_reports_unknown_duration() {
+        let track_map = HashMap::from([(3, track_entry(TrackKind::Subtitle, "S_TEXT/UTF8"))]);
+        let mut subtitle_packet = packet(3, 48_000, b"No duration");
+        subtitle_packet.dur = SymphoniaDuration::new(0);
+
+        let converted = convert_packet(subtitle_packet, &track_map).expect("subtitle converts");
+
+        assert_eq!(converted.duration, None);
+        assert_eq!(converted.track_duration, None);
+        assert_eq!(converted.pts, Duration::from_secs(1));
     }
 
     #[test]

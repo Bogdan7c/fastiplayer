@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use media_core::{TimeBase as MediaTimeBase, TrackTimestampUnits};
+use media_core::{SkippedAttachment, TimeBase as MediaTimeBase, TrackTimestampUnits};
 pub(crate) use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
 pub(crate) use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader};
@@ -10,6 +10,7 @@ pub(crate) use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Time, TimeBase, Timestamp};
 
+use crate::attachments::{AttachmentReadLimits, probe_with_attachment_limits};
 use crate::error::DemuxError;
 
 /// Owned Symphonia reader, который demuxer хранит между generic `next_event` вызовами.
@@ -35,18 +36,39 @@ pub(crate) fn hint_from_path(path: &Path) -> Hint {
         .unwrap_or_default()
 }
 
+/// Результат probe-а: reader и вложения, которые MKV-патч пропустил по лимитам.
+pub(crate) struct ProbedFormatReader<'source> {
+    /// Готовый Symphonia reader.
+    pub(crate) reader: FormatReaderBox<'source>,
+
+    /// Вложения, пропущенные без чтения в память (пусто для не-Matroska контейнеров).
+    pub(crate) skipped_attachments: Vec<SkippedAttachment>,
+}
+
 /// Прячет Symphonia 0.6 `Probe::probe` и форму результата за локальной границей.
+///
+/// Probe выполняется внутри области лимитов вложений, чтобы Matroska не читал в память
+/// файлы больше `attachment_limits`.
 pub(crate) fn probe_format_reader<'source>(
     hint: &Hint,
     media_source_stream: MediaSourceStream<'source>,
-) -> Result<FormatReaderBox<'source>, DemuxError> {
-    symphonia::default::get_probe()
-        .probe(
-            hint,
-            media_source_stream,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )
+    attachment_limits: AttachmentReadLimits,
+) -> Result<ProbedFormatReader<'source>, DemuxError> {
+    let (probe_result, skipped_attachments) =
+        probe_with_attachment_limits(attachment_limits, || {
+            symphonia::default::get_probe().probe(
+                hint,
+                media_source_stream,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+        });
+
+    probe_result
+        .map(|reader| ProbedFormatReader {
+            reader,
+            skipped_attachments,
+        })
         .map_err(|error| DemuxError::UnsupportedFormat(error.to_string()))
 }
 

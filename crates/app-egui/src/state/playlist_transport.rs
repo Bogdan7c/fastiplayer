@@ -556,6 +556,10 @@ impl AppState {
                 path: path.to_path_buf(),
                 expected_fingerprint: None,
                 demux_config: config.player.demux,
+                attachment_limits:
+                    media_source_open::local_media::attachment_read_limits_from_config(
+                        &config.subtitles,
+                    ),
             }
         } else {
             let secret_url = locator

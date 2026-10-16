@@ -146,7 +146,7 @@ fn unknown_track_does_not_break_open() {
 }
 
 #[test]
-fn subtitle_packets_are_skipped_without_unknown_track_error() {
+fn subtitle_packets_are_delivered_as_subtitle_kind_packets() {
     let reader = FakeFormatReader::new(
         vec![subtitle_track(9)],
         vec![Ok(fake_packet(9, 0, b"subtitle".to_vec()))],
@@ -160,9 +160,43 @@ fn subtitle_packets_are_skipped_without_unknown_track_error() {
     )
     .expect("The subtitle track should not break open.");
 
+    assert_eq!(demuxer.tracks().len(), 1);
+    assert_eq!(demuxer.tracks()[0].kind, TrackKind::Subtitle);
+
     let event = demuxer
         .next_event()
-        .expect("subtitle packet must be missed without fatal errors");
+        .expect("subtitle packet must be delivered without fatal errors");
+
+    let DemuxReadEvent::Packet(packet) = event else {
+        panic!("expected subtitle packet, got {event:?}");
+    };
+    assert_eq!(packet.kind, TrackKind::Subtitle);
+    assert_eq!(packet.track_id, TrackId::new(9));
+    assert_eq!(&packet.data[..], b"subtitle");
+    assert_eq!(
+        demuxer.next_event().expect("eof"),
+        DemuxReadEvent::EndOfStream
+    );
+}
+
+#[test]
+fn packets_of_unclassified_tracks_are_skipped_without_unknown_track_error() {
+    let reader = FakeFormatReader::new(
+        vec![unknown_track(9)],
+        vec![Ok(fake_packet(9, 0, b"opaque".to_vec()))],
+    );
+    let mut demuxer = SymphoniaDemuxer::from_format_reader(
+        Box::new(reader),
+        "fake",
+        HashMap::new(),
+        DemuxSeekability::Seekable,
+        DemuxerOptions::default(),
+    )
+    .expect("The unclassified track should not break open.");
+
+    let event = demuxer
+        .next_event()
+        .expect("unclassified packet must be missed without fatal errors");
 
     assert_eq!(event, DemuxReadEvent::EndOfStream);
 }

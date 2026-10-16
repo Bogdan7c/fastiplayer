@@ -151,6 +151,7 @@ mod tests {
                 path: fixture_path.clone(),
                 expected_fingerprint: None,
                 demux_config: fastiplayer_config::PlayerDemuxConfig::default(),
+                attachment_limits: media_source_open::local_media::AttachmentReadLimits::default(),
             })
             .expect("speculative local preparation starts");
 

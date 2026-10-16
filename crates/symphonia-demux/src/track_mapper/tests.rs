@@ -5,7 +5,10 @@ use codec_core::{
     MatrixCoefficients, TransferFunction, VideoColorMetadata, VideoDisplayOrientation,
     VideoProfile, Vp9Profile,
 };
-use media_core::{TrackId, TrackKind, VideoPacketFraming, VideoTrackMetadata};
+use media_core::{
+    TrackId, TrackKind, TrackLanguage, VideoPacketFraming, VideoTrackMetadata,
+    subtitle_codec as subtitle_codec_ids,
+};
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::codecs::audio::AudioCodecParameters;
 use symphonia::core::codecs::audio::well_known as audio_codec;
@@ -14,7 +17,7 @@ use symphonia::core::codecs::subtitle::well_known as subtitle_codec;
 use symphonia::core::codecs::video::well_known::extra_data::VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG;
 use symphonia::core::codecs::video::well_known::profiles as video_profile;
 use symphonia::core::codecs::video::{VideoCodecParameters, VideoExtraData};
-use symphonia::core::formats::Track;
+use symphonia::core::formats::{Track, TrackFlags};
 use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase};
 
 use super::{
@@ -243,15 +246,125 @@ fn audio_only_tracks_do_not_request_matroska_video_pre_scan() {
 }
 
 #[test]
-fn subtitle_track_is_skipped_in_public_tracks() {
+fn subtitle_track_is_published_as_subtitle_kind_with_media_core_codec_id() {
     let mut metadata_by_track = HashMap::new();
     let mapping = map_tracks(&[subtitle_track(9)], &mut metadata_by_track);
 
-    assert!(mapping.tracks.is_empty());
+    assert_eq!(mapping.tracks.len(), 1);
+    assert_eq!(mapping.tracks[0].id, TrackId::new(9));
+    assert_eq!(mapping.tracks[0].kind, TrackKind::Subtitle);
+    assert_eq!(mapping.tracks[0].codec_id, subtitle_codec_ids::WEBVTT);
     assert_eq!(
         mapping.track_map.get(&9).map(|entry| entry.kind),
-        Some(TrackEntryKind::Unsupported(UnsupportedTrackKind::Subtitle))
+        Some(TrackEntryKind::Supported(TrackKind::Subtitle))
     );
+}
+
+#[test]
+fn symphonia_subtitle_codecs_map_to_media_core_constants() {
+    let expected = [
+        (
+            subtitle_codec::CODEC_ID_TEXT_UTF8,
+            subtitle_codec_ids::TEXT_UTF8,
+        ),
+        (subtitle_codec::CODEC_ID_SRT, subtitle_codec_ids::TEXT_UTF8),
+        (subtitle_codec::CODEC_ID_SSA, subtitle_codec_ids::SSA),
+        (subtitle_codec::CODEC_ID_ASS, subtitle_codec_ids::ASS),
+        (subtitle_codec::CODEC_ID_WEBVTT, subtitle_codec_ids::WEBVTT),
+        (
+            subtitle_codec::CODEC_ID_MOV_TEXT,
+            subtitle_codec_ids::MOV_TEXT,
+        ),
+        (
+            subtitle_codec::CODEC_ID_HDMV_PGS,
+            subtitle_codec_ids::HDMV_PGS,
+        ),
+        (subtitle_codec::CODEC_ID_VOBSUB, subtitle_codec_ids::VOBSUB),
+        (subtitle_codec::CODEC_ID_DVBSUB, subtitle_codec_ids::DVBSUB),
+        (
+            subtitle_codec::CODEC_ID_HDMV_TEXTST,
+            subtitle_codec_ids::HDMV_TEXTST,
+        ),
+        (subtitle_codec::CODEC_ID_KATE, subtitle_codec_ids::KATE),
+        (subtitle_codec::CODEC_ID_BMP, subtitle_codec_ids::BMP),
+        // SAMI Symphonia знает, но плееру не нужен: он публикуется как unknown, не как сырой id.
+        (subtitle_codec::CODEC_ID_SAMI, subtitle_codec_ids::UNKNOWN),
+        (
+            symphonia::core::codecs::subtitle::CODEC_ID_NULL_SUBTITLE,
+            subtitle_codec_ids::UNKNOWN,
+        ),
+    ];
+
+    for (symphonia_codec, expected_codec_id) in expected {
+        let mut subtitle_params = SubtitleCodecParameters::new();
+        subtitle_params.for_codec(symphonia_codec);
+        let mut track = Track::new(1);
+        track.with_codec_params(CodecParameters::Subtitle(subtitle_params));
+
+        let entry = build_track_entry(&track, None);
+
+        assert_eq!(entry.codec_id, expected_codec_id, "codec {symphonia_codec}");
+    }
+}
+
+#[test]
+fn subtitle_codec_private_is_the_symphonia_extra_data_header() {
+    let mut subtitle_params = SubtitleCodecParameters::new();
+    subtitle_params.for_codec(subtitle_codec::CODEC_ID_ASS);
+    subtitle_params.with_extra_data(b"[Script Info]\nTitle: t\n".to_vec().into_boxed_slice());
+    let mut track = Track::new(2);
+    track.with_codec_params(CodecParameters::Subtitle(subtitle_params));
+
+    let mapping = map_tracks(&[track], &mut HashMap::new());
+
+    assert_eq!(
+        mapping.tracks[0].codec_private.as_deref(),
+        Some(&b"[Script Info]\nTitle: t\n"[..])
+    );
+}
+
+#[test]
+fn track_labels_combine_symphonia_language_flags_and_container_title() {
+    let mut track = subtitle_track(4);
+    track.with_language("rus");
+    track.with_flags(TrackFlags::FORCED | TrackFlags::DEFAULT);
+    let titles = HashMap::from([(TrackId::new(4), "Russian".to_string())]);
+
+    let mapping = map_tracks_with_video_metadata(
+        &[track],
+        &mut HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &titles,
+    );
+
+    let labels = &mapping.tracks[0].labels;
+    assert_eq!(labels.language, Some(TrackLanguage::new("rus")));
+    assert_eq!(labels.title.as_deref(), Some("Russian"));
+    assert!(labels.disposition.is_forced && labels.disposition.is_default);
+    assert!(!labels.disposition.is_hearing_impaired && !labels.disposition.is_commentary);
+}
+
+#[test]
+fn video_and_audio_tracks_also_carry_labels() {
+    let mut audio = audio_track_with_codec(2, audio_codec::CODEC_ID_AAC);
+    audio.with_language("jpn");
+    audio.with_flags(TrackFlags::COMMENTARY);
+    let mut video = vp9_video_track(1);
+    video.with_language("eng");
+
+    let mapping = map_tracks(&[video, audio], &mut HashMap::new());
+
+    assert_eq!(
+        mapping.tracks[0].labels.language,
+        Some(TrackLanguage::new("eng"))
+    );
+    assert_eq!(
+        mapping.tracks[1].labels.language,
+        Some(TrackLanguage::new("jpn"))
+    );
+    assert!(mapping.tracks[1].labels.disposition.is_commentary);
 }
 
 #[test]
@@ -428,6 +541,7 @@ fn map_tracks_preserves_display_orientation_metadata() {
         &display_orientations_by_track,
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
     );
     let video_metadata = mapping.tracks[0]
         .video
@@ -462,6 +576,7 @@ fn avc3_metadata_preserves_in_band_parameter_set_framing() {
         &HashMap::new(),
         &HashMap::new(),
         &packet_framings_by_track,
+        &HashMap::new(),
     );
 
     assert_eq!(mapping.tracks[0].codec_id, "V_MPEG4/ISO/AVC");
@@ -489,6 +604,7 @@ fn avc3_metadata_cannot_relabel_non_h264_video_framing() {
         &HashMap::new(),
         &HashMap::new(),
         &packet_framings_by_track,
+        &HashMap::new(),
     );
 
     assert_eq!(mapping.tracks[0].codec_id, "V_VP9");
@@ -553,6 +669,7 @@ fn mp4_av1c_hdr_metadata_reaches_neutral_track() {
         &display_orientations_by_track,
         &color_metadata_by_track,
         &HashMap::new(),
+        &HashMap::new(),
     );
     let video_metadata = mapping.tracks[0]
         .video
@@ -612,6 +729,7 @@ fn mp4_color_metadata_wins_over_matroska_color_fallback() {
         &mut metadata_by_track,
         &HashMap::new(),
         &color_metadata_by_track,
+        &HashMap::new(),
         &HashMap::new(),
     );
     let video_metadata = mapping.tracks[0]

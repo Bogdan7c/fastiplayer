@@ -22,12 +22,17 @@ use symphonia_core::units::TimeBase;
 
 use log::{info, warn};
 
+use crate::attachment_limits::{
+    AttachmentReadLimits, SkippedAttachment, report_skipped_to_scope, scoped_limits,
+};
 use crate::codecs::{apply_codec_state, make_track_codec_params};
 use crate::ebml::{EbmlElementInfo, EbmlError, EbmlIterator, EbmlSchema, ReadEbml};
 use crate::lacing::{Frame, block_track_num, extract_frames};
 use crate::schema::{MkvElement, MkvSchema};
+use crate::track_names::track_names_revision;
 use crate::segment::{
-    AttachmentsElement, BlockGroupElement, ChaptersElement, CuesElement, EbmlHeaderElement,
+    read_attachments_element,
+    BlockGroupElement, ChaptersElement, CuesElement, EbmlHeaderElement,
     InfoElement, MatroskaTicks, NonZeroMatroskaTicks, SeekHeadElement, SegmentTicks,
     SignedTrackTicks, TagsElement, TargetTagsMap, TracksElement,
 };
@@ -58,6 +63,8 @@ pub struct MkvReader<'s> {
     tracks: Vec<Track>,
     track_states: HashMap<u32, TrackState>,
     attachments: Vec<Attachment>,
+    /// Fastiplayer: вложения, пропущенные по лимитам без чтения FileData.
+    skipped_attachments: Vec<SkippedAttachment>,
     chapters: Option<ChapterGroup>,
     metadata: MetadataLog,
     cues: Option<CuesElement>,
@@ -76,7 +83,21 @@ struct ClusterState {
 }
 
 impl<'s> MkvReader<'s> {
+    /// Создаёт reader; лимиты вложений берутся из активной `with_attachment_read_limits`
+    /// области текущего потока, а вне неё вложения читаются без ограничений (как в upstream).
     pub fn try_new(mss: MediaSourceStream<'s>, opts: FormatOptions) -> Result<Self> {
+        Self::try_new_with_attachment_limits(mss, opts, scoped_limits())
+    }
+
+    /// Fastiplayer: создаёт reader с явными лимитами вложений.
+    ///
+    /// Вложения сверх лимита не читаются в память; их отчёт доступен через
+    /// [`MkvReader::skipped_attachments`].
+    pub fn try_new_with_attachment_limits(
+        mss: MediaSourceStream<'s>,
+        opts: FormatOptions,
+        attachment_limits: AttachmentReadLimits,
+    ) -> Result<Self> {
         // Get the total length of the stream, if possible.
         let (is_seekable, total_len) = (mss.is_seekable(), mss.byte_len());
 
@@ -151,7 +172,7 @@ impl<'s> MkvReader<'s> {
                     if attachments.is_some() {
                         log::warn!("unexpected attachments element");
                     }
-                    attachments = Some(it.read_master_element::<AttachmentsElement>()?);
+                    attachments = Some(read_attachments_element(&mut it, attachment_limits)?);
                 }
                 MkvElement::Chapters => {
                     // Only one chapters element per segment is expected.
@@ -208,7 +229,7 @@ impl<'s> MkvReader<'s> {
                         if attachments.is_some() {
                             log::warn!("unexpected attachments element after meta seek");
                         }
-                        attachments = Some(it.read_master_element::<AttachmentsElement>()?);
+                        attachments = Some(read_attachments_element(&mut it, attachment_limits)?);
                     }
                     MkvElement::Chapters => {
                         // Only one chapters element per segment is expected.
@@ -267,9 +288,10 @@ impl<'s> MkvReader<'s> {
             .unwrap_or(opts.external_data.chapters);
 
         // Process attachments element.
-        let attachments = attachments
+        let (attachments, skipped_attachments) = attachments
             .map(|attachments| attachments.into_attachments(&mut per_target_tags))
             .unwrap_or_default();
+        report_skipped_to_scope(&skipped_attachments);
 
         // Should TimeBase use a u64/u64 rational?
         // Reduce the timebase to reduce the chance of overflows later.
@@ -282,6 +304,7 @@ impl<'s> MkvReader<'s> {
         .reduce();
 
         let mut tracks = Vec::new();
+        let mut track_names: Vec<(u64, String)> = Vec::new();
         let mut track_states = HashMap::new();
 
         for track in segment_tracks.tracks {
@@ -315,12 +338,21 @@ impl<'s> MkvReader<'s> {
 
             tr.with_flags(track.flags);
 
+            if let Some(name) = &track.name {
+                track_names.push((u64::from(state.track_num), name.clone()));
+            }
+
             if let Some(codec_params) = make_track_codec_params(track)? {
                 tr.with_codec_params(codec_params);
             }
 
             tracks.push(tr);
             track_states.insert(state.track_num, state);
+        }
+
+        // Fastiplayer: названия дорожек идут первой ревизией, как tag-и isomp4-патча.
+        if let Some(revision) = track_names_revision(&track_names) {
+            metadata.push_front(revision);
         }
 
         // Populate media information.
@@ -338,6 +370,7 @@ impl<'s> MkvReader<'s> {
             tracks,
             track_states,
             attachments,
+            skipped_attachments,
             chapters,
             metadata,
             cues,
@@ -345,6 +378,11 @@ impl<'s> MkvReader<'s> {
             frames: VecDeque::new(),
             reset_required_before_frames: false,
         })
+    }
+
+    /// Fastiplayer: вложения, пропущенные по лимитам без чтения FileData.
+    pub fn skipped_attachments(&self) -> &[SkippedAttachment] {
+        &self.skipped_attachments
     }
 
     fn seek_track_by_ts_forward(&mut self, track_id: u32, ts: Timestamp) -> Result<SeekedTo> {

@@ -342,6 +342,14 @@ pub trait Demuxer: Send {
         None
     }
 
+    /// Забирает вложения контейнера (например, шрифты MKV): один раз за жизнь demuxer-а.
+    ///
+    /// Default — «вложений нет». Повторный вызов возвращает пустой результат: владение
+    /// байтами переходит вызывающему.
+    fn take_attachments(&mut self) -> crate::MediaAttachments {
+        crate::MediaAttachments::default()
+    }
+
     /// Возвращает seekability текущего demuxer/source stack-а.
     fn seekability(&self) -> DemuxSeekability {
         if self.duration().is_some() {

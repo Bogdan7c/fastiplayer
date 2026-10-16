@@ -1,5 +1,5 @@
 //! Лимиты и бюджеты субтитров: пользовательские значения берутся из `SubtitlesConfig`
-//! (секция `[subtitles]` конфига v13), здесь только перевод единиц и внутренние инварианты.
+//! (секция `[subtitles]` конфига), здесь только перевод единиц и внутренние инварианты.
 //!
 //! # Что в конфиге, а что нет
 //! В конфиге лежит то, что пользователь может осмысленно менять (размер файла, число реплик,
@@ -9,8 +9,10 @@
 use std::time::Duration;
 
 use fastiplayer_config::SubtitlesConfig;
-use subtitle_formats::SubtitleParseLimits;
-use subtitle_raster::{FontLookupCacheLimits, RasterCacheLimits, RasterInputLimits, RasterLimits};
+use subtitle_formats::{EmbeddedCueLimits, SubtitleParseLimits};
+use subtitle_raster::{
+    AttachedFontLimits, FontLookupCacheLimits, RasterCacheLimits, RasterInputLimits, RasterLimits,
+};
 use subtitle_sidecar::SidecarSearchLimits;
 
 /// Байтов в мегабайте конфига (МБ = МиБ, как в прежней константе «8 МиБ»).
@@ -31,6 +33,18 @@ const RASTER_SHAPER_FACES: usize = 16;
 /// Максимальная сторона холста: заведомо больше любого реального экрана. Защита от
 /// мусорного размера картинки, а не пользовательская настройка.
 const RASTER_MAX_CANVAS_SIDE: u32 = 8_192;
+
+/// Сколько лиц суммарно принимает библиотека шрифтов из вложений одного видео. Защита от
+/// коллекций `.ttc` с тысячами лиц: размер файла лимитирован конфигом, а число лиц — нет,
+/// поэтому это инвариант реализации, а не пользовательская настройка.
+const ATTACHED_FONT_MAX_FACES: usize = 256;
+
+/// Худший случай UTF-8: байт на один символ (для предела размера пакета).
+const MAX_BYTES_PER_CHAR: usize = 4;
+
+/// Запас пакета на служебные поля: девять полей строки ASS, блоки `styl` mov_text, теги
+/// разметки. Если текст пакета и так укладывается в `max_chars`, лишнее отсечёт второй предел.
+const EMBEDDED_PAYLOAD_OVERHEAD_BYTES: usize = 4_096;
 
 /// Бюджет одной растеризации на потоке UI. Растеризация идёт синхронно перед рендером и
 /// только при смене реплик/холста/стиля; дольше бюджета — `tracing::warn` (без текста реплик),
@@ -77,6 +91,54 @@ impl LoadLimits {
             },
         }
     }
+}
+
+/// Лимиты встроенных дорожек: вложенные шрифты и время показа реплики без длительности.
+///
+/// Строится из конфига в момент, когда владелец начинает работать с новым media; смена
+/// настроек во время воспроизведения действует со следующего media.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EmbeddedLimits {
+    /// Лимиты регистрации вложенных шрифтов в растеризатор.
+    pub(super) attached_fonts: AttachedFontLimits,
+    /// Сколько показывать реплику встроенной дорожки, у которой в пакете нет длительности.
+    pub(super) cue_max_open_duration: Duration,
+    /// Пределы разбора одного пакета (защита от враждебных пакетов).
+    pub(super) cue_parse: EmbeddedCueLimits,
+    /// Сколько реплик хранит кэш одной встроенной дорожки (`max_cues_per_file`).
+    pub(super) max_cues_per_track: usize,
+}
+
+impl EmbeddedLimits {
+    /// Строит лимиты из конфига; поля уже проверены `validate()`.
+    pub(super) fn from_config(config: &SubtitlesConfig) -> Self {
+        Self {
+            attached_fonts: AttachedFontLimits {
+                max_font_bytes: megabytes_to_bytes(config.max_attached_font_mb),
+                max_total_bytes: megabytes_to_bytes(config.max_attached_fonts_total_mb),
+                max_faces: ATTACHED_FONT_MAX_FACES,
+            },
+            cue_max_open_duration: Duration::from_millis(u64::from(
+                config.embedded_cue_max_open_duration_ms,
+            )),
+            cue_parse: embedded_cue_limits(widen(config.max_chars_per_cue)),
+            max_cues_per_track: widen(config.max_cues_per_file),
+        }
+    }
+}
+
+/// Пределы разбора пакета: символы — из конфига, байты — с запасом на кодировку и служебные
+/// поля (UTF-8 до 4 байт на символ; ASS-строка и `styl` mov_text добавляют свою разметку).
+fn embedded_cue_limits(max_chars: usize) -> EmbeddedCueLimits {
+    let max_payload_bytes = max_chars
+        .saturating_mul(MAX_BYTES_PER_CHAR)
+        .saturating_add(EMBEDDED_PAYLOAD_OVERHEAD_BYTES);
+    EmbeddedCueLimits::new(max_payload_bytes, max_chars)
+}
+
+/// Мегабайты конфига -> байты (насыщающее умножение, без паники).
+fn megabytes_to_bytes(megabytes: u16) -> usize {
+    usize::from(megabytes).saturating_mul(BYTES_PER_MEGABYTE)
 }
 
 /// Лимиты растеризатора из конфига. Действуют с создания растеризатора (см.
@@ -142,5 +204,47 @@ mod tests {
         let raster = raster_limits_from_config(&config);
         assert_eq!(raster.cache.cue_bitmaps_bytes, 4 * 1024 * 1024);
         assert_eq!(raster.input.max_cues_per_frame, 2);
+    }
+
+    #[test]
+    fn default_config_gives_former_attachment_limits_and_cue_duration() {
+        let limits = EmbeddedLimits::from_config(&SubtitlesConfig::default());
+
+        assert_eq!(limits.attached_fonts.max_font_bytes, 20 * 1024 * 1024);
+        assert_eq!(limits.attached_fonts.max_total_bytes, 100 * 1024 * 1024);
+        assert_eq!(limits.attached_fonts.max_faces, ATTACHED_FONT_MAX_FACES);
+        assert_eq!(limits.cue_max_open_duration, Duration::from_millis(5_000));
+        assert_eq!(limits.cue_parse.max_chars, 2_000);
+        assert_eq!(limits.cue_parse.max_payload_bytes, 2_000 * 4 + 4_096);
+        assert_eq!(limits.max_cues_per_track, 100_000);
+    }
+
+    #[test]
+    fn changed_embedded_config_values_reach_the_limits() {
+        let config = SubtitlesConfig {
+            max_attached_font_mb: 2,
+            max_attached_fonts_total_mb: 6,
+            embedded_cue_max_open_duration_ms: 1_500,
+            ..SubtitlesConfig::default()
+        };
+
+        let limits = EmbeddedLimits::from_config(&config);
+
+        assert_eq!(limits.attached_fonts.max_font_bytes, 2 * 1024 * 1024);
+        assert_eq!(limits.attached_fonts.max_total_bytes, 6 * 1024 * 1024);
+        assert_eq!(limits.cue_max_open_duration, Duration::from_millis(1_500));
+    }
+
+    #[test]
+    fn embedded_limits_do_not_touch_file_loading_limits() {
+        let config = SubtitlesConfig {
+            max_attached_font_mb: 2,
+            ..SubtitlesConfig::default()
+        };
+
+        assert_eq!(
+            LoadLimits::from_config(&config),
+            LoadLimits::from_config(&SubtitlesConfig::default())
+        );
     }
 }

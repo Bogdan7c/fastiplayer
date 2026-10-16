@@ -6,15 +6,21 @@
 
 #![forbid(unsafe_code)]
 
+mod attachment;
 mod demux;
 mod dynamic_timeline;
 mod metadata;
 mod packet;
 mod presentation_window;
 mod seek_cancellation;
+pub mod subtitle_codec;
 mod time;
 mod track;
+mod track_labels;
 
+pub use attachment::{
+    MediaAttachment, MediaAttachments, SkippedAttachment, SkippedAttachmentReason,
+};
 pub use demux::{
     DemuxActiveReadInterrupter, DemuxActiveReadInterruptionCapability,
     DemuxActiveReadInterruptionPort, DemuxActiveReadInterruptionReason,
@@ -47,3 +53,4 @@ pub use time::{
     TrackTimestamp, TrackTimestampUnits,
 };
 pub use track::{TrackId, TrackInfo, TrackKind, VideoPacketFraming, VideoTrackMetadata};
+pub use track_labels::{TrackDisposition, TrackLabels, TrackLanguage};

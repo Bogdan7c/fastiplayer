@@ -39,6 +39,7 @@ impl NeverReadyVideoDemuxer {
                 sample_rate: None,
                 channels: None,
                 video: Some(media_core::VideoTrackMetadata::empty()),
+                labels: media_core::TrackLabels::default(),
             }],
         }
     }

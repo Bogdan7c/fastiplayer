@@ -40,6 +40,7 @@ fn playback_window_identity_wraps_reopen_request_without_source_specific_types()
         path: PathBuf::from("fixture.flac"),
         expected_fingerprint: None,
         demux_config: fastiplayer_config::PlayerDemuxConfig::default(),
+        attachment_limits: media_source_open::local_media::AttachmentReadLimits::default(),
     });
 
     assert_eq!(source.playback_window(), Some(semantic_identity));

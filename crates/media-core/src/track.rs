@@ -6,7 +6,7 @@ use codec_core::{
     BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation, VideoProfile,
 };
 
-use crate::TimeBase;
+use crate::{TimeBase, TrackLabels};
 
 /// Идентификатор media-трека внутри текущего контейнера или stream manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -47,7 +47,7 @@ impl From<TrackId> for u32 {
     }
 }
 
-/// Тип media-трека, поддерживаемый текущим MVP.
+/// Тип media-трека.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TrackKind {
     /// Видеотрек.
@@ -55,6 +55,9 @@ pub enum TrackKind {
 
     /// Аудиотрек.
     Audio,
+
+    /// Дорожка субтитров: пакеты идут мимо декодеров и никогда не являются timing/seek-якорем.
+    Subtitle,
 }
 
 /// Доказанный способ framing-а compressed video packets на demux boundary.
@@ -83,7 +86,7 @@ pub struct TrackInfo {
     /// Уникальный идентификатор трека внутри текущего media source.
     pub id: TrackId,
 
-    /// Тип трека: video или audio.
+    /// Тип трека: video, audio или subtitle.
     pub kind: TrackKind,
 
     /// Контейнерный codec id: например, `V_VP9` или `A_OPUS`.
@@ -106,6 +109,9 @@ pub struct TrackInfo {
 
     /// Container-level video metadata, если demuxer смог получить её до decode.
     pub video: Option<VideoTrackMetadata>,
+
+    /// Язык, название и флаги назначения дорожки (для всех видов дорожек).
+    pub labels: TrackLabels,
 }
 
 /// Container metadata видеотрека без backend-specific ресурсов.

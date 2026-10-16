@@ -24,6 +24,7 @@ mod seek_state;
 mod session;
 mod snapshot;
 mod state;
+mod subtitle_feed;
 mod worker;
 mod worker_scheduler;
 
@@ -145,6 +146,10 @@ pub use snapshot::{
     TrackSummarySnapshot, VideoFrameSnapshot,
 };
 pub use state::PlaybackState;
+pub use subtitle_feed::{
+    SubtitleFeedCapacity, SubtitleFeedMediaStart, SubtitleFeedMessage, SubtitleFeedPacket,
+    SubtitleFeedReceiver,
+};
 pub use worker::{
     MediaInstallControlReceipt, MediaInstallControlReceiptError, PlayerCommandSender,
     PlayerRenderError, PlayerRenderErrorKind, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,

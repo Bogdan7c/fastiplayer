@@ -55,7 +55,7 @@ pub(super) fn menu_track(
         id: SubtitleTrackId::new(raw_id),
         label: SubtitleTrackLabel {
             language: language.map(|tag| SubtitleLanguage::parse(tag).expect("valid test tag")),
-            format: SubtitleFormat::Srt,
+            format: Some(SubtitleFormat::Srt),
             origin: SubtitleFileOrigin::NextToVideo,
             is_forced: false,
             is_hearing_impaired: false,

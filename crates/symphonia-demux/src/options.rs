@@ -1,6 +1,8 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+use crate::attachments::AttachmentReadLimits;
+
 /// Дефолтный лимит recoverable corrupted packets до fatal ошибки.
 ///
 /// Structural ошибки `FormatReader::next_packet()` в Symphonia не относятся к
@@ -40,6 +42,9 @@ pub struct DemuxerOptions {
 
     /// Сколько packets после seek можно prebuffer-нуть для проверки selected video track.
     decode_point_before_verification_packet_limit: usize,
+
+    /// Лимиты чтения вложений контейнера (шрифты MKV) в память.
+    attachment_read_limits: AttachmentReadLimits,
 }
 
 impl DemuxerOptions {
@@ -53,6 +58,7 @@ impl DemuxerOptions {
                 DEFAULT_DECODE_POINT_BEFORE_MAX_ACCEPTED_PREROLL,
             decode_point_before_verification_packet_limit:
                 DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
+            attachment_read_limits: AttachmentReadLimits::DEFAULT,
         }
     }
 
@@ -87,6 +93,22 @@ impl DemuxerOptions {
     #[must_use]
     pub const fn decode_point_before_verification_packet_limit(self) -> usize {
         self.decode_point_before_verification_packet_limit
+    }
+
+    /// Возвращает лимиты чтения вложений контейнера.
+    #[must_use]
+    pub const fn attachment_read_limits(self) -> AttachmentReadLimits {
+        self.attachment_read_limits
+    }
+
+    /// Задаёт лимиты чтения вложений контейнера без изменения остальных demux options.
+    #[must_use]
+    pub const fn with_attachment_read_limits(
+        mut self,
+        attachment_read_limits: AttachmentReadLimits,
+    ) -> Self {
+        self.attachment_read_limits = attachment_read_limits;
+        self
     }
 
     /// Задаёт pre-roll окно для `DecodePointBefore` без изменения остальных demux options.
@@ -137,6 +159,7 @@ impl Default for DemuxerOptions {
                 DEFAULT_DECODE_POINT_BEFORE_MAX_ACCEPTED_PREROLL,
             decode_point_before_verification_packet_limit:
                 DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
+            attachment_read_limits: AttachmentReadLimits::default(),
         }
     }
 }

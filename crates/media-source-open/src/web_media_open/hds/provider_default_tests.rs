@@ -557,6 +557,7 @@ fn assert_av_tracks_and_packets(demuxer: &mut dyn Demuxer) {
             DemuxReadEvent::Packet(packet) => match packet.kind {
                 TrackKind::Video => video_packet_seen = true,
                 TrackKind::Audio => audio_packet_seen = true,
+                TrackKind::Subtitle => unreachable!("F4F fixture has no subtitle tracks"),
             },
             DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => break,

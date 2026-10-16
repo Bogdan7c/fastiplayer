@@ -248,6 +248,7 @@ dash-mpd-core = { version = "0.1.0-alpha.1", path = "crates/dash-mpd-core" }
 smooth-streaming-manifest-core = { version = "0.1.0-alpha.1", path = "crates/smooth-streaming-manifest-core" }
 smooth-streaming-fmp4 = { version = "0.1.0-alpha.1", path = "crates/smooth-streaming-fmp4" }
 symphonia-format-isomp4 = "0.6"
+symphonia-format-mkv = "0.6"
 web-media-smooth = { version = "0.1.0-alpha.1", path = "crates/web-media-smooth" }
 web-media-dash = { version = "0.1.0-alpha.1", path = "crates/web-media-dash" }
 settings-core = { version = "0.1.0-alpha.1", path = "crates/settings-core" }

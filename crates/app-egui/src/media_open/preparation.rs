@@ -28,11 +28,13 @@ pub(super) fn prepare_source(
             path,
             expected_fingerprint,
             demux_config,
+            attachment_limits,
         } => {
             let safe_label = SafeMediaLabel::from_local_path(&path);
             super::local::prepare_local_open(
                 &path,
                 &demux_config,
+                attachment_limits,
                 expected_fingerprint,
                 cancellation.source_token(),
                 || cancellation.is_cancelled(),

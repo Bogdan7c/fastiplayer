@@ -683,6 +683,7 @@ mod tests {
             sample_rate: None,
             channels: None,
             video: None,
+            labels: media_core::TrackLabels::default(),
         }
     }
 
@@ -699,6 +700,7 @@ mod tests {
 
         let audio_topology = TrackInfo {
             kind: TrackKind::Audio,
+            labels: media_core::TrackLabels::default(),
             ..video_track(1, "aac", None)
         };
         assert!(stabilize_tracks(&stable, &[audio_topology]).is_err());

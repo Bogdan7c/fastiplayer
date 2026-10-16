@@ -13,60 +13,85 @@
 
 use std::path::Path;
 
+use media_core::TrackId;
+use player_core::TrackSummarySnapshot;
 use subtitle_core::{SubtitleSyncOffset, SubtitleTrackId};
 use subtitle_sidecar::{SidecarLocation, SidecarSubtitleCandidate};
 
 use super::active_track::ActiveSubtitleTrack;
-use super::auto_select::TrackTraits;
+use super::auto_select::{TrackOrigin, TrackTraits};
+use super::embedded_track::EmbeddedTrackDescription;
 use super::menu_view::{
     SubtitleFileOrigin, SubtitleTrackAvailability, SubtitleTrackLabel, SubtitleUnavailableReason,
 };
 use super::sidecar_job::SubtitleLoadFailure;
 
-/// Описание дорожки: то, что известно без чтения содержимого файла.
+/// Описание дорожки: то, что известно без чтения содержимого.
 ///
-/// Хранит кандидата целиком: из него же задача загрузки получает путь и подсказки языка.
+/// Либо файл (кандидат целиком: из него задача загрузки берёт путь и подсказки языка), либо
+/// дорожка контейнера (идентификатор плеера и метки).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct TrackDescription {
-    candidate: SidecarSubtitleCandidate,
+pub(super) enum TrackDescription {
+    /// Файл рядом с видео либо добавленный пользователем.
+    Sidecar(SidecarSubtitleCandidate),
+    /// Дорожка внутри контейнера видео.
+    Embedded(EmbeddedTrackDescription),
 }
 
 impl TrackDescription {
-    fn from_candidate(candidate: &SidecarSubtitleCandidate) -> Self {
-        Self {
-            candidate: candidate.clone(),
+    /// Кандидат-файл для задачи загрузки; у встроенной дорожки файла нет.
+    pub(super) fn sidecar_candidate(&self) -> Option<&SidecarSubtitleCandidate> {
+        match self {
+            Self::Sidecar(candidate) => Some(candidate),
+            Self::Embedded(_) => None,
         }
     }
 
-    /// Кандидат для задачи загрузки.
-    pub(super) fn candidate(&self) -> &SidecarSubtitleCandidate {
-        &self.candidate
+    /// Описание встроенной дорожки; у файла его нет.
+    pub(super) fn embedded(&self) -> Option<&EmbeddedTrackDescription> {
+        match self {
+            Self::Embedded(description) => Some(description),
+            Self::Sidecar(_) => None,
+        }
     }
 
-    /// Файл добавлен пользователем или найден рядом.
+    /// Файл добавлен пользователем, найден рядом или дорожка встроена.
     fn origin(&self) -> SubtitleFileOrigin {
-        match self.candidate.location {
-            SidecarLocation::ChosenByUser => SubtitleFileOrigin::ChosenByUser,
-            SidecarLocation::VideoDirectory
-            | SidecarLocation::SubtitleDirectory
-            | SidecarLocation::MovieNamedDirectory => SubtitleFileOrigin::NextToVideo,
+        match self {
+            Self::Sidecar(candidate) => match candidate.location {
+                SidecarLocation::ChosenByUser => SubtitleFileOrigin::ChosenByUser,
+                SidecarLocation::VideoDirectory
+                | SidecarLocation::SubtitleDirectory
+                | SidecarLocation::MovieNamedDirectory => SubtitleFileOrigin::NextToVideo,
+            },
+            Self::Embedded(_) => SubtitleFileOrigin::Embedded,
         }
     }
 
     /// Части подписи для меню.
     fn label(&self) -> SubtitleTrackLabel {
-        SubtitleTrackLabel {
-            language: self.candidate.language.clone(),
-            format: self.candidate.format.to_subtitle_format(),
-            origin: self.origin(),
-            is_forced: self.candidate.disposition.is_forced,
-            is_hearing_impaired: self.candidate.is_hearing_impaired,
-            title: self.candidate.title.clone(),
-            file_name: self
-                .candidate
-                .path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned()),
+        match self {
+            Self::Embedded(description) => description.label(),
+            Self::Sidecar(candidate) => SubtitleTrackLabel {
+                language: candidate.language.clone(),
+                format: Some(candidate.format.to_subtitle_format()),
+                origin: self.origin(),
+                is_forced: candidate.disposition.is_forced,
+                is_hearing_impaired: candidate.is_hearing_impaired,
+                title: candidate.title.clone(),
+                file_name: candidate
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+            },
+        }
+    }
+
+    /// Формат можно показать уже сейчас.
+    fn is_renderable_now(&self) -> bool {
+        match self {
+            Self::Sidecar(candidate) => candidate.format.is_renderable_now(),
+            Self::Embedded(description) => description.is_renderable_now(),
         }
     }
 }
@@ -74,7 +99,8 @@ impl TrackDescription {
 /// Причина недоступности для UI (без внутренних типов и путей).
 fn unavailable_reason_view(failure: &SubtitleLoadFailure) -> SubtitleUnavailableReason {
     match failure {
-        SubtitleLoadFailure::FormatNotSupportedYet { .. } => {
+        SubtitleLoadFailure::FormatNotSupportedYet { .. }
+        | SubtitleLoadFailure::EmbeddedCodecNotSupportedYet => {
             SubtitleUnavailableReason::FormatNotSupportedYet
         }
         other => SubtitleUnavailableReason::LoadFailed(other.to_string()),
@@ -108,7 +134,7 @@ impl TrackEntry {
 
     /// Формат можно показать уже сейчас.
     fn is_renderable_now(&self) -> bool {
-        self.description.candidate.format.is_renderable_now()
+        self.description.is_renderable_now()
     }
 
     /// Доступность для меню.
@@ -126,6 +152,29 @@ impl TrackEntry {
     /// Подпись для меню.
     pub(super) fn label(&self) -> SubtitleTrackLabel {
         self.description.label()
+    }
+
+    /// Признаки для автовыбора.
+    fn traits(&self) -> TrackTraits<'_> {
+        let is_renderable = self.is_renderable_now() && self.is_selectable();
+        match &self.description {
+            TrackDescription::Sidecar(candidate) => TrackTraits {
+                origin: TrackOrigin::Sidecar,
+                is_default: false,
+                language: candidate.language.as_ref(),
+                is_forced: candidate.disposition.is_forced,
+                is_hearing_impaired: candidate.is_hearing_impaired,
+                is_renderable,
+            },
+            TrackDescription::Embedded(description) => TrackTraits {
+                origin: TrackOrigin::Embedded,
+                is_default: description.is_default(),
+                language: description.language(),
+                is_forced: description.is_forced(),
+                is_hearing_impaired: description.is_hearing_impaired(),
+                is_renderable,
+            },
+        }
     }
 }
 
@@ -171,7 +220,11 @@ impl SubtitleTrackList {
     pub(super) fn allow_retry_after_failure(&mut self, id: SubtitleTrackId) {
         if let Some(entry) = self.get_mut(id)
             && matches!(&entry.load, TrackLoadState::Unavailable(failure)
-                if !matches!(failure, SubtitleLoadFailure::FormatNotSupportedYet { .. }))
+            if !matches!(
+                failure,
+                SubtitleLoadFailure::FormatNotSupportedYet { .. }
+                    | SubtitleLoadFailure::EmbeddedCodecNotSupportedYet
+            ))
         {
             entry.load = TrackLoadState::NotLoaded;
         }
@@ -181,7 +234,12 @@ impl SubtitleTrackList {
     pub(super) fn find_by_path(&self, path: &Path) -> Option<SubtitleTrackId> {
         self.entries
             .iter()
-            .find(|entry| entry.description.candidate.path == path)
+            .find(|entry| {
+                entry
+                    .description
+                    .sidecar_candidate()
+                    .is_some_and(|candidate| candidate.path == path)
+            })
             .map(|entry| entry.id)
     }
 
@@ -193,17 +251,25 @@ impl SubtitleTrackList {
 
     /// Состояние новой дорожки: непоказываемый формат сразу недоступен с причиной.
     fn initial_state_of(description: &TrackDescription) -> TrackLoadState {
-        if description.candidate.format.is_renderable_now() {
-            TrackLoadState::NotLoaded
-        } else {
-            TrackLoadState::Unavailable(SubtitleLoadFailure::FormatNotSupportedYet {
-                format: description.candidate.format,
-            })
+        match description {
+            TrackDescription::Sidecar(candidate) if candidate.format.is_renderable_now() => {
+                TrackLoadState::NotLoaded
+            }
+            TrackDescription::Sidecar(candidate) => {
+                TrackLoadState::Unavailable(SubtitleLoadFailure::FormatNotSupportedYet {
+                    format: candidate.format,
+                })
+            }
+            // Встроенная дорожка готовится владельцем (`Ready` с пустым таймлайном) либо
+            // сразу недоступна: файла, который можно «прочитать позже», у неё нет.
+            TrackDescription::Embedded(_) => {
+                TrackLoadState::Unavailable(SubtitleLoadFailure::EmbeddedCodecNotSupportedYet)
+            }
         }
     }
 
     fn make_entry(&mut self, candidate: &SidecarSubtitleCandidate) -> TrackEntry {
-        let description = TrackDescription::from_candidate(candidate);
+        let description = TrackDescription::Sidecar(candidate.clone());
         TrackEntry {
             id: self.allocate_id(),
             load: Self::initial_state_of(&description),
@@ -237,15 +303,87 @@ impl SubtitleTrackList {
 
     /// Признаки дорожек для автовыбора (в порядке списка).
     pub(super) fn traits(&self) -> Vec<TrackTraits<'_>> {
+        self.entries.iter().map(|entry| entry.traits()).collect()
+    }
+
+    /// Список встроенных дорожек совпадает со строками снимка плеера (без аллокаций).
+    ///
+    /// Владелец вызывает его на каждом снимке и перестраивает список только при `false`.
+    pub(super) fn embedded_matches_snapshot<'a>(
+        &self,
+        subtitle_rows: impl IntoIterator<Item = &'a TrackSummarySnapshot>,
+    ) -> bool {
+        let mut embedded = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.description.embedded());
+        for row in subtitle_rows {
+            match embedded.next() {
+                Some(description) if description.matches_snapshot(row) => {}
+                _ => return false,
+            }
+        }
+        embedded.next().is_none()
+    }
+
+    /// Дорожка списка по идентификатору дорожки плеера.
+    pub(super) fn find_embedded(&self, player_track_id: TrackId) -> Option<SubtitleTrackId> {
         self.entries
             .iter()
-            .map(|entry| TrackTraits {
-                language: entry.description.candidate.language.as_ref(),
-                is_forced: entry.description.candidate.disposition.is_forced,
-                is_hearing_impaired: entry.description.candidate.is_hearing_impaired,
-                is_renderable: entry.is_renderable_now() && entry.is_selectable(),
+            .find(|entry| {
+                entry
+                    .description
+                    .embedded()
+                    .is_some_and(|description| description.player_track_id() == player_track_id)
             })
-            .collect()
+            .map(|entry| entry.id)
+    }
+
+    /// Выдаёт новый идентификатор и добавляет в КОНЕЦ списка встроенную дорожку с заданным
+    /// начальным состоянием (владелец решает: пустой таймлайн или «не поддержано»).
+    pub(super) fn push_embedded(
+        &mut self,
+        description: EmbeddedTrackDescription,
+        load: TrackLoadState,
+    ) -> SubtitleTrackId {
+        let id = self.allocate_id();
+        self.entries.push(TrackEntry {
+            id,
+            description: TrackDescription::Embedded(description),
+            load,
+        });
+        id
+    }
+
+    /// Обновляет описание встроенной дорожки на месте (метки изменились, кодек прежний).
+    pub(super) fn replace_embedded_description(
+        &mut self,
+        id: SubtitleTrackId,
+        description: EmbeddedTrackDescription,
+    ) {
+        if let Some(entry) = self.get_mut(id) {
+            entry.description = TrackDescription::Embedded(description);
+        }
+    }
+
+    /// Убирает встроенные дорожки, которых больше нет в снимке (смена набора дорожек).
+    /// Возвращает убранные идентификаторы.
+    pub(super) fn retain_embedded(
+        &mut self,
+        keep: impl Fn(TrackId) -> bool,
+    ) -> Vec<SubtitleTrackId> {
+        let mut removed = Vec::new();
+        self.entries.retain(|entry| {
+            let keep_entry = entry
+                .description
+                .embedded()
+                .is_none_or(|description| keep(description.player_track_id()));
+            if !keep_entry {
+                removed.push(entry.id);
+            }
+            keep_entry
+        });
+        removed
     }
 
     /// Применяет общий сдвиг ко всем уже загруженным дорожкам.

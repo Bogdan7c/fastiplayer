@@ -506,6 +506,14 @@ impl PlaybackPipeline {
         self.media_metadata = media_metadata;
     }
 
+    /// Забирает вложения контейнера у demuxer-а (один раз); без demuxer-а — пусто.
+    pub(crate) fn take_media_attachments(&mut self) -> media_core::MediaAttachments {
+        self.demuxer
+            .as_mut()
+            .map(|demuxer| demuxer.take_attachments())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn media_source_info(&self) -> Option<&crate::MediaSourceInfo> {
         self.media_source_info.as_ref()
     }

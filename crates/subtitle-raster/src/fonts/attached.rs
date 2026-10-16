@@ -1,6 +1,15 @@
 //! Вложенные шрифты (например, из вложений MKV): лимиты, ошибки и разбор.
 //!
-//! Извлечение шрифтов из контейнера — не здесь (сессия 06); библиотека принимает готовые байты.
+//! Извлечение шрифтов из контейнера — не здесь; библиотека принимает готовые байты.
+//!
+//! Жизненный цикл разделён на две фазы:
+//! 1. ТЯЖЁЛАЯ ([`PreparedAttachedFont::prepare`], [`PreparedAttachedFonts::prepare`]): проверка
+//!    лимита файла, разбор лиц через `fontdb` и `skrifa`. Не трогает библиотеку, результат
+//!    `Send` — выполняется вне UI-потока.
+//! 2. ДЕШЁВАЯ (`install_*` у библиотеки и растеризатора): дедупликация, суммарные лимиты и
+//!    добавление уже разобранных лиц. Ничего не парсит.
+//!
+//! Снять все вложенные шрифты (смена видео) можно через `clear_attached_fonts`.
 
 use std::sync::Arc;
 
@@ -79,6 +88,121 @@ pub struct AttachedFontRegistration {
     pub status: AttachedFontStatus,
     /// Лица файла в библиотеке (для `.ttc` — все лица коллекции), не пусто.
     pub faces: Vec<FaceId>,
+}
+
+/// Исход снятия всех вложенных шрифтов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachedFontsClearOutcome {
+    /// Вложенные шрифты были и сняты; зависящие от набора шрифтов кэши надо сбросить.
+    Cleared {
+        /// Сколько лиц снято.
+        faces: usize,
+        /// Сколько байт файлов освобождено.
+        bytes: usize,
+    },
+    /// Вложенных шрифтов не было: ничего не изменилось, кэши сбрасывать не нужно.
+    NothingAttached,
+}
+
+/// Файл, отвергнутый на одной из фаз пакетной подготовки/установки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RejectedAttachedFont {
+    /// Номер файла во входном списке [`PreparedAttachedFonts::prepare`].
+    pub input_index: usize,
+    /// Причина отказа.
+    pub error: AttachedFontError,
+}
+
+/// Итог пакетной установки подготовленных шрифтов.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachedFontsInstallReport {
+    /// Сколько файлов добавлено в библиотеку.
+    pub registered: usize,
+    /// Сколько файлов уже были зарегистрированы (библиотека от них не менялась).
+    pub already_registered: usize,
+    /// Отказы подготовки и установки, в порядке входных файлов.
+    pub rejected: Vec<RejectedAttachedFont>,
+}
+
+/// Вложенный файл шрифта, разобранный вне библиотеки (тяжёлая фаза готова).
+///
+/// Содержит только байты и описания лиц, поэтому `Send + Sync`: готовится в фоне и
+/// передаётся в UI-поток для дешёвой установки.
+#[derive(Debug)]
+pub struct PreparedAttachedFont {
+    pub(super) bytes: Arc<[u8]>,
+    pub(super) faces: Vec<ParsedAttachedFace>,
+}
+
+impl PreparedAttachedFont {
+    /// Тяжёлая фаза: проверяет лимит одного файла и разбирает все лица. Суммарные лимиты и
+    /// дубликаты проверяются при установке — только библиотека знает, что уже принято.
+    pub fn prepare(
+        font_bytes: Arc<[u8]>,
+        limits: &AttachedFontLimits,
+    ) -> Result<Self, AttachedFontError> {
+        let faces = parse_attached_font(&font_bytes, limits)?;
+        Ok(Self {
+            bytes: font_bytes,
+            faces,
+        })
+    }
+
+    /// Размер файла в байтах.
+    pub fn byte_len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Сколько пригодных лиц нашлось в файле.
+    pub fn face_count(&self) -> usize {
+        self.faces.len()
+    }
+}
+
+/// Подготовленный пакет вложений одного media: принятые файлы и отказы тяжёлой фазы.
+#[derive(Debug, Default)]
+pub struct PreparedAttachedFonts {
+    /// Принятые файлы вместе с номером во входном списке.
+    pub(super) fonts: Vec<(usize, PreparedAttachedFont)>,
+    rejected: Vec<RejectedAttachedFont>,
+}
+
+impl PreparedAttachedFonts {
+    /// Тяжёлая фаза для набора файлов; плохой файл не мешает остальным.
+    pub fn prepare(
+        files: impl IntoIterator<Item = Arc<[u8]>>,
+        limits: &AttachedFontLimits,
+    ) -> Self {
+        let mut batch = Self::default();
+        for (input_index, bytes) in files.into_iter().enumerate() {
+            match PreparedAttachedFont::prepare(bytes, limits) {
+                Ok(font) => batch.fonts.push((input_index, font)),
+                Err(error) => batch
+                    .rejected
+                    .push(RejectedAttachedFont { input_index, error }),
+            }
+        }
+        batch
+    }
+
+    /// Файлы, отвергнутые тяжёлой фазой.
+    pub fn rejected(&self) -> &[RejectedAttachedFont] {
+        &self.rejected
+    }
+
+    /// Сколько файлов подготовлено к установке.
+    pub fn prepared_count(&self) -> usize {
+        self.fonts.len()
+    }
+
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        Vec<(usize, PreparedAttachedFont)>,
+        Vec<RejectedAttachedFont>,
+    ) {
+        (self.fonts, self.rejected)
+    }
 }
 
 /// Лицо вложенного шрифта, разобранное до изменения библиотеки.
@@ -190,6 +314,16 @@ impl AttachedRegistry {
         self.total_bytes = self.total_bytes.saturating_add(bytes.len());
         self.total_faces = self.total_faces.saturating_add(faces.len());
         self.files.push(RegisteredFile { bytes, faces });
+    }
+
+    /// Забывает все файлы и возвращает лица, которые надо снять с библиотеки.
+    pub(super) fn take_all(&mut self) -> (Vec<FaceId>, usize) {
+        let faces: Vec<FaceId> = self.all_faces().collect();
+        let bytes = self.total_bytes;
+        self.files.clear();
+        self.total_bytes = 0;
+        self.total_faces = 0;
+        (faces, bytes)
     }
 
     /// Суммарный размер зарегистрированных файлов.

@@ -274,6 +274,7 @@ fn read_initial_old_pair_anchor(demuxer: &mut dyn Demuxer, stable_tracks: &[(Tra
     while !(saw_video_anchor && saw_audio_anchor) {
         match next_ready_event(demuxer).expect("initial old A/V anchor") {
             DemuxReadEvent::Packet(packet) => match packet.kind {
+                TrackKind::Subtitle => unreachable!("fixture has no subtitle tracks"),
                 TrackKind::Video => {
                     assert_eq!(packet.track_id, video_track_id);
                     assert!(packet.pts <= expected_anchor_pts);
@@ -307,6 +308,7 @@ fn assert_old_pair_tail_is_still_readable(
     while !(saw_video_tail && saw_audio_tail) {
         match next_ready_event(demuxer).expect("old A/V tail after cancelled candidate") {
             DemuxReadEvent::Packet(packet) => match packet.kind {
+                TrackKind::Subtitle => unreachable!("fixture has no subtitle tracks"),
                 TrackKind::Video => {
                     assert_eq!(packet.track_id, video_track_id);
                     if !saw_video_tail {

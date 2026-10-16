@@ -2,7 +2,10 @@
 
 use std::time::Duration;
 
-use subtitle_core::{SubtitleLanguage, SubtitleSyncOffset, SubtitleTime, SubtitleTimeline};
+use subtitle_core::{
+    SubtitleEvent, SubtitleLanguage, SubtitleSyncOffset, SubtitleTime, SubtitleTimeline,
+    TimelineBuildReport,
+};
 use subtitle_raster::CueSourceId;
 
 /// Дорожка, готовая к показу.
@@ -57,6 +60,18 @@ impl ActiveSubtitleTrack {
     /// Таймлайн реплик (только чтение).
     pub(super) fn timeline(&self) -> &SubtitleTimeline {
         &self.timeline
+    }
+
+    /// Дописывает реплики встроенной дорожки (пакеты приходят потоком, дорожка растёт).
+    ///
+    /// Идентификаторы событий — порядок вставки, поэтому добавление не меняет `CueKey`
+    /// уже растеризованных реплик. Дубликаты (после seek назад демуксер перечитывает те же
+    /// пакеты) таймлайн отбрасывает сам и считает в отчёте.
+    pub(super) fn append_events(
+        &mut self,
+        events: impl IntoIterator<Item = SubtitleEvent>,
+    ) -> TimelineBuildReport {
+        self.timeline.extend(events)
     }
 
     /// Время, по которому нужно искать реплики для кадра с данным `pts`.

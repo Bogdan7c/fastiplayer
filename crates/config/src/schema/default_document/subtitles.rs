@@ -74,12 +74,28 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
         "max_cues_on_screen",
         "# Сколько реплик максимум показывается одновременно.",
     ),
+    (
+        "max_attached_font_mb",
+        "# Вложенные в видео шрифты больше этого размера (МБ) не загружаются.",
+    ),
+    (
+        "max_attached_fonts_total_mb",
+        "# Сколько МБ вложенных шрифтов загружается из одного видео (не меньше лимита одного шрифта).",
+    ),
+    (
+        "embedded_feed_capacity",
+        "# Сколько пакетов встроенных субтитров ждёт интерфейс; лишние отбрасываются (действует при запуске плеера).",
+    ),
+    (
+        "embedded_cue_max_open_duration_ms",
+        "# Сколько мс показывается встроенная реплика без длительности.",
+    ),
 ];
 
 /// Добавляет комментарии перед ключами секции `[subtitles]`.
 ///
 /// Если секции нет (не должно случаться для документа из `AppConfig`), текст не меняется;
-/// золотой файл `current_schema_v14.toml` тогда провалит тест стабильности схемы.
+/// золотой файл `current_schema_v15.toml` тогда провалит тест стабильности схемы.
 pub(super) fn document_subtitles_defaults(toml_text: &mut String) {
     let Some(header_offset) = toml_text.find(&format!("\n{SUBTITLES_HEADER}\n")) else {
         return;

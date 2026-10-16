@@ -141,6 +141,7 @@ fn track(id: u32, kind: TrackKind, codec_id: &str, duration_ms: u64) -> TrackInf
         sample_rate: (kind == TrackKind::Audio).then_some(48_000),
         channels: (kind == TrackKind::Audio).then_some(2),
         video: None,
+        labels: media_core::TrackLabels::default(),
     }
 }
 

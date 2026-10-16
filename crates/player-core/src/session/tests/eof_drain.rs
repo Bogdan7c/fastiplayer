@@ -730,7 +730,7 @@ fn play_pause_toggle_pauses_eof_drain_audio_tail_without_replay_seek() {
     assert_eq!(audio_output.pause_count.load(Ordering::Relaxed), 1);
     assert!(session.seek_commit().is_none());
     assert!(!session.snapshot().timeline.seeking);
-    assert_eq!(seek_log.lock().expect("seek log lock").as_slice(), &[]);
+    assert!(seek_log.lock().expect("seek log lock").is_empty());
     assert!(session.snapshot().last_error.is_none());
 }
 

@@ -4,12 +4,15 @@
 
 use crate::{
     AppConfig, ConfigResult, HEX_COLOR_LEN, MAX_BACKGROUND_OPACITY_PERCENT,
-    MAX_FONT_LOOKUP_CACHE_CHARS, MAX_MAX_CHARS_PER_CUE, MAX_MAX_CUES_ON_SCREEN,
-    MAX_MAX_CUES_PER_FILE, MAX_MAX_FILE_SIZE_MB, MAX_POSITION_HORIZONTAL_PERCENT,
-    MAX_POSITION_VERTICAL_PERCENT, MAX_PREFERRED_LANGUAGE_COUNT, MAX_PREFERRED_LANGUAGES_LEN,
-    MAX_RENDER_CACHE_MB, MAX_SIDECAR_MAX_CANDIDATES, MAX_SIDECAR_MAX_ENTRIES_PER_FOLDER,
-    MAX_TEXT_SIZE_PERCENT, MIN_BACKGROUND_OPACITY_PERCENT, MIN_FONT_LOOKUP_CACHE_CHARS,
-    MIN_MAX_CHARS_PER_CUE, MIN_MAX_CUES_ON_SCREEN, MIN_MAX_CUES_PER_FILE, MIN_MAX_FILE_SIZE_MB,
+    MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS, MAX_EMBEDDED_FEED_CAPACITY, MAX_FONT_LOOKUP_CACHE_CHARS,
+    MAX_MAX_ATTACHED_FONT_MB, MAX_MAX_ATTACHED_FONTS_TOTAL_MB, MAX_MAX_CHARS_PER_CUE,
+    MAX_MAX_CUES_ON_SCREEN, MAX_MAX_CUES_PER_FILE, MAX_MAX_FILE_SIZE_MB,
+    MAX_POSITION_HORIZONTAL_PERCENT, MAX_POSITION_VERTICAL_PERCENT, MAX_PREFERRED_LANGUAGE_COUNT,
+    MAX_PREFERRED_LANGUAGES_LEN, MAX_RENDER_CACHE_MB, MAX_SIDECAR_MAX_CANDIDATES,
+    MAX_SIDECAR_MAX_ENTRIES_PER_FOLDER, MAX_TEXT_SIZE_PERCENT, MIN_BACKGROUND_OPACITY_PERCENT,
+    MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS, MIN_EMBEDDED_FEED_CAPACITY, MIN_FONT_LOOKUP_CACHE_CHARS,
+    MIN_MAX_ATTACHED_FONT_MB, MIN_MAX_ATTACHED_FONTS_TOTAL_MB, MIN_MAX_CHARS_PER_CUE,
+    MIN_MAX_CUES_ON_SCREEN, MIN_MAX_CUES_PER_FILE, MIN_MAX_FILE_SIZE_MB,
     MIN_POSITION_HORIZONTAL_PERCENT, MIN_POSITION_VERTICAL_PERCENT, MIN_RENDER_CACHE_MB,
     MIN_SIDECAR_MAX_CANDIDATES, MIN_SIDECAR_MAX_ENTRIES_PER_FOLDER, MIN_TEXT_SIZE_PERCENT,
     SubtitlesConfig,
@@ -111,6 +114,45 @@ fn validate_subtitle_limits(subtitles: &SubtitlesConfig) -> ConfigResult<()> {
         subtitles.max_cues_on_screen,
         MIN_MAX_CUES_ON_SCREEN,
         MAX_MAX_CUES_ON_SCREEN,
+    )?;
+    validate_embedded_track_limits(subtitles)
+}
+
+/// Лимиты встроенных дорожек: вложенные шрифты, труба пакетов и время показа реплики.
+fn validate_embedded_track_limits(subtitles: &SubtitlesConfig) -> ConfigResult<()> {
+    validate_u16_range(
+        "subtitles.max_attached_font_mb",
+        subtitles.max_attached_font_mb,
+        MIN_MAX_ATTACHED_FONT_MB,
+        MAX_MAX_ATTACHED_FONT_MB,
+    )?;
+    validate_u16_range(
+        "subtitles.max_attached_fonts_total_mb",
+        subtitles.max_attached_fonts_total_mb,
+        MIN_MAX_ATTACHED_FONTS_TOTAL_MB,
+        MAX_MAX_ATTACHED_FONTS_TOTAL_MB,
+    )?;
+    // Общий лимит меньше лимита одного вложения бессмысленен: ни одно вложение «до лимита» не влезло бы.
+    if subtitles.max_attached_fonts_total_mb < subtitles.max_attached_font_mb {
+        return Err(invalid_value(
+            "subtitles.max_attached_fonts_total_mb",
+            format!(
+                "the total limit must not be smaller than subtitles.max_attached_font_mb ({}); got {}",
+                subtitles.max_attached_font_mb, subtitles.max_attached_fonts_total_mb
+            ),
+        ));
+    }
+    validate_u32_range(
+        "subtitles.embedded_feed_capacity",
+        subtitles.embedded_feed_capacity,
+        MIN_EMBEDDED_FEED_CAPACITY,
+        MAX_EMBEDDED_FEED_CAPACITY,
+    )?;
+    validate_u32_range(
+        "subtitles.embedded_cue_max_open_duration_ms",
+        subtitles.embedded_cue_max_open_duration_ms,
+        MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
+        MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
     )
 }
 

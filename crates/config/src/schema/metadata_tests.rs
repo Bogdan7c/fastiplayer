@@ -127,6 +127,10 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "subtitles.font_lookup_cache_chars",
     "subtitles.max_chars_per_cue",
     "subtitles.max_cues_on_screen",
+    "subtitles.max_attached_font_mb",
+    "subtitles.max_attached_fonts_total_mb",
+    "subtitles.embedded_feed_capacity",
+    "subtitles.embedded_cue_max_open_duration_ms",
 ];
 
 #[test]
@@ -384,6 +388,30 @@ fn metadata_ranges_match_validation_constants() {
         "subtitles.max_cues_on_screen",
         crate::MIN_MAX_CUES_ON_SCREEN,
         crate::MAX_MAX_CUES_ON_SCREEN,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_attached_font_mb",
+        crate::MIN_MAX_ATTACHED_FONT_MB,
+        crate::MAX_MAX_ATTACHED_FONT_MB,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_attached_fonts_total_mb",
+        crate::MIN_MAX_ATTACHED_FONTS_TOTAL_MB,
+        crate::MAX_MAX_ATTACHED_FONTS_TOTAL_MB,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.embedded_feed_capacity",
+        crate::MIN_EMBEDDED_FEED_CAPACITY,
+        crate::MAX_EMBEDDED_FEED_CAPACITY,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.embedded_cue_max_open_duration_ms",
+        crate::MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
+        crate::MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
     );
     assert_text_len(
         &registry,

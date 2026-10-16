@@ -8,6 +8,7 @@
 //! в [`SubtitleParseReport`] — плохая реплика не должна ломать весь фильм.
 
 mod document;
+mod embedded;
 mod encoding;
 mod error;
 mod limits;
@@ -18,6 +19,10 @@ mod srt;
 mod webvtt;
 
 pub use document::ParsedSubtitleDocument;
+pub use embedded::{
+    EmbeddedCue, EmbeddedCueError, EmbeddedCueFormat, EmbeddedCueLimits, EmbeddedCueMalformation,
+    EmbeddedCueOutcome, parse_embedded_cue,
+};
 pub use encoding::{
     DecodedSubtitleText, DetectedSubtitleEncoding, LegacyEncodingHint, decode_subtitle_bytes,
 };

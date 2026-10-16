@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use render_core::{PictureLayout, PictureRect, PictureSize, RenderViewport, RenderableFrame};
 use subtitle_core::{SubtitleContent, SubtitleEventId, SubtitleLanguage};
 use subtitle_raster::{
-    CanvasSize, CueKey, CueSourceId, RasterLimits, RenderRequest, RenderableCue,
+    AttachedFontLimits, AttachedFontsClearOutcome, AttachedFontsInstallReport, CanvasSize, CueKey,
+    CueSourceId, PreparedAttachedFonts, RasterLimits, RenderRequest, RenderableCue,
     SubtitleAppearance, SubtitleFontLibrary, SubtitleOverlay, SubtitleRasterizer,
     TextLanguagePreference,
 };
@@ -211,6 +212,32 @@ impl SubtitlePresenter {
     pub(super) fn install_font_library(&mut self, fonts: SubtitleFontLibrary) {
         self.rasterizer = Some(SubtitleRasterizer::new(fonts, self.raster_limits));
         self.shown = None;
+    }
+
+    /// Дешёвая фаза установки вложенных шрифтов media. `None` — растеризатора ещё нет
+    /// (вызывающий держит подготовленные шрифты, пока он не появится). Показанный overlay
+    /// забывается: шрифт реплик мог измениться.
+    pub(super) fn install_attached_fonts(
+        &mut self,
+        prepared: PreparedAttachedFonts,
+        limits: &AttachedFontLimits,
+    ) -> Result<AttachedFontsInstallReport, PreparedAttachedFonts> {
+        let Some(rasterizer) = self.rasterizer.as_mut() else {
+            return Err(prepared);
+        };
+        let report = rasterizer.install_prepared_attached_fonts(prepared, limits);
+        self.shown = None;
+        Ok(report)
+    }
+
+    /// Снимает вложенные шрифты прежнего media (встроенные и системные не затрагиваются) и
+    /// забывает показанный overlay. Без растеризатора снимать нечего.
+    pub(super) fn clear_attached_fonts(&mut self) -> AttachedFontsClearOutcome {
+        self.shown = None;
+        match self.rasterizer.as_mut() {
+            Some(rasterizer) => rasterizer.clear_attached_fonts(),
+            None => AttachedFontsClearOutcome::NothingAttached,
+        }
     }
 
     /// Забывает показанный overlay (смена media или дорожки): следующий кадр с репликами

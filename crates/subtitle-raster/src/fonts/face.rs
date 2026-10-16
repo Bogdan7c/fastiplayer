@@ -70,6 +70,9 @@ pub(super) enum FaceSource {
     Static(&'static [u8]),
     /// Вложенный шрифт: байты уже в памяти.
     Attached(Arc<[u8]>),
+    /// Снятое вложенное лицо: байты освобождены, а запись осталась, чтобы `FaceId` не
+    /// переиспользовался (см. инвариант [`FaceId`]). Не выбирается и не отдаёт данных.
+    Detached,
     /// Системный шрифт: лежит на диске. Покрытие кодпоинтов посчитано при сканировании, так что
     /// поиск символа файл не открывает; файл читается целиком только когда лицо реально
     /// понадобилось для отрисовки ([`LoadedFace::materialize_bytes`]), причём байты общие на файл.
@@ -119,6 +122,18 @@ pub(super) struct FaceDataAccess<'a> {
 }
 
 impl LoadedFace {
+    /// Лицо снято (вложенный шрифт убран при смене media).
+    pub(super) fn is_detached(&self) -> bool {
+        matches!(self.source, FaceSource::Detached)
+    }
+
+    /// Превращает лицо в «надгробие»: освобождает байты и навсегда исключает из выбора.
+    pub(super) fn detach(&mut self) {
+        self.source = FaceSource::Detached;
+        self.family = String::new();
+        self.unusable = true;
+    }
+
     /// Выполняет `inspect` над разобранным `FontRef`, не копируя данные системных шрифтов.
     ///
     /// `None` — данные недоступны (файл исчез) или не разбираются как шрифт (второе считается
@@ -130,6 +145,7 @@ impl LoadedFace {
     ) -> Option<T> {
         let counters = access.counters;
         match &self.source {
+            FaceSource::Detached => None,
             FaceSource::Static(bytes) => {
                 parse_and_inspect(bytes, self.collection_index, counters, inspect)
             }
@@ -155,6 +171,7 @@ impl LoadedFace {
     /// вытеснено из кэша подготовленных лиц. `None` — файл не читается (причина в `tracing`).
     pub(super) fn materialize_bytes(&self, access: FaceDataAccess<'_>) -> Option<FaceBytes> {
         match &self.source {
+            FaceSource::Detached => None,
             FaceSource::Static(bytes) => Some(FaceBytes::Static(bytes)),
             FaceSource::Attached(bytes) => Some(FaceBytes::Shared(Arc::clone(bytes))),
             FaceSource::System {

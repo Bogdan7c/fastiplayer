@@ -310,6 +310,7 @@ fn validate_video_configuration(
             sample_rate: None,
             channels: None,
             video: Some(video),
+            labels: media_core::TrackLabels::default(),
         },
         video_codec: Some(codec),
     })
@@ -334,6 +335,7 @@ fn parse_aac_tag(payload: &Bytes) -> Result<CodecTagEvent, FlvDemuxError> {
                     sample_rate: Some(sample_rate),
                     channels: Some(channels),
                     video: None,
+                    labels: media_core::TrackLabels::default(),
                 },
                 video_codec: None,
             }))
@@ -417,6 +419,7 @@ pub(crate) fn legacy_audio_configuration(
             sample_rate: Some(rate),
             channels: Some(channels),
             video: None,
+            labels: media_core::TrackLabels::default(),
         },
         video_codec: None,
     }))

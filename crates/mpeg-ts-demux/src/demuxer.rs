@@ -601,6 +601,7 @@ impl MpegTsDemuxer {
                 metadata.packet_framing = VideoPacketFraming::AnnexB;
                 metadata
             }),
+            labels: media_core::TrackLabels::default(),
         })
     }
 

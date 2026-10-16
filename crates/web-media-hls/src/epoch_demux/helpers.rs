@@ -37,6 +37,7 @@ pub(super) fn event_encoded_bytes(event: &DemuxReadEvent) -> usize {
 pub(super) fn layout_ordinals(tracks: &[TrackInfo]) -> Vec<(TrackKind, usize)> {
     let mut video_index = 0;
     let mut audio_index = 0;
+    let mut subtitle_index = 0;
     tracks
         .iter()
         .map(|track| match track.kind {
@@ -49,6 +50,11 @@ pub(super) fn layout_ordinals(tracks: &[TrackInfo]) -> Vec<(TrackKind, usize)> {
                 let ordinal = audio_index;
                 audio_index += 1;
                 (TrackKind::Audio, ordinal)
+            }
+            TrackKind::Subtitle => {
+                let ordinal = subtitle_index;
+                subtitle_index += 1;
+                (TrackKind::Subtitle, ordinal)
             }
         })
         .collect()

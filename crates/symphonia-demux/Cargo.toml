@@ -16,6 +16,7 @@ demux-api = { workspace = true }
 codec-core = { workspace = true }
 source-core = { workspace = true }
 symphonia-format-isomp4.workspace = true
+symphonia-format-mkv.workspace = true
 
 [dev-dependencies]
 audio = { workspace = true }

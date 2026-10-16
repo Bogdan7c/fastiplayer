@@ -1747,6 +1747,7 @@ pub(super) fn fake_track(track_id: u32, kind: TrackKind) -> TrackInfo {
         codec_id: match kind {
             TrackKind::Video => "V_VP9".to_string(),
             TrackKind::Audio => "A_OPUS".to_string(),
+            TrackKind::Subtitle => media_core::subtitle_codec::TEXT_UTF8.to_string(),
         },
         codec_private: None,
         time_base: media_core::TimeBase::new(1, 1_000),
@@ -1754,6 +1755,7 @@ pub(super) fn fake_track(track_id: u32, kind: TrackKind) -> TrackInfo {
         sample_rate: (kind == TrackKind::Audio).then_some(48_000),
         channels: (kind == TrackKind::Audio).then_some(2),
         video: None,
+        labels: media_core::TrackLabels::default(),
     }
 }
 

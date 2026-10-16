@@ -83,6 +83,10 @@ impl PlayerSession {
         packet: &media_core::Packet,
         packet_generation: u64,
     ) {
+        // Субтитры не якорь seek и не должны попадать в post-seek диагностику.
+        if packet.kind == media_core::TrackKind::Subtitle {
+            return;
+        }
         let Some(seek_commit) = self.seek_runtime.active_commit() else {
             return;
         };

@@ -77,6 +77,8 @@ impl SeekTraceState {
             TrackKind::Video => {
                 increment_counter(&mut self.accurate_preroll_counters.demux_events.video_packets);
             }
+            // Субтитровые пакеты не участвуют в preroll-диагностике seek.
+            TrackKind::Subtitle => {}
         }
 
         if target_or_after_selected_video {

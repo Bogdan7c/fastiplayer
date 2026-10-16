@@ -107,6 +107,7 @@ pub(super) fn log_video_backlog_recovery_outcome(
         }
         DemuxPacketRouteOutcome::Queued
         | DemuxPacketRouteOutcome::DroppedSeekAudioPreroll
+        | DemuxPacketRouteOutcome::ForwardedSubtitlePacket
         | DemuxPacketRouteOutcome::StagedVideoBacklogRecoveryPacket => {}
     }
 }

@@ -578,6 +578,9 @@ impl StartupMediaController {
                 match crate::local_file_open::LocalFileOpenJob::spawn_preparation(
                     local_open.into_path(),
                     app_config.player.demux,
+                    media_source_open::local_media::attachment_read_limits_from_config(
+                        &app_config.subtitles,
+                    ),
                     self.wake_port.clone(),
                 ) {
                     Ok(job) => self.local_startup_job = Some(job),

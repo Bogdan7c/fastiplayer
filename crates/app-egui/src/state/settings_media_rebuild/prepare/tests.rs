@@ -129,6 +129,7 @@ fn missing_local_file_gives_the_human_rebuild_message() {
             source: RebuildSourceInput::LocalFile {
                 path: directory.path().join("no-such-clip.wav"),
                 demux: PlayerDemuxConfig::default(),
+                attachment_limits: media_source_open::local_media::AttachmentReadLimits::default(),
             },
             preferred_video_codecs: Vec::new(),
         },
@@ -152,6 +153,7 @@ fn real_local_file_is_prepared_in_the_background_job() {
         source: RebuildSourceInput::LocalFile {
             path: fixture.path().to_path_buf(),
             demux: PlayerDemuxConfig::default(),
+            attachment_limits: media_source_open::local_media::AttachmentReadLimits::default(),
         },
         preferred_video_codecs: Vec::new(),
     };

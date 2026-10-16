@@ -77,6 +77,8 @@ impl PlayerSession {
         } = prepared_media.into_pipeline_slots();
         self.pipeline
             .install_opened_media(demuxer, file_path, source_label, tracks);
+        // Вложения (шрифты) забираются один раз и раньше любых пакетов этого media.
+        self.announce_subtitle_feed_media_start(media_instance_id);
         self.pipeline.update_media_source_info(source_info);
         self.reset_session_state_for_staged_media_commit();
         debug_assert!(matches!(

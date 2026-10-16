@@ -94,9 +94,11 @@ impl SubtitleOwner {
     fn apply_discovery(&mut self, discovery: DiscoveryOutcome) {
         let DiscoveryOutcome {
             candidates,
-            selection,
             preloaded,
             fonts,
+            // Автовыбор задачи нужен только ей самой (чтобы решить, что прочитать); итоговый
+            // выбор считается заново над полным списком.
+            selection: _,
         } = discovery;
         self.install_fonts_if_needed(fonts);
         let Some(media) = self.media.as_mut() else {
@@ -107,10 +109,13 @@ impl SubtitleOwner {
 
         let track_ids = media.tracks.insert_discovered(&candidates);
         let id_of = |index: usize| track_ids.get(index).copied();
-        media.forced_fallback = selection.forced_fallback.and_then(id_of);
-        if !media.user_chose_track {
-            media.selected = selection.for_enabled.and_then(id_of);
-        }
+        // Автовыбор по всему списку (файлы + встроенные, которые могли появиться раньше поиска).
+        // Считается ДО применения прочитанной дорожки: нечитаемый файл остаётся выбранным и
+        // показывается как недоступный, а не подменяется молча другой дорожкой.
+        self.reselect_automatically();
+        let Some(media) = self.media.as_mut() else {
+            return;
+        };
         tracing::debug!(
             tracks = track_ids.len(),
             auto_selected = media.selected.is_some(),
@@ -167,6 +172,8 @@ impl SubtitleOwner {
         {
             self.presenter.install_font_library(fonts);
         }
+        // Вложенные шрифты могли ждать именно растеризатора.
+        self.install_ready_attached_fonts();
     }
 
     /// Гарантирует, что показываемая дорожка читается: если она ещё не загружена, запускает
@@ -193,10 +200,12 @@ impl SubtitleOwner {
         if !matches!(entry.load, TrackLoadState::NotLoaded) {
             return;
         }
+        // Встроенные дорожки не читаются из файла: они готовы с самого начала.
+        let Some(candidate) = entry.description.sidecar_candidate().cloned() else {
+            return;
+        };
         let request = SidecarJobRequest {
-            task: SidecarJobTask::LoadFile {
-                candidate: entry.description.candidate().clone(),
-            },
+            task: SidecarJobTask::LoadFile { candidate },
             fonts,
             limits,
         };

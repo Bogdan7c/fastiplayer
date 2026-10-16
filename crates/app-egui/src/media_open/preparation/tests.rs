@@ -338,6 +338,7 @@ fn missing_local_file_preparation_carries_user_reason_for_playlist_row() {
         path: directory.path().join("missing-row-item.mkv"),
         expected_fingerprint: None,
         demux_config: fastiplayer_config::PlayerDemuxConfig::default(),
+        attachment_limits: media_source_open::local_media::AttachmentReadLimits::default(),
     };
     let cancellation = super::super::executor::PreparationCancellation::new();
 

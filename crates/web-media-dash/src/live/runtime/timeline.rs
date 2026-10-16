@@ -101,6 +101,8 @@ impl DashLiveTimelineCoordinator {
         let slot = match packet.kind {
             TrackKind::Video => &mut state.video,
             TrackKind::Audio => &mut state.audio,
+            // Субтитры не участвуют в доказательстве availability окна DASH.
+            TrackKind::Subtitle => return Ok(()),
         };
         let start = packet_start.max(manifest.start);
         let end = packet_end.min(manifest.end);

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use fastiplayer_config::PlayerDemuxConfig;
 use media_core::{MediaTagMetadata, TrackInfo};
+use media_source_open::local_media::AttachmentReadLimits;
 use player_core::PreparedMedia;
 use playlist_discovery::{LocalMediaFingerprint, LocalMediaKind, classify_local_media_tracks};
 use source_core::{CancellationToken, LocalFileMetadataSnapshot, LocalFileSource};
@@ -84,6 +85,7 @@ pub(crate) enum PrepareLocalOpenError {
 pub(crate) fn prepare_local_open(
     path: &Path,
     demux_config: &PlayerDemuxConfig,
+    attachment_limits: AttachmentReadLimits,
     expected_fingerprint: Option<LocalMediaFingerprint>,
     source_cancellation: CancellationToken,
     is_cancelled: impl Fn() -> bool,
@@ -91,6 +93,7 @@ pub(crate) fn prepare_local_open(
     prepare_local_open_with_hook(
         path,
         demux_config,
+        attachment_limits,
         expected_fingerprint,
         source_cancellation,
         is_cancelled,
@@ -101,6 +104,7 @@ pub(crate) fn prepare_local_open(
 fn prepare_local_open_with_hook(
     path: &Path,
     demux_config: &PlayerDemuxConfig,
+    attachment_limits: AttachmentReadLimits,
     expected_fingerprint: Option<LocalMediaFingerprint>,
     source_cancellation: CancellationToken,
     is_cancelled: impl Fn() -> bool,
@@ -132,6 +136,7 @@ fn prepare_local_open_with_hook(
         local_source,
         extension_hint,
         demux_config,
+        attachment_limits,
         source_cancellation,
     )
     .map_err(|error| {
@@ -239,6 +244,7 @@ pub(crate) mod tests {
         let prepared = prepare_local_open(
             &path,
             &PlayerDemuxConfig::default(),
+            media_source_open::local_media::AttachmentReadLimits::default(),
             None,
             CancellationToken::never_cancelled(),
             || false,
@@ -271,6 +277,7 @@ pub(crate) mod tests {
         let prepared = prepare_local_open(
             &path,
             &PlayerDemuxConfig::default(),
+            media_source_open::local_media::AttachmentReadLimits::default(),
             Some(stale),
             CancellationToken::never_cancelled(),
             || false,
@@ -293,6 +300,7 @@ pub(crate) mod tests {
         let result = prepare_local_open_with_hook(
             &path,
             &PlayerDemuxConfig::default(),
+            media_source_open::local_media::AttachmentReadLimits::default(),
             None,
             CancellationToken::never_cancelled(),
             || false,
@@ -321,6 +329,7 @@ pub(crate) mod tests {
         let prepared = prepare_local_open(
             &path,
             &PlayerDemuxConfig::default(),
+            media_source_open::local_media::AttachmentReadLimits::default(),
             None,
             CancellationToken::never_cancelled(),
             || false,
@@ -341,6 +350,7 @@ pub(crate) mod tests {
         let prepared = prepare_local_open(
             &path,
             &PlayerDemuxConfig::default(),
+            media_source_open::local_media::AttachmentReadLimits::default(),
             None,
             CancellationToken::never_cancelled(),
             || false,
@@ -364,6 +374,7 @@ pub(crate) mod tests {
         let prepared = prepare_local_open(
             &path,
             &PlayerDemuxConfig::default(),
+            media_source_open::local_media::AttachmentReadLimits::default(),
             None,
             CancellationToken::never_cancelled(),
             || false,
@@ -386,6 +397,7 @@ pub(crate) mod tests {
         let result = prepare_local_open(
             &path,
             &PlayerDemuxConfig::default(),
+            media_source_open::local_media::AttachmentReadLimits::default(),
             None,
             cancellation,
             || false,
@@ -409,6 +421,7 @@ pub(crate) mod tests {
         let error = match prepare_local_open(
             &path,
             &PlayerDemuxConfig::default(),
+            media_source_open::local_media::AttachmentReadLimits::default(),
             None,
             CancellationToken::never_cancelled(),
             || false,

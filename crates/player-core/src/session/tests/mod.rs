@@ -83,5 +83,6 @@ mod seek_regressions;
 mod seek_start;
 mod seek_trace;
 mod staged_media_install;
+mod subtitle_feed;
 mod subtitle_selection;
 mod timeline_seek;

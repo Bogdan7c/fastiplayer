@@ -30,7 +30,10 @@ impl TrackNumber {
 }
 
 /// Короткое имя формата для подписи.
-fn format_name(format: SubtitleFormat) -> &'static str {
+fn format_name(format: Option<SubtitleFormat>) -> &'static str {
+    let Some(format) = format else {
+        return "other";
+    };
     match format {
         SubtitleFormat::Srt => "SRT",
         SubtitleFormat::WebVtt => "VTT",
@@ -52,6 +55,7 @@ const fn origin_name(origin: SubtitleFileOrigin) -> &'static str {
     match origin {
         SubtitleFileOrigin::NextToVideo => "file",
         SubtitleFileOrigin::ChosenByUser => "added",
+        SubtitleFileOrigin::Embedded => "embedded",
     }
 }
 
@@ -157,7 +161,7 @@ mod tests {
     fn label(language: Option<&str>) -> SubtitleTrackLabel {
         SubtitleTrackLabel {
             language: language.map(|tag| SubtitleLanguage::parse(tag).expect("valid test tag")),
-            format: SubtitleFormat::Srt,
+            format: Some(SubtitleFormat::Srt),
             origin: SubtitleFileOrigin::NextToVideo,
             is_forced: false,
             is_hearing_impaired: false,
@@ -199,7 +203,7 @@ mod tests {
 
         let mut sdh = label(Some("en"));
         sdh.is_hearing_impaired = true;
-        sdh.format = SubtitleFormat::WebVtt;
+        sdh.format = Some(SubtitleFormat::WebVtt);
         sdh.origin = SubtitleFileOrigin::ChosenByUser;
         assert_eq!(text_of(&sdh), "English — SDH (VTT, added)");
 
@@ -229,10 +233,20 @@ mod tests {
     #[test]
     fn ass_and_ssa_have_their_own_format_names() {
         let mut ass = label(Some("en"));
-        ass.format = SubtitleFormat::Ass;
+        ass.format = Some(SubtitleFormat::Ass);
         assert_eq!(text_of(&ass), "English (ASS, file)");
-        ass.format = SubtitleFormat::Ssa;
+        ass.format = Some(SubtitleFormat::Ssa);
         assert_eq!(text_of(&ass), "English (SSA, file)");
+    }
+
+    #[test]
+    fn embedded_tracks_say_embedded_and_unnamed_formats_say_other() {
+        let mut embedded = label(Some("ja"));
+        embedded.origin = SubtitleFileOrigin::Embedded;
+        embedded.format = Some(SubtitleFormat::Pgs);
+        assert_eq!(text_of(&embedded), "Japanese (PGS, embedded)");
+        embedded.format = None;
+        assert_eq!(text_of(&embedded), "Japanese (other, embedded)");
     }
 
     #[test]

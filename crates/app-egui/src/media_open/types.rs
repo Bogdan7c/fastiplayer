@@ -337,6 +337,8 @@ pub(crate) enum MediaOpenSourceRequest {
         path: PathBuf,
         expected_fingerprint: Option<LocalMediaFingerprint>,
         demux_config: fastiplayer_config::PlayerDemuxConfig,
+        /// Лимиты чтения вложений контейнера (шрифты MKV) из `[subtitles]` конфига.
+        attachment_limits: media_source_open::local_media::AttachmentReadLimits,
     },
     Web(super::web::WebMediaOpenRequest),
     PlaybackWindow {

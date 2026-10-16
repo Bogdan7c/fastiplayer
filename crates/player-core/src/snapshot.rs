@@ -196,6 +196,9 @@ pub struct TrackSummarySnapshot {
 
     /// Compact summary video color metadata для diagnostics panel.
     pub video_color_summary: Option<String>,
+
+    /// Язык, название и флаги дорожки из контейнера (для всех видов дорожек).
+    pub labels: media_core::TrackLabels,
 }
 
 /// Snapshot Info-панели, не дающий UI доступ к demuxer/session internals.

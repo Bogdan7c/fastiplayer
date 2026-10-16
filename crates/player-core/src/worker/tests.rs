@@ -48,6 +48,7 @@ fn worker_config_for_tests() -> PlayerWorkerConfig {
             .validate()
             .expect("default frame-server config must validate"),
         timeline_activity_wake: None,
+        subtitle_feed_capacity: SubtitleFeedCapacity::FALLBACK,
     }
 }
 
@@ -106,6 +107,7 @@ fn worker_fake_track(track_id: u32, kind: TrackKind) -> TrackInfo {
         codec_id: match kind {
             TrackKind::Video => "V_VP9".to_string(),
             TrackKind::Audio => "A_OPUS".to_string(),
+            TrackKind::Subtitle => media_core::subtitle_codec::TEXT_UTF8.to_string(),
         },
         codec_private: None,
         time_base: media_core::TimeBase::new(1, 1_000),
@@ -113,6 +115,7 @@ fn worker_fake_track(track_id: u32, kind: TrackKind) -> TrackInfo {
         sample_rate: (kind == TrackKind::Audio).then_some(48_000),
         channels: (kind == TrackKind::Audio).then_some(2),
         video: None,
+        labels: media_core::TrackLabels::default(),
     }
 }
 
@@ -528,6 +531,7 @@ fn worker_with_latest_handoffs_for_tests(
             event_rx,
             render_bridge_client,
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
+            subtitle_feed_receiver: None,
             shutdown_tx,
             join_handle: None,
             terminal_state: PlayerWorkerTerminalState::Completed,
@@ -564,6 +568,7 @@ fn worker_with_terminal_thread_for_tests(
         event_rx,
         render_bridge_client,
         decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
+        subtitle_feed_receiver: None,
         shutdown_tx,
         join_handle: Some(join_handle),
         terminal_state: PlayerWorkerTerminalState::Running,

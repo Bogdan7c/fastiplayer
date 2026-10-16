@@ -7,7 +7,8 @@ use std::time::Duration;
 use anyhow::Result;
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, MediaDemuxError, TimelineNotSeekableReason, TrackId, TrackInfo,
+    DemuxTrackListUpdate, Demuxer, MediaAttachments, MediaDemuxError, SkippedAttachment,
+    TimelineNotSeekableReason, TrackId, TrackInfo,
 };
 use source_core::ByteSource;
 use tracing::{info, trace};
@@ -16,7 +17,9 @@ mod decode_point_before;
 mod matroska_source_probe;
 pub(crate) mod metadata;
 mod seek_execution;
+mod track_state;
 
+use crate::attachments::media_attachments_from_reader;
 use crate::byte_source::ByteSourceMediaSource;
 use crate::error::DemuxError;
 use crate::isomp4_source_offset::{PacketSourceOffsetObserver, open_reader_with_source_offsets};
@@ -26,9 +29,11 @@ use crate::packet_mapper::{PacketConvertError, convert_packet_with_source_offset
 use crate::seek_mapper::{preferred_seek_track_id, symphonia_seek_mode};
 use crate::stream_probe_failure::StreamProbeFailureReader;
 use crate::symphonia_api::{
-    self, FormatReaderBox, Hint, MediaSourceStream, ReadOnlySource, SymphoniaError,
+    self, FormatReaderBox, Hint, MediaSourceStream, ProbedFormatReader, ReadOnlySource,
+    SymphoniaError,
 };
-use crate::track_mapper::{TrackEntry, map_tracks_with_video_metadata};
+use crate::track_labels::track_titles_from_metadata;
+use crate::track_mapper::TrackEntry;
 
 use self::decode_point_before::prepend_retained_lifecycle_events;
 use self::matroska_source_probe::{
@@ -41,10 +46,8 @@ use self::matroska_source_probe::{
     source_seekability_to_demux_seekability as map_source_seekability,
 };
 
-use self::metadata::{
-    display_orientations_from_metadata, summarize_symphonia_format_metadata,
-    video_color_metadata_from_metadata, video_packet_framings_from_metadata,
-};
+use self::metadata::summarize_symphonia_format_metadata;
+use self::track_state::{track_layout_snapshot, track_state_from_format_reader};
 
 #[cfg(test)]
 use self::metadata::{
@@ -73,15 +76,12 @@ pub struct SymphoniaDemuxer {
     pending_events: VecDeque<DemuxReadEvent>,
     media_metadata: media_core::MediaMetadata,
     end_of_stream_reached: bool,
-}
-
-/// Снимок track state-а, который rebuild может проверить перед заменой reader-а.
-struct SymphoniaTrackState {
-    tracks: Vec<TrackInfo>,
-    duration: Option<Duration>,
-    track_map: HashMap<u32, TrackEntry>,
-    track_duration: Option<Duration>,
-    media_info_duration: Option<Duration>,
+    /// Названия дорожек из container metadata (MKV `Name`); log уже вычитан, поэтому кэш здесь.
+    track_titles_by_track: HashMap<TrackId, String>,
+    /// Вложения, пропущенные MKV-патчем по лимитам при open.
+    skipped_attachments: Vec<SkippedAttachment>,
+    /// `take_attachments` отдаёт содержимое ровно один раз.
+    attachments_taken: bool,
 }
 
 /// Именованный context открытия отделяет reader ownership от source/probe state demuxer-а.
@@ -98,6 +98,8 @@ struct FormatReaderProbeContext {
     seekability: DemuxSeekability,
     /// Observer присутствует только у concrete ISO-BMFF reader-а.
     packet_source_offset_observer: Option<PacketSourceOffsetObserver>,
+    /// Вложения, пропущенные MKV-патчем по лимитам во время probe.
+    skipped_attachments: Vec<SkippedAttachment>,
 }
 
 impl SymphoniaDemuxer {
@@ -116,7 +118,14 @@ impl SymphoniaDemuxer {
         let file = File::open(path)?;
         let media_source_stream = MediaSourceStream::new(Box::new(file), Default::default());
         let hint = symphonia_api::hint_from_path(path);
-        let format = symphonia_api::probe_format_reader(&hint, media_source_stream)?;
+        let ProbedFormatReader {
+            reader: format,
+            skipped_attachments,
+        } = symphonia_api::probe_format_reader(
+            &hint,
+            media_source_stream,
+            options.attachment_read_limits(),
+        )?;
         let video_tracks_by_track = probe_video_tracks_from_file_if_needed(path, format.tracks());
         let matroska_cue_index = probe_cue_index_from_file_if_needed(path);
 
@@ -129,6 +138,7 @@ impl SymphoniaDemuxer {
                 matroska_cue_index,
                 seekability: DemuxSeekability::Seekable,
                 packet_source_offset_observer: None,
+                skipped_attachments,
             },
             options,
         )
@@ -180,8 +190,15 @@ impl SymphoniaDemuxer {
             };
 
         let hint = symphonia_api::hint_from_extension(extension_hint);
-        let format = symphonia_api::probe_format_reader(&hint, media_source_stream)
-            .map_err(|error| probe_failure_observer.take_demux_error().unwrap_or(error))?;
+        let ProbedFormatReader {
+            reader: format,
+            skipped_attachments,
+        } = symphonia_api::probe_format_reader(
+            &hint,
+            media_source_stream,
+            options.attachment_read_limits(),
+        )
+        .map_err(|error| probe_failure_observer.take_demux_error().unwrap_or(error))?;
         probe_failure_observer.finish_probe_success();
 
         Self::from_format_reader_with_probe_context(
@@ -195,6 +212,7 @@ impl SymphoniaDemuxer {
                     reason: TimelineNotSeekableReason::SourceNotSeekable,
                 },
                 packet_source_offset_observer: None,
+                skipped_attachments,
             },
             options,
         )
@@ -274,8 +292,15 @@ impl SymphoniaDemuxer {
             MediaSourceStream::new(Box::new(media_source), Default::default());
 
         let hint = symphonia_api::hint_from_extension(extension_hint);
-        let format = symphonia_api::probe_format_reader(&hint, media_source_stream)
-            .map_err(|error| failure_observer.take_demux_error().unwrap_or(error))?;
+        let ProbedFormatReader {
+            reader: format,
+            skipped_attachments,
+        } = symphonia_api::probe_format_reader(
+            &hint,
+            media_source_stream,
+            options.attachment_read_limits(),
+        )
+        .map_err(|error| failure_observer.take_demux_error().unwrap_or(error))?;
         failure_observer.finish_probe_success();
 
         Self::from_format_reader_with_probe_context(
@@ -287,6 +312,7 @@ impl SymphoniaDemuxer {
                 matroska_cue_index,
                 seekability: demux_seekability,
                 packet_source_offset_observer: None,
+                skipped_attachments,
             },
             options,
         )
@@ -335,6 +361,8 @@ impl SymphoniaDemuxer {
                 matroska_cue_index: MatroskaCueIndex::default(),
                 seekability,
                 packet_source_offset_observer: Some(packet_source_offset_observer),
+                // ISO-BMFF не несёт вложений.
+                skipped_attachments: Vec::new(),
             },
             options,
         )
@@ -358,6 +386,7 @@ impl SymphoniaDemuxer {
                 matroska_cue_index: MatroskaCueIndex::default(),
                 seekability,
                 packet_source_offset_observer: None,
+                skipped_attachments: Vec::new(),
             },
             options,
         )
@@ -376,10 +405,16 @@ impl SymphoniaDemuxer {
             matroska_cue_index,
             seekability,
             packet_source_offset_observer,
+            skipped_attachments,
         } = probe_context;
         let symphonia_metadata = summarize_symphonia_format_metadata(&mut format);
-        let track_state =
-            track_state_from_format_reader(&mut format, &matroska_video_tracks_by_track);
+        // Названия читаются до `consume_media_metadata`, который вычитывает metadata log.
+        let track_titles_by_track = track_titles_from_metadata(&mut format);
+        let track_state = track_state_from_format_reader(
+            &mut format,
+            &matroska_video_tracks_by_track,
+            &track_titles_by_track,
+        );
 
         info!(
             source = %source_label,
@@ -388,6 +423,7 @@ impl SymphoniaDemuxer {
             track_duration = ?track_state.track_duration,
             media_info_duration = ?track_state.media_info_duration,
             attachments = symphonia_metadata.attachments,
+            skipped_attachments = skipped_attachments.len(),
             chapters = symphonia_metadata.has_chapters,
             metadata_revision = symphonia_metadata.has_metadata_revision,
             "Symphonia media source is open"
@@ -410,6 +446,9 @@ impl SymphoniaDemuxer {
             pending_events: VecDeque::new(),
             media_metadata,
             end_of_stream_reached: false,
+            track_titles_by_track,
+            skipped_attachments,
+            attachments_taken: false,
         })
     }
 
@@ -485,15 +524,19 @@ impl SymphoniaDemuxer {
                 let (format, observer) = open_reader_with_source_offsets(media_source_stream)?;
                 (format, Some(observer))
             } else {
-                (
-                    symphonia_api::probe_format_reader(&self.probe_hint, media_source_stream)?,
-                    None,
-                )
+                let probed = symphonia_api::probe_format_reader(
+                    &self.probe_hint,
+                    media_source_stream,
+                    self.options.attachment_read_limits(),
+                )?;
+                (probed.reader, None)
             };
         let symphonia_metadata = summarize_symphonia_format_metadata(&mut rebuilt_format);
+        let rebuilt_track_titles = track_titles_from_metadata(&mut rebuilt_format);
         let track_state = track_state_from_format_reader(
             &mut rebuilt_format,
             &self.matroska_video_tracks_by_track,
+            &rebuilt_track_titles,
         );
         let rebuilt_snapshot = track_layout_snapshot(&track_state.tracks, track_state.duration);
 
@@ -518,6 +561,7 @@ impl SymphoniaDemuxer {
         );
 
         self.format = Some(rebuilt_format);
+        self.track_titles_by_track = rebuilt_track_titles;
         self.packet_source_offset_observer = rebuilt_packet_source_offset_observer;
         self.track_map = track_state.track_map;
         self.end_of_stream_reached = false;
@@ -533,8 +577,13 @@ impl SymphoniaDemuxer {
     /// Перечитывает Symphonia track list после `ResetRequired` и обновляет demux boundary state.
     fn refresh_track_list_after_reset(&mut self) -> Result<DemuxTrackListUpdate> {
         let matroska_video_tracks_by_track = self.matroska_video_tracks_by_track.clone();
+        let track_titles_by_track = self.track_titles_by_track.clone();
         let format = self.format_mut("refresh_track_list_after_reset")?;
-        let track_state = track_state_from_format_reader(format, &matroska_video_tracks_by_track);
+        let track_state = track_state_from_format_reader(
+            format,
+            &matroska_video_tracks_by_track,
+            &track_titles_by_track,
+        );
 
         self.tracks = track_state.tracks;
         self.duration = track_state.duration;
@@ -631,60 +680,6 @@ impl SymphoniaDemuxer {
     }
 }
 
-/// Читает container-level duration из Symphonia `MediaInfo`.
-///
-/// Symphonia 0.6 может хранить duration на media-level, даже если отдельные
-/// tracks не несут `Track::duration`. Player timeline использует это только как
-/// fallback, чтобы не терять seekable VOD UI при валидном seekable source-е.
-fn media_info_duration(media_info: &symphonia::core::formats::MediaInfo) -> Option<Duration> {
-    media_info
-        .time_base
-        .zip(media_info.duration)
-        .map(|(time_base, duration)| {
-            symphonia_api::symphonia_duration_to_duration(time_base, duration)
-        })
-        .filter(|duration| !duration.is_zero())
-}
-
-/// Строит neutral track state из текущего Symphonia reader-а без изменения public boundary.
-fn track_state_from_format_reader(
-    format: &mut FormatReaderBox<'static>,
-    video_tracks_by_track: &HashMap<TrackId, MatroskaVideoTrack>,
-) -> SymphoniaTrackState {
-    let mut video_tracks_for_mapping = video_tracks_by_track.clone();
-    let display_orientations_by_track = display_orientations_from_metadata(format);
-    let color_metadata_by_track = video_color_metadata_from_metadata(format);
-    let packet_framings_by_track = video_packet_framings_from_metadata(format);
-    let track_mapping = map_tracks_with_video_metadata(
-        format.tracks(),
-        &mut video_tracks_for_mapping,
-        &display_orientations_by_track,
-        &color_metadata_by_track,
-        &packet_framings_by_track,
-    );
-    let media_info_duration = media_info_duration(format.media_info());
-    let duration = track_mapping.duration.or(media_info_duration);
-
-    SymphoniaTrackState {
-        tracks: track_mapping.tracks,
-        duration,
-        track_map: track_mapping.track_map,
-        track_duration: track_mapping.duration,
-        media_info_duration,
-    }
-}
-
-/// Формирует компактный diagnostics snapshot для случая, когда reprobe меняет public identity.
-fn track_layout_snapshot(tracks: &[TrackInfo], duration: Option<Duration>) -> String {
-    let track_ids = tracks
-        .iter()
-        .map(|track| format!("{:?}:{:?}:{}", track.id, track.kind, track.codec_id))
-        .collect::<Vec<_>>()
-        .join(",");
-
-    format!("duration={duration:?};tracks=[{track_ids}]")
-}
-
 impl Demuxer for SymphoniaDemuxer {
     fn tracks(&self) -> &[TrackInfo] {
         &self.tracks
@@ -692,6 +687,18 @@ impl Demuxer for SymphoniaDemuxer {
 
     fn duration(&self) -> Option<Duration> {
         self.duration
+    }
+
+    fn take_attachments(&mut self) -> MediaAttachments {
+        // Повторный вызов не должен снова копировать шрифты: владение уже передано.
+        if std::mem::replace(&mut self.attachments_taken, true) {
+            return MediaAttachments::default();
+        }
+        let reader_attachments = self
+            .format
+            .as_deref()
+            .map_or(&[][..], |format| format.attachments());
+        media_attachments_from_reader(reader_attachments, &self.skipped_attachments)
     }
 
     fn media_metadata(&self) -> Option<media_core::MediaMetadata> {

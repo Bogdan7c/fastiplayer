@@ -611,6 +611,7 @@ mod tests {
             duration: None,
             video: None,
             video_color_summary: None,
+            labels: media_core::TrackLabels::default(),
         }
     }
 

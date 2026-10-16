@@ -40,6 +40,7 @@ fn video_only_snapshot(media_instance_id: MediaInstanceId) -> PlayerSnapshot {
         duration: None,
         video: None,
         video_color_summary: None,
+        labels: media_core::TrackLabels::default(),
     }];
     snapshot
 }
@@ -56,6 +57,7 @@ fn audio_only_snapshot(media_instance_id: MediaInstanceId) -> PlayerSnapshot {
         duration: None,
         video: None,
         video_color_summary: None,
+        labels: media_core::TrackLabels::default(),
     }];
     snapshot
 }

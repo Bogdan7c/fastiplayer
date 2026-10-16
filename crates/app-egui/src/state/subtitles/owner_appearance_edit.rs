@@ -39,7 +39,7 @@ impl SubtitleOwner {
         }
         self.appearance_edit = Some(AppearanceEditSession::begin(&self.settings.style));
         // Старт без правок ничего не меняет на экране: стиль черновика равен закоммиченному.
-        self.request_rasterizer_for_sample();
+        self.request_rasterizer_in_background();
         AppearanceEditBegin::Started
     }
 

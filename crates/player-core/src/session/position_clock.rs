@@ -276,6 +276,8 @@ impl PlayerSession {
             media_core::TrackKind::Video => {
                 self.pipeline.selected_video_track_id() == Some(packet.track_id)
             }
+            // Реплика до начала окна ещё может быть активна: субтитры окном не отбрасываются.
+            media_core::TrackKind::Subtitle => return false,
         };
         if belongs_to_selected_track {
             self.playback_window_end_state

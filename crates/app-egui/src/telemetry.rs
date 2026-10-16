@@ -269,6 +269,8 @@ impl Telemetry {
         match kind {
             TrackKind::Video => self.video_packets.fetch_add(count, Ordering::Relaxed),
             TrackKind::Audio => self.audio_packets.fetch_add(count, Ordering::Relaxed),
+            // Субтитры считаются только в общем `packets_read`; отдельного счётчика нет.
+            TrackKind::Subtitle => 0,
         };
     }
 

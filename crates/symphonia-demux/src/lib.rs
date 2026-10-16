@@ -1,3 +1,4 @@
+mod attachments;
 mod byte_source;
 pub mod demuxer;
 pub mod dual_stream_demuxer;
@@ -15,8 +16,12 @@ mod stream_probe_failure;
 pub mod streaming_source;
 mod symphonia_api;
 pub mod symphonia_demuxer;
+mod track_labels;
 mod track_mapper;
 
+pub use attachments::{
+    AttachmentReadLimits, DEFAULT_MAX_ATTACHMENT_BYTES, DEFAULT_MAX_TOTAL_ATTACHMENT_BYTES,
+};
 pub use demuxer::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
     DemuxTrackListUpdate, Demuxer, MediaDemuxError,

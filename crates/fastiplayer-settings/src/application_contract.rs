@@ -528,6 +528,8 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         ),
         // Живого runtime-потребителя пока нет: владелец читает committed snapshot при
         // открытии следующего медиа (effect on next natural event), состояние соседей не трогает.
+        // `subtitles.embedded_feed_capacity` читается при создании player worker-а (запуск
+        // приложения): живой worker трубу не пересоздаёт, новое значение действует после перезапуска.
         "subtitles.enabled"
         | "subtitles.preferred_languages"
         | "subtitles.decoration"
@@ -545,7 +547,11 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "subtitles.render_cache_mb"
         | "subtitles.font_lookup_cache_chars"
         | "subtitles.max_chars_per_cue"
-        | "subtitles.max_cues_on_screen" => SettingApplicationContract::new(
+        | "subtitles.max_cues_on_screen"
+        | "subtitles.max_attached_font_mb"
+        | "subtitles.max_attached_fonts_total_mb"
+        | "subtitles.embedded_feed_capacity"
+        | "subtitles.embedded_cue_max_open_duration_ms" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::Subtitles,
             SettingStateOwner::SubtitlePolicy,
@@ -665,7 +671,7 @@ mod tests {
         );
     }
 
-    /// Все 18 настроек субтитров идут своим route и владельцем, не задевая playlist/player.
+    /// Все 22 настройки субтитров идут своим route и владельцем, не задевая playlist/player.
     #[test]
     fn subtitle_descriptors_use_dedicated_route_and_owner() {
         let registry = crate::app_config_registry().expect("registry builds");
@@ -674,7 +680,7 @@ mod tests {
             .filter(|descriptor| descriptor.id.as_str().starts_with("subtitles."))
             .map(|descriptor| descriptor.id.clone())
             .collect();
-        assert_eq!(subtitle_ids.len(), 18);
+        assert_eq!(subtitle_ids.len(), 22);
 
         for setting_id in subtitle_ids {
             let contract = setting_application_contract(&setting_id)

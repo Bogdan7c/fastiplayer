@@ -1,4 +1,4 @@
-//! Запуск растеризатора «по требованию» для образца в режиме правки.
+//! Запуск растеризатора «по требованию»: для образца в режиме правки и для встроенных дорожек.
 //!
 //! Растеризатор (с библиотекой шрифтов ~90 мс) обычно строит первая загруженная дорожка. Если
 //! у видео дорожек нет (или субтитры выключены), он не появится никогда, а образцу он нужен.
@@ -12,8 +12,10 @@ use super::job_runner::{SidecarJob, SidecarJobPoll};
 use super::sidecar_job::{FontLibraryPlan, SidecarJobOutcome, SidecarJobRequest, SidecarJobTask};
 
 impl SubtitleOwner {
-    /// Заказывает растеризатор, если его нет и заказ ещё не идёт.
-    pub(super) fn request_rasterizer_for_sample(&mut self) {
+    /// Заказывает растеризатор, если его нет и заказ ещё не идёт. Нужен образцу правки и
+    /// media со встроенными дорожками (их реплики показывает тот же растеризатор, а файл
+    /// рядом, который обычно строит библиотеку, может отсутствовать).
+    pub(super) fn request_rasterizer_in_background(&mut self) {
         if self.presenter.has_rasterizer() || self.fonts_bootstrap_job.is_some() {
             return;
         }
@@ -64,5 +66,10 @@ impl SubtitleOwner {
     /// Идёт ли заказ шрифтов (владельцу нужны wake-события).
     pub(super) fn has_running_fonts_bootstrap(&self) -> bool {
         self.fonts_bootstrap_job.is_some()
+    }
+
+    /// Идёт ли любая фоновая работа со шрифтами: библиотека или вложения media.
+    pub(super) fn has_running_font_jobs(&self) -> bool {
+        self.has_running_fonts_bootstrap() || self.attached_fonts.has_running_work()
     }
 }

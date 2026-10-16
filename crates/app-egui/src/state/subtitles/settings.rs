@@ -9,7 +9,7 @@ use fastiplayer_config::SubtitlesConfig;
 use subtitle_raster::RasterLimits;
 
 use super::intents::SubtitleVisibility;
-use super::limits::{LoadLimits, raster_limits_from_config};
+use super::limits::{EmbeddedLimits, LoadLimits, raster_limits_from_config};
 use super::user_style::UserSubtitleStyle;
 
 /// Настройки субтитров, разобранные из конфига.
@@ -25,6 +25,8 @@ pub(super) struct SubtitleSettings {
     pub(super) load_limits: LoadLimits,
     /// Лимиты растеризатора (действуют с создания растеризатора).
     pub(super) raster_limits: RasterLimits,
+    /// Лимиты встроенных дорожек (читаются владельцем в момент использования).
+    pub(super) embedded_limits: EmbeddedLimits,
 }
 
 impl SubtitleSettings {
@@ -40,6 +42,7 @@ impl SubtitleSettings {
             style: UserSubtitleStyle::from_config(config),
             load_limits: LoadLimits::from_config(config),
             raster_limits: raster_limits_from_config(config),
+            embedded_limits: EmbeddedLimits::from_config(config),
         }
     }
 }

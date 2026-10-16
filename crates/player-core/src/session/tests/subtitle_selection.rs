@@ -76,6 +76,43 @@ fn unknown_id_is_rejected_without_touching_the_selection_or_publishing_selected(
 }
 
 #[test]
+fn embedded_subtitle_track_id_is_accepted_while_video_audio_and_unknown_ids_stay_rejected() {
+    let mut session = PlayerSession::default();
+    install_fake_media(
+        &mut session,
+        vec![
+            fake_track(1, TrackKind::Video),
+            fake_track(2, TrackKind::Audio),
+            fake_track(3, TrackKind::Subtitle),
+        ],
+    );
+    let _install_events = session.take_events();
+
+    for rejected_id in [1_u32, 2, 99] {
+        assert!(
+            session
+                .dispatch_command(PlayerCommand::SelectSubtitleTrack(Some(TrackId::new(
+                    rejected_id,
+                ))))
+                .is_err(),
+            "id {rejected_id} is not a subtitle track"
+        );
+    }
+    assert_eq!(session.snapshot().selected_tracks.subtitle_track, None);
+    let _rejection_events = session.take_events();
+
+    session
+        .dispatch_command(PlayerCommand::SelectSubtitleTrack(Some(TrackId::new(3))))
+        .expect("an embedded subtitle track id is valid");
+
+    assert_eq!(
+        session.snapshot().selected_tracks.subtitle_track,
+        Some(TrackId::new(3))
+    );
+    assert_eq!(count_subtitle_selected(&session.take_events()), 1);
+}
+
+#[test]
 fn none_clears_the_selection_and_publishes_the_event_even_without_media() {
     let mut session = PlayerSession::default();
     // Выбор мог остаться от прежнего состояния: `None` обязан его снять.

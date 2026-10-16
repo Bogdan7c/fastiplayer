@@ -224,6 +224,7 @@ mod tests {
             path: PathBuf::from("fixture.flac"),
             expected_fingerprint: None,
             demux_config: fastiplayer_config::PlayerDemuxConfig::default(),
+            attachment_limits: media_source_open::local_media::AttachmentReadLimits::default(),
         }
         .with_queue_preload_budget(QueuePreloadResourceBudget::from_validated_config(64));
 
