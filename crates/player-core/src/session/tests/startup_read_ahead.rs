@@ -117,17 +117,24 @@ impl AudioOutputFactory for FillingAudioOutputFactory {
 }
 
 /// Стенд: сессия с настоящим MKV, видео включено, дефолтный tick config.
-struct StartupHarness {
-    session: PlayerSession,
-    video_decoder: SharedFakeVideoDecoderThread,
+pub(super) struct StartupHarness {
+    pub(super) session: PlayerSession,
+    pub(super) video_decoder: SharedFakeVideoDecoderThread,
     output_factory: Arc<FillingAudioOutputFactory>,
-    first_frame_published: bool,
+    pub(super) first_frame_published: bool,
+    /// Сколько packets decoder обязан принять до первого кадра.
+    first_frame_after_packets: usize,
     acked_packets: usize,
-    frames_presented: u64,
+    pub(super) frames_presented: u64,
 }
 
 impl StartupHarness {
     fn new() -> Self {
+        Self::with_fixture("two-audio-tracks.mkv", FIRST_FRAME_AFTER_PACKETS)
+    }
+
+    /// Стенд на заданной фикстуре; decoder выдаёт первый кадр после `first_frame_after_packets`.
+    pub(super) fn with_fixture(fixture_name: &str, first_frame_after_packets: usize) -> Self {
         let output_factory = Arc::new(FillingAudioOutputFactory {
             last_handle: Mutex::new(None),
         });
@@ -137,7 +144,7 @@ impl StartupHarness {
         );
         install_media(
             &mut session,
-            Box::new(open_fixture("two-audio-tracks.mkv")),
+            Box::new(open_fixture(fixture_name)),
             PlaybackIntent::StartPlaying,
         );
         let video_decoder = SharedFakeVideoDecoderThread::new();
@@ -150,12 +157,13 @@ impl StartupHarness {
             video_decoder,
             output_factory,
             first_frame_published: false,
+            first_frame_after_packets,
             acked_packets: 0,
             frames_presented: 0,
         }
     }
 
-    fn output(&self) -> Option<ScriptedAudioOutputHandle> {
+    pub(super) fn output(&self) -> Option<ScriptedAudioOutputHandle> {
         self.output_factory
             .last_handle
             .lock()
@@ -164,7 +172,7 @@ impl StartupHarness {
     }
 
     /// Один tick с дефолтным config-ом; decoder «созревает» после N принятых packets.
-    fn tick(&mut self) {
+    pub(super) fn tick(&mut self) {
         // Decoder принимает (ack-ает) каждый packet сразу, как реальный: пакеты оседают
         // в его DPB, а кадр появляется позже, поэтому in-flight лимит не душит отправку.
         let sent_packets = self.video_decoder.sent_packets().len();
@@ -172,7 +180,7 @@ impl StartupHarness {
             .add_completed_packet_count(sent_packets - self.acked_packets);
         self.acked_packets = sent_packets;
         if !self.first_frame_published
-            && self.video_decoder.sent_packets().len() >= FIRST_FRAME_AFTER_PACKETS
+            && self.video_decoder.sent_packets().len() >= self.first_frame_after_packets
         {
             self.video_decoder
                 .push_decoded_frame(decoded_frame_for_tests(Duration::ZERO, 1));

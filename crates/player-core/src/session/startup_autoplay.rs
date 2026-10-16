@@ -107,6 +107,17 @@ impl PlayerSession {
         self.startup_autoplay_pending_during_eof_drain() && !self.autoplay_video_preroll_ready()
     }
 
+    /// `true`, пока decoder ещё не выдал первый кадр текущего startup/buffering preroll-а.
+    ///
+    /// Объединяет обычный голодный preroll (`Buffering`, см. `video_preroll_is_starved`) и
+    /// старт, который из-за раннего EOF ждёт первый кадр внутри `Draining`. Intent-метод для
+    /// video decode-ahead policy: пока кадра нет, audio clock стоит, и временное окно
+    /// относительно него не должно морить frame-threaded decoder. Seek сюда не попадает.
+    pub(crate) fn video_first_frame_is_awaited(&self) -> bool {
+        self.video_preroll_is_starved()
+            || self.startup_autoplay_waits_for_first_video_frame_in_eof_drain()
+    }
+
     /// `true`, пока идёт EOF drain первого просмотра: старт ещё ждёт либо уже выполнен
     /// внутри этого drain-а. Такой drain — не «конец просмотренного файла».
     pub(super) fn eof_drain_belongs_to_startup_playthrough(&self) -> bool {

@@ -121,3 +121,12 @@ ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "sine=frequency=880:sample_rate=48000:duration=1" \
   -af "pan=5.1(side)|FC=c0" -c:a aac -b:a 96k \
   "$here/aac-pce-5p1.mkv"
+
+# (g) MKV: низкий fps + звук, длинный для обычного (не короткого) старта. VP8 64x64, 10 fps,
+# 8 с + Opus mono 48 кГц (синус 440 Гц). Для теста `startup_decode_ahead.rs`: frame-threaded
+# декодеру нужно больше packets до первого кадра, чем помещается в окно decode-ahead.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc=size=64x64:rate=10:duration=8" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=8" \
+  -map 0:v -map 1:a -c:v libvpx -b:v 40k -g 20 -c:a libopus -b:a 8k -ac 1 \
+  "$here/low-fps-vp8-opus.mkv"

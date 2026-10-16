@@ -24,9 +24,12 @@ use crate::{
     PlayerErrorKind, pipeline::VideoDecoderSendBackpressure, session::PlayerSession,
 };
 
+mod decode_ahead;
 mod packet_validation;
 mod present_admission;
 
+pub(super) use decode_ahead::VideoDecoderDecodeAheadLimits;
+use decode_ahead::video_decode_ahead_allowance;
 use present_admission::{decoded_frame_receive_budget, video_packet_send_present_admission_budget};
 
 use packet_validation::{
@@ -51,31 +54,6 @@ impl VideoDecoderTextureLimits {
         Self {
             min_slots_available_for_decode,
         }
-    }
-}
-
-/// Typed лимит decode-ahead относительно audio clock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct VideoDecoderDecodeAheadLimits {
-    /// Лимит текущего режима admission: steady-state target или catch-up max.
-    admission_limit: Duration,
-
-    /// Жёсткий максимум из scheduler policy.
-    max_limit: Duration,
-}
-
-impl VideoDecoderDecodeAheadLimits {
-    /// Создаёт decode-ahead limits для текущего режима отправки packets.
-    pub(super) const fn new(admission_limit: Duration, max_limit: Duration) -> Self {
-        Self {
-            admission_limit,
-            max_limit,
-        }
-    }
-
-    /// Возвращает эффективный лимит, сохраняя старое fail-closed ограничение max.
-    fn effective_limit(self) -> Duration {
-        self.admission_limit.min(self.max_limit)
     }
 }
 
@@ -228,7 +206,7 @@ pub(super) fn can_send_video_packet_to_decoder(
     let media_audio_now = session.pipeline.media_position_from_audio_clock();
     let packet_lead = packet_pts.saturating_sub(media_audio_now);
 
-    packet_lead <= decode_ahead_limits.effective_limit()
+    video_decode_ahead_allowance(session, decode_ahead_limits).admits(packet_lead)
 }
 
 /// Проверяет запас texture slots для ещё одного decoded frame.
@@ -641,8 +619,8 @@ pub(super) fn send_pending_video_packets_to_decoder(
             trace!(
                 pts_ms = packet_pts.as_millis(),
                 audio_ms = session.audio_clock_now().as_millis(),
-                decode_ahead_limit_ms = limits.decode_ahead.admission_limit.as_millis(),
-                max_ahead_ms = limits.decode_ahead.max_limit.as_millis(),
+                decode_ahead_limit_ms = limits.decode_ahead.admission_limit().as_millis(),
+                max_ahead_ms = limits.decode_ahead.max_limit().as_millis(),
                 "A/V sync: holding video packet to limit decode-ahead"
             );
             break;
