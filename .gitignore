@@ -1,5 +1,7 @@
 # Rust build output.
 /target/
+# Сборка standalone патч-крейтов (cargo --manifest-path crates/*-patch/Cargo.toml).
+/crates/*-patch/target/
 
 # Coverage raw profiles, LCOV и HTML являются локальными/CI artifacts.
 
