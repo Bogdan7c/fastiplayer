@@ -75,6 +75,7 @@ mod seek_transaction;
 mod snapshot_builder;
 mod staged_media_install;
 mod staged_video_preflight;
+mod startup_autoplay;
 mod subtitle_feed_bridge;
 mod subtitle_selection;
 mod tick;
@@ -97,6 +98,7 @@ use self::prepared_seek::PreparedSeekLandingRuntime;
 pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
 use self::scrub_command_correlation::ScrubCommandCorrelationRuntime;
 use self::staged_media_install::{InstalledStagedPosition, StagedMediaInstallRegistry};
+use self::startup_autoplay::StartupAutoplayPreroll;
 pub use self::tick::{
     PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
     PlayerVideoDropReason, PlayerVideoFrameDrop,
@@ -176,6 +178,9 @@ pub struct PlayerSession {
 
     /// Runtime EOF-drain boundary: наружу выходит только через intent methods.
     eof_drain: EofDrainRuntime,
+
+    /// Ждёт ли текущий media первого autoplay-старта (см. `startup_autoplay`).
+    startup_autoplay: StartupAutoplayPreroll,
 
     /// Последний системный capability report, полученный от shell/backend layer.
     capabilities: Option<SystemCapabilities>,
@@ -734,6 +739,7 @@ impl Default for PlayerSession {
             playback_intent_control: Arc::new(PlaybackIntentControl::default()),
             shutdown_requested: false,
             eof_drain: EofDrainRuntime::default(),
+            startup_autoplay: StartupAutoplayPreroll::default(),
             capabilities: None,
             active_video_backend_id: None,
             frame_server_config: frame_server_core::FrameServerConfig::default()

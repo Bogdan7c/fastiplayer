@@ -41,14 +41,14 @@ pub(in crate::session::tests) fn open_fixture(name: &str) -> symphonia_demux::Sy
 
 /// Обёртка над настоящим демуксером: прячет видео (дорожку и пакеты), чтобы session
 /// проходила audio-only путь без декодера кадров, и может объявить источник не seekable.
-pub(super) struct AudioOnlyDemuxer {
+pub(in crate::session::tests) struct AudioOnlyDemuxer {
     inner: symphonia_demux::SymphoniaDemuxer,
     tracks: Vec<TrackInfo>,
     seekability: DemuxSeekability,
 }
 
 impl AudioOnlyDemuxer {
-    pub(super) fn new(inner: symphonia_demux::SymphoniaDemuxer) -> Self {
+    pub(in crate::session::tests) fn new(inner: symphonia_demux::SymphoniaDemuxer) -> Self {
         let tracks = inner
             .tracks()
             .iter()

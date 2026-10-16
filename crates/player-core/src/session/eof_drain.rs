@@ -80,8 +80,13 @@ impl PlayerSession {
     }
 
     /// Проверяет, должен ли `Play` запускать replay через seek-to-zero.
+    ///
+    /// Drain первого просмотра (EOF пришёл раньше первого autoplay-старта, короткий файл) —
+    /// не «конец просмотренного файла»: там Play присоединяется к старту, а не повторяет файл.
     pub(super) fn should_replay_from_eof_on_play(&self) -> bool {
-        self.is_eof_draining() || self.snapshot.playback_state == PlaybackState::Ended
+        let drain_after_started_playback =
+            self.is_eof_draining() && !self.eof_drain_belongs_to_startup_playthrough();
+        drain_after_started_playback || self.snapshot.playback_state == PlaybackState::Ended
     }
 
     /// Переводит session в EOF-drain, сохраняя demuxer открытым для replay/seek.
@@ -129,8 +134,15 @@ impl PlayerSession {
     }
 
     /// Запускает audio output для EOF tail-а, который был накоплен до завершения autoplay preroll.
+    ///
+    /// Если EOF наступил раньше первого кадра стартового autoplay (короткий файл), звук
+    /// ждёт этот кадр: старт выполнит `complete_startup_autoplay_during_eof_drain_if_ready`
+    /// через этот же метод, чтобы звук не ушёл раньше картинки.
     pub(crate) fn start_eof_audio_tail_if_needed(&mut self) {
-        if !self.is_eof_draining() || self.has_active_seek_commit() {
+        if !self.is_eof_draining()
+            || self.has_active_seek_commit()
+            || self.startup_autoplay_waits_for_first_video_frame_in_eof_drain()
+        {
             return;
         }
 

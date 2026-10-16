@@ -132,6 +132,11 @@ impl PlayerSession {
             PlaybackIntent::StartPaused => PlaybackState::Paused,
         };
         self.set_playback_state(committed_playback_state);
+        if accepted_intent.intent == PlaybackIntent::StartPlaying {
+            // Первый старт нового media ещё впереди: его выполнит autoplay preroll, даже
+            // если короткий файл успеет дойти до EOF раньше первого кадра.
+            self.mark_startup_autoplay_preroll_pending();
+        }
         if installs_dynamic_timeline {
             self.pipeline
                 .reset_audio_clock_sample(self.current_source_position, Instant::now());
@@ -176,9 +181,8 @@ impl PlayerSession {
         }
 
         let apply_result = match intent {
-            PlaybackIntent::StartPlaying
-                if self.snapshot.playback_state == PlaybackState::Buffering =>
-            {
+            // Preroll (в т.ч. отложенный старт в EOF drain) уже ведёт к воспроизведению.
+            PlaybackIntent::StartPlaying if self.start_playing_intent_already_in_progress() => {
                 Ok(())
             }
             PlaybackIntent::StartPlaying => self
@@ -243,6 +247,7 @@ impl PlayerSession {
         self.reset_diagnostics_for_media();
         self.clear_pending_video_backend_reselection();
         self.media_lifecycle.clear_pending_autoplay();
+        self.clear_startup_autoplay_preroll();
         self.seek_runtime.clear_active_commit();
         self.prepared_demux_seek.reset();
         self.installed_staged_position = None;

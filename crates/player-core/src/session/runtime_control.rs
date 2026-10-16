@@ -50,6 +50,13 @@ impl PlayerSession {
             return Ok(());
         }
 
+        // Короткий файл: EOF наступил раньше первого старта. Play во время такого drain-а
+        // (старт ещё ждёт или уже выполнен внутри него) — не «повтор после конца», а то же
+        // намерение, которое уже выполняет/выполнил стартовый preroll.
+        if self.play_joins_startup_playthrough_in_eof_drain() {
+            return Ok(());
+        }
+
         if self.should_replay_from_eof_on_play() {
             return self.restart_playback_after_eof();
         }
@@ -101,6 +108,7 @@ impl PlayerSession {
         self.ensure_not_shutdown()?;
         self.media_lifecycle.clear_pending_autoplay();
         self.set_playback_state(PlaybackState::Buffering);
+        self.mark_startup_autoplay_preroll_pending();
         let observed_at = Instant::now();
         let audio_now = self.audio_clock_now();
         self.pipeline
@@ -109,11 +117,21 @@ impl PlayerSession {
     }
 
     /// Завершает autoplay preroll, когда audio/video уже готовы к слышимому старту.
+    ///
+    /// Стартовый preroll, который застал EOF (короткий файл), завершается отдельным
+    /// путём `startup_autoplay`: тот же старт (audio output, якорь часов), но state
+    /// остаётся `Draining`, и EOF drain дальше штатно доводит media до `Ended`.
     pub(crate) fn finish_autoplay_preroll_if_ready(
         &mut self,
         audio_preroll_target_ms: f64,
     ) -> PlayerResult<bool> {
         self.ensure_not_shutdown()?;
+        if self.startup_autoplay_pending_during_eof_drain() {
+            return Ok(
+                self.complete_startup_autoplay_during_eof_drain_if_ready(audio_preroll_target_ms)
+            );
+        }
+
         if self.snapshot.playback_state != PlaybackState::Buffering {
             return Ok(false);
         }
@@ -183,7 +201,7 @@ impl PlayerSession {
     }
 
     /// Проверяет video gate autoplay-preroll без раскрытия очередей pipeline.
-    fn autoplay_video_preroll_ready(&self) -> bool {
+    pub(super) fn autoplay_video_preroll_ready(&self) -> bool {
         if !self.pipeline.has_selected_video_track() {
             return true;
         }
@@ -409,6 +427,7 @@ impl PlayerSession {
     pub(super) fn set_playback_state(&mut self, playback_state: PlaybackState) {
         let previous_state = self.playback_state();
         self.eof_drain.sync_from_playback_state(playback_state);
+        self.sync_startup_autoplay_from_playback_state(playback_state);
         self.snapshot.playback_state = playback_state;
 
         if previous_state == playback_state {

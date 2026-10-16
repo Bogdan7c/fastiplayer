@@ -83,6 +83,7 @@ mod seek_diagnostics;
 mod seek_regressions;
 mod seek_start;
 mod seek_trace;
+mod short_media_startup;
 mod staged_media_install;
 mod startup_read_ahead;
 mod subtitle_feed;
