@@ -15,6 +15,18 @@ pub(crate) struct PesPacket {
     pub(crate) byte_offset: u64,
 }
 
+/// PES, прерванный разрывом `continuity_counter` перед новым payload_unit_start.
+#[derive(Debug)]
+pub(crate) enum InterruptedPes {
+    /// Закрывать нечего.
+    Absent,
+    /// Объявленный `PES_packet_length` набран: PES полный.
+    Complete(PesPacket),
+    /// Длина не объявлена (так пишут видео): потерянные пакеты могли быть его
+    /// хвостом, полноту по самому PES не проверить.
+    LengthNotDeclared(PesPacket),
+}
+
 /// Per-PID bounded PES accumulator.
 #[derive(Debug, Clone)]
 pub(crate) struct PesAssembler {
@@ -81,6 +93,35 @@ impl PesAssembler {
         let bytes = std::mem::take(&mut self.bytes);
         parse_pes(self.pid, self.byte_offset, bytes).map(Some)
     }
+
+    /// Закрывает PES, после которого continuity counter скакнул на новом
+    /// payload_unit_start. PES с объявленной длиной, которой не хватило,
+    /// возвращается typed `Malformed`, как и при обычном закрытии.
+    pub(crate) fn close_after_continuity_gap(
+        &mut self,
+    ) -> Result<InterruptedPes, MpegTsDemuxError> {
+        let length_declared = self.bytes.get(4..6).is_some_and(|length| length != [0, 0]);
+        Ok(match self.finish()? {
+            None => InterruptedPes::Absent,
+            Some(pes) if length_declared => InterruptedPes::Complete(pes),
+            Some(pes) => InterruptedPes::LengthNotDeclared(pes),
+        })
+    }
+}
+
+/// PTS из заголовка PES, начинающегося в `payload` (пакет с payload_unit_start),
+/// без разбора остального; `None`, если заголовок неполон или PTS нет.
+pub(crate) fn peek_pes_pts(payload: &[u8]) -> Option<u64> {
+    if payload.len() < 14 || payload[..3] != [0x00, 0x00, 0x01] {
+        return None;
+    }
+    let timestamp_flags = (payload[7] >> 6) & 0x03;
+    let expected_prefix = match timestamp_flags {
+        0b10 => 0b0010,
+        0b11 => 0b0011,
+        _ => return None,
+    };
+    parse_timestamp(&payload[9..], expected_prefix).ok()
 }
 
 fn parse_pes(pid: u16, byte_offset: u64, bytes: Vec<u8>) -> Result<PesPacket, MpegTsDemuxError> {
@@ -182,6 +223,50 @@ mod tests {
         assert_eq!(completed.payload, vec![1, 2, 3, 4]);
         assert_eq!(completed.byte_offset, 188);
         assert_eq!(completed.pts, Some(0));
+    }
+
+    #[test]
+    fn gap_close_distinguishes_declared_and_undeclared_length() {
+        let mut declared = pes_start(&[1, 2]);
+        // PES_packet_length = 3 (флаги) + 5 (PTS) + 2 байта payload-а.
+        declared[5] = 10;
+        let mut assembler = PesAssembler::new(PID, 1_024);
+        assert!(matches!(assembler.push(true, &declared, 0), Ok(None)));
+        assert!(matches!(
+            assembler.close_after_continuity_gap(),
+            Ok(InterruptedPes::Complete(pes)) if pes.payload == [1, 2]
+        ));
+        assert!(matches!(
+            assembler.close_after_continuity_gap(),
+            Ok(InterruptedPes::Absent)
+        ));
+
+        let mut truncated = declared.clone();
+        truncated[5] = 20;
+        assert!(matches!(assembler.push(true, &truncated, 0), Ok(None)));
+        assert!(matches!(
+            assembler.close_after_continuity_gap(),
+            Err(MpegTsDemuxError::Malformed { .. })
+        ));
+
+        assert!(matches!(
+            assembler.push(true, &pes_start(&[7]), 0),
+            Ok(None)
+        ));
+        assert!(matches!(
+            assembler.close_after_continuity_gap(),
+            Ok(InterruptedPes::LengthNotDeclared(pes)) if pes.payload == [7]
+        ));
+    }
+
+    #[test]
+    fn peek_reads_pts_only_from_a_complete_header() {
+        assert_eq!(peek_pes_pts(&pes_start(&[])), Some(0));
+        assert_eq!(peek_pes_pts(&pes_start(&[])[..13]), None);
+        let mut without_pts = pes_start(&[]);
+        without_pts[7] = 0x00;
+        assert_eq!(peek_pes_pts(&without_pts), None);
+        assert_eq!(peek_pes_pts(&[0xff; 20]), None);
     }
 
     #[test]

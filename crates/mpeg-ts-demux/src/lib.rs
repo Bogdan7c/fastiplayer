@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod ac3_elementary;
+mod continuity;
 mod demuxer;
 mod elementary;
 mod error;
@@ -16,13 +17,14 @@ mod options;
 mod pes;
 mod psi;
 mod psi_descriptors;
+mod timeline_continuity;
 mod timestamps;
 mod video_assembler;
 
 pub use demuxer::MpegTsDemuxer;
 pub use error::{MpegTsDemuxError, MpegTsOptionsError};
 pub use factory::MpegTsDemuxFactory;
-pub use options::{MpegTsDemuxOptions, MpegTsLimit};
+pub use options::{MpegTsDemuxOptions, MpegTsLimit, TimestampDiscontinuityThresholds};
 
 #[cfg(test)]
 mod tests;

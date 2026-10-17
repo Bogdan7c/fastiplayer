@@ -26,6 +26,6 @@
 
 ## Не сделано
 - Живой прогон D6 (2026-10-17, release GUI, CPAL ALSA `default` на PipeWire null sink, `pw-record` монитора): вещательный TS одного мультиплекса AC-3 2.0→5.1→2.0 (чирп 200+40·t Гц в FL = метка времени медиа) — обе смены идут этим путём (`Audio output rebuilt for a mid-stream decoded format change`, старый отпускается `TailPlayed`), сдвиг время записи↔медиа 6 и 25 мс, паузы 12/17 мс (у ffmpeg на тех же стыках 0/15 мс — priming/padding самих потоков). На эксклюзивном ALSA hw второй поток может не открыться → degraded (то же допущение, что у C3 recreate) — не проверялось.
-- Ловушка для приёмки: TS, склеенный `cat` из отдельных ffmpeg-выходов, даёт скачок continuity counter → `mpeg-ts-demux` публикует `TracksChanged` → полный пересбор pipeline (НЕ этот путь): теряется 0,2–0,4 с звука (`mem:mpeg-ts-demux/core`). Для проверки смены формата — один mux (`cat` сырых `.ac3` → `ffmpeg -c:a copy -f mpegts`).
+- С 2026-10-17 TS, склеенный `cat` из отдельных ffmpeg-выходов, больше не даёт `TracksChanged` (мягкий разрыв + одна шкала, `mem:mpeg-ts-demux/core`); если записи отличаются форматом звука на том же PID-е AC-3, смена пойдёт этим путём. Для чистой проверки смены формата по-прежнему удобен один mux (`cat` сырых `.ac3` → `ffmpeg -c:a copy -f mpegts`).
 - Нет защиты от «дребезга» формата каждый packet (каждая смена = новый CPAL stream).
 - Drop старого CPAL stream-а происходит в worker-потоке внутри записи PCM.

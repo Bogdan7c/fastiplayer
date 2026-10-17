@@ -205,6 +205,8 @@ mod ac3_elementary_tests;
 #[cfg(test)]
 mod attachment_limits_tests;
 #[cfg(test)]
+mod ts_concatenation_tests;
+#[cfg(test)]
 mod ts_fixture;
 
 #[cfg(test)]

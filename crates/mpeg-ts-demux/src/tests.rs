@@ -36,6 +36,7 @@ mod ac3_stream_recovery;
 mod cancellation_priority;
 mod psi_section_assembly;
 mod seekable_playback_start;
+mod timeline_rebase;
 
 /// Hermetic builder производит только минимальные deterministic 188-byte fixtures.
 struct TsFixtureBuilder {
@@ -1658,8 +1659,12 @@ fn duplicate_continuity_counter_is_ignored_without_duplicate_video_packet() {
     assert_eq!(video_packets, 2);
 }
 
+/// Счётчик скачет на пакете, который начинает новый PES (потеряны целые пакеты
+/// между PES или началась склеенная запись): предыдущий PES полный и
+/// дособирается, дорожки не сбрасываются. Раньше такой разрыв выбрасывал
+/// готовый кадр и публиковал `TracksChanged` (полный пересбор player-core).
 #[test]
-fn continuity_gap_resets_only_affected_video_pid() {
+fn continuity_gap_before_pes_start_keeps_completed_units_without_track_reset() {
     let video = [0, 0, 1, 0x65, 0x80];
     let audio = adts_frame(&[1, 2, 3]);
     let mut bytes = TsFixtureBuilder::new()
@@ -1679,15 +1684,26 @@ fn continuity_gap_resets_only_affected_video_pid() {
     .expect("continuity gap fixture");
     let events = drain(&mut *demuxer).expect("recover affected PID");
 
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DemuxReadEvent::TracksChanged(_))),
+        "a transport gap is not a track change"
+    );
     assert!(events.iter().any(
         |event| matches!(event, DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Audio)
     ));
+    let video_pts: Vec<Duration> = events
+        .iter()
+        .filter_map(|event| match event {
+            DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video => Some(packet.pts),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video))
-            .count(),
-        2
+        video_pts,
+        [0, 1, 2].map(Duration::from_secs),
+        "no access unit is lost and timestamps are untouched"
     );
 }
 

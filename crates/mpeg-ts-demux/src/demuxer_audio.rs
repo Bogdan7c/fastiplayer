@@ -26,6 +26,7 @@ use crate::elementary::{
 };
 use crate::pes::PesPacket;
 use crate::psi::StreamKind;
+use crate::timeline_continuity::ElementaryClock;
 
 /// Таймстемпы одного PES, payload которого лежит в буфере начиная с `buffer_offset`.
 #[derive(Debug, Clone, Copy)]
@@ -240,16 +241,29 @@ impl MpegTsDemuxer {
             if track_changed && publish_lifecycle {
                 self.publish_tracks_changed();
             }
+            // Цепочка длительностей (`advance_after_frame`) остаётся в raw-домене
+            // PID-а; на шкалу презентации переносится только опубликованный кадр.
+            let presented = self.present_on_timeline(
+                pid,
+                ElementaryClock::Audio,
+                timing.pts,
+                timing.dts,
+                frame
+                    .packet
+                    .duration_90khz
+                    .and_then(|duration| i64::try_from(duration).ok()),
+                timing.byte_offset,
+            );
             let packet = self.make_packet(
                 pid,
                 kind,
-                timing.pts,
-                timing.dts,
+                presented.pts,
+                presented.dts,
                 timing.byte_offset,
                 frame.packet,
             );
             if packet.keyframe.is_known_keyframe() {
-                self.add_seek_anchor(timing.pts, timing.byte_offset);
+                self.add_seek_anchor(presented.pts, timing.byte_offset, presented.epoch);
             }
             let packet_end = packet
                 .duration

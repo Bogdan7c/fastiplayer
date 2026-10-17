@@ -143,6 +143,15 @@ impl TransportPacketReader {
         self.source_seekable
     }
 
+    /// Вход размечен transport-ом на ordered segments/resources (HLS и т.п.):
+    /// разрывы timeline объявляет он, а не demuxer.
+    pub(crate) const fn delivers_ordered_resources(&self) -> bool {
+        matches!(
+            &self.input,
+            TransportInput::OrderedSegments(_) | TransportInput::OrderedResourceStream(_)
+        )
+    }
+
     /// Только новый streamed contract запрещает трактовать probe limit как resource EOF.
     pub(crate) const fn requires_explicit_resource_end(&self) -> bool {
         matches!(&self.input, TransportInput::OrderedResourceStream(_))

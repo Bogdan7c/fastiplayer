@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use crate::MpegTsOptionsError;
 
@@ -43,6 +44,42 @@ pub struct MpegTsDemuxOptions {
     /// синхронизации (битый кадр, мусор, висящие dependent-ы), прежде чем PID
     /// считается не-AC-3 (typed `Ac3SyncLost`).
     pub ac3_resync_bytes: MpegTsLimit,
+    /// Когда скачок PTS/DTS/PCR считается разрывом шкалы (склейка записей),
+    /// а не обычным ходом времени. См. `TimestampDiscontinuityThresholds`.
+    pub timestamp_discontinuity: TimestampDiscontinuityThresholds,
+}
+
+/// Пороги распознавания разрыва timestamps внутри одной программы.
+///
+/// Склеенные `cat`-ом записи начинают PTS/PCR заново (обычно снова с 1.4 с), а
+/// player-core ведёт аудио-часы по проигранным сэмплам и не умеет «прыгать»
+/// назад. Поэтому demuxer сам переносит новую запись на продолжение шкалы
+/// (`timeline_continuity.rs`). Обычный ход времени при этом трогать нельзя:
+/// небольшой скачок вперёд (потеря пакетов в эфире) остаётся настоящим временем.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimestampDiscontinuityThresholds {
+    /// Насколько timestamp может уйти назад от предыдущего в том же потоке,
+    /// не считаясь разрывом. Decode timestamps монотонны, так что это запас
+    /// на неаккуратные muxer-ы, а не на B-кадры (по ним сравнивается DTS).
+    pub backward_tolerance: Duration,
+    /// Насколько timestamp может уйти вперёд от ожидаемого продолжения,
+    /// не считаясь разрывом. Больший скачок — новая шкала, а не пропуск.
+    pub forward_threshold: Duration,
+}
+
+impl Default for TimestampDiscontinuityThresholds {
+    fn default() -> Self {
+        Self {
+            // В корректном потоке decode timestamps назад не идут совсем;
+            // 0.1 с — тот же запас, что у ffmpeg для «DTS ушёл назад».
+            // Больше нельзя: склейка короткой записи прыгает назад всего на
+            // её длину.
+            backward_tolerance: Duration::from_millis(100),
+            // Как `-dts_delta_threshold` у ffmpeg для форматов с разрывами
+            // (AVFMT_TS_DISCONT): меньший скачок вперёд — реальный пропуск.
+            forward_threshold: Duration::from_secs(10),
+        }
+    }
 }
 
 impl MpegTsDemuxOptions {
@@ -96,6 +133,7 @@ impl Default for MpegTsDemuxOptions {
             ac3_resync_bytes: MpegTsLimit(
                 const { NonZeroUsize::new(256 * 1024).expect("non-zero") },
             ),
+            timestamp_discontinuity: TimestampDiscontinuityThresholds::default(),
         }
     }
 }

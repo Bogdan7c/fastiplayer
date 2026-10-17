@@ -3,6 +3,7 @@
 //! проверка «в каждой lane звучит свой тон» (Гёрцель по позиции канала).
 //!
 //! Используют: `local_media::ac3_elementary_tests` (локальный файл / TS),
+//! `local_media::ts_concatenation_tests` (склеенные TS-записи),
 //! `direct_progressive_open::ac3_elementary_tests` (прямой HTTP),
 //! `native_startup::{dash,hls}::*ac3*` (адаптивные fMP4 вертикали).
 
@@ -113,7 +114,7 @@ pub(crate) fn decode_track_packets(track: &TrackInfo, packets: &[Packet]) -> Dec
 }
 
 /// Энергия тона в одной lane (Гёрцель, нормированный на квадрат длины).
-fn tone_energy(decoded: &DecodedPcm, lane: usize, frequency: f32) -> f32 {
+pub(crate) fn tone_energy(decoded: &DecodedPcm, lane: usize, frequency: f32) -> f32 {
     let channels = decoded.positions.len();
     let coefficient = 2.0 * (2.0 * PI * frequency / decoded.sample_rate as f32).cos();
     let (mut previous, mut before_previous, mut count) = (0.0_f32, 0.0_f32, 0_usize);

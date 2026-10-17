@@ -5,9 +5,11 @@ use media_core::{DemuxReadEvent, DemuxSeekMode, TrackInfo};
 
 use super::{AudioAccumulator, AudioTrackEvidence, MpegTsDemuxer, StreamTimestamps};
 use crate::MpegTsDemuxError;
+use crate::continuity::ContinuityTracker;
 use crate::framing::TransportReadOutcome;
 use crate::pes::PesAssembler;
 use crate::psi::{ProgramMap, ProgramMapEntry, PsiSectionAssembler, StreamKind};
+use crate::timeline_continuity::{EpochPlacement, PresentationTimeline, ProgramClockPlacement};
 use crate::timestamps::TimestampUnwrapper;
 use crate::video_assembler::VideoAccessUnitAssembler;
 
@@ -17,6 +19,8 @@ pub(super) struct SeekAnchor {
     pub(super) timestamp_90khz: i64,
     pub(super) byte_offset: u64,
     pub(super) decode_safe: bool,
+    /// Эпоха шкалы презентации на этом месте: seek восстанавливает её сдвиг.
+    pub(super) epoch: EpochPlacement,
 }
 
 /// Полный parser snapshot для transactional on-demand index scan.
@@ -28,7 +32,7 @@ struct DemuxStateSnapshot {
     program_maps: BTreeMap<u16, ProgramMap>,
     selected_program: Option<ProgramMap>,
     stream_by_pid: HashMap<u16, StreamKind>,
-    continuity_by_pid: HashMap<u16, u8>,
+    continuity: ContinuityTracker,
     pes_by_pid: HashMap<u16, PesAssembler>,
     timestamps_by_pid: HashMap<u16, StreamTimestamps>,
     pcr_timestamp: TimestampUnwrapper,
@@ -38,6 +42,7 @@ struct DemuxStateSnapshot {
     config_evidence_by_pid: HashMap<u16, Vec<u8>>,
     tracks: Vec<TrackInfo>,
     pending_events: VecDeque<DemuxReadEvent>,
+    timeline: PresentationTimeline,
     seek_index: Vec<SeekAnchor>,
     duration: Option<Duration>,
     reached_end: bool,
@@ -53,7 +58,7 @@ pub(super) struct IndexContinuationState {
     program_maps: BTreeMap<u16, ProgramMap>,
     selected_program: Option<ProgramMap>,
     stream_by_pid: HashMap<u16, StreamKind>,
-    continuity_by_pid: HashMap<u16, u8>,
+    continuity: ContinuityTracker,
     pes_by_pid: HashMap<u16, PesAssembler>,
     timestamps_by_pid: HashMap<u16, StreamTimestamps>,
     pcr_timestamp: TimestampUnwrapper,
@@ -61,11 +66,21 @@ pub(super) struct IndexContinuationState {
     video_assembler: VideoAccessUnitAssembler,
     audio_evidence_by_pid: HashMap<u16, AudioTrackEvidence>,
     config_evidence_by_pid: HashMap<u16, Vec<u8>>,
+    timeline: PresentationTimeline,
 }
 
 impl MpegTsDemuxer {
     pub(super) fn observe_pcr(&mut self, raw_pcr: u64, byte_offset: u64) {
-        let timestamp = self.pcr_timestamp.unwrap(raw_pcr);
+        let raw_timestamp = self.pcr_timestamp.unwrap(raw_pcr);
+        // PCR после скачка (склейка) ждёт эпоху от elementary потоков: anchor с
+        // «сырым» временем второй записи указывал бы seek-у не туда.
+        let ProgramClockPlacement::OnTimeline {
+            pcr_90khz: timestamp,
+            epoch,
+        } = self.timeline.place_program_clock(raw_timestamp)
+        else {
+            return;
+        };
         if self
             .seek_index
             .iter()
@@ -73,15 +88,26 @@ impl MpegTsDemuxer {
             .max_by_key(|anchor| anchor.byte_offset)
             .is_none_or(|anchor| byte_offset.saturating_sub(anchor.byte_offset) >= 188 * 64)
         {
-            self.add_index_anchor(timestamp, byte_offset, false);
+            self.add_index_anchor(timestamp, byte_offset, false, epoch);
         }
     }
 
-    pub(super) fn add_seek_anchor(&mut self, timestamp_90khz: i64, byte_offset: u64) {
-        self.add_index_anchor(timestamp_90khz, byte_offset, true);
+    pub(super) fn add_seek_anchor(
+        &mut self,
+        timestamp_90khz: i64,
+        byte_offset: u64,
+        epoch: EpochPlacement,
+    ) {
+        self.add_index_anchor(timestamp_90khz, byte_offset, true, epoch);
     }
 
-    fn add_index_anchor(&mut self, timestamp_90khz: i64, byte_offset: u64, decode_safe: bool) {
+    fn add_index_anchor(
+        &mut self,
+        timestamp_90khz: i64,
+        byte_offset: u64,
+        decode_safe: bool,
+        epoch: EpochPlacement,
+    ) {
         if self.seek_index.len() >= self.options.index_entries.get() {
             return;
         }
@@ -89,9 +115,26 @@ impl MpegTsDemuxer {
             timestamp_90khz,
             byte_offset,
             decode_safe,
+            epoch,
         });
         self.seek_index.sort_by_key(|anchor| anchor.timestamp_90khz);
         self.seek_index.dedup_by_key(|anchor| anchor.byte_offset);
+    }
+
+    /// Первый аудиокадр уточнил сдвиг эпохи (её создало видео по шагу кадра):
+    /// anchor-ы этой эпохи переезжают на ту же разницу, иначе seek в начало
+    /// склеенной записи дал бы A/V сдвиг на эту разницу.
+    pub(super) fn move_seek_anchors_to_refined_epoch(&mut self, refined: EpochPlacement) {
+        for anchor in &mut self.seek_index {
+            if anchor.epoch.id == refined.id {
+                let shift = refined
+                    .offset_90khz
+                    .saturating_sub(anchor.epoch.offset_90khz);
+                anchor.timestamp_90khz = anchor.timestamp_90khz.saturating_add(shift);
+                anchor.epoch = refined;
+            }
+        }
+        self.seek_index.sort_by_key(|anchor| anchor.timestamp_90khz);
     }
 
     /// Строит bounded initial index seekable входа и возвращает чтение к
@@ -134,6 +177,9 @@ impl MpegTsDemuxer {
         self.reader
             .restore_after_index_scan(playback_start_offset)?;
         self.reset_elementary_state();
+        // Playback переигрывает вход с начала: эпохи scan-а не переносятся,
+        // чтение заново пройдёт те же разрывы (с теми же id эпох).
+        self.timeline.restart_from_stream_start();
         self.pending_events.clear();
         self.reached_end = false;
         self.rebuild_tracks();
@@ -149,7 +195,7 @@ impl MpegTsDemuxer {
             program_maps: self.program_maps.clone(),
             selected_program: self.selected_program.clone(),
             stream_by_pid: self.stream_by_pid.clone(),
-            continuity_by_pid: self.continuity_by_pid.clone(),
+            continuity: self.continuity.clone(),
             pes_by_pid: self.pes_by_pid.clone(),
             timestamps_by_pid: self.timestamps_by_pid.clone(),
             pcr_timestamp: self.pcr_timestamp.clone(),
@@ -159,6 +205,7 @@ impl MpegTsDemuxer {
             config_evidence_by_pid: self.config_evidence_by_pid.clone(),
             tracks: self.tracks.clone(),
             pending_events: std::mem::take(&mut self.pending_events),
+            timeline: self.timeline.clone(),
             seek_index: self.seek_index.clone(),
             duration: self.duration,
             reached_end: self.reached_end,
@@ -173,7 +220,7 @@ impl MpegTsDemuxer {
         self.program_maps = snapshot.program_maps;
         self.selected_program = snapshot.selected_program;
         self.stream_by_pid = snapshot.stream_by_pid;
-        self.continuity_by_pid = snapshot.continuity_by_pid;
+        self.continuity = snapshot.continuity;
         self.pes_by_pid = snapshot.pes_by_pid;
         self.timestamps_by_pid = snapshot.timestamps_by_pid;
         self.pcr_timestamp = snapshot.pcr_timestamp;
@@ -183,6 +230,7 @@ impl MpegTsDemuxer {
         self.config_evidence_by_pid = snapshot.config_evidence_by_pid;
         self.tracks = snapshot.tracks;
         self.pending_events = snapshot.pending_events;
+        self.timeline = snapshot.timeline;
         self.seek_index = snapshot.seek_index;
         self.duration = snapshot.duration;
         self.reached_end = snapshot.reached_end;
@@ -197,7 +245,7 @@ impl MpegTsDemuxer {
             program_maps: self.program_maps.clone(),
             selected_program: self.selected_program.clone(),
             stream_by_pid: self.stream_by_pid.clone(),
-            continuity_by_pid: self.continuity_by_pid.clone(),
+            continuity: self.continuity.clone(),
             pes_by_pid: self.pes_by_pid.clone(),
             timestamps_by_pid: self.timestamps_by_pid.clone(),
             pcr_timestamp: self.pcr_timestamp.clone(),
@@ -205,6 +253,7 @@ impl MpegTsDemuxer {
             video_assembler: self.video_assembler.clone(),
             audio_evidence_by_pid: self.audio_evidence_by_pid.clone(),
             config_evidence_by_pid: self.config_evidence_by_pid.clone(),
+            timeline: self.timeline.clone(),
         }
     }
 
@@ -216,7 +265,7 @@ impl MpegTsDemuxer {
         self.program_maps = continuation.program_maps;
         self.selected_program = continuation.selected_program;
         self.stream_by_pid = continuation.stream_by_pid;
-        self.continuity_by_pid = continuation.continuity_by_pid;
+        self.continuity = continuation.continuity;
         self.pes_by_pid = continuation.pes_by_pid;
         self.timestamps_by_pid = continuation.timestamps_by_pid;
         self.pcr_timestamp = continuation.pcr_timestamp;
@@ -224,6 +273,7 @@ impl MpegTsDemuxer {
         self.video_assembler = continuation.video_assembler;
         self.audio_evidence_by_pid = continuation.audio_evidence_by_pid;
         self.config_evidence_by_pid = continuation.config_evidence_by_pid;
+        self.timeline = continuation.timeline;
     }
 
     pub(super) fn expand_index_towards(
@@ -249,12 +299,18 @@ impl MpegTsDemuxer {
                 self.reset_elementary_state();
             }
             if self.index_continuation.is_none()
-                && let Some(reference) = self
+                && let Some(latest_anchor) = self
                     .seek_index
                     .iter()
-                    .map(|anchor| anchor.timestamp_90khz)
-                    .max()
+                    .max_by_key(|anchor| anchor.timestamp_90khz)
+                    .copied()
             {
+                // Scan продолжает после последнего anchor-а в его эпохе; unwrap
+                // работает в raw-домене, поэтому опора — raw время anchor-а.
+                self.timeline.restart_in_epoch(latest_anchor.epoch);
+                let reference = latest_anchor
+                    .timestamp_90khz
+                    .saturating_sub(latest_anchor.epoch.offset_90khz);
                 self.pcr_timestamp = TimestampUnwrapper::from_unwrapped_reference(reference);
                 for pid in self.stream_by_pid.keys().copied() {
                     self.timestamps_by_pid.insert(

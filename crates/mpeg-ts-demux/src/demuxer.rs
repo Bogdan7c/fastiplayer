@@ -12,6 +12,7 @@ use media_core::{
 use source_core::CancellationToken;
 
 use crate::ac3_elementary::Ac3SyncState;
+use crate::continuity::{ContinuityTracker, ContinuityVerdict};
 use crate::elementary::ElementaryPacket;
 use crate::framing::{TransportPacket, TransportPacketReader, TransportReadOutcome};
 use crate::pes::{PesAssembler, PesPacket};
@@ -19,12 +20,17 @@ use crate::psi::{
     ElementaryStream, ProgramMap, ProgramMapEntry, PsiSectionAssembler, StreamKind, parse_pat,
     parse_pmt, select_program,
 };
+use crate::timeline_continuity::{
+    ElementaryClock, EpochPlacement, PresentationTimeline, TimelineOwnership,
+};
 use crate::timestamps::TimestampUnwrapper;
 use crate::video_assembler::{TimedVideoAccessUnit, VideoAccessUnitAssembler};
 use crate::{MpegTsDemuxError, MpegTsDemuxOptions};
 
 #[path = "demuxer_audio.rs"]
 mod audio;
+#[path = "demuxer_continuity.rs"]
+mod continuity_recovery;
 #[path = "index.rs"]
 mod index;
 use index::{IndexContinuationState, SeekAnchor};
@@ -78,7 +84,7 @@ pub struct MpegTsDemuxer {
     program_maps: BTreeMap<u16, ProgramMap>,
     selected_program: Option<ProgramMap>,
     stream_by_pid: HashMap<u16, StreamKind>,
-    continuity_by_pid: HashMap<u16, u8>,
+    continuity: ContinuityTracker,
     pes_by_pid: HashMap<u16, PesAssembler>,
     timestamps_by_pid: HashMap<u16, StreamTimestamps>,
     pcr_timestamp: TimestampUnwrapper,
@@ -88,6 +94,8 @@ pub struct MpegTsDemuxer {
     config_evidence_by_pid: HashMap<u16, Vec<u8>>,
     tracks: Vec<TrackInfo>,
     pending_events: VecDeque<DemuxReadEvent>,
+    /// Одна монотонная шкала презентации поверх разрывов timestamps (склейка записей).
+    timeline: PresentationTimeline,
     seek_index: Vec<SeekAnchor>,
     index_scan_offset: u64,
     index_reached_end: bool,
@@ -113,8 +121,15 @@ impl MpegTsDemuxer {
         cancellation: CancellationToken,
         options: MpegTsDemuxOptions,
     ) -> Result<Self, MpegTsDemuxError> {
+        let reader = TransportPacketReader::new(input, cancellation, options);
+        // Ordered segments (HLS) объявляют разрывы сами — шкалой владеет transport.
+        let timeline_ownership = if reader.delivers_ordered_resources() {
+            TimelineOwnership::OwnedByTransport
+        } else {
+            TimelineOwnership::RebasedByDemuxer
+        };
         let mut demuxer = Self {
-            reader: TransportPacketReader::new(input, cancellation, options),
+            reader,
             options,
             pat_assembler: PsiSectionAssembler::default(),
             pmt_assemblers: HashMap::new(),
@@ -123,7 +138,7 @@ impl MpegTsDemuxer {
             program_maps: BTreeMap::new(),
             selected_program: None,
             stream_by_pid: HashMap::new(),
-            continuity_by_pid: HashMap::new(),
+            continuity: ContinuityTracker::default(),
             pes_by_pid: HashMap::new(),
             timestamps_by_pid: HashMap::new(),
             pcr_timestamp: TimestampUnwrapper::default(),
@@ -133,6 +148,10 @@ impl MpegTsDemuxer {
             config_evidence_by_pid: HashMap::new(),
             tracks: Vec::new(),
             pending_events: VecDeque::new(),
+            timeline: PresentationTimeline::new(
+                timeline_ownership,
+                options.timestamp_discontinuity,
+            ),
             seek_index: Vec::new(),
             index_scan_offset: 0,
             index_reached_end: false,
@@ -231,23 +250,21 @@ impl MpegTsDemuxer {
                 self.publish_tracks_changed();
             }
         }
-        if !packet.payload.is_empty()
-            && !packet.discontinuity
-            && let Some(previous) = self.continuity_by_pid.get(&packet.pid).copied()
-        {
-            if packet.continuity_counter == previous {
-                return Ok(());
-            }
-            if packet.continuity_counter != (previous + 1) & 0x0f {
-                self.reset_pid(packet.pid);
-                if publish_lifecycle && self.stream_by_pid.contains_key(&packet.pid) {
-                    self.publish_tracks_changed();
+        if !packet.payload.is_empty() {
+            match self
+                .continuity
+                .observe(packet.pid, packet.continuity_counter, &packet.payload)
+            {
+                ContinuityVerdict::InOrder => {}
+                ContinuityVerdict::Duplicate => return Ok(()),
+                // Разрыв транспорта — потеря пакетов или склейка записей, а не
+                // смена дорожек: `TracksChanged` здесь пересобирал весь pipeline
+                // player-core (звук терялся, видео ждало keyframe). Настоящую
+                // смену состава публикуют PAT/PMT/config evidence.
+                ContinuityVerdict::Gap => {
+                    self.recover_from_continuity_gap(&packet, publish_lifecycle)?;
                 }
             }
-        }
-        if !packet.payload.is_empty() {
-            self.continuity_by_pid
-                .insert(packet.pid, packet.continuity_counter);
         }
         if packet.pid == 0 {
             return self.process_pat(packet, publish_lifecycle);
@@ -354,7 +371,7 @@ impl MpegTsDemuxer {
         self.pcr_timestamp.reset();
         self.audio_by_pid.clear();
         self.video_assembler.reset_all();
-        self.continuity_by_pid.clear();
+        self.continuity.clear();
         // Уже опубликованное track evidence переживает seek/index rewind той же topology.
         // Иначе короткий seekable TS после initial index терял AAC track до первого нового frame-а.
         self.config_evidence_by_pid.clear();
@@ -362,7 +379,7 @@ impl MpegTsDemuxer {
 
     /// Новый ordered segment может начать continuity counters заново без смены media timeline.
     fn reset_ordered_segment_state(&mut self) {
-        self.continuity_by_pid.clear();
+        self.continuity.clear();
         self.pat_assembler.reset();
         for assembler in self.pmt_assemblers.values_mut() {
             assembler.reset();
@@ -383,7 +400,7 @@ impl MpegTsDemuxer {
     }
 
     fn reset_pid(&mut self, pid: u16) {
-        self.continuity_by_pid.remove(&pid);
+        self.continuity.forget(pid);
         if pid == 0 {
             self.pat_assembler.reset();
         }
@@ -458,16 +475,24 @@ impl MpegTsDemuxer {
                 self.publish_tracks_changed();
             }
         }
+        let presented = self.present_on_timeline(
+            pid,
+            ElementaryClock::Video,
+            access_unit.pts,
+            access_unit.dts,
+            None,
+            access_unit.byte_offset,
+        );
         let packet = self.make_packet(
             pid,
             kind,
-            access_unit.pts,
-            access_unit.dts,
+            presented.pts,
+            presented.dts,
             access_unit.byte_offset,
             access_unit.packet,
         );
         if packet.keyframe.is_known_keyframe() {
-            self.add_seek_anchor(access_unit.pts, access_unit.byte_offset);
+            self.add_seek_anchor(presented.pts, access_unit.byte_offset, presented.epoch);
         }
         self.duration = Some(self.duration.unwrap_or_default().max(packet.pts));
         self.pending_events
@@ -662,6 +687,7 @@ impl Demuxer for MpegTsDemuxer {
                     timestamp_90khz: 0,
                     byte_offset: 0,
                     decode_safe: false,
+                    epoch: EpochPlacement::STREAM_START,
                 })
             })
             .ok_or(MpegTsDemuxError::SeekAnchorUnavailable {
@@ -669,6 +695,10 @@ impl Demuxer for MpegTsDemuxer {
             })?;
         self.reader.seek_absolute(anchor.byte_offset)?;
         self.reset_elementary_state();
+        // Пакеты после anchor-а лежат в его эпохе: тот же сдвиг, что при
+        // последовательном чтении, иначе вторая склеенная запись после seek-а
+        // вернулась бы к своим «сырым» 1.4 с.
+        self.timeline.restart_in_epoch(anchor.epoch);
         self.pending_events.clear();
         self.reached_end = false;
         let actual_timestamp =
